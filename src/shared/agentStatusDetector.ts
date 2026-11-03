@@ -496,9 +496,12 @@ function stopAroundBox(rows: readonly string[], box: number): string | null {
 // echo of the prompt it was just sent can end in anything.
 // Codex's, and the workspace stops a Business or Enterprise seat meets (read from Codex 0.164's program text).
 const CODEX_LIMIT_CELL = /^■ (?:You['’]ve hit your usage limit|Your workspace is out of credits|You hit your spend cap set in your workspace)\b/
-const AGY_LIMIT_CELL = /^✕ You have exhausted your quota on this model\./
+/** The marks an agy error row can lead with: ✕ is the one its cell is known by, but the installed 1.4.8 holds the message and no
+ *  U+2715 at all, and U+2717 (✗) ten times as the lead of its error rows, and no capture of a real quota stop exists (F-R2-3). */
+const AGY_ERROR_MARK = '[✕✗✘✖⚠]'
+const AGY_LIMIT_CELL = new RegExp(String.raw`^${AGY_ERROR_MARK} (?:You have exhausted your quota on this model\.|Your AI credits balance is too low to continue\.)`)
 /** A row that starts a cell of its own in an agent's transcript: not the rest of a wrapped one. */
-const CELL_START = /^(?:[•■⚠✕›>❯●]|\s*⎿)/
+const CELL_START = /^(?:[•■⚠✕✗✘✖›>❯●]|\s*⎿)/
 const CLAUDE_REPLY = /^[ \t]+⎿[ \t\u00a0]+\S/
 /** MessageResponse's ⎿ exactly as claude.exe 2.1.302 to 2.1.304 draw it in front of a reply or a
  *  tool's output: two in (two no-break spaces in for one summary of a tool's output), a space and a
@@ -519,6 +522,11 @@ const TURN_END = /^✻ \S+ for \d/
  *  in: "Read 1 file (ctrl+o to expand)", "Searched for 1 pattern, read 1 file (ctrl+o to expand)"
  *  (claude.exe 2.1.304). The key is the one that shows the transcript, ctrl+o unless rebound. */
 const FOLDED_READS = /\([^()]+ to expand\)$/
+/** The row Claude Code 2.1.316 folds a turn's finished calls into, with no "(ctrl+o to expand)" hint and no ⎿ output rows
+ *  under it: "Ran 1 shell command", "Read 2 files", "Searched for 1 pattern", and them joined by commas ("Searched for 2
+ *  patterns, read 1 file, ran 3 shell commands"). The whole of the rows between the turn's text and the reply must be
+ *  such a group, so a sentence that only starts like one is not (F-R2-1). */
+const FOLDED_GROUP = /^(?:Searched for \d+ patterns?|[Rr]ead \d+ files?|[Rr]an \d+ shell commands?)(?:, (?:searched for \d+ patterns?|read \d+ files?|ran \d+ shell commands?))*$/
 
 function turnEndLimit(rows: readonly string[], box: number): string | null {
   // The last thing above the box: up past its top rule and the blank rows under the transcript, and
@@ -578,7 +586,9 @@ function claudeLimitReply(rows: readonly string[], end: number): string | null {
  *  the answer's own ●. */
 function underFoldedReads(rows: readonly string[], up: number, at: number): boolean {
   const between = rows.slice(up + 1, at)
-  return /^[●⏺] /.test(rows[up]) && !between.some((row) => /^ {2}[●⏺]/.test(row)) && FOLDED_READS.test(runTogether(between))
+  if (!/^[●⏺] /.test(rows[up]) || between.some((row) => /^ {2}[●⏺]/.test(row))) return false
+  const folded = runTogether(between).trim()
+  return FOLDED_READS.test(folded) || FOLDED_GROUP.test(folded)
 }
 
 /** Whether row `up` ends a tool's output in Claude Code's transcript: the rows it draws a ⎿ in, two

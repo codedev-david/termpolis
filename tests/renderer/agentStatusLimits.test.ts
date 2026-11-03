@@ -340,6 +340,82 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
   })
 
+  // F-R2-1: Claude Code 2.1.316 folds the calls a turn made into one row with NO "(ctrl+o to expand)" and no output rows
+  // ("Ran 1 shell command", "Read 1 file", "Searched for 1 pattern", and the groups of them), and the limit's reply comes under
+  // it. Captured live by resuming a transcript that ends in tool calls and then the limit reply (bash, bash+bash, bash+read,
+  // read, grep, glob, read+grep), in both TUI modes; in David's own transcripts about one limit in twenty ends a turn so.
+  it.each([
+    ['one shell command', ['  Ran 1 shell command']],
+    ['two shell commands', ['  Ran 2 shell commands']],
+    ['one file read', ['  Read 1 file']],
+    ['three files read', ['  Read 3 files']],
+    ['a pattern searched', ['  Searched for 1 pattern']],
+    ['two patterns searched', ['  Searched for 2 patterns']],
+    ['a search and a read', ['  Searched for 1 pattern, read 1 file']],
+    ['a read and a shell command', ['  Read 1 file, ran 1 shell command']],
+    ['all three', ['  Searched for 2 patterns, read 1 file, ran 3 shell commands']],
+    ['the old form with its hint', ['  Searched for 1 pattern, read 1 file (ctrl+o to expand)']],
+    ['a group wrapped at 30 columns', ['  Searched for 1 pattern,', '  read 1 file']],
+    ['a group wrapped at 20 columns', ['  Ran 1 shell', '  command']],
+  ])("reads Claude Code's reply under a folded group of calls with no hint: %s (F-R2-1)", (_name, group) => {
+    const rows = ['❯ go', '', '● I will check the folder first.', '', ...group, LIMIT_REPLY, '', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+    // The macOS bullet reads the same.
+    expect(onScreen([...rows.slice(0, 2), '⏺ I will check the folder first.', ...rows.slice(3)], 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
+  it.each([
+    ['another message under it', ['  Ran 1 shell command'], `${REPLY}Request interrupted by user`],
+    ['the reply quoted at four spaces', ['  Ran 1 shell command'], `    ⎿  You've hit your session limit · resets 3pm (America/New_York)`],
+    ['the reply with plain spaces, a quoted screen', ['  Ran 1 shell command'], "  ⎿  You've hit your session limit · resets 3pm (America/New_York)"],
+    ['a sentence that only starts like a group', ['  Ran 1 shell command in the repo and found nothing'], LIMIT_REPLY],
+    ['a group the user prompt quotes', ['  Read 1 file, said the user'], LIMIT_REPLY],
+    ['a group counted in words', ['  Ran one shell command'], LIMIT_REPLY],
+    ['a group with extra words after the last item', ['  Searched for 1 pattern, read 1 file and more'], LIMIT_REPLY],
+  ])('does not read a folded-looking row under which %s as a limit (F-R2-1)', (_name, group, reply) => {
+    const rows = ['❯ go', '', '● I will check the folder first.', '', ...group, reply, '', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude').status).not.toBe('blocked')
+  })
+
+  // F-R2-3: the installed agy 1.4.8 holds the quota message but no U+2715 at all, and U+2717 (✗) ten times as the lead of its
+  // error rows: the glyph its cell leads with is not known from the program, and no real limit capture exists (a real limit
+  // needs a sign-in). Any of the error marks reads, so the chooser and the guided switch open whichever it draws.
+  it.each(['✕', '✗', '✘', '✖', '⚠'])('reads agy\'s quota cell led by %s as a limit, and its credits message as a cell too (F-R2-3)', (glyph) => {
+    const idle = ['', '─'.repeat(80), '> ', '─'.repeat(80), '? for shortcuts']
+    expect(onScreen(['  Ready.', '', '> Write the docs', '', `${glyph} You have exhausted your quota on this model.`, ...idle], 'Gemini')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
+    expect(onScreen(['  Ready.', '', '> Write the docs', '', `${glyph} Your AI credits balance is too low to continue.`, ...idle], 'Gemini').status).toBe('blocked')
+  })
+
+  it('does not read a quoted quota message led by a mark inside an answer, or a mark that is no error mark (F-R2-3)', () => {
+    const idle = ['', '─'.repeat(80), '> ', '─'.repeat(80), '? for shortcuts']
+    expect(onScreen(['> Why did it stop?', '', '  It printed ✗ You have exhausted your quota on this model.', ...idle], 'Gemini').status).not.toBe('blocked')
+    expect(onScreen(['  Ready.', '', '> Write the docs', '', `✓ You have exhausted your quota on this model.`, ...idle], 'Gemini').status).not.toBe('blocked')
+    expect(onScreen(['  Ready.', '', '> Write the docs', '', `- You have exhausted your quota on this model.`, ...idle], 'Gemini').status).not.toBe('blocked')
+    // The sentence's full stop is a full stop, not any character.
+    expect(onScreen(['  Ready.', '', '> Write the docs', '', '✗ You have exhausted your quota on this model!', ...idle], 'Gemini').status).not.toBe('blocked')
+    expect(onScreen(['  Ready.', '', '> Write the docs', '', '✗ Your AI credits balance is too low to continue,', ...idle], 'Gemini').status).not.toBe('blocked')
+  })
+
+  // F-R2-4: the prompt Claude Code echoes starts at the screen's left edge; a screen an answer quotes is indented. Whatever the
+  // indent and whichever space the reply keeps after its ⎿, a screen quoted in an answer is no stop of this run (R5).
+  it.each([2, 3, 4].flatMap((indent) => [[indent, ' '], [indent, ' ']] as const))('does not read a quoted screen indented by %i, its reply keeping %j, as a limit (F-R2-4)', (indent, gap) => {
+    const sp = ' '.repeat(indent)
+    const rows = ['> quote the error', '', '● It said:', '', `${sp}> Build the page`, `${sp}⎿ ${gap}You've hit your session limit · resets 3pm (America/New_York)`, ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude').status).not.toBe('blocked')
+  })
+
+  it('reads the same reply under the prompt at the left edge, as the real screen draws it (the control of the quoted ones)', () => {
+    const rows = ['> Build the page', LIMIT_REPLY, ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
+  it('does not read the reply when a second turn mark stands between the folded group and it, or the turn text is the user\'s', () => {
+    const rows = ['❯ go', '', '● I will check the folder first.', '', '  Ran 1 shell command', '', '  ● and then I stopped.', LIMIT_REPLY, '', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude').status).not.toBe('blocked')
+    const user = ['❯ I will check the folder first.', '  Ran 1 shell command', LIMIT_REPLY, '', ...CLAUDE_IDLE]
+    expect(onScreen(user, 'Claude').status).toBe('blocked')
+  })
+
   // MW2-1: what the screen can't tell from that reply. An answer that ends its turn on a quote of a
   // worker's screen, Claude Code's no-break space after each ⎿ kept, as read_output returns it, is
   // drawn the same: mid-turn when no row of the quote is led by a turn's mark, the answer's own ●
@@ -533,6 +609,9 @@ describe('what is no usage limit or menu', () => {
     ["agy's, quoted in an answer", 'Gemini', ['> Why did it stop?', '', '  It printed ✕ You have exhausted your quota on this model.', ...AGY_IDLE]],
     ["Codex's, still at work on the prompt it was sent", 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', ...CODEX_BUSY]],
     ["Codex's, a cell of another kind right under it", 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', '⚠ Falling back from WebSockets to HTTPS transport.', ...CODEX_IDLE]],
+    // Another error row of agy's right under it, led by the mark its error rows are known by (F-R2-3): the last cell is not this one.
+    ["agy's, an error cell of its own mark right under it", 'Gemini', ['> Write the docs', '', '✕ You have exhausted your quota on this model.', '✗ The request could not be retried.', ...AGY_IDLE]],
+    ["agy's, led by the other mark, an error cell right under it", 'Gemini', ['> Write the docs', '', '✗ You have exhausted your quota on this model.', '✗ The request could not be retried.', ...AGY_IDLE]],
     ["Codex's words in the middle of a long cell, no blank row above them", 'Codex', ['• The log ends with:', '■ You\'ve hit your usage limit. Try again at 4:15 PM.', '  and then', '  the session', '  closed', '  itself.', ...CODEX_IDLE]],
     // R4-3: a ⎿ row of its own between the prompt and the reply, a hook's, leaves the reply no longer
     // right under the prompt: it can be a hook's own words, so it is read as nothing.
@@ -721,7 +800,21 @@ describe('a stop an admin or a workspace puts on a seat (round 1)', () => {
     ['a prompt quoting it', 'Claude', ['❯ Your seat type doesn\'t include usage, what now?', ...CLAUDE_IDLE]],
     ['an answer that mentions it mid-sentence', 'Claude', ['❯ why?', '● It says that your seat type doesn\'t include usage today.', ...CLAUDE_IDLE]],
     ['Codex quoting it in its answer', 'Codex', ['› why?', '', '• The message "Your workspace is out of credits" means an admin acts.', '', ...CODEX_IDLE]],
+    // F-R2-4: a group limit of NOTHING ends at its $0. A limit of fifty cents, or a figure that only starts with a zero, is a
+    // sentence of a different message, and no stop here.
+    ['Claude Code: a group limit of fifty cents', 'Claude', ['❯ Build the page', `${REPLY}Your group's usage limit is set to $0.50`, ...CLAUDE_IDLE]],
+    ['Claude Code: a group limit of five dollars written with a zero', 'Claude', ['❯ Build the page', `${REPLY}Your group's usage limit is set to $05`, ...CLAUDE_IDLE]],
+    ['Claude Code: a group limit of zero point something', 'Claude', ['❯ Build the page', `${REPLY}Your group's usage limit is set to $0.`, ...CLAUDE_IDLE]],
   ])('%s is no stop', (_name, agent, rows) => {
     expect(stopKind(onScreen(rows, agent))).not.toBe('limit')
+  })
+
+  // The sentence's own ends, which are stops: the reply may end the message there, or go on with other words.
+  it.each([
+    ['at the end of the row', "Your group's usage limit is set to $0"],
+    ['with a space after it', "Your group's usage limit is set to $0 "],
+    ['followed by words', "Your group's usage limit is set to $0 · ask your admin"],
+  ])('reads a group limit of nothing %s as a stop (F-R2-4)', (_name, words) => {
+    expect(stopKind(onScreen(['❯ Build the page', `${REPLY}${words}`, ...CLAUDE_IDLE], 'Claude'))).toBe('limit')
   })
 })

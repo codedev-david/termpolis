@@ -458,6 +458,18 @@ describe('accounts:switch, an account that isn\'t offered automatically (D14, R1
       noteTerminalSession('t1', ID)
     }
 
+    // F-R2-4 (MB04): the question is for a terminal whose account Termpolis does NOT know. One it started on an account that is
+    // offered, and nobody changed by hand, is known: asking about work there would ask every switch of a user who has a work
+    // account, which is the whole of a work account's holder.
+    it('asks nothing of a terminal whose account is known and offered, though a work account exists', async () => {
+      const { main, other } = await workAndAnother()
+      startedOn(main)
+      expect(isAccountChangedByHand('t1')).toBe(false)
+      const r = await switchTo(other.id)
+      expect(r.kind).toBe('switched')
+      expect(terminalAccountId('t1')).toBe(other.id)
+    })
+
     it('asks for the second confirmation when the user pointed the shell at another profile by hand', async () => {
       const { main, workDir, other } = await workAndAnother()
       startedOn(main)

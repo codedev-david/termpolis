@@ -599,10 +599,34 @@ describe('how the keys of one write are gathered into lines (CHOOSER-R1-5)', () 
     ['Esc then LF (Shift+Enter) is a space in the line, not a submit', `foo${E}\nbar\r`, 'foo bar'],
     ['control characters in a paste are left out', `${E}[200~fo\x01\x02o\x1b bar${E}[201~\r`, 'foo bar'],
     ['a paste\'s line breaks read as ";"', `${E}[200~one\ntwo${E}[201~\r`, 'one; two'],
+    // F-R2-4: Ctrl+C and Ctrl+U clear the line a shell is reading, as the keys do there, and what is typed after is the line.
+    ['Ctrl+C clears the line typed so far', 'foo\x03bar\r', 'bar'],
+    ['Ctrl+U clears the line typed so far', 'foo\x15bar\r', 'bar'],
+    ['Backspace takes the last character off', 'fooo\x7f\r', 'foo'],
   ])('%s', (_what, written, expected) => {
     const lines: string[] = []
     _gatherLinesForTest('t9', written, (l) => lines.push(l))
     expect(lines).toEqual([expected])
+  })
+
+  // F-R2-4: a line is kept to 4096 characters. A longer one is a paste or a runaway, whose first 4096 are the line (the rest is
+  // not held, so a flood of typed text costs a terminal no more than that), and what is typed after it still reaches its Enter.
+  it('keeps no more than 4096 characters of a line, and still ends it at its Enter', () => {
+    const lines: string[] = []
+    _gatherLinesForTest('t8', `${'a'.repeat(5000)}\r`, (l) => lines.push(l))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toHaveLength(4096)
+    expect(lines[0]).toBe('a'.repeat(4096))
+    _gatherLinesForTest('t8', `${'b'.repeat(4096)}c\r`, (l) => lines.push(l))
+    expect(lines[1]).toBe('b'.repeat(4096))
+  })
+
+  it('keeps no more than 4096 characters of a line typed across several writes', () => {
+    const lines: string[] = []
+    for (let i = 0; i < 5; i++) _gatherLinesForTest('t7', 'x'.repeat(1000), (l) => lines.push(l))
+    _gatherLinesForTest('t7', 'x'.repeat(1000) + '\r', (l) => lines.push(l))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toHaveLength(4096)
   })
 })
 

@@ -288,6 +288,32 @@ describe('where a turn began (R4): an old limit is not the answer to it', () => 
     expect(start.turnedAt).toBe(out.text.length)
   })
 
+  // F-R2-4 (P08, P09, C06): Codex 0.164 draws its composer while it still looks for the session ("Resuming session…"), and
+  // the detector reads the row it draws there as at work. That is the same start-up as "model: loading": no prompt was taken,
+  // so it is no turn, and the old limit its resumed session draws after is not a fresh one.
+  it('does not take Codex\'s "Resuming session…" start-up for a turn either, and takes the first real one', () => {
+    const RESUMING = ['  Resuming session…', '• Working (1s • esc to interrupt)', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~/repo']
+    const out = { text: paint(RESUMING) }
+    const io = ioOver(out)
+    const start: LiveStart = { at: 0, commands: ['codex resume x'], agent: 'codex', time: 0 }
+    expect(lookForLimit(io, 't1', start, 1)).toMatchObject({ live: true, turned: false })
+    expect(start.turnedAt).toBeUndefined()
+    // Up, with no such row any more: still no turn until the user takes one.
+    out.text += paint(['› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~/repo'])
+    expect(lookForLimit(io, 't1', start, 2).turned).toBe(false)
+    out.text += paint(['› go on', '• Working (3s • esc to interrupt)', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~/repo'])
+    expect(lookForLimit(io, 't1', start, 3).turned).toBe(true)
+  })
+
+  it('does not take either start-up of Claude Code or agy for anything but a turn at work', () => {
+    // Only Codex's own start-up words are no turn; the same row on another agent's screen is work.
+    for (const agent of ['claude', 'agy'] as const) {
+      const io = ioOver({ text: paint(['  Resuming session…', '✻ Thinking… (3s · esc to interrupt)', '', RULE, '❯ ', RULE]) })
+      const start: LiveStart = { at: 0, commands: [agent], agent, time: 0 }
+      expect(lookForLimit(io, 't1', start, 1).turned, agent).toBe(true)
+    }
+  })
+
   it('still takes a turn at work from Claude Code and agy as before', () => {
     for (const agent of ['claude', 'agy'] as const) {
       // Even with the words Codex's loading screen uses in what it quoted: only Codex's own header means "starting".
