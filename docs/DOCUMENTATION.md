@@ -1491,10 +1491,17 @@ audit log.
   URL-encoded twice, or with its base64 characters written as HTML
   entities (`&#43;`); key lines that a few other layouts alter or break apart (a
   word diff, a `git diff` that alternates context and changed lines, email
-  quoted-printable, `cat -A` of a tab-indented key, `grep --color` with its
-  match highlighted inside every key line); an SSH2, PuTTY or OpenVPN key file URL-encoded whole; a PuTTY key's
-  private lines run together with no separator, when the first of them starts
-  with a digit (which can read as part of the line count); a key shown by `hexdump -C`,
+  quoted-printable, `cat -A` of a tab-indented key); key lines alone, with
+  neither a BEGIN nor an END line (what `grep --color` prints for a match
+  inside every key line: not reported); a key whose lines each start with a
+  token of 16 characters or more and a blank, such as a commit hash, a request
+  id or a log stream's name (reported); a private key stored as bare base64 DER
+  with no BEGIN line (the value of a `.properties`, `.env`, YAML or JSON key:
+  reported when the name says it is a secret, and not otherwise); an SSH2, PuTTY
+  or OpenVPN key file URL-encoded whole; a PuTTY key's lines joined by colons
+  (reported), or its private lines run together with no separator, when the
+  first of them starts with a digit (which can read as part of the line count);
+  a key shown by `hexdump -C`,
   or with U+0085 between its lines; a JWK in upper-case environment variables
   (`JWK_D=`); a PKCS#12 (`.pfx`) file or a
   binary OpenPGP export in base64; a key file base64 encoded twice, or from
