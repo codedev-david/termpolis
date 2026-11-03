@@ -3,8 +3,10 @@
 // (fixtures/primerBaseline.json), so a change to the primer that was meant to leave a digest alone is
 // caught as a changed byte, not argued about.
 //
-// Every scenario is built from nothing the 1.55 ordering acts on: no gated lesson, no note past the
-// first three. Hits are plain objects with the fields a search result carries; the clock is fixed.
+// Thirteen of the fourteen scenarios are built from nothing the 1.55 ordering acts on (no gated lesson, no saved
+// note), and their expected text is what the 1.54 builder printed. The fourteenth holds three saved notes and
+// pins the 1.55.0 order, in which they lead; 1.54 printed them after the conversation. Hits are plain objects
+// with the fields a search result carries; the clock is fixed.
 import { buildContextPrimer, type PrimerHit } from '../../src/main/contextPrimer'
 
 export const NOW = 1_700_000_000_000

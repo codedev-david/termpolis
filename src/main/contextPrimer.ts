@@ -14,8 +14,8 @@
 // unchanged. The order spends the same lines as before: where a digest holds no
 // saved note and no such lesson, the order is the one 1.54 used. (The text can still
 // differ from 1.54's: a chunk and the fuller chunk that begins with it collapse into
-// one line, the freshness lane leaves out what is superseded, suppressed or corrected,
-// and a correction applies to every digest.)
+// one line, the freshness lane leaves out what is superseded, suppressed or corrected and
+// what an automated run filed under cwd, tmp or temp, and a correction applies to every digest.)
 //
 // Decoupled from the store (search is injected) so it unit-tests cleanly. The
 // formatting mirrors the cross-AI handoff prompt: no backticks (AI shells often

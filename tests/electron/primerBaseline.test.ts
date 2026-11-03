@@ -14,7 +14,7 @@ import { scenarios } from './_primerScenarios'
 
 const baseline = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'primerBaseline.json'), 'utf8')) as Record<string, string | null>
 
-describe('the primer without notes or gated lessons is the 1.54 primer, byte for byte, in the pinned scenarios', () => {
+describe('the primer: 13 pinned scenarios without notes or gated lessons are the 1.54 text byte for byte, and the one with notes pins the 1.55.0 order', () => {
   it('has an expected digest for every scenario and no stray ones', () => {
     expect(Object.keys(baseline).sort()).toEqual(scenarios.map((s) => s.name).sort())
   })
