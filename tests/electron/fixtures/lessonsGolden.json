@@ -22,6 +22,16 @@
     { "id": "u18", "label": "usable", "content": "Problem: TLS handshake fails behind the corporate proxy (UNABLE_TO_VERIFY_LEAF_SIGNATURE). → Fix: export the proxy's root certificate and set `NODE_EXTRA_CA_CERTS` to its path." },
     { "id": "u19", "label": "usable", "content": "The release job must publish as a draft first, since a public release with a missing installer breaks auto-update for everyone." },
     { "id": "u20", "label": "usable", "content": "The lockfile `package-lock.json` drifts when `npm install` runs on a stale `node_modules`; regenerate it from a clean checkout." },
+    { "id": "u21", "label": "usable", "kind": "rule-one-name", "content": "Windows keeps a handle on `node_modules` while the editor is open, so close it before running the clean script." },
+    { "id": "u22", "label": "usable", "kind": "rule-one-name", "content": "The renderer cannot read files outside the app folder, so route each read through an `ipcMain` handler." },
+    { "id": "u23", "label": "usable", "kind": "rule-one-name", "content": "`JSON.stringify` drops undefined values, so a missing field and an undefined one look the same on the wire." },
+    { "id": "u24", "label": "usable", "kind": "rule-one-name", "content": "Re-create the Tray in the `ready` handler, since Electron destroys it when the app relaunches." },
+    { "id": "u25", "label": "usable", "kind": "rule-one-name", "content": "A cached `DNS` answer outlives the switch to the office network, so flush it after connecting." },
+    { "id": "u26", "label": "usable", "kind": "rule-one-name", "content": "`Date.now()` is mocked per file in vitest, so a timer test in another file may see a frozen clock." },
+    { "id": "u27", "label": "usable", "kind": "rule-one-name", "content": "Cap the transcript read at 256 KB since `readFileSync` on a larger file blocks the main thread for seconds." },
+    { "id": "u28", "label": "usable", "kind": "rule-one-name", "content": "The `watch` mode debounces for 200 ms, so a burst of saves triggers one rebuild." },
+    { "id": "u29", "label": "usable", "kind": "rule-one-name", "content": "PowerShell 5.1 has no && operator, so chain commands with a semicolon and check the exit code." },
+    { "id": "u30", "label": "usable", "kind": "rule-one-name", "content": "Going with SQLite for the `cache` folder since a single file is easier to back up than a server." },
 
     { "id": "m01", "label": "marginal", "content": "Something is wrong with `retryQueue` after a restart." },
     { "id": "m02", "label": "marginal", "content": "The nightly build failed again on the Linux runner; the cause is not clear yet." },
@@ -63,6 +73,16 @@
     { "id": "n17", "label": "not-usable", "content": "See above for the details of the change." },
     { "id": "n18", "label": "not-usable", "content": "608 files passed, 14,626 tests passed, 0 failed on the first run." },
     { "id": "n19", "label": "not-usable", "content": "Working on it today, will have more later this afternoon." },
-    { "id": "n20", "label": "not-usable", "content": "I'll rename `oldName` to `newName` today because the reviewer asked for it." }
+    { "id": "n20", "label": "not-usable", "content": "I'll rename `oldName` to `newName` today because the reviewer asked for it." },
+    { "id": "n21", "label": "not-usable", "kind": "status-one-name", "content": "The tests in `lessonSubstance.test.ts` passed, so the gate is done." },
+    { "id": "n22", "label": "not-usable", "kind": "status-one-name", "content": "The reviewer approved the change to `index.ts`, so the merge can go ahead now." },
+    { "id": "n23", "label": "not-usable", "kind": "status-one-name", "content": "The `lint` job on the main branch has been red since the dependency bump landed." },
+    { "id": "n24", "label": "not-usable", "kind": "status-one-name", "content": "Nobody has touched `schema.sql` since the migration was reviewed by the team." },
+    { "id": "n25", "label": "not-usable", "kind": "status-one-name", "content": "The migration `0042_add_index.sql` ran against staging, so the table has the new index." },
+    { "id": "n26", "label": "not-usable", "kind": "status-one-name", "content": "Problem: I hit an error in `contextPrimer.ts` when the suite ran. → Fix: I fixed `contextPrimer.ts` and re-ran everything, so all tests pass now." },
+    { "id": "n27", "label": "not-usable", "kind": "status-one-name", "content": "The `reports` folder is empty at the moment, so there is nothing to upload yet." },
+    { "id": "n28", "label": "not-usable", "kind": "status-one-name", "content": "Closed issue `#412` in the tracker, since the fix shipped in the last build on Tuesday." },
+    { "id": "n29", "label": "not-usable", "kind": "status-one-name", "content": "CI is green on the `release` branch, so the tag can be created by the owner." },
+    { "id": "n30", "label": "not-usable", "kind": "status-one-name", "content": "The staging site is up and the `health` check answers, so the testers can begin." }
   ]
 }

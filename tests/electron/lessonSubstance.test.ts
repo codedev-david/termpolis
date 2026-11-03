@@ -317,6 +317,199 @@ describe('lessonSubstance: a rule or a mechanism', () => {
       }
     })
 
+    // A report of what happened is not a rule, however much it names: "The tests in `x.test.ts` passed, so the gate is done." has a name
+    // and a "so" and says only that something was done. What tells it from "the watcher fires twice, so debounce the handler" is what
+    // comes before the connective. A rule says how something works (the present tense, an instruction); a report says what happened (a
+    // past tense, or a perfect), and a progress or time-bound marker anywhere dates the whole lesson.
+    describe('in a report of what happened', () => {
+      const credited = (text: string): boolean => connective(text)
+      const kept = (text: string): boolean => lessonSubstance(text).score >= KEEP_SCORE
+
+      it.each([
+        // the past tense; a dot inside a name is not the end of a sentence, so the verb before it is still read
+        'The tests in `lessonSubstance.test.ts` passed, so the gate is done.',
+        'The reviewer approved the change to `index.ts`, so the merge can go ahead now.',
+        'I fixed the typo in `README.md`, so the docs are correct now.',
+        'The edit to README.md is committed and pushed, so the documentation is up to date.',
+        'Closed issue `#412` in the tracker, since the fix shipped in the last build on Tuesday.',
+        'The module was mocked in `setup.ts`, so the test passes now.', // "was" is a past, "is" is not
+        // an irregular past
+        'The migration `0042_add_index.sql` ran against staging, so the table has the new index.',
+        'The agent wrote `notes.md` to the shared folder, so the handoff is complete.',
+        'The vendor sent the corrected invoice for `PO-7781`, so finance can close the purchase order.',
+        // a perfect
+        'The `lint` job on the main branch has been red since the dependency bump landed.',
+        'Nobody has touched `schema.sql` since the migration was reviewed by the team.',
+        "The `staging` site hasn't answered since the deploy, so the testers are blocked.",
+        "The job didn't finish on `ci.yml`, so the next stage was skipped.",
+        // dated by a progress or time-bound marker, whatever the clause says
+        'The `reports` folder is empty at the moment, so there is nothing to upload yet.',
+        'Nothing is running on `build-03` right now, so the node can be reused for the next job.',
+        // what the heuristic distiller writes from the summary at the end of a task
+        'Problem: I hit an error in `contextPrimer.ts` when the suite ran. → Fix: I fixed `contextPrimer.ts` and re-ran everything, so all tests pass now.',
+        'Problem: The build failed on CI for the notes branch. → Fix: Fixed the typo in `build.ps1`, so the pipeline is green and I merged the branch.',
+        'Problem: Found a failing import in `memoryClient.ts`. → Fix: Fixed the path, so the module loads now and the commit was pushed.',
+      ])('does not count, and does not lift the lesson to the bar: %s', (text) => {
+        expect(credited(text)).toBe(false)
+        expect(kept(text)).toBe(false)
+      })
+
+      it.each([
+        'The watcher fires twice per save on Windows, so debounce the `change` handler by fifty milliseconds.',
+        'Re-create the Tray in the `ready` handler, since Electron destroys it on relaunch.',
+        'Going with SQLite for the `cache` folder since a single file is easier to back up than a server.',
+        'The importer has to close the `handle` first, so call the release step before anything else.',
+        // "has" that owns something is not a perfect
+        'PowerShell 5.1 has no && operator, so chain commands with a semicolon and check the exit code.',
+        // an -ed word that is an adjective, or a present passive, says how it is and not what happened
+        'The SDK retries a failed call three times silently, so a slow test may be a retry loop.',
+        'A cached `DNS` answer outlives the switch to the office network, so flush it after connecting.',
+        'Each uploaded `chunk` is hashed first, so a repeat costs nothing.',
+        '`Date.now()` is mocked per file in vitest, so a timer test in another file may see a frozen clock.',
+        'The `--effort` flag is not forwarded on a model switch, so a session falls back to the default effort.',
+        'Rows are only marked in `memory.db`, so the file does not shrink until the next compaction.',
+        // a word that starts with "un" is not a verb in the past
+        '`JSON.stringify` drops undefined values, so a missing field and an undefined one look the same on the wire.',
+        'Plain git stash ignores untracked files by default, so add `-u` when the new files need to travel with it.',
+        // only the clause before the connective says what is being explained: what comes after it is not read
+        'The cache is keyed by `path`, so a folder that was renamed is a miss.',
+        // a report in the sentence before is another sentence
+        'I fixed the loader in the last change. Since `fs.watch` fires twice, debounce the handler.',
+        'Problem: the tray icon vanished after an update. → Fix: re-create the Tray in the `ready` handler, since Electron destroys it on relaunch.',
+        'The tray icon vanished!\nRe-create the Tray in the `ready` handler, since Electron destroys it on relaunch.',
+        // a name in ticks is not a verb, whatever it is called
+        'Call `fixed` in the handler, since Electron destroys it on relaunch.',
+        // a later connective can carry what an earlier one cannot
+        'It ran, so look at `ci.yml` closely. Keep it small, since the runner times out on a large file.',
+      ])('still counts: %s', (text) => {
+        expect(credited(text)).toBe(true)
+      })
+
+      // The word lists, one word at a time: each is what a rule or a report is made of, and a list that loses a word loses the row.
+      it.each(['was', 'were', 'did', 'ran', 'went', 'came', 'wrote', 'got', 'made', 'took', 'found', 'saw', 'left', 'kept', 'built', 'sent', 'began', 'gave', 'told'])(
+        'takes "%s" for a past tense',
+        (word) => {
+          expect(credited(`Tune ${word} in \`limits.ts\`, so debounce the handler`)).toBe(false)
+          expect(credited(`Tune ${word.toUpperCase()} in \`limits.ts\`, so debounce the handler`)).toBe(false)
+        },
+      )
+
+      it.each(['fixed', 'merged', 'pushed', 'approved', 'committed', 'deployed', 'applied', 'queued', 'passed'])('takes the -ed word "%s" for a past tense', (word) => {
+        expect(credited(`Tune ${word} in \`limits.ts\`, so debounce the handler`)).toBe(false)
+      })
+
+      // Only words of five letters and more: "used", "need", "seed" are not a report, and these are -ed words that never were one.
+      it.each(['used', 'need', 'seed', 'speed', 'embed', 'indeed', 'proceed', 'succeed', 'exceed', 'hundred', 'named', 'unused', 'unsorted'])(
+        'does not take "%s" for a past tense',
+        (word) => {
+          expect(credited(`Tune ${word} in \`limits.ts\`, so debounce the handler`)).toBe(true)
+        },
+      )
+
+      // A word that ends in "d" and is no verb in the past is no report: only "-ed" makes one.
+      it.each(['around', 'beyond', 'second', 'thread', 'field', 'method', 'command', 'record', 'upload', 'round'])('does not take "%s" for a past tense', (word) => {
+        expect(credited(`Tune ${word} in \`limits.ts\`, so debounce the handler`)).toBe(true)
+      })
+
+      it.each(['has been', 'have been', 'had been', 'has not been', 'has just run', 'have gone', 'has grown', 'has done', 'has stayed', 'have dropped'])(
+        'takes "%s" for a perfect',
+        (words) => {
+          expect(credited(`The queue ${words} slow in \`limits.ts\`, so debounce the handler`)).toBe(false)
+        },
+      )
+
+      // A line break ends a sentence (below), so the white space inside one is a run of spaces and tabs.
+      it.each(['has  been', 'have\tgone', 'had \t done', 'has  not  been', 'has not\t been'])('reads a perfect through any run of spaces and tabs: %j', (words) => {
+        expect(credited(`The queue ${words} slow in \`limits.ts\`, so debounce the handler`)).toBe(false)
+      })
+
+      it.each(['not', 'already', 'just', 'still', 'also'])('reads past "%s" between has and its participle', (adverb) => {
+        expect(credited(`The queue has ${adverb} been slow in \`limits.ts\`, so debounce the handler`)).toBe(false)
+        expect(credited(`The queue has ${adverb} ${adverb} been slow in \`limits.ts\`, so debounce the handler`)).toBe(false)
+      })
+
+      it('takes has, have and had as whole words, and a perfect only with its participle', () => {
+        expect(credited('Tune xhas been slow in `limits.ts`, so debounce the handler')).toBe(true) // not an auxiliary
+        expect(credited('The queue has runway in `limits.ts`, so debounce the handler')).toBe(true) // "has run" is not a prefix of "has runway"
+        expect(credited('The queue has no slack in `limits.ts`, so debounce the handler')).toBe(true) // has, owning something
+        expect(credited('The queue had to wait in `limits.ts`, so debounce the handler')).toBe(true) // had to
+      })
+
+      // An -ed word that is an adjective or a present passive is no report, and the lists that say so are read one word at a time.
+      it.each(['a', 'an', 'the', 'this', 'that', 'its', 'their', 'each', 'every'])('reads an -ed word after "%s" as an adjective', (word) => {
+        expect(credited(`Tune ${word} failed call in \`limits.ts\`, so debounce the handler`)).toBe(true)
+      })
+
+      it.each(['is', 'are'])('reads an -ed word after "%s" as a present passive', (be) => {
+        expect(credited(`Rows ${be} dropped in \`limits.ts\`, so debounce the handler`)).toBe(true)
+      })
+
+      it.each(['not', 'only', 'also'])('reads past "%s" to the "is" or "are" before an -ed word', (adverb) => {
+        expect(credited(`Rows are ${adverb} dropped in \`limits.ts\`, so debounce the handler`)).toBe(true)
+        expect(credited(`Rows are ${adverb} ${adverb} dropped in \`limits.ts\`, so debounce the handler`)).toBe(true)
+      })
+
+      it('reads an -ed word with no "is", "are" or determiner before it, or after "was" or "were", as a past tense', () => {
+        expect(credited('Rows were dropped in `limits.ts`, so debounce the handler')).toBe(false)
+        expect(credited('Rows got dropped in `limits.ts`, so debounce the handler')).toBe(false)
+        expect(credited('Dropped rows in `limits.ts`, so debounce the handler')).toBe(false) // an -ed word that opens the lesson is a verb
+        expect(credited('Ran `ci.yml` on the runner, so the job is green.')).toBe(false) // and so is an irregular one, from the first letter
+        expect(credited('Tune dropped in `limits.ts`, so debounce the handler')).toBe(false)
+      })
+
+      // A contraction is read as the two words it stands for: "didn't" is "did not", "hasn't been" is "has not been", "isn't dropped" is "is not dropped".
+      it.each(["hasn't been slow", 'haven’t been slow', "hadn't been slow", "didn't drain", "wasn't slow", "weren't slow"])(
+        'takes "%s" for a report',
+        (words) => {
+          expect(credited(`The queue ${words} in \`limits.ts\`, so debounce the handler`)).toBe(false)
+        },
+      )
+
+      it('reads a contraction in capitals as it reads one in lower case', () => {
+        expect(credited("The queue WASN'T slow in `limits.ts`, so debounce the handler")).toBe(false)
+        expect(credited('The queue HASN’T BEEN slow in `limits.ts`, so debounce the handler')).toBe(false)
+        expect(credited("The queue CAN'T drain in `limits.ts`, so debounce the handler")).toBe(true)
+      })
+
+      it('does not take every contraction for a report', () => {
+        expect(credited("The queue can't drain in `limits.ts`, so debounce the handler")).toBe(true)
+        expect(credited("The queue isn't drained in `limits.ts`, so debounce the handler")).toBe(true) // a negated present passive
+        expect(credited('Rows aren’t dropped in `memory.db`, so debounce the handler')).toBe(true)
+      })
+
+      it('takes the progress markers as a date on the whole lesson, wherever they stand', () => {
+        const rule = 'Re-create the Tray in the `ready` handler, since Electron destroys it on relaunch'
+        expect(credited(rule)).toBe(true)
+        for (const marker of ['today', 'right now', 'at the moment', 'for now', 'currently', 'in progress']) {
+          expect(credited(`${rule}; this is ${marker}.`)).toBe(false)
+          expect(credited(`Done ${marker}: ${rule}.`)).toBe(false)
+        }
+      })
+
+      it('judges each connective by the sentence it stands in, up to the nearest sentence end', () => {
+        // a line break, "!", "?" and the arrow of "Problem -> Fix" end a sentence; a dot followed by a space does; a dot inside a name does not
+        for (const end of ['.', '!', '?', '\n', ' →']) {
+          expect(credited(`The build was fixed${end} Re-create the Tray in the \`ready\` handler, since Electron destroys it.`)).toBe(true)
+        }
+        expect(credited('The build was fixed in `ready.ts`, since Electron destroys it on relaunch.')).toBe(false)
+        expect(credited('The build was fixed in ready.ts, since Electron destroys it on relaunch, and `x` is cold.')).toBe(false)
+        expect(credited('Version 1.54 was fixed in `ready`, since Electron destroys it on relaunch.')).toBe(false)
+      })
+
+      it('counts a weak connective in a later sentence of a lesson whose first sentence is a report', () => {
+        const text = 'Fixed the loader in `ready.ts`. Debounce the handler, since fs.watch fires twice.'
+        expect(credited(text)).toBe(true)
+      })
+
+      it('reads a long run of reports in the time it reads a short one, and credits none of them', () => {
+        const text = '`ready` ' + 'It ran, so '.repeat(105) + ' '.repeat(30)
+        const t0 = Date.now()
+        const r = lessonSubstance(text)
+        expect(Date.now() - t0).toBeLessThan(500)
+        expect(r.reasons.some((x) => x.startsWith('connective'))).toBe(false)
+      })
+    })
+
     it('does not count a "so" or "since" that ends the lesson (nothing follows it to join)', () => {
       expect(connective('In `ready` it broke, so')).toBe(false)
       expect(connective('In `ready` it broke since')).toBe(false)
@@ -746,31 +939,39 @@ describe('lessonSubstance: the score adds up and the call is safe', () => {
   })
 })
 
-// What this file is, and is not. The 60 lessons were written, and labelled, by the author of the gate, who then tuned the gate
+// What this file is, and is not. The first 60 lessons were written, and labelled, by the author of the gate, who then tuned the gate
 // until the bars below held: it is a REGRESSION PIN for the gate's own behaviour, and 95% / 5% on it is not a measured precision.
-// Sets nobody tuned against (about 200 lessons invented afterwards and labelled before they were scored, and 35 lessons the
-// extractor wrote from invented turns, labelled blind) keep about 80 to 85 percent of the usable lessons and 0 to 20 percent of
-// the not usable ones, which is inside what research doc 6.3 allows of a single rater's thresholds (in-sample recall 0.67,
-// weighted precision 0.45). Real labels (decision D4: David labelling 100 lessons) would replace these numbers, and are still open.
-describe('the golden file: 60 invented lessons, 20 per class', () => {
+// The 20 after them (a "kind" on each) were added when a review found that a status line naming one file and carrying a bare "so" or
+// "since" was kept as a rule: ten rules and ten status lines of that shape, two of the status lines present-tense ones the gate still
+// cannot tell from a rule, so the pin does not flatter it. Sets nobody tuned against (lessons invented afterwards and labelled before
+// they were scored, and lessons the extractor wrote from invented turns, labelled blind) keep 78 to 100 percent of the usable lessons
+// and 0 to 20 percent of the not usable ones (counts in the comment above WEAK_CONNECTIVE_RE), which is inside what research doc 6.3
+// allows of a single rater's thresholds (in-sample recall 0.67, weighted precision 0.45). Real labels (decision D4: David labelling
+// 100 lessons) would replace these numbers, and are still open.
+describe('the golden file: 80 invented lessons, 30 usable, 20 marginal, 30 not usable', () => {
+  type Lesson = { id: string; label: 'usable' | 'marginal' | 'not-usable'; kind?: string; content: string }
   const golden = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'lessonsGolden.json'), 'utf8')) as {
     synthetic: boolean
-    lessons: Array<{ id: string; label: 'usable' | 'marginal' | 'not-usable'; content: string }>
+    lessons: Lesson[]
   }
-  const of = (label: string) => golden.lessons.filter((l) => l.label === label)
-  const keepRate = (label: string, from = KEEP_SCORE): number =>
-    of(label).filter((l) => lessonSubstance(l.content).score >= from).length / of(label).length
+  const of = (label: string): Lesson[] => golden.lessons.filter((l) => l.label === label)
+  const ofKind = (kind: string | undefined): Lesson[] => golden.lessons.filter((l) => l.kind === kind)
+  const rate = (rows: Lesson[], from = KEEP_SCORE): number => rows.filter((l) => lessonSubstance(l.content).score >= from).length / rows.length
+  const keepRate = (label: string, from = KEEP_SCORE): number => rate(of(label), from)
   const mean = (label: string): number =>
     of(label).reduce((s, l) => s + lessonSubstance(l.content).score, 0) / of(label).length
 
   it('is what it says it is', () => {
     expect(golden.synthetic).toBe(true)
-    expect(golden.lessons).toHaveLength(60)
-    expect(of('usable')).toHaveLength(20)
+    expect(golden.lessons).toHaveLength(80)
+    expect(of('usable')).toHaveLength(30)
     expect(of('marginal')).toHaveLength(20)
-    expect(of('not-usable')).toHaveLength(20)
-    expect(new Set(golden.lessons.map((l) => l.id)).size).toBe(60)
-    expect(new Set(golden.lessons.map((l) => l.content)).size).toBe(60)
+    expect(of('not-usable')).toHaveLength(30)
+    expect(ofKind(undefined)).toHaveLength(60) // the first sixty, as they were written
+    expect(ofKind('rule-one-name')).toHaveLength(10)
+    expect(ofKind('status-one-name')).toHaveLength(10)
+    expect(new Set(golden.lessons.map((l) => l.id)).size).toBe(80)
+    expect(new Set(golden.lessons.map((l) => l.content)).size).toBe(80)
   })
 
   it('carries no private text: no home-folder path, e-mail address or URL', () => {
@@ -794,7 +995,20 @@ describe('the golden file: 60 invented lessons, 20 per class', () => {
     expect(mean('marginal')).toBeGreaterThan(mean('not-usable'))
   })
 
-  it('writes almost nothing of the not-usable class at all', () => {
-    expect(keepRate('not-usable', CANDIDATE_SCORE)).toBeLessThanOrEqual(0.2)
+  // The shapes the gate is built to drop outright: announcements, fragments, progress, JSON, hashes. A status line that names one
+  // thing scores 1 by that name alone and is held back (stored, never shown), which is what the middle band is for.
+  it('writes almost nothing of the not-usable class at all, bar the status lines that name one thing', () => {
+    const shapes = of('not-usable').filter((l) => l.kind === undefined)
+    expect(shapes).toHaveLength(20)
+    expect(rate(shapes, CANDIDATE_SCORE)).toBeLessThanOrEqual(0.2)
+  })
+
+  // The shape where a status line and a rule look alike: one name and a bare "so" or "since".
+  it('keeps the rules that carry one name and a bare so or since', () => {
+    expect(rate(ofKind('rule-one-name'))).toBeGreaterThanOrEqual(0.9)
+  })
+
+  it('shows at most two in ten of the status lines that carry one name and a bare so or since', () => {
+    expect(rate(ofKind('status-one-name'))).toBeLessThanOrEqual(0.2)
   })
 })

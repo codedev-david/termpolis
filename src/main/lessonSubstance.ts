@@ -156,19 +156,83 @@ const CONNECTIVE_RE = new RegExp(
 // a version, the morning, a day, a month, "ever since"). The whitespace is asked for and then looked past, not matched before the
 // lookahead, so two spaces after "so" cannot slip by it, and the words that make a "since" about when ("ever", "the" before
 // "morning") are followed by any run of white space, not one space; and neither word is inside the group above, so what follows
-// it may start with a backtick or a bracket. Needing a name keeps out the status lines that name nothing searchable: of 28 invented
-// ones, 13 got through without the condition and none with it ("The tests passed, so the PR is ready for review."). It keeps out no
-// more than that. A status line that names one command, file or product still counts ("The `npm test` run finished without
-// failures, so the branch is ready to merge." scores 3), and so does a decision that gives a trivial or time-bound reason ("We
-// decided to freeze `main` since the audit starts on Monday."). On scratch sets kept out of the repo (lessons invented to be usable
-// or not, and lessons the extractor wrote from invented turns) the credit kept 65 of 68 usable lessons at the bar where the same
-// gate without it kept 52, and 4 of 31 junk ones where it kept none; sets built to find the hole kept far more junk than that.
+// it may start with a backtick or a bracket. Needing a name keeps out the status lines that name nothing searchable ("The tests
+// passed, so the PR is ready for review."), and no more: a report that names one command, file or product is kept out by the check
+// on the sentence before the connective, below.
 const WEAK_CONNECTIVE_RE = new RegExp(
   '(?<=[,;]\\s+)so(?=\\s)(?!\\s+(?:i|we|let|my|our|far)\\b)' +
     '|(?<!\\bever\\s+)\\bsince(?=\\s)(?!\\s+(?:(?:this|last|then|yesterday|today|tonight|tomorrow|the\\s+(?:morning|afternoon|evening|start|beginning)|' +
     '(?:mon|tues|wednes|thurs|fri|satur|sun)day|january|february|march|april|may|june|july|august|september|october|november|december)\\b|v?\\d))',
-  'i',
+  'gi',
 )
+
+// What the sentence before a bare "so" or "since" says decides whether it is a rule or a report. "The tests in `x.test.ts` passed, so the
+// gate is done." names a file and has a "so", and says only that something was done; "the watcher fires twice, so debounce the
+// handler" says how something works. A rule is in the present tense or an instruction; a report is in the past tense or the perfect
+// ("passed", "ran", "has been red since"). So the connective does not count when the sentence it stands in, up to it, holds an -ed
+// word of five letters or more, one of the common irregular pasts, or a perfect, and neither does it when a progress or time-bound
+// marker (PROGRESS_RE) dates the lesson. An -ed word that is an adjective (right after "a", "the", "this", "each"...: "a failed
+// call"), a present passive (right after "is" or "are", with "not" or "only" between: "is mocked per file"), a word that starts with
+// "un" ("undefined", "untracked") or one of NOT_PAST is not a report. A name in ticks is blanked first (it is not a verb, whatever it
+// is called), and a contraction loses its "n't", so the verb in front of it stands as the word it is ("didn't" is "did", "isn't
+// dropped" is "is dropped", "hasn't been" is "has been"): saying that something did not happen is still a report of what happened.
+// On scratch sets kept out of the repo and labelled before they were scored, this left the credit 58 of the 68 usable lessons the
+// extractor wrote from invented turns (the credit alone keeps 65, and the gate without it 52) and none of the 31 junk ones (the
+// credit alone kept 4). On the 207 labelled lines two reviewers built to find the hole, it keeps 82 of 95 usable and 12 of 112 junk
+// (the credit alone: 82 and 58). It cannot tell a report in the present tense ("CI is green
+// on `main`, so the release branch can be cut.") from a rule, and it holds a decision in the past tense ("We decided to use `pnpm`
+// since the lockfile is smaller.") back with the reports: a score of 1, stored and not shown, never a deletion.
+const PAST_IRREGULAR = new Set([
+  'was', 'were', 'did', 'ran', 'went', 'came', 'wrote', 'got', 'made', 'took', 'found', 'saw', 'left', 'kept', 'built', 'sent', 'began', 'gave', 'told',
+])
+const NOT_PAST = new Set(['speed', 'embed', 'indeed', 'proceed', 'succeed', 'exceed', 'hundred', 'named'])
+const ADJECTIVE_AFTER = new Set(['a', 'an', 'the', 'this', 'that', 'its', 'their', 'each', 'every'])
+const PASSIVE_AFTER = new Set(['is', 'are'])
+const NEGATING_ADVERBS = new Set(['not', 'only', 'also'])
+// "has been", "have gone", "has not run", "had already done": the -ed participles ("has stayed") are read as -ed words by the loop below
+const PERFECT_RE = /\b(?:has|have|had)\s+(?:(?:not|already|just|still|also)\s+)*(?:been|run|gone|grown|done)\b/i
+const CONTRACTION_RE = /n['’]t/gi
+const WORD_RE = /[a-z]+/g
+
+function isPastForm(word: string): boolean {
+  return PAST_IRREGULAR.has(word) || (word.length >= 5 && word.endsWith('ed') && !word.startsWith('un') && !NOT_PAST.has(word))
+}
+
+/** Whether `clause` says what happened (a past tense or a perfect) and not how something is. */
+function reportsAnEvent(clause: string): boolean {
+  const text = clause.replace(TICK_RE, ' ').replace(CONTRACTION_RE, '')
+  if (PERFECT_RE.test(text)) return true
+  const words = text.toLowerCase().match(WORD_RE) ?? []
+  for (let i = 0; i < words.length; i++) {
+    if (!isPastForm(words[i])) continue
+    let before = i - 1
+    while (before >= 0 && NEGATING_ADVERBS.has(words[before])) before--
+    const lead = before >= 0 ? words[before] : ''
+    if (!ADJECTIVE_AFTER.has(lead) && !PASSIVE_AFTER.has(lead)) return true
+  }
+  return false
+}
+
+/** Where the sentence that holds `at` starts: after the nearest ".", "!", "?", line break or arrow before it. A dot inside a name
+ *  ("index.ts") has no white space after it and ends nothing. */
+function sentenceStart(head: string, at: number): number {
+  for (let i = at - 1; i >= 0; i--) {
+    const c = head[i]
+    if (c === '!' || c === '?' || c === '\n' || c === '→') return i + 1
+    if (c === '.' && /\s/.test(head.charAt(i + 1))) return i + 1
+  }
+  return 0
+}
+
+/** Whether a bare "so" or "since" in `head` joins a cause to what follows: one that is not in a report of what happened, in a lesson
+ *  that is not dated (`dated`: it carries a progress or time-bound marker). Any one such connective is enough. */
+function weakConnectiveCounts(head: string, dated: boolean): boolean {
+  if (dated) return false
+  for (const m of head.matchAll(WEAK_CONNECTIVE_RE)) {
+    if (!reportsAnEvent(head.slice(sentenceStart(head, m.index), m.index))) return true
+  }
+  return false
+}
 
 // ---- narration ----------------------------------------------------------------------------------------
 
@@ -274,9 +338,10 @@ export function lessonSubstance(content: string): Substance {
 
   const ids = identifierPoints(head)
   if (ids > 0) add(ids, 'identifiers')
-  if (CONNECTIVE_RE.test(head) || (ids > 0 && WEAK_CONNECTIVE_RE.test(head))) add(2, 'connective')
+  const markers = count(head, PROGRESS_RE)
+  if (CONNECTIVE_RE.test(head) || (ids > 0 && weakConnectiveCounts(head, markers > 0))) add(2, 'connective')
   if (isBareAnnouncement(head)) add(-3, 'announcement')
-  const progress = Math.min(PROGRESS_CAP, count(head, PROGRESS_RE))
+  const progress = Math.min(PROGRESS_CAP, markers)
   if (progress > 0) add(-progress, 'progress')
   if (isShort(text)) add(-2, 'short')
   else if (text.length >= LONG_FROM) add(-1, 'long')
