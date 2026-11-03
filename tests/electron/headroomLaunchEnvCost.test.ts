@@ -148,7 +148,10 @@ describe('what the context window costs a launch', () => {
       const pending = read(userDir, project).then((v) => { settled = true; return v })
       for (let i = 0; i < 20; i++) await Promise.resolve()
       expect(settled).toBe(false)
-      expect(calls.filter((c) => c.startsWith('stat '))).toHaveLength(3) // all three were asked for before any answer came
+      // All three were asked for before any answer came, and the launch folder's own stat with them (it is looked at in the
+      // same round, so a folder that is there costs a launch nothing it did not already wait for).
+      expect(calls.filter((c) => c.startsWith('stat '))).toHaveLength(4)
+      expect(calls.filter((c) => c === `stat ${path.basename(project)}`)).toHaveLength(1)
       release()
       expect(await pending).toEqual({ env: null, savedWindow: false })
       expect(settled).toBe(true)

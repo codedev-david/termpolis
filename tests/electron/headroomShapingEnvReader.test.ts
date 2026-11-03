@@ -4,7 +4,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { readClaudeWindowSettings, claudeWindowSettingsFiles, SETTINGS_FILE_MAX_BYTES } from '../../src/main/headroom/shapingEnvReader'
-import { buildShapingEnv } from '../../src/main/headroom/shapingEnv'
+import { buildShapingEnv, resolveShapingEnv } from '../../src/main/headroom/shapingEnv'
 
 /**
  * The files a Claude launch's window is checked against. Every test uses a temp folder: the reader is
@@ -134,7 +134,8 @@ describe('reading the Claude Code settings files that can hold a window', () => 
     const pad = 'x'.repeat(SETTINGS_FILE_MAX_BYTES)
     put(userFile(), JSON.stringify({ env: { [VAR]: '250000' }, pad }))
     expect(fs.statSync(userFile()).size).toBeGreaterThan(SETTINGS_FILE_MAX_BYTES)
-    expect(await readClaudeWindowSettings(userDir, project)).toEqual(NOTHING)
+    // Not decoded, and not taken for a file that holds nothing: it is one whose window this cannot see (see below).
+    expect(await readClaudeWindowSettings(userDir, project)).toEqual({ env: null, savedWindow: false, unreadable: true })
     // Just under the limit is read.
     const room = SETTINGS_FILE_MAX_BYTES - JSON.stringify({ env: { [VAR]: '250000' }, pad: '' }).length - 16
     put(userFile(), JSON.stringify({ env: { [VAR]: '250000' }, pad: 'x'.repeat(room) }))
@@ -152,7 +153,7 @@ describe('reading the Claude Code settings files that can hold a window', () => 
     expect((await readClaudeWindowSettings(userDir, project)).env).toEqual({ [VAR]: '250000' })
     put(userFile(), JSON.stringify({ env: { [VAR]: '250000' }, pad: 'x'.repeat(1_048_577 - base) }))
     expect(fs.statSync(userFile()).size).toBe(1_048_577)
-    expect(await readClaudeWindowSettings(userDir, project)).toEqual(NOTHING)
+    expect(await readClaudeWindowSettings(userDir, project)).toEqual({ env: null, savedWindow: false, unreadable: true })
   })
 
   it('reads only the three named files: a neighbour with a similar name is never looked at', async () => {
@@ -167,6 +168,102 @@ describe('reading the Claude Code settings files that can hold a window', () => 
   it('never throws, whatever it is handed', async () => {
     await expect(readClaudeWindowSettings(undefined as never, null as never)).resolves.toEqual(NOTHING)
     await expect(readClaudeWindowSettings(42 as never, {} as never)).resolves.toEqual(NOTHING)
+    await expect(readClaudeWindowSettings(userDir, project, 42 as never)).resolves.toEqual(NOTHING)
+  })
+
+  // spawnTerminal opens the shell in the home folder when the folder it was asked for is gone (a restored workspace or a past
+  // session whose folder was deleted), and Claude Code reads the project files of the folder it runs in. A window saved in
+  // the home folder's .claude/settings.local.json is the user's own there, and the reader used to look only in the folder
+  // asked for, so the variable was set over it.
+  describe('when the folder the terminal was asked to open in is gone', () => {
+    let home: string
+    let gone: string
+    beforeEach(() => {
+      home = path.join(root, 'home')
+      gone = path.join(root, 'deleted-workspace')
+      fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+    })
+    const homeLocal = (): string => path.join(home, '.claude', 'settings.local.json')
+    const homeShared = (): string => path.join(home, '.claude', 'settings.json')
+
+    it('looks in the home folder instead, which is where the terminal opens', async () => {
+      put(homeLocal(), { autoCompactWindow: 200000 })
+      expect(await readClaudeWindowSettings(userDir, gone, home)).toEqual({ env: null, savedWindow: true })
+      fs.rmSync(homeLocal())
+      put(homeShared(), { env: { [VAR]: '250000' } })
+      expect(await readClaudeWindowSettings(userDir, gone, home)).toEqual({ env: { [VAR]: '250000' }, savedWindow: false })
+    })
+
+    it('does not look there when the folder is there, with or without a .claude folder in it', async () => {
+      put(homeLocal(), { autoCompactWindow: 200000 })
+      expect(await readClaudeWindowSettings(userDir, project, home)).toEqual(NOTHING)
+      const bare = path.join(root, 'bare')
+      fs.mkdirSync(bare)
+      expect(await readClaudeWindowSettings(userDir, bare, home)).toEqual(NOTHING)
+    })
+
+    it('keeps what the folder asked for would have said, and adds the home folder\'s to it', async () => {
+      put(userFile(), { env: { [VAR]: '250000' } })
+      put(homeLocal(), { autoCompactWindow: 200000 })
+      expect(await readClaudeWindowSettings(userDir, gone, home)).toEqual({ env: { [VAR]: '250000' }, savedWindow: true })
+    })
+
+    it('stops the cap, where it would otherwise have been set over a window of the user\'s own', async () => {
+      const decide = (dir: string): Promise<Record<string, string>> =>
+        resolveShapingEnv({ contextCap: 300000 }, {}, () => readClaudeWindowSettings(userDir, dir, home))
+      put(homeLocal(), { autoCompactWindow: 200000 })
+      expect(await decide(gone)).toEqual({})
+      expect(await decide(project)).toEqual({ [VAR]: '300000' })
+    })
+
+    it('leaves a path that is not absolute as it was: it names no folder to look for, so it sends nothing to the home folder', async () => {
+      put(homeLocal(), { autoCompactWindow: 200000 })
+      expect(await readClaudeWindowSettings(userDir, 'relative/gone', home)).toEqual(NOTHING)
+      expect(await readClaudeWindowSettings(userDir, '', home)).toEqual(NOTHING)
+      expect(await readClaudeWindowSettings(userDir, undefined, home)).toEqual(NOTHING)
+    })
+
+    it('reads nothing more when there is no home to look in', async () => {
+      put(homeLocal(), { autoCompactWindow: 200000 })
+      expect(await readClaudeWindowSettings(userDir, gone, '')).toEqual(NOTHING)
+      expect(await readClaudeWindowSettings(userDir, gone, 'relative/home')).toEqual(NOTHING)
+    })
+
+    it('takes the home folder from the scratch home a test run is pointed at, never the developer\'s own, when none is handed in', async () => {
+      const before = process.env.TERMPOLIS_TEST_AGENT_HOME
+      process.env.TERMPOLIS_TEST_AGENT_HOME = home
+      try {
+        put(homeLocal(), { autoCompactWindow: 200000 })
+        expect(await readClaudeWindowSettings(userDir, gone)).toEqual({ env: null, savedWindow: true })
+        // Set and blank is no home at all, not the real one.
+        process.env.TERMPOLIS_TEST_AGENT_HOME = '  '
+        expect(await readClaudeWindowSettings(userDir, gone)).toEqual(NOTHING)
+      } finally {
+        if (before === undefined) delete process.env.TERMPOLIS_TEST_AGENT_HOME
+        else process.env.TERMPOLIS_TEST_AGENT_HOME = before
+      }
+    })
+  })
+
+  // A file larger than SETTINGS_FILE_MAX_BYTES is one this does not decode, and Claude Code would: it can hold a window
+  // of the user's own that nothing here can see. It used to read as a file that holds nothing, so the variable was set
+  // over it; it reads as a window that cannot be seen, as a locked file does, and the variable is left unset.
+  it('counts a settings file too large to read as holding a window it cannot see, and sets nothing over it', async () => {
+    const big = JSON.stringify({ autoCompactWindow: 200000 }).padEnd(SETTINGS_FILE_MAX_BYTES + 1, ' ')
+    expect(Buffer.byteLength(big)).toBe(SETTINGS_FILE_MAX_BYTES + 1)
+    put(localFile(), big)
+    expect(await readClaudeWindowSettings(userDir, project)).toEqual({ env: null, savedWindow: false, unreadable: true })
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, () => readClaudeWindowSettings(userDir, project))).toEqual({})
+    // The same file at the limit is read, and the window in it is seen as the window it is.
+    put(localFile(), JSON.stringify({ autoCompactWindow: 200000 }).padEnd(SETTINGS_FILE_MAX_BYTES, ' '))
+    expect(await readClaudeWindowSettings(userDir, project)).toEqual({ env: null, savedWindow: true })
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, () => readClaudeWindowSettings(userDir, project))).toEqual({})
+    // And with no window in a file that is over the limit, the variable still stays unset: it cannot be known to hold none.
+    put(localFile(), '{}'.padEnd(SETTINGS_FILE_MAX_BYTES + 1, ' '))
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, () => readClaudeWindowSettings(userDir, project))).toEqual({})
+    // Where a file of the same size at the limit holds none, it is set.
+    put(localFile(), '{}'.padEnd(SETTINGS_FILE_MAX_BYTES, ' '))
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, () => readClaudeWindowSettings(userDir, project))).toEqual({ [VAR]: '300000' })
   })
 
   it('feeds the builder: a window in any of the files stops the cap, and an unrelated file does not', async () => {

@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'fs'
 import { join, relative, sep } from 'path'
 import ts from 'typescript'
-import { claudeWindowSettingsFiles } from '../../src/main/headroom/shapingEnvReader'
+import { claudeWindowSettingsFiles, SETTINGS_FILE_MAX_BYTES } from '../../src/main/headroom/shapingEnvReader'
 import { CONTEXT_CAP_CHOICES, CONTEXT_CAP_MIN, CONTEXT_CAP_MAX } from '../../src/main/headroom/shapingEnv'
 import { MIN_ARM_REQUESTS, MIN_ARM_GROUPS } from '../../src/main/headroom/armCompare'
 
@@ -83,6 +83,21 @@ describe('the context window is disclosed, and the disclosure matches what is re
     expect(privacySection).toContain('is tried once more; if it still cannot be read Termpolis sets none, since it cannot tell')
     expect(docsSection).toContain('a file that is missing or is not valid JSON counts as not set (as it does for Claude Code)')
     expect(docsSection).toContain('is tried once more and, if it still cannot be read, counts as set, because Termpolis cannot tell')
+  })
+
+  // Two more things the reader does that a person who has a window of their own would want to know: a file over a mebibyte
+  // is one Termpolis does not read and Claude Code would, so it cannot tell what window it holds and sets none; and the
+  // folder the terminal "opens in" is the home folder when the one it was asked for has been deleted, which is what it
+  // does (terminalManager.spawnTerminal), so that is where the project files are looked for then.
+  it('says a file over a mebibyte counts the same way, and that a deleted folder means the home folder', () => {
+    expect(SETTINGS_FILE_MAX_BYTES).toBe(1024 * 1024)
+    expect(privacySection).toContain('A file larger than 1 MiB is not read at all and counts the same way: Claude Code would read it and Termpolis cannot tell what window it holds, so it sets none')
+    expect(docsSection).toContain('and so does a file larger than 1 MiB, which it does not read')
+    expect(privacySection).toContain('in the folder the terminal opens in (the home folder, if the folder it was asked to open in has been deleted: that is where the terminal opens then)')
+    expect(docsSection).toContain('in the folder the terminal opens in (the home folder, if the folder it was asked to open in has been deleted)')
+    // The code does what the sentence says.
+    const terminalManager = readFileSync(join(ROOT, 'src', 'main', 'terminalManager.ts'), 'utf8')
+    expect(terminalManager).toContain('existsSync(cwd) ? cwd : homedir()')
   })
 
   it('says which terminals get it: those opened for Claude Code and every terminal the MCP create_terminal tool makes, new ones only, never your other shells', () => {

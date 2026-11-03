@@ -416,7 +416,9 @@ sets the variable for. It looks in your environment, then reads three files if
 they exist: `settings.json` in Claude Code's config folder (`~/.claude`, or the
 folder `CLAUDE_CONFIG_DIR` names in Termpolis's own environment) and
 `.claude/settings.json` and `.claude/settings.local.json` in the folder the
-terminal opens in. From each it keeps two things and drops the rest on the
+terminal opens in (the home folder, if the folder it was asked to open in has
+been deleted: that is where the terminal opens then). From each it keeps two
+things and drops the rest on the
 spot: the value of the window variable in the `env` block (no other entry of
 that block, which can hold keys of its own) and whether a window is saved
 (`autoCompactWindow`, or the one `/autocompact` saves per model). Your
@@ -426,7 +428,9 @@ is already set in any of those places, Termpolis sets none. A file that is not
 there, or is not valid JSON, counts as holding nothing, as it does for Claude
 Code. A file that is there but cannot be read, because another program has it
 locked for a moment, is tried once more; if it still cannot be read Termpolis
-sets none, since it cannot tell.
+sets none, since it cannot tell. A file larger than 1 MiB is not read at all and
+counts the same way: Claude Code would read it and Termpolis cannot tell what
+window it holds, so it sets none.
 
 It does not see every place a window can live. Claude Code lets this variable
 win over a window saved in a subagent's definition, in a `--settings` argument
