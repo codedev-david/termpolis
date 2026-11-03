@@ -87,6 +87,26 @@ describe('primeHistory', () => {
     expect(mod.searchHistory('direct')).toHaveLength(1)
   })
 
+  it('a history asked for (read synchronously) while the prime is still reading keeps its answer: the late prime changes nothing', async () => {
+    seed(2)
+    const priming = mod.primeHistory()
+    mod.appendCommand('t1', 'One', 'typed meanwhile') // an Enter before the read finished
+    expect(mod.searchHistory('').length).toBe(3) // the search could not wait: it read the file itself, and kept the Enter
+    await priming
+    expect(mod.searchHistory('').length).toBe(3) // not 5: the Enter is not merged twice, the file is not read over the cache
+    mod.appendCommand('t1', 'One', 'after')
+    expect(mod.searchHistory('').length).toBe(4)
+  })
+
+  it('two primes at once read once and keep every command typed meanwhile', async () => {
+    seed(1)
+    const a = mod.primeHistory()
+    const b = mod.primeHistory()
+    mod.appendCommand('t1', 'One', 'typed meanwhile')
+    await Promise.all([a, b])
+    expect(mod.searchHistory('').length).toBe(2)
+  })
+
   it('priming twice, or after the cache exists, is harmless', async () => {
     seed(1)
     await mod.primeHistory()

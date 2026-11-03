@@ -60,6 +60,28 @@ describe('ccr store writes on the thread pool', () => {
     expect(ccrRetrieve(token)).toEqual({ keep: 'me' })
   })
 
+  it('a write that fails after its entry was already evicted from the disk index takes nothing back twice', async () => {
+    const { _setCcrLimits } = await import('../../src/main/headroom/ccrStore')
+    _setCcrLimits(1200, 1000) // room for about two entries: the rest are evicted from the index as they come
+    fs.rmSync(dir, { recursive: true, force: true })
+    fs.writeFileSync(dir, 'not a folder') // every write fails
+    for (let i = 0; i < 6; i++) ccrStash({ i, pad: 'z'.repeat(500) })
+    expect(ccrStats().diskEntries).toBeLessThanOrEqual(2) // the older ones are no longer indexed...
+    await offMainFiles.idle() // ...when their writes fail
+    expect(ccrStats().diskEntries).toBe(0)
+    expect(ccrStats().diskBytes).toBe(0) // the byte count did not go negative or drift
+  })
+
+  it('a failed write for a record whose memory copy is gone is forgotten (it can no longer be retrieved), not pinned', async () => {
+    fs.rmSync(dir, { recursive: true, force: true })
+    fs.writeFileSync(dir, 'not a folder') // every write fails
+    const first = ccrStash({ first: true })
+    for (let i = 0; i < CCR_MAX_ENTRIES + 20; i++) ccrStash({ i }) // pushes the first out of the memory LRU while its write is queued
+    await offMainFiles.idle()
+    expect(ccrRetrieve(first)).toBeUndefined() // gone from memory, and its write failed: nothing to retrieve
+    expect(ccrStats().memoryOnlyEntries).toBeLessThanOrEqual(CCR_MAX_ENTRIES) // the ones still in memory are pinned, the gone one is not
+  })
+
   it('evicting past the byte cap deletes the oldest files on the pool, after their writes', async () => {
     const { _setCcrLimits } = await import('../../src/main/headroom/ccrStore')
     _setCcrLimits(2000, 1500)

@@ -313,6 +313,26 @@ describe('agentEventBus log rotation', () => {
     expect(fs.statSync(live()).size).toBeGreaterThan(0)               // ...and kept taking writes
   })
 
+  it('a rotation that fails (the old copy cannot be replaced) re-syncs its counter from the file, so it tries again later', async () => {
+    const spy = vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }))
+    try {
+      const big = 'z'.repeat(50_000)
+      for (let i = 0; i < 110; i++) { // ~5.5 MB: past the cap once
+        publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `f${i}`, payload: { data: big } })
+      }
+      await flushEventBus()
+      expect(spy).toHaveBeenCalledTimes(1) // the rotation was tried, and failed
+      expect(fs.existsSync(backup())).toBe(false) // nothing moved: the live log is still the one with the lines
+      expect(fs.statSync(live()).size).toBeGreaterThan(MAX_LOG_SIZE) // ...and it still has them all
+      // The counter was set from the file, not left at zero: the next lines past the cap rotate it for real.
+      for (let i = 0; i < 5; i++) publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `g${i}`, payload: { data: big } })
+      await flushEventBus()
+      expect(fs.existsSync(backup())).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('loses no line to a rotation: every event published is in the live log or the rotated one', async () => {
     const big = 'q'.repeat(60_000)
     const total = 130 // ~7.8 MB, one rotation

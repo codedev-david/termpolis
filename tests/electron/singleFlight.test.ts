@@ -104,4 +104,23 @@ describe('singleFlight', () => {
     release('late')
     expect(await running).toBe('late')
   })
+
+  it('a call that settles after clear() leaves no entry behind, whether it answers (unkept) or fails', async () => {
+    const sf = createSingleFlight(clock().now)
+    let answer!: (v: string) => void
+    const unkept = sf.run('a', 0, () => new Promise<string>((r) => { answer = r })) // ttl 0: never kept
+    sf.clear()
+    answer('v')
+    expect(await unkept).toBe('v')
+    expect(sf.size()).toBe(0)
+    let fail!: (e: Error) => void
+    const failing = sf.run('b', 5000, () => new Promise<string>((_, rej) => { fail = rej }))
+    const later = sf.run('b', 5000, async () => 'fresh') // joins the running one
+    sf.clear()
+    fail(new Error('boom'))
+    await expect(failing).rejects.toThrow('boom')
+    await expect(later).rejects.toThrow('boom')
+    expect(sf.size()).toBe(0)
+    expect(await sf.run('b', 5000, async () => 'again')).toBe('again') // the failure was not replayed
+  })
 })

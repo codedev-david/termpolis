@@ -207,6 +207,6 @@ export async function attachCodexWatcher(terminalId: string): Promise<CodexWatch
     terminalId,
     sessionFile,
     stop: () => tail.stop(),
-    settled: () => tail.settled?.() ?? Promise.resolve(),
+    settled: () => tail.settled(),
   }
 }

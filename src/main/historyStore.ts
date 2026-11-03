@@ -44,7 +44,9 @@ let pendingAppends: HistoryEntry[] | null = null
  */
 export function primeHistory(): Promise<void> {
   if (cache) return Promise.resolve()
-  pendingAppends = pendingAppends ?? []
+  // The commands typed while the file is read are pushed into this array (appendCommand); it is kept here so the merge
+  // below does not depend on the module state, which a synchronous load in the meantime may already have cleared.
+  const early: HistoryEntry[] = pendingAppends ?? (pendingAppends = [])
   return (async () => {
     let loaded: HistoryFile = {}
     try {
@@ -52,8 +54,8 @@ export function primeHistory(): Promise<void> {
     } catch { /* no file yet, or a damaged one: an empty history rather than taking the app down */ }
     if (!cache) {
       cache = loaded
-      for (const e of pendingAppends ?? []) pushEntry(cache, e)
-      if ((pendingAppends ?? []).length > 0) scheduleFlush()
+      for (const e of early) pushEntry(cache, e)
+      if (early.length > 0) scheduleFlush()
     }
     pendingAppends = null
   })()

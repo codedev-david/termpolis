@@ -110,6 +110,6 @@ export async function attachGeminiWatcher(terminalId: string): Promise<GeminiWat
     terminalId,
     sessionFile,
     stop: () => tail.stop(),
-    settled: () => tail.settled?.() ?? Promise.resolve(),
+    settled: () => tail.settled(),
   }
 }

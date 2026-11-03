@@ -81,6 +81,12 @@ describe('loadSession', () => {
     expect(result).toMatchObject(defaultSession)
   })
 
+  it('returns default session when the file cannot be read at all (it exists, reading it throws)', () => {
+    vi.mocked(existsSync).mockReturnValue(true)
+    vi.mocked(readFileSync).mockImplementation(() => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) })
+    expect(loadSession()).toMatchObject(defaultSession)
+  })
+
   it('migrates legacy grid viewMode to split', () => {
     vi.mocked(existsSync).mockReturnValue(true)
     const stored = { ...defaultSession, appVersion: '1.0.0', viewMode: 'grid' }

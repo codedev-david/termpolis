@@ -330,7 +330,7 @@ export async function attachClaudeCodeWatcher(terminalId: string, cwd: string): 
     terminalId,
     sessionFile,
     stop: () => tail.stop(),
-    settled: () => tail.settled?.() ?? Promise.resolve(),
+    settled: () => tail.settled(),
   }
 }
 

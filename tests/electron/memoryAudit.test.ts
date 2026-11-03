@@ -11,6 +11,7 @@ import {
   setMemoryAuditEnabled,
   memoryAuditEnabled,
   auditMemory,
+  flushMemoryAudit,
   readMemoryAudit,
   memoryAuditSummary,
   redactPreview,
@@ -80,5 +81,14 @@ describe('memory/learning audit (WP-E)', () => {
     await offMainFiles.idle()
     expect(fs.existsSync(path.join(tmp, 'memory-audit.prev.jsonl'))).toBe(true) // previous generation kept
     expect(fs.statSync(auditFile()).size).toBeLessThan(4000 + 500) // live file stays near the cap, not unbounded
+  })
+
+  it('flushMemoryAudit waits for the lines asked for so far, and has nothing to wait for before the log is set up', async () => {
+    auditMemory({ event: 'write', id: 'f1', kind: 'fact', preview: 'one' }, 1)
+    auditMemory({ event: 'write', id: 'f2', kind: 'fact', preview: 'two' }, 2)
+    await flushMemoryAudit()
+    expect(fs.readFileSync(auditFile(), 'utf8').split('\n').filter(Boolean)).toHaveLength(2) // both are on disk when it resolves
+    _resetMemoryAuditForTests() // no folder known any more
+    await expect(flushMemoryAudit()).resolves.toBeUndefined()
   })
 })

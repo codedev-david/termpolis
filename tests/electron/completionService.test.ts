@@ -347,6 +347,28 @@ describe('listPathCommands', () => {
     expect(result).not.toContain('not-runnable')
   })
 
+  it('asks for the commands twice at once (two panes opening): ONE scan serves both, and the next ask after it uses the cache', async () => {
+    process.env.PATH = '/usr/bin'
+    mockReaddirSync.mockReturnValue(['git', 'node'])
+    mockAccessSync.mockImplementation(() => undefined)
+    const [a, b] = await Promise.all([listPathCommands(), listPathCommands()])
+    expect(a).toEqual(b)
+    expect(a).toContain('git')
+    expect(mockReaddirSync).toHaveBeenCalledTimes(1) // one scan of the folder, not two
+    await listPathCommands()
+    expect(mockReaddirSync).toHaveBeenCalledTimes(1) // and the answer is kept
+  })
+
+  it('a scan that fails is forgotten, so the next ask scans again (nothing stays stuck)', async () => {
+    process.env.PATH = '/usr/bin'
+    mockAccessSync.mockImplementation(() => undefined)
+    mockReaddirSync.mockImplementationOnce(() => { throw new Error('EIO') }) // a folder that cannot be listed counts as empty
+    expect(await listPathCommands()).toEqual([])
+    mockReaddirSync.mockReturnValue(['git'])
+    resetPathCommandsCache() // the empty answer was kept for the TTL; a restart forgets it
+    expect(await listPathCommands()).toContain('git')
+  })
+
   it('returns cached result on second call within TTL', async () => {
     process.env.PATH = '/usr/bin'
     mockReaddirSync.mockReturnValue(['git'])

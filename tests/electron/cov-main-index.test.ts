@@ -1842,6 +1842,26 @@ describe('workflow orchestrator wiring', () => {
     expect(typeof deps.now()).toBe('number')
   })
 
+  it('a finished run is appended to its workflow history file on the thread pool, one line each, never throwing into the run', async () => {
+    const { offMainFiles } = await import('../../src/main/offMainFiles')
+    const fsMod = await import('fs')
+    const appendFile = fsMod.promises.appendFile as unknown as ReturnType<typeof vi.fn>
+    appendFile.mockClear()
+    const ipc = wfCaptured.ipcOpts
+    expect(typeof ipc.appendHistory).toBe('function')
+    const dir = join(tmpdir(), 'wf-hist-fake')
+    ipc.appendHistory(dir, { workflowId: 'wf-9', runId: 'r1', status: 'succeeded' })
+    ipc.appendHistory(dir, { workflowId: 'wf-9', runId: 'r2', status: 'failed' })
+    await offMainFiles.idle()
+    // Both lines were asked for before the first write started: they go out together, in order, one JSON line each.
+    const written = appendFile.mock.calls.filter((c) => String(c[0]) === join(dir, 'wf-9.jsonl')).map((c) => String(c[1])).join('')
+    expect(written.split('\n').filter(Boolean).map((l) => JSON.parse(l).runId)).toEqual(['r1', 'r2'])
+    // A write that fails is swallowed: a run's history is best-effort and must never take the run down.
+    appendFile.mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }))
+    expect(() => ipc.appendHistory(dir, { workflowId: 'wf-9', runId: 'r3', status: 'succeeded' })).not.toThrow()
+    await offMainFiles.idle()
+  })
+
   it('the demo-workflow sweep runs against the home store', () => {
     expect(M.oncePerVersion).toHaveBeenCalled()
     expect(M.cleanupDemoWorkflows).toHaveBeenCalledWith(homedir(), expect.anything(), undefined, expect.any(Function))

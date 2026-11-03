@@ -107,6 +107,19 @@ describe('the trigger supervisor tick reads git on the thread pool', () => {
     expect(fired).toEqual([])
   })
 
+  it('a workflow still waiting its turn in a pass is skipped when its project was closed during the one before it', async () => {
+    const { sup, fired } = supervisor()
+    const second = { id: 'on-commit-2', name: 'second', version: 1, trigger: { type: 'gitCommit', config: {} }, steps: [] } as unknown as Workflow
+    fs.writeFileSync(path.join(workflowsDir(root), 'on-commit-2.yml'), serializeWorkflow(second))
+    sup.watchProject(root)
+    await sup.tick() // seeds both
+    commit('h')
+    const pass = sup.tick()
+    sup.unwatchProject(root) // closed while the first workflow's refs were being read
+    await pass
+    expect(fired).toEqual([]) // neither fired, and the second was not even looked at
+  })
+
   it('persists its state on the thread pool when the app gives it an async fs', async () => {
     const { sup } = supervisor()
     sup.watchProject(root)
@@ -152,6 +165,33 @@ describe('the learning signals poll reads git on the thread pool', () => {
     expect(s.emitted).toEqual(['git-commit'])
     await s.tick()
     expect(s.emitted).toEqual(['git-commit'])
+  })
+
+  it('a poll whose run ended while it was reading the LAST file (the ref itself) drops its answer too', async () => {
+    const emitted: string[] = []
+    let tick: (() => void | Promise<void>) | null = null
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    let held = false
+    const gated = { ...nodeAsyncFs, readText: async (p: string) => {
+      if (held && p.endsWith(path.join('refs', 'heads', 'main'))) await gate // the loose ref: the last read of a poll
+      return nodeAsyncFs.readText(p)
+    } }
+    startLearningSignals({
+      openProjects: () => [root], cwdForTerminal: () => root, normalizeProject: () => 'proj',
+      emit: (e) => { emitted.push(e.kind) }, subscribe: () => () => { /* none */ },
+      fs: { existsSync: fs.existsSync, readFileSync: fs.readFileSync } as never, fsAsync: gated,
+      readBytes: (p) => fs.readFileSync(p), setInterval: (fn) => { tick = fn; return 0 as never }, clearInterval: () => { tick = null },
+    })
+    await tick!() // seeds: HEAD at a
+    commit('i')
+    held = true
+    const reading = tick!() // stops at the ref read
+    await new Promise<void>((r) => setTimeout(r, 20))
+    stopLearningSignals() // the run ends with the poll holding a NEW sha
+    release()
+    await reading
+    expect(emitted).toEqual([]) // the commit it found belongs to a run that is over
   })
 
   it('polls do not stack: a poll started while one is reading answers with the one in flight', async () => {

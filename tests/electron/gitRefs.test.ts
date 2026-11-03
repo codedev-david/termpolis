@@ -105,6 +105,18 @@ describe('the asynchronous git plumbing gives the synchronous answers', () => {
     }
   })
 
+  it('targetRef: on a detached HEAD a trigger with no branch has nothing to follow; a .git file with no pointer is the git dir itself', async () => {
+    const detached = repo('target-detached', { '.git/HEAD': SHA_C + '\n' })
+    for (const type of ['gitCommit', 'gitPush'] as const) {
+      const w = wf(type)
+      expect(await targetRefAsync(w.trigger.type, w.trigger.config ?? {}, join(detached, '.git'), nodeAsyncFs)).toBeNull()
+      expect(targetRef(w, join(detached, '.git'), realFs)).toBeNull()
+    }
+    const odd = repo('odd-dotgit', { '.git': 'this is not a gitdir pointer\n' })
+    expect(await gitDirOfAsync(odd, nodeAsyncFs)).toBe(join(odd, '.git'))
+    expect(gitDirOf(odd, realFs)).toBe(join(odd, '.git'))
+  })
+
   it('asAsync wraps a synchronous fake with the same answers', async () => {
     const files = new Map<string, string>([[join('/r', '.git', 'HEAD'), 'ref: refs/heads/x\n']])
     const fake = asAsync(

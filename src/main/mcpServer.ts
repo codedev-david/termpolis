@@ -87,7 +87,7 @@ function openAuditStream(): void {
 }
 
 function rotateLogIfNeeded(): void {
-  if (!auditLogPath || auditBytes < MAX_LOG_SIZE || heldWhileRotating) return
+  if (!auditLogPath || !auditStream || auditBytes < MAX_LOG_SIZE || heldWhileRotating) return
   // Keep one backup. The stream is ended (it flushes what it holds), then the old backup is dropped and the live log
   // renamed on the thread pool, then a fresh stream is opened and the lines that came meanwhile go into it.
   const live = auditLogPath
@@ -95,20 +95,18 @@ function rotateLogIfNeeded(): void {
   const ending = auditStream
   auditStream = null
   auditBytes = 0
-  heldWhileRotating = []
-  const reopen = (): void => {
+  const held: string[] = []
+  heldWhileRotating = held
+  ending.end(() => {
     void (async () => {
       try { await fs.promises.unlink(backupPath) } catch { /* none yet */ }
       try { await fs.promises.rename(live, backupPath) } catch { /* locked: the live log keeps growing; the next lines rotate it again */ }
     })().finally(() => {
       openAuditStream()
-      const held = heldWhileRotating ?? []
       heldWhileRotating = null
-      if (auditStream) for (const l of held) { (auditStream as fs.WriteStream).write(l); auditBytes += l.length }
+      if (auditStream) for (const l of held) { auditStream.write(l); auditBytes += l.length }
     })
-  }
-  if (ending) ending.end(reopen)
-  else reopen()
+  })
 }
 
 /** The id of the paired phone a request came in on behalf of, if any.

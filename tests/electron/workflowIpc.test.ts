@@ -3,7 +3,7 @@ import { registerWorkflowIpc, resolveInputs } from '../../src/main/workflow/ipc'
 
 const USER_DATA = '/userdata'
 
-function harness({ trusted = true, engine: engineOver }: { trusted?: boolean; engine?: any } = {}) {
+function harness({ trusted = true, engine: engineOver, appendHistory }: { trusted?: boolean; engine?: any; appendHistory?: (dir: string, run: any) => void } = {}) {
   const handlers = new Map<string, Function>()
   const ipcMain = { handle: (ch: string, fn: Function) => handlers.set(ch, fn) }
   const sent: any[] = []
@@ -33,6 +33,7 @@ function harness({ trusted = true, engine: engineOver }: { trusted?: boolean; en
     isTrusted: () => trusted,
     newRunId: () => 'r',
     userDataDir: USER_DATA,
+    ...(appendHistory ? { appendHistory } : {}),
     makeDeps: (emit) => ({ emit }) as any,
     onWorkflowsChanged: (cwd: string, scope: string) => { changed.push(cwd); changedScopes.push(scope) },
     onWatchProject: (cwd: string) => watched.push(cwd),
@@ -71,6 +72,18 @@ describe('workflow IPC', () => {
     await h.call('workflow:run', { cwd: '/r', id: 'x' })
     await new Promise((r) => setTimeout(r, 0)) // let the engine promise + history append settle
     expect([...h.files.keys()].some((k) => k.endsWith('x.jsonl'))).toBe(true)
+  })
+  it('a finished run is handed to the appender the app injects (the thread pool), and not appended synchronously', async () => {
+    const appended: Array<{ dir: string; run: any }> = []
+    const h = harness({ appendHistory: (dir, run) => { appended.push({ dir, run }) } })
+    const wf = { id: 'x', name: 'X', version: 1, trigger: { type: 'manual' }, steps: [] }
+    await h.call('workflow:save', { cwd: '/r', workflow: wf })
+    await h.call('workflow:run', { cwd: '/r', id: 'x' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(appended).toHaveLength(1)
+    expect(appended[0].run.runId).toBe('r')
+    expect(typeof appended[0].dir).toBe('string')
+    expect([...h.files.keys()].some((k) => k.endsWith('x.jsonl'))).toBe(false) // the synchronous append was not used
   })
   it('delete removes a saved workflow', async () => {
     const h = harness()

@@ -29,10 +29,10 @@ export interface TailHandle {
   stop(): void
   /** Resolves once the tail's start position is fixed (the file's end when it was asked to start there). A caller that
    *  awaits it keeps the old guarantee of attaching: whatever is appended after that is delivered, never skipped. */
-  ready?: Promise<void>
+  ready: Promise<void>
   /** Resolves when no pass is running (the one at attach time included): what a pass found has been delivered. For
    *  tests, and for a caller that must know the tail has caught up. */
-  settled?: () => Promise<void>
+  settled: () => Promise<void>
 }
 
 /**

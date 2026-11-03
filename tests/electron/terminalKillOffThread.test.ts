@@ -10,6 +10,7 @@ const H = vi.hoisted(() => ({
   hostReply: { stdout: '', stderr: '' } as { stdout: string; stderr: string; error?: { message: string } },
   agents: [] as any[],
   noAgent: false,
+  noInner: false,
 }))
 
 vi.mock('electron', () => ({ app: { getPath: () => require('os').tmpdir(), isPackaged: false } }))
@@ -18,7 +19,7 @@ vi.mock('node-pty', () => {
     const pid = 9000 + H.agents.length
     // What node-pty's WindowsTerminal looks like from outside: an agent that forks a helper to list the console.
     const agent = {
-      innerPid: pid,
+      innerPid: H.noInner ? undefined : pid,
       _getConsoleProcessList: vi.fn(() => { H.forks++; return Promise.resolve([pid]) }),
     }
     H.agents.push(agent)
@@ -49,6 +50,7 @@ beforeEach(() => {
   H.hostAsks.length = 0
   H.agents.length = 0
   H.noAgent = false
+  H.noInner = false
   H.hostReply = { stdout: JSON.stringify({ self: 55, list: [55, 9000, 9101, 9102] }), stderr: '' }
 })
 afterEach(() => { Object.defineProperty(process, 'platform', realPlatform) })
@@ -92,6 +94,15 @@ describe('closing a terminal on Windows asks the proc host, never forks', () => 
     setPlatform('win32')
     H.noAgent = true // a pty that is not node-pty's WindowsTerminal (a fake, a future version)
     expect(() => tm.spawnTerminal('k5', 'C:\\Windows\\System32\\cmd.exe', 'C:\\', () => {})).not.toThrow()
+  })
+
+  it('an agent that does not say its own shell pid (an older node-pty) is asked about the pty pid instead', async () => {
+    setPlatform('win32')
+    H.noInner = true
+    tm.spawnTerminal('k7', 'C:\\Windows\\System32\\cmd.exe', 'C:\\', () => {})
+    expect(await H.agents[0]._getConsoleProcessList()).toEqual([9000, 9101, 9102])
+    expect(H.hostAsks[0].args[1]).toBe('9000') // the pty's own pid
+    expect(H.forks).toBe(0)
   })
 
   it('closing the terminal still ends it (the pty is killed) and counts no fork', async () => {
