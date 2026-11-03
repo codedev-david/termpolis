@@ -95,15 +95,18 @@ describe('attachClaudeSessionWatcher', () => {
     expect(tools()).toEqual(['swarm_create_task', 'create_terminal'])
   })
 
-  it('waits for the transcript to appear, then reads it from its first line, and on as it grows', () => {
+  it('waits for the transcript to appear, then reads it from its first line, and on as it grows', async () => {
     attach()
     poll(2)
     expect(tools()).toEqual([])
     const file = transcript(own(), SID, 'swarm_send_message')
     poll()
-    expect(tools()).toEqual(['swarm_send_message'])
+    expect(tools()).toEqual(['swarm_send_message']) // the first pass is made at attach
     fs.appendFileSync(file, toolLine('swarm_update_task'))
     poll()
+    // Growth is read by the watcher's poll too, but off the main thread (watchGuard.ts), so it lands
+    // when the real read does, not inside the poll call.
+    await settle()
     expect(tools()).toEqual(['swarm_send_message', 'swarm_update_task'])
   })
 

@@ -581,6 +581,7 @@ import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcH
 import { createProcHostTransport } from './procHostTransport'
 import { cachedGit, invalidateGitCache } from './gitCache'
 import { createGitWatcherRegistry } from './gitWatcher'
+import { WATCH_MIN_INTERVAL_MS } from './watchGuard'
 import { installApplicationMenu, globalHotkeys } from './appMenu'
 import { writeSecureFile } from './secureFile'
 import {
@@ -1822,6 +1823,10 @@ ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
 // open, the app behaves exactly like v1.47 with a slower poll.
 const gitWatchers = createGitWatcherRegistry({
   watch: (target, opts, listener) => fsWatch(target, opts, listener),
+  // At most one repaint per 2 s per repo (each one costs the renderer three git processes), and a
+  // flood backs off. The module's own default stays 1 s because its tests pin it.
+  throttleMs: WATCH_MIN_INTERVAL_MS,
+  log: (msg) => console.warn(msg),
   onChange: (root) => {
     invalidateGitCache(root)
     for (const win of BrowserWindow.getAllWindows()) {
@@ -2235,9 +2240,11 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       // re-index just the changed files (AST-first) with a full-sweep fallback — so edits show up in
       // seconds without re-parsing the whole tree. reindexWatchedChange owns the incremental-vs-full
       // logic (and is unit-tested); this callback just wires the real fs reader.
-      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(fsWatch, (root, files) => {
-        void reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
-      }))
+      // The promise is RETURNED, not dropped: the watch gate (watchGuard.ts) waits for it, so two
+      // re-indexes never overlap however long one takes. reindexWatchedChange never rejects.
+      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(fsWatch, (root, files) =>
+        reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8')),
+      ))
     } catch { /* best effort */ }
     return ok({ ...stats, codeGraph })
   } catch (e: any) { return err(e.message) }
