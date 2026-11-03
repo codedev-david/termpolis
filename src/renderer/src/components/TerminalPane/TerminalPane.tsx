@@ -7,6 +7,9 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
+import { createChunkQueue, createStringQueue } from '../../lib/chunkQueue'
+import { holdOutput, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
+import { switchEnabled, SWITCH_OUTPUT_CHUNKS } from '../../lib/paneSwitches'
 import { echoTraceAttach } from '../../lib/echoTrace'
 import { registerWebglPane, setWebglPaneVisible } from '../../lib/webglBudget'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, formatAsMessageHtmlFromTerm, formatAsMessagePlainTextFromTerm } from '../../lib/exportTerminal'
@@ -325,7 +328,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // flips true on left-mousedown and false on a document mouseup; pendingWriteRef
   // holds the deferred output until the selection is released/cleared.
   const selectingRef = useRef(false)
-  const pendingWriteRef = useRef('')
+  // A chunk list, made once (useRef(createChunkQueue()) would build and drop one every render).
+  const [pendingWrite] = useState(createChunkQueue)
+  const pendingWriteRef = useRef(pendingWrite)
   // When the user scrolls a mouse-tracking TUI we forward a wheel report to the
   // pty and the app answers by repainting. That repaint is output the user ASKED
   // for, unlike the streamed agent output the pause above guards against — so it
@@ -822,7 +827,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // you get a diff badge on an empty terminal, or a stale copy snapshot the context
     // menu will happily paste.
     outputBufferRef.current = ''
-    pendingWriteRef.current = ''
+    pendingWriteRef.current.clear()
     inputBufferRef.current = ''
     copySnapshotRef.current = null
     mouseDownSnapRef.current = null
@@ -1458,7 +1463,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       }
     })
 
-    const throttledWrite = createOutputThrottle(echo.tap((data) => term.write(data)))
+    // The backlog lives in a chunk list; localStorage 'termpolis.outputChunks' = '0' brings back the 1.54.4 string buffer.
+    const chunkedOutput = switchEnabled(SWITCH_OUTPUT_CHUNKS)
+    const throttledWrite = createOutputThrottle(echo.tap((data) => term.write(data)), { queue: chunkedOutput ? createChunkQueue() : createStringQueue() })
     // Until this mount's replay lands, live output goes straight into xterm's own (ordered)
     // write queue rather than through the throttle: if the replay then has to be laid in behind
     // it (landReplay), nothing can still be sitting in the throttle to land after the replay.
@@ -1474,7 +1481,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // string-based side effect below live — only the term.write is deferred,
     // then flushed on release / when the selection clears. A hard cap stops
     // runaway buffering if output floods while a selection just sits there.
-    const PENDING_WRITE_CAP = 1_000_000
+    // 256 KB = four throttle ticks, so the first key after a selection is not echoed behind sixteen
+    // (selectionHold.ts); the 1.54.4 cap of 1,000,000 returns with the output-chunks switch.
+    const PENDING_WRITE_CAP = chunkedOutput ? HOLD_CAP_CHARS : HOLD_CAP_LEGACY_CHARS
     // Long enough to cover a wheel report's round trip through the pty and the
     // app's repaint, short enough that the selection is protected again as soon
     // as the user stops scrolling. Each notch re-stamps it, so a continuous
@@ -1483,17 +1492,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     const isSelectionActive = (): boolean => selectingRef.current || term.hasSelection()
     const isUserScroll = (): boolean => Date.now() - lastUserScrollRef.current < USER_SCROLL_WINDOW_MS
     const flushPendingWrite = (): void => {
-      const buffered = pendingWriteRef.current
-      if (!buffered) return
-      pendingWriteRef.current = ''
-      toXterm(buffered)
+      const buffered = pendingWriteRef.current.takeAll()
+      if (buffered) toXterm(buffered)
     }
     const writeOutput = (data: string): void => {
       if (isSelectionActive() && !isUserScroll()) {
-        pendingWriteRef.current += data
         // Safety valve: never balloon memory or appear frozen forever — if a lot
-        // of output arrives while a selection sits active, resume live writes.
-        if (pendingWriteRef.current.length > PENDING_WRITE_CAP) flushPendingWrite()
+        // of output arrives while a selection sits active, resume live writes
+        // (holdOutput lets go of what it holds, in order, once it would pass the cap).
+        const through = holdOutput(pendingWriteRef.current, data, PENDING_WRITE_CAP)
+        if (through) toXterm(through)
         return
       }
       flushPendingWrite()
@@ -1741,7 +1749,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         // The early chunks are already in xterm's queue — or frozen behind a selection — AHEAD
         // of this older replay. RIS, parsed in order, wipes what they drew; the replay redraws
         // the window; and whatever it does not cover goes back on top, once, in order.
-        pendingWriteRef.current = ''
+        pendingWriteRef.current.clear()
         replay = '\x1bc' + replay + uncovered.map((c) => c.data).join('')
       }
       // A resize that throws must not cost the replay: drawn at the wrong width beats a blank

@@ -3317,6 +3317,39 @@ describe('TerminalPane', () => {
       expect(mocks.mockTerminal.write).toHaveBeenCalledWith(big)
     })
 
+    // 1.54.5 (plan package P2): the hold is capped at 256 KB, four throttle ticks, so the first key
+    // typed after a selection is not echoed behind sixteen. NEGATIVE CONTROL: the kill switch brings
+    // the 1.54.4 cap of 1,000,000 chars back, and the very same output stays held.
+    it('caps the hold at 256 KB: output that would pass it releases what is held, in order, ahead of itself', () => {
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.write.mockClear()
+      const chunk = 'x'.repeat(10_000)
+      for (let i = 0; i < 26; i++) act(() => { mockOnTerminalDataCb?.('term-1', chunk) }) // 260,000: under 262,144
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+      act(() => { mockOnTerminalDataCb?.('term-1', 'y'.repeat(10_000)) }) // would take the hold past its cap
+      expect(mocks.mockTerminal.write).toHaveBeenCalledTimes(1)
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith(chunk.repeat(26))
+      // ...and the chunk that overflowed is held, behind the selection, until it is released
+      fireEvent.mouseUp(document)
+      mocks.mockTerminal.hasSelection.mockReturnValue(false)
+      act(() => { mockSelectionChangeCb?.() })
+      expect(mocks.mockTerminal.write).toHaveBeenLastCalledWith('y'.repeat(10_000))
+    })
+
+    it('NEGATIVE CONTROL: with the output-chunks switch off the hold keeps its 1.54.4 cap, so the same output stays held', () => {
+      window.localStorage.setItem('termpolis.outputChunks', '0')
+      try {
+        mocks.mockTerminal.hasSelection.mockReturnValue(true)
+        render(<TerminalPane {...defaultProps} />)
+        mocks.mockTerminal.write.mockClear()
+        for (let i = 0; i < 27; i++) act(() => { mockOnTerminalDataCb?.('term-1', 'x'.repeat(10_000)) }) // 270,000
+        expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+      } finally {
+        window.localStorage.removeItem('termpolis.outputChunks')
+      }
+    })
+
     it('stays paused on mouseup / selection-change while a selection still exists', () => {
       mocks.mockTerminal.hasSelection.mockReturnValue(true)
       render(<TerminalPane {...defaultProps} />)
