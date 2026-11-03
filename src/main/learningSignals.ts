@@ -27,6 +27,7 @@ import { gitDirOf, headRef, resolveRef, type ReadBytes } from './workflow/trigge
 import type { FsLike } from './workflow/workflowStore'
 import type { AgentEvent } from './agentEventBus'
 import type { WorkEvent } from './outcomeSignals'
+import { createShedGate, type ShedGate } from './loopGovernor'
 
 /** setInterval's handle type differs between the DOM and Node libs — it travels opaquely. */
 type TimerHandle = ReturnType<typeof setInterval>
@@ -81,6 +82,9 @@ const heads = new Map<string, HeadState>()
 const pending = new Map<string, PendingTest>()
 let stopTimer: (() => void) | null = null
 let unsubscribe: (() => void) | null = null
+/** While the event loop is struggling (loopGovernor SHED) a tick does nothing: the next calm tick compares HEAD with
+ *  the remembered sha, so a commit made meanwhile is still seen. */
+let gate: ShedGate | null = null
 
 // ── test-run classification ──────────────────────────────────────────────────
 
@@ -219,7 +223,8 @@ export function startLearningSignals(d: LearningSignalDeps): void {
   const every = d.tickMs ?? DEFAULT_TICK_MS
   const setTimer = d.setInterval ?? setInterval
   const clearTimer = d.clearInterval ?? clearInterval
-  const handle = setTimer(() => pollGitHeads(d), every)
+  gate = createShedGate('learningSignals.gitPoll')
+  const handle = setTimer(() => { if (gate?.skip()) return; pollGitHeads(d) }, every)
   stopTimer = () => clearTimer(handle)
 }
 
@@ -227,6 +232,8 @@ export function startLearningSignals(d: LearningSignalDeps): void {
 export function stopLearningSignals(): void {
   if (stopTimer) stopTimer()
   if (unsubscribe) unsubscribe()
+  gate?.dispose()
+  gate = null
   stopTimer = null
   unsubscribe = null
   heads.clear()

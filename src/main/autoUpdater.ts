@@ -30,6 +30,7 @@ import {
 import { hasNoNewPrivs, readPackageType, runsFromAppImage } from './noNewPrivs'
 import { sudoAskpassPath } from './sudoAskpass'
 import { recordUpdaterEvent } from './telemetry'
+import { createShedGate, type ShedGate } from './loopGovernor'
 import { classifyUpdaterError, DISK_FULL_MESSAGE, scrubUpdaterText, updaterFailureMessage } from './updaterErrors'
 import {
   bundlePathFromExe,
@@ -335,6 +336,9 @@ export function initAutoUpdater(
   // failed hours ago, as if it were happening now.
   let lastSettled: UpdateState = { status: 'idle' }
   let interval: ReturnType<typeof setInterval> | undefined
+  // The scheduled checks (never a manual one) stand down while the event loop struggles (loopGovernor SHED); one
+  // check is made up a minute after calm returns.
+  let scheduledGate: ShedGate | undefined
 
   const setState = (next: UpdateState, { record = true }: { record?: boolean } = {}) => {
     // What the last .deb install came to rides along on every state until Restart is tried again.
@@ -388,6 +392,7 @@ export function initAutoUpdater(
   const standDown = (hint: string) => {
     blockedHint = hint
     clearInterval(interval)
+    scheduledGate?.dispose()
     setState({ status: 'error', error: hint, reason: 'read-only-location' }, { record: false })
   }
 
@@ -470,8 +475,10 @@ export function initAutoUpdater(
     blockedHint ? undefined : autoUpdater.checkForUpdates().then(ignoreDownloadRejection).catch(() => {})
   // First check a few seconds after launch; then every 4 hours.
   const schedule = () => {
-    setTimeout(runCheck, 10_000)
-    interval = setInterval(runCheck, 4 * 60 * 60 * 1000)
+    scheduledGate = createShedGate('updater.scheduledCheck', { makeUp: () => { void runCheck() } })
+    const scheduledCheck = () => (scheduledGate?.skip() ? undefined : runCheck())
+    setTimeout(scheduledCheck, 10_000)
+    interval = setInterval(scheduledCheck, 4 * 60 * 60 * 1000)
   }
 
   const bundle = host.platform === 'darwin' ? bundlePathFromExe(host.exePath) : null

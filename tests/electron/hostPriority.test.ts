@@ -17,7 +17,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative, sep } from 'path'
 import ts from 'typescript'
-import { lowerHostPriority, __setHostPriorityDepsForTests } from '../../src/main/hostPriority'
+import * as nodeOs from 'os'
+import { lowerHostPriority, __setHostPriorityDepsForTests, type HostPriorityDeps } from '../../src/main/hostPriority'
 
 const SRC_MAIN = join(__dirname, '..', '..', 'src', 'main')
 const BELOW_NORMAL = 10 // os.constants.priority.PRIORITY_BELOW_NORMAL on every platform Node supports
@@ -86,6 +87,19 @@ describe('lowerHostPriority', () => {
     const { os, calls } = fakeOs({ constants: {} })
     expect(lowerHostPriority({ os, env: {} })).toBe('unsupported')
     expect(calls).toEqual([])
+  })
+
+  it('with no arguments at all it reads the real environment: the unit suite runs with the kill switch on, so nothing happens', () => {
+    expect(process.env.TERMPOLIS_NO_HOST_PRIORITY).toBe('1')
+    expect(lowerHostPriority()).toBe('disabled')
+  })
+
+  it('smoke: against the REAL os module in this very process it does not throw (and the test puts the priority back)', () => {
+    const real = lowerHostPriority({ env: {} })
+    expect(['lowered', 'failed']).toContain(real)
+    if (real === 'lowered') {
+      try { nodeOs.setPriority(0, nodeOs.constants.priority.PRIORITY_NORMAL) } catch { /* POSIX cannot raise it again: a throwaway worker */ }
+    }
   })
 
   it('does not remember: calling twice makes two calls (so a host that called it twice would be caught by the counters below)', () => {
@@ -186,8 +200,18 @@ describe('each background host lowers its own priority first, once, only when it
 
 interface FakePort { on: ReturnType<typeof vi.fn>; postMessage: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn> }
 
+/**
+ * A fresh module graph with the fake os installed in ITS copy of hostPriority (vi.resetModules gives the host a new
+ * copy, so a seam set on the copy this file imported at the top would never be seen by the host).
+ */
+async function freshGraph(deps: HostPriorityDeps): Promise<void> {
+  vi.resetModules()
+  const fresh = await import('../../src/main/hostPriority')
+  fresh.__setHostPriorityDepsForTests(deps)
+}
+
 /** Import a host module as if `process.parentPort` existed, then undo every process-level side effect of doing so. */
-async function importAsChild(load: () => Promise<unknown>): Promise<FakePort> {
+async function importAsChild(load: () => Promise<unknown>, deps: HostPriorityDeps): Promise<FakePort> {
   const port: FakePort = { on: vi.fn(), postMessage: vi.fn(), start: vi.fn() }
   const before = {
     rejection: process.listeners('unhandledRejection'),
@@ -195,7 +219,7 @@ async function importAsChild(load: () => Promise<unknown>): Promise<FakePort> {
   }
   Object.defineProperty(process, 'parentPort', { value: port, configurable: true, writable: true })
   try {
-    vi.resetModules()
+    await freshGraph(deps)
     await load()
   } finally {
     delete (process as unknown as Record<string, unknown>).parentPort
@@ -209,24 +233,21 @@ describe('dynamic: the real host modules, imported as forked children, call the 
   for (const host of HOSTS) {
     it(`${host.name}: one call, pid 0, below-normal`, async () => {
       const { os, calls } = fakeOs()
-      __setHostPriorityDepsForTests({ os, env: {} })
-      const port = await importAsChild(host.load)
+      const port = await importAsChild(host.load, { os, env: {} })
       expect(port.on).toHaveBeenCalled() // the fork-only block really ran (control: the import was not inert)
       expect(calls).toEqual([[0, BELOW_NORMAL]])
     }, 60_000)
 
     it(`${host.name} control: imported in the main process (no parentPort) it never changes any priority`, async () => {
       const { os, calls } = fakeOs()
-      __setHostPriorityDepsForTests({ os, env: {} })
-      vi.resetModules()
+      await freshGraph({ os, env: {} })
       await host.load()
       expect(calls).toEqual([])
     }, 60_000)
 
     it(`${host.name} kill switch: TERMPOLIS_NO_HOST_PRIORITY=1 makes no call even as a child`, async () => {
       const { os, calls } = fakeOs()
-      __setHostPriorityDepsForTests({ os, env: { TERMPOLIS_NO_HOST_PRIORITY: '1' } })
-      await importAsChild(host.load)
+      await importAsChild(host.load, { os, env: { TERMPOLIS_NO_HOST_PRIORITY: '1' } })
       expect(calls).toEqual([])
     }, 60_000)
   }

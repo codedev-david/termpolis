@@ -120,13 +120,16 @@ describe('learningSignals: the git HEAD poll stands down while shed', () => {
 interface FakeChild { fireExit: () => void }
 let children: FakeChild[] = []
 
-function spawner(): unknown {
+function spawner() {
   let msgCb: (m: unknown) => void = () => {}
   let exitCb: (c: number) => void = () => {}
   const child: FakeChild = { fireExit: () => exitCb(1) }
   children.push(child)
   return {
-    postMessage: (m: { kind?: string; port?: number }) => { if (m?.kind === 'init') msgCb({ kind: 'ready', port: m.port }) },
+    postMessage: (raw: unknown) => {
+      const m = raw as { kind?: string; port?: number }
+      if (m?.kind === 'init') msgCb({ kind: 'ready', port: m.port })
+    },
     onMessage: (cb: (m: unknown) => void) => { msgCb = cb },
     onExit: (cb: (c: number) => void) => { exitCb = cb },
     kill: () => {},

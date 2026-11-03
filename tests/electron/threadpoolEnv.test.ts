@@ -146,7 +146,7 @@ function runChild(entrySource: string, allowMs: number): Promise<{ seventhOperat
   writeFileSync(join(dir, 'threadpoolEnv.mjs'), transpiledEnvModule())
   writeFileSync(join(dir, 'probe.mjs'), PROBE)
   writeFileSync(join(dir, 'entry.mjs'), entrySource)
-  const env = { ...process.env, PROBE_ALLOW_MS: String(allowMs) }
+  const env: NodeJS.ProcessEnv = { ...process.env, PROBE_ALLOW_MS: String(allowMs) }
   delete env.UV_THREADPOOL_SIZE
   delete env.TERMPOLIS_NO_GOVERNOR
   return new Promise((resolve, reject) => {

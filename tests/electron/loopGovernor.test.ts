@@ -23,9 +23,14 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import ts from 'typescript'
+import { readAppLog, clearAppLog } from '../../src/main/appLog'
 import {
   createShedRegistry,
   createShedGate,
+  shedRegistry,
+  registerShed,
+  isShed,
+  onShedChange,
   startLoopGovernor,
   installLoopGovernor,
   getGovernorSnapshot,
@@ -55,10 +60,12 @@ interface Rig {
   createHistogram: ReturnType<typeof vi.fn>
   /** One sampler tick: the clock moves `dtMs` (default: exactly the sample period), the histogram answers `p99Ms`. */
   sample: (p99Ms: number, dtMs?: number) => void
+  /** The sampler callback as it was first registered, callable even after stop() cleared the interval. */
+  staleTick: () => void
   elapsed: () => number
 }
 
-function rig(opts: { config?: Partial<GovernorConfig>; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; pairs?: Array<[string, { pause: () => void; resume: () => void }]> } = {}): Rig {
+function rig(opts: { config?: Partial<GovernorConfig>; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; freememBytes?: number; pairs?: Array<[string, { pause: () => void; resume: () => void }]> } = {}): Rig {
   let now = 1_000_000
   const t0 = now
   let tick: (() => void) | undefined
@@ -77,7 +84,8 @@ function rig(opts: { config?: Partial<GovernorConfig>; platform?: NodeJS.Platfor
       return Reflect.get(target, prop, receiver)
     },
   })
-  const setIntervalFn = vi.fn((fn: () => void) => { tick = fn; return { unref: () => {} } })
+  let firstTick: (() => void) | undefined
+  const setIntervalFn = vi.fn((fn: () => void) => { tick = fn; firstTick = fn; return { unref: () => {} } })
   const clearIntervalFn = vi.fn(() => { tick = undefined })
   const createHistogram = vi.fn(() => proxied)
   const logs: string[] = []
@@ -91,7 +99,7 @@ function rig(opts: { config?: Partial<GovernorConfig>; platform?: NodeJS.Platfor
     setInterval: setIntervalFn,
     clearInterval: clearIntervalFn,
     now: () => now,
-    freemem: () => { freememAt.push(now); return 6 * 1024 ** 3 },
+    freemem: () => { freememAt.push(now); return opts.freememBytes ?? 6 * 1024 ** 3 },
     log: (line) => logs.push(line),
     registry,
     // idleFloorMs 0 maps the fake histogram's numbers 1:1 onto the brief's thresholds.
@@ -102,6 +110,7 @@ function rig(opts: { config?: Partial<GovernorConfig>; platform?: NodeJS.Platfor
     handle, registry, hist, histReads, logs, freememAt, setIntervalFn, clearIntervalFn, createHistogram,
     sample: (p99Ms, dtMs = DEFAULT_GOVERNOR_CONFIG.sampleMs) => { now += dtMs; hist.value = p99Ms; tick!() },
     elapsed: () => now - t0,
+    staleTick: () => firstTick?.(),
   }
 }
 
@@ -260,6 +269,49 @@ describe('shed registry: register / isShed / onShedChange', () => {
     expect(reg.isShed()).toBe(false)
     expect(b.pause.mock.calls.length).toBeLessThanOrEqual(1)
     expect(b.pause.mock.calls.length - b.resume.mock.calls.length).toBe(0) // balanced
+  })
+})
+
+describe('shed registry: re-entrancy, round two, and the process-wide default', () => {
+  it('a hook that flips the state off and on again mid-pass leaves every entry paused exactly once (balanced)', () => {
+    const reg = createShedRegistry()
+    let flipped = false
+    const a = {
+      pause: vi.fn(() => { if (flipped) return; flipped = true; reg.setShed(false); reg.setShed(true) }),
+      resume: vi.fn(),
+    }
+    const b = hooks()
+    reg.register('a', a); reg.register('b', b)
+    reg.setShed(true)
+    expect(reg.isShed()).toBe(true)
+    expect(b.pause).toHaveBeenCalledTimes(1) // the outer pass must not pause it a second time
+    expect(b.resume).not.toHaveBeenCalled()
+    expect(a.pause.mock.calls.length - a.resume.mock.calls.length).toBe(1) // paused now, and balanced
+    reg.setShed(false)
+    expect(b.resume).toHaveBeenCalledTimes(1)
+    expect(a.pause.mock.calls.length).toBe(a.resume.mock.calls.length)
+  })
+
+  it('registerShed / isShed / onShedChange are the process-wide registry', () => {
+    const h = hooks()
+    const heard: boolean[] = []
+    const unregister = registerShed('lane-g-test', h)
+    const unsubscribe = onShedChange((s) => heard.push(s))
+    try {
+      expect(isShed()).toBe(false)
+      expect(shedRegistry.names()).toContain('lane-g-test')
+      shedRegistry.setShed(true)
+      expect(isShed()).toBe(true)
+      expect(h.pause).toHaveBeenCalledTimes(1)
+      shedRegistry.setShed(false)
+      expect(h.resume).toHaveBeenCalledTimes(1)
+      expect(heard).toEqual([true, false])
+    } finally {
+      unregister()
+      unsubscribe()
+      shedRegistry.setShed(false)
+    }
+    expect(shedRegistry.names()).not.toContain('lane-g-test')
   })
 })
 
@@ -478,8 +530,8 @@ describe('watchdog: the max-dwell valve (fail open: a stuck SHED must not starve
     const r = rig({ pairs: [['bg', h]], config: { maxShedMs: 60_000, forcedOpenMs: 20_000 } })
     r.sample(SLOW); r.sample(SLOW); r.sample(SLOW) // entered at t = 6 s
     expect(r.registry.isShed()).toBe(true)
-    while (r.elapsed() < 65_000) r.sample(SLOW)
-    expect(r.registry.isShed()).toBe(true) // 59 s in: still shed
+    while (r.elapsed() < 64_000) r.sample(SLOW)
+    expect(r.registry.isShed()).toBe(true) // 58 s in: still shed
     r.sample(SLOW) // t = 66 s: 60 s of shed
     expect(r.registry.isShed()).toBe(false)
     expect(h.resume).toHaveBeenCalledTimes(1)
@@ -530,19 +582,11 @@ describe('watchdog: the sensor', () => {
     for (let i = 1; i < r.freememAt.length; i++) expect(r.freememAt[i] - r.freememAt[i - 1]).toBeGreaterThanOrEqual(10_000)
   })
 
-  it('freemem is a diagnostic only: a tiny free-memory reading never causes SHED', () => {
-    const r = rig()
-    // the rig's freemem is fixed at 6 GiB; swap the dependency by starting a second rig with a starved machine
-    __resetLoopGovernorForTests()
-    const starved = startLoopGovernor({
-      env: {}, platform: 'linux', config: { idleFloorMs: 0 }, registry: createShedRegistry(),
-      createHistogram: () => ({ enable: () => {}, disable: () => {}, reset: () => {}, percentile: () => CALM * 1e6 }),
-      setInterval: ((fn: () => void) => { for (let i = 0; i < 20; i++) fn(); return { unref() {} } }) as never,
-      clearInterval: () => {}, now: (() => { let t = 0; return () => (t += 2000) })(), freemem: () => 1024, log: () => {},
-    })
-    expect(starved.snapshot().shed).toBe(false)
-    expect(starved.snapshot().freeMB).toBe(0)
+  it('freemem is a diagnostic only: a starved machine (50 MB free) with a calm loop never causes SHED', () => {
+    const r = rig({ freememBytes: 50 * 1024 * 1024 })
+    for (let i = 0; i < 100; i++) r.sample(CALM)
     expect(r.registry.isShed()).toBe(false)
+    expect(r.handle.snapshot().freeMB).toBe(50)
   })
 
   it('a sample that arrives late (the loop was blocked) is slow even when the histogram dropped the stall: lateness backstop', () => {
@@ -603,7 +647,54 @@ describe('watchdog: the idle floor (Windows reports 31.25 ms for an idle loop at
   })
 })
 
+describe('watchdog: with every default (real histogram, real timers, real clock, real app log)', () => {
+  it('starts, samples, enters and leaves SHED, writes both transitions to the app log, reads free memory, and stops', () => {
+    vi.useFakeTimers()
+    clearAppLog()
+    const registry = createShedRegistry()
+    // enterDelayMs -1 makes the real histogram's "no data" reading (nothing real elapsed under fake timers) count as slow
+    const handle = startLoopGovernor({
+      env: {}, registry, config: { enterDelayMs: -1, enterSamples: 1, leaveDelayMs: 1000, leaveHoldMs: 0 },
+    })
+    expect(handle.enabled).toBe(true)
+    vi.advanceTimersByTime(2000)
+    expect(registry.isShed()).toBe(true)
+    vi.advanceTimersByTime(2000)
+    expect(registry.isShed()).toBe(false)
+    const lines = readAppLog().map((e) => e.msg)
+    expect(lines.some((l) => /loop governor: SHED on/.test(l))).toBe(true)
+    expect(lines.some((l) => /loop governor: SHED off/.test(l))).toBe(true)
+    expect(typeof handle.snapshot().freeMB).toBe('number')
+    expect(handle.snapshot().samples).toBe(2)
+    handle.stop()
+    expect(vi.getTimerCount()).toBe(0) // the one interval it ever created is gone
+    clearAppLog()
+  })
+
+  it('control: the same defaults with a calm real histogram and the shipped thresholds never enter', () => {
+    vi.useFakeTimers()
+    const registry = createShedRegistry()
+    const handle = startLoopGovernor({ env: {}, registry })
+    vi.advanceTimersByTime(60_000)
+    expect(registry.isShed()).toBe(false)
+    expect(handle.snapshot().transitions).toBe(0)
+    handle.stop()
+  })
+})
+
 describe('watchdog: logging', () => {
+  it('a single suppressed transition is reported in the singular on the next line that is allowed', () => {
+    const r = rig({ config: { enterSamples: 1, leaveHoldMs: 2000, logMaxPerWindow: 2, logWindowMs: 10_000 } })
+    r.sample(SLOW) // t=2 s  enter  (logged)
+    r.sample(CALM) // t=4 s  leave  (logged)
+    r.sample(SLOW) // t=6 s  enter  (over the limit: suppressed)
+    r.sample(SLOW); r.sample(SLOW) // t=8, 10 s: still shed, each slow sample restarts the 2 s calm clock
+    expect(r.logs).toHaveLength(2)
+    r.sample(CALM) // t=12 s leave: the t=2 s line has aged out of the window
+    expect(r.logs).toHaveLength(3)
+    expect(r.logs[2]).toMatch(/\(1 earlier transition not logged\)/)
+  })
+
   it('each transition is logged exactly once, in plain words', () => {
     const r = rig()
     r.sample(SLOW); r.sample(SLOW); r.sample(SLOW)
@@ -643,6 +734,14 @@ describe('watchdog: lifecycle, kill switch and failing open', () => {
     r.handle.stop() // harmless
   })
 
+  it('reads the real environment when none is injected: the unit suite runs with the kill switch on, so it stays inert', () => {
+    expect(process.env.TERMPOLIS_NO_GOVERNOR).toBe('1')
+    const createHistogram = vi.fn()
+    const handle = startLoopGovernor({ createHistogram: createHistogram as never })
+    expect(handle.enabled).toBe(false)
+    expect(createHistogram).not.toHaveBeenCalled()
+  })
+
   it('control: "true" also switches it off; "0" and an unset variable leave it running', () => {
     expect(rig({ env: { TERMPOLIS_NO_GOVERNOR: 'true' } }).handle.enabled).toBe(false)
     expect(rig({ env: { TERMPOLIS_NO_GOVERNOR: '0' } }).handle.enabled).toBe(true)
@@ -677,6 +776,27 @@ describe('watchdog: lifecycle, kill switch and failing open', () => {
     expect(logs[0]).toMatch(/unavailable|disabled/i)
   })
 
+  it('a histogram that throws something that is not an Error is reported just as well', () => {
+    const logs: string[] = []
+    const handle = startLoopGovernor({
+      env: {}, registry: createShedRegistry(), log: (l) => logs.push(l),
+      createHistogram: () => { throw 'no perf hooks here' }, // eslint-disable-line no-throw-literal
+      setInterval: vi.fn() as never, clearInterval: vi.fn(),
+    })
+    expect(handle.enabled).toBe(false)
+    expect(logs[0]).toMatch(/no perf hooks here/)
+  })
+
+  it('a tick that arrives after stop() does nothing (control: counters do not move)', () => {
+    const r = rig()
+    r.sample(CALM)
+    r.handle.stop()
+    const reads = r.hist.percentile.mock.calls.length
+    r.staleTick(); r.staleTick()
+    expect(r.hist.percentile.mock.calls.length).toBe(reads)
+    expect(r.handle.snapshot().samples).toBe(1)
+  })
+
   it('three failing samples in a row stop the governor and release everything; one failure alone does not', () => {
     const h = hooks()
     const r = rig({ pairs: [['bg', h]] })
@@ -691,7 +811,7 @@ describe('watchdog: lifecycle, kill switch and failing open', () => {
     expect(r.handle.enabled).toBe(false)
     expect(r.registry.isShed()).toBe(false)
     expect(h.resume).toHaveBeenCalledTimes(1)
-    expect(r.handle.snapshot().errors).toBe(3)
+    expect(r.handle.snapshot().errors).toBe(4) // the first lone failure plus the three in a row
   })
 
   it('starting again replaces the previous run (its interval is cleared once)', () => {
@@ -740,15 +860,12 @@ describe('installLoopGovernor: ONE call from main', () => {
   it('starts the watchdog and stops it when the app emits will-quit', () => {
     const quit: Array<() => void> = []
     const app = { once: vi.fn((event: string, cb: () => void) => { if (event === 'will-quit') quit.push(cb) }) }
-    const r = rig()
-    __resetLoopGovernorForTests()
     const clear = vi.fn()
     const handle = installLoopGovernor(app, {
       env: {}, registry: createShedRegistry(), log: () => {}, platform: 'linux',
       createHistogram: () => ({ enable() {}, disable() {}, reset() {}, percentile: () => 0 }),
       setInterval: vi.fn(() => ({})) as never, clearInterval: clear, now: () => 0, freemem: () => 0,
     })
-    expect(r.handle).toBeDefined()
     expect(handle.enabled).toBe(true)
     expect(app.once).toHaveBeenCalledTimes(1)
     expect(app.once.mock.calls[0][0]).toBe('will-quit')
@@ -756,6 +873,18 @@ describe('installLoopGovernor: ONE call from main', () => {
     quit[0]()
     expect(clear).toHaveBeenCalledTimes(1)
     expect(handle.enabled).toBe(false)
+  })
+
+  it('a governor that cannot even start (the clock throws) leaves an inert handle, never an exception', () => {
+    const handle = installLoopGovernor({ once: vi.fn() }, {
+      env: {}, registry: createShedRegistry(), log: () => {},
+      createHistogram: () => ({ enable() {}, disable() {}, reset() {}, percentile: () => 0 }),
+      setInterval: vi.fn(() => ({})) as never, clearInterval: vi.fn(),
+      now: () => { throw new Error('clock unavailable') }, freemem: () => 0,
+    })
+    expect(handle.enabled).toBe(false)
+    expect(handle.snapshot()).toMatchObject({ enabled: false, shed: false, samples: 0 })
+    expect(() => handle.stop()).not.toThrow()
   })
 
   it('with the kill switch it does not even look at app, and it never throws on an app that has no once()', () => {

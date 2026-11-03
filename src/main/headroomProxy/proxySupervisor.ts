@@ -2,6 +2,7 @@ import * as net from 'net'
 import type { WireStats } from './wireCompress'
 import type { Usage } from './usageParse'
 import { killUtility } from '../utilityKill'
+import { createShedGate, type ShedGate } from '../loopGovernor'
 
 export interface ProxyResultMsg {
   kind: 'result'
@@ -51,6 +52,9 @@ let stopped = false
 // nothing may start a proxy it will not be around to stop.
 let shutDown = false
 let cooldownTimer: ReturnType<typeof setTimeout> | null = null
+// While the event loop is struggling (loopGovernor SHED) the cooldown restart, which forks on main, waits another
+// cooldown instead. An ordinary crash restart is NOT gated: a dead proxy breaks every live Claude session on its port.
+let cooldownGate: ShedGate | null = null
 let resultCb: ((r: ProxyResultMsg) => void) | null = null
 let stashCb: ((s: ProxyStashMsg) => void) | null = null
 
@@ -207,18 +211,37 @@ function maybeRestart(): void {
     healthy = false // flapping → back off; new Claude launches go direct (safe) meanwhile
     // Don't give up FOREVER — after a cooldown, reset and try again so the proxy self-heals and
     // any live session pinned to the port recovers on the next successful bind.
-    if (cooldownTimer) clearTimeout(cooldownTimer)
-    cooldownTimer = setTimeout(() => { cooldownTimer = null; if (!stopped && !healthy) { restartTimes = []; spawnOnce() } }, 30_000)
+    armCooldown()
     return
   }
   spawnOnce()
+}
+
+const COOLDOWN_MS = 30_000
+
+function armCooldown(): void {
+  if (cooldownTimer) clearTimeout(cooldownTimer)
+  cooldownGate ??= createShedGate('headroomProxy.cooldownRestart')
+  cooldownTimer = setTimeout(() => {
+    cooldownTimer = null
+    if (stopped || healthy) return
+    if (cooldownGate?.skip()) { armCooldown(); return } // a fork now would only add to the stall: wait it out
+    restartTimes = []
+    spawnOnce()
+  }, COOLDOWN_MS)
+}
+
+function disposeCooldown(): void {
+  if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
+  cooldownGate?.dispose()
+  cooldownGate = null
 }
 
 export function stopProxy(): void {
   shutDown = true
   stopped = true
   started = false
-  if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
+  disposeCooldown()
   try { transport?.kill() } catch { /* ignore */ }
   transport = null
   healthy = false
@@ -254,6 +277,6 @@ export function pickFreePort(): Promise<number> {
 
 export function _resetProxyForTest(): void {
   agentEnvReader = null
-  if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
+  disposeCooldown()
   transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; shutDown = false; resultCb = null; stashCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'; proxyEnabled = true; started = false
 }
