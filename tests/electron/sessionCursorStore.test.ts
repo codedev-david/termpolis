@@ -58,6 +58,19 @@ describe('sessionCursorStore', () => {
     expect(getSessionCursor(k)).toEqual({ count: 12, hash: 'abc' })
   })
 
+  // A cursor may carry where in the transcript FILE it stands (transcriptDelta.ts). That is what lets a
+  // restart find an unchanged transcript without opening it, so it must come back byte for byte.
+  it('carries a byte position through a restart untouched', () => {
+    const k = sessionCursorKey('C:/repos/termpolis', 'claude')
+    const pos = { file: 'C:/p/s.jsonl', size: 4096, mtimeMs: 1730678400123.4567, offset: 4096, anchor: 'abcd1234', anchorLen: 256 }
+    setSessionCursor(k, { count: 12, hash: 'abc', pos })
+    flushSessionCursors()
+
+    resetSessionCursors()
+    initSessionCursors(dir)
+    expect(getSessionCursor(k)).toEqual({ count: 12, hash: 'abc', pos })
+  })
+
   it('returns undefined for a transcript it has never reflected', () => {
     expect(getSessionCursor(sessionCursorKey('C:/repos/new', 'claude'))).toBeUndefined()
   })

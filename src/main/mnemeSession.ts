@@ -17,12 +17,32 @@ import type { RawTurn } from './mnemeEpisode'
 import { assembleEpisode } from './mnemeEpisode'
 import type { Episode, Outcome } from './mnemeReflect'
 
+/**
+ * Where in the transcript FILE a cursor stands (written by transcriptDelta.ts, which owns its rules). It
+ * lets the next pass open nothing when the file is unchanged, and read only the bytes after `offset`
+ * when it grew, instead of reading and parsing the whole transcript to find out.
+ */
+export interface TranscriptPos {
+  /** The transcript file the cursor was last advanced over. */
+  file: string
+  /** Its size and mtime when that happened: a file that still has both is not opened again. */
+  size: number
+  mtimeMs: number
+  /** Claude Code only: the byte just past the last line consumed. Absent = no incremental read. */
+  offset?: number
+  /** A hash of the `anchorLen` bytes before `offset`: the file still starts with what was reflected. */
+  anchor?: string
+  anchorLen?: number
+}
+
 /** How far a terminal's transcript has already been reflected. */
 export interface SessionCursor {
   /** Number of turns reflected so far. */
   count: number
   /** Hash of those reflected turns — detects a rewritten / switched session. */
   hash: string
+  /** Where in the transcript file this stands, when a delta reader knows. A cursor without it reads in full. */
+  pos?: TranscriptPos
 }
 
 /** The starting cursor for a terminal we have never reflected. */
@@ -42,8 +62,10 @@ const turnText = (t: RawTurn): string => (t.text ?? t.content ?? '')
  * change-detector for the cursor, not a security hash (the content-addressed store
  * dedups any genuine overlap downstream, so a rare collision only costs a no-op pass).
  */
-function hashTurns(turns: RawTurn[]): string {
-  let h = 0x811c9dc5
+const FNV_BASIS = 0x811c9dc5
+
+function foldTurns(start: number, turns: RawTurn[]): number {
+  let h = start
   for (const t of turns) {
     const s = (t.role || '') + '\u0000' + turnText(t)
     for (let i = 0; i < s.length; i++) {
@@ -51,7 +73,24 @@ function hashTurns(turns: RawTurn[]): string {
       h = Math.imul(h, 0x01000193)
     }
   }
-  return (h >>> 0).toString(16)
+  return h
+}
+
+export function hashTurns(turns: RawTurn[]): string {
+  return (foldTurns(FNV_BASIS, turns) >>> 0).toString(16)
+}
+
+/**
+ * The hash of `before ++ turns` from the hash of `before` alone. FNV-1a keeps all of its state in the
+ * 32 bits it prints, so a hash can be carried on over the turns appended since without reading the
+ * ones it already covers; hashTurns(a ++ b) === continueHash(hashTurns(a), b). null for a string that
+ * is not a hash this module wrote (the caller then reads in full rather than invent one); '' is the
+ * hash of nothing (the empty cursor).
+ */
+export function continueHash(prevHash: string, turns: RawTurn[]): string | null {
+  if (prevHash !== '' && !/^[0-9a-f]{1,8}$/.test(prevHash)) return null
+  const start = prevHash === '' ? FNV_BASIS : parseInt(prevHash, 16)
+  return (foldTurns(start, turns) >>> 0).toString(16)
 }
 
 /**
@@ -143,9 +182,23 @@ export interface SoloSessionInput {
   project: string
 }
 
+/** What a delta reader found after the cursor: the same two things sessionDelta returns for a whole transcript. */
+export interface TranscriptDelta {
+  /** The turns after the cursor. Empty = nothing new. */
+  fresh: RawTurn[]
+  /** The cursor to store once they are reflected. */
+  cursor: SessionCursor
+}
+
 export interface SoloReflexDeps {
   /** Read the agent's active transcript for a cwd into raw turns. */
   readTranscript: (cwd: string, agent: string) => Promise<RawTurn[]>
+  /**
+   * Optional, and much cheaper than readTranscript: told the cursor, it reads only what was added after
+   * it (nothing at all when the transcript did not change) and says what the cursor becomes. null, or a
+   * throw, means "I cannot tell": the whole transcript is then read and diffed exactly as it always was.
+   */
+  readDelta?: (cwd: string, agent: string, prev: SessionCursor) => Promise<TranscriptDelta | null>
   /** Per-terminal reflection cursor lookup. */
   getCursor: (terminalId: string) => SessionCursor | undefined
   /** Persist the advanced cursor for a terminal. */
@@ -160,14 +213,24 @@ export interface SoloReflexDeps {
  * session episode and run the reflex, advancing the cursor only after the reflex
  * resolves (so a failed pass re-processes those turns next time). A pass with no fresh
  * turns is a cheap no-op. Injectable deps keep it fully unit-testable.
+ *
+ * With a `readDelta` dep the transcript is not read in full on every pass: see TranscriptDelta.
  */
 export async function reflectSoloSession(
   input: SoloSessionInput,
   deps: SoloReflexDeps,
 ): Promise<{ fired: boolean; lessons: number }> {
-  const turns = await deps.readTranscript(input.cwd, input.agent)
-  const prev = deps.getCursor(input.terminalId) ?? EMPTY_CURSOR
-  const { fresh, cursor } = sessionDelta(turns, prev)
+  // The cursor comes FIRST when a delta reader is there to use it: it decides what is opened, if anything.
+  let step: TranscriptDelta | null = null
+  if (deps.readDelta) {
+    try {
+      step = await deps.readDelta(input.cwd, input.agent, deps.getCursor(input.terminalId) ?? EMPTY_CURSOR)
+    } catch {
+      step = null // never costs a reflection: the whole transcript is read below
+    }
+  }
+  const { fresh, cursor } =
+    step ?? sessionDelta(await deps.readTranscript(input.cwd, input.agent), deps.getCursor(input.terminalId) ?? EMPTY_CURSOR)
 
   if (fresh.length === 0) {
     deps.setCursor(input.terminalId, cursor)

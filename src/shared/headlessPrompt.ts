@@ -99,6 +99,23 @@ function promptIndex(turns: readonly DialogueTurn[]): number {
   return -1
 }
 
+/**
+ * Whether what ownDialogue decides about a session's opening can no longer change as the session
+ * grows: its opening prompt is there, or a turn that is not the user's came before any (then no
+ * prompt can follow, and it keeps every turn for good). False while there is nothing yet, or only
+ * the preambles a CLI writes first: the prompt that follows can still turn the whole session into
+ * another computer's, or take a primer off it. A reader that carries on from a byte offset instead of
+ * re-reading the file (transcriptDelta) may do so only once this is true.
+ */
+export function openingSettled(turns: readonly DialogueTurn[]): boolean {
+  for (const turn of turns) {
+    if (turn.role !== 'user') return true
+    const text = turn.text.trimStart()
+    if (!PREAMBLES.some((p) => text.startsWith(p))) return true
+  }
+  return false
+}
+
 /** Whether another computer started this session over Linked machines. */
 export function isDelegatedSession(turns: readonly DialogueTurn[]): boolean {
   const i = promptIndex(turns)

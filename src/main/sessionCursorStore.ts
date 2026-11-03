@@ -19,15 +19,20 @@
 
 import { readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
+import type { TranscriptPos } from './mnemeSession'
 
 export interface SessionCursor {
   count: number
   hash: string
+  /** Where in the transcript file this stands (transcriptDelta.ts), when known. Kept and written as is:
+   *  the reader that uses it validates it, so a hand-edited or older file costs one read in full. */
+  pos?: TranscriptPos
 }
 
 const FILE = 'session-cursors.json'
-/** One entry is ~80 bytes, so this caps the file around 40 KB. A user with more than 500
- *  distinct (repo, agent) transcripts is not being served by keeping the coldest ones. */
+/** One entry is ~80 bytes, ~300 with the position of the transcript file in it, so this caps the
+ *  file around 150 KB. A user with more than 500 distinct (repo, agent) transcripts is not being
+ *  served by keeping the coldest ones. */
 const MAX_ENTRIES = 500
 
 let dir: string | null = null
