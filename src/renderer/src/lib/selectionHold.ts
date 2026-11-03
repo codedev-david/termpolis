@@ -32,3 +32,13 @@ export function holdOutput(held: ChunkQueue, data: string, cap: number): string 
   held.push(data)
   return out
 }
+
+/**
+ * The 1.54.4 rule, for the kill switch: append, and once the hold is OVER the cap write all of it, the
+ * chunk that took it over included, and keep nothing. (The new rule above keeps that chunk held instead,
+ * so the hold never exceeds its cap.)
+ */
+export function holdOutputLegacy(held: ChunkQueue, data: string, cap: number): string {
+  held.push(data)
+  return held.length > cap ? held.takeAll() : ''
+}

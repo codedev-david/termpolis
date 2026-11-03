@@ -8,7 +8,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { createChunkQueue, createStringQueue } from '../../lib/chunkQueue'
-import { holdOutput, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
+import { holdOutput, holdOutputLegacy, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
 import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER } from '../../lib/paneSwitches'
 import { createPaneFitter, type PaneFitter } from '../../lib/paneFitter'
 import { echoTraceAttach } from '../../lib/echoTrace'
@@ -1487,7 +1487,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
     // The backlog lives in a chunk list; localStorage 'termpolis.outputChunks' = '0' brings back the 1.54.4 string buffer.
     const chunkedOutput = switchEnabled(SWITCH_OUTPUT_CHUNKS)
-    const throttledWrite = createOutputThrottle(echo.tap((data) => term.write(data)), { queue: chunkedOutput ? createChunkQueue() : createStringQueue() })
+    // With the switch off the whole 1.54.4 output path is back: the string buffer, the flush that loses a refused chunk,
+    // the 1,000,000 char hold and its overflow rule.
+    const throttledWrite = createOutputThrottle(echo.tap((data) => term.write(data)), {
+      queue: chunkedOutput ? createChunkQueue() : createStringQueue(),
+      retryRefused: chunkedOutput,
+    })
     // Until this mount's replay lands, live output goes straight into xterm's own (ordered)
     // write queue rather than through the throttle: if the replay then has to be laid in behind
     // it (landReplay), nothing can still be sitting in the throttle to land after the replay.
@@ -1522,7 +1527,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         // Safety valve: never balloon memory or appear frozen forever — if a lot
         // of output arrives while a selection sits active, resume live writes
         // (holdOutput lets go of what it holds, in order, once it would pass the cap).
-        const through = holdOutput(pendingWriteRef.current, data, PENDING_WRITE_CAP)
+        const through = (chunkedOutput ? holdOutput : holdOutputLegacy)(pendingWriteRef.current, data, PENDING_WRITE_CAP)
         if (through) toXterm(through)
         return
       }

@@ -3350,6 +3350,24 @@ describe('TerminalPane', () => {
       }
     })
 
+    it('NEGATIVE CONTROL: with the switch off the hold overflows the 1.54.4 way, writing the chunk that took it past the cap WITH what it held', () => {
+      window.localStorage.setItem('termpolis.outputChunks', '0')
+      try {
+        mocks.mockTerminal.hasSelection.mockReturnValue(true)
+        render(<TerminalPane {...defaultProps} />)
+        mocks.mockTerminal.write.mockClear()
+        for (let i = 0; i < 99; i++) act(() => { mockOnTerminalDataCb?.('term-1', 'x'.repeat(10_000)) }) // 990,000: held
+        expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+        act(() => { mockOnTerminalDataCb?.('term-1', 'y'.repeat(10_001)) }) // 1,000,001: past the 1,000,000 cap
+        expect(mocks.mockTerminal.write).toHaveBeenCalledTimes(1)
+        const written = mocks.mockTerminal.write.mock.calls[0][0] as string
+        expect(written.length).toBe(1_000_001)
+        expect(written.endsWith('y'.repeat(10_001))).toBe(true) // the new chunk went out with the rest, not into the hold
+      } finally {
+        window.localStorage.removeItem('termpolis.outputChunks')
+      }
+    })
+
     it('stays paused on mouseup / selection-change while a selection still exists', () => {
       mocks.mockTerminal.hasSelection.mockReturnValue(true)
       render(<TerminalPane {...defaultProps} />)

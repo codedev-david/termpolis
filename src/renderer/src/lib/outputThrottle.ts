@@ -68,6 +68,13 @@ export interface OutputThrottleOptions {
    * uncaught throw in the timer used to reach (so crash reporting still sees it), else the console.
    */
   onError?: (error: unknown, info: ThrottleErrorInfo) => void
+  /**
+   * Keep a chunk the writer refuses and offer it again (default). `false` is the 1.54.4 flush, for the
+   * kill switch: the chunk is taken out of the queue before it is offered, a refusal loses it (a refused
+   * slice of a BIGGER backlog stays queued, because 1.54.4 cut it off only after writing it), and the
+   * error propagates to the timer, or for a typed echo to the caller.
+   */
+  retryRefused?: boolean
 }
 
 /** The throttle's write function.
@@ -93,6 +100,7 @@ const reportThrottleFailure = (error: unknown): void => reportFailure(error, 'ou
 export function createOutputThrottle(writeFn: (data: string) => void, opts: OutputThrottleOptions = {}): OutputThrottle {
   const queue = opts.queue ?? createChunkQueue()
   const onError = opts.onError ?? reportThrottleFailure
+  const retryRefused = opts.retryRefused !== false
   let scheduled = false
   let rafId: number | null = null
   let timerId: ReturnType<typeof setTimeout> | undefined
@@ -163,7 +171,32 @@ export function createOutputThrottle(writeFn: (data: string) => void, opts: Outp
     for (const w of waiters.slice()) if (w.target <= handed) runWaiter(w)
   }
 
+  /** The 1.54.4 flush (retryRefused: false): what a refusal did then, step for step. */
+  function flushLegacy() {
+    const whole = queue.length <= MAX_FLUSH_SIZE
+    const out = queue.take(MAX_FLUSH_SIZE)
+    try {
+      writeFn(out)
+    } catch (error) {
+      if (whole) {
+        // 1.54.4 had emptied its buffer before writing: the chunk is lost. A wait on it must not wait for ever.
+        handed += out.length
+        settle()
+      } else {
+        queue.restore(out) // it cut the slice off only AFTER writing it: a refused slice stayed queued
+      }
+      throw error
+    }
+    handed += out.length
+    if (queue.length > 0) schedule()
+    settle()
+  }
+
   function flush() {
+    if (!retryRefused) {
+      flushLegacy()
+      return
+    }
     // Write up to 64KB, defer the rest — re-armed on BOTH clocks so a large backlog keeps
     // draining even with no frames, instead of stalling after the first chunk.
     const out = queue.take(MAX_FLUSH_SIZE)
@@ -194,6 +227,11 @@ export function createOutputThrottle(writeFn: (data: string) => void, opts: Outp
     // preserves ordering: once a burst is in flight, small writes fall through to the queue and
     // flush in order behind it.
     if (!scheduled && queue.length === 0 && data.length <= SMALL_WRITE_BYPASS) {
+      if (!retryRefused) {
+        handed += data.length // handed on, or lost with the refusal: either way nothing is waiting on it
+        writeFn(data) // 1.54.4: a refusal reaches the caller, and nothing is kept
+        return
+      }
       try {
         writeFn(data)
         handed += data.length

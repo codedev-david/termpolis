@@ -894,3 +894,77 @@ describe('createOutputThrottle: whenDrained (the hook a resize waits on)', () =>
     expect(t.pending()).toBe(0)
   })
 })
+
+// The kill switch (localStorage 'termpolis.outputChunks' = '0') turns the throw-safe flush off with the
+// chunk list: `retryRefused: false` is the 1.54.4 flush, refusal for refusal. Differential: the same
+// scenario through the 1.54.4 algorithm kept above as the oracle, and through the new throttle with
+// the switch off, must end in the same place.
+describe('createOutputThrottle: retryRefused = false is the 1.54.4 flush', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  interface Result { thrown: string[]; delivered: string; pending: number }
+
+  /** Write `first`, let the writer refuse the first call it gets, then write 'Z' and let everything run. */
+  function scenario(make: (w: (d: string) => void) => ((d: string) => void) & { pending: () => number }, first: string, throwOnCall: number): Result {
+    const env = frameEnv()
+    const delivered: string[] = []
+    const thrown: string[] = []
+    let calls = 0
+    const t = make((d) => {
+      calls++
+      if (calls === throwOnCall) throw new Error('refused')
+      delivered.push(d)
+    })
+    const attempt = (fn: () => void): void => {
+      try { fn() } catch (e) { thrown.push((e as Error).message) }
+    }
+    attempt(() => t(first))
+    for (let i = 0; i < 6 && env.count() > 0; i++) attempt(() => env.frame())
+    attempt(() => t('Z'))
+    for (let i = 0; i < 12 && (env.count() > 0 || vi.getTimerCount() > 0); i++) {
+      if (env.count() > 0) attempt(() => env.frame())
+      else attempt(() => vi.advanceTimersByTime(100))
+    }
+    return { thrown, delivered: delivered.join(''), pending: t.pending() }
+  }
+
+  it('a refused chunk that was the whole backlog is lost and the error reaches the timer: same as 1.54.4', () => {
+    const old = scenario(createLegacyThrottle, 'A'.repeat(20_000), 1)
+    const off = scenario((w) => createOutputThrottle(w, { retryRefused: false, queue: createStringQueue() }), 'A'.repeat(20_000), 1)
+    expect(old.thrown).toEqual(['refused'])
+    expect(old.delivered).toBe('Z') // the 20,000 chars never arrive
+    expect(off).toEqual(old)
+  })
+
+  it('a refused 64 KB slice of a bigger backlog stays queued, because 1.54.4 cut it off AFTER writing it', () => {
+    const first = 'B'.repeat(150_000)
+    const old = scenario(createLegacyThrottle, first, 1)
+    const off = scenario((w) => createOutputThrottle(w, { retryRefused: false, queue: createStringQueue() }), first, 1)
+    expect(old.thrown).toEqual(['refused'])
+    expect(old.delivered.length).toBe(150_001) // the backlog survived the refusal (and 'Z' follows it)
+    expect(off).toEqual(old)
+    // and with the chunk list under the same switch
+    expect(scenario((w) => createOutputThrottle(w, { retryRefused: false }), first, 1)).toEqual(old)
+  })
+
+  it('NEGATIVE CONTROL: with the retry on (the default) the first case loses nothing and throws nothing', () => {
+    const on = scenario((w) => createOutputThrottle(w, { onError: () => undefined }), 'A'.repeat(20_000), 1)
+    expect(on.thrown).toEqual([])
+    expect(on.delivered).toBe('A'.repeat(20_000) + 'Z')
+  })
+
+  it('the typed-echo bypass lets the refusal through to its caller, as 1.54.4 did, and keeps nothing', () => {
+    const t = createOutputThrottle(() => { throw new Error('refused') }, { retryRefused: false })
+    expect(() => t('echo')).toThrow('refused')
+    expect(t.pending()).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('a writer that never refuses behaves identically with the retry on or off', () => {
+    const steps = makeSteps(21)
+    const on = runSteps((w) => createOutputThrottle(w), steps)
+    const off = runSteps((w) => createOutputThrottle(w, { retryRefused: false }), steps)
+    expect(off).toEqual(on)
+  })
+})

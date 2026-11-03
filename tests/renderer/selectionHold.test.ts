@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { holdOutput, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../src/renderer/src/lib/selectionHold'
+import { holdOutput, holdOutputLegacy, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../src/renderer/src/lib/selectionHold'
 import { createChunkQueue } from '../../src/renderer/src/lib/chunkQueue'
 import { createOutputThrottle } from '../../src/renderer/src/lib/outputThrottle'
 
@@ -134,4 +134,60 @@ describe('releasing the hold in front of a typed key', () => {
     expect(worst).toBeGreaterThan(4)
     expect(worst).toBeLessThanOrEqual(16)
   })
+})
+
+describe('holdOutputLegacy (the 1.54.4 rule, behind the kill switch)', () => {
+  it('holds everything up to the cap', () => {
+    const hold = createChunkQueue()
+    expect(holdOutputLegacy(hold, 'x'.repeat(60), 100)).toBe('')
+    expect(holdOutputLegacy(hold, 'y'.repeat(40), 100)).toBe('')
+    expect(hold.length).toBe(100)
+  })
+
+  it('past the cap it writes everything it holds AND the chunk that took it past, and keeps nothing', () => {
+    const hold = createChunkQueue()
+    holdOutputLegacy(hold, 'x'.repeat(60), 100)
+    const through = holdOutputLegacy(hold, 'y'.repeat(60), 100)
+    expect(through).toBe('x'.repeat(60) + 'y'.repeat(60))
+    expect(hold.length).toBe(0)
+  })
+
+  it('a single chunk bigger than the cap passes straight through', () => {
+    const hold = createChunkQueue()
+    expect(holdOutputLegacy(hold, 'z'.repeat(500), 100)).toBe('z'.repeat(500))
+    expect(hold.length).toBe(0)
+  })
+
+  it('NEGATIVE CONTROL: the 256 KB rule keeps the chunk that took it past the cap, the 1.54.4 rule does not', () => {
+    const modern = createChunkQueue()
+    const legacy = createChunkQueue()
+    for (const hold of [modern, legacy]) hold.push('x'.repeat(60))
+    expect(holdOutput(modern, 'y'.repeat(60), 100)).toBe('x'.repeat(60))
+    expect(modern.length).toBe(60)
+    expect(holdOutputLegacy(legacy, 'y'.repeat(60), 100)).toBe('x'.repeat(60) + 'y'.repeat(60))
+    expect(legacy.length).toBe(0)
+  })
+
+  for (const seed of [2, 6, 10, 14, 18]) {
+    it(`seed ${seed}: the same text comes out, in the same order, as the 1.54.4 string rule`, () => {
+      const rand = prng(seed)
+      const hold = createChunkQueue()
+      let oracleHold = ''
+      const written: string[] = []
+      const oracleWritten: string[] = []
+      for (let i = 0; i < 150; i++) {
+        const data = `<${i}>` + 'x'.repeat(Math.floor(rand() * rand() * 300_000))
+        const through = holdOutputLegacy(hold, data, HOLD_CAP_LEGACY_CHARS)
+        if (through) written.push(through)
+        // the 1.54.4 code, verbatim
+        oracleHold += data
+        if (oracleHold.length > HOLD_CAP_LEGACY_CHARS) {
+          oracleWritten.push(oracleHold)
+          oracleHold = ''
+        }
+      }
+      expect(written).toEqual(oracleWritten)
+      expect(hold.length).toBe(oracleHold.length)
+    })
+  }
 })

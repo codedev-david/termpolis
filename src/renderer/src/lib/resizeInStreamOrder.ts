@@ -31,7 +31,10 @@ import { reportFailure } from './reportFailure'
  *
  * NOT fixed here, and not fixable here: bytes ConPTY has already put in its pipe when the pty is told
  * the new size are drawn for the old one (there is no in-band marker), and conhost's own repaint heals
- * the viewport but not the scrollback.
+ * the viewport but not the scrollback. The same goes for output that ARRIVES while the resize waits in
+ * line: the pty has not been told yet, so it is drawn for the old size, but it queues behind the
+ * resize and is parsed at the new one. Waiting for it too would never end under a flood; the cap
+ * bounds the wait instead, and the redraw the pty makes once it is told puts the screen right.
  */
 
 /** How long a resize waits, in all, for the output ahead of it to be parsed before it goes ahead anyway. */
