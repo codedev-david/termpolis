@@ -66,11 +66,15 @@ const lines = (n: number): string => Array.from({ length: n }, r64).join('\n')
 const fill = (unit: string, n: number): string => unit.repeat(Math.ceil(n / unit.length)).slice(0, n)
 const hex = (n: number): string => randomBytes(n >> 1).toString('hex')
 const alnum = (n: number): string => randomBytes(n * 2).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, n)
+/** The one line of an Ed25519 PKCS#8 key (64 characters: the 16 bytes every such key starts with, and 32 random ones). */
+export const ed25519Line = (): string => Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), randomBytes(32)]).toString('base64')
 const OVPN = '-----BEGIN OpenVPN Static key V1-----'
 const OVPN_END = '-----END OpenVPN Static key V1-----'
 const ANSWER: CostAsk = { keep: 200_000 }
 /** A real PKCS#8 key's lines (BEGIN, 12 body lines, END), made once: the paths that read a key's lines between its parts need a key that decodes. */
 const REAL = generateKeyPairSync('rsa', { modulusLength: 1024 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString().trim().split('\n')
+/** A PKCS#8 key file's text (CR LF line ends) in base64, in lines of 76: what a Kubernetes Secret's `tls.key` holds. */
+const K5_LINES = (Buffer.from(`${REAL.join('\r\n')}\r\n`).toString('base64').match(/.{1,76}/g) ?? []) as string[]
 
 /** [text, how the screen is asked, the bound in ms]. The bounds are for what costs seconds, with room
  *  for a loaded runner and for coverage (which makes the detectors four or five times slower). */
@@ -128,4 +132,20 @@ export const COST_SHAPES: Record<string, [string, CostAsk, number]> = {
   // (a JWK's oct k that is text: the line feeds at its end were taken off with a pattern that cost n * n in a run of them inside
   // the text; 45,000 took 1.7 s, for each value)
   'an oct k whose text holds 45,000 line feeds': [`{"kty":"oct","k":"${Buffer.from(`${alnum(40)}${'\n'.repeat(45_000)}${alnum(10)}`, 'latin1').toString('base64url')}"}`, ANSWER, 300],
+  // (lines of 512 digits under an OpenVPN BEGIN line: each run is judged by the stretch between the BEGIN line and it, which only its first 4,096
+  // characters are read of. Left to grow, or capped at a million, every run read back to the BEGIN line: 1 MB took 1.3 s to screen and 1.3 s to mask
+  // against 80 ms. The growth test (4 MB against 1 MB) tells that from a linear screen by a thin margin; this bound by five times.)
+  '1 MB of lines of 512 digits under an OpenVPN BEGIN line': [`${OVPN}\n${fill(`${hex(512)}\n`, 1 << 20)}`, {}, 600],
+  // (a written-out line break after a backslash is told from the backslash of a Windows path by what follows it and what stands before it, 96
+  // characters each way: a look at all the path-like text after it, with no bound, cost n * n when a line of letters and digits repeated (one
+  // with a `+` in it stops the look at once): 1 MB took 22 s. A unit of base64 holds no `+` 37 times in 100, so this one is made so)
+  'letters and digits with an escaped line break after each 64': [fill(`${alnum(64)}${BS}n`, 465_000), ANSWER, 300],
+  'the same with a Windows path after each break': [fill(`${alnum(64)}${BS}n${BS}repos${BS}${alnum(20)}.pem:7:`, 465_000), ANSWER, 300],
+  // (a key file stored base64 encoded, wrapped, with the CR and the LF of each of its line ends written out in the JSON string it is in, once or twice: a CR and
+  // an LF right behind it are read as one break. 465,000 characters of them took 50 ms to screen and 110 to mask)
+  'a base64 key file in JSON with its CR LF written out': [fill(`{"tls.key":"${K5_LINES.join(`${BS}r${BS}n`)}"}\n`, 465_000), ANSWER, 300],
+  'the same with each written out twice': [fill(`{"tls.key":"${K5_LINES.join(`${BS}${BS}r${BS}${BS}n`)}"}\n`, 465_000), ANSWER, 300],
+  // (a key of one line with no END line, repeated: the DER says how long the key is, and the line under it is read for the characters it lacks,
+  // five lines of 600 characters at most for each block. Costs 410 ms for 1 MB; nothing else in this file reaches that read.)
+  'blocks of a key of one line with no END line': [fill(`-----BEGIN PRIVATE KEY-----\n${ed25519Line()}\n`, 465_000), ANSWER, 400],
 }

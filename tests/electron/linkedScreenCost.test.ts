@@ -45,7 +45,7 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
    *  a stretch of load on a busy runner reaches both alike and cannot fall on the larger one alone: it once did, in a
    *  coverage run beside the whole Linked suite, and 4 MB took 5 times its usual 2 s while 1 MB took its usual 0.5 s, a
    *  ratio of 22 for linear work (best of three runs one size after the other cannot tell that from a quadratic). */
-  function pair(small: () => void, large: () => void): [number, number] {
+  function pair(small: () => void, large: () => void, giveUp = Infinity): [number, number] {
     let s = Infinity
     let l = Infinity
     for (let i = 0; i < 3; i++) {
@@ -55,6 +55,8 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
       t = performance.now()
       large()
       l = Math.min(l, performance.now() - t)
+      // (once the larger took longer than `giveUp`, that is the answer: another round of it would take as long again)
+      if (l > giveUp) break
     }
     return [s, l]
   }
@@ -196,6 +198,13 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     // 512 digits it cost n * n. The run of backslashes that once made the same stretch cost n * n is in COST_SHAPES, with a bound:
     // at 1 MB, a regression there would take a quarter of an hour)
     'lines of 512 digits under an OpenVPN BEGIN line': (n) => `-----BEGIN OpenVPN Static key V1-----\n${fill(`${rb(256).toString('hex')}\n`, n)}`,
+    // (the same, with no `+` in the unit: an unbounded look after each of them at the path-like text that follows read all of it. The random unit of the shape
+    // above has one 63 times in 100)
+    'escaped line breaks between runs of letters and digits': (n) => fill(`${rb(96).toString('base64').replace(/[+/=]/g, 'x')}${BS}n`, n),
+    'escaped line breaks and Windows paths': (n) => fill(`${rb(96).toString('base64').replace(/[+/=]/g, 'x').slice(0, 64)}${BS}n${BS}repos${BS}${rb(15).toString('hex')}.pem:7:`, n),
+    // (the line under a key of one line with no END line is read for the characters its DER says the key lacks: lackedLine, which nothing above reaches)
+    'blocks of a key of one line with no END line': (n) =>
+      fill(Array.from({ length: 64 }, () => `-----BEGIN PRIVATE KEY-----\n${Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), rb(32)]).toString('base64')}\n`).join(''), n),
   }
   const MB = 1 << 20
 
@@ -217,6 +226,15 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
   })
 
   it.each(Object.keys(HOSTILE))('grows in step with %s: 4 MB of it takes under 12 times as long as 1 MB', (shape) => {
+    // Small first. What is quadratic inside one run (backslashes, line feeds or plus signs by the hundred thousand) takes a quarter of an hour at 1 MB and
+    // cannot be interrupted, so a regression there made this file hang instead of fail. At 32 KB and 128 KB it costs seconds, and fails here: a linear screen
+    // takes tens of milliseconds for 128 KB (the larger of the two is held to 400, as well as to 12 times the smaller, for the noise of a few milliseconds).
+    reseed()
+    const small = HOSTILE[shape](32 << 10)
+    reseed()
+    const quarter = HOSTILE[shape](128 << 10)
+    const [s1, s4] = pair(() => screenText(small), () => screenText(quarter), within(2_000))
+    expect(s4, `${shape}: 32 KB ${s1.toFixed(0)} ms, 128 KB ${s4.toFixed(0)} ms`).toBeLessThan(Math.max(12 * s1, within(400)))
     reseed()
     const one = HOSTILE[shape](MB)
     reseed()
