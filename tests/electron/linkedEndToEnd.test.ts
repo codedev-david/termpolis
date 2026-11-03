@@ -681,6 +681,36 @@ describe('delegating a job', () => {
     expect(a.audits).toEqual([])
   })
 
+  it('takes a key out of an answer and of an error that lists it in a JSON string, its lines joined by written-out breaks, whatever name starts each line', async () => {
+    // What the agent reads of a tool result: `{"stdout": "id.pem-1-<line>\\n id.pem-2-<line> ..."}`. After each break comes the next key line's own frame, which a Windows path goes on
+    // with, and the end of a base64 line is what a piece of a path looks like: the screen read them as paths, and a key crossed whole, reported and not removed.
+    const pem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }) as string
+    const lines = pem.trim().split('\n')
+    const NL = String.fromCharCode(92) + 'n'
+    const frames: Record<string, (i: number, l: string) => string> = {
+      'a context line of rg': (i, l) => `id.pem-${i + 1}-${l}`,
+      'an indented line of rg': (i, l) => `values.yaml:${i + 1}:    ${l}`,
+      'a pod and a container': (_i, l) => `cronjob-27890123-x7q2p app ${l}`,
+    }
+    for (const [name, frame] of Object.entries(frames)) {
+      const listing = '{"stdout": "' + lines.map((l, i) => frame(i, l)).join(NL) + '"}'
+      const { a, b } = await linkedPair()
+      b.agent = async (req) => finished(req, listing)
+      const done = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'List the key.', cwd: b.work })
+      expect(done, name).toMatchObject({ status: 'done' })
+      expect(leakedWindows(JSON.stringify(done), secretLinesOf(lines)), name).toBe(0)
+      // the build box took it out; this side had nothing left to find
+      expect(b.audits, name).toEqual([{ agent: 'codex', event: 'linked_secret_removed', hitCount: 1, notes: `answer to "${LAPTOP_ON_BUILDBOX}": private_key x1` }])
+      expect(a.audits, name).toEqual([])
+      // the same in an error
+      const second = await linkedPair()
+      second.b.agent = async (req) => ({ ...finished(req, ''), ok: false, error: listing, code: 1 })
+      const failed = await second.a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'List the key.', cwd: second.b.work })
+      expect(failed, `${name}, error`).toMatchObject({ status: 'failed' })
+      expect(leakedWindows(JSON.stringify(failed), secretLinesOf(lines)), `${name}, error`).toBe(0)
+    }
+  })
+
   it("hands back the end of lnk3's 218,726-character report with every line of it, screened on both computers", async () => {
     // F2: a 2,600-line report whose every line ends in the same word, between a BEGIN line and an
     // END line its summary names. The build box keeps its end; this side screens that again as an
