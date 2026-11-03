@@ -3,24 +3,36 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 
-// Counts appendFileSync instead of spying on it: `vi.spyOn(fs, 'appendFileSync')` cannot work here
-// ("Module namespace is not configurable in ESM"). Every other fs call is the real one, so the rest
-// of this file keeps using the genuine filesystem.
-const fsCalls = vi.hoisted(() => ({ appendFileSync: 0, failOpen: false }))
+// Counts instead of spying: `vi.spyOn(fs, 'appendFileSync')` cannot work here ("Module namespace is not
+// configurable in ESM"). Every *Sync function of fs is wrapped to count the calls made while `armed`, and
+// fs.promises.appendFile can be made to fail. Everything else is the real one, so the rest of this file keeps using
+// the genuine filesystem.
+const fsCalls = vi.hoisted(() => ({ armed: false, sync: {} as Record<string, number>, failAppend: false, asyncAppends: 0 }))
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs')
-  const appendFileSync = (...args: Parameters<typeof actual.appendFileSync>): void => {
-    fsCalls.appendFileSync++
-    return actual.appendFileSync(...args)
+  const wrapped: Record<string, unknown> = { ...actual }
+  for (const name of Object.keys(actual)) {
+    const fn = (actual as unknown as Record<string, unknown>)[name]
+    if (typeof fn === 'function' && name.endsWith('Sync')) {
+      wrapped[name] = (...args: unknown[]) => {
+        if (fsCalls.armed) fsCalls.sync[name] = (fsCalls.sync[name] ?? 0) + 1
+        return (fn as (...a: unknown[]) => unknown)(...args)
+      }
+    }
   }
-  // A failing open has to be injected rather than provoked. Pointing the log at a DIRECTORY looked
-  // like the portable way to do it, but Windows opens a directory for append without complaining —
-  // the test passed while the catch it was written for never ran.
-  const openSync = (...args: Parameters<typeof actual.openSync>): number => {
-    if (fsCalls.failOpen) throw new Error('EACCES: permission denied, open')
-    return actual.openSync(...args)
+  // A failing write has to be injected rather than provoked: Windows opens a directory for append without
+  // complaining, so pointing the log at one never failed there.
+  const promises = {
+    ...actual.promises,
+    appendFile: async (...args: Parameters<typeof actual.promises.appendFile>) => {
+      fsCalls.asyncAppends++
+      if (fsCalls.failAppend) throw new Error('EACCES: permission denied, open')
+      return actual.promises.appendFile(...args)
+    },
   }
-  return { ...actual, appendFileSync, openSync, default: { ...actual, appendFileSync, openSync } }
+  // `default` too: that is where a module that does `import fs from 'fs'` (or reads a named export through
+  // the default interop) finds it.
+  return { ...wrapped, promises, default: { ...wrapped, promises } }
 })
 
 import {
@@ -32,8 +44,10 @@ import {
   clearRing,
   getDroppedCount,
   shutdownEventBus,
+  flushEventBus,
   _resetForTests,
 } from '../../src/main/agentEventBus'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 let tmpDir: string
 
@@ -274,21 +288,23 @@ describe('agentEventBus.clearRing', () => {
 
 // Rotation used to be checked by statSync-ing the log on EVERY publish — a syscall per event, on the
 // thread that pumps the PTY, to ask the filesystem something we already know (we wrote every byte).
-// It is an in-process byte counter now. These tests exist because the previous one could not tell
-// the difference: it said "rotation may or may not have triggered depending on timing; assert no
-// crash" and only checked the backup `if` it happened to exist — green whether or not the log ever
-// rotated at all, which is precisely the property under test.
+// It is an in-process byte counter now, and the rename runs on the thread pool, queued behind the lines
+// already asked for. These tests exist because the previous one could not tell the difference: it said
+// "rotation may or may not have triggered depending on timing; assert no crash" and only checked the backup
+// `if` it happened to exist — green whether or not the log ever rotated at all, which is precisely the
+// property under test.
 const MAX_LOG_SIZE = 5 * 1024 * 1024
 
 describe('agentEventBus log rotation', () => {
   const live = (): string => path.join(tmpDir, 'agent-events.jsonl')
   const backup = (): string => path.join(tmpDir, 'agent-events.jsonl.old')
 
-  it('rotates once the log passes 5 MB: the old log is kept, the live one restarts', () => {
+  it('rotates once the log passes 5 MB: the old log is kept, the live one restarts', async () => {
     const big = 'z'.repeat(50_000)
     for (let i = 0; i < 150; i++) {  // ~7.5 MB — crosses the threshold exactly once
       publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `e${i}`, payload: { data: big } })
     }
+    await flushEventBus()
     expect(fs.existsSync(backup())).toBe(true)                        // it DID rotate
     // The counter must track the real file. If it drifted, we'd rotate at the wrong size — so assert
     // the rotated log really had crossed the threshold, and the live one really did start over.
@@ -297,15 +313,30 @@ describe('agentEventBus log rotation', () => {
     expect(fs.statSync(live()).size).toBeGreaterThan(0)               // ...and kept taking writes
   })
 
+  it('loses no line to a rotation: every event published is in the live log or the rotated one', async () => {
+    const big = 'q'.repeat(60_000)
+    const total = 130 // ~7.8 MB, one rotation
+    for (let i = 0; i < total; i++) {
+      publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `n${String(i).padStart(4, '0')}`, payload: { data: big } })
+    }
+    await flushEventBus()
+    const seen = new Set<string>()
+    for (const file of [backup(), live()]) {
+      for (const m of fs.readFileSync(file, 'utf8').matchAll(/"summary":"(n\d{4})"/g)) seen.add(m[1])
+    }
+    expect(seen.size).toBe(total)
+  })
+
   // The counter starts from the file's real size, not zero. Without the one stat at init, a bus that
   // reopened a 5 MB log would count from 0 and let it grow to 10 MB before rotating — the exact
   // unbounded growth the rotation exists to prevent, reintroduced by the optimization.
-  it('picks up the size of an EXISTING log on init rather than counting from zero', () => {
+  it('picks up the size of an EXISTING log on init rather than counting from zero', async () => {
     _resetForTests()
     fs.writeFileSync(live(), 'x'.repeat(MAX_LOG_SIZE + 1))            // a log already over the line
     initEventBus(tmpDir)
 
     publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'first since restart' })
+    await flushEventBus()
 
     expect(fs.existsSync(backup())).toBe(true)                        // rotated on the very next event
     expect(fs.statSync(backup()).size).toBeGreaterThan(MAX_LOG_SIZE)
@@ -318,80 +349,79 @@ describe('agentEventBus log rotation', () => {
     expect(query({ kind: 'message' }).at(-1)?.summary).toBe('first since restart')
   })
 
-  it('counts BYTES, not characters — a non-ASCII summary must not under-count the log', () => {
+  it('counts BYTES, not characters — a non-ASCII summary must not under-count the log', async () => {
     // JSON.stringify keeps 'é' as one CHARACTER but it is two BYTES on disk. Counting .length would
     // drift low on every multibyte event and rotate late, forever.
     publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'héllo — ünïcode ✓' })
+    await flushEventBus()
     // The in-process count is what rotation trusts; prove it equals what actually landed on disk.
     const onDisk = fs.statSync(live()).size
     publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'ascii' })
+    await flushEventBus()
     const grew = fs.statSync(live()).size - onDisk
     expect(grew).toBeGreaterThan(0)
     expect(fs.readFileSync(live(), 'utf8')).toContain('ünïcode')
   })
 })
 
-// Persistence used to be fs.appendFileSync PER EVENT — an open() + write() + close() every time.
-// Measured on this box at 447 us per line, which at the 500 events/s rate limit is ~224 ms of dead
-// main thread per second, on the thread that pumps every PTY. A persistent append fd costs 3.3 us.
+// publish() runs on the thread that pumps every PTY, at up to 500 events a second while an agent works. Its
+// persistence was a synchronous write per line (once an open + write + close per event at 447 us, then a held
+// handle at 3.3 us); a write is a system call that the endpoint scanner inspects, and one has been measured at
+// up to 105 ms on a busy laptop. The line now joins a batch that is written on the thread pool.
 describe('agentEventBus log persistence cost', () => {
   const live = (): string => path.join(tmpDir, 'agent-events.jsonl')
-  const backup = (): string => path.join(tmpDir, 'agent-events.jsonl.old')
 
-  it('does not reopen the log file for every event', () => {
-    fsCalls.appendFileSync = 0
-    for (let i = 0; i < 20; i++) {
-      publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `e${i}`, payload: {} })
+  it('makes no synchronous file call and no append of its own per event (2,000 events, counted)', async () => {
+    fsCalls.sync = {}
+    fsCalls.asyncAppends = 0
+    fsCalls.armed = true
+    for (let i = 0; i < 2000; i++) {
+      // 500 events a second is the rate limit; a fresh clock window every 500 lets all 2,000 through.
+      publish({ ts: Date.now(), terminalId: 't1', agentType: 'claude', kind: 'message', summary: `e${i}`, payload: {} })
+      if (i % 500 === 499) await new Promise<void>((r) => setTimeout(r, 1010))
     }
-    expect(fsCalls.appendFileSync).toBe(0)
-    // ...and the events still landed, synchronously. The write must stay visible to a reader that
-    // looks immediately — rotation itself depends on that, and so do the tests above.
-    expect(fs.readFileSync(live(), 'utf8')).toContain('e19')
-  })
+    fsCalls.armed = false
+    expect(fsCalls.sync, 'main thread did a synchronous file call while publishing').toEqual({})
+    await flushEventBus()
+    // Lines asked for while a write is under way go out together: far fewer writes than events.
+    expect(fsCalls.asyncAppends).toBeGreaterThan(0)
+    expect(fsCalls.asyncAppends).toBeLessThan(2000)
+    expect(offMainFiles.stats().coalesced).toBeGreaterThan(0)
+    const lines = fs.readFileSync(live(), 'utf8').trimEnd().split('\n')
+    expect(lines).toHaveLength(2000)
+    expect(lines[0]).toContain('"e0"')
+    expect(lines[1999]).toContain('"e1999"')
+  }, 30_000)
 
-  it('shutdownEventBus closes the log handle', () => {
+  it('shutdownEventBus writes what is still waiting, then stops persisting', async () => {
     publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'before-shutdown', payload: {} })
-    shutdownEventBus()
+    shutdownEventBus() // the quit handler: the one synchronous flush that is allowed
+    expect(fs.readFileSync(live(), 'utf8')).toContain('before-shutdown')
     publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'after-shutdown', payload: {} })
-    const contents = fs.readFileSync(live(), 'utf8')
-    expect(contents).toContain('before-shutdown')
-    expect(contents).not.toContain('after-shutdown')
+    await flushEventBus()
+    expect(fs.readFileSync(live(), 'utf8')).not.toContain('after-shutdown')
+    expect(query({ kind: 'message' }).at(-1)?.summary).toBe('after-shutdown') // the ring still has it
   })
 
-  it('keeps writing to the LIVE log after rotation, never into the rotated backup', () => {
-    const big = 'z'.repeat(50_000)
-    for (let i = 0; i < 150; i++) {
-      publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: `fill${i}`, payload: { data: big } })
-    }
-    expect(fs.existsSync(backup())).toBe(true)
-
-    publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'AFTER-ROTATION', payload: {} })
-    // A held file handle follows the INODE across a rename. Get this wrong and every event after
-    // the first rotation is appended to the .old file while the live log stays empty forever —
-    // unbounded growth of the backup, and the rotation that was supposed to bound it never bites.
-    expect(fs.readFileSync(live(), 'utf8')).toContain('AFTER-ROTATION')
-    expect(fs.readFileSync(backup(), 'utf8')).not.toContain('AFTER-ROTATION')
-  })
-
-  it('keeps serving events when the log file cannot be opened', () => {
-    _resetForTests() // drops the handle the shared beforeEach opened
-    fsCalls.failOpen = true
+  it('a write that fails is skipped silently: publish still returns the event and the ring has it', async () => {
+    fsCalls.failAppend = true
     try {
-      initEventBus(tmpDir)
-      const e = publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'no-disk', payload: {} })
-      expect(e).not.toBeNull()                          // the ring still serves every consumer
-      expect(query({ search: 'no-disk' })).toHaveLength(1)
-      expect(fs.readFileSync(live(), 'utf8')).toBe('')  // persistence is skipped, silently
+      const e = publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'unwritable', payload: {} })
+      expect(e).not.toBeNull()
+      await flushEventBus()
     } finally {
-      fsCalls.failOpen = false
+      fsCalls.failAppend = false
     }
+    expect(fs.existsSync(live()) ? fs.readFileSync(live(), 'utf8') : '').not.toContain('unwritable')
+    expect(query({ kind: 'message' }).at(-1)?.summary).toBe('unwritable')
   })
 
-  it('appends to an existing log across a re-init rather than truncating it', () => {
+  it('appends to an existing log across a re-init rather than truncating it', async () => {
     _resetForTests()
     fs.writeFileSync(live(), '{"pre":"existing"}\n')
     initEventBus(tmpDir)
     publish({ terminalId: 't1', agentType: 'claude', kind: 'message', summary: 'appended', payload: {} })
+    await flushEventBus()
     const contents = fs.readFileSync(live(), 'utf8')
     expect(contents).toContain('existing')
     expect(contents).toContain('appended')

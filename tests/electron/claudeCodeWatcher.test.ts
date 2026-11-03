@@ -248,19 +248,19 @@ describe('findLatestSessionFile', () => {
     try { fs.rmSync(claudeDir, { recursive: true, force: true }) } catch {}
   })
 
-  it('returns null when projects dir does not exist for cwd', () => {
+  it('returns null when projects dir does not exist for cwd', async () => {
     const nonExistent = path.join(tmpDir, 'this-cwd-definitely-has-no-claude-session')
-    expect(findLatestSessionFile(nonExistent)).toBeNull()
+    expect(await findLatestSessionFile(nonExistent)).toBeNull()
   })
 
-  it('returns null for empty cwd', () => {
-    expect(findLatestSessionFile('')).toBeNull()
+  it('returns null for empty cwd', async () => {
+    expect(await findLatestSessionFile('')).toBeNull()
   })
 })
 
 describe('attachClaudeCodeWatcher', () => {
-  it('returns null when no session file exists', () => {
-    const handle = attachClaudeCodeWatcher('t1', path.join(tmpDir, 'no-sessions-here'))
+  it('returns null when no session file exists', async () => {
+    const handle = await attachClaudeCodeWatcher('t1', path.join(tmpDir, 'no-sessions-here'))
     expect(handle).toBeNull()
   })
 })

@@ -329,5 +329,10 @@ export class OffMainFiles {
   }
 }
 
-/** The one the app shares. Tests make their own with a fake fs. */
-export const offMainFiles = new OffMainFiles()
+/**
+ * The one the app shares. Kept on globalThis so that every copy of this module in one process (a test that resets
+ * the module registry, a bundle that holds two) queues into the SAME bounded queue and flushSync() sees every write.
+ * Tests that want their own make one with a fake fs.
+ */
+const SHARED = Symbol.for('termpolis.offMainFiles')
+export const offMainFiles: OffMainFiles = ((globalThis as unknown as Record<symbol, OffMainFiles | undefined>)[SHARED] ??= new OffMainFiles())

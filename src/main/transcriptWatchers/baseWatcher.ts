@@ -18,7 +18,7 @@ import { openSheddingWatch, type ShedFsWatcher, type ShedFsWatchFn } from '../sh
  * a second. Now an event only tells a run gate "something happened": the first one after quiet reads
  * at once (async, off the main thread), the rest of that 2 s window collapses into one trailing read,
  * two reads never overlap, and a flood backs off. The 1.5 s poll is the same request, not a second
- * code path. Only the pass at attach time stays synchronous.
+ * code path. Nothing here is synchronous, the pass at attach time included.
  */
 
 export const MAX_LINE_BYTES = 64 * 1024        // 64KB — any longer line is skipped
@@ -59,15 +59,16 @@ export function tailFile(
   let watcher: ShedFsWatcher | null = null
   let poller: ReturnType<typeof setInterval> | null = null
 
-  // Initialize offset
-  try {
-    if (opts.startAtEnd) {
-      const stats = fs.statSync(filePath)
-      offset = stats.size
+  // The offset a tail starts from: the end of the file when asked, else its first byte. Fixed on the thread pool,
+  // before the first read: attaching to a transcript used to stat and read it on the main thread.
+  const ready: Promise<void> = (async () => {
+    if (!opts.startAtEnd) return
+    try {
+      offset = (await fs.promises.stat(filePath)).size
+    } catch {
+      // File may not exist yet — start at 0, the first pass will handle it
     }
-  } catch {
-    // File may not exist yet — start at 0, tick will handle it
-  }
+  })()
 
   /** Newly read bytes -> complete lines -> the consumer. Shared by the attach-time pass and the gate. */
   const deliver = (buf: Buffer): void => {
@@ -91,41 +92,10 @@ export function tailFile(
     }
   }
 
-  // The pass at attach time. Synchronous on purpose, for now: `startAtEnd` has just fixed the offset
-  // synchronously and a caller (the session watcher) reads its first line from here.
-  const tickSync = () => {
-    let stats: fs.Stats
-    try {
-      stats = fs.statSync(filePath)
-    } catch {
-      return
-    }
-
-    // Nothing new. (A file that shrank in the instant between startAtEnd's stat and this one is
-    // caught by the next pass, tickAsync, which resets the offset.)
-    if (stats.size <= offset) return
-
-    const toRead = Math.min(stats.size - offset, MAX_READ_BYTES)
-    let buf: Buffer
-    try {
-      const fd = fs.openSync(filePath, 'r')
-      try {
-        buf = Buffer.alloc(toRead)
-        fs.readSync(fd, buf, 0, toRead, offset)
-      } finally {
-        fs.closeSync(fd)
-      }
-    } catch {
-      return
-    }
-
-    offset += toRead
-    deliver(buf)
-  }
-
-  // Everything after attach: the same read, off the main thread. The gate never starts one while the
+  // Every pass, the first at attach time included, runs on the thread pool. The gate never starts one while the
   // previous is still awaiting the disk.
   const tickAsync = async (): Promise<void> => {
+    await ready
     // (No `stopped` check up here: stop() disposes the gate first, so the gate never starts a pass on
     // a stopped tail. The checks below are for a stop() that lands while a pass is awaiting the disk.)
     let size: number
@@ -193,8 +163,8 @@ export function tailFile(
   // Always run a slow poll as a safety net — fs.watch misses events on some platforms
   poller = setInterval(() => gate.poke(), POLL_INTERVAL_MS)
 
-  // Immediate tick in case there's content
-  tickSync()
+  // Immediate pass in case there's content (the gate's leading edge: it runs at once, off the main thread)
+  gate.poke()
 
   return {
     stop() {

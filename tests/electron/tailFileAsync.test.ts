@@ -193,6 +193,7 @@ describe('tailFile: the asynchronous pass', () => {
     fs.writeFileSync(file, 'aaa\nbbb\nccc\n')
     const seen: string[] = []
     const t = tailFile(file, (l) => { seen.push(l) }) // the attach pass reads all three, offset 12
+    await until(() => seen.length === 3, 'the attach pass')
     expect(seen).toEqual(['aaa', 'bbb', 'ccc'])
     fs.writeFileSync(file, 'n\n')
     await until(() => seen.length === 4, 'the line of the rotated file')
@@ -251,6 +252,7 @@ describe('tailFile: the asynchronous pass', () => {
   it('reads nothing while the governor has the gates paused, then catches up with the lines it missed', async () => {
     const seen: string[] = []
     const t = tailFile(file, (l) => { seen.push(l) })
+    await drain() // the pass at attach time (the gate's first run) has finished: the file was empty
     setWatchGatesPaused(true)
     fs.appendFileSync(file, 'a\nb\n')
     H.stats = 0
@@ -300,6 +302,7 @@ describe('tailFile: the asynchronous pass', () => {
 
   it('stop() is idempotent and ends the poll: no pass is made afterwards', async () => {
     const t = tailFile(file, () => {})
+    await drain() // the pass at attach time has finished
     t.stop()
     t.stop()
     H.stats = 0

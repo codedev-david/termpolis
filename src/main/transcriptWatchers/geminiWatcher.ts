@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { publish } from '../agentEventBus'
+import { mapLimit } from '../asyncPool'
 import { tailFile, resolvePathWithinRoot, type TailHandle } from './baseWatcher'
 
 /**
@@ -20,7 +21,7 @@ export interface GeminiWatcherHandle {
   stop(): void
 }
 
-export function findLatestGeminiSessionFile(): string | null {
+export async function findLatestGeminiSessionFile(): Promise<string | null> {
   const candidates: { path: string; mtime: number }[] = []
 
   // As in codexWatcher: readdir already reports the entry type and the name already says
@@ -30,22 +31,34 @@ export function findLatestGeminiSessionFile(): string | null {
   // The separate "flat layout" pass that used to follow this walk is gone. Depth 0 IS
   // the top level, so that pass re-stat'd and re-collected every .jsonl sitting directly
   // in ~/.gemini — duplicating both the syscalls and the candidate entries.
-  const walk = (dir: string, depth: number): void => {
+  //
+  // All of it on the thread pool, a bounded number of stats at a time (attaching a watcher to a Gemini terminal
+  // used to walk this on the main thread).
+  const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > 2) return // cap recursion — don't scan whole home dir
     let items: fs.Dirent[]
-    try { items = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    try { items = await fs.promises.readdir(dir, { withFileTypes: true }) } catch { return }
+    const files: string[] = []
+    const folders: string[] = []
     for (const item of items) {
       const full = path.join(dir, item.name)
       try { resolvePathWithinRoot(GEMINI_DIR, full) } catch { continue }
-      if (item.isDirectory()) { walk(full, depth + 1); continue }
+      if (item.isDirectory()) { folders.push(full); continue }
       if (!item.isFile() || !item.name.endsWith('.jsonl')) continue
-      try {
-        candidates.push({ path: full, mtime: fs.statSync(full).mtimeMs })
-      } catch { /* vanished between readdir and stat */ }
+      files.push(full)
     }
+    const stats = await mapLimit(files, 16, async (full) => {
+      try {
+        return { path: full, mtime: (await fs.promises.stat(full)).mtimeMs }
+      } catch {
+        return null // vanished between readdir and stat
+      }
+    })
+    for (const s of stats) if (s) candidates.push(s)
+    for (const folder of folders) await walk(folder, depth + 1)
   }
 
-  walk(GEMINI_DIR, 0)
+  await walk(GEMINI_DIR, 0)
 
   candidates.sort((a, b) => b.mtime - a.mtime)
   return candidates.length > 0 ? candidates[0].path : null
@@ -81,8 +94,8 @@ export function processGeminiLine(line: string, terminalId: string): void {
   }
 }
 
-export function attachGeminiWatcher(terminalId: string): GeminiWatcherHandle | null {
-  const sessionFile = findLatestGeminiSessionFile()
+export async function attachGeminiWatcher(terminalId: string): Promise<GeminiWatcherHandle | null> {
+  const sessionFile = await findLatestGeminiSessionFile()
   if (!sessionFile) return null
   try { resolvePathWithinRoot(GEMINI_DIR, sessionFile) } catch { return null }
 

@@ -3,7 +3,8 @@ import * as path from 'path'
 
 /**
  * Finding the newest transcript means walking a directory the user has been filling up
- * for months, and it happens on the thread that pumps every PTY. The type of each entry
+ * for months. It happens when an agent is attached to a terminal, and it used to run on the thread
+ * that pumps every PTY; it runs on the thread pool now. The type of each entry
  * — file or directory — is something readdir already knows, so asking the OS again with
  * a stat per entry spends a syscall on an answer we were already handed.
  *
@@ -20,11 +21,12 @@ const H = vi.hoisted(() => ({
   dirPaths: new Set<string>(),
   mtimes: {} as Record<string, number>,
   statted: [] as string[],
+  syncCalls: [] as string[],
 }))
 
 vi.mock('fs', async (importOriginal) => {
   const real = await importOriginal<typeof import('fs')>()
-  const readdirSync = (dir: string, opts?: { withFileTypes?: boolean }) => {
+  const readdir = async (dir: string, opts?: { withFileTypes?: boolean }) => {
     const entries = H.tree[dir]
     if (!entries) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     if (opts?.withFileTypes) {
@@ -32,12 +34,17 @@ vi.mock('fs', async (importOriginal) => {
     }
     return entries.map(e => e.name)
   }
-  const statSync = (p: string) => {
+  const stat = async (p: string) => {
     H.statted.push(p)
     const isDir = H.dirPaths.has(p)
     return { isFile: () => !isDir, isDirectory: () => isDir, mtimeMs: H.mtimes[p] ?? 1 }
   }
-  return { ...real, readdirSync, statSync, default: { ...real, readdirSync, statSync } }
+  // The walk runs on the thread pool now: it must not reach for the synchronous calls at all.
+  const noSync = (name: string) => () => { H.syncCalls.push(name); throw new Error(name + ' on the main thread') }
+  const readdirSync = noSync('readdirSync')
+  const statSync = noSync('statSync')
+  const promises = { ...real.promises, readdir, stat }
+  return { ...real, readdirSync, statSync, promises, default: { ...real, readdirSync, statSync, promises } }
 })
 
 import { findLatestCodexSessionFile, CODEX_SESSIONS_DIR } from '../../src/main/transcriptWatchers/codexWatcher'
@@ -54,6 +61,7 @@ function install(tree: Record<string, Node[]>, mtimes: Record<string, number>) {
 
 beforeEach(() => {
   H.statted.length = 0
+  H.syncCalls.length = 0
   H.tree = {}
   H.mtimes = {}
   H.dirPaths = new Set<string>()
@@ -86,17 +94,18 @@ describe('transcript scan — syscalls per attach', () => {
     return r
   }
 
-  it('never stats a directory while hunting for the latest Codex session', () => {
+  it('never stats a directory while hunting for the latest Codex session', async () => {
     codex()
-    findLatestCodexSessionFile()
+    await findLatestCodexSessionFile()
     expect(stattedDirs()).toEqual([])
+    expect(H.syncCalls).toEqual([])
   })
 
   // The optimisation must not change the answer: the newest transcript is the one the
   // terminal attaches to, and attaching to the wrong one shows another session's output.
-  it('still picks the newest Codex transcript', () => {
+  it('still picks the newest Codex transcript', async () => {
     const r = codex()
-    expect(findLatestCodexSessionFile()).toBe(path.join(r, '2025', 'b.jsonl'))
+    expect(await findLatestCodexSessionFile()).toBe(path.join(r, '2025', 'b.jsonl'))
   })
 
   const gemini = () => {
@@ -120,23 +129,24 @@ describe('transcript scan — syscalls per attach', () => {
     return r
   }
 
-  it('never stats a directory while hunting for the latest Gemini session', () => {
+  it('never stats a directory while hunting for the latest Gemini session', async () => {
     gemini()
-    findLatestGeminiSessionFile()
+    await findLatestGeminiSessionFile()
     expect(stattedDirs()).toEqual([])
+    expect(H.syncCalls).toEqual([])
   })
 
-  it('still picks the newest Gemini transcript', () => {
+  it('still picks the newest Gemini transcript', async () => {
     const r = gemini()
-    expect(findLatestGeminiSessionFile()).toBe(path.join(r, 'sessions', 'y.jsonl'))
+    expect(await findLatestGeminiSessionFile()).toBe(path.join(r, 'sessions', 'y.jsonl'))
   })
 
   // Gemini's flat-layout fallback re-walked the top level and stat'd every name a second
   // time, so a file sitting directly in ~/.gemini was stat'd once by the walk and again
   // by the fallback.
-  it('stats each Gemini candidate only once', () => {
+  it('stats each Gemini candidate only once', async () => {
     gemini()
-    findLatestGeminiSessionFile()
+    await findLatestGeminiSessionFile()
     expect(new Set(H.statted).size).toBe(H.statted.length)
   })
 })

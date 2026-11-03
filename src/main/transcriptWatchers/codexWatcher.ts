@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { publish } from '../agentEventBus'
+import { mapLimit } from '../asyncPool'
 import { tailFile, resolvePathWithinRoot, type TailHandle } from './baseWatcher'
 
 /**
@@ -31,7 +32,7 @@ export interface CodexWatcherHandle {
  * Find the most-recently-modified session file under CODEX_SESSIONS_DIR.
  * Codex's directory structure varies — we walk one level deep.
  */
-export function findLatestCodexSessionFile(): string | null {
+export async function findLatestCodexSessionFile(): Promise<string | null> {
   const candidates: { path: string; mtime: number }[] = []
 
   // readdir already reports whether each entry is a file or a directory, and the name
@@ -39,13 +40,18 @@ export function findLatestCodexSessionFile(): string | null {
   // to re-learn both — a syscall per entry, on the thread that pumps every PTY, against
   // a directory the user has been filling up for months. Now the only stats left are on
   // files that are genuinely candidates, for the one thing readdir cannot report: mtime.
-  const collect = (dir: string, recurse: boolean): void => {
+  //
+  // All of it on the thread pool, a bounded number of stats at a time (attaching a watcher to a codex terminal
+  // used to walk this on the main thread).
+  const collect = async (dir: string, recurse: boolean): Promise<void> => {
     let entries: fs.Dirent[]
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
+      entries = await fs.promises.readdir(dir, { withFileTypes: true })
     } catch {
       return
     }
+    const files: string[] = []
+    const folders: string[] = []
     for (const entry of entries) {
       const full = path.join(dir, entry.name)
       // Security: enforce containment
@@ -55,17 +61,24 @@ export function findLatestCodexSessionFile(): string | null {
         continue
       }
       if (entry.isDirectory()) {
-        if (recurse) collect(full, false) // one level deep, as before
+        if (recurse) folders.push(full) // one level deep, as before
         continue
       }
       if (!entry.isFile() || !/\.(jsonl|json)$/.test(entry.name)) continue
-      try {
-        candidates.push({ path: full, mtime: fs.statSync(full).mtimeMs })
-      } catch { /* vanished between readdir and stat */ }
+      files.push(full)
     }
+    const stats = await mapLimit(files, 16, async (full) => {
+      try {
+        return { path: full, mtime: (await fs.promises.stat(full)).mtimeMs }
+      } catch {
+        return null // vanished between readdir and stat
+      }
+    })
+    for (const s of stats) if (s) candidates.push(s)
+    for (const folder of folders) await collect(folder, false)
   }
 
-  collect(CODEX_SESSIONS_DIR, true)
+  await collect(CODEX_SESSIONS_DIR, true)
 
   candidates.sort((a, b) => b.mtime - a.mtime)
   return candidates.length > 0 ? candidates[0].path : null
@@ -173,8 +186,8 @@ export function processCodexLine(line: string, terminalId: string): void {
   }
 }
 
-export function attachCodexWatcher(terminalId: string): CodexWatcherHandle | null {
-  const sessionFile = findLatestCodexSessionFile()
+export async function attachCodexWatcher(terminalId: string): Promise<CodexWatcherHandle | null> {
+  const sessionFile = await findLatestCodexSessionFile()
   if (!sessionFile) return null
 
   try {

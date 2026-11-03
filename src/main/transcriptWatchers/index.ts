@@ -26,14 +26,23 @@ export type AttachedWatcher =
 
 const active = new Map<string, AttachedWatcher[]>()
 
+/** How many times each terminal's watchers have been detached. An attach looks for its transcript on the thread pool,
+ *  which takes a moment; if its terminal is detached (closed, or the agent changed) in that moment, the watcher it
+ *  was about to register belongs to nothing and must not outlive it. */
+const detaches = new Map<string, number>()
+/** The same for detachAll(), which has no list of the attaches still looking. */
+let detachAllCount = 0
+
 export type DetectedAgent = 'claude' | 'codex' | 'gemini'
 
 /** `sessionId`: the Claude Code session whose transcript to follow, the swarm conductor's (it is
  *  started with `claude -p --session-id`). Without one a pane's newest transcript in `cwd` is. */
-export function attachWatcher(terminalId: string, cwd: string, agentType: DetectedAgent, sessionId?: string): AttachedWatcher | null {
+export async function attachWatcher(terminalId: string, cwd: string, agentType: DetectedAgent, sessionId?: string): Promise<AttachedWatcher | null> {
   if (!terminalId || typeof terminalId !== 'string') return null
   if (!cwd || typeof cwd !== 'string') return null
 
+  const detachedBefore = detaches.get(terminalId) ?? 0
+  const detachAllBefore = detachAllCount
   let handle: AttachedWatcher | null = null
   switch (agentType) {
     case 'claude':
@@ -44,19 +53,23 @@ export function attachWatcher(terminalId: string, cwd: string, agentType: Detect
         if (following) return following
         handle = attachClaudeSessionWatcher(terminalId, cwd, sessionId)
       } else {
-        handle = attachClaudeCodeWatcher(terminalId, cwd)
+        handle = await attachClaudeCodeWatcher(terminalId, cwd)
       }
       break
     case 'codex':
-      handle = attachCodexWatcher(terminalId)
+      handle = await attachCodexWatcher(terminalId)
       break
     case 'gemini':
-      handle = attachGeminiWatcher(terminalId)
+      handle = await attachGeminiWatcher(terminalId)
       break
     default:
       return null
   }
 
+  if (handle && ((detaches.get(terminalId) ?? 0) !== detachedBefore || detachAllCount !== detachAllBefore)) {
+    try { handle.stop() } catch {}
+    return null
+  }
   if (handle) {
     const list = active.get(terminalId) ?? []
     list.push(handle)
@@ -66,6 +79,7 @@ export function attachWatcher(terminalId: string, cwd: string, agentType: Detect
 }
 
 export function detachWatchers(terminalId: string): void {
+  detaches.set(terminalId, (detaches.get(terminalId) ?? 0) + 1)
   const list = active.get(terminalId)
   if (!list) return
   for (const h of list) {
@@ -75,6 +89,7 @@ export function detachWatchers(terminalId: string): void {
 }
 
 export function detachAll(): void {
+  detachAllCount++
   for (const [, list] of active) {
     for (const h of list) {
       try { h.stop() } catch {}
