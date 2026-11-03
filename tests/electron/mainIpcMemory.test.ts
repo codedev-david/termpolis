@@ -725,6 +725,37 @@ describe('memory:host-status', () => {
     // read a payload with no `pid` key at all rather than one that says "there is no child".
     expect(await invoke('memory:host-status')).toEqual({ success: true, data: { mode: 'inproc', pid: null } })
   })
+
+  it('v1.54.5: an UNAVAILABLE brain carries what the panel shows: the attempt, the wait, the sizes and the cause', async () => {
+    // The mode alone would only say "unavailable". The panel also tells a person how big the store
+    // is against the limit, which attempt this is and when the next one is; those ride on the same
+    // payload, from the one small module that holds them, so this handler gained one spread.
+    const { setMemoryUnavailableState } = await import('../../src/main/memoryFallbackGuard')
+    mem.memoryHostMode.mockReturnValueOnce('unavailable')
+    mem.memoryHostPid.mockReturnValueOnce(undefined)
+    setMemoryUnavailableState({
+      attempt: 2, nextRetryAt: Date.now() + 20_000, retrying: false,
+      storeBytes: 475 * 1024 * 1024, limitBytes: 256 * 1024 * 1024,
+      reason: 'memory host exited during startup (code 9)', since: Date.now(),
+    })
+    try {
+      const res = await invoke('memory:host-status') as { success: boolean; data: Record<string, unknown> }
+      expect(res.success).toBe(true)
+      expect(res.data).toMatchObject({
+        mode: 'unavailable', pid: null, attempt: 2, retrying: false, storeMB: 475, limitMB: 256,
+        reason: 'memory host exited during startup (code 9)',
+      })
+      expect(res.data.retryInMs as number).toBeGreaterThan(0)
+      expect(res.data.retryInMs as number).toBeLessThanOrEqual(20_000)
+    } finally {
+      setMemoryUnavailableState(null)
+    }
+  })
+
+  it('CONTROL: with nothing unavailable the payload is still exactly {mode, pid}, with no extra keys', async () => {
+    const res = await invoke('memory:host-status') as { data: Record<string, unknown> }
+    expect(Object.keys(res.data).sort()).toEqual(['mode', 'pid'])
+  })
 })
 
 // ===========================================================================
