@@ -364,13 +364,13 @@ describe('priority', () => {
   it('picks a change of class up at the next pass, with no notification', () => {
     const r = makeRig()
     const p = r.add('p', 'hidden')
-    p.w(text(200_000))
+    p.w(text(300_000))
     r.clock.frame()
-    expect(lens(p.t)).toEqual([D.slice.hidden]) // hidden: one 32 KB slice
+    expect(lens(p.t)).toEqual([D.slice.hidden, D.slice.hidden]) // hidden: 32 KB slices, two in flight
     p.t.ack()
     p.setClass('focused')
     r.clock.frame()
-    expect(lens(p.t).slice(1)).toEqual([D.slice.focused, D.slice.focused]) // focused: 64 KB slices, two in flight
+    expect(lens(p.t).slice(2)).toEqual([D.slice.focused, D.slice.focused]) // focused: 64 KB slices, two in flight
   })
 
   it('a saturated focused terminal leaves the others nothing but their starvation slices', () => {
@@ -404,7 +404,7 @@ describe('priority', () => {
     r.clock.frame()
     expect(f.w.inflight()).toBe(20_000)
     expect(v.w.inflight()).toBe(D.inflight.visible) // 128 KB pool - 20 KB leaves 108 KB: a visible pane's cap fits
-    expect(h.w.inflight()).toBe(D.inflight.hidden) // and what is left of it, 42 KB, holds a hidden pane's
+    expect(h.w.inflight()).toBe(D.pool - 20_000 - D.inflight.visible) // and the hidden pane takes what is left of the pool, 44 KB
     expect(r.sch.stats().rationedPasses).toBe(0)
   })
 
@@ -522,13 +522,13 @@ describe('priority', () => {
       expect(handed).toBe(D.frameBudgetTyping) // 4 hidden panes' typing slices (8 KB each) use up the 32 KB budget; scaled by 6 it would be all twelve
     })
 
-    it('NEGATIVE CONTROL: the same twelve panes with nobody typing get the scaled pool on a timer pass: all of them, to their caps', () => {
+    it('NEGATIVE CONTROL: ten panes with nobody typing get the scaled pool on a timer pass: all of them, to their caps', () => {
       const r = makeRig()
-      const hidden = Array.from({ length: 12 }, (_, i) => r.add(`h${i}`, 'hidden'))
+      const hidden = Array.from({ length: 10 }, (_, i) => r.add(`h${i}`, 'hidden'))
       hidden.forEach((h) => h.w(text(200_000)))
       r.clock.advance(D.watchdogMs)
       const handed = hidden.reduce((n, h) => n + h.t.joined().length, 0)
-      expect(handed).toBe(12 * D.inflight.hidden) // 12 x 32 KB = 384 KB, under the scaled pool (768 KB)
+      expect(handed).toBe(10 * D.inflight.hidden) // 10 x 64 KB = 640 KB, under the scaled pool (768 KB)
     })
   })
 
@@ -631,6 +631,38 @@ describe('typing', () => {
     expect(lens(t)[0]).toBe(D.sliceTyping.focused) // the terminal a key went into is treated as focused, with the typing slice
   })
 
+  it("a hidden pane's own traffic is not typing: a reply the classifier does not know neither starts the typing rules nor promotes the pane", () => {
+    const r = makeRig()
+    const f = r.add('f', 'focused')
+    const h = r.add('h', 'hidden')
+    h.w.typed('\x1b[8;24;80t') // an XTWINOPS reply: not one the classifier knows, so it looks like a key
+    expect(r.sch.stats().keys).toBe(0)
+    f.w(text(300_000))
+    h.w(text(300_000))
+    r.clock.frame()
+    expect(lens(f.t)).toEqual([D.slice.focused, D.slice.focused]) // not the typing slice: nobody is typing
+    expect(h.t.writes.length).toBe(0) // and the hidden pane was not promoted to focused (the pool is the focused terminal's cap: nothing is left)
+  })
+
+  it('NEGATIVE CONTROL: the same bytes typed into a visible pane are a key, and that pane is treated as focused', () => {
+    const r = makeRig()
+    const v = r.add('v', 'visible')
+    v.w.typed('\x1b[8;24;80t')
+    expect(r.sch.stats().keys).toBe(1)
+    v.w(text(300_000))
+    expect(lens(v.t)).toEqual([D.sliceTyping.focused, D.sliceTyping.focused, D.sliceTyping.focused, D.sliceTyping.focused])
+  })
+
+  it('a pane that turns hidden while its key is still in the typing window is not focused any more', () => {
+    const r = makeRig()
+    const p = r.add('p', 'visible')
+    p.w.typed('k')
+    p.setClass('hidden') // the user switched tabs
+    p.w(text(300_000))
+    r.clock.frame()
+    expect(lens(p.t)).toEqual([D.sliceTyping.hidden])
+  })
+
   it('does not start for what the terminal itself sends back', () => {
     const r = makeRig()
     const f = r.add('f', 'focused')
@@ -708,6 +740,41 @@ describe('typing', () => {
     expect(waited.w.inflight()).toBeGreaterThan(0)
     expect(plain.w.inflight()).toBe(0) // rationed: the pool is 0
     expect(big.w.inflight()).toBeGreaterThan(0)
+  })
+
+  describe('a pane whose backlog passes holdCapChars (held-back output is strings: it must not outgrow the output throttle)', () => {
+    /** Frames with no acks at all: what xterm having stopped answering looks like. Returns what was in flight after each. */
+    function flood(limits: Partial<SchedulerLimits>, cls: PaneClass): number[] {
+      const r = makeRig({ ackTimeoutMs: Number.POSITIVE_INFINITY, ...limits })
+      const f = r.add('f', 'focused')
+      void f
+      const v = r.add('v', cls)
+      v.w(text(1_000_000))
+      const seen: number[] = []
+      for (let i = 0; i < 5; i++) {
+        r.clock.frame()
+        seen.push(v.w.inflight())
+      }
+      return seen
+    }
+
+    it('is handed a slice every pass whatever is in flight: five frames, five slices, not one cap and then nothing', () => {
+      expect(flood({ holdCapChars: 100_000 }, 'visible')).toEqual([1, 2, 3, 4, 5].map((n) => n * D.slice.visible))
+      expect(flood({ holdCapChars: 100_000 }, 'hidden')).toEqual([1, 2, 3, 4, 5].map((n) => n * D.slice.hidden))
+    })
+
+    it('NEGATIVE CONTROL: under the cap, the same pane stops at its in-flight cap until xterm acks', () => {
+      expect(flood({}, 'visible')).toEqual([1, 1, 1, 1, 1].map((n) => n * D.inflight.visible))
+      expect(flood({}, 'hidden')).toEqual([1, 1, 1, 1, 1].map((n) => n * D.inflight.hidden))
+    })
+
+    it('never lifts the focused terminal\'s cap: the echo protection is for it', () => {
+      const r = makeRig({ ackTimeoutMs: Number.POSITIVE_INFINITY, holdCapChars: 100_000 })
+      const f = r.add('f', 'focused')
+      f.w(text(1_000_000))
+      for (let i = 0; i < 5; i++) r.clock.frame()
+      expect(f.w.inflight()).toBe(D.inflight.focused)
+    })
   })
 
   it('NEGATIVE CONTROL: the same panes without a wait or a big backlog are all rationed', () => {

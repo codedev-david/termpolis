@@ -12,7 +12,7 @@
  *      it falls back to when its own code throws).
  *   2. While terminal C floods (6,000 numbered lines) and is NOT the one in front, a command typed into
  *      terminal A echoes and runs; the scheduler saw the keys; at no time did a terminal have more in flight
- *      to xterm than its cap (focused 128 KB + one echo write, hidden 32 KB); and afterwards C holds all 6,000
+ *      to xterm than its cap (focused 128 KB + one echo write, hidden 64 KB); and afterwards C holds all 6,000
  *      lines, complete and in order (a hidden terminal is rationed, never starved).
  *   3. With localStorage 'termpolis.writeScheduler' = '0' a terminal opened afterwards keeps its own output
  *      throttle: the scheduler does not count it, and it works.
@@ -47,7 +47,7 @@ interface Stats {
 
 /** The caps in the scheduler's defaults (writeScheduler.ts DEFAULT_LIMITS), and the one small echo write on top. */
 const FOCUSED_CAP = 131_072
-const HIDDEN_CAP = 32_768
+const HIDDEN_CAP = 65_536
 const SMALL_WRITE = 8_192
 
 async function launch(): Promise<{ app: ElectronApplication; page: Page; dir: string }> {

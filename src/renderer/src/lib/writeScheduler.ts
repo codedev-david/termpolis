@@ -78,7 +78,11 @@ export interface SchedulerLimits {
   smallWrite: number
   /** In flight this long without an ack: give the credit back (xterm never called back). */
   ackTimeoutMs: number
-  /** A terminal whose backlog passes this is not rationed by the pool: held-back output is strings, so the hold must not grow without end. */
+  /**
+   * A terminal (that is not the focused one) whose backlog passes this is not rationed by the pool and not held to
+   * its in-flight cap: it is handed one slice a pass whatever is in flight, which is what the output throttle did
+   * (64 KB a frame). Held-back output is strings, so the hold must not grow faster than it did.
+   */
   holdCapChars: number
   /** The timer half of a tick: fires when no animation frame does (a covered or minimised window). */
   watchdogMs: number
@@ -86,9 +90,11 @@ export interface SchedulerLimits {
 
 export const DEFAULT_LIMITS: Readonly<SchedulerLimits> = Object.freeze({
   // 128 KB = two 64 KB slices: xterm always has the next one while it parses the first. A visible pane in a
-  // split gets one slice, a hidden one half of that: nobody is looking, and what they hold when typing starts
-  // is what the first echoes may wait behind (9 other terminals x 32 KB is about 100 ms of parse here).
-  inflight: Object.freeze({ focused: 131_072, visible: 65_536, hidden: 32_768 }),
+  // split and a hidden one get 64 KB: the same per pass as the output throttle every pane had (64 KB a frame),
+  // so a terminal nobody looks at drains no slower than before (a covered window has no frames, and its passes
+  // are 100 ms apart). What bounds the others in aggregate is the pool, not these caps; what bounds one block of
+  // the thread is the slice, which stays at 32 KB for a hidden pane.
+  inflight: Object.freeze({ focused: 131_072, visible: 65_536, hidden: 65_536 }),
   // While typing: the focused terminal keeps 64 KB (10 to 20 ms of parse) ahead of the echo at most; the others
   // one or two small slices.
   inflightTyping: Object.freeze({ focused: 65_536, visible: 16_384, hidden: 8_192 }),
@@ -322,14 +328,16 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
   }
 
   function classOf(p: PaneState, typing: boolean): PaneClass {
-    // The terminal a key is going into is the focused one, whatever the store has caught up with.
-    if (typing && typedId === p.id) return 'focused'
+    let c: PaneClass
     try {
-      const c = p.deps.classify()
-      return c === 'focused' || c === 'hidden' ? c : 'visible'
+      const v = p.deps.classify()
+      c = v === 'focused' || v === 'hidden' ? v : 'visible'
     } catch {
-      return 'visible'
+      c = 'visible'
     }
+    // The terminal a key is going into is the focused one, whatever the store has caught up with. Never a hidden
+    // one: nobody types into a pane that is not on screen, so a hidden pane is not promoted, whatever its xterm sends.
+    return typing && typedId === p.id && c !== 'hidden' ? 'focused' : c
   }
 
   // ---- the clocks -------------------------------------------------------------------------------------------
@@ -500,13 +508,17 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
     counters.ackTimeouts++
   }
 
-  /** Hand `p` up to `limit` chars, as far as its in-flight room goes. Returns the chars handed. */
-  function servePane(p: PaneState, cls: PaneClass, typing: boolean, limit: number): number {
+  /**
+   * Hand `p` up to `limit` chars, as far as its in-flight room goes. Returns the chars handed. `overCap`: the pane's
+   * backlog is past holdCapChars, so it has no in-flight cap and is handed one slice.
+   */
+  function servePane(p: PaneState, cls: PaneClass, typing: boolean, limit: number, overCap = false): number {
     if (p.serving) return 0 // re-entrant: a write handler pushed to its own pane while this hand-over runs; the loop below picks it up
     const now = clock.now()
     if (p.retryAt > now) return 0
-    const cap = (typing ? limits.inflightTyping : limits.inflight)[cls]
+    const cap = overCap ? Number.POSITIVE_INFINITY : (typing ? limits.inflightTyping : limits.inflight)[cls]
     const slice = (typing ? limits.sliceTyping : limits.slice)[cls]
+    if (overCap) limit = Math.min(limit, slice)
     p.serving = true
     let total = 0
     try {
@@ -564,14 +576,15 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
       const cls: PaneClass = k === 0 ? 'visible' : 'hidden'
       for (const p of list) {
         // A pane with a resize waiting on it, or a backlog so big that rationing it is a memory problem, is
-        // not rationed by the pool.
-        const exempt = p.waiters.length > 0 || p.queue.length > limits.holdCapChars
+        // not rationed by the pool; the second is not held to its in-flight cap either (see holdCapChars).
+        const overCap = p.queue.length > limits.holdCapChars
+        const exempt = p.waiters.length > 0 || overCap
         let allowance = Math.min(budget, exempt ? Number.POSITIVE_INFINITY : pool)
         const starved = p.waitingSince > 0 && now - p.waitingSince >= limits.starvationMs
         if (allowance < limits.starveSlice && starved) {
           // Whatever the budgets say, a terminal that has waited this long is handed a slice.
           allowance = limits.starveSlice
-          const n = servePane(p, cls, typing, allowance)
+          const n = servePane(p, cls, typing, allowance, overCap)
           if (n > 0) counters.starveServes++
           budget = Math.max(0, budget - n)
           pool = Math.max(0, pool - n)
@@ -581,7 +594,7 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
           rationed = true
           continue
         }
-        const n = servePane(p, cls, typing, allowance)
+        const n = servePane(p, cls, typing, allowance, overCap)
         budget = Math.max(0, budget - n)
         pool = Math.max(0, pool - n)
       }
@@ -690,6 +703,10 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
 
   function noteKey(id: string, data?: string): void {
     if (data !== undefined && !isUserInput(data)) return
+    // Nobody types into a pane that is not on screen: what its xterm sends is the terminal talking (a reply the
+    // classifier above does not know), and it must neither start the typing rules nor stand in for the user.
+    const pane = panes.get(id)
+    if (pane && classOf(pane, false) === 'hidden') return
     lastKeyAt = clock.now()
     typedId = id
     counters.keys++

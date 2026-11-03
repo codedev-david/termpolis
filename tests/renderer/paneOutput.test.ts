@@ -69,17 +69,16 @@ describe('the write scheduler path (the default)', () => {
     visible = false
     const { out, term } = make('p', { scheduler })
     expect(out.scheduled).toBe(true)
-    out('x'.repeat(100_000))
+    out('x'.repeat(300_000))
     clock.frame()
-    expect(term.writes).toHaveLength(1)
-    expect(term.writes[0].data).toHaveLength(D.slice.hidden) // hidden: one 32 KB slice
+    expect(term.writes.map((w) => w.data.length)).toEqual([D.slice.hidden, D.slice.hidden]) // hidden: 32 KB slices, two in flight
     expect(typeof term.writes[0].ack).toBe('function')
-    term.writes[0].ack!()
+    term.writes.forEach((w) => w.ack!())
     visible = true // shown: the next pass serves it as a visible pane, no notification needed
     clock.frame()
-    expect(term.writes[1].data).toHaveLength(D.slice.visible)
+    expect(term.writes[2].data).toHaveLength(D.slice.visible)
     active = true
-    term.writes[1].ack!()
+    term.writes[2].ack!()
     clock.frame()
     expect(out.inflight()).toBeGreaterThan(0)
     scheduler.dispose()
