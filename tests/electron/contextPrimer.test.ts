@@ -1552,6 +1552,14 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
         expect(out.match(/how do I cut a release/g)).toHaveLength(1)
         expect(out).toContain('where does termpolis keep it')
       })
+
+      // A lister is not held to returning text for every row, and the builder never throws on what it is given: a row with none says
+      // nothing about this project, so it is nobody's here, and it takes no line.
+      it.each([['an empty text', ''], ['no text at all', undefined]])('counts a row with %s as nobody\'s, and shows nothing of it', async (_name, content) => {
+        const out = (await buildContextPrimer(vi.fn(async (o: { project?: string }) => (o.project ? [] : [chunk('blank', content as never, { score: 0.9, project: 'otherproj' }), chunk('head', HEAD, { score: 0.8 })])), { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 }))!
+        expect(rows(out)).toHaveLength(1)
+        expect(out).toContain('how do I cut a release')
+      })
     })
   })
 
