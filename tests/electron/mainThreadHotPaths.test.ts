@@ -50,11 +50,12 @@ vi.mock('electron', () => {
   }
   const win = {
     minimize: vi.fn(), maximize: vi.fn(), unmaximize: vi.fn(), isMaximized: vi.fn(() => false), isMinimized: vi.fn(() => false),
-    restore: vi.fn(), focus: vi.fn(), close: vi.fn(), on: vi.fn(), setIcon: vi.fn(), loadURL: vi.fn(), loadFile: vi.fn(),
+    restore: vi.fn(), focus: vi.fn(), close: vi.fn(), on: vi.fn(), setIcon: vi.fn(), loadURL: vi.fn(), loadFile: vi.fn(), isDestroyed: vi.fn(() => false),
     webContents,
   }
   function MockBrowserWindow() { return win }
   MockBrowserWindow.prototype = {}
+  MockBrowserWindow.getAllWindows = () => [win] // what the repository watcher reaches the renderer through
   return {
     app: {
       getPath: vi.fn(() => H.userData), getVersion: vi.fn(() => '9.9.9'), whenReady: () => Promise.resolve(),
@@ -346,6 +347,54 @@ describe('what a person does while typing, and what the app does behind it', () 
     let res: any
     const c = await measure(async () => { res = await invoke('agentWatcher:attach', { terminalId: 'alone-1', cwd: H.home, agentType: 'codex' }) })
     expect(res.success).toBe(true)
+    expectNothing(c)
+  })
+
+  it('(d) a file-system watcher event: a real fs.watch change in a watched repository reaches git:tree-changed with nothing counted', async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    const repo = path.join(H.root, 'watched-repo')
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'one\n')
+    const savedReply = H.hostReply
+    // The proc host fake names the synthetic folder as the repository root (the real git is not asked in this test).
+    H.hostReply = (req: any) => (req.args?.includes?.('--show-toplevel') ? { ok: true, stdout: repo + '\n', stderr: '' } : { ok: true, stdout: '', stderr: '' })
+    let watched: any
+    try {
+      const c1 = await measure(async () => { watched = await invoke('git:watch', { cwd: repo }) })
+      expect(watched?.data ?? watched?.success ? true : false, JSON.stringify(watched)).toBe(true)
+      expectNothing(c1) // opening the watch: the root comes from the proc host, the folders are opened by the watcher itself
+      H.sent.length = 0
+      // The change is the test's own (not counted: it is not src/main). What is counted is what main does about it.
+      const c2 = await measure(async () => {
+        // The watcher opens its folders asynchronously after git:watch returned, so a write made too early is not seen:
+        // write again until the event arrives (a bound on the wait, not a claim about its length).
+        for (let i = 0; i < 200 && !H.sent.some((m) => m.channel === 'git:tree-changed'); i++) {
+          fs.writeFileSync(path.join(repo, 'a.txt'), `change ${i}\n`)
+          await new Promise<void>((r) => setTimeout(r, 25))
+        }
+      })
+      // Not vacuous: the real watcher saw the real write and main told the renderer.
+      expect(H.sent.filter((m) => m.channel === 'git:tree-changed').length, 'git:tree-changed sent for the change').toBeGreaterThanOrEqual(1)
+      expectNothing(c2)
+    } finally {
+      H.hostReply = savedReply
+      await invoke('git:unwatch', { cwd: repo }).catch(() => undefined)
+    }
+  })
+
+  it('the git panel repainting after a git:tree-changed (status, branch info, diffs) asks the proc host and nothing else', async () => {
+    // What the renderer asks for each time the repository watcher says the tree changed: three git processes in the
+    // panel, one more per open file diff. They must all be the proc host's, not processes created by the main thread.
+    H.hostRequests.length = 0
+    const c = await measure(async () => {
+      await invoke('git:status-parsed', { cwd: process.cwd() })
+      await invoke('terminal:git-info', { cwd: process.cwd() })
+      await invoke('terminal:git-diff', { cwd: process.cwd() })
+      await invoke('git:file-diff', { cwd: process.cwd(), file: 'package.json' })
+    })
+    expect(H.hostRequests.length).toBeGreaterThanOrEqual(3)
     expectNothing(c)
   })
 

@@ -53,11 +53,12 @@ vi.mock('electron', () => {
   }
   const win = {
     minimize: vi.fn(), maximize: vi.fn(), unmaximize: vi.fn(), isMaximized: vi.fn(() => false), isMinimized: vi.fn(() => false),
-    restore: vi.fn(), focus: vi.fn(), close: vi.fn(), on: vi.fn(), setIcon: vi.fn(), loadURL: vi.fn(), loadFile: vi.fn(),
+    restore: vi.fn(), focus: vi.fn(), close: vi.fn(), on: vi.fn(), setIcon: vi.fn(), loadURL: vi.fn(), loadFile: vi.fn(), isDestroyed: vi.fn(() => false),
     webContents,
   }
   function MockBrowserWindow() { return win }
   MockBrowserWindow.prototype = {}
+  MockBrowserWindow.getAllWindows = () => [win] // what the repository watcher reaches the renderer through
   return {
     app: {
       getPath: vi.fn(() => H.userData), getVersion: vi.fn(() => '9.9.9'), whenReady: () => Promise.resolve(),
