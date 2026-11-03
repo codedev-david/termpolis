@@ -402,8 +402,9 @@ const GRAPH_READ: FillBounds = { fallback: 20, ceiling: 100 }
  * yes to connecting their agents (the consent every agent integration is gated on). An install an older version connected, that
  * nobody has asked yet, does not count: it keeps working in the narrower form v1.49 gave it, and this read is new.
  *
- * `roots: noteRoots` is the ONE call site to change once fix/accounts154 merges: noteRoots() (claudeNotesIngest.ts)
- * then returns `walkRoots(transcriptRoots('claude'))`, so every sign-in profile's notes are read.
+ * `roots: noteRoots` is the ONE call site that names the roots: once fix/accounts154 merges, noteRoots() (claudeNotesIngest.ts)
+ * returns `walkRoots(transcriptRoots('claude'))`, so every sign-in profile's notes are read. Its comment lists what that switch
+ * needs besides (the removal of a note that is gone must first be made to work per root).
  */
 function claudeNotesDeps(): NotesDeps {
   return {

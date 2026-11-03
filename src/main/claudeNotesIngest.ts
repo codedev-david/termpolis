@@ -67,8 +67,16 @@ export const LIST_PAGE = 500
  * (TERMPOLIS_TEST_AGENT_HOME, which every reader of agent folders honours so no test reads the real one).
  *
  * Once fix/accounts154 merges, this body becomes `return walkRoots(transcriptRoots('claude'))`
- * (conversationIngest.ts): every sign-in profile's projects folder, each real folder once. This is the only
- * line of CODE to change; nothing else here assumes a single root. The WORDS are another matter: that adds
+ * (conversationIngest.ts): every sign-in profile's projects folder, each real folder once. That is NOT the only
+ * change: step 2 of pass() (a note that is gone from disk) trusts `found.rootsRead > 0`, any one root read, and takes a root that
+ * was read before and is missing now (a profile folder renamed, a drive not mounted: that branch's walkRoots drops a root whose
+ * real path fails) for a root with no notes, so it would remove the copies of that root's notes while the files are still on disk. The
+ * switch needs a required-roots policy first (the manifest remembers the real roots it has read, and step 2 removes nothing while
+ * one of them is not read), a two-root test with one root unreadable, and a change to the noteRoots test, whose second assertion
+ * (no scratch home) would then look at the real projects folder. Do NOT test `rootsRead === roots.length` instead: findNotes
+ * reads a real folder once, however many roots resolve to it, and the profiles' projects/ are junctioned together, so that is
+ * false for good and no gone note would ever be removed.
+ * The WORDS are another matter: that adds
  * read locations the user was told nothing about, and the v1.49 consent model has the disclosure match the code.
  * Every place that names `~/.claude/projects` for the saved notes must then name each sign-in profile's own projects
  * folder too (one folder where Termpolis linked them). Do not work from a list of section names: search for the path
