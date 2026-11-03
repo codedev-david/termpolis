@@ -205,6 +205,16 @@ describe('fsBackedWatchDeps', () => {
     expect(opened[0].close).toHaveBeenCalled()
   })
 
+  it('scoped: a root it cannot list falls back to ONE recursive watch and says so in the app log (console.warn)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const opened: Array<{ recursive?: boolean }> = []
+    const fsWatchFn = vi.fn((_dir: string, o: { recursive?: boolean }) => { opened.push({ recursive: o.recursive }); return { close() {} } })
+    const handle = fsBackedWatchDeps(fsWatchFn as never, vi.fn(), undefined, true).watch('/definitely/not/here/' + process.pid, vi.fn())
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringMatching(/could not list it; watching it recursively instead/)), { timeout: 15_000, interval: 25 })
+    expect(opened.map((o) => o.recursive)).toEqual([false, true])
+    handle.close()
+  })
+
   it('unscoped (the default): ONE recursive watch of the root, exactly as before', () => {
     const fsWatchFn = vi.fn(() => ({ close() {} }))
     const deps = fsBackedWatchDeps(fsWatchFn as never, vi.fn())

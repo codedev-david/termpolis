@@ -168,7 +168,8 @@ export function tailFile(
     mode: 'leading',
     windowMs: WATCH_MIN_INTERVAL_MS,
     label: `transcript ${path.basename(filePath)}`,
-    log: (msg) => console.warn(msg),
+    // (No log here: the shedding watch below caps what reaches this gate at 200 events a second, which is not
+    // a flood to the gate, so it has nothing to say; the shedding watch logs its own closing.)
     run: tickAsync,
   })
 
