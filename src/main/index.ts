@@ -121,8 +121,8 @@ import {
   replayPreamble,
   type OutputBuffers,
 } from './terminalOutputBuffer'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
 import { registerTerminalDataRouting, sendTerminalData } from './terminalDataRouting'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
