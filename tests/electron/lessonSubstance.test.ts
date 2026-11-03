@@ -573,6 +573,60 @@ describe('lessonSubstance: a rule or a mechanism', () => {
         expect(credited('Version 1.54 was fixed in `ready`, since Electron destroys it on relaunch.')).toBe(false)
       })
 
+      // A "since" that opens its clause has nothing in front of it to judge, so what it says itself is judged, up to the end of its clause
+      // (a comma, a semicolon, "!", "?", a line break, an arrow, or a full stop that ends a sentence): "Since the build passed, ..." reports
+      // what happened, "Since `fs.watch` fires twice, ..." says how something works. A label in front of it is not something that happened.
+      it.each([
+        'Since the `main` build passed, the release branch can be created.',
+        'Since the reviewer approved `LoginForm`, the merge is unblocked.',
+        'Since `index.ts` passed review, the merge can go ahead.',
+        'Since README.md was edited, the docs are up to date now.', // a dot inside a name does not end the clause
+        'Problem: Since the `main` build passed, the release branch can be created.',
+        'Problem: the tray vanished. → Fix: Since the `main` build passed, the release branch can be created.',
+        'Gotcha: since README.md was edited, the docs are up to date now.',
+        'Step 2: Since the reviewer approved `LoginForm`, the merge is unblocked.',
+        'Since the `main` build passed the release branch can be created', // no comma and no full stop: the clause runs to the end
+        // a list marker, a heading mark or a bold label in front of it is mark-up, not something that happened
+        '- Since the `main` build passed, the release branch can be created.',
+        '* Since the reviewer approved `LoginForm`, the merge is unblocked.',
+        '1) Since `index.ts` passed review, the merge can go ahead on the next run of the pipeline.',
+        '**Note:** Since the `main` build passed, the release branch can be created.',
+        '# Fix: Since the `main` build passed, the release branch can be created.',
+        '1) Problem: Since the `main` build passed, the release branch can be created.', // mark-up, then a label
+        '- **Fix:** Since the reviewer approved `LoginForm`, the merge is unblocked.',
+        '# Since the `main` build passed, the release branch can be created.', // each mark-up character on its own, in front of the "since"
+        '> Since the reviewer approved `LoginForm`, the merge is unblocked.',
+        '• Since `index.ts` passed review, the merge can go ahead on the next run of the pipeline.',
+        '__Note:__ Since the `main` build passed, the release branch can be created.',
+      ])('does not count a "since" that opens a report: %s', (text) => {
+        expect(credited(text)).toBe(false)
+        expect(kept(text)).toBe(false)
+      })
+
+      it.each([
+        'Since `fs.watch` fires twice on Windows, debounce the handler by fifty milliseconds.',
+        'Since the Tray is destroyed on relaunch, re-create it in the `ready` handler.',
+        'Since `Directory.Build.props` is imported before the project file, a property set in the project cannot be read from it.',
+        'Problem: the tray icon vanished. → Fix: Since Electron destroys the Tray on relaunch, re-create it in the `ready` handler.',
+        'Problem: Since Electron destroys the Tray on relaunch, re-create it in the `ready` handler.',
+        'Since `fs.watch` fires twice on Windows debounce the handler by fifty milliseconds', // no comma and no full stop
+        '- Since `fs.watch` fires twice on Windows, debounce the handler by fifty milliseconds.',
+        '> Since the Tray is destroyed on relaunch, re-create it in the `ready` handler.',
+        '**Gotcha:** Since Electron destroys the Tray on relaunch, re-create it in the `ready` handler.',
+      ])('counts a "since" that opens a clause saying how something is: %s', (text) => {
+        expect(credited(text)).toBe(true)
+      })
+
+      // Only the clause the "since" opens is read: what the sentence goes on to say is not, as nothing after a trailing "since" is.
+      it.each([',', ';', '!', '?', '\n', ' →', '.'])('reads a "since" clause up to %j and no further', (end) => {
+        expect(credited(`Since \`fs.watch\` fires twice${end} the loader was fixed in the last change.`)).toBe(true)
+      })
+
+      // A colon ends a label only when it is short and stands at the start of its sentence: a whole clause before the colon is judged as it is.
+      it('does not take a clause that ends in a colon for a label', () => {
+        expect(credited('The tray icon vanished after the update: since `fs.watch` fires twice, debounce the handler.')).toBe(false)
+      })
+
       it('counts a weak connective in a later sentence of a lesson whose first sentence is a report', () => {
         const text = 'Fixed the loader in `ready.ts`. Debounce the handler, since fs.watch fires twice.'
         expect(credited(text)).toBe(true)

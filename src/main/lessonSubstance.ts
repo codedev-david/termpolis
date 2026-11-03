@@ -227,12 +227,31 @@ function sentenceStart(head: string, at: number): number {
   return 0
 }
 
+// What stands in front of a "since" that opens its clause: nothing, or a label such as "Problem:" or the "Fix:" of "Problem: ... → Fix: ..."
+// (the arrow ends the sentence before it, so the label is all that is left), with the mark-up of a list or a heading ("- ", "* ", "1) ",
+// "> ", "# ", "**Note:** ") in front of any of them. Each label is closed by its own colon, and the mark-up is one character class with no
+// overlap with the letters, so a long run of labels is read once and not in every way it could be split.
+const OPENS_CLAUSE_RE = /^(?:(?:[\s\-*•>#_]|\d{1,3}\))*[A-Za-z][A-Za-z0-9 ]{0,11}:)*(?:[\s\-*•>#_]|\d{1,3}\))*$/
+// Where the clause that a "since" opens ends: a comma, a semicolon, "!", "?", a line break, an arrow, or a full stop that ends a sentence.
+const CLAUSE_END_RE = /[,;!?\n→]|\.(?=\s)/
+
+/** What the "since" that ends at `from` goes on to say, up to the end of its clause. */
+function clauseAfter(head: string, from: number): string {
+  const rest = head.slice(from)
+  const end = rest.search(CLAUSE_END_RE)
+  return end < 0 ? rest : rest.slice(0, end)
+}
+
 /** Whether a bare "so" or "since" in `head` joins a cause to what follows: one that is not in a report of what happened, in a lesson
- *  that is not dated (`dated`: it carries a progress or time-bound marker). Any one such connective is enough. */
+ *  that is not dated (`dated`: it carries a progress or time-bound marker). Any one such connective is enough. A "since" that opens its
+ *  clause ("Since the build passed, the release can be cut.") has nothing before it to judge, so what it says itself is judged. Only a
+ *  "since" is read that way: a "so" follows a comma, and what stands before it is the cause it joins to what follows. */
 function weakConnectiveCounts(head: string, dated: boolean): boolean {
   if (dated) return false
   for (const m of head.matchAll(WEAK_CONNECTIVE_RE)) {
-    if (!reportsAnEvent(head.slice(sentenceStart(head, m.index), m.index))) return true
+    const before = head.slice(sentenceStart(head, m.index), m.index)
+    const opens = m[0].toLowerCase() === 'since' && OPENS_CLAUSE_RE.test(before)
+    if (!reportsAnEvent(opens ? clauseAfter(head, m.index + m[0].length) : before)) return true
   }
   return false
 }
