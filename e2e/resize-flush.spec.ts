@@ -30,6 +30,10 @@ let page: Page
 let isolatedUserData: string
 
 const LINES = 2000
+/** Each numbered line is 10 characters ("RF-00001" and CRLF). Main keeps the last 32,768 characters of a
+ *  terminal's output (MAX_TERMINAL_BUFFER_CHARS), and the strict check below reads all of the stream back
+ *  out of that window, so LINES * 10 plus the echoed command and the prompt must stay well under it. */
+const BUFFER_CAP = 32_768
 
 /** Prints LINES numbered lines, four per 10 ms tick, then RF-DONE. The marker is built from two
  *  literals so that the echo of this very command (which the terminal shows) does not contain it. The
@@ -212,6 +216,9 @@ test.describe.serial('Resizing a terminal while it prints', () => {
 
     if (process.platform !== 'win32') {
       const out = await mainBuffer(id)
+      expect(out.length, 'the stream must fit in main\'s output window, or its first lines are evicted').toBeLessThan(
+        BUFFER_CAP - 2000,
+      )
       const seen = [...out.matchAll(/RF-(\d{5})/g)].map((m) => Number(m[1]))
       const firstBad = seen.findIndex((n, i) => n !== i + 1)
       expect(
