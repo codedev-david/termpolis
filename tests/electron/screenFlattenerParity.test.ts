@@ -172,8 +172,10 @@ class Pair {
    *   'screen'   the rows are what the pane holds after ITS reflow. A tidy ConPTY.
    *   'old-rows' the rows are the ones the screen held BEFORE the resize, not wrapped again: in the real capture
    *              ConPTY painted 110-character rows into a screen narrowed to 90 columns, and the pane wrapped them.
+   *   'none'     no repaint: a shell, or a Linux or macOS pty, where nothing redraws the screen after a resize.
    */
-  async repaint(kind: 'screen' | 'old-rows' = 'screen'): Promise<void> {
+  async repaint(kind: 'screen' | 'old-rows' | 'none' = 'screen'): Promise<void> {
+    if (kind === 'none') return
     const rows = kind === 'old-rows' && this.before !== null ? this.before.rows : screenRows(this.desk)
     const cursor = kind === 'old-rows' && this.before !== null ? this.before.cursor : {
       x: this.desk.buffer.active.cursorX,
@@ -317,9 +319,14 @@ interface ResizeCase {
   from: TerminalSize
   to: TerminalSize
   pre: string
-  repaint?: 'screen' | 'old-rows'
+  repaint?: 'screen' | 'old-rows' | 'none'
   /** What the phone showed on the base (parity off), measured, against the pane's rows. null: it already agreed. */
   today: { rows: number; duplicates: number; paneRows: number; paneDuplicates: number } | null
+}
+
+/** `n` short numbered lines: enough of them put real history above the screen. */
+function numbered(n: number): string {
+  return Array.from({ length: n }, (_, i) => `row ${i}`).join('\r\n') + '\r\n'
 }
 
 const SCREEN = 'line A\r\nline B\r\nline C\r\n$ '
@@ -389,6 +396,46 @@ const RESIZE_CASES: ResizeCase[] = [
     to: { cols: 40, rows: 10 },
     pre: SCREEN,
     today: null,
+  },
+  {
+    name: 'with history: rows 10 to 6, the top scrolls into it',
+    from: { cols: 40, rows: 10 },
+    to: { cols: 40, rows: 6 },
+    pre: numbered(12) + SCREEN,
+    today: null,
+  },
+  {
+    name: 'with history: columns narrowed so a line wraps, the top scrolls into it',
+    from: { cols: 40, rows: 10 },
+    to: { cols: 30, rows: 10 },
+    pre: numbered(12) + WRAPPING,
+    today: null,
+  },
+  {
+    // xterm adds the new rows first and does not let the rewrap use them: the top still scrolls into history.
+    name: 'with history: rows grow while a line wraps (30x6 to 24x9)',
+    from: { cols: 30, rows: 6 },
+    to: { cols: 24, rows: 9 },
+    pre: `${numbered(10)}${'w'.repeat(28)}\r\n$ `,
+    today: { rows: 12, duplicates: 0, paneRows: 13, paneDuplicates: 0 },
+  },
+  {
+    // A double-width glyph in the last two cells: counted as two, the row needs one more row at 18 columns, and the
+    // blank row under the prompt is what makes room. Counted as one, nothing is dropped and the top scrolls away.
+    name: 'a double-width glyph ends a row that now wraps (20x6 to 18x6)',
+    from: { cols: 20, rows: 6 },
+    to: { cols: 18, rows: 6 },
+    pre: `${'a'.repeat(17)}你\r\nb\r\nc\r\nd\r\n$ `,
+    today: { rows: 7, duplicates: 1, paneRows: 6, paneDuplicates: 0 },
+  },
+  {
+    // The blank cell xterm leaves where a double-width glyph did not fit at the margin is not a space.
+    name: 'a double-width glyph that wrapped at the margin, joined again by a wider screen (10 to 20)',
+    from: { cols: 10, rows: 5 },
+    to: { cols: 20, rows: 5 },
+    pre: 'abcdefghi你你你xyz\r\n$ ',
+    repaint: 'none',
+    today: { rows: 2, duplicates: 0, paneRows: 2, paneDuplicates: 0 },
   },
   {
     name: 'a screen of long lines narrowed, ConPTY painting its old wide rows (120x30 to 90x30)',
@@ -521,6 +568,30 @@ describe('the wrapped line the cursor is on', () => {
     const pre = `${LONG}\r\nrow\r\nrow\r\n${'q'.repeat(50)}`
     const pair = await run(TODAY, { cols: 40, rows: 5 }, pre, true)
     expect(pair.counters().phoneDuplicates).toBeGreaterThan(pair.counters().desktopDuplicates)
+  })
+
+  // 34 characters in 10 columns: the line began above the screen, so its first row is already history.
+  async function startedAboveTheScreen(options: { parity: boolean } | undefined): Promise<Pair> {
+    const pair = new Pair(new ScreenFlattener(120, 30, options), { cols: 10, rows: 3 })
+    await pair.feed('a'.repeat(34))
+    pair.resize({ cols: 8, rows: 3 })
+    await pair.feed('!')
+    return pair
+  }
+
+  it('holds only the rows of the line that are on the screen when it began in history', async () => {
+    const pair = await startedAboveTheScreen(WITH_PARITY)
+    // The first row is settled history: permanent by design, and it keeps the width it was sent at. The screen is
+    // what has to match the pane, and it does: the same rows, cut at the new width, the cursor at the end.
+    expect(pair.phone().slice(-3)).toEqual(screenRows(pair.desk))
+    expect(screenRows(pair.desk)).toEqual(['aaaaaaaa', 'aaaaaaaa', 'aaaa!'])
+  })
+
+  it('control: the flattener as it was re-wrapped the line the cursor is on there', async () => {
+    const pair = await startedAboveTheScreen(TODAY)
+    const rows = pair.phone()
+    expect(rows.slice(-3)).not.toEqual(screenRows(pair.desk))
+    expect(rows[rows.length - 1]).toBe('aaaaaaa!')
   })
 })
 
