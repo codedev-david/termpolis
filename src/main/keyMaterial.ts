@@ -633,7 +633,7 @@ const BEGIN_RE = /-----BEGIN ((?:[A-Z0-9]+ ){0,3})PRIVATE KEY(?: BLOCK)?-----|--
 const HEADER_WORD = /(?:^|[^A-Za-z0-9]|\x1b\[[0-9;]{0,16}m)(Proc-Type|DEK-Info|Version|Comment|Hash|Charset|MessageID): ?/
 // (a cipher's IV is its block's size: 8 bytes, 16 digits, for DES and the other 64-bit ciphers OpenSSL writes a traditional key with;
 // 16 bytes, 32 digits, for AES and the rest)
-const DEK_RE = /DEK-Info: ?(?:(?:DES|BF|CAST5|RC2|IDEA)[A-Z0-9-]*,[0-9A-Fa-f]{16}|[A-Z0-9-]{3,32},[0-9A-Fa-f]{32})/
+const DEK_RE = /DEK-Info: ?(?:(?:DES|BF|CAST5|RC2|RC5|IDEA)[A-Z0-9-]*,[0-9A-Fa-f]{16}|[A-Z0-9-]{3,32},[0-9A-Fa-f]{32})/
 /** Only what ends a key line or joins two: whitespace, quotes, a concatenation, a closing bracket. */
 const JOINERS = /^[\s"'`,;+)\]}|\\]*$/
 /** A frame made of joiners, indentation and comment or quote marks only. */

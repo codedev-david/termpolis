@@ -525,9 +525,9 @@ describe('T1 K1-K3: a key block, recognised by what its bytes decode to', () => 
     expect(leakedWindows(r.text, [...a.slice(1, 10), ...secretLinesOf(b)])).toBe(0)
   })
 
-  it('a legacy encrypted key written with a cipher of an 8-byte block (DES, BF, CAST5, RC2, IDEA) is removed: its IV is 16 hex digits', () => {
+  it('a legacy encrypted key written with a cipher of an 8-byte block (DES, BF, CAST5, RC2, RC5, IDEA) is removed: its IV is 16 hex digits', () => {
     const body = wrap(randomBytes(1200).toString('base64'))
-    for (const cipher of ['DES-CBC', 'DES-EDE-CBC', 'DES-EDE3-CBC', 'BF-CBC', 'CAST5-CBC', 'RC2-CBC', 'RC2-40-CBC', 'RC2-64-CBC', 'IDEA-CBC']) {
+    for (const cipher of ['DES-CBC', 'DES-EDE-CBC', 'DES-EDE3-CBC', 'BF-CBC', 'CAST5-CBC', 'RC2-CBC', 'RC2-40-CBC', 'RC2-64-CBC', 'RC5-CBC', 'IDEA-CBC']) {
       for (const withEnd of [true, false]) {
         const lines = ['-----BEGIN RSA PRIVATE KEY-----', 'Proc-Type: 4,ENCRYPTED', `DEK-Info: ${cipher},${randomBytes(8).toString('hex').toUpperCase()}`, '', ...body]
         const text = `Answer follows.\n${(withEnd ? [...lines, '-----END RSA PRIVATE KEY-----'] : lines).join('\n')}\nThat was the file.`
