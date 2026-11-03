@@ -1,4 +1,5 @@
 {
+  "_format": 1,
   "claude/default": {
     "parsedTurns": 36,
     "ownTurns": 36,

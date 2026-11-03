@@ -86,6 +86,8 @@ const M = vi.hoisted(() => ({
   setPrimerLimit: vi.fn((v: number) => v),
   getVectorQuantize: vi.fn(() => false),
   setVectorQuantize: vi.fn((v: boolean) => v),
+  getLearnFromConversations: vi.fn(() => true),
+  setLearnFromConversations: vi.fn((v: boolean) => ({ learnFromConversations: v })),
   // context pins
   listPins: vi.fn(() => [] as unknown[]),
   addPin: vi.fn(() => ({ id: 'pin-1' })),
@@ -367,6 +369,7 @@ vi.mock('../../src/main/importTrust', () => ({
 vi.mock('../../src/main/memorySettings', () => ({
   getPrimerLimit: M.getPrimerLimit, setPrimerLimit: M.setPrimerLimit,
   getVectorQuantize: M.getVectorQuantize, setVectorQuantize: M.setVectorQuantize,
+  getLearnFromConversations: M.getLearnFromConversations, setLearnFromConversations: M.setLearnFromConversations,
 }))
 vi.mock('../../src/main/contextPinStore', () => ({
   initContextPinStore: vi.fn(),
@@ -447,7 +450,7 @@ vi.mock('../../src/main/aiSessions', () => ({
 vi.mock('../../src/main/liveTranscript', () => ({
   readActiveTranscript: vi.fn(async () => []), readSessionTranscript: vi.fn(async () => ({ turns: [] })),
 }))
-vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: vi.fn(), stopIndexer: vi.fn() }))
+vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: vi.fn(), stopIndexer: vi.fn(), nudgeIndexer: vi.fn() }))
 vi.mock('../../src/main/secondOpinion', () => ({
   runSecondOpinion: M.runSecondOpinion, secondOpinionSpawnPlan: M.secondOpinionSpawnPlan,
 }))

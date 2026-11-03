@@ -33,6 +33,8 @@ beforeAll(() => {
     brainImport: vi.fn().mockResolvedValue({ success: true, data: { canceled: false, memoriesImported: 5, edgesImported: 3, restored: [] } }),
     memoryGetPrimerLimit: vi.fn().mockResolvedValue({ success: true, data: 15 }),
     memorySetPrimerLimit: vi.fn().mockResolvedValue({ success: true, data: { primerLimit: 30 } }),
+    memoryGetLearnConversations: vi.fn().mockResolvedValue({ success: true, data: true }),
+    memorySetLearnConversations: vi.fn().mockImplementation((value: boolean) => Promise.resolve({ success: true, data: { learnFromConversations: value } })),
   }
   ;(window as any).updater = {
     getStatus: vi.fn().mockResolvedValue({ status: 'idle' }),
@@ -149,6 +151,93 @@ describe('SettingsPane', () => {
     expect((window as any).termpolis.memorySetPrimerLimit).toHaveBeenCalledWith(50)
     fireEvent.change(input, { target: { value: '0' } })
     expect((window as any).termpolis.memorySetPrimerLimit).toHaveBeenCalledWith(1)
+  })
+
+  // "Learn from conversations": the pause switch for conversation ingest and the indexer passes (main owns it).
+  describe('Learn from conversations switch', () => {
+    const tp = () => (window as any).termpolis
+    const row = async () => await screen.findByTestId('settings-learn-conversations-toggle')
+
+    it('is a labelled switch in the memory settings, ON by default', async () => {
+      render(<SettingsPane />)
+      const sw = await row()
+      expect(sw).toHaveAttribute('role', 'switch')
+      expect(sw).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByText('Learn from conversations')).toBeInTheDocument()
+      // it says what OFF does and does not do, in plain words
+      expect(screen.getByText(/Nothing is\s+deleted and memory search keeps working/)).toBeInTheDocument()
+      await waitFor(() => expect(tp().memoryGetLearnConversations).toHaveBeenCalled())
+    })
+
+    it('shows what main says: a saved OFF is OFF when Settings opens', async () => {
+      tp().memoryGetLearnConversations.mockResolvedValueOnce({ success: true, data: false })
+      render(<SettingsPane />)
+      const sw = await row()
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+    })
+
+    it('turning it off and on again tells main each time, and the switch follows the answer', async () => {
+      render(<SettingsPane />)
+      const sw = await row()
+      fireEvent.click(sw)
+      expect(tp().memorySetLearnConversations).toHaveBeenLastCalledWith(false)
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+      fireEvent.click(sw)
+      expect(tp().memorySetLearnConversations).toHaveBeenLastCalledWith(true)
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+      expect(tp().memorySetLearnConversations).toHaveBeenCalledTimes(2)
+    })
+
+    // NEGATIVE CONTROL: it is the row that talks to main, not some other control on the page.
+    it('control: the other memory toggles do not touch it', async () => {
+      render(<SettingsPane />)
+      await row()
+      fireEvent.click(screen.getByTestId('settings-solo-learning-toggle'))
+      fireEvent.click(screen.getByTestId('settings-auto-index-toggle'))
+      expect(tp().memorySetLearnConversations).not.toHaveBeenCalled()
+    })
+
+    it('a save that main refuses puts the switch back (it must not look saved when it is not)', async () => {
+      tp().memorySetLearnConversations.mockResolvedValueOnce({ success: false, error: 'disk full' })
+      render(<SettingsPane />)
+      const sw = await row()
+      fireEvent.click(sw)
+      await waitFor(() => expect(tp().memorySetLearnConversations).toHaveBeenCalledWith(false))
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+    })
+
+    it('a save that never arrives (the call rejects) puts the switch back too', async () => {
+      tp().memorySetLearnConversations.mockRejectedValueOnce(new Error('ipc gone'))
+      render(<SettingsPane />)
+      const sw = await row()
+      fireEvent.click(sw)
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+    })
+
+    it('a failed or odd load leaves it ON and the page working', async () => {
+      tp().memoryGetLearnConversations.mockRejectedValueOnce(new Error('boom'))
+      const { unmount } = render(<SettingsPane />)
+      expect(await row()).toHaveAttribute('aria-checked', 'true')
+      unmount()
+      tp().memoryGetLearnConversations.mockResolvedValueOnce({ success: true, data: 'nonsense' })
+      render(<SettingsPane />)
+      expect(await row()).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('an older preload without these calls does not break the page', async () => {
+      const saved = [tp().memoryGetLearnConversations, tp().memorySetLearnConversations]
+      delete tp().memoryGetLearnConversations
+      delete tp().memorySetLearnConversations
+      try {
+        render(<SettingsPane />)
+        const sw = await row()
+        fireEvent.click(sw)
+        expect(sw).toHaveAttribute('aria-checked', 'false') // optimistic, and nothing to call
+      } finally {
+        tp().memoryGetLearnConversations = saved[0]
+        tp().memorySetLearnConversations = saved[1]
+      }
+    })
   })
 
   it('primer size control tolerates a failed load without crashing', async () => {
