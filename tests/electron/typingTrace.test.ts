@@ -74,10 +74,15 @@ class FakeClock {
       this.idle += at - this.t
       this.t = at
       next.fn()
-      next.due = this.t + next.every
+      // Rescheduled from when the callback STARTED, as Node's setInterval does: a slow callback must not
+      // push every later tick back (that would make the sampler's own cost look like drift).
+      next.due = at + next.every
     }
-    this.idle += end - this.t
-    this.t = end
+    // A callback that blocked (the profiler model below) can leave the clock past `end`: never rewind it.
+    if (end > this.t) {
+      this.idle += end - this.t
+      this.t = end
+    }
   }
 
   block(ms: number): void {
@@ -259,6 +264,28 @@ describe('typingTrace: the sampler stays cheap', () => {
     expect(r.trace.snapshot().memory).toEqual({ freeMB: 3072, rssMB: 900, heapUsedMB: 200, heapTotalMB: 300, heapLimitMB: 4096 })
   })
 
+  it('records its own cost per tick, so an instrument that got expensive would show in its own record', () => {
+    // The v1.25.16 lesson in one field: the sampler's time is measured and REPORTED, never acted on.
+    const cheap = rig()
+    cheap.trace.start()
+    cheap.clock.advance(60_000)
+    expect(cheap.trace.snapshot().sampler).toEqual({ ticks: 12, msSum: 0, msMax: 0 })
+
+    // A memory read that blocks 7 ms (a loaded box, a slow syscall): it lands in the 10 s ticks only.
+    const dear = rig({ freemem: () => { dearClock.block(7); return 1 } })
+    const dearClock = dear.clock
+    dear.trace.start()
+    dear.clock.advance(60_000)
+    const s = dear.trace.snapshot().sampler
+    expect(s.ticks).toBe(12)
+    expect(s.msMax).toBe(7)
+    expect(s.msSum).toBe(7 * 6) // six memory samples in a minute
+    expect(dear.lines).toEqual([]) // an idle minute stays silent however dear the sampler is
+    dear.trace.traceTerminalWrite((_e: unknown, _p: unknown) => undefined)({}, { id: 't1', data: 'x' })
+    dear.clock.advance(60_000)
+    expect(dear.lines[0]).toContain('sampler max=7ms')
+  })
+
   it('imports no inspector and drives no profiler', () => {
     const src = fs.readFileSync(MAIN_SRC, 'utf8')
     expect(offendsInstrumentRule(src)).toEqual([])
@@ -315,6 +342,11 @@ describe('typingTrace: the feedback-loop check (v1.25.16)', () => {
     expect(r.loop.reads).toBe(r.loop.resets)
     expect(r.calls.elu).toBe(r.loop.reads + 1) // one reading per window, plus the baseline at start
     expect(r.clock.timerCount).toBe(timersBefore)
+    // Every sensor is read at its own fixed cadence, whatever the loop did: a stall buys no extra read.
+    const ticks = r.loop.reads
+    expect(r.calls.freemem).toBe(Math.floor(ticks / 2))
+    expect(r.calls.rss).toBe(Math.floor(ticks / 2))
+    expect(r.calls.heap).toBe(Math.floor(ticks / 2))
 
     // The storm is over: the next window's baseline is the one from before it, and nothing keeps
     // stalling. Twelve quiet windows also flush the minute's ring of every storm window.
@@ -538,7 +570,7 @@ describe('typingTrace: garbage collection', () => {
 
 // ---------------------------------------------------------------------------------------------
 describe('typingTrace: the one log line a minute', () => {
-  const ALLOWED = /^[A-Za-z0-9 _.:=,;()<>\/%+\-[\]|]+$/
+  const ALLOWED = /^[A-Za-z0-9 _.:=,;()<>/%+\-[\]|]+$/
 
   function typeFor(r: Rig, minutes: number, perMinute = 1): void {
     const write = r.trace.traceTerminalWrite((_e: unknown, _p: unknown) => undefined)

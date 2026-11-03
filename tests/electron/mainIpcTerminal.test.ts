@@ -1677,8 +1677,8 @@ describe('typing trace wiring', () => {
 
   it('still forwards when the strict-mode block returns early, and still times the call', async () => {
     const before = await traceNow()
-    fire('terminal:write', { id: 'tt-3', data: '' })
-    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('tt-3', '')
+    fire('terminal:write', { id: 'tt-3', data: '\u0003' })
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('tt-3', '\u0003')
     expect((await traceNow()).ipc['terminal:write'].count).toBe(before.ipc['terminal:write'].count + 1)
   })
 

@@ -23,10 +23,11 @@ describe('collectDiagnostics: the typing block', () => {
     expect(d.typing).toBeDefined()
     const t = d.typing!
     expect(Object.keys(t).sort()).toEqual(
-      ['elu', 'enabled', 'extra', 'gc', 'ipc', 'loopDelay', 'memory', 't1', 't2', 'started', 'uptimeMs'].sort(),
+      ['elu', 'enabled', 'extra', 'gc', 'ipc', 'loopDelay', 'memory', 'sampler', 't1', 't2', 'started', 'uptimeMs'].sort(),
     )
     expect(Object.keys(t.loopDelay).sort()).toEqual(['last', 'minute'])
     expect(Object.keys(t.gc).sort()).toEqual(['incrementalCount', 'incrementalMaxMs', 'majorCount', 'majorMaxMs', 'minorCount'])
+    expect(Object.keys(t.sampler).sort()).toEqual(['msMax', 'msSum', 'ticks'])
     expect(Object.keys(t.t1).sort()).toEqual(['avg', 'max', 'n'])
     expect(Object.keys(t.t2).sort()).toEqual(['avg', 'expired', 'max', 'n'])
     expect(typeof t.enabled).toBe('boolean')

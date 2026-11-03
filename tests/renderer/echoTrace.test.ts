@@ -398,7 +398,7 @@ describe('echoTrace: long tasks, frame gaps and the heap', () => {
 
 // ---------------------------------------------------------------------------------------------
 describe('echoTrace: the one line a minute', () => {
-  const ALLOWED = /^[A-Za-z0-9 _.:=,;()<>\/%+\-[\]|]+$/
+  const ALLOWED = /^[A-Za-z0-9 _.:=,;()<>/%+\-[\]|]+$/
 
   it('writes exactly one line for an active minute, and none for an idle one', () => {
     const r = rig()

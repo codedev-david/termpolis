@@ -116,6 +116,9 @@ export interface TypingTraceSnapshot {
   }
   /** Busy share of the last window, 0..1. */
   elu: number | null
+  /** What the sampler itself cost, per 5 s tick, since start. Recorded and reported, never reacted to:
+   *  an instrument that got expensive has to show in its own record (the v1.25.16 lesson). */
+  sampler: { ticks: number; msSum: number; msMax: number }
   gc: { majorCount: number; majorMaxMs: number; incrementalCount: number; incrementalMaxMs: number; minorCount: number }
   /** Renderer key handler to this process, for stamped keys, since start. */
   t1: LatencyStat
@@ -168,6 +171,11 @@ const realHooks = perfHooks as unknown as LoopHooks & EluHooks & GcHooks
  * Node's event-loop-delay histogram. It records the time between its own 10 ms timer firings, so the
  * delay is the excess over the period. An EMPTY histogram does not read zero (percentile() answers
  * 511 ns), hence the count guard: unknown is not a healthy loop.
+ *
+ * READING IT ON WINDOWS: the OS timer floor is about 15.6 ms, so a 10 ms timer fires roughly every
+ * 15.6 ms even on an idle loop and p50 reads about 5 to 6 ms here. That is the clock, not lag
+ * (project_v1_47_learning_loop.md measured the same floor). Compare windows with each other, and
+ * look at max and the over-250 ms counts, not at the idle baseline.
  */
 export function openLoopDelay(hooks: LoopHooks = realHooks): LoopDelaySource | null {
   try {
@@ -280,6 +288,10 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
   let memory: TypingTraceSnapshot['memory'] = null
   let lastWindow: LoopDelayReading | null = null
   const ring: LoopDelayReading[] = []
+  let samplerTicks = 0
+  let samplerSum = 0
+  let samplerMax = 0
+  let samplerMinuteMax = 0
 
   const gc = { majorCount: 0, majorMaxMs: 0, incrementalCount: 0, incrementalMaxMs: 0, minorCount: 0 }
   const gcMinute = { majorCount: 0, majorMaxMs: 0, incrementalCount: 0, incrementalMaxMs: 0, minorCount: 0 }
@@ -372,13 +384,15 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
 
   function noteTerminalOutput(id: string): void {
     if (pendingT2.size === 0) return // the hot path: output with no stamped key waiting leaves at once
-    const t0 = pendingT2.get(id)
-    if (t0 === undefined) return
-    pendingT2.delete(id)
-    const d = now() - t0
-    if (d > T2_EXPIRE_MS) { t2Expired++; return }
-    addAcc(t2, d)
-    addAcc(t2m, d)
+    try {
+      const t0 = pendingT2.get(id)
+      if (t0 === undefined) return
+      pendingT2.delete(id)
+      const d = now() - t0
+      if (d > T2_EXPIRE_MS) { t2Expired++; return }
+      addAcc(t2, d)
+      addAcc(t2m, d)
+    } catch { /* output is never held up by its own trace */ }
   }
 
   function timedIpc<A extends unknown[], R>(name: string, fn: (...args: A) => R): (...args: A) => R {
@@ -459,6 +473,7 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
     if (t1m.n > 0) parts.push(`| t1 n=${t1m.n} avg=${viewAcc(t1m).avg}ms max=${viewAcc(t1m).max}ms`)
     if (t2m.n > 0) parts.push(`| t2 n=${t2m.n} avg=${viewAcc(t2m).avg}ms max=${viewAcc(t2m).max}ms`)
     if (memory !== null) parts.push(`| mem free=${memory.freeMB}MB rss=${memory.rssMB}MB heap=${memory.heapUsedMB}/${memory.heapTotalMB}MB`)
+    parts.push(`| sampler max=${round1(samplerMinuteMax)}ms`)
     const busiest = [...ipc.entries()]
       .filter(([, e]) => e.mCount > 0)
       .sort((a, b) => b[1].mSum - a[1].mSum || b[1].mCount - a[1].mCount)
@@ -475,6 +490,7 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
     gcMinute.majorCount = 0; gcMinute.majorMaxMs = 0
     gcMinute.incrementalCount = 0; gcMinute.incrementalMaxMs = 0
     gcMinute.minorCount = 0
+    samplerMinuteMax = 0
     for (const e of ipc.values()) { e.mCount = 0; e.mSum = 0; e.mMax = 0 }
   }
 
@@ -488,10 +504,16 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
   }
 
   function onTick(): void {
+    const t0 = safe(now, 0)
     tick++
     sampleWindow()
     if (tick % MEMORY_EVERY_TICKS === 0) { try { sampleMemory() } catch { /* the last sample stays */ } }
     if (tick % MINUTE_EVERY_TICKS === 0) { try { logMinute() } catch { /* the log sink is not ours to fix */ } }
+    const cost = Math.max(0, safe(now, t0) - t0)
+    samplerTicks++
+    samplerSum += cost
+    if (cost > samplerMax) samplerMax = cost
+    if (cost > samplerMinuteMax) samplerMinuteMax = cost
   }
 
   // -- lifecycle -------------------------------------------------------------------------------
@@ -535,6 +557,7 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
         minute: minuteLoop(),
       },
       elu,
+      sampler: { ticks: samplerTicks, msSum: round1(samplerSum), msMax: round1(samplerMax) },
       gc: { ...gc, majorMaxMs: round1(gc.majorMaxMs), incrementalMaxMs: round1(gc.incrementalMaxMs) },
       t1: viewAcc(t1),
       t2: { ...viewAcc(t2), expired: t2Expired },
