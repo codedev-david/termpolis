@@ -609,6 +609,26 @@ describe('TerminalPane: side-effect passes per second', () => {
     expect(detectCalls).toHaveLength(2) // ... and nothing stale is left to run after the reset
   })
 
+  it('Enter: the pending pass is looked at under the command that PRODUCED the output, not the one just typed', async () => {
+    const { getSuggestion } = await import('../../src/renderer/src/corrections/correctionEngine')
+    const lookups = vi.mocked(getSuggestion)
+    await mount(tabs(1, 0))
+    await settle(500)
+    await runCommand(0, 'first-command')
+    await settle(400) // the window of anything before this has elapsed: the next chunk runs at once
+    lookups.mockClear()
+    // `first-command` fails: one chunk runs at once (leading edge), the error line lands inside the window and waits for its pass.
+    await act(async () => { ipc.emit('terminal:data', 't0', 'starting\r\n', 10) })
+    await act(async () => { ipc.emit('terminal:data', 't0', 'zsh: command not found: first-command\r\n', 50) })
+    expect(lookups).toHaveBeenCalledTimes(0)
+    // The next command is typed and entered inside the same window.
+    await runCommand(0, 'second-command')
+    expect(lookups).toHaveBeenCalledTimes(1) // the pending pass ran at Enter ...
+    expect(lookups.mock.calls[0][0]).toBe('first-command') // ... for the command whose output it was
+    await settle(2000)
+    expect(lookups).toHaveBeenCalledTimes(1) // and nothing is left to run under the new one
+  })
+
   it('Clear terminal drops the output still waiting for its pass, with the screen: nothing stale runs afterwards', async () => {
     await mount(tabs(1, 0))
     await settle(500)

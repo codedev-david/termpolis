@@ -20,9 +20,9 @@
  * The existing terminal-layout.spec.ts and terminal-focus.spec.ts guard the other half of the risk: a hidden pane keeps
  * its box (no resize churn) and the caret still lands in a pane the moment it is shown.
  *
- * The floods are TIME-based (a loop that prints for a few seconds, then a sentinel with the line count), so the terminal is
- * still printing when it is hidden however fast the pty is; the sentinel is built from two strings, so the typed command's
- * own echo can never satisfy a wait. Isolated --user-data-dir so it owns its own single-instance lock (mirrors
+ * The floods are TIME-based and RATE-LIMITED (200 lines every 50 ms for a few seconds, then a sentinel with the line count), so
+ * the terminal is still printing when it is hidden however fast the pty is, and the renderer is handed megabytes, not hundreds
+ * of them; the sentinel is built from two strings, so the typed command's own echo can never satisfy a wait. Isolated --user-data-dir so it owns its own single-instance lock (mirrors
  * write-scheduler.spec.ts). NOT RUN where this was written (no Electron there): it is "unverified until CI runs it".
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'

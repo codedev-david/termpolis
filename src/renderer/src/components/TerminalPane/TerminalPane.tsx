@@ -1476,15 +1476,17 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // Track the current command line so we can record it to history on Enter and
       // dismiss the command-fix banner when the user starts a new command.
       const submitLine = () => {
+        // Output still waiting for its pass goes into the window and through the detectors NOW: under the command that
+        // PRODUCED it (lastCommandRef is replaced below, and a fix suggestion is looked up for that command), and before the
+        // reset below drops it with the rest. That is what happened when every chunk was processed on arrival; otherwise the
+        // output would be looked at under the NEW command and land in the window after the reset.
+        paneEffectsRef.current?.flush()
         const cmd = inputBufferRef.current.trim()
         if (cmd) {
           window.termpolis.appendHistory(terminalId, terminalName, cmd)
           lastCommandRef.current = cmd
         }
         inputBufferRef.current = ''
-        // Output still waiting for its pass goes into the window and through the detectors NOW, so the reset below drops
-        // it with the rest, as it did when every chunk was processed on arrival (otherwise it would land after the reset).
-        paneEffectsRef.current?.flush()
         outputBufferRef.current = ''
         diffDetectedRef.current = false
         setDiffDetected(false)
