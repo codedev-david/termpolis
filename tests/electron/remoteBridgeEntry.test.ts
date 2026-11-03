@@ -2622,6 +2622,55 @@ describe('a frame the link lost', () => {
     expect(onPhone(chunksIn(room)).text).toBe(real.snapshot('t1')!.text)
   })
 
+  describe('and a phone whose room was never opened', () => {
+    /** A bridge on `relayUrl` with one paired phone, watching t1 that has printed one line. A relay that is
+     *  not secure is never dialled: the phone stays paired and watching, and there is no room for it. */
+    async function watched(relayUrl: string) {
+      const clock = manualClock()
+      const rooms: ReturnType<typeof stubRoom>[] = []
+      const c = createBridgeCore({
+        send: () => undefined,
+        mcp: { callTool: vi.fn().mockResolvedValue({ terminals: [] }) },
+        relayUrl,
+        clock,
+        desktopName: 'Bench desktop',
+        openRelay: (d) => {
+          const room = stubRoom(d)
+          rooms.push(room)
+          return room
+        },
+      })
+      c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices: [device('d1')] })
+      await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+      c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'hello', nextOffset: 5, missed: 0 } })
+      await c.settled()
+      return { c, clock, rooms }
+    }
+
+    it('is skipped for it: nothing is queued for a phone that cannot be sent to, and nothing throws', async () => {
+      const { c, clock, rooms } = await watched('ws://relay.test')
+      expect(rooms).toHaveLength(0)
+      // What waits for it is the line that printed, and the quiet watch is running.
+      expect(c.drainOutput('d1').map((chunk) => chunk.chunk).join('')).toContain('hello')
+      expect(clock.armed()).toBe(1)
+      expect(() => clock.advance(10 * QUIET_MS)).not.toThrow()
+      expect(clock.armed()).toBe(0)
+      // The quiet period added nothing to what waits for a phone that cannot be sent to.
+      expect(c.drainOutput('d1')).toEqual([])
+    })
+
+    // NEGATIVE CONTROL: the same phone with a room that is open gets its rewrite when the terminal is quiet.
+    it('CONTROL: with its room open the same phone is sent the rewrite', async () => {
+      const { c, clock, rooms } = await watched('wss://relay.test')
+      expect(rooms).toHaveLength(1)
+      attach(rooms[0])
+      rooms[0].sent.length = 0
+      clock.advance(QUIET_MS)
+      expect(rooms[0].sent).toHaveLength(1)
+      expect(c.drainOutput('d1')).toEqual([])
+    })
+  })
+
   it('is not sent for a terminal nobody watches any more, and nothing is left running', async () => {
     const { room, clock, unsubscribe, h } = await lostToggle()
     const before = room.sent.length
