@@ -13,10 +13,14 @@ vi.mock('fs', async (importOriginal) => {
     p === 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' ||
     p === 'C:\\Windows\\System32\\cmd.exe' ||
     p === 'C:\\Program Files\\Git\\bin\\bash.exe'
+  // The async probe (detectAvailableShells) asks the thread pool; it answers from the same stub. It must be on
+  // `default` too: that is where the module under test reads it.
+  const promises = { ...actual.promises, access: async (p: unknown) => { if (!existsSync(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) } }
   return {
     ...actual,
-    default: { ...actual, existsSync },
+    default: { ...actual, existsSync, promises },
     existsSync,
+    promises,
   }
 })
 

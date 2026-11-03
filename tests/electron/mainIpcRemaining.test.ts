@@ -236,6 +236,8 @@ vi.mock('../../src/main/autoUpdater', () => ({ initAutoUpdater: M.initAutoUpdate
 vi.mock('../../src/main/agentCommandSanitizer', () => ({ sanitizeAgentCommand: vi.fn((c: string) => c), isClaudeAgentName: (name: string) => /(^|[^a-z])claude/i.test(name || '') }))
 vi.mock('../../src/main/agentPaths', () => ({
   getAgentExtraPaths: M.getAgentExtraPaths,
+  // Opening a terminal lists the version managers' folders on the thread pool: the same list, asynchronously.
+  getAgentExtraPathsAsync: vi.fn(async () => M.getAgentExtraPaths()),
   getExtendedPath: M.getExtendedPath,
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),
@@ -679,10 +681,15 @@ describe('aiSecurity:clear-audit', () => {
     expect(unlinked.length).toBe(2) // current + rotated .prev
   })
 
-  it('succeeds when there is no audit file to remove', async () => {
+  it('succeeds when there is no audit file to remove (a file that is not there is not an error)', async () => {
     M.fsUnlink.mockClear()
-    expect((await invoke('aiSecurity:clear-audit')).success).toBe(true)
-    expect(M.fsUnlink).not.toHaveBeenCalled()
+    M.fsUnlink.mockRejectedValue(Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }))
+    try {
+      expect((await invoke('aiSecurity:clear-audit')).success).toBe(true)
+    } finally {
+      M.fsUnlink.mockReset()
+      M.fsUnlink.mockResolvedValue(undefined)
+    }
   })
 })
 

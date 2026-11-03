@@ -36,10 +36,12 @@ export const MAIN_THREAD_CODE = /[\\/]src[\\/]main[\\/]/
 const SPAWNERS = ['spawn', 'exec', 'execFile', 'fork', 'execSync', 'spawnSync', 'execFileSync'] as const
 const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom')
 
-let armed = false
-let counts: Counts = { sync: {}, spawn: {} }
-let attribution: RegExp = MAIN_THREAD_CODE
-let installed: Array<() => void> = []
+// One state for the whole worker, on globalThis: vi.resetModules() makes a new copy of this module, and the
+// copy a vi.mock factory imports must count into the same counters as the copy the test file imported.
+interface State { armed: boolean; counts: Counts; attribution: RegExp; installed: Array<() => void> }
+const KEY = Symbol.for('termpolis.mainThreadCounters')
+const g = globalThis as unknown as Record<symbol, State | undefined>
+const S: State = (g[KEY] ??= { armed: false, counts: { sync: {}, spawn: {} }, attribution: MAIN_THREAD_CODE, installed: [] })
 
 /** The call stack of whoever called a patched function, without the patch's own frames. */
 function callerStack(): string {
@@ -51,9 +53,9 @@ function callerStack(): string {
 }
 
 function bump(kind: 'sync' | 'spawn', name: string): void {
-  if (!armed) return
-  if (!attribution.test(callerStack())) return
-  counts[kind][name] = (counts[kind][name] ?? 0) + 1
+  if (!S.armed) return
+  if (!S.attribution.test(callerStack())) return
+  S.counts[kind][name] = (S.counts[kind][name] ?? 0) + 1
 }
 
 function patch(target: Record<string, unknown>, name: string, kind: 'sync' | 'spawn'): void {
@@ -72,12 +74,12 @@ function patch(target: Record<string, unknown>, name: string, kind: 'sync' | 'sp
   }
   Object.defineProperty(wrapper, 'name', { value: name })
   target[name] = wrapper
-  installed.push(() => { target[name] = original })
+  S.installed.push(() => { target[name] = original })
 }
 
 /** Patch fs and child_process. Idempotent; undo with uninstall(). Runs when this file is imported. */
 export function install(): void {
-  if (installed.length > 0) return
+  if (S.installed.length > 0) return
   const f = fs as unknown as Record<string, unknown>
   for (const name of Object.keys(f)) {
     if (name.endsWith('Sync') && name.length > 4) patch(f, name, 'sync')
@@ -88,45 +90,45 @@ export function install(): void {
 }
 
 export function uninstall(): void {
-  for (const undo of installed.reverse()) undo()
-  installed = []
-  armed = false
+  for (const undo of S.installed.reverse()) undo()
+  S.installed = []
+  S.armed = false
   syncBuiltinESMExports()
 }
 
 /** Start counting from zero. */
 export function arm(): void {
-  counts = { sync: {}, spawn: {} }
-  armed = true
+  S.counts = { sync: {}, spawn: {} }
+  S.armed = true
 }
 
 /** Stop counting and return what was counted. */
 export function disarm(): Counts {
-  armed = false
+  S.armed = false
   return snapshot()
 }
 
 export function snapshot(): Counts {
-  return { sync: { ...counts.sync }, spawn: { ...counts.spawn } }
+  return { sync: { ...S.counts.sync }, spawn: { ...S.counts.spawn } }
 }
 
 /** Which stacks count (default: frames in src/main). A control test narrows it to itself. */
 export function setAttribution(pattern: RegExp | null): void {
-  attribution = pattern ?? MAIN_THREAD_CODE
+  S.attribution = pattern ?? MAIN_THREAD_CODE
 }
 
-export function total(c: Counts = counts): number {
+export function total(c: Counts = S.counts): number {
   return Object.values(c.sync).reduce((a, b) => a + b, 0) + Object.values(c.spawn).reduce((a, b) => a + b, 0)
 }
 
 /** What a hot path did that it must not: `existsSync x3, execFile x1`; '' when it did nothing. */
-export function describeCounts(c: Counts = counts): string {
+export function describeCounts(c: Counts = S.counts): string {
   return [...Object.entries(c.sync), ...Object.entries(c.spawn)].map(([k, v]) => `${k} x${v}`).join(', ')
 }
 
 /** Count a process creation that does not go through child_process (a fake node-pty). */
 export function countSpawn(name: string): void {
-  if (armed) counts.spawn[name] = (counts.spawn[name] ?? 0) + 1
+  if (S.armed) S.counts.spawn[name] = (S.counts.spawn[name] ?? 0) + 1
 }
 
 install()

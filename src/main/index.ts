@@ -108,6 +108,7 @@ import {
   type ModelCatalog,
 } from './modelCatalog'
 import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
+import { prepareSpawn } from './terminalSpawnPrep'
 import { createTerminalNameLookup } from './terminalNames'
 import { initAppLog, logToApp, readAppLog, clearAppLog, appLogFilePath, captureConsole } from './appLog'
 import { normalizeLevel } from '../shared/appLog'
@@ -575,7 +576,7 @@ const terminalDisplayName = createTerminalNameLookup({
 const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
-import { getAgentExtraPaths, getExtendedPath, primeInteractiveShellPath } from './agentPaths'
+import { getAgentExtraPaths, getAgentExtraPathsAsync, getExtendedPath, primeInteractiveShellPath } from './agentPaths'
 import { safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommandAsync } from './gitCommand'
 import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcHost } from './procClient'
 import { createProcHostTransport } from './procHostTransport'
@@ -803,6 +804,10 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
     // an agent run in that folder unasked; Claude Code's own trust prompt stays the gate
     // unless the user connected the agents, and then only where Termpolis launches Claude
     // itself (`claude:trust-workspace`, via agentIntegrationManager).
+    // What spawnTerminal would look up synchronously, on the thread that echoes every keystroke (the folder
+    // that exists, the shell-integration script, NVM's folders), is looked up here, on the thread pool.
+    const agentPaths = await getAgentExtraPathsAsync()
+    const prep = await prepareSpawn(cwd, shell.executable)
     await new Promise<void>((resolve, reject) => {
       // NOTE: a `setTimeout(() => reject('timeout'), 5000)` "hang guard" used to sit here. It was
       // DEAD CODE: the executor body below is fully SYNCHRONOUS, so clearTimeout always won the
@@ -810,7 +815,6 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
       // synchronous spawn blocks the event loop, so the timer still could not fire. It read like
       // a hang guard and provided none, which is worse than no guard at all.
       try {
-        const agentPaths = getAgentExtraPaths()
         const allExtraPaths = [...agentPaths, ...(extraPaths || [])]
         spawnTerminal(id, shell.executable, cwd, (data) => {
           // Buffer first, so the event can carry where this chunk ENDS in the stream: a pane
@@ -822,7 +826,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           // paired phone never adds work proportional to PTY chatter -- and with no
           // phone subscribed this is a set lookup that finds nothing.
           remoteNoteTerminalOutput(id)
-        }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined)
+        }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined, undefined, prep)
         resolve()
       } catch (e) {
         reject(e)
@@ -3413,6 +3417,9 @@ if (!gotTheLock) {
     // asking it there means three CreateProcess calls on the main thread while the user waits for
     // the terminal to open. Answered here instead, long before the first terminal.
     void primeBundledToolsCheck()
+    // The shells installed here, probed once (on the thread pool), so a workflow step that opens a terminal
+    // reads them from memory instead of probing the disk on the main thread.
+    void Promise.resolve().then(() => detectAvailableShells()).catch(() => { /* none found: the next terminal asks again */ })
     // Refresh what each installed agent says its own models are, so the pickers offer
     // today's list rather than whatever was hardcoded at release. Fire-and-forget and
     // fully guarded: it reads Codex's own cache file and starts no agent CLI (Gemini's
@@ -3563,6 +3570,9 @@ async function semanticPoolOptions(
         const shells = await detectAvailableShells()
         const shellInfo = shells.find(s => s.type === shell) || shells[0]
         if (shellInfo) {
+          // The folder, the integration script and NVM's folders are looked up on the thread pool, not here.
+          const mcpAgentPaths = await getAgentExtraPathsAsync()
+          const mcpPrep = await prepareSpawn(resolvedCwd, shellInfo.executable)
           spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
             // Buffer first: the event carries the chunk's end offset (see terminal:create).
             const end = appendOutput(terminalOutputBuffers, id, data)
@@ -3573,7 +3583,7 @@ async function semanticPoolOptions(
           // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
           // (codex/gemini read OPENAI_*/Google env), so this compresses every Claude worker and
           // no-ops the rest; getProxyEnv() is null when the proxy is unhealthy → direct launch.
-          }, getAgentExtraPaths(), getProxyEnv() ?? undefined)
+          }, mcpAgentPaths, getProxyEnv() ?? undefined, undefined, mcpPrep)
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)

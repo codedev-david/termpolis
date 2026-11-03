@@ -412,6 +412,8 @@ describe('terminal:create', () => {
       expect.any(Function),
       expect.any(Array),
       undefined, // claudeHeadroom env (only injected for Claude launches)
+      undefined, // onExit
+      expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
     )
   })
 
@@ -432,6 +434,8 @@ describe('terminal:create', () => {
       expect.any(Function),
       expect.any(Array),
       undefined, // claudeHeadroom env (only injected for Claude launches)
+      undefined, // onExit
+      expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
     )
   })
 
@@ -2273,6 +2277,8 @@ describe('MCP handler callbacks', () => {
       expect.any(Function),
       expect.any(Array),
       undefined, // claudeHeadroom env (non-Claude agent name → none)
+      undefined, // onExit
+      expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
     )
     try { capturedMcpHandlers.closeTerminal(id) } catch {}
   })
@@ -2292,6 +2298,8 @@ describe('MCP handler callbacks', () => {
       expect.any(Function),
       expect.any(Array),
       undefined, // claudeHeadroom env (non-Claude agent name → none)
+      undefined, // onExit
+      expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
     )
     try { capturedMcpHandlers.closeTerminal(id) } catch {}
   })

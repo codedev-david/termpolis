@@ -424,6 +424,7 @@ vi.mock('../../src/main/agentCommandSanitizer', () => ({
 }))
 vi.mock('../../src/main/agentPaths', () => ({
   getAgentExtraPaths: vi.fn(() => ['/opt/agent-bin']),
+  getAgentExtraPathsAsync: vi.fn(async () => ['/opt/agent-bin']),
   getExtendedPath: vi.fn(() => '/usr/bin:/opt/agent-bin'),
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),

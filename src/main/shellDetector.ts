@@ -1,4 +1,4 @@
-import { existsSync } from 'fs'
+import { existsSync, promises as fsp } from 'fs'
 import * as os from 'os'
 import type { ShellInfo, ShellType } from './types'
 
@@ -36,8 +36,55 @@ export function detectAvailableShellsSync(): ShellInfo[] {
   return found
 }
 
+function candidatesForPlatform(): { type: ShellType; label: string; paths: string[] }[] {
+  const currentPlatform = os.platform()
+  const key = currentPlatform === 'win32' ? 'win32' : currentPlatform === 'darwin' ? 'darwin' : 'linux'
+  return SHELL_CANDIDATES[key] ?? []
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fsp.access(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Callers that ask while a probe is running share it: a swarm opening twenty terminals probes once. */
+let probeInFlight: Promise<ShellInfo[]> | null = null
+/** The last probe, for resolveShellExecutable. */
+let lastProbe: ShellInfo[] | null = null
+
+/**
+ * The shells installed here. The probe runs on the thread pool, never on the main thread: it used to be
+ * existsSync per candidate path, on EVERY terminal creation, on the thread that echoes keystrokes.
+ * Candidates are probed together; within one candidate the first path that exists wins, as before.
+ */
 export async function detectAvailableShells(): Promise<ShellInfo[]> {
-  return detectAvailableShellsSync()
+  if (!probeInFlight) {
+    probeInFlight = (async () => {
+      const candidates = candidatesForPlatform()
+      const exes = await Promise.all(candidates.map(async (candidate) => {
+        for (const p of candidate.paths) if (await pathExists(p)) return p
+        return null
+      }))
+      const found: ShellInfo[] = []
+      candidates.forEach((candidate, i) => {
+        const exe = exes[i]
+        if (exe) found.push({ type: candidate.type, label: candidate.label, executable: exe })
+      })
+      lastProbe = found
+      return found
+    })().finally(() => { probeInFlight = null })
+  }
+  return (await probeInFlight).map((s) => ({ ...s }))
+}
+
+/** @internal test-only */
+export function _resetShellProbeForTests(): void {
+  probeInFlight = null
+  lastProbe = null
 }
 
 // When an exact shell type isn't installed, fall back to the nearest compatible
@@ -79,8 +126,10 @@ export function pickShellExecutable(shells: ShellInfo[], shell: string): string 
 
 // Real substrate: detect the machine's shells, then resolve a logical type to a
 // concrete executable. Used to wire the workflow Command-step spawn.
+// From memory once the app has probed (start-up and every terminal creation do, on the thread pool): a step is
+// started by a timer or a trigger, on the main thread. A probe of its own before the first one, and in a test.
 export function resolveShellExecutable(shell: string): string {
-  return pickShellExecutable(detectAvailableShellsSync(), shell)
+  return pickShellExecutable(lastProbe ?? detectAvailableShellsSync(), shell)
 }
 
 export function getDefaultShell(shells: ShellInfo[], os: string): ShellInfo | undefined {

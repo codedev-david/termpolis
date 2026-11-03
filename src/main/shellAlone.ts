@@ -1,7 +1,8 @@
-import { fork as forkProcess } from 'child_process'
 import { createRequire } from 'module'
 import { basename, dirname, join } from 'path'
 import { execCaptureOffThread } from './procClient'
+import { ensureConsoleListHelper } from './consoleListHelper'
+import { createSingleFlight } from './singleFlight'
 
 /**
  * Whether nothing runs in a terminal but its shell: whatever was typed at its prompt, an agent
@@ -21,14 +22,22 @@ import { execCaptureOffThread } from './procClient'
  * Answers true only where the OS says so, from the terminal's own processes: no process listing,
  * no names or command lines of other programs. It answers null where it can't tell: a shell not
  * known here, WSL, or a query that failed. The screen's answer then stands.
+ *
+ * Never on the main thread: every question here is a process creation (Windows: Termpolis run as Node, to read the
+ * console; Unix: ps and pgrep), and a process creation on the thread that echoes keystrokes has been measured at
+ * 0.1-0.3 s on a busy Windows laptop. They go to the proc host (procClient.ts), and the caller waits for the answer.
  */
 export async function shellAlone(pid: number, executable: string, platform: NodeJS.Platform = process.platform): Promise<boolean | null> {
   return platform === 'win32' ? aloneOnConsole(pid, executable) : aloneInForeground(pid, executable)
 }
 
-/** How long node-pty's helper gets to list a console: it is Termpolis started again as Node, which
+/** How long the console helper gets to list a console: it is Termpolis started again as Node, which
  *  took 0.7 to 1.1 s on a live run. */
 export const CONSOLE_LIST_TIMEOUT_MS = 5000
+
+/** Two asks for the same terminal this close together (a submit and an auto-primer, say) share one run of the helper.
+ *  Shorter than the 2 s between the auto-primer's own asks, so each of those is a fresh look. */
+export const CONSOLE_LIST_SHARE_MS = 1500
 
 /** How many processes a Windows shell keeps on its console at its prompt: one, or two for Git for
  *  Windows' bin\bash.exe, which starts usr\bin\bash.exe and waits for it. A program run from an
@@ -43,9 +52,9 @@ export function ownConsoleProcesses(executable: string): number | null {
 }
 
 /** Windows has no foreground process. What runs in a terminal is on its console: the shell, and
- *  every console program started in it. Read by node-pty's own helper, the one it starts to close
- *  a terminal, with the console's process list (GetConsoleProcessList). It attaches to the console
- *  to read it, so it is in the list itself. */
+ *  every console program started in it. Read with node-pty's own call for it, the one it makes to close
+ *  a terminal, through a helper script (consoleListHelper.ts) that the proc host runs. It attaches to the
+ *  console to read it, so it is in the list itself. */
 async function aloneOnConsole(pid: number, executable: string): Promise<boolean | null> {
   const own = ownConsoleProcesses(executable)
   if (own === null) return null
@@ -53,43 +62,47 @@ async function aloneOnConsole(pid: number, executable: string): Promise<boolean 
   return attached === null || !attached.includes(pid) ? null : attached.length <= own
 }
 
-/** node-pty's conpty_console_list_agent, next to its own lib, from where the package keeps it on
- *  disk (package.json asarUnpack): a forked script outside app.asar loads its native module the
- *  same way in or out of a packaged build. */
-function consoleListAgent(): string {
-  const lib = dirname(createRequire(import.meta.url).resolve('node-pty'))
-  return join(lib, 'conpty_console_list_agent').replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2')
+/** node-pty's lib folder, from where the package keeps it on disk (package.json asarUnpack): a script outside
+ *  app.asar loads node-pty's native module the same way in or out of a packaged build. */
+function nodePtyLibDir(): string {
+  return dirname(createRequire(import.meta.url).resolve('node-pty')).replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2')
+}
+
+/** What the helper prints: {"self": its own pid, "list": [pid, ...]}; null for anything else. */
+export function parseConsoleList(stdout: string): number[] | null {
+  let parsed: unknown
+  try { parsed = JSON.parse(stdout) } catch { return null }
+  const { self, list } = (parsed ?? {}) as { self?: unknown; list?: unknown }
+  if (!Array.isArray(list) || !list.every((p) => Number.isInteger(p))) return null
+  return (list as number[]).filter((p) => p !== self)
+}
+
+const consoleLists = createSingleFlight()
+
+/** @internal test-only */
+export function _resetShellAloneForTests(): void {
+  consoleLists.clear()
 }
 
 /** The processes on the console of the shell `pid`, the helper left out; null where the helper
  *  failed. node-pty's own use of it (WindowsPtyAgent._getConsoleProcessList) answers the shell
  *  alone when it fails, which would read here as the shell being alone. */
 function consoleProcesses(pid: number): Promise<number[] | null> {
-  return new Promise((resolve) => {
-    let helper: ReturnType<typeof forkProcess>
+  return consoleLists.run(`shellAlone:${pid}`, CONSOLE_LIST_SHARE_MS, async () => {
     try {
-      // silent: what the helper prints when the shell exits as it attaches isn't Termpolis's to show.
-      helper = forkProcess(consoleListAgent(), [String(pid)], { silent: true })
+      const helper = await ensureConsoleListHelper()
+      if (!helper) return null
+      // Termpolis run as Node (ELECTRON_RUN_AS_NODE), by the proc host. A failure of any kind (the host is down, the
+      // helper could not load node-pty, the time ran out and it was killed) is "cannot tell", never "alone".
+      const r = await execCaptureOffThread(process.execPath, [helper, String(pid), nodePtyLibDir()], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        timeout: CONSOLE_LIST_TIMEOUT_MS,
+      })
+      return r.error ? null : parseConsoleList(r.stdout)
     } catch {
-      resolve(null)
-      return
+      return null
     }
-    const timer = setTimeout(() => {
-      try { helper.kill() } catch { /* already gone */ }
-      resolve(null)
-    }, CONSOLE_LIST_TIMEOUT_MS)
-    const done = (list: number[] | null): void => {
-      clearTimeout(timer)
-      resolve(list)
-    }
-    helper.on('message', (m: unknown) => {
-      const list = (m as { consoleProcessList?: unknown } | null)?.consoleProcessList
-      done(Array.isArray(list) && list.every((p) => Number.isInteger(p)) ? (list as number[]).filter((p) => p !== helper.pid) : null)
-    })
-    helper.on('error', () => done(null))
-    // Its list can come after it has exited: it sends it, then exits at once.
-    helper.on('exit', () => { setTimeout(() => done(null), 100) })
-  })
+  }, (list) => list !== null)
 }
 
 /** The shells that give each program they run the terminal, in a process group of its own (job

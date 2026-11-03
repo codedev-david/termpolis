@@ -1,13 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { existsSync } from 'fs'
 
-vi.mock('fs')
+// existsSync is the fake every case drives; the async probe (detectAvailableShells) asks the thread pool and is
+// answered from the same fake.
+vi.mock('fs', () => {
+  const existsSync = vi.fn()
+  const promises = { access: vi.fn(async (p: unknown) => { if (!existsSync(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) }) }
+  return { existsSync, promises, default: { existsSync, promises } }
+})
 vi.mock('os', () => ({ homedir: () => '/home/user', platform: () => 'linux' }))
 
-const { detectAvailableShells, detectAvailableShellsSync, getDefaultShell, pickShellExecutable, resolveShellExecutable } = await import('../../src/main/shellDetector')
+const { detectAvailableShells, detectAvailableShellsSync, getDefaultShell, pickShellExecutable, resolveShellExecutable, _resetShellProbeForTests } = await import('../../src/main/shellDetector')
 
 describe('detectAvailableShells', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => { vi.clearAllMocks(); _resetShellProbeForTests() })
 
   it('returns bash when /bin/bash exists on linux', async () => {
     vi.mocked(existsSync).mockImplementation((p: any) => p === '/bin/bash')
@@ -129,6 +135,8 @@ describe('pickShellExecutable', () => {
 })
 
 describe('resolveShellExecutable (linux platform mock)', () => {
+  beforeEach(() => { vi.clearAllMocks(); _resetShellProbeForTests() })
+
   it("resolves 'bash' to the detected /bin/bash", () => {
     vi.mocked(existsSync).mockImplementation((p: any) => p === '/bin/bash')
     expect(resolveShellExecutable('bash')).toBe('/bin/bash')
@@ -137,6 +145,49 @@ describe('resolveShellExecutable (linux platform mock)', () => {
   it('detectAvailableShellsSync returns the same result as the async detector', async () => {
     vi.mocked(existsSync).mockImplementation((p: any) => p === '/bin/bash')
     expect(detectAvailableShellsSync()).toEqual(await detectAvailableShells())
+  })
+
+  it('reads the shells the async probe found from memory, without touching the file system again', async () => {
+    vi.mocked(existsSync).mockImplementation((p: any) => p === '/bin/bash')
+    await detectAvailableShells() // what start-up and every terminal creation do, on the thread pool
+    vi.mocked(existsSync).mockClear()
+    expect(resolveShellExecutable('bash')).toBe('/bin/bash')
+    expect(existsSync).not.toHaveBeenCalled()
+  })
+})
+
+describe('detectAvailableShells never probes on the main thread', () => {
+  beforeEach(() => { vi.clearAllMocks(); _resetShellProbeForTests() })
+
+  it('asks the thread pool and makes no synchronous existence check', async () => {
+    vi.mocked(existsSync).mockImplementation((p: any) => p === '/bin/bash')
+    const fsMod = await import('fs')
+    vi.mocked(fsMod.promises.access).mockClear()
+    await detectAvailableShells()
+    const asked = vi.mocked(fsMod.promises.access).mock.calls.length
+    expect(asked).toBeGreaterThan(0)
+    // The fake answers each access() from existsSync, so every existsSync call here is one access() made: the
+    // detector itself made none of its own.
+    expect(existsSync).toHaveBeenCalledTimes(asked)
+  })
+
+  it('shares one probe between callers that ask together (a swarm opening twenty terminals)', async () => {
+    vi.mocked(existsSync).mockImplementation((p: any) => p === '/bin/bash')
+    const fsMod = await import('fs')
+    vi.mocked(fsMod.promises.access).mockClear()
+    const once = await detectAvailableShells()
+    const perProbe = vi.mocked(fsMod.promises.access).mock.calls.length
+    vi.mocked(fsMod.promises.access).mockClear()
+    const twenty = await Promise.all(Array.from({ length: 20 }, () => detectAvailableShells()))
+    expect(vi.mocked(fsMod.promises.access).mock.calls.length).toBe(perProbe)
+    for (const r of twenty) expect(r).toEqual(once)
+  })
+
+  it('hands every caller its own copy (one cannot change what another sees)', async () => {
+    vi.mocked(existsSync).mockImplementation((p: any) => p === '/bin/bash')
+    const [a, b] = await Promise.all([detectAvailableShells(), detectAvailableShells()])
+    a[0].executable = '/tampered'
+    expect(b[0].executable).toBe('/bin/bash')
   })
 })
 

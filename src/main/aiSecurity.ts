@@ -25,8 +25,9 @@
 // the ~40 suites that mock electron as `vi.mock('electron', () => ({ app: … }))` with no `default`.
 // Guarded by tests/electron/memoryHostImportGraph.test.ts.
 import * as electron from 'electron'
-import { promises as fs, existsSync, mkdirSync, statSync, renameSync } from 'fs'
+import { promises as fs, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
+import { offMainFiles } from './offMainFiles'
 
 const SETTINGS_FILE = 'ai-security-settings.json'
 const AUDIT_FILE = 'ai-security-audit.jsonl'
@@ -776,31 +777,49 @@ function overlapsCut(cuts: Span[], span: Span): boolean {
   return last >= 0 && cuts[last].to > span.from
 }
 
-function rotateIfNeeded(): void {
+/** How big the live audit file is, as far as this process knows (-1: not measured yet). The old code asked the
+ *  file system (existsSync + statSync) for it before EVERY append, on the main thread, and an append is
+ *  made when someone types the name of an agent, pastes code, or closes a terminal. */
+let auditBytes = -1
+
+async function auditFileSize(path: string): Promise<number> {
+  try { return (await fs.stat(path)).size } catch { return 0 }
+}
+
+/** Past the cap the live file becomes the previous one, replacing the one before it. */
+async function rotateAuditIfNeeded(path: string): Promise<void> {
+  if (auditBytes < 0) auditBytes = await auditFileSize(path)
+  if (auditBytes < MAX_AUDIT_BYTES) return
+  auditBytes = await auditFileSize(path) // confirm with the disk before moving anything
+  if (auditBytes < MAX_AUDIT_BYTES) return
   try {
-    if (!existsSync(auditPath())) return
-    const sz = statSync(auditPath()).size
-    if (sz < MAX_AUDIT_BYTES) return
-    if (existsSync(auditPrevPath())) {
-      try { require('fs').unlinkSync(auditPrevPath()) } catch {}
-    }
-    renameSync(auditPath(), auditPrevPath())
-  } catch {}
+    await fs.unlink(auditPrevPath())
+  } catch { /* none to replace */ }
+  try {
+    await fs.rename(path, auditPrevPath())
+    auditBytes = 0
+  } catch { /* locked: the next append tries again */ }
 }
 
 export async function appendAudit(entry: Omit<AuditEntry, 'ts'>): Promise<void> {
   if (!initialized) initAiSecurity()
   if (!settings.auditEnabled) return
-  rotateIfNeeded()
   const full: AuditEntry = { ts: new Date().toISOString(), ...entry }
+  const line = JSON.stringify(full) + '\n'
+  const path = auditPath()
   try {
-    await fs.appendFile(auditPath(), JSON.stringify(full) + '\n', 'utf8')
+    // One operation at a time per file, in the order asked, through the bounded queue of offMainFiles: a flood
+    // of audit lines is shed and counted there, it cannot pile up here.
+    await offMainFiles.run(path, async () => {
+      await rotateAuditIfNeeded(path)
+      await fs.appendFile(path, line, 'utf8')
+      auditBytes += Buffer.byteLength(line, 'utf8')
+    })
   } catch {}
 }
 
 export async function getRecentAudit(limit = 200): Promise<AuditEntry[]> {
   if (!initialized) initAiSecurity()
-  if (!existsSync(auditPath())) return []
   try {
     const raw = await fs.readFile(auditPath(), 'utf8')
     const lines = raw.split(/\r?\n/).filter(Boolean)
@@ -817,12 +836,12 @@ export async function getRecentAudit(limit = 200): Promise<AuditEntry[]> {
 
 export async function clearAudit(): Promise<void> {
   if (!initialized) initAiSecurity()
-  try {
-    if (existsSync(auditPath())) await fs.unlink(auditPath())
-  } catch {}
-  try {
-    if (existsSync(auditPrevPath())) await fs.unlink(auditPrevPath())
-  } catch {}
+  const path = auditPath()
+  await offMainFiles.run(path, async () => {
+    try { await fs.unlink(path) } catch {}
+    try { await fs.unlink(auditPrevPath()) } catch {}
+    auditBytes = 0
+  }).catch(() => {})
 }
 
 export function getAuditPath(): string {

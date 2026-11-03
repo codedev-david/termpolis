@@ -8,6 +8,7 @@ import { execShellCaptureOffThread } from './procClient'
 import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { sudoAskpassEnv } from './sudoAskpass'
+import { integrationScriptState, INTEGRATION_SCRIPT_NAME, type SpawnPrep } from './terminalSpawnPrep'
 import { shellAlone } from './shellAlone'
 import {
   detectShellKind,
@@ -115,9 +116,11 @@ export function spawnTerminal(
   onData: (data: string) => void,
   extraPaths?: string[],
   extraEnv?: Record<string, string>,
-  onExit?: (exitCode: number) => void
+  onExit?: (exitCode: number) => void,
+  /** What a caller on a hot path looked up on the thread pool (terminalSpawnPrep.ts); without it, the lookups are synchronous. */
+  prep?: SpawnPrep,
 ): void {
-  const resolvedCwd = (() => {
+  const resolvedCwd = prep ? prep.cwd : (() => {
     try { return existsSync(cwd) ? cwd : homedir() }
     catch { return homedir() }
   })()
@@ -209,7 +212,7 @@ export function spawnTerminal(
   // does not update is a small loss, a terminal that does not open is a broken app.
   const shellKind = detectShellKind(executable)
   const integrate = !integrationDisabled()
-  const scriptPath = integrate && needsScriptFile(shellKind) ? ensureIntegrationScript() : null
+  const scriptPath = integrate && needsScriptFile(shellKind) ? (prep ? prep.integrationScript : ensureIntegrationScript()) : null
   const env = {
     ...baseEnv,
     ...(integrate ? integrationEnv(shellKind, baseEnv) : {}),
@@ -394,15 +397,14 @@ export async function getTerminalCwdAsync(id: string): Promise<string | null> {
  *
  * Returns null on any failure, which the caller reads as "spawn exactly as before".
  */
-let integrationScriptPath: string | null = null
 function ensureIntegrationScript(): string | null {
   try {
-    const p = integrationScriptPath ?? join(app.getPath('userData'), 'termpolis-shell-integration.ps1')
-    if (integrationScriptPath === null || !existsSync(p)) {
+    const p = integrationScriptState.path ?? join(app.getPath('userData'), INTEGRATION_SCRIPT_NAME)
+    if (integrationScriptState.path === null || !existsSync(p)) {
       mkdirSync(dirname(p), { recursive: true })
       writeFileSync(p, POWERSHELL_INTEGRATION_SCRIPT, 'utf8')
     }
-    integrationScriptPath = p
+    integrationScriptState.path = p
     return p
   } catch {
     return null

@@ -1,33 +1,32 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { EventEmitter } from 'events'
+// IMPORT ORDER: the counters first (they patch fs and child_process before the module under test loads).
+import { arm, disarm, describeCounts, uninstall } from '../helpers/mainThreadCounters'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
+import { readFileSync } from 'fs'
 import { join } from 'path'
 
-// shellAlone.ts: whether nothing runs in a terminal but its shell, from the OS. Windows reads the
-// console's process list through node-pty's helper (forked here as a fake); Unix asks ps and pgrep
-// (procClient, faked) for the terminal's foreground process group.
+// shellAlone.ts: whether nothing runs in a terminal but its shell, from the OS. Windows reads the console's process
+// list with a small helper script that the proc host runs (procClient, faked here: nothing is forked from main); Unix
+// asks ps and pgrep (procClient, faked) for the terminal's foreground process group.
 
-const h = vi.hoisted(() => ({ fork: vi.fn(), exec: vi.fn() }))
-vi.mock('child_process', () => ({ fork: h.fork, default: { fork: h.fork } }))
+const h = vi.hoisted(() => ({ exec: vi.fn(), ensure: vi.fn() }))
+const HELPER_PATH = 'C:\data\termpolis-console-list.cjs'
 vi.mock('../../src/main/procClient', () => ({ execCaptureOffThread: h.exec }))
+vi.mock('../../src/main/consoleListHelper', () => ({ ensureConsoleListHelper: h.ensure }))
 
-import { shellAlone, ownConsoleProcesses, CONSOLE_LIST_TIMEOUT_MS } from '../../src/main/shellAlone'
+import { shellAlone, ownConsoleProcesses, parseConsoleList, CONSOLE_LIST_TIMEOUT_MS, CONSOLE_LIST_SHARE_MS, _resetShellAloneForTests } from '../../src/main/shellAlone'
 
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const GIT_BASH = 'C:\\Program Files\\Git\\bin\\bash.exe'
 const SHELL = 100
 const HELPER = 900
 
-/** node-pty's helper as fork returns it: it sends its list, or fails, as a test says. */
-function helper(pid = HELPER) {
-  const child = Object.assign(new EventEmitter(), { pid, kill: vi.fn() })
-  h.fork.mockReturnValueOnce(child)
-  return child
-}
-
 beforeEach(() => {
-  h.fork.mockReset()
+  _resetShellAloneForTests() // answers are shared for 1.5 s: one test must not read another's
   h.exec.mockReset()
+  h.ensure.mockReset()
+  h.ensure.mockResolvedValue(HELPER_PATH)
 })
+afterAll(() => { uninstall() })
 
 describe('ownConsoleProcesses', () => {
   it.each([
@@ -51,16 +50,30 @@ describe('ownConsoleProcesses', () => {
   })
 })
 
+/** What the console helper prints for a console holding `list` (its own pid, HELPER, among them). */
+const printed = (list: unknown, self: number = HELPER) => ({ stdout: JSON.stringify({ self, list }), stderr: '' })
+
 describe('shellAlone on Windows', () => {
-  it('reads the console through node-pty\'s helper, forked quietly with the shell\'s pid', async () => {
-    const child = helper()
-    const alone = shellAlone(SHELL, POWERSHELL, 'win32')
-    child.emit('message', { consoleProcessList: [HELPER, SHELL] })
-    expect(await alone).toBe(true)
-    const [script, args, opts] = h.fork.mock.calls[0]
-    expect(script).toMatch(new RegExp(`${join('node-pty', 'lib', 'conpty_console_list_agent').replace(/\\/g, '\\\\')}$`))
-    expect(args).toEqual([String(SHELL)])
-    expect(opts).toEqual({ silent: true })
+  it('reads the console with the helper script, run by the proc host, never forked from main', async () => {
+    h.exec.mockResolvedValue(printed([HELPER, SHELL]))
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBe(true)
+    expect(h.exec).toHaveBeenCalledTimes(1)
+    const [bin, args, opts] = h.exec.mock.calls[0]
+    expect(bin).toBe(process.execPath)
+    expect(args[0]).toBe(HELPER_PATH)
+    expect(args[1]).toBe(String(SHELL))
+    // node-pty's own lib folder, from where the package keeps it on disk.
+    expect(args[2]).toMatch(new RegExp(`${join('node-pty', 'lib').replace(/\\/g, '\\\\')}$`))
+    expect(args).toHaveLength(3)
+    // Termpolis run as Node, with the shell's console to read; and the 5 s a console may take.
+    expect(opts.env.ELECTRON_RUN_AS_NODE).toBe('1')
+    expect(opts.timeout).toBe(CONSOLE_LIST_TIMEOUT_MS)
+  })
+
+  it('does not import child_process any more: the Windows path cannot fork on the main thread', () => {
+    const source = readFileSync(join(__dirname, '..', '..', 'src', 'main', 'shellAlone.ts'), 'utf8')
+    expect(source).not.toMatch(/child_process/)
+    expect(source).not.toMatch(/\bfork\(/)
   })
 
   it.each([
@@ -68,84 +81,134 @@ describe('shellAlone on Windows', () => {
     ['Git Bash at its prompt', GIT_BASH, [HELPER, 101, SHELL], true],
     ['Git Bash running a program', GIT_BASH, [HELPER, 303, 302, 101, SHELL], false],
   ])('%s', async (_case, exe, list, alone) => {
-    const child = helper()
-    const answer = shellAlone(SHELL, exe, 'win32')
-    child.emit('message', { consoleProcessList: list })
-    expect(await answer).toBe(alone)
+    h.exec.mockResolvedValue(printed(list))
+    expect(await shellAlone(SHELL, exe, 'win32')).toBe(alone)
   })
 
-  it("can't tell for WSL, and starts no helper", async () => {
+  it("can't tell for WSL, and asks nothing", async () => {
     expect(await shellAlone(SHELL, 'C:\\Windows\\System32\\wsl.exe', 'win32')).toBeNull()
-    expect(h.fork).not.toHaveBeenCalled()
+    expect(h.exec).not.toHaveBeenCalled()
+    expect(h.ensure).not.toHaveBeenCalled()
   })
 
   it.each([
-    ['no list', { other: 1 }],
-    ['a list of other things', { consoleProcessList: ['100'] }],
-    ['nothing at all', null],
-    ['a list without the shell', { consoleProcessList: [HELPER, 300] }],
-  ])("can't tell from a helper that sent %s", async (_case, message) => {
-    const child = helper()
-    const answer = shellAlone(SHELL, POWERSHELL, 'win32')
-    child.emit('message', message)
-    expect(await answer).toBeNull()
-  })
-
-  describe('with a helper that fails', () => {
-    beforeEach(() => { vi.useFakeTimers() })
-    afterEach(() => { vi.useRealTimers() })
-
-    it("can't tell once it exits without its list", async () => {
-      const child = helper()
-      const answer = shellAlone(SHELL, POWERSHELL, 'win32')
-      child.emit('exit', 1)
-      await vi.advanceTimersByTimeAsync(100)
-      expect(await answer).toBeNull()
-    })
-
-    it('takes the list it sends just after it exits', async () => {
-      const child = helper()
-      const answer = shellAlone(SHELL, POWERSHELL, 'win32')
-      child.emit('exit', 0)
-      child.emit('message', { consoleProcessList: [HELPER, SHELL] })
-      await vi.advanceTimersByTimeAsync(100)
-      expect(await answer).toBe(true)
-    })
-
-    it("can't tell from one that couldn't start", async () => {
-      const child = helper()
-      const answer = shellAlone(SHELL, POWERSHELL, 'win32')
-      child.emit('error', new Error('spawn EPERM'))
-      expect(await answer).toBeNull()
-    })
-
-    it("can't tell from one that never answers, and stops it", async () => {
-      const child = helper()
-      const answer = shellAlone(SHELL, POWERSHELL, 'win32')
-      await vi.advanceTimersByTimeAsync(CONSOLE_LIST_TIMEOUT_MS)
-      expect(await answer).toBeNull()
-      expect(child.kill).toHaveBeenCalled()
-    })
-
-    it("can't tell from one that never answers and is gone when stopped", async () => {
-      const child = helper()
-      child.kill.mockImplementation(() => { throw new Error('ESRCH') })
-      const answer = shellAlone(SHELL, POWERSHELL, 'win32')
-      await vi.advanceTimersByTimeAsync(CONSOLE_LIST_TIMEOUT_MS)
-      expect(await answer).toBeNull()
-    })
-  })
-
-  it("can't tell when the helper can't be forked", async () => {
-    h.fork.mockImplementationOnce(() => { throw new Error('EAGAIN') })
+    ['no list', JSON.stringify({ other: 1 })],
+    ['a list of other things', JSON.stringify({ self: HELPER, list: ['100'] })],
+    ['nothing at all', 'null'],
+    ['text that is not JSON', 'Segmentation fault'],
+    ['nothing printed', ''],
+    ['a list without the shell', JSON.stringify({ self: HELPER, list: [HELPER, 300] })],
+  ])("can't tell from a helper that printed %s", async (_case, stdout) => {
+    h.exec.mockResolvedValue({ stdout, stderr: '' })
     expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBeNull()
+  })
+
+  it("can't tell when the helper failed or was stopped for taking too long (the host reports an error)", async () => {
+    h.exec.mockResolvedValue({ stdout: '', stderr: 'boom', error: { message: 'Command failed', code: 1 } })
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBeNull()
+    h.exec.mockResolvedValue({ stdout: '', stderr: '', error: { message: 'timed out', signal: 'SIGTERM', killed: true } })
+    expect(await shellAlone(SHELL + 1, POWERSHELL, 'win32')).toBeNull()
+  })
+
+  it("can't tell when the proc host is gone (the call is rejected)", async () => {
+    h.exec.mockRejectedValue(new Error('proc host exited (code 1) with the call in flight'))
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBeNull()
+  })
+
+  it("can't tell when the helper script cannot be written, and runs nothing", async () => {
+    h.ensure.mockResolvedValue(null)
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBeNull()
+    expect(h.exec).not.toHaveBeenCalled()
+  })
+
+  it('waits for the answer and never on a timer: no timer is armed while it waits', async () => {
+    vi.useFakeTimers()
+    try {
+      let answer: (v: { stdout: string; stderr: string }) => void = () => {}
+      h.exec.mockReturnValue(new Promise((r) => { answer = r }))
+      const asked = shellAlone(SHELL, POWERSHELL, 'win32')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(60_000) // however long it takes, nothing resolves it but the answer
+      let settled = false
+      void asked.then(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(settled).toBe(false)
+      answer(printed([HELPER, SHELL]))
+      expect(await asked).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reads the platform it runs on by default', async () => {
     // Neither platform knows an agent's binary for a shell, so neither asks anything.
     expect(await shellAlone(SHELL, 'claude')).toBeNull()
-    expect(h.fork).not.toHaveBeenCalled()
     expect(h.exec).not.toHaveBeenCalled()
+  })
+})
+
+describe('shellAlone shares one run of the helper between asks made together (key shellAlone:<pid>, 1.5 s)', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('a submit and an auto-primer asking at once cost one host exec', async () => {
+    h.exec.mockResolvedValue(printed([HELPER, SHELL]))
+    const [a, b, c] = await Promise.all([shellAlone(SHELL, POWERSHELL, 'win32'), shellAlone(SHELL, POWERSHELL, 'win32'), shellAlone(SHELL, POWERSHELL, 'win32')])
+    expect([a, b, c]).toEqual([true, true, true])
+    expect(h.exec).toHaveBeenCalledTimes(1)
+  })
+
+  it('an answer is kept for 1.5 s, and the next ask after that is a fresh look', async () => {
+    h.exec.mockResolvedValue(printed([HELPER, SHELL]))
+    await shellAlone(SHELL, POWERSHELL, 'win32')
+    await vi.advanceTimersByTimeAsync(CONSOLE_LIST_SHARE_MS - 1)
+    await shellAlone(SHELL, POWERSHELL, 'win32')
+    expect(h.exec).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await shellAlone(SHELL, POWERSHELL, 'win32')
+    expect(h.exec).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps the auto-primer's own asks, 2 s apart, as separate looks", async () => {
+    h.exec.mockResolvedValue(printed([HELPER, SHELL]))
+    for (let i = 0; i < 3; i++) {
+      await shellAlone(SHELL, POWERSHELL, 'win32')
+      await vi.advanceTimersByTimeAsync(2000)
+    }
+    expect(h.exec).toHaveBeenCalledTimes(3)
+  })
+
+  it('never shares what it could not tell, nor an answer between two terminals', async () => {
+    h.exec.mockResolvedValueOnce({ stdout: '', stderr: '', error: { message: 'failed' } })
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBeNull()
+    h.exec.mockResolvedValueOnce(printed([HELPER, SHELL]))
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBe(true) // the failure was not replayed
+    h.exec.mockResolvedValueOnce(printed([HELPER, SHELL + 5, 300]))
+    expect(await shellAlone(SHELL + 5, POWERSHELL, 'win32')).toBe(false) // another terminal: its own look
+    expect(h.exec).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('shellAlone costs the main thread no process creation (counted)', () => {
+  it('ten asks make ten host execs and zero spawns, forks or execFiles of its own', async () => {
+    h.exec.mockImplementation(async (_bin: string, args: string[]) => printed([HELPER, Number(args[1])]))
+    arm()
+    const answers = await Promise.all(Array.from({ length: 10 }, (_, i) => shellAlone(1000 + i, POWERSHELL, 'win32')))
+    const c = disarm()
+    expect(answers.every((a) => a === true)).toBe(true)
+    expect(h.exec).toHaveBeenCalledTimes(10)
+    expect(describeCounts(c)).toBe('')
+  })
+})
+
+describe('parseConsoleList', () => {
+  it('takes the helper out of the list, and reads nothing else as a list', () => {
+    expect(parseConsoleList(JSON.stringify({ self: 9, list: [9, 4, 5] }))).toEqual([4, 5])
+    expect(parseConsoleList(JSON.stringify({ list: [4, 5] }))).toEqual([4, 5])
+    expect(parseConsoleList(JSON.stringify({ self: 9, list: [4.5] }))).toBeNull()
+    expect(parseConsoleList('[1,2]')).toBeNull()
+    expect(parseConsoleList('')).toBeNull()
   })
 })
 

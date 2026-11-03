@@ -16,10 +16,11 @@ vi.mock('child_process', () => ({
   default: { execSync: mockExecSync },
   execSync: mockExecSync,
 }))
-vi.mock('fs', () => ({
-  readdirSync: mockReaddirSync,
-  default: { readdirSync: mockReaddirSync },
-}))
+// The async listing (getAgentExtraPathsAsync) answers from the same fake as the sync one, so a test can compare them.
+vi.mock('fs', () => {
+  const promises = { readdir: async (dir: string) => mockReaddirSync(dir) }
+  return { readdirSync: mockReaddirSync, promises, default: { readdirSync: mockReaddirSync, promises } }
+})
 vi.mock('os', () => ({
   homedir: mockHomedir,
   default: { homedir: mockHomedir },
@@ -31,6 +32,7 @@ vi.mock('../../src/main/procClient', () => ({
 import {
   getInteractiveShellPath,
   getAgentExtraPaths,
+  getAgentExtraPathsAsync,
   getExtendedPath,
   getExtendedPathAsync,
   primeInteractiveShellPath,
@@ -435,5 +437,35 @@ describe('getExtendedPathAsync', () => {
     const out = await getExtendedPathAsync()
     expect(out).toContain('/shell/bin')
     expect(out.endsWith(':')).toBe(false)
+  })
+})
+
+describe('getAgentExtraPathsAsync (opening a terminal lists NVM and fnm on the thread pool)', () => {
+  it('gives the same list as the sync version, in the same order, for NVM and fnm', async () => {
+    setPlatform('linux')
+    process.env.NVM_DIR = '/nvm'
+    process.env.FNM_DIR = '/fnm'
+    mockReaddirSync.mockImplementation((dir: string) => (/nvm/.test(dir) ? ['v18.0.0', 'v20.1.0'] : ['20.0.0']))
+    const sync = getAgentExtraPaths()
+    expect(await getAgentExtraPathsAsync()).toEqual(sync)
+    expect(sync.some((p) => p.includes('v20.1.0'))).toBe(true)
+    expect(sync.some((p) => p.includes('installation'))).toBe(true)
+  })
+
+  it('skips a version manager that is not installed, and still returns the static list', async () => {
+    setPlatform('linux')
+    mockReaddirSync.mockImplementation(() => { throw new Error('ENOENT') })
+    const paths = await getAgentExtraPathsAsync()
+    expect(paths).toContain('/opt/homebrew/bin')
+    expect(paths).toEqual(getAgentExtraPaths())
+  })
+
+  it('on Windows lists nothing at all (the fixed folders only), the same as the sync version', async () => {
+    setPlatform('win32')
+    mockHomedir.mockReturnValue('C:\\Users\\dev')
+    mockReaddirSync.mockClear()
+    const paths = await getAgentExtraPathsAsync()
+    expect(paths).toEqual(getAgentExtraPaths())
+    expect(mockReaddirSync).not.toHaveBeenCalled()
   })
 })

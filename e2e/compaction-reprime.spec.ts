@@ -153,3 +153,56 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
     expect(after).toBe(before) // cooldown held — no extra paste
   })
 })
+
+/**
+ * shellAlone (v1.54.2) is the guard that stops a task being typed at a bare prompt: it asks the OS whether anything but
+ * the shell runs in a terminal. On Windows it reads the terminal's console with a small helper script. That helper used
+ * to be forked from the main process on every ask (0.1-0.3 s of the thread that echoes keystrokes, on a busy laptop);
+ * it now runs through the proc host (utility process). Its failure mode is SILENT: if the helper cannot run, every answer
+ * is "cannot tell" (null) and the guard is off. So this drives a REAL cmd.exe: alone at its prompt it answers true, with
+ * a program running on its console it answers false, and after that program ends it answers true again.
+ * Windows only: the other platforms ask ps and pgrep, which tests/electron/shellAlone.test.ts covers.
+ */
+test.describe.serial('shellAlone answers for a real shell, through the proc host (Windows)', () => {
+  test.skip(process.platform !== 'win32', 'Windows reads the console; Unix asks ps and pgrep (unit-tested)')
+
+  const ID = 'e2e-shell-alone-cmd'
+
+  /** Ask until the answer is `want` (the console takes a moment to show a program starting or ending). */
+  async function aloneBecomes(want: boolean): Promise<boolean | null> {
+    return page.evaluate(async ({ id, want: w }) => {
+      const api = (window as any).termpolis
+      let last: boolean | null = null
+      for (let i = 0; i < 40; i++) { // up to ~40 s: the helper takes 1-2 s a try
+        const r = await api.terminalShellAlone(id)
+        last = r && r.success ? r.data : null
+        if (last === w) return last
+        await new Promise((res) => setTimeout(res, 500))
+      }
+      return last
+    }, { id: ID, want })
+  }
+
+  test('opens a real cmd.exe', async () => {
+    const res = await page.evaluate(async (id) => (window as any).termpolis.createTerminal(id, 'cmd', 'C:\\Windows'), ID)
+    expect(res.success, JSON.stringify(res)).toBe(true)
+  })
+
+  test('answers true when nothing but the shell runs (never null: null would switch the guard off)', async () => {
+    expect(await aloneBecomes(true)).toBe(true)
+  })
+
+  test('answers false while a program runs on the shell\'s console', async () => {
+    await page.evaluate((id) => (window as any).termpolis.writeToTerminal(id, 'timeout /t 60 /nobreak >nul\r'), ID)
+    expect(await aloneBecomes(false)).toBe(false)
+  })
+
+  test('answers true again once that program has ended', async () => {
+    await page.evaluate((id) => (window as any).termpolis.writeToTerminal(id, '\x03'), ID)
+    expect(await aloneBecomes(true)).toBe(true)
+  })
+
+  test('closes the terminal', async () => {
+    await page.evaluate((id) => (window as any).termpolis.killTerminal(id), ID)
+  })
+})

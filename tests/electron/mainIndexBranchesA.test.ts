@@ -234,6 +234,7 @@ vi.mock('../../src/main/autoUpdater', () => ({ initAutoUpdater: M.initAutoUpdate
 vi.mock('../../src/main/agentCommandSanitizer', () => ({ sanitizeAgentCommand: vi.fn((c: string) => c), isClaudeAgentName: (name: string) => /(^|[^a-z])claude/i.test(name || '') }))
 vi.mock('../../src/main/agentPaths', () => ({
   getAgentExtraPaths: M.getAgentExtraPaths,
+  getAgentExtraPathsAsync: vi.fn(async () => M.getAgentExtraPaths()),
   getExtendedPath: M.getExtendedPath,
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),

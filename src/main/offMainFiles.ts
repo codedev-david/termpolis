@@ -80,7 +80,7 @@ export class OffMainFiles {
   private readonly concurrency: number
   private readonly maxQueuedOps: number
   private readonly maxAppendChars: number
-  private readonly fsApi: FsPromisesLike
+  private readonly injectedFs: FsPromisesLike | undefined
   private readonly onShed: OffMainFilesOptions['onShed']
   private readonly chains = new Map<string, Promise<void>>()
   private readonly pendingWrites = new Map<string, PendingWrite>()
@@ -96,8 +96,14 @@ export class OffMainFiles {
     this.concurrency = Math.max(1, opts.concurrency ?? DEFAULT_CONCURRENCY)
     this.maxQueuedOps = Math.max(1, opts.maxQueued ?? DEFAULT_MAX_QUEUED)
     this.maxAppendChars = Math.max(1, opts.maxAppendChars ?? DEFAULT_MAX_APPEND_CHARS)
-    this.fsApi = opts.fs ?? (fsp as unknown as FsPromisesLike)
+    this.injectedFs = opts.fs
     this.onShed = opts.onShed
+  }
+
+  /** fs.promises, looked up when an operation runs, not when this module loads: a test that replaces `fs` with a
+   *  partial fake must be able to import everything that imports this. */
+  private api(): FsPromisesLike {
+    return this.injectedFs ?? (fsp as unknown as FsPromisesLike)
   }
 
   stats(): OffMainFilesStats {
@@ -135,7 +141,7 @@ export class OffMainFiles {
     entry.promise = this.enqueue(path, async () => {
       if (this.pendingWrites.get(path) === entry) this.pendingWrites.delete(path)
       if (entry.flushed) return
-      await this.withDir(path, () => this.fsApi.writeFile(path, entry.data, entry.mode !== undefined ? { mode: entry.mode } : undefined))
+      await this.withDir(path, () => this.api().writeFile(path, entry.data, entry.mode !== undefined ? { mode: entry.mode } : undefined))
       this.st.writes++
     })
     entry.promise.catch(() => { if (this.pendingWrites.get(path) === entry) this.pendingWrites.delete(path) })
@@ -193,7 +199,7 @@ export class OffMainFiles {
     entry.promise = this.enqueue(path, async () => {
       if (this.pendingAppends.get(path) === entry) this.pendingAppends.delete(path)
       if (entry.flushed || entry.chunks.length === 0) return
-      await this.withDir(path, () => this.fsApi.appendFile(path, entry.chunks.join('')))
+      await this.withDir(path, () => this.api().appendFile(path, entry.chunks.join('')))
       this.st.appends++
     })
     entry.promise.catch(() => { if (this.pendingAppends.get(path) === entry) this.pendingAppends.delete(path) })
@@ -204,7 +210,7 @@ export class OffMainFiles {
   async read(path: string, enc: BufferEncoding = 'utf8'): Promise<string> {
     await this.acquire()
     try {
-      const out = await this.fsApi.readFile(path, enc)
+      const out = await this.api().readFile(path, enc)
       this.st.reads++
       return typeof out === 'string' ? out : out.toString(enc)
     } finally {
@@ -274,7 +280,7 @@ export class OffMainFiles {
       await op()
     } catch (e) {
       if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e
-      await this.fsApi.mkdir(dirname(path), { recursive: true })
+      await this.api().mkdir(dirname(path), { recursive: true })
       await op()
     }
   }
