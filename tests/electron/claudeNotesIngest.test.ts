@@ -1983,4 +1983,23 @@ describe('copies that came in with a brain import from another computer', () => 
     expect(store.removed).toEqual([])
     expect(store.rows.size).toBe(3)
   })
+
+  // The sweep at the end of a pass runs only for a pass that ran to its end. One that was cut short because the import was turned off
+  // while it ran has not been let finish, and the copies are not touched: they are there for as long as the import stays off.
+  it('stay when the import is turned off in the middle of the pass that would have removed them', async () => {
+    for (let i = 0; i < 3; i++) note(FOLDER, `n${i}.md`, `---\nname: n${i}\ndescription: d${i}\ntype: reference\n---\nBody ${i}`)
+    session(FOLDER, CWD)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store)) // a whole pass: the record knows its three notes
+    const m = manifestJson()
+    m.dirty = true // an interrupted pass left it unfinished, so the next one that gets to the end clears what it cannot account for
+    for (const file of Object.values(m.files) as Array<{ mtimeMs: number; size: number; sha: string }>) { file.mtimeMs = -1; file.size = -1; file.sha = '' } // every note is read again
+    fs.writeFileSync(manifestFile(), JSON.stringify(m))
+    for (const r of imported()) store.rows.set(r.id, r) // the copies a brain export brought in
+    let asks = 0
+    const stats = await runClaudeNotesIngest(deps(store, { enabled: () => ++asks <= 2 })) // on at the start and for the first note, off for the second
+    expect(stats.swept).toBe(0)
+    expect(imported().every((r) => store.rows.has(r.id))).toBe(true)
+    expect(manifestJson().dirty).toBe(true) // and the next pass that is let finish does what the user asked of it
+  })
 })
