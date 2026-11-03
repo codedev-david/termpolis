@@ -285,7 +285,7 @@ import { auditMemory } from './memoryAudit' // WP-E: audit learning events (refl
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
 import { onTaskComplete, onSessionEpisode } from './mnemeReflex'
-import { reflectSoloSession } from './mnemeSession'
+import { runSessionReflection } from './sessionReflectPass'
 import { initSessionCursors, getSessionCursor, setSessionCursor, sessionCursorKey, flushSessionCursors } from './sessionCursorStore'
 import { readSessionTranscript } from './liveTranscript'
 import { initCompetence, recordOutcome, assessCompetence, competenceSummary, competenceRecords } from './mnemeCompetence'
@@ -2625,7 +2625,7 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
     if (await memoryIsLocked()) return ok({ fired: false, lessons: 0 })
     const project = normalizeProjectSlug(opts.cwd)
     const cursorKey = sessionCursorKey(opts.cwd, opts.agent)
-    const res = await reflectSoloSession(
+    const res = await runSessionReflection(
       { terminalId: opts.terminalId, cwd: opts.cwd, agent: opts.agent, project },
       {
         readTranscript: (cwd, agent) => readSessionTranscript(cwd, agent),
