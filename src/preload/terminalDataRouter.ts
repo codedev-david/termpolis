@@ -19,9 +19,14 @@
 
 export type TerminalDataCallback = (id: string, data: string, end?: number) => void
 
+// `any[]`: the argument lists are ipcRenderer's own (its listener is `(event, ...args: any[]) => void`), and narrowing them here
+// would stop ipcRenderer itself from being passed in.
 export interface RouterIpc {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on: (channel: string, listener: (event: unknown, ...args: any[]) => void) => unknown
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   removeListener: (channel: string, listener: (event: unknown, ...args: any[]) => void) => unknown
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   send: (channel: string, ...args: any[]) => void
 }
 

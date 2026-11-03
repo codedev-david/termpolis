@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   createTerminalDataRouting,
   registerTerminalDataRouting,
+  GRACE_CHUNKS,
+  type TerminalDataRouting,
   type TerminalDataTarget,
 } from '../../src/main/terminalDataRouting'
 
@@ -29,6 +31,12 @@ function fakeWindow(webContentsId: number | 'none' = 1): FakeWindow {
 
 const sentIds = (w: FakeWindow): string[] => w.sends.map((a) => a[1] as string)
 
+/** A terminal the page has spoken of (a pane that mounted and left): it has no grace chunks left. */
+function spokenOf(routing: TerminalDataRouting, sender: number | undefined, id: string, epoch = 1): void {
+  routing.note(sender, { id, epoch }, true)
+  routing.note(sender, { id, epoch }, false)
+}
+
 describe('terminal:data routing: what main sends to the renderer', () => {
   it('sends everything until a page has announced what it listens to (existing behaviour, and every harness without a preload)', () => {
     const routing = createTerminalDataRouting()
@@ -39,7 +47,7 @@ describe('terminal:data routing: what main sends to the renderer', () => {
     expect(routing.stats()).toMatchObject({ sent: 2, skipped: 0, armed: false })
   })
 
-  it('sends 0 terminal:data for an id nothing listens to, and every chunk of the one a pane listens to', () => {
+  it('sends 0 terminal:data for an id nothing listens to (after its grace), and every chunk of the one a pane listens to', () => {
     const routing = createTerminalDataRouting()
     const win = fakeWindow()
     routing.note(1, { id: 'pane', epoch: 10 }, true)
@@ -48,9 +56,15 @@ describe('terminal:data routing: what main sends to the renderer', () => {
       routing.send(win, 'worker-1', `w${i}`, i)
       routing.send(win, 'worker-2', `w${i}`, i)
     }
-    expect(sentIds(win).filter((id) => id === 'worker-1' || id === 'worker-2')).toEqual([])
+    // Each worker was sent its first GRACE_CHUNKS chunks (see the grace tests) and nothing after them.
+    expect(sentIds(win).filter((id) => id === 'worker-1')).toHaveLength(GRACE_CHUNKS)
+    expect(sentIds(win).filter((id) => id === 'worker-2')).toHaveLength(GRACE_CHUNKS)
     expect(sentIds(win).filter((id) => id === 'pane')).toHaveLength(1000)
-    expect(routing.stats()).toMatchObject({ sent: 1000, skipped: 2000, ids: 1, armed: true })
+    expect(routing.stats()).toMatchObject({ sent: 1000 + 2 * GRACE_CHUNKS, skipped: 2 * (1000 - GRACE_CHUNKS), ids: 1, armed: true })
+    // And once the grace is spent, a further chunk is not sent at all: the counter that matters for a terminal with no pane.
+    const before = win.sends.length
+    for (let i = 0; i < 500; i++) { routing.send(win, 'worker-1', 'x'); routing.send(win, 'worker-2', 'x') }
+    expect(win.sends.length).toBe(before)
   })
 
   it('NEGATIVE CONTROL: with the kill switch on, the same traffic is sent in full (the base)', () => {
@@ -64,6 +78,66 @@ describe('terminal:data routing: what main sends to the renderer', () => {
     }
     expect(win.sends).toHaveLength(3000)
     expect(routing.stats()).toMatchObject({ sent: 3000, skipped: 0, armed: false })
+  })
+
+  describe("the grace: a terminal's first chunks are sent even before anything announced it", () => {
+    it("a launch that announces all a round trip after the shell started loses none of the shell's first output", () => {
+      const routing = createTerminalDataRouting()
+      const win = fakeWindow()
+      routing.note(1, { id: 'someone-elses-pane', epoch: 1 }, true) // routing is armed
+      // The shell speaks (two chunks) before main has read the launch's { all: true }...
+      routing.send(win, 'fresh', 'Microsoft Windows banner', 1)
+      routing.send(win, 'fresh', 'C:> ', 2)
+      routing.note(1, { all: true, epoch: 1 }, true) // ...which then arrives
+      routing.send(win, 'fresh', 'later', 3)
+      expect(win.sends.map((a) => a[2])).toEqual(['Microsoft Windows banner', 'C:> ', 'later'])
+    })
+
+    it('NEGATIVE CONTROL: the same race without the grace would lose the first two chunks (a terminal whose grace is used up)', () => {
+      const routing = createTerminalDataRouting()
+      const win = fakeWindow()
+      routing.note(1, { id: 'someone-elses-pane', epoch: 1 }, true)
+      spokenOf(routing, 1, 'old')
+      routing.send(win, 'old', 'banner')
+      routing.send(win, 'old', 'prompt')
+      expect(win.sends).toHaveLength(0)
+    })
+
+    it('exactly GRACE_CHUNKS are free per terminal, counted per terminal, and an announced id never spends any', () => {
+      const routing = createTerminalDataRouting()
+      const win = fakeWindow()
+      routing.note(1, { id: 'pane', epoch: 1 }, true)
+      for (let i = 0; i < GRACE_CHUNKS + 5; i++) { routing.send(win, 'a', 'x'); routing.send(win, 'b', 'x') }
+      expect(sentIds(win).filter((id) => id === 'a')).toHaveLength(GRACE_CHUNKS)
+      expect(sentIds(win).filter((id) => id === 'b')).toHaveLength(GRACE_CHUNKS)
+      expect(routing.stats().skipped).toBe(10)
+      // A pane that mounts and leaves again does not give the terminal a fresh grace.
+      spokenOf(routing, 1, 'c')
+      const before = win.sends.length
+      routing.send(win, 'c', 'x')
+      expect(win.sends.length).toBe(before)
+    })
+
+    it('is not spent while routing is not filtering at all (everything is sent then), and reset() forgets it', () => {
+      const routing = createTerminalDataRouting()
+      const win = fakeWindow()
+      for (let i = 0; i < GRACE_CHUNKS * 2; i++) routing.send(win, 'w', 'x') // nothing announced: sent, grace untouched
+      routing.note(1, { id: 'pane', epoch: 1 }, true)
+      for (let i = 0; i < GRACE_CHUNKS + 10; i++) routing.send(win, 'w', 'x')
+      expect(sentIds(win).filter((id) => id === 'w')).toHaveLength(GRACE_CHUNKS * 2 + GRACE_CHUNKS)
+      expect(routing.stats().graced).toBe(2) // w, and the announced pane (marked as spoken of)
+      routing.reset()
+      expect(routing.stats().graced).toBe(0)
+    })
+
+    it('remembers at most 1,024 terminals: the oldest are forgotten (and would only get their free chunks again)', () => {
+      const routing = createTerminalDataRouting()
+      const win = fakeWindow()
+      routing.note(1, { id: 'pane', epoch: 1 }, true)
+      for (let i = 0; i < 1500; i++) routing.send(win, `worker-${i}`, 'x')
+      expect(routing.stats().graced).toBeLessThanOrEqual(1024)
+      expect(win.sends).toHaveLength(1500) // each was a first chunk: all sent
+    })
   })
 
   it('passes the chunk and where it ends in the stream through untouched, as the base did: 4 arguments', () => {
@@ -93,6 +167,7 @@ describe('terminal:data routing: what main sends to the renderer', () => {
     const routing = createTerminalDataRouting()
     const win = fakeWindow()
     routing.note(1, { id: 'pane', epoch: 1 }, true)
+    spokenOf(routing, 1, 'other') // its grace is not what is under test here
     routing.send(win, 'other', 'before')
     routing.note(1, { all: true, epoch: 1 }, true)
     routing.send(win, 'other', 'during')
@@ -103,7 +178,7 @@ describe('terminal:data routing: what main sends to the renderer', () => {
     expect(routing.stats().all).toBe(false)
   })
 
-  it('a unsubscribe for an id nobody announced changes nothing, and never arms the router', () => {
+  it('an unsubscribe for an id nobody announced changes nothing, and never arms the router', () => {
     const routing = createTerminalDataRouting()
     const win = fakeWindow()
     routing.note(1, { id: 'ghost', epoch: 1 }, false)
@@ -114,14 +189,14 @@ describe('terminal:data routing: what main sends to the renderer', () => {
 })
 
 describe('terminal:data routing: a new page, an old page, two windows', () => {
-  it('a reloaded page (a newer epoch) starts from nothing: the old page\'s ids are not carried over', () => {
+  it("a reloaded page (a newer epoch) starts from nothing: the old page's ids are not carried over", () => {
     const routing = createTerminalDataRouting()
     const win = fakeWindow()
     routing.note(1, { id: 'a', epoch: 100 }, true)
     routing.note(1, { id: 'b', epoch: 100 }, true)
     // The page reloads: its preload announces under a newer epoch and only the panes that mounted again.
     routing.note(1, { id: 'b', epoch: 200 }, true)
-    routing.send(win, 'a', 'a')
+    for (let i = 0; i < GRACE_CHUNKS + 5; i++) routing.send(win, 'a', 'a') // a was spoken of: no grace, and no longer listened to
     routing.send(win, 'b', 'b')
     expect(win.sends.map((a) => a[2])).toEqual(['b'])
   })
@@ -133,8 +208,10 @@ describe('terminal:data routing: a new page, an old page, two windows', () => {
     routing.note(1, { id: 'a', epoch: 100 }, false) // the dead page's cleanup, arriving after the new page's subscribe
     routing.note(1, { id: 'z', epoch: 100 }, true) // and a late subscribe of the dead page
     routing.send(win, 'a', 'a')
-    routing.send(win, 'z', 'z')
-    expect(win.sends.map((a) => a[2])).toEqual(['a'])
+    // z is not listened to: only its grace chunks get through, however many are sent.
+    for (let i = 0; i < GRACE_CHUNKS + 20; i++) routing.send(win, 'z', 'z')
+    expect(sentIds(win).filter((id) => id === 'a')).toHaveLength(1)
+    expect(sentIds(win).filter((id) => id === 'z')).toHaveLength(GRACE_CHUNKS)
   })
 
   it('a window main is not tracking is sent everything (fail open), and a newer sender takes over the tracking', () => {
@@ -145,7 +222,8 @@ describe('terminal:data routing: a new page, an old page, two windows', () => {
     routing.send(second, 'unlisted', 'x')
     expect(second.sends).toHaveLength(1)
     routing.note(2, { id: 'b', epoch: 1 }, true)
-    routing.send(second, 'unlisted', 'y')
+    spokenOf(routing, 2, 'old')
+    routing.send(second, 'old', 'y')
     routing.send(second, 'b', 'z')
     expect(second.sends.map((a) => a[2])).toEqual(['x', 'z'])
     routing.send(first, 'unlisted', 'q')
@@ -156,6 +234,7 @@ describe('terminal:data routing: a new page, an old page, two windows', () => {
     const routing = createTerminalDataRouting()
     const win = fakeWindow('none')
     routing.note(undefined, { id: 'a', epoch: 1 }, true)
+    spokenOf(routing, undefined, 'b')
     routing.send(win, 'a', '1')
     routing.send(win, 'b', '2')
     expect(win.sends.map((a) => a[2])).toEqual(['1'])
@@ -164,15 +243,15 @@ describe('terminal:data routing: a new page, an old page, two windows', () => {
 
 describe('terminal:data routing: fails open', () => {
   it('a malformed announcement turns routing off for the rest of the process: everything is sent, even after valid announcements', () => {
-    const bad: unknown[] = [undefined, null, 'a', 7, {}, { epoch: 1 }, { id: '', epoch: 1 }, { id: 5, epoch: 1 }, { id: 'a' }, { id: 'a', epoch: 'x' }, { id: 'a', epoch: NaN }, { all: false, epoch: 1 }, { id: 'x'.repeat(5000), epoch: 1 }]
+    const bad: unknown[] = [undefined, null, 'a', 7, {}, { epoch: 1 }, { id: '', epoch: 1 }, { id: 5, epoch: 1 }, { id: 'a' }, { id: 'a', epoch: 'x' }, { id: 'a', epoch: NaN }, { all: false, epoch: 1 }, { id: 'x'.repeat(5000), epoch: 1 }, { id: 'a', all: true, epoch: 1 }]
     for (const msg of bad) {
       const routing = createTerminalDataRouting()
       const win = fakeWindow()
       routing.note(1, { id: 'a', epoch: 1 }, true)
       routing.note(1, msg, true)
       routing.note(1, { id: 'b', epoch: 1 }, true)
-      routing.send(win, 'never-announced', 'x')
-      expect(win.sends, JSON.stringify(msg)).toHaveLength(1)
+      for (let i = 0; i < GRACE_CHUNKS + 5; i++) routing.send(win, 'never-announced', 'x') // past any grace
+      expect(win.sends, JSON.stringify(msg)).toHaveLength(GRACE_CHUNKS + 5)
       expect(routing.stats().armed).toBe(false)
     }
   })
@@ -197,6 +276,7 @@ describe('terminal:data routing: fails open', () => {
     const routing = createTerminalDataRouting()
     const win = fakeWindow()
     routing.note(1, { id: 'a', epoch: 1 }, true)
+    spokenOf(routing, 1, 'other')
     routing.reset()
     routing.send(win, 'other', 'x')
     expect(win.sends).toHaveLength(1)
@@ -212,6 +292,8 @@ describe('registerTerminalDataRouting: the two IPC channels', () => {
     expect([...handlers.keys()].sort()).toEqual(['terminal:subscribe', 'terminal:unsubscribe'])
     const win = fakeWindow(9)
     handlers.get('terminal:subscribe')!({ sender: { id: 9 } }, { id: 'a', epoch: 1 })
+    handlers.get('terminal:subscribe')!({ sender: { id: 9 } }, { id: 'b', epoch: 1 })
+    handlers.get('terminal:unsubscribe')!({ sender: { id: 9 } }, { id: 'b', epoch: 1 })
     routing.send(win, 'a', '1')
     routing.send(win, 'b', '2')
     handlers.get('terminal:unsubscribe')!({ sender: { id: 9 } }, { id: 'a', epoch: 1 })
@@ -225,6 +307,7 @@ describe('registerTerminalDataRouting: the two IPC channels', () => {
     registerTerminalDataRouting({ on: (c, h) => { handlers.set(c, h as (e: unknown, msg: unknown) => void) } }, routing)
     handlers.get('terminal:subscribe')!({}, { id: 'a', epoch: 1 })
     handlers.get('terminal:subscribe')!(undefined, { id: 'b', epoch: 1 })
+    spokenOf(routing, undefined, 'c')
     const win = fakeWindow('none')
     routing.send(win, 'a', '1')
     routing.send(win, 'b', '2')
@@ -240,6 +323,7 @@ describe('registerTerminalDataRouting: the two IPC channels', () => {
     mod.terminalDataRouting.reset()
     const win = fakeWindow(5)
     handlers.get('terminal:subscribe')!({ sender: { id: 5 } }, { id: 'only', epoch: 1 })
+    spokenOf(mod.terminalDataRouting, 5, 'else')
     expect(mod.sendTerminalData(win, 'only', 'x', 1)).toBe(true)
     expect(mod.sendTerminalData(win, 'else', 'x', 1)).toBe(false)
     mod.terminalDataRouting.reset()
@@ -254,12 +338,14 @@ describe('terminal:data routing: the process-wide router honours the kill switch
       vi.resetModules()
       const off = await import('../../src/main/terminalDataRouting')
       off.terminalDataRouting.note(1, { id: 'a', epoch: 1 }, true)
+      spokenOf(off.terminalDataRouting, 1, 'b')
       expect(off.terminalDataRouting.send(fakeWindow(1), 'b', 'x')).toBe(true)
 
       process.env.TERMPOLIS_TERMINAL_DATA_ROUTING = '1'
       vi.resetModules()
       const on = await import('../../src/main/terminalDataRouting')
       on.terminalDataRouting.note(1, { id: 'a', epoch: 1 }, true)
+      spokenOf(on.terminalDataRouting, 1, 'b')
       expect(on.terminalDataRouting.send(fakeWindow(1), 'b', 'x')).toBe(false)
     } finally {
       if (before === undefined) delete process.env.TERMPOLIS_TERMINAL_DATA_ROUTING

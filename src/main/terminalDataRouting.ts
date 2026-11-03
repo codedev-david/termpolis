@@ -16,8 +16,12 @@
 // FAILS OPEN, every way it can:
 //   * until a renderer page has announced anything, main sends everything (a window without the new preload, a unit
 //     test with no renderer at all);
+//   * the first GRACE_CHUNKS chunks of a terminal nobody has announced are sent anyway (a launch's announcement that it
+//     listens to everything lags the shell's first output by a round trip);
 //   * `epoch` is the page's load time: a reloaded page announces under a newer one and starts from nothing, and a
-//     message from the page it replaced (an older epoch, however late) is ignored;
+//     message from the page it replaced (an older epoch, however late) is ignored. The app never reloads its own page, so
+//     this only matters to a developer's Ctrl+R (a wall clock stepped back by more than the time between two loads would
+//     make that reload's announcements look old: the kill switch below is the way out);
 //   * a window main is not tracking is sent everything;
 //   * ANY malformed announcement turns routing off for the rest of the process: the one thing that must never happen
 //     is a pane that is not sent its output, so a message that cannot be understood is never guessed at;
@@ -38,6 +42,8 @@ export interface RoutingStats {
   armed: boolean
   /** True while something listens to every terminal. */
   all: boolean
+  /** Terminals remembered for the grace (bounded). */
+  graced: number
 }
 
 export interface TerminalDataRouting {
@@ -52,6 +58,17 @@ export interface TerminalDataRouting {
 
 /** A terminal id is a uuid or a short name; anything longer is not one. */
 const MAX_ID_LENGTH = 512
+
+/**
+ * The first chunks of a terminal nothing has announced are sent anyway. A launch subscribes to every terminal a moment after
+ * the shell it started begins to speak, and main reads that announcement a round trip later (longer while main is busy): the
+ * shell's first output (a cmd.exe banner and prompt come in one chunk within milliseconds of the spawn) must not fall into
+ * that gap, or the launch waits out its 4 s ceiling instead of seeing the shell go quiet. 64 chunks cover any shell's
+ * start-up; after them a swarm worker nobody watches costs the renderer nothing.
+ */
+export const GRACE_CHUNKS = 64
+/** Terminals remembered for the grace; the oldest are forgotten (they would only get their 64 chunks again). */
+const MAX_GRACED_IDS = 1024
 
 interface Listening {
   epoch: number
@@ -81,11 +98,22 @@ export function createTerminalDataRouting(opts: { enabled?: boolean } = {}): Ter
   let poisoned = false
   let sent = 0
   let skipped = 0
+  /** Chunks sent under the grace, per terminal never announced; GRACE_CHUNKS means used up (an announced id is marked so). */
+  const graced = new Map<string, number>()
 
   const wants = (sender: number | undefined, id: string): boolean => {
     if (!enabled || poisoned || listening === null) return true
     if (listening.sender !== sender) return true
     return listening.all || listening.ids.has(id)
+  }
+
+  /** Spend one of the terminal's grace chunks, if it has any left. */
+  const spendGrace = (id: string): boolean => {
+    const used = graced.get(id) ?? 0
+    if (used >= GRACE_CHUNKS) return false
+    graced.set(id, used + 1)
+    if (graced.size > MAX_GRACED_IDS) graced.delete(graced.keys().next().value as string)
+    return true
   }
 
   return {
@@ -105,14 +133,20 @@ export function createTerminalDataRouting(opts: { enabled?: boolean } = {}): Ter
       } else if (a.epoch < listening.epoch) {
         return // the page that was replaced
       }
-      if (a.all) listening.all = on
-      else if (on) listening.ids.add(a.id as string)
-      else listening.ids.delete(a.id as string)
+      if (a.all) {
+        listening.all = on
+      } else {
+        const id = a.id as string
+        // A terminal the page has spoken of has no grace left: it is listened to, or it was and is not any more.
+        graced.set(id, GRACE_CHUNKS)
+        if (on) listening.ids.add(id)
+        else listening.ids.delete(id)
+      }
     },
     send(target, id, data, end) {
       if (!target) return false
       const { webContents } = target
-      if (!wants(webContents.id, id)) {
+      if (!wants(webContents.id, id) && !spendGrace(id)) {
         skipped++
         return false
       }
@@ -126,10 +160,12 @@ export function createTerminalDataRouting(opts: { enabled?: boolean } = {}): Ter
       ids: listening?.ids.size ?? 0,
       armed: enabled && !poisoned && listening !== null,
       all: listening?.all ?? false,
+      graced: graced.size,
     }),
     reset() {
       listening = null
       poisoned = false
+      graced.clear()
     },
   }
 }

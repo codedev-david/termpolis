@@ -9,7 +9,10 @@ import { getTheme } from '../../themes/terminalThemes'
 import { createPaneOutput } from '../../lib/paneOutput'
 import { createChunkQueue } from '../../lib/chunkQueue'
 import { holdOutput, holdOutputLegacy, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
-import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER } from '../../lib/paneSwitches'
+import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER, SWITCH_HIDDEN_PANES, SWITCH_PANE_EFFECTS } from '../../lib/paneSwitches'
+import { paneRootStyle } from '../../lib/paneHiding'
+import { createPaneEffects, trackPaneEffects, paneEffectsSnapshot, type PaneEffects } from '../../lib/paneSideEffects'
+import { subscribeTerminalOutput } from '../../lib/paneRouting'
 import { createPaneFitter, type PaneFitter } from '../../lib/paneFitter'
 import { echoTraceAttach } from '../../lib/echoTrace'
 import { registerWebglPane, setWebglPaneVisible } from '../../lib/webglBudget'
@@ -288,7 +291,13 @@ if (typeof window !== 'undefined') {
   // Read-only test inspection hook — used by e2e terminal tests.
   ;(window as unknown as { __termpolis_terminal_text?: typeof readTerminalText }).__termpolis_terminal_text =
     readTerminalText
+  // Counters of the per-pass side effects, by terminal id (numbers only): what an e2e spec reads to see how often a pane
+  // really ran them.
+  ;(window as unknown as { __termpolis_pane_effects?: typeof paneEffectsSnapshot }).__termpolis_pane_effects = paneEffectsSnapshot
 }
+
+/** How much of what arrived between two side-effect passes a pass reads, at most (paneSideEffects.ts). */
+const EFFECT_SCAN_CHARS = 16384
 
 /** The CSI and OSC sequences in a chunk of pty output, removed: what the prompt parser and the
  *  agent detector read. */
@@ -357,6 +366,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // The fitter reads visibility live: the mount effect only ever sees the value it was created with.
   const isVisibleRef = useRef(isVisible)
   isVisibleRef.current = isVisible
+  // This mount's per-pass side effects (paneSideEffects.ts), so the visibility effect can run the pending pass the moment
+  // the pane is shown; and whether an inactive pane also skips its rendering (read once, when the pane mounts).
+  const paneEffectsRef = useRef<PaneEffects | null>(null)
+  const [skipHiddenRender] = useState(() => switchEnabled(SWITCH_HIDDEN_PANES))
   // The current mount's count of history writes still being parsed (see writeHistory) — so a
   // Clear's mode restore, made outside the mount effect, is counted where onData looks.
   const historyParsesRef = useRef<HistoryParses>({ count: 0 })
@@ -842,6 +855,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // you get a diff badge on an empty terminal, or a stale copy snapshot the context
     // menu will happily paste.
     outputBufferRef.current = ''
+    paneEffectsRef.current?.cancel() // the output that has not been looked at yet went away with the rest
     pendingWriteRef.current.clear()
     inputBufferRef.current = ''
     copySnapshotRef.current = null
@@ -1176,6 +1190,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // the reply is already on its way while the rest of the pane wires up; landReplay (further
     // down, once everything it needs exists) writes it. Until it lands, live output is noted
     // with where it ends in the stream, so landReplay can tell what the reply already holds.
+    //
+    // Listen BEFORE asking (1.54.5): main sends this terminal's output only to a pane that announced it listens, and it
+    // reads the announcement ahead of the replay request, so whatever is produced from then on is in the reply or live
+    // (or both, which the end offsets sort out), never in neither. `outputHandler` is assigned further down, in this same
+    // synchronous effect, so no chunk can reach the stub before it.
+    let outputHandler: (id: string, data: string, end?: number) => void = () => undefined
+    const unsub = subscribeTerminalOutput(window.termpolis, terminalId, (id, data, end) => outputHandler(id, data, end))
     const replayRequest = window.termpolis.readTerminalBuffer(terminalId)
     let replayPending = true
     const earlyLive: Array<{ data: string; end?: number }> = []
@@ -1463,6 +1484,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           lastCommandRef.current = cmd
         }
         inputBufferRef.current = ''
+        // Output still waiting for its pass goes into the window and through the detectors NOW, so the reset below drops
+        // it with the rest, as it did when every chunk was processed on arrival (otherwise it would land after the reset).
+        paneEffectsRef.current?.flush()
         outputBufferRef.current = ''
         diffDetectedRef.current = false
         setDiffDetected(false)
@@ -1644,7 +1668,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     }
     const promptParse = createTrailingThrottle(parsePromptNow, 500)
 
-    const unsub = window.termpolis.onTerminalData((id, data, end) => {
+    outputHandler = (id, data, end) => {
       if (id !== terminalId) return
       echo.received(data.length)
       // Output that beat this mount's replay reply: note where it ends in the stream, so
@@ -1662,6 +1686,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // Record output if recording
       recording.appendRecordingEntry('output', data)
 
+      // Everything the output drives besides xterm (window, diff, prompt, agent, compaction, session, error patterns)
+      // runs once per pass over what arrived since the last one (paneSideEffects.ts), or per chunk with the kill switch.
+      if (paneEffects) paneEffects.push(data)
+      else runEffects(data, 1)
+    }
+
+    const runEffects = (data: string, messages: number): void => {
       // Buffer recent output (keep last 4KB to avoid memory bloat)
       outputBufferRef.current += data
       if (outputBufferRef.current.length > 4096) {
@@ -1675,15 +1706,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         if (!disposed) setDiffDetected(hasDiff)
       }
 
-      // Strip ANSI for processing
-      const stripped = stripEscapes(outputBufferRef.current)
+      // Strip ANSI for processing. A pass that covers more than the window reads what arrived (up to a cap), not just
+      // the window's last 4 KB: a marker in the first half of a burst is not scrolled out of sight before it is looked at.
+      const stripped = stripEscapes(paneEffects && data.length > 4096 ? data.slice(-EFFECT_SCAN_CHARS) : outputBufferRef.current)
 
       // Parse prompt for cwd and git branch — at most once per 500ms, and never skipping
       // the last prompt of a burst (see parsePromptNow).
       promptParse.request()
 
       // Agent detection + cost tracking + conversation parsing
-      agent.processAgentDetection(stripped, data.length, terminalId, terminalName)
+      agent.processAgentDetection(stripped, data.length, terminalId, terminalName, messages)
 
       // Re-prime memory after the agent compacts its conversation (settles, then
       // re-injects recalled context). Stable callback; internally gated + debounced.
@@ -1693,11 +1725,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // delta into the brain. Stable callback; internally gated + debounced.
       onSessionOutput(stripped)
 
-      // Watch for OSC 633 exit code marker (if shell integration is enabled)
-      const oscMatch = data.match(/\x1b\]633;E;(\d+)\x07/)
-      if (oscMatch) {
-        const exitCode = parseInt(oscMatch[1], 10)
-        if (exitCode !== 0 && lastCommandRef.current) {
+      // Watch for OSC 633 exit code marker (if shell integration is enabled). A pass can hold several: any failure counts.
+      const oscFailed = data.includes('\x1b]633;E;') && Array.from(data.matchAll(/\x1b\]633;E;(\d+)\x07/g)).some((m) => parseInt(m[1], 10) !== 0)
+      if (oscFailed) {
+        if (lastCommandRef.current) {
           const cmd = lastCommandRef.current
           const output = outputBufferRef.current
           getSuggestion(cmd, output).then(suggestion => {
@@ -1710,7 +1741,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // Pattern-matching fallback: detect common error patterns in output
       // (using compiled combined pattern)
       if (lastCommandRef.current && !fixSuggestionRef.current) {
-        if (ERROR_PATTERN.test(data)) {
+        if (ERROR_PATTERN.test(paneEffects && data.length > EFFECT_SCAN_CHARS ? data.slice(-EFFECT_SCAN_CHARS) : data)) {
           const cmd = lastCommandRef.current
           const output = outputBufferRef.current
           getSuggestion(cmd, output).then(suggestion => {
@@ -1719,7 +1750,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           }).catch(() => {})
         }
       }
-    })
+    }
+    const paneEffects: PaneEffects | null = switchEnabled(SWITCH_PANE_EFFECTS)
+      ? createPaneEffects({ run: runEffects, isVisible: () => isVisibleRef.current })
+      : null
+    paneEffectsRef.current = paneEffects
+    const untrackEffects = paneEffects ? trackPaneEffects(terminalId, paneEffects) : null
 
     // 1.54.5: the fit happens in stream order (the output ahead of it is parsed at the size it was
     // drawn for), only while the pane is visible, never to a collapsed grid, and the pty is told even
@@ -1833,6 +1869,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     return () => {
       disposed = true
       unsub()
+      paneEffects?.cancel() // a pass still waiting for its window has nothing left to act on
+      untrackEffects?.()
+      if (paneEffectsRef.current === paneEffects) paneEffectsRef.current = null
       echo.detach()
       throttledWrite.detach() // the write scheduler stops handing output to this pane's xterm
       promptParse.cancel()
@@ -1904,6 +1943,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     setWebglPaneVisible(terminalId, isVisible)
   }, [isVisible, terminalId])
 
+  // Shown: the side effects of the output that arrived while the pane was in the background run now (they run once a second
+  // there, not per chunk), so what the user looks at, the prompt, the agent, the diff badge, is current.
+  useEffect(() => {
+    if (isVisible) paneEffectsRef.current?.flush()
+  }, [isVisible, terminalId])
+
   // Put the cursor on the active terminal's command line so it's ready for input
   // the instant you switch to it (Alt+1..9) or launch an agent (Ctrl+1..4 →
   // addTerminal marks the new terminal active) — no manual click. Without this,
@@ -1933,7 +1978,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   return (
     <div
       className="absolute inset-0 flex flex-col"
-      style={{ visibility: isVisible ? 'visible' : 'hidden' }}
+      style={paneRootStyle(isVisible, skipHiddenRender)}
     >
       {/* No padding here on purpose: the 4px inset lives on `.xterm` itself
           (index.css). FitAddon sizes the grid from getComputedStyle(parent).width,

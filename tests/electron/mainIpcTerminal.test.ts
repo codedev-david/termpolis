@@ -529,6 +529,89 @@ describe('terminal output buffering (terminal:create onData -> terminal:read-buf
     expect(data.nextOffset).toBe(5)
   })
 
+  // 1.54.5 (plan package P9): main pushes terminal:data only for a terminal the renderer announced it listens to. The buffer
+  // is appended BEFORE that is asked, so nothing about replay, the phone pump or MCP read_output depends on it.
+  describe('terminal:data goes only where something listens (terminal:subscribe)', () => {
+    const mod = () => import('../../src/main/terminalDataRouting')
+    async function routing() {
+      return (await mod()).terminalDataRouting
+    }
+    const dataSends = () => mockWebContents.send.mock.calls.filter((c) => c[0] === 'terminal:data')
+
+    it('sends 0 terminal:data for a terminal nothing listens to, and its output stays in the replay buffer, unchanged', async () => {
+      const r = await routing()
+      const { GRACE_CHUNKS } = await mod() // the first chunks of a terminal nobody announced are sent anyway
+      try {
+        const watched = await spawnWithPump('route-watched')
+        const worker = await spawnWithPump('route-worker')
+        fire('terminal:subscribe', { id: 'route-watched', epoch: 7 }) // a pane mounted for one of them
+        for (let i = 0; i < GRACE_CHUNKS; i++) worker('.') // spend the grace
+        mockWebContents.send.mockClear()
+        watched('seen ')
+        worker('not sent ')
+        worker('at all')
+        expect(dataSends().map((c) => [c[1], c[2]])).toEqual([['route-watched', 'seen ']])
+        expect(dataSends().filter((c) => c[1] === 'route-worker')).toHaveLength(0)
+        // The worker's output was never lost: a pane that mounts later replays it, and read_output reads it.
+        const tail = '.'.repeat(GRACE_CHUNKS) + 'not sent at all'
+        const replay = await invoke('terminal:read-buffer', { terminalId: 'route-worker' })
+        expect(replay).toEqual({ success: true, data: { output: tail, length: tail.length, nextOffset: tail.length, missed: 0 } })
+        expect((await invoke('terminal:read-buffer', { terminalId: 'route-watched' })).data.output).toBe('seen ')
+      } finally {
+        r.reset()
+      }
+    })
+
+    it('the pane that mounts later is subscribed first, then replays: what comes after is live, with its end offset', async () => {
+      const r = await routing()
+      try {
+        const worker = await spawnWithPump('route-late')
+        fire('terminal:subscribe', { id: 'someone-else', epoch: 3 }) // arms the router
+        worker('before ')
+        mockWebContents.send.mockClear()
+        fire('terminal:subscribe', { id: 'route-late', epoch: 3 })    // the pane mounts...
+        const replay = await invoke('terminal:read-buffer', { terminalId: 'route-late' }) // ...then asks
+        expect(replay.data).toMatchObject({ output: 'before ', nextOffset: 7 })
+        worker('after')
+        expect(dataSends().map((c) => [c[1], c[2], c[3]])).toEqual([['route-late', 'after', 12]])
+      } finally {
+        r.reset()
+      }
+    })
+
+    it('NEGATIVE CONTROL: before any pane has announced anything (a window without the new preload) every chunk is sent, as in 1.54.4', async () => {
+      const r = await routing()
+      r.reset()
+      const a = await spawnWithPump('route-open-a')
+      const b = await spawnWithPump('route-open-b')
+      mockWebContents.send.mockClear()
+      a('one')
+      b('two')
+      expect(dataSends().map((c) => [c[1], c[2]])).toEqual([['route-open-a', 'one'], ['route-open-b', 'two']])
+    })
+
+    it('a launch waiting for a shell listens to every terminal: all output is sent while it does, and only the panes\' after', async () => {
+      const r = await routing()
+      try {
+        const pane = await spawnWithPump('route-all-pane')
+        const fresh = await spawnWithPump('route-all-fresh')
+        fire('terminal:subscribe', { id: 'route-all-pane', epoch: 5 })
+        fire('terminal:subscribe', { all: true, epoch: 5 })
+        mockWebContents.send.mockClear()
+        fresh('banner')
+        fire('terminal:unsubscribe', { all: true, epoch: 5 })
+        // The launch's own pane mounted and left meanwhile: the page has spoken of the terminal, so no grace is left for it.
+        fire('terminal:subscribe', { id: 'route-all-fresh', epoch: 5 })
+        fire('terminal:unsubscribe', { id: 'route-all-fresh', epoch: 5 })
+        fresh('quiet')
+        pane('shown')
+        expect(dataSends().map((c) => [c[1], c[2]])).toEqual([['route-all-fresh', 'banner'], ['route-all-pane', 'shown']])
+      } finally {
+        r.reset()
+      }
+    })
+  })
+
   it('hands a replaying pane the modes the evicted output left set, and the size the pty draws for', async () => {
     const id = 'buf-replay'
     mockGetTerminalSize.mockReturnValue({ cols: 120, rows: 30 })

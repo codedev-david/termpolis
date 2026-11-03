@@ -47,6 +47,7 @@ const api: TermpolisAPI = {
   // One shared listener for every pane (onTerminalDataFor), the all-terminal listener it always was (onTerminalData).
   onTerminalData: terminalData.onAll,
   onTerminalDataFor: terminalData.onFor,
+  terminalDataStats: terminalData.stats,
 
   getAvailableShells: () =>
     ipcRenderer.invoke('shell:available'),
