@@ -152,8 +152,9 @@ const CONNECTIVE_RE = new RegExp(
 // end on: "Watch out: `fs.watch` fires twice, so debounce the handler"). A "so" counts after a comma or semicolon and white space (a
 // space, or a line break in wrapped text), not after a colon (that is how a label ends, and "Problem: So ..." is a filler, not a cause),
 // and not when the clause goes on about the speaker or the story so far (", so I", ", so we", ", so let's", ", so my", ", so our",
-// ", so far"); a "since" counts when it is not about when (this, last, then, yesterday, today, tonight, tomorrow, a number or
-// a version, the morning, a day, a month, "ever since"). The whitespace is asked for and then looked past, not matched before the
+// ", so far"); a "since" counts when it is not about when (this, last, then, a number or a version, the morning, a day, a month,
+// "ever since"; "since yesterday", "today", "tonight" and "tomorrow" are not listed: they are progress markers, and a lesson that has
+// one is dated, which is settled before this pattern runs). The whitespace is asked for and then looked past, not matched before the
 // lookahead, so two spaces after "so" cannot slip by it, and the words that make a "since" about when ("ever", "the" before
 // "morning") are followed by any run of white space, not one space; and neither word is inside the group above, so what follows
 // it may start with a backtick or a bracket. Needing a name keeps out the status lines that name nothing searchable ("The tests
@@ -161,7 +162,7 @@ const CONNECTIVE_RE = new RegExp(
 // on the sentence before the connective, below.
 const WEAK_CONNECTIVE_RE = new RegExp(
   '(?<=[,;]\\s+)so(?=\\s)(?!\\s+(?:i|we|let|my|our|far)\\b)' +
-    '|(?<!\\bever\\s+)\\bsince(?=\\s)(?!\\s+(?:(?:this|last|then|yesterday|today|tonight|tomorrow|the\\s+(?:morning|afternoon|evening|start|beginning)|' +
+    '|(?<!\\bever\\s+)\\bsince(?=\\s)(?!\\s+(?:(?:this|last|then|the\\s+(?:morning|afternoon|evening|start|beginning)|' +
     '(?:mon|tues|wednes|thurs|fri|satur|sun)day|january|february|march|april|may|june|july|august|september|october|november|december)\\b|v?\\d))',
   'gi',
 )

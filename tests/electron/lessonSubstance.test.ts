@@ -305,6 +305,25 @@ describe('lessonSubstance: a rule or a mechanism', () => {
       expect(named(clause)).toBe(false)
     })
 
+    // Each line below has nothing else that keeps it out (no past tense, no progress marker), so only the exclusion decides: a "so" that
+    // goes on about the speaker ("so I think", "so we should", "so let us", "so my guess", "so our fix") is not a cause joined to a rule.
+    it.each([
+      'the `cache` is stale, so I think we should flush it after every deploy',
+      'the `cache` is stale, so we should flush it after every deploy of the app',
+      'the `cache` is stale, so let us flush it after every deploy of the app',
+      'the `cache` is stale, so my guess is that we should flush it after every deploy',
+      'the `cache` is stale, so our fix is to flush it after every deploy of the app',
+    ])('does not count a "so" that goes on about the speaker: %s', (clause) => {
+      expect(connective(clause + pad)).toBe(false)
+    })
+
+    // "ever since" is about when; "whatever since" is not, so the word boundary before "ever" matters. "since this" is about when
+    // whatever follows it ("since this change to the build image").
+    it('reads "ever since" as a word of its own, and "since this" as about when', () => {
+      expect(named('the `build` step fails whatever since the update of the agent image rolled out')).toBe(true)
+      expect(named('the `lint` job fails on the main branch since this change to the build image')).toBe(false)
+    })
+
     // The heuristic distiller writes "Problem: <sentence> -> Fix: <sentence>", and a turn that opens with "So" gives "Problem: So ...".
     // Neither lesson says anything, and neither is a cause joined to a consequence.
     it('does not lift the lessons the distiller writes after a filler "So" past the bar', () => {
@@ -457,6 +476,16 @@ describe('lessonSubstance: a rule or a mechanism', () => {
         expect(credited('Tune dropped in `limits.ts`, so debounce the handler')).toBe(false)
       })
 
+      // A word that starts with "u" and not with "un" is a past tense like any other: "updated", "uploaded", "upgraded".
+      it.each(['updated', 'uploaded', 'upgraded'])('takes "%s" for a past tense: it starts with "u", not with "un"', (word) => {
+        expect(credited(`We ${word} \`index.ts\` to read the flag, so the old path is gone for good.`)).toBe(false)
+      })
+
+      // A past participle inside single quotes is still the word it is: the quotes do not hide it from the check.
+      it('reads a past tense inside single quotes as the word it is', () => {
+        expect(credited("The `lint` job says 'failed' for the whole run, so the pipeline stops there for good.")).toBe(false)
+      })
+
       // A contraction is read as the two words it stands for: "didn't" is "did not", "hasn't been" is "has not been", "isn't dropped" is "is not dropped".
       it.each(["hasn't been slow", 'haven’t been slow', "hadn't been slow", "didn't drain", "wasn't slow", "weren't slow"])(
         'takes "%s" for a report',
@@ -471,10 +500,21 @@ describe('lessonSubstance: a rule or a mechanism', () => {
         expect(credited("The queue CAN'T drain in `limits.ts`, so debounce the handler")).toBe(true)
       })
 
+      // Every contraction in the clause loses its "n't", not only the first: the verb in front of the second one stands as the word it is.
+      it('strips each contraction in a clause', () => {
+        expect(credited("The `cache` isn't flushed and hasn't been reset, so go and call it by hand after every test run.")).toBe(false)
+        expect(credited("The `cache` isn't flushed and doesn't expire, so go and call it by hand after every test run.")).toBe(true)
+      })
+
       it('does not take every contraction for a report', () => {
         expect(credited("The queue can't drain in `limits.ts`, so debounce the handler")).toBe(true)
         expect(credited("The queue isn't drained in `limits.ts`, so debounce the handler")).toBe(true) // a negated present passive
         expect(credited('Rows aren’t dropped in `memory.db`, so debounce the handler')).toBe(true)
+      })
+
+      // A full stop ends a sentence when any white space follows it, a tab or a no-break space as well as a space.
+      it.each(['\t', ' '])('ends a sentence at a full stop followed by %j', (gap) => {
+        expect(credited(`The deploy was called.${gap}Then the \`retry\` step runs twice, so guard it with a flag in the handler.`)).toBe(true)
       })
 
       it('takes the progress markers as a date on the whole lesson, wherever they stand', () => {
@@ -854,6 +894,14 @@ describe('lessonSubstance: the edges of each rule', () => {
         expect(has(at(1250), 'connective +2')).toBe(false) // starts after the window
         expect(ids(at(1250))).toBe('identifiers +1') // and the name in the first words is still inside it
       }
+    })
+
+    // A progress marker is read from the same window as the identifiers and the connective: one past character 1,200 does not date the lesson.
+    it('takes a progress marker that lies past character 1,200 for nothing, and one at the start for a marker', () => {
+      const body = 'The `cache` is stale and ' + 'it keeps growing between the nightly runs and the weekly cleanups '.repeat(18)
+      expect(body.length).toBeGreaterThan(1200)
+      expect(has(`${body}so flush it today.`, 'progress -1')).toBe(false)
+      expect(has(`today ${body}so flush it.`, 'progress -1')).toBe(true)
     })
 
     // The window is 1,200 characters, to the character: a word that ends at 1,200 is inside it, one that ends at 1,201 is cut.
