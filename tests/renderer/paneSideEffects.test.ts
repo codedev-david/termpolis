@@ -131,6 +131,18 @@ describe('the per-pass side effects: how often they run', () => {
     expect(h.clock.timers()).toBe(0)
   })
 
+  it('a clock that steps BACK (a time sync, a resume) does not leave the next pass waiting out the whole step', () => {
+    const h = setup()
+    h.effects.push('a')                      // leading edge at t0
+    expect(h.passes).toHaveLength(1)
+    h.clock.advance(-3_600_000)              // the wall clock jumps back an hour
+    h.effects.push('b')                      // inside what would now be "the future" of the last pass
+    expect(h.clock.timers()).toBe(1)
+    h.clock.advance(EFFECTS_VISIBLE_MS + 1)  // one window later, not one hour
+    expect(h.passes).toHaveLength(2)
+    expect(h.passes[1]).toMatchObject({ frame: 'b', messages: 1 })
+  })
+
   it('nothing runs and nothing is armed while nothing arrives', () => {
     const h = setup()
     h.clock.advance(60_000)

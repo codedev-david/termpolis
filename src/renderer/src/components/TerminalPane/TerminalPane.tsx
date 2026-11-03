@@ -251,8 +251,9 @@ interface LiveTerminal {
 const liveTerminals = new Map<string, LiveTerminal>()
 
 /** With no id, answer for the terminal the user is actually looking at. In tab mode the
- *  inactive panes stay mounted with `visibility: hidden`, so "the first one" and "the one on
- *  screen" are different terminals and only the second is the one a test means. */
+ *  inactive panes stay mounted with `visibility: hidden` (and `content-visibility: hidden`,
+ *  paneHiding.ts), so "the first one" and "the one on screen" are different terminals and only
+ *  the second is the one a test means. */
 function activeTerminal(): LiveTerminal | undefined {
   const live = [...liveTerminals.values()]
   const visible = live.find(({ container }) =>

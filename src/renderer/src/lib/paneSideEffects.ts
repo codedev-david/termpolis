@@ -173,6 +173,9 @@ export function createPaneEffects(o: PaneEffectsOptions): PaneEffects {
 
   function request(): void {
     const now = clock.now()
+    // A wall clock that stepped back (a time sync, a resume) would otherwise leave the next pass waiting out the whole step:
+    // the window starts again from here instead.
+    if (now < lastRun) lastRun = now
     const target = lastRun + (o.isVisible() ? visibleMs : hiddenMs)
     if (target <= now) {
       run()
