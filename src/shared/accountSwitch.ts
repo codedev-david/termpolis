@@ -61,7 +61,15 @@ export const HINT_FROM_FOOT_ROWS = 14
 const WORKTREE_NAME = /^[A-Za-z0-9._-]{1,64}$/
 
 const CLAUDE_HINT_HEAD = /^\s*Resume this session with:\s*$/
-const CLAUDE_HINT_COMMAND = /^\s*claude(?:\s+(?:--worktree|-w)\s+"([^"]*)")?\s+(?:--resume|-r)(?:\s+(\S+))?\s*$/
+/** One word of the flags Claude Code 2.1.317 prints between `claude` and `--resume`, the ones the session was started with (`--effort max`,
+ *  `--model sonnet`, `--dangerously-skip-permissions`, `--permission-mode plan`, `--worktree "<n>"`): a double-quoted string, or a run of
+ *  characters no shell reads as more than a word, so a line that is a command (`$(...)`, `;`, `&`, `|`, `<`, `>`, a backtick) is no hint.
+ *  David's own wrapper adds `--effort max` to every launch, so a hint without flags is the exception (SW3-1). */
+export const HINT_FLAG_WORD = String.raw`(?:"[^"\r\n]*"|[^\s"$()<>;&|\x60]+)`
+/** Group 1: the flags, as printed; group 2: what follows `--resume`. */
+const CLAUDE_HINT_COMMAND = new RegExp(String.raw`^\s*claude((?:\s+${HINT_FLAG_WORD})*?)\s+(?:--resume|-r)(?:\s+(\S+))?\s*$`)
+/** The worktree flag among the flags, and its name when it has one in double quotes: `--worktree "<name>"` or `-w "<name>"`. */
+const WORKTREE_FLAG = /(?:^|\s)(?:--worktree|-w)(?=\s|=|$)(?:\s+"([^"]*)")?/
 const CODEX_HINT_HEAD = /To continue this session, run/
 const CODEX_HINT_COMMAND = /\bcodex\s+resume\s+(\S+)/
 const CODEX_SESSION_ROW = /^\s*Session ID:\s*(\S+)\s*$/
@@ -108,10 +116,12 @@ export function exitHintOf(rows: readonly string[], agent: AccountAgent, whole =
   if (agent === 'claude') {
     const hit = last(CLAUDE_HINT_HEAD, CLAUDE_HINT_COMMAND, false)
     if (!hit) return null
-    const [, worktree, id] = hit.m
-    // A worktree name this can't type back safely is no worktree to resume in: from the main folder
-    // the transcript isn't found, so the session goes as one with no id.
-    if (worktree !== undefined && !WORKTREE_NAME.test(worktree)) return { id: null, row: hit.row }
+    const [, flags, id] = hit.m
+    const named = WORKTREE_FLAG.exec(flags ?? '')
+    const worktree = named?.[1]
+    // A worktree this can't type back safely (a name with odd characters, or none in quotes) is no worktree to resume in: from the
+    // main folder the transcript isn't found, so the session goes as one with no id.
+    if (named && (worktree === undefined || !WORKTREE_NAME.test(worktree))) return { id: null, row: hit.row }
     const hint: ExitHint = { id: isSessionId(id) ? id : null, row: hit.row }
     if (worktree !== undefined) hint.worktree = worktree
     return hint

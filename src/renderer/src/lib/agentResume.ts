@@ -24,8 +24,9 @@
 // watched from the start, and it is always reported to the user.
 
 import type { ModelProvider } from './modelCatalog'
+import { HINT_FLAG_WORD } from '../../../shared/accountSwitch'
 
-const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+const UUID ='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 const UUID_ONLY = new RegExp(`^${UUID}$`, 'i')
 const UUID_ANYWHERE = new RegExp(UUID, 'i')
 
@@ -35,10 +36,12 @@ export function isResumeId(value: unknown): value is string {
 }
 
 /** Each agent's exit line, up to and including the id. Not followed by more id-like characters, so
- *  a longer token is not read as its prefix. */
+ *  a longer token is not read as its prefix. Claude Code 2.1.317 prints the flags the session was started with between `claude` and
+ *  `--resume` (`claude --effort max --model sonnet --resume <id>`), words on the one line: its own wrapper adds `--effort max` to every
+ *  launch, so a hint without flags is the exception (SW3-1). */
 function hintPattern(provider: ModelProvider): RegExp {
   switch (provider) {
-    case 'claude': return new RegExp(`\\bclaude(?:\\.exe)?\\s+--resume(?:\\s+|=)(${UUID})(?![0-9a-z-])`, 'gi')
+    case 'claude': return new RegExp(`\\bclaude(?:\\.exe)?(?:[ \\t]+${HINT_FLAG_WORD})*?[ \\t]+--resume(?:[ \\t]+|=)(${UUID})(?![0-9a-z-])`, 'gi')
     case 'codex': return new RegExp(`\\bcodex(?:\\.exe)?\\s+resume\\s+(${UUID})(?![0-9a-z-])`, 'gi')
     case 'gemini': return new RegExp(`\\bagy(?:\\.exe)?\\s+--conversation(?:\\s+|=)(${UUID})(?![0-9a-z-])`, 'gi')
   }

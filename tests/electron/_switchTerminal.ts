@@ -38,6 +38,9 @@ export interface TermScript {
   id?: string
   /** Claude Code's hint in a worktree. */
   worktree?: string
+  /** The flags Claude Code 2.1.317 prints between `claude` and `--resume` in its hint: the ones the session was started with
+   *  (`--effort max` from David's wrapper, `--model sonnet`, `--dangerously-skip-permissions`; SW3-1). */
+  hintFlags?: string
   /** What each relaunch shows, in turn; the last one repeats. */
   relaunch?: Relaunch[]
   /** Codex 0.164 draws a status line between its composer's blank row and its hint row, as the real one
@@ -280,7 +283,8 @@ export class FakeTerminal {
   hint(): string {
     const id = this.exits > 1 ? THROWAWAY : this.s.id ?? ID
     if (this.s.agent === 'claude') {
-      const cmd = this.s.worktree ? `claude --worktree "${this.s.worktree}" --resume ${id}` : `claude --resume ${id}`
+      const flags = this.s.hintFlags ? ` ${this.s.hintFlags}` : ''
+      const cmd = this.s.worktree ? `claude --worktree "${this.s.worktree}"${flags} --resume ${id}` : `claude${flags} --resume ${id}`
       return `\r\n${E}[2m\r\nResume this session with:\r\n${cmd}\r\n${E}[22m`
     }
     if (this.s.agent === 'codex') {
