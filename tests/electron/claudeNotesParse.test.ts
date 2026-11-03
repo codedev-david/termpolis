@@ -504,4 +504,21 @@ describe('which project a folder belongs to', () => {
     expect(cwdsFromTranscript(text)).toEqual(['C:\\r\\app', 'C:\\r\\app\\src'])
     expect(cwdsFromTranscript('')).toEqual([])
   })
+
+  // A transcript is read to 256 KB, which holds thousands of distinct directories; each new one was once compared with every one before it
+  // (an array's includes), which is quadratic. The text here is five times that, so the old form takes seconds (about five on a quiet
+  // machine) where this one takes tens of milliseconds, and the bound is generous for a loaded CI box.
+  it('dedupes the working directories of a long transcript without comparing each with every one before it', () => {
+    const distinct = 50_000
+    const lines: string[] = []
+    for (let i = 0; i < distinct; i++) lines.push(`{"cwd":"C:\\\\w\\\\${i}"}`)
+    for (let i = 0; i < 100; i++) lines.push('{"cwd":"C:\\\\w\\\\7"}', '{"cwd":"C:\\\\w\\\\49999"}') // and the same ones again
+    const started = performance.now()
+    const cwds = cwdsFromTranscript(lines.join('\n'))
+    const took = performance.now() - started
+    expect(cwds).toHaveLength(distinct)
+    expect(cwds[0]).toBe('C:\\w\\0')
+    expect(cwds[distinct - 1]).toBe('C:\\w\\49999') // in the order they first appeared
+    expect(took).toBeLessThan(1_500)
+  })
 })
