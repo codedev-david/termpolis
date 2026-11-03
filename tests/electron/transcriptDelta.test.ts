@@ -565,6 +565,27 @@ describe('anything it cannot be sure of is a full read, never a guess', () => {
     expect(got!.cursor.pos).toMatchObject({ file, offset: fs.statSync(file).size })
   })
 
+  it('UPGRADE: a cursor written before byte positions existed ({count, hash} only) costs ONE full read, reflects only what is after it, and gains a position', async () => {
+    const p = newProject()
+    const file = write(p.dir, 's1', lines(userLine('first task'), assistantLine('first answer')))
+    // the cursor the OLD code stored after reflecting those two turns
+    const old = mneme.sessionDelta(await legacyTurns(p.cwd, [file]), mneme.EMPTY_CURSOR).cursor
+    expect(old.pos).toBeUndefined()
+    fs.appendFileSync(file, lines(userLine('second task'), assistantLine('second answer')))
+    const { deps, c } = makeDeps()
+
+    const first = await delta.readSessionDelta(p.cwd, 'claude', old, deps)
+    expect(texts(first!.fresh)).toEqual(['second task', 'second answer']) // nothing reflected twice
+    expect(c.bytes).toBe(fs.statSync(file).size) // the whole file, once
+    expect(first!.cursor.count).toBe(4)
+    expect(first!.cursor.pos).toMatchObject({ file, offset: fs.statSync(file).size })
+
+    const before = { ...c }
+    const again = await delta.readSessionDelta(p.cwd, 'claude', first!.cursor, deps)
+    expect(again!.fresh).toEqual([])
+    expect(c.opens).toBe(before.opens) // and from here on it is a stat
+  })
+
   it('a hash it cannot continue (a cursor not written by this code) is a full read', async () => {
     const { p, file, first, deps, c } = await grown()
     const before = c.bytes

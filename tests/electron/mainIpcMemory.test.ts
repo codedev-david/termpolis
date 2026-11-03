@@ -1497,6 +1497,93 @@ describe('memory:reflect-session', () => {
     const r = await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
     expect(r).toEqual({ success: false, error: 'transcript unreadable' })
   })
+
+  // The pass used to read the WHOLE transcript before it looked at the cursor, and five terminals on one
+  // repo each ran it (the cursor only moves after the reflex resolves, so all five reflected the same turns).
+  // The handler now goes through runSessionReflection: a delta reader that is told the cursor first, and
+  // one pass per (cwd, agent) at a time. TERMPOLIS_REFLECT_FAST=off is today's call, exactly.
+  describe('the cursor is read first, and one pass runs per transcript (TERMPOLIS_REFLECT_FAST)', () => {
+    const saved = process.env.TERMPOLIS_REFLECT_FAST
+    afterEach(async () => {
+      if (saved === undefined) delete process.env.TERMPOLIS_REFLECT_FAST
+      else process.env.TERMPOLIS_REFLECT_FAST = saved
+      mneme.reflectSoloSession.mockImplementation(async () => ({ fired: true, lessons: 2 }))
+      const { resetFlights } = await import('../../src/main/sessionReflectPass')
+      resetFlights()
+    })
+
+    /** Hold every reflectSoloSession call until `release()`, so five requests can be in flight together. */
+    function held() {
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      mneme.reflectSoloSession.mockImplementation(async () => {
+        await gate
+        return { fired: true, lessons: 2 }
+      })
+      return release
+    }
+    const five = () =>
+      Array.from({ length: 5 }, (_, i) => invoke('memory:reflect-session', { terminalId: `t${i}`, cwd: 'C:/repos/Termpolis', agent: 'claude' }))
+    const settle = () => new Promise((r) => setTimeout(r, 25))
+
+    it('hands the reflex the delta reader, so the cursor decides what is read', async () => {
+      delete process.env.TERMPOLIS_REFLECT_FAST
+      await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+      const deps = mneme.reflectSoloSession.mock.calls[0][1]
+      const { readSessionDelta } = await import('../../src/main/transcriptDelta')
+      expect(deps.readDelta).toBe(readSessionDelta)
+      expect(typeof deps.readTranscript).toBe('function') // the whole-transcript read is still there to fall back on
+    })
+
+    it('five terminals on one repo: ONE pass runs, then ONE shared trailing pass, not five', async () => {
+      delete process.env.TERMPOLIS_REFLECT_FAST
+      const release = held()
+      const calls = five()
+      await vi.waitFor(() => expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(1))
+      await settle() // the other four have arrived by now, and none started a pass of its own
+      expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(1)
+      release()
+      const results = await Promise.all(calls)
+      expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(2)
+      expect(results.every((r: { success: boolean }) => r.success)).toBe(true)
+    })
+
+    it('different repos, and different agents on one repo, are different transcripts: each runs at once', async () => {
+      delete process.env.TERMPOLIS_REFLECT_FAST
+      const release = held()
+      const calls = [
+        invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r/one', agent: 'claude' }),
+        invoke('memory:reflect-session', { terminalId: 't2', cwd: '/r/two', agent: 'claude' }),
+        invoke('memory:reflect-session', { terminalId: 't3', cwd: '/r/one', agent: 'codex' }),
+      ]
+      await vi.waitFor(() => expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(3))
+      release()
+      await Promise.all(calls)
+      expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(3)
+    })
+
+    it('records the pass in the pass counters (numbers only)', async () => {
+      delete process.env.TERMPOLIS_REFLECT_FAST
+      const { resetPasses, snapshotPasses } = await import('../../src/main/passCounters')
+      resetPasses()
+      await invoke('memory:reflect-session', { terminalId: 't1', cwd: 'C:/very/private/project', agent: 'claude' })
+      const snap = snapshotPasses()
+      expect(snap.kinds.reflect.n).toBe(1)
+      expect(snap.kinds.reflect.sum).toMatchObject({ callers: 1, fired: 1, lessons: 2 })
+      expect(JSON.stringify(snap)).not.toContain('private')
+    })
+
+    it('CONTROL: with the switch off the deps are the old ones (no delta reader) and five requests are five passes', async () => {
+      process.env.TERMPOLIS_REFLECT_FAST = 'off'
+      const release = held()
+      const calls = five()
+      await vi.waitFor(() => expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(5))
+      expect(mneme.reflectSoloSession.mock.calls[0][1].readDelta).toBeUndefined()
+      release()
+      await Promise.all(calls)
+      expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(5)
+    })
+  })
 })
 
 // ===========================================================================

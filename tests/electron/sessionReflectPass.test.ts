@@ -142,6 +142,21 @@ describe('the kill switch', () => {
     await Promise.all(calls.map((c) => c.promise))
     expect(pass.flightCount()).toBe(0)
   })
+
+  it('off: the pass is still counted (one line per request, marked legacy), so before and after can be compared', async () => {
+    process.env.TERMPOLIS_REFLECT_FAST = 'off'
+    const ok = gated('ok', newShared())
+    ok.deps.readDelta = undefined
+    await expect(pass.runSessionReflection(input('t1'), ok.deps)).resolves.toEqual({ fired: false, lessons: 0 })
+    const bad: SoloReflexDeps = { ...ok.deps, readTranscript: async () => { throw new Error('unreadable') } }
+    await expect(pass.runSessionReflection(input('t2'), bad)).rejects.toThrow('unreadable') // the rejection is the old one, untouched
+
+    const k = counters.snapshotPasses().kinds.reflect
+    expect(k.n).toBe(2)
+    expect(k.sum.legacy).toBe(2)
+    expect(k.sum.failed).toBe(1)
+    expect(k.sum.callers).toBe(2)
+  })
 })
 
 describe('single flight per (cwd, agent)', () => {

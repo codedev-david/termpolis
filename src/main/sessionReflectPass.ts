@@ -145,7 +145,23 @@ export function resetFlights(): void {
  * delta reader unless `deps` already has one. Resolves like reflectSoloSession; rejects like it.
  */
 export function runSessionReflection(input: SoloSessionInput, deps: SoloReflexDeps, opts: { now?: () => number } = {}): Promise<ReflectResult> {
-  if (!reflectFastEnabled()) return reflectSoloSession(input, deps)
+  const now = opts.now ?? Date.now
+  if (!reflectFastEnabled()) {
+    // Exactly the old call. Only the pass is counted, so the cost with and without the fast path can be compared.
+    const began = now()
+    const line = (r: Partial<ReflectResult> | null, failed: boolean): void =>
+      recordPass('reflect', { callers: 1, legacy: 1, ms: now() - began, fired: r?.fired ? 1 : 0, lessons: r?.lessons ?? 0, failed: failed ? 1 : 0 })
+    return reflectSoloSession(input, deps).then(
+      (r) => {
+        line(r, false)
+        return r
+      },
+      (e) => {
+        line(null, true)
+        throw e
+      },
+    )
+  }
   const withDelta: SoloReflexDeps = deps.readDelta ? deps : { ...deps, readDelta: readSessionDelta }
-  return singleFlight(sessionCursorKey(input.cwd, input.agent), () => reflectSoloSession(input, withDelta), opts.now ?? Date.now)
+  return singleFlight(sessionCursorKey(input.cwd, input.agent), () => reflectSoloSession(input, withDelta), now)
 }
