@@ -105,6 +105,16 @@ describe('the context window control', () => {
     expect(optionValues(await select())).toEqual([0, 500_000, 400_000, 300_000, 200_000, 100_000])
   })
 
+  // The longest option is about 70 characters, which measured 513 px: wider than the pane at the narrowest window the app
+  // allows (600 px with the sidebar open leaves 360), so the tab got a horizontal scrollbar. A select that may not be wider
+  // than the label it sits in shrinks to the pane and shows the chosen option cut off; the list it opens is not narrowed.
+  // jsdom lays nothing out, so what is held is the class that carries the limit.
+  it('cannot be wider than the pane it sits in', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    expect(((await select()).className).split(/\s+/)).toContain('max-w-full')
+  })
+
   it('sends the choice alone, as a one-key patch, and as a NUMBER', async () => {
     const { patches } = serve()
     render(<TokenSavingsSettings />)

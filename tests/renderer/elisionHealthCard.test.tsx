@@ -977,6 +977,22 @@ describe('Elision health card — states a screen reader and a keyboard meet', (
     expect((await screen.findByTestId('hr-elision-unavailable')).getAttribute('role')).toBe('status')
   })
 
+  // The two tables measured 413 px (432 with very large counts) in a card that is 360 px wide at the narrowest window with the
+  // sidebar open, so the table spilled past the card's border. Each sits in a box that scrolls sideways instead, so a narrow
+  // pane scrolls the table inside the card and the pane itself keeps no horizontal scrollbar. jsdom lays nothing out, so what
+  // is held is that each table's parent is that box.
+  it('scrolls each table sideways inside the card instead of spilling out of it', async () => {
+    serve(lateView({ arms: arms({ late: arm({ requests: 10 }), holdout: arm({ requests: 10 }) }) }))
+    render(<ElisionHealthCard />)
+    for (const id of ['hr-elision-table', 'hr-arms-table']) {
+      const table = await screen.findByTestId(id)
+      const box = table.parentElement as HTMLElement
+      expect(box.getAttribute('data-testid'), id).toBe(`${id}-scroll`)
+      expect(box, id).toHaveStyle({ overflowX: 'auto' })
+      expect(table, id).toHaveStyle({ width: '100%' })
+    }
+  })
+
   it('names its tables and their columns', async () => {
     serve(lateView({ arms: arms({ late: arm({ requests: 10 }), holdout: arm({ requests: 10 }) }) }))
     render(<ElisionHealthCard />)

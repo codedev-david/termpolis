@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { TokenSavingsSettings } from '../../src/renderer/src/components/SettingsPane/TokenSavingsSettings'
 import { billBreakdown } from '../../src/main/headroom/effectiveUnits'
@@ -204,6 +204,23 @@ describe('what the headline claims to be', () => {
     render(<TokenSavingsSettings />)
     const head = await screen.findByTestId('hr-bill-avoided')
     expect(head.textContent).toBe('0')
+  })
+
+  // The line under the headline reads "<gross> kept off the bill - <spent> spent on <n> turns". A ledger whose only event
+  // is a 3-token give-back has a gross of -3 x 0.125 = -0.375 units, which Math.round makes -0, and (-0).toLocaleString()
+  // is "-0": the headline and the session line were guarded, the figure beside them was not.
+  it('writes a kept-off-the-bill figure that rounds to zero as 0 as well, so the line under the headline never shows -0', async () => {
+    serve({}, { netSavedTokens: -3, grossSavedTokens: -3, retrieves: 1, givebackTokens: 3 })
+    render(<TokenSavingsSettings />)
+    const gross = await screen.findByTestId('hr-bill-gross')
+    expect(gross.textContent).toBe('0')
+    expect(screen.getByTestId('hr-bill-parts').textContent).not.toContain('-0')
+    expect(screen.getByTestId('hr-bill-avoided').textContent).toBe('0')
+    // A figure that is negative and does not round to nothing is shown as it is.
+    serve({}, { netSavedTokens: -3000, grossSavedTokens: -3000, retrieves: 1, givebackTokens: 3000 })
+    cleanup()
+    render(<TokenSavingsSettings />)
+    expect((await screen.findByTestId('hr-bill-gross')).textContent).toBe('-375')
   })
 
   it('writes a session figure that rounds to zero as 0 as well, in the same place', async () => {

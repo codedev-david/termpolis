@@ -204,22 +204,24 @@ function Arms({ a, policy }: { a: ArmComparisonView; policy: 'late' | 'legacy' }
       <div style={{ fontWeight: 600 }}>Late compared with the holdout <span style={{ fontWeight: 400, opacity: 0.65 }}>— conversations split at random, compared on cost per working request</span></div>
       <ArmVerdictLine a={a} policy={policy} />
       <ArmTurnsLine a={a} />
-      <table data-testid="hr-arms-table" aria-label="Late compared with the holdout" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 8 }}>
-        <thead>
-          <tr style={{ textAlign: 'left', opacity: 0.7 }}>
-            <th scope="col" style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>Arm</th>
-            <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }}>Requests</th>
-            <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Turns that only fetched elided text, and their share of the requests">Retrieval turns</th>
-            <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request, retrieval turns counted as requests">Units per request</th>
-            <th scope="col" style={{ padding: '3px 0 3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request that was not a retrieval turn, the retrieval turns counted as cost">Units per working request</th>
-          </tr>
-        </thead>
-        <tbody>
-          <ArmRow id="hr-arm-late" label="Late" s={a.late} />
-          <ArmRow id="hr-arm-holdout" label="Holdout" note="old behavior" s={a.holdout} />
-          {a.legacy.requests > 0 && <ArmRow id="hr-arm-legacy" label="Legacy setting" note="not compared" s={a.legacy} />}
-        </tbody>
-      </table>
+      <div data-testid="hr-arms-table-scroll" style={{ overflowX: 'auto' }}>
+        <table data-testid="hr-arms-table" aria-label="Late compared with the holdout" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 8 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.7 }}>
+              <th scope="col" style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>Arm</th>
+              <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }}>Requests</th>
+              <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Turns that only fetched elided text, and their share of the requests">Retrieval turns</th>
+              <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request, retrieval turns counted as requests">Units per request</th>
+              <th scope="col" style={{ padding: '3px 0 3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request that was not a retrieval turn, the retrieval turns counted as cost">Units per working request</th>
+            </tr>
+          </thead>
+          <tbody>
+            <ArmRow id="hr-arm-late" label="Late" s={a.late} />
+            <ArmRow id="hr-arm-holdout" label="Holdout" note="old behavior" s={a.holdout} />
+            {a.legacy.requests > 0 && <ArmRow id="hr-arm-legacy" label="Legacy setting" note="not compared" s={a.legacy} />}
+          </tbody>
+        </table>
+      </div>
       <div data-testid="hr-arms-note" style={{ marginTop: 8, fontSize: 12, opacity: 0.65 }}>
         A working request is one that was not a turn spent only on fetching elided text. A retrieval turn costs less than an average request,
         so cost per request would make late look dearer even while it lowers the bill; cost per working request counts those turns as cost
@@ -341,21 +343,23 @@ export function ElisionHealthCard() {
             </div>
           ) : (
             <>
-              <table data-testid="hr-elision-table" aria-label="Elision by kind of result" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 10 }}>
-                <thead>
-                  <tr style={{ textAlign: 'left', opacity: 0.7 }}>
-                    <th scope="col" style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>What was done</th>
-                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600 }}>Tool</th>
-                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600 }}>Size</th>
-                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Distinct results of this kind elided, all time. A result sent in several conversations counts once.">Elided</th>
-                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Share of those distinct results the model later asked for back, all time">Asked back</th>
-                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title={`The same over the last ${fmt(view.windowSize)} elisions of this run`}>Recent</th>
-                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="The asked-back rate above which eliding this kind at first sight loses money">Break-even</th>
-                    <th scope="col" style={{ padding: '3px 0 3px 8px', fontWeight: 600 }}>Verdict</th>
-                  </tr>
-                </thead>
-                <tbody>{shown.map((c) => <Row key={c.key} c={c} inForce={view.firstSight.policy} />)}</tbody>
-              </table>
+              <div data-testid="hr-elision-table-scroll" style={{ overflowX: 'auto' }}>
+                <table data-testid="hr-elision-table" aria-label="Elision by kind of result" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 10 }}>
+                  <thead>
+                    <tr style={{ textAlign: 'left', opacity: 0.7 }}>
+                      <th scope="col" style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>What was done</th>
+                      <th scope="col" style={{ padding: '3px 8px', fontWeight: 600 }}>Tool</th>
+                      <th scope="col" style={{ padding: '3px 8px', fontWeight: 600 }}>Size</th>
+                      <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Distinct results of this kind elided, all time. A result sent in several conversations counts once.">Elided</th>
+                      <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Share of those distinct results the model later asked for back, all time">Asked back</th>
+                      <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title={`The same over the last ${fmt(view.windowSize)} elisions of this run`}>Recent</th>
+                      <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="The asked-back rate above which eliding this kind at first sight loses money">Break-even</th>
+                      <th scope="col" style={{ padding: '3px 0 3px 8px', fontWeight: 600 }}>Verdict</th>
+                    </tr>
+                  </thead>
+                  <tbody>{shown.map((c) => <Row key={c.key} c={c} inForce={view.firstSight.policy} />)}</tbody>
+                </table>
+              </div>
               {view.classes.length > TOP_ROWS && (
                 <button data-testid="hr-elision-more" type="button" aria-expanded={all} onClick={() => setAll(!all)}
                   className={BUTTON} style={{ marginTop: 8 }}>

@@ -12,7 +12,8 @@ interface Receipt { session: Totals; cumulative: Totals }
 interface ProxyReceipt { session: ProxyTotalsView; cumulative: ProxyTotalsView }
 interface UnifiedReceipt { session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null }
 
-const fmt = (n: number): string => n.toLocaleString('en-US')
+// + 0 turns a negative zero into 0: a figure that rounds to nothing (Math.round(-0.4) is -0) must not print "-0".
+const fmt = (n: number): string => (n + 0).toLocaleString('en-US')
 
 // Thinking-budget ceilings offered in the UI. 0 = off (the default). Anthropic's own floor is
 // 1024, so nothing lower is worth listing — the wire clamp raises anything under it anyway.
@@ -473,7 +474,7 @@ export function TokenSavingsSettings() {
                 data-testid="hr-first-sight-select"
                 value={settings.firstSightElision ?? 'late'}
                 onChange={(e) => update({ firstSightElision: e.target.value as FirstSight })}
-                className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
+                className="max-w-full bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
               >
                 <option value="late" className="bg-[#2d2d2d] text-[#d4d4d4]">Late — only from {LATE_FLOOR} characters (recommended)</option>
                 <option value="legacy" className="bg-[#2d2d2d] text-[#d4d4d4]">Legacy — from the size of the tier, as in v1.54</option>
@@ -547,7 +548,7 @@ export function TokenSavingsSettings() {
                 data-testid="hr-context-cap-select"
                 value={String(contextCap)}
                 onChange={(e) => update({ contextCap: Number(e.target.value) })}
-                className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
+                className="max-w-full bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
               >
                 {contextCapChoices(contextCap).map((c) => (
                   <option key={c.value} value={String(c.value)} className="bg-[#2d2d2d] text-[#d4d4d4]">{c.label}</option>

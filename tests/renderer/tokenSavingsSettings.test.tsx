@@ -929,6 +929,16 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(n).not.toHaveTextContent('Read/Bash')
   })
 
+  // The Late/Legacy select measured 359 px, wider than the 360 px pane at the narrowest window with the sidebar open (and
+  // wider than the room beside its label). It may not be wider than the label it sits in: it shrinks and shows the chosen
+  // option cut off. jsdom lays nothing out, so what is held is the class that carries the limit.
+  it('cannot be wider than the pane it sits in', async () => {
+    serve(settingsWith({ firstSightElision: 'late' }))
+    render(<TokenSavingsSettings />)
+    const select = await screen.findByTestId('hr-first-sight-select')
+    expect(select.className.split(/\s+/)).toContain('max-w-full')
+  })
+
   it('says what is running when it matches what is chosen', async () => {
     serve()
     render(<TokenSavingsSettings />)
