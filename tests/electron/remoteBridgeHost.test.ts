@@ -503,6 +503,97 @@ describe('remote bridge host', () => {
     expect(read).not.toHaveBeenCalled()
   })
 
+  // Plan P11: flush before a pty resize. The pump reads a terminal's size when it SENDS a slice, and main
+  // records the new size the moment a resize arrives, so a slice still waiting for its 50 ms tick was
+  // drawn for the old size and would be emulated at the new one. `flushTerminalOutput` is what main
+  // calls first.
+  describe('flushTerminalOutput', () => {
+    const outputs = (): Array<Extract<HostToBridge, { kind: 'terminalOutput' }>> =>
+      harness.posted.filter((m): m is Extract<HostToBridge, { kind: 'terminalOutput' }> => m.kind === 'terminalOutput')
+
+    /** A watched terminal that has just printed what was drawn for 80x24 and is waiting for the tick. */
+    function printedAt80x24(): void {
+      saveRemoteSettings(dir, { enabled: true })
+      harness.host.start()
+      harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t1'] })
+      harness.write('t1', 'drawn for 80x24')
+      harness.host.noteTerminalOutput('t1')
+    }
+
+    it('reads a terminal at its old size before the new size is recorded', () => {
+      printedAt80x24()
+      // The pane is resized: main flushes, THEN records the new size.
+      harness.host.flushTerminalOutput('t1')
+      harness.setSize({ cols: 40, rows: 10 })
+      // The tick that used to carry these bytes comes and finds nothing left to read.
+      harness.tick()
+      harness.write('t1', ' and what the TUI drew for 40x10')
+      harness.host.noteTerminalOutput('t1')
+      harness.tick()
+      expect(outputs().map((m) => [m.slice.output, m.size])).toEqual([
+        ['', { cols: 80, rows: 24 }], // the opening read
+        ['drawn for 80x24', { cols: 80, rows: 24 }], // the flush: the size the bytes were drawn for
+        [' and what the TUI drew for 40x10', { cols: 40, rows: 10 }],
+      ])
+    })
+
+    it('NEGATIVE CONTROL: without it, the same bytes are read at the new size when the tick comes', () => {
+      printedAt80x24()
+      harness.setSize({ cols: 40, rows: 10 })
+      harness.tick()
+      expect(outputs().map((m) => [m.slice.output, m.size])).toEqual([
+        ['', { cols: 80, rows: 24 }],
+        ['drawn for 80x24', { cols: 40, rows: 10 }],
+      ])
+    })
+
+    it('takes the pending tick with it, so nothing is read twice', () => {
+      printedAt80x24()
+      const clearedBefore = harness.cleared
+      harness.host.flushTerminalOutput('t1')
+      expect(harness.cleared).toBe(clearedBefore + 1)
+      const afterFlush = outputs().length
+      harness.tick() // the cancelled tick's callback, if it ran, finds nothing dirty
+      expect(outputs()).toHaveLength(afterFlush)
+    })
+
+    it('sends nothing when nothing is waiting', () => {
+      printedAt80x24()
+      harness.tick()
+      const sent = outputs().length
+      harness.host.flushTerminalOutput('t1')
+      expect(outputs()).toHaveLength(sent)
+    })
+
+    it('reads only the terminals a phone is watching, as the tick does', () => {
+      printedAt80x24()
+      harness.write('t2', 'nobody is watching this')
+      harness.host.noteTerminalOutput('t2')
+      harness.host.flushTerminalOutput('t2')
+      expect(harness.posted.some((m) => JSON.stringify(m).includes('t2'))).toBe(false)
+      // The watched terminal that was waiting is read by the same flush, at the size it has.
+      expect(outputs().map((m) => m.slice.output)).toEqual(['', 'drawn for 80x24'])
+    })
+
+    it('does nothing before the host starts, or while remote is off', () => {
+      // Nothing to send to: the pump does not exist, and a resize must not be what makes it.
+      expect(() => harness.host.flushTerminalOutput('t1')).not.toThrow()
+      harness.host.start() // settings default to off
+      harness.write('t1', 'bytes')
+      harness.host.noteTerminalOutput('t1')
+      expect(() => harness.host.flushTerminalOutput('t1')).not.toThrow()
+      expect(outputs()).toEqual([])
+    })
+
+    it('does nothing once the host has stopped', () => {
+      printedAt80x24()
+      harness.host.stop()
+      const sent = outputs().length
+      expect(() => harness.host.flushTerminalOutput('t1')).not.toThrow()
+      expect(outputs()).toHaveLength(sent)
+    })
+  })
+
   it('forgets a closed terminal so a reused id starts clean', () => {
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()
