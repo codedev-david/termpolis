@@ -410,6 +410,7 @@ describe('run: checks before anything is sent', () => {
     // A folder is never a URL, and a clone URL can carry a token. Sent, the other machine would
     // refuse it too, repeating it, and keep that refusal in its job history.
     const token = `ghp_${'a'.repeat(36)}`
+    const BS = String.fromCharCode(92)
     const h = setup({ screen: screenText })
     for (const cwd of [
       `https://x-access-token:${token}@github.com/acme/billing.git`,
@@ -422,6 +423,17 @@ describe('run: checks before anything is sent', () => {
       // In quotes, which the other machine takes off a folder.
       `"https://deploy:${token}@git.internal/acme"`,
       "'deploy:hunter2hunter2@git.internal:acme/billing'",
+      // With no scheme: a protocol-relative URL, with its slashes as backslashes, a scheme with a zero-width character in it, a clone URL inside a path.
+      `//deploy:${token}@git.internal/acme`,
+      `${BS}${BS}deploy:${token}@git.internal${BS}acme`,
+      `https:${BS}${BS}deploy:${token}@git.internal${BS}acme`,
+      `https:${BS}${BS}git.internal${BS}acme${BS}billing`,
+      `ht${String.fromCharCode(0x200b)}tps://deploy:${token}@git.internal/acme`,
+      `https${String.fromCharCode(0x200d)}://deploy:${token}@git.internal/acme`,
+      `${String.fromCharCode(0x2060)}//deploy:${token}@git.internal/acme`,
+      `${BS}${String.fromCharCode(0xfeff)}${BS}deploy:${token}@git.internal/acme`,
+      `/srv/work/https://deploy:${token}@git.internal/acme`,
+      `D:${BS}work${BS}ssh://deploy:${token}@git.internal/acme`,
     ]) {
       expect(await run(h, { cwd }), cwd).toEqual({
         error: 'cwd is a URL, not a folder on "linux"; nothing was sent. A clone URL can carry a token.',
@@ -435,6 +447,16 @@ describe('run: checks before anything is sent', () => {
   it('sends a folder on a drive with an @ in it, which is no URL', async () => {
     // (the round-0 review's FR-6: `C:x@y` read as a user `C` and a password before an `@`)
     for (const cwd of ['C:x@y', 'D:builds@2026', 'c:repos@feature/app']) {
+      const h = setup()
+      scripted(h, [view({ status: 'done', output: 'ok', durationMs: 5 })])
+      await run(h, { cwd })
+      expect(h.calls[0].request, cwd).toMatchObject({ kind: 'peerRun', cwd })
+    }
+  })
+
+  it('sends a UNC path, a folder with a colon or an @ in its name and a path with two slashes in it, which are no URL', async () => {
+    const BS = String.fromCharCode(92)
+    for (const cwd of ['//fileserver/share/work', `${BS}${BS}fileserver${BS}share${BS}work`, '//fileserver/share:v2/work@home', '/srv/work//double/slash', '~/work/a:b@c', '/srv/work/http:/not-a-url', 'C:/work/https:/x', '/srv/work/https://git.internal/acme', '~/work/ssh://git@git.internal/acme']) {
       const h = setup()
       scripted(h, [view({ status: 'done', output: 'ok', durationMs: 5 })])
       await run(h, { cwd })

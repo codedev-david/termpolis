@@ -168,22 +168,26 @@ const tooLongScreened = `Invalid prompt: longer than ${MAX_PROMPT_CHARS} charact
 const urlCwd = (name: string): string => `cwd is a URL, not a folder on "${name}"; nothing was sent. A clone URL can carry a token.`
 const refusedUnshown = (name: string): string => `"${name}" refused the request. Its reason could not be checked for credentials, so it is not shown.`
 
-/** A URL's start: a scheme and `//` (`https://`, `ssh://`, `file://`), or a user and a password
- *  before an `@` (`user:token@host:repo`, an scp-style remote), the user not a drive letter
- *  (`C:x@y` is a folder on drive C). No folder starts as either: one starts with `/`, `\` or `~`,
- *  or a drive letter. (The other machine would read a `file://` URL as the folder it names;
- *  written as that folder, it runs.) */
-const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]{1,31}:\/\//i
+/** A URL's start: a scheme and two slashes (`https://`, `ssh://`, `file://`, `https:\\user:x@host\org` with backslashes), two slashes and a user and a password before an `@`
+ *  (`//user:token@host/org`, a protocol-relative URL: a UNC path has no `:` before its first slash), or a user and a password before an `@` (`user:token@host:repo`, an
+ *  scp-style remote), the user not a drive letter (`C:x@y` is a folder on drive C). No folder starts as any of these: one starts with `/`, `\` or `~`, or a drive letter. (The
+ *  other machine would read a `file://` URL as the folder it names; written as that folder, it runs.) A clone URL that stands inside a path (`/srv/x/https://user:token@host/org`) is
+ *  one too: no folder name holds a scheme, `://` and a password before an `@`. */
+const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]{1,31}:[\\/]{2}/i
 const URL_USERINFO_RE = /^(?![A-Za-z]:)[^\s/\\:@]{1,256}:[^\s/\\@]{1,512}@/
+const URL_RELATIVE_RE = /^[\\/]{2}[^\s/\\:@]{1,256}:[^\s/\\@]{1,512}@/
+const URL_INSIDE_RE = /[a-z][a-z0-9+.-]{1,31}:[\\/]{2}[^\s/\\:@]{0,256}:[^\s/\\@]{1,512}@/i
+/** What a copy of a URL out of a page or a chat carries between its characters: zero-width spaces and joiners, a word joiner, a byte order mark. No scheme is written with them. */
+const ZERO_WIDTH = new RegExp('[' + String.fromCharCode(0x200b) + '-' + String.fromCharCode(0x200d) + String.fromCharCode(0x2060) + String.fromCharCode(0xfeff) + ']', 'g')
 
 /** Whether `cwd` is written as a URL, read as the other machine reads a folder: trimmed, and out of
  *  the quotes a shell puts around one (cwdPath). A folder's name is not screened for credentials:
  *  the rules match branch and project names. A clone URL can carry a token, which the other
  *  machine would repeat in its refusal and keep in its job history. */
 function isUrl(cwd: string): boolean {
-  let p = cwd.trim()
+  let p = cwd.replace(ZERO_WIDTH, '').trim()
   if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) p = p.slice(1, -1).trim()
-  return URL_SCHEME_RE.test(p) || URL_USERINFO_RE.test(p)
+  return URL_SCHEME_RE.test(p) || URL_USERINFO_RE.test(p) || URL_RELATIVE_RE.test(p) || URL_INSIDE_RE.test(p)
 }
 
 /** What an edit job could do over there, for the agent that started one to pass on: Claude and
