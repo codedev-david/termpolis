@@ -4663,6 +4663,10 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
       ['a doubled backslash', `x ${piece}${BS}${BS}repos${BS}${BS}a.pem:12:${P}`, false],
       ['a doubled backslash and a CR', `x ${piece}${BS}${BS}rsa_key.pem:12:${P}`, false],
       ['three backslashes', `x ${piece}${BS}${BS}${BS}notes${BS}${BS}${BS}a.pem:12:${P}`, false],
+      // a CR and an LF written out (a Windows line end in a JSON string) are one break, and the LF is no folder of the path that follows: the next line's path is no name of this one
+      ['a CR and an LF written out, then a path', `x ${piece}${BS}r${BS}nsrc/keys/a.pem:12:${P}`, true],
+      ['two backslashes each, a CR and an LF written out, then a path', `x ${piece}${BS}${BS}r${BS}${BS}nsrc/keys/a.pem:12:${P}`, true],
+      ['a CR written out, an LF written out as a Unicode escape, then a path', `x ${piece}${BS}r${BS}u000asrc/keys/a.pem:12:${P}`, true],
     ]
     for (const [label, text, isBreak, usualBreak = isBreak] of rows) {
       const i = text.search(/\\+[nr]|\\u000a|\\x0a|%0A|<br>/)
