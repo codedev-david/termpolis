@@ -551,6 +551,9 @@ class Ledger {
   private bumped = false
   private began = false
   halted = false
+  /** Set when a look through the store did not reach the end (a listing failed, or the sweep's rounds ran out with notes still
+   *  turning up): a copy this computer had lost track of may still be there, which "Remove imported notes" must say. */
+  unseen = false
 
   constructor(readonly deps: NotesDeps, readonly m: Manifest, readonly stats: NotesStats) {}
 
@@ -614,7 +617,8 @@ class Ledger {
  * with every id removed here, so a note whose removal fails is not asked for again.
  *
  * True when the store was seen whole and everything found was removed: the caller may then call it settled. False when the store
- * could not be listed, the manifest could not be saved, a removal failed, or the rounds ran out with notes still turning up.
+ * could not be listed, the manifest could not be saved, a removal failed, or the rounds ran out with notes still turning up. In the
+ * first and the last of those the store was not seen to the end, and `ledger.unseen` says so (the others are counted as failures).
  */
 async function sweepOwnNotes(deps: NotesDeps, ledger: Ledger, tried: Set<string>, counter: 'chunksDeleted' | 'swept'): Promise<boolean> {
   let clean = true
@@ -624,6 +628,7 @@ async function sweepOwnNotes(deps: NotesDeps, ledger: Ledger, tried: Set<string>
     try {
       fresh = (await ownNotes(deps)).map((r) => r.id).filter((id) => !tried.has(id))
     } catch {
+      ledger.unseen = true
       return false // the store could not be listed: check again next time
     }
     if (fresh.length === 0) return clean
@@ -634,6 +639,7 @@ async function sweepOwnNotes(deps: NotesDeps, ledger: Ledger, tried: Set<string>
     }
     if (fresh.some((id) => ledger.m.stale.includes(id))) clean = false // a removal failed; it waits on the manifest's list
   }
+  ledger.unseen = true
   return false // the rounds ran out with notes still turning up
 }
 
@@ -860,7 +866,7 @@ export function removeImportedNotes(deps: NotesDeps): Promise<RemoveResult> {
     tidyRecord(deps.manifest) // the record starts over, and no earlier copy of it is left beside it
     // A store that could not be looked through says so: a record that had lost its copies removes nothing then, and "removed 0" would
     // read as a success while every agent can still find them.
-    return { removed: stats.chunksDeleted, failed: wroteAhead ? stats.deleteFailed : ids.size, ...(listed ? {} : { unchecked: true }) }
+    return { removed: stats.chunksDeleted, failed: wroteAhead ? stats.deleteFailed : ids.size, ...(listed && !ledger.unseen ? {} : { unchecked: true }) }
   })
 }
 

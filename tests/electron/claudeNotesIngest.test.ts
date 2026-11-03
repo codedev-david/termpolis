@@ -1177,6 +1177,29 @@ describe('Remove imported notes', () => {
       expect('unchecked' in res).toBe(false)
       expect(store.rows.size).toBe(0)
     })
+
+    // The first listing is not the only look: the removal looks again until a listing shows nothing new. A look that fails then, or
+    // that the rounds run out before, leaves memory unseen all the same, and the panel must not say that everything went.
+    it('says it could not look when the first listing works and a later one fails, and what was found is removed', async () => {
+      const store = await lostRecord()
+      const list = store.list
+      let looks = 0
+      store.list = async (o) => { if (++looks >= 2) throw new Error('host busy'); return list(o) }
+      const res = await removeImportedNotes(deps(store))
+      expect(res).toEqual({ removed: 3, failed: 0, unchecked: true })
+      expect(store.rows.size).toBe(0)
+      expect(manifestJson().dirty).toBe(true) // and a pass that is let finish checks again
+    })
+
+    // A removal that fails, or a record that cannot be saved ahead, is told as a count of what is left (`failed`), not as memory unseen:
+    // the listing worked, and the copies are known.
+    it('does not say it could not look when memory was seen whole and a removal failed', async () => {
+      const store = await lostRecord()
+      store.failRemoves(new Error('locked'))
+      const res = await removeImportedNotes(deps(store))
+      expect(res).toEqual({ removed: 0, failed: 3 })
+      expect('unchecked' in res).toBe(false)
+    })
   })
 
   it('leaves another computer\'s notes alone', async () => {
@@ -1309,12 +1332,27 @@ describe('more notes than a listing can reach in one go', () => {
   it('leaves the manifest dirty when the rounds run out, so the next pass looks again, and a second removal finishes the job', async () => {
     const store = fakeStore()
     await stored(store, 1200)
-    expect(await removeImportedNotes(deps(store, { sweepRounds: 1 }))).toEqual({ removed: 1000, failed: 0 }) // the first listing's 500, and one round of 500
+    // the first listing's 500, and one round of 500; memory was not seen to the end, and the panel is told so (it must not say all went)
+    expect(await removeImportedNotes(deps(store, { sweepRounds: 1 }))).toEqual({ removed: 1000, failed: 0, unchecked: true })
     expect(store.rows.size).toBe(200)
     expect(manifestJson().dirty).toBe(true)
-    expect(await removeImportedNotes(deps(store))).toEqual({ removed: 200, failed: 0 })
+    const finished = await removeImportedNotes(deps(store))
+    expect(finished).toEqual({ removed: 200, failed: 0 })
+    expect('unchecked' in finished).toBe(false) // seen to the end this time
     expect(store.rows.size).toBe(0)
     expect(manifestJson().dirty).toBe(false)
+  })
+
+  // The record can be saved for the first 500 and not for the next ones: those are in the store, and known, so they are counted as
+  // failed (the panel says how many are left) and memory is not called unseen: it was looked through.
+  it('counts what it could not save a removal ahead for as failed, and does not say memory was unseen', async () => {
+    const store = fakeStore()
+    await stored(store, 600)
+    // two saves are the first removal's (the record is marked, then the 500 are queued); the third is the one for the next 100
+    const res = await removeImportedNotes(deps(store, { manifest: flakyManifest(2) }))
+    expect(res).toEqual({ removed: 500, failed: 100 })
+    expect('unchecked' in res).toBe(false)
+    expect(store.rows.size).toBe(100)
   })
 
   it('does not call a sweep settled when it ran out of rounds, and does not clear the flag', async () => {
