@@ -4832,6 +4832,31 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
     }
   })
 
+  it('removes a legacy encrypted PEM key an older computer cut inside its DEK-Info line, listed under names with single backslashes in them: the lines above the key lines are split at the usual reading too', () => {
+    // (the names start with a digit or a dash: read leniently, the break written out before one is a folder named n, and read with every `\r` and `\n` a break, the folders in the
+    // name cut it: only the usual reading splits the lines above the key lines where they end)
+    const lines = K.F.rsa_legacy_enc
+    for (const joiner of [BS + BS + 'n', BS + 'n']) {
+      for (const first of ['0', '9', '-']) {
+        for (const tail of [win('dev', 'repos', 'tls.key'), win('notes', 'k.pem')]) {
+          for (const frame of [(n: string, i: number): string => `${n}-${i + 1}-`, (n: string, i: number): string => `${n}:${i + 1}:`]) {
+            const name = `${first}AbCdEfGhIjKlMnOpQrStUvWxYz01${BS}${tail}`
+            const listing = lines.map((l, i) => frame(name, i) + l).join(joiner)
+            const at = listing.indexOf('DEK-Info')
+            for (const off of [3, 12, 25, 40]) {
+              for (const prefix of ['', '\u2026']) {
+                const label = `${JSON.stringify(joiner)}/${first}/${tail}/${frame('n', 0)}/${off} characters into the DEK-Info line, ${prefix === '' ? 'cut' : 'an error'}`
+                const r = screenKeys(prefix + listing.slice(at + off), { cutStart: true })
+                expect(leakedWindows(r.text, secretLinesOf(lines)), label).toBe(0)
+                expect(r.removed, label).toEqual({ private_key: 1 })
+              }
+            }
+          }
+        }
+      }
+    }
+  })
+
   it('finds one key block for each BEGIN line, in order, whichever readings found it', () => {
     // The readings of a text that has an escape the first one kept from being a break each find the key blocks of it (a block that takes the key, or one that only looks like it): a BEGIN line stays one
     // block, or headless, which walks them in order and takes the END line inside one for its own, sees two where there is one and finds the tail of the key a second time, under the wrong one.
