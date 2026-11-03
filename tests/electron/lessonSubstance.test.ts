@@ -322,7 +322,9 @@ describe('lessonSubstance: a rule or a mechanism', () => {
       expect(connective('In `ready` it broke since')).toBe(false)
     })
 
-    it('does not count without something searchable in the lesson, which is what keeps status lines out', () => {
+    // The condition keeps out the status lines that name nothing searchable. A status line that names one command, file or product is
+    // not kept out by it (see the comment above WEAK_CONNECTIVE_RE).
+    it('does not count without something searchable in the lesson, which keeps out the status lines that name nothing', () => {
       for (const text of [
         'The deploy finished, so the new version is live.',
         'The tests passed, so the PR is ready for review.',

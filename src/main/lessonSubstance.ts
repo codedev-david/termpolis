@@ -156,10 +156,13 @@ const CONNECTIVE_RE = new RegExp(
 // a version, the morning, a day, a month, "ever since"). The whitespace is asked for and then looked past, not matched before the
 // lookahead, so two spaces after "so" cannot slip by it, and the words that make a "since" about when ("ever", "the" before
 // "morning") are followed by any run of white space, not one space; and neither word is inside the group above, so what follows
-// it may start with a backtick or a bracket. On scratch sets kept out of the repo (about 200 lessons invented to be usable or not, and 35 the
-// extractor wrote from invented turns) this kept up to 2 more of every 20 usable lessons at the bar (the most on the 35 the
-// extractor wrote) and no more of the others, and let through none of 28 invented status lines; with no identifier needed it let
-// through 13 of those 28 ("The tests passed, so the PR is ready for review.").
+// it may start with a backtick or a bracket. Needing a name keeps out the status lines that name nothing searchable: of 28 invented
+// ones, 13 got through without the condition and none with it ("The tests passed, so the PR is ready for review."). It keeps out no
+// more than that. A status line that names one command, file or product still counts ("The `npm test` run finished without
+// failures, so the branch is ready to merge." scores 3), and so does a decision that gives a trivial or time-bound reason ("We
+// decided to freeze `main` since the audit starts on Monday."). On scratch sets kept out of the repo (lessons invented to be usable
+// or not, and lessons the extractor wrote from invented turns) the credit kept 65 of 68 usable lessons at the bar where the same
+// gate without it kept 52, and 4 of 31 junk ones where it kept none; sets built to find the hole kept far more junk than that.
 const WEAK_CONNECTIVE_RE = new RegExp(
   '(?<=[,;]\\s+)so(?=\\s)(?!\\s+(?:i|we|let|my|our|far)\\b)' +
     '|(?<!\\bever\\s+)\\bsince(?=\\s)(?!\\s+(?:(?:this|last|then|yesterday|today|tonight|tomorrow|the\\s+(?:morning|afternoon|evening|start|beginning)|' +
