@@ -32,6 +32,8 @@
 // write() is the plain two-argument call, whose tap() returns the function it was given, and which
 // owns no timer and no observer: today's behaviour. (Main's half has its own: TERMPOLIS_TYPING_TRACE.)
 
+import { readXtermPending } from './xtermPending'
+
 export const SAMPLE_EVERY_KEYS = 10
 
 const WINDOW_MS = 5_000
@@ -59,20 +61,9 @@ export function isPrintableKey(data: string): boolean {
   return c >= 0x20 && c !== 0x7f && !(c >= 0x80 && c <= 0x9f) && !(c >= 0xd800 && c <= 0xdfff) // a lone surrogate is half of something
 }
 
-/**
- * Chars sitting in xterm's own write buffer, ahead of whatever is written next. xterm keeps the count
- * in a private field: no public API says how far behind the parser is. Anything that does not look
- * like the real thing reads as null, never as 0: unknown is not an empty queue. The test suite parses
- * a write with the installed xterm and reads this back, so an upgrade that moves it fails loudly.
- */
-export function readXtermPending(term: unknown): number | null {
-  try {
-    const n = (term as { _core?: { _writeBuffer?: { _pendingData?: unknown } } } | null | undefined)?._core?._writeBuffer?._pendingData
-    return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null
-  } catch {
-    return null
-  }
-}
+// The reader moved to xtermPending.ts (the resize barrier reads it too); re-exported so nothing that
+// imports it from here has to change.
+export { readXtermPending }
 
 export interface EchoPaneProbes {
   /** Chars buffered in the output throttle, not yet handed to xterm. */

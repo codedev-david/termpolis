@@ -1,4 +1,5 @@
 import { createChunkQueue, type ChunkQueue } from './chunkQueue'
+import { reportFailure } from './reportFailure'
 
 const MAX_FLUSH_SIZE = 65536 // 64KB per frame — prevents memory spikes from extreme output
 
@@ -87,19 +88,11 @@ interface Waiter {
   timer: ReturnType<typeof setTimeout> | undefined
 }
 
-function reportFailure(error: unknown): void {
-  try {
-    const report = (globalThis as { reportError?: (e: unknown) => void }).reportError
-    if (typeof report === 'function') report(error)
-    else console.error('[output throttle] the writer refused a chunk', error)
-  } catch {
-    // reporting must never throw into a flush
-  }
-}
+const reportThrottleFailure = (error: unknown): void => reportFailure(error, 'output throttle')
 
 export function createOutputThrottle(writeFn: (data: string) => void, opts: OutputThrottleOptions = {}): OutputThrottle {
   const queue = opts.queue ?? createChunkQueue()
-  const onError = opts.onError ?? reportFailure
+  const onError = opts.onError ?? reportThrottleFailure
   let scheduled = false
   let rafId: number | null = null
   let timerId: ReturnType<typeof setTimeout> | undefined
@@ -160,7 +153,7 @@ export function createOutputThrottle(writeFn: (data: string) => void, opts: Outp
     try {
       w.cb()
     } catch (error) {
-      reportFailure(error)
+      reportThrottleFailure(error)
     }
   }
 
