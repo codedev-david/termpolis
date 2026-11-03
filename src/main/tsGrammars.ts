@@ -31,21 +31,20 @@ function candidateDirs(): string[] {
   return dirs
 }
 
-/** Where each grammar file is, asked once. hasGrammar() is asked for every file a code index walks, on the thread that
- *  echoes keystrokes when the index is built by a re-index after a file change: it was an existsSync per candidate
- *  folder per file. The files ship with the app and do not appear or vanish while it runs. */
-const wasmLocations = new Map<string, string | null>()
+/** Where each grammar file that IS on disk is, asked once. treeSitterSupports() is asked for every file a code index walks,
+ *  on the thread that echoes keystrokes when the index is built by a re-index after a file change: it was an existsSync
+ *  per candidate folder per file. The grammars ship with the app, so a found one stays where it is. A MISSING one is not
+ *  remembered here (a file planted later is seen at once, as before; loadGrammar keeps its own cached miss). */
+const wasmLocations = new Map<string, string>()
 
 function findWasm(fileName: string): string | null {
   const known = wasmLocations.get(fileName)
   if (known !== undefined) return known
-  let found: string | null = null
   for (const dir of candidateDirs()) {
     const p = path.join(dir, fileName)
-    if (fs.existsSync(p)) { found = p; break }
+    if (fs.existsSync(p)) { wasmLocations.set(fileName, p); return p }
   }
-  wasmLocations.set(fileName, found)
-  return found
+  return null
 }
 
 function coreWasmPath(): string | null {

@@ -1,7 +1,8 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { join } from 'path'
 import {
   RECHECK_REASON,
+  _resetRecheckMarkersForTests,
   recheckMarker,
   recheckStoredLessons,
   wouldStillWrite,
@@ -159,6 +160,8 @@ describe('recheckStoredLessons', () => {
 })
 
 describe('recheckMarker', () => {
+  beforeEach(() => { _resetRecheckMarkersForTests() })
+
   it('records the pass in userData and reads it back', () => {
     const files = new Map<string, string>()
     const m = recheckMarker('/data', { exists: (p) => files.has(p), write: (p, t) => { files.set(p, t) } }, join)
@@ -166,6 +169,52 @@ describe('recheckMarker', () => {
     m.markDone()
     expect(files.get(join('/data', 'mneme-lesson-recheck.json'))).toBe('{"version":1}')
     expect(m.done()).toBe(true)
+  })
+
+  it('asks the disk once the marker is there, not on every pass (the indexer asks every few minutes, on the main thread)', () => {
+    let asks = 0
+    const files = new Map<string, string>([[join('/data', 'mneme-lesson-recheck.json'), '{"version":1}']])
+    const m = recheckMarker('/data', { exists: (p) => { asks++; return files.has(p) }, write: () => {} }, join)
+    for (let i = 0; i < 50; i++) expect(m.done()).toBe(true)
+    expect(asks).toBe(1)
+  })
+
+  it('asks the disk once per launch, however many marker objects ask (the indexer builds a new one on every pass)', () => {
+    let asks = 0
+    const files = new Map<string, string>()
+    const fsLike = { exists: (p: string) => { asks++; return files.has(p) }, write: (p: string, t: string) => { files.set(p, t) } }
+    for (let pass = 0; pass < 30; pass++) expect(recheckMarker('/data', fsLike, join).done()).toBe(false)
+    expect(asks).toBe(1)
+    recheckMarker('/data', fsLike, join).markDone() // this pass finished
+    expect(recheckMarker('/data', fsLike, join).done()).toBe(true) // the next pass's fresh marker knows
+    expect(asks).toBe(1)
+    expect(recheckMarker('/data', fsLike, join, 'linked-history-recheck.json').done()).toBe(false) // another marker is its own question
+    expect(asks).toBe(2)
+  })
+
+  it('asks the disk once even when the marker is missing: only markDone() changes the answer, and it needs no read back', () => {
+    let asks = 0
+    const files = new Map<string, string>()
+    const m = recheckMarker('/data', { exists: (p) => { asks++; return files.has(p) }, write: (p, t) => { files.set(p, t) } }, join)
+    for (let i = 0; i < 20; i++) expect(m.done()).toBe(false) // twenty passes that could not finish: one look at the disk
+    expect(asks).toBe(1)
+    m.markDone()
+    expect(m.done()).toBe(true)
+    expect(m.done()).toBe(true)
+    expect(asks).toBe(1)
+  })
+
+  it('does not remember a disk that could not be read: the next pass asks again', () => {
+    let asks = 0
+    let broken = true
+    const m = recheckMarker('/data', { exists: () => { asks++; if (broken) throw new Error('EIO'); return true }, write: () => {} }, join)
+    expect(m.done()).toBe(false)
+    expect(m.done()).toBe(false)
+    expect(asks).toBe(2)
+    broken = false
+    expect(m.done()).toBe(true)
+    expect(m.done()).toBe(true)
+    expect(asks).toBe(3)
   })
 
   it('never throws', () => {

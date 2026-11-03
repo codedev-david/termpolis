@@ -29,6 +29,9 @@ export interface Counts {
   sync: Record<string, number>
   /** Process creations, by function name (`pty.spawn` and `utilityProcess.fork` from the fakes). */
   spawn: Record<string, number>
+  /** Where each counted call came from: `fn(arg) <- src/main/file.ts:line`, the innermost src/main frame of its stack.
+   *  A failing assertion prints these (describeSites), so it names the line instead of only the function. */
+  sites?: Record<string, number>
 }
 
 export const MAIN_THREAD_CODE = /[\\/]src[\\/]main[\\/]/
@@ -39,6 +42,8 @@ const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom')
 // One state for the whole worker, on globalThis: vi.resetModules() makes a new copy of this module, and the
 // copy a vi.mock factory imports must count into the same counters as the copy the test file imported.
 interface State { armed: boolean; counts: Counts; attribution: RegExp; installed: Array<() => void> }
+/** A stack frame inside src/main: `at fn (C:\x\src\main\file.ts:12:3)` or `at C:\x\src\main\file.ts:12:3`; group 1 = path:line. */
+const SITE_FRAME = /\(?((?:[A-Za-z]:)?[^()\s]*[\\/]src[\\/]main[\\/][^()\s]*?:\d+):\d+\)?\s*$/
 const KEY = Symbol.for('termpolis.mainThreadCounters')
 const g = globalThis as unknown as Record<symbol, State | undefined>
 const S: State = (g[KEY] ??= { armed: false, counts: { sync: {}, spawn: {} }, attribution: MAIN_THREAD_CODE, installed: [] })
@@ -54,8 +59,18 @@ function callerStack(): string {
 
 function bump(kind: 'sync' | 'spawn', name: string): void {
   if (!S.armed) return
-  if (!S.attribution.test(callerStack())) return
+  const stack = callerStack()
+  if (!S.attribution.test(stack)) return
   S.counts[kind][name] = (S.counts[kind][name] ?? 0) + 1
+  // The innermost frame inside src/main: the line that made the call (or the one that handed it a callback).
+  for (const frame of stack.split('\n')) {
+    const m = SITE_FRAME.exec(frame)
+    if (!m) continue
+    const where = `${name} <- ${m[1].replace(/^.*[\\/]src[\\/]main[\\/]/, 'src/main/').replace(/\\/g, '/')}`
+    const sites = (S.counts.sites ??= {})
+    sites[where] = (sites[where] ?? 0) + 1
+    break
+  }
 }
 
 function patch(target: Record<string, unknown>, name: string, kind: 'sync' | 'spawn'): void {
@@ -109,7 +124,7 @@ export function disarm(): Counts {
 }
 
 export function snapshot(): Counts {
-  return { sync: { ...S.counts.sync }, spawn: { ...S.counts.spawn } }
+  return { sync: { ...S.counts.sync }, spawn: { ...S.counts.spawn }, sites: { ...(S.counts.sites ?? {}) } }
 }
 
 /** Which stacks count (default: frames in src/main). A control test narrows it to itself. */
@@ -124,6 +139,11 @@ export function total(c: Counts = S.counts): number {
 /** What a hot path did that it must not: `existsSync x3, execFile x1`; '' when it did nothing. */
 export function describeCounts(c: Counts = S.counts): string {
   return [...Object.entries(c.sync), ...Object.entries(c.spawn)].map(([k, v]) => `${k} x${v}`).join(', ')
+}
+
+/** The lines the counted calls came from, most frequent first: `existsSync <- src/main/foo.ts:42 x3`. */
+export function describeSites(c: Counts = S.counts): string {
+  return Object.entries(c.sites ?? {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} x${v}`).join('; ')
 }
 
 /** Count a process creation that does not go through child_process (a fake node-pty). */

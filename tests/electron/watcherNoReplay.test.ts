@@ -138,7 +138,8 @@ describe('the codex and gemini watchers attach the same way', () => {
 
     const dir = path.join(tmpHome, '.gemini', 'tmp')
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'logs.json'), JSON.stringify({ role: 'user', parts: [{ text: 'hi' }] }) + '\n')
+    // .jsonl: the finder only takes those (a logs.json here attached to nothing, and the no-replay check below was empty)
+    fs.writeFileSync(path.join(dir, 'logs.jsonl'), JSON.stringify({ role: 'user', parts: [{ text: 'hi' }] }) + '\n')
 
     const handle = await attachGeminiWatcher('t1')
     expect(handle).not.toBeNull()

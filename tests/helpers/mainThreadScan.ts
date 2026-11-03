@@ -129,6 +129,7 @@ export function scanFile(file: string, root: string): Site[] {
 
   // Names this file bound to child_process, electron's utilityProcess and node-pty.
   const fsNamed = new Map<string, string>() // local alias -> the fs function it was imported as (`readFileSync as rf`)
+  const fsNamespace = new Set<string>() // local names of the whole fs module (`import * as fs`, `import fs`, `const fs = require('fs')`)
   const cpNamed = new Map<string, string>() // local -> imported child_process function
   const cpNamespace = new Set<string>() // local names of the whole module
   const utilityLocals = new Set<string>()
@@ -156,6 +157,10 @@ export function scanFile(file: string, root: string): Site[] {
         if (FS_MODULE.test(mod) && c.namedBindings && ts.isNamedImports(c.namedBindings)) {
           for (const el of c.namedBindings.elements) fsNamed.set(el.name.text, (el.propertyName ?? el.name).text)
         }
+        if (FS_MODULE.test(mod)) {
+          if (c.name) fsNamespace.add(c.name.text)
+          if (c.namedBindings && ts.isNamespaceImport(c.namedBindings)) fsNamespace.add(c.namedBindings.name.text)
+        }
         if (CP_MODULE.test(mod)) {
           if (c.name) cpNamespace.add(c.name.text)
           if (c.namedBindings) {
@@ -177,6 +182,7 @@ export function scanFile(file: string, root: string): Site[] {
       if (isModuleExpr(n.initializer, FS_MODULE) && ts.isObjectBindingPattern(n.name)) {
         for (const el of n.name.elements) if (ts.isIdentifier(el.name)) fsNamed.set(el.name.text, (el.propertyName ?? el.name).getText())
       }
+      if (isModuleExpr(n.initializer, FS_MODULE) && ts.isIdentifier(n.name)) fsNamespace.add(n.name.text)
       if (isCpModuleExpr(n.initializer)) {
         if (ts.isIdentifier(n.name)) cpNamespace.add(n.name.text)
         else if (ts.isObjectBindingPattern(n.name)) {
@@ -240,6 +246,16 @@ export function scanFile(file: string, root: string): Site[] {
         else if (name === 'fork' && ts.isIdentifier(obj) && utilityLocals.has(obj.text)) record(n, 'utilityProcess.fork', 'spawn')
         else if (name === 'spawn' && ts.isIdentifier(obj) && ptyNamespace.has(obj.text)) record(n, 'pty.spawn', 'spawn')
       }
+    } else if (ts.isIdentifier(n) && fsNamed.has(n.text) && /Sync$/.test(fsNamed.get(n.text) as string)) {
+      // A synchronous fs function used as a VALUE (`{ exists: existsSync }`, `deps = { readFileSync }`, `.map(statSync)`):
+      // whoever is handed it calls it on this thread, in a file this scan would not otherwise look at.
+      const p = n.parent
+      const declares = ts.isImportSpecifier(p) || ts.isBindingElement(p) || ts.isVariableDeclaration(p) && p.name === n || ts.isParameter(p) && p.name === n
+      const propName = ts.isPropertyAccessExpression(p) && p.name === n || ts.isPropertyAssignment(p) && p.name === n || ts.isPropertySignature(p) || ts.isMethodSignature(p) || ts.isPropertyDeclaration(p) && p.name === n
+      if (!declares && !propName && !isCallee(n) && !ts.isTypeQueryNode(p) && !ts.isExportSpecifier(p)) record(n, `${fsNamed.get(n.text)}(ref)`, 'sync')
+    } else if (ts.isPropertyAccessExpression(n) && /Sync$/.test(n.name.text) && n.name.text.length > 4 && !isCallee(n) && !ts.isTypeQueryNode(n.parent)
+      && ((ts.isIdentifier(n.expression) && fsNamespace.has(n.expression.text)) || isModuleExpr(n.expression, FS_MODULE))) {
+      record(n, `${n.name.text}(ref)`, 'sync') // `fs.statSync` handed on without being called
     } else if (ts.isIdentifier(n) && cpNamed.has(n.text) && CP_FNS.has(cpNamed.get(n.text) as string)) {
       // The function used as a VALUE (a default parameter `spawnImpl = spawn`, promisify(execFile),
       // an injected seam): whoever calls it spawns on this thread.

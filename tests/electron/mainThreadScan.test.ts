@@ -62,6 +62,22 @@ describe('the scanner itself (synthetic sources)', () => {
     expect(callNames(sites).sort()).toEqual(['sync:existsSync', 'sync:mkdirSync', 'sync:readFileSync', 'sync:readdirSync', 'sync:statSync', 'sync:unlinkSync', 'sync:writeFileSync'].sort())
   })
 
+  it('counts a synchronous fs function handed on as a value: whoever is given it calls it on this thread', () => {
+    const sites = scanSource(`
+      import { existsSync, statSync as st, readFileSync } from 'fs'
+      import * as fs from 'fs'
+      export type Probe = typeof existsSync
+      export const a = { exists: existsSync, write: (f: string) => fs.writeFileSync(f, '') }
+      export const b = { readFileSync }
+      export function c(deps = { stat: st }) { return deps }
+      export function d(paths: string[]) { return paths.map(fs.lstatSync) }
+      export function e() { return { listing: require('fs').readdirSync } }
+      export const f = { existsSync: 1 }
+    `)
+    // the called one is a call, the handed-on ones are (ref); a property NAME, a type query and an import are neither
+    expect(callNames(sites).sort()).toEqual(['sync:existsSync(ref)', 'sync:lstatSync(ref)', 'sync:readFileSync(ref)', 'sync:readdirSync(ref)', 'sync:statSync(ref)', 'sync:writeFileSync'].sort())
+  })
+
   it('counts a project function named like a Sync call, and nothing that merely contains the word', () => {
     const sites = scanSource(`
       function flushHistorySync() {}
