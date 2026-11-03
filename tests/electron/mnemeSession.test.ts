@@ -203,6 +203,14 @@ describe('mnemeSession', () => {
   // twice, and only then learn that nothing was new. A delta reader (transcriptDelta.ts) is told the
   // cursor, reads only what came after it, and says what the cursor becomes.
 
+  describe('hashTurns — what a turn contributes to the cursor hash', () => {
+    it('uses `content` when a turn has no `text`, and treats a missing role and a missing body as empty', () => {
+      expect(hashTurns([{ role: 'user', content: 'hello' }])).toBe(hashTurns([{ role: 'user', text: 'hello' }]))
+      expect(hashTurns([{ role: undefined as unknown as string, text: 'hi' }])).toBe(hashTurns([{ role: '', text: 'hi' }]))
+      expect(hashTurns([{ role: 'user' }])).toBe(hashTurns([{ role: 'user', text: '' }]))
+    })
+  })
+
   describe('continueHash — the cursor hash can be extended without re-reading the prefix', () => {
     const fixtures: RawTurn[][] = [
       [],
@@ -252,7 +260,7 @@ describe('mnemeSession', () => {
     function harness(over: Record<string, unknown> = {}) {
       const calls: string[] = []
       const cursors = new Map<string, SessionCursor>()
-      const reflect = vi.fn(async () => ({ fired: true, lessons: 1 }))
+      const reflect = vi.fn(async (_episode: unknown) => ({ fired: true, lessons: 1 }))
       const readTranscript = vi.fn(async () => {
         calls.push('readTranscript')
         return reflectable()

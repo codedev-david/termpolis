@@ -62,13 +62,29 @@ describe('sessionCursorStore', () => {
   // restart find an unchanged transcript without opening it, so it must come back byte for byte.
   it('carries a byte position through a restart untouched', () => {
     const k = sessionCursorKey('C:/repos/termpolis', 'claude')
-    const pos = { file: 'C:/p/s.jsonl', size: 4096, mtimeMs: 1730678400123.4567, offset: 4096, anchor: 'abcd1234', anchorLen: 256 }
+    const pos = { file: 'C:/p/s.jsonl', size: 4096, mtimeMs: 1730678400123.5, offset: 4096, anchor: 'abcd1234', anchorLen: 256 }
     setSessionCursor(k, { count: 12, hash: 'abc', pos })
     flushSessionCursors()
 
     resetSessionCursors()
     initSessionCursors(dir)
     expect(getSessionCursor(k)).toEqual({ count: 12, hash: 'abc', pos })
+  })
+
+  it('keys an empty working folder or agent as empty, never as "undefined"', () => {
+    expect(sessionCursorKey('', '')).toBe('|')
+    expect(sessionCursorKey(undefined as unknown as string, undefined as unknown as string)).toBe('|')
+  })
+
+  it('loads the entries that are cursors and drops the ones that are not', () => {
+    writeFileSync(
+      join(dir, 'session-cursors.json'),
+      JSON.stringify({ good: { count: 2, hash: 'ab' }, noHash: { count: 2 }, noCount: { hash: 'ab' }, junk: 'text', nothing: null }),
+      'utf8',
+    )
+    initSessionCursors(dir)
+    expect(getSessionCursor('good')).toEqual({ count: 2, hash: 'ab' })
+    for (const k of ['noHash', 'noCount', 'junk', 'nothing']) expect(getSessionCursor(k)).toBeUndefined()
   })
 
   it('returns undefined for a transcript it has never reflected', () => {

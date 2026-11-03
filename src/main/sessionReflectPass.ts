@@ -35,36 +35,36 @@ export function reflectFastEnabled(env: Record<string, string | undefined> = pro
   return !(v === '0' || v === 'off' || v === 'false' || v === 'no')
 }
 
-interface Pass<T> {
-  run: () => Promise<T>
+// Passes are type-erased inside: the map only ever stores them, and singleFlight<T> casts once at its boundary.
+interface Pass {
+  run: () => Promise<unknown>
   /** Requests this pass answers. */
   callers: number
-  resolve: (value: T) => void
+  resolve: (value: unknown) => void
   reject: (reason: unknown) => void
-  promise: Promise<T>
+  promise: Promise<unknown>
 }
 
-interface Flight<T> {
+interface Flight {
   /** The pass that starts when this one ends: shared by every request that arrived meanwhile. */
-  next: Pass<T> | null
+  next: Pass | null
   startedAt: number
 }
 
-// One map for every kind of result: a flight only ever holds the type its starter gave it.
-const flights = new Map<string, Flight<any>>()
+const flights = new Map<string, Flight>()
 
-function newPass<T>(run: () => Promise<T>): Pass<T> {
-  let resolve!: (value: T) => void
+function newPass(run: () => Promise<unknown>): Pass {
+  let resolve!: (value: unknown) => void
   let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((res, rej) => {
+  const promise = new Promise<unknown>((res, rej) => {
     resolve = res
     reject = rej
   })
   return { run, callers: 1, resolve, reject, promise }
 }
 
-function launch<T>(key: string, pass: Pass<T>, now: () => number): void {
-  const flight: Flight<T> = { next: null, startedAt: now() }
+function launch(key: string, pass: Pass, now: () => number): void {
+  const flight: Flight = { next: null, startedAt: now() }
   flights.set(key, flight)
   const began = flight.startedAt
 
@@ -82,7 +82,7 @@ function launch<T>(key: string, pass: Pass<T>, now: () => number): void {
     if (flight.next) launch(key, flight.next, now)
   }
 
-  let started: Promise<T>
+  let started: Promise<unknown>
   try {
     started = pass.run()
   } catch (e) {
@@ -91,7 +91,7 @@ function launch<T>(key: string, pass: Pass<T>, now: () => number): void {
   started.then(
     (value) => {
       pass.resolve(value)
-      const r = value as unknown as ReflectResult | null
+      const r = value as ReflectResult | null
       finish({ fired: !!r?.fired, lessons: typeof r?.lessons === 'number' ? r.lessons : 0 })
     },
     (err) => {
@@ -106,11 +106,11 @@ function launch<T>(key: string, pass: Pass<T>, now: () => number): void {
  * start another: it joins the ONE pass that follows (and the latest request's `run` is the one that runs).
  */
 export function singleFlight<T>(key: string, run: () => Promise<T>, now: () => number = Date.now): Promise<T> {
-  const flight = flights.get(key) as Flight<T> | undefined
+  const flight = flights.get(key)
   if (!flight) {
     const pass = newPass(run)
     launch(key, pass, now)
-    return pass.promise
+    return pass.promise as Promise<T>
   }
   const age = now() - flight.startedAt
   if (!(age >= 0 && age < FLIGHT_STALE_MS)) {
@@ -121,15 +121,15 @@ export function singleFlight<T>(key: string, run: () => Promise<T>, now: () => n
       pass.callers++
     }
     launch(key, pass, now)
-    return pass.promise
+    return pass.promise as Promise<T>
   }
   if (flight.next) {
     flight.next.run = run
     flight.next.callers++
-    return flight.next.promise
+    return flight.next.promise as Promise<T>
   }
   flight.next = newPass(run)
-  return flight.next.promise
+  return flight.next.promise as Promise<T>
 }
 
 /** Test seams. */

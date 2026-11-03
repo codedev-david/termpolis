@@ -185,8 +185,9 @@ async function legacyTurns(cwd: string, files: string[], agent = 'claude') {
   })
 }
 
-const texts = (turns: Array<{ text: string }>): string[] => turns.map((t) => t.text)
-const rt = (turns: Array<{ role: string; text: string }>): Array<[string, string]> => turns.map((t) => [t.role, t.text])
+type AnyTurn = { role: string; text?: string; content?: string }
+const texts = (turns: AnyTurn[]): string[] => turns.map((t) => t.text ?? t.content ?? '')
+const rt = (turns: AnyTurn[]): Array<[string, string]> => turns.map((t) => [t.role, t.text ?? t.content ?? ''])
 
 let counter: SyncFsCounter | null = null
 beforeEach(() => {
@@ -513,7 +514,7 @@ describe('anything it cannot be sure of is a full read, never a guess', () => {
     return { p, file, first: first!.cursor, deps, c }
   }
 
-  async function sameAsWhole(p: Project, file: string, got: { fresh: Array<{ role: string; text: string }>; cursor: Cursor }, legacyPrev: Cursor): Promise<void> {
+  async function sameAsWhole(p: Project, file: string, got: { fresh: AnyTurn[]; cursor: Cursor }, legacyPrev: Cursor): Promise<void> {
     const o = mneme.sessionDelta(await legacyTurns(p.cwd, [file]), legacyPrev)
     expect(rt(got.fresh)).toEqual(rt(o.fresh))
     expect(got.cursor.count).toBe(o.cursor.count)
@@ -633,6 +634,197 @@ describe('anything it cannot be sure of is a full read, never a guess', () => {
   })
 })
 
+describe('races and odd files', () => {
+  /** The real fs, with the handle's methods wrapped. `n` counts handles opened. */
+  function wrapped(over: {
+    stat?: (n: number, real: { size: number; mtimeMs: number }) => { size: number; mtimeMs: number }
+    read?: (n: number, call: number) => 'eof' | 'real'
+    close?: 'throws'
+  }): { fs: DeltaDeps['fs']; opened: () => number; closed: () => number } {
+    let n = 0
+    let closed = 0
+    return {
+      opened: () => n,
+      closed: () => closed,
+      fs: {
+        stat: (f) => fs.promises.stat(f),
+        readFile: (f) => fs.promises.readFile(f, 'utf8'),
+        open: async (f) => {
+          const fh = await fs.promises.open(f, 'r')
+          const mine = ++n
+          let call = 0
+          return {
+            stat: async () => {
+              const real = await fh.stat()
+              return over.stat ? over.stat(mine, real) : real
+            },
+            read: async (buf, off, len, pos) => {
+              call++
+              if (over.read?.(mine, call) === 'eof') return { bytesRead: 0 }
+              return fh.read(buf, off, len, pos)
+            },
+            close: async () => {
+              closed++
+              await fh.close()
+              if (over.close === 'throws') throw new Error('EBADF')
+            },
+          }
+        },
+      },
+    }
+  }
+
+  async function sessionFile(body: string): Promise<{ p: Project; file: string }> {
+    const p = newProject()
+    return { p, file: write(p.dir, 's1', body) }
+  }
+
+  it('a file that is cut short while it is being read is an empty read, not an error; the handle is closed', async () => {
+    const { p } = await sessionFile(lines(userLine('first'), assistantLine('second')))
+    const w = wrapped({ read: () => 'eof' })
+    const { deps } = makeDeps({ fs: w.fs })
+    const res = await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, deps)
+    const empty = mneme.sessionDelta([], mneme.EMPTY_CURSOR) // what reading an empty file says
+    expect(res!.fresh).toEqual([])
+    expect(res!.cursor.count).toBe(empty.cursor.count)
+    expect(res!.cursor.hash).toBe(empty.cursor.hash)
+    expect(res!.cursor.pos!.offset).toBeUndefined() // nothing settled, so no byte to carry on from
+    expect(w.closed()).toBe(w.opened())
+  })
+
+  it('a file that shrinks between the size check and the open falls back to a full read and says what the whole file says', async () => {
+    const { p, file } = await sessionFile(lines(userLine('first'), assistantLine('second')))
+    const { deps: d0 } = makeDeps()
+    const a = await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, d0)
+    fs.appendFileSync(file, lines(userLine('third'), assistantLine('fourth')))
+    // the first handle (the incremental attempt) sees a file shorter than the offset: a rewrite
+    const w = wrapped({ stat: (n, real) => (n === 1 ? { ...real, size: 3 } : real) })
+    const { deps } = makeDeps({ fs: w.fs })
+    const got = await delta.readSessionDelta(p.cwd, 'claude', a!.cursor, deps)
+    const want = mneme.sessionDelta(await legacyTurns(p.cwd, [file]), a!.cursor)
+    expect(rt(got!.fresh)).toEqual(rt(want.fresh))
+    expect(got!.cursor.hash).toBe(want.cursor.hash)
+    expect(w.opened()).toBe(2) // the attempt, then the full read
+    expect(w.closed()).toBe(2)
+  })
+
+  it('a position at byte 0 (nothing was consumed) carries on from the start without an anchor', async () => {
+    const { p, file } = await sessionFile(lines(userLine('first'), assistantLine('second')))
+    const pos = { file, size: 1, mtimeMs: 1, offset: 0, anchor: '811c9dc5', anchorLen: 0 }
+    const { deps, c } = makeDeps()
+    const got = await delta.readSessionDelta(p.cwd, 'claude', { count: 0, hash: '', pos }, deps)
+    const want = mneme.sessionDelta(await legacyTurns(p.cwd, [file]), mneme.EMPTY_CURSOR)
+    expect(rt(got!.fresh)).toEqual(rt(want.fresh))
+    expect(got!.cursor.hash).toBe(want.cursor.hash)
+    expect(c.bytes).toBe(fs.statSync(file).size) // no anchor bytes: there was nothing before byte 0
+  })
+
+  it('an anchor length that is not the one it would read now (a hand-edited cursor) is not trusted: one full read', async () => {
+    const body = lines(...Array.from({ length: 30 }, (_, i) => (i % 2 ? assistantLine : userLine)(`turn ${i} ${'q'.repeat(40)}`)))
+    const { p, file } = await sessionFile(body)
+    const size = fs.statSync(file).size
+    expect(size).toBeGreaterThan(1500)
+    const pos = { file, size: size - 10, mtimeMs: 1, offset: 1000, anchor: 'abcd', anchorLen: 100 }
+    const { deps, c } = makeDeps()
+    const got = await delta.readSessionDelta(p.cwd, 'claude', { count: 0, hash: '', pos }, deps)
+    expect(c.opens).toBe(1) // the full read only: the incremental attempt gave up before opening anything
+    expect(c.bytes).toBe(size)
+    expect(rt(got!.fresh)).toEqual(rt(await legacyTurns(p.cwd, [file])))
+  })
+
+  it.each([
+    ['spaces', '   '],
+    ['a lone carriage return', '\r'],
+  ])('a tail of only %s is consumed (it holds no turn), and the line it precedes is taken whole later', async (_name, tail) => {
+    const { p, file } = await sessionFile(lines(userLine('first'), assistantLine('second')) + tail)
+    const { deps } = makeDeps()
+    const a = await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, deps)
+    expect(a!.cursor.pos!.offset).toBe(fs.statSync(file).size)
+    fs.appendFileSync(file, '\n' + lines(userLine('third')))
+    const b = await delta.readSessionDelta(p.cwd, 'claude', a!.cursor, deps)
+    expect(texts(b!.fresh)).toEqual(['third'])
+    const want = mneme.sessionDelta(await legacyTurns(p.cwd, [file]), a!.cursor)
+    expect(b!.cursor.hash).toBe(want.cursor.hash)
+  })
+
+  it('a handle that cannot be closed does not cost the answer (full read and incremental read alike)', async () => {
+    const { p, file } = await sessionFile(lines(userLine('first'), assistantLine('second')))
+    const w = wrapped({ close: 'throws' })
+    const { deps } = makeDeps({ fs: w.fs })
+    const a = await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, deps)
+    expect(texts(a!.fresh)).toEqual(['first', 'second'])
+    fs.appendFileSync(file, lines(userLine('third')))
+    const b = await delta.readSessionDelta(p.cwd, 'claude', a!.cursor, deps)
+    expect(texts(b!.fresh)).toEqual(['third'])
+    expect(w.closed()).toBe(2)
+  })
+
+  it('the cursor.pos of a different CANDIDATE is not mistaken for this file: it is read in full', async () => {
+    const p = newProject()
+    const other = write(p.dir, 'other', lines(userLine('somewhere else')), 5)
+    const mine = write(p.dir, 'mine', lines(userLine('here'), assistantLine('there')), 50)
+    touchDir(p)
+    const { deps, c } = makeDeps()
+    const pos = { file: other, size: fs.statSync(other).size, mtimeMs: fs.statSync(other).mtimeMs }
+    const got = await delta.readSessionDelta(p.cwd, 'claude', { count: 0, hash: '', pos }, deps)
+    expect(texts(got!.fresh)).toEqual(['here', 'there'])
+    expect(c.bytes).toBe(fs.statSync(mine).size)
+  })
+})
+
+describe('what is remembered is bounded', () => {
+  it(`remembers at most ${'DELEGATED_MAX'} delegated sessions, forgetting the one judged longest ago`, async () => {
+    const p = newProject()
+    const count = delta.DELEGATED_MAX + 3
+    const files = Array.from({ length: count }, (_, i) => write(p.dir, `job-${i}`, lines(userLine(delegated(`job ${i}`)), assistantLine('done')), 10 + i))
+    const { deps, c } = makeDeps()
+    const only = (file: string): Partial<DeltaDeps> => ({ listFiles: async () => [file] })
+    for (const f of files) await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, { ...deps, ...only(f) })
+    expect(c.opens).toBe(count)
+
+    const before = c.opens
+    await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, { ...deps, ...only(files[count - 1]) })
+    expect(c.opens).toBe(before) // the latest is still remembered: a stat, no open
+    await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, { ...deps, ...only(files[0]) })
+    expect(c.opens).toBe(before + 1) // the first was forgotten: judged again
+  })
+
+  it('looks at a delegated session again when it has changed since it was judged', async () => {
+    const p = newProject()
+    const file = write(p.dir, 'job', lines(userLine(delegated()), assistantLine('reviewed')), 10)
+    const { deps, c } = makeDeps()
+    await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, deps)
+    const judged = c.opens
+    fs.appendFileSync(file, lines(assistantLine('still going')))
+    await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, deps)
+    expect(c.opens).toBe(judged + 1)
+  })
+})
+
+describe('the production deps', () => {
+  it('list, stat, open and read, parse, clock and yield all work on real files', async () => {
+    const d = delta.defaultDeltaDeps()
+    const p = newProject()
+    const file = write(p.dir, 's1', lines(userLine('x'), assistantLine('y')))
+    expect(await d.listFiles(p.cwd, 'claude')).toEqual([file])
+    expect((await d.fs.stat(file)).size).toBe(fs.statSync(file).size)
+    const fh = await d.fs.open(file)
+    const buf = Buffer.alloc(4)
+    expect((await fh.read(buf, 0, 4, 0)).bytesRead).toBe(4)
+    expect((await fh.stat()).size).toBe(fs.statSync(file).size)
+    await fh.close()
+    const content = await d.fs.readFile(file)
+    expect(d.parse('claude', content).map((t) => t.text)).toEqual(['x', 'y'])
+    expect(d.now()).toBeGreaterThan(0)
+    await expect(d.yieldToLoop()).resolves.toBeUndefined()
+    expect(d.chunkBytes).toBe(delta.CHUNK_BYTES)
+  })
+
+  it('looks at as many sessions as the whole-transcript reader does', () => {
+    expect(delta.CANDIDATES).toBe(live.MAX_SESSION_CANDIDATES)
+  })
+})
+
 describe('Codex and Gemini: gated by size and mtime, read whole when they change (as before)', () => {
   const codexLine = (role: 'user' | 'assistant', text: string): string =>
     JSON.stringify({ timestamp: '2026-11-03T10:00:00.000Z', type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] } })
@@ -661,6 +853,19 @@ describe('Codex and Gemini: gated by size and mtime, read whole when they change
     const whole = await legacyTurns('/r', [file], 'codex')
     const o = mneme.sessionDelta(whole, mneme.sessionDelta(whole.slice(0, 2), mneme.EMPTY_CURSOR).cursor)
     expect(second!.cursor.hash).toBe(o.cursor.hash)
+  })
+
+  it('Codex: a rollout another computer started is passed over, and not read again while it is unchanged', async () => {
+    const dir = fs.mkdtempSync(path.join(work, 'codex-job-'))
+    const file = path.join(dir, 'rollout-job.jsonl')
+    fs.writeFileSync(file, lines(codexMeta, codexLine('user', PREAMBLE), codexLine('user', delegated()), codexLine('assistant', 'reviewed it')))
+    const { deps, c } = makeDeps({ listFiles: async () => [file] })
+    const prev: Cursor = { count: 3, hash: 'abc' }
+    const first = await delta.readSessionDelta('/r', 'codex', prev, deps)
+    expect(first).toEqual(mneme.sessionDelta([], prev)) // no transcript of its own: as the whole-transcript reader says
+    expect(c.readFiles).toBe(1)
+    await delta.readSessionDelta('/r', 'codex', prev, deps)
+    expect(c.readFiles).toBe(1) // unchanged and known to be delegated: a stat
   })
 
   it('Gemini: the same, for its single JSON document', async () => {

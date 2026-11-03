@@ -99,16 +99,15 @@ const inflight = new Map<string, Promise<Entry[]>>()
 /** Test seam. */
 export function resetSessionListCache(): void {
   folders.clear()
-  inflight.clear()
 }
 
 function remember(dir: string, folder: Folder): void {
   folders.delete(dir)
   folders.set(dir, folder)
-  while (folders.size > LIST_MAX_DIRS) {
-    const oldest = folders.keys().next()
-    if (oldest.done) break
-    folders.delete(oldest.value)
+  // A Map iterates in insertion order, so the first keys are the least recently remembered.
+  for (const oldest of folders.keys()) {
+    if (folders.size <= LIST_MAX_DIRS) break
+    folders.delete(oldest)
   }
 }
 
@@ -208,9 +207,8 @@ export async function listSessionFilesAsync(cwd: string, opts: ListOptions = {})
   // Callers that arrive together share ONE pass over the files.
   let pending = inflight.get(dir)
   if (!pending) {
-    const mine: Promise<Entry[]> = compute(dir, root, st.mtimeMs, io, clock()).finally(() => {
-      if (inflight.get(dir) === mine) inflight.delete(dir)
-    })
+    // Set and deleted in pairs, and a second compute for this folder starts only after the first's delete.
+    const mine: Promise<Entry[]> = compute(dir, root, st.mtimeMs, io, clock()).finally(() => inflight.delete(dir))
     inflight.set(dir, mine)
     pending = mine
   }

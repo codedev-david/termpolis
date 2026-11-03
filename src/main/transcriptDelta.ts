@@ -98,7 +98,7 @@ export function defaultDeltaDeps(): DeltaDeps {
     },
     parse: (agent, content) => parseBySource(agent as ConversationSource, content),
     now: () => Date.now(),
-    yieldToLoop: () => new Promise<void>((resolve) => (typeof setImmediate === 'function' ? setImmediate(resolve) : setTimeout(resolve, 0))),
+    yieldToLoop: () => new Promise<void>((resolve) => setImmediate(resolve)),
     chunkBytes: CHUNK_BYTES,
   }
 }
@@ -116,10 +116,10 @@ const delegated = new Map<string, { size: number; mtimeMs: number }>()
 function markDelegated(file: string, size: number, mtimeMs: number): void {
   delegated.delete(file)
   delegated.set(file, { size, mtimeMs })
-  while (delegated.size > DELEGATED_MAX) {
-    const oldest = delegated.keys().next()
-    if (oldest.done) break
-    delegated.delete(oldest.value)
+  // A Map iterates in insertion order, so the first keys are the least recently judged.
+  for (const oldest of delegated.keys()) {
+    if (delegated.size <= DELEGATED_MAX) break
+    delegated.delete(oldest)
   }
 }
 
@@ -301,7 +301,7 @@ const DELEGATED = 'delegated' as const
 async function incremental(file: string, prev: SessionCursor, pos: TranscriptPos, deps: DeltaDeps, m: Metrics): Promise<TranscriptDelta | null> {
   const offset = pos.offset as number
   const anchorLen = Math.min(ANCHOR_BYTES, offset)
-  if (pos.anchorLen !== anchorLen || pos.anchor === undefined) return null
+  if (pos.anchorLen !== anchorLen) return null // validPos made sure an anchor is there whenever an offset is
 
   const fh = await deps.fs.open(file)
   m.opens++
@@ -337,14 +337,16 @@ async function fullClaude(file: string, prev: SessionCursor, deps: DeltaDeps, m:
   m.opens++
   try {
     const fst = await fh.stat()
-    let verdict: 'pending' | 'own' | 'delegated' = 'pending'
+    let judged = false
     const scan = await scanLines(fh, 'claude', 0, fst.size, EMPTY, deps, m, (turns) => {
-      // A delegated session shows itself in its first lines: do not read the rest of it.
-      if (verdict !== 'pending' || !openingSettled(turns)) return false
-      verdict = ownDialogue(turns) === null ? 'delegated' : 'own'
-      return verdict === 'delegated'
+      // A delegated session shows itself in its first lines: once the opening prompt is in, judge it
+      // (once) and, if it is another computer's, do not read the rest. The opening prompt is within the
+      // turns read so far, so ownDialogue of them gives the verdict it would give of all of them.
+      if (judged || !openingSettled(turns)) return false
+      judged = true
+      return ownDialogue(turns) === null
     })
-    const own = verdict === 'delegated' ? null : ownDialogue(scan.turns)
+    const own = ownDialogue(scan.turns)
     if (own === null) {
       markDelegated(file, fst.size, fst.mtimeMs)
       return DELEGATED

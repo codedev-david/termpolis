@@ -74,6 +74,11 @@ describe('recordPass / snapshotPasses', () => {
     expect(s.records).toBe(1)
   })
 
+  it('two names that clean to the same short name are ONE counter: the first value wins', () => {
+    recordPass('reflect', { 'a b': 1, a_b: 2, ['x'.repeat(30)]: 3, ['x'.repeat(40)]: 4 })
+    expect(snapshotPasses().recent[0].f).toEqual({ a_b: 1, ['x'.repeat(PASS_LIMITS.maxName)]: 3 })
+  })
+
   it('caps the number of fields kept per pass', () => {
     const many: Record<string, number> = {}
     for (let i = 0; i < 100; i++) many[`f${i}`] = i

@@ -320,6 +320,51 @@ describe('listSessionFilesAsync', () => {
     })
   })
 
+  describe('it fails closed', () => {
+    const io = (over: Partial<import('../../src/main/claudeSessionList').ListFs> = {}): import('../../src/main/claudeSessionList').ListFs => ({
+      stat: (p) => fs.promises.stat(p),
+      readdir: (p) => fs.promises.readdir(p),
+      realpath: async (p) => p,
+      ...over,
+    })
+
+    it('refuses a listed name that would leave the projects folder', async () => {
+      const p = project()
+      session(p.dir, 'ok', 10)
+      p.pin()
+      const out = await list.listSessionFilesAsync(p.cwd, { fs: io({ readdir: async () => ['../../escape.jsonl', 'ok.jsonl'] }) })
+      expect(out.map((f) => path.basename(f))).toEqual(['ok.jsonl'])
+      expect(out.every((f) => list.entryWithinRoot(watcher.CLAUDE_PROJECTS_DIR, f))).toBe(true)
+    })
+
+    it('is [] when the folder cannot be listed after it was found (it vanished in between)', async () => {
+      const p = project()
+      session(p.dir, 'a', 10)
+      p.pin()
+      expect(await list.listSessionFilesAsync(p.cwd, { fs: io({ readdir: async () => { throw new Error('ENOENT') } }) })).toEqual([])
+    })
+
+    it('never lists the projects folder itself when a working folder resolves to nothing', async () => {
+      let listed = 0
+      const out = await list.listSessionFilesAsync(path.join(work, 'x'), {
+        fs: io({ realpath: async () => '', readdir: async (p) => { listed++; return fs.promises.readdir(p) } }),
+      })
+      expect(out).toEqual([])
+      expect(listed).toBe(0)
+    })
+
+    it('uses the projects folder it is given instead of the default', async () => {
+      const other = fs.mkdtempSync(path.join(work, 'projects-'))
+      const cwd = path.join(work, `repo-${seq++}`)
+      fs.mkdirSync(cwd)
+      const dir = path.join(other, watcher.mangleCwd(watcher.claudeCwd(cwd)))
+      fs.mkdirSync(dir)
+      const file = session(dir, 'there', 10)
+      expect(await list.listSessionFilesAsync(cwd, { projectsDir: other })).toEqual([file])
+      expect(await list.listSessionFilesAsync(cwd)).toEqual([]) // the default folder has no such project
+    })
+  })
+
   describe('entryWithinRoot / claudeCwdAsync', () => {
     it('refuses a path outside the projects folder, as the synchronous listing does', () => {
       const root = path.join(work, 'projects-root')

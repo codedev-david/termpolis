@@ -73,12 +73,13 @@ function cleanName(raw: unknown): string | null {
   return raw.slice(0, PASS_LIMITS.maxName).replace(/[^A-Za-z0-9_.:-]/g, '_')
 }
 
+/** Only ever called with size >= 1, so the slot at `head` holds a record. */
 function evictOldest(): void {
-  const old = ring[head]
+  const old = ring[head] as PassRecord
   ring[head] = undefined
   head = (head + 1) % PASS_LIMITS.maxRecords
   size--
-  if (old) ringBytes -= old.bytes
+  ringBytes -= old.bytes
   dropped++
 }
 
@@ -150,8 +151,8 @@ export function recordPass(kind: string, fields: Record<string, number>): void {
 export function snapshotPasses(): PassSnapshot {
   const recent: PassSnapshot['recent'] = []
   for (let i = 0; i < size; i++) {
-    const r = ring[(head + i) % PASS_LIMITS.maxRecords]
-    if (r) recent.push({ at: r.at, kind: r.kind, f: { ...r.f } })
+    const r = ring[(head + i) % PASS_LIMITS.maxRecords] as PassRecord // the `size` slots from `head` are all filled
+    recent.push({ at: r.at, kind: r.kind, f: { ...r.f } })
   }
   const out: PassSnapshot['kinds'] = {}
   for (const [name, k] of kinds) out[name] = { n: k.n, last: k.last, sum: { ...k.sum }, max: { ...k.max } }
