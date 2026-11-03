@@ -1432,10 +1432,7 @@ audit log.
     16 KB around its `kty` line: a member there named like a private member,
     with a long random-looking value, is read as the key's.) A block runs from
     its BEGIN line to its END line, or with no END line in view to its last key
-    line (in rg or Select-String output on Windows whose paths hold `\r` or `\n`
-    after a backslash, as `\repos` and `\notes` do, the pair reads as an escaped
-    line break, and a last line under 16 characters and a PGP checksum line can
-    stay behind). One whose lines are laid out unevenly (one indented, split or joined,
+    line. One whose lines are laid out unevenly (one indented, split or joined,
     or re-wrapped) still runs to its END line once the lines before the uneven
     one show it is a key, and with no END line is removed up to the uneven line
     and the rest named in a note (but for an uneven line that is the key's last,
@@ -1530,9 +1527,7 @@ audit log.
   written all on one line, echoed into a file line by line or URL-encoded whole; for a
   key whose lines carry markup, colour codes or a blame prefix (a coloured
   `git diff`, `git blame`, HTML tags or table cells) or another language's
-  string concatenation (SQL, Lua, MATLAB); for a listing of Windows paths in
-  which a folder's name starts with `r` or `n` (`\repos`, `\notes`), whose
-  backslash and letter read as an escaped line break; for a
+  string concatenation (SQL, Lua, MATLAB); for a
   key with no END line whose cut fell inside its BEGIN line, its header lines
   (`Version`, `Comment`, `Proc-Type`, `DEK-Info`) or a string literal's line break, which
   crosses without a note; for the last line of a key written as a template

@@ -12,6 +12,7 @@ import {
   detectorStart,
   encodedKeys,
   ESC_ALL_RE,
+  escapeAt,
   hasWords,
   headless,
   jwkKeys,
@@ -1296,6 +1297,36 @@ describe('T1 K6: a PuTTY key file', () => {
     expect(r.text).toBe(cut)
     expect(r.removed).toEqual({})
     expect(leakedWindows(r.text, [priv[0]])).toBeGreaterThan(0)
+  })
+
+  it('takes the private lines of a PuTTY file under a Windows path whose piece of 16 to 69 characters stands right before a folder that starts with r or n', () => {
+    // `\repos` and `\notes` hold the backslash and the letter of a written-out line break, and the piece before one (a build's hash directory, a project's long name)
+    // took the place of a private line: a run of 40 to 68 characters is one. The file's last lines were left behind.
+    const piece = (n: number): string => Array.from({ length: n }, (_, i) => 'abcdefghijklmnopqrstuvwxyz0123456789'[(i * 7 + n) % 36]).join('')
+    const listings: Record<string, (p: string, ls: string[]) => string> = {
+      'rg': (p, ls) => ls.map((l, i) => `${p}:${i + 1}:${l}`).join('\n'),
+      'Select-String': (p, ls) => ls.map((l, i) => `  ${p}:${i + 1}:${l}`).join('\r\n'),
+      'rg -C': (p, ls) => ls.map((l, i) => `${p}${i === 0 ? ':' : '-'}${i + 1}${i === 0 ? ':' : '-'}${l}`).join('\n'),
+      'a > marker': (p, ls) => ls.map((l, i) => `> ${p}:${i + 1}:${l}`).join('\n'),
+      'findstr, no line numbers': (p, ls) => ls.map((l) => `${p}:${l}`).join('\n'),
+    }
+    for (const kind of ['rsa', 'p384', 'ed25519']) {
+      for (const mac of [true, false]) {
+        const { lines, secret } = ppkOf(kind, { mac })
+        for (const n of [16, 39, 40, 41, 64, 68, 69]) {
+          for (const folder of ['repos', 'notes', 'new', 'node_modules']) {
+            const p = ['C:', 'Users', 'dev', piece(n), folder, 'deploy.ppk'].join(BS)
+            for (const [mode, write] of Object.entries(listings)) {
+              const label = `${kind}, ${mac ? 'with' : 'without'} the MAC line, a piece of ${n}, ${folder}, ${mode}`
+              const r = screenKeys('Found:\n' + write(p, lines) + '\nDone.')
+              expect(r.removed, label).toEqual({ putty_private_key: 1 })
+              expect(leakedWindows(r.text, secret), label).toBe(0)
+              expect(r.text, label).toContain(piece(n))
+            }
+          }
+        }
+      }
+    }
   })
 
   it('takes the private lines of a PuTTY file written with no line break at all, with its MAC line behind and without it', () => {
@@ -4124,6 +4155,200 @@ describe('T1 K1: a key in a grep or rg listing whose path holds a long run of ba
         const r = screenKeys(ls.map(write).join('\n'))
         expect(Object.keys(r.removed).length, ls[1]).toBe(plain)
         if (plain) expect(r.text.includes(ls[1].slice(0, 20)), ls[1]).toBe(false)
+      }
+    }
+  })
+})
+
+describe('T1 K1: a key in a listing under a Windows path whose folder or file name starts with r or n, after a piece of 16 or more characters', () => {
+  // `\repos`, `\notes`, `\node_modules` and `\rsa_key.pem` hold the backslash and the letter of a written-out CR or LF. Read as one, they cut the listing line in
+  // two, and the piece of the path before them (`AzurePipelineTool`: 17 characters) stood alone on a line of its own as a key line of another width: the key was
+  // only reported, and every line of it crossed, in every listing, with its END line and without.
+  const BS = '\\'
+  const win = (...parts: string[]): string => parts.join(BS)
+  const paths: Record<string, string> = {
+    'a folder named repos': win('C:', 'Users', 'DavidEngelhart', 'repos', 'msimga-baseline', 'DevSecOps', 'AzurePipelineTool', 'rsa_key.pem'),
+    'node_modules': win('C:', 'work', 'CommercialAgentPortal', 'node_modules', 'x', 'deploy.pem'),
+    'resources': win('D:', 'ci', 'CommercialAgentPortal', 'resources', 'keys', 'deploy.pem'),
+    'the relative form rg prints inside the repo': win('AzurePipelineTool', 'rsa_key.pem'),
+    'notes': win('C:', 'Users', 'dev', 'AzurePipelineTool', 'notes', 'deploy.pem'),
+  }
+  const modes: Record<string, (p: string, ls: string[]) => string> = {
+    'rg': (p, ls) => ls.map((l, i) => `${p}:${i + 1}:${l}`).join('\n'),
+    'Select-String': (p, ls) => ls.map((l, i) => `  ${p}:${i + 1}:${l}`).join('\r\n'),
+    'rg -C': (p, ls) => ls.map((l, i) => `${p}${i === 0 ? ':' : '-'}${i + 1}${i === 0 ? ':' : '-'}${l}`).join('\n'),
+    'a > marker': (p, ls) => ls.map((l, i) => `> ${p}:${i + 1}:${l}`).join('\n'),
+    'findstr, no line numbers': (p, ls) => ls.map((l) => `${p}:${l}`).join('\n'),
+    'cat -n of a listing': (p, ls) => ls.map((l, i) => `${String(i + 1).padStart(6)}\t${p}:${i + 1}:${l}`).join('\n'),
+    'in a JSON string, backslashes doubled': (p, ls) => JSON.stringify(ls.map((l, i) => `${p}:${i + 1}:${l}`).join('\n')),
+  }
+  const formats: Format[] = ['pkcs8_rsa', 'pkcs8_ed25519', 'sec1_ec', 'enc_pkcs8', 'rsa_legacy_enc', 'openssh', 'dsa', 'pgp_rsa_hdr', 'ssh2_real', 'openvpn']
+
+  it('removes every format, with its END line and without, in seven listings, under five paths', () => {
+    for (const format of formats) {
+      const [rule] = EXPECT[format]
+      for (const [pathName, p] of Object.entries(paths)) {
+        for (const [mode, write] of Object.entries(modes)) {
+          for (const withEnd of [true, false]) {
+            const label = `${format}/${pathName}/${mode}/${withEnd ? 'END' : 'no END'}`
+            const ls = withEnd ? K.F[format] : K.F[format].slice(0, -1)
+            const r = screenKeys('Found:\n' + write(p, ls) + '\nDone.')
+            expect(leakedWindows(r.text, secretLinesOf(K.F[format])), label).toBe(0)
+            expect(Object.keys(r.removed), label).toEqual([rule])
+          }
+        }
+      }
+    }
+  })
+
+  it('removes the tail of a key whose BEGIN line is out of view, and a key an older computer cut, listed under such a path as it is written plainly', () => {
+    const p = paths['a folder named repos']
+    for (const format of ['pkcs8_rsa', 'pkcs1_rsa', 'enc_pkcs8', 'pgp_rsa_nohdr', 'openssh'] as Format[]) {
+      // (half and four fifths of the way down: at least four lines are left, the END line the last of them)
+      for (const cut of [0.5, 0.8].map((f) => Math.min(Math.floor(K.F[format].length * f), K.F[format].length - 4))) {
+        const tail = K.F[format].slice(cut)
+        for (const cutStart of [false, true]) {
+          const plain = screenKeys(tail.join('\n'), { cutStart })
+          expect(Object.keys(plain.removed), `${format}/${cut}, plain lines`).toEqual([EXPECT[format][0]])
+          for (const [mode, write] of Object.entries(modes).slice(0, 5)) {
+            const label = `${format}/${cut}/${mode}/${cutStart ? 'cut start' : 'top of the text'}`
+            const r = screenKeys(write(p, tail), { cutStart })
+            expect(leakedWindows(r.text, secretLinesOf(tail)), label).toBe(0)
+            expect(Object.keys(r.removed), label).toEqual([EXPECT[format][0]])
+          }
+        }
+      }
+    }
+  })
+
+  it('tells the backslash and letter of a Windows path from a written-out line break by what stands before the piece of path in front of it and what follows it', () => {
+    // The first `\r` or `\n` of `text` is read: null when it is a path's, else the escape. (Each row: a label, the text, and whether a line break is read.)
+    const P = 'AbCdEfGhIjKlMnOpQrSt'
+    const piece = 'AzurePipelineTool'
+    const rest = `${BS}repos${BS}a.pem:12:${P}`
+    const rows: Array<[string, string, boolean]> = [
+      // what stands before the piece: a backslash, a line start, a blank, a tab, a `>`, a quote, a CR or an LF end a path's piece; nothing else does
+      ['the text starts with the piece', `${piece}${rest}`, false],
+      ['a backslash before it', `C:${BS}work${BS}${piece}${rest}`, false],
+      ['a blank before it', `x ${piece}${rest}`, false],
+      ['a tab before it', `x\t${piece}${rest}`, false],
+      ['a > before it', `>${piece}${rest}`, false],
+      ['a double quote before it', `"${piece}${rest}`, false],
+      ['a single quote before it', `'${piece}${rest}`, false],
+      ['a CR before it', `x\r${piece}${rest}`, false],
+      ['an LF before it', `x\n${piece}${rest}`, false],
+      ...[':', '/', '+', '=', ',', '(', '@', '[', '`', '{', ';'].map((c): [string, string, boolean] => [`a ${c} before it: the end of a key line`, `x${c}${piece}${rest}`, true]),
+      // the piece is made of letters, digits, `_`, `.` and `-`, and ends at anything else: what stands before THAT decides nothing
+      ['every character of a piece', ` A0-9_.Zaz9${rest}`, false],
+      ...[':', '/', '+', '=', '@', '[', '`', '{', '}', ')', '~', '!'].map((c): [string, string, boolean] => [`a ${c} inside the piece stops it there`, ` ${piece}${c}${piece}${rest}`, true]),
+      // the piece's length: 96 characters at the most
+      ['a piece of 96', ` ${'a'.repeat(96)}${rest}`, false],
+      ['a piece of 97', ` ${'a'.repeat(97)}${rest}`, true],
+      // no piece: a path that opens with the escape
+      ['a UNC path at the start of the text', `${BS}${BS}repos${BS}share${BS}a.pem:12:${P}`, false],
+      ['a UNC path after a line break', `x\n${BS}${BS}repos${BS}share${BS}a.pem:12:${P}`, false],
+      ['a UNC path after a CR', `x\r${BS}${BS}repos${BS}share${BS}a.pem:12:${P}`, false],
+      ['a path after its drive, at the start', `C:${BS}repos${BS}a.pem:12:${P}`, false],
+      ['a path after its drive, after a blank', ` C:${BS}repos${BS}a.pem:12:${P}`, false],
+      ['a path after its drive, after a quote', `"D:${BS}notes${BS}a.pem:12:${P}`, false],
+      ['a colon that is no drive: a name of letters in front of it', `xC:${BS}repos${BS}a.pem:12:${P}`, true],
+      ['a colon after a digit', `1:${BS}repos${BS}a.pem:12:${P}`, true],
+      ['a colon after two characters of a name', `ab:${BS}repos${BS}a.pem:12:${P}`, true],
+      ['a blank right before the backslash', `x ${BS}repos${BS}a.pem:12:${P}`, true],
+      ['a quote right before the backslash', `"${BS}repos${BS}a.pem:12:${P}`, true],
+      // what follows: a name of up to 96 characters, and then a listing's separator
+      ['a name and a line number between colons', `x ${piece}${BS}rsa_key.pem:12:${P}`, false],
+      ['a name and a line number between dashes (a context line)', `x ${piece}${BS}rsa_key.pem-12-${P}`, false],
+      ['a name and a line number of nine digits, and a line end', `x ${piece}${BS}rsa_key.pem:123456789:\nnext`, false],
+      ['a name and a line number, a colon and a line end', `x ${piece}${BS}rsa_key.pem:12:\nnext`, false],
+      ['a folder named notes', `x ${piece}${BS}notes${BS}a.pem:12:${P}`, false],
+      ['a folder named new', `x ${piece}${BS}new_folder${BS}a.pem:12:${P}`, false],
+      ['a folder named node_modules', `x ${piece}${BS}node_modules${BS}a.pem:12:${P}`, false],
+      ['a file named rsa_key.pem', `x ${piece}${BS}rsa_key.pem:12:${P}`, false],
+      ['a name and a line number, a colon and a dash', `x ${piece}${BS}rsa_key.pem:12-${P}`, false],
+      ['no separator at all', `x ${piece}${BS}rsa_key.pem`, true],
+      ['no separator, a blank after the name', `x ${piece}${BS}rsa_key.pem ${P}`, true],
+      ['a name of 96 characters after the escape', `x ${piece}${BS}r${'a'.repeat(96)}:12:${P}`, false],
+      ['a name of 97 characters after the escape', `x ${piece}${BS}r${'a'.repeat(97)}:12:${P}`, true],
+      ['a name that starts with a digit (a timestamp)', `"${piece}${BS}n2026-11-02T10:11:10.123456789Z ${P}`, true],
+      ['a name that starts with a dash', `"${piece}${BS}n-2026-11-02 ${P}`, true],
+      // a colon with no line number: findstr, grep -H
+      ['a colon and a payload', `x ${piece}${rest.replace(':12:', ':')}`, false],
+      ['a colon and a payload of 4', `x ${piece}${BS}repos${BS}a.pem:AbCd`, false],
+      ['a colon and a payload of 3', `x ${piece}${BS}repos${BS}a.pem:AbC`, true],
+      ['a colon and the end of the line', `x ${piece}${BS}repos${BS}a.pem:\nnext`, false],
+      ['a colon and a CR', `x ${piece}${BS}repos${BS}a.pem:\rnext`, false],
+      ['a colon and the end of the text', `x ${piece}${BS}repos${BS}a.pem:`, false],
+      ['a colon and a marker', `x ${piece}${BS}repos${BS}a.pem:-----BEGIN PRIVATE KEY-----`, false],
+      ['a colon and three dashes', `x ${piece}${BS}repos${BS}a.pem:---`, true],
+      ['a colon and four dashes (an SSH2 marker)', `x ${piece}${BS}repos${BS}a.pem:---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----`, false],
+      ['a colon and a header of 3 letters', `x ${piece}${BS}repos${BS}a.pem:Key: x`, false],
+      ['a colon and a header with a lower-case start', `x ${piece}${BS}repos${BS}a.pem:abc: x`, true],
+      ['a name that has its dot far from the colon', `x ${piece}${BS}rsa_key_with_a_long_name_before_any_dot_at_all${BS}x:${P}`, false],
+      ['a colon and a blank', `x ${piece}${BS}repos${BS}a.pem: ${P}`, true],
+      ['a name with a dot in it, a colon and a payload', `x ${piece}${BS}nodes.x:${P}`, false],
+      ['a name with a slash in it', `x ${piece}${BS}nodes/x:${P}`, false],
+      ['a name with a backslash in it', `x ${piece}${BS}nodes${BS}x:${P}`, false],
+      ['a word and a colon (no dot, slash or backslash in it)', `x ${piece}${BS}nodes:${P}`, true],
+      ['a word and a colon, a dash and digits in it', `x ${piece}${BS}note-1:${P}`, true],
+      // the other written-out breaks are never a path's
+      ['a Unicode escape', `x ${piece}${BS}u000asrc/keys/a.pem:12:${P}`, true],
+      ['a hex escape', `x ${piece}${BS}x0asrc/keys/a.pem:12:${P}`, true],
+      ['a URL escape', `x ${piece}%0Asrc/keys/a.pem:12:${P}`, true],
+      ['a br tag', `x ${piece}<br>src/keys/a.pem:12:${P}`, true],
+      // more than one backslash, as JSON writes a path inside a string
+      ['a doubled backslash', `x ${piece}${BS}${BS}repos${BS}${BS}a.pem:12:${P}`, false],
+      ['a doubled backslash and a CR', `x ${piece}${BS}${BS}rsa_key.pem:12:${P}`, false],
+      ['three backslashes', `x ${piece}${BS}${BS}${BS}notes${BS}${BS}${BS}a.pem:12:${P}`, false],
+    ]
+    for (const [label, text, isBreak] of rows) {
+      const i = text.search(/\\+[nr]|\\u000a|\\x0a|%0A|<br>/)
+      expect(i, label).toBeGreaterThanOrEqual(0)
+      const m = escapeAt(text, i)
+      expect(m !== null, label).toBe(isBreak)
+      if (isBreak) expect(text.startsWith((m as RegExpExecArray)[0], i), label).toBe(true)
+    }
+  })
+
+  it('removes a legacy encrypted PEM key an older computer cut inside its DEK-Info line or the blank line under it, listed under a Windows path with a folder named repos', () => {
+    // The lines above the key lines are looked at for what a cut left of the DEK-Info line, and were split at every written-out break: the `\repos` of the path
+    // was one, and a line of the path's own pieces stood between the cut and the key.
+    const lines = K.F.rsa_legacy_enc
+    for (const p of [paths['a folder named repos'], paths.notes, win('C:', 'repos', 'deploy.pem')]) {
+      const listing = 'Output:\n' + lines.map((l, i) => `${p}:${i + 1}:${l}`).join('\n')
+      const at = listing.indexOf('DEK-Info')
+      for (const off of [3, 12, 25, 40]) {
+        for (const prefix of ['', '\u2026']) {
+          const label = `${p}, ${off} characters into the DEK-Info line, ${prefix === '' ? 'cut' : 'an error'}`
+          const r = screenKeys(prefix + listing.slice(at + off), { cutStart: true })
+          expect(r.removed, label).toEqual({ private_key: 1 })
+          expect(leakedWindows(r.text, secretLinesOf(lines)), label).toBe(0)
+        }
+      }
+    }
+  })
+
+  it('keeps the written-out breaks of a listing that a JSON string holds: the end of a key line is no piece of a path', () => {
+    // After a key line comes `\n` and the next line's path, `src/keys/deploy.pem:13:` (or a clock time, or a service name): a piece of a path right before the
+    // backslash, a `:N:` right after the letter, and still a line break. The piece is the end of the line's payload, which follows a `:` (or a `/` or a `+` inside it).
+    const frames: Record<string, (l: string, i: number) => string> = {
+      'rg': (l, i) => `src/keys/deploy.pem:${i + 1}:${l}`,
+      'rg -C': (l, i) => `src/keys/deploy.pem${i === 0 ? ':' : '-'}${i + 1}${i === 0 ? ':' : '-'}${l}`,
+      'findstr': (l) => `src/keys/deploy.pem:${l}`,
+      'a clock time, as docker logs -t': (l, i) => `2026-11-02T10:11:${String(10 + (i % 50))}.123456789Z ${l}`,
+      'a service name, as compose': (l) => `web-1  | ${l}`,
+      'a pod, as kubectl': (l) => `[pod/web-1/app] ${l}`,
+    }
+    // lines of letters and digits only, so that the piece before each break is the whole line (preceded by the `:` or the blank of its frame)
+    const plain = (ls: string[]): string[] => ls.map((l, i) => (i === 0 ? l : l.replace(/\+/g, 'A').replace(/\//g, 'B')))
+    for (const format of ['pkcs8_rsa', 'pkcs8_ed25519', 'sec1_ec', 'openssh', 'pgp_rsa_nohdr'] as Format[]) {
+      for (const [name, frame] of Object.entries(frames)) {
+        for (const ls of [K.F[format], plain(K.F[format])]) {
+          const label = `${format}, ${name}, ${ls === K.F[format] ? 'as it is' : 'letters and digits only'}`
+          const r = screenKeys(`Output:\n${JSON.stringify(ls.map(frame).join('\n'))}\nDone.`)
+          expect(Object.keys(r.removed), label).toEqual([EXPECT[format][0]])
+          expect(leakedWindows(r.text, secretLinesOf(ls)), label).toBe(0)
+        }
       }
     }
   })

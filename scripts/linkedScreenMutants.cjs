@@ -153,7 +153,7 @@ const REVIEW = {
   'legacy cut: the rest of a frame the cut fell in not read': [KEY, " || nlTail(l) || (frame !== '' && own(l) !== '' && loose(frame).endsWith(loose(own(l))))", ' || nlTail(l)'],
   "legacy cut: the rest of a line break or newline constant not read": [KEY, " || escTail(l.replace(TRAILING_HEAD_JOINERS, '')) || nlTail(l)", ""],
   'legacy cut: only \\n and \\r split the lines': [KEY, 'const BREAKS = /\\r\\n|\\r|\\n|(?<!\\\\)\\\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\\s*\\/?>|`[nr]/', 'const BREAKS = /\\r\\n|\\r|\\n|(?<!\\\\)\\\\+[nr]/'],
-  'legacy cut: newline constants not blanked': [KEY, "blankNl(above.replace(/^…/, '')).split(BREAKS)", "above.replace(/^…/, '').split(BREAKS)"],
+  'legacy cut: newline constants not blanked': [KEY, "splitBreaks(blankNl(above.replace(/^…/, '')))", "splitBreaks(above.replace(/^…/, ''))"],
   "legacy cut: a blank line in the frame and a closing quote not read (r\"\")": [KEY, "own(l) === frame || (own(l).startsWith(frame) && FRAGMENT.test(own(l).slice(frame.length)))", "own(l) === frame"],
   "legacy cut: a $ at a blank line's end (cat -A) not read": [KEY, "/^[\\s\\d:|>#*+$-]*$/.test(l)", "/^[\\s\\d:|>#*+-]*$/.test(l)"],
   "legacy cut: a $ after the DEK-Info remnant (cat -A) not read": [KEY, ")?[\\s\"'`,;+.&_)\\]}|\\\\$]*$/", ")?[\\s\"'`,;+.&_)\\]}|\\\\]*$/"],

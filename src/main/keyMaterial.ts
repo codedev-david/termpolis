@@ -80,10 +80,42 @@ export const ESC_ALL_RE = new RegExp('(?<!\\\\)' + ESC_RE.source, 'g')
  *  CR LF is for nextBreak, which reads the two as a break with an empty line between them. */
 const CRLF_ESCAPED = /^(?:\\+r|\\+u000[dD]|\\+x0[dD]|%0[dD]|&#(?:x0?[dD]|13);|`r)(?:\\+n|\\+u000[aA]|\\+x0[aA]|%0[aA]|&#(?:x0?[aA]|10);|`n)/
 
+/** What a Windows path goes on with after a backslash and the letter that read as a written-out CR or LF (`\repos\a.pem:12:AAAA`, `\rsa_key.pem:12:AAAA`):
+ *  a name or more folders, and a listing's separator: `:N:` or `-N-`, or, when no line numbers are printed (`findstr`, `grep -H`), a `:` that a payload,
+ *  a marker (`-----BEGIN`, SSH2's `---- BEGIN`), an armor header (`Proc-Type: `) or the line's end follows, after a name that has an extension or a folder in it
+ *  (`error:` is a word). */
+const PATH_AFTER_ESCAPE = /(?:[A-Za-z_.][A-Za-z0-9_.\-/\\]{0,95}?(?::\d{1,9}[:-]|-\d{1,9}-)|(?=[A-Za-z0-9_.\-/\\]{0,96}?[.\\/])[A-Za-z_.][A-Za-z0-9_.\-/\\]{0,95}?:(?=[A-Za-z0-9+/=]{4}|-{4}|[A-Z][A-Za-z-]{2,12}: |[\r\n]|$))/y
+/** A written-out CR or LF made of backslashes and the letter alone (not the Unicode or hex escape of one). */
+const BACKSLASH_BREAK = /^\\+[nr]$/
+/** Whether `c` can be in a piece of a path: a letter, a digit, `_`, `.` or `-`. */
+const isPathChar = (c: number): boolean => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 46 || c === 45
+
+/** Whether the written-out CR or LF `m`, found at i, is the backslash and the letter of a Windows path in a listing (`...\AzurePipelineTool\rsa_key.pem:12:AAAA`,
+ *  `\repos`, `\notes`, `\node_modules`): the text after it goes on as a path to a listing's separator, and a piece of a path ends right before it, one that
+ *  starts the line or follows a backslash, a blank, a `>` or a quote. (A piece that follows a `:` or a `/` is the end of a key line, in a listing whose lines are joined by
+ *  written-out breaks, and so is any text that goes on with a timestamp or a service name instead of a path.) Read as a break, such a backslash cut the path in two,
+ *  and a piece of 16 characters or more before it was taken for a key line. */
+function pathEscape(text: string, i: number, escape: string): boolean {
+  if (!BACKSLASH_BREAK.test(escape)) return false
+  PATH_AFTER_ESCAPE.lastIndex = i + escape.length
+  if (!PATH_AFTER_ESCAPE.test(text)) return false
+  let k = i
+  while (k > 0 && i - k < 97 && isPathChar(text.charCodeAt(k - 1))) k--
+  if (i - k > 96) return false
+  if (k === i) {
+    // No piece in front of it: a path that opens with it (a UNC path's `\\repos`, a relative one's first folder, a cut that took the piece before it), or one that
+    // follows its drive (`C:\repos`).
+    const before = text.charCodeAt(i - 1)
+    return i === 0 || before === 10 || before === 13 || (before === 58 && isLetter(text.charCodeAt(i - 2)) && !isPathChar(text.charCodeAt(i - 3)))
+  }
+  const c = k === 0 ? 10 : text.charCodeAt(k - 1)
+  return c === 92 || c === 10 || c === 13 || c === 9 || c === 32 || c === 62 || c === 34 || c === 39
+}
+
 /** The written-out line break that starts at i, or null. PowerShell's `n and `r count only after the text they end: a base64
  *  character, a quote or a dash (a BEGIN line's). An inline-code span opens with a backtick in front of a key line (after a space,
- *  a comma or a line start), and about half of the key lines start with n or r. */
-function escapeAt(text: string, i: number): RegExpExecArray | null {
+ *  a comma or a line start), and about half of the key lines start with n or r. A backslash and a letter of a Windows path are not one (pathEscape). */
+export function escapeAt(text: string, i: number): RegExpExecArray | null {
   ESC_RE.lastIndex = i
   const m = ESC_RE.exec(text)
   if (m !== null && text.charCodeAt(i) === 96) {
@@ -91,6 +123,7 @@ function escapeAt(text: string, i: number): RegExpExecArray | null {
     const before = text.charCodeAt(i - 1)
     if (!isB64(before) && before !== 34 && before !== 39 && before !== 45) return null
   }
+  if (m !== null && pathEscape(text, i, m[0])) return null
   return m
 }
 
@@ -1396,6 +1429,19 @@ function decodedHead(text: string, runs: Run[], end: string): boolean {
  *  first backslash of its run: tried at each of a run of n that no `n` or `r` follows, `\\+[nr]` read the
  *  rest of the run from every one, n * n. */
 const BREAKS = /\r\n|\r|\n|(?<!\\)\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]/
+/** `s` split at its line breaks (BREAKS), but not at the backslash and letter of a Windows path (pathEscape). */
+function splitBreaks(s: string): string[] {
+  const out: string[] = []
+  const re = new RegExp(BREAKS.source, 'g')
+  let from = 0
+  for (let m = re.exec(s); m !== null; m = re.exec(s)) {
+    if (m[0].charCodeAt(0) === 92 && pathEscape(s, m.index, m[0])) continue
+    out.push(s.slice(from, m.index))
+    from = m.index + m[0].length
+  }
+  out.push(s.slice(from))
+  return out
+}
 /** What a cut leaves of a DEK-Info line's rest: a header name's end, a cipher's end, an IV's end, and
  *  what a listing, a log or a literal adds after it (joiners; `cat -A` ends every line in `$`). */
 export const DEK_REMNANT = /^(?:\s*(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?[\s"'`,;+.&_)\]}|\\$]*$/
@@ -1412,7 +1458,7 @@ function legacyAbove(text: string, runs: Run[], floor: number, cutText: boolean)
   const above = text.slice(a, ls)
   if (DEK_RE.test(above)) return true
   if (!cutText || a !== floor) return false
-  const lines = blankNl(above.replace(/^…/, '')).split(BREAKS)
+  const lines = splitBreaks(blankNl(above.replace(/^…/, '')))
   // (a blank line keeps its frame: a listing's number `     4\t`, a path `deploy.pem:4:`; a cut at the
   // DEK-Info line's end left none of it)
   const frame = frameAt(text, ls, runs[0][0])
