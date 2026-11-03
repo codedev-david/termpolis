@@ -1,0 +1,154 @@
+// codeWatch under the storm guard (src/main/codeWatch.ts + watchGuard.ts): what a re-index is and is
+// not asked to do. The 100,000-event runs are in watcherFlood.test.ts; these are the single-case
+// behaviours, each on counters: re-index calls, the files named in each, timers armed.
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { watchRepo, fsBackedWatchDeps, type WatchDeps } from '../../src/main/codeWatch'
+
+type Listener = (event: string, filename: string | null) => void
+
+function harness(over: Partial<WatchDeps> = {}) {
+  let listener: Listener = () => {}
+  const timers = new Map<number, () => void>()
+  let seq = 0
+  const closed = { n: 0 }
+  const deps: WatchDeps = {
+    watch: (_dir, l) => { listener = l; return { close: () => { closed.n++ } } },
+    reindex: vi.fn(),
+    setTimer: (fn) => { const id = ++seq; timers.set(id, fn); return id },
+    clearTimer: (t) => { timers.delete(t as number) },
+    probeNested: async () => false,
+    ...over,
+  }
+  return {
+    deps,
+    closed,
+    emit: (n: string | null) => listener('change', n),
+    flush: () => { const fns = [...timers.values()]; timers.clear(); for (const fn of fns) fn() },
+    get armed() { return timers.size },
+    get armedTotal() { return seq },
+  }
+}
+
+afterEach(() => { vi.restoreAllMocks() })
+
+describe('codeWatch storm guard', () => {
+  it('a mass change (more than 2048 distinct files in one window) asks for a re-sweep instead of naming them', () => {
+    const h = harness()
+    watchRepo('/repo', h.deps)
+    for (let i = 0; i < 2048; i++) h.emit(`src/gen/f${i}.ts`)
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenLastCalledWith('/repo', expect.any(Array))
+    expect((h.deps.reindex as ReturnType<typeof vi.fn>).mock.calls[0][1]).toHaveLength(2048)
+    for (let i = 0; i < 2049; i++) h.emit(`src/gen/g${i}.ts`)
+    h.flush()
+    expect((h.deps.reindex as ReturnType<typeof vi.fn>).mock.calls[1][1]).toEqual([]) // "everything may have changed"
+    // The next window is an ordinary one again: the overflow flag does not stick.
+    h.emit('src/a.ts')
+    h.flush()
+    expect((h.deps.reindex as ReturnType<typeof vi.fn>).mock.calls[2][1]).toEqual(['src/a.ts'])
+  })
+
+  it('arms ONE timer however many events arrive in the window', () => {
+    const h = harness()
+    watchRepo('/repo', h.deps)
+    for (let i = 0; i < 5000; i++) h.emit(`src/f${i % 50}.ts`)
+    expect(h.armedTotal).toBe(1)
+    expect(h.armed).toBe(1)
+  })
+
+  it.each([
+    'Pods/Alamofire/Source.swift', '.turbo/cache/x.ts', 'node_modules/x/index.js', '.worktrees/wt1/src/a.ts',
+    '.WORKTREES\\wt1\\src\\a.ts', '.claude/worktrees/x/src/a.ts', 'dist/a.js', '.git/hooks/x.js',
+  ])('ignores %s: nothing is armed and nothing is re-indexed', (name) => {
+    const h = harness()
+    watchRepo('/repo', h.deps)
+    h.emit(name)
+    expect(h.armedTotal).toBe(0)
+    h.flush()
+    expect(h.deps.reindex).not.toHaveBeenCalled()
+  })
+
+  it('learns a nested repository from a .git event and stops indexing what happens inside it', () => {
+    const h = harness()
+    watchRepo('/repo', h.deps)
+    h.emit('vendor/lib/.git/index') // not source, but it teaches the filter
+    h.emit('vendor/lib/src/a.ts')
+    h.flush()
+    expect(h.deps.reindex).not.toHaveBeenCalled()
+    h.emit('src/a.ts')
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenCalledWith('/repo', ['src/a.ts'])
+  })
+
+  it('learns a nested repository from the disk (async probe) with the default probe too', async () => {
+    const probe = vi.fn(async (abs: string) => abs.replace(/\\/g, '/').endsWith('/vendor/lib'))
+    const h = harness({ probeNested: probe })
+    watchRepo('/repo', h.deps)
+    h.emit('vendor/lib/src/first.ts')
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenCalledTimes(1) // the one event that taught us got through
+    h.emit('vendor/lib/src/second.ts')
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenCalledTimes(1)
+  })
+
+  it('a re-index that rejects is swallowed and does not stop the next one', async () => {
+    const reindex = vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValue(undefined)
+    const h = harness({ reindex })
+    watchRepo('/repo', h.deps)
+    h.emit('a.ts')
+    h.flush()
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    h.emit('b.ts')
+    h.flush()
+    expect(reindex).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not start a second re-index while the first is still running', async () => {
+    let finish!: () => void
+    const reindex = vi.fn(() => new Promise<void>((r) => { finish = r }))
+    const h = harness({ reindex })
+    watchRepo('/repo', h.deps)
+    h.emit('a.ts')
+    h.flush()
+    h.emit('b.ts')
+    h.flush() // would start a second one, if the gate let it
+    expect(reindex).toHaveBeenCalledTimes(1)
+    finish()
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    h.flush()
+    expect(reindex).toHaveBeenCalledTimes(2)
+    expect(reindex).toHaveBeenLastCalledWith('/repo', ['b.ts'])
+  })
+
+  it('close() stops the OS watch, cancels the pending timer, and ignores an event that arrives late', () => {
+    const h = harness()
+    const w = watchRepo('/repo', h.deps)
+    h.emit('a.ts')
+    expect(h.armed).toBe(1)
+    w.close()
+    expect(h.armed).toBe(0)
+    expect(h.closed.n).toBe(1)
+    h.emit('b.ts') // fs.watch can deliver one that was already queued
+    expect(h.armed).toBe(0)
+    h.flush()
+    expect(h.deps.reindex).not.toHaveBeenCalled()
+  })
+
+  it('a handle that throws on close does not stop close()', () => {
+    const h = harness({ watch: () => ({ close: () => { throw new Error('already closed') } }) })
+    expect(() => watchRepo('/repo', h.deps).close()).not.toThrow()
+  })
+})
+
+describe('fsBackedWatchDeps', () => {
+  it('carries the probe through and logs a flood to the in-app log (console.warn)', () => {
+    const probe = async (): Promise<boolean> => false
+    const deps = fsBackedWatchDeps((() => ({ close() {} })) as never, vi.fn(), probe)
+    expect(deps.probeNested).toBe(probe)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    deps.log?.('[watch] flood on x')
+    expect(warn).toHaveBeenCalledWith('[watch] flood on x')
+  })
+})

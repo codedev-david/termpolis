@@ -109,13 +109,13 @@ export interface GitWatcherRegistry {
   isWatching(root: string): boolean
 }
 
-/** The `path = ...` lines of a `.gitmodules` file. Bounded: a file this big is not a real one. */
+/** The `path = ...` lines of a `.gitmodules` file (LF or CRLF). Bounded: a file this big is not a real one. */
 async function readGitmodulePaths(root: string): Promise<string[]> {
   try {
     const text = await fsp.readFile(joinPath(root, '.gitmodules'), 'utf8')
     if (text.length > 256 * 1024) return []
     const out: string[] = []
-    for (const m of text.matchAll(/^[ \t]*path[ \t]*=[ \t]*(.+?)[ \t]*$/gm)) out.push(m[1])
+    for (const m of text.matchAll(/^[ \t]*path[ \t]*=[ \t]*(.+?)[ \t\r]*$/gm)) out.push(m[1])
     return out
   } catch {
     return [] // no .gitmodules: nearly every repo

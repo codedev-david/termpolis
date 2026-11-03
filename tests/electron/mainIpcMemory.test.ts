@@ -877,6 +877,16 @@ describe('memory:ingest-code', () => {
     expect(fsMock.readFileSync).not.toHaveBeenCalledWith('a.ts', 'utf8')
   })
 
+  it('hands the re-index promise back to the watch gate, so two re-indexes never overlap', async () => {
+    // The gate (watchGuard.ts) waits for what the callback returns. A callback that dropped the
+    // promise (`void ...`) would let a slow re-index and the next one run at the same time.
+    await invoke('memory:ingest-code', { repoRoot: '/repos/x' })
+    const onChange = mneme.fsBackedWatchDeps.mock.calls[0][1]
+    const pending = Promise.resolve()
+    cg.reindexWatchedChange.mockReturnValueOnce(pending)
+    expect(onChange('/repos/x', ['a.ts'])).toBe(pending)
+  })
+
   it('still succeeds when the code graph blows up — a graph hiccup never fails a good ingest', async () => {
     cg.buildCodeGraph.mockRejectedValueOnce(new Error('parser exploded'))
     const r = await invoke('memory:ingest-code', { repoRoot: '/repos/x' })

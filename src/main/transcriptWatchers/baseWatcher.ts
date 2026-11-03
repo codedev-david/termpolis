@@ -93,7 +93,6 @@ export function tailFile(
   // The pass at attach time. Synchronous on purpose, for now: `startAtEnd` has just fixed the offset
   // synchronously and a caller (the session watcher) reads its first line from here.
   const tickSync = () => {
-    if (stopped) return
     let stats: fs.Stats
     try {
       stats = fs.statSync(filePath)
@@ -101,13 +100,9 @@ export function tailFile(
       return
     }
 
-    // File truncated / rotated — reset
-    if (stats.size < offset) {
-      offset = 0
-      leftover = ''
-    }
-
-    if (stats.size === offset) return
+    // Nothing new. (A file that shrank in the instant between startAtEnd's stat and this one is
+    // caught by the next pass, tickAsync, which resets the offset.)
+    if (stats.size <= offset) return
 
     const toRead = Math.min(stats.size - offset, MAX_READ_BYTES)
     let buf: Buffer
@@ -130,7 +125,8 @@ export function tailFile(
   // Everything after attach: the same read, off the main thread. The gate never starts one while the
   // previous is still awaiting the disk.
   const tickAsync = async (): Promise<void> => {
-    if (stopped) return
+    // (No `stopped` check up here: stop() disposes the gate first, so the gate never starts a pass on
+    // a stopped tail. The checks below are for a stop() that lands while a pass is awaiting the disk.)
     let size: number
     try {
       size = (await fs.promises.stat(filePath)).size
