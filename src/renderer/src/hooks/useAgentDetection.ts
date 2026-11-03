@@ -8,8 +8,10 @@ const CONVERSATION_PARSE_INTERVAL = 10
 
 interface AgentDetectionState {
   detectedAgent: AgentInfo | null
-  /** Call from onData handler with stripped (ANSI-free) output */
-  processAgentDetection: (strippedOutput: string, dataLength: number, terminalId: string, terminalName: string) => void
+  /** Call from onData handler with stripped (ANSI-free) output. `messages` is how many chunks of output this call stands for
+   *  (default 1): the side-effect pass of a pane covers every chunk since the last pass, and the conversation parse runs once
+   *  per CONVERSATION_PARSE_INTERVAL chunks however they are batched. */
+  processAgentDetection: (strippedOutput: string, dataLength: number, terminalId: string, terminalName: string, messages?: number) => void
   /** Ref indicating if agent has been detected */
   agentDetectedRef: React.RefObject<boolean>
 }
@@ -30,6 +32,7 @@ export function useAgentDetection(): AgentDetectionState {
     dataLength: number,
     terminalId: string,
     terminalName: string,
+    messages = 1,
   ): void {
     // Agent detection: scan first ~2KB of output then stop
     if (!agentDetectedRef.current && agentScanBytesRef.current < AGENT_SCAN_LIMIT) {
@@ -47,8 +50,11 @@ export function useAgentDetection(): AgentDetectionState {
 
     // Conversation parsing: periodically parse output when an agent is active
     if (agentDetectedRef.current) {
-      conversationParsedCountRef.current++
-      if (conversationParsedCountRef.current % CONVERSATION_PARSE_INTERVAL === 0) {
+      // One parse each time the chunk count crosses a multiple of the interval: with one chunk per call that is every 10th
+      // call, as always; a call that stands for 30 chunks crosses it at most once.
+      const before = conversationParsedCountRef.current
+      conversationParsedCountRef.current = before + messages
+      if (Math.floor(conversationParsedCountRef.current / CONVERSATION_PARSE_INTERVAL) > Math.floor(before / CONVERSATION_PARSE_INTERVAL)) {
         const agentName = detectedAgentRef.current?.name ?? 'AI Agent'
         const turns = parseConversation(strippedOutput, terminalId, terminalName, agentName)
         const store = useTerminalStore.getState()

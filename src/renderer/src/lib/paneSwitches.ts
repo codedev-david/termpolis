@@ -22,6 +22,27 @@ export const SWITCH_RESIZE_ORDER = 'termpolis.resizeOrder'
  */
 export const SWITCH_WRITE_SCHEDULER = 'termpolis.writeScheduler'
 
+/**
+ * Hidden panes: '0' leaves an inactive pane with `visibility: hidden` alone, as 1.54.4 did, instead of also skipping its
+ * rendering with `content-visibility: hidden`. xterm does not treat a `visibility: hidden` pane as hidden, so such a pane
+ * painted every row as if it were the one on screen.
+ */
+export const SWITCH_HIDDEN_PANES = 'termpolis.hiddenPanes'
+
+/**
+ * Output routing: '0' gives every pane its own all-terminal output listener again (one `ipcRenderer.on` per pane, each
+ * dropping the chunks of the other terminals after the context bridge) instead of one shared listener that hands a chunk to
+ * the pane of its terminal. Main then sends the pane's terminal output as it did; the all-terminal API is untouched.
+ */
+export const SWITCH_DATA_ROUTING = 'termpolis.dataRouting'
+
+/**
+ * Per-pass side effects: '0' runs the whole per-chunk block (window slice, diff test, escape strips, prompt parse, agent
+ * detection, compaction and session controllers, OSC 633, error pattern) for every chunk, as 1.54.4 did, instead of once per
+ * pass over everything that arrived since the last one.
+ */
+export const SWITCH_PANE_EFFECTS = 'termpolis.paneEffects'
+
 export function switchEnabled(key: string): boolean {
   try {
     return window.localStorage.getItem(key) !== '0'
