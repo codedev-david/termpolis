@@ -77,8 +77,10 @@ export class QuietWatch {
   touch(terminalId: string): void {
     this.lastOutput.set(terminalId, this.clock.now())
     if (this.armed) return
-    this.armed = true
+    // Armed only once the clock has given an interval: a clock that throws leaves the watch free to ask
+    // again at the next output, not believing in an interval that was never made.
     this.handle = this.clock.setInterval(() => this.tick(), this.tickMs)
+    this.armed = true
   }
 
   /** Forget everything pending and stop looking. */

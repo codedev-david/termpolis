@@ -165,6 +165,27 @@ describe('QuietWatch', () => {
     expect(clock.armed()).toBe(0)
   })
 
+  it('asks the clock again at the next output when it could not give an interval', () => {
+    // A watch that believed itself armed after the clock refused would never look again, whatever printed.
+    const clock = manualClock()
+    const give = clock.setInterval.bind(clock)
+    let refuse = true
+    clock.setInterval = (fn, ms) => {
+      if (refuse) throw new Error('no timer to be had')
+      return give(fn, ms)
+    }
+    const quiet: string[] = []
+    const w = new QuietWatch(clock, (id) => quiet.push(id))
+    expect(() => w.touch('t1')).toThrow('no timer to be had')
+    expect(clock.armed()).toBe(0)
+    refuse = false
+    w.touch('t1')
+    expect(clock.armed()).toBe(1)
+    clock.advance(QUIET_MS + QUIET_TICK_MS)
+    expect(quiet).toEqual(['t1'])
+    expect(clock.armed()).toBe(0)
+  })
+
   it('stop forgets what was pending and clears its interval; stopping twice is harmless', () => {
     const { clock, quiet, w } = watch()
     w.touch('t1')
