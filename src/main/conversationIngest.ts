@@ -362,6 +362,8 @@ export interface IngestStats {
   delegatedSkipped?: number
   /** Files passed over untouched because the watermark says they were completely ingested at this size and time. Present when a watermark was given. */
   unchanged?: number
+  /** Files this pass vouched for (marked complete, or known to be another computer's). A pass that stopped at its byte budget without marking one got nowhere. Present when a watermark was given. */
+  marked?: number
   /** Bytes the pass spent: the size of every file it read (the characters read, for one whose size is unknown). Present when the pass looks at file sizes. */
   bytesRead?: number
   /** Why a truncated pass stopped. */
@@ -515,6 +517,9 @@ export function parentSessionFile(source: ConversationSource, filePath: string):
 /** The head of a subagent's parent session that settles whether another computer started it. Far less than the file. */
 export const PARENT_HEAD_BYTES = 256 * 1024
 
+/** Hashes per question when checking that the store kept what a pass wrote (the store answers at most 5,000 at a time). */
+const VERIFY_BATCH = 4000
+
 /** The tier a pass's marks are kept under: null when its chunking is not the default (a mark would vouch for another cut). */
 function markTier(o?: ChunkOptions): MarkTier | null {
   if (o?.maxChars !== undefined && o.maxChars !== DEFAULT_MAX_CHARS) return null
@@ -557,6 +562,7 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
   const startedAt = now()
   let sinceYield = 0
   let bytesRead = 0
+  let marked = 0
   const listed: Set<string> | null = wm && deps.fullListing ? new Set<string>() : null
   let listingComplete = true
 
@@ -757,6 +763,24 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
     if (present === 0) wm.clear()
   }
 
+  /**
+   * Whether the store really holds `hashes` now. A write that returned is not proof of it: the store answers
+   * a write whose disk append failed (it keeps the entry in memory, says nothing, and does not count the hash
+   * as stored), and the old loop made up for that by offering the chunk again on the next pass. A mark would
+   * stop that, so a file is marked only once the store itself says it has everything this pass wrote. A store
+   * that cannot answer (it throws, or knownHashes degrades to "none") means "not proven": the file is simply
+   * read again next pass.
+   */
+  const storeHolds = async (hashes: string[]): Promise<boolean> => {
+    if (hashes.length === 0 || (!deps.hasHashes && !deps.hasHash)) return true
+    for (let i = 0; i < hashes.length; i += VERIFY_BATCH) {
+      const batch = hashes.slice(i, i + VERIFY_BATCH)
+      const kept = await io(() => knownHashes(deps, batch))
+      if (kept.size < batch.length) return false
+    }
+    return true
+  }
+
   const walk = async (): Promise<void> => {
     if (deps.stopped?.()) return stopWith('stopped')
     await confirmStore()
@@ -787,6 +811,12 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
           metrics.unchanged++
           continue
         }
+        // Another computer's session, known at exactly this size and time: only the pass that feeds the one-time
+        // linked-history recheck (it asks for the hashes, with onDelegated) has any reason to read it again.
+        if (wm && stamp && !deps.onDelegated && wm.isDelegated(filePath, stamp)) {
+          metrics.unchanged++
+          continue
+        }
         if (bytesRead >= maxBytes) return stopWith('bytes')
         await waitQuiet()
         if (deps.stopped?.()) return stopWith('stopped')
@@ -800,15 +830,23 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
         metrics.files++
         const parsed = got.turns
         const markFile = (probe?: string): void => {
-          if (wm && tier && stamp) wm.markDone(filePath, stamp, tier, probe)
+          if (wm && tier && stamp) {
+            wm.markDone(filePath, stamp, tier, probe)
+            marked++
+          }
+        }
+        /** Mark a file that wrote chunks, once the store has proven it keeps them. */
+        const markWritten = async (written: string[], probe: string): Promise<void> => {
+          if (wm && tier && stamp && (await storeHolds(written))) markFile(probe)
         }
 
         // A session another computer started here over Linked machines is that computer's job, not
         // this one's memory, and the primer a headless run opened with is memory already. Both are
         // left out (shared/headlessPrompt). A subagent's transcript opens with the task its session
         // gave it, not with the session's prompt: it is another computer's work when its session is.
-        // Such a file is never marked: it is read again each pass, so the one-time linked-history
-        // recheck always gets the hashes it needs.
+        // Such a file is marked as another computer's, so a pass that wants no hashes of it (the drain, the
+        // fast tier) passes it over unread; a pass that does (onDelegated, the one-time linked-history
+        // recheck) reads it every time, so the recheck always gets the hashes it needs.
         const parent = parentSessionFile(source, filePath)
         const turns = parent !== null && (await io(() => parentDelegated(parent))) ? null : ownDialogue(parsed)
         if (!turns) {
@@ -817,6 +855,10 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
             const would = await buildChunks(parsed)
             if (would === null) return stopWith('stopped')
             try { deps.onDelegated(would.map((c) => c.hash)) } catch { /* best effort */ }
+          }
+          if (wm && stamp) {
+            wm.markDone(filePath, stamp, 'delegated')
+            marked++
           }
           continue
         }
@@ -851,6 +893,7 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
           }
         }
         let failed = false
+        const written: string[] = [] // the hashes this pass wrote for this file
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i]
           if (known.has(chunk.hash)) {
@@ -864,6 +907,7 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
             stats.chunksWritten++
             metrics.written++
             known.add(chunk.hash) // the store has it now — a repeat inside this same file must skip
+            written.push(chunk.hash)
           } catch {
             failed = true // skip a chunk that fails to persist (no embed happened to yield for); the file is not complete
             continue
@@ -879,11 +923,11 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
           // long grind. The caller decides whether to cap (background) or not (
           // an explicit user-triggered "index everything").
           if (stats.chunksWritten >= maxChunks) {
-            if (!failed && i === chunks.length - 1) markFile(chunks[0].hash) // the cap fell on this file's last chunk: it is complete
+            if (!failed && i === chunks.length - 1) await markWritten(written, chunks[0].hash) // the cap fell on this file's last chunk: it is complete
             return stopWith('chunks')
           }
         }
-        if (!failed) markFile(chunks[0].hash)
+        if (!failed) await markWritten(written, chunks[0].hash)
       }
     }
   }
@@ -913,7 +957,10 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
     await settleMarks()
   } finally {
     if (threw) wm?.discard()
-    if (wm) stats.unchanged = metrics.unchanged
+    if (wm) {
+      stats.unchanged = metrics.unchanged
+      stats.marked = marked
+    }
     if (wantStat) stats.bytesRead = bytesRead
     metrics.truncated = stats.truncated
     metrics.stop = stats.stop

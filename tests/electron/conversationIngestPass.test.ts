@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { ingestConversations, parseBySource, PARENT_HEAD_BYTES, type IngestChunk, type IngestStats } from '../../src/main/conversationIngest'
 import { openWatermark } from '../../src/main/ingestWatermark'
+import { passResult } from '../../src/main/ingestRuntime'
 import { ownDialogue, delegationHeader } from '../../src/shared/headlessPrompt'
 import { corpus, memoryIO, MIB, sessionText } from './_ingestCorpus'
 import { referenceChunkTurns, referenceParseClaude } from './_ingestOracle'
@@ -202,7 +203,7 @@ describe('only a COMPLETE ingest is marked', () => {
     expect(c.reads).toEqual([a, b, a, b])
   })
 
-  it("another computer's session is never marked: it is read every pass, so the linked-history recheck keeps its hashes", async () => {
+  it("a pass that wants the hashes of another computer's sessions (the one-time linked-history recheck) reads them every time, and gets the same hashes", async () => {
     const c = corpus()
     const own = c.add('/proj/own.jsonl', sessionText('own', 2))
     const job = c.add('/proj/job.jsonl', lines(userLine(delegated('Review the parser.'), { sessionId: 'sess-job', cwd: '/r' }), assistantLine('Reviewed.')))
@@ -323,6 +324,215 @@ describe('a mark is a claim about the store (it was cleared, restored or re-keye
     c.clearCounters()
     await ingestConversations(c.deps({ watermark: restarted }))
     expect(c.reads).toHaveLength(5)
+  })
+})
+
+describe('a write that returned is not proof the store kept the chunk', () => {
+  // The memory store answers a write whose disk append failed: it keeps the entry in memory, does not count
+  // its hash as stored, and the old loop made up for it by offering the chunk again every pass.
+  const dropping = (c: ReturnType<typeof corpus>, drop: (chunk: IngestChunk) => boolean) => async (chunk: IngestChunk): Promise<void> => {
+    if (drop(chunk)) return // resolved, but not kept
+    c.known.add(chunk.hash)
+    c.written.push(chunk)
+  }
+
+  it('a chunk the store accepted but did not keep leaves its file unmarked: the next pass reads that file again, and only it', async () => {
+    const c = corpus()
+    const [a, b, d] = fill(c, 3, 3)
+    const { wm } = await open()
+    let lost = 0
+    const first = await ingestConversations(c.deps({ watermark: wm, write: dropping(c, (ch) => ch.text.includes('ask 1/1') && lost++ < 1) }))
+    expect(lost).toBe(1)
+    expect(first.filesScanned).toBe(3)
+    c.clearCounters()
+    const second = await ingestConversations(c.deps({ watermark: wm })) // the store behaves now
+    expect(c.reads).toEqual([b]) // a and d were kept in full
+    expect(second.chunksWritten).toBeGreaterThanOrEqual(1)
+    expect(a).toBeDefined()
+    expect(d).toBeDefined()
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toEqual([]) // and now b is complete too
+    for (const f of [a, b, d]) for (const h of refHashes(c.files.get(f)!.content)) expect(c.known.has(h)).toBe(true)
+  })
+
+  // NEGATIVE CONTROL: a store that keeps everything marks every file on the first pass.
+  it('control: a store that keeps what it is given marks every file, with one membership question per file that wrote', async () => {
+    const c = corpus()
+    fill(c, 3, 3)
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm }))
+    expect(wm.size).toBe(3)
+    // per file: the question before the writes, and one more to prove they were kept (no probes yet, so no question about them)
+    expect(c.hashAsks.length).toBe(3 * 2)
+  })
+
+  it('a file whose chunks were all known already is marked without any extra question', async () => {
+    const c = corpus()
+    fill(c, 3, 3)
+    await ingestConversations(c.deps()) // a first pass with no watermark stores everything
+    c.clearCounters()
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm }))
+    expect(wm.size).toBe(3)
+    expect(c.hashAsks.length).toBe(3) // one per file, before: nothing was written, so nothing needed proving
+  })
+
+  it('a store that cannot answer the proof leaves the file unmarked (read again next pass), never marked on faith', async () => {
+    const c = corpus()
+    const [a] = fill(c, 1, 3)
+    const { wm } = await open()
+    let asks = 0
+    const hasHashes = async (hs: string[]): Promise<string[]> => {
+      if (++asks > 1) throw new Error('memory host down') // the first question (before the writes) is answered, the proof is not
+      return hs.filter((h) => c.known.has(h))
+    }
+    await ingestConversations(c.deps({ watermark: wm, hasHashes }))
+    expect(wm.size).toBe(0)
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toEqual([a])
+  })
+
+  it('a cap that falls on the last chunk of a file still proves it before it marks it', async () => {
+    const c = corpus()
+    const a = c.add('/proj/a.jsonl', sessionText('a', 2, 400))
+    const { wm } = await open()
+    const n = refHashes(c.files.get(a)!.content).length
+    let lost = 0
+    await ingestConversations(c.deps({ watermark: wm, maxChunks: n, write: dropping(c, () => lost++ === n - 1) })) // the LAST chunk is dropped
+    expect(wm.size).toBe(0)
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm, maxChunks: n }))
+    expect(c.reads).toEqual([a])
+    expect(wm.size).toBe(1)
+  })
+
+  it('a file with thousands of new chunks is proven in batches the store can answer (at most 4,000 per question)', async () => {
+    const c = corpus()
+    // One 9 MB turn: exactly 4,500 windows of 2,000, every one of them different (identical windows would hash alike and dedup to one).
+    const blocks = Array.from({ length: 4_500 }, (_, i) => String(i).padStart(2_000, 'k'))
+    const turn = userLine(blocks.join('').slice(0, 2_000 * 4_500 - 'user: '.length), { sessionId: 'big', cwd: '/r' })
+    c.add('/proj/big.jsonl', lines(turn))
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm }))
+    const sizes = c.hashAsks.map((a) => a.length)
+    expect(sizes[0]).toBe(4_500) // the question before the writes: as it always was
+    expect(sizes.slice(1).every((n) => n <= 4_000)).toBe(true)
+    expect(sizes.slice(1).reduce((a, b) => a + b, 0)).toBe(4_500)
+    expect(wm.size).toBe(1)
+  })
+})
+
+describe("another computer's sessions are passed over by a pass that wants no hashes of them", () => {
+  const JOB = (id: string): string => lines(userLine(delegated('Review the parser.'), { sessionId: `sess-${id}`, cwd: '/r' }), assistantLine('Reviewed.'))
+
+  it('the drain and fast tiers (no onDelegated) skip a session an earlier pass found delegated, unread', async () => {
+    const c = corpus()
+    c.add('/proj/own.jsonl', sessionText('own', 2))
+    c.add('/proj/job.jsonl', JOB('job'))
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm, onDelegated: () => {} })) // the full pass: reads both, marks both
+    c.clearCounters()
+    const drain = await ingestConversations(c.deps({ watermark: wm })) // wants no hashes
+    expect(c.reads).toEqual([])
+    expect(drain).toMatchObject({ filesScanned: 0, unchanged: 2, truncated: false })
+  })
+
+  // NEGATIVE CONTROL: the pass that WANTS the hashes reads it again, and reports the same ones.
+  it('control: the pass that wants the hashes (onDelegated) still reads it every time', async () => {
+    const c = corpus()
+    const job = c.add('/proj/job.jsonl', JOB('job'))
+    const { wm } = await open()
+    const seen: string[][] = []
+    const onDelegated = (h: string[]): void => { seen.push(h) }
+    await ingestConversations(c.deps({ watermark: wm, onDelegated }))
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm, onDelegated }))
+    expect(c.reads).toEqual([job])
+    expect(seen).toHaveLength(2)
+    expect(seen[0].length).toBeGreaterThan(0)
+    expect(seen[1]).toEqual(seen[0])
+  })
+
+  it('a session a pass that wanted no hashes found delegated is marked too: the next such pass skips it, the one that wants hashes reads it', async () => {
+    const c = corpus()
+    const job = c.add('/proj/job.jsonl', JOB('job'))
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toEqual([job])
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toEqual([])
+    const seen: string[][] = []
+    await ingestConversations(c.deps({ watermark: wm, onDelegated: (h) => { seen.push(h) } }))
+    expect(c.reads).toEqual([job])
+    expect(seen).toHaveLength(1)
+  })
+
+  it('a delegated session that grows is read again (the mark is for the size and time it had)', async () => {
+    const c = corpus()
+    const job = c.add('/proj/job.jsonl', JOB('job'))
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm }))
+    c.append(job, lines(assistantLine('One more reply.')))
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toEqual([job])
+  })
+
+  it('they do not eat the byte budget of a pass that skips them: the files behind them are not starved', async () => {
+    const c = corpus()
+    const jobs = [0, 1, 2, 3].map((i) => c.add(`/a/job${i}.jsonl`, JOB(`j${i}`), 6 * MIB)) // listed first, 6 MiB each
+    const owns = [0, 1, 2, 3].map((i) => c.add(`/b/own${i}.jsonl`, sessionText(`o${i}`, 2), 1 * MIB))
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm, onDelegated: () => {} })) // a full pass with no budget marks everything
+    for (const f of owns) c.touch(f) // they changed (same virtual size, new time)
+    c.clearCounters()
+    const skipping = await ingestConversations(c.deps({ watermark: wm, maxBytes: 8 * MIB }))
+    expect(c.reads.slice().sort()).toEqual(owns.slice().sort())
+    expect(skipping.truncated).toBe(false)
+    // CONTROL: a pass that wants the hashes pays for reading the jobs, and the budget ends it among them.
+    c.clearCounters()
+    const wants = await ingestConversations(c.deps({ watermark: wm, onDelegated: () => {}, maxBytes: 8 * MIB }))
+    expect(c.reads).toEqual(jobs.slice(0, 2))
+    expect(wants).toMatchObject({ truncated: true, stop: 'bytes' })
+  })
+})
+
+describe('a pass that gets nowhere asks for no follow-up (the memory host is down)', () => {
+  const files = (c: ReturnType<typeof corpus>, n: number): void => {
+    for (let i = 0; i < n; i++) c.add(`/proj/b${String(i).padStart(2, '0')}.jsonl`, sessionText(i, 1, 200), MIB)
+  }
+
+  it('a budget-limited pass over a store that refuses everything writes nothing, vouches for nothing, and does not ask for a drain', async () => {
+    const c = corpus()
+    files(c, 12)
+    const { wm } = await open()
+    const down = async (): Promise<never> => { throw new Error('memory host down') }
+    const s = await ingestConversations(c.deps({ watermark: wm, maxBytes: 4 * MIB, write: down, hasHashes: down }))
+    expect(s).toMatchObject({ truncated: true, stop: 'bytes', chunksWritten: 0, marked: 0 })
+    expect(passResult(s).more).toBe(false)
+  })
+
+  // NEGATIVE CONTROL: with the store up the same pass vouches for files, and does ask for more.
+  it('control: with the store up the same pass marks files and asks for more', async () => {
+    const c = corpus()
+    files(c, 12)
+    const { wm } = await open()
+    const s = await ingestConversations(c.deps({ watermark: wm, maxBytes: 4 * MIB }))
+    expect(s).toMatchObject({ truncated: true, stop: 'bytes', marked: 4 })
+    expect(passResult(s).more).toBe(true)
+  })
+
+  it('files that were all stored already (a cold watermark over a full store) are progress too: the pass asks for more', async () => {
+    const c = corpus()
+    files(c, 12)
+    await ingestConversations(c.deps()) // the store holds everything; no watermark yet
+    const { wm } = await open()
+    const s = await ingestConversations(c.deps({ watermark: wm, maxBytes: 4 * MIB }))
+    expect(s).toMatchObject({ truncated: true, stop: 'bytes', chunksWritten: 0, marked: 4 })
+    expect(passResult(s).more).toBe(true)
   })
 })
 
@@ -673,6 +883,19 @@ describe('synchronous slices', () => {
     expect(Math.max(...slices)).toBeLessThanOrEqual(25 + 0.5 + 0.2)
   })
 
+  it('the typing gate is asked at every slice boundary too, not only before a file', async () => {
+    const c = corpus()
+    c.add('/proj/long.jsonl', longFile(6_000))
+    await ingestConversations(c.deps()) // stored: the pass below writes nothing, so every yield is a slice boundary
+    const clock = fakeClock()
+    let asks = 0
+    let yields = 0
+    const stats = await ingestConversations(c.deps({ now: clock.now, sliceMs: 25, yield: async () => { yields++ }, quiet: async () => { asks++ } }))
+    expect(stats.filesScanned).toBe(1)
+    expect(yields).toBeGreaterThanOrEqual(2)
+    expect(asks).toBe(1 + yields) // once before the file, and once after each slice's yield
+  })
+
   it('stopped() is asked at every slice boundary: a pass stopped mid-file ends within one slice and keeps nothing of that file', async () => {
     const c = corpus()
     const path = c.add('/proj/long.jsonl', longFile(6_000))
@@ -704,10 +927,11 @@ describe('synchronous slices', () => {
     let asked = 0
     const parse = vi.spyOn(JSON, 'parse')
     const running = ingestConversations(c.deps({ quiet: () => { asked++; return gate } }))
-    await new Promise((r) => setTimeout(r, 30))
+    // Wait for a COUNTER, not for a time: the pass has parked on the gate once it has asked it.
+    for (let i = 0; i < 5_000 && asked === 0; i++) await new Promise((r) => setImmediate(r))
+    expect(asked).toBeGreaterThanOrEqual(1)
     expect(parse.mock.calls.length).toBe(0)
     expect(c.reads).toEqual([])
-    expect(asked).toBeGreaterThanOrEqual(1)
     open()
     const stats = await running
     expect(stats.filesScanned).toBe(3)
@@ -715,13 +939,12 @@ describe('synchronous slices', () => {
   })
 
   // NEGATIVE CONTROL for the gate: without one, the same pass starts at once.
-  it('control: without a typing gate the pass starts immediately', async () => {
+  it('control: without a typing gate nothing holds the pass back: it reads every file', async () => {
     const c = corpus()
     fill(c, 3)
-    const running = ingestConversations(c.deps())
-    await new Promise((r) => setTimeout(r, 30))
+    const stats = await ingestConversations(c.deps())
     expect(c.reads).toHaveLength(3)
-    await running
+    expect(stats.filesScanned).toBe(3)
   })
 })
 

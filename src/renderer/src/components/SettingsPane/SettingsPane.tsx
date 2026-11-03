@@ -527,8 +527,8 @@ export function SettingsPane() {
             <div className="flex flex-col gap-0.5">
               <span className="text-sm font-medium">Learn from conversations</span>
               <span className="text-xs text-[#9ca3af] leading-relaxed">
-                On by default. Termpolis reads your past Claude Code, Codex and Gemini sessions in the
-                background and saves what is worth remembering. Turn it off to stop that reading
+                On by default. Termpolis reads your past Claude Code, Codex and Gemini conversations in
+                the background and stores them as searchable memory. Turn it off to stop that reading
                 completely, for example to rule it out while you are chasing a slowdown. Nothing is
                 deleted and memory search keeps working; it just stops adding. Turning it back on picks
                 up where it left off.

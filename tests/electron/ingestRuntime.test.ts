@@ -11,9 +11,9 @@ import { join } from 'path'
 import { runConversationIngest, type IngestMemory } from '../../src/main/conversationIngest'
 import { configureConversationIngest, getIngestRuntime, INGEST_PASS_BYTES, INGEST_SLICE_MS, makeDrainRun, passResult, resetIngestRuntime } from '../../src/main/ingestRuntime'
 import { WATERMARK_FILE } from '../../src/main/ingestWatermark'
-import { noteTyping, resetTypingQuiet } from '../../src/main/typingQuiet'
+import { noteTyping, QUIET_MS, resetTypingQuiet, typingGateStats } from '../../src/main/typingQuiet'
 import { resetPasses, snapshotPasses } from '../../src/main/passCounters'
-import { sessionText } from './_ingestCorpus'
+import { MIB, sessionText } from './_ingestCorpus'
 import { assistantLine, lines, userLine } from './_transcriptFixture'
 
 let root = ''
@@ -174,6 +174,22 @@ describe('the first pass and the steady pass', () => {
     expect(manual.filesScanned).toBe(4)
   })
 
+  it('the byte budget comes with the chunk cap: a background pass (maxChunks) stops after 8 MiB of real files, the manual pass (no cap) reads on', async () => {
+    const dir = join(projects, 'big')
+    mkdirSync(dir, { recursive: true })
+    for (let i = 0; i < 3; i++) {
+      // a real session plus one long line of noise, so each file is a little over 4 MiB on disk
+      writeFileSync(join(dir, `s${i}.jsonl`), sessionText(`big${i}`, 2) + JSON.stringify({ type: 'summary', summary: 'x'.repeat(4 * MIB) }) + '\n')
+    }
+    configure()
+    const m = store()
+    const background = await run(m, { maxChunks: 250 })
+    expect(background).toMatchObject({ filesScanned: 2, truncated: true, stop: 'bytes' })
+    expect(background.bytesRead).toBeGreaterThanOrEqual(8 * MIB)
+    const manual = await run(m) // no cap, so no budget: the third file, and the first two are skipped as done
+    expect(manual).toMatchObject({ filesScanned: 1, unchanged: 2, truncated: false })
+  })
+
   it('a file read as pieces gives exactly the chunks the whole-file read gives', async () => {
     const dir = join(projects, 'p')
     mkdirSync(dir)
@@ -265,20 +281,33 @@ describe('the kill switch TERMPOLIS_INGEST_FAST=off', () => {
 })
 
 describe('the typing gate', () => {
+  // Fake setTimeout and Date only: the file system stays real, and the proof is a count (timers parked, files
+  // opened), never an elapsed time.
+  const fakeClock = (): void => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] }) }
+  const untilParked = async (): Promise<void> => {
+    for (let i = 0; i < 20_000 && vi.getTimerCount() === 0; i++) await new Promise((r) => setImmediate(r))
+  }
+
   it('a pass that finds the user typing waits for the quiet period before it reads anything', async () => {
     sessions(3)
     configure()
-    noteTyping(Date.now())
+    fakeClock()
     const k = counters()
-    const m = store()
-    const t0 = Date.now()
-    const running = run(m)
-    await new Promise((r) => setTimeout(r, 100))
-    expect(k.c.open).toBe(0) // still waiting for 500 ms of quiet
-    const s = await running
-    expect(Date.now() - t0).toBeGreaterThanOrEqual(400)
-    expect(s.filesScanned).toBe(3)
-    k.restore()
+    try {
+      noteTyping(Date.now())
+      const running = run(store())
+      await untilParked()
+      expect(vi.getTimerCount()).toBe(1) // the gate's sleep
+      expect(k.c.open).toBe(0) // nothing is opened while the user is typing
+      await vi.advanceTimersByTimeAsync(QUIET_MS)
+      const s = await running
+      expect(s.filesScanned).toBe(3)
+      expect(k.c.open).toBe(3)
+      expect(typingGateStats().waits).toBe(1)
+    } finally {
+      vi.useRealTimers()
+      k.restore()
+    }
   })
 
   it('a pass over unchanged files never waits (a skip is free)', async () => {
@@ -286,10 +315,15 @@ describe('the typing gate', () => {
     configure()
     const m = store()
     await run(m)
-    noteTyping(Date.now())
-    const t0 = Date.now()
-    expect((await run(m)).unchanged).toBe(3)
-    expect(Date.now() - t0).toBeLessThan(300)
+    fakeClock()
+    try {
+      noteTyping(Date.now())
+      expect((await run(m)).unchanged).toBe(3)
+      expect(vi.getTimerCount()).toBe(0) // no sleep was ever parked
+      expect(typingGateStats().waits).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -334,6 +368,19 @@ describe('passResult and makeDrainRun', () => {
     expect(busy.note).toMatch(/budget/)
   })
 
+  it('a pass that stopped at its byte budget asks for a follow-up only if it got somewhere (wrote chunks, or vouched for files)', () => {
+    const base = { filesScanned: 5, chunksWritten: 0, chunksSkipped: 0, truncated: true, stop: 'bytes' as const, unchanged: 0, bytesRead: 8 * MIB }
+    expect(passResult({ ...base, marked: 0 }).more).toBe(false)
+    expect(passResult({ ...base, marked: undefined }).more).toBe(false)
+    expect(passResult({ ...base, marked: 3 }).more).toBe(true)
+    expect(passResult({ ...base, chunksWritten: 2, marked: 0 }).more).toBe(true)
+    // the chunk cap, a stop and a complete pass are decided as they always were
+    expect(passResult({ ...base, stop: 'chunks', marked: 0 }).more).toBe(true)
+    expect(passResult({ ...base, stop: 'stopped', chunksWritten: 9, marked: 9 }).more).toBe(false)
+    expect(passResult({ ...base, truncated: false, stop: undefined, marked: 9 }).more).toBe(false)
+    expect(passResult({ filesScanned: 1, chunksWritten: 9, chunksSkipped: 0, truncated: true }).more).toBe(true) // the shape the old stats had
+  })
+
   const deps = (over: Record<string, unknown> = {}) => {
     const calls: Record<string, unknown[]> = { ingest: [], persist: [] }
     return {
@@ -371,6 +418,68 @@ describe('passResult and makeDrainRun', () => {
   it('a failing persist never loses the pass that already succeeded', async () => {
     const { hooks } = deps({ persist: async () => { throw new Error('hnsw locked') } })
     expect(await makeDrainRun(hooks)({ drainPass: 1 })).toMatchObject({ written: 7, more: false })
+  })
+})
+
+describe('a cold index drains through the real full pass and the real drain tier (real files)', () => {
+  it('six 4 MiB transcripts: a budgeted full pass, then ingest-only follow-ups, each at most 8 MiB plus the file that crossed it; then every pass reads nothing', async () => {
+    const dir = join(projects, 'cold')
+    mkdirSync(dir, { recursive: true })
+    for (let i = 0; i < 6; i++) {
+      writeFileSync(join(dir, `s${i}.jsonl`), sessionText(`cold${i}`, 2) + JSON.stringify({ type: 'summary', summary: 'x'.repeat(4 * MIB) }) + '\n')
+    }
+    configure()
+    const m = store()
+    const k = counters()
+    let persisted = 0
+    const drain = makeDrainRun({
+      memory: () => m,
+      isLocked: async () => false,
+      persist: async () => { persisted++ },
+      stopped: () => false,
+      // ALWAYS the scratch folder: without `roots` the real ~/.claude/projects would be read.
+      ingest: (memory, opts) => runConversationIngest(memory, { roots: { claude: projects }, sources: ['claude'], ...opts }),
+    })
+    // The full pass, as index.ts runs it (minus the planners): a background pass, so it carries the chunk cap and gets the budget.
+    let result = passResult(await run(m, { maxChunks: 250 }))
+    let passes = 1
+    expect(result.more).toBe(true)
+    expect(k.c.open).toBe(2) // 8 MiB: two files, never the whole corpus
+    while (result.more && passes < 10) {
+      // The drain tier lists everything again, but a file that is done costs one stat: it opens only what the budget allows.
+      const opened = k.c.open
+      const next = await drain({ drainPass: passes })
+      expect(k.c.open - opened).toBeLessThanOrEqual(2)
+      result = { written: next.written, more: next.more === true }
+      passes++
+    }
+    expect(passes).toBeLessThanOrEqual(Math.ceil((6 * 4) / 8)) // ceil(MiB / 8) passes in all
+    expect(result.more).toBe(false)
+    expect(persisted).toBe(1) // the ANN index is persisted once, when the backlog is done
+    expect(k.c.open).toBe(6) // every file was opened exactly once in the whole drain
+    expect(m.known.size).toBe(6) // one chunk of dialogue per file; the filler line is not dialogue
+
+    k.reset()
+    const steady = await run(m, { maxChunks: 250 })
+    expect(steady).toMatchObject({ filesScanned: 0, unchanged: 6, truncated: false })
+    expect(k.c.open).toBe(0)
+    k.restore()
+  })
+})
+
+describe('the memory host is down (real files)', () => {
+  it('a budget-limited background pass writes nothing, marks nothing, keeps the files for later and asks for no follow-up', async () => {
+    sessions(12)
+    configure()
+    const down = async (): Promise<never> => { throw new Error('memory host down') }
+    const m = { hasHashes: down, write: down } as unknown as IngestMemory
+    const s = await run(m, { maxChunks: 250, maxBytes: 1 })
+    expect(s).toMatchObject({ truncated: true, stop: 'bytes', chunksWritten: 0, marked: 0 })
+    expect(passResult(s).more).toBe(false)
+    expect(existsSync(join(userData, WATERMARK_FILE))).toBe(false) // nothing was vouched for
+    // and when it is back, everything is still there to learn
+    const up = store()
+    expect((await run(up)).filesScanned).toBe(12)
   })
 })
 

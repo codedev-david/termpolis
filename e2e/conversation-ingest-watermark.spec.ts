@@ -116,24 +116,32 @@ interface Scratch {
   userDataDir: string
   home: string
   files: string[]
+  /** Write the synthetic transcripts (done at once by default; a test that must not race the app's own first pass does it later). */
+  writeSessions: () => void
   remove: () => void
 }
 
-function scratch(label: string, sessions = 6): Scratch {
+const SESSIONS = 6
+
+function scratch(label: string, writeNow = true): Scratch {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `termpolis-${label}-ud-`))
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `termpolis-${label}-home-`))
   const dir = path.join(home, '.claude', 'projects', 'C--synthetic-repo')
   fs.mkdirSync(dir, { recursive: true })
   const files: string[] = []
-  for (let i = 0; i < sessions; i++) {
-    const f = path.join(dir, `session-${i}.jsonl`)
-    fs.writeFileSync(f, session(i))
-    files.push(f)
+  const writeSessions = (): void => {
+    for (let i = 0; i < SESSIONS; i++) {
+      const f = path.join(dir, `session-${i}.jsonl`)
+      fs.writeFileSync(f, session(i))
+      files.push(f)
+    }
   }
+  if (writeNow) writeSessions()
   return {
     userDataDir,
     home,
     files,
+    writeSessions,
     remove: () => {
       for (const d of [userDataDir, home]) {
         try { fs.rmSync(d, { recursive: true, force: true }) } catch { /* ignore */ }
@@ -150,10 +158,15 @@ test.beforeAll(() => {
 
 test('an unchanged transcript is skipped, an appended one is read alone, and the watermark is kept in userData', async () => {
   test.setTimeout(300_000)
-  const s = scratch('ingest-fast')
+  const s = scratch('ingest-fast', false)
   let l: Launched | undefined
   try {
     l = await launch(s.userDataDir, s.home)
+    // The app's own indexer makes a first pass 10 s after launch and the next one 90 s after that. Let the first go by over
+    // an EMPTY folder (it finds nothing, so it marks nothing), and only then write the transcripts: every pass counted below
+    // is then a manual one, and none of them races with a background pass.
+    await l.page.waitForTimeout(13_000)
+    s.writeSessions()
 
     // First pass: everything is new. (An unlocked, empty memory is what a fresh scratch userData has.)
     const first = await ingest(l.page)
@@ -180,7 +193,8 @@ test('an unchanged transcript is skipped, an appended one is read alone, and the
     const fourth = await ingest(l.page)
     expect(fourth.data).toMatchObject({ filesScanned: 0, chunksWritten: 0, unchanged: s.files.length })
 
-    // The marks survive a restart: a new process over the same userData skips everything.
+    // The marks survive a restart: a new process over the same userData skips everything. (Its own first background pass is
+    // 10 s after its launch, and it would skip everything too: nothing here depends on which pass comes first.)
     await quitApp(l.app)
     l = await launch(s.userDataDir, s.home)
     const restarted = await ingest(l.page)
@@ -194,13 +208,16 @@ test('an unchanged transcript is skipped, an appended one is read alone, and the
 
 test('"Learn from conversations" off: a pass reads nothing, the setting survives a restart, and on again learns', async () => {
   test.setTimeout(300_000)
-  const s = scratch('ingest-pause')
+  // The transcripts are written only once the switch is off, so the app's own indexer (first pass 10 s after launch)
+  // has nothing to learn from before then, however slowly the app starts.
+  const s = scratch('ingest-pause', false)
   let l: Launched | undefined
   try {
     l = await launch(s.userDataDir, s.home)
     expect(await getLearn(l.page)).toMatchObject({ success: true, data: true }) // on by default
 
     expect(await setLearn(l.page, false)).toMatchObject({ success: true })
+    s.writeSessions()
     const off = await ingest(l.page)
     expect(off.success).toBe(false) // refused with a plain message, and nothing was read
     expect(off.error).toMatch(/turned off/i)

@@ -14,6 +14,9 @@
 //     being read looks changed next pass and is read again.
 //   - two tiers: the fast pass emits only sealed chunks (it leaves the trailing partial chunk for later),
 //     so its mark ("sealed") does not cover a full pass; a full mark covers both.
+//   - a third kind of mark, "delegated": a session another computer started (never ingested). A pass that
+//     wants no hashes of such sessions may skip it unread; the pass that feeds the one-time linked-history
+//     recheck still reads it, because the recheck needs those hashes.
 //   - marks are held in memory and written only at the end of a pass, after the caller has decided they
 //     are safe to keep (the store was not locked, the pass was not cut short by quit or by the pause
 //     switch). discard() drops them.
@@ -48,6 +51,8 @@ export const MAX_PROBES = 8
 const PROBE_SHAPE = /^[0-9a-f]{8,128}$/
 
 export type MarkTier = 'sealed' | 'full'
+/** What a mark vouches for: an ingest tier, or "another computer's session, left out". */
+export type MarkKind = MarkTier | 'delegated'
 
 /** What a file looked like when it was read. */
 export interface FileStamp {
@@ -57,7 +62,10 @@ export interface FileStamp {
 
 const SEALED = 1
 const FULL = 2
-const bitsOf = (tier: MarkTier): number => (tier === 'full' ? FULL : SEALED)
+/** Another computer's session, known at this size and time. Never combined with an ingest tier. */
+const DELEGATED = 4
+const TIERS = SEALED | FULL
+const bitsOf = (kind: MarkKind): number => (kind === 'full' ? FULL : kind === 'sealed' ? SEALED : DELEGATED)
 
 interface Entry {
   size: number
@@ -74,11 +82,13 @@ export interface WatermarkIO {
 export interface IngestWatermark {
   /** True only when `path` was completely ingested at exactly this size and mtime, for this tier or a stronger one. */
   isDone(path: string, stamp: FileStamp, tier: MarkTier): boolean
+  /** True only when `path` is known to be another computer's session at exactly this size and mtime. */
+  isDelegated(path: string, stamp: FileStamp): boolean
   /**
    * Remember `path` as complete (in memory until flush). A stamp that is not a real size and time is refused.
    * `probe` is the hash of one chunk the store now holds for this file, kept to check the store later.
    */
-  markDone(path: string, stamp: FileStamp, tier: MarkTier, probe?: string): void
+  markDone(path: string, stamp: FileStamp, kind: MarkKind, probe?: string): void
   /** Write what changed since the last flush. True when a write happened and succeeded. Never throws. */
   flush(): Promise<boolean>
   /** Forget the marks made since the last flush. */
@@ -132,7 +142,7 @@ function parseStored(text: string | null, stamp: string): { files: Map<string, E
   for (const [path, raw] of Object.entries(d.files as Record<string, unknown>)) {
     if (!Array.isArray(raw) || raw.length !== 3) continue
     const [size, mtimeMs, bits] = raw
-    if (!isSize(size) || !isSize(mtimeMs) || (bits !== SEALED && bits !== FULL)) continue
+    if (!isSize(size) || !isSize(mtimeMs) || (bits !== SEALED && bits !== FULL && bits !== DELEGATED)) continue
     files.set(path, { size, mtimeMs, bits })
   }
   if (Array.isArray(d.probes)) {
@@ -198,15 +208,21 @@ export async function openWatermark(io: WatermarkIO, stamp: string): Promise<Ing
     isDone(path, stamp2, tier) {
       const e = entryOf(path)
       // bits are ordered by strength (1 sealed < 2 full), and a stronger mark answers a weaker question.
-      return e !== undefined && e.size === stamp2.size && e.mtimeMs === stamp2.mtimeMs && e.bits >= bitsOf(tier)
+      return e !== undefined && e.size === stamp2.size && e.mtimeMs === stamp2.mtimeMs && (e.bits & TIERS) >= bitsOf(tier)
     },
-    markDone(path, stamp2, tier, probe) {
+    isDelegated(path, stamp2) {
+      const e = entryOf(path)
+      return e !== undefined && e.size === stamp2.size && e.mtimeMs === stamp2.mtimeMs && (e.bits & DELEGATED) !== 0
+    },
+    markDone(path, stamp2, kind, probe) {
       if (!isSize(stamp2.size) || !isSize(stamp2.mtimeMs)) return
       if (typeof probe === 'string' && PROBE_SHAPE.test(probe)) changedProbes = mergeProbes(changedProbes, [probe])
       const old = entryOf(path)
       const same = old !== undefined && old.size === stamp2.size && old.mtimeMs === stamp2.mtimeMs
       // The same stamp keeps the stronger tier: a sealed pass after a full one does not take the full mark back.
-      const bits = same ? Math.max(old.bits, bitsOf(tier)) : bitsOf(tier)
+      // A verdict of the other kind (delegated or not) replaces the old one: a file is one or the other.
+      const kindBits = bitsOf(kind)
+      const bits = same && kindBits !== DELEGATED && (old.bits & DELEGATED) === 0 ? Math.max(old.bits, kindBits) : kindBits
       if (same && bits === old.bits) return
       changed.set(path, { size: stamp2.size, mtimeMs: stamp2.mtimeMs, bits })
     },

@@ -329,6 +329,56 @@ describe('writes: a mark made while a write is out is never lost', () => {
   })
 })
 
+describe("delegated sessions (another computer's work, never ingested)", () => {
+  it('a delegated mark is a verdict about the session at exactly this size and time, and is never an ingest mark', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    wm.markDone('/j.jsonl', A, 'delegated')
+    expect(wm.isDelegated('/j.jsonl', A)).toBe(true)
+    expect(wm.isDone('/j.jsonl', A, 'sealed')).toBe(false) // never confused with "ingested"
+    expect(wm.isDone('/j.jsonl', A, 'full')).toBe(false)
+    expect(wm.isDelegated('/j.jsonl', { size: 101, mtimeMs: 1_000 })).toBe(false) // it grew
+    expect(wm.isDelegated('/j.jsonl', { size: 100, mtimeMs: 1_001 })).toBe(false) // it was touched
+    expect(wm.isDelegated('/other.jsonl', A)).toBe(false)
+    wm.markDone('/own.jsonl', A, 'full')
+    expect(wm.isDelegated('/own.jsonl', A)).toBe(false) // an ingested file is not "delegated"
+  })
+
+  it('a verdict of the other kind replaces the old one at the same stamp, in both directions; the same verdict is a no-op', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    wm.markDone('/f', A, 'full')
+    wm.markDone('/f', A, 'delegated')
+    expect(wm.isDelegated('/f', A)).toBe(true)
+    expect(wm.isDone('/f', A, 'sealed')).toBe(false)
+    wm.markDone('/f', A, 'sealed')
+    expect(wm.isDelegated('/f', A)).toBe(false)
+    expect(wm.isDone('/f', A, 'sealed')).toBe(true)
+    expect(wm.isDone('/f', A, 'full')).toBe(false)
+    const pending = wm.pending
+    wm.markDone('/f', A, 'sealed') // identical: nothing new to write
+    wm.markDone('/g', A, 'delegated')
+    wm.markDone('/g', A, 'delegated')
+    expect(wm.pending).toBe(pending + 1)
+  })
+
+  it('is written with the file, read back after a restart, and a kind that is none of the three is dropped as damaged', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/j', A, 'delegated')
+    wm.markDone('/o', { size: 5, mtimeMs: 6 }, 'full', H(1))
+    await wm.flush()
+    const again = await openWatermark(io, 's1')
+    expect(again.isDelegated('/j', A)).toBe(true)
+    expect(again.isDone('/j', A, 'full')).toBe(false)
+    expect(again.isDone('/o', { size: 5, mtimeMs: 6 }, 'full')).toBe(true)
+    const doc = JSON.parse(io.text as string)
+    doc.files['/bad'] = [1, 2, 3]
+    doc.files['/bad2'] = [1, 2, 6]
+    doc.files['/bad3'] = [1, 2, 0]
+    io.text = JSON.stringify(doc)
+    expect((await openWatermark(io, 's1')).size).toBe(2)
+  })
+})
+
 describe('the real file', () => {
   const dirs: string[] = []
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })

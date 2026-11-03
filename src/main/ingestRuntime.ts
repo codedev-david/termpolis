@@ -138,8 +138,14 @@ export function passResult(stats: IngestStats): { written: number; more: boolean
     if (stats.stop === 'bytes') note += ' (byte budget)'
     else if (stats.stop === 'chunks') note += ' (chunk cap)'
   }
-  // A pass that was stopped (the app is quitting, or the switch went OFF) asks for no follow-up.
-  return { written: stats.chunksWritten, more: stats.truncated && stats.stop !== 'stopped', note }
+  // A pass that was stopped (the app is quitting, or the switch went OFF) asks for no follow-up. One that
+  // stopped at its BYTE budget asks for one only if it got somewhere (it wrote chunks, or vouched for files so
+  // the next pass will not read them again): spent on files it could neither store nor vouch for (the memory
+  // host is down, say), the next pass would spend the same 8 MiB on the same files, and the follow-up would
+  // repeat every few seconds for as long as the host stays down. (The old loop did not do that: it had no budget.)
+  const gotSomewhere = stats.chunksWritten > 0 || (stats.marked ?? 0) > 0
+  const more = stats.truncated && stats.stop !== 'stopped' && (stats.stop !== 'bytes' || gotSomewhere)
+  return { written: stats.chunksWritten, more, note }
 }
 
 export interface DrainHooks {

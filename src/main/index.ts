@@ -4418,6 +4418,8 @@ async function semanticPoolOptions(
           // growing trailing partial doesn't deposit a superset duplicate every 90s.
           { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000, chunkOptions: { sealedOnly: true }, stopped: () => appQuitting },
         )
+        // "Learn from conversations" went OFF while the pass ran: nothing more is done on its behalf.
+        if (stats.stop === 'stopped' && !getLearnFromConversations()) return passResult(stats)
         try { await persistMemoryIndex() } catch { /* best effort */ }
         return passResult(stats)
       },

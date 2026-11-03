@@ -2183,7 +2183,14 @@ describe('Learn from conversations (the pause switch) and the drain tier', () =>
     expect(typeof o.log).toBe('function')
     expect(typeof o.drainRun).toBe('function')
     const { getIngestRuntime } = await import('../../src/main/ingestRuntime')
-    expect(getIngestRuntime()).not.toBeNull()
+    const rt = getIngestRuntime()
+    expect(rt).not.toBeNull()
+    // and every ingest pass reads the very same switch, at every file and every slice
+    expect(rt!.paused()).toBe(false)
+    await invoke('memory:set-learn-conversations', { value: false })
+    expect(rt!.paused()).toBe(true)
+    await invoke('memory:set-learn-conversations', { value: true })
+    expect(rt!.paused()).toBe(false)
   })
 
   it('the drain tier ingests only: capped at 250 chunks, told which drain pass it is, with no recheck, no planners, no Weave', async () => {
@@ -2236,6 +2243,21 @@ describe('Learn from conversations (the pause switch) and the drain tier', () =>
     expect(mem.persistMemoryIndex).not.toHaveBeenCalled()
     expect(mneme.runConsolidation).not.toHaveBeenCalled()
     expect(mneme.runWeave).not.toHaveBeenCalled()
+  })
+
+  it('the fast pass ends at once too when the switch goes OFF while it ingests (no index persist); a quit-stop still persists as it always did', async () => {
+    mem.persistMemoryIndex.mockClear()
+    mneme.runConversationIngest.mockImplementationOnce(async () => {
+      await invoke('memory:set-learn-conversations', { value: false })
+      return { filesScanned: 1, chunksWritten: 0, chunksSkipped: 0, truncated: true, stop: 'stopped' }
+    })
+    expect(await indexerOpts().fastRun()).toMatchObject({ more: false })
+    expect(mem.persistMemoryIndex).not.toHaveBeenCalled()
+    // CONTROL: a pass stopped by something else (the app quitting) with the switch still ON is handled as before
+    await invoke('memory:set-learn-conversations', { value: true })
+    mneme.runConversationIngest.mockResolvedValueOnce({ filesScanned: 1, chunksWritten: 0, chunksSkipped: 0, truncated: true, stop: 'stopped' })
+    await indexerOpts().fastRun()
+    expect(mem.persistMemoryIndex).toHaveBeenCalledTimes(1)
   })
 
   it('both passes report their counters as a note for the log', async () => {
