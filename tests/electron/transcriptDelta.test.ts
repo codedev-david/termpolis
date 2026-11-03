@@ -389,6 +389,30 @@ describe('a cold read is chunked', () => {
     expect(c.bytes).toBe(fs.statSync(file).size)
   })
 
+  // The anchor check turns a WRONG recorded offset into a full read, so the answer stays right and only the
+  // cost shows: the offset has to be pinned on its own, and the cost of the pass after it with it.
+  it('records the end of the last whole line exactly when a line that spans chunks is followed by one still being written', async () => {
+    const p = newProject()
+    const whole = lines(userLine('short'), assistantLine('M'.repeat(500)))
+    const late = userLine('late arrival')
+    const file = write(p.dir, 's1', whole + late.slice(0, 20))
+    const { deps, c } = makeDeps({}, 64)
+
+    const first = await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, deps)
+    expect(texts(first!.fresh)).toEqual(['short', 'M'.repeat(500)])
+    expect(first!.cursor.pos!.offset).toBe(Buffer.byteLength(whole))
+
+    const before = { ...c }
+    const rest = late.slice(20) + '\n'
+    fs.appendFileSync(file, rest)
+    const second = await delta.readSessionDelta(p.cwd, 'claude', first!.cursor, deps)
+    expect(texts(second!.fresh)).toEqual(['late arrival'])
+    // carried on from that offset: the anchor and what was added, not the whole file
+    expect(c.bytes - before.bytes).toBe(delta.ANCHOR_BYTES + Buffer.byteLength(late) + 1)
+    expect(second!.cursor.pos!.offset).toBe(fs.statSync(file).size)
+    expect(rest.length).toBeGreaterThan(0)
+  })
+
   // A multi-MB tool result is ONE line of a transcript. Carrying it forward by joining it to the next chunk
   // each time copies it once per chunk: quadratic, with a fresh multi-MB buffer for every chunk. Joined once,
   // when its end arrives, it is copied once. Counter: the bytes Buffer.concat produced during the read.
