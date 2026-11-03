@@ -237,6 +237,20 @@ describe('accounts:sign-in-start and sign-in-input', () => {
     expect(await until('error')).toMatchObject({ message: 'Termpolis couldn\'t confirm the sign-in: it took too long' })
   })
 
+  // R3-9b: PRIVACY.md says logs hold account labels, never emails: the line that says a sign-in started names the label and its mode alone.
+  it('logs the start of a sign-in with the account\'s label and its mode, and no email', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      const r = await addClaude('codedev', 'me@example.test')
+      await ok(ACCOUNTS_IPC.signInStart, { accountId: r.account.id, method: 'console' })
+      const lines = log.mock.calls.map((c) => c.join(' ')).filter((l) => l.startsWith('[accounts] sign-in for'))
+      expect(lines.filter((l) => l.includes('started'))).toEqual(['[accounts] sign-in for codedev started (sign-in)'])
+      for (const l of log.mock.calls.map((c) => c.join(' '))) expect(l).not.toContain('me@example.test')
+    } finally {
+      log.mockRestore()
+    }
+  })
+
   it('refuses before anything runs: no such account, the wrong mode, a missing folder, no CLI', async () => {
     expect((await call(ACCOUNTS_IPC.signInStart, { accountId: 'nope' })).error).toMatch(/isn't registered/)
     const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g', email: 'g@example.test' })

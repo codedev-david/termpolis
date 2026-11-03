@@ -995,6 +995,45 @@ describe('Settings ▸ Accounts wiring', () => {
     expect(io.reported!('t-never')).toEqual({ posix: false, windows: false })
   })
 
+  it('tells the switch once that David\'s wrapper restarted Claude Code on another profile in a terminal, since it was last asked (SW3-3)', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-banner', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[mockSpawnTerminal.mock.calls.length - 1][3] as (d: string) => void
+    const io = deps().switchIO
+    expect(io.restarted!('t-banner')).toBe(false)
+    onData('Switching this terminal to work: starting Claude again on its profile and resuming the conversation...\r\n')
+    expect(io.restarted!('t-banner')).toBe(true)
+    expect(io.restarted!('t-banner')).toBe(false)
+    expect(io.restarted!('t-never')).toBe(false)
+    // The line is cut between two chunks, and the window lets it go long before main asks.
+    onData('Switching this terminal to codedev: starting Claude ag')
+    onData('ain on its profile...\r\n')
+    for (let i = 0; i < 40; i++) onData('x'.repeat(2000))
+    expect(io.outputFrom('t-banner', 0)).not.toContain('Switching this terminal')
+    expect(io.restarted!('t-banner')).toBe(true)
+  })
+
+  it('stops keeping the screen of a terminal whose agent is gone (SAFETY-R3-8)', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-over', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[mockSpawnTerminal.mock.calls.length - 1][3] as (d: string) => void
+    const io = deps().switchIO
+    H.getTerminalSize.mockReturnValue({ cols: 30, rows: 6 })
+    onData('PS C:\\> claude\r\n')
+    io.watch!('t-over')
+    expect(io.screen!('t-over')).not.toBeNull()
+    io.unwatch!('t-over')
+    expect(io.screen!('t-over')).toBeNull()
+    expect(io.outputFrom('t-over', 0)).toContain('claude')
+    // Output after it is the window's alone, and a start keeps a screen again.
+    onData('more\r\n')
+    expect(io.screen!('t-over')).toBeNull()
+    io.watch!('t-over')
+    expect(io.screen!('t-over')).not.toBeNull()
+    H.getTerminalSize.mockReset()
+    H.getTerminalSize.mockImplementation(() => null)
+  })
+
   it('trusts a folder in the launch\'s own profile, and refuses an account the user didn\'t connect (R9)', async () => {
     const target = H.profiles[0]
     H.resolveLaunchTarget.mockReturnValueOnce({ connected: false })

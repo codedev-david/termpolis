@@ -57,6 +57,15 @@ describe('accountChipFor', () => {
     expect(accountChipFor({ agentCommand: 'claude', agentAccountId: 'acc_a' }, two, false)?.color).toBe('#D97706')
   })
 
+  // SW3-7 (D13): an agent with one account shows no chip unless something is wrong; a user who added no second account sees nothing change.
+  it('shows nothing for a terminal on its agent only account, whose profile is signed in as it should be', () => {
+    const one = view([a])
+    expect(accountChipFor({ agentCommand: 'claude', agentAccountId: 'acc_a' }, one, false)).toBeNull()
+    // The same terminal beside a second account does show one, and the same one account with something wrong does too.
+    expect(accountChipFor({ agentCommand: 'claude', agentAccountId: 'acc_a' }, two, false)).not.toBeNull()
+    expect(accountChipFor({ agentCommand: 'claude', agentAccountId: 'acc_a' }, view([{ ...a, lastEmail: 'other@example.test' }]), false)).toMatchObject({ alert: true })
+  })
+
   it('says "?" in red when the account was changed by hand', () => {
     const chip = accountChipFor({ agentCommand: 'claude', agentAccountId: 'acc_b' }, two, true)!
     expect(chip).toEqual(expect.objectContaining({ label: '?', alert: true }))

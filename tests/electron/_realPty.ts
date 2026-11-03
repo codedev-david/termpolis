@@ -101,6 +101,9 @@ export function machineScale(): Promise<number> {
 
 const KEEP = 400_000
 
+/** The line bash runs before each prompt in Termpolis's own terminals (shellIntegration.ts), reporting the folder as OSC 7. */
+export const POSIX_PROMPT_REPORT = `printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-}" "$PWD"`
+
 export class RealTerminal {
   /** The tail of what the terminal drew, and the absolute offset of its end. */
   raw = ''
@@ -117,7 +120,12 @@ export class RealTerminal {
   constructor(pty: PtyModule, readonly shell: ShellSpec, opts: { cwd: string; env: Record<string, string>; cols?: number; rows?: number }) {
     this.cols = opts.cols ?? 110
     this.rows = opts.rows ?? 30
-    this.proc = pty.spawn(shell.file, shell.args, { name: 'xterm-256color', cols: this.cols, rows: this.rows, cwd: opts.cwd, env: opts.env })
+    // A bash terminal of Termpolis's own reports each prompt (shellIntegration.ts: OSC 7 from PROMPT_COMMAND), and the switch waits for
+    // that report where its terminal's shell sends one, instead of reading a quiet spell as "the prompt is back". The harness's bash,
+    // started with --noprofile --norc, sent none, so a loaded machine's slow shell read as a stalled one (MODELS-R3-6). The host's own
+    // PROMPT_COMMAND (David's rc has one) is replaced, not chained: a test's shell is the same on every machine.
+    const env = shell.family === 'posix' ? { ...opts.env, PROMPT_COMMAND: POSIX_PROMPT_REPORT } : opts.env
+    this.proc = pty.spawn(shell.file, shell.args, { name: 'xterm-256color', cols: this.cols, rows: this.rows, cwd: opts.cwd, env })
     this.proc.onData((d) => {
       this.trace.push(`+${Date.now() - this.t0} r ${JSON.stringify(d.slice(0, 80))}`)
       this.raw += d

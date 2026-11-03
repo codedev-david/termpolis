@@ -1,8 +1,9 @@
 // The screen kept beside the window for a terminal an agent runs in (F-R2-2): Claude Code paints its input box
 // once, so the last 32 KB of its output no longer draw one.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  appendOutput, liveScreen, readOutput, readOutputFrom, replayPreamble, reportedFamilies, resizeScreen, watchScreen, MAX_TERMINAL_BUFFER_CHARS,
+  appendOutput, liveScreen, readOutput, readOutputFrom, replayPreamble, reportedFamilies, resizeScreen, unwatchScreen, watchScreen, MAX_TERMINAL_BUFFER_CHARS,
+  SCREEN_CHUNK_MAX, SCREEN_BYTES_PER_SECOND, _setScreenClockForTest,
   type OutputBuffers,
 } from '../../src/main/terminalOutputBuffer'
 import { screenOfReplay } from '../../src/shared/terminalScreen'
@@ -107,6 +108,39 @@ describe('the screen kept beside the window', () => {
     expect(liveScreen(buffers, 't')!.lines[7]).toBe('─'.repeat(30))
   })
 
+  // F-R3-2: the same-size check compares both axes; one dropped would leave a screen of the wrong height (or width) after a resize on one axis.
+  it.each([
+    ['taller', { cols: 40, rows: 9 }],
+    ['shorter', { cols: 40, rows: 4 }],
+    ['wider', { cols: 55, rows: 6 }],
+    ['narrower', { cols: 25, rows: 6 }],
+    ['both', { cols: 55, rows: 9 }],
+  ])('is drawn again at the new size when the pane is resized %s, on one axis or both', (_what, size) => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 't', BOX)
+    watchScreen(buffers, 't', SIZE)
+    const before = buffers.get('t')!.screen
+    resizeScreen(buffers, 't', size)
+    const after = buffers.get('t')!.screen!
+    expect(after).not.toBe(before)
+    expect([after.cols, after.rows]).toEqual([size.cols, size.rows])
+    expect(liveScreen(buffers, 't')!.lines).toHaveLength(size.rows)
+    // The same size again is the screen already kept, not another.
+    resizeScreen(buffers, 't', size)
+    expect(buffers.get('t')!.screen).toBe(after)
+  })
+
+  it('draws the title the output set, from a screen kept from the start and from one kept anew', () => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 't', `${E}]0;✳ Claude Code${BOX}`)
+    watchScreen(buffers, 't', SIZE)
+    expect(liveScreen(buffers, 't')!.title).toBe('✳ Claude Code')
+    appendOutput(buffers, 't', `${E}]0;⠐ working`)
+    expect(liveScreen(buffers, 't')!.title).toBe('⠐ working')
+    resizeScreen(buffers, 't', { cols: 30, rows: 8 })
+    expect(liveScreen(buffers, 't')!.title).toBe('⠐ working')
+  })
+
   it('starts in the mode the evicted output left: an agent that entered the alternate screen long ago', () => {
     const buffers: OutputBuffers = new Map()
     appendOutput(buffers, 't', `${E}[?1049h${E}[H`)
@@ -188,5 +222,126 @@ describe('the prompt reports a terminal has ever printed (SW2-10)', () => {
     expect(reportedFamilies(buffers, 'a')).toEqual({ posix: false, windows: true })
     appendOutput(buffers, 'b', `${E}]9;1;a progress report is no prompt${String.fromCharCode(7)}`)
     expect(reportedFamilies(buffers, 'b')).toEqual({ posix: false, windows: false })
+  })
+})
+
+// SAFETY-R3-8: since F-R2-2 main keeps a live screen for every terminal an agent line was typed in, and drew every output chunk onto it on the
+// PTY data handler's thread for the terminal's whole life, for users who added no account too. Measured: 8 MB through appendOutput costs 0 to
+// 27 ms without a screen and 640 to 766 ms with one (80 to 96 ms a MB), so a `cat` of 100 MB in such a terminal stalled main for 8 to 10 s,
+// and every terminal's typing with it. The screen is dropped (the reads replay the window again, as before F-R2-2) when a flood arrives, and it
+// is not drawn for a terminal whose agent has gone: both come back at the next recorded start.
+describe('what the kept screen costs a flood of output (SAFETY-R3-8)', () => {
+  const FLOOD = 'x'.repeat(1000)
+  let clock = 1_000_000
+  beforeEach(() => { clock = 1_000_000; _setScreenClockForTest(() => clock) })
+  afterEach(() => { _setScreenClockForTest(null) })
+
+  function kept(): OutputBuffers {
+    const b: OutputBuffers = new Map()
+    appendOutput(b, 't1', `${E}[2J${E}[H${BOX}`)
+    expect(watchScreen(b, 't1', SIZE)).toBe(true)
+    return b
+  }
+
+  it('draws a big chunk onto no screen: the screen goes, the window keeps every byte, and the next start brings the screen back', () => {
+    const b = kept()
+    const big = 'y'.repeat(SCREEN_CHUNK_MAX + 1)
+    appendOutput(b, 't1', big, 10_000_000)
+    expect(liveScreen(b, 't1')).toBeNull()
+    expect(readOutput(b, 't1').endsWith('y')).toBe(true)
+    expect(watchScreen(b, 't1', SIZE)).toBe(true)
+    expect(liveScreen(b, 't1')).not.toBeNull()
+  })
+
+  it('counts a screen kept anew from nothing: the flood\'s second is not held against the next start', () => {
+    const b = kept()
+    const chunks = Math.floor(SCREEN_BYTES_PER_SECOND / FLOOD.length) + 2
+    for (let i = 0; i < chunks; i++) appendOutput(b, 't1', FLOOD)
+    expect(liveScreen(b, 't1')).toBeNull()
+    expect(watchScreen(b, 't1', SIZE)).toBe(true)
+    // Same second, a few chunks: well under the budget of the new screen.
+    for (let i = 0; i < 10; i++) appendOutput(b, 't1', FLOOD)
+    expect(liveScreen(b, 't1')).not.toBeNull()
+  })
+
+  it('draws a chunk of exactly the most', () => {
+    const b = kept()
+    appendOutput(b, 't1', 'y'.repeat(SCREEN_CHUNK_MAX), 10_000_000)
+    expect(liveScreen(b, 't1')).not.toBeNull()
+  })
+
+  it('drops the screen once more than a second\'s budget of small chunks came within one second, and not before', () => {
+    const b = kept()
+    const chunks = Math.floor(SCREEN_BYTES_PER_SECOND / FLOOD.length)
+    for (let i = 0; i < chunks; i++) appendOutput(b, 't1', FLOOD)
+    expect(liveScreen(b, 't1')).not.toBeNull()
+    appendOutput(b, 't1', FLOOD)
+    expect(liveScreen(b, 't1')).toBeNull()
+    // The window took all of it, and a start asks for the screen again.
+    expect(reportedFamilies(b, 't1')).toEqual({ posix: false, windows: false })
+    expect(watchScreen(b, 't1', SIZE)).toBe(true)
+    expect(liveScreen(b, 't1')).not.toBeNull()
+  })
+
+  it('counts each second on its own: the same bytes spread over several seconds draw all along', () => {
+    const b = kept()
+    const perSecond = Math.floor(SCREEN_BYTES_PER_SECOND / FLOOD.length)
+    for (let second = 0; second < 5; second++) {
+      for (let i = 0; i < perSecond; i++) appendOutput(b, 't1', FLOOD)
+      clock += 1000
+    }
+    expect(liveScreen(b, 't1')).not.toBeNull()
+  })
+
+  it('keeps drawing an agent\'s steady redraws, which are far under the budget', () => {
+    const b = kept()
+    for (let i = 0; i < 3000; i++) {
+      appendOutput(b, 't1', spin(i))
+      clock += 20
+    }
+    expect(liveScreen(b, 't1')?.lines.join('\n')).toContain('working 2999')
+  })
+
+  it('costs a flood nothing once dropped: the screen is not written', () => {
+    const b = kept()
+    appendOutput(b, 't1', 'y'.repeat(SCREEN_CHUNK_MAX + 1), 10_000_000)
+    const t0 = process.cpuUsage()
+    for (let i = 0; i < 200; i++) appendOutput(b, 't1', 'z'.repeat(40_000), 10_000_000)
+    const used = process.cpuUsage(t0)
+    // 8 MB through a kept screen cost 640 ms or more of CPU on the laptop it was measured on; with none it costs a few tens.
+    expect((used.user + used.system) / 1000).toBeLessThan(400)
+  })
+})
+
+describe('unwatching a terminal\'s screen once its agent is gone (SAFETY-R3-8)', () => {
+  it('drops the screen, and keeps the window; watching it again draws what the window holds', () => {
+    const b: OutputBuffers = new Map()
+    appendOutput(b, 't1', `${E}[2J${E}[H${BOX}`)
+    watchScreen(b, 't1', SIZE)
+    expect(liveScreen(b, 't1')).not.toBeNull()
+    unwatchScreen(b, 't1')
+    expect(liveScreen(b, 't1')).toBeNull()
+    appendOutput(b, 't1', 'more')
+    expect(readOutput(b, 't1').endsWith('more')).toBe(true)
+    expect(liveScreen(b, 't1')).toBeNull()
+    watchScreen(b, 't1', SIZE)
+    expect(liveScreen(b, 't1')?.lines.join('\n')).toContain('─')
+  })
+
+  it('is nothing for a terminal that has no screen or no window', () => {
+    const b: OutputBuffers = new Map()
+    expect(() => unwatchScreen(b, 'nobody')).not.toThrow()
+    appendOutput(b, 't2', 'text')
+    expect(() => unwatchScreen(b, 't2')).not.toThrow()
+    expect(liveScreen(b, 't2')).toBeNull()
+  })
+
+  it('is not undone by a resize: a terminal with no screen kept has none to rebuild', () => {
+    const b: OutputBuffers = new Map()
+    appendOutput(b, 't1', `${E}[2J${E}[H${BOX}`)
+    watchScreen(b, 't1', SIZE)
+    unwatchScreen(b, 't1')
+    resizeScreen(b, 't1', { cols: 50, rows: 8 })
+    expect(liveScreen(b, 't1')).toBeNull()
   })
 })

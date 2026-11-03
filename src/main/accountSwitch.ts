@@ -104,6 +104,9 @@ export interface SwitchIO {
   screen?(terminalId: string): { lines: string[]; title: string } | null
   /** Starts keeping that screen: the terminal's agent was just started (accountsIpc.ts records it). */
   watch?(terminalId: string): void
+  /** Stops keeping it: the agent is seen gone, so nothing reads the screen and every chunk drawn on it is the main thread's time; the
+   *  next recorded start keeps one again (SAFETY-R3-8). */
+  unwatch?(terminalId: string): void
   write(terminalId: string, data: string): void
   sleep(ms: number): Promise<void>
   now(): number

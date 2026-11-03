@@ -20,3 +20,30 @@ describe('loadScale', () => {
     expect(await machineScale()).toBe(first)
   })
 })
+
+// MODELS-R3-6: the harness's bash terminals report each prompt as Termpolis's own do (OSC 7 from PROMPT_COMMAND), so the switch waits for the
+// report instead of reading a quiet spell on a loaded machine as "the prompt is back". The line is the one shellIntegration.ts types.
+import { cleanEnv, loadPty, RealTerminal, shellsHere, POSIX_PROMPT_REPORT } from './_realPty'
+import { mkdtempSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+describe('the harness\'s posix shells report their prompts', () => {
+  it('is the line Termpolis\'s own bash terminals run before each prompt', () => {
+    expect(POSIX_PROMPT_REPORT).toBe(String.raw`printf '\033]7;file://%s%s\007' "${'$'}{HOSTNAME:-}" "$PWD"`)
+  })
+
+  const pty = loadPty()
+  const posix = shellsHere().filter((s) => s.family === 'posix')
+  it.skipIf(!pty || posix.length === 0)('a real bash writes OSC 7 before its first prompt, whatever PROMPT_COMMAND the host has', async () => {
+    const shell = posix[0]
+    const home = mkdtempSync(join(tmpdir(), 'termpolis-harness-'))
+    const t = new RealTerminal(pty!, shell, { cwd: home, env: cleanEnv({ HOME: home, USERPROFILE: home, PROMPT_COMMAND: 'echo the-host-prompt-command' }) })
+    try {
+      await t.until(() => t.raw.includes('\x1b]7;file://'), 30_000, 'the shell\'s prompt report')
+      expect(t.raw).not.toContain('the-host-prompt-command')
+    } finally {
+      t.kill()
+    }
+  }, 60_000)
+})

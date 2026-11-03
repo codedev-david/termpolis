@@ -52,6 +52,21 @@ function mainTerminal(live: boolean) {
 const START: LiveStart = { at: 0, commands: ['claude'], agent: 'claude', time: 0, turned: true, turnedAt: 0 }
 
 describe('a long-running Claude Code terminal (its box scrolled out of the 32 KB window)', () => {
+  // F-R3-2: the kept screen's TITLE is what the reads judge a busy agent by (Claude Code's title spinner), as a replay of the window's is.
+  it('reads the kept screen\'s window title, and a Claude title spinner still says the agent is at work', () => {
+    const t = mainTerminal(true)
+    t.feed(paintClaude(['❯ Build the login page.', '']))
+    expect(watchScreen(t.buffers, ID, t.size)).toBe(true)
+    t.feed(working(PAST_THE_WINDOW))
+    t.feed(']0;⠐ Claude Code')
+    expect(look(t.io, ID).title).toBe('⠐ Claude Code')
+    expect(look(t.io, ID).box).toBeGreaterThanOrEqual(0)
+    expect(lookForLimit(t.io, ID, { at: 0, commands: ['claude'], agent: 'claude', time: 0 }, 1000).status.status).toBe('working')
+    t.feed(']0;Claude Code')
+    expect(look(t.io, ID).title).toBe('Claude Code')
+    expect(lookForLimit(t.io, ID, { at: 0, commands: ['claude'], agent: 'claude', time: 0 }, 1000).status.status).not.toBe('working')
+  })
+
   it('has no box in a replay of the window: the cause', () => {
     const t = mainTerminal(false)
     t.feed(claudeTurn(PAST_THE_WINDOW))

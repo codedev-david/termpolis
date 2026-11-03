@@ -135,6 +135,7 @@ export function forgetTerminalAccount(terminalId: string): void {
   byHand.delete(terminalId)
   unsettled.delete(terminalId)
   agentStarts.delete(terminalId)
+  screenReleased.delete(terminalId)
   workers.delete(terminalId)
   shellAccounts.delete(terminalId)
 }
@@ -195,7 +196,19 @@ function startRecord(start: AgentStart, now: number): AgentStart {
  *  terminal that cannot keep one still has its start recorded, and its window is replayed. */
 function setStart(terminalId: string, start: AgentStart): void {
   agentStarts.set(terminalId, start)
+  screenReleased.delete(terminalId)
   try { wiring.io?.watch?.(terminalId) } catch { /* replayed from the window then */ }
+}
+
+/** Terminals whose kept screen was let go because their agent was seen gone: until the next recorded start, which keeps one again. */
+const screenReleased = new Set<string>()
+
+/** Lets go of the terminal's kept screen once its agent is seen gone, once: nothing reads it then, and drawing every chunk the terminal prints
+ *  on it, its whole life, is the main thread's time (SAFETY-R3-8). The reads replay the window meanwhile, as they did before F-R2-2. */
+function releaseScreen(terminalId: string): void {
+  if (screenReleased.has(terminalId) || agentStarts.get(terminalId)?.ended !== true) return
+  screenReleased.add(terminalId)
+  try { wiring.io?.unwatch?.(terminalId) } catch { /* it is let go at the next start's watch, or lives on at its small cost */ }
 }
 
 export function noteAgentStart(terminalId: string, start: AgentStart, now: number = Date.now()): void {
@@ -390,6 +403,7 @@ function noteLife(terminalId: string, typed: string, now: number, lookNow: () =>
   if (!io || end === undefined) return
   try {
     const started = noteEnteredLine(io, terminalId, agentStarts.get(terminalId), typed, end, now, lookNow, edited)
+    if (!started) releaseScreen(terminalId)
     if (started) {
       setStart(terminalId, started)
       // The conversation of the line just typed is the terminal's now, and the one an earlier launch named is not: a switch before
@@ -589,6 +603,7 @@ export function _resetTerminalAccountsForTest(): void {
   byHand.clear()
   unsettled.clear()
   agentStarts.clear()
+  screenReleased.clear()
   workers.clear()
   shellAccounts.clear()
 }
@@ -1398,6 +1413,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     noteRestarted(terminalId)
     const start = agentStarts.get(terminalId)
     const seen = lookForLimit(io, terminalId, start, now())
+    releaseScreen(terminalId)
     const accountId = terminalAccounts.get(terminalId) ?? null
     // R15: an account recorded as out of usage BEFORE this agent started on it, whose agent now answers a
     // prompt (seen at work on a turn), is not out of usage: the record was wrong, or its reset came early.

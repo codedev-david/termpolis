@@ -55,6 +55,8 @@ export interface OutputWindow {
   /** The screen this terminal's output draws, kept live for a terminal an agent runs in (watchScreen):
    *  every chunk appended is written to it. Absent for any other terminal, which costs nothing. */
   screen?: TerminalScreen
+  /** How much the kept screen has drawn in the second it is counting (overBudget). */
+  meter?: { second: number; chars: number }
   /** Which shells' prompt reports (OSC 7 from bash, zsh and fish; OSC 9;9 from PowerShell and cmd) this terminal has ever
    *  printed, kept after the report itself left the window: the switch's nested-shell guard needs to know that the
    *  terminal's own shell reported, and a minute of an agent's work pushes every report out of 32 KB (SW2-10). Absent
@@ -251,9 +253,28 @@ export function clearOutput(buffers: OutputBuffers, id: string): void {
 // The screen kept live beside the window
 // ---------------------------------------------------------------------------
 
+/** The most one chunk may hold for the kept screen to draw it, in characters. Drawing costs the thread the PTY's output arrives on 80 to
+ *  96 ms a MB (measured), so a `cat` of a big file in a terminal an agent was started in stalled the main process, and with it the typing in
+ *  every terminal, for seconds (SAFETY-R3-8). An agent draws a few MB a minute; a chunk this big is a dump. */
+export const SCREEN_CHUNK_MAX = 262_144
+/** The most the kept screen draws in any one second, in characters: about 100 ms of the thread's time at the cost above. A steady stream
+ *  of small chunks that adds up to more than this in a second is a flood too. */
+export const SCREEN_BYTES_PER_SECOND = 1_048_576
+
+let screenClock: () => number = Date.now
+/** For the tests: the clock the budget above counts seconds by; null puts the real one back. */
+export function _setScreenClockForTest(clock: (() => number) | null): void {
+  screenClock = clock ?? Date.now
+}
+
 /** Writes a chunk to the window's screen. A screen that cannot draw it is dropped, never the chunk: the
- *  window has taken it already, and the reads go back to replaying the window. */
+ *  window has taken it already, and the reads go back to replaying the window. A flood is dropped the same
+ *  way (SCREEN_CHUNK_MAX, SCREEN_BYTES_PER_SECOND); the next recorded start of an agent keeps a screen again (watchScreen). */
 function drawOnScreen(win: OutputWindow, data: string): void {
+  if (data.length > SCREEN_CHUNK_MAX || overBudget(win, data.length)) {
+    win.screen = undefined
+    return
+  }
   try {
     win.screen!.write(data)
     // Rows that scroll off the top are not read from here (the window has them); letting them pile up
@@ -262,6 +283,18 @@ function drawOnScreen(win: OutputWindow, data: string): void {
   } catch {
     win.screen = undefined
   }
+}
+
+/** Counts `chars` against the second the clock is in, and whether that second has drawn more than the budget. */
+function overBudget(win: OutputWindow, chars: number): boolean {
+  const second = Math.floor(screenClock() / 1000)
+  const meter = win.meter
+  if (!meter || meter.second !== second) {
+    win.meter = { second, chars }
+    return false
+  }
+  meter.chars += chars
+  return meter.chars > SCREEN_BYTES_PER_SECOND
 }
 
 /** The screen the window draws at `size`, as a pane rebuilds one on a mount: the modes the evicted
@@ -285,6 +318,8 @@ export function watchScreen(buffers: OutputBuffers, id: string, size: ScreenSize
   }
   if (win.screen && win.screen.cols === size.cols && win.screen.rows === size.rows) return true
   win.screen = replayedScreen(buffers, id, size)
+  // A screen kept anew counts its second anew: what a flood drew before it was dropped is not held against it.
+  win.meter = undefined
   return true
 }
 
@@ -294,6 +329,13 @@ export function watchScreen(buffers: OutputBuffers, id: string, size: ScreenSize
 export function resizeScreen(buffers: OutputBuffers, id: string, size: ScreenSize | null): void {
   const win = buffers.get(id)
   if (win?.screen && size) watchScreen(buffers, id, size)
+}
+
+/** Stops keeping the terminal's screen: its agent is gone, so nothing reads it, and every chunk drawn on it is the main thread's time. The
+ *  window is untouched, and the reads replay it; the next recorded start of an agent keeps a screen again (watchScreen). */
+export function unwatchScreen(buffers: OutputBuffers, id: string): void {
+  const win = buffers.get(id)
+  if (win) win.screen = undefined
 }
 
 /** The rows and the title of the terminal's kept screen, as drawn now, or null when none is kept. */

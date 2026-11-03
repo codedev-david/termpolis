@@ -17,6 +17,7 @@ import { ACCOUNTS_IPC } from '../../src/shared/agentAccounts'
 import { createSandbox } from './_agentIntegrationManagerFixture'
 import type { Sandbox } from './_agentIntegrationManagerFixture'
 import { FakeTerminal } from './_switchTerminal'
+import type { LimitLook } from '../../src/shared/accountLimits'
 
 let sb: Sandbox
 let handlers: Map<string, (e: unknown, input?: unknown) => unknown>
@@ -273,5 +274,75 @@ describe('a line the shell ran that the keys do not say (SAFETY-R3-1, MODELS-R3-
     expect(terminalSessionId('t1')).toBeUndefined()
     noteWorkerCommand('t1', `claude --resume ${SESSION}`, clock)
     expect(terminalSessionId('t1')).toBe(SESSION)
+  })
+})
+
+// SAFETY-R3-8: main keeps a live screen for every terminal an agent was started in, and every chunk the terminal prints is drawn on it, the
+// terminal's whole life. Once the agent is seen gone nothing reads it, and it is let go until the next recorded start.
+describe('the kept screen of a terminal whose agent is gone (SAFETY-R3-8)', () => {
+  const baseIO = (watch: (id: string) => void, unwatch: (id: string) => void): AccountsIpcDeps['switchIO'] => ({
+    output: (id) => term.io().output(id),
+    outputFrom: (id, from) => term.io().outputFrom(id, from),
+    end: (id) => term.io().end(id),
+    size: () => ({ cols: 80, rows: 24 }),
+    write: (id, data) => term.io().write(id, data),
+    sleep: (ms) => term.io().sleep(ms),
+    now: () => clock,
+    watch,
+    unwatch,
+  })
+  const trace: string[] = []
+  const wire = (): void => {
+    trace.length = 0
+    register({ switchIO: baseIO((id) => { trace.push(`watch ${id}`) }, (id) => { trace.push(`unwatch ${id}`) }) })
+  }
+  const launched = async (): Promise<void> => {
+    const { line } = await ok<{ line: string }>(ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude' })
+    noteTypedInput('t1', `${line}\r`, clock)
+  }
+
+  it('lets it go when a look finds the agent gone, once, and keeps it while the agent runs', async () => {
+    wire()
+    await launched()
+    expect(trace).toEqual(['watch t1'])
+    term.mode = 'agent'
+    term.out += term.frame()
+    clock += 5000
+    await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+    expect(trace).toEqual(['watch t1'])
+    term.mode = 'shell'
+    term.out += term.hint?.() ?? ''
+    term.out += term.prompt()
+    clock += 5000
+    await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+    expect(trace).toEqual(['watch t1', 'unwatch t1'])
+    // Once: the next looks find it gone already, and let go of nothing again.
+    clock += 5000
+    await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+    expect(trace).toEqual(['watch t1', 'unwatch t1'])
+  })
+
+  it('keeps one again at the next start, which is recorded as ever', async () => {
+    wire()
+    await launched()
+    term.mode = 'shell'
+    term.out += term.prompt()
+    clock += 5000
+    await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+    expect(trace).toEqual(['watch t1', 'unwatch t1'])
+    noteTypedInput('t1', 'claude --model sonnet\r', clock)
+    expect(trace).toEqual(['watch t1', 'unwatch t1', 'watch t1'])
+  })
+
+  it('never lets one go for a terminal no agent was started in, and a screen that will not let go changes nothing', async () => {
+    wire()
+    await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+    expect(trace).toEqual([])
+    register({ switchIO: baseIO(() => undefined, () => { throw new Error('no such terminal') }) })
+    await launched()
+    term.mode = 'shell'
+    term.out += term.prompt()
+    clock += 5000
+    await expect(ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })).resolves.toMatchObject({ agent: 'claude', live: false })
   })
 })

@@ -122,6 +122,7 @@ import {
   reportedFamilies,
   resizeScreen,
   takeRestarted,
+  unwatchScreen,
   watchScreen,
   type OutputBuffers,
 } from './terminalOutputBuffer'
@@ -2947,6 +2948,7 @@ registerAccountsIpc(ipcMain, {
     // The screen kept for a terminal an agent runs in: the 32 KB window above loses its input box (F-R2-2).
     screen: (terminalId) => liveScreen(terminalOutputBuffers, terminalId),
     watch: (terminalId) => { watchScreen(terminalOutputBuffers, terminalId, getTerminalSize(terminalId)) },
+    unwatch: (terminalId) => { unwatchScreen(terminalOutputBuffers, terminalId) },
     // Which shells have ever reported a prompt here, though the window has lost the reports (SW2-10).
     reported: (terminalId) => reportedFamilies(terminalOutputBuffers, terminalId),
     // David's wrapper restarted Claude Code here on another profile since this was last asked (SW3-3).
