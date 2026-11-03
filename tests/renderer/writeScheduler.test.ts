@@ -1189,15 +1189,15 @@ describe('a writer that calls back into the scheduler', () => {
     const r = makeRig()
     const seen: string[] = []
     let once = true
-    let w!: PaneWriter
-    w = r.sch.attach('p', {
+    const self: { w?: PaneWriter } = {}
+    const w: PaneWriter = (self.w = r.sch.attach('p', {
       write: (d, ack) => {
         seen.push(d)
-        if (once) { once = false; w('AFTER') } // re-entrant: while this very hand-over is running
+        if (once) { once = false; self.w!('AFTER') } // re-entrant: while this very hand-over is running
         ack()
       },
       classify: () => 'focused',
-    })
+    }))
     w(text(20_000))
     r.clock.frame()
     r.clock.frame()
@@ -1210,15 +1210,15 @@ describe('a writer that calls back into the scheduler', () => {
     const r = makeRig()
     const seen: string[] = []
     let once = true
-    let w!: PaneWriter
-    w = r.sch.attach('p', {
+    const self: { w?: PaneWriter } = {}
+    const w: PaneWriter = (self.w = r.sch.attach('p', {
       write: (d, ack) => {
         seen.push(d)
-        if (once) { once = false; w('AFTER'.repeat(5_000)) } // re-entrant, and a key is going in: push() would serve the pane
+        if (once) { once = false; self.w!('AFTER'.repeat(5_000)) } // re-entrant, and a key is going in: push() would serve the pane
         ack()
       },
       classify: () => 'focused',
-    })
+    }))
     w.typed('k')
     w(text(40_000))
     r.clock.frame()
@@ -1228,12 +1228,12 @@ describe('a writer that calls back into the scheduler', () => {
 
   it('a refusal that detaches the pane first leaves no negative in-flight behind', () => {
     const r = makeRig()
-    let w!: PaneWriter
-    w = r.sch.attach('p', {
-      write: () => { w.detach(); throw new Error('torn down') },
+    const self: { w?: PaneWriter } = {}
+    const w: PaneWriter = (self.w = r.sch.attach('p', {
+      write: () => { self.w!.detach(); throw new Error('torn down') },
       classify: () => 'visible',
       onError: () => undefined,
-    })
+    }))
     w(text(20_000))
     r.clock.frame()
     expect(w.inflight()).toBe(0)
