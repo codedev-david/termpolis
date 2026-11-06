@@ -43,7 +43,7 @@
 import { promises as fsp } from 'fs'
 import { join, sep } from 'path'
 import { makeNameRule, CASE_FOLDING_PLATFORMS } from './watchGuard'
-import { openSheddingWatch, type ShedFsWatcher, type ShedFsWatchFn, type SheddingWatchOptions } from './shedWatch'
+import { openSheddingWatch, scopedWatchDisabled, type ShedFsWatcher, type ShedFsWatchFn, type SheddingWatchOptions } from './shedWatch'
 
 export type ScopedFsWatcher = ShedFsWatcher
 /** fs.watch, as far as this module needs it. */
@@ -71,6 +71,8 @@ export interface ScopedWatchOptions {
   log?: (msg: string) => void
   /** Timing of the shedding watches (events per second, back-off, clock, timers). Tests only. */
   shed?: Pick<SheddingWatchOptions, 'eventsPerSecond' | 'backoffBaseMs' | 'backoffMaxMs' | 'calmMs' | 'now' | 'setTimer' | 'clearTimer'>
+  /** The environment the kill switch (TERMPOLIS_SCOPED_WATCH, shedWatch.ts) is read from. Default: process.env. Tests only. */
+  env?: Record<string, string | undefined>
 }
 
 export interface ScopedWatch {
@@ -348,23 +350,35 @@ export function scopedRecursiveWatch(
     }
   }
 
-  // The root, non-recursively. A throw here (ENOENT, EPERM, no watch support) is the caller's to handle,
-  // exactly as it was for the single recursive watch this replaces.
-  rootHandle = openWatch(
-    root,
-    false,
-    (event, n) => {
-      const t = text(n)
-      deliver('', event, t)
-      if (event === 'rename' && t) considerChild('', t)
-    },
-    (heard) => {
-      if (heard) deliverOverflow('')
-      void rescan('')
-    },
-  )
-  onWatchError(rootHandle, () => { deliver('', 'rename', null) })
-  void init()
+  // Kill switch: the single recursive watch of the root that 1.54.4 opened, and nothing else (no scoping, no
+  // shedding). A throw is the caller's, as it was then; an error later is reported as a look-again, as above.
+  if (scopedWatchDisabled(options.env)) {
+    fellBack = true
+    fullHandle = fsWatch(root, { recursive: true, ...persistent }, (event, name) => listener(event, text(name)))
+    onWatchError(fullHandle, () => { listener('rename', null) })
+  } else {
+    // The root, non-recursively. A throw here (ENOENT, EPERM, no watch support) is the caller's to handle,
+    // exactly as it was for the single recursive watch this replaces.
+    rootHandle = openRoot()
+    onWatchError(rootHandle, () => { deliver('', 'rename', null) })
+    void init()
+  }
+
+  function openRoot(): ScopedFsWatcher {
+    return openWatch(
+      root,
+      false,
+      (event, n) => {
+        const t = text(n)
+        deliver('', event, t)
+        if (event === 'rename' && t) considerChild('', t)
+      },
+      (heard) => {
+        if (heard) deliverOverflow('')
+        void rescan('')
+      },
+    )
+  }
 
   return {
     close() {

@@ -42,7 +42,19 @@ export const SHED_BACKOFF_MAX_MS = 60_000
 /** A watch that ran this long without tripping starts its schedule again. */
 export const SHED_CALM_MS = 30_000
 
+/** Kill switch for the 1.54.5 watcher changes (lane M), read each time a watch is opened. 0, off, false or no (any
+ *  case) brings back the 1.54.4 subscriptions: a plain fs.watch here (no storm shedding), and in scopedWatch.ts one
+ *  recursive watch of the root instead of the scoped set. The run gates in watchGuard.ts are not affected. */
+export const SCOPED_WATCH_ENV = 'TERMPOLIS_SCOPED_WATCH'
+
+export function scopedWatchDisabled(env: Record<string, string | undefined> = process.env): boolean {
+  const v = (env[SCOPED_WATCH_ENV] ?? '').trim().toLowerCase()
+  return v === '0' || v === 'off' || v === 'false' || v === 'no'
+}
+
 export interface SheddingWatchOptions {
+  /** The environment the kill switch is read from. Default: process.env. Tests only. */
+  env?: Record<string, string | undefined>
   /** Runs after a closed watch has been reopened: the owner's cue to look again (emit an `overflow`). */
   onResume?: () => void
   /** A line when a watch is first closed, and at most one a minute after that. */
@@ -72,6 +84,7 @@ export function openSheddingWatch(
   listener: (event: string, filename: string | Buffer | null) => void,
   o: SheddingWatchOptions = {},
 ): SheddingWatch {
+  if (scopedWatchDisabled(o.env)) return plainWatch(fsWatch(path, opts, listener))
   const limit = o.eventsPerSecond ?? SHED_EVENTS_PER_SECOND
   const base = o.backoffBaseMs ?? SHED_BACKOFF_BASE_MS
   const cap = o.backoffMaxMs ?? SHED_BACKOFF_MAX_MS
@@ -176,6 +189,17 @@ export function openSheddingWatch(
     },
     get shed(): boolean { return shed },
     get sheds(): number { return sheds },
+  }
+  return handle
+}
+
+/** The kill switch's watch: the OS watch itself, in the SheddingWatch shape (it never sheds). */
+function plainWatch(inner: ShedFsWatcher): SheddingWatch {
+  const handle: SheddingWatch = {
+    close() { inner.close() },
+    on(event, l) { inner.on?.(event, l); return handle },
+    get shed(): boolean { return false },
+    get sheds(): number { return 0 },
   }
   return handle
 }
