@@ -13,7 +13,8 @@ import {
   recordUncleanExit,
 } from './telemetry'
 import { initCrashWatch, heartbeat as crashHeartbeat, markCleanExit, installCleanExitGuards } from './crashWatch'
-import { installLoopGovernor } from './loopGovernor'
+import { installLoopGovernor, whenNotShed } from './loopGovernor'
+import { registerShedTargets } from './shedRegistrations'
 // Up here, above the `--disconnect-agents` block that calls homedir(), and not with the other
 // builtins further down: under Vitest's jsdom environment a builtin's names are bound where its
 // import is written, so from down there the block failed with "Cannot access 'homedir' before
@@ -191,7 +192,8 @@ import { detectAgentStatus } from '../shared/agentStatusDetector'
 import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from './workflow/adapters'
 import { runWorkflow as wfRun, cancelRun as wfCancel } from './workflow/workflowEngine'
 import { registerWorkflowIpc } from './workflow/ipc'
-import { TriggerSupervisor } from './workflow/triggers'
+import { TriggerSupervisor, setTriggerGitChecksPaused } from './workflow/triggers'
+import { setClaudeLocatePaused } from './transcriptWatchers/claudeCodeWatcher'
 import { sessionProjectCwds, type SessionLike } from './workflow/sessionProjects'
 import { startLearningSignals, stopLearningSignals } from './learningSignals'
 import { cleanupDemoWorkflows, oncePerVersion } from './workflow/demoCleanup'
@@ -280,6 +282,7 @@ import {
   type MemoryEntry,
   vectorRamStats,
   setVectorQuantization,
+  setMemoryRetryGovernor,
 } from './memoryClient'
 import { memoryUnavailableInfo } from './memoryFallbackGuard'
 import { registerMemoryTraceSources } from './memoryTraceSources'
@@ -595,7 +598,7 @@ import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcH
 import { createProcHostTransport } from './procHostTransport'
 import { cachedGit, invalidateGitCache } from './gitCache'
 import { createGitWatcherRegistry } from './gitWatcher'
-import { WATCH_MIN_INTERVAL_MS } from './watchGuard'
+import { WATCH_MIN_INTERVAL_MS, setWatchGatesPaused } from './watchGuard'
 import { openScopedGitWatch, scopedTriggerWatch } from './scopedWatch'
 import { installApplicationMenu, globalHotkeys } from './appMenu'
 import { writeSecureFile } from './secureFile'
@@ -2676,6 +2679,9 @@ ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string })
 ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', async (_, opts: { terminalId: string; cwd: string; agent: string }) => {
   try {
     if (!opts?.terminalId || !opts?.cwd || !opts?.agent) return ok({ fired: false, lessons: 0 })
+    // SHED (the event-loop governor): hold the reflection until the loop is calm (capped), never drop it: a reflection
+    // asked at terminal close has no second chance. No wait at all while calm or with TERMPOLIS_NO_GOVERNOR=1.
+    await whenNotShed()
     // LOCKED: every lesson write would be refused, yet the cursor would still advance past the turns —
     // and they would never be reflected. Leave the cursor where it is; the first pass after unlock does it.
     if (await memoryIsLocked()) return ok({ fired: false, lessons: 0 })
@@ -4017,6 +4023,14 @@ async function semanticPoolOptions(
     // The event-loop governor (1.54.5): background timers that registered with it stand down while the loop is
     // struggling. Started here, stopped at will-quit. Kill switch TERMPOLIS_NO_GOVERNOR=1.
     installLoopGovernor(app)
+    // What SHED may pause in the other lanes' files (shedRegistrations.ts lists each and what is never paused). Arrows,
+    // so a module a test mocks without these exports is only touched if SHED actually starts.
+    registerShedTargets({
+      setWatchGatesPaused: (paused, opts) => setWatchGatesPaused(paused, opts),
+      setMemoryRetryGovernor: (fn) => setMemoryRetryGovernor(fn),
+      setClaudeLocatePaused: (paused) => setClaudeLocatePaused(paused),
+      setTriggerGitChecksPaused: (paused) => setTriggerGitChecksPaused(paused),
+    })
     initMcpGateway(app.getPath('userData'))
     registerMcpIpc(ipcMain)
     registerStuckProcessIpc(ipcMain)

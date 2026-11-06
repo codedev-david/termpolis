@@ -25,6 +25,7 @@
 //     of a drain it was, so nobody has to guess whether a drain is running.
 
 import { recordPass } from './passCounters'
+import { createShedGate, type ShedGate, type ShedRegistry } from './loopGovernor'
 
 export interface IndexRunResult {
   ranAt: number
@@ -71,6 +72,9 @@ let fastInterval: ReturnType<typeof setInterval> | null = null
 let initial: ReturnType<typeof setTimeout> | null = null
 let drain: ReturnType<typeof setTimeout> | null = null
 let nudge: ReturnType<typeof setTimeout> | null = null
+// v1.54.5: the event-loop governor. While the main loop is struggling (SHED) a timer-driven pass is skipped; ONE pass is
+// made up a minute after calm returns (createShedGate's staggered make-up), never a burst. Manual tick() is not gated.
+let shedGate: ShedGate | null = null
 let running = false
 /** Follow-ups of the current drain so far: counted up by each drain pass, back to 0 when a pass reports no more. */
 let drainPasses = 0
@@ -147,6 +151,7 @@ export async function tick(fast = false): Promise<IndexRunResult> {
 // follow-up while a bulk backlog is still draining. Manual tick() stays pure so
 // tests/callers don't get surprise timers.
 async function scheduledTick(tier: Tier = 'full'): Promise<void> {
+  if (shedGate?.skip()) return
   const r = await runTier(tier)
   if (r.more && config && !isPaused()) scheduleDrain(config)
 }
@@ -183,9 +188,14 @@ export function startIndexer(
     fastIntervalMs?: number
     initialDelayMs?: number
     drainDelayMs?: number
+    /** The governor's registry (tests inject one; the app uses the process-wide one). */
+    shedRegistry?: ShedRegistry
   },
 ): void {
   stopIndexer()
+  try {
+    shedGate = createShedGate('memoryIndexer.tick', { makeUp: () => void scheduledTick(), registry: cfg.shedRegistry })
+  } catch { shedGate = null /* fail open: passes run as in 1.54.4 */ }
   drainPasses = 0
   config = {
     run: cfg.run,
@@ -215,6 +225,8 @@ export function stopIndexer(): void {
   if (initial) clearTimeout(initial)
   if (drain) clearTimeout(drain)
   if (nudge) clearTimeout(nudge)
+  shedGate?.dispose()
+  shedGate = null
   interval = null
   fastInterval = null
   initial = null

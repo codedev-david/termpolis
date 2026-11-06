@@ -30,6 +30,7 @@ import {
 } from './ingestWatermark'
 import { recordPass } from './passCounters'
 import { whenTypingQuiet } from './typingQuiet'
+import { whenNotShed } from './loopGovernor'
 
 /** Most bytes one background pass reads before it stops and leaves the rest to the next. */
 export const INGEST_PASS_BYTES = 8 * 1024 * 1024
@@ -120,7 +121,12 @@ export function configureConversationIngest(cfg: IngestRuntimeConfig): void {
     statFile: fileStamp,
     readText: (filePath) => filePieces(filePath),
     readHead: fileHead,
-    quiet: () => whenTypingQuiet(),
+    // Asked before each file and at every slice boundary: the user typing holds the pass back (bounded), and so does the
+    // event-loop governor's SHED (until it ends, at most SHED_WAIT_CAP_MS a boundary; never with TERMPOLIS_NO_GOVERNOR=1).
+    quiet: async () => {
+      await whenTypingQuiet()
+      await whenNotShed()
+    },
     canMark: async () => !(await cfg.isLocked()),
     record,
   }

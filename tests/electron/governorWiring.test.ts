@@ -48,11 +48,23 @@ describe('src/main/index.ts footprint', () => {
     expect(text.indexOf('installLoopGovernor(app)')).toBeGreaterThan(text.indexOf('app.whenReady()'))
   })
 
-  it('imports the governor from ./loopGovernor (once) and nothing else of it', () => {
+  it('imports the governor from ./loopGovernor (once): the installer, and the SHED wait the reflect handler uses', () => {
     const imports = importsFrom(text, './loopGovernor')
     expect(imports).toHaveLength(1)
     const named = (imports[0].importClause?.namedBindings as ts.NamedImports).elements.map((e) => e.name.text)
-    expect(named).toEqual(['installLoopGovernor'])
+    expect(named).toEqual(['installLoopGovernor', 'whenNotShed'])
+    // 1.54.5 wire step: whenNotShed is awaited in exactly one place (memory:reflect-session), never on the typing path.
+    expect(callsTo(text, 'whenNotShed')).toHaveLength(1)
+  })
+
+  it('registers the other lanes’ pausables once, right after the governor is installed (shedRegistrations.ts)', () => {
+    expect(importsFrom(text, './shedRegistrations')).toHaveLength(1)
+    expect(callsTo(text, 'registerShedTargets')).toHaveLength(1)
+    const install = text.indexOf('installLoopGovernor(app)')
+    const reg = text.indexOf('registerShedTargets(')
+    expect(reg).toBeGreaterThan(install)
+    // The next statement, not somewhere further down: only the call's own comment lies between them.
+    expect(text.slice(install, reg).split('\n').length).toBeLessThanOrEqual(5)
   })
 
   it('places the call after initAppLog (so its transition lines reach the log file) and not next to other lanes\' hooks', () => {

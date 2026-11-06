@@ -402,6 +402,13 @@ async function sessionFileIn(projectsDir: string, name: string): Promise<string 
   return found.find((file) => file !== null) ?? null
 }
 
+// v1.54.5: the event-loop governor pauses the session-file locator polls (lane M's 1.5 s look for a file that does
+// not exist yet) while the main loop is struggling. Registered as 'transcript.locate' in shedRegistrations.ts.
+let locatePaused = false
+export function setClaudeLocatePaused(paused: boolean): void {
+  locatePaused = paused
+}
+
 /**
  * Follow one Claude Code session's transcript, from its first byte: the file a `claude -p
  * --session-id <id>` writes, `<id>.jsonl`, which the swarm conductor is started with. Unlike
@@ -462,6 +469,8 @@ export function attachClaudeSessionWatcher(
   // look found the record, a synchronous read of it) on the main thread, once per poll, per watched session.
   const lookOnce = async (): Promise<void> => {
     if (stopped || tail) return
+    // SHED (the event-loop governor): no look at all, and the poll is not counted, so the scan window is not used up.
+    if (locatePaused) return
     try {
       if (folders === null) folders = [...new Set([await claudeCwd(cwd), await spelledOut(cwd)].map(mangleCwd))]
       const dir = await projectsDir()

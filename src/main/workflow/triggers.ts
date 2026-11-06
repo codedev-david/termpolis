@@ -191,6 +191,14 @@ export function resolveRef(gitDir: string, ref: string, fs: FsLike, readBytes: R
   return null
 }
 
+// v1.54.5: the event-loop governor (SHED) pauses the git-ref checks of every supervisor's tick, and nothing else: the
+// file watches pause through watchGuard's gates, cron never pauses. Registered as 'workflowTriggers.git' in
+// shedRegistrations.ts.
+let gitChecksPaused = false
+export function setTriggerGitChecksPaused(paused: boolean): void {
+  gitChecksPaused = paused
+}
+
 /** The ref a git trigger should follow, given its config. Returns null when the
  *  project isn't a repo or the ref can't be determined yet (e.g. a remote branch
  *  that has never been pushed). */
@@ -482,7 +490,9 @@ export class TriggerSupervisor {
         if (this.projects.get(p.cwd) !== p || p.armed.get(a.workflow.id) !== a) continue
         const type = a.workflow.trigger.type
         if (type === 'schedule') this.checkSchedule(p, a, now)
-        else if (type === 'gitCommit' || type === 'gitPush') await this.checkGit(p, a)
+        // SHED skips only the git check (the sha is remembered, so a commit made meanwhile fires on the first calm
+        // tick). Never cron: a non-catch-up schedule looks back only 3 ticks, so a skipped tick would drop its slot.
+        else if ((type === 'gitCommit' || type === 'gitPush') && !gitChecksPaused) await this.checkGit(p, a)
       }
       this.flushState(p)
     }

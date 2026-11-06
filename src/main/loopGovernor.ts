@@ -177,6 +177,32 @@ export function createShedGate(name: string, opts: ShedGateOptions = {}): ShedGa
   }
 }
 
+/** The longest whenNotShed() holds a caller: after that it goes ahead (fail open), and asks again at its next boundary. */
+export const SHED_WAIT_CAP_MS = 120_000
+
+/**
+ * For work that is already running and has natural boundaries (an ingest pass between slices, a session reflection
+ * before it reads): resolves at once when the loop is calm, otherwise when SHED ends or after `capMs`, whichever is
+ * first. Resolves true when it waited. Never rejects. With the kill switch on SHED never starts, so this never waits.
+ */
+export function whenNotShed(opts: { capMs?: number; registry?: ShedRegistry } = {}): Promise<boolean> {
+  const registry = opts.registry ?? shedRegistry
+  if (!registry.isShed()) return Promise.resolve(false)
+  return new Promise<boolean>((resolve) => {
+    let off: () => void = () => {}
+    // Idempotent: clearing a cleared timer, unsubscribing twice and resolving twice are all no-ops.
+    const finish = (): void => {
+      clearTimeout(timer)
+      off()
+      resolve(true)
+    }
+    const timer = setTimeout(finish, opts.capMs ?? SHED_WAIT_CAP_MS)
+    timer.unref()
+    // Asks the registry, not the event's value: a listener that re-enters SHED mid-transition keeps this waiting.
+    off = registry.onShedChange(() => { if (!registry.isShed()) finish() })
+  })
+}
+
 // ── 3. the watchdog ────────────────────────────────────────────────
 
 /** What the governor needs of a Node event-loop-delay histogram (perf_hooks' IntervalHistogram has all of it). */

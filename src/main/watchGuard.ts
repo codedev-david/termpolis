@@ -446,13 +446,29 @@ let allPaused = false
 /** Pause (true) or resume (false) EVERY run gate in the process. Idempotent. While paused no watcher
  *  starts a handler (re-index, repaint, trigger pass, transcript read); events are counted and the
  *  gate remembers that something arrived, so resuming runs each handler once, not once per event. */
-export function setWatchGatesPaused(paused: boolean): void {
+export function setWatchGatesPaused(paused: boolean, opts: WatchGatesResumeOptions = {}): void {
   if (allPaused === paused) return
   allPaused = paused
-  for (const g of [...liveGates]) {
+  const gates = [...liveGates]
+  const stagger = !paused && opts.staggerMs !== undefined && opts.staggerMs > 0 ? opts.staggerMs : 0
+  const setT = opts.setTimer ?? ((fn: () => void, ms: number): unknown => {
+    const t = setTimeout(fn, ms)
+    t.unref?.()
+    return t
+  })
+  gates.forEach((g, i) => {
     if (paused) g.pause()
-    else g.resume()
-  }
+    // The governor's rule: SHED ending is never a burst. The first gate resumes now, the others one stagger apart; a
+    // gate whose turn comes after SHED started again stays paused (the pause above already reached it).
+    else if (stagger === 0 || i === 0) g.resume()
+    else setT(() => { if (!allPaused) g.resume() }, i * stagger)
+  })
+}
+
+export interface WatchGatesResumeOptions {
+  /** On resume: start the gates this far apart (ms) instead of all in one tick. Absent or 0: all at once (lane M's). */
+  staggerMs?: number
+  setTimer?: (fn: () => void, ms: number) => unknown
 }
 
 export function watchGatesPaused(): boolean {
