@@ -515,3 +515,55 @@ describe('no runtime configured', () => {
     expect(existsSync(join(userData, WATERMARK_FILE))).toBe(false)
   })
 })
+
+// MEM-F1 (1.54.5), through the real wiring and real files: the agent's transcript above the 8 MiB budget keeps growing
+// between drain passes. A drain episode reads it once; the drain passes go on to the file behind it and the drain ends.
+describe('a drain episode over a growing transcript (real files)', () => {
+  function setup() {
+    const dir = join(projects, 'live')
+    mkdirSync(dir, { recursive: true })
+    const active = join(dir, 'a-active.jsonl')
+    writeFileSync(active, sessionText('live', 2) + JSON.stringify({ type: 'summary', summary: 'x'.repeat(9 * MIB) }) + '\n')
+    const grow = (n: number): void => appendFileSync(active, lines(userLine(`ask ${n}`, { sessionId: 'live', cwd: '/r' }), assistantLine(`step ${n} done`)))
+    return { dir, active, grow }
+  }
+
+  async function drainScenario(over: Record<string, unknown>) {
+    const { dir, grow } = setup()
+    configure(over)
+    const m = store()
+    await run(m) // warm: everything marked
+    grow(-1)
+    writeFileSync(join(dir, 'z-behind.jsonl'), sessionText('behind', 2))
+    const k = counters()
+    const drain = makeDrainRun({
+      memory: () => m, isLocked: async () => false, persist: async () => {}, stopped: () => false,
+      ingest: (memory, opts) => runConversationIngest(memory, { roots: { claude: projects }, sources: ['claude'], ...opts }),
+    })
+    let result = passResult(await run(m, { maxChunks: 250 })) // the pass that starts the episode
+    const opens: number[] = [k.c.open]
+    let passes = 0
+    while (result.more && passes < 6) {
+      grow(passes)
+      k.reset()
+      const next = await drain({ drainPass: ++passes })
+      opens.push(k.c.open)
+      result = { written: next.written, more: next.more === true }
+    }
+    k.restore()
+    return { result, passes, opens, behindKnown: [...m.known].length }
+  }
+
+  it('the drain reaches the file behind and ends; no drain pass re-opens the growing file', async () => {
+    const { result, passes, opens } = await drainScenario({})
+    expect(result.more).toBe(false)
+    expect(passes).toBeLessThanOrEqual(2)
+    expect(opens[0]).toBe(1) // the starting pass: the growing file, then the budget is spent
+    expect(opens.slice(1).reduce((a, b) => a + b, 0)).toBe(1) // the drain: only the file behind
+  })
+
+  it('control (TERMPOLIS_INGEST_FAST=off): no episode, as in 1.54.4', () => {
+    configure({ env: { TERMPOLIS_INGEST_FAST: 'off' } })
+    expect(getIngestRuntime()?.drainEpisode).toBeUndefined()
+  })
+})

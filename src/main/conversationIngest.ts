@@ -360,6 +360,8 @@ export interface IngestStats {
   truncated: boolean    // a cap, the byte budget or a stop halted this pass early — backlog remains for the next run
   /** Sessions another computer started over Linked machines, left out. Absent when there were none. */
   delegatedSkipped?: number
+  /** Changed files a drain pass left for the next episode because this episode already read them (MEM-F1). Absent when none. */
+  episodeSkipped?: number
   /** Files passed over untouched because the watermark says they were completely ingested at this size and time. Present when a watermark was given. */
   unchanged?: number
   /** Files this pass vouched for (marked complete, or known to be another computer's). A pass that stopped at its byte budget without marking one got nowhere. Present when a watermark was given. */
@@ -489,6 +491,12 @@ export interface IngestDeps {
   onPass?: (metrics: PassMetrics) => void
   /** Which follow-up of a drain this pass is (reported back in PassMetrics). */
   drainPass?: number
+  /** v1.54.5 (MEM-F1): the files this drain episode has read (the pass that started it, and every drain pass since).
+   *  A DRAIN pass passes over a file in it, and every pass adds the files it read whole. An agent's transcript that is
+   *  still growing changes between two drain passes; read again each time, a big one took the whole byte budget, was
+   *  marked (progress), asked for one more pass and starved every file behind it, every 3 s for as long as the agent
+   *  worked. Without it (the kill switch TERMPOLIS_INGEST_FAST=off, tests) every pass reads every changed file. */
+  episode?: Set<string>
 }
 
 // Sources with stable, documented on-disk transcripts.
@@ -818,6 +826,12 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
           metrics.unchanged++
           continue
         }
+        // Read already in this drain episode (it changed since: an agent is still writing it). The next full or fast
+        // pass reads it; a drain pass goes on to the files behind it.
+        if (deps.episode && deps.drainPass !== undefined && deps.episode.has(filePath)) {
+          stats.episodeSkipped = (stats.episodeSkipped ?? 0) + 1
+          continue
+        }
         if (bytesRead >= maxBytes) return stopWith('bytes')
         await waitQuiet()
         if (deps.stopped?.()) return stopWith('stopped')
@@ -825,6 +839,7 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
         const got = await readParsed(source, filePath, stamp)
         if (got === 'stopped') return stopWith('stopped')
         if (got === null) continue
+        deps.episode?.add(filePath)
         bytesRead += got.spent
         metrics.bytes += got.spent
         stats.filesScanned++
@@ -925,6 +940,7 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
           // an explicit user-triggered "index everything").
           if (stats.chunksWritten >= maxChunks) {
             if (!failed && i === chunks.length - 1) await markWritten(written, chunks[0].hash) // the cap fell on this file's last chunk: it is complete
+            else deps.episode?.delete(filePath) // cut short: the next drain pass goes on with it
             return stopWith('chunks')
           }
         }
@@ -1068,6 +1084,10 @@ async function runtimeDeps(
 ): Promise<Partial<IngestDeps>> {
   const base: Partial<IngestDeps> = { onPass: (m) => rt.record(m), drainPass: opts.drainPass }
   if (rt.legacy) return base
+  // A drain episode starts at the pass that is not a drain pass (full, fast or "index everything"), and its drain
+  // passes do not re-read what it already read (MEM-F1).
+  const ep = rt.drainEpisode
+  if (ep && opts.drainPass === undefined) ep.files = new Set()
   // Switched OFF: the pass ends before it touches anything, and that includes our own state file.
   // (openWatermark never rejects: whatever cannot be read is an empty store.)
   const watermark: IngestWatermark | undefined = rt.openWatermark && !pausedNow ? await rt.openWatermark() : undefined
@@ -1080,6 +1100,7 @@ async function runtimeDeps(
     readText: rt.readText,
     readHead: rt.readHead,
     canMark: rt.canMark,
+    episode: ep?.files,
     // A pass that carries a chunk cap is a background pass and gets the byte budget too; the explicit
     // "index everything" has no cap and no budget (it still yields, waits for typing and skips what is done).
     maxBytes: opts.maxBytes ?? (opts.maxChunks !== undefined ? rt.passBytes : undefined),

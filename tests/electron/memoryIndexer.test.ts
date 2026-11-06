@@ -6,6 +6,7 @@ import {
   isIndexing,
   nudgeIndexer,
   _resetIndexerForTests,
+  DEFAULT_MAX_DRAIN_PASSES,
 } from '../../src/main/memoryIndexer'
 import { resetPasses, snapshotPasses } from '../../src/main/passCounters'
 
@@ -172,6 +173,34 @@ describe('drain follow-ups (P4)', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(drainRun).toHaveBeenCalledTimes(2) // caught up: no more follow-ups
     expect(run).toHaveBeenCalledTimes(1) // the corpus walk and the planners ran once, not once per follow-up
+  })
+
+  // MEM-F1 backstop: a drain that keeps asking for more stops after maxDrainPasses; the next full pass takes over.
+  it('a drain that never catches up stops after maxDrainPasses in a row, and says so in the log', async () => {
+    const run = vi.fn().mockResolvedValue({ written: 1, more: true })
+    const drainRun = vi.fn().mockResolvedValue({ written: 1, more: true, note: 'files 1' })
+    const log: string[] = []
+    startIndexer({ run, drainRun, initialDelayMs: 0, intervalMs: 1e9, drainDelayMs: 1000, maxDrainPasses: 3, log: (m) => log.push(m) })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(drainRun).toHaveBeenCalledTimes(3)
+    expect(log[log.length - 1]).toMatch(/drain capped at 3 passes/)
+  })
+
+  it('the cap defaults to DEFAULT_MAX_DRAIN_PASSES, and Infinity (the kill switch) lifts it', async () => {
+    expect(DEFAULT_MAX_DRAIN_PASSES).toBe(400)
+    const run = vi.fn().mockResolvedValueOnce({ written: 1, more: true }).mockResolvedValue({ written: 0 })
+    let n = 0
+    const drainRun = vi.fn(async () => ({ written: 1, more: ++n < 450 }))
+    startIndexer({ run, drainRun, initialDelayMs: 0, intervalMs: 1e9, drainDelayMs: 1, maxDrainPasses: Number.POSITIVE_INFINITY })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(drainRun).toHaveBeenCalledTimes(450)
+    _resetIndexerForTests()
+    n = 0
+    const drain2 = vi.fn(async () => ({ written: 1, more: true }))
+    startIndexer({ run: vi.fn().mockResolvedValueOnce({ written: 1, more: true }), drainRun: drain2, initialDelayMs: 0, intervalMs: 1e9, drainDelayMs: 1 })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(drain2).toHaveBeenCalledTimes(DEFAULT_MAX_DRAIN_PASSES)
   })
 
   // NEGATIVE CONTROL: without a drain tier the follow-ups are the full run again, exactly as before.

@@ -288,7 +288,7 @@ import { memoryUnavailableInfo } from './memoryFallbackGuard'
 import { registerMemoryTraceSources } from './memoryTraceSources'
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
-import { configureConversationIngest, makeDrainRun, passResult } from './ingestRuntime'
+import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult } from './ingestRuntime'
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
@@ -4325,6 +4325,9 @@ async function semanticPoolOptions(
       log: (msg) => console.log(`[mneme] ${msg}`), // nobody could see drain mode before: every pass that did something is logged now
       paused: () => !getLearnFromConversations(), // "Learn from conversations" OFF: no timer starts a pass
       quiet: () => whenTypingQuiet(), // nothing starts within 500 ms of a keystroke (capped at 2 s)
+      // MEM-F1 backstop: a drain stops after DEFAULT_MAX_DRAIN_PASSES in a row. Under TERMPOLIS_INGEST_FAST=off (or with
+      // no runtime) the cap is lifted, as in 1.54.4.
+      maxDrainPasses: getIngestRuntime()?.legacy === false ? undefined : Number.POSITIVE_INFINITY,
       // A pass that hit its cap continues with the incremental tier only (ingest, nothing else), not a whole full pass again.
       drainRun: makeDrainRun({
         memory: ingestMemoryDeps,

@@ -55,6 +55,8 @@ interface IndexerConfig {
   drainRun?: (info: { drainPass: number }) => Promise<RunResult>
   log?: (msg: string) => void
   drainDelayMs: number
+  /** Most drain passes in a row (MEM-F1 backstop); the next full pass takes over after. Infinity: no cap. */
+  maxDrainPasses: number
   paused?: () => boolean
   quiet?: () => Promise<unknown>
 }
@@ -62,6 +64,10 @@ interface IndexerConfig {
 const DEFAULT_INTERVAL_MS = 30 * 60_000 // every 30 min, like a quiet autosync
 const DEFAULT_INITIAL_DELAY_MS = 10_000 // 10s after launch, once the app settles
 const DEFAULT_DRAIN_DELAY_MS = 3_000 // when a pass hit its cap, continue draining soon — not in 30 min
+/** v1.54.5 (MEM-F1): a backstop on one drain episode, 400 passes (about 3 GB at the 8 MiB pass budget, some 20 min at
+ *  one pass every 3 s). A drain that is still asking for more after that is not draining a backlog: it is chasing
+ *  something that keeps changing, and the 30-minute full pass is soon enough for it. TERMPOLIS_INGEST_FAST=off lifts it. */
+export const DEFAULT_MAX_DRAIN_PASSES = 400
 const DEFAULT_NUDGE_MS = 5_000 // after the "Learn from conversations" switch goes back ON
 
 const TIER_NUMBER: Record<Tier, number> = { full: 0, fast: 1, drain: 2 }
@@ -118,6 +124,9 @@ async function runTier(tier: Tier): Promise<IndexRunResult> {
     if (tier === 'drain') {
       drainPasses++
       r = await (runner as NonNullable<IndexerConfig['drainRun']>)({ drainPass: drainPasses })
+      if (r.more && drainPasses >= cfg.maxDrainPasses) {
+        r = { ...r, more: false, note: `${r.note ? `${r.note} ` : ''}drain capped at ${cfg.maxDrainPasses} passes` }
+      }
     } else {
       r = await (runner as () => Promise<RunResult>)()
     }
@@ -188,6 +197,8 @@ export function startIndexer(
     fastIntervalMs?: number
     initialDelayMs?: number
     drainDelayMs?: number
+    /** Most drain passes in a row (default DEFAULT_MAX_DRAIN_PASSES; Infinity lifts the cap). */
+    maxDrainPasses?: number
     /** The governor's registry (tests inject one; the app uses the process-wide one). */
     shedRegistry?: ShedRegistry
   },
@@ -205,6 +216,7 @@ export function startIndexer(
     paused: cfg.paused,
     quiet: cfg.quiet,
     drainDelayMs: cfg.drainDelayMs ?? DEFAULT_DRAIN_DELAY_MS,
+    maxDrainPasses: cfg.maxDrainPasses ?? DEFAULT_MAX_DRAIN_PASSES,
   }
   initial = setTimeout(() => void scheduledTick(), cfg.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS)
   interval = setInterval(() => void scheduledTick(), cfg.intervalMs ?? DEFAULT_INTERVAL_MS)

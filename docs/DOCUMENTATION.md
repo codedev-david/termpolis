@@ -917,7 +917,7 @@ Every one of these mechanisms has a switch that puts back the 1.54.4 behaviour, 
 - `TERMPOLIS_NO_HOST_PRIORITY=1`: the background hosts (memory, proxy) keep normal process priority.
 - `TERMPOLIS_TYPING_TRACE=0`: the keystroke-to-echo trace is off and adds nothing.
 - `TERMPOLIS_MEMORY_INPROC_GUARD=off`: the old in-process memory fallback, whatever the store size (`TERMPOLIS_MEMORY_INPROC_MAX_MB` moves the 256 MB limit instead).
-- `TERMPOLIS_INGEST_FAST=off`: conversation ingest reads whole files and the whole corpus each pass, as before.
+- `TERMPOLIS_INGEST_FAST=off`: conversation ingest reads whole files and the whole corpus each pass, as before. It also lets a drain re-read a transcript that is still growing on every follow-up, with no cap on the number of follow-ups (by default a drain reads a file once and stops after 400 follow-ups).
 - `TERMPOLIS_REFLECT_FAST=off`: learning from an agent session reads its whole transcript, as before.
 - `TERMPOLIS_SCOPED_WATCH=0`: one plain recursive file watch per repository again, with no storm limit.
 - `TERMPOLIS_SYNC_WORKFLOW_LIST=1`: the workflow list and triggers of the active terminal's project are read in the main process again on each `cd` and tab switch.

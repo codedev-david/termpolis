@@ -53,6 +53,8 @@ export interface IngestRuntime {
   readonly quiet?: () => Promise<unknown>
   readonly canMark?: () => Promise<boolean>
   readonly record: (metrics: PassMetrics) => void
+  /** The files the current drain episode has read (MEM-F1): a pass that is not a drain pass starts a new one. */
+  readonly drainEpisode?: { files: Set<string> }
 }
 
 export interface IngestRuntimeConfig {
@@ -115,6 +117,7 @@ export function configureConversationIngest(cfg: IngestRuntimeConfig): void {
     legacy: false,
     paused,
     passBytes: INGEST_PASS_BYTES,
+    drainEpisode: { files: new Set() },
     sliceMs: INGEST_SLICE_MS,
     // Opened (read from disk) once, on the first pass; every pass shares the one object.
     openWatermark: () => (opened ??= openWatermark(fileWatermarkIO(join(cfg.userData, WATERMARK_FILE)), stamp)),
@@ -141,6 +144,7 @@ export function passResult(stats: IngestStats): { written: number; more: boolean
   if (busy && stats.unchanged !== undefined) {
     note = `files ${stats.filesScanned} skipped ${stats.unchanged}`
     if (stats.bytesRead !== undefined) note += ` ${round(stats.bytesRead / MIB, 1).toFixed(1)} MB`
+    if (stats.episodeSkipped) note += ` held ${stats.episodeSkipped}`
     if (stats.stop === 'bytes') note += ' (byte budget)'
     else if (stats.stop === 'chunks') note += ' (chunk cap)'
   }
