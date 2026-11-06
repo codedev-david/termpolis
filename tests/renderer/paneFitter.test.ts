@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   createPaneFitter,
-  MIN_FIT_COLS,
-  MIN_FIT_ROWS,
+  DEGENERATE_COLS,
+  DEGENERATE_ROWS,
+  UNMEASURED_RETRY_FRAMES,
   SELECTION_DEFER_CAP_MS,
   SELECTION_RETRY_MS,
+  type PaneFitter,
   type PaneFitterDeps,
 } from '../../src/renderer/src/lib/paneFitter'
 import { RESIZE_DRAIN_CAP_MS } from '../../src/renderer/src/lib/resizeInStreamOrder'
@@ -16,7 +18,9 @@ import { RESIZE_DRAIN_CAP_MS } from '../../src/renderer/src/lib/resizeInStreamOr
 //     too, 5 to 69 ms of reflow each plus a conhost repaint and an agent redraw (needsFit remembers it;
 //     the visibility effect fits on show)
 //   - not while a selection is active, for at most SELECTION_DEFER_CAP_MS (it used to be for ever)
-//   - never to a grid under the floor (a collapsed container: FitAddon answers 2 x 1)
+//   - never to a degenerate grid (a 0 px container: FitAddon answers 2 x 1), but to any real one, small or not
+//   - a pane whose pty was never told a size is fitted once even while hidden (RZ-2)
+//   - an unmeasurable proposal keeps the fit owed and is retried on the next frames (RZ-3)
 //   - in stream order (resizeInStreamOrder), and `try { fit() } finally { tell the pty }`
 //   - never dropping a same-size resize: conhost repaints the viewport on every resize, even to the
 //     same size, and that repaint is the only thing that heals a replayed pane
@@ -125,11 +129,21 @@ describe('paneFitter', () => {
     })
   })
 
+  // A pane that has told its pty a size once (the usual case: it was visible at some point).
+  function sizedThenHidden(r: Rig): PaneFitter {
+    const f = createPaneFitter(r.deps)
+    f.request()
+    expect(r.sent).toEqual([[100, 30]])
+    r.log.length = 0
+    r.sent.length = 0
+    r.s.visible = false
+    return f
+  }
+
   describe('a hidden pane', () => {
     it('is not fitted (no reflow, no pty resize, no repaint), and remembers it owes a fit', () => {
       const r = rig()
-      r.s.visible = false
-      const f = createPaneFitter(r.deps)
+      const f = sizedThenHidden(r)
       f.request()
       f.request()
       f.request()
@@ -140,13 +154,40 @@ describe('paneFitter', () => {
 
     it('fits when asked again once it is shown, and then owes nothing', () => {
       const r = rig()
-      r.s.visible = false
-      const f = createPaneFitter(r.deps)
+      const f = sizedThenHidden(r)
+      r.s.proposal = { cols: 90, rows: 20 }
       f.request()
       r.s.visible = true
       f.request()
-      expect(r.sent).toEqual([[100, 30]])
+      expect(r.sent).toEqual([[90, 20]])
       expect(f.needsFit).toBe(false)
+    })
+
+    it('RZ-2: a pane hidden from mount (its pty never told a size) is fitted ONCE while hidden, then waits for the show', () => {
+      const r = rig()
+      r.s.visible = false
+      const f = createPaneFitter(r.deps)
+      for (let i = 0; i < 5; i++) f.request() // the mount fit, then window resizes while the tab stays in the background
+      expect(r.sent).toEqual([[100, 30]]) // the agent draws at the real width, not the spawn size of 80 x 24
+      expect(r.log.filter((x) => x === 'fit').length).toBe(1)
+      expect(f.needsFit).toBe(true) // the later requests are owed for the show
+    })
+
+    it('RZ-2: a hidden-from-mount pane that cannot be measured is left owing the fit, with no frame loop', () => {
+      const r = rig()
+      const frames: Array<() => void> = []
+      r.deps.nextFrame = (cb) => { frames.push(cb); return () => {} }
+      r.s.visible = false
+      r.s.proposal = undefined
+      const f = createPaneFitter(r.deps)
+      f.request()
+      expect(r.sent).toEqual([])
+      expect(frames.length).toBe(0) // the show asks again; a hidden pane does not spin
+      expect(f.needsFit).toBe(true)
+      r.s.visible = true
+      r.s.proposal = { cols: 100, rows: 30 }
+      f.request()
+      expect(r.sent).toEqual([[100, 30]])
     })
 
     it('NEGATIVE CONTROL: the same pane, visible, fits on every request', () => {
@@ -160,8 +201,9 @@ describe('paneFitter', () => {
 
     it('hidden while the resize waited in line: the fit is skipped when it comes up, and owed', () => {
       const r = rig()
+      const f = sizedThenHidden(r)
+      r.s.visible = true
       r.s.throttlePending = 100_000
-      const f = createPaneFitter(r.deps)
       f.request()
       r.s.visible = false
       r.s.throttlePending = 0
@@ -240,7 +282,7 @@ describe('paneFitter', () => {
     })
   })
 
-  describe('floors: a collapsed container never reaches the pty', () => {
+  describe('floor: a 0 px container never reaches the pty, a small pane does', () => {
     it('keeps the last good size when FitAddon proposes 2 x 1 (a zero-size container)', () => {
       const r = rig()
       r.s.proposal = { cols: 2, rows: 1 }
@@ -250,11 +292,12 @@ describe('paneFitter', () => {
     })
 
     it.each([
-      [MIN_FIT_COLS - 1, 30, false],
-      [MIN_FIT_COLS, MIN_FIT_ROWS, true],
-      [120, MIN_FIT_ROWS - 1, false],
-      [120, MIN_FIT_ROWS, true],
-      [10, 34, false], // a 10% split pane of a 1200 px window
+      [DEGENERATE_COLS, 30, false],
+      [120, DEGENERATE_ROWS, false],
+      [DEGENERATE_COLS + 1, DEGENERATE_ROWS + 1, true],
+      [120, 4, true], // RZ-1: a pane shrunk to 4 visible rows gets a 4-row grid, so its input box is not clipped
+      [19, 30, true],
+      [10, 34, true], // a 10% split pane of a 1200 px window is a real layout
     ])('a proposal of %i x %i fits: %s', (cols, rows, fits) => {
       const r = rig()
       r.s.proposal = { cols, rows }
@@ -263,11 +306,97 @@ describe('paneFitter', () => {
       if (fits) expect(r.sent[0]).toEqual([cols, rows])
     })
 
-    it('a proposal it cannot read (undefined: nothing measured yet, a hidden element) goes ahead as before', () => {
+    it('the termpolis.fitFloor switch (floor: false) declines nothing, as 1.54.4', () => {
+      const r = rig({ floor: false })
+      r.s.proposal = { cols: 2, rows: 1 }
+      createPaneFitter(r.deps).request()
+      expect(r.sent).toEqual([[2, 1]])
+    })
+  })
+
+  describe('RZ-3: a proposal xterm cannot measure yet (undefined, just after a content-visibility show)', () => {
+    function framed(r: Rig): { frames: Array<() => void>; cancelled: () => number } {
+      const frames: Array<() => void> = []
+      let cancelled = 0
+      r.deps.nextFrame = (cb) => {
+        frames.push(cb)
+        return () => { cancelled++ }
+      }
+      return { frames, cancelled: () => cancelled }
+    }
+
+    it('keeps the fit owed, does not tell the pty the stale size, and fits on the next frame once measurable', () => {
+      const r = rig()
+      const { frames } = framed(r)
+      r.s.proposal = undefined
+      const f = createPaneFitter(r.deps)
+      f.request()
+      expect(r.sent).toEqual([]) // it used to send [80, 24] and clear needsFit
+      expect(f.needsFit).toBe(true)
+      expect(frames.length).toBe(1)
+      r.s.proposal = { cols: 100, rows: 30 }
+      frames.shift()!()
+      expect(r.sent).toEqual([[100, 30]])
+      expect(f.needsFit).toBe(false)
+      expect(frames.length).toBe(0)
+    })
+
+    it('retries for at most UNMEASURED_RETRY_FRAMES frames, then waits for the next request', () => {
+      const r = rig()
+      const { frames } = framed(r)
+      r.s.proposal = undefined
+      const f = createPaneFitter(r.deps)
+      f.request()
+      let ran = 0
+      while (frames.length > 0 && ran < 100) { frames.shift()!(); ran++ }
+      expect(ran).toBe(UNMEASURED_RETRY_FRAMES)
+      expect(r.sent).toEqual([])
+      expect(f.needsFit).toBe(true)
+      f.request() // the next resize or show gets the whole allowance again
+      expect(frames.length).toBe(1)
+    })
+
+    it('cancel() drops a pending frame', () => {
+      const r = rig()
+      const { cancelled } = framed(r)
+      r.s.proposal = undefined
+      const f = createPaneFitter(r.deps)
+      f.request()
+      f.cancel()
+      expect(cancelled()).toBe(1)
+    })
+
+    it('with no nextFrame given it uses requestAnimationFrame, or a timer where there is none', () => {
       const r = rig()
       r.s.proposal = undefined
       createPaneFitter(r.deps).request()
-      expect(r.sent).toEqual([[80, 24]])
+      r.s.proposal = { cols: 100, rows: 30 }
+      vi.advanceTimersByTime(50)
+      expect(r.sent).toEqual([[100, 30]])
+    })
+
+    it.each([true, false])('the default frame can be cancelled (requestAnimationFrame present: %s)', (hasRaf) => {
+      if (!hasRaf) {
+        vi.stubGlobal('requestAnimationFrame', undefined)
+        vi.stubGlobal('cancelAnimationFrame', undefined)
+      }
+      try {
+        const r = rig()
+        r.s.proposal = undefined
+        const f = createPaneFitter(r.deps)
+        f.request()
+        f.cancel()
+        r.s.proposal = { cols: 100, rows: 30 }
+        vi.advanceTimersByTime(50)
+        expect(r.sent).toEqual([]) // the cancelled frame never ran
+        if (!hasRaf) {
+          f.request()
+          vi.advanceTimersByTime(20)
+          expect(r.sent).toEqual([[100, 30]]) // the timer fallback runs it
+        }
+      } finally {
+        vi.unstubAllGlobals()
+      }
     })
 
     it('a FitAddon double with no proposeDimensions at all goes ahead as before', () => {

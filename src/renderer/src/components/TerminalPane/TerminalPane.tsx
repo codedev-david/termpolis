@@ -9,7 +9,7 @@ import { getTheme } from '../../themes/terminalThemes'
 import { createPaneOutput } from '../../lib/paneOutput'
 import { createChunkQueue } from '../../lib/chunkQueue'
 import { holdOutput, holdOutputLegacy, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
-import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER, SWITCH_HIDDEN_PANES, SWITCH_PANE_EFFECTS } from '../../lib/paneSwitches'
+import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER, SWITCH_FIT_FLOOR, SWITCH_HIDDEN_PANES, SWITCH_PANE_EFFECTS } from '../../lib/paneSwitches'
 import { paneRootStyle } from '../../lib/paneHiding'
 import { createPaneEffects, trackPaneEffects, paneEffectsSnapshot, type PaneEffects } from '../../lib/paneSideEffects'
 import { subscribeTerminalOutput } from '../../lib/paneRouting'
@@ -1763,8 +1763,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     const untrackEffects = paneEffects ? trackPaneEffects(terminalId, paneEffects) : null
 
     // 1.54.5: the fit happens in stream order (the output ahead of it is parsed at the size it was
-    // drawn for), only while the pane is visible, never to a collapsed grid, and the pty is told even
-    // if fit() throws. The body below is the 1.54.4 fit, kept for the kill switch.
+    // drawn for), only while the pane is visible (a pane mounted hidden is fitted once, so its pty gets
+    // its real size), never to a 0 px container's grid, and the pty is told even if fit() throws. The body below is the 1.54.4 fit, kept for the kill switch.
     const fitter = ordered
       ? createPaneFitter({
           isDisposed: () => disposed,
@@ -1777,6 +1777,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           term,
           addon: fitAddon,
           send: (cols, rows) => window.termpolis.resizeTerminal(terminalId, cols, rows),
+          floor: switchEnabled(SWITCH_FIT_FLOOR),
         })
       : null
     fitterRef.current = fitter

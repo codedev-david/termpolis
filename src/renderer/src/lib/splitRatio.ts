@@ -5,14 +5,13 @@ import { switchEnabled, SWITCH_RESIZE_ORDER } from './paneSwitches'
  *
  * The divider only ever clamped its ratio to 10%..90%: a 10% pane of a 1200 px window is about 12
  * columns, and a TUI repainted at that width writes a long, narrow frame into the scrollback and the
- * retained window. The pane's own fit already declines a grid under MIN_FIT_COLS x MIN_FIT_ROWS (see
- * paneFitter.ts); this stops a drag from making one.
+ * retained window. This stops a drag from making a pane under MIN_FIT_COLS x MIN_FIT_ROWS (paneFitter.ts).
  *
  * In pixels, at the default 14 px font (a cell is about 8.5 x 17 px): 20 columns plus the pane's 4 px
  * padding on each side and xterm's 14 px scrollbar reserve is about 192, and a split pane's 28 px header
  * bar plus 5 rows plus padding is about 121; both get a little room on top. The font can be larger than
- * that; then a pane can still end up under the floor, and its fit is declined (the pty keeps its last
- * good size, the pane is clipped).
+ * that; then a pane can still end up smaller, and it is fitted to what it shows (only a 0 px container's
+ * 2 x 1 grid is declined by the fit).
  */
 export const MIN_PANE_WIDTH_PX = 210
 export const MIN_PANE_HEIGHT_PX = 135

@@ -256,7 +256,8 @@ describe('TerminalPane resize: real xterm, real FitAddon, real output throttle',
     await mount([['a', true], ['b', false]])
     await settle(500)
     expect(size('a')).toEqual({ cols: term(0).cols, rows: term(0).rows })
-    expect(size('b')).toEqual({ cols: 80, rows: 24 }) // never fitted: hidden
+    expect(size('b')).toEqual({ cols: term(1).cols, rows: term(1).rows }) // fitted once at mount, hidden (RZ-2)
+    expect(term(1).cols).toBeGreaterThan(100) // the real container, not the spawn size of 80 x 24
     expect(size('nope')).toBeNull()
     expect(size()).not.toBeNull() // no id: the terminal on screen (jsdom has no visibility API: the first live one)
     act(() => { cleanup() })
@@ -333,17 +334,20 @@ describe('TerminalPane resize: real xterm, real FitAddon, real output throttle',
       expect([sizeOf(term(1)), sizeOf(term(2))]).toEqual(hiddenBefore) // the hidden panes did not reflow
     })
 
-    it('a hidden pane is never told a size while it is hidden; shown, it fits once, to the size the container has by then', async () => {
+    it('a pane hidden from mount is told its real size once (RZ-2), then nothing while hidden; shown, it fits to the container it has by then', async () => {
       await mount([['a', true], ['b', false]])
       await settle(500)
+      const atMount = sizeOf(term(1))
+      expect(sentFor('b')).toEqual([atMount]) // once, after the replay: its agent draws at the real width, not 80 x 24
+      expect(atMount[0]).toBeGreaterThan(100)
       defaultLayout = { width: 800, height: 500 }
       fireObservers()
       await settle(300)
-      expect(sentFor('b')).toEqual([]) // hidden: no reflow, no pty resize, no conhost repaint, no agent redraw
-      expect(sizeOf(term(1))).toEqual([80, 24]) // and its grid still agrees with its pty, which was never moved
+      expect(sentFor('b')).toEqual([atMount]) // hidden: no reflow, no pty resize, no conhost repaint, no agent redraw
+      expect(sizeOf(term(1))).toEqual(atMount) // and its grid still agrees with its pty
       await remount([['a', true], ['b', true]])
       await settle(50)
-      expect(sentFor('b')).toEqual([sizeOf(term(1))])
+      expect(sentFor('b')).toEqual([atMount, sizeOf(term(1))])
       expect(term(1).cols).toBeLessThan(100) // fitted to the 800 px container, not the 1000 px it had at mount
     })
 

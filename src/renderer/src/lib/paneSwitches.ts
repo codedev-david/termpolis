@@ -14,6 +14,9 @@ export const SWITCH_OUTPUT_CHUNKS = 'termpolis.outputChunks'
 /** Resize: fit and tell the pty at once, as 1.54.4 did (no drain barrier, no mount hold, no visible-only fits, no floors). */
 export const SWITCH_RESIZE_ORDER = 'termpolis.resizeOrder'
 
+/** Resize: the fit declines nothing, not even a 0 px container's 2 x 1 grid (the rest of the resize order stays on). */
+export const SWITCH_FIT_FLOOR = 'termpolis.fitFloor'
+
 /**
  * Write scheduler: '0' gives every pane its own output throttle again (the chunk-list one of 1.54.5) instead of
  * the renderer's one write scheduler, which serves the focused terminal first, bounds what xterm holds per

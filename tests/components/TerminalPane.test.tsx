@@ -4171,14 +4171,17 @@ describe('TerminalPane', () => {
       vi.useFakeTimers()
       try {
         const { rerender } = render(<TerminalPane {...defaultProps} isVisible={false} />)
-        // The mount's replay reply lands first (the pane holds every fit until it has: 1.54.5), and a
-        // hidden pane is not fitted or resized at all: the pty is told nothing until it is shown.
+        // The mount's replay reply lands first (the pane holds every fit until it has: 1.54.5). A pane
+        // hidden from mount is fitted once so its pty gets a size (RZ-2), and then not again while hidden.
         await act(async () => {})
         vi.advanceTimersByTime(200)
-        expect(mockResizeTerminal).not.toHaveBeenCalled()
+        expect(mockResizeTerminal).toHaveBeenCalledTimes(1)
+        vi.advanceTimersByTime(1000)
+        expect(mockResizeTerminal).toHaveBeenCalledTimes(1)
         rerender(<TerminalPane {...defaultProps} isVisible={true} />)
         vi.advanceTimersByTime(10)
-        expect(mockResizeTerminal).toHaveBeenCalledWith('term-1', 80, 24)
+        expect(mockResizeTerminal).toHaveBeenCalledTimes(2)
+        expect(mockResizeTerminal).toHaveBeenLastCalledWith('term-1', 80, 24)
       } finally {
         vi.useRealTimers()
       }
