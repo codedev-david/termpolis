@@ -909,6 +909,23 @@ On a system without pkexec, Termpolis asks through `sudo -A` and its own passwor
 
 **Terminal scrollback is sluggish.** The default xterm scrollback is 10,000 lines. If you've pasted very large logs, scrolling slows down. Press `Ctrl+Shift+X` (Clear Terminal) to wipe the active terminal's screen and scrollback without restarting it.
 
+**Typing while Termpolis works in the background (1.54.5 and later).** What is guaranteed: typing never waits on background work. Starting processes, reading files and indexing stay off the thread that echoes your keys; bursts of terminal output and of file-watch events are rate-limited; background work (memory indexing, transcript ingest, file-watch restarts, git checks for workflow triggers, update checks) pauses while the app is busy and resumes when it is calm; the memory host never moves onto the typing thread, even when it fails to start; and **Settings → Learn from conversations** can be switched off. What is not guaranteed: the operating system or an antivirus scanner (such as Microsoft Defender) can still slow the whole machine, and Termpolis cannot reserve RAM for itself. The setting reads: *"On by default. Termpolis reads your past Claude Code, Codex and Gemini conversations in the background and stores them as searchable memory. Turn it off to stop that reading completely, for example to rule it out while you are chasing a slowdown. Nothing is deleted and memory search keeps working; it just stops adding. Turning it back on picks up where it left off."*
+
+Every one of these mechanisms has a switch that puts back the 1.54.4 behaviour, for ruling it out while you chase a problem. Environment variables are read where Termpolis starts:
+
+- `TERMPOLIS_NO_GOVERNOR=1`: no busy watchdog; nothing ever pauses.
+- `TERMPOLIS_NO_HOST_PRIORITY=1`: the background hosts (memory, proxy) keep normal process priority.
+- `TERMPOLIS_TYPING_TRACE=0`: the keystroke-to-echo trace is off and adds nothing.
+- `TERMPOLIS_MEMORY_INPROC_GUARD=off`: the old in-process memory fallback, whatever the store size (`TERMPOLIS_MEMORY_INPROC_MAX_MB` moves the 256 MB limit instead).
+- `TERMPOLIS_INGEST_FAST=off`: conversation ingest reads whole files and the whole corpus each pass, as before.
+- `TERMPOLIS_REFLECT_FAST=off`: learning from an agent session reads its whole transcript, as before.
+- `TERMPOLIS_SCOPED_WATCH=0`: one plain recursive file watch per repository again, with no storm limit.
+- `TERMPOLIS_DISABLE_RESIZE_FLUSH=1`: no output flush before a terminal resize.
+- `TERMPOLIS_TERMINAL_DATA_ROUTING=0`: every terminal's output is sent to the window, shown or not.
+- `TERMPOLIS_DISABLE_PHONE_RESYNC=1` and `TERMPOLIS_DISABLE_FLATTENER_PARITY=1`: the phone bridge as before.
+
+Window switches are `localStorage` keys set to `0` (for example from the developer tools console), then reload the window: `termpolis.outputChunks` (the old output buffer, which also turns off the write scheduler), `termpolis.writeScheduler` (a separate output throttle per pane), `termpolis.resizeOrder` (fit and resize at once), `termpolis.hiddenPanes` (hidden panes keep rendering), `termpolis.dataRouting` (one output listener per pane) and `termpolis.paneEffects` (the per-chunk work runs for every chunk).
+
 ### Session corruption & reset
 
 **App opens to a blank screen.** Sign of a broken `session.json`. Close Termpolis, rename `session.json` in the data directory, relaunch — the app creates a fresh session. Your workspaces will be empty but the app is usable again; the old file is preserved if you want to diff it later.
