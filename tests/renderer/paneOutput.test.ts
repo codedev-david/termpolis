@@ -191,6 +191,7 @@ describe('the kill switches give every pane its own output throttle again', () =
     expect(counted).toEqual([5])
     out.typed('k')
     out.detach()
+    expect(out.discard()).toBe(0) // a Clear drops nothing on the throttle path (1.54.4)
     expect(out.pending()).toBe(0)
     expect(getWriteScheduler().stats().panes).toBe(0) // the scheduler never heard of it
   })

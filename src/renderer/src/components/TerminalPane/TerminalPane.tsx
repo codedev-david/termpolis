@@ -6,7 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
-import { createPaneOutput } from '../../lib/paneOutput'
+import { createPaneOutput, type PaneOutput } from '../../lib/paneOutput'
 import { createChunkQueue } from '../../lib/chunkQueue'
 import { holdOutput, holdOutputLegacy, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
 import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER, SWITCH_FIT_FLOOR, SWITCH_HIDDEN_PANES, SWITCH_PANE_EFFECTS } from '../../lib/paneSwitches'
@@ -367,6 +367,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // This mount's per-pass side effects (paneSideEffects.ts), so the visibility effect can run the pending pass the moment
   // the pane is shown; and whether an inactive pane also skips its rendering (read once, when the pane mounts).
   const paneEffectsRef = useRef<PaneEffects | null>(null)
+  // This mount's output path, so a Clear can drop what is still queued for the screen it just cleared.
+  const paneOutputRef = useRef<PaneOutput | null>(null)
   const [skipHiddenRender] = useState(() => switchEnabled(SWITCH_HIDDEN_PANES))
   // The current mount's count of history writes still being parsed (see writeHistory) — so a
   // Clear's mode restore, made outside the mount effect, is counted where onData looks.
@@ -834,6 +836,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // paste bug v1.51.3 fixed). Main hands back the modes the cleared output left, from the
   // same step as the clear, and they go straight back on after the reset.
   const handleClearTerminal = useCallback(async () => {
+    // What is still queued for this screen when Clear is pressed is output from before the Clear: with the write
+    // scheduler a busy pane can hold a lot of it, and it used to be drawn onto the cleared screen. Dropped first,
+    // before the round trip to main, so output that arrives after main's clear is not lost with it.
+    paneOutputRef.current?.discard()
     let preamble = ''
     try {
       const res = await window.termpolis.clearTerminalBuffer(terminalId)
@@ -1525,6 +1531,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       isVisible: () => isVisibleRef.current,
       isActive: () => useTerminalStore.getState().activeTerminalId === terminalId,
     })
+    paneOutputRef.current = throttledWrite
     // Until this mount's replay lands, live output goes straight into xterm's own (ordered)
     // write queue rather than through the throttle: if the replay then has to be laid in behind
     // it (landReplay), nothing can still be sitting in the throttle to land after the replay.
@@ -1880,6 +1887,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       paneEffectsRef.current = null
       echo.detach()
       throttledWrite.detach() // the write scheduler stops handing output to this pane's xterm
+      if (paneOutputRef.current === throttledWrite) paneOutputRef.current = null
       promptParse.cancel()
       selectionChangeDisposable.dispose()
       document.removeEventListener('mouseup', handleDocumentMouseUp)

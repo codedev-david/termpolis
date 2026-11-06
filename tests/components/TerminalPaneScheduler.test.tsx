@@ -445,6 +445,33 @@ describe('TerminalPane output through the write scheduler: real xterm, real sche
   })
 
   // ---------------------------------------------------------------------------------------------
+  describe('Clear (RZ-4)', () => {
+    it("drops what is still queued for the pane, so the old output is not drawn onto the cleared screen; output after the Clear arrives", async () => {
+      await mount([['a', true]])
+      await settle(500)
+      await act(async () => {
+        dataCbs[0]('a', 'y'.repeat(3_000_000) + '\r\nBEFORE-CLEAR\r\n') // far more than one pass hands over
+        window.dispatchEvent(new CustomEvent('termpolis:clear-terminal', { detail: 'a' }))
+      })
+      await settle(2000)
+      expect(sched().discardedChars).toBeGreaterThan(0)
+      expect(sched().queuedChars).toBe(0)
+      expect(bufferLines(term()).join('\n')).not.toContain('BEFORE-CLEAR')
+      await act(async () => { dataCbs[0]('a', 'AFTER-CLEAR\r\n') })
+      await settle(200)
+      expect(bufferLines(term())).toContain('AFTER-CLEAR')
+    })
+
+    it('NEGATIVE CONTROL: the same backlog with no Clear is drawn in full', async () => {
+      await mount([['a', true]])
+      await settle(500)
+      await act(async () => { dataCbs[0]('a', 'y'.repeat(3_000_000) + '\r\nBEFORE-CLEAR\r\n') })
+      await settle(2000)
+      expect(sched().discardedChars).toBe(0)
+      expect(bufferLines(term())).toContain('BEFORE-CLEAR')
+    })
+  })
+
   describe('typing', () => {
     it("a key typed into a pane is noted by the scheduler; the terminal's own reports are not keys", async () => {
       await mount([['a', true]])

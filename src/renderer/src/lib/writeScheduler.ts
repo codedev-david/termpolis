@@ -167,6 +167,8 @@ export type PaneWriter = ((data: string) => void) & {
   typed: (data?: string) => void
   /** The pane is gone: its queue is dropped and nothing more is handed to its terminal. */
   detach: () => void
+  /** The user cleared the terminal: drop what is queued here and not yet handed to xterm (the pane stays attached). Returns the chars dropped. */
+  discard: () => number
 }
 
 export interface SchedulerStats {
@@ -192,6 +194,8 @@ export interface SchedulerStats {
   drops: number
   /** Keystrokes noted. */
   keys: number
+  /** Chars dropped from a queue because the user cleared that terminal. */
+  discardedChars: number
   /** Chars queued here now, and chars in flight now. */
   queuedChars: number
   inflightChars: number
@@ -312,7 +316,7 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
 
   const counters = {
     ticks: 0, handoffs: 0, handedChars: 0, ackedChars: 0, fastPath: 0, rationedPasses: 0, timerTicks: 0, starveServes: 0,
-    ackTimeouts: 0, refusals: 0, drops: 0, keys: 0,
+    ackTimeouts: 0, refusals: 0, drops: 0, keys: 0, discardedChars: 0,
   }
   const maxInflight: Record<PaneClass, number> = { focused: 0, visible: 0, hidden: 0 }
 
@@ -701,6 +705,21 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
     if (typedId === p.id) typedId = undefined
   }
 
+  /** A Clear: what is queued would be drawn onto the cleared screen. In-flight chunks are xterm's already. */
+  function discardPane(p: PaneState): number {
+    if (p.detached) return 0
+    const n = p.queue.length
+    if (n === 0) return 0
+    p.queue.clear()
+    p.handed += n // gone, and a resize waiting on it must not wait for it
+    p.failures = 0
+    p.retryAt = 0
+    p.waitingSince = 0
+    counters.discardedChars += n
+    settle(p)
+    return n
+  }
+
   function noteKey(id: string, data?: string): void {
     if (data !== undefined && !isUserInput(data)) return
     // Nobody types into a pane that is not on screen: what its xterm sends is the terminal talking (a reply the
@@ -728,6 +747,7 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
       whenDrained: (cb: () => void, maxWaitMs: number): (() => void) => drainedPane(p, cb, maxWaitMs),
       typed: (data?: string): void => noteKey(id, data),
       detach: (): void => detachPane(p),
+      discard: (): number => discardPane(p),
     })
   }
 

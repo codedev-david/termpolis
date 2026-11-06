@@ -1055,6 +1055,29 @@ describe('attach and detach', () => {
     expect(r.sch.stats().panes).toBe(0)
   })
 
+  it('discard (a Clear) drops the queue but not the pane: in-flight chunks stay, a waiting resize is served, later output flows', () => {
+    const r = makeRig()
+    const v = r.add('v', 'visible')
+    v.w(text(300_000))
+    r.clock.frame()
+    const handedBefore = r.sch.stats().handedChars
+    const queued = r.sch.pending('v')
+    expect(queued).toBeGreaterThan(0)
+    let served = 0
+    r.sch.drained('v', () => { served++ }, 1e9)
+    expect(v.w.discard()).toBe(queued)
+    expect(served).toBe(1) // what it waited on is gone: a resize does not wait for it
+    expect(r.sch.stats()).toMatchObject({ panes: 1, queuedChars: 0, discardedChars: queued })
+    expect(v.w.discard()).toBe(0) // nothing left: harmless
+    for (const u of v.t.unacked.splice(0)) u.ack()
+    v.w('after')
+    r.clock.frame()
+    expect(v.t.joined().endsWith('after')).toBe(true)
+    expect(r.sch.stats().handedChars - handedBefore).toBe(5) // nothing of the dropped backlog was handed over
+    v.w.detach()
+    expect(v.w.discard()).toBe(0) // a detached pane has nothing to drop
+  })
+
   it('a pane that mounts again under the same id takes over; the one it replaces goes quiet', () => {
     const r = makeRig()
     const old = r.add('same', 'visible')

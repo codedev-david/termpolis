@@ -36,6 +36,8 @@ export type PaneOutput = OutputThrottle & {
   typed: (data?: string) => void
   /** The pane is going away (a no-op without the scheduler). */
   detach: () => void
+  /** The user cleared the terminal: drop the output queued for it (0 and a no-op without the scheduler, as 1.54.4). */
+  discard: () => number
   /** True when the write scheduler carries this pane's output. */
   readonly scheduled: boolean
 }
@@ -64,7 +66,7 @@ export function createPaneOutput(o: PaneOutputOptions): PaneOutput {
       queue: o.chunked ? createChunkQueue() : createStringQueue(),
       retryRefused: o.chunked,
     })
-    return Object.assign(throttle, { typed: noop, detach: noop, scheduled: false })
+    return Object.assign(throttle, { typed: noop, detach: noop, discard: () => 0, scheduled: false })
   }
   const scheduler = o.scheduler ?? getWriteScheduler()
   // The tap counts what is handed to xterm; the scheduler needs the callback of the same write, which is
