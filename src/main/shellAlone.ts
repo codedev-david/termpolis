@@ -59,7 +59,7 @@ export function ownConsoleProcesses(executable: string): number | null {
 async function aloneOnConsole(pid: number, executable: string): Promise<boolean | null> {
   const own = ownConsoleProcesses(executable)
   if (own === null) return null
-  const attached = await consoleProcesses(pid)
+  const attached = await consoleProcesses(pid, own)
   return attached === null || !attached.includes(pid) ? null : attached.length <= own
 }
 
@@ -118,9 +118,15 @@ export function _resetShellAloneForTests(): void {
 
 /** The processes on the console of the shell `pid`, the helper left out; null where the helper
  *  failed. node-pty's own use of it (WindowsPtyAgent._getConsoleProcessList) answers the shell
- *  alone when it fails, which would read here as the shell being alone. */
-function consoleProcesses(pid: number): Promise<number[] | null> {
-  return consoleLists.run(`shellAlone:${pid}`, CONSOLE_LIST_SHARE_MS, () => readConsole(pid), (list) => list !== null)
+ *  alone when it fails, which would read here as the shell being alone.
+ *
+ *  Asks made while one run is going share it. After it settles only a "not alone" list is kept for
+ *  CONSOLE_LIST_SHARE_MS (HP-6): a kept "alone" would outlive an agent started again inside the window
+ *  (the model switcher's relaunch), and a submit would be refused as "agent exited". A kept "not alone"
+ *  only delays seeing an exit, which the quit loop asks again for. */
+function consoleProcesses(pid: number, own: number): Promise<number[] | null> {
+  const busy = (list: number[] | null): boolean => list !== null && list.includes(pid) && list.length > own
+  return consoleLists.run(`shellAlone:${pid}`, CONSOLE_LIST_SHARE_MS, () => readConsole(pid), busy)
 }
 
 async function readConsole(pid: number): Promise<number[] | null> {

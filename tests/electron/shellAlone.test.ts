@@ -159,19 +159,38 @@ describe('shellAlone shares one run of the helper between asks made together (ke
     expect(h.exec).toHaveBeenCalledTimes(1)
   })
 
-  it('an answer is kept for 1.5 s, and the next ask after that is a fresh look', async () => {
-    h.exec.mockResolvedValue(printed([HELPER, SHELL]))
-    await shellAlone(SHELL, POWERSHELL, 'win32')
+  it('a "not alone" answer is kept for 1.5 s, and the next ask after that is a fresh look', async () => {
+    h.exec.mockResolvedValue(printed([HELPER, SHELL, 300]))
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBe(false)
     await vi.advanceTimersByTimeAsync(CONSOLE_LIST_SHARE_MS - 1)
-    await shellAlone(SHELL, POWERSHELL, 'win32')
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBe(false)
     expect(h.exec).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     await shellAlone(SHELL, POWERSHELL, 'win32')
     expect(h.exec).toHaveBeenCalledTimes(2)
   })
 
+  // HP-6: a kept "alone" outlives the shell going busy again: the model switcher relaunches the agent (or the user
+  // starts it by hand), and a submit inside the 1.5 s would read the old "alone" and be refused as "agent exited".
+  // Only "not alone" is kept; that one only delays seeing an exit, which the quit loop asks again for.
+  it('HP-6: an "alone" answer is never kept: the next ask, even at once, is a fresh look and sees the agent started again', async () => {
+    h.exec.mockResolvedValueOnce(printed([HELPER, SHELL]))
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBe(true)
+    h.exec.mockResolvedValueOnce(printed([HELPER, SHELL, 4242])) // the agent was started again
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBe(false)
+    expect(h.exec).toHaveBeenCalledTimes(2)
+  })
+
+  it('HP-6: nor is a list that does not hold the shell (cannot tell)', async () => {
+    h.exec.mockResolvedValueOnce(printed([HELPER, 999]))
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBeNull()
+    h.exec.mockResolvedValueOnce(printed([HELPER, SHELL]))
+    expect(await shellAlone(SHELL, POWERSHELL, 'win32')).toBe(true)
+    expect(h.exec).toHaveBeenCalledTimes(2)
+  })
+
   it("keeps the auto-primer's own asks, 2 s apart, as separate looks", async () => {
-    h.exec.mockResolvedValue(printed([HELPER, SHELL]))
+    h.exec.mockResolvedValue(printed([HELPER, SHELL, 300]))
     for (let i = 0; i < 3; i++) {
       await shellAlone(SHELL, POWERSHELL, 'win32')
       await vi.advanceTimersByTimeAsync(2000)
