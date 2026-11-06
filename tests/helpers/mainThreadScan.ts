@@ -13,10 +13,17 @@
 //
 // Sites are keyed by (file, enclosing function) and counted per call name, never by line number, so
 // an edit that moves code does not disturb the allowlist and an edit that ADDS a call does.
+//
+// HP-2 (1.54.5): also element access (fs['existsSync']), `import x = require(...)`, a function
+// destructured from a namespace variable, a require() of a run-time path, new Worker() from
+// worker_threads, electron's shell.openPath/openExternal/showItemInFolder, a third-party process
+// wrapper (cross-spawn, tree-kill, execa, ...), and every file outside src/main that main imports
+// (followed transitively). Not seen: a new CALLER of an allowlisted helper (mainThreadHotPaths pins
+// the hot paths) and CPU work such as JSON.parse.
 
 import ts from 'typescript'
-import { readdirSync, readFileSync } from 'fs'
-import { join, relative, sep } from 'path'
+import { readdirSync, readFileSync, statSync } from 'fs'
+import { dirname, join, relative, resolve, sep } from 'path'
 
 export type SiteKind = 'sync' | 'spawn'
 
@@ -40,6 +47,10 @@ export interface SiteGroup {
 const CP_FNS = new Set(['spawn', 'exec', 'execFile', 'fork', 'execSync', 'spawnSync', 'execFileSync'])
 const CP_MODULE = /^(node:)?child_process$/
 const FS_MODULE = /^(node:)?fs$/
+const WORKER_MODULE = /^(node:)?worker_threads$/
+/** Third-party modules whose exports start or signal processes. A call of anything imported from one counts. */
+const WRAPPER_MODULE = /^(cross-spawn|tree-kill|execa|ps-tree|ps-list|pidtree|find-process|open|node-cmd|shelljs)$/
+const SHELL_FNS = new Set(['openPath', 'openExternal', 'showItemInFolder'])
 
 export function sourceFilesOf(dir: string): string[] {
   const out: string[] = []
@@ -123,6 +134,10 @@ function fnLabel(fn: ts.FunctionLikeDeclaration, scope: ts.Node, scopes: Map<ts.
 }
 
 export function scanFile(file: string, root: string): Site[] {
+  return scanFileFull(file, root).sites
+}
+
+function scanFileFull(file: string, root: string): { sites: Site[]; imports: string[] } {
   const rel = relative(root, file).split(sep).join('/')
   const text = readFileSync(file, 'utf8')
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.ES2022, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
@@ -135,6 +150,11 @@ export function scanFile(file: string, root: string): Site[] {
   const utilityLocals = new Set<string>()
   const ptyNamespace = new Set<string>()
   const ptySpawnLocals = new Set<string>()
+  const shellLocals = new Set<string>() // electron's shell
+  const workerLocals = new Set<string>() // worker_threads' Worker
+  const wtNamespace = new Set<string>()
+  const wrapperLocals = new Map<string, string>() // local -> third-party process module it came from
+  const imports: string[] = [] // relative module specifiers, followed by scanMainThreadSites
 
   /** `require('m')`, `await import('m')`, with any parentheses and casts around it. */
   const isModuleExpr = (e: ts.Expression | undefined, wanted: RegExp): boolean => {
@@ -148,8 +168,54 @@ export function scanFile(file: string, root: string): Site[] {
     return (isRequire || isDynamicImport) && isStringish(x.arguments[0]) && wanted.test(x.arguments[0].text)
   }
   const isCpModuleExpr = (e: ts.Expression | undefined): boolean => isModuleExpr(e, CP_MODULE)
+  /** The module a `require('m')` / `import('m')` names, or ''. */
+  const moduleOf = (e: ts.Expression | undefined): string => {
+    if (!e) return ''
+    let x: ts.Expression = e
+    while (ts.isParenthesizedExpression(x) || ts.isAwaitExpression(x) || ts.isAsExpression(x) || ts.isNonNullExpression(x)) x = (x as ts.ParenthesizedExpression).expression
+    if (!ts.isCallExpression(x)) return ''
+    const callee = x.expression
+    const ok = (ts.isIdentifier(callee) && callee.text === 'require') || callee.kind === ts.SyntaxKind.ImportKeyword
+    return ok && isStringish(x.arguments[0]) ? x.arguments[0].text : ''
+  }
+  /** A whole module bound to one local name (`import x = require`, `const x = require`, `import * as x`, `import x`). */
+  const bindNamespace = (mod: string, local: string): void => {
+    if (FS_MODULE.test(mod)) fsNamespace.add(local)
+    else if (CP_MODULE.test(mod)) cpNamespace.add(local)
+    else if (mod === 'node-pty') ptyNamespace.add(local)
+    else if (WORKER_MODULE.test(mod)) wtNamespace.add(local)
+    else if (WRAPPER_MODULE.test(mod)) wrapperLocals.set(local, mod)
+  }
 
   const bind = (n: ts.Node): void => {
+    if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier)
+      && n.moduleSpecifier.text.startsWith('.') && !(ts.isImportDeclaration(n) ? n.importClause?.isTypeOnly : n.isTypeOnly)) {
+      imports.push(n.moduleSpecifier.text)
+    }
+    if (ts.isCallExpression(n) && isStringish(n.arguments[0]) && n.arguments[0].text.startsWith('.')
+      && ((ts.isIdentifier(n.expression) && n.expression.text === 'require') || n.expression.kind === ts.SyntaxKind.ImportKeyword)) {
+      imports.push(n.arguments[0].text)
+    }
+    if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference) && isStringish(n.moduleReference.expression)) {
+      bindNamespace(n.moduleReference.expression.text, n.name.text)
+    }
+    if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier) && n.importClause && !n.importClause.isTypeOnly) {
+      const mod = n.moduleSpecifier.text
+      const c = n.importClause
+      if (WORKER_MODULE.test(mod) || WRAPPER_MODULE.test(mod)) {
+        if (c.name) bindNamespace(mod, c.name.text)
+        if (c.namedBindings && ts.isNamespaceImport(c.namedBindings)) bindNamespace(mod, c.namedBindings.name.text)
+        if (c.namedBindings && ts.isNamedImports(c.namedBindings)) {
+          for (const el of c.namedBindings.elements) {
+            if (WRAPPER_MODULE.test(mod)) wrapperLocals.set(el.name.text, mod)
+            else if ((el.propertyName ?? el.name).text === 'Worker') workerLocals.add(el.name.text)
+          }
+        }
+      }
+      if (mod === 'electron' && c.namedBindings && ts.isNamedImports(c.namedBindings)) {
+        for (const el of c.namedBindings.elements) if ((el.propertyName ?? el.name).text === 'shell') shellLocals.add(el.name.text)
+      }
+    }
     if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) {
       const mod = n.moduleSpecifier.text
       const c = n.importClause
@@ -179,6 +245,17 @@ export function scanFile(file: string, root: string): Site[] {
       }
     }
     if (ts.isVariableDeclaration(n)) {
+      const req = moduleOf(n.initializer)
+      if (req && ts.isIdentifier(n.name) && (WORKER_MODULE.test(req) || WRAPPER_MODULE.test(req))) bindNamespace(req, n.name.text)
+      if (req === 'electron' && ts.isObjectBindingPattern(n.name)) {
+        for (const el of n.name.elements) if (ts.isIdentifier(el.name) && (el.propertyName ?? el.name).getText() === 'shell') shellLocals.add(el.name.text)
+      }
+      // const { readFileSync } = fs, where fs is the whole module bound earlier
+      const init = n.initializer
+      if (init && ts.isIdentifier(init) && ts.isObjectBindingPattern(n.name) && (fsNamespace.has(init.text) || cpNamespace.has(init.text))) {
+        const into = fsNamespace.has(init.text) ? fsNamed : cpNamed
+        for (const el of n.name.elements) if (ts.isIdentifier(el.name)) into.set(el.name.text, (el.propertyName ?? el.name).getText())
+      }
       if (isModuleExpr(n.initializer, FS_MODULE) && ts.isObjectBindingPattern(n.name)) {
         for (const el of n.name.elements) if (ts.isIdentifier(el.name)) fsNamed.set(el.name.text, (el.propertyName ?? el.name).getText())
       }
@@ -231,6 +308,13 @@ export function scanFile(file: string, root: string): Site[] {
   const isCallee = (n: ts.Node): boolean => !!n.parent && ts.isCallExpression(n.parent) && n.parent.expression === n
 
   const visit = (n: ts.Node): void => {
+    if (ts.isNewExpression(n)) {
+      const e = n.expression
+      if ((ts.isIdentifier(e) && workerLocals.has(e.text))
+        || (ts.isPropertyAccessExpression(e) && e.name.text === 'Worker' && ts.isIdentifier(e.expression) && wtNamespace.has(e.expression.text))) {
+        record(n, 'new Worker', 'spawn')
+      }
+    }
     if (ts.isCallExpression(n)) {
       const e = n.expression
       if (ts.isIdentifier(e)) {
@@ -238,10 +322,20 @@ export function scanFile(file: string, root: string): Site[] {
         else if (/Sync$/.test(e.text) && e.text.length > 4) record(n, e.text, 'sync')
         else if (cpNamed.has(e.text) && CP_FNS.has(cpNamed.get(e.text) as string)) record(n, cpNamed.get(e.text) as string, 'spawn')
         else if (ptySpawnLocals.has(e.text)) record(n, 'pty.spawn', 'spawn')
+        else if (wrapperLocals.has(e.text)) record(n, wrapperLocals.get(e.text) as string, 'spawn')
+        else if (e.text === 'require' && n.arguments.length > 0 && !isStringish(n.arguments[0])) record(n, 'require(dynamic)', 'sync')
+      } else if (ts.isElementAccessExpression(e) && isStringish(e.argumentExpression)) {
+        // fs['existsSync'](p), cp['spawn'](...)
+        const name = e.argumentExpression.text
+        const obj = e.expression
+        if (/Sync$/.test(name) && name.length > 4) record(n, name, 'sync')
+        else if (CP_FNS.has(name) && ts.isIdentifier(obj) && cpNamespace.has(obj.text)) record(n, name, 'spawn')
       } else if (ts.isPropertyAccessExpression(e)) {
         const name = e.name.text
         const obj = e.expression
         if (/Sync$/.test(name) && name.length > 4) record(n, name, 'sync')
+        else if (SHELL_FNS.has(name) && ts.isIdentifier(obj) && shellLocals.has(obj.text)) record(n, `shell.${name}`, 'spawn')
+        else if (ts.isIdentifier(obj) && wrapperLocals.has(obj.text)) record(n, wrapperLocals.get(obj.text) as string, 'spawn')
         else if (CP_FNS.has(name) && ((ts.isIdentifier(obj) && cpNamespace.has(obj.text)) || isCpModuleExpr(obj))) record(n, name, 'spawn')
         else if (name === 'fork' && ts.isIdentifier(obj) && utilityLocals.has(obj.text)) record(n, 'utilityProcess.fork', 'spawn')
         else if (name === 'spawn' && ts.isIdentifier(obj) && ptyNamespace.has(obj.text)) record(n, 'pty.spawn', 'spawn')
@@ -269,12 +363,42 @@ export function scanFile(file: string, root: string): Site[] {
     ts.forEachChild(n, visit)
   }
   visit(sf)
-  return sites
+  return { sites, imports }
 }
 
+/** The source file a relative specifier names, or null (a .js/.json/.node asset, a .d.ts, or nothing). */
+function resolveSource(from: string, spec: string): string | null {
+  const base = resolve(dirname(from), spec)
+  for (const cand of [base, `${base}.ts`, `${base}.tsx`, `${base}.mts`, `${base}.cts`, join(base, 'index.ts'), join(base, 'index.tsx')]) {
+    if (!/\.(ts|tsx|cts|mts)$/.test(cand) || /\.d\.ts$/.test(cand)) continue
+    try { if (statSync(cand).isFile()) return cand } catch { /* not this one */ }
+  }
+  return null
+}
+
+/** Every site in src/main, and (HP-2, S09) in every file outside it that main imports, followed transitively:
+ *  shared code runs on main as much as main's own. Type-only imports are not followed. */
 export function scanMainThreadSites(root: string): Site[] {
   const sites: Site[] = []
-  for (const f of sourceFilesOf(join(root, 'src', 'main')).sort()) sites.push(...scanFile(f, root))
+  const own = sourceFilesOf(join(root, 'src', 'main')).sort()
+  const seen = new Set(own.map((f) => resolve(f)))
+  const outside: string[] = []
+  const follow = (file: string, imports: string[]): void => {
+    for (const spec of imports) {
+      const target = resolveSource(file, spec)
+      if (target && !seen.has(resolve(target))) { seen.add(resolve(target)); outside.push(target) }
+    }
+  }
+  for (const f of own) {
+    const r = scanFileFull(f, root)
+    sites.push(...r.sites)
+    follow(f, r.imports)
+  }
+  for (let i = 0; i < outside.length; i++) {
+    const r = scanFileFull(outside[i], root)
+    sites.push(...r.sites)
+    follow(outside[i], r.imports)
+  }
   return sites
 }
 

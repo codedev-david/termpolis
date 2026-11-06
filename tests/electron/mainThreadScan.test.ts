@@ -16,7 +16,7 @@
 //   * a tag outside the fixed set, or a missing reason, FAILS.
 // Everything here is a COUNT of call sites. No clock, no wall-clock ratio.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'fs'
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { scanMainThreadSites, scanFile, groupSites, type Site } from '../helpers/mainThreadScan'
@@ -136,6 +136,105 @@ describe('the scanner itself (synthetic sources)', () => {
       "setup > handle('terminal:kill')",
       'setup > setInterval',
     ])
+  })
+})
+
+// HP-2 (1.54.5 fixer round 1): a mutation test of src/main planted 14 violations and 9 shipped green. These are the
+// forms that were cheap to see; each was missed before this change. Still not seen, by design of a per-function count:
+// a NEW caller of an allowlisted sync helper (the allowlist keys on where a call is, not on what reaches it; the hot
+// paths are pinned by mainThreadHotPaths.test.ts), and JSON.parse or other CPU work (no CPU check at all).
+describe('HP-2: forms the scanner used to miss', () => {
+  it('S01: a Sync or spawn function reached by element access', () => {
+    const sites = scanSource(`
+      import * as fs from 'fs'
+      import * as cp from 'child_process'
+      export function a(p: string) { fs['existsSync'](p); cp['spawn']('x') }
+    `)
+    expect(callNames(sites).sort()).toEqual(['spawn:spawn', 'sync:existsSync'])
+  })
+
+  it("S02: import x = require('child_process') / ('fs')", () => {
+    const sites = scanSource(`
+      import cp = require('child_process')
+      import fs = require('fs')
+      export function a(paths: string[]) { cp.spawn('x'); return paths.map(fs.statSync) }
+    `)
+    expect(callNames(sites).sort()).toEqual(['spawn:spawn', 'sync:statSync(ref)'])
+  })
+
+  it('S04: a function destructured from a namespace variable, then called or handed on', () => {
+    const sites = scanSource(`
+      import * as fs from 'fs'
+      import * as cp from 'child_process'
+      const { readFileSync } = fs
+      const { execFile: ef } = cp
+      export const deps = { read: readFileSync }
+      export function a() { ef('x') }
+    `)
+    expect(callNames(sites).sort()).toEqual(['spawn:execFile', 'sync:readFileSync(ref)'])
+  })
+
+  it('S05: a require of a path known only at run time (a synchronous load); a literal require is not counted', () => {
+    const sites = scanSource(`
+      export function a(p: string) { return require(p) }
+      export function b() { return require('path') }
+    `)
+    expect(callNames(sites)).toEqual(['sync:require(dynamic)'])
+    expect(sites[0].fn).toBe('a')
+  })
+
+  it("S06: new Worker() from worker_threads (a synchronous script load and a thread)", () => {
+    const sites = scanSource(`
+      import { Worker } from 'worker_threads'
+      import * as wt from 'node:worker_threads'
+      export function a() { return [new Worker('w.js'), new wt.Worker('v.js')] }
+    `)
+    expect(callNames(sites)).toEqual(['spawn:new Worker', 'spawn:new Worker'])
+  })
+
+  it("S08: electron's shell.openPath, openExternal and showItemInFolder (each starts a process)", () => {
+    const sites = scanSource(`
+      import { shell } from 'electron'
+      export async function a(p: string) { await shell.openPath(p); await shell.openExternal(p); shell.showItemInFolder(p) }
+    `)
+    expect(callNames(sites).sort()).toEqual(['spawn:shell.openExternal', 'spawn:shell.openPath', 'spawn:shell.showItemInFolder'])
+  })
+
+  it('S10: a third-party process wrapper (cross-spawn, tree-kill, execa), however it is imported', () => {
+    const sites = scanSource(`
+      import crossSpawn from 'cross-spawn'
+      import treeKill from 'tree-kill'
+      import { execa } from 'execa'
+      const cs = require('cross-spawn')
+      export function a() { crossSpawn('x'); treeKill(1); execa('y'); cs.sync('z') }
+    `)
+    expect(callNames(sites).sort()).toEqual(['spawn:cross-spawn', 'spawn:cross-spawn', 'spawn:execa', 'spawn:tree-kill'])
+  })
+
+  it('controls: a lookalike on something else is still not counted', () => {
+    const sites = scanSource(`
+      const m = new Map<string, () => void>()
+      class Worker { constructor(_: string) {} }
+      const shell = { openPath(_: string) {} }
+      export function a() { m['get']('x'); new Worker('w'); shell.openPath('p'); require('fs') }
+    `)
+    expect(sites).toEqual([])
+  })
+
+  it('S09: a file outside src/main that main imports is scanned; one only the renderer uses is not', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mtscan-'))
+    try {
+      mkdirSync(join(dir, 'src', 'main'), { recursive: true })
+      mkdirSync(join(dir, 'src', 'shared'), { recursive: true })
+      writeFileSync(join(dir, 'src', 'main', 'a.ts'), "import { helper } from '../shared/b'\nexport function a() { return helper() }\n")
+      writeFileSync(join(dir, 'src', 'shared', 'b.ts'), "import { readFileSync } from 'fs'\nimport { more } from './d'\nexport function helper() { return readFileSync('x') + more() }\n")
+      writeFileSync(join(dir, 'src', 'shared', 'd.ts'), "import { execSync } from 'child_process'\nexport function more() { return execSync('y') }\n")
+      writeFileSync(join(dir, 'src', 'shared', 'c.ts'), "import { existsSync } from 'fs'\nexport function unused() { return existsSync('z') }\n")
+      const sites = scanMainThreadSites(dir)
+      expect(sites.map((s) => `${s.file}:${s.call}`).sort()).toEqual(['src/shared/b.ts:readFileSync', 'src/shared/d.ts:execSync'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
