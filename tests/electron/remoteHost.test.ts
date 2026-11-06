@@ -28,6 +28,7 @@ import {
   REMOTE_UNAVAILABLE,
   _resetRemoteHostForTests,
   encryptRemoteKeys,
+  flushTerminalOutput,
   noteTerminalClosed,
   noteTerminalOutput,
   registerRemoteIpc,
@@ -36,6 +37,7 @@ import {
   startRemoteBridgeHost,
   stopRemoteBridgeHost,
 } from '../../src/main/remoteHost'
+import { DISABLE_FLAG as DISABLE_RESIZE_FLUSH_FLAG, flushBeforeResize } from '../../src/main/ptyResizeFlush'
 
 const XOR = 0x5a
 function fakeSafeStorage() {
@@ -609,6 +611,73 @@ describe('renderer pushes and terminal hooks', () => {
     stopRemoteBridgeHost()
     expect(() => noteTerminalOutput('t1')).not.toThrow()
     expect(() => noteTerminalClosed('t1')).not.toThrow()
+  })
+})
+
+describe('the phone pump before a pty resize (plan P11)', () => {
+  const outputs = (): Array<Extract<HostToBridge, { kind: 'terminalOutput' }>> =>
+    harness
+      .child()
+      .posted.filter((m): m is Extract<HostToBridge, { kind: 'terminalOutput' }> => m.kind === 'terminalOutput')
+
+  /** A terminal a phone is watching, that has just printed and is waiting for the pump's tick. */
+  function waitingForTheTick(): void {
+    saveRemoteSettings(dir, { enabled: true })
+    harness.start()
+    harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t1'] })
+    harness.text.t1 = 'drawn for 80x24'
+    noteTerminalOutput('t1')
+  }
+
+  afterEach(() => {
+    delete process.env[DISABLE_RESIZE_FLUSH_FLAG]
+  })
+
+  it('is read by the terminal manager\'s resize path: a resize hands the pump what it holds, at once', () => {
+    waitingForTheTick()
+    const opening = outputs().length
+    flushBeforeResize('t1', () => undefined)
+    expect(outputs().slice(opening).map((m) => [m.terminalId, m.slice.output, m.size])).toEqual([
+      ['t1', 'drawn for 80x24', { cols: 80, rows: 24 }],
+    ])
+  })
+
+  it('NEGATIVE CONTROL: with the kill switch on the same resize reads nothing, and the bytes wait for the tick', () => {
+    waitingForTheTick()
+    const opening = outputs().length
+    process.env[DISABLE_RESIZE_FLUSH_FLAG] = '1'
+    flushBeforeResize('t1', () => undefined)
+    expect(outputs()).toHaveLength(opening)
+  })
+
+  it('is exported the way noteTerminalOutput is, and a no-op until the host is started', () => {
+    expect(() => flushTerminalOutput('t1')).not.toThrow()
+    waitingForTheTick()
+    const opening = outputs().length
+    flushTerminalOutput('t1')
+    expect(outputs()).toHaveLength(opening + 1)
+  })
+
+  it('stops being asked when the host stops', () => {
+    waitingForTheTick()
+    stopRemoteBridgeHost()
+    const sent = outputs().length
+    flushBeforeResize('t1', () => undefined)
+    expect(outputs()).toHaveLength(sent)
+  })
+
+  it('is let go of by the test reset as well, and a host started after it is asked again', () => {
+    waitingForTheTick()
+    _resetRemoteHostForTests()
+    const sent = outputs().length
+    flushBeforeResize('t1', () => undefined)
+    expect(outputs()).toHaveLength(sent)
+    _resetSupervisorForTests()
+    harness.text.t1 = '' // the new host's opening read must not already hold what is about to wait
+    waitingForTheTick()
+    const opening = outputs().length
+    flushBeforeResize('t1', () => undefined)
+    expect(outputs()).toHaveLength(opening + 1)
   })
 })
 

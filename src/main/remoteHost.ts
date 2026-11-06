@@ -33,6 +33,7 @@ import { isSecureRelayUrl } from './remoteBridge/relayUrl'
 import type { TerminalSnapshot } from './remoteStatusPump'
 import { keyStorageMode } from './secureKeyStore'
 import { ok, err } from './ipcResult'
+import { onBeforeResize } from './ptyResizeFlush'
 
 export { REMOTE_KEYS_LOCKED }
 
@@ -115,6 +116,9 @@ const messageOf = (e: unknown): string => (e instanceof Error ? e.message : Stri
 let host: RemoteHost | null = null
 let handler: ((m: BridgeToHost) => void) | null = null
 let subscribed = false
+/** Removes the reader that makes the phone pump send what it holds before a terminal is resized. Set
+ *  while a host runs: with Remote off nothing is registered, so a resize costs the remote nothing. */
+let unhookResizeFlush: (() => void) | null = null
 
 /** Linked machines' listeners. Held here rather than on a host so they outlive a
  *  host stop/start, and so `linkedHost.ts` can subscribe BEFORE Remote starts --
@@ -228,10 +232,15 @@ export function startRemoteBridgeHost(binding: RemoteHostBinding): void {
       }
     }
   })
+  // The terminal manager runs this ahead of every resize that changes a size, with the old size still
+  // in force (ptyResizeFlush.ts). Installed with the host and removed with it.
+  unhookResizeFlush = onBeforeResize((terminalId) => flushTerminalOutput(terminalId))
   host.start()
 }
 
 export function stopRemoteBridgeHost(): void {
+  unhookResizeFlush?.()
+  unhookResizeFlush = null
   host?.stop()
   host = null
   handler = null
@@ -291,6 +300,12 @@ export function startOverRemoteKeys(): string | null {
  *  free, not merely cheap -- this runs ahead of the renderer's own write. */
 export function noteTerminalOutput(terminalId: string): void {
   host?.noteTerminalOutput(terminalId)
+}
+
+/** Send the phone what the output pump holds, now. Called, through ptyResizeFlush, just before a
+ *  terminal's pty is resized: bytes drawn for the old size must be read at the old size. */
+export function flushTerminalOutput(terminalId: string): void {
+  host?.flushTerminalOutput(terminalId)
 }
 
 export function noteTerminalClosed(terminalId: string): void {
@@ -463,6 +478,8 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
 
 /** @internal test-only */
 export function _resetRemoteHostForTests(): void {
+  unhookResizeFlush?.()
+  unhookResizeFlush = null
   host = null
   handler = null
   subscribed = false

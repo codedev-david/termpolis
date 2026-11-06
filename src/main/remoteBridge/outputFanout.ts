@@ -7,6 +7,27 @@ type QueuedChunk = Omit<OutputChunk, 'marker'>
  *  loses nothing the desktop itself still holds. */
 const DEFAULT_CAPACITY_CHARS = 262_144
 
+/** A queue that holds more than this many chunks of ONE terminal is replaced by one screen of it (see
+ *  `FanoutOptions.screenOf`). Sixteen whole-region edits is already more than a phone that comes back can
+ *  use: it is shown the last of them, and every one it is sent costs it a re-parse of the whole copy. */
+export const COLLAPSE_AFTER_CHUNKS = 16
+
+/** A whole screen as one edit: the flattener's `snapshot`, in the same numbering as every edit `ingest`
+ *  queues. Structural, so the fan-out never imports the emulator. */
+export interface ScreenView {
+  replaceFrom: number
+  text: string
+}
+
+export interface FanoutOptions {
+  /** The whole screen of a terminal as it stands, or null when there is none to give. With it, a device
+   *  that falls behind is not evicted from the head: once its queue holds more than `collapseAfter` chunks of
+   *  one terminal they are replaced by ONE screen (see `reseed`), and nothing the device missed is lost
+   *  from what it will show -- it is shown the screen. Without it, the queue is today's. */
+  screenOf?: (terminalId: string) => ScreenView | null
+  collapseAfter?: number
+}
+
 /** What `drain` hands back: the wire shape exactly, so a drained chunk goes
  *  straight into a frame with no adapter in between.
  *
@@ -39,6 +60,16 @@ function forgetting(terminalId: string): QueuedChunk {
   return { terminalId, chunk: '', missed: 0, replaceFrom: FORGET_FROM }
 }
 
+/** What the fan-out holds for one device. */
+interface Device {
+  terminals: Set<string>
+  queue: QueuedChunk[]
+  /** Per terminal, where in the stream the furthest gap notice this device was SENT sits in its copy -- or
+   *  `Infinity` when a notice came with no anchor, which is a place nobody can name. A notice is in the
+   *  phone's copy but not in its end mark, which every anchor counts back from; see `gapAt`. */
+  gaps: Map<string, number>
+}
+
 export class OutputFanout {
   /** One entry per device, holding BOTH what it watches and what is waiting for it.
    *
@@ -46,18 +77,29 @@ export class OutputFanout {
    *  them in step and `ingest` carried a `if (!q) continue` guard against a desync
    *  that no caller could actually cause. One map makes the invariant structural:
    *  a device either has a subscription record with a queue, or it does not exist. */
-  private readonly devices = new Map<string, { terminals: Set<string>; queue: QueuedChunk[] }>()
+  private readonly devices = new Map<string, Device>()
+  private readonly screenOf: FanoutOptions['screenOf']
+  private readonly collapseAfter: number
 
-  constructor(private readonly capacityChars: number = DEFAULT_CAPACITY_CHARS) {}
+  constructor(
+    private readonly capacityChars: number = DEFAULT_CAPACITY_CHARS,
+    options: FanoutOptions = {},
+  ) {
+    this.screenOf = options.screenOf
+    this.collapseAfter = options.collapseAfter ?? COLLAPSE_AFTER_CHUNKS
+  }
 
   subscribe(deviceId: string, terminalId: string): void {
     let d = this.devices.get(deviceId)
-    if (!d) this.devices.set(deviceId, (d = { terminals: new Set(), queue: [] }))
+    if (!d) this.devices.set(deviceId, (d = { terminals: new Set(), queue: [], gaps: new Map() }))
     d.terminals.add(terminalId)
   }
 
   unsubscribe(deviceId: string, terminalId: string): void {
-    this.devices.get(deviceId)?.terminals.delete(terminalId)
+    const d = this.devices.get(deviceId)
+    if (d === undefined) return
+    d.terminals.delete(terminalId)
+    d.gaps.delete(terminalId)
   }
 
   dropDevice(deviceId: string): void {
@@ -126,6 +168,7 @@ export class OutputFanout {
         missed: slice.missed,
         replaceFrom: slice.replaceFrom ?? null,
       })
+      this.collapse(d, terminalId)
       this.trim(d.queue)
     }
   }
@@ -155,6 +198,72 @@ export class OutputFanout {
     if (clear || view.replaceFrom === 0) d.queue.push(forgetting(terminalId))
     d.queue.push({ terminalId, chunk: view.text, missed: 0, replaceFrom: view.replaceFrom })
     this.trim(d.queue)
+  }
+
+  /** Replace everything queued for ONE device on ONE terminal with its whole screen.
+   *
+   *  For a device that has come back: the edits it missed are a list of whole-region repaints measured
+   *  against a copy it may no longer hold in the state they assume (nothing on the wire says a frame
+   *  arrived), and a screen is the same information once, in a form that is right whatever the copy was.
+   *  It always goes behind a forget -- the phone's copy is replaced, not drawn over -- so what the phone
+   *  held before, history above the screen included, is gone: the honest limit, the same as a phone
+   *  opening a terminal that is already watched. What is queued for the device's OTHER terminals stays
+   *  where it is, in order.
+   *
+   *  Refused for a terminal the device is not watching, like `seed`: the watch list is the `read` check. */
+  reseed(deviceId: string, terminalId: string, screen: ScreenView): void {
+    const d = this.devices.get(deviceId)
+    if (!d?.terminals.has(terminalId)) return
+    this.replaceQueued(d, terminalId, screen)
+    this.trim(d.queue)
+  }
+
+  /** What is waiting for a device, counted: the numbers a test or a gauge reads without draining it. */
+  queuedFor(deviceId: string): { chunks: number; chars: number } {
+    const q = this.devices.get(deviceId)?.queue ?? []
+    return { chunks: q.length, chars: q.reduce((n, c) => n + c.chunk.length, 0) }
+  }
+
+  /** Where in the stream a gap notice sits in a device's copy of a terminal, or null when it holds none.
+   *
+   *  A notice is drawn into the phone's copy but not counted in its end mark, so afterwards the copy runs a
+   *  notice longer than the mark says, and an edit anchored BEFORE the notice keeps that much of the old text
+   *  it meant to cut (see `FORGET_FROM`). A rewrite of the live region has to know whether it would. Only
+   *  notices the device was actually SENT count -- a queued one is not in its copy yet -- and a screen behind
+   *  a forget replaces the copy, notices and all. `Infinity` is a notice with no anchor: where it was drawn
+   *  is the end of a copy this fan-out does not track. */
+  gapAt(deviceId: string, terminalId: string): number | null {
+    return this.devices.get(deviceId)?.gaps.get(terminalId) ?? null
+  }
+
+  private replaceQueued(d: Device, terminalId: string, screen: ScreenView): void {
+    d.queue = d.queue.filter((c) => c.terminalId !== terminalId)
+    d.queue.push(forgetting(terminalId), {
+      terminalId,
+      chunk: screen.text,
+      missed: 0,
+      replaceFrom: screen.replaceFrom,
+    })
+  }
+
+  /** A device that has fallen behind is held to a screen, not to the head of a list of edits.
+   *
+   *  Evicting the head keeps the NEWEST edits, each measured against a copy the older ones built and the
+   *  phone no longer gets, and reports the loss -- while the screen those edits add up to is a few KB. So once
+   *  a terminal has more than `collapseAfter` chunks queued for one device they are replaced by its screen as
+   *  it stands now, which is where the edit that was just queued has already taken it. The loss counts the
+   *  replaced chunks carried go with them: what was lost came before a whole new screen, not out of it.
+   *
+   *  Counted per terminal, so a device watching several is never made to give up one terminal's edits for
+   *  another's. A terminal with no screen to give (`screenOf` says null, or there is no `screenOf`) is left
+   *  to the ceiling in `trim`, as before. */
+  private collapse(d: Device, terminalId: string): void {
+    if (this.screenOf === undefined) return
+    let held = 0
+    for (const c of d.queue) if (c.terminalId === terminalId) held += 1
+    if (held <= this.collapseAfter) return
+    const screen = this.screenOf(terminalId)
+    if (screen !== null) this.replaceQueued(d, terminalId, screen)
   }
 
   /** Enforces the per-device ceiling, converting evicted chars into a missed count
@@ -188,6 +297,14 @@ export class OutputFanout {
     if (!d || d.queue.length === 0) return []
     const q = d.queue
     d.queue = []
+    for (const c of q) {
+      // A notice goes into the copy where the chunk that carries it is anchored -- or at the end of the
+      // copy, which is nowhere the fan-out knows, when the chunk has no anchor...
+      if (c.missed > 0) d.gaps.set(c.terminalId, Math.max(d.gaps.get(c.terminalId) ?? 0, c.replaceFrom ?? Infinity))
+      // ...and a forget empties the copy, notice and all: whatever a forget itself carried was drawn into
+      // the copy and wiped by the screen behind it.
+      if (c.replaceFrom === FORGET_FROM) d.gaps.delete(c.terminalId)
+    }
     // Render the marker here rather than leaving it to each client. Dropped output
     // is the one failure mode of this design that the user cannot detect for
     // themselves -- a silent gap reads as "the agent went quiet", which is

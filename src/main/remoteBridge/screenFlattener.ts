@@ -50,7 +50,26 @@
 
 import { Terminal } from '@xterm/headless'
 import type { IBuffer, IBufferCell, IBufferLine } from '@xterm/headless'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
 import type { TerminalSize } from './protocol'
+
+/** Environment switch for everything that makes the phone's emulator match the desktop pane after a resize and in
+ *  cell widths: Unicode 11, and the resize rules of xterm 5.5.0. Any value but empty, `0` or `false` puts the
+ *  flattener back to exactly what it was before those changes. The bridge is forked with main's environment, so
+ *  setting it where Termpolis starts reaches it. Parsed like TERMPOLIS_DISABLE_RESIZE_FLUSH and
+ *  TERMPOLIS_DISABLE_SHELL_INTEGRATION. */
+export const PARITY_DISABLE_FLAG = 'TERMPOLIS_DISABLE_FLATTENER_PARITY'
+
+export function flattenerParityDisabled(env: Record<string, string | undefined> = process.env): boolean {
+  const v = env[PARITY_DISABLE_FLAG]
+  return !!v && v !== '0' && v.toLowerCase() !== 'false'
+}
+
+export interface FlattenerOptions {
+  /** Match the desktop pane (see PARITY_DISABLE_FLAG). Defaults to on unless the environment switches it off;
+   *  `false` is the flattener as it was, which the tests keep as their control. */
+  parity?: boolean
+}
 
 /** Lines the emulator may hold before we rebuild it from its viewport.
  *
@@ -197,12 +216,25 @@ function sgrOf(cell: IBufferCell): string {
   return parts.length === 0 ? '' : `\x1b[0;${parts.join(';')}m`
 }
 
+/** Where the written part of `line[from, to)` ends. A grid row is always the
+ *  full width, so what follows the last written cell is the unwritten
+ *  remainder of the row -- but a cell with a background set is painted rather
+ *  than empty, so only blank cells in the default background count as unwritten. */
+function trimEnd(line: IBufferLine, cell: IBufferCell, from: number, to: number): number {
+  let end = to
+  while (end > from) {
+    line.getCell(end - 1, cell)
+    const chars = cell.getChars()
+    if ((chars !== '' && chars !== ' ') || !cell.isBgDefault()) break
+    end -= 1
+  }
+  return end
+}
+
 /** One buffer row as text with colour.
  *
- *  `trimTrailing` drops the unwritten remainder of the row. A grid row is always
- *  the full width, so without this every line would arrive padded to 120 columns
- *  -- but a cell with a background set is painted rather than empty, so only
- *  blank cells in the default background count as unwritten.
+ *  `trimTrailing` drops the unwritten remainder of the row (see `trimEnd`):
+ *  without it every line would arrive padded to 120 columns.
  *
  *  `from`/`to` cut the row down to a span of it. Only a rebuild needs that, to
  *  split the cursor's own row at the cursor. */
@@ -213,15 +245,7 @@ function encodeLine(
   from = 0,
   to = line.length,
 ): string {
-  let end = to
-  if (trimTrailing) {
-    while (end > from) {
-      line.getCell(end - 1, cell)
-      const chars = cell.getChars()
-      if ((chars !== '' && chars !== ' ') || !cell.isBgDefault()) break
-      end -= 1
-    }
-  }
+  const end = trimTrailing ? trimEnd(line, cell, from, to) : to
 
   let out = ''
   let open = ''
@@ -243,13 +267,168 @@ function encodeLine(
   return out
 }
 
+/** Whether buffer row `y` continues the row above it. Only asked of rows inside the buffer. */
+function wraps(buf: IBuffer, y: number): boolean {
+  return (buf.getLine(y) as IBufferLine).isWrapped
+}
+
+/** Whether row `y` ends in the blank cell xterm leaves where a double-width glyph did not fit on the row and
+ *  wrapped to the next one. Rejoining wrapped rows must leave that cell out, as xterm's own reflow does
+ *  (`getWrappedLineTrimmedLength`): replayed as text it became a space in the middle of the line, which pushed
+ *  everything after it one cell along. Only asked of a row that the next row continues. */
+function endsInWidePad(buf: IBuffer, y: number, cell: IBufferCell): boolean {
+  const line = buf.getLine(y) as IBufferLine
+  line.getCell(line.length - 1, cell)
+  const blank = cell.getChars() === '' && cell.getWidth() === 1
+  ;(buf.getLine(y + 1) as IBufferLine).getCell(0, cell)
+  return blank && cell.getWidth() === 2
+}
+
+/** What a rebuild replays into the new grid, and how. */
+interface Replay {
+  /** The last buffer row replayed, inclusive. Rows below it are not replayed. */
+  last: number
+  /** The wrapped line the cursor is on, as buffer rows, inclusive. It is replayed row by row and cut at the new
+   *  width instead of being rejoined, which is what xterm does with it. Empty when `heldTo < heldFrom`. */
+  heldFrom: number
+  heldTo: number
+  /** The cursor's column in the new grid. */
+  cursorX: number
+  /** Blank rows to replay after the last one. */
+  pad: number
+}
+
+/** Everything replayed, wrapped rows rejoined, the cursor's column as it was: the flattener before it matched the
+ *  pane, kept for TERMPOLIS_DISABLE_FLATTENER_PARITY and as the tests' control. */
+function legacyReplay(buf: IBuffer): Replay {
+  return { last: buf.length - 1, heldFrom: 0, heldTo: -1, cursorX: buf.cursorX, pad: 0 }
+}
+
+/** How many cells of `line` are written. `trimEnd` leaves out the empty second half of a double-width glyph at the
+ *  end of a row, which is right for text and one cell short for counting. */
+function writtenCells(line: IBufferLine, cell: IBufferCell): number {
+  const end = trimEnd(line, cell, 0, line.length)
+  if (end === 0) return 0
+  line.getCell(end - 1, cell)
+  return cell.getWidth() === 2 ? end + 1 : end
+}
+
+/** How many rows replaying `[from, last]` fills at `cols` columns.
+ *
+ *  Rejoined lines wrap at the new width, so one that held three rows may now need two or four; the cursor's own
+ *  line is replayed as the rows it is. Counted in cells, which is exact except where a double-width glyph does not
+ *  fit at the end of a row and moves to the next: the cell it leaves behind is wasted and the count does not know,
+ *  so it can come out one row short for that line. */
+function rowsNeeded(
+  buf: IBuffer,
+  cell: IBufferCell,
+  from: number,
+  last: number,
+  heldFrom: number,
+  heldTo: number,
+  cols: number,
+): number {
+  let needed = 0
+  let y = from
+  while (y <= last) {
+    if (y >= heldFrom && y <= heldTo) {
+      needed += 1
+      y += 1
+      continue
+    }
+    let end = y
+    while (end < last && wraps(buf, end + 1)) end += 1
+    const tail = buf.getLine(end) as IBufferLine
+    const cells = (end - y) * tail.length + writtenCells(tail, cell)
+    needed += Math.max(1, Math.ceil(cells / cols))
+    y = end + 1
+  }
+  return needed
+}
+
+/** What to replay so the rebuilt grid is what xterm 5.5.0's own resize leaves the desktop pane with (reproduced
+ *  against the real emulator in tests/electron/screenFlattenerParity.test.ts; the rules are Buffer.resize,
+ *  _reflowSmaller and _reflowLarger in xterm's src/common/buffer/Buffer.ts).
+ *
+ *  1. A shorter screen loses the rows UNDER the cursor first, content or not, and only what still does not fit
+ *     scrolls the top into history. Replaying all of them scrolled real content into the phone's permanent text:
+ *     the whole screen twice, once settled and once more when the repaint that follows a resize drew it.
+ *  2. The wrapped line the cursor is on is not reflowed ("the program will handle fixing up wrapped lines with the
+ *     cursor"): it keeps its rows, cut at the new width, and the cursor's column is clamped into it.
+ *  3. While nothing has scrolled into history, a rewrap that needs more rows pops them off the BOTTOM -- below
+ *     the cursor's row, whatever they hold -- instead of scrolling the top away. Once there is history it
+ *     scrolls, as it does here without help, because that is how xterm behaves then too.
+ *  4. With history, a rewrap scrolls the top even when the screen has just grown and has blank room at the
+ *     bottom: xterm adds the new rows first and does not let the rewrap use them (see `pad`).
+ *
+ *  What it does not follow, because the phone's settled rows are permanent by design: rows xterm pulls back out
+ *  of its scrollback when a widened screen un-wraps them, and history it reflows. Nor does it follow a
+ *  double-width glyph left sticking out of a held line that is cut.
+ *
+ *  Nor does it model xterm's cursor bookkeeping when a narrowing rewraps rows BELOW a cursor parked above content
+ *  (a TUI with its input box above its status rows). xterm reflows from the bottom up and moves its cursor row
+ *  down for every row it adds, wherever that row is, so by the time it reaches the cursor's own line the cursor
+ *  has been carried onto another one: THAT line is left unreflowed (cut at the new width) and the cursor ends up
+ *  below its content. A TUI that then redraws relative to the cursor lands a row or more off, on the pane and
+ *  differently on the phone. Measured against a real pane: a six-row frame like that, 120 to 80 columns, with no
+ *  repaint after the resize: the phone shows a row more than the pane (12 against 11) and nine of the twelve
+ *  bottom rows are out of step with it (moving the cursor alone, tried, got that to six, not to none). With
+ *  ConPTY's repaint the live region matched in every case measured; what is left is one stale row in the
+ *  phone's history. Doing it properly means running xterm's whole bottom-up pass here, which is its own change.
+ *
+ *  Measured against the real emulator with the fuzz in the tests, and by hand against this machine's real
+ *  ConPTY capture. */
+function parityReplay(
+  buf: IBuffer,
+  cell: IBufferCell,
+  from: TerminalSize,
+  to: TerminalSize,
+  scrolled: boolean,
+): Replay {
+  const top = buf.baseY
+  const cursorRow = top + buf.cursorY
+
+  let last = buf.length - 1
+  if (to.rows < from.rows) last = Math.max(cursorRow, top + to.rows - 1)
+
+  let heldFrom = 0
+  let heldTo = -1
+  let cursorX = buf.cursorX
+  // Only a change of width reflows anything. Rows alone leave every wrapped line as it is, and so does a rebuild at
+  // the same size, where rejoining keeps the wrap marks and the cursor's pending wrap is part of the state.
+  if (to.cols !== from.cols) {
+    heldFrom = cursorRow
+    while (heldFrom > top && wraps(buf, heldFrom)) heldFrom -= 1
+    heldTo = cursorRow
+    while (heldTo < last && wraps(buf, heldTo + 1)) heldTo += 1
+    cursorX = Math.min(cursorX, to.cols - 1)
+  }
+
+  if (!scrolled) {
+    const overflow = rowsNeeded(buf, cell, top, last, heldFrom, heldTo, to.cols) - to.rows
+    last -= Math.max(0, Math.min(overflow, last - cursorRow))
+  }
+
+  // 4. With history, a rewrap scrolls the top away even when the screen has just grown and has blank room at the
+  //    bottom: xterm adds the new rows first and does not let the rewrap use them. The room is given back by
+  //    replaying the rows the screen grew by as blank rows, which the rewrap then pushes the top out over.
+  const pad = scrolled && to.rows > from.rows ? to.rows - from.rows : 0
+
+  return { last, heldFrom, heldTo, cursorX, pad }
+}
+
 export class ScreenFlattener {
   private readonly screens = new Map<string, Screen>()
+  /** Whether this flattener matches the desktop pane (see PARITY_DISABLE_FLAG). */
+  private readonly parity: boolean
 
   constructor(
     private readonly cols: number = DEFAULT_COLS,
     private readonly rows: number = DEFAULT_ROWS,
-  ) {}
+    options: FlattenerOptions = {},
+  ) {
+    this.parity = options.parity ?? !flattenerParityDisabled()
+  }
 
   /** Feed raw terminal bytes, get back what changed in flattened form.
    *
@@ -315,6 +494,20 @@ export class ScreenFlattener {
     return { replaceFrom: screen.settledLen - screen.tail.length, text: screen.tail + screen.live }
   }
 
+  /** The viewport alone, as one edit: the part of a screen a rewrite may replace.
+   *
+   *  Everything above it is settled -- permanent, sent once, never again -- so a copy that is only wrong in the
+   *  viewport is put right by this and by nothing larger. It starts where the settled text ends, which is also
+   *  where `snapshot`'s text passes from the kept tail to the viewport: the two are in one numbering, and either
+   *  applies to the same copy. Reads only what `feed` has committed, like `snapshot`.
+   *
+   *  Null when there is no emulator for this terminal. */
+  liveRegion(terminalId: string): FlatEdit | null {
+    const screen = this.screens.get(terminalId)
+    if (screen === undefined) return null
+    return { replaceFrom: screen.settledLen, text: screen.live }
+  }
+
   /** Drop a terminal's emulator. Called when nobody is watching it any more:
    *  an emulator kept for an unwatched terminal is a grid nobody reads. */
   forget(terminalId: string): void {
@@ -351,7 +544,7 @@ export class ScreenFlattener {
   }
 
   private newTerminal(cols: number, rows: number): Terminal {
-    return new Terminal({
+    const term = new Terminal({
       cols,
       rows,
       scrollback: SCROLLBACK_LINES,
@@ -361,6 +554,8 @@ export class ScreenFlattener {
       convertEol: false,
       allowProposedApi: true,
     })
+    if (this.parity) loadUnicode11(term)
+    return term
   }
 
   /** Move rows that have scrolled above the viewport out of the live region.
@@ -448,48 +643,85 @@ export class ScreenFlattener {
    *  Everything above the viewport has already been settled and sent, so the
    *  emulator is holding it for nobody. Replaying the viewport into a fresh
    *  terminal keeps the grid a redraw is about to address -- including where the
-   *  cursor sits, which is what a differential repaint moves relative to. */
+   *  cursor sits, which is what a differential repaint moves relative to.
+   *
+   *  The replay is not blind. What the phone must end up with is what the pane
+   *  ends up with when xterm resizes it, so `parityReplay` decides which rows are
+   *  replayed and which line is left unreflowed. A replay that just played back
+   *  every row, blank ones under the cursor included, scrolled real content out
+   *  of a smaller grid into the settled text -- which is permanent, and then the
+   *  repaint ConPTY sends after every resize drew it a second time. */
   private rebuild(screen: Screen, cols: number, rows: number): void {
     const buf = screen.term.buffer.active
     const cell = buf.getNullCell()
     const cursorRow = buf.baseY + buf.cursorY
+    const { last, heldFrom, heldTo, cursorX, pad } = this.parity
+      ? parityReplay(buf, cell, { cols: screen.cols, rows: screen.rows }, { cols, rows }, screen.settledLen > 0)
+      : legacyReplay(buf)
     const parts: string[] = []
-    for (let y = buf.baseY; y < buf.length; y += 1) {
+    for (let y = buf.baseY; y <= last; y += 1) {
       const line = buf.getLine(y)
       /* v8 ignore next -- y is bounded by buf.length, so the undefined arm is
          unreachable; it exists because getLine is typed for out-of-range reads */
       if (line === undefined) continue
-      const next = y + 1 < buf.length ? buf.getLine(y + 1) : undefined
+      // The cursor's own wrapped line is replayed as the rows it is (see
+      // parityReplay), and cut where the new grid ends.
+      const held = y >= heldFrom && y <= heldTo
+      let to = line.length
+      if (held) to = Math.min(to, cols)
       // Rejoined, unlike anything sent to the phone: a wrap is a break the OLD
       // width imposed, and replaying it would freeze that break into a grid that
-      // may no longer have it.
-      const continues = next !== undefined && next.isWrapped
+      // may no longer have it. A held row is joined too when the cut leaves it
+      // filling the new width: that is not a reflow, it keeps the wrap mark xterm
+      // keeps on those rows, so the NEXT resize -- a window being dragged is a run
+      // of them -- reflows the line like any other once the cursor has left it. A
+      // held row narrower than the grid (a widening) stays a row of its own.
+      const continues = y < last && wraps(buf, y + 1) && (!held || to === cols)
+      // A row that is joined to the next one leaves out the pad cell a double-width
+      // glyph left behind at its end.
+      if (!held && this.parity && continues && endsInWidePad(buf, y, cell)) to -= 1
       if (y === cursorRow) {
         // Split at the cursor's own cell and mark the spot, so the emulator is
         // the one that works out where the cursor lands at the new width -- the
         // old row and column name a cell the reflow has moved. Nothing is
         // trimmed to the left of the mark: those blank cells are what put the
         // cursor where it is.
-        parts.push(encodeLine(line, cell, false, 0, buf.cursorX), SAVE_CURSOR)
-        parts.push(encodeLine(line, cell, !continues, buf.cursorX))
+        parts.push(encodeLine(line, cell, false, 0, cursorX), SAVE_CURSOR)
+        parts.push(encodeLine(line, cell, !continues, cursorX, to))
       } else {
-        parts.push(encodeLine(line, cell, !continues))
+        parts.push(encodeLine(line, cell, !continues, 0, to))
       }
       // Carriage return as well as newline: a row filled to the last column
       // leaves the cursor pending a wrap, and a bare newline would carry that
       // column down with it. Never after the last row -- that would scroll the
       // grid, and the replay is meant to reproduce it, not extend it.
-      if (!continues && y + 1 < buf.length) parts.push('\r\n')
+      if (!continues && y < last) parts.push('\r\n')
     }
 
     screen.term.dispose()
     screen.term = this.newTerminal(cols, rows)
     screen.cols = cols
     screen.rows = rows
-    screen.term.write(`${parts.join('')}${RESTORE_CURSOR}`)
+    screen.term.write(`${parts.join('')}${'\r\n'.repeat(pad)}${RESTORE_CURSOR}`)
     screen.settledCount = 0
     screen.normalSettledCount = 0
     screen.inAlt = false
+  }
+}
+
+/** Count cell widths the way the desktop pane does (TerminalPane.tsx loads the
+ *  same addon and selects the same version). The default table is Unicode 6,
+ *  which is one cell narrower for most emoji and dingbats; a TUI that addresses
+ *  the cell AFTER one then lands a cell off on the phone -- "passed" arrived as
+ *  "ppassed". Fails open: an emulator that cannot take the table keeps the
+ *  default one, which is slightly wrong about a few glyphs and alive, where the
+ *  alternative was a bridge that died on a width table. */
+function loadUnicode11(term: Terminal): void {
+  try {
+    term.loadAddon(new Unicode11Addon())
+    term.unicode.activeVersion = '11'
+  } catch {
+    // Deliberately nothing: see above.
   }
 }
 

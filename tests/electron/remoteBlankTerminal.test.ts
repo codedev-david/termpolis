@@ -8,6 +8,7 @@ import { createBridgeCore, type BridgeCore, type RelayLike } from '../../src/mai
 import { generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
 import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
 import { MAX_PAYLOAD_BYTES } from '../../src/main/remoteBridge/outputChunker'
+import { PHONE_RESYNC_DISABLE_FLAG, QUIET_MS } from '../../src/main/remoteBridge/phoneResync'
 import {
   NO_CAPABILITIES,
   type BridgeToHost,
@@ -19,6 +20,7 @@ import {
 import type { RelayState, SessionRelayDeps } from '../../src/main/remoteBridge/relayClient'
 import { saveRemoteDevices } from '../../src/main/remoteDeviceStore'
 import { identityOf } from './fixtures/remoteIdentity'
+import { manualClock } from './fixtures/manualClock'
 import { saveRemoteSettings } from '../../src/main/remoteSettings'
 import { createRemoteHost, type RemoteHost } from '../../src/main/remoteBridgeHost'
 import {
@@ -125,6 +127,9 @@ function desktop(devices: PairedDevice[]) {
   const toHost: BridgeToHost[] = []
   const rooms: Room[] = []
   const cores: BridgeCore[] = []
+  // What the bridge's quiet watch reads. It moves only when a test moves it, so a slow machine can
+  // never let a rewrite land between two of a test's own steps.
+  const clock = manualClock()
   let bridge: BridgeCore | null = null
   // The init FACTORY, asked again on every spawn, as the real supervisor does.
   let launched: { init: () => InitParams; relayUrl: string } | null = null
@@ -151,6 +156,7 @@ function desktop(devices: PairedDevice[]) {
       mcp: { callTool: async () => ({ terminals: [] }) },
       relayUrl: launched!.relayUrl,
       desktopName: 'Bench desktop',
+      clock,
       openRelay: (deps) => {
         const room: Room = {
           deps: deps as SessionRelayDeps,
@@ -284,6 +290,7 @@ function desktop(devices: PairedDevice[]) {
       for (const fn of due) fn()
     },
     settle,
+    clock,
     /** The phone's socket meets the desktop's in the room the CURRENT bridge
      *  opened for it. */
     async attach(phone: Phone): Promise<void> {
@@ -358,6 +365,7 @@ beforeEach(() => {
 
 afterEach(() => {
   desk?.teardown()
+  delete process.env[PHONE_RESYNC_DISABLE_FLAG]
   setSafeStorage(null)
   try {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -523,14 +531,15 @@ describe('the neighbours of that fix', () => {
     expect(shown).not.toContain('skipped')
   })
 
-  it('keeps the newest output when a phone falls further behind than its queue holds', async () => {
+  /** A phone that opened t1, lost its link, and came back after twelve bursts: escape-dense and
+   *  well past the per-device queue, in pieces main's window can hold, so the only thing it can
+   *  lose is what the queue drops. `onAttach` is what went on the wire when it came back. */
+  async function fallBehind() {
     await idleAgent()
     const phone = desk.phone(devices.dev1)
     await desk.attach(phone)
     await desk.open(phone, 't1')
     await desk.drop(phone)
-    // Escape-dense and well past the per-device queue, in pieces main's window
-    // can hold, so the only loss is the queue's own.
     for (let burst = 0; burst < 12; burst += 1) {
       let lines = ''
       for (let i = 0; i < 400; i += 1) lines += `\x1b[3${i % 8}mburst ${burst} line ${i}\x1b[0m ${'y'.repeat(40)}\r\n`
@@ -538,23 +547,146 @@ describe('the neighbours of that fix', () => {
       desk.tick()
       await desk.settle()
     }
+    const before = desk.rooms.flatMap((r) => r.sent).length
     await desk.attach(phone)
+    const sent = desk.rooms.flatMap((r) => r.sent) as WirePayload[]
+    return { phone, sent, onAttach: sent.slice(before) }
+  }
+
+  type WirePayload = { kind?: string; chunks: Array<{ missed: number }> }
+  const reportsALoss = (p: WirePayload): boolean => p.kind === 'output' && p.chunks.some((c) => c.missed > 0)
+
+  it('keeps the newest output when a phone falls further behind than its queue holds, in one screen', async () => {
+    const { phone, sent, onAttach } = await fallBehind()
     const shown = plain(phone.output.t1)
     expect(shown).toContain('burst 11 line 399')
     expect(count(shown, 'burst 11 line 399')).toBe(1)
-    const sent = desk.rooms.flatMap((r) => r.sent)
-    // The loss is reported on the wire, whatever the phone then keeps of it...
-    expect(
-      sent.some(
-        (p) =>
-          (p as { kind?: string }).kind === 'output' &&
-          (p as { chunks: Array<{ missed: number }> }).chunks.some((c) => c.missed > 0),
-      ),
-    ).toBe(true)
-    // ...and nothing went out in a frame the relay would cut the connection over.
+    // What it was sent when it came back is one output payload holding a forget and the screen behind it,
+    // not the queue it missed. (Counters, not a clock: the queue held about thirty edits of 30 KB each.
+    // The status the bridge replays on attach is a frame of its own, and not output.)
+    const output = onAttach.filter((p) => p.kind === 'output')
+    expect(output).toHaveLength(1)
+    expect(output[0].chunks).toHaveLength(2)
+    // Nothing went out in a frame the relay would cut the connection over...
     for (const payload of sent) {
       expect(utf8Encode(JSON.stringify(payload)).length).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES)
     }
+    // ...and there is no loss to report: the phone is shown the whole screen as it stands, which is what
+    // opening the terminal shows. What scrolled by while it was away is history, not output it missed.
+    expect(sent.some(reportsALoss)).toBe(false)
+  })
+
+  // NEGATIVE CONTROL for the test above: with the resync switched off the bridge is today's, and the
+  // loss is reported on the wire, whatever the phone then keeps of it.
+  it('with the resync switched off, a phone that fell behind is sent the queue and told what it lost', async () => {
+    process.env[PHONE_RESYNC_DISABLE_FLAG] = '1'
+    const { phone, sent, onAttach } = await fallBehind()
+    const shown = plain(phone.output.t1)
+    expect(shown).toContain('burst 11 line 399')
+    expect(count(shown, 'burst 11 line 399')).toBe(1)
+    expect(onAttach.filter((p) => p.kind === 'output').flatMap((p) => p.chunks).length).toBeGreaterThan(2)
+    expect(sent.some(reportsALoss)).toBe(true)
+    for (const payload of sent) {
+      expect(utf8Encode(JSON.stringify(payload)).length).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES)
+    }
+  })
+})
+
+// Nothing on the wire says a frame arrived. A row the lost frame changed and no later frame repaints stays
+// wrong on the phone until something does -- unless the bridge, once the terminal has been quiet, rewrites
+// the live region (src/main/remoteBridge/phoneResync.ts). The phone here is the real session and parser out
+// of mobile/src with the store rule this file's first test keeps honest.
+describe('a frame the link lost', () => {
+  /** An Ink-style menu: every frame erases the rows the last one drew and writes all of them again, so
+   *  after the first it is only the status line that differs from what the bridge already sent. */
+  function menu(toggled: boolean, tick: number, previous: number): { bytes: string; rows: number } {
+    const lines = [
+      'Select models',
+      toggled ? '[x] opus' : '[ ] opus',
+      '[ ] sonnet',
+      '-'.repeat(30),
+      `status tick ${String(tick).padStart(5, '0')}`,
+    ]
+    let erase = ''
+    for (let i = 0; i < previous; i += 1) erase += `\x1b[2K${i < previous - 1 ? '\x1b[1A' : ''}`
+    if (previous > 0) erase += '\x1b[G'
+    return { bytes: `${erase}${lines.join('\r\n')}\r\n`, rows: lines.length + 1 }
+  }
+
+  /** Print one frame and let it travel. */
+  async function frame(bytes: string): Promise<void> {
+    desk.print('t1', bytes)
+    desk.tick()
+    await desk.settle()
+  }
+
+  async function menuWithALostToggle() {
+    await idleAgent()
+    const phone = desk.phone(devices.dev1)
+    await desk.attach(phone)
+    await desk.open(phone, 't1')
+    const room = desk.rooms.find((r) => r.phone === phone)!
+    const carry = room.send
+    let lose = false
+    let lost = 0
+    room.send = (payload) => {
+      if (lose) {
+        lose = false
+        lost += 1
+        return
+      }
+      carry(payload)
+    }
+    let rows = 0
+    let tick = 0
+    const draw = async (toggled: boolean): Promise<void> => {
+      const f = menu(toggled, (tick += 1), rows)
+      rows = f.rows
+      await frame(f.bytes)
+    }
+    // A fresh line to draw from: the agent's screen ends mid-row at its prompt.
+    await frame('\r\n')
+    await draw(false)
+    await draw(false)
+    lose = true
+    await draw(true)
+    await draw(true)
+    await draw(true)
+    return { phone, room, lost: () => lost, sentCount: () => room.sent.length }
+  }
+
+  it('is put right once the terminal has been quiet, and not before', async () => {
+    const { phone, lost, sentCount } = await menuWithALostToggle()
+    expect(lost()).toBe(1)
+    // The row the lost frame changed is still the old one: later frames repainted only the status line.
+    expect(plain(phone.output.t1)).toContain('[ ] opus')
+    expect(plain(phone.output.t1)).not.toContain('[x] opus')
+
+    const sentBefore = sentCount()
+    desk.clock.advance(QUIET_MS - 1)
+    expect(sentCount()).toBe(sentBefore)
+    expect(plain(phone.output.t1)).toContain('[ ] opus')
+
+    desk.clock.advance(1)
+    expect(plain(phone.output.t1)).toContain('[x] opus')
+    expect(plain(phone.output.t1)).not.toContain('[ ] opus')
+    // One rewrite, once.
+    expect(sentCount()).toBe(sentBefore + 1)
+    desk.clock.advance(60_000)
+    expect(sentCount()).toBe(sentBefore + 1)
+    // The menu is on the phone once: the rewrite replaced the old rows, it did not stack on them.
+    expect(count(plain(phone.output.t1), 'Select models')).toBe(1)
+  })
+
+  // NEGATIVE CONTROL: today. The row stays wrong for as long as nothing repaints it, and nothing is armed.
+  it('stays wrong with the resync switched off, and nothing runs while the terminal is quiet', async () => {
+    process.env[PHONE_RESYNC_DISABLE_FLAG] = '1'
+    const { phone, sentCount } = await menuWithALostToggle()
+    const sentBefore = sentCount()
+    desk.clock.advance(10 * QUIET_MS)
+    expect(sentCount()).toBe(sentBefore)
+    expect(plain(phone.output.t1)).toContain('[ ] opus')
+    expect(desk.clock.armed()).toBe(0)
   })
 })
 

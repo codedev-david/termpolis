@@ -205,6 +205,15 @@ export interface RemoteHost {
   setDeviceCapabilities(deviceId: string, capabilities: Capabilities): void
   verificationPhraseFor(deviceId: string): string | null
   noteTerminalOutput(terminalId: string): void
+  /** Send the phone everything the output pump is holding, NOW, instead of at its next tick.
+   *
+   *  Main calls this just before a terminal's pty is resized, while the size it reports is still
+   *  the old one. The pump reads a terminal's size as it SENDS a slice, so bytes that were drawn for
+   *  the old size and are still waiting for the tick would be emulated at the new one: the live
+   *  region of a TUI comes out garbled on the phone. `terminalId` says which terminal is about to
+   *  change; the pump has one flush for everything it holds, and reading another watched terminal a
+   *  few milliseconds early costs one slice. A no-op while Remote is off (there is no pump). */
+  flushTerminalOutput(terminalId: string): void
   noteTerminalClosed(terminalId: string): void
   /** Re-read `linkedInit()` and bring the bridge in line: start or stop it (it
    *  runs while Remote OR Linked machines is on), restart it when the kinds of
@@ -822,6 +831,11 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     noteTerminalOutput(terminalId: string): void {
       pump?.markDirty(terminalId)
       statusPump?.markDirty(terminalId)
+    },
+
+    // Bytes only: the status pump reads TEXT, which a size change does not alter.
+    flushTerminalOutput(): void {
+      pump?.flushNow()
     },
 
     noteTerminalClosed(terminalId: string): void {

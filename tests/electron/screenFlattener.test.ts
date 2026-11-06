@@ -283,17 +283,34 @@ describe('the geometry main reports', () => {
     expect(phone.text).toBe(`first line\n${'y'.repeat(20)}\n${'y'.repeat(10)}`)
   })
 
-  it('rejoins a wrapped row before replaying it into a wider grid', async () => {
+  it('rejoins a wrapped row the cursor is not on before replaying it into a wider grid', async () => {
     // The break exists only because of the OLD width. Replaying it verbatim
     // would freeze it into a grid that no longer has it, leaving the phone with
     // a hard break the desktop does not show -- and the cursor has to survive
     // the reflow too, or the next byte lands in the wrong cell.
     const phone = new Phone(new ScreenFlattener(20, 6))
     const long = 'wrapped-line-that-keeps-going-past-the-edge'
+    await phone.feed(`${long}\r\n$ `)
+    expect(phone.text).toBe([long.slice(0, 20), long.slice(20, 40), long.slice(40), '$'].join('\n'))
+    await phone.feed('!', { cols: 60, rows: 6 })
+    expect(phone.text).toBe(`${long}\n$ !`)
+  })
+
+  it('leaves the wrapped row the cursor IS on as the desktop does when the grid widens', async () => {
+    // This used to expect the line rejoined, and that was the flattener copying
+    // a reflow the desktop does not do. xterm 5.5.0 skips the wrapped line that
+    // holds the cursor when it reflows (Buffer._reflowLarger and _reflowSmaller:
+    // "If these lines contain the cursor don't touch them, the program will
+    // handle fixing up wrapped lines with the cursor"). The pane keeps the three
+    // rows, the phone is a copy of the pane, and a line the pane does not show
+    // is a garble -- so the split stays, and the next byte lands where the
+    // cursor is: at the end of the third row.
+    const phone = new Phone(new ScreenFlattener(20, 6))
+    const long = 'wrapped-line-that-keeps-going-past-the-edge'
     await phone.feed(long)
     expect(phone.text).toBe([long.slice(0, 20), long.slice(20, 40), long.slice(40)].join('\n'))
     await phone.feed('!', { cols: 60, rows: 6 })
-    expect(phone.text).toBe(`${long}!`)
+    expect(phone.text).toBe([long.slice(0, 20), long.slice(20, 40), `${long.slice(40)}!`].join('\n'))
   })
 
   it('ignores an implausible size rather than killing the emulator', async () => {

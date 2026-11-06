@@ -31,6 +31,8 @@ import type {
 } from '../../src/main/remoteBridge/relayClient'
 import { MAX_PAYLOAD_BYTES, type OutputPayload } from '../../src/main/remoteBridge/outputChunker'
 import { FORGET_FROM, formatGapMarker } from '../../src/main/remoteBridge/outputFanout'
+import { PHONE_RESYNC_DISABLE_FLAG, QUIET_MS, QUIET_TICK_MS } from '../../src/main/remoteBridge/phoneResync'
+import { manualClock, type ManualClock } from './fixtures/manualClock'
 
 // A real curve point: the core mints a Handshake against every paired device's
 // key the moment it opens that device's room, so a placeholder string no longer
@@ -100,7 +102,12 @@ function stubRoom(deps: RelayClientDeps) {
 
 function core(
   devices: PairedDevice[] = [],
-  { init = true, flattener }: { init?: boolean; flattener?: FlattenerLike } = {},
+  {
+    init = true,
+    flattener,
+    resync,
+    clock = manualClock(),
+  }: { init?: boolean; flattener?: FlattenerLike; resync?: boolean; clock?: ManualClock } = {},
 ) {
   const sent: BridgeToHost[] = []
   const rooms: ReturnType<typeof stubRoom>[] = []
@@ -110,6 +117,10 @@ function core(
     mcp: { callTool },
     relayUrl: 'wss://relay.test',
     flattener,
+    // What the quiet watch reads. A clock that only moves when a test moves it: a suite that is slow on a
+    // busy machine must never let a rewrite land between two of a test's own steps.
+    clock,
+    resync,
     // Pinned so the name in the ack is the harness's, not whatever machine is
     // running the suite.
     desktopName: 'Bench desktop',
@@ -122,7 +133,7 @@ function core(
   if (init) {
     c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices })
   }
-  return { c, sent, callTool, rooms }
+  return { c, sent, callTool, rooms, clock }
 }
 
 /** Attach a room the way the relay client would, so the core's own
@@ -1143,9 +1154,9 @@ describe('the screen for a phone opening a terminal', () => {
   }, 60_000)
 
   it('leaves a phone that is already current exactly as it was', async () => {
-    // A phone back from a tunnel is sent what queued while it was away, and may
-    // then open the terminal again. It holds the whole stream -- clearing it
-    // for the screen would throw away the history above the screen.
+    // A phone back from a tunnel is sent the screen as it stands (one per terminal it watches, not the
+    // edits it missed), and may then open the terminal again. What it holds is already that screen --
+    // drawing it again must not throw away or double anything.
     const h = twoPhones()
     await open(h, 'd1')
     await output(h, rows(2000), true)
@@ -1153,7 +1164,10 @@ describe('the screen for a phone opening a terminal', () => {
     await output(h, rows(20, 2000))
     attach(h.rooms[0])
     const current = onPhone(chunksIn(h.rooms[0]))
-    expect(current.text).toContain('row 0 of output here')
+    // What it holds is the NEWEST of the stream: the 32 KB tail the bridge keeps. The first rows of the
+    // 2,000 are history above it, which a phone that comes back no longer has (the same as a phone that
+    // opens a watched terminal today -- see phoneResync.ts).
+    expect(current.text).toContain('row 2019 of output here')
 
     await open(h, 'd1')
 
@@ -2200,5 +2214,857 @@ describe('a device unpairing itself', () => {
     const { c } = core([])
     const res = await c.handleRemoteRequest('never-paired', { id: 1, request: { kind: 'unpair' } })
     expect(res.kind).toBe('error')
+  })
+})
+
+// ── A phone that comes back, and a frame the link lost ───────────────────────────────────────────────
+//
+// The wire has no ack, so the desktop cannot learn that a phone went away holding an old copy, that it
+// fell behind, or that a frame never arrived. Three rules stand in for one (src/main/remoteBridge/
+// phoneResync.ts), each sending only chunks the shipped 1.1.0 app already applies. This is the bridge's
+// half of them. The phone is `onPhone`, the rule that app runs; what it has to end up showing is the
+// bridge's own emulator's screen (`real.snapshot`). Every count here is a counter -- payloads, chunks,
+// chars, intervals armed -- and every clock is the one the test moves.
+
+/** An Ink-style TUI, which is what an agent is: each frame erases the rows the last one occupied and
+ *  writes all of them again. A screen of it is a few rows that change, not lines that scroll -- and every
+ *  edit the bridge flattens it to starts at the first character that differs, so a panel with a ticking
+ *  header re-sends the whole panel. */
+class Tui {
+  private rowsDrawn = 0
+  frame(lines: string[]): string {
+    let erase = ''
+    for (let i = 0; i < this.rowsDrawn; i += 1) erase += `\x1b[2K${i < this.rowsDrawn - 1 ? '\x1b[1A' : ''}`
+    if (this.rowsDrawn > 0) erase += '\x1b[G'
+    this.rowsDrawn = lines.length + 1
+    return `${erase}${lines.join('\r\n')}\r\n`
+  }
+}
+
+/** Six sub-agents under a header that ticks. */
+function panel(tick: number): string[] {
+  return [
+    `Running 6 agents (${tick}s)`,
+    ...Array.from({ length: 6 }, (_, a) => `  agent-${a} ${'#'.repeat((tick + a) % 12).padEnd(12, '.')} ${((tick + a) * 7) % 100}%`),
+    '> ',
+  ]
+}
+
+/** A model picker. After its first frame only the status line differs from what the bridge sent, so a
+ *  row the link lost stays wrong until something repaints it. */
+function menu(toggled: boolean, tick: number): string[] {
+  return [
+    'Select models',
+    toggled ? '[x] opus' : '[ ] opus',
+    '[ ] sonnet',
+    '-'.repeat(30),
+    `status tick ${String(tick).padStart(5, '0')}`,
+  ]
+}
+
+/** The bridge with a REAL emulator the test can ask what the screen is, and the phones paired to it,
+ *  attached and watching nothing yet. */
+function bench(
+  options: { resync?: boolean; devices?: string[]; size?: TerminalSize; snapshotOf?: (id: string) => ReturnType<ScreenFlattener['snapshot']> | undefined } = {},
+) {
+  const real = new ScreenFlattener()
+  const flattener: FlattenerLike = {
+    feed: (id, raw, size) => real.feed(id, raw, size),
+    snapshot: (id) => {
+      const standIn = options.snapshotOf?.(id)
+      return standIn === undefined ? real.snapshot(id) : standIn
+    },
+    forget: (id) => real.forget(id),
+    forgetAll: () => real.forgetAll(),
+    liveRegion: (id) => real.liveRegion(id),
+  }
+  const size = options.size ?? { cols: 60, rows: 40 }
+  const h = core((options.devices ?? ['d1']).map((id) => device(id)), { flattener, resync: options.resync })
+  let requestId = 1_000
+  return {
+    h,
+    real,
+    room: h.rooms[0],
+    clock: h.clock,
+    subscribe: (deviceId: string, terminalId = 't1') =>
+      h.c.handleRemoteRequest(deviceId, { id: (requestId += 1), request: { kind: 'subscribe', terminalId } }),
+    unsubscribe: (deviceId: string, terminalId = 't1') =>
+      h.c.handleRemoteRequest(deviceId, { id: (requestId += 1), request: { kind: 'unsubscribe', terminalId } }),
+    /** One slice from main, flattened and fanned out before this returns. */
+    async print(terminalId: string, output: string, extra: { reset?: boolean; missed?: number } = {}): Promise<void> {
+      h.c.handleHostMessage({
+        kind: 'terminalOutput',
+        terminalId,
+        slice: { output, nextOffset: 0, missed: extra.missed ?? 0 },
+        size,
+        ...(extra.reset ? { reset: true } : {}),
+      })
+      await h.c.settled()
+    },
+    /** The phone's link drops. The desktop keeps its seat and waits. */
+    leave(room = h.rooms[0]): void {
+      room.state = 'offline'
+      room.deps.onStateChange('offline')
+    },
+  }
+}
+
+describe('a phone that comes back', () => {
+  /** A phone that watched a panel of agents, went into a tunnel, and came back after `ticks` repaints. */
+  async function awayFor(ticks: number, options: { resync?: boolean } = {}) {
+    const b = bench(options)
+    attach(b.room)
+    await b.subscribe('d1')
+    const tui = new Tui()
+    // Main's opening read, as it is when a phone opens a terminal.
+    await b.print('t1', tui.frame(panel(0)), { reset: true })
+    const kept = onPhone(chunksIn(b.room))
+    b.leave()
+    b.room.sent.length = 0
+    for (let tick = 1; tick <= ticks; tick += 1) await b.print('t1', tui.frame(panel(tick)))
+    // Held for it, as always: the queue is what a link that comes and goes is for.
+    expect(b.room.sent).toHaveLength(0)
+    attach(b.room)
+    return { ...b, kept }
+  }
+
+  it('a device that re-attaches is sent one screen and none of the edits it missed', async () => {
+    const { real, room, kept } = await awayFor(40)
+    const screen = real.snapshot('t1')!
+
+    // One payload, holding a forget and the screen behind it: not the forty repaints it missed.
+    expect(room.sent).toHaveLength(1)
+    expect(chunksIn(room)).toHaveLength(2)
+    expect(chunksIn(room).reduce((n, c) => n + c.chunk.length, 0)).toBe(screen.text.length)
+    // What it then shows is the screen as it stands, in the numbering every later edit applies to.
+    const shown = onPhone(chunksIn(room), kept)
+    expect(shown.text).toBe(screen.text)
+    expect(shown.end).toBe(screen.replaceFrom + screen.text.length)
+  })
+
+  // NEGATIVE CONTROL: today. The same phone is flushed every edit it missed -- each one the whole panel,
+  // because the header ticks -- and ends up showing the same screen, for a great deal more.
+  it('CONTROL: with the resync switched off it is sent every edit it missed, as before', async () => {
+    const { real, room, kept } = await awayFor(40, { resync: false })
+    const screen = real.snapshot('t1')!
+    expect(chunksIn(room).length).toBeGreaterThanOrEqual(40)
+    expect(chunksIn(room).reduce((n, c) => n + c.chunk.length, 0)).toBeGreaterThan(10 * screen.text.length)
+    expect(onPhone(chunksIn(room), kept).text).toBe(screen.text)
+  })
+
+  it('is sent one screen per terminal it watches, and only those', async () => {
+    const b = bench()
+    attach(b.room)
+    await b.subscribe('d1', 't1')
+    await b.subscribe('d1', 't2')
+    const one = new Tui()
+    const two = new Tui()
+    await b.print('t1', one.frame(panel(0)), { reset: true })
+    await b.print('t2', two.frame(panel(100)), { reset: true })
+    // A third terminal the phone never opened: its output is nobody's business here.
+    await b.print('t3', 'SECRET=hunter2', { reset: true })
+    const of = (terminalId: string) => chunksIn(b.room).filter((c) => c.terminalId === terminalId)
+    const kept = { t1: onPhone(of('t1')), t2: onPhone(of('t2')) }
+    b.leave()
+    b.room.sent.length = 0
+    for (let tick = 1; tick <= 25; tick += 1) {
+      await b.print('t1', one.frame(panel(tick)))
+      await b.print('t2', two.frame(panel(100 + tick)))
+    }
+    attach(b.room)
+
+    expect(b.room.sent).toHaveLength(1)
+    expect(chunksIn(b.room)).toHaveLength(4)
+    expect(chunksIn(b.room).some((c) => c.terminalId === 't3')).toBe(false)
+    expect(onPhone(of('t1').slice(-2), kept.t1).text).toBe(b.real.snapshot('t1')!.text)
+    expect(onPhone(of('t2').slice(-2), kept.t2).text).toBe(b.real.snapshot('t2')!.text)
+  })
+
+  it('keeps what is queued for a terminal the bridge holds no screen for', async () => {
+    // Fail open: with nothing to draw the screen from, the edits are all there is, and they go as before.
+    const b = bench({ snapshotOf: (id) => (id === 't2' ? null : undefined) })
+    attach(b.room)
+    await b.subscribe('d1', 't2')
+    const tui = new Tui()
+    await b.print('t2', tui.frame(panel(0)), { reset: true })
+    const kept = onPhone(chunksIn(b.room))
+    b.leave()
+    b.room.sent.length = 0
+    for (let tick = 1; tick <= 6; tick += 1) await b.print('t2', tui.frame(panel(tick)))
+    attach(b.room)
+    expect(chunksIn(b.room).length).toBeGreaterThanOrEqual(6)
+    expect(onPhone(chunksIn(b.room), kept).text).toBe(b.real.snapshot('t2')!.text)
+  })
+
+  it('sends nothing to a device that was watching nothing', async () => {
+    const b = bench()
+    attach(b.room)
+    b.leave()
+    attach(b.room)
+    expect(b.room.sent).toEqual([])
+  })
+
+  it('leaves everything as it was when the emulator cannot give a screen, and throws nothing', async () => {
+    // Fail open: the screen is a better way to catch a phone up, never the only one.
+    const real = new ScreenFlattener()
+    let broken = false
+    const h = core([device('d1')], {
+      flattener: {
+        feed: (id, raw, size) => real.feed(id, raw, size),
+        snapshot: (id) => {
+          if (broken) throw new Error('emulator gave up')
+          return real.snapshot(id)
+        },
+        forget: (id) => real.forget(id),
+        forgetAll: () => real.forgetAll(),
+        liveRegion: (id) => real.liveRegion(id),
+      },
+    })
+    attach(h.rooms[0])
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    const tui = new Tui()
+    const send = async (lines: string[], reset = false): Promise<void> => {
+      h.c.handleHostMessage({
+        kind: 'terminalOutput',
+        terminalId: 't1',
+        slice: { output: tui.frame(lines), nextOffset: 0, missed: 0 },
+        size: { cols: 60, rows: 40 },
+        ...(reset ? { reset: true } : {}),
+      })
+      await h.c.settled()
+    }
+    await send(panel(0), true)
+    const kept = onPhone(chunksIn(h.rooms[0]))
+    h.rooms[0].state = 'offline'
+    h.rooms[0].sent.length = 0
+    broken = true
+    // More than the sixteen a queue is held to: the collapse asks for a screen, is refused, and the
+    // queue is what it always was.
+    for (let tick = 1; tick <= 20; tick += 1) await send(panel(tick))
+    expect(() => attach(h.rooms[0])).not.toThrow()
+    expect(chunksIn(h.rooms[0]).length).toBeGreaterThanOrEqual(20)
+    broken = false
+    expect(onPhone(chunksIn(h.rooms[0]), kept).text).toBe(real.snapshot('t1')!.text)
+  })
+
+  it('loses the history above the screen, as a phone opening a watched terminal does today', async () => {
+    // The honest limit: it keeps the 32 KB tail the bridge keeps, and no more. What it is shown is exactly
+    // what a phone that opens the terminal NOW is shown.
+    const b = bench({ devices: ['d1', 'd2'] })
+    attach(b.room)
+    attach(b.h.rooms[1])
+    await b.subscribe('d1')
+    await b.print('t1', rows(2000), { reset: true })
+    expect(onPhone(chunksIn(b.room)).text).toContain('row 0 of output here')
+    b.leave()
+    await b.print('t1', rows(20, 2000))
+    attach(b.room)
+    await b.subscribe('d2')
+
+    const back = onPhone(chunksIn(b.room))
+    const fresh = onPhone(chunksIn(b.h.rooms[1]))
+    expect(back).toEqual(fresh)
+    expect(back.text).toContain('row 2019 of output here')
+    expect(back.text).not.toContain('row 0 of output here')
+    expect(back.text.length).toBeLessThan(40_000)
+  }, 60_000)
+})
+
+describe('a phone that stays away', () => {
+  async function away(options: { resync?: boolean } = {}) {
+    const b = bench(options)
+    attach(b.room)
+    await b.subscribe('d1')
+    const tui = new Tui()
+    await b.print('t1', tui.frame(panel(0)), { reset: true })
+    const kept = onPhone(chunksIn(b.room))
+    b.leave()
+    b.room.sent.length = 0
+    for (let tick = 1; tick <= 60; tick += 1) await b.print('t1', tui.frame(panel(tick)))
+    return { ...b, kept }
+  }
+
+  it('is held to one screen and a few edits, not to every edit it has missed', async () => {
+    const { h, real, kept } = await away()
+    // Sixty repaints went by. What waits for the phone is what a lagging device is held to: at most
+    // sixteen chunks of a terminal, however long it stays away...
+    const queued = h.c.drainOutput('d1')
+    expect(queued.length).toBeLessThanOrEqual(16)
+    // ...and applied to the copy it left with, it is the screen as it stands.
+    expect(onPhone(queued, kept).text).toBe(real.snapshot('t1')!.text)
+  })
+
+  // NEGATIVE CONTROL: today it waits with every edit it missed.
+  it('CONTROL: with the resync switched off the queue holds every edit', async () => {
+    const { h, real, kept } = await away({ resync: false })
+    const queued = h.c.drainOutput('d1')
+    expect(queued.length).toBeGreaterThanOrEqual(60)
+    expect(onPhone(queued, kept).text).toBe(real.snapshot('t1')!.text)
+  })
+})
+
+describe('a frame the link lost', () => {
+  /** A menu on screen, and the link loses exactly the frame that toggles its second row. Later frames
+   *  repaint the status line only, so nothing repaints the row the lost frame changed. */
+  async function lostToggle(options: { resync?: boolean; size?: TerminalSize; history?: number } = {}) {
+    const b = bench({ resync: options.resync, size: options.size })
+    attach(b.room)
+    await b.subscribe('d1')
+    let lose = false
+    let lost = 0
+    const carry = b.room.send.bind(b.room)
+    b.room.send = (payload: unknown) => {
+      if (lose) {
+        lose = false
+        lost += 1
+        return
+      }
+      carry(payload)
+    }
+    const history = Array.from({ length: options.history ?? 10 }, (_, i) => `h${String(i).padStart(3, '0')} ${'x'.repeat(20)}\r\n`).join('')
+    await b.print('t1', history, { reset: true })
+    const tui = new Tui()
+    let tick = 0
+    const draw = (toggled: boolean): Promise<void> => b.print('t1', tui.frame(menu(toggled, (tick += 1))))
+    await draw(false)
+    await draw(false)
+    lose = true
+    await draw(true)
+    await draw(true)
+    await draw(true)
+    return { ...b, lost: () => lost, draw }
+  }
+
+  it('a dropped frame heals once the terminal is quiet', async () => {
+    const { real, room, clock, lost } = await lostToggle()
+    expect(lost()).toBe(1)
+    const truth = real.snapshot('t1')!
+    // The loss mattered: the row it changed is still the old one.
+    const wrong = onPhone(chunksIn(room))
+    expect(wrong.text).toContain('[ ] opus')
+    expect(wrong.text).not.toBe(truth.text)
+
+    const before = room.sent.length
+    clock.advance(QUIET_MS - 1)
+    expect(room.sent).toHaveLength(before)
+    clock.advance(1)
+
+    // One payload of at most two chunks (a forget, and the live region -- here the whole screen)...
+    expect(room.sent).toHaveLength(before + 1)
+    expect(room.sent[before].chunks.length).toBeLessThanOrEqual(2)
+    // ...and the phone shows what the bridge's own screen shows.
+    const healed = onPhone(chunksIn(room))
+    expect(healed.text).toBe(truth.text)
+    expect(healed.end).toBe(truth.replaceFrom + truth.text.length)
+    expect(healed.text).toContain('[x] opus')
+    expect(healed.text).not.toContain('[ ] opus')
+    // Once, not once per tick: a quiet terminal is not nagged.
+    clock.advance(100 * QUIET_MS)
+    expect(room.sent).toHaveLength(before + 1)
+    expect(clock.armed()).toBe(0)
+  })
+
+  // NEGATIVE CONTROL: today. Nothing is armed, nothing is sent, and the row stays wrong.
+  it('CONTROL: with the resync switched off the row stays wrong however long the terminal is quiet', async () => {
+    const { real, room, clock } = await lostToggle({ resync: false })
+    const before = room.sent.length
+    expect(clock.armed()).toBe(0)
+    clock.advance(100 * QUIET_MS)
+    expect(room.sent).toHaveLength(before)
+    expect(onPhone(chunksIn(room)).text).toContain('[ ] opus')
+    expect(onPhone(chunksIn(room)).text).not.toBe(real.snapshot('t1')!.text)
+  })
+
+  it('rewrites the live region only, when rows have scrolled out above it', async () => {
+    const { real, room, clock } = await lostToggle({ size: { cols: 40, rows: 8 }, history: 30 })
+    const live = real.liveRegion('t1')!
+    const truth = real.snapshot('t1')!
+    // Rows are settled above the screen: they are permanent, and a rewrite must not touch them.
+    expect(live.replaceFrom).toBeGreaterThan(0)
+    expect(onPhone(chunksIn(room)).text).toContain('[ ] opus')
+
+    const before = room.sent.length
+    clock.advance(QUIET_MS)
+    expect(room.sent).toHaveLength(before + 1)
+    const rewrite = room.sent[before].chunks
+    // A single chunk, anchored where the live region starts, carrying the live region and nothing above it.
+    expect(rewrite).toHaveLength(1)
+    expect(rewrite[0]).toMatchObject({ chunk: live.text, replaceFrom: live.replaceFrom, missed: 0 })
+    expect(rewrite[0].chunk.length).toBeLessThan(truth.text.length / 2)
+    const healed = onPhone(chunksIn(room))
+    expect(healed.text).toBe(truth.text)
+    expect(healed.text).toContain('[x] opus')
+  })
+
+  it('is not sent while the terminal keeps printing', async () => {
+    const { room, clock, draw } = await lostToggle()
+    const before = room.sent.length
+    // A frame every 1.5 s: never quiet for the 2 s it takes.
+    for (let i = 0; i < 12; i += 1) {
+      clock.advance(1_500)
+      await draw(true)
+    }
+    expect(room.sent).toHaveLength(before + 12)
+    expect(chunksIn(room).slice(-12).every((c) => c.replaceFrom !== FORGET_FROM)).toBe(true)
+  })
+
+  it('is not queued for a phone that is away, which is given the screen when it comes back', async () => {
+    const { real, room, clock, leave } = await lostToggle()
+    const before = room.sent.length
+    leave()
+    clock.advance(100 * QUIET_MS)
+    expect(room.sent).toHaveLength(before)
+
+    attach(room)
+    // The attach is what heals it: one payload, one screen.
+    expect(room.sent).toHaveLength(before + 1)
+    expect(room.sent[before].chunks).toHaveLength(2)
+    expect(onPhone(chunksIn(room)).text).toBe(real.snapshot('t1')!.text)
+  })
+
+  describe('and a phone whose room was never opened', () => {
+    /** A bridge on `relayUrl` with one paired phone, watching t1 that has printed one line. A relay that is
+     *  not secure is never dialled: the phone stays paired and watching, and there is no room for it. */
+    async function watched(relayUrl: string) {
+      const clock = manualClock()
+      const rooms: ReturnType<typeof stubRoom>[] = []
+      const c = createBridgeCore({
+        send: () => undefined,
+        mcp: { callTool: vi.fn().mockResolvedValue({ terminals: [] }) },
+        relayUrl,
+        clock,
+        desktopName: 'Bench desktop',
+        openRelay: (d) => {
+          const room = stubRoom(d)
+          rooms.push(room)
+          return room
+        },
+      })
+      c.handleHostMessage({ kind: 'init', mcpPort: 1, mcpToken: 't', identitySecretKey: DESKTOP_SECRET, devices: [device('d1')] })
+      await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+      c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'hello', nextOffset: 5, missed: 0 } })
+      await c.settled()
+      return { c, clock, rooms }
+    }
+
+    it('is skipped for it: nothing is queued for a phone that cannot be sent to, and nothing throws', async () => {
+      const { c, clock, rooms } = await watched('ws://relay.test')
+      expect(rooms).toHaveLength(0)
+      // What waits for it is the line that printed, and the quiet watch is running.
+      expect(c.drainOutput('d1').map((chunk) => chunk.chunk).join('')).toContain('hello')
+      expect(clock.armed()).toBe(1)
+      expect(() => clock.advance(10 * QUIET_MS)).not.toThrow()
+      expect(clock.armed()).toBe(0)
+      // The quiet period added nothing to what waits for a phone that cannot be sent to.
+      expect(c.drainOutput('d1')).toEqual([])
+    })
+
+    // NEGATIVE CONTROL: the same phone with a room that is open gets its rewrite when the terminal is quiet.
+    it('CONTROL: with its room open the same phone is sent the rewrite', async () => {
+      const { c, clock, rooms } = await watched('wss://relay.test')
+      expect(rooms).toHaveLength(1)
+      attach(rooms[0])
+      rooms[0].sent.length = 0
+      clock.advance(QUIET_MS)
+      expect(rooms[0].sent).toHaveLength(1)
+      expect(c.drainOutput('d1')).toEqual([])
+    })
+  })
+
+  it('is not sent for a terminal nobody watches any more, and nothing is left running', async () => {
+    const { room, clock, unsubscribe, h } = await lostToggle()
+    const before = room.sent.length
+    await unsubscribe('d1')
+    clock.advance(100 * QUIET_MS)
+    expect(room.sent).toHaveLength(before)
+
+    // Shutdown leaves no interval behind either.
+    const again = await lostToggle()
+    expect(again.clock.armed()).toBe(1)
+    again.h.c.handleHostMessage({ kind: 'shutdown' })
+    expect(again.clock.armed()).toBe(0)
+    h.c.handleHostMessage({ kind: 'shutdown' })
+  })
+
+  it('arms nothing at all until a watched terminal prints', async () => {
+    const b = bench()
+    attach(b.room)
+    await b.subscribe('d1')
+    expect(b.clock.armed()).toBe(0)
+    // And not for one nobody watches.
+    await b.print('t9', 'stray output')
+    expect(b.clock.armed()).toBe(0)
+    expect(b.clock.ticks()).toBe(0)
+  })
+
+  it('does not throw out of a timer when the emulator cannot give the live region', async () => {
+    const real = new ScreenFlattener()
+    const h = core([device('d1')], {
+      flattener: {
+        feed: (id, raw, size) => real.feed(id, raw, size),
+        snapshot: (id) => real.snapshot(id),
+        forget: (id) => real.forget(id),
+        forgetAll: () => real.forgetAll(),
+        liveRegion: () => {
+          throw new Error('emulator gave up')
+        },
+      },
+    })
+    attach(h.rooms[0])
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    h.c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'hello', nextOffset: 5, missed: 0 } })
+    await h.c.settled()
+    h.rooms[0].sent.length = 0
+    expect(() => h.clock.advance(10 * QUIET_MS)).not.toThrow()
+    expect(h.rooms[0].sent).toEqual([])
+  })
+
+  it('is not attempted for an emulator that has no live region to give', async () => {
+    // A stand-in without one -- every fixture above this file's own -- is simply never healed.
+    const real = new ScreenFlattener()
+    const h = core([device('d1')], {
+      flattener: {
+        feed: (id, raw, size) => real.feed(id, raw, size),
+        snapshot: (id) => real.snapshot(id),
+        forget: (id) => real.forget(id),
+        forgetAll: () => real.forgetAll(),
+      },
+    })
+    attach(h.rooms[0])
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    h.c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output: 'hello', nextOffset: 5, missed: 0 } })
+    await h.c.settled()
+    h.rooms[0].sent.length = 0
+    h.clock.advance(10 * QUIET_MS)
+    expect(h.rooms[0].sent).toEqual([])
+  })
+
+  it('is not attempted for a terminal whose emulator was let go meanwhile', async () => {
+    const { room, clock, h } = await lostToggle()
+    const before = room.sent.length
+    // The last watcher leaves and another terminal is opened: t1's grid is gone when the quiet period ends.
+    await h.c.handleRemoteRequest('d1', { id: 99, request: { kind: 'unsubscribe', terminalId: 't1' } })
+    clock.advance(10 * QUIET_MS)
+    expect(room.sent).toHaveLength(before)
+  })
+
+  describe('and a gap notice on the phone', () => {
+    const SMALL: TerminalSize = { cols: 40, rows: 8 }
+
+    /** A phone watching a screen with rows settled above it, shown a loss main reported. */
+    async function gapped(extra: { text?: string; missed?: number } = {}) {
+      const b = bench({ size: SMALL })
+      attach(b.room)
+      await b.subscribe('d1')
+      await b.print('t1', rows(30), { reset: true })
+      await b.print('t1', extra.text ?? 'what is left of the line', { missed: extra.missed ?? 5_000 })
+      expect(onPhone(chunksIn(b.room)).text).toContain('output skipped')
+      return b
+    }
+
+    it('is not rewritten when the notice is inside the live region: the notice stays, the copy is no worse', async () => {
+      const b = await gapped()
+      expect(b.real.liveRegion('t1')!.replaceFrom).toBeGreaterThan(0)
+      const before = b.room.sent.length
+      b.clock.advance(100 * QUIET_MS)
+      expect(b.room.sent).toHaveLength(before)
+      expect(onPhone(chunksIn(b.room)).text).toContain('output skipped')
+    })
+
+    it('is not rewritten when the notice sits at a place nobody can name', async () => {
+      // A loss that came with no edit at all has no anchor: where it was drawn is the end of the phone's
+      // copy at the time, which the bridge does not track.
+      const b = await gapped({ text: '', missed: 100 })
+      const before = b.room.sent.length
+      b.clock.advance(100 * QUIET_MS)
+      expect(b.room.sent).toHaveLength(before)
+    })
+
+    it('is not rewritten when the screen starts at 0: a forget would wipe the notice unread', async () => {
+      const b = bench()
+      attach(b.room)
+      await b.subscribe('d1')
+      await b.print('t1', 'just a prompt', { reset: true })
+      await b.print('t1', ' and more', { missed: 5_000 })
+      expect(b.real.liveRegion('t1')!.replaceFrom).toBe(0)
+      const before = b.room.sent.length
+      b.clock.advance(100 * QUIET_MS)
+      expect(b.room.sent).toHaveLength(before)
+      expect(onPhone(chunksIn(b.room)).text).toContain('output skipped')
+    })
+
+    it('is rewritten once the notice has scrolled out above the live region, and the notice is kept', async () => {
+      const b = await gapped()
+      // More rows than the screen holds: the notice's row is settled now, above everything a rewrite touches.
+      await b.print('t1', `\r\n${rows(20, 30)}`)
+      const before = b.room.sent.length
+      b.clock.advance(QUIET_MS)
+      expect(b.room.sent).toHaveLength(before + 1)
+      const rewrite = b.room.sent[before].chunks
+      const live = b.real.liveRegion('t1')!
+      expect(rewrite).toHaveLength(1)
+      expect(rewrite[0]).toMatchObject({ chunk: live.text, replaceFrom: live.replaceFrom, missed: 0 })
+      const shown = onPhone(chunksIn(b.room))
+      // The notice is still there for the user to read, and the live region is exactly the emulator's.
+      expect(shown.text).toContain('output skipped')
+      expect(shown.text.endsWith(live.text)).toBe(true)
+    })
+
+    it('is rewritten again after a whole new screen replaced the copy, notice and all', async () => {
+      const b = await gapped()
+      b.leave()
+      attach(b.room)
+      expect(onPhone(chunksIn(b.room)).text).not.toContain('output skipped')
+      // New output and a quiet period: the copy holds no notice now, so nothing stops a rewrite.
+      await b.print('t1', ' and then more')
+      b.room.sent.length = 0
+      b.clock.advance(QUIET_MS)
+      expect(b.room.sent).toHaveLength(1)
+    })
+  })
+})
+
+// Whatever frames the link loses, once the terminal is quiet the phone shows the bridge's live region. The
+// scenarios are random (a seeded generator, so a failure names the seed that reproduces it), made of the
+// frames an agent's TUI really sends -- panels that tick in place, and ones that grow and shrink -- and each
+// loses a few payloads at random while the phone stays attached.
+//
+// What it does NOT claim, and the test below it says out loud: that the whole copy is right. A lost frame that
+// changed the LENGTH of the stream leaves the phone's text shorter than its end mark says, so every later edit
+// (the rewrite included) cuts that much too early. The live region is put right all the same; the hole above it
+// stays until the next attach replaces the copy.
+describe('a frame the link lost, whatever it was', () => {
+  function seeded(seed: number): () => number {
+    let a = seed >>> 0
+    return () => {
+      a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+
+  /** One scenario: history, then frames, a random few of whose payloads never reach the phone, then quiet. */
+  async function scenario(seed: number, resync: boolean) {
+    const next = seeded(seed)
+    const size: TerminalSize = { cols: 30 + Math.floor(next() * 50), rows: 6 + Math.floor(next() * 20) }
+    const b = bench({ resync, size })
+    attach(b.room)
+    await b.subscribe('d1')
+    let lose = false
+    let lost = 0
+    const carry = b.room.send.bind(b.room)
+    b.room.send = (payload: unknown) => {
+      if (lose) {
+        lose = false
+        lost += 1
+        return
+      }
+      carry(payload)
+    }
+    const history = Array.from({ length: Math.floor(next() * 40) }, (_, i) => `h${String(i).padStart(3, '0')} ${'x'.repeat(Math.floor(next() * 20))}\r\n`)
+    await b.print('t1', history.join(''), { reset: true })
+    const tui = new Tui()
+    const toggles = Array.from({ length: 2 + Math.floor(next() * 4) }, () => next() < 0.5)
+    const frames = 4 + Math.floor(next() * 12)
+    const pLose = 0.1 + next() * 0.3
+    let lastFrame = ''
+    for (let tick = 1; tick <= frames; tick += 1) {
+      const kind = next()
+      let lines: string[]
+      if (kind < 0.5) {
+        // A panel whose rows come and go: the frame that changes the length of the stream.
+        const agents = 2 + Math.floor(next() * 5)
+        lines = [
+          `Running ${agents} agents (${tick}s)`,
+          ...Array.from({ length: agents }, (_, a) => `  agent-${a} ${'#'.repeat((tick + a) % 12).padEnd(12, '.')} ${((tick + a) * 7) % 100}%`),
+          '> ',
+        ]
+      } else {
+        const flip = Math.floor(next() * toggles.length)
+        toggles[flip] = !toggles[flip]
+        lines = ['Select models', ...toggles.map((on, i) => `${on ? '[x]' : '[ ]'} option-${i}`), '-'.repeat(20), `status tick ${String(tick).padStart(5, '0')}`]
+      }
+      lose = next() < pLose
+      lastFrame = lines.map((line) => line.trimEnd()).join('\n')
+      await b.print('t1', tui.frame(lines))
+      lose = false
+    }
+    const truth = b.real.snapshot('t1')!
+    const end = truth.replaceFrom + truth.text.length
+    const sentBefore = b.room.sent.length
+    const diverged = onPhone(chunksIn(b.room)).text !== truth.text
+    b.clock.advance(QUIET_MS + QUIET_TICK_MS)
+    const after = onPhone(chunksIn(b.room))
+    // What the last frame drew, as the bridge's own screen ends with it: an oracle that needs nothing the
+    // bridge of today lacks, so the control below can run against it. Only meaningful for a frame that fits
+    // the viewport: a taller one scrolls its first rows into the settled text, which no rewrite reaches.
+    const drawn = truth.text.slice(truth.text.length - lastFrame.length)
+    const fits = lastFrame.split('\n').length + 1 <= size.rows
+    return {
+      lost,
+      diverged,
+      fits,
+      /** The phone shows what the last frame drew, and agrees where the stream ends. */
+      bottomRight: after.text.endsWith(drawn) && after.end === end,
+      /** The stronger oracle, the bridge's whole live region. Null where the emulator has none to give. */
+      liveRight: (() => {
+        const live = b.real.liveRegion?.('t1') ?? null
+        return live === null ? null : after.text.endsWith(live.text) && after.end === end
+      })(),
+      exact: after.text === truth.text,
+      payloadsToHeal: b.room.sent.length - sentBefore,
+      armed: b.clock.armed(),
+    }
+  }
+
+  const SEEDS = Array.from({ length: 60 }, (_, i) => i + 1)
+
+  it('puts the live region right in every scenario, with one payload at most and nothing left running', async () => {
+    let lossy = 0
+    let wrongBefore = 0
+    let exact = 0
+    for (const seed of SEEDS) {
+      const s = await scenario(seed, true)
+      if (s.lost === 0) continue
+      lossy += 1
+      if (s.diverged) wrongBefore += 1
+      if (s.exact) exact += 1
+      // The seed is in the message: it is the whole reproduction.
+      expect(s.liveRight, `seed ${seed}`).toBe(true)
+      if (s.fits) expect(s.bottomRight, `seed ${seed}`).toBe(true)
+      expect(s.payloadsToHeal, `seed ${seed}`).toBeLessThanOrEqual(1)
+      expect(s.armed, `seed ${seed}`).toBe(0)
+    }
+    // The scenarios are not vacuous: most lost something, and most of those left the copy wrong before the rewrite.
+    expect(lossy).toBeGreaterThanOrEqual(40)
+    expect(wrongBefore).toBeGreaterThanOrEqual(20)
+    expect(exact).toBeGreaterThan(0)
+  }, 120_000)
+
+  // NEGATIVE CONTROL: today. The same scenarios, the same lost payloads, nothing sent when the terminal is quiet:
+  // the live region is left wrong in a good share of them.
+  it('CONTROL: with the resync switched off the live region is left wrong in many of them', async () => {
+    let wrong = 0
+    for (const seed of SEEDS) {
+      const s = await scenario(seed, false)
+      if (s.lost === 0) continue
+      expect(s.payloadsToHeal, `seed ${seed}`).toBe(0)
+      if (s.fits && !s.bottomRight) wrong += 1
+    }
+    expect(wrong).toBeGreaterThanOrEqual(10)
+  }, 120_000)
+})
+
+describe('the quiet watch is an extra: it comes after the pump', () => {
+  /** A clock that cannot give its first `refuse` intervals (a throw, as a timer that cannot be had would
+   *  be), noting how many payloads the phone had been sent each time it was asked for one. */
+  function wary(refuse: number) {
+    const clock = manualClock()
+    const give = clock.setInterval.bind(clock)
+    const asked: number[] = []
+    let phone: { sent: unknown[] } | null = null
+    clock.setInterval = (fn, ms) => {
+      asked.push(phone === null ? -1 : phone.sent.length)
+      if (asked.length <= refuse) throw new Error('no timer to be had')
+      return give(fn, ms)
+    }
+    return {
+      clock,
+      asked,
+      /** A phone watching t1, and the bridge it is on. */
+      async bridge(options: { resync?: boolean } = {}) {
+        const h = core([device('d1')], { clock, resync: options.resync })
+        phone = h.rooms[0]
+        attach(h.rooms[0])
+        await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+        return h
+      },
+    }
+  }
+
+  async function slice(h: Awaited<ReturnType<ReturnType<typeof wary>['bridge']>>, output: string): Promise<void> {
+    h.c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output, nextOffset: output.length, missed: 0 } })
+    await h.c.settled()
+  }
+
+  it('sends the slice before it so much as asks the clock for an interval', async () => {
+    const w = wary(0)
+    const h = await w.bridge()
+    const before = h.rooms[0].sent.length
+    await slice(h, 'hello')
+    // Asked once -- and by then the phone had already been sent what the slice drew.
+    expect(w.asked).toHaveLength(1)
+    expect(w.asked[0]).toBeGreaterThan(before)
+    expect(onPhone(chunksIn(h.rooms[0])).text).toContain('hello')
+  })
+
+  it('sends the slice even when the clock cannot give an interval, and asks again with the next one', async () => {
+    const w = wary(1)
+    const h = await w.bridge()
+    await slice(h, 'hello')
+    // The refusal went where every failure in that chain goes, and after the phone had its slice.
+    expect(w.asked).toHaveLength(1)
+    expect(onPhone(chunksIn(h.rooms[0])).text).toContain('hello')
+    expect(w.clock.armed()).toBe(0)
+    // Nothing is left believing it is armed: the next slice asks again, and gets one.
+    await slice(h, ' world')
+    expect(w.asked).toHaveLength(2)
+    expect(w.clock.armed()).toBe(1)
+    expect(onPhone(chunksIn(h.rooms[0])).text).toContain('hello world')
+  })
+
+  // NEGATIVE CONTROL: today's bridge never asks a clock for anything, so a clock that refuses cannot matter.
+  it('CONTROL: with the resync switched off the clock is never asked, and the slice is sent all the same', async () => {
+    const w = wary(1)
+    const h = await w.bridge({ resync: false })
+    await slice(h, 'hello')
+    expect(w.asked).toEqual([])
+    expect(onPhone(chunksIn(h.rooms[0])).text).toContain('hello')
+  })
+})
+
+describe('the kill switch', () => {
+  afterEach(() => {
+    delete process.env[PHONE_RESYNC_DISABLE_FLAG]
+  })
+
+  it('is read from the environment when the bridge is built: today\'s bridge, nothing armed', async () => {
+    process.env[PHONE_RESYNC_DISABLE_FLAG] = '1'
+    const b = bench()
+    attach(b.room)
+    await b.subscribe('d1')
+    const tui = new Tui()
+    await b.print('t1', tui.frame(panel(0)), { reset: true })
+    b.leave()
+    b.room.sent.length = 0
+    for (let tick = 1; tick <= 30; tick += 1) await b.print('t1', tui.frame(panel(tick)))
+    attach(b.room)
+    // Every edit it missed, and no interval anywhere.
+    expect(chunksIn(b.room).length).toBeGreaterThanOrEqual(30)
+    expect(b.clock.armed()).toBe(0)
+  })
+
+  it('is on by default', async () => {
+    const b = bench()
+    attach(b.room)
+    await b.subscribe('d1')
+    await b.print('t1', 'hello', { reset: true })
+    expect(b.clock.armed()).toBe(1)
+  })
+
+  it('can be overruled in either direction by the core\'s own option', async () => {
+    process.env[PHONE_RESYNC_DISABLE_FLAG] = '1'
+    const on = bench({ resync: true })
+    attach(on.room)
+    await on.subscribe('d1')
+    await on.print('t1', 'hello', { reset: true })
+    expect(on.clock.armed()).toBe(1)
+    delete process.env[PHONE_RESYNC_DISABLE_FLAG]
+    const off = bench({ resync: false })
+    attach(off.room)
+    await off.subscribe('d1')
+    await off.print('t1', 'hello', { reset: true })
+    expect(off.clock.armed()).toBe(0)
   })
 })
