@@ -172,8 +172,39 @@ export function listWorkflowsFull(dir: string, fs: FsLike, scope?: WorkflowScope
 
 export type WorkflowSummary = { id: string; name: string; category?: string; scope?: WorkflowScope }
 
+const toSummary = (w: Workflow): WorkflowSummary => ({ id: w.id, name: w.name, category: w.category, scope: w.scope })
+
 export function listWorkflows(dir: string, fs: FsLike, scope?: WorkflowScope): WorkflowSummary[] {
-  return listWorkflowsFull(dir, fs, scope).map(w => ({ id: w.id, name: w.name, category: w.category, scope: w.scope }))
+  return listWorkflowsFull(dir, fs, scope).map(toSummary)
+}
+
+/** v1.54.5: what listing a store needs on the thread pool. The sidebar lists (and the trigger supervisor arms) the
+ *  project of the ACTIVE terminal on every `cd` and every tab switch, so the listing must not be a run of synchronous
+ *  opens on the thread that echoes the user's typing (each one 0.1-1.5 s under Defender on a busy machine). */
+export interface AsyncListFs {
+  exists(p: string): Promise<boolean>
+  readdir(d: string): Promise<string[]>
+  readText(p: string): Promise<string>
+}
+
+/** listWorkflowsFull on the thread pool: the same answers, with every directory listing and file read awaited. */
+export async function listWorkflowsFullAsync(dir: string, fs: AsyncListFs, scope?: WorkflowScope): Promise<Workflow[]> {
+  if (!(await fs.exists(dir))) return []
+  const out: Workflow[] = []
+  for (const f of await fs.readdir(dir)) {
+    if (!f.endsWith('.yml')) continue
+    const id = f.replace(/\.yml$/, '')
+    if (!isSafeId(id)) continue
+    let text: string
+    try { text = await fs.readText(fileFor(dir, id)) } catch { continue } // deleted between the listing and the read
+    const r = parseWorkflow(text)
+    if (r.ok && r.workflow) out.push(scope ? { ...r.workflow, scope } : r.workflow)
+  }
+  return out
+}
+
+export async function listWorkflowsAsync(dir: string, fs: AsyncListFs, scope?: WorkflowScope): Promise<WorkflowSummary[]> {
+  return (await listWorkflowsFullAsync(dir, fs, scope)).map(toSummary)
 }
 
 export function readWorkflow(dir: string, id: string, fs: FsLike, scope?: WorkflowScope): { ok: boolean; errors: string[]; workflow?: Workflow } {

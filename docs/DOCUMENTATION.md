@@ -920,6 +920,7 @@ Every one of these mechanisms has a switch that puts back the 1.54.4 behaviour, 
 - `TERMPOLIS_INGEST_FAST=off`: conversation ingest reads whole files and the whole corpus each pass, as before.
 - `TERMPOLIS_REFLECT_FAST=off`: learning from an agent session reads its whole transcript, as before.
 - `TERMPOLIS_SCOPED_WATCH=0`: one plain recursive file watch per repository again, with no storm limit.
+- `TERMPOLIS_SYNC_WORKFLOW_LIST=1`: the workflow list and triggers of the active terminal's project are read in the main process again on each `cd` and tab switch.
 - `TERMPOLIS_DISABLE_RESIZE_FLUSH=1`: no output flush before a terminal resize.
 - `TERMPOLIS_TERMINAL_DATA_ROUTING=0`: every terminal's output is sent to the window, shown or not.
 - `TERMPOLIS_DISABLE_PHONE_RESYNC=1` and `TERMPOLIS_DISABLE_FLATTENER_PARITY=1`: the phone bridge as before.

@@ -4563,6 +4563,12 @@ async function semanticPoolOptions(
     // fault can never fatal `whenReady`.
     try {
       const wfFs = { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } as unknown as WorkflowFsLike
+      // v1.54.5: the sidebar lists the workflows of the ACTIVE terminal's project, and arms its triggers, on every `cd`
+      // and tab switch; both read on the thread pool. TERMPOLIS_SYNC_WORKFLOW_LIST=1 brings back the 1.54.4 synchronous
+      // reads (the kill switch).
+      const wfListFs = process.env.TERMPOLIS_SYNC_WORKFLOW_LIST === '1'
+        ? undefined
+        : { exists: nodeAsyncFs.exists, readText: nodeAsyncFs.readText, readdir: (d: string) => fsPromises.readdir(d) }
       // `prepare`: what opening a terminal looks up (the folder, the shell integration script, the bundled tools) is asked
       // on the thread pool before the spawn, as terminal:create does for a click: a workflow step, an agent step and an
       // agent's run_and_wait each open a terminal, and none of them may stall the thread that echoes the user's typing.
@@ -4607,6 +4613,7 @@ async function semanticPoolOptions(
         fs: wfFs,
         fsAsync: nodeAsyncFs, // the tick reads git refs on the thread pool, and writes its state there too
         readBytes: (p: string) => readFileSync(p),
+        listFs: wfListFs,
         // Scoped (scopedWatch.ts): nothing under .worktrees, node_modules, .termpolis ... reaches this thread.
         watch: scopedTriggerWatch(fsWatch, (msg) => console.warn(msg)),
         setTimer: (fn, ms) => setTimeout(fn, ms),
@@ -4625,6 +4632,8 @@ async function semanticPoolOptions(
       })
       const wfIpc = registerWorkflowIpc(ipcMain, () => mainWindow, {
         fs: wfFs,
+        fsAsync: wfListFs,
+        gitFsAsync: wfListFs ? nodeAsyncFs : undefined,
         onWorkflowsChanged: (cwd, scope) => { if (scope === 'global') wfTriggers.rearmAll(); else wfTriggers.rearm(cwd) },
         onWatchProject: (cwd) => wfTriggers.watchProject(cwd),
         engine: { runWorkflow: wfRun, cancelRun: wfCancel },

@@ -21,7 +21,7 @@ import { join } from 'path'
 import { readFileSync } from 'fs'
 import { forEachBufferLine } from '../fileLines'
 import type { Workflow, WorkflowScope } from '../../renderer/src/types'
-import { workflowsDir, globalWorkflowsDir, listWorkflowsFull, type FsLike } from './workflowStore'
+import { workflowsDir, globalWorkflowsDir, listWorkflowsFull, listWorkflowsFullAsync, type FsLike, type AsyncListFs } from './workflowStore'
 import { parseCron, dueSince, MAX_CATCHUP_MS, type CronFields } from './cron'
 import { createIgnoreFilter, createRunGate, WATCH_MIN_INTERVAL_MS, type IgnoreFilter, type RunGate } from '../watchGuard'
 import { TRIGGER_SKIP_NAMES } from '../scopedWatch'
@@ -60,6 +60,12 @@ export interface TriggerDeps {
   defaultDebounceMs?: number
   /** Async: is this directory a nested repository (own .git) or a link? Defaults to lstat + stat. */
   probeNested?: (absDir: string) => Promise<boolean>
+  /** v1.54.5: how arming a project lists its workflows and loads its state, on the thread pool. The sidebar registers the
+   *  ACTIVE terminal's project on every `cd` and every tab switch, so arming must not be a run of synchronous opens on
+   *  the thread that echoes the user's typing. With it, `rearm` (and so `watchProject`) is asynchronous and coalesced
+   *  per project (one running, at most one more queued). Without it the synchronous `fs` arms, as before (tests, and
+   *  the kill switch TERMPOLIS_SYNC_WORKFLOW_LIST=1). */
+  listFs?: AsyncListFs
 }
 
 /** Dirs whose churn must never fire a fileWatch workflow. `.termpolis` is the
@@ -110,6 +116,12 @@ interface Project {
   pendingOverflow: boolean
   state: ProjectState
   stateDirty: boolean
+  /** The asynchronous arm (listFs) in flight for this project, and whether another was asked for meanwhile. */
+  rearming: Promise<void> | null
+  rearmAgain: boolean
+  /** The asynchronous arm loads the persisted state from disk once; after that the memory copy is the truth (the
+   *  flush is asynchronous, so the disk can lag it). */
+  stateLoaded: boolean
   /** True once we've logged "untrusted, skipping" â€” keeps the log from
    *  repeating every tick for a project the user simply hasn't trusted. */
   warnedUntrusted: boolean
@@ -283,6 +295,9 @@ export class TriggerSupervisor {
         pendingOverflow: false,
         state: {},
         stateDirty: false,
+        rearming: null,
+        rearmAgain: false,
+        stateLoaded: false,
         warnedUntrusted: false,
       })
     }
@@ -317,10 +332,15 @@ export class TriggerSupervisor {
     for (const cwd of [...this.projects.keys()]) this.rearm(cwd)
   }
 
-  /** Re-read a project's workflows from disk and arm the non-manual ones. */
+  /** Re-read a project's workflows from disk and arm the non-manual ones. With `listFs` the reading happens on the
+   *  thread pool and the arming follows it (see whenArmed). */
   rearm(cwd: string): void {
     const p = this.projects.get(cwd)
     if (!p) return
+    if (this.d.listFs) {
+      void this.rearmOffMain(p)
+      return
+    }
     let workflows: Workflow[] = []
     try {
       workflows = listWorkflowsFull(workflowsDir(cwd), this.d.fs, 'project')
@@ -340,6 +360,99 @@ export class TriggerSupervisor {
       }
     }
     p.state = this.loadState(cwd)
+    this.arm(p, workflows, (wf) => this.seedGit(p, wf))
+  }
+
+  /** Settles when the project's asynchronous arm (if any) has finished. Tests, and nothing on a hot path. */
+  whenArmed(cwd: string): Promise<void> {
+    return this.projects.get(cwd)?.rearming ?? Promise.resolve()
+  }
+
+  private rearmOffMain(p: Project): Promise<void> {
+    if (p.rearming) {
+      // A `cd` storm or a run of tab switches: one arm runs, one more follows it, the rest fold into that one.
+      p.rearmAgain = true
+      return p.rearming
+    }
+    const run = async (): Promise<void> => {
+      try {
+        do {
+          p.rearmAgain = false
+          try {
+            await this.rearmOnceOffMain(p)
+          } catch (e) {
+            this.log(`could not arm ${p.cwd}: ${(e as Error)?.message}`)
+          }
+        } while (p.rearmAgain && this.projects.get(p.cwd) === p)
+      } finally {
+        p.rearming = null
+      }
+    }
+    p.rearming = run()
+    return p.rearming
+  }
+
+  private async rearmOnceOffMain(p: Project): Promise<void> {
+    const lfs = this.d.listFs as AsyncListFs
+    let workflows: Workflow[] = []
+    try {
+      workflows = await listWorkflowsFullAsync(workflowsDir(p.cwd), lfs, 'project')
+    } catch (e) {
+      this.log(`could not list workflows in ${p.cwd}: ${(e as Error)?.message}`)
+      return
+    }
+    if (this.d.globalDir) {
+      try {
+        workflows = [...workflows, ...(await listWorkflowsFullAsync(globalWorkflowsDir(this.d.globalDir), lfs, 'global'))]
+      } catch (e) {
+        this.log(`could not list global workflows: ${(e as Error)?.message}`)
+      }
+    }
+    if (!p.stateLoaded) {
+      const loaded = await this.loadStateAsync(p.cwd, lfs)
+      if (this.projects.get(p.cwd) !== p) return
+      // Anything the tick or a run recorded while the file was being read is newer than the file.
+      if (!p.stateLoaded) p.state = { ...loaded, ...p.state }
+      p.stateLoaded = true
+    }
+    // The git seeds, read on the thread pool before arming (seedGit's synchronous reads, answered in advance).
+    const seeds = new Map<string, { sha: string; ref: string }>()
+    const gfs = this.asyncFs()
+    for (const wf of workflows) {
+      const type = wf.trigger?.type
+      if (type !== 'gitCommit' && type !== 'gitPush') continue
+      if (p.state[wf.id]?.sha !== undefined) continue
+      const gitDir = await gitDirOfAsync(p.cwd, gfs)
+      if (!gitDir) break
+      const ref = await targetRefAsync(type, wf.trigger.config ?? {}, gitDir, gfs)
+      if (!ref) continue
+      const sha = await resolveRefAsync(gitDir, ref, gfs)
+      if (sha) seeds.set(wf.id, { sha, ref })
+    }
+    if (this.projects.get(p.cwd) !== p) return // unwatched (or stopped) while reading
+    this.arm(p, workflows, (wf) => {
+      const seed = seeds.get(wf.id)
+      const st = (p.state[wf.id] ??= {})
+      if (!seed || st.sha !== undefined) return
+      st.sha = seed.sha
+      st.ref = seed.ref
+      p.stateDirty = true
+    })
+  }
+
+  private async loadStateAsync(cwd: string, lfs: AsyncListFs): Promise<ProjectState> {
+    const f = this.stateFile(cwd)
+    try {
+      if (!(await lfs.exists(f))) return {}
+      const parsed = JSON.parse(await lfs.readText(f))
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as ProjectState) : {}
+    } catch {
+      return {}
+    }
+  }
+
+  /** Arm the non-manual workflows of `p` (pure: every read it needs was made before), then watch and flush. */
+  private arm(p: Project, workflows: Workflow[], seed: (wf: Workflow) => void): void {
     p.armed.clear()
 
     for (const wf of workflows) {
@@ -364,7 +477,7 @@ export class TriggerSupervisor {
       }
       if (type === 'gitCommit' || type === 'gitPush') {
         p.armed.set(wf.id, { workflow: wf, catchUp: false })
-        this.seedGit(p, wf)
+        seed(wf)
         continue
       }
       if (type === 'fileWatch') {

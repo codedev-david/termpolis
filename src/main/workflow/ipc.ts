@@ -1,12 +1,13 @@
 import { basename } from 'path'
 import type { Workflow, WorkflowRun, WorkflowScope } from '../../renderer/src/types'
 import type { EngineDeps, WorkflowRunEvent, ExprScope } from './contracts'
-import type { FsLike, WorkflowSummary } from './workflowStore'
+import type { FsLike, WorkflowSummary, AsyncListFs } from './workflowStore'
 import {
-  listWorkflows, readWorkflow, writeWorkflow, deleteWorkflow,
+  listWorkflows, listWorkflowsAsync, readWorkflow, writeWorkflow, deleteWorkflow,
   workflowsDir, dirForScope, runsDirForScope, appendRunHistory,
 } from './workflowStore'
 import { gitDirOf, headRef } from './triggers'
+import { gitDirOfAsync, headRefAsync, type AsyncFsLike } from '../gitRefs'
 
 type Engine = { runWorkflow: (wf: Workflow, d: EngineDeps) => Promise<any>; cancelRun: (id: string, d: EngineDeps) => void }
 type Wiring = {
@@ -26,6 +27,13 @@ type Wiring = {
   /** Where a finished run's record goes. The app appends it on the thread pool (a run a trigger started can finish while
    *  the user types); without it `fs` appends it, as before (tests). */
   appendHistory?: (dir: string, run: WorkflowRun) => void
+  /** v1.54.5: how `workflow:list` lists the stores, on the thread pool. The sidebar asks on every `cd` and tab switch of
+   *  the active terminal, whether the Workflows panel is open or not. Without it `fs` lists them, as before (tests, and
+   *  the kill switch TERMPOLIS_SYNC_WORKFLOW_LIST=1). */
+  fsAsync?: AsyncListFs
+  /** v1.54.5: how a starting run reads its branch (`${project.branch}`), on the thread pool. A trigger starts runs while
+   *  the user types. Without it the synchronous plumbing reads it, as before. */
+  gitFsAsync?: AsyncFsLike
 }
 const ok = (data?: any) => ({ success: true, data })
 const err = (e: string) => ({ success: false, error: e })
@@ -40,6 +48,17 @@ function branchOf(cwd: string, fs: FsLike): string | undefined {
     const gitDir = gitDirOf(cwd, fs)
     if (!gitDir) return undefined
     const ref = headRef(gitDir, fs)
+    return ref ? ref.replace(/^refs\/heads\//, '') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function branchOfAsync(cwd: string, fs: AsyncFsLike): Promise<string | undefined> {
+  try {
+    const gitDir = await gitDirOfAsync(cwd, fs)
+    if (!gitDir) return undefined
+    const ref = await headRefAsync(gitDir, fs)
     return ref ? ref.replace(/^refs\/heads\//, '') : undefined
   } catch {
     return undefined
@@ -95,13 +114,19 @@ export function registerWorkflowIpc(ipcMain: { handle: (ch: string, fn: (ev: any
     if (missing.length) return { ok: false, error: `missing required input(s): ${missing.join(', ')}` }
     const runId = w.newRunId()
     const emit = (ev: WorkflowRunEvent) => getWindow()?.webContents.send('workflow:run-event', ev)
+    const gfs = w.gitFsAsync
     const exprScope: ExprScope = {
       inputs,
-      project: { cwd, name: basename(cwd) || cwd, branch: branchOf(cwd, w.fs) },
+      project: { cwd, name: basename(cwd) || cwd, branch: gfs ? undefined : branchOf(cwd, w.fs) },
     }
     const deps: EngineDeps = { ...w.makeDeps(emit, runId), scope: exprScope }
     depsByRun.set(runId, deps)
-    const done = Promise.resolve(w.engine.runWorkflow(r.workflow, deps))
+    const wf = r.workflow
+    // With the thread-pool reader the run starts once the branch is known (two small reads), not before.
+    const started = gfs
+      ? branchOfAsync(cwd, gfs).then((branch) => { exprScope.project!.branch = branch; return w.engine.runWorkflow(wf, deps) })
+      : Promise.resolve(w.engine.runWorkflow(wf, deps))
+    const done = started
       .then((run) => {
         try {
           const dir = runsDirForScope(scope, cwd, w.userDataDir)
@@ -117,13 +142,21 @@ export function registerWorkflowIpc(ipcMain: { handle: (ch: string, fn: (ev: any
   // The sidebar asks once and gets BOTH stores, each entry tagged with the store
   // it came from, so global workflows are offered in every project without the
   // renderer having to know where they live.
-  const listAll = (cwd: string): WorkflowSummary[] => {
+  const listAll = async (cwd: string): Promise<WorkflowSummary[]> => {
+    const afs = w.fsAsync
+    if (afs) {
+      const [global, project] = await Promise.all([
+        listWorkflowsAsync(dirForScope('global', cwd, w.userDataDir), afs, 'global'),
+        cwd ? listWorkflowsAsync(workflowsDir(cwd), afs, 'project') : Promise.resolve([] as WorkflowSummary[]),
+      ])
+      return [...global, ...project]
+    }
     const global = listWorkflows(dirForScope('global', cwd, w.userDataDir), w.fs, 'global')
     const project = cwd ? listWorkflows(workflowsDir(cwd), w.fs, 'project') : []
     return [...global, ...project]
   }
 
-  ipcMain.handle('workflow:list', async (_e, { cwd }) => { try { return ok(listAll(cwd)) } catch (e: any) { return err(e.message) } })
+  ipcMain.handle('workflow:list', async (_e, { cwd }) => { try { return ok(await listAll(cwd)) } catch (e: any) { return err(e.message) } })
   ipcMain.handle('workflow:read', async (_e, { cwd, id, scope }) => {
     const s = asScope(scope)
     const r = readWorkflow(dirForScope(s, cwd, w.userDataDir), id, w.fs, s)
