@@ -176,4 +176,60 @@ describe('endpoint activity guard', () => {
     )
     expect([...inStrings, ...inArgv]).toEqual([])
   })
+
+  // 1.54.5 (EDR-1): Termpolis.exe run as Node (ELECTRON_RUN_AS_NODE) on a script it wrote into its own data folder is
+  // what endpoint security reports as a dropped-and-executed payload. Every script it runs that way ships with the app.
+  it('4. runs itself as Node only from the allowed modules', () => {
+    const named = new Map<string, string[]>()
+    for (const f of FILES) {
+      const sf = ts.createSourceFile(f.path, readFileSync(f.path, 'utf8'), ts.ScriptTarget.Latest, true)
+      const visit = (n: ts.Node): void => {
+        if ((ts.isIdentifier(n) || ts.isStringLiteral(n)) && n.text === 'ELECTRON_RUN_AS_NODE') {
+          const rel = relative(ROOT, f.path).split(sep).join('/')
+          named.set(rel, [...(named.get(rel) ?? []), `${rel}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`])
+        }
+        ts.forEachChild(n, visit)
+      }
+      visit(sf)
+    }
+    expectOnly(named, {
+      'src/main/agentMcpRegistry.ts':
+        'The MCP entry an agent starts: Termpolis as Node on resources/mcp-adapter/stdio-adapter.cjs (shipped).',
+      'src/main/codexConfigEdit.ts':
+        'The same MCP entry, written into Codex\'s config.',
+      'src/main/noNewPrivs.ts':
+        'Linux relaunch: REMOVES the variable from the new Termpolis\'s environment.',
+      'src/main/shellAlone.ts':
+        'Windows: resources/mcp-adapter/termpolis-console-list.cjs (shipped, see consoleListHelper.ts), through the proc host.',
+    })
+  })
+
+  it('4a. never passes a path under its data, temp or home folder to process.execPath, and never writes the script it runs', () => {
+    const bad: string[] = []
+    const scriptArgs: string[] = []
+    for (const f of FILES) {
+      const sf = ts.createSourceFile(f.path, readFileSync(f.path, 'utf8'), ts.ScriptTarget.Latest, true)
+      const rel = relative(ROOT, f.path).split(sep).join('/')
+      const visit = (n: ts.Node): void => {
+        if (ts.isCallExpression(n)) {
+          const i = n.arguments.findIndex((a) => a.getText(sf).replace(/\s/g, '') === 'process.execPath')
+          const next = i >= 0 ? n.arguments[i + 1] : undefined
+          if (next && ts.isArrayLiteralExpression(next) && next.elements.length) {
+            const script = next.elements[0].getText(sf)
+            scriptArgs.push(`${rel}: ${script}`)
+            if (/userData|getPath|tmpdir|homedir|TEMP|APPDATA|LOCALAPPDATA/i.test(script)) bad.push(`${rel}: ${script}`)
+          }
+        }
+        ts.forEachChild(n, visit)
+      }
+      visit(sf)
+    }
+    expect(bad).toEqual([])
+    // The only script so far: shellAlone's console-list helper, resolved by consoleListHelper.ts.
+    expect(scriptArgs).toEqual(['src/main/shellAlone.ts: helper'])
+    const resolver = readFileSync(join(SRC, 'main', 'consoleListHelper.ts'), 'utf8')
+    expect(resolver).toMatch(/process\.resourcesPath,\s*'mcp-adapter'/)
+    expect(resolver).not.toMatch(/\b(writeFile|writeFileSync|copyFile|copyFileSync|createWriteStream|mkdir)\b/)
+    expect(resolver).not.toMatch(/getPath\(/)
+  })
 })

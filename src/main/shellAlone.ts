@@ -53,7 +53,8 @@ export function ownConsoleProcesses(executable: string): number | null {
 
 /** Windows has no foreground process. What runs in a terminal is on its console: the shell, and
  *  every console program started in it. Read with node-pty's own call for it, the one it makes to close
- *  a terminal, through a helper script (consoleListHelper.ts) that the proc host runs. It attaches to the
+ *  a terminal, through a helper script that ships with the app (resources/mcp-adapter/termpolis-console-list.cjs,
+ *  see consoleListHelper.ts; never written at run time) and that the proc host runs. It attaches to the
  *  console to read it, so it is in the list itself. */
 async function aloneOnConsole(pid: number, executable: string): Promise<boolean | null> {
   const own = ownConsoleProcesses(executable)
@@ -115,7 +116,7 @@ async function readConsole(pid: number): Promise<number[] | null> {
   try {
     const helper = await ensureConsoleListHelper()
     if (!helper) return null
-    // Termpolis run as Node (ELECTRON_RUN_AS_NODE), by the proc host. A failure of any kind (the host is down, the
+    // Termpolis run as Node (ELECTRON_RUN_AS_NODE) on the shipped script, by the proc host. A failure of any kind (the host is down, the
     // helper could not load node-pty, the time ran out and it was killed) is "cannot tell", never "alone".
     const r = await execCaptureOffThread(process.execPath, [helper, String(pid), nodePtyLibDir()], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
