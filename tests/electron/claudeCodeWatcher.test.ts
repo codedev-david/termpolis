@@ -1,14 +1,28 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import {
+
+// The watcher captures ~/.claude/projects when it loads, and os.homedir() reads HOME on POSIX but USERPROFILE on
+// Windows. Point both at a scratch home before it loads, so no test here looks inside the developer's real ~/.claude.
+const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-ccw-home-'))
+process.env.HOME = fakeHome
+process.env.USERPROFILE = fakeHome
+afterAll(() => {
+  for (const k of ['HOME', 'USERPROFILE'] as const) {
+    if (savedHome[k] === undefined) delete process.env[k]
+    else process.env[k] = savedHome[k]
+  }
+  try { fs.rmSync(fakeHome, { recursive: true, force: true }) } catch {}
+})
+const {
   mangleCwd,
   findLatestSessionFile,
   processClaudeLine,
   CLAUDE_PROJECTS_DIR,
   attachClaudeCodeWatcher,
-} from '../../src/main/transcriptWatchers/claudeCodeWatcher'
+} = await import('../../src/main/transcriptWatchers/claudeCodeWatcher')
 import { tailFile, resolvePathWithinRoot, MAX_LINE_BYTES } from '../../src/main/transcriptWatchers/baseWatcher'
 import {
   initEventBus,
@@ -238,8 +252,7 @@ describe('findLatestSessionFile', () => {
   beforeEach(() => {
     claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-home-'))
     origHome = process.env.HOME
-    // CLAUDE_PROJECTS_DIR was captured at module load — test by placing files at that real path's test fixture location
-    // Since we can't easily override os.homedir() post-import, we test the logic via the exported path indirectly.
+    // CLAUDE_PROJECTS_DIR was captured at module load, under the scratch home set at the top of this file.
   })
 
   afterEach(() => {
@@ -364,5 +377,6 @@ describe('CLAUDE_PROJECTS_DIR constant', () => {
   it('resolves under the user home directory', () => {
     expect(CLAUDE_PROJECTS_DIR).toContain('.claude')
     expect(CLAUDE_PROJECTS_DIR).toContain('projects')
+    expect(CLAUDE_PROJECTS_DIR).toBe(path.join(fakeHome, '.claude', 'projects'))
   })
 })

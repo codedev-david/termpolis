@@ -5,13 +5,15 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { execSync } from 'child_process'
+import { makeScratchAgentHome } from '../tests/agentHomeScratch'
 
-export default function globalSetup() {
+export default function globalSetup(): () => void {
   // Agent configs the app writes (MCP registration, folder trust, one-time migrations) land
   // in a scratch home. Workers inherit this, and every Electron launch inherits its worker's
   // env, so no spec can rewrite the developer's real ~/.claude*, ~/.codex or ~/.gemini.
   // resolveAgentIntegrationPaths() honors it over homedir(), CLAUDE_CONFIG_DIR and CODEX_HOME.
-  process.env.TERMPOLIS_TEST_AGENT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-agent-home-'))
+  const agentHome = makeScratchAgentHome()
+  process.env.TERMPOLIS_TEST_AGENT_HOME = agentHome.dir
 
   // Kill any lingering Electron processes
   try {
@@ -47,4 +49,8 @@ export default function globalSetup() {
       }
     } catch {}
   }
+
+  // Playwright runs a function returned from globalSetup as the global teardown, after every worker has exited:
+  // the scratch agent home goes with the run instead of piling up in the temp folder.
+  return () => { agentHome.remove() }
 }

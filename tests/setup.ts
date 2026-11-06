@@ -1,8 +1,6 @@
 import '@testing-library/jest-dom'
-import { vi } from 'vitest'
-import { mkdtempSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { afterAll, vi } from 'vitest'
+import { makeScratchAgentHome } from './agentHomeScratch'
 import { ensureGitOnPath } from './gitPath'
 
 // Several tests spawn a real `git`. Whether they could find one used to depend
@@ -47,7 +45,10 @@ for (const k of ['ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY', 'HTTPS_PROXY'
 // test run could rewrite the developer's own ~/.claude.json, ~/.claude/settings.json,
 // ~/.codex/config.toml or ~/.gemini/settings.json. resolveAgentIntegrationPaths()
 // honors this scratch home over homedir(), CLAUDE_CONFIG_DIR and CODEX_HOME.
-process.env.TERMPOLIS_TEST_AGENT_HOME = mkdtempSync(join(tmpdir(), 'termpolis-agent-home-'))
+// Removed again once the file's tests are done (this runs once per test file), so a run leaves no folder behind.
+const agentHome = makeScratchAgentHome()
+process.env.TERMPOLIS_TEST_AGENT_HOME = agentHome.dir
+afterAll(() => { agentHome.remove() })
 
 // The 1.54.5 hotfix kill switches, on for the whole unit suite. A test that boots src/main/index.ts must not
 // start a real event-loop watchdog (a native histogram plus a timer per test file), must not change the test
