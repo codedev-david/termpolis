@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -48,11 +48,23 @@ let seq = 0
 const T0 = 1_700_000_000 // seconds
 const at = (s: number): Date => new Date((T0 + s) * 1000)
 
+/** The folder Claude Code files a working folder's transcripts under, worked out synchronously for the fixtures
+ *  (the watcher's own claudeCwd is async since 1.54.5 and the fixtures are built synchronously): every link
+ *  resolved, a folder that can't be read or none at all taken as given. */
+function claudeCwdSync(cwd: string): string {
+  if (!cwd) return cwd
+  try {
+    return fs.realpathSync(cwd)
+  } catch {
+    return cwd
+  }
+}
+
 /** A working folder that exists, and Claude Code's project folder for it (created, with its mtime pinned). */
 function project(): { cwd: string; dir: string; pin: () => void } {
   const cwd = path.join(work, `repo-${seq++}`)
   fs.mkdirSync(cwd, { recursive: true })
-  const dir = path.join(watcher.CLAUDE_PROJECTS_DIR, watcher.mangleCwd(watcher.claudeCwd(cwd)))
+  const dir = path.join(watcher.CLAUDE_PROJECTS_DIR, watcher.mangleCwd(claudeCwdSync(cwd)))
   fs.mkdirSync(dir, { recursive: true })
   // The folder's own mtime is what the cache keys on: pin it so a test says exactly when it "changes".
   const pin = (): void => fs.utimesSync(dir, at(0), at(0))
@@ -109,7 +121,7 @@ describe('listSessionFilesAsync', () => {
     fs.mkdirSync(path.join(p.dir, 'aaa'), { recursive: true }) // a session's subagents folder
     p.pin()
 
-    const sync = watcher.listSessionFiles(p.cwd)
+    const sync = await watcher.listSessionFiles(p.cwd)
     expect(sync.map((f) => path.basename(f))).toEqual(['aaa.jsonl', 'ccc.jsonl', 'bbb.jsonl', 'ddd.jsonl'])
     expect(await list.listSessionFilesAsync(p.cwd)).toEqual(sync)
   })
@@ -121,7 +133,7 @@ describe('listSessionFilesAsync', () => {
     const cwd = path.join(work, `file-${seq++}`)
     fs.mkdirSync(cwd)
     fs.mkdirSync(watcher.CLAUDE_PROJECTS_DIR, { recursive: true })
-    fs.writeFileSync(path.join(watcher.CLAUDE_PROJECTS_DIR, watcher.mangleCwd(watcher.claudeCwd(cwd))), 'not a folder')
+    fs.writeFileSync(path.join(watcher.CLAUDE_PROJECTS_DIR, watcher.mangleCwd(claudeCwdSync(cwd))), 'not a folder')
     expect(await list.listSessionFilesAsync(cwd)).toEqual([])
   })
 
@@ -154,21 +166,37 @@ describe('listSessionFilesAsync', () => {
     expect(made).toEqual({})
   })
 
-  it('CONTROL: the synchronous listing it replaces makes one sync stat per file plus its readdir', async () => {
+  it('CONTROL: the uncached listing it replaces lists the folder and stats every file on every pass', async () => {
+    // The watcher's listSessionFiles went async in 1.54.5 (no sync call left), but it still remembers nothing:
+    // each pass pays one readdir and one stat per transcript. That per-pass cost is what the cache removes.
     const p = project()
     const N = 25
     for (let i = 0; i < N; i++) session(p.dir, `s${i}`, i * 10)
     p.pin()
 
+    const under = (a: unknown): boolean => typeof a === 'string' && path.resolve(a).startsWith(path.resolve(p.dir))
+    const readdir = vi.spyOn(fs.promises, 'readdir')
+    const stat = vi.spyOn(fs.promises, 'stat')
     counter = countSyncFs([home, work])
-    watcher.listSessionFiles(p.cwd)
-    watcher.listSessionFiles(p.cwd) // every pass pays it again: nothing is remembered
+    let readdirs = 0
+    let stats = 0
+    try {
+      await watcher.listSessionFiles(p.cwd)
+      await watcher.listSessionFiles(p.cwd) // every pass pays it again: nothing is remembered
+      readdirs = readdir.mock.calls.filter((a) => under(a[0])).length
+      stats = stat.mock.calls.filter((a) => under(a[0])).length
+    } finally {
+      readdir.mockRestore()
+      stat.mockRestore()
+    }
     const c = { ...counter.counts }
     counter.restore()
     counter = null
 
-    expect(c.readdirSync).toBe(2)
-    expect(c.statSync).toBeGreaterThanOrEqual(2 * (N + 1))
+    expect(readdirs).toBe(2)
+    expect(stats).toBeGreaterThanOrEqual(2 * (N + 1))
+    expect(c.readdirSync ?? 0).toBe(0)
+    expect(c.statSync ?? 0).toBe(0)
   })
 
   describe('the folder cache', () => {
@@ -361,7 +389,7 @@ describe('listSessionFilesAsync', () => {
       const other = fs.mkdtempSync(path.join(work, 'projects-'))
       const cwd = path.join(work, `repo-${seq++}`)
       fs.mkdirSync(cwd)
-      const dir = path.join(other, watcher.mangleCwd(watcher.claudeCwd(cwd)))
+      const dir = path.join(other, watcher.mangleCwd(claudeCwdSync(cwd)))
       fs.mkdirSync(dir)
       const file = session(dir, 'there', 10)
       expect(await list.listSessionFilesAsync(cwd, { projectsDir: other })).toEqual([file])
@@ -384,7 +412,7 @@ describe('listSessionFilesAsync', () => {
       const missing = path.join(work, 'does-not-exist')
 
       for (const cwd of [target, link, missing, '']) {
-        expect(await list.claudeCwdAsync(cwd)).toBe(watcher.claudeCwd(cwd))
+        expect(await list.claudeCwdAsync(cwd)).toBe(await watcher.claudeCwd(cwd))
       }
       expect(await list.claudeCwdAsync(link)).not.toBe(link)
     })

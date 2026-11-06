@@ -393,10 +393,19 @@ describe('the delta reader is wired in unless the caller brings its own', () => 
 // ---------------------------------------------------------------------------------------------------
 
 describe('five terminals open on one repo (real files, the production delta reader)', () => {
+  /** Claude Code's folder for a working folder, synchronously for the fixture (the watcher's claudeCwd is async since 1.54.5). */
+  function claudeCwdSync(cwd: string): string {
+    try {
+      return fs.realpathSync(cwd)
+    } catch {
+      return cwd
+    }
+  }
+
   function fixture() {
     const cwd = path.join(work, `repo-${Math.random().toString(36).slice(2)}`)
     fs.mkdirSync(cwd, { recursive: true })
-    const dir = path.join(watcher.CLAUDE_PROJECTS_DIR, watcher.mangleCwd(watcher.claudeCwd(cwd)))
+    const dir = path.join(watcher.CLAUDE_PROJECTS_DIR, watcher.mangleCwd(claudeCwdSync(cwd)))
     fs.mkdirSync(dir, { recursive: true })
     const file = path.join(dir, 'session.jsonl')
     fs.writeFileSync(file, lines(userLine('the build is broken with a module error'), assistantLine('fixed it; tests pass now')))

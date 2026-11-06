@@ -91,11 +91,22 @@ interface Project {
   dir: string
 }
 
+/** The folder Claude Code files a working folder's transcripts under, worked out synchronously for the fixtures
+ *  (the watcher's own claudeCwd is async since 1.54.5): every link resolved, an unreadable folder or none as given. */
+function claudeCwdSync(cwd: string): string {
+  if (!cwd) return cwd
+  try {
+    return fs.realpathSync(cwd)
+  } catch {
+    return cwd
+  }
+}
+
 /** A working folder that exists, and Claude Code's project folder for it. */
 function newProject(): Project {
   const cwd = path.join(work, `repo-${seq++}`)
   fs.mkdirSync(cwd, { recursive: true })
-  const dir = path.join(watcher.CLAUDE_PROJECTS_DIR, watcher.mangleCwd(watcher.claudeCwd(cwd)))
+  const dir = path.join(watcher.CLAUDE_PROJECTS_DIR, watcher.mangleCwd(claudeCwdSync(cwd)))
   fs.mkdirSync(dir, { recursive: true })
   return { cwd, dir }
 }
@@ -1055,20 +1066,35 @@ describe('the hot path makes no synchronous fs call', () => {
     expect(made).toEqual({})
   })
 
-  it('CONTROL: the whole-transcript path it replaces makes sync calls on every pass (the listing: a readdir and a stat per file)', async () => {
+  it('CONTROL: the whole-transcript path it replaces lists the folder on every pass (a readdir and a stat per file)', async () => {
+    // Since 1.54.5 that listing is async (the watcher's listSessionFiles makes no sync call), but it remembers
+    // nothing: every pass pays a readdir and a stat per transcript. That per-pass cost is what the delta reader removes.
     const p = newProject()
     for (let i = 0; i < 10; i++) write(p.dir, `old-${i}`, lines(userLine(`old ${i}`)), i)
     write(p.dir, 'live', lines(userLine('Fix the build')), 50)
     touchDir(p)
 
+    const under = (a: unknown): boolean => typeof a === 'string' && path.resolve(a).startsWith(path.resolve(p.dir))
+    const readdir = vi.spyOn(fs.promises, 'readdir')
+    const stat = vi.spyOn(fs.promises, 'stat')
     counter = countSyncFs([home, work])
-    await live.readSessionTranscript(p.cwd, 'claude')
-    await live.readSessionTranscript(p.cwd, 'claude')
+    let readdirs = 0
+    let stats = 0
+    try {
+      await live.readSessionTranscript(p.cwd, 'claude')
+      await live.readSessionTranscript(p.cwd, 'claude')
+      readdirs = readdir.mock.calls.filter((a) => under(a[0])).length
+      stats = stat.mock.calls.filter((a) => under(a[0])).length
+    } finally {
+      readdir.mockRestore()
+      stat.mockRestore()
+    }
     const c = { ...counter.counts }
     counter.restore()
     counter = null
-    expect(c.readdirSync).toBe(2)
-    expect(c.statSync).toBeGreaterThanOrEqual(2 * 12)
+    expect(readdirs).toBe(2)
+    expect(stats).toBeGreaterThanOrEqual(2 * 12)
+    expect(c.readdirSync ?? 0).toBe(0)
   })
 })
 
