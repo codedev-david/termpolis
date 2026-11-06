@@ -2247,6 +2247,9 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
     if (await memoryIsLocked()) return err(MEMORY_LOCKED)
+    // HP-3: this starts the moment the user cd's into a repo, which is when they type. While the loop governor says
+    // the main thread is starved, wait (capped at SHED_WAIT_CAP_MS, fails open); the sweep asks again at its boundaries.
+    await whenNotShed()
     // hasHashES, not hasHash: the sync per-chunk predicate cannot be answered by an out-of-process
     // store, and an async one would report every chunk as already-indexed (a Promise is truthy) —
     // the repo would appear to index and nothing would be written.
@@ -2269,7 +2272,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       // only a microtask — Node drains those to completion WITHOUT running the event loop. That made
       // the whole repo sweep one unbroken 2.8s block: no PTY, no IPC, "(Not Responding)". A real
       // async read hits the threadpool and gives the main thread back between files.
-      codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (f) => fsPromises.readFile(f, 'utf8') }, graphKeyForRoot(opts.repoRoot))
+      codeGraph = await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => whenNotShed() }, graphKeyForRoot(opts.repoRoot))
       // Keep the graph FRESH: watch the repo and, on source-file changes (debounced), incrementally
       // re-index just the changed files (AST-first) with a full-sweep fallback — so edits show up in
       // seconds without re-parsing the whole tree. reindexWatchedChange owns the incremental-vs-full
@@ -2293,7 +2296,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
 ipcMain.handle('code-graph:build', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
-    return ok(await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (f) => fsPromises.readFile(f, 'utf8') }, graphKeyForRoot(opts.repoRoot)))
+    return ok(await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => whenNotShed() }, graphKeyForRoot(opts.repoRoot)))
   } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('memory:anomalies', async (_, opts?: { limit?: number }) => { try { return ok({ anomalies: getAnomalies(opts?.limit ?? 100), total: anomalyCount() }) } catch (e: any) { return err(e.message) } })

@@ -282,6 +282,30 @@ export async function reindexFile(file: string, content: string, projectKey?: st
 export interface CodeGraphDeps {
   listFiles: () => Promise<string[]>
   readFile: (file: string) => Promise<string>
+  /** Asked at each yield boundary of a sweep (HP-3): the loop governor's whenNotShed, which holds the sweep while
+   *  the main thread is starved (capped, fails open). A throw is ignored: the sweep goes on. */
+  pause?: () => Promise<unknown>
+}
+
+/** HP-3: a file longer than this is left out of the graph. Its tree-sitter parse is one unbroken block on the main
+ *  thread (the sweep yields between files, never inside one), and a generated or vendored file this size is not code
+ *  anyone navigates. 512 KB of source. Override in KB with TERMPOLIS_CODE_GRAPH_FILE_CAP; 0 turns the cap off. */
+export const MAX_GRAPH_FILE_CHARS = 512 * 1024
+
+export function maxGraphFileChars(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.TERMPOLIS_CODE_GRAPH_FILE_CAP
+  if (raw === undefined || raw.trim() === '') return MAX_GRAPH_FILE_CHARS
+  const kb = Number(raw)
+  if (!Number.isFinite(kb) || kb < 0) return MAX_GRAPH_FILE_CHARS
+  return kb === 0 ? Infinity : kb * 1024
+}
+
+/** What the full sweeps did since start-up: files parsed, files left out for size, governor asks. */
+export interface CodeGraphSweepCounters { parsed: number; skippedLarge: number; pauses: number }
+const sweepCounters: CodeGraphSweepCounters = { parsed: 0, skippedLarge: 0, pauses: 0 }
+
+export function codeGraphSweepCounters(): CodeGraphSweepCounters {
+  return { ...sweepCounters }
 }
 
 /**
@@ -337,6 +361,7 @@ async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Prom
     return statsOf(st) // preserve the last good graph — don't wipe on empty discovery
   }
   clearState(st)
+  const cap = maxGraphFileChars()
   let sinceYield = 0
   for (const file of files) {
     // Give the main thread back regularly — see yieldToEventLoop. Counted over EVERY file, skips
@@ -344,6 +369,10 @@ async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Prom
     if (++sinceYield >= YIELD_EVERY) {
       sinceYield = 0
       await yieldToEventLoop()
+      if (deps.pause) {
+        sweepCounters.pauses++
+        try { await deps.pause() } catch { /* fail open: the sweep goes on */ }
+      }
     }
     if (!isIndexableCodeFile(file) || !languageForFile(file)) continue
     let content: string
@@ -352,6 +381,11 @@ async function buildCodeGraphImpl(deps: CodeGraphDeps, projectKey: string): Prom
     } catch {
       continue
     }
+    if (content.length > cap) {
+      sweepCounters.skippedLarge++
+      continue
+    }
+    sweepCounters.parsed++
     // Prefer AST-precise extraction (web-tree-sitter); fall back to the heuristic for languages
     // without a grammar, or if the grammar can't load. The graph degrades, it never breaks.
     removeFile(st, file)
@@ -611,4 +645,5 @@ export function _resetCodeGraphForTests(): void {
   dir = null
   graphs.clear()
   activeKey = ''
+  sweepCounters.parsed = sweepCounters.skippedLarge = sweepCounters.pauses = 0
 }
