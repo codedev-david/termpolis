@@ -68,6 +68,25 @@ describe('lowerHostPriority', () => {
     }
   })
 
+  it('EDR-2: TERMPOLIS_NO_HOST_PRIORITY=<host list> leaves only the named hosts alone', () => {
+    const env = { TERMPOLIS_NO_HOST_PRIORITY: 'proc, bridge' }
+    const proc = fakeOs()
+    expect(lowerHostPriority({ os: proc.os, env, host: 'proc' })).toBe('disabled')
+    expect(proc.calls).toEqual([])
+    const memory = fakeOs() // control: a host the list does not name is still lowered
+    expect(lowerHostPriority({ os: memory.os, env, host: 'memory' })).toBe('lowered')
+    expect(memory.calls).toEqual([[0, BELOW_NORMAL]])
+    const anon = fakeOs() // control: a caller that names no host is not matched by a list
+    expect(lowerHostPriority({ os: anon.os, env })).toBe('lowered')
+  })
+
+  it('EDR-2: a host named by the caller still sees the test seam (deps merge, they do not replace it)', () => {
+    const { os, calls } = fakeOs()
+    __setHostPriorityDepsForTests({ os, env: {} })
+    expect(lowerHostPriority({ host: 'memory' })).toBe('lowered')
+    expect(calls).toEqual([[0, BELOW_NORMAL]])
+  })
+
   it('control: "0" and an unset variable do not disable it', () => {
     for (const env of [{ TERMPOLIS_NO_HOST_PRIORITY: '0' }, {}]) {
       const { os, calls } = fakeOs()
@@ -154,12 +173,30 @@ describe('nothing else can touch a process priority', () => {
 
 // ── static: each host calls it first, once ─────────────────────────────
 
-const HOSTS: Array<{ name: string; file: string; load: () => Promise<unknown> }> = [
-  { name: 'memory host', file: 'memoryHost.ts', load: () => import('../../src/main/memoryHost') },
-  { name: 'proc host', file: 'procHost.ts', load: () => import('../../src/main/procHost') },
+// The hosts that do background work only, lowered. Each names itself, so TERMPOLIS_NO_HOST_PRIORITY can list it alone.
+const HOSTS: Array<{ name: string; file: string; host: string; load: () => Promise<unknown> }> = [
+  { name: 'memory host', file: 'memoryHost.ts', host: 'memory', load: () => import('../../src/main/memoryHost') },
+  { name: 'proc host', file: 'procHost.ts', host: 'proc', load: () => import('../../src/main/procHost') },
+]
+
+// EDR-2: the hosts on an interactive path stay at normal priority. The Headroom proxy carries every model reply an
+// agent streams, and the remote bridge carries what is typed on the phone: both are what someone is waiting on.
+const INTERACTIVE: Array<{ name: string; file: string; load: () => Promise<unknown> }> = [
   { name: 'Headroom proxy entry', file: 'headroomProxy/proxyMain.ts', load: () => import('../../src/main/headroomProxy/proxyMain') },
   { name: 'remote bridge entry', file: 'remoteBridge/entry.ts', load: () => import('../../src/main/remoteBridge/entry') },
 ]
+
+/** How many lowerHostPriority(...) calls a file makes, whatever their arguments. */
+function lowerCalls(file: string, text: string): number {
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
+  let calls = 0
+  const visit = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'lowerHostPriority') calls++
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
+  return calls
+}
 
 /** The statements of the body of the `if (parentPort) { … }` block, which is what runs only inside a fork. */
 function childBlockStatements(text: string): ts.Statement[] {
@@ -174,24 +211,27 @@ function childBlockStatements(text: string): ts.Statement[] {
 
 describe('each background host lowers its own priority first, once, only when it is a forked child', () => {
   it('control: a block that does something else first is reported as not-first', () => {
-    const stmts = childBlockStatements("if (parentPort) { process.on('x', () => {}); lowerHostPriority() }")
-    expect(stmts[0].getText()).not.toMatch(/^lowerHostPriority\(\)/)
+    const stmts = childBlockStatements("if (parentPort) { process.on('x', () => {}); lowerHostPriority({ host: 'x' }) }")
+    expect(stmts[0].getText()).not.toMatch(/^lowerHostPriority\(/)
   })
 
   for (const host of HOSTS) {
-    it(`${host.name}: lowerHostPriority() is the first statement of the fork-only block and appears once in the file`, () => {
+    it(`${host.name}: lowerHostPriority({ host: '${host.host}' }) is the first statement of the fork-only block and appears once in the file`, () => {
       const text = readFileSync(join(SRC_MAIN, host.file), 'utf8')
       const stmts = childBlockStatements(text)
       expect(stmts.length).toBeGreaterThan(0)
-      expect(stmts[0].getText()).toBe('lowerHostPriority()')
-      const sf = ts.createSourceFile(host.file, text, ts.ScriptTarget.Latest, true)
-      let calls = 0
-      const visit = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'lowerHostPriority') calls++
-        ts.forEachChild(n, visit)
-      }
-      visit(sf)
-      expect(calls).toBe(1)
+      expect(stmts[0].getText()).toBe(`lowerHostPriority({ host: '${host.host}' })`)
+      expect(lowerCalls(host.file, text)).toBe(1)
+    })
+  }
+
+  it('control: the counter sees a call wherever it is', () => {
+    expect(lowerCalls('x.ts', "if (parentPort) { foo(); lowerHostPriority() }")).toBe(1)
+  })
+
+  for (const host of INTERACTIVE) {
+    it(`EDR-2: ${host.name} never lowers its priority: no lowerHostPriority call anywhere in the file`, () => {
+      expect(lowerCalls(host.file, readFileSync(join(SRC_MAIN, host.file), 'utf8'))).toBe(0)
     })
   }
 })
@@ -248,6 +288,21 @@ describe('dynamic: the real host modules, imported as forked children, call the 
     it(`${host.name} kill switch: TERMPOLIS_NO_HOST_PRIORITY=1 makes no call even as a child`, async () => {
       const { os, calls } = fakeOs()
       await importAsChild(host.load, { os, env: { TERMPOLIS_NO_HOST_PRIORITY: '1' } })
+      expect(calls).toEqual([])
+    }, 60_000)
+
+    it(`${host.name} kill switch for this host alone: TERMPOLIS_NO_HOST_PRIORITY=${host.host} makes no call as a child`, async () => {
+      const { os, calls } = fakeOs()
+      await importAsChild(host.load, { os, env: { TERMPOLIS_NO_HOST_PRIORITY: host.host } })
+      expect(calls).toEqual([])
+    }, 60_000)
+  }
+
+  for (const host of INTERACTIVE) {
+    it(`EDR-2: ${host.name}, imported as a forked child, makes zero priority calls`, async () => {
+      const { os, calls } = fakeOs()
+      const port = await importAsChild(host.load, { os, env: {} })
+      expect(port.on).toHaveBeenCalled() // control: the fork-only block really ran
       expect(calls).toEqual([])
     }, 60_000)
   }

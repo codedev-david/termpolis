@@ -381,7 +381,7 @@ const parentPort = (process as NodeJS.Process & { parentPort?: ParentPortLike })
 if (parentPort) {
   // The first thing a forked host does: lower its OWN priority (never another process's, never main's).
   // Kill switch TERMPOLIS_NO_HOST_PRIORITY=1. Inside this block, so main and the unit suite never run it.
-  lowerHostPriority()
+  lowerHostPriority({ host: 'memory' })
   // Electron 37 stopped ending a utility process on an unhandled rejection: it only warns now.
   // The parent restarts this child when it dies and falls back when it keeps dying, which assumes
   // a child in an unknown state goes away. So it still does. Inside this block, not at the top:

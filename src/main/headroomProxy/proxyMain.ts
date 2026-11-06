@@ -1,4 +1,3 @@
-import { lowerHostPriority } from '../hostPriority'
 import * as http from 'http'
 import * as https from 'https'
 import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, type WireStats } from './wireCompress'
@@ -121,9 +120,8 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
 /* v8 ignore start -- utilityProcess child entry: exercised at runtime in the fork, not unit-testable */
 const parentPort = (process as unknown as { parentPort?: { on: (ev: string, cb: (e: { data: unknown }) => void) => void; postMessage: (m: unknown) => void } }).parentPort
 if (parentPort) {
-  // The first thing a forked host does: lower its OWN priority (never another process's, never main's).
-  // Kill switch TERMPOLIS_NO_HOST_PRIORITY=1. Inside this block, so main and the unit suite never run it.
-  lowerHostPriority()
+  // No lowerHostPriority() here (EDR-2): this child carries every model reply an agent streams, which is what
+  // someone is waiting on, so it stays at normal priority. Only the memory and proc hosts lower themselves.
   // Keep the child ALIVE on any unexpected error. A crash would break every live Claude session
   // pinned to this port (a running PTY can't re-resolve ANTHROPIC_BASE_URL to direct mid-session).
   // One request may be lost; the child survives to serve the rest.

@@ -126,6 +126,53 @@ describe('the helper script, run as the proc host runs it (a child process with 
     expect(missing.stdout).toBe('')
   })
 
+  // EDR-2: the proc host lowers itself below normal (hostPriority.ts) and a Windows child inherits that, so the helper,
+  // which a submit to an agent waits on, would run below normal too. It puts ITSELF back to normal first. Counted, not
+  // timed: the fake native call reports the priority the helper is running at when it is asked for the list.
+  describe('EDR-2: it runs at normal priority even when started below normal', () => {
+    const BELOW_NORMAL = 10 // os.constants.priority.PRIORITY_BELOW_NORMAL
+    function runBelowNormal(lib: string, env: Record<string, string> = {}) {
+      // A preload that lowers the child ITSELF (pid 0) before the helper runs: what inheriting the proc host's class does.
+      const preload = join(lib, 'lower-self.js')
+      writeFileSync(preload, "try { require('os').setPriority(0, 10) } catch (e) { /* not allowed here: the test reads what it got */ }\n")
+      return spawnSync(process.execPath, ['-r', preload, shipped, '5', lib], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...env }, timeout: 20_000 })
+    }
+    const priorityLib = () => fakeNodePtyLib("[pid, require('os').getPriority(0)]")
+
+    it.runIf(process.platform === 'win32')('started below normal, it lists the console at normal priority (0), not 10', () => {
+      const lib = priorityLib()
+      try {
+        const r = runBelowNormal(lib)
+        expect(r.status).toBe(0)
+        expect(JSON.parse(r.stdout).list).toEqual([5, 0])
+      } finally { rmSync(lib, { recursive: true, force: true }) }
+    })
+
+    it.runIf(process.platform === 'win32')('NEGATIVE CONTROL / kill switch: TERMPOLIS_CONSOLE_LIST_NORMAL=0 leaves it at the inherited below normal', () => {
+      const lib = priorityLib()
+      try {
+        const r = runBelowNormal(lib, { TERMPOLIS_CONSOLE_LIST_NORMAL: '0' })
+        expect(r.status).toBe(0)
+        expect(JSON.parse(r.stdout).list).toEqual([5, BELOW_NORMAL])
+      } finally { rmSync(lib, { recursive: true, force: true }) }
+    })
+
+    it('fails open: where it may not raise its priority (an unprivileged Unix process) it still lists the console', () => {
+      const lib = priorityLib()
+      try {
+        const r = runBelowNormal(lib)
+        expect(r.status).toBe(0)
+        expect(JSON.parse(r.stdout).list[0]).toBe(5)
+      } finally { rmSync(lib, { recursive: true, force: true }) }
+    })
+
+    it('touches no priority but its own: every setPriority call in the script names pid 0', () => {
+      const calls = readFileSync(shipped, 'utf8').match(/setPriority\(([^,]*),/g) ?? []
+      expect(calls.length).toBe(1)
+      expect(calls.every((c) => /setPriority\(\s*0\s*,/.test(c))).toBe(true)
+    })
+  })
+
   it('answers on stdout only: it does not use an IPC channel (process.send), which an execFile child does not have', () => {
     expect(readFileSync(shipped, 'utf8')).not.toMatch(/process\.send/)
   })

@@ -13,7 +13,7 @@ const HELPER_PATH = 'C:\data\termpolis-console-list.cjs'
 vi.mock('../../src/main/procClient', () => ({ execCaptureOffThread: h.exec }))
 vi.mock('../../src/main/consoleListHelper', () => ({ ensureConsoleListHelper: h.ensure }))
 
-import { shellAlone, ownConsoleProcesses, parseConsoleList, primeShellAlone, CONSOLE_LIST_TIMEOUT_MS, CONSOLE_LIST_SHARE_MS, _resetShellAloneForTests } from '../../src/main/shellAlone'
+import { shellAlone, ownConsoleProcesses, parseConsoleList, primeShellAlone, readConsoleProcessList, consoleListCounters, CONSOLE_LIST_TIMEOUT_MS, CONSOLE_LIST_SHARE_MS, _resetShellAloneForTests } from '../../src/main/shellAlone'
 
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const GIT_BASH = 'C:\\Program Files\\Git\\bin\\bash.exe'
@@ -187,6 +187,45 @@ describe('shellAlone shares one run of the helper between asks made together (ke
     h.exec.mockResolvedValueOnce(printed([HELPER, SHELL + 5, 300]))
     expect(await shellAlone(SHELL + 5, POWERSHELL, 'win32')).toBe(false) // another terminal: its own look
     expect(h.exec).toHaveBeenCalledTimes(3)
+  })
+})
+
+// EDR-2: the helper runs from the below-normal proc host. Whether that ever makes it run out of time is counted here,
+// so a run can say how many asks it cost and how many came back "cannot tell" because the time ran out.
+describe('EDR-2: the console helper\'s runs, failures and timeouts are counted', () => {
+  it('counts a run that answered, one that failed, one stopped for taking too long, and one the host never answered', async () => {
+    expect(consoleListCounters()).toEqual({ runs: 0, failures: 0, timeouts: 0 })
+    h.exec.mockResolvedValueOnce(printed([HELPER, SHELL]))
+    await shellAlone(SHELL, POWERSHELL, 'win32')
+    expect(consoleListCounters()).toEqual({ runs: 1, failures: 0, timeouts: 0 })
+    h.exec.mockResolvedValueOnce({ stdout: '', stderr: 'boom', error: { message: 'Command failed', code: 1 } })
+    await shellAlone(SHELL + 1, POWERSHELL, 'win32')
+    expect(consoleListCounters()).toEqual({ runs: 2, failures: 1, timeouts: 0 })
+    h.exec.mockResolvedValueOnce({ stdout: '', stderr: '', error: { message: 'timed out', signal: 'SIGTERM', killed: true } })
+    await shellAlone(SHELL + 2, POWERSHELL, 'win32')
+    expect(consoleListCounters()).toEqual({ runs: 3, failures: 2, timeouts: 1 })
+    h.exec.mockRejectedValueOnce(new Error('proc host call timed out after 6000ms'))
+    await shellAlone(SHELL + 3, POWERSHELL, 'win32')
+    expect(consoleListCounters()).toEqual({ runs: 4, failures: 3, timeouts: 2 })
+  })
+
+  it('control: no helper (nothing run) counts nothing, and an answer shared between two asks is one run', async () => {
+    h.ensure.mockResolvedValueOnce(null)
+    await shellAlone(SHELL, POWERSHELL, 'win32')
+    h.ensure.mockRejectedValueOnce(new Error('no resources folder'))
+    expect(await shellAlone(SHELL + 8, POWERSHELL, 'win32')).toBeNull()
+    expect(consoleListCounters()).toEqual({ runs: 0, failures: 0, timeouts: 0 })
+    h.exec.mockResolvedValue(printed([HELPER, SHELL + 9]))
+    await Promise.all([shellAlone(SHELL + 9, POWERSHELL, 'win32'), shellAlone(SHELL + 9, POWERSHELL, 'win32')])
+    expect(consoleListCounters().runs).toBe(1)
+  })
+
+  it('readConsoleProcessList (closing a terminal) is a fresh run each time, counted the same way', async () => {
+    h.exec.mockResolvedValue(printed([HELPER, SHELL, 4242]))
+    expect(await readConsoleProcessList(SHELL)).toEqual([SHELL, 4242])
+    expect(await readConsoleProcessList(SHELL)).toEqual([SHELL, 4242])
+    expect(h.exec).toHaveBeenCalledTimes(2)
+    expect(consoleListCounters()).toEqual({ runs: 2, failures: 0, timeouts: 0 })
   })
 })
 

@@ -20,7 +20,8 @@
  *   4. With TERMPOLIS_NO_GOVERNOR=1 the app starts and types, the block says the governor is off, the same real
  *      stall changes nothing, and the pool variable is untouched: fail-open.
  *
- * NOT covered here, on purpose: that the four background hosts run below normal priority. Reading another
+ * NOT covered here, on purpose: that the two background hosts (memory, proc) run below normal priority, and the proxy
+ * and the remote bridge at normal (EDR-2). Reading another
  * process's priority needs a per-process query and the project rule is no process enumeration of any kind; the
  * unit tests count the calls to a fake os module instead (tests/electron/hostPriority.test.ts). Unverified in a
  * real Electron.

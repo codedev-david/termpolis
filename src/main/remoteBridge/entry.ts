@@ -1,5 +1,4 @@
 import { createHash } from 'crypto'
-import { lowerHostPriority } from '../hostPriority'
 import { DeviceRegistry } from './deviceRegistry'
 import { RequestDispatcher } from './dispatcher'
 import { OutputFanout, type DrainedChunk, type ScreenView } from './outputFanout'
@@ -1473,9 +1472,8 @@ interface ParentPortLike {
 }
 const parentPort = (process as NodeJS.Process & { parentPort?: ParentPortLike }).parentPort
 if (parentPort) {
-  // The first thing a forked host does: lower its OWN priority (never another process's, never main's).
-  // Kill switch TERMPOLIS_NO_HOST_PRIORITY=1. Inside this block, so main and the unit suite never run it.
-  lowerHostPriority()
+  // No lowerHostPriority() here (EDR-2): this child carries what is typed on the phone, which is what someone is
+  // waiting on, so it stays at normal priority. Only the memory and proc hosts lower themselves.
   // Electron 37 stopped ending a utility process on an unhandled rejection: it only warns now.
   // The parent restarts this child when it dies and falls back when it keeps dying, which assumes
   // a child in an unknown state goes away. So it still does. Inside this block, not at the top:

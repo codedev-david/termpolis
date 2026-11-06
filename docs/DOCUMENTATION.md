@@ -914,7 +914,8 @@ On a system without pkexec, Termpolis asks through `sudo -A` and its own passwor
 Every one of these mechanisms has a switch that puts back the 1.54.4 behaviour, for ruling it out while you chase a problem. Environment variables are read where Termpolis starts:
 
 - `TERMPOLIS_NO_GOVERNOR=1`: no busy watchdog; nothing ever pauses.
-- `TERMPOLIS_NO_HOST_PRIORITY=1`: the background hosts (memory, proxy) keep normal process priority.
+- `TERMPOLIS_NO_HOST_PRIORITY=1`: the background hosts (memory, proc) keep normal process priority. A comma list (`memory`, `proc`) keeps it for the hosts it names alone. The Headroom proxy and the remote bridge always run at normal priority: they carry model replies and phone typing.
+- `TERMPOLIS_CONSOLE_LIST_NORMAL=0`: the console-list helper (the check before typing into an agent on Windows) stays at the below-normal priority it inherits from the proc host, instead of putting itself back to normal.
 - `TERMPOLIS_TYPING_TRACE=0`: the keystroke-to-echo trace is off and adds nothing.
 - `TERMPOLIS_MEMORY_INPROC_GUARD=off`: the old in-process memory fallback, whatever the store size (`TERMPOLIS_MEMORY_INPROC_MAX_MB` moves the 256 MB limit instead).
 - `TERMPOLIS_INGEST_FAST=off`: conversation ingest reads whole files and the whole corpus each pass, as before. It also lets a drain re-read a transcript that is still growing on every follow-up, with no cap on the number of follow-ups (by default a drain reads a file once and stops after 400 follow-ups).

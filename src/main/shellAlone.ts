@@ -1,5 +1,5 @@
 import { createRequire } from 'module'
-import { basename, dirname, join } from 'path'
+import { basename, dirname } from 'path'
 import { execCaptureOffThread } from './procClient'
 import { ensureConsoleListHelper } from './consoleListHelper'
 import { createSingleFlight } from './singleFlight'
@@ -94,6 +94,16 @@ export function parseConsoleList(stdout: string): number[] | null {
 
 const consoleLists = createSingleFlight()
 
+/** What the console helper did since start-up (EDR-2): the runs, the runs that came back "cannot tell", and those of them
+ *  that ran out of time (the helper killed at CONSOLE_LIST_TIMEOUT_MS, or the proc host never answering). The helper is run
+ *  by the below-normal proc host; these say whether that ever costs a submit its answer. */
+export interface ConsoleListCounters { runs: number; failures: number; timeouts: number }
+const counters: ConsoleListCounters = { runs: 0, failures: 0, timeouts: 0 }
+
+export function consoleListCounters(): ConsoleListCounters {
+  return { ...counters }
+}
+
 /** The programs on the console of the shell `pid`, read now (never shared with another ask); null where the helper
  *  failed. For closing a terminal, which must see what runs in it at that moment. */
 export function readConsoleProcessList(pid: number): Promise<number[] | null> {
@@ -103,6 +113,7 @@ export function readConsoleProcessList(pid: number): Promise<number[] | null> {
 /** @internal test-only */
 export function _resetShellAloneForTests(): void {
   consoleLists.clear()
+  counters.runs = counters.failures = counters.timeouts = 0
 }
 
 /** The processes on the console of the shell `pid`, the helper left out; null where the helper
@@ -118,11 +129,24 @@ async function readConsole(pid: number): Promise<number[] | null> {
     if (!helper) return null
     // Termpolis run as Node (ELECTRON_RUN_AS_NODE) on the shipped script, by the proc host. A failure of any kind (the host is down, the
     // helper could not load node-pty, the time ran out and it was killed) is "cannot tell", never "alone".
-    const r = await execCaptureOffThread(process.execPath, [helper, String(pid), nodePtyLibDir()], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-      timeout: CONSOLE_LIST_TIMEOUT_MS,
-    })
-    return r.error ? null : parseConsoleList(r.stdout)
+    counters.runs++
+    let r: Awaited<ReturnType<typeof execCaptureOffThread>>
+    try {
+      r = await execCaptureOffThread(process.execPath, [helper, String(pid), nodePtyLibDir()], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        timeout: CONSOLE_LIST_TIMEOUT_MS,
+      })
+    } catch (err) {
+      counters.failures++
+      if (/timed out/.test(String(err))) counters.timeouts++
+      return null
+    }
+    if (r.error) {
+      counters.failures++
+      if (r.error.killed || r.error.signal) counters.timeouts++
+      return null
+    }
+    return parseConsoleList(r.stdout)
   } catch {
     return null
   }
