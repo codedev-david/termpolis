@@ -1375,6 +1375,22 @@ describe('memory:reflect-session', () => {
     expect(mneme.reflectSoloSession).not.toHaveBeenCalled()
   })
 
+  // 1.54.5 (MEM-F2): "Learn from conversations" OFF must stop this pass too, not only the ingest. Otherwise every
+  // idle-settle of an agent terminal lists the agent's session folder, stats and reads its transcript.
+  it('does nothing with "Learn from conversations" off: no transcript read, no reflection, cursor untouched', async () => {
+    await invoke('memory:set-learn-conversations', { value: false })
+    try {
+      const r = await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+      expect(r).toEqual({ success: true, data: { fired: false, lessons: 0 } })
+      expect(mneme.reflectSoloSession).not.toHaveBeenCalled()
+      expect(mneme.readSessionTranscript).not.toHaveBeenCalled()
+    } finally {
+      await invoke('memory:set-learn-conversations', { value: true })
+    }
+    await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(1) // control: on again, it reflects
+  })
+
   it('reflects the session under the cwd\'s project slug and returns the result', async () => {
     const r = await invoke('memory:reflect-session', { terminalId: 't1', cwd: 'C:/repos/Termpolis', agent: 'claude' })
     expect(r).toEqual({ success: true, data: { fired: true, lessons: 2 } })

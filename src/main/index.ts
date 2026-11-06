@@ -2679,6 +2679,9 @@ ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string })
 ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', async (_, opts: { terminalId: string; cwd: string; agent: string }) => {
   try {
     if (!opts?.terminalId || !opts?.cwd || !opts?.agent) return ok({ fired: false, lessons: 0 })
+    // "Learn from conversations" OFF (Settings, Memory): no transcript is listed, stat'ed or read, and nothing is learned.
+    // The cursor stays where it is.
+    if (!getLearnFromConversations()) return ok({ fired: false, lessons: 0 })
     // SHED (the event-loop governor): hold the reflection until the loop is calm (capped), never drop it: a reflection
     // asked at terminal close has no second chance. No wait at all while calm or with TERMPOLIS_NO_GOVERNOR=1.
     await whenNotShed()
