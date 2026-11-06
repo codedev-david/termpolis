@@ -195,6 +195,15 @@ describe('src/main against the allowlist', () => {
     expect(problems).toEqual([])
   })
 
+  // EDR-4: a tag is a reason the site may stay, not an owner. A lane's tag outlived the lane's merge, and its entries
+  // kept saying "that lane removes this"; an unused tag is how that starts.
+  it('uses every tag it defines, and no tag or reason names a branch or lane as the reason to stay', () => {
+    const used = new Set(allowlist.sites.map((e) => e.tag))
+    expect(Object.keys(allowlist.tags).filter((t) => !used.has(t))).toEqual([])
+    const laneScoped = allowlist.sites.filter((e) => /\blane[ -][a-z]\b|fix\/typing/i.test(`${e.tag} ${e.reason}`)).map((e) => e.site)
+    expect(laneScoped).toEqual([])
+  })
+
   it('keeps the lines sorted, so two branches that edit it merge cleanly', () => {
     const keys = allowlist.sites.map((e) => e.site)
     expect(keys).toEqual([...keys].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)))
