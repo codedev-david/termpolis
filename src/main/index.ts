@@ -126,6 +126,7 @@ import {
   replayPreamble,
   type OutputBuffers,
 } from './terminalOutputBuffer'
+import { registerTerminalDataRouting, sendTerminalData } from './terminalDataRouting'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
 import { primeShellAlone } from './shellAlone'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
@@ -807,6 +808,9 @@ ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; htm
   return ok()
 })
 
+// Which terminals the renderer listens to (terminal:subscribe / terminal:unsubscribe): main sends terminal:data for those only.
+registerTerminalDataRouting(ipcMain)
+
 ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom }) => {
   try {
     const shells = await detectAvailableShells()
@@ -836,7 +840,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           // replaying the buffer on mount compares it with the reply's nextOffset, to drop a
           // chunk that is both in its replay and on its way live instead of drawing it twice.
           const end = appendOutput(terminalOutputBuffers, id, data)
-          mainWindow?.webContents.send('terminal:data', id, data, end)
+          sendTerminalData(mainWindow, id, data, end)
           noteTerminalOutput(id)
           // Mark only. The remote pump reads the buffer on its own 50ms tick, so a
           // paired phone never adds work proportional to PTY chatter -- and with no
@@ -3615,7 +3619,7 @@ async function semanticPoolOptions(
           spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
             // Buffer first: the event carries the chunk's end offset (see terminal:create).
             const end = appendOutput(terminalOutputBuffers, id, data)
-            mainWindow?.webContents.send('terminal:data', id, data, end)
+            sendTerminalData(mainWindow, id, data, end)
             noteTerminalOutput(id)
             remoteNoteTerminalOutput(id)
           // Inject the proxy env for EVERY swarm worker: create_terminal fixes env BEFORE run_command

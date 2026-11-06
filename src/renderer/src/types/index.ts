@@ -342,6 +342,11 @@ export interface TermpolisAPI {
   /** `end` is where the chunk ends in the terminal's output stream — absent for output main
    *  never buffered (a Strict-Mode banner). Comparable with readTerminalBuffer's `nextOffset`. */
   onTerminalData: (cb: (id: string, data: string, end?: number) => void) => () => void
+  /** One terminal's output only, as `onTerminalData` (the callback keeps its three arguments). Every pane shares ONE
+   *  listener, and main sends terminal:data for an id only while something listens for it (see terminalDataRouting.ts). */
+  onTerminalDataFor: (id: string, cb: (id: string, data: string, end?: number) => void) => () => void
+  /** Counters of that routing, numbers and one boolean only: for an e2e spec to read what the real bridge did. */
+  terminalDataStats: () => { shared: boolean; ids: number; panes: number; all: number; delivered: number; dropped: number }
   getAvailableShells: () => Promise<IpcResponse<ShellInfo[]>>
   readConfigFile: (filePath: string) => Promise<IpcResponse<string>>
   writeConfigFile: (filePath: string, content: string) => Promise<IpcResponse>

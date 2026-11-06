@@ -1,5 +1,10 @@
 import { createChunkQueue, type ChunkQueue } from './chunkQueue'
 import { reportFailure } from './reportFailure'
+import { MAX_WRITE_RETRIES, RETRY_BACKOFF_CAP_MS, type ThrottleErrorInfo } from './writeRetry'
+
+// The retry policy lives in writeRetry.ts, shared with the write scheduler; these stay importable from here.
+export { MAX_WRITE_RETRIES }
+export type { ThrottleErrorInfo }
 
 const MAX_FLUSH_SIZE = 65536 // 64KB per frame — prevents memory spikes from extreme output
 
@@ -34,30 +39,11 @@ const SMALL_WRITE_BYPASS = 8192
  */
 const WATCHDOG_MS = 100
 
-/**
- * How many times in a row the writer may refuse one chunk before the chunk is dropped.
- *
- * term.write throws when xterm's own queue is past its 50,000,000-char watermark ("write data
- * discarded, use flow control to avoid losing data") or when the terminal is being torn down. The
- * 1.54.4 flush had already taken the chunk out of its buffer by then, so the throw lost it, in the
- * middle of an escape sequence if that is where the 64 KB boundary fell, and the screen stayed
- * wrong. Now the chunk stays at the head of the queue and is offered again: on the next tick, then
- * with a doubling delay (200, 400, 800, 1600 ms, then every 2 s), about 13 s in all. A refusal that
- * lasts that long is a terminal that is gone, and the chunk is dropped so the queue cannot grow for
- * ever behind it.
- */
-export const MAX_WRITE_RETRIES = 10
-const RETRY_BACKOFF_CAP_MS = 2000
-
-/** What the throttle tells `onError` about a refused chunk. */
-export interface ThrottleErrorInfo {
-  /** Consecutive refusals of this chunk so far, this one included. */
-  attempt: number
-  /** True when this was the last: the chunk is gone. */
-  dropped: boolean
-  /** Size of the chunk that was refused. */
-  chars: number
-}
+// A chunk the writer refuses (term.write throws past xterm's 50,000,000-char watermark, or while the terminal
+// is torn down) stays at the head of the queue and is offered again: on the next tick, then with a doubling
+// delay (200, 400, 800, 1600 ms, then every 2 s), until MAX_WRITE_RETRIES refusals in a row drop it. The 1.54.4
+// flush had already taken the chunk out of its buffer by then, so the throw lost it, in the middle of an
+// escape sequence if that is where the 64 KB boundary fell. The policy itself is in writeRetry.ts.
 
 export interface OutputThrottleOptions {
   /** The queue the backlog lives in. Default: the chunk list. The kill switch passes the 1.54.4 string queue. */
