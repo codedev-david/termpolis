@@ -99,6 +99,9 @@ describe('Past AI Sessions on an account', () => {
     expect(api().claudeTrustWorkspace).not.toHaveBeenCalled()
   })
 
+  // A handoff pastes its prompt 2.5 s after the line: waiting for it here keeps that timer from writing into a later test's mock (UI4-6).
+  const pasted = (): Promise<void> => waitFor(() => expect(api().writeToTerminal).toHaveBeenCalledWith('new-term', expect.stringContaining('CONTEXT HANDOFF')), { timeout: 4000 })
+
   it('hands off to another agent on its preferred account', async () => {
     await open()
     fireEvent.click(screen.getByTestId('past-ai-session-handoff-btn'))
@@ -109,6 +112,7 @@ describe('Past AI Sessions on an account', () => {
     expect(api().writeToTerminal).toHaveBeenCalledWith('new-term', 'unset CLAUDE_CONFIG_DIR && codex\r')
     // Not Claude: no folder trust is seeded.
     expect(api().claudeTrustWorkspace).not.toHaveBeenCalled()
+    await pasted()
   })
 
   it('types nothing for a handoff whose line is refused', async () => {
@@ -131,6 +135,7 @@ describe('Past AI Sessions on an account', () => {
     const t = useTerminalStore.getState().terminals.find((x) => x.id === 'new-term')
     expect(t?.agentAccountId).toBe('acc_p')
     expect(t).not.toHaveProperty('agentSessionId')
+    await pasted()
   })
 
   it('logs a handoff whose terminal fails to open', async () => {
