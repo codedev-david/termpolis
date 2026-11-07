@@ -164,7 +164,15 @@ test.describe.serial('Write scheduler in the real app', () => {
     await expect.poll(() => terminalText(page), { timeout: 120_000 }).toContain('FLOOD-DONE')
     const text = await terminalText(page)
     const numbers = Array.from(text.matchAll(/S(\d+) x{100}/g), (m) => Number(m[1]))
-    expect(numbers.length).toBeGreaterThanOrEqual(5900) // the scrollback holds 10,000 rows: every line of the flood is in it
+    // The scrollback keeps 10,000 ROWS, and a line of the flood (up to 106 characters) takes ceil(106 / cols) of them: on a
+    // pane narrower than that (94 columns on the Windows runner) it wraps into two rows, and only about 5,000 of the 6,000
+    // lines can be in the buffer, whatever the scheduler does. Every line that fits must be there.
+    const grid = await page.evaluate(
+      () => (window as unknown as { __termpolis_terminal_size?: () => { cols: number; rows: number } | null }).__termpolis_terminal_size?.() ?? null,
+    )
+    expect(grid).not.toBeNull()
+    const linesThatFit = Math.min(6000, Math.floor(10_000 / Math.ceil(106 / grid!.cols)))
+    expect(numbers.length).toBeGreaterThanOrEqual(linesThatFit - 100)
     for (let i = 1; i < numbers.length; i++) expect(numbers[i]).toBe(numbers[i - 1] + 1) // no gap, no repeat, in order
     expect(numbers[numbers.length - 1]).toBe(5999)
 
