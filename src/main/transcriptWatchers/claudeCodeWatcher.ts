@@ -474,6 +474,11 @@ export function attachClaudeSessionWatcher(
     try {
       if (folders === null) folders = [...new Set([await claudeCwd(cwd), await spelledOut(cwd)].map(mangleCwd))]
       const dir = await projectsDir()
+      // Until it is found, the handle names the first place it is looked for: the folder named for the link's
+      // target (macOS /var is /private/var), under the config home the run script recorded. At attach that could
+      // only be the folder named for cwd as given: resolving it there would block the main thread again. (The looks
+      // run one at a time and only a look follows a file, so nothing can have followed one since this look began.)
+      handle.sessionFile = path.join(dir, folders[0], name)
       for (const folder of folders) {
         const file = path.join(dir, folder, name)
         let there = true

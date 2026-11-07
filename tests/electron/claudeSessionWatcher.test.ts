@@ -134,6 +134,18 @@ describe('attachClaudeSessionWatcher', () => {
     fs.unlinkSync(link)
   })
 
+  // macOS's /var -> /private/var, reproduced anywhere: before the transcript exists, the handle names the folder
+  // for the link's target (where it is looked for first), not the one for the link as given.
+  it("names the folder for a link's target while it waits, not the link's own", async () => {
+    const link = path.join(tmpDir, 'project-link')
+    fs.symlinkSync(cwd, link, 'junction')
+    const handle = attach(SID, link)
+    await handle.settled()
+    expect(handle.sessionFile).toBe(path.join(projects, own(), `${SID}.jsonl`))
+    expect(handle.sessionFile).not.toBe(path.join(projects, mangleCwd(link), `${SID}.jsonl`))
+    fs.unlinkSync(link)
+  })
+
   // PowerShell spells out a short name before it starts claude, which keeps what it was handed:
   // a conductor started in C:\Users\TERMPO~1\... kept its transcript under ...TermpolisUser1...
   const short = os.tmpdir().includes('~') && fs.realpathSync.native(os.tmpdir()) !== os.tmpdir()
@@ -263,9 +275,18 @@ describe('attachClaudeSessionWatcher', () => {
     expect(tools()).toEqual([])
   })
 
-  it("names the file it looks for until it finds one, then the one it follows", () => {
+  // The first look resolves the working folder (on the thread pool) and names the folder Claude Code uses: on macOS
+  // the temp folder is /var/..., a link to /private/var/..., and the transcript is under -private-var-... . At attach
+  // only the folder as given can be named without blocking the main thread; a test that read it then passed on
+  // Windows (no link in the temp path) and failed on macOS.
+  it("names the file it looks for until it finds one, then the one it follows", async () => {
     const handle = attach()
+    expect(path.basename(handle.sessionFile)).toBe(`${SID}.jsonl`)
+    await handle.settled()
     expect(handle.sessionFile).toBe(path.join(projects, own(), `${SID}.jsonl`))
+    const file = transcript(own(), SID, 'Read')
+    await poll()
+    expect(handle.sessionFile).toBe(file)
     expect(handle.sessionId).toBe(SID)
     expect(handle.terminalId).toBe('conductor-1')
   })

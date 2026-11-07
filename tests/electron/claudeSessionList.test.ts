@@ -352,7 +352,9 @@ describe('listSessionFilesAsync', () => {
     const io = (over: Partial<import('../../src/main/claudeSessionList').ListFs> = {}): import('../../src/main/claudeSessionList').ListFs => ({
       stat: (p) => fs.promises.stat(p),
       readdir: (p) => fs.promises.readdir(p),
-      realpath: async (p) => p,
+      // The real (JS) realpath, as project() names the folder: an identity stub named the folder for /var/... on
+      // macOS, where the temp folder is a link to /private/var/..., and the listing found nothing to refuse.
+      realpath: (p) => new Promise<string>((resolve, reject) => fs.realpath(p, (err, resolved) => (err ? reject(err) : resolve(resolved)))),
       ...over,
     })
 
