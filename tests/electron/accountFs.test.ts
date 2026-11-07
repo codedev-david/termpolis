@@ -284,7 +284,12 @@ describe('isSameOrInside', () => {
   })
 
   it('folds case where the filesystem does', () => {
-    expect(isSameOrInside('C:\\Users\\ME\\.claude\\x', 'c:\\users\\me\\.claude')).toBe(process.platform === 'win32' || process.platform === 'darwin')
+    // In this platform's own path form: a backslash separates nothing on macOS, so a Windows path
+    // there is one long name and was never inside anything, whatever the case.
+    const [child, parent] = process.platform === 'win32'
+      ? ['C:\\Users\\ME\\.claude\\x', 'c:\\users\\me\\.claude']
+      : ['/Users/ME/.claude/x', '/users/me/.claude']
+    expect(isSameOrInside(child, parent)).toBe(process.platform === 'win32' || process.platform === 'darwin')
   })
 })
 
@@ -316,6 +321,7 @@ describe('on each platform', () => {
     expect(withPlatform('linux', () => isCredentialPath('/p/auth.json'))).toBe(true)
     expect(withPlatform('darwin', () => isCredentialPath('/p/AUTH.JSON'))).toBe(true)
     expect(withPlatform('linux', () => isSameOrInside('/A/b', '/a'))).toBe(false)
+    expect(withPlatform('darwin', () => isSameOrInside('/A/b', '/a'))).toBe(true)
   })
 
   it('removes a link with unlink where links are symlinks', () => {
