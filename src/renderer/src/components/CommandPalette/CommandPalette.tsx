@@ -39,6 +39,7 @@ const COMMAND_PATTERNS: CommandAction[] = [
   { pattern: /launch\s*claude/i, action: 'launch_claude', label: 'Launch Claude', description: 'Launch Claude Code AI agent', icon: 'fa-solid fa-robot' },
   { pattern: /launch\s*codex/i, action: 'launch_codex', label: 'Launch Codex', description: 'Launch OpenAI Codex agent', icon: 'fa-solid fa-microchip' },
   { pattern: /launch\s*gemini/i, action: 'launch_gemini', label: 'Launch Gemini', description: 'Launch Gemini CLI agent', icon: 'fa-brands fa-google' },
+  { pattern: /switch\s*account/i, action: 'switch_account', label: 'Switch account…', description: 'Move the active agent terminal to another account', icon: 'fa-solid fa-user-group' },
   { pattern: /run\s+(.+)/i, action: 'run_command', capture: true, label: 'Run Command', description: 'Execute a command in active terminal', icon: 'fa-solid fa-terminal' },
 ]
 
@@ -54,6 +55,8 @@ export function CommandPalette({ onAction, onClose }: Props) {
   const listRef = useRef<HTMLDivElement>(null)
   const storeTemplates = useTerminalStore(s => s.promptTemplates)
   const terminals = useTerminalStore(s => s.terminals).filter(t => !t.hidden)
+  // D13: Switch account… is offered only once an account is registered.
+  const accountsOn = useTerminalStore(s => !!s.accountsView?.accounts.length)
 
   // Merge default + custom prompt templates
   const allTemplates = useMemo(() => {
@@ -77,21 +80,22 @@ export function CommandPalette({ onAction, onClose }: Props) {
   }, [onClose])
 
   const matches = useMemo(() => {
+    const commands = accountsOn ? COMMAND_PATTERNS : COMMAND_PATTERNS.filter(c => c.action !== 'switch_account')
     const lower = query.trim().toLowerCase()
 
     // Build command matches
     let commandResults: (CommandAction & { captured?: string })[] = []
     if (!lower) {
-      commandResults = COMMAND_PATTERNS.map(cmd => ({ ...cmd, captured: undefined as string | undefined }))
+      commandResults = commands.map(cmd => ({ ...cmd, captured: undefined as string | undefined }))
     } else {
-      for (const cmd of COMMAND_PATTERNS) {
+      for (const cmd of commands) {
         const m = cmd.pattern.exec(query)
         if (m) {
           commandResults.push({ ...cmd, captured: cmd.capture ? m[1] : undefined })
         }
       }
       if (commandResults.length === 0) {
-        for (const cmd of COMMAND_PATTERNS) {
+        for (const cmd of commands) {
           if (cmd.label.toLowerCase().includes(lower) || cmd.description.toLowerCase().includes(lower)) {
             commandResults.push({ ...cmd, captured: undefined })
           }
@@ -124,7 +128,7 @@ export function CommandPalette({ onAction, onClose }: Props) {
       }))
 
     return [...commandResults, ...templateResults, ...terminalResults]
-  }, [query, allTemplates, terminals])
+  }, [query, allTemplates, terminals, accountsOn])
 
   // Reset selection only when the query changes (not when matches recompute from store updates)
   useEffect(() => {

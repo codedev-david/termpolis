@@ -249,6 +249,22 @@ describe('trustClaudeWorkspace', () => {
     expect(readFileSync(configPath, 'utf-8')).toBe('{ this is not json')
   })
 
+  it('says nothing of the file when it will not parse, in the trust call or the two that withdraw it (SAFETY-R1 S5)', () => {
+    // A bare word beside a key-shaped string: V8 quotes the source around the unexpected token.
+    const secretish = 'a'.repeat(24)
+    writeFileSync(configPath, `{ "projects": {}, "primaryApiKey": sk-ant-${secretish} }`, 'utf-8')
+    const trusted = trustClaudeWorkspace(dir, { configPath })
+    expect(trusted.skipped).toBe('corrupt')
+    const reverted = revertClaudeTrust(['x'], { configPath })
+    const untrusted = untrustUnsafeClaudeRoots({ configPath })
+    for (const error of [trusted.error, reverted.error, untrusted.error]) {
+      expect(error).toBeTruthy()
+      expect(error).not.toContain(secretish)
+      expect(error).not.toContain('sk-ant')
+      expect(error).not.toContain('primaryApiKey')
+    }
+  })
+
   it('treats a non-object config root as corrupt', () => {
     writeFileSync(configPath, '[1,2,3]', 'utf-8')
     const res = trustClaudeWorkspace(dir, { configPath })

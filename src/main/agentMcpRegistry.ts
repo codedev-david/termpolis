@@ -495,3 +495,14 @@ export function isTermpolisPluginManifest(pluginJson: Json | null, mcpJson: Json
     isObject(pluginJson.author) && pluginJson.author.name === 'Termpolis'
   return byManifest || (!!mcpJson && hasServerEntry(mcpJson))
 }
+
+/** Take Termpolis's own entries out of a Claude Code settings.json: its tool allow rules, its
+ *  memory hook and the server entry older versions put there. A copied settings.json gets this, so
+ *  a profile the user leaves unconnected carries none of them; Settings ▸ Accounts' "Remove the
+ *  copied entries" is the same edit. */
+export function stripTermpolisEntries(root: Json): EntryEdit {
+  const edits: EntryEdit[] = [removeAllowRules(root), removePrimerHooks(root), removeServerEntry(root)]
+  const skipped = edits.find((e) => typeof e === 'object')
+  if (skipped) return skipped
+  return edits.includes('remove') ? 'remove' : 'unchanged'
+}

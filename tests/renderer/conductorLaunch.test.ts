@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   conductorRunScript,
   conductorLaunchCommand,
+  conductorLimitOf,
   findConductorExit,
   conductorScreenText,
   CONDUCTOR_EXIT_SENTINEL,
@@ -379,5 +380,61 @@ describe('conductorLaunchCommand', () => {
 
   it('runs the .sh with bash, its path single-quoted so the shell expands nothing in it', () => {
     expect(conductorLaunchCommand(false, '/home/$USER/.termpolis-conductor-run.sh')).toBe("bash '/home/$USER/.termpolis-conductor-run.sh'")
+  })
+})
+
+// v1.55.0, §9 (P2): the conductor, run again on another account at its usage limit. The run script
+// puts claude on that account itself, in its own shell's syntax, and resumes the conductor's own
+// session by its id where the account can see it.
+describe('the run scripts put claude on the account they are given', () => {
+  it('on Windows, set or removed with $env: before the session is recorded, as single-quoted literals', () => {
+    for (const testCommand of [undefined, 'node e2e/mocks/mock-claude.cjs']) {
+      const set = conductorRunScript(true, { ...WIN, testCommand, account: { profile: "C:\\Users\\O'Brien $x\\.claude-b" } })
+      const line = "$env:CLAUDE_CONFIG_DIR = 'C:\\Users\\O''Brien $x\\.claude-b'"
+      expect(set).toContain(`\n${line}\n`)
+      expect(set.indexOf(line)).toBeLessThan(set.indexOf('Set-Content -LiteralPath'))
+      const unset = conductorRunScript(true, { ...WIN, testCommand, account: { profile: null } })
+      expect(unset).toContain('\nRemove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue\n')
+      // With no account given, the script is v1.54.0's.
+      expect(conductorRunScript(true, { ...WIN, testCommand })).not.toMatch(/\$env:CLAUDE_CONFIG_DIR =|Remove-Item Env:CLAUDE_CONFIG_DIR/)
+    }
+  })
+
+  it('on Linux and macOS, exported or unset before the session is recorded', () => {
+    const set = conductorRunScript(false, { ...UNIX, account: { profile: "/home/o'brien/.claude-b" } })
+    expect(set).toContain("\nexport CLAUDE_CONFIG_DIR='/home/o'\\''brien/.claude-b'\n")
+    expect(set.indexOf('export CLAUDE_CONFIG_DIR')).toBeLessThan(set.indexOf("printf '%s"))
+    expect(conductorRunScript(false, { ...UNIX, account: { profile: null } })).toContain('\nunset CLAUDE_CONFIG_DIR\n')
+    expect(conductorRunScript(false, UNIX)).not.toMatch(/export CLAUDE_CONFIG_DIR|unset CLAUDE_CONFIG_DIR/)
+  })
+
+  it('resume the session by its id in every launch mode, instead of starting one', () => {
+    for (const [isWindows, paths, starts] of [[true, WIN, 3], [false, UNIX, 1]] as const) {
+      const script = conductorRunScript(isWindows, { ...paths, resume: true })
+      expect(script.match(/--resume/g)).toHaveLength(starts)
+      expect(script).not.toContain('--session-id')
+      expect(script).toContain(` --resume '${SESSION}' --dangerously-skip-permissions`)
+    }
+    expect(conductorRunScript(true, { ...WIN, resume: true })).toContain(`--resume ${SESSION} --dangerously-skip-permissions'`)
+  })
+})
+
+// "Conductor exited (code N)" with its last lines: at a usage limit, the last of them are Claude
+// Code's own limit message. Read only after the exit sentinel, only with a code that isn't 0.
+describe('conductorLimitOf', () => {
+  const exit = (code: number, lastLines: string[]) => ({ code, lastLines })
+
+  it('reads Claude Code\'s limit message among the last lines of a conductor that exited with an error', () => {
+    expect(conductorLimitOf(exit(1, ['Working…', "You've hit your session limit · resets 3pm (America/New_York)"]))).toBe("You've hit your session limit · resets 3pm (America/New_York)")
+    expect(conductorLimitOf(exit(1, ["  ⎿  You've hit your weekly limit · resets Oct 24, 4pm", '/upgrade to increase your usage limit.']))).toBe("You've hit your weekly limit · resets Oct 24, 4pm")
+    expect(conductorLimitOf(exit(2, ["You've reached your Fable limit.", 'x', 'y']))).toBe("You've reached your Fable limit.")
+  })
+
+  it('reads none with a code of 0, far up, quoted mid-line, or Claude Code\'s fast limit', () => {
+    expect(conductorLimitOf(exit(0, ["You've hit your session limit · resets 3pm"]))).toBeNull()
+    expect(conductorLimitOf(exit(1, ["You've hit your session limit · resets 3pm", 'a', 'b', 'c']))).toBeNull()
+    expect(conductorLimitOf(exit(1, ["The worker said: You've hit your session limit"]))).toBeNull()
+    expect(conductorLimitOf(exit(1, ["You've hit your fast limit · resets in 4h 59m"]))).toBeNull()
+    expect(conductorLimitOf(exit(1, []))).toBeNull()
   })
 })

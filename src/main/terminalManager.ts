@@ -1,7 +1,7 @@
 import * as pty from 'node-pty'
 import { homedir } from 'os'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
-import { dirname, join } from 'path'
+import { basename, dirname, join } from 'path'
 import { execSync } from 'child_process'
 import { app } from 'electron'
 import { execShellCaptureOffThread } from './procClient'
@@ -10,7 +10,7 @@ import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { flushBeforeResize } from './ptyResizeFlush'
 import { sudoAskpassEnv } from './sudoAskpass'
 import { integrationScriptState, INTEGRATION_SCRIPT_NAME, type SpawnPrep } from './terminalSpawnPrep'
-import { shellAlone, readConsoleProcessList } from './shellAlone'
+import { hasJobControl, shellAlone, readConsoleProcessList } from './shellAlone'
 import { consoleListInProc } from './consoleListInProc'
 import {
   detectShellKind,
@@ -306,6 +306,25 @@ function endConsoleOffThread(proc: pty.IPty): void {
   agent._getConsoleProcessList = async () => {
     const pid = agent.innerPid ?? proc.pid
     return (await readConsoleProcessList(pid)) ?? [pid]
+  }
+}
+
+/** Whether the terminal's own shell is its PTY's foreground process (macOS and Linux): an agent
+ *  started in it has exited. node-pty reads the name through the PTY's own master fd, the same
+ *  kind of read as the live cwd below, never a process listing. The cheap, synchronous read the
+ *  screen-polling parts use (limitLook.ts, accountSwitch.ts); shellAlone.ts is the OS's full answer,
+ *  asked once at the moments that need it. null where that can't be told: on Windows, where
+ *  node-pty only ever names the program it started, for a shell that gives what it runs no
+ *  foreground group of its own (shellAlone.ts: PowerShell on Unix), or for no such terminal. */
+export function isShellInForeground(id: string): boolean | null {
+  const proc = processes.get(id)
+  if (process.platform === 'win32' || !proc || !hasJobControl(proc.executable)) return null
+  // A login shell's name can carry a leading '-'.
+  const name = (s: string): string => basename(s).replace(/^-/, '')
+  try {
+    return name(proc.pty.process) === name(proc.executable)
+  } catch {
+    return null
   }
 }
 

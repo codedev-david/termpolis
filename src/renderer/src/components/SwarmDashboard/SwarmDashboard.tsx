@@ -9,6 +9,9 @@ import { ConductorTrace } from '../ConductorTrace/ConductorTrace'
 import { ConductorOutput } from '../ConductorOutput/ConductorOutput'
 import { HandoffAnimation } from '../HandoffAnimation/HandoffAnimation'
 import { SwarmReviewPanel } from '../SwarmReview/SwarmReviewPanel'
+import { SwarmWorkerAccounts } from '../Accounts/SwarmWorkerAccounts'
+import { SwarmRestartList } from '../Accounts/SwarmRestartOffers'
+import { clearSwarmRestarts, liveRestartDeps } from '../../lib/swarmRestart'
 
 interface SwarmDashboardProps {
   onClose: () => void
@@ -103,6 +106,8 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
     stopAllBridges()
     stopConductor()
     await window.swarmAPI.clear()
+    // The restart offers of the workers about to be killed go with them, and tell no one: the swarm is over.
+    clearSwarmRestarts(liveRestartDeps())
     // Close and kill all swarm terminals
     const store = useTerminalStore.getState()
     const swarmTerminals = store.terminals.filter(t => t.isSwarm)
@@ -313,6 +318,11 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
             </button>
           </div>
         </div>
+
+        {/* Each worker's account chip, where its agent has two accounts or more (§9) */}
+        <SwarmWorkerAccounts />
+        {/* The restart offers for workers that ran out of usage (§9), while the dashboard is open */}
+        <SwarmRestartList />
 
         {/* Tabs */}
         <div className="flex items-center gap-1 px-5 py-2 border-b border-[#3c3c3c]">

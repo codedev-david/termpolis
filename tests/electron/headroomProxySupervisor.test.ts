@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 const { setProxySpawner, onProxyResult, onProxyStash, startProxy, isProxyHealthy, getProxyEnv, stopProxy, pickFreePort, setProxyMode, _resetProxyForTest, setProxyEnabled, isProxyEnabled, isProxyStarted, userRoutingVar, setAgentEnvReader, USER_ROUTING_ENV, PROVIDER_SWITCH_ENV, getProxyMode } =
   await import('../../src/main/headroomProxy/proxySupervisor')
 
-interface Fake { transport: unknown; fireExit: () => void; fireResult: (r: Record<string, unknown>) => void; fireStash: (stashes: Array<{ token: string; original: string }>) => void; killed: boolean; posted: Array<Record<string, unknown>> }
+interface Fake { transport: unknown; fire: (m: unknown) => void; fireExit: () => void; fireResult: (r: Record<string, unknown>) => void; fireStash: (stashes: Array<{ token: string; original: string }>) => void; killed: boolean; posted: Array<Record<string, unknown>> }
 let fakes: Fake[] = []
 
 function fakeSpawner(): unknown {
@@ -16,6 +16,7 @@ function fakeSpawner(): unknown {
       kill: () => { f.killed = true },
       pid: 1,
     },
+    fire: (m: unknown) => msgCb(m),
     fireExit: () => exitCb(1),
     fireResult: (r: Record<string, unknown>) => msgCb({ kind: 'result', ...r }),
     fireStash: (stashes: Array<{ token: string; original: string }>) => msgCb({ kind: 'stash', stashes }),
@@ -81,6 +82,46 @@ describe('proxy supervisor', () => {
     for (let i = 0; i < 6; i++) fakes[fakes.length - 1].fireExit()
     expect(isProxyHealthy()).toBe(false)
     expect(getProxyEnv()).toBeNull()
+  })
+
+  it('takes health and port only from the child serving now, never from one it replaced', () => {
+    startProxy({ port: 9999 })
+    fakes[0].fireExit()
+    expect(fakes).toHaveLength(2)
+    expect(isProxyHealthy()).toBe(true)
+    // The replaced child's late words describe nothing that serves.
+    fakes[0].fire({ kind: 'error' })
+    expect(isProxyHealthy()).toBe(true)
+    fakes[0].fire({ kind: 'ready', port: 1234 })
+    expect(getProxyEnv({})?.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:9999')
+    fakes[1].fire({ kind: 'error' })
+    expect(isProxyHealthy()).toBe(false)
+    fakes[0].fire({ kind: 'ready', port: 1234 })
+    expect(isProxyHealthy()).toBe(false)
+  })
+
+  it('restarts the cooldown when the proxy flaps again while the last one waits', () => {
+    vi.useFakeTimers()
+    try {
+      startProxy({ port: 9999 })
+      for (let i = 0; i < 6; i++) fakes[fakes.length - 1].fireExit()
+      expect(isProxyHealthy()).toBe(false)
+      // 10 s later a Settings flip starts it again, and it flaps again before the first cooldown ran out.
+      vi.advanceTimersByTime(10_000)
+      startProxy({ port: 9999 })
+      for (let i = 0; i < 6; i++) fakes[fakes.length - 1].fireExit()
+      const spawned = fakes.length
+      // The first burst's cooldown is gone: nothing respawns 30 s after it...
+      vi.advanceTimersByTime(20_000)
+      expect(fakes.length).toBe(spawned)
+      expect(isProxyHealthy()).toBe(false)
+      // ...only 30 s after the second.
+      vi.advanceTimersByTime(10_000)
+      expect(fakes.length).toBe(spawned + 1)
+      expect(isProxyHealthy()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('stopProxy kills the child and marks unhealthy', () => {
@@ -259,5 +300,25 @@ describe('proxy supervisor — the user decides where Claude traffic goes', () =
     }
     setAgentEnvReader(null)
     expect(getProxyEnv({})?.ANTHROPIC_BASE_URL).toBe(ours)
+  })
+
+  it('judges a launch on an account by its own profile settings.json env, not the default one', () => {
+    startProxy({ port: 9999 })
+    const ours = getProxyEnv({})?.ANTHROPIC_BASE_URL
+    expect(ours).toBeTruthy()
+    // The default profile routes elsewhere; the account's profile doesn't, and the reverse.
+    setAgentEnvReader(() => ({ ANTHROPIC_BASE_URL: 'http://gateway.corp.example:4000' }))
+    expect(userRoutingVar({})).toBe('ANTHROPIC_BASE_URL')
+    expect(userRoutingVar({}, { model: 'opus' })).toBeNull()
+    expect(userRoutingVar({}, null)).toBeNull()
+    expect(getProxyEnv({}, {})?.ANTHROPIC_BASE_URL).toBe(ours)
+    setAgentEnvReader(null)
+    expect(userRoutingVar({}, { HTTPS_PROXY: 'http://p:8080', N: 5 })).toBe('HTTPS_PROXY')
+    expect(userRoutingVar({}, { CLAUDE_CODE_USE_BEDROCK: '1' })).toBe('CLAUDE_CODE_USE_BEDROCK')
+    expect(getProxyEnv({}, { ANTHROPIC_BASE_URL: 'http://elsewhere' })).toBeNull()
+    // The account's block still wins over the launch env, as Claude Code applies it.
+    expect(userRoutingVar({ CLAUDE_CODE_USE_VERTEX: '1' }, { CLAUDE_CODE_USE_VERTEX: '0' })).toBeNull()
+    expect(userRoutingVar({}, [] as unknown as Record<string, unknown>)).toBeNull()
+    stopProxy()
   })
 })

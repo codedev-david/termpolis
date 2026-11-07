@@ -10,6 +10,8 @@ let mockSetSwarmActive = vi.fn()
 let mockSetSwarmAgents = vi.fn()
 let mockSetActiveTerminal = vi.fn()
 let mockRemoveTerminal = vi.fn()
+let mockSwarmRestarts: any[] = []
+let mockDropSwarmRestart = vi.fn()
 let mockConductorStatus = 'idle'
 let mockConductorTerminalId: string | null = null
 
@@ -61,6 +63,8 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         setSwarmAgents: mockSetSwarmAgents,
         setActiveTerminal: mockSetActiveTerminal,
         removeTerminal: mockRemoveTerminal,
+        swarmRestarts: mockSwarmRestarts,
+        dropSwarmRestart: mockDropSwarmRestart,
       })),
       setState: vi.fn(),
     },
@@ -159,6 +163,8 @@ beforeEach(() => {
   mockSetSwarmAgents = vi.fn()
   mockSetActiveTerminal = vi.fn()
   mockRemoveTerminal = vi.fn()
+  mockSwarmRestarts = []
+  mockDropSwarmRestart = vi.fn()
   mockConductorStatus = 'idle'
   mockConductorTerminalId = null
   vi.clearAllMocks()
@@ -222,6 +228,19 @@ describe('SwarmDashboard', () => {
       expect(screen.getByText(/All swarm work will be lost/)).toBeInTheDocument()
       fireEvent.click(screen.getByText('Cancel'))
       expect(screen.queryByText(/All swarm work will be lost/)).not.toBeInTheDocument()
+    })
+
+    it('takes the restart offers of the swarm workers down with it, before their terminals go (SWARM-R1 N7)', async () => {
+      mockSwarmActive = true
+      mockTerminals = [{ id: 'sw-1', name: 'Agent 1', isSwarm: true, hidden: false, isConductor: false }]
+      mockSwarmRestarts = [{ id: 'offer-1', agent: 'claude', accountId: 'a', words: 'w', resetsAt: null, workers: [{ terminalId: 'sw-1', agentName: 'Claude', role: 'Build', summary: 's' }], targets: [], phase: { kind: 'offered' } }]
+      const order: string[] = []
+      mockDropSwarmRestart = vi.fn((id: string) => { order.push(`drop ${id}`) })
+      mockRemoveTerminal = vi.fn((id: string) => { order.push(`remove ${id}`) })
+      render(<SwarmDashboard onClose={vi.fn()} />)
+      fireEvent.click(screen.getByText('Clear'))
+      fireEvent.click(screen.getAllByText(/Clear Swarm/).find((el) => el.tagName === 'BUTTON')!)
+      await waitFor(() => expect(order).toEqual(['drop offer-1', 'remove sw-1']))
     })
 
     it('calls clear APIs when confirm is clicked', async () => {

@@ -113,6 +113,39 @@ describe('detectAgentStatus with a task in the box that starts "1. ", or is tall
     expect(inputBoxRows(['no box'])).toBeNull()
   })
 
+  // As the real Codex 0.164.0 draws its settled composer (SWITCH-R1 C1, captured in a temp CODEX_HOME): the
+  // placeholder row, a blank row, a status line (the default config), and the hint row, a warning on its right.
+  const CODEX_164 = ['› Ask Codex to do anything', '', '  GPT-6-Astra default · ~\\AppData\\Local\\Temp\\proj\\work', '  ? for shortcuts                                                        ⚠ 1 warning · f2 to view']
+
+  it("ends Codex 0.164's composer above the status line and the hint row that follow its blank row", () => {
+    expect(inputBoxRows(CODEX_164)).toEqual(['› Ask Codex to do anything', ''])
+    expect(emptyInputBox(CODEX_164)).toBe(true)
+    // After its history, as a resumed session settles.
+    const resumed = ['  >_ OpenAI Codex (v0.164.0)', '', '› hi', '■ Conversation interrupted - use /feedback if something went wrong', '', ...CODEX_164]
+    expect(inputBoxRow(resumed)).toBe(5)
+    expect(emptyInputBox(resumed)).toBe(true)
+    // With no status line (its config turns it off) the hint row alone is the footer, as before.
+    expect(emptyInputBox([CODEX_164[0], '', CODEX_164[3]])).toBe(true)
+  })
+
+  it("still reads what is typed into Codex 0.164's composer as the box, however it wraps or breaks", () => {
+    // Its blank row, status line and hint row.
+    const under = CODEX_164.slice(1)
+    expect(emptyInputBox(['› Write the docs', ...under])).toBe(false)
+    expect(inputBoxRows(['› Write the docs', '  and the tests', ...under])).toEqual(['› Write the docs', '  and the tests', ''])
+    // Text that wraps onto the rows under its first, with no blank row before the last two, is all the box's.
+    expect(inputBoxRows(['› Write the docs', '  and the tests', '  and more'])).toEqual(['› Write the docs', '  and the tests', '  and more'])
+    // A blank line inside what was typed is the text's, not the footer's: only the last blank row parts the footer.
+    expect(inputBoxRows(['› Write the docs', '', '  then the tests', ...under])).toEqual(['› Write the docs', '', '  then the tests', ''])
+    // A first line left empty, with the text under it, is not an empty box either.
+    expect(emptyInputBox(['›', '  hello there', ...under])).toBe(false)
+  })
+
+  it("reads the rows under Codex 0.164's composer as its footer, which can say it is at work", () => {
+    expect(isBusyOnScreen(CODEX_164, '')).toBe(false)
+    expect(isBusyOnScreen([CODEX_164[0], '', CODEX_164[2], '  esc to interrupt'], '')).toBe(true)
+  })
+
   it("reads Claude Code's box taller than the screen from the screen's top down to its closing rule", () => {
     const lines = rows(input.screens['claude-80x17-tall'])
     expect(inputBoxRow(lines)).toBe(0)

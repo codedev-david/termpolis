@@ -358,3 +358,22 @@ describe('buildConductorPrompt — model guidance seam', () => {
     expect(prompt).not.toContain('No MCP (use swarm bridge)')
   })
 })
+
+// v1.55.0, §9: Termpolis can offer to restart a worker that ran out of usage on another account,
+// and tells the conductor to wait while it does. Said only where such an offer can happen: an agent
+// with two accounts or more. Anywhere else the prompt is v1.54.0's, byte for byte (D13).
+describe('buildConductorPrompt: the swarm restart offer', () => {
+  const SENTENCE = 'If system says Termpolis is restarting a worker on another account, wait for its next message about that worker.'
+
+  it('tells the conductor to wait for system\'s next message about a worker Termpolis restarts, after the usage-limit rule', () => {
+    const prompt = buildDefault({ restartOffer: true })
+    expect(prompt).toContain(`\n- ${SENTENCE}\n`)
+    expect(prompt.indexOf(SENTENCE)).toBeGreaterThan(prompt.indexOf('blocked by a usage limit'))
+  })
+
+  it('is v1.54.0\'s prompt, byte for byte, where no offer can happen', () => {
+    expect(buildDefault({ restartOffer: false })).toBe(buildDefault())
+    expect(buildDefault()).not.toContain(SENTENCE)
+    expect(buildDefault({ restartOffer: true }).replace(`- ${SENTENCE}\n`, '')).toBe(buildDefault())
+  })
+})

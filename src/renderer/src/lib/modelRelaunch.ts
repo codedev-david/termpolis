@@ -27,9 +27,23 @@
 // Only call this for a terminal AUTHORITATIVELY known to be running that agent (Termpolis itself
 // launched it) — a heuristically output-detected "Claude-like" terminal might be a different
 // program that the quit keys would not mean the same thing to.
+//
+// The sequence runs for seconds, and in that time anything else typing into the terminal (an account
+// switch, a conductor's text, the phone, the user's keys) would land in the agent as it quits or on
+// the shell's line under the relaunch. relaunchHeld wraps it in the terminal's relaunch lock: the
+// store's half (the pane takes no keys, the pollers answer nothing, an account switch waits) and
+// main's (MCP clients and the phone are refused, every write but this relaunch's own is dropped).
+// An account switch moves the agent with its own steps (src/main/accountSwitch.ts) but decides
+// "the agent has exited" from the same OS answer (shellAlone) and types into the same shell, whose
+// account variable stays set: a model change keeps the account, an account change keeps the model.
 
+import { MODEL_HELD } from '../../../shared/accountSwitch'
+import { EXIT_CEILING_MS, EXIT_POLL_MS, BLIND_EXIT_WAIT_MS, PROMPT_SETTLE_MS, aloneNow, waitForExit } from '../../../shared/agentExit'
+import type { ModelHold, ModelHoldRequest } from '../../../shared/accountSwitch'
+import type { IpcResponse } from '../types'
 import { providerForCommand, relaunchCommandFor, type ModelCatalog, type ModelProvider } from './modelCatalog'
 import { hasStrictResumeHint, resumeTargetFrom, unsureResumeTarget } from './agentResume'
+import { stripAnsi } from './exportTerminal'
 
 const CTRL_C = '\x03'
 
@@ -37,14 +51,8 @@ const CTRL_C = '\x03'
 export const QUIT_PRESSES = 3
 /** Gap between presses: inside every agent's "press again" window (Codex's is about 1 s). */
 export const QUIT_PRESS_GAP_MS = 400
-/** Between "has it gone?" questions. On Windows each question also costs ~1 s on its own. */
-export const EXIT_POLL_MS = 500
-/** How long an agent gets to quit before we give up and leave the terminal alone. */
-export const EXIT_CEILING_MS = 30_000
-/** When the OS cannot tell, assume a slow teardown: too long only delays, too short loses the command. */
-export const BLIND_EXIT_WAIT_MS = 12_000
-/** After the OS says the agent is gone, the shell still has to draw its prompt. */
-export const PROMPT_SETTLE_MS = 600
+// The clock the account switch waits with too (shared/agentExit.ts), under the names it always had here.
+export { EXIT_POLL_MS, EXIT_CEILING_MS, BLIND_EXIT_WAIT_MS, PROMPT_SETTLE_MS }
 /** After typing a resume of "the latest", how long a start that cannot work (nothing to continue)
  *  gets to fail. Measured: Claude Code takes about 4-5 s to print "No conversation found" and exit. */
 export const RESUME_PROBE_MS = 8_000
@@ -92,15 +100,6 @@ export type RelaunchOutcome =
   /** The agent did not quit in time: the relaunch was NOT typed. */
   | 'still-running'
 
-async function aloneNow(io: RelaunchIO): Promise<boolean | null> {
-  if (!io.shellAlone) return null
-  try {
-    return await io.shellAlone()
-  } catch {
-    return null
-  }
-}
-
 async function markNow(io: RelaunchIO): Promise<number | null> {
   if (!io.outputMark) return null
   try {
@@ -124,29 +123,6 @@ async function quitAgent(io: RelaunchIO): Promise<void> {
     // The gap goes BETWEEN presses; the exit wait that follows covers the rest.
     if (i > 0) await io.sleep(QUIT_PRESS_GAP_MS)
     io.write(CTRL_C)
-  }
-}
-
-/**
- * True once the agent is gone (or, where the OS never could say, once it is sane to guess); false if
- * it was still running at the ceiling. `osKnown`: the OS already answered "still running" once, so
- * it CAN tell, and a later failed query is a hiccup to ask again about rather than a reason to type
- * blind into an agent that may still be tearing down.
- */
-async function waitForExit(io: RelaunchIO, osKnown: boolean): Promise<boolean> {
-  const now = io.now ?? Date.now
-  const deadline = now() + EXIT_CEILING_MS
-  let known = osKnown
-  for (;;) {
-    await io.sleep(EXIT_POLL_MS)
-    const alone = await aloneNow(io)
-    if (alone === true) return true
-    if (alone === false) known = true
-    else if (!known) {
-      await io.sleep(BLIND_EXIT_WAIT_MS)
-      return true
-    }
-    if (now() >= deadline) return false
   }
 }
 
@@ -208,4 +184,99 @@ export async function relaunchAgentWithModel(
   if ((await aloneNow(io)) !== true) return 'relaunched'
   io.write(`${relaunchCommandFor(provider, modelId, catalog, launchCommand, { kind: 'none' })}\r`)
   return 'started-fresh'
+}
+
+// ── The terminal's relaunch lock ───────────────────────────────────────────────────────
+
+/** Main's half of the terminal's relaunch lock, where this preload has it. */
+export interface ModelHoldBridge {
+  modelHold: (req: ModelHoldRequest) => Promise<IpcResponse<ModelHold>>
+  modelRelease: (terminalId: string, key: string) => Promise<unknown>
+}
+
+export interface HeldRelaunch {
+  terminalId: string
+  provider: ModelProvider
+  modelId: string
+  catalog: ModelCatalog | null | undefined
+  /** What the terminal was started with (relaunchAgentWithModel). */
+  launchCommand?: string | null
+  /** The store's half of the lock: true once this relaunch holds the terminal there. */
+  begin: () => boolean
+  end: () => void
+  main: ModelHoldBridge | null
+  /** The terminal's writes (window.termpolis.writeToTerminal): each carries the key of main's hold,
+   *  while there is one. */
+  write: (id: string, data: string, key?: string) => void
+  /** What the relaunch reads and waits with (terminalRelaunchIo). */
+  io: Omit<RelaunchIO, 'write'>
+}
+
+/** How a held relaunch ended: the engine's outcome, or why the lock was refused and nothing was typed. */
+export type HeldResult = { outcome: RelaunchOutcome } | { refused: string }
+
+/**
+ * The model picker's relaunch (relaunchAgentWithModel) holding the terminal's relaunch lock for its
+ * whole run (R7): nothing is typed unless both halves are this relaunch's, and both are let go on every
+ * outcome, a throw included (main's lapses by itself after MODEL_HOLD_MS). Main records the line this
+ * relaunch types as the agent's start, so a later account switch relaunches the model picked here.
+ */
+export async function relaunchHeld(r: HeldRelaunch): Promise<HeldResult> {
+  // A model the provider doesn't offer, or a command that isn't the plain agent, is the engine's to
+  // refuse; neither is worth holding the terminal for.
+  if (!relaunchCommandFor(r.provider, r.modelId, r.catalog, r.launchCommand)) return { outcome: 'invalid' }
+  if (r.launchCommand?.trim() && providerForCommand(r.launchCommand) !== r.provider) return { outcome: 'unsupported' }
+  if (!r.begin()) return { refused: MODEL_HELD }
+  let key: string | null = null
+  try {
+    if (r.main) {
+      const res = await r.main.modelHold({ terminalId: r.terminalId })
+      if (!res.success) return { refused: res.error }
+      key = res.data.key
+    }
+    const held = key
+    const write = held ? (data: string) => r.write(r.terminalId, data, held) : (data: string) => r.write(r.terminalId, data)
+    return { outcome: await relaunchAgentWithModel(r.provider, r.modelId, r.catalog, { ...r.io, write }, r.launchCommand) }
+  } finally {
+    if (r.main && key) r.main.modelRelease(r.terminalId, key).catch(() => { /* it lapses by itself (MODEL_HOLD_MS) */ })
+    r.end()
+  }
+}
+
+/** Main's hold for the picker, when this preload has one. */
+export function modelHoldBridge(): ModelHoldBridge | null {
+  const api = window.accounts
+  return api && typeof api.modelHold === 'function' && typeof api.modelRelease === 'function' ? api : null
+}
+
+/**
+ * What a relaunch of terminal `terminalId` reads and waits with, from the preload's bridge: the
+ * OS's own answer to "has the agent really exited?" (without it the relaunch was typed on a timer,
+ * into a Claude Code still shutting down), and what the agent prints as it exits, which names the
+ * conversation to resume. The picker and the usage-limit card's model row share it.
+ */
+export function terminalRelaunchIo(terminalId: string): Omit<RelaunchIO, 'write'> {
+  return {
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    shellAlone: async () => {
+      const res = await window.termpolis.terminalShellAlone?.(terminalId)
+      return res?.success ? res.data : null
+    },
+    outputMark: async () => {
+      const res = await window.termpolis.readTerminalBuffer?.(terminalId)
+      const at = res?.success && res.data ? res.data.nextOffset : null
+      // A mark that is not a real offset would read as "nothing was printed".
+      return typeof at === 'number' && Number.isFinite(at) ? at : null
+    },
+    outputSince: async (mark) => {
+      const res = await window.termpolis.readTerminalBuffer?.(terminalId, mark ?? undefined)
+      if (!res?.success || !res.data) return null
+      // Output that fell out of the buffer between the mark and now is output that was never
+      // read: not conclusive, so report it as unreadable.
+      if (mark !== null && res.data.missed > 0) return null
+      // A cursor-forward is how a TUI draws a space: keep it as one, or the words of the exit
+      // line run together.
+      return stripAnsi(res.data.output.replace(/\x1b\[\d*C/g, ' '))
+    },
+  }
 }

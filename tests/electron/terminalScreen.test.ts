@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { Terminal as HeadlessTerminal } from '@xterm/headless'
-import { TerminalScreen, screenOf, screenOfReplay, screenSizeOf, cursorExtentOf, resizeReportOf, DEFAULT_SCREEN } from '../../src/shared/terminalScreen'
+import { TerminalScreen, screenOf, screenOfReplay, screenSizeOf, cursorExtentOf, resizeReportOf, viewOfReplay, DEFAULT_SCREEN } from '../../src/shared/terminalScreen'
 import fixtures from '../fixtures/agentScreens.json'
 
 const E = '\x1b'
@@ -134,6 +134,18 @@ describe('screenOfReplay', () => {
 
   it('without a size, takes the one its output reaches', () => {
     expect(screenOfReplay({ output: `${E}[30;100Hx` }).lines()).toHaveLength(30)
+  })
+})
+
+describe('viewOfReplay', () => {
+  it('is the screen main kept when the read carries one: the window it came with has lost the box (F-R2-2)', () => {
+    const kept = { lines: ['reply', '─'.repeat(10), '> ', '─'.repeat(10)], title: 'claude' }
+    expect(viewOfReplay({ output: 'only the last words', cols: 10, rows: 4, screen: kept })).toBe(kept)
+  })
+
+  it('is the window drawn as the terminal drew it when it carries none', () => {
+    const view = viewOfReplay({ output: `${E}]0;title\x07${E}[2;1Hrow two`, cols: 10, rows: 3 })
+    expect(view).toEqual({ lines: ['', 'row two', ''], title: 'title' })
   })
 })
 

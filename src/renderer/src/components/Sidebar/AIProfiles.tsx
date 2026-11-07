@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { v4 as uuid } from 'uuid'
 import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo, ShellType } from '../../types'
 import { DEFAULT_AI_PROFILES, launchAgentProfile, resolveShellType } from '../../lib/aiProfiles'
 import { CLAUDE_MODEL_OPTIONS } from '../../lib/modelBroker'
+import { AGENT_COLOR, agentOfCommand } from '../../lib/accountsView'
+import { isAccountLimited, untilText } from '../../../../shared/accountLimits'
 
 interface AddProfileModalProps {
   availableShells: ShellInfo[]
@@ -111,12 +113,21 @@ interface AIProfilesProps {
 }
 
 export function AIProfiles({ availableShells }: AIProfilesProps) {
-  const { aiProfiles, addAIProfile, removeAIProfile, addTerminal, setLaunchingAgent } = useTerminalStore()
+  const { aiProfiles, addAIProfile, removeAIProfile, addTerminal, setLaunchingAgent, accountsView } = useTerminalStore()
   const [showAddModal, setShowAddModal] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [installedAgents, setInstalledAgents] = useState<Record<string, boolean>>({})
   const [detectingAgents, setDetectingAgents] = useState(true)
   const [installHint, setInstallHint] = useState<{ id: string; name: string } | null>(null)
+  /** The profile whose Launch on ▸ menu (right-click) is open. */
+  const [launchOn, setLaunchOn] = useState<string | null>(null)
+  // The Launch on ▸ list's items and the button that opened it, for the keyboard: the first account takes
+  // the focus when the list opens, the arrows go round it, and Esc gives the focus back.
+  const launchItems = useRef<Array<HTMLButtonElement | null>>([])
+  const launchOpeners = useRef<Record<string, HTMLButtonElement | null>>({})
+  useEffect(() => {
+    if (launchOn !== null) launchItems.current[0]?.focus()
+  }, [launchOn])
 
   useEffect(() => {
     window.termpolis.detectAgents().then(res => {
@@ -127,8 +138,14 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
 
   const allProfiles = [...DEFAULT_AI_PROFILES, ...aiProfiles]
 
-  const handleLaunch = (profile: AIProfile) =>
-    launchAgentProfile(profile, { availableShells, addTerminal, setLaunchingAgent })
+  const handleLaunch = (profile: AIProfile, accountId?: string) =>
+    launchAgentProfile(profile, { availableShells, addTerminal, setLaunchingAgent, ...(accountId ? { accountId } : {}) })
+
+  /** The accounts a profile's agent has: Launch on ▸ lists them once there are two. */
+  const accountsFor = (profile: AIProfile) => {
+    const agent = agentOfCommand(profile.command)
+    return agent && accountsView ? accountsView.accounts.filter((r) => r.agent === agent) : []
+  }
 
   const handleAddProfile = (profile: AIProfile) => {
     addAIProfile(profile)
@@ -157,13 +174,23 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
         <div className="px-2 pb-1 flex flex-col gap-0.5">
           {allProfiles.map(profile => {
             const isCustom = aiProfiles.some(p => p.id === profile.id)
+            const accounts = accountsFor(profile)
+            const notInstalled = !detectingAgents && installedAgents[profile.id] === false
             return (
-              <div key={profile.id} className="group flex flex-col">
+              <div
+                key={profile.id}
+                className="group flex flex-col"
+                onContextMenu={(e) => {
+                  // Launch on ▸ <account>, once the agent has more than one.
+                  if (accounts.length < 2) return
+                  e.preventDefault()
+                  setLaunchOn(launchOn === profile.id ? null : profile.id)
+                }}
+              >
                 <div className="flex items-center">
                   <button
                     className="flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-[#37373d] flex-1 text-left"
                     onClick={() => {
-                      const notInstalled = !detectingAgents && installedAgents[profile.id] === false
                       if (notInstalled) {
                         setInstallHint({ id: profile.id, name: profile.name })
                         return
@@ -197,6 +224,20 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                       </span>
                     )
                   )}
+                  {accounts.length > 1 && (
+                    <button
+                      className="text-[#9ca3af] hover:text-[#d4d4d4] text-[10px] px-1 shrink-0"
+                      aria-label={`Launch ${profile.name} on an account`}
+                      aria-haspopup="menu"
+                      aria-expanded={launchOn === profile.id}
+                      title={`Launch ${profile.name} on one of its accounts`}
+                      data-testid="launch-on-open"
+                      ref={(el) => { launchOpeners.current[profile.id] = el }}
+                      onClick={() => setLaunchOn(launchOn === profile.id ? null : profile.id)}
+                    >
+                      <i className="fa-solid fa-caret-down" aria-hidden="true"></i>
+                    </button>
+                  )}
                   {isCustom && (
                     <button
                       className="text-[#9ca3af] hover:text-red-400 text-[10px] px-1 opacity-0 group-hover:opacity-100"
@@ -207,6 +248,55 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                     </button>
                   )}
                 </div>
+                {launchOn === profile.id && accounts.length > 1 && (
+                  <div
+                    className="ml-6 mb-1 flex flex-col"
+                    data-testid="launch-on-menu"
+                    role="menu"
+                    aria-label={`Launch ${profile.name} on`}
+                    onKeyDown={(e) => {
+                      const items = launchItems.current.filter((x): x is HTMLButtonElement => !!x)
+                      const at = items.indexOf(document.activeElement as HTMLButtonElement)
+                      const go = (i: number): void => { e.preventDefault(); items[(i + items.length) % items.length]?.focus() }
+                      if (e.key === 'ArrowDown') go(at + 1)
+                      else if (e.key === 'ArrowUp') go(at < 0 ? items.length - 1 : at - 1)
+                      else if (e.key === 'Home') go(0)
+                      else if (e.key === 'End') go(items.length - 1)
+                      else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setLaunchOn(null)
+                        launchOpeners.current[profile.id]?.focus()
+                      }
+                    }}
+                  >
+                    <span className="text-[10px] text-[#9ca3af] px-2">Launch on</span>
+                    {accounts.map((r, k) => (
+                      <button
+                        key={r.id}
+                        role="menuitem"
+                        ref={(el) => { launchItems.current[k] = el }}
+                        data-testid="launch-on-account"
+                        className="flex items-center gap-2 px-2 py-1 rounded text-xs text-[#d4d4d4] hover:bg-[#37373d] text-left"
+                        onClick={() => {
+                          setLaunchOn(null)
+                          if (notInstalled) {
+                            setInstallHint({ id: profile.id, name: profile.name })
+                            return
+                          }
+                          handleLaunch(profile, r.id)
+                        }}
+                      >
+                        <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: r.color ?? AGENT_COLOR[r.agent] }} />
+                        {r.label}
+                        {isAccountLimited(r, Date.now()) && (
+                          <span className="text-[10px] text-[#e5c07b]" data-testid="launch-on-limited">
+                            out of usage{r.limit && untilText(r.limit.resetsAt, Date.now()) ? ` ${untilText(r.limit.resetsAt, Date.now())}` : ''}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )
           })}

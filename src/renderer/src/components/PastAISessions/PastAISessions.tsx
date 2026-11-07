@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { useTerminalStore } from '../../store/terminalStore'
 import { getTerminalDefaults } from '../../lib/terminalDefaults'
 import { isClaudeCommand } from '../../lib/testAgents'
+import { accountLaunchLine, launchAccountFor, launchTerminalArgs } from '../../lib/accountLaunch'
 import { catalogForLaunch, defaultModelFor, droppedDefaultNotice } from '../../lib/agentModelDefaults'
 import type { AISessionSummary, ShellType } from '../../types'
 
@@ -63,9 +64,23 @@ export function wrapAsBracketedPaste(text: string): string {
 // "No, exit", so a resume into an untrusted folder can be killed by a single stray
 // Enter — seeding trust means that dialog never renders at all. Never throws: a
 // failed seed only means the dialog may appear, which App.tsx's poller can answer.
-async function trustFolder(cwd: string | undefined): Promise<void> {
+async function trustFolder(cwd: string | undefined, accountId?: string): Promise<void> {
   if (!cwd) return
-  try { await window.termpolis.claudeTrustWorkspace(cwd) } catch { /* dialog handler covers it */ }
+  try { await window.termpolis.claudeTrustWorkspace(cwd, ...(accountId ? [accountId] as [string] : [] as [])) } catch { /* dialog handler covers it */ }
+}
+
+/** Starts `command` in terminal `id` on its account (main's line, accountLaunch.ts), recording the
+ *  account on the terminal; shows why when main refused it, and types nothing then. */
+async function lineFor(id: string, shellType: string, command: string, accountId: string | undefined): Promise<string | null> {
+  const built = await accountLaunchLine(id, shellType, command, command, accountId)
+  if ('refused' in built) {
+    useTerminalStore.getState().setMemoryNotice(`⚠️ ${built.refused}`)
+    return null
+  }
+  if (built.accountId) {
+    useTerminalStore.getState().updateTerminal(id, { agentAccountId: built.accountId, ...(built.sessionId ? { agentSessionId: built.sessionId } : {}) })
+  }
+  return built.line
 }
 
 export function PastAISessions({ open, onClose }: Props) {
@@ -143,13 +158,17 @@ export function PastAISessions({ open, onClose }: Props) {
     setActiveTerminal(newId)
     onClose()
     try {
-      await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, true) // resume always runs `claude --resume`
-      await trustFolder(session.cwd)
+      // On the preferred account: a shared projects/ folder makes every account's sessions resumable.
+      const accountId = await launchAccountFor('claude')
+      await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, true, ...launchTerminalArgs(accountId, 'claude')) // resume always runs `claude --resume`
+      await trustFolder(session.cwd, accountId)
+      const line = await lineFor(newId, defaultShell, 'claude --resume ' + session.id, accountId)
+      if (line === null) return
       // Give the shell ~800ms to print its first prompt before injecting the
       // resume command — too soon and the keystrokes land before the prompt
       // is ready, too late and the user sees a blank pane.
       setTimeout(() => {
-        window.termpolis.writeToTerminal(newId, 'claude --resume ' + session.id + '\r')
+        window.termpolis.writeToTerminal(newId, line + '\r')
       }, 800)
     } catch (e) {
       console.error('[PastAISessions] resume failed', e)
@@ -171,8 +190,15 @@ export function PastAISessions({ open, onClose }: Props) {
     }
     // Claude will start in the ACTIVE terminal's folder, not the session's, so that
     // is the folder to pre-approve.
-    await trustFolder(terminals.find(t => t.id === activeTerminalId)?.cwd)
-    window.termpolis.writeToTerminal(activeTerminalId, 'claude --resume ' + session.id + '\r')
+    const active = terminals.find(t => t.id === activeTerminalId)
+    const accountId = await launchAccountFor('claude')
+    await trustFolder(active?.cwd, accountId)
+    const built = await accountLaunchLine(activeTerminalId, active?.shellType ?? defaultShell, 'claude --resume ' + session.id, 'claude', accountId)
+    if ('refused' in built) {
+      setStatusMsg(built.refused)
+      return
+    }
+    window.termpolis.writeToTerminal(activeTerminalId, built.line + '\r')
     onClose()
   }
 
@@ -223,16 +249,19 @@ export function PastAISessions({ open, onClose }: Props) {
       setActiveTerminal(newId)
       onClose()
       try {
-        await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, isClaudeCommand(cmd))
-        if (isClaudeCommand(cmd)) await trustFolder(session.cwd)
+        const accountId = await launchAccountFor(cmd)
+        await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, isClaudeCommand(cmd), ...launchTerminalArgs(accountId, cmd))
+        if (isClaudeCommand(cmd)) await trustFolder(session.cwd, accountId)
         // Settings › General › Default Models: the agent this hands off to starts on the model
         // chosen for it, like any other new terminal of that agent.
         const model = defaultModelFor(cmd, await catalogForLaunch())
         if (model.dropped) useTerminalStore.getState().setMemoryNotice(droppedDefaultNotice(cmd, model.dropped))
+        const line = await lineFor(newId, defaultShell, cmd + model.arg, accountId)
+        if (line === null) return
         // 1. Boot the agent. 2. Wait for it to be ready. 3. Paste the prompt.
         // Two-step delay because agents take time to print their banner.
         setTimeout(() => {
-          window.termpolis.writeToTerminal(newId, cmd + model.arg + '\r')
+          window.termpolis.writeToTerminal(newId, line + '\r')
           setTimeout(() => {
             // Write the prompt without auto-submit. User reads + presses Enter
             // when they're satisfied — gives them an "abort" lever if the

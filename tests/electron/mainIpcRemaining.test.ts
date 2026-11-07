@@ -602,7 +602,9 @@ describe('aiSessions:list / conversation:read-active', () => {
 // The digest handler reads an arbitrary renderer-supplied path off disk. The containment check is
 // the only thing standing between "resume a past session" and "read any file on the machine".
 describe('aiSessions:digest — path containment', () => {
-  const projects = join(homedir(), '.claude', 'projects')
+  // The default projects folder: under the test run's agent home, which wins (tests/setup.ts).
+  const agentHome = process.env.TERMPOLIS_TEST_AGENT_HOME as string
+  const projects = join(agentHome, '.claude', 'projects')
 
   it.each([
     ['', 'empty string'],
@@ -623,11 +625,15 @@ describe('aiSessions:digest — path containment', () => {
     join(homedir(), '.claude', 'settings.json'),
     join(projects, '..', '..', '..', 'etc', 'passwd'),
     join(projects, '..', 'settings.json'),
-  ])('refuses to read outside ~/.claude/projects: %s', async (evil) => {
+    // A sibling whose name only starts like the folder: the old prefix check let it through.
+    join(agentHome, '.claude', 'projects-evil', 'x.jsonl'),
+    // The folder itself is no transcript.
+    projects,
+  ])('refuses to read outside a Claude Code projects folder: %s', async (evil) => {
     M.digestAISession.mockClear()
     const r = await invoke('aiSessions:digest', evil)
     expect(r.success).toBe(false)
-    expect(r.error).toBe('filePath must be inside ~/.claude/projects')
+    expect(r.error).toBe('filePath must be inside a Claude Code projects folder')
     // The file is never opened — the guard runs BEFORE the read, not after.
     expect(M.digestAISession).not.toHaveBeenCalled()
   })

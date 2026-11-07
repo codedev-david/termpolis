@@ -97,6 +97,14 @@ describe('preload: termpolis API', () => {
     expect(Object.keys(mockIpcRenderer.send.mock.calls[mockIpcRenderer.send.mock.calls.length - 1][1])).toEqual(['id', 'data'])
   })
 
+  it('writeToTerminal sends the model picker\'s hold key with its writes, and no key field without one', () => {
+    exposed.termpolis.writeToTerminal('id1', '/quit', undefined, 'k-picker')
+    expect(mockIpcRenderer.send).toHaveBeenLastCalledWith('terminal:write', { id: 'id1', data: '/quit', key: 'k-picker' })
+    exposed.termpolis.writeToTerminal('id1', 'x', undefined, '')
+    expect(mockIpcRenderer.send).toHaveBeenLastCalledWith('terminal:write', { id: 'id1', data: 'x' })
+    expect(Object.keys(mockIpcRenderer.send.mock.calls[mockIpcRenderer.send.mock.calls.length - 1][1])).toEqual(['id', 'data'])
+  })
+
   it('resizeTerminal sends terminal:resize', () => {
     exposed.termpolis.resizeTerminal('id1', 120, 40)
     expect(mockIpcRenderer.send).toHaveBeenCalledWith('terminal:resize', { id: 'id1', cols: 120, rows: 40 })
@@ -1082,6 +1090,122 @@ describe('preload: commit shield git-hook bridge', () => {
 // register a listener, forward each event to the callback, and return a cleanup
 // that unsubscribes.
 // ---------------------------------------------------------------------------
+describe('preload: accounts (Settings ▸ Accounts)', () => {
+  it('is its own namespace, like Linked machines', () => {
+    expect(exposed.accounts).toBeDefined()
+  })
+
+  it('sends each call to the channel main registers, with the payload accountsIpc reads', async () => {
+    const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
+    const a = exposed.accounts
+    const cases: Array<[() => unknown, string, unknown]> = [
+      [() => a.list(), ACCOUNTS_IPC.list, undefined],
+      [() => a.pickFolder('codex'), ACCOUNTS_IPC.pickFolder, { agent: 'codex' }],
+      [() => a.add({ agent: 'claude', label: 'work', folder: 'new' }), ACCOUNTS_IPC.add, { agent: 'claude', label: 'work', folder: 'new' }],
+      [() => a.update('acc_1', { label: 'w', color: null }), ACCOUNTS_IPC.update, { id: 'acc_1', label: 'w', color: null }],
+      [() => a.move('acc_1', -1), ACCOUNTS_IPC.move, { id: 'acc_1', by: -1 }],
+      [() => a.remove('acc_1'), ACCOUNTS_IPC.remove, { id: 'acc_1' }],
+      [() => a.setConnect('acc_1', true), ACCOUNTS_IPC.setConnect, { id: 'acc_1', connect: true }],
+      [() => a.stripCopied('acc_1'), ACCOUNTS_IPC.stripCopied, { id: 'acc_1' }],
+      [() => a.recopy('acc_1'), ACCOUNTS_IPC.recopy, { id: 'acc_1' }],
+      [() => a.setPreferred('claude', null), ACCOUNTS_IPC.setPreferred, { agent: 'claude', id: null }],
+      [() => a.setChooser(false), ACCOUNTS_IPC.setChooser, { on: false }],
+      [() => a.hideAdvice('hookAdvice'), ACCOUNTS_IPC.hideAdvice, { which: 'hookAdvice' }],
+      [() => a.importPreview(), ACCOUNTS_IPC.importPreview, undefined],
+      [() => a.import(['work'], { work: true }), ACCOUNTS_IPC.import, { keys: ['work'], connect: { work: true } }],
+      [() => a.check('acc_1'), ACCOUNTS_IPC.check, { id: 'acc_1' }],
+      [() => a.noteLimit('acc_1', { text: 'You\'ve hit your session limit', resetsAt: 5 }), ACCOUNTS_IPC.noteLimit, { id: 'acc_1', text: 'You\'ve hit your session limit', resetsAt: 5 }],
+      [() => a.clearLimit('acc_1'), ACCOUNTS_IPC.clearLimit, { id: 'acc_1' }],
+      [() => a.launchAccount('codex', 'acc_1'), ACCOUNTS_IPC.launchAccount, { agent: 'codex', accountId: 'acc_1' }],
+      [() => a.switchAccount({ terminalId: 't1', targetId: 'acc_1', shellType: 'cmd', fresh: true }), ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: 'acc_1', shellType: 'cmd', fresh: true }],
+      [() => a.agySwitch({ terminalId: 't1', targetId: 'g1', shellType: 'bash', step: 'check', mark: 3 }), ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: 'g1', shellType: 'bash', step: 'check', mark: 3 }],
+      [() => a.modelHold({ terminalId: 't1', line: 'codex --model gpt-5.5 resume --last' }), ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'codex --model gpt-5.5 resume --last' }],
+      [() => a.modelRelease('t1', 'k1'), ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key: 'k1' }],
+      [() => a.launchLine({ terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }), ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }],
+      [() => a.limitLook('t1'), ACCOUNTS_IPC.limitLook, { terminalId: 't1' }],
+      [() => a.signInStart({ accountId: 'acc_1', method: 'console' }), ACCOUNTS_IPC.signInStart, { accountId: 'acc_1', method: 'console' }],
+      // The session's id wins over any the input carried.
+      [() => a.signInInput('s1', { kind: 'code', value: 'c', sessionId: 'other' } as never), ACCOUNTS_IPC.signInInput, { kind: 'code', value: 'c', sessionId: 's1' }],
+    ]
+    for (const [call, channel, payload] of cases) {
+      mockIpcRenderer.invoke.mockClear()
+      await call()
+      expect(mockIpcRenderer.invoke.mock.calls, channel).toEqual([payload === undefined ? [channel] : [channel, payload]])
+    }
+    // Every invoke channel main registers has its bridge method; signInProgress and terminalAccount
+    // are main → renderer.
+    const invoked = new Set(cases.map((c) => c[1]))
+    expect(Object.values(ACCOUNTS_IPC).filter((ch) => !invoked.has(ch))).toEqual([ACCOUNTS_IPC.terminalAccount, ACCOUNTS_IPC.switchProgress, ACCOUNTS_IPC.signInState])
+  })
+
+  it('passes a sign-in session\'s state to the subscriber, and unsubscribes', async () => {
+    const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
+    const cb = vi.fn()
+    const off = exposed.accounts.onSignInState(cb)
+    const [channel, handler] = mockIpcRenderer.on.mock.calls[0]
+    expect(channel).toBe(ACCOUNTS_IPC.signInState)
+    const state = { sessionId: 's1', accountId: 'acc_1', agent: 'claude', phase: { kind: 'starting' } }
+    handler({}, state)
+    expect(cb).toHaveBeenCalledWith(state)
+    off()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith(ACCOUNTS_IPC.signInState, handler)
+  })
+
+  it('hands main the launch\'s account for its writes only when there is one, so today\'s payloads stay as they were', async () => {
+    const t = exposed.termpolis
+    const cases: Array<[() => unknown, unknown[], unknown[]]> = [
+      [() => t.createTerminal('id1', 'bash', '/tmp', [], true), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: [], claudeHeadroom: true }], []],
+      [() => t.createTerminal('id1', 'bash', '/tmp', [], true, 'acc_1'), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: [], claudeHeadroom: true, accountId: 'acc_1' }], []],
+      // What the launch watches for usage limits (R6), only when there is one: a plain terminal's payload is as it was.
+      [() => t.createTerminal('id1', 'bash', '/tmp', [], true, 'acc_1', 'claude'), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: [], claudeHeadroom: true, accountId: 'acc_1', limitWatch: 'claude' }], []],
+      [() => t.createTerminal('id1', 'bash', '/tmp', undefined, false, undefined, true), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: undefined, claudeHeadroom: false, limitWatch: true }], []],
+      [() => t.claudeTrustWorkspace('/repo'), ['claude:trust-workspace', { cwd: '/repo' }], []],
+      [() => t.claudeTrustWorkspace('/repo', 'acc_1'), ['claude:trust-workspace', { cwd: '/repo', accountId: 'acc_1' }], []],
+      // The primer file's gate (R9, R17) reads the account id from this one hop: dropped here, main reads "no account", the default
+      // profile, which is connected, and a primer file is written for an account the user did not connect (SAFETY-R3-4).
+      [() => t.memoryPreparePrimerFile('q', '/repo', 'acc_1'), ['memory:prepare-primer-file', { query: 'q', cwd: '/repo', accountId: 'acc_1' }], []],
+      [() => t.memoryPreparePrimerFile('q', '/repo'), ['memory:prepare-primer-file', { query: 'q', cwd: '/repo', accountId: undefined }], []],
+      [() => t.memoryPrepareCodexContext('/repo'), ['memory:prepare-codex-context', { cwd: '/repo' }], []],
+      [() => t.memoryPrepareCodexContext('/repo', 'acc_1'), ['memory:prepare-codex-context', { cwd: '/repo', accountId: 'acc_1' }], []],
+      [() => t.agentRemoveCodexHomeTrust(), ['agents:remove-codex-home-trust'], []],
+      [() => t.agentRemoveCodexHomeTrust('acc_1'), ['agents:remove-codex-home-trust', { accountId: 'acc_1' }], []],
+    ]
+    for (const [call, expected] of cases) {
+      mockIpcRenderer.invoke.mockClear()
+      await call()
+      expect(mockIpcRenderer.invoke.mock.calls).toEqual([expected])
+      // Exactly these keys: no accountId key at all when none was given.
+      if (expected.length > 1) expect(Object.keys(mockIpcRenderer.invoke.mock.calls[0][1] as object)).toEqual(Object.keys(expected[1] as object))
+    }
+  })
+
+  it("passes a switch's progress to the subscriber, and unsubscribes", async () => {
+    const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
+    const cb = vi.fn()
+    mockIpcRenderer.on.mockClear()
+    const off = exposed.accounts.onSwitchProgress(cb)
+    const [channel, handler] = mockIpcRenderer.on.mock.calls[0]
+    expect(channel).toBe(ACCOUNTS_IPC.switchProgress)
+    handler({}, { terminalId: 't1', step: 'typing' })
+    expect(cb).toHaveBeenCalledWith({ terminalId: 't1', step: 'typing' })
+    off()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith(ACCOUNTS_IPC.switchProgress, handler)
+  })
+
+  it("passes a terminal's account to the subscriber, and unsubscribes", async () => {
+    const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
+    const cb = vi.fn()
+    mockIpcRenderer.on.mockClear()
+    const off = exposed.accounts.onTerminalAccount(cb)
+    const [channel, handler] = mockIpcRenderer.on.mock.calls[0]
+    expect(channel).toBe(ACCOUNTS_IPC.terminalAccount)
+    handler({}, { terminalId: 't1', accountId: null, byHand: true })
+    expect(cb).toHaveBeenCalledWith({ terminalId: 't1', accountId: null, byHand: true })
+    off()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith(ACCOUNTS_IPC.terminalAccount, handler)
+  })
+})
+
 describe('preload — workflow orchestrator bridge', () => {
   it('listWorkflows invokes workflow:list with the cwd', async () => {
     await exposed.termpolis.listWorkflows('/proj')

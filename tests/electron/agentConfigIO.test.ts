@@ -6,7 +6,7 @@ import {
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
-  MAX_CONFIG_BYTES, atomicWriteText, editJsonObject, errorText, formatJsonLike, readJsonObject,
+  MAX_CONFIG_BYTES, atomicWriteText, editJsonObject, errorText, formatJsonLike, parseFailure, readJsonObject,
   readTextFile, renameWithRetry,
 } from '../../src/main/agentConfigIO'
 
@@ -476,5 +476,38 @@ describe('readTextFile', () => {
   it('throws a read failure', () => {
     mkdirSync(join(dir, 'config.toml'))
     expect(() => readTextFile(join(dir, 'config.toml'))).toThrow(/EISDIR/)
+  })
+})
+
+describe('parseFailure: a JSON mistake said with none of the file in it (R12)', () => {
+  const failing = (text: string): Error => {
+    try { JSON.parse(text) } catch (e) { return e as Error }
+    throw new Error('parsed')
+  }
+
+  it('leaves out the source V8 quotes around an unexpected token, long or short', () => {
+    const key = 'a'.repeat(40)
+    for (const text of [`{"primaryApiKey": "${key}", "z": bareword01}`, '[1,2,x]', `{"k": "${key}" "z": 1}`]) {
+      const said = parseFailure(failing(text))
+      expect(said, text).not.toMatch(/bareword|\[1,2|aaaa|primaryApiKey/)
+      expect(said.length).toBeGreaterThan(5)
+    }
+    expect(parseFailure(failing('[1,2,x]'))).toBe("it can't be parsed")
+  })
+
+  it('keeps a message that quotes nothing of the file: where it went wrong, or that it ended early', () => {
+    expect(parseFailure(failing('{\n  "model": "opus",\n}\n'))).toMatch(/^Expected double-quoted property name in JSON at position 21 \(line 3 column 1\)$/)
+    expect(parseFailure(failing('{"a":'))).toMatch(/^Unexpected end of JSON input|^Expected/)
+  })
+
+  it('names no source character, as an older engine did ("Unexpected token b in JSON at position 5")', () => {
+    expect(parseFailure(new SyntaxError('Unexpected token b in JSON at position 5'))).toBe('Unexpected token in JSON at position 5')
+    expect(parseFailure(new SyntaxError('Unexpected token } in JSON at position 17'))).toBe('Unexpected token in JSON at position 17')
+  })
+
+  it('reaches the error a read of a malformed file reports', () => {
+    const text = `{"primaryApiKey": "${'a'.repeat(40)}", "z": bareword01}`
+    const read = readJsonObject(file('claude.json', text))
+    expect(read).toEqual({ kind: 'error', error: "not valid JSON (it can't be parsed)" })
   })
 })

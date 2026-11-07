@@ -574,6 +574,10 @@ export interface ReplayRead {
   rows?: number
   preamble?: string
   skip?: number
+  /** The screen main keeps for a terminal an agent runs in (terminalOutputBuffer.ts watchScreen), as its
+   *  whole output has drawn it. The window above holds only the last 32 KB, and an agent that paints its
+   *  input box once, as Claude Code 2.1.316 does, has none in it after a minute of work. */
+  screen?: { lines: string[]; title: string }
 }
 
 /** The screen a replay read shows, drawn as the terminal drew it. */
@@ -581,4 +585,12 @@ export function screenOfReplay(read: ReplayRead): TerminalScreen {
   const output = read.skip ? read.output.slice(read.skip) : read.output
   const size = read.cols && read.rows ? { cols: read.cols, rows: read.rows } : screenSizeOf(output)
   return screenOf((read.preamble ?? '') + output, size)
+}
+
+/** What a replay read shows: the screen main kept for the terminal when the read carries it, else the
+ *  window drawn as the terminal drew it (screenOfReplay). Its rows and its window title. */
+export function viewOfReplay(read: ReplayRead): { lines: string[]; title: string } {
+  if (read.screen) return read.screen
+  const screen = screenOfReplay(read)
+  return { lines: screen.lines(), title: screen.title }
 }

@@ -28,6 +28,11 @@
 //   * `--disconnect-agents` runs before Sentry starts, prints one row per change (with the error when
 //     there is one) and exits 0 even when the disconnect throws: an uninstaller must never be
 //     blocked, or failed, by a config it could not clean.
+//   * Settings ▸ Accounts (v1.54.0, accountsIpc.ts, mocked whole here too): its IPC is registered
+//     once with main's own paths, runtime, consent and folder dialog; the runtime carries every
+//     connected account's profile; and the launch-time writes and answers -- folder trust, the
+//     poller's trust verdict, the Codex prepare, the home-trust removal -- go to the launch's own
+//     account, and refuse one the user didn't connect (R9).
 //
 // Why this file pins `@vitest-environment node` (line 1): Vitest 4 dropped `environmentMatchGlobs`,
 // so vitest.config.ts's ['tests/electron/**', 'node'] is silently ignored and every file in
@@ -43,6 +48,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, type MockIns
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { AGENT_INTEGRATION_IPC as IPC } from '../../src/shared/agentIntegration'
+import { sanitizeAgentCommand } from '../../src/main/agentCommandSanitizer'
 
 // ---------------------------------------------------------------------------
 // Agent-integration spies. The manager is mocked whole, so every value it "returns" here is an
@@ -66,6 +72,7 @@ const H = vi.hoisted(() => {
   const runner = { command: '/scratch/bin/node', env: { SENTINEL: 'runner' } }
   const conductorCfg = { mcpServers: { termpolis: { type: 'stdio', command: '/scratch/bin/node', args: ['adapter.cjs'] } } }
   // What the boot reports: one clean change and one that failed, so both halves of the line show.
+  const profiles = [{ agent: 'claude', dir: '/scratch/home/.claude-b', claudeJson: '/scratch/home/.claude-b/.claude.json', accountId: 'acc_bbbbbbbbbbbb' }]
   const bootChanges = [
     { agent: 'claude', file: '/scratch/home/.claude/settings.json', action: 'add', what: 'SessionStart memory hook' },
     { agent: 'codex', file: '/scratch/home/.codex/config.toml', action: 'skipped', what: 'MCP server `termpolis`', error: 'EACCES: permission denied' },
@@ -87,6 +94,30 @@ const H = vi.hoisted(() => {
     prepareCodexLaunch: vi.fn(() => ({ developerInstructions: null })),
     removeCodexHomeTrust: vi.fn((_paths: unknown): { changed: boolean; error?: string } => ({ changed: true })),
     conductorMcpConfig: vi.fn((_rt: unknown) => conductorCfg),
+    isAgentIntegrationConnected: vi.fn((_paths: unknown) => true),
+    // Settings ▸ Accounts, whole: the sentinel profiles prove the runtime hands them on untouched.
+    profiles,
+    registerAccountsIpc: vi.fn((_ipc: unknown, _deps: unknown) => undefined),
+    connectedProfileTargets: vi.fn((_paths: unknown) => profiles),
+    resolveLaunchTarget: vi.fn((_paths: unknown, _id: unknown, _agent: string): { connected: boolean; target?: unknown } => ({ connected: true })),
+    isTerminalAccountConnected: vi.fn((_paths: unknown, _id: unknown) => true),
+    codexHomeFor: vi.fn((_paths: unknown, _id: unknown): { home?: string } | { error: string } => ({})),
+    accountSettingsEnv: vi.fn((_paths: unknown, _id: unknown): Record<string, unknown> | null | undefined => undefined),
+    forgetTerminalAccount: vi.fn((_id: string) => undefined),
+    noteTypedInput: vi.fn((_id: string, _typed: string): 'own' | 'by-hand' | null => null),
+    noteSwarmWorker: vi.fn((_id: string) => undefined),
+    noteWorkerCommand: vi.fn((_id: string, _command: string) => undefined),
+    noteWorkerInput: vi.fn((_id: string, _typed: string) => undefined),
+    workerStopCarried: vi.fn((_id: string): boolean => false),
+    // The chooser's marker (R6): the extra env as it came, so every other test sees today's.
+    withLimitChooser: vi.fn((extra: Record<string, string> | undefined, _watch: unknown) => extra),
+    relaunchLockReason: vi.fn((_id: string, _now?: number, _key?: string): string | null => null),
+    getTerminalSize: vi.fn((_id: string): { cols: number; rows: number } | null => null),
+    isShellInForeground: vi.fn((_id: string): boolean | null => null),
+    terminalShellAlone: vi.fn(async (_id: string): Promise<boolean | null> => null),
+    mcpHandlers: null as null | Record<string, (...a: any[]) => any>,
+    getProxyEnv: vi.fn((_env: unknown, _settingsEnv?: unknown): Record<string, string> | null => null),
+    mkdirSync: vi.fn(),
   }
 })
 
@@ -243,6 +274,9 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalCwdAsync: mockGetTerminalCwdAsync,
   getTerminalPid: mockGetTerminalPid,
   computeWindowsPty: mockComputeWindowsPty,
+  getTerminalSize: H.getTerminalSize,
+  isShellInForeground: H.isShellInForeground,
+  terminalShellAlone: H.terminalShellAlone,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: mockLoadSession, loadRestoreSession: mockLoadRestoreSession, saveSession: mockSaveSession }))
@@ -264,10 +298,12 @@ vi.mock('../../src/main/aiSecurity', async (importOriginal) => {
 })
 
 vi.mock('../../src/main/mcpServer', () => ({
-  startMcpServer: vi.fn(), stopMcpServer: vi.fn(),
+  startMcpServer: vi.fn((handlers: Record<string, (...a: any[]) => any>) => { H.mcpHandlers = handlers }), stopMcpServer: vi.fn(),
   getMcpAuthToken: vi.fn(() => 'fake-token'), getMcpPort: vi.fn(() => 9315),
   initAuditLog: vi.fn(),
   awaitMcpPortBound: vi.fn(() => Promise.resolve(9315)),
+  // The shell's prompt report, as mcpServer.ts defines it: OSC 9;9 (PowerShell, cmd) or OSC 7 (bash).
+  PROMPT_REPORT: /\x1b\](?:9;9;|7;)/g,
 }))
 vi.mock('../../src/main/swarmManager', () => ({
   sendMessage: vi.fn(), readMessages: vi.fn(() => []), getAllMessages: vi.fn(() => []),
@@ -371,7 +407,7 @@ vi.mock('fs', () => {
     writeFileSync: mockWriteFileSync, existsSync: H.existsSync,
     readFileSync: vi.fn(() => '{}'), readdirSync: vi.fn(() => []),
     statSync: vi.fn(() => ({ isDirectory: () => false, mtimeMs: 0, size: 0 })),
-    mkdirSync: vi.fn(), appendFileSync: vi.fn(),
+    mkdirSync: H.mkdirSync, appendFileSync: vi.fn(),
     renameSync: vi.fn(), unlinkSync: vi.fn(), watch: vi.fn(),
   }
   return { ...impl, default: impl }
@@ -392,6 +428,31 @@ vi.mock('../../src/main/agentIntegrationManager', () => ({
   prepareCodexLaunch: H.prepareCodexLaunch,
   removeCodexHomeTrust: H.removeCodexHomeTrust,
   conductorMcpConfig: H.conductorMcpConfig,
+  isAgentIntegrationConnected: H.isAgentIntegrationConnected,
+}))
+// Settings ▸ Accounts, whole, for the same reason as the manager.
+vi.mock('../../src/main/accountsIpc', () => ({
+  registerAccountsIpc: H.registerAccountsIpc,
+  connectedProfileTargets: H.connectedProfileTargets,
+  resolveLaunchTarget: H.resolveLaunchTarget,
+  isTerminalAccountConnected: H.isTerminalAccountConnected,
+  codexHomeFor: H.codexHomeFor,
+  accountSettingsEnv: H.accountSettingsEnv,
+  forgetTerminalAccount: H.forgetTerminalAccount,
+  noteTypedInput: H.noteTypedInput,
+  noteSwarmWorker: H.noteSwarmWorker,
+  noteWorkerCommand: H.noteWorkerCommand,
+  noteWorkerInput: H.noteWorkerInput,
+  workerStopCarried: H.workerStopCarried,
+  withLimitChooser: H.withLimitChooser,
+  endAccountSignIns: vi.fn(),
+}))
+// The switch's lock, so a test can hold a terminal as a switch would.
+vi.mock('../../src/main/accountSwitch', () => ({ relaunchLockReason: H.relaunchLockReason }))
+// The proxy's launch env, so a test can see which profile's routing it was asked about.
+vi.mock('../../src/main/headroomProxy/proxySupervisor', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/main/headroomProxy/proxySupervisor')>()),
+  getProxyEnv: H.getProxyEnv,
 }))
 // The git-root probe, so a test can say what `git rev-parse --show-toplevel` answered.
 vi.mock('../../src/main/gitCommand', async (importOriginal) => ({
@@ -420,7 +481,7 @@ const CONDUCTOR_JSON = JSON.stringify(H.conductorCfg, null, 2)
 
 /** The runtime index.ts assembles for the manager in a dev build with no hook script on disk
  *  (existsSync is stubbed false here; mainIndexBranchesB covers the hook-present path on real fs). */
-const RUNTIME = { paths: H.agentPaths, adapterPath: DEV_ADAPTER, hookScriptPath: null, node: H.runner }
+const RUNTIME = { paths: H.agentPaths, profiles: H.profiles, adapterPath: DEV_ADAPTER, hookScriptPath: null, node: H.runner }
 
 /** writeFileSync calls that wrote the conductor's --mcp-config, each with its global call order. */
 function conductorWrites(): Array<{ args: unknown[]; order: number }> {
@@ -453,6 +514,7 @@ const boot = {
   agentLines: [] as string[],
   disconnects: -1,
   exits: -1,
+  accountsRegistrations: [] as unknown[][],
 }
 
 beforeAll(async () => {
@@ -474,6 +536,7 @@ beforeAll(async () => {
     .filter((l): l is string => typeof l === 'string' && l.startsWith('[agents]'))
   boot.disconnects = H.disconnectAgentIntegration.mock.calls.length
   boot.exits = H.appExit.mock.calls.length
+  boot.accountsRegistrations = H.registerAccountsIpc.mock.calls.map((c) => [...c])
 }, 60_000)
 
 afterAll(() => {
@@ -492,6 +555,8 @@ beforeEach(() => {
     H.appExit, H.existsSync, H.safeGitAsync, H.resolveAgentIntegrationPaths, H.disconnectAgentIntegration,
     H.getAgentIntegrationStatus, H.setAgentIntegration, H.isFolderTrustAllowed, H.removeCodexHomeTrust,
     H.conductorMcpConfig, mockWriteFileSync, mockGetTerminalCwdAsync,
+    H.isAgentIntegrationConnected, H.connectedProfileTargets, H.resolveLaunchTarget, H.isTerminalAccountConnected,
+    H.codexHomeFor, H.accountSettingsEnv, H.getProxyEnv, mockShowOpenDialog, mockDetectAvailableShells,
   ] as Array<{ mockReset: () => void }>) m.mockReset()
 })
 
@@ -691,13 +756,417 @@ describe('agents:remove-codex-home-trust', () => {
     H.removeCodexHomeTrust.mockReturnValueOnce({ changed: false })
     expect(await invoke(IPC.removeCodexHomeTrust)).toEqual({ success: true, data: { changed: false } })
     expect(H.resolveAgentIntegrationPaths).toHaveBeenCalledWith(homedir(), H.userData, process.env)
-    expect(H.removeCodexHomeTrust).toHaveBeenCalledWith(H.agentPaths)
+    // No account named: the default CODEX_HOME.
+    expect(H.codexHomeFor).toHaveBeenCalledWith(H.agentPaths, undefined)
+    expect(H.removeCodexHomeTrust).toHaveBeenCalledWith(H.agentPaths, undefined)
   })
 
   it('returns a failure as err()', async () => {
     H.resolveAgentIntegrationPaths.mockImplementationOnce(() => { throw new Error('no home folder') })
     expect(await invoke(IPC.removeCodexHomeTrust)).toEqual({ success: false, error: 'no home folder' })
     expect(H.removeCodexHomeTrust).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// Settings ▸ Accounts (v1.54.0): the IPC's registration, and the account a launch-time write or
+// answer goes to.
+// ===========================================================================
+describe('Settings ▸ Accounts wiring', () => {
+  const deps = (): any => boot.accountsRegistrations[0][1]
+
+  it('registers the accounts IPC once, on ipcMain, with main\'s own paths, runtime and consent', () => {
+    expect(boot.accountsRegistrations).toHaveLength(1)
+    expect(typeof (boot.accountsRegistrations[0][0] as { handle: unknown }).handle).toBe('function')
+    expect(deps().paths()).toBe(H.agentPaths)
+    expect(H.resolveAgentIntegrationPaths).toHaveBeenCalledWith(homedir(), H.userData, process.env)
+    expect(deps().runtime()).toEqual(RUNTIME)
+    H.isAgentIntegrationConnected.mockReturnValueOnce(false)
+    expect(deps().integrationConnected()).toBe(false)
+    expect(H.isAgentIntegrationConnected).toHaveBeenCalledWith(H.agentPaths)
+    expect(deps().integrationConnected()).toBe(true)
+  })
+
+  it('gives agent integration every connected account\'s profile, read afresh for each runtime', () => {
+    expect(boot.runtimes.map((r) => (r as { profiles: unknown }).profiles)).toEqual([H.profiles])
+    H.connectedProfileTargets.mockClear()
+    deps().runtime()
+    expect(H.connectedProfileTargets).toHaveBeenCalledWith(H.agentPaths)
+  })
+
+  it('opens main\'s own folder dialog on hidden folders, and answers null when it is cancelled', async () => {
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/scratch/home/.claude-x'] })
+    expect(await deps().pickFolder('Choose the Claude Code profile folder')).toBe('/scratch/home/.claude-x')
+    expect(mockShowOpenDialog).toHaveBeenCalledWith(mockMainWindow, {
+      title: 'Choose the Claude Code profile folder', defaultPath: homedir(), properties: ['openDirectory', 'showHiddenFiles'],
+    })
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: ['/scratch/home/.claude-x'] })
+    expect(await deps().pickFolder('t')).toBeNull()
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [] })
+    expect(await deps().pickFolder('t')).toBeNull()
+  })
+
+  it('takes the folder an e2e run names only in a test run, with no dialog', async () => {
+    const saved = { home: process.env.TERMPOLIS_TEST_AGENT_HOME, folder: process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER }
+    try {
+      process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER = '/scratch/home/.claude-e2e'
+      delete process.env.TERMPOLIS_TEST_AGENT_HOME
+      mockShowOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+      expect(await deps().pickFolder('t')).toBeNull()
+      expect(mockShowOpenDialog).toHaveBeenCalledTimes(1)
+      process.env.TERMPOLIS_TEST_AGENT_HOME = '/scratch/home'
+      expect(await deps().pickFolder('t')).toBe('/scratch/home/.claude-e2e')
+      expect(mockShowOpenDialog).toHaveBeenCalledTimes(1)
+    } finally {
+      if (saved.home === undefined) delete process.env.TERMPOLIS_TEST_AGENT_HOME
+      else process.env.TERMPOLIS_TEST_AGENT_HOME = saved.home
+      if (saved.folder === undefined) delete process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER
+      else process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER = saved.folder
+    }
+  })
+
+  it('opens a provider\'s sign-in page through the shell, only as main\'s accounts code asks', () => {
+    deps().openExternal('https://claude.com/cai/oauth/authorize?x=1')
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://claude.com/cai/oauth/authorize?x=1')
+  })
+
+  it('sends a sign-in\'s state to the window, and runs the status checks in a folder of its own', () => {
+    deps().send('accounts:sign-in-state', { sessionId: 's1', accountId: 'acc_bbbbbbbbbbbb', agent: 'claude', phase: { kind: 'starting' } })
+    expect(mockWebContents.send).toHaveBeenCalledWith('accounts:sign-in-state', { sessionId: 's1', accountId: 'acc_bbbbbbbbbbbb', agent: 'claude', phase: { kind: 'starting' } })
+    const dir = join(H.userData, 'account-checks')
+    expect(deps().checkCwd()).toBe(dir)
+    expect(H.mkdirSync).toHaveBeenCalledWith(dir, { recursive: true })
+  })
+
+  it('tells where a terminal\'s output ends now, for where an agent a launch line starts begins', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-end', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[0][3] as (d: string) => void
+    expect(deps().outputEnd('t-end')).toBe(0)
+    onData('PS C:\\> ')
+    expect(deps().outputEnd('t-end')).toBe('PS C:\\> '.length)
+    expect(deps().outputEnd('t-none')).toBe(0)
+  })
+
+  it('shows every write from the renderer, as typed, to the account watch, after it reached the PTY', () => {
+    const write = (data: string) => { for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-typed', data }) }
+    const order: string[] = []
+    mockWriteToTerminal.mockImplementationOnce(() => { order.push('pty') })
+    H.noteTypedInput.mockImplementationOnce(() => { order.push('watch'); return null })
+    write('\x1b[200~unset CLAUDE_CONFIG_DIR\x1b[201~')
+    // The paste's markers stay on what the account watch is shown (they say a paste's line breaks are
+    // text, not Enters: accountsIpc.ts gatherLines); the launch audit reads it with them off.
+    expect(H.noteTypedInput).toHaveBeenCalledWith('t-typed', '\x1b[200~unset CLAUDE_CONFIG_DIR\x1b[201~', expect.any(Number), undefined)
+    expect(order).toEqual(['pty', 'watch'])
+    // A watch that throws never breaks the terminal.
+    H.noteTypedInput.mockImplementationOnce(() => { throw new Error('boom') })
+    expect(() => write('x')).not.toThrow()
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('t-typed', 'x')
+    // Only text is a typed line: a write that is not a string (a malformed message) is shown to the watch as nothing.
+    H.noteTypedInput.mockClear()
+    for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-typed', data: 42 })
+    expect(H.noteTypedInput).not.toHaveBeenCalled()
+  })
+
+  it('drops the renderer\'s keys, and refuses MCP\'s, for a terminal a switch holds (R7)', () => {
+    const write = (data: string) => { for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-held', data }) }
+    H.relaunchLockReason.mockImplementation((id: string) => (id === 't-held' ? 'held' : null))
+    mockWriteToTerminal.mockClear()
+    H.noteTypedInput.mockClear()
+    write('typed while switching\r')
+    expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    expect(H.noteTypedInput).not.toHaveBeenCalled()
+    for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-free', data: 'x' })
+    expect(mockWriteToTerminal).toHaveBeenCalledWith('t-free', 'x')
+    // MCP asks main's lock for the terminal (mcpServer.ts refuses the call with its words).
+    expect(H.mcpHandlers!.relaunchLock('t-held')).toBe('held')
+    expect(H.mcpHandlers!.relaunchLock('t-free')).toBeNull()
+    H.relaunchLockReason.mockImplementation(() => null)
+  })
+
+  it('asks main whether a limit is the old one its relaunched agent draws again (SWARM-R1 N5)', () => {
+    H.workerStopCarried.mockImplementation((id: string) => id === 't-restarted')
+    expect(H.mcpHandlers!.carriedStop!('t-restarted')).toBe(true)
+    expect(H.mcpHandlers!.carriedStop!('t-other')).toBe(false)
+    H.workerStopCarried.mockImplementation(() => false)
+  })
+
+  it('lets the model picker\'s own writes through its hold, by the key they carry (§7.5)', () => {
+    const write = (payload: Record<string, unknown>) => { for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-model', ...payload }) }
+    H.relaunchLockReason.mockImplementation((_id: string, _now?: number, key?: string) => (key === 'k-picker' ? null : 'held'))
+    mockWriteToTerminal.mockClear()
+    write({ data: 'typed meanwhile\r' })
+    expect(H.relaunchLockReason).toHaveBeenLastCalledWith('t-model', expect.any(Number), undefined)
+    write({ data: '/quit', key: 'k-other' })
+    // A key that is no string is none.
+    write({ data: 'x', key: 7 })
+    expect(H.relaunchLockReason).toHaveBeenLastCalledWith('t-model', expect.any(Number), undefined)
+    expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    write({ data: '/quit', key: 'k-picker' })
+    // The key goes to the lock, never to the PTY.
+    expect(H.relaunchLockReason).toHaveBeenLastCalledWith('t-model', expect.any(Number), 'k-picker')
+    expect(mockWriteToTerminal.mock.calls).toEqual([['t-model', '/quit']])
+    // ...and to the watch of what is typed, which counts the picker's relaunch line as the agent's start
+    // (accountsIpc.ts noteTypedInput): a key that is no string is none there too.
+    expect(H.noteTypedInput).toHaveBeenLastCalledWith('t-model', '/quit', expect.any(Number), 'k-picker')
+    H.relaunchLockReason.mockImplementation(() => null)
+    write({ data: 'x', key: 7 })
+    expect(H.noteTypedInput).toHaveBeenLastCalledWith('t-model', 'x', expect.any(Number), undefined)
+  })
+
+  it('reads and types for a switch through the terminals\' buffers and PTYs', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-sw', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[0][3] as (d: string) => void
+    const io = deps().switchIO
+    expect(io.output('t-sw')).toBeNull()
+    onData('PS C:\\> ')
+    expect(io.output('t-sw')).toEqual({ raw: 'PS C:\\> ', end: 8 })
+    expect(io.outputFrom('t-sw', 3)).toBe('C:\\> ')
+    expect(io.end('t-sw')).toBe(8)
+    H.getTerminalSize.mockReturnValueOnce({ cols: 120, rows: 30 })
+    expect(io.size('t-sw')).toEqual({ cols: 120, rows: 30 })
+    io.write('t-sw', '/exit')
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('t-sw', '/exit')
+    expect(typeof io.now()).toBe('number')
+    // macOS and Linux: whether the shell is the PTY's foreground again (terminalManager.ts).
+    H.isShellInForeground.mockReturnValueOnce(true)
+    expect(io.atShell!('t-sw')).toBe(true)
+    expect(H.isShellInForeground).toHaveBeenLastCalledWith('t-sw')
+    // The OS's full answer on whether only the shell is left (shellAlone.ts), which the switch asks at
+    // its exit and the model switch and submit ask at theirs; main hands it the terminal's own.
+    H.terminalShellAlone.mockResolvedValueOnce(true)
+    expect(await io.shellAlone!('t-sw')).toBe(true)
+    expect(H.terminalShellAlone).toHaveBeenLastCalledWith('t-sw')
+    H.terminalShellAlone.mockResolvedValueOnce(null)
+    expect(await io.shellAlone!('t-sw')).toBeNull()
+    vi.useFakeTimers()
+    const slept = io.sleep(250)
+    vi.advanceTimersByTime(250)
+    await expect(slept).resolves.toBeUndefined()
+    vi.useRealTimers()
+  })
+
+  it('keeps the screen of a terminal an agent was started in, for the switch, the chooser and the swarm loop (F-R2-2)', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-kept', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[mockSpawnTerminal.mock.calls.length - 1][3] as (d: string) => void
+    const io = deps().switchIO
+    const E = '\x1b'
+    const read = async (): Promise<any> => (await invoke('terminal:read-buffer', { terminalId: 't-kept', fromOffset: 0 })).data
+    onData(`${E}[2J${E}[H${E}[4;1H${'─'.repeat(30)}${E}[5;1H> ${E}[6;1H${'─'.repeat(30)}`)
+    // Nothing is kept for a terminal no agent was started in.
+    expect(io.screen!('t-kept')).toBeNull()
+    expect((await read()).screen).toBeUndefined()
+    // Started: the screen is drawn at the terminal's size from now on.
+    H.getTerminalSize.mockReturnValue({ cols: 30, rows: 6 })
+    io.watch!('t-kept')
+    onData(`${E}[1;1Hworking`)
+    const kept = io.screen!('t-kept')!
+    expect(kept.lines.slice(3)).toEqual(['─'.repeat(30), '>', '─'.repeat(30)])
+    expect(kept.lines[0]).toBe('working')
+    // The swarm loop's read carries it, beside the window and its geometry.
+    expect((await read()).screen).toEqual(kept)
+    // A resize draws it again at the new size.
+    H.getTerminalSize.mockReturnValue({ cols: 20, rows: 4 })
+    for (const h of ipcOnHandlers.get('terminal:resize') ?? []) h({}, { id: 't-kept', cols: 20, rows: 4 })
+    expect(mockResizeTerminal).toHaveBeenLastCalledWith('t-kept', 20, 4)
+    expect(io.screen!('t-kept')!.lines).toHaveLength(4)
+    // A terminal that is gone (no size) keeps nothing.
+    H.getTerminalSize.mockReturnValue(null)
+    io.watch!('t-gone')
+    expect(io.screen!('t-gone')).toBeNull()
+    H.getTerminalSize.mockReset()
+    H.getTerminalSize.mockImplementation(() => null)
+  })
+
+  it('tells the switch which shells have reported a prompt in a terminal, after the reports left the window (SW2-10)', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-rep', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[mockSpawnTerminal.mock.calls.length - 1][3] as (d: string) => void
+    const io = deps().switchIO
+    expect(io.reported!('t-rep')).toEqual({ posix: false, windows: false })
+    onData('\x1b]9;9;C:\\repo\x07PS C:\\repo> ')
+    expect(io.reported!('t-rep')).toEqual({ posix: false, windows: true })
+    // Far more than the window holds: the report is gone from it, and still known.
+    for (let i = 0; i < 40; i++) onData('x'.repeat(2000))
+    expect(io.outputFrom('t-rep', 0)).not.toContain('\x1b]9;9;')
+    expect(io.reported!('t-rep')).toEqual({ posix: false, windows: true })
+    expect(io.reported!('t-never')).toEqual({ posix: false, windows: false })
+  })
+
+  it('tells the switch once that David\'s wrapper restarted Claude Code on another profile in a terminal, since it was last asked (SW3-3)', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-banner', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[mockSpawnTerminal.mock.calls.length - 1][3] as (d: string) => void
+    const io = deps().switchIO
+    expect(io.restarted!('t-banner')).toBe(false)
+    onData('Switching this terminal to work: starting Claude again on its profile and resuming the conversation...\r\n')
+    expect(io.restarted!('t-banner')).toBe(true)
+    expect(io.restarted!('t-banner')).toBe(false)
+    expect(io.restarted!('t-never')).toBe(false)
+    // The line is cut between two chunks, and the window lets it go long before main asks.
+    onData('Switching this terminal to codedev: starting Claude ag')
+    onData('ain on its profile...\r\n')
+    for (let i = 0; i < 40; i++) onData('x'.repeat(2000))
+    expect(io.outputFrom('t-banner', 0)).not.toContain('Switching this terminal')
+    expect(io.restarted!('t-banner')).toBe(true)
+  })
+
+  it('stops keeping the screen of a terminal whose agent is gone (SAFETY-R3-8)', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-over', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[mockSpawnTerminal.mock.calls.length - 1][3] as (d: string) => void
+    const io = deps().switchIO
+    H.getTerminalSize.mockReturnValue({ cols: 30, rows: 6 })
+    onData('PS C:\\> claude\r\n')
+    io.watch!('t-over')
+    expect(io.screen!('t-over')).not.toBeNull()
+    io.unwatch!('t-over')
+    expect(io.screen!('t-over')).toBeNull()
+    expect(io.outputFrom('t-over', 0)).toContain('claude')
+    // Output after it is the window's alone, and a start keeps a screen again.
+    onData('more\r\n')
+    expect(io.screen!('t-over')).toBeNull()
+    io.watch!('t-over')
+    expect(io.screen!('t-over')).not.toBeNull()
+    H.getTerminalSize.mockReset()
+    H.getTerminalSize.mockImplementation(() => null)
+  })
+
+  it('trusts a folder in the launch\'s own profile, and refuses an account the user didn\'t connect (R9)', async () => {
+    const target = H.profiles[0]
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: false })
+    expect(await invoke('claude:trust-workspace', { cwd: '/repo', accountId: 'acc_off' }))
+      .toEqual({ success: true, data: { changed: false, keys: [], skipped: 'account-not-connected' } })
+    expect(H.resolveLaunchTarget).toHaveBeenCalledWith(H.agentPaths, 'acc_off', 'claude')
+    expect(H.isFolderTrustAllowed).not.toHaveBeenCalled()
+    expect(H.trustFolderForAgents).not.toHaveBeenCalled()
+    expect(rootProbes()).toEqual([])
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: true, target })
+    H.safeGitAsync.mockResolvedValueOnce('/repo\n')
+    await invoke('claude:trust-workspace', { cwd: '/repo/app', accountId: 'acc_bbbbbbbbbbbb' })
+    expect(H.trustFolderForAgents).toHaveBeenLastCalledWith(H.agentPaths, '/repo/app', '/repo', target)
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: true, target })
+    H.isFolderTrustAllowed.mockReturnValueOnce(false)
+    await invoke('claude:trust-workspace', { cwd: '/home/me', accountId: 'acc_bbbbbbbbbbbb' })
+    expect(H.trustFolderForAgents).toHaveBeenLastCalledWith(H.agentPaths, '/home/me', undefined, target)
+  })
+
+  it('never lets the poller answer a trust prompt in a terminal on an unconnected account (R9)', async () => {
+    H.isTerminalAccountConnected.mockReturnValueOnce(false)
+    expect(await invoke(IPC.folderTrustAllowed, { terminalId: 't-off', fallbackCwd: '/repo' })).toEqual({ success: true, data: false })
+    expect(H.isTerminalAccountConnected).toHaveBeenCalledWith(H.agentPaths, 't-off')
+    // Refused before the shell is probed or the manager asked.
+    expect(mockGetTerminalCwdAsync).not.toHaveBeenCalled()
+    expect(H.isFolderTrustAllowed).not.toHaveBeenCalled()
+  })
+
+  it('prepares a Codex launch in the account\'s own CODEX_HOME, and adds nothing for one not connected (R9)', async () => {
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: true, target: { agent: 'codex', dir: '/scratch/home/.codex-b', accountId: 'acc_c' } })
+    await invoke('memory:prepare-codex-context', { cwd: '/repo', accountId: 'acc_c' })
+    expect(H.resolveLaunchTarget).toHaveBeenCalledWith(H.agentPaths, 'acc_c', 'codex')
+    expect(H.prepareCodexLaunch).toHaveBeenLastCalledWith(H.agentPaths, '/repo', expect.objectContaining({ accountConnected: true }), '/scratch/home/.codex-b')
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: false })
+    await invoke('memory:prepare-codex-context', { cwd: '/repo', accountId: 'acc_off' })
+    expect(H.prepareCodexLaunch).toHaveBeenLastCalledWith(H.agentPaths, '/repo', expect.objectContaining({ accountConnected: false }), undefined)
+  })
+
+  it('seeds a Claude launch with the memory primer only on an account the user connected (R17)', async () => {
+    // The primer file points the session at the project's saved memory: an account the user didn't
+    // connect (a work account) gets neither the file nor the call that would build it.
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: false })
+    expect(await invoke('memory:prepare-primer-file', { query: 'q', cwd: '/repo', accountId: 'acc_off' }))
+      .toEqual({ success: true, data: { file: null, count: 0 } })
+    expect(H.resolveLaunchTarget).toHaveBeenLastCalledWith(H.agentPaths, 'acc_off', 'claude')
+  })
+
+  it('takes home-folder trust out of an account\'s CODEX_HOME, and never the default one instead of a missing one', async () => {
+    H.codexHomeFor.mockReturnValueOnce({ home: '/scratch/home/.codex-b' })
+    await invoke(IPC.removeCodexHomeTrust, { accountId: 'acc_c' })
+    expect(H.codexHomeFor).toHaveBeenCalledWith(H.agentPaths, 'acc_c')
+    expect(H.removeCodexHomeTrust).toHaveBeenCalledWith(H.agentPaths, '/scratch/home/.codex-b')
+    H.removeCodexHomeTrust.mockClear()
+    H.codexHomeFor.mockReturnValueOnce({ error: 'lost\'s profile folder doesn\'t exist' })
+    expect(await invoke(IPC.removeCodexHomeTrust, { accountId: 'acc_lost' }))
+      .toEqual({ success: true, data: { changed: false, error: 'lost\'s profile folder doesn\'t exist' } })
+    expect(H.removeCodexHomeTrust).not.toHaveBeenCalled()
+  })
+
+  it("hands the chooser's marker the extra env and what the launch watches, for a terminal and for a swarm worker (R6)", async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    const marked = { TERMPOLIS_LIMIT_CHOOSER: '1' }
+    H.withLimitChooser.mockReturnValueOnce(marked)
+    await invoke('terminal:create', { id: 't-watch', shellType: 'powershell', cwd: '/repo', limitWatch: 'claude' })
+    expect(H.withLimitChooser).toHaveBeenLastCalledWith(undefined, 'claude')
+    expect(mockSpawnTerminal.mock.calls[0][5]).toBe(marked)
+    const proxied = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' }
+    H.getProxyEnv.mockReturnValueOnce(proxied)
+    await invoke('terminal:create', { id: 't-plain2', shellType: 'powershell', cwd: '/repo', claudeHeadroom: true })
+    expect(H.withLimitChooser).toHaveBeenLastCalledWith(proxied, undefined)
+    // A swarm worker is watched (by the swarm's loop); a phone's terminal isn't.
+    await H.mcpHandlers!.createTerminal('Claude (Build UI)', 'powershell', '/repo')
+    expect(H.withLimitChooser).toHaveBeenLastCalledWith(undefined, true)
+    await H.mcpHandlers!.createTerminal('Phone', 'powershell', '/repo', { agentCommand: 'claude' })
+    expect(H.withLimitChooser).toHaveBeenLastCalledWith(undefined, false)
+  })
+
+  it('judges a Claude launch\'s proxy by its own account\'s profile, and forgets a terminal\'s account when it closes', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    const accountEnv = { ANTHROPIC_BASE_URL: 'http://gateway.example' }
+    H.accountSettingsEnv.mockReturnValueOnce(accountEnv)
+    expect((await invoke('terminal:create', { id: 't-acc', shellType: 'powershell', cwd: '/repo', claudeHeadroom: true, accountId: 'acc_bbbbbbbbbbbb' })).success).toBe(true)
+    expect(H.accountSettingsEnv).toHaveBeenCalledWith(H.agentPaths, 'acc_bbbbbbbbbbbb')
+    expect(H.getProxyEnv).toHaveBeenCalledWith(process.env, accountEnv)
+    // The proxy stepped aside (null), so the launch gets no proxy env.
+    expect(mockSpawnTerminal.mock.calls[0][5]).toBeUndefined()
+    const proxied = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' }
+    H.getProxyEnv.mockReturnValueOnce(proxied)
+    await invoke('terminal:create', { id: 't-acc2', shellType: 'powershell', cwd: '/repo', claudeHeadroom: true })
+    expect(H.accountSettingsEnv).toHaveBeenLastCalledWith(H.agentPaths, undefined)
+    expect(mockSpawnTerminal.mock.calls[1][5]).toBe(proxied)
+    // Not a Claude launch: no profile is read for it.
+    H.accountSettingsEnv.mockClear()
+    await invoke('terminal:create', { id: 't-plain', shellType: 'powershell', cwd: '/repo' })
+    expect(H.accountSettingsEnv).not.toHaveBeenCalled()
+    await invoke('terminal:kill', { id: 't-acc' })
+    expect(H.forgetTerminalAccount).toHaveBeenCalledWith('t-acc')
+  })
+
+  // §9: a worker's agent, restarted on another account at its usage limit, starts again with the
+  // command run_command typed, as main typed it; a phone's terminal is the user's own, no worker.
+  it('notes a swarm worker and the command run_command typed into it, sanitized, before it is typed; and forgets it once closed', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    const worker = await H.mcpHandlers!.createTerminal('Claude (Build UI)', 'powershell', '/repo')
+    expect(H.noteSwarmWorker).toHaveBeenCalledWith(worker)
+    H.noteSwarmWorker.mockClear()
+    await H.mcpHandlers!.createTerminal('Phone', 'powershell', '/repo', { device: 'phone-1', agentCommand: 'claude' })
+    expect(H.noteSwarmWorker).not.toHaveBeenCalled()
+    const order: string[] = []
+    H.noteWorkerCommand.mockImplementationOnce(() => { order.push('note') })
+    mockWriteToTerminal.mockImplementationOnce(() => { order.push('pty') })
+    // The sanitizer is mocked here as it is everywhere in this file: what it returns is what is noted.
+    vi.mocked(sanitizeAgentCommand).mockReturnValueOnce('claude --dangerously-skip-permissions')
+    H.mcpHandlers!.runCommand(worker, 'claude -p "build it"')
+    expect(sanitizeAgentCommand).toHaveBeenCalledWith('claude -p "build it"')
+    expect(H.noteWorkerCommand).toHaveBeenCalledWith(worker, 'claude --dangerously-skip-permissions')
+    expect(order).toEqual(['note', 'pty'])
+    H.mcpHandlers!.closeTerminal(worker)
+    expect(H.forgetTerminalAccount).toHaveBeenCalledWith(worker)
+  })
+
+  // R4 for workers: a prompt the conductor sends a worker is the worker's turn. Watched after the
+  // PTY has it, and a watch that throws never stops a write.
+  it('hands what an MCP client writes into a terminal to the worker-input watch, after the PTY has it', async () => {
+    const order: string[] = []
+    mockWriteToTerminal.mockImplementationOnce(() => { order.push('pty') })
+    H.noteWorkerInput.mockImplementationOnce(() => { order.push('watch') })
+    H.mcpHandlers!.writeToTerminal('w-typed', 'Continue your task.')
+    expect(order).toEqual(['pty', 'watch'])
+    expect(H.noteWorkerInput).toHaveBeenCalledWith('w-typed', 'Continue your task.')
+    H.noteWorkerInput.mockImplementationOnce(() => { throw new Error('boom') })
+    expect(() => H.mcpHandlers!.writeToTerminal('w-typed', '\r')).not.toThrow()
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('w-typed', '\r')
   })
 })
 

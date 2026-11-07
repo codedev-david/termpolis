@@ -14,9 +14,13 @@
  *
  * The report is addressed to the conductor. swarm_read_messages marks a broadcast read for every
  * reader at once, so a Claude worker that read the bus first would have taken it.
+ *
+ * From v1.55.0 a worker's usage limit can go to the swarm restart offer first (swarmRestart.ts,
+ * §9), once per stop like a report; the offer then tells the conductor itself, or falls back here.
  */
 
 import { menuAnswer, stopKind, type AgentStatusResult } from '../../../shared/agentStatusDetector'
+import { stopKey } from '../../../shared/accountLimits'
 
 export interface SwarmWorker {
   terminalId: string
@@ -24,34 +28,114 @@ export interface SwarmWorker {
   role: string
 }
 
-/** What stopped each worker, while it is stopped, and how many reads in a row since showed no stop. */
-const stopped = new Map<string, { key: string; clear: number }>()
+/** What stopped each worker, while it is stopped, and how many reads in a row since showed no stop.
+ *  `carried`: the stop the worker showed before Termpolis restarted it on another account, which
+ *  the resumed session can draw again (R4). Only the worker read at work ends it, or the same stop
+ *  seen once this says the worker took a turn since (a prompt the conductor sent it): then it is a
+ *  new one. */
+const stopped = new Map<string, { key: string; clear: number; carried?: () => Promise<boolean>; working?: number }>()
+
+/** How many reads in a row at work end a stop carried across a restart. The resumed session draws a frame that reads as work
+ *  (its history half drawn, a repaint after the pane was resized) before it settles on the limit it stopped at, and one such
+ *  frame must not make that limit a new stop, which would tell the conductor to close the worker that was just restarted. */
+export const CARRIED_WORKING_READS = 2
+
+/** Who may take a new usage limit over from the report (the swarm restart offer, §9): true when it
+ *  did, and told the conductor itself. `words` reads the CLI's own words for the limit off the
+ *  screen, when the offer needs them. */
+export type StopOffer = (worker: SwarmWorker, result: AgentStatusResult, words?: () => string | null) => boolean | Promise<boolean>
 
 /** How many reads in a row with no stop end one, the worker not read at work. A single read is no
  *  end: while ConPTY repaints a resized screen, a stopped worker reads idle for a moment, or thinking
  *  while no input box is drawn yet, and the read after it shows the same stop (MW1-3). The poller
  *  reads every 5 seconds; on real Claude Code screens such a moment lasted under a second. */
-const READS_TO_CLEAR = 2
+export const READS_TO_CLEAR = 2
 
-/** A stop, without when it lifts: a reset time the CLI redraws as a countdown is the same stop. */
-function stopKey(summary: string): string {
-  return summary.replace(/ \(resets .*\)$/, '')
+/** Who is told when a worker with a stop on record is read at work again (its limit lifted, or the stop
+ *  was never one): the swarm restart offer, which then takes the worker off its offer (§9). */
+export type WorkingAgain = (worker: SwarmWorker) => void | Promise<void>
+let workingAgain: WorkingAgain | null = null
+
+export function setSwarmWorkingAgain(hook: WorkingAgain | null): void {
+  workingAgain = hook
 }
 
-export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusResult): Promise<void> {
+export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusResult, offer?: StopOffer, words?: () => string | null): Promise<void> {
   const kind = stopKind(result)
   const last = stopped.get(worker.terminalId)
   if (kind === null) {
-    // It got going, or showed no stop for long enough: a stop after this is another one.
-    if (last && (result.status === 'working' || ++last.clear >= READS_TO_CLEAR)) stopped.delete(worker.terminalId)
+    // It got going, or showed no stop for long enough: a stop after this is another one. A stop
+    // carried across a restart ends only once the worker is at work.
+    if (last && result.status === 'working') {
+      if (last.carried && (last.working = (last.working ?? 0) + 1) < CARRIED_WORKING_READS) return
+      stopped.delete(worker.terminalId)
+      // An addition to v1.54.0's report: whatever goes wrong inside it, the stop has ended all the same.
+      try { await workingAgain?.(worker) } catch { /* nothing waits on it */ }
+    } else if (last) {
+      // Not at work: a run of reads at work is broken.
+      last.working = 0
+      if (!last.carried && ++last.clear >= READS_TO_CLEAR) stopped.delete(worker.terminalId)
+    }
     return
   }
   const key = stopKey(result.summary)
-  if (last && last.key === key) {
+  if (last && last.key === key && !(last.carried && (await last.carried()))) {
     last.clear = 0
+    last.working = 0
     return
   }
   stopped.set(worker.terminalId, { key, clear: 0 })
+  // The offer is an addition: whatever goes wrong inside it, the conductor is told as v1.54.0 told it.
+  if (kind === 'limit' && offer) {
+    try {
+      if (await offer(worker, result, words)) return
+    } catch { /* told below */ }
+  }
+  await reportWorkerStop(worker, result)
+}
+
+export function _resetStopReportsForTest(): void {
+  stopped.clear()
+  workingAgain = null
+}
+
+/** The record of the stop a worker is on now, as an opaque mark (undefined: no stop on record). The same mark read
+ *  later means the same stop is still on; the worker read at work meanwhile, or stopped again, gives another. The
+ *  swarm restart offer awaits a sign-in check, a task lookup and the main process before it opens anything, and
+ *  asks this once they are done: a limit that lifted meanwhile is offered to no one and no conductor is told to
+ *  wait about a worker at work (SWARM-R2 F3). */
+export function stopMark(terminalId: string): object | undefined {
+  return stopped.get(terminalId)
+}
+
+/** A worker Termpolis restarted on another account (§9): the stop it showed is carried, so the same
+ *  stop drawn again by the resumed session tells the conductor nothing, until the worker took a
+ *  turn there (R4): read at work, or `turned` says so. */
+export function carryWorkerStop(terminalId: string, summary: string, turned: () => Promise<boolean>): void {
+  stopped.set(terminalId, { key: stopKey(summary), clear: 0, carried: turned })
+}
+
+/** Whether the stop a worker shows is the one carried across a restart and the worker has taken no turn
+ *  since: the resumed session draws its old limit again above its empty box (R4), so the dashboard shows it
+ *  waiting, not blocked, and the conductor hears nothing of it. A limit after a turn is a new stop. */
+export async function isStopCarried(terminalId: string): Promise<boolean> {
+  const carried = stopped.get(terminalId)?.carried
+  return carried !== undefined && !(await carried())
+}
+
+/** As carryWorkerStop, for a worker switched by hand: the stop it shows, if it shows one. */
+export function carryIfStopped(terminalId: string, turned: () => Promise<boolean>): void {
+  const last = stopped.get(terminalId)
+  if (last) last.carried = turned
+}
+
+/** v1.54.0's report of a stop to the conductor: for a limit, to close the worker and give its task
+ *  to another installed agent; for a menu, to answer it. Sent also when the restart offer for a
+ *  limit is declined, fails or has no answer in time (§9). `afterExit`: a restart that failed once its agent had been exited
+ *  (why, in a few words): the limit is no longer on the worker's screen (a prompt, a sign-in screen or a dialog is), so the conductor
+ *  is told what happened and that the task is its to give away, not to look for a limit first (SWARM-R3-2). */
+export async function reportWorkerStop(worker: SwarmWorker, result: AgentStatusResult, afterExit?: string): Promise<void> {
+  const kind = stopKind(result)
   // The conductor sent the task, so it knows which one this terminal has; when the task was
   // assigned to it, say which.
   let task = ''
@@ -70,12 +154,11 @@ export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusR
     ? 'Check its screen with read_output first: if the limit is there, close its terminal, then give its task to another installed agent.'
     : `Check its screen with read_output first: if the menu is there, answer it as STEP 6 says, without submit${answer ? `: ${answer}` : ', with the keys its screen shows for the option to pick'}. ` +
       'Then send its task again with submit=true if it never got it. Give its task to another installed agent only if the menu stays.'
+  const said = afterExit !== undefined
+    ? `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) could not be restarted on another account (${afterExit}), and its agent is no longer running there.${task} ` +
+      'Close its terminal and give its task to another installed agent: the limit is no longer on its screen, so there is nothing to look for.'
+    : `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) is blocked: ${result.summary}.${task} ${todo}`
   try {
-    await window.swarmAPI.sendMessage(
-      'system',
-      'conductor',
-      'info',
-      `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) is blocked: ${result.summary}.${task} ${todo}`,
-    )
+    await window.swarmAPI.sendMessage('system', 'conductor', 'info', said)
   } catch {}
 }

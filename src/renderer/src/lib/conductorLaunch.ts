@@ -1,4 +1,5 @@
 import { psQuote, shQuote } from '../../../shared/shellQuote'
+import { isClaudeLimitMessage } from '../../../shared/agentStatusDetector'
 import { stripAnsi } from './exportTerminal'
 
 // The scripts that start the swarm conductor (`claude -p`) in its hidden terminal, and the line
@@ -41,6 +42,13 @@ export interface ConductorRunPaths {
    *  program and its arguments, none with a space in it (`node e2e/mocks/mock-claude.cjs`): in
    *  Constrained Language Mode its first word is the program Start-Process starts. */
   testCommand?: string
+  /** The account claude runs on, when the conductor is run again on another one at its usage
+   *  limit (§9): its profile's launch string, or null for the default profile, whose variable is
+   *  removed. Absent: claude gets the config home the shell gives it, as in v1.54.0. */
+  account?: { profile: string | null }
+  /** Resume the session `sessionId` names instead of starting it: the conductor run again on an
+   *  account that can see its transcript. */
+  resume?: boolean
 }
 
 const PS51_PATH = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -109,14 +117,15 @@ const RESOLVE_CLAUDE = [
 /** The run script: `.termpolis-conductor-run.ps1` on Windows, `.termpolis-conductor-run.sh`
  *  elsewhere. Every path in it is a single-quoted literal, so a `$` or a backtick in a user name
  *  expands to nothing. */
-export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath, sessionId, claudeHomeFile, testCommand }: ConductorRunPaths): string {
+export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath, sessionId, claudeHomeFile, testCommand, account, resume }: ConductorRunPaths): string {
   const quote = isWindows ? psQuote : shQuote
-  const flags = `-p${mcpConfigPath ? ` --mcp-config ${quote(mcpConfigPath)}` : ''} --session-id ${quote(sessionId)} --dangerously-skip-permissions`
+  const session = resume ? '--resume' : '--session-id'
+  const flags = `-p${mcpConfigPath ? ` --mcp-config ${quote(mcpConfigPath)}` : ''} ${session} ${quote(sessionId)} --dangerously-skip-permissions`
   if (isWindows) {
     const pipe = (command: string): string => `Get-Content -Raw -Encoding UTF8 -LiteralPath ${psQuote(taskFile)} | ${command} ${flags}`
     // The same flags as one command line, for a program Start-Process starts: double quotes around
     // the one path, which can hold no `"` and doesn't end in a backslash.
-    const commandLine = `-p${mcpConfigPath ? ` --mcp-config "${mcpConfigPath}"` : ''} --session-id ${sessionId} --dangerously-skip-permissions`
+    const commandLine = `-p${mcpConfigPath ? ` --mcp-config "${mcpConfigPath}"` : ''} ${session} ${sessionId} --dangerously-skip-permissions`
     // Its exit code is read through a handle taken at once: a process object that has none can't
     // get one once the process has exited, and its ExitCode is empty (a program that exits at once
     // lost it, live). It waits for that process alone, not for what it leaves running, as -Wait
@@ -154,9 +163,13 @@ export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath
     // A BOM first, which writeConfigFile writes as UTF-8's: 5.1 reads a .ps1 without one in the
     // ANSI code page, and the paths here are under the user's home folder. "José" came out as
     // "JosÃ©", and Ñ, ł or ’ as bytes that read as quotes and ended the literal early.
+    // The account it was asked to run on: $env: writes the process env, which ConstrainedLanguage
+    // allows, so claude and the record below get it.
+    const onAccount = account === undefined ? [] : [account.profile === null ? 'Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue' : `$env:CLAUDE_CONFIG_DIR = ${psQuote(account.profile)}`]
     return '\uFEFF' + [
       `Write-Output '${CONDUCTOR_START_LINE}'`,
       ...(testCommand ? [] : RESOLVE_WORKING_CLAUDE),
+      ...onAccount,
       // Where claude keeps this session's transcript, for Trace: under the config home it gets from
       // this shell, which its profile or a command typed before the run can have set.
       `Set-Content -LiteralPath ${psQuote(claudeHomeFile)} -Value ${psQuote(sessionId)}, "$env:CLAUDE_CONFIG_DIR" -Encoding UTF8 -ErrorAction SilentlyContinue`,
@@ -193,6 +206,7 @@ export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath
     `echo '${CONDUCTOR_START_LINE}'`,
     `TASK_FILE=${shQuote(taskFile)}`,
     ...(testCommand ? [] : RESOLVE_CLAUDE),
+    ...(account === undefined ? [] : [account.profile === null ? 'unset CLAUDE_CONFIG_DIR' : `export CLAUDE_CONFIG_DIR=${shQuote(account.profile)}`]),
     `printf '%s\\n%s\\n' ${shQuote(sessionId)} "\${CLAUDE_CONFIG_DIR-}" 2>/dev/null > ${shQuote(claudeHomeFile)}`,
     `${testCommand ?? '"$CLAUDE_EXE"'} ${flags} < "$TASK_FILE"`,
     'code=$?',
@@ -258,6 +272,22 @@ export function findConductorExit(output: string): ConductorExit | null {
     }
     const printed = lines.slice(from, i).filter((line) => line.trim() !== '')
     return { code: Number(m[1]), lastLines: printed.slice(-EXIT_TAIL_LINES) }
+  }
+  return null
+}
+
+/** How far up the conductor's last lines its limit message can be: the message, and what Claude
+ *  Code can print under it (the hint for the account, a note of the server's). */
+const LIMIT_TAIL_LINES = 3
+
+/** Claude Code's own limit message, when the conductor's `claude -p` exited at its usage limit:
+ *  read only from what the run script reported after claude exited, only with a code that isn't
+ *  0, and only as one of its last lines (§9). null for any other exit. */
+export function conductorLimitOf(exit: ConductorExit): string | null {
+  if (exit.code === 0) return null
+  const tail = exit.lastLines.slice(-LIMIT_TAIL_LINES)
+  for (let i = tail.length - 1; i >= 0; i--) {
+    if (isClaudeLimitMessage(tail[i])) return tail[i].replace(/^[ \t]*(?:⎿[ \t\u00a0]+)?/, '').trim()
   }
   return null
 }

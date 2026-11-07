@@ -6,9 +6,10 @@ import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary, flushM
 import { isMemoryUnavailable, isMemoryUnavailableMessage, unavailableMessage } from './memoryFallbackGuard'
 import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
-import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
+import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, stopKind, type AgentStatusResult } from '../shared/agentStatusDetector'
 import { screenOf, type ScreenSize } from '../shared/terminalScreen'
 import { traceMcpTool } from './typingTrace'
+import { RELAUNCH_HELD } from '../shared/accountSwitch'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -668,6 +669,13 @@ export interface McpToolHandlers {
    *  readOutputFrom's nextOffset). Submit marks it at a run_command that starts an agent, and reads
    *  what the agent did from the output after it. */
   outputOffset?: (terminalId: string) => number
+  /** Why nothing may be typed into the terminal now, or null: Termpolis is switching its agent's
+   *  account and types into it itself (accountSwitch.ts, R7). */
+  relaunchLock?: (terminalId: string) => string | null
+  /** Whether the terminal's agent was relaunched by Termpolis (an account switch, a swarm worker's restart)
+   *  and has taken no turn since (R4): a usage limit its screen shows is the one it stopped at before, which
+   *  the resumed session draws again above its empty box, and no stop of the new run. */
+  carriedStop?: (terminalId: string) => boolean
   /** Whether nothing runs in the terminal but its shell, as the OS tells (shellAlone.ts): true once
    *  whatever its prompt ran, an agent among them, has exited; null where main can't tell. Submit
    *  types into an agent only where this isn't true. */
@@ -800,7 +808,7 @@ interface Seen {
 /** What every Termpolis shell writes at each prompt it prints, its folder (shellIntegration.ts: OSC
  *  9;9 from PowerShell and cmd, OSC 7 from bash; zsh and fish get none); an agent's own output has
  *  none (its OSC 7501 query is another code). */
-const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
+export const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
 /** Where ConPTY paints the whole screen again when the PTY is resized: from its top left, with or
  *  without its report of the new size before (terminalScreen.ts resizeReportOf; on the live runs only
  *  a PTY's first resize had one). It paints an exited agent's last frame, box and all, again. */
@@ -826,7 +834,7 @@ const JOINED_RULE = /^[─━]{20,}/
 
 /** `text` drawn on a blank screen of the terminal's size (of the size the output reaches, where main
  *  has none), less the blank rows at its foot. */
-function drawn(text: string, size: ScreenSize | null): { lines: string[]; title: string } {
+export function drawn(text: string, size: ScreenSize | null): { lines: string[]; title: string } {
   const screen = size ? screenOf(text, size) : screenOf(text)
   const lines = screen.lines()
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
@@ -884,7 +892,7 @@ const showsCommand = (rows: readonly string[], commands: readonly string[]): boo
  *  command on a row under it is the screen of before the agent started, the shell's line under the
  *  last frame an agent left, painted again by a resize. Under the box is from the rule that closes
  *  it, though the repaint joined the row under it onto that rule (JOINED_RULE). */
-function sinceStarted(raw: string, from: number, whole: boolean, size: ScreenSize | null, commands: readonly string[]): { shell: boolean; started: boolean } {
+export function sinceStarted(raw: string, from: number, whole: boolean, size: ScreenSize | null, commands: readonly string[]): { shell: boolean; started: boolean } {
   const since = drawn(raw.slice(from), size).lines
   const box = inputBoxRow(since)
   const rows = box < 0 ? [] : inputBoxRows(since)!
@@ -910,7 +918,10 @@ function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: st
   if (!raw) return null
   const size = handlers.terminalSize?.(terminalId) ?? null
   const { lines, title } = drawn(raw, size)
-  const status = detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title })
+  let status = detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title })
+  // R4: the old limit a resumed session draws again above its fresh, empty box is no stop of this run, so the
+  // follow-up the conductor sends is typed (real Claude Code 2.1.304 does this, agentScreensLimit.json).
+  if (stopKind(status) === 'limit' && inputBoxRow(lines) >= 0 && handlers.carriedStop?.(terminalId)) status = { status: 'idle', summary: 'Waiting at prompt' }
   const start = agentStarts.get(terminalId)
   if (start === undefined) return { lines, title, status, shell: false }
   // `raw` ends where the output does.
@@ -1122,13 +1133,30 @@ export function submitToTerminal(
   abandoned?: AbortSignal,
 ): Promise<SubmitResult> {
   const before = submitQueues.get(terminalId) ?? Promise.resolve()
-  const result = before.then(() => submitNow(handlers, terminalId, text, clock, abandoned))
+  const result = before.then(() => submitNow(heldOff(handlers), terminalId, text, clock, abandoned))
   const done = result.then(() => undefined, () => undefined)
   submitQueues.set(terminalId, done)
   void done.then(() => {
     if (submitQueues.get(terminalId) === done) submitQueues.delete(terminalId)
   })
   return result
+}
+
+/** The handlers a submit types through: once a relaunch takes the terminal (an account switch, a
+ *  swarm worker's restart: R7), no key of the submit's reaches it, and the call ends with the lock's
+ *  words. A submit waits up to minutes for the agent, and the lock is taken in between: what it typed
+ *  then would sit on the shell's line for the switch's Enter to run, or reach the agent started there. */
+function heldOff(handlers: McpToolHandlers): McpToolHandlers {
+  const locked = handlers.relaunchLock
+  if (!locked) return handlers
+  return {
+    ...handlers,
+    writeToTerminal: (terminalId, text) => {
+      const why = locked(terminalId)
+      if (why) throw new Error(why)
+      handlers.writeToTerminal(terminalId, text)
+    },
+  }
 }
 
 async function submitNow(handlers: McpToolHandlers, terminalId: string, text: string, clock: SubmitClock, abandoned?: AbortSignal): Promise<SubmitResult> {
@@ -1346,6 +1374,8 @@ export async function executeTool(
       // Whether the terminal hosts an agent now, for submit: its latest command says, and where in
       // the output it was typed, marked before it is.
       const command = String(args.command ?? '').trim()
+      const locked = handlers.relaunchLock?.(args.terminalId)
+      if (locked) throw new Error(locked)
       if (isAgentBinary(command.split(/\s+/)[0])) agentStarts.set(args.terminalId, { at: handlers.outputOffset?.(args.terminalId) ?? 0, commands: agentCommands(command) })
       else agentStarts.delete(args.terminalId)
       handlers.runCommand(args.terminalId, args.command)
@@ -1377,12 +1407,15 @@ export async function executeTool(
       agentStarts.delete(args.terminalId)
       handlers.closeTerminal(args.terminalId)
       return { success: true }
-    case 'write_to_terminal':
+    case 'write_to_terminal': {
       // Raw unless asked: scripts rely on every byte arriving as sent, at once (remoteBridge/
       // dispatcher.ts writeThenSubmit says why the Enter split isn't the default).
+      const locked = handlers.relaunchLock?.(args.terminalId)
+      if (locked) throw new Error(locked)
       if (args.submit === true) return submitToTerminal(handlers, args.terminalId, String(args.text ?? ''), realClock, abandoned)
       handlers.writeToTerminal(args.terminalId, args.text)
       return { success: true }
+    }
     case 'get_file_tree':
       return await handlers.getFileTree(args.path)
     case 'get_git_status':
@@ -1528,11 +1561,13 @@ export async function executeTool(
 /** A thrown tool error as it may be repeated: our own argument and unknown-tool messages, LOCKED
  *  memory's refusal (fixed text that tells the agent to stop and send the user to the Memory panel),
  *  UNAVAILABLE memory's refusal (fixed text: nothing was read or saved, retrying in the background),
+ *  a relaunch lock's (fixed text that tells the conductor to wait for system's next message, R7),
  *  and a generic line for anything else, which can carry internals (a path, a connection string). */
 function safeToolMessage(e: unknown): string {
   const message = (e as { message?: unknown } | null | undefined)?.message
   return typeof message === 'string' &&
-    (message.includes('Unknown tool') || message.includes('Invalid') || message.startsWith('Memory is locked (') || isMemoryUnavailableMessage(message))
+    (message.includes('Unknown tool') || message.includes('Invalid') || message.startsWith('Memory is locked (') || isMemoryUnavailableMessage(message) ||
+      (Object.values(RELAUNCH_HELD) as string[]).includes(message))
     ? message
     : 'Tool execution failed'
 }

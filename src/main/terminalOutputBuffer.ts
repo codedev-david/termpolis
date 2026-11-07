@@ -24,6 +24,15 @@
 // PURE by construction: the Map is passed in rather than owned here, so the whole
 // module is testable with no Electron, no PTY and no globals — and `index.ts` keeps
 // owning the lifetime, which is where the spawn/kill pairing already lives.
+//
+// The window is the wrong thing to DRAW a screen from, for a terminal an agent runs in. Claude Code
+// 2.1.316 paints its input box, two rules and a footer, once, and updates the rows above it in place,
+// so after 32 KB of work a replay of the window has no box in it, though the user sees one: the usage
+// limit's chooser never opened and a switch typed nothing (F-R2-2). A terminal an agent runs in
+// therefore keeps its screen as well (watchScreen), fed by every chunk the window takes, and the
+// reads that judge what the agent shows use it (liveScreen). The window stays for the offset reads.
+import { screenOfReplay } from '../shared/terminalScreen'
+import type { ScreenSize, TerminalScreen } from '../shared/terminalScreen'
 
 /** Chars of scrollback retained per terminal. Not bytes: `.length` is UTF-16 code
  *  units, which is what the previous implementation counted, and changing the unit
@@ -43,6 +52,20 @@ export interface OutputWindow {
    *  replayPreamble. Created by the first evicted (or cleared) text that holds an ESC:
    *  a window that never lost an escape sequence has none, and keeps its old shape. */
   evicted?: ModeTracker
+  /** The screen this terminal's output draws, kept live for a terminal an agent runs in (watchScreen):
+   *  every chunk appended is written to it. Absent for any other terminal, which costs nothing. */
+  screen?: TerminalScreen
+  /** How much the kept screen has drawn in the second it is counting (overBudget). */
+  meter?: { second: number; chars: number }
+  /** Which shells' prompt reports (OSC 7 from bash, zsh and fish; OSC 9;9 from PowerShell and cmd) this terminal has ever
+   *  printed, kept after the report itself left the window: the switch's nested-shell guard needs to know that the
+   *  terminal's own shell reported, and a minute of an agent's work pushes every report out of 32 KB (SW2-10). Absent
+   *  until one is seen. */
+  reported?: { posix: boolean; windows: boolean }
+  /** David's own wrapper (~/.claude/claude-run.sh) printed the line that says it starts Claude Code again on another profile, here,
+   *  since main last asked (takeRestarted): the terminal's account is no longer the one Termpolis put it on (SW3-3). A latch: the
+   *  line itself leaves the window within moments, as the resumed conversation redraws. */
+  restarted?: boolean
 }
 
 export type OutputBuffers = Map<string, OutputWindow>
@@ -71,6 +94,9 @@ export function appendOutput(
   win.chunks.push(data)
   win.bytes += data.length
   win.total += data.length
+  if (win.reported?.posix !== true || win.reported.windows !== true) noteReports(win, data)
+  noteRestart(win, data)
+  if (win.screen) drawOnScreen(win, data)
   if (win.bytes <= cap) return win.total
 
   // Whole-chunk eviction: stop as soon as dropping the head would take us under.
@@ -87,6 +113,48 @@ export function appendOutput(
     win.bytes -= overshoot
   }
   return win.total
+}
+
+/** Notes a prompt report in `data`. A chunk with no ESC costs one indexOf, as in noteEvicted. */
+function noteReports(win: OutputWindow, data: string): void {
+  if (data.indexOf('\x1b]') < 0) return
+  const posix = data.includes('\x1b]7;')
+  const windows = data.includes('\x1b]9;9;')
+  if (!posix && !windows) return
+  const r = (win.reported ??= { posix: false, windows: false })
+  if (posix) r.posix = true
+  if (windows) r.windows = true
+}
+
+/** What ~/.claude/claude-run.sh prints, after "Switching this terminal to <account>", before it starts Claude Code again on another
+ *  profile: the one sign that the terminal's agent moved without a line Termpolis typed (a /switch-account completed by the CLI's own
+ *  box, or recalled from its history, never reaches main as the keys that spell it). */
+const RESTART_MARK = ': starting Claude again on its profile'
+
+/** The end of the last chunk each terminal printed, as long as the mark less one character: a chunk can end inside the mark. Kept
+ *  beside the window, not in it, so that a window that never saw the line keeps its old shape. */
+const markTails = new WeakMap<OutputWindow, string>()
+
+/** Notes the restart line in `data`, whole or cut between two chunks. A chunk without it costs one search. */
+function noteRestart(win: OutputWindow, data: string): void {
+  const keep = RESTART_MARK.length - 1
+  const tail = markTails.get(win)
+  if (data.includes(RESTART_MARK) || (tail !== undefined && (tail + data.slice(0, keep)).includes(RESTART_MARK))) win.restarted = true
+  markTails.set(win, data.length >= keep ? data.slice(data.length - keep) : ((tail ?? '') + data).slice(-keep))
+}
+
+/** Whether the restart line was printed in this terminal since the last time this was asked: the latch is given up with the answer. */
+export function takeRestarted(buffers: OutputBuffers, id: string): boolean {
+  const win = buffers.get(id)
+  if (win?.restarted !== true) return false
+  delete win.restarted
+  return true
+}
+
+/** Which shells have reported a prompt in this terminal, ever (OutputWindow.reported). */
+export function reportedFamilies(buffers: OutputBuffers, id: string): { posix: boolean; windows: boolean } {
+  const r = buffers.get(id)?.reported
+  return { posix: r?.posix === true, windows: r?.windows === true }
 }
 
 /** The retained tail as one string.
@@ -179,6 +247,101 @@ export function clearOutput(buffers: OutputBuffers, id: string): void {
   for (const chunk of win.chunks) noteEvicted(win, chunk, chunk.length)
   win.chunks = []
   win.bytes = 0
+}
+
+// ---------------------------------------------------------------------------
+// The screen kept live beside the window
+// ---------------------------------------------------------------------------
+
+/** The most one chunk may hold for the kept screen to draw it, in characters. Drawing costs the thread the PTY's output arrives on 80 to
+ *  96 ms a MB (measured), so a `cat` of a big file in a terminal an agent was started in stalled the main process, and with it the typing in
+ *  every terminal, for seconds (SAFETY-R3-8). An agent draws a few MB a minute; a chunk this big is a dump. */
+export const SCREEN_CHUNK_MAX = 262_144
+/** The most the kept screen draws in any one second, in characters: about 100 ms of the thread's time at the cost above. A steady stream
+ *  of small chunks that adds up to more than this in a second is a flood too. */
+export const SCREEN_BYTES_PER_SECOND = 1_048_576
+
+let screenClock: () => number = Date.now
+/** For the tests: the clock the budget above counts seconds by; null puts the real one back. */
+export function _setScreenClockForTest(clock: (() => number) | null): void {
+  screenClock = clock ?? Date.now
+}
+
+/** Writes a chunk to the window's screen. A screen that cannot draw it is dropped, never the chunk: the
+ *  window has taken it already, and the reads go back to replaying the window. A flood is dropped the same
+ *  way (SCREEN_CHUNK_MAX, SCREEN_BYTES_PER_SECOND); the next recorded start of an agent keeps a screen again (watchScreen). */
+function drawOnScreen(win: OutputWindow, data: string): void {
+  if (data.length > SCREEN_CHUNK_MAX || overBudget(win, data.length)) {
+    win.screen = undefined
+    return
+  }
+  try {
+    win.screen!.write(data)
+    // Rows that scroll off the top are not read from here (the window has them); letting them pile up
+    // would keep a thousand rows for every agent's terminal.
+    win.screen!.takeScrolledOff()
+  } catch {
+    win.screen = undefined
+  }
+}
+
+/** Counts `chars` against the second the clock is in, and whether that second has drawn more than the budget. */
+function overBudget(win: OutputWindow, chars: number): boolean {
+  const second = Math.floor(screenClock() / 1000)
+  const meter = win.meter
+  if (!meter || meter.second !== second) {
+    win.meter = { second, chars }
+    return false
+  }
+  meter.chars += chars
+  return meter.chars > SCREEN_BYTES_PER_SECOND
+}
+
+/** The screen the window draws at `size`, as a pane rebuilds one on a mount: the modes the evicted
+ *  output left set (the alt screen an agent enters once), then what the window holds. */
+function replayedScreen(buffers: OutputBuffers, id: string, size: ScreenSize): TerminalScreen {
+  const replay = replayPreamble(buffers, id)
+  return screenOfReplay({ output: readOutput(buffers, id), ...(replay?.preamble ? { preamble: replay.preamble } : {}), ...(replay?.skip ? { skip: replay.skip } : {}), ...size })
+}
+
+/** Starts keeping the terminal's screen at `size`: the window as it stands is drawn into it, and every
+ *  chunk after that is written to it. Already kept at that size, nothing is redone. A terminal that has
+ *  printed nothing yet gets its (empty) window now, so the first chunk is drawn too: a swarm worker's
+ *  agent is started the moment its shell is made. False for a terminal of no known size (it is gone),
+ *  which keeps nothing. */
+export function watchScreen(buffers: OutputBuffers, id: string, size: ScreenSize | null): boolean {
+  if (!size) return false
+  let win = buffers.get(id)
+  if (!win) {
+    win = { chunks: [], bytes: 0, total: 0 }
+    buffers.set(id, win)
+  }
+  if (win.screen && win.screen.cols === size.cols && win.screen.rows === size.rows) return true
+  win.screen = replayedScreen(buffers, id, size)
+  // A screen kept anew counts its second anew: what a flood drew before it was dropped is not held against it.
+  win.meter = undefined
+  return true
+}
+
+/** The terminal was resized: a screen kept for it is drawn again at the new size from the window, and
+ *  the CLI's repaint for that size (every agent sends one) is written to it as it arrives. A screen
+ *  cannot be resized in place: its rows were wrapped at the old width. */
+export function resizeScreen(buffers: OutputBuffers, id: string, size: ScreenSize | null): void {
+  const win = buffers.get(id)
+  if (win?.screen && size) watchScreen(buffers, id, size)
+}
+
+/** Stops keeping the terminal's screen: its agent is gone, so nothing reads it, and every chunk drawn on it is the main thread's time. The
+ *  window is untouched, and the reads replay it; the next recorded start of an agent keeps a screen again (watchScreen). */
+export function unwatchScreen(buffers: OutputBuffers, id: string): void {
+  const win = buffers.get(id)
+  if (win) win.screen = undefined
+}
+
+/** The rows and the title of the terminal's kept screen, as drawn now, or null when none is kept. */
+export function liveScreen(buffers: OutputBuffers, id: string): { lines: string[]; title: string } | null {
+  const screen = buffers.get(id)?.screen
+  return screen ? { lines: screen.lines(), title: screen.title } : null
 }
 
 // ---------------------------------------------------------------------------

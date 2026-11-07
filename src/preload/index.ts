@@ -9,6 +9,7 @@ import type {
   RemoteStatusView,
   LinkedAPI,
   LinkedEvent,
+  AccountsAPI,
   LinkedStatusView,
   McpServerSpecView,
   McpGatewayPolicyView,
@@ -18,8 +19,8 @@ import { createTerminalDataRouter } from './terminalDataRouter'
 const terminalData = createTerminalDataRouter(ipcRenderer)
 
 const api: TermpolisAPI = {
-  createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom) =>
-    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths, claudeHeadroom }),
+  createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch) =>
+    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths, claudeHeadroom, ...(accountId ? { accountId } : {}), ...(limitWatch ? { limitWatch } : {}) }),
 
   killTerminal: (id) =>
     ipcRenderer.invoke('terminal:kill', { id }),
@@ -37,9 +38,15 @@ const api: TermpolisAPI = {
   onWorkflowRunEvent: (cb) => { const h = (_: unknown, e: import('../renderer/src/types').WorkflowRunEvent) => cb(e); ipcRenderer.on('workflow:run-event', h); return () => ipcRenderer.removeListener('workflow:run-event', h) },
 
   // `t` is the sampled key's wall-clock stamp (the echo trace, 1 printable key in 10). Only a stamped
-  // write carries it; every other write sends exactly the payload it always did.
-  writeToTerminal: (id, data, t) =>
-    ipcRenderer.send('terminal:write', t === undefined ? { id, data } : { id, data, t }),
+  // write carries it; every other write sends exactly the payload it always did. `key` is the model
+  // picker's hold on the terminal (§7.5); only the relaunch's own writes carry it.
+  writeToTerminal: (id, data, t, key) =>
+    ipcRenderer.send('terminal:write', {
+      id,
+      data,
+      ...(t === undefined ? {} : { t }),
+      ...(key ? { key } : {}),
+    }),
 
   resizeTerminal: (id, cols, rows) =>
     ipcRenderer.send('terminal:resize', { id, cols, rows }),
@@ -219,8 +226,8 @@ const api: TermpolisAPI = {
   workspaceListTrusted: () =>
     ipcRenderer.invoke('workspace:list-trusted'),
   // Seed Claude Code's own trust config for a folder, so its trust dialog never opens.
-  claudeTrustWorkspace: (cwd) =>
-    ipcRenderer.invoke('claude:trust-workspace', { cwd }),
+  claudeTrustWorkspace: (cwd, accountId) =>
+    ipcRenderer.invoke('claude:trust-workspace', { cwd, ...(accountId ? { accountId } : {}) }),
 
   // Shared swarm memory (RAG)
   memoryWrite: (input) => ipcRenderer.invoke('memory:write', input),
@@ -244,14 +251,16 @@ const api: TermpolisAPI = {
   brainExport: () => ipcRenderer.invoke('brain:export'),
   brainImport: () => ipcRenderer.invoke('brain:import'),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
-  memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
-  memoryPrepareCodexContext: (cwd: string) => ipcRenderer.invoke('memory:prepare-codex-context', { cwd }),
+  memoryPreparePrimerFile: (query: string, cwd?: string, accountId?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd, accountId }),
+  memoryPrepareCodexContext: (cwd: string, accountId?: string) =>
+    ipcRenderer.invoke('memory:prepare-codex-context', { cwd, ...(accountId ? { accountId } : {}) }),
   // Agent integration: consent-gated writes into Claude Code / Codex / Gemini configs.
   agentIntegrationStatus: () => ipcRenderer.invoke('agents:integration-status'),
   agentIntegrationSet: (req) => ipcRenderer.invoke('agents:integration-set', req),
   agentFolderTrustAllowed: (terminalId: string, fallbackCwd: string) =>
     ipcRenderer.invoke('agents:folder-trust-allowed', { terminalId, fallbackCwd }),
-  agentRemoveCodexHomeTrust: () => ipcRenderer.invoke('agents:remove-codex-home-trust'),
+  agentRemoveCodexHomeTrust: (accountId?: string) =>
+    (accountId ? ipcRenderer.invoke('agents:remove-codex-home-trust', { accountId }) : ipcRenderer.invoke('agents:remove-codex-home-trust')),
   tokenSavingsGetSettings: () => ipcRenderer.invoke('tokenSavings:get-settings'),
   tokenSavingsSetSettings: (p: { enabled?: boolean; wireProxy?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean; floorControl?: boolean; prefixDecay?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
   tokenSavingsGetReceipt: () => ipcRenderer.invoke('tokenSavings:get-receipt'),
@@ -620,6 +629,54 @@ const linked: LinkedAPI = {
   },
 }
 contextBridge.exposeInMainWorld('linked', linked)
+
+// Settings ▸ Accounts (v1.54.0): more than one sign-in per agent. Its own namespace, like
+// Linked's, and annotated for the same reason. Channel names match src/shared/agentAccounts.ts's
+// ACCOUNTS_IPC (preload.test.ts checks each one); the preload imports types only.
+const accounts: AccountsAPI = {
+  list: () => ipcRenderer.invoke('accounts:list'),
+  pickFolder: (agent) => ipcRenderer.invoke('accounts:pick-folder', { agent }),
+  add: (req) => ipcRenderer.invoke('accounts:add', req),
+  update: (id, patch) => ipcRenderer.invoke('accounts:update', { id, ...patch }),
+  move: (id, by) => ipcRenderer.invoke('accounts:move', { id, by }),
+  remove: (id) => ipcRenderer.invoke('accounts:remove', { id }),
+  setConnect: (id, connect) => ipcRenderer.invoke('accounts:set-connect', { id, connect }),
+  stripCopied: (id) => ipcRenderer.invoke('accounts:strip-copied', { id }),
+  recopy: (id) => ipcRenderer.invoke('accounts:recopy', { id }),
+  setPreferred: (agent, id) => ipcRenderer.invoke('accounts:set-preferred', { agent, id }),
+  setChooser: (on) => ipcRenderer.invoke('accounts:set-chooser', { on }),
+  hideAdvice: (which) => ipcRenderer.invoke('accounts:hide-advice', { which }),
+  importPreview: () => ipcRenderer.invoke('accounts:import-preview'),
+  import: (keys, connect) => ipcRenderer.invoke('accounts:import', { keys, connect }),
+  check: (id) => ipcRenderer.invoke('accounts:check', { id }),
+  noteLimit: (id, limit) => ipcRenderer.invoke('accounts:note-limit', { id, ...limit }),
+  clearLimit: (id) => ipcRenderer.invoke('accounts:clear-limit', { id }),
+  launchAccount: (agent, accountId) => ipcRenderer.invoke('accounts:launch-account', { agent, accountId }),
+  launchLine: (req) => ipcRenderer.invoke('accounts:launch-line', req),
+  switchAccount: (req) => ipcRenderer.invoke('accounts:switch', req),
+  agySwitch: (req) => ipcRenderer.invoke('accounts:agy-switch', req),
+  modelHold: (req) => ipcRenderer.invoke('accounts:model-hold', req),
+  modelRelease: (terminalId, key) => ipcRenderer.invoke('accounts:model-release', { terminalId, key }),
+  limitLook: (terminalId) => ipcRenderer.invoke('accounts:limit-look', { terminalId }),
+  signInStart: (req) => ipcRenderer.invoke('accounts:sign-in-start', req),
+  signInInput: (sessionId, input) => ipcRenderer.invoke('accounts:sign-in-input', { ...input, sessionId }),
+  onSignInState: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, s: Parameters<typeof cb>[0]) => cb(s)
+    ipcRenderer.on('accounts:sign-in-state', handler)
+    return () => ipcRenderer.removeListener('accounts:sign-in-state', handler)
+  },
+  onSwitchProgress: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]) => cb(p)
+    ipcRenderer.on('accounts:switch-progress', handler)
+    return () => ipcRenderer.removeListener('accounts:switch-progress', handler)
+  },
+  onTerminalAccount: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, e: Parameters<typeof cb>[0]) => cb(e)
+    ipcRenderer.on('accounts:terminal-account', handler)
+    return () => ipcRenderer.removeListener('accounts:terminal-account', handler)
+  },
+}
+contextBridge.exposeInMainWorld('accounts', accounts)
 
 // MCP server events — terminals created/closed by AI agents
 contextBridge.exposeInMainWorld('mcpEvents', {

@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   relaunchAgentWithModel,
+  relaunchHeld,
+  modelHoldBridge,
+  terminalRelaunchIo,
   QUIT_PRESSES,
   QUIT_PRESS_GAP_MS,
   EXIT_POLL_MS,
@@ -10,6 +13,7 @@ import {
   RESUME_PROBE_MS,
   LEAD_WINDOW,
 } from '../../src/renderer/src/lib/modelRelaunch'
+import type { HeldRelaunch, ModelHoldBridge } from '../../src/renderer/src/lib/modelRelaunch'
 import type { ModelCatalog } from '../../src/renderer/src/lib/modelCatalog'
 import {
   CLAUDE_EXIT_AFTER_A_TURN,
@@ -185,6 +189,15 @@ describe('relaunchAgentWithModel: quitting the agent', () => {
     expect(f.slept()).toContain(BLIND_EXIT_WAIT_MS)
   })
 
+  it('does NOT go blind when the question asked first said "still running" and the first poll after it fails', async () => {
+    // The OS answered before the quit keys (so it can tell); a failed poll right after is a hiccup too.
+    const f = fakeIo({ alone: [false, null, true], output: CLAUDE_EXIT_AFTER_A_TURN })
+    const outcome = await relaunchAgentWithModel('claude', 'opus', CAT, f.io)
+    expect(outcome).toBe('relaunched')
+    expect(f.slept()).not.toContain(BLIND_EXIT_WAIT_MS)
+    expect(f.questions()).toBe(3)
+  })
+
   it('does NOT go blind when a query that worked a moment ago fails once: it asks again', async () => {
     // The OS could answer ("still running"), so a single hiccup is a hiccup, not a reason to type
     // into an agent that may still be tearing down.
@@ -319,6 +332,13 @@ describe('relaunchAgentWithModel: when it cannot be sure', () => {
     expect(f.writes()).not.toContain('claude --model opus\r')
   })
 
+  it('takes a terminal that gives no way to read its output as an exit it could not read, and resumes the latest', async () => {
+    // Marked, but nothing to read the exit with: all that is known is that the agent quit.
+    const f = fakeIo({ alone: [false, true, false], mark: 100 })
+    const { outputSince: _noReader, ...io } = f.io
+    expect(await relaunchAgentWithModel('claude', 'opus', CAT, io)).toBe('relaunched')
+    expect(f.writes()).toEqual([CTRL_C, CTRL_C, CTRL_C, 'claude --model opus --continue\r'])
+  })
   it('still resumes the exact conversation when the OS could not see the agent but the hint is after the mark', async () => {
     const f = fakeIo({ alone: [null], output: CLAUDE_EXIT_AFTER_A_TURN })
     expect(await relaunchAgentWithModel('claude', 'opus', CAT, f.io)).toBe('relaunched')
@@ -548,5 +568,217 @@ describe('relaunchAgentWithModel: refusing', () => {
     const f = fakeIo({ alone: [false] })
     expect(await relaunchAgentWithModel('codex', 'gpt-5.6-sol', null, f.io)).toBe('invalid')
     expect(f.log).toEqual([])
+  })
+})
+
+
+describe('relaunchHeld: the picker under the terminal\'s relaunch lock (§7.5)', () => {
+  afterEach(() => { delete (window as any).accounts })
+
+  /** The engine's scripted terminal (fakeIo) with the lock's two halves around it. `calls` is the ONE
+   *  ordered log of the lock and of every key, so a test can prove the order. */
+  function held(script: Script, over: Partial<HeldRelaunch> = {}) {
+    const calls: string[] = []
+    const writes: Array<[string, string | undefined, number]> = []
+    const f = fakeIo(script)
+    const main: ModelHoldBridge = {
+      modelHold: vi.fn(async (req) => { calls.push(`hold ${req.terminalId}`); return { success: true as const, data: { key: 'k1' } } }),
+      modelRelease: vi.fn(async (id: string, key: string) => { calls.push(`release ${id} ${key}`) }),
+    }
+    const { write: _unkeyed, ...io } = f.io
+    const r: HeldRelaunch = {
+      terminalId: 't1',
+      provider: 'claude',
+      modelId: 'opus',
+      catalog: CAT,
+      begin: vi.fn(() => { calls.push('begin'); return true }),
+      end: vi.fn(() => { calls.push('end') }),
+      main,
+      // Its arguments as given: a write with no key has only two, as before the hold.
+      write: (...args: [string, string, string?]) => { writes.push([args[1], args[2], args.length]); calls.push(`write ${JSON.stringify(args[1])}`); f.io.write(args[1]) },
+      io,
+      ...over,
+    }
+    return { r, calls, writes, main, f }
+  }
+
+  const RESUME = `claude --model opus --resume ${CLAUDE_SESSION_ID}\r`
+
+  it('holds both halves before the first key, types every key with main\'s key, and lets both go after', async () => {
+    const { r, calls, writes } = held({ alone: [false, false, true], output: CLAUDE_EXIT_AFTER_A_TURN })
+    expect(await relaunchHeld(r)).toEqual({ outcome: 'relaunched' })
+    expect(writes.map(([data, key]) => [data, key])).toEqual([[CTRL_C, 'k1'], [CTRL_C, 'k1'], [CTRL_C, 'k1'], [RESUME, 'k1']])
+    expect(calls).toEqual([
+      'begin', 'hold t1',
+      `write ${JSON.stringify(CTRL_C)}`, `write ${JSON.stringify(CTRL_C)}`, `write ${JSON.stringify(CTRL_C)}`, `write ${JSON.stringify(RESUME)}`,
+      'release t1 k1', 'end',
+    ])
+  })
+
+  it('asks main for the hold without a line: what it types is only known once the agent has exited', async () => {
+    const { r, main } = held({ alone: [false, true], output: CLAUDE_EXIT_AFTER_A_TURN })
+    await relaunchHeld(r)
+    expect(main.modelHold).toHaveBeenCalledWith({ terminalId: 't1' })
+  })
+
+  it('types with no key where this preload has no main hold, and writes exactly as before the hold', async () => {
+    const { r, writes } = held({ alone: [false, true], output: CLAUDE_EXIT_AFTER_A_TURN }, { main: null })
+    expect(await relaunchHeld(r)).toEqual({ outcome: 'relaunched' })
+    expect(writes.every(([, key, length]) => key === undefined && length === 2)).toBe(true)
+  })
+
+  it('says what the engine decided, started-new and the rest included', async () => {
+    const { r } = held({ alone: [false, true], output: CLAUDE_EXIT_NO_TURN })
+    expect(await relaunchHeld(r)).toEqual({ outcome: 'started-new' })
+    const gone = held({ alone: [false] }, { launchCommand: 'claude-sandbox' })
+    expect(await relaunchHeld(gone.r)).toEqual({ outcome: 'unsupported' })
+  })
+
+  it('carries what the terminal was started with into the relaunch', async () => {
+    const { r, writes } = held({ alone: [false, true], output: CLAUDE_EXIT_AFTER_A_TURN }, { launchCommand: 'claude --dangerously-skip-permissions' })
+    await relaunchHeld(r)
+    expect(writes[writes.length - 1][0]).toBe(`claude --dangerously-skip-permissions --model opus --resume ${CLAUDE_SESSION_ID}\r`)
+  })
+
+  it('takes nothing, asks main nothing and types nothing when the store says another relaunch holds the terminal', async () => {
+    const { r, calls, main } = held({ alone: [false] }, { begin: vi.fn(() => false) })
+    expect(await relaunchHeld(r)).toEqual({ refused: 'an account switch or another model change is running in this terminal' })
+    expect(calls).toEqual([])
+    expect(main.modelHold).not.toHaveBeenCalled()
+    // It never held the store's half, so it does not let it go either.
+    expect(r.end).not.toHaveBeenCalled()
+  })
+
+  it('types nothing and lets the store go when main refuses the hold, giving main\'s words', async () => {
+    const refused = held({ alone: [false] })
+    refused.main.modelHold = vi.fn(async () => ({ success: false as const, error: 'an account switch or another model change is running in this terminal' }))
+    expect(await relaunchHeld(refused.r)).toEqual({ refused: 'an account switch or another model change is running in this terminal' })
+    expect(refused.f.writes()).toEqual([])
+    expect(refused.main.modelRelease).not.toHaveBeenCalled()
+    expect(refused.r.end).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets both halves go and throws on when the engine throws, and a failing release is no error', async () => {
+    const broken = held({ alone: [false, true], output: CLAUDE_EXIT_AFTER_A_TURN }, { write: () => { throw new Error('pty closed') } })
+    await expect(relaunchHeld(broken.r)).rejects.toThrow('pty closed')
+    expect(broken.main.modelRelease).toHaveBeenCalledWith('t1', 'k1')
+    expect(broken.r.end).toHaveBeenCalledTimes(1)
+
+    const lapsing = held({ alone: [false, true], output: CLAUDE_EXIT_AFTER_A_TURN })
+    lapsing.main.modelRelease = vi.fn(async () => { throw new Error('ipc gone') })
+    expect(await relaunchHeld(lapsing.r)).toEqual({ outcome: 'relaunched' })
+    expect(lapsing.r.end).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets both halves go when main\'s hold itself throws', async () => {
+    const down = held({ alone: [false] })
+    down.main.modelHold = vi.fn(async () => { throw new Error('ipc gone') })
+    await expect(relaunchHeld(down.r)).rejects.toThrow('ipc gone')
+    expect(down.main.modelRelease).not.toHaveBeenCalled()
+    expect(down.r.end).toHaveBeenCalledTimes(1)
+  })
+
+  it('touches no lock at all for a model the provider does not offer, or a wrapper around the agent', async () => {
+    const unoffered = held({ alone: [false] }, { modelId: 'claude-opus-5-5' })
+    expect(await relaunchHeld(unoffered.r)).toEqual({ outcome: 'invalid' })
+    const wrapper = held({ alone: [false] }, { launchCommand: 'claudex --dangerously-skip-permissions' })
+    expect(await relaunchHeld(wrapper.r)).toEqual({ outcome: 'unsupported' })
+    for (const x of [unoffered, wrapper]) {
+      expect(x.calls).toEqual([])
+      expect(x.main.modelHold).not.toHaveBeenCalled()
+    }
+  })
+
+  it('holds the terminal through the whole exit wait, however long the agent takes to hand the prompt back', async () => {
+    // Claude Code took 4-11 s to hand the prompt back on a machine with hooks: the hold is not a timer
+    // around the keys, it is held until the engine is done.
+    const slow = held({ alone: [false, false, false, false, false, false, true], output: CLAUDE_EXIT_AFTER_A_TURN })
+    expect(await relaunchHeld(slow.r)).toEqual({ outcome: 'relaunched' })
+    expect(slow.calls.indexOf('release t1 k1')).toBeGreaterThan(slow.calls.indexOf(`write ${JSON.stringify(RESUME)}`))
+  })
+})
+
+describe('modelHoldBridge', () => {
+  afterEach(() => { delete (window as any).accounts })
+
+  it('is the accounts bridge only when it has both halves of the hold', () => {
+    expect(modelHoldBridge()).toBeNull()
+    ;(window as any).accounts = { modelHold: vi.fn() }
+    expect(modelHoldBridge()).toBeNull()
+    ;(window as any).accounts = { modelHold: vi.fn(), modelRelease: vi.fn() }
+    expect(modelHoldBridge()).toBe((window as any).accounts)
+  })
+})
+
+describe('terminalRelaunchIo: what a relaunch reads off the preload\'s bridge', () => {
+  afterEach(() => { delete (window as any).termpolis })
+
+  function bridge(over: Record<string, unknown> = {}) {
+    ;(window as any).termpolis = {
+      terminalShellAlone: vi.fn(async () => ({ success: true, data: true })),
+      readTerminalBuffer: vi.fn(async (_id: string, from?: number) => ({ success: true, data: { output: from === undefined ? '' : '\x1b[1mResume\x1b[3Cthis\x1b[0m', nextOffset: 42, missed: 0 } })),
+      ...over,
+    }
+    return (window as any).termpolis
+  }
+
+  it('asks the OS about this terminal, and reads an answer it cannot give as "cannot tell"', async () => {
+    const tp = bridge()
+    expect(await terminalRelaunchIo('t9').shellAlone!()).toBe(true)
+    expect(tp.terminalShellAlone).toHaveBeenCalledWith('t9')
+    tp.terminalShellAlone = vi.fn(async () => ({ success: false, error: 'Invalid terminal id' }))
+    expect(await terminalRelaunchIo('t9').shellAlone!()).toBeNull()
+    delete tp.terminalShellAlone
+    expect(await terminalRelaunchIo('t9').shellAlone!()).toBeNull()
+  })
+
+  it('marks the output at its next offset, and takes a mark that is no offset for none', async () => {
+    const tp = bridge()
+    expect(await terminalRelaunchIo('t9').outputMark!()).toBe(42)
+    expect(tp.readTerminalBuffer).toHaveBeenCalledWith('t9')
+    tp.readTerminalBuffer = vi.fn(async () => ({ success: true, data: { output: '', nextOffset: Number.NaN, missed: 0 } }))
+    expect(await terminalRelaunchIo('t9').outputMark!()).toBeNull()
+    tp.readTerminalBuffer = vi.fn(async () => ({ success: false, error: 'x' }))
+    expect(await terminalRelaunchIo('t9').outputMark!()).toBeNull()
+    delete tp.readTerminalBuffer
+    expect(await terminalRelaunchIo('t9').outputMark!()).toBeNull()
+  })
+
+  it('reads the output since the mark as plain text, a cursor-forward kept as the space it draws', async () => {
+    const tp = bridge()
+    expect(await terminalRelaunchIo('t9').outputSince!(10)).toBe('Resume this')
+    expect(tp.readTerminalBuffer).toHaveBeenCalledWith('t9', 10)
+    // Everything still retained, when there is no mark.
+    await terminalRelaunchIo('t9').outputSince!(null)
+    expect(tp.readTerminalBuffer).toHaveBeenLastCalledWith('t9', undefined)
+  })
+
+  it('reports output that fell out of the buffer, or a read that failed, as unreadable', async () => {
+    const tp = bridge()
+    tp.readTerminalBuffer = vi.fn(async () => ({ success: true, data: { output: 'x', nextOffset: 5, missed: 3 } }))
+    expect(await terminalRelaunchIo('t9').outputSince!(1)).toBeNull()
+    // With no mark, what was dropped before the buffer's start is not a gap.
+    expect(await terminalRelaunchIo('t9').outputSince!(null)).toBe('x')
+    tp.readTerminalBuffer = vi.fn(async () => ({ success: false, error: 'x' }))
+    expect(await terminalRelaunchIo('t9').outputSince!(1)).toBeNull()
+    tp.readTerminalBuffer = vi.fn(async () => ({ success: true, data: null }))
+    expect(await terminalRelaunchIo('t9').outputSince!(1)).toBeNull()
+    delete tp.readTerminalBuffer
+    expect(await terminalRelaunchIo('t9').outputSince!(1)).toBeNull()
+  })
+
+  it('sleeps on a real timer', async () => {
+    vi.useFakeTimers()
+    try {
+      let done = false
+      const p = terminalRelaunchIo('t9').sleep(500).then(() => { done = true })
+      await vi.advanceTimersByTimeAsync(499)
+      expect(done).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await p
+      expect(done).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

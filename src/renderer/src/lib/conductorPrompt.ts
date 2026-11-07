@@ -7,6 +7,9 @@ interface ConductorPromptOptions {
   projectCwd: string
   shellType?: string  // 'bash' | 'powershell'
   agentRatingOverrides?: AgentRatingOverrides
+  /** Termpolis may offer to restart a worker that ran out of usage on another account (an agent has
+   *  two accounts or more): the conductor waits while it does (§9). */
+  restartOffer?: boolean
 }
 
 export function buildConductorPrompt(options: ConductorPromptOptions): string {
@@ -30,6 +33,9 @@ export function buildConductorPrompt(options: ConductorPromptOptions): string {
   // registry so the aliases never drift. Empty when no Claude tiers are configured.
   const modelGuidance = claudeModelGuidance()
   const modelGuidanceBlock = modelGuidance ? `${modelGuidance}\n` : ''
+  const restartRule = options.restartOffer
+    ? '- If system says Termpolis is restarting a worker on another account, wait for its next message about that worker.\n'
+    : ''
 
   return `You are the Swarm Conductor for Termpolis. Your job is to orchestrate a multi-agent swarm to complete the user's task.
 
@@ -156,7 +162,7 @@ IMPORTANT RULES:
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
 - If a message from system says an agent is blocked by a usage limit, first look at its screen with read_output: only if the limit is there, close its terminal with close_terminal, then give its task to another installed agent: start one (STEPS 3-4) and send it the same task with the same taskId (STEP 5).
-- If it says an agent is waiting on a menu, first look at its screen with read_output: only if the menu is there, answer the menu as STEP 6 says (the message names the option and its keys), then send its task again with submit=true if it never got it. Give the task to another installed agent only if the menu stays.
+${restartRule}- If it says an agent is waiting on a menu, first look at its screen with read_output: only if the menu is there, answer the menu as STEP 6 says (the message names the option and its keys), then send its task again with submit=true if it never got it. Give the task to another installed agent only if the menu stays.
 - If you are tempted to add -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.
 
 Begin now.`

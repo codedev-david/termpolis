@@ -120,6 +120,13 @@ describe('WorkspaceList', () => {
       expect(mockAddWorkspace).toHaveBeenCalledWith('Enter WS')
     })
 
+    it('uses the default name for Enter on an empty input too', () => {
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByText('+ Save Workspace'))
+      fireEvent.keyDown(screen.getByPlaceholderText(/workspace name/i), { key: 'Enter' })
+      expect(mockAddWorkspace).toHaveBeenCalledWith('Workspace')
+    })
+
     it('uses default name when input is empty', () => {
       render(<WorkspaceList />)
       fireEvent.click(screen.getByText('+ Save Workspace'))
@@ -251,6 +258,8 @@ describe('WorkspaceList', () => {
           '/work',
           undefined,
           true, // agentCommand 'claude' → gate ON so a manual `claude` in the restored terminal compresses
+          undefined,
+          'claude', // watched for usage limits (R6)
         )
       })
     })
@@ -277,6 +286,75 @@ describe('WorkspaceList', () => {
       const restored = (useTerminalStore.setState as any).mock.calls.at(-1)[0].terminals
       expect(restored[0]).toMatchObject({ name: 'Claude Code — repo', cwd: '/work', agentCommand: 'claude' })
       expect(restored[1].agentCommand).toBeUndefined()
+    })
+
+    it('opens a workspace with no terminals on no terminal, launching nothing', async () => {
+      mockStoreState = { ...mockStoreState, workspaces: [{ id: 'w0', name: 'Empty WS', terminals: [] }] }
+      ;(useTerminalStore.getState as any).mockReturnValue({ terminals: [] })
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByText('Empty WS'))
+      await waitFor(() => expect(useTerminalStore.setState).toHaveBeenCalledWith(expect.objectContaining({ terminals: [], activeTerminalId: null })))
+      expect(mockLaunchAgents).not.toHaveBeenCalled()
+    })
+
+    it('carries each agent terminal\'s account, so it launches on the account it ran on', async () => {
+      mockStoreState = {
+        ...mockStoreState,
+        workspaces: [
+          {
+            id: 'w1',
+            name: 'Accounts WS',
+            terminals: [
+              { name: 'Claude on b', color: '#fff', shellType: 'powershell', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace', agentCommand: 'claude', agentAccountId: 'acc_b', agentSessionId: 's-old' },
+              { name: 'Codex', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace', agentCommand: 'codex' },
+            ],
+          },
+        ],
+      }
+      ;(useTerminalStore.getState as any).mockReturnValue({ terminals: [] })
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByText('Accounts WS'))
+
+      await waitFor(() => expect(mockLaunchAgents).toHaveBeenCalled())
+      const restored = (useTerminalStore.setState as any).mock.calls.at(-1)[0].terminals
+      expect(restored[0]).toMatchObject({ agentCommand: 'claude', agentAccountId: 'acc_b', shellType: 'powershell' })
+      // A new launch is a new session: the old one's id doesn't come along.
+      expect(restored[0]).not.toHaveProperty('agentSessionId')
+      expect(restored[1]).not.toHaveProperty('agentAccountId')
+      const [targets] = mockLaunchAgents.mock.calls[0]
+      expect(targets[0]).toMatchObject({ agentAccountId: 'acc_b', shellType: 'powershell' })
+    })
+
+    it("creates each agent terminal for the account it will launch on, so the proxy's step-aside and the folder trust are that account's", async () => {
+      mockStoreState = {
+        ...mockStoreState,
+        workspaces: [
+          {
+            id: 'w1',
+            name: 'Accounts WS',
+            terminals: [
+              { name: 'Claude on b', color: '#fff', shellType: 'powershell', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace', agentCommand: 'claude', agentAccountId: 'acc_b' },
+              { name: 'Codex', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace', agentCommand: 'codex' },
+              { name: 'Shell', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace' },
+            ],
+          },
+        ],
+      }
+      ;(window as any).accounts = {
+        launchLine: vi.fn(),
+        launchAccount: vi.fn(async (agent: string, requested: string | null) => ({ success: true, data: { accountId: agent === 'claude' ? (requested ?? 'acc_pref') : null } })),
+      }
+      ;(useTerminalStore.getState as any).mockReturnValue({ terminals: [] })
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByText('Accounts WS'))
+      await waitFor(() => expect(mockLaunchAgents).toHaveBeenCalled())
+      const calls = (window as any).termpolis.createTerminal.mock.calls
+      // The saved account, for the terminal that ran on one.
+      expect(calls[0].slice(5)).toEqual(['acc_b', 'claude'])
+      // An agent with no account (Codex still names its agent), and a plain shell: as before accounts.
+      expect(calls[1].slice(5)).toEqual([undefined, 'codex'])
+      expect(calls[2].slice(5)).toEqual([])
+      delete (window as any).accounts
     })
 
     it('re-launches the saved agent and shows the launching overlay', async () => {
@@ -355,6 +433,19 @@ describe('WorkspaceList', () => {
   })
 
   describe('rename workspace', () => {
+    it('keeps the name when the rename is left blank', () => {
+      mockStoreState = {
+        ...mockStoreState,
+        workspaces: [{ id: 'w1', name: 'Old Name', terminals: [] }],
+      }
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByLabelText('Rename Old Name'))
+      const input = screen.getByDisplayValue('Old Name')
+      fireEvent.change(input, { target: { value: '   ' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      expect(mockRenameWorkspace).not.toHaveBeenCalled()
+    })
+
     it('shows rename input when rename button is clicked', () => {
       mockStoreState = {
         ...mockStoreState,

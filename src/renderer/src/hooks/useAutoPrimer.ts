@@ -4,6 +4,7 @@ import { createReprimeController, type ReprimeController } from '../lib/compacti
 import { createSessionReflectionController, type SessionReflectionController } from '../lib/sessionReflection'
 import { useTerminalStore } from '../store/terminalStore'
 import { isAwaitingAnswer, tailSlice } from '../lib/promptAutoDismiss'
+import { onUnconnectedAccount } from '../lib/accountsView'
 
 // Auto context-primer: point a freshly-launched agent at this project's memory digest via the
 // memory_primer MCP tool, so every invocation starts already knowing prior decisions and context
@@ -117,6 +118,11 @@ export async function injectAutoPrimer(
   try {
     const api = window.termpolis
     if (!api?.memoryBuildPrimer || !api?.writeToTerminal) return false
+    // An account the user did not connect holds no Termpolis server: the agent there can't call memory_primer, so a typed
+    // pointer would cost it a turn and the banner below would say what never loaded (R17). The primer file is left out
+    // for it in main, and this is the same intent through the typed channel, for a launch and a compaction alike.
+    const s = useTerminalStore.getState()
+    if (onUnconnectedAccount(s.terminals.find((t) => t.id === terminalId), s.accountsView, s.accountsByHand)) return false
     const project = cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '' : ''
     const query = project
       ? `recent work, decisions, conventions, and context for ${project}`

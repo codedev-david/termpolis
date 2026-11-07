@@ -1,0 +1,128 @@
+// Settings ▸ Accounts, the renderer's pure half: what a row says about its account, and the
+// little decisions the tab makes. Main sends the rows (src/main/accountsIpc.ts); nothing here
+// reads a file or builds a path or an env value.
+import { isProfileAgent, tildifyPath } from '../../../shared/agentAccounts'
+import { agentNamed } from '../../../shared/launchCarry'
+import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
+
+/** Each agent's colour, as its terminal tab and badge show it: an account with no colour of its own. */
+export const AGENT_COLOR: Readonly<Record<AccountAgent, string>> = { claude: '#D97706', codex: '#10B981', agy: '#4285F4' }
+
+/** The colours an account can take in the Add wizard, the agents' own first. */
+export const ACCOUNT_COLORS: readonly string[] = ['#D97706', '#10B981', '#4285F4', '#22D3EE', '#c678dd', '#e06c75', '#e5c07b', '#7ee2a3']
+
+/** What each account colour is called, for a screen reader (a hex code says nothing). */
+export const ACCOUNT_COLOR_NAMES: Readonly<Record<string, string>> = {
+  '#D97706': 'amber', '#10B981': 'green', '#4285F4': 'blue', '#22D3EE': 'cyan', '#c678dd': 'purple', '#e06c75': 'red', '#e5c07b': 'yellow', '#7ee2a3': 'mint',
+}
+
+/** The first colour none of the agent's accounts has yet (its own first), else its own. */
+export function freeColor(view: AccountsView | null, agent: AccountAgent): string {
+  const taken = new Set((view?.accounts ?? []).filter((r) => r.agent === agent).map((r) => (r.color ?? AGENT_COLOR[agent]).toLowerCase()))
+  return [AGENT_COLOR[agent], ...ACCOUNT_COLORS].find((c) => !taken.has(c.toLowerCase())) ?? AGENT_COLOR[agent]
+}
+
+export function accountsOf(rows: readonly AccountRowView[], agent: AccountAgent): AccountRowView[] {
+  return rows.filter((r) => r.agent === agent)
+}
+
+/** Any account registered at all. With none, Termpolis behaves as before accounts (D13). */
+export function hasAccounts(rows: readonly AccountRowView[]): boolean {
+  return rows.length > 0
+}
+
+export type BadgeTone = 'good' | 'warn' | 'bad' | 'muted'
+
+function sameEmail(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase()
+}
+
+function resetTime(at: number): string {
+  return new Date(at).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+}
+
+/** The row's state, worst first: a missing folder, a usage limit, a profile signed in to
+ *  another email than the account's own, then who it is signed in as. */
+export function accountBadge(r: AccountRowView, now: number): { text: string; tone: BadgeTone } {
+  if (!isProfileAgent(r.agent)) return { text: r.email ?? 'no email given', tone: 'muted' }
+  if (!r.folderExists) return { text: 'folder missing', tone: 'bad' }
+  if (r.limit && r.limit.scope === 'model') return { text: 'a model is out of usage', tone: 'warn' }
+  if (r.limit) return { text: r.limit.resetsAt !== null && r.limit.resetsAt > now ? `out of usage · resets ${resetTime(r.limit.resetsAt)}` : 'out of usage', tone: 'warn' }
+  if (r.limitedOutside !== undefined) return { text: 'out of usage (seen by your failover hook)', tone: 'warn' }
+  const checked = r.identity && r.identity.signedIn !== null ? r.identity : null
+  const actual = checked ? (checked.signedIn ? checked.email : null) : r.lastEmail
+  if (r.email && actual && !sameEmail(r.email, actual)) return { text: `signed in to ${actual} instead!`, tone: 'bad' }
+  if (checked) {
+    if (!checked.signedIn) return checked.source === 'sign-in-screen' ? { text: 'sign-in expired', tone: 'bad' } : { text: 'signed out', tone: 'muted' }
+    return { text: checked.email ? `signed in as ${checked.email}` : 'signed in', tone: 'good' }
+  }
+  return r.lastEmail ? { text: `last signed in as ${r.lastEmail}`, tone: 'muted' } : { text: 'signed out', tone: 'muted' }
+}
+
+/** The row's folder, with the home folder as ~. */
+export function folderLine(r: AccountRowView, home: string): string {
+  if (!r.folder) return ''
+  const shown = tildifyPath(r.folder, home)
+  return r.isDefault ? `${shown} (main profile)` : shown
+}
+
+/** The account agent a terminal's launch command runs, or null: its first word is exactly the agent's
+ *  (a wrapper such as claude-sandbox has no account). agy only: Termpolis launches agy for its Gemini
+ *  profile, and the legacy `gemini` CLI has no accounts in 1.54. */
+export function agentOfCommand(command: string | undefined): AccountAgent | null {
+  return agentNamed(command)
+}
+
+/** The agent a terminal runs, as Termpolis knows it: the one it launched there, or a swarm worker's,
+ *  as main recorded the command run_command started it with: Claude Code's or Codex's, which a
+ *  switch restarts in place; agy's switch goes through its own sign-in, which a worker's hidden
+ *  terminal can't show. Never the conductor's, which runs `claude -p` behind its script and is never
+ *  switched. */
+export function agentOfTerminal(t: { agentCommand?: string; isConductor?: boolean; isSwarm?: boolean; swarmAgent?: AccountAgent } | undefined): AccountAgent | null {
+  if (!t || t.isConductor) return null
+  const worker = t.isSwarm && t.swarmAgent && isProfileAgent(t.swarmAgent) ? t.swarmAgent : null
+  return agentOfCommand(t.agentCommand) ?? worker
+}
+
+/** Can this terminal's account be switched at all: it runs an account agent (never the conductor, a
+ *  wrapper or a plain shell), and that agent has an account registered. The account menu, its keys and
+ *  its Settings line mean nothing otherwise, so none of them is offered, and no key is taken for it (D13). */
+export function canSwitchAccount(
+  t: { agentCommand?: string; isConductor?: boolean; isSwarm?: boolean; swarmAgent?: AccountAgent } | undefined,
+  view: { accounts: readonly { agent: AccountAgent }[] } | null | undefined,
+): boolean {
+  const agent = agentOfTerminal(t)
+  return !!agent && !!view?.accounts.some((r) => r.agent === agent)
+}
+
+/** Is this terminal's agent on a registered account the user did not connect to Termpolis (neither the default profile,
+ *  which Agent Integration itself connects, nor one with Connect on)? Such a profile holds no Termpolis server, so
+ *  nothing about memory is typed or shown for it (R17). A terminal with no account, a stale one or one changed by hand
+ *  is not judged: as before, and a user with no accounts sees no change (D13). */
+export function onUnconnectedAccount(
+  t: { id: string; agentAccountId?: string } | undefined,
+  view: { accounts: readonly AccountRowView[] } | null | undefined,
+  byHand: Readonly<Record<string, boolean>> | undefined,
+): boolean {
+  if (!t?.agentAccountId || byHand?.[t.id]) return false
+  const row = view?.accounts.find((r) => r.id === t.agentAccountId)
+  return !!row && !(row.isDefault || row.connect)
+}
+
+/** Why an account can't take a swarm worker over, or null when it can: it must be connected, its
+ *  profile holding Termpolis's server entry with Agent Integration on, so the worker keeps
+ *  Termpolis's tools (§8.3 rule 8); and for Claude Code it must skip the bypass-permissions
+ *  warning, which a worker's --dangerously-skip-permissions opens otherwise and Termpolis never
+ *  answers (R16). */
+export function workerBlocker(row: AccountRowView, view: { integrationConnected: boolean }): 'not-connected' | 'bypass' | null {
+  if (!view.integrationConnected || !(row.isDefault || row.connect) || row.connection?.server !== true) return 'not-connected'
+  return row.agent === 'claude' && !row.bypassReady ? 'bypass' : null
+}
+
+/** The account agent a swarm worker's name says it runs ("Claude", "Codex", "Gemini"), or null.
+ *  Termpolis runs agy for Gemini. */
+export function agentOfName(name: string): AccountAgent | null {
+  if (/claude/i.test(name)) return 'claude'
+  if (/codex/i.test(name)) return 'codex'
+  return /gemini|antigravity|\bagy\b/i.test(name) ? 'agy' : null
+}

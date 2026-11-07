@@ -30,7 +30,7 @@
 import { readFileSync, realpathSync, statSync, existsSync } from 'fs'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
-import { atomicWriteText, errorText, formatJsonLike } from './agentConfigIO'
+import { atomicWriteText, errorText, formatJsonLike, parseFailure } from './agentConfigIO'
 import { isUnsafeTrustRoot } from '../shared/agentIntegration'
 
 export interface TrustResult {
@@ -134,7 +134,8 @@ function readConfig(path: string): ConfigRead {
   } catch (e) {
     // Never overwrite a config we failed to parse — that file holds the user's
     // whole Claude Code state. Skip and let the dialog handler take over.
-    return { ok: false, reason: 'corrupt', error: errorText(e) }
+    // None of the file in the message: V8 quotes the source around an unexpected token, and this one can hold a key.
+    return { ok: false, reason: 'corrupt', error: parseFailure(e) }
   }
 }
 

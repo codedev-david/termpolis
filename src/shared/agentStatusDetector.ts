@@ -294,6 +294,14 @@ const closingRule = (rows: readonly string[], top: number): number => rows.findI
 /** Whether the screen's last row is Codex's footer under a box with no closing rule: Codex draws it
  *  under a blank row. A last row right under the text is the text, wrapped. */
 const codexFooter = (rows: readonly string[], top: number): boolean => rows.length - 2 > top && rows[rows.length - 2].trim() === ''
+/** Where Codex's composer (no closing rule) ends and its footer begins: under a blank row, Codex 0.153
+ *  draws one hint row and Codex 0.164 a status line and the hint row. Only the last blank row before
+ *  them parts the footer, so a blank line the user typed into the composer stays in it. */
+function composerEnd(rows: readonly string[], top: number): number {
+  const n = rows.length
+  if (n - 3 > top && rows[n - 3].trim() === '') return n - 2
+  return codexFooter(rows, top) ? n - 1 : n
+}
 
 /** The rows an agent's input box takes: from its first row (the screen's top for one taller than
  *  the screen) to its closing rule (Claude Code, agy) or, for a box with none (Codex's composer), to
@@ -303,14 +311,14 @@ export function inputBoxRows(rows: readonly string[]): string[] | null {
   if (top < 0) return null
   const close = closingRule(rows, top)
   if (close > top) return rows.slice(top, close)
-  return rows.slice(top, codexFooter(rows, top) ? rows.length - 1 : rows.length)
+  return rows.slice(top, composerEnd(rows, top))
 }
 
 /** The rows under the input box at row `box`: its footer, under its closing rule, or Codex's. */
 function footerOf(rows: readonly string[], box: number): readonly string[] {
   const close = closingRule(rows, box)
   if (close > box) return rows.slice(close + 1)
-  return codexFooter(rows, box) ? rows.slice(-1) : []
+  return rows.slice(composerEnd(rows, box))
 }
 
 /** Whether the agent's input box is empty, ready for a prompt: its glyph alone, or with the
@@ -370,8 +378,18 @@ const CLAUDE_LIMIT_MESSAGES: readonly RegExp[] = [
   /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]ve reached your (?!workspace)[\w ]{1,20}? limit\./,
   /^[ \t]*(?:⎿[ \t\u00a0]+)?(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\n]{1,40}?)? requires usage credits\./,
   /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]re out of (?:usage credits|extra usage)\b/,
+  // What an admin puts on a seat (read from the program text of Claude Code 2.1.316): another account may have one.
+  /^\s*(?:⎿\s+)?Your seat type doesn['’]t include (?:extra )?usage(?: credits)?\b/,
+  /^\s*(?:⎿\s+)?Your usage allocation has been disabled by your admin\b/,
+  /^\s*(?:⎿\s+)?Your group['’]s usage limit is set to \$0(?![\d.])/,
   /^[ \t]*(?:⎿[ \t\u00a0]+)?Your org is out of usage\b/,
 ]
+/** Whether a row starts with one of Claude Code's limit messages (CLAUDE_LIMIT_MESSAGES): the run
+ *  script's report of the conductor's `claude -p` ends in one at its limit (§9). */
+export function isClaudeLimitMessage(row: string): boolean {
+  return CLAUDE_LIMIT_MESSAGES.some((p) => p.test(row))
+}
+
 /** Claude Code's, and Antigravity 1.4's two, which its footer could show. */
 const LIMIT_MESSAGES: readonly RegExp[] = [
   ...CLAUDE_LIMIT_MESSAGES,
@@ -476,10 +494,14 @@ function stopAroundBox(rows: readonly string[], box: number): string | null {
 // An answer or a tool's output indents what it quotes, or puts its own mark first; a prompt or an
 // answer after the message makes it history. Read only with the agent at rest: while it works, the
 // echo of the prompt it was just sent can end in anything.
-const CODEX_LIMIT_CELL = /^■ You['’]ve hit your usage limit\b/
-const AGY_LIMIT_CELL = /^✕ You have exhausted your quota on this model\./
+// Codex's, and the workspace stops a Business or Enterprise seat meets (read from Codex 0.164's program text).
+const CODEX_LIMIT_CELL = /^■ (?:You['’]ve hit your usage limit|Your workspace is out of credits|You hit your spend cap set in your workspace)\b/
+/** The marks an agy error row can lead with: ✕ is the one its cell is known by, but the installed 1.4.8 holds the message and no
+ *  U+2715 at all, and U+2717 (✗) ten times as the lead of its error rows, and no capture of a real quota stop exists (F-R2-3). */
+const AGY_ERROR_MARK = '[✕✗✘✖⚠]'
+const AGY_LIMIT_CELL = new RegExp(String.raw`^${AGY_ERROR_MARK} (?:You have exhausted your quota on this model\.|Your AI credits balance is too low to continue\.)`)
 /** A row that starts a cell of its own in an agent's transcript: not the rest of a wrapped one. */
-const CELL_START = /^(?:[•■⚠✕›>❯●]|\s*⎿)/
+const CELL_START = /^(?:[•■⚠✕✗✘✖›>❯●]|\s*⎿)/
 const CLAUDE_REPLY = /^[ \t]+⎿[ \t\u00a0]+\S/
 /** MessageResponse's ⎿ exactly as claude.exe 2.1.302 to 2.1.304 draw it in front of a reply or a
  *  tool's output: two in (two no-break spaces in for one summary of a tool's output), a space and a
@@ -500,6 +522,12 @@ const TURN_END = /^✻ \S+ for \d/
  *  in: "Read 1 file (ctrl+o to expand)", "Searched for 1 pattern, read 1 file (ctrl+o to expand)"
  *  (claude.exe 2.1.304). The key is the one that shows the transcript, ctrl+o unless rebound. */
 const FOLDED_READS = /\([^()]+ to expand\)$/
+/** The row Claude Code 2.1.316 folds a turn's finished calls into, with no "(ctrl+o to expand)" hint and no ⎿ output rows
+ *  under it: "Ran 1 shell command", "Read 2 files", "Searched for 1 pattern", "Listed 1 directory" (a Bash ls, ls -la or tree),
+ *  and them joined by commas ("Searched for 2 patterns, read 1 file, listed 1 directory, ran 3 shell commands"). The whole of the
+ *  rows between the turn's text and the reply must be such a group, so a sentence that only starts like one is not (F-R2-1).
+ *  "Listed N directories" was captured live on 2.1.317 (F-R3-1): the verbs of the next release are re-captured the same way. */
+const FOLDED_GROUP = /^(?:Searched for \d+ patterns?|[Rr]ead \d+ files?|[Ll]isted \d+ director(?:y|ies)|[Rr]an \d+ shell commands?)(?:, (?:searched for \d+ patterns?|read \d+ files?|listed \d+ director(?:y|ies)|ran \d+ shell commands?))*$/
 
 function turnEndLimit(rows: readonly string[], box: number): string | null {
   // The last thing above the box: up past its top rule and the blank rows under the transcript, and
@@ -559,7 +587,9 @@ function claudeLimitReply(rows: readonly string[], end: number): string | null {
  *  the answer's own ●. */
 function underFoldedReads(rows: readonly string[], up: number, at: number): boolean {
   const between = rows.slice(up + 1, at)
-  return /^[●⏺] /.test(rows[up]) && !between.some((row) => /^ {2}[●⏺]/.test(row)) && FOLDED_READS.test(runTogether(between))
+  if (!/^[●⏺] /.test(rows[up]) || between.some((row) => /^ {2}[●⏺]/.test(row))) return false
+  const folded = runTogether(between).trim()
+  return FOLDED_READS.test(folded) || FOLDED_GROUP.test(folded)
 }
 
 /** Whether row `up` ends a tool's output in Claude Code's transcript: the rows it draws a ⎿ in, two
@@ -686,6 +716,50 @@ function geminiQuotaDialog(rows: readonly string[]): string | null {
   const dialog = rows.slice(top + 1, end).map((row) => row.trimStart()).join('\n')
   const m = GEMINI_QUOTA.exec(dialog)
   return m ? limitSummary(dialog.slice(m.index)) : null
+}
+
+// ---- A limit's own words (the usage-limit chooser, R15) ----
+
+/** How many of a screen's last rows hold a stop's words: a dialog of 15 rows, or the transcript's
+ *  last cell above an input box with Claude Code's footer under it. */
+const WORDS_ROWS = 30
+/** A CLI's own limit message at the start of a row: Claude Code's and agy's (LIMIT_MESSAGES), Codex's
+ *  and agy's cells, the titles of Codex's popups. */
+const WORDS_MESSAGES: readonly RegExp[] = [
+  ...LIMIT_MESSAGES, CODEX_LIMIT_CELL, AGY_LIMIT_CELL,
+  /^\s*You['’]ve reached your workspace credit limit\s*$/, /^\s*Usage limit reached\s*$/,
+]
+
+/** How many rows a cell's words are read from: a message a 20-column screen wrapped. */
+const WORDS_CELL_ROWS = 8
+
+/**
+ * The words a CLI stopped with when a screen shows its usage limit: the lowest cell of the screen's
+ * last WORDS_ROWS that starts with a limit message, read with the rows a narrow screen wrapped it
+ * onto (as the detector reads it), up to the zone of its reset ("You've hit your weekly limit ·
+ * resets Aug 1, 4pm (America/New_York)"). Claude Code waiting out a limit says only that, read when
+ * no message is on screen. For the chooser to show, and to tell a model's limit from the account's
+ * (accountLimits.ts limitKindOf): read only once detectAgentStatus said the screen shows a limit,
+ * which it reads from the CLI's own rows. null when none is there.
+ */
+export function limitWords(screen: string): string | null {
+  const rows = screen.split('\n')
+  const from = Math.max(0, rows.length - WORDS_ROWS)
+  for (const patterns of [WORDS_MESSAGES, [WAITING_STATUS, WAITING_FOOTER]]) {
+    for (let i = rows.length - 1; i >= from; i--) {
+      // The cell from this row: on to a blank row, a rule or the next cell.
+      let end = i
+      while (end + 1 < rows.length && end + 1 - i < WORDS_CELL_ROWS && rows[end + 1].trim() !== '' && !RULE.test(rows[end + 1]) && !CELL_START.test(rows[end + 1])) end++
+      const cell = runTogether(rows.slice(i, end + 1))
+      if (!patterns.some((p) => p.test(rows[i]) || p.test(cell))) continue
+      const words = cell.replace(/^[\s⎿■✕✢✳✶✻✽*·]+/, '').trim()
+        // A zone a narrow screen broke where its row ended, read without the break.
+        .replace(/\(([^()]*)\)/g, (_m, inner: string) => `(${inner.replace(/\s/g, '')})`)
+      const zoned = /^.*?\bresets [^()]{1,40}\([^()]{1,40}\)/.exec(words)
+      return (zoned ? zoned[0] : words).slice(0, 240)
+    }
+  }
+  return null
 }
 
 /** A CLI that exited or needs relaunching, in its words, or null. Only a screen without the agent's

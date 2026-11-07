@@ -36,12 +36,17 @@
 // This module is pure: no IPC, no state. Callers decide when to poll and how
 // to track "already dismissed" so the same prompt isn't re-answered on every
 // tick.
+import { SIGN_IN_SCREEN } from '../../../shared/accountSwitch'
 
 export interface DismissContext {
   agentName: string
   /** True only when Termpolis may answer a folder-trust prompt for this terminal's folder
    *  (main's `agents:folder-trust-allowed`). Missing or false leaves the prompt to the user. */
   allowFolderTrust?: boolean
+  /** False: the login-method picker is the user's too. Once an agent has more than one account,
+   *  a relaunch can land on a profile whose sign-in expired, where Enter starts a browser sign-in
+   *  for whichever account the browser has (R10). Missing is true, as before accounts. */
+  answerSignIn?: boolean
 }
 
 /** Terminal key sequences that move an Ink select cursor. */
@@ -236,6 +241,12 @@ export function detectDismissChar(rawTail: string, ctx: DismissContext): string 
   //    Claude's "Claude Code may make mistakes" notice, Gemini's welcome, etc.
   //    Only while it is the last thing drawn and no menu or session prompt is:
   //    Enter there would pick a row or send the user's draft.
+  // An agent with more than one account: its sign-in screen is the user's to answer (R10), however
+  // tall it is. The rule below reads only the last RECENT_LINES rows for a marked row, and Codex's real
+  // picker is eleven rows tall, so its marked row sits above them and its "Press enter to continue"
+  // looked like a splash: Enter on that row starts a browser sign-in for whichever account is open.
+  if (ctx.answerSignIn === false && Object.values(SIGN_IN_SCREEN).some((screen) => screen.test(tail))) return null
+
   const recent = tail.split('\n').map(unframed).filter(Boolean).slice(-RECENT_LINES)
   if (PRESS_ENTER.test(recent.join('\n')) && !recent.some(l => MARKED_LINE.test(l))) {
     return '\r'
@@ -251,12 +262,13 @@ export function detectDismissChar(rawTail: string, ctx: DismissContext): string 
   // 4. Onboarding login flow / auth method picker
   //    These all default to a sensible option — Enter accepts.
   if (/how\s+would\s+you\s+like\s+to\s+(?:login|sign\s+in|authenticate)|select.*(?:login|sign[\s-]?in|auth)\s+method|preferred\s+(?:login|auth)\s+method/i.test(tail)) {
-    return '\r'
+    return ctx.answerSignIn === false ? null : '\r'
   }
 
-  // 5. Gemini-specific — onboarding auth menu
+  // 5. Gemini-specific — onboarding auth menu (a sign-in choice too: the user's, once the agent has
+  //    accounts)
   if (isGemini && /accept\s+(?:the\s+)?terms|authenticate\s+with/i.test(tail)) {
-    return '\r'
+    return ctx.answerSignIn === false ? null : '\r'
   }
 
   return null
@@ -271,9 +283,10 @@ export async function dismissReply(
   tail: string,
   agentName: string,
   mayTrustFolder: () => Promise<boolean>,
+  answerSignIn = true,
 ): Promise<string | null> {
-  const reply = detectDismissChar(tail, { agentName })
-  const trusting = detectDismissChar(tail, { agentName, allowFolderTrust: true })
+  const reply = detectDismissChar(tail, { agentName, answerSignIn })
+  const trusting = detectDismissChar(tail, { agentName, allowFolderTrust: true, answerSignIn })
   if (trusting === reply) return reply
   const allowed = await Promise.resolve().then(mayTrustFolder).catch(() => false)
   return allowed === true ? trusting : reply
@@ -295,8 +308,9 @@ export async function replyToScreen(
   agentName: string,
   mayTrustFolder: () => Promise<boolean>,
   readScreen: () => Promise<string | null>,
+  answerSignIn = true,
 ): Promise<string | null> {
-  const reply = await dismissReply(tailSlice((output ?? '').slice(-3000)), agentName, mayTrustFolder)
+  const reply = await dismissReply(tailSlice((output ?? '').slice(-3000)), agentName, mayTrustFolder, answerSignIn)
   if (!reply) return null
   const now = await Promise.resolve().then(readScreen).catch(() => null)
   return typeof now === 'string' && screenKey(now) === screenKey(output) ? reply : null

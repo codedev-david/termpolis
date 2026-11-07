@@ -380,6 +380,7 @@ If you ever need to launch from a shell with the same flag: `/opt/Termpolis/term
 
 ### AI-Native Features
 - **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, and Gemini CLI with custom profiles support
+- **Accounts** — more than one sign-in per agent (personal and work Claude Code, two Codex plans, two Google accounts for Gemini CLI): sign in from Termpolis's own sheet, switch a terminal from its account chip in place with its conversation kept, and, when one runs out of usage, go on with another account in one click from the card on its pane
 - **Agents can use `sudo` (Linux, macOS)** — `sudo -A` in a Termpolis terminal asks for your password in a dialog that shows the whole command about to run. Type it only for commands you expected: whatever you approve runs as administrator
 - **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
 - **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P` (accessible via Command Palette)

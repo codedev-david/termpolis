@@ -5,6 +5,11 @@ import { DEFAULT_KEYBINDINGS, isReservedAction, type KeybindingMap } from '../li
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../lib/voice/voiceTypes'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
+import type { AccountAgent, AccountsView } from '../../../shared/agentAccounts'
+import type { LimitBanner, LimitContext } from '../lib/limitWatch'
+import type { QueuedSwitch, SwitchRun } from '../lib/accountSwitchRun'
+import type { SwarmRestartGroup } from '../lib/swarmRestart'
+import type { LaunchAskContext } from '../lib/launchAsk'
 
 // ---- Pane tree helpers ----
 
@@ -149,6 +154,42 @@ interface TerminalStore {
   memoryNotice: string | null
   swarmCompletionSummary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null; preSwarmSha?: string | null } | null
   agentRatingOverrides: AgentRatingOverrides
+  /** Settings ▸ Accounts as main last answered it (accounts:list): what the account chips, the
+   *  switch dialog and the sidebar's Launch on ▸ read. null until it is first read. */
+  accountsView: AccountsView | null
+  /** Terminals whose account a line typed by hand changed (main's accounts:terminal-account):
+   *  Termpolis no longer knows it, and their chip shows "?". */
+  accountsByHand: Record<string, true>
+  /** The usage-limit chooser, open for the limit that stopped `terminalId`, and the other terminals
+   *  the same limit stopped. */
+  accountSwitch: { terminalId: string; limit?: LimitContext } | null
+  /** The account menu, open for a terminal: its chip's popover (the in-app account UI, §2.1). */
+  accountMenu: { terminalId: string } | null
+  /** A fresh launch on an account that is out of usage, waiting for the user's word (launchAsk.ts). */
+  launchAsk: LaunchAskContext | null
+  /** Each terminal's last switch while its pane shows it: the overlay, then a toast or an error card. */
+  switchRuns: Record<string, SwitchRun>
+  /** Switches waiting for a busy agent to finish its turn (§2.2). */
+  queuedSwitches: Record<string, QueuedSwitch>
+  /** agy's switch-all sheet, open for the agy account every agy terminal moves to (§2.4). */
+  agySwitchSheet: { targetId: string } | null
+  /** The Add account wizard (the in-app account UI, §2.5), for this agent. */
+  addAccountSheet: { agent: AccountAgent } | null
+  /** The usage-limit banners on screen (§8.4), one per stop or per account's group of stops. */
+  limitBanners: LimitBanner[]
+  /** The swarm restart offers on screen (§9): one per agent and account that ran out, with the
+   *  workers it stopped (swarmRestart.ts). */
+  swarmRestarts: SwarmRestartGroup[]
+  /** Terminals whose agent Termpolis is relaunching, and for what: one at a time per terminal, the
+   *  model picker and the account switch alike. Their panes take no keys meanwhile, and the
+   *  prompt pollers answer nothing in them. 'sign-in': agy's switch waits for the user to sign in
+   *  there, so the pane takes keys, and the pollers still answer nothing. */
+  relaunching: Record<string, 'account' | 'model' | 'sign-in'>
+  /** The sign-in sheet, open for an account (the in-app account UI, §2.3). `then` runs once it
+   *  signed in: a switch that needed the sign-in goes on. */
+  /** `then`: what goes on once it signed in; `doneLabel` names it on the sheet's button; `cancelled` runs when the
+   *  sheet is closed without signing in (a swarm offer's clock runs again). */
+  signInSheet: { accountId: string; then?: () => void; doneLabel?: string; cancelled?: () => void } | null
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -191,6 +232,41 @@ interface TerminalStore {
   setMemoryNotice: (message: string | null) => void
   setSwarmCompletionSummary: (summary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null; preSwarmSha?: string | null } | null) => void
   setAgentRatingOverrides: (overrides: AgentRatingOverrides) => void
+  setAccountsView: (view: AccountsView | null) => void
+  setAccountByHand: (terminalId: string, byHand: boolean) => void
+  /** Switch account…, from the chip, Ctrl+Shift+N, the palette or the context menu: the account menu. */
+  openAccountSwitch: (terminalId: string) => void
+  closeAccountMenu: () => void
+  setLaunchAsk: (ctx: LaunchAskContext | null) => void
+  closeAccountSwitch: () => void
+  putSwitchRun: (run: SwitchRun) => void
+  dropSwitchRun: (terminalId: string) => void
+  /** A key typed into a pane while its switch holds it: the overlay says so. */
+  noteHeldKey: (terminalId: string) => void
+  queueSwitch: (terminalId: string, q: QueuedSwitch) => void
+  dropQueuedSwitch: (terminalId: string) => void
+  openAgySwitchSheet: (targetId: string) => void
+  closeAgySwitchSheet: () => void
+  openAddAccount: (agent: AccountAgent) => void
+  closeAddAccount: () => void
+  /** The chooser, in limit mode, for its first terminal. */
+  openLimitChooser: (ctx: LimitContext) => void
+  /** A stop on the same account joins the chooser open for it (R22). */
+  joinLimitChooser: (terminalId: string) => void
+  /** A terminal the chooser moved on from: off its list, and the dialog on the next one; closed
+   *  when none is left. */
+  leaveLimitChooser: (terminalId: string) => void
+  /** Shows a banner, or replaces the one with its id. */
+  showLimitBanner: (banner: LimitBanner) => void
+  dismissLimitBanner: (id: string) => void
+  /** Shows a swarm restart offer, or replaces the one with its id. */
+  putSwarmRestart: (group: SwarmRestartGroup) => void
+  dropSwarmRestart: (id: string) => void
+  /** Takes the terminal's relaunch lock: false when a relaunch already holds it. */
+  beginRelaunch: (terminalId: string, kind: 'account' | 'model' | 'sign-in') => boolean
+  endRelaunch: (terminalId: string) => void
+  openSignInSheet: (accountId: string, then?: () => void, opts?: { doneLabel?: string; cancelled?: () => void }) => void
+  closeSignInSheet: () => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set) => ({
@@ -221,6 +297,19 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   memoryNotice: null,
   swarmCompletionSummary: null,
   agentRatingOverrides: {},
+  accountsView: null,
+  accountsByHand: {},
+  accountSwitch: null,
+  accountMenu: null,
+  launchAsk: null,
+  switchRuns: {},
+  queuedSwitches: {},
+  agySwitchSheet: null,
+  addAccountSheet: null,
+  limitBanners: [],
+  swarmRestarts: [],
+  relaunching: {},
+  signInSheet: null,
 
   addTerminal: (t) => set(s => {
     const visibleCount = s.terminals.filter(t => !t.hidden).length
@@ -456,4 +545,71 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
 
   setSwarmCompletionSummary: (summary) => set({ swarmCompletionSummary: summary }),
   setAgentRatingOverrides: (overrides) => set({ agentRatingOverrides: overrides }),
+  setAccountsView: (view) => set({ accountsView: view }),
+  setAccountByHand: (terminalId, byHand) => set(s => {
+    const next = { ...s.accountsByHand }
+    if (byHand) next[terminalId] = true
+    else delete next[terminalId]
+    return { accountsByHand: next }
+  }),
+  openAccountSwitch: (terminalId) => set({ accountMenu: { terminalId } }),
+  closeAccountMenu: () => set({ accountMenu: null }),
+  setLaunchAsk: (ctx) => set({ launchAsk: ctx }),
+  closeAccountSwitch: () => set({ accountSwitch: null }),
+  putSwitchRun: (run) => set(s => ({ switchRuns: { ...s.switchRuns, [run.terminalId]: run } })),
+  dropSwitchRun: (terminalId) => set(s => {
+    const next = { ...s.switchRuns }
+    delete next[terminalId]
+    return { switchRuns: next }
+  }),
+  noteHeldKey: (terminalId) => set(s => {
+    const run = s.switchRuns[terminalId]
+    return run ? { switchRuns: { ...s.switchRuns, [terminalId]: { ...run, heldAt: Date.now() } } } : {}
+  }),
+  queueSwitch: (terminalId, q) => set(s => ({ queuedSwitches: { ...s.queuedSwitches, [terminalId]: q } })),
+  dropQueuedSwitch: (terminalId) => set(s => {
+    const next = { ...s.queuedSwitches }
+    delete next[terminalId]
+    return { queuedSwitches: next }
+  }),
+  openAgySwitchSheet: (targetId) => set({ agySwitchSheet: { targetId } }),
+  closeAgySwitchSheet: () => set({ agySwitchSheet: null }),
+  openAddAccount: (agent) => set({ addAccountSheet: { agent } }),
+  closeAddAccount: () => set({ addAccountSheet: null }),
+  openLimitChooser: (ctx) => set({ accountSwitch: { terminalId: ctx.terminals[0], limit: ctx } }),
+  joinLimitChooser: (terminalId) => set(s => {
+    const open = s.accountSwitch
+    if (!open?.limit || open.limit.terminals.includes(terminalId)) return {}
+    return { accountSwitch: { ...open, limit: { ...open.limit, terminals: [...open.limit.terminals, terminalId] } } }
+  }),
+  leaveLimitChooser: (terminalId) => set(s => {
+    const open = s.accountSwitch
+    if (!open?.limit) return {}
+    const terminals = open.limit.terminals.filter((id) => id !== terminalId)
+    return { accountSwitch: terminals.length === 0 ? null : { terminalId: terminals[0], limit: { ...open.limit, terminals } } }
+  }),
+  showLimitBanner: (banner) => set(s => {
+    const at = s.limitBanners.findIndex((b) => b.id === banner.id)
+    return { limitBanners: at < 0 ? [...s.limitBanners, banner] : s.limitBanners.map((b, i) => (i === at ? banner : b)) }
+  }),
+  dismissLimitBanner: (id) => set(s => ({ limitBanners: s.limitBanners.filter((b) => b.id !== id) })),
+  putSwarmRestart: (group) => set(s => {
+    const at = s.swarmRestarts.findIndex((g) => g.id === group.id)
+    return { swarmRestarts: at < 0 ? [...s.swarmRestarts, group] : s.swarmRestarts.map((g, i) => (i === at ? group : g)) }
+  }),
+  dropSwarmRestart: (id) => set(s => ({ swarmRestarts: s.swarmRestarts.filter((g) => g.id !== id) })),
+  beginRelaunch: (terminalId, kind) => {
+    if (useTerminalStore.getState().relaunching[terminalId]) return false
+    set(s => ({ relaunching: { ...s.relaunching, [terminalId]: kind } }))
+    return true
+  },
+  openSignInSheet: (accountId, then, opts) => set({
+    signInSheet: { accountId, ...(then ? { then } : {}), ...(opts?.doneLabel ? { doneLabel: opts.doneLabel } : {}), ...(opts?.cancelled ? { cancelled: opts.cancelled } : {}) },
+  }),
+  closeSignInSheet: () => set({ signInSheet: null }),
+  endRelaunch: (terminalId) => set(s => {
+    const next = { ...s.relaunching }
+    delete next[terminalId]
+    return { relaunching: next }
+  }),
 }))

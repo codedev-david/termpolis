@@ -19,6 +19,8 @@ export interface KeybindingMap {
   /** Wipes the focused terminal's screen AND its scrollback, here and in the main
    *  process, without sending anything to the running program. */
   clearTerminal: string
+  /** Opens the account switch dialog for the focused agent terminal. */
+  switchAccount: string
   // Per-agent launch shortcuts — map to the first three AI profiles, which are
   // always the built-in Claude / Codex / Gemini defaults.
   launchAgent1: string
@@ -47,6 +49,9 @@ export const DEFAULT_KEYBINDINGS: KeybindingMap = {
   // Ctrl+Shift+<letter> in App.tsx and the Electron menu accelerators.
   viewLogs: 'Ctrl+Shift+O',
   clearTerminal: 'Ctrl+Shift+X',
+  // N was free: App.tsx binds I E A B J D Y M P S with Ctrl+Shift, the app menu is role-based only,
+  // and the global hotkeys are Super+Shift+T and S (Ctrl+Alt on macOS).
+  switchAccount: 'Ctrl+Shift+N',
   // Ctrl+<digit> (no Shift): Shift mutates the digit into a symbol in
   // KeyboardEvent.key (1 → "!"), which matchesKeybinding could never match.
   launchAgent1: 'Ctrl+1',
@@ -70,6 +75,7 @@ export const KEYBINDING_LABELS: Record<keyof KeybindingMap, string> = {
   toggleGrid: 'Toggle Split View',
   viewLogs: 'View App Log',
   clearTerminal: 'Clear Terminal',
+  switchAccount: 'Switch Account',
   launchAgent1: 'Launch Claude Code',
   launchAgent2: 'Launch OpenAI Codex',
   launchAgent3: 'Launch Gemini CLI',

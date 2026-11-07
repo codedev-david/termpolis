@@ -125,10 +125,16 @@ import {
   readOutputTail,
   clearOutput,
   replayPreamble,
+  liveScreen,
+  reportedFamilies,
+  resizeScreen,
+  takeRestarted,
+  unwatchScreen,
+  watchScreen,
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { registerTerminalDataRouting, sendTerminalData } from './terminalDataRouting'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground } from './terminalManager'
 import { primeShellAlone, consoleListCounters } from './shellAlone'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
@@ -287,7 +293,7 @@ import {
 import { memoryUnavailableInfo, skipPassWhileUnavailable, isWriteRefusedMessage } from './memoryFallbackGuard'
 import { registerMemoryTraceSources } from './memoryTraceSources'
 import { setSafeStorage } from './secureKeyStore'
-import { runConversationIngest } from './conversationIngest'
+import { isInTranscriptRoot, runConversationIngest } from './conversationIngest'
 import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult } from './ingestRuntime'
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
@@ -624,9 +630,15 @@ import {
   removeCodexHomeTrust,
   conductorMcpConfig,
   codexHasTermpolisServer,
+  isAgentIntegrationConnected,
   type AgentIntegrationPaths,
   type AgentIntegrationRuntime,
 } from './agentIntegrationManager'
+import {
+  accountSettingsEnv, codexHomeFor, connectedProfileTargets, endAccountSignIns, forgetTerminalAccount, isTerminalAccountConnected,
+  noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveLaunchTarget, withLimitChooser, workerStopCarried,
+} from './accountsIpc'
+import { relaunchLockReason } from './accountSwitch'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
 import {
   repairWindowsShortcuts,
@@ -814,7 +826,7 @@ ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; htm
 // Which terminals the renderer listens to (terminal:subscribe / terminal:unsubscribe): main sends terminal:data for those only.
 registerTerminalDataRouting(ipcMain)
 
-ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom }) => {
+ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
@@ -849,7 +861,9 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           // paired phone never adds work proportional to PTY chatter -- and with no
           // phone subscribed this is a set lookup that finds nothing.
           remoteNoteTerminalOutput(id)
-        }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined, undefined, prep)
+          // A launch on an account steps aside for that profile's own routing, not the default one's.
+          // A terminal launched to run an agent Termpolis watches carries the chooser's marker (R6).
+        }, allExtraPaths, withLimitChooser(claudeHeadroom ? (getProxyEnv(process.env, accountSettingsEnv(agentIntegrationPaths(), accountId)) ?? undefined) : undefined, limitWatch), undefined, prep)
         resolve()
       } catch (e) {
         reject(e)
@@ -866,8 +880,9 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
 // going to that AI provider's network. We log a terminal_open audit entry
 // (only if the audit toggle is on) so security-conscious teams can prove
 // "exactly when did developer X launch agent Y in repo Z." `agy` is the
-// Antigravity CLI, which every built-in Gemini launch types; it is recorded as gemini.
-const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(claude|codex|gemini|agy)(?:\s|$)/
+// Antigravity CLI, which every built-in Gemini launch types; it is recorded as gemini. A launch on
+// an account in cmd puts `call` in front of the agent (accountLine).
+const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(?:call\s+)?(claude|codex|gemini|agy)(?:\s|$)/
 const launchedAgentName = (m: RegExpMatchArray | null): string | null => (m ? (m[1] === 'agy' ? 'gemini' : m[1]) : null)
 // Strict mode: refuse to forward a `gemini` invocation when the account
 // detector says we're on the free OAuth tier. We intercept before the bytes
@@ -909,6 +924,7 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
     // agent or phone terminal closed by hand counted against MAX_MCP_TERMINALS until a restart.
     mcpCreatedTerminals.delete(id)
     remoteTerminals.remove(id)
+    forgetTerminalAccount(id)
     try { detachWatchers(id) } catch {}
     if (recentlyAuditedTerminals.has(id)) {
       recentlyAuditedTerminals.delete(id)
@@ -1002,9 +1018,12 @@ ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { termin
 // Test-only: record raw terminal writes so e2e can assert the compaction re-prime
 // paste actually reached a terminal. Only populated under NODE_ENV=test.
 const __testTerminalWrites: Array<{ id: string; data: string }> = []
-ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data }: { id: string; data: string; t?: number }) => {
+ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data, key }: { id: string; data: string; key?: string; t?: number }) => {
   noteTyping() // background work (conversation ingest, the indexer) stands aside for 500 ms after this
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
+  // A switch is typing into it itself (accountSwitch.ts, R7): nothing else may meanwhile. The model
+  // picker's own writes carry the key of its hold (§7.5).
+  if (relaunchLockReason(id, Date.now(), typeof key === 'string' ? key : undefined)) return
   // The launch patterns below read what was typed or pasted, so a paste's bracketed-paste
   // markers come off first (see stripPasteMarkers). `data` itself still goes to the PTY as is.
   const typed = typeof data === 'string' ? stripPasteMarkers(data) : data
@@ -1136,6 +1155,10 @@ ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data }: { id: string; 
 
   // ALWAYS. Unmodified. Never withheld. This is the "don't touch" half of the contract.
   writeToTerminal(id, data)
+  // Which account the terminal's agents run on, as typed: Termpolis's own launch line, or a line
+  // typed by hand that changes it (accountsIpc.ts).
+  // The raw data, not `typed`: a paste's markers say its line breaks are text, not Enters (accountsIpc.ts gatherLines).
+  try { if (typeof data === 'string') noteTypedInput(id, data, Date.now(), typeof key === 'string' ? key : undefined) } catch {}
   try {
     if (typeof data === 'string' && auditLaunchPattern.test(typed)) {
       const last = recentlyAuditedTerminals.get(id) || 0
@@ -1148,7 +1171,11 @@ ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data }: { id: string; 
     }
   } catch {}
 }))
-ipcMain.on('terminal:resize', timedIpc('terminal:resize', (_, { id, cols, rows }) => resizeTerminal(id, cols, rows)))
+ipcMain.on('terminal:resize', timedIpc('terminal:resize', (_, { id, cols, rows }) => {
+  resizeTerminal(id, cols, rows)
+  // A screen kept for an agent's terminal is drawn again at the new size; the CLI's repaint fills it in.
+  resizeScreen(terminalOutputBuffers, id, getTerminalSize(id))
+}))
 
 ipcMain.handle('shell:available', async () => {
   try { return ok(await detectAvailableShells()) }
@@ -1336,18 +1363,17 @@ ipcMain.handle('conversation:read-active', async (_evt, opts: { cwd?: string; ag
 // Context handoff: read a full Claude Code JSONL and return a prompt
 // the renderer can inject into any AI shell (Codex, Gemini, or
 // even a fresh Claude). Filepath is supplied by the renderer and must
-// match a file under ~/.claude/projects/ — we sanity-check that.
+// match a file under a Claude Code projects folder (~/.claude/projects/, or an account's) — we check that.
 ipcMain.handle('aiSessions:digest', async (_evt, filePath: string) => {
   try {
     if (typeof filePath !== 'string' || !filePath) {
       return err('filePath is required')
     }
-    const { homedir } = await import('os')
-    const { join, normalize } = await import('path')
-    const expectedRoot = normalize(join(homedir(), '.claude', 'projects'))
+    const { normalize } = await import('path')
     const requested = normalize(filePath)
-    if (!requested.startsWith(expectedRoot)) {
-      return err('filePath must be inside ~/.claude/projects')
+    // Inside a Claude Code projects folder: the default one, or a registered account's (§10).
+    if (!isInTranscriptRoot(requested, 'claude')) {
+      return err('filePath must be inside a Claude Code projects folder')
     }
     const { digestAISession, renderDigestAsPrompt } = await import('./aiSessions')
     const digest = await digestAISession(requested)
@@ -2587,8 +2613,11 @@ ipcMain.handle('memory:set-vector-quantize', async (_, opts: { value: boolean })
 // or null when there is no relevant memory to seed. The instruction routes the
 // agent to memory_primer/memory_search; the digest itself loads via the tool, not
 // inline, so it never bloats the system prompt.
-ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cwd?: string }) => {
+ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cwd?: string; accountId?: string }) => {
   try {
+    // The primer points the session at the project's saved memory, so an account the user didn't
+    // connect (a work account) gets none of it (R17), the same gate Codex's launch has.
+    if (!resolveLaunchTarget(agentIntegrationPaths(), opts?.accountId, 'claude').connected) return ok({ file: null, count: 0 })
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
     const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
     if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding
@@ -2651,7 +2680,7 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
 // the memory tools' approvals Codex is missing, never changing one the user set, and returns no
 // instruction when the user's config.toml sets developer_instructions itself or they haven't
 // connected the agents. See agentIntegrationManager.ts.
-ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string }) => {
+ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string; accountId?: string }) => {
   try {
     if (!opts?.cwd) return err('cwd required')
     let steering = false
@@ -2668,9 +2697,14 @@ ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string })
       // the experiment whichever agent it launches, and the arms stay comparable.
       if (steering && armForSession(opts.cwd) === 'holdout') steering = false
     } catch { /* steering optional */ }
-    return ok(prepareCodexLaunch(agentIntegrationPaths(), opts.cwd, {
+    // A launch on an account is prepared in that account's CODEX_HOME, and not at all in one the
+    // user didn't connect (R9).
+    const paths = agentIntegrationPaths()
+    const account = resolveLaunchTarget(paths, opts.accountId, 'codex')
+    return ok(prepareCodexLaunch(paths, opts.cwd, {
       steering: steering ? steeringDirective(steeringMode) : null,
-    }))
+      accountConnected: account.connected,
+    }, account.target?.dir))
   } catch (e: any) { return err(e.message) }
 })
 
@@ -2876,8 +2910,11 @@ const linkedJobMcp = createLinkedJobMcp({
 
 function agentIntegrationRuntime(): AgentIntegrationRuntime {
   const hook = agentHookPath()
+  const paths = agentIntegrationPaths()
   return {
-    paths: agentIntegrationPaths(),
+    paths,
+    // Every connected account's profile (Settings ▸ Accounts) gets what the default one gets.
+    profiles: connectedProfileTargets(paths),
     adapterPath: agentAdapterPath(),
     // Forward slashes for the embedded hook command: node accepts them on every OS.
     hookScriptPath: existsSync(hook) ? hook.replace(/\\/g, '/') : null,
@@ -2908,20 +2945,23 @@ function writeConductorMcpConfig(): void {
 // is what used to kill launches — since Claude Code 2.1.x it opens focused on "No, exit".
 // Only once the user connected the agents, and never for the home folder or a filesystem
 // root: there Claude asks, as it would anywhere else. See agentIntegrationManager.ts.
-ipcMain.handle('claude:trust-workspace', async (_, req: { cwd?: unknown }) => {
+ipcMain.handle('claude:trust-workspace', async (_, req: { cwd?: unknown; accountId?: unknown }) => {
   try {
     // Checked in here, not destructured in the parameter list: a null payload threw there, before
     // this try, and rejected the call instead of answering it.
     const cwd = req?.cwd
     if (typeof cwd !== 'string' || !cwd) return err('cwd required')
     const paths = agentIntegrationPaths()
-    if (!isFolderTrustAllowed(paths, cwd)) return ok(trustFolderForAgents(paths, cwd))
+    // Trusted in the profile the launch runs on, and never in one the user didn't connect (R9).
+    const account = resolveLaunchTarget(paths, req?.accountId, 'claude')
+    if (!account.connected) return ok({ changed: false, keys: [], skipped: 'account-not-connected' })
+    if (!isFolderTrustAllowed(paths, cwd)) return ok(trustFolderForAgents(paths, cwd, undefined, account.target))
     // Claude keys a git repo by its ROOT, so seed that too when there is one — it is
     // the exact key Claude itself would write, and it covers launches from a subdir.
     const root = await safeGitAsync(['rev-parse', '--show-toplevel'], { cwd, timeout: 2000 })
       .then((s) => s.trim())
       .catch(() => '')
-    return ok(trustFolderForAgents(paths, cwd, root || null))
+    return ok(trustFolderForAgents(paths, cwd, root || null, account.target))
   } catch (e: any) { return err(e.message) }
 })
 
@@ -2949,6 +2989,9 @@ ipcMain.handle(AGENT_INTEGRATION_IPC.set, async (_, req: AgentIntegrationSetRequ
 ipcMain.handle(AGENT_INTEGRATION_IPC.folderTrustAllowed, async (_, req: { terminalId?: unknown; fallbackCwd?: unknown }) => {
   try {
     const paths = agentIntegrationPaths()
+    // Never in a terminal Termpolis put on an account the user didn't connect (R9): Claude would
+    // write that trust itself, where no ledger records it and Disconnect never takes it back.
+    if (!isTerminalAccountConnected(paths, req?.terminalId)) return ok(false)
     const live = typeof req?.terminalId === 'string' ? await getTerminalCwdAsync(req.terminalId) : null
     const cwd = live || req?.fallbackCwd
     if (typeof cwd !== 'string' || !cwd || !isFolderTrustAllowed(paths, cwd)) return ok(false)
@@ -2958,8 +3001,62 @@ ipcMain.handle(AGENT_INTEGRATION_IPC.folderTrustAllowed, async (_, req: { termin
   } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle(AGENT_INTEGRATION_IPC.removeCodexHomeTrust, async () => {
-  try { return ok(removeCodexHomeTrust(agentIntegrationPaths())) } catch (e: any) { return err(e.message) }
+ipcMain.handle(AGENT_INTEGRATION_IPC.removeCodexHomeTrust, async (_, req?: { accountId?: unknown }) => {
+  try {
+    const paths = agentIntegrationPaths()
+    // An account's own CODEX_HOME; never the default one in place of a missing one.
+    const home = codexHomeFor(paths, req?.accountId)
+    if ('error' in home) return ok({ changed: false, error: home.error })
+    return ok(removeCodexHomeTrust(paths, home.home))
+  } catch (e: any) { return err(e.message) }
+})
+
+// Settings ▸ Accounts: more than one sign-in per agent. Everything runs in accountsIpc.ts.
+registerAccountsIpc(ipcMain, {
+  paths: agentIntegrationPaths,
+  runtime: agentIntegrationRuntime,
+  integrationConnected: () => isAgentIntegrationConnected(agentIntegrationPaths()),
+  pickFolder: async (title) => {
+    // An e2e run can't drive the OS dialog; the folder it names must be in its scratch home.
+    if (process.env.TERMPOLIS_TEST_AGENT_HOME && process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER) return process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER
+    // Every profile folder is a dot-folder, which the macOS and GTK dialogs hide by default.
+    const r = await dialog.showOpenDialog(mainWindow!, { title, defaultPath: homedir(), properties: ['openDirectory', 'showHiddenFiles'] })
+    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0]
+  },
+  send: (channel, payload) => { mainWindow?.webContents.send(channel, payload) },
+  // The sign-in sheet's Open again: a provider's sign-in page, checked in main (signInSession.ts).
+  openExternal: (url) => { void shell.openExternal(url) },
+  outputEnd: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
+  // A switch reads and types through these, beside the buffers (accountSwitch.ts).
+  switchIO: {
+    output: (terminalId) => {
+      const raw = readOutputTail(terminalOutputBuffers, terminalId, 1000)
+      return raw ? { raw, end: readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset } : null
+    },
+    outputFrom: (terminalId, from) => readOutputFrom(terminalOutputBuffers, terminalId, from).output,
+    end: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
+    size: (terminalId) => getTerminalSize(terminalId),
+    // The screen kept for a terminal an agent runs in: the 32 KB window above loses its input box (F-R2-2).
+    screen: (terminalId) => liveScreen(terminalOutputBuffers, terminalId),
+    watch: (terminalId) => { watchScreen(terminalOutputBuffers, terminalId, getTerminalSize(terminalId)) },
+    unwatch: (terminalId) => { unwatchScreen(terminalOutputBuffers, terminalId) },
+    // Which shells have ever reported a prompt here, though the window has lost the reports (SW2-10).
+    reported: (terminalId) => reportedFamilies(terminalOutputBuffers, terminalId),
+    // David's wrapper restarted Claude Code here on another profile since this was last asked (SW3-3).
+    restarted: (terminalId) => takeRestarted(terminalOutputBuffers, terminalId),
+    write: (terminalId, data) => writeToTerminal(terminalId, data),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
+    atShell: (terminalId) => isShellInForeground(terminalId),
+    // The OS's full word on whether the agent is gone, asked at the moments that need it (a switch's
+    // exit), never polled: the same read as the model switch's and write_to_terminal's submit's.
+    shellAlone: (terminalId) => terminalShellAlone(terminalId),
+  },
+  checkCwd: () => {
+    const dir = join(app.getPath('userData'), 'account-checks')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  },
 })
 
 ipcMain.handle('workspace:revoke-trust', async (_, req: { cwd?: unknown }) => {
@@ -3215,7 +3312,9 @@ ipcMain.handle('models:refresh-catalog', async () => {
 // evicted before the caller read it, so falling behind is visible instead of silent.
 ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => {
   const slice = readOutputFrom(terminalOutputBuffers, terminalId, fromOffset || 0)
-  return ok({ ...slice, length: slice.output.length, ...replayContext(terminalId, fromOffset || 0) })
+  // The screen kept for an agent's terminal comes with the replay: the swarm's loop reads a worker's stop off it.
+  const screen = liveScreen(terminalOutputBuffers, terminalId)
+  return ok({ ...slice, length: slice.output.length, ...replayContext(terminalId, fromOffset || 0), ...(screen ? { screen } : {}) })
 })
 
 // A pane rebuilding a terminal from the window (TerminalPane, on every mount) needs more than
@@ -3661,10 +3760,13 @@ async function semanticPoolOptions(
           // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
           // (codex/gemini read OPENAI_*/Google env), so this compresses every Claude worker and
           // no-ops the rest; getProxyEnv() is null when the proxy is unhealthy → direct launch.
-          }, mcpAgentPaths, getProxyEnv() ?? undefined, undefined, mcpPrep)
+          // A swarm worker is watched, by the swarm's loop (R6); a phone's terminal isn't.
+          }, mcpAgentPaths, withLimitChooser(getProxyEnv() ?? undefined, !remote), undefined, mcpPrep)
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)
+        // An agent's terminal is a swarm worker, which a usage limit can restart on another account (§9).
+        if (!remote) noteSwarmWorker(id)
         const shellType = shellInfo?.type || shell
         if (remote) remoteTerminals.add({ id, name, shellType, cwd: resolvedCwd })
         // Notify renderer to add the terminal to the store. A phone's terminal goes in the
@@ -3680,6 +3782,8 @@ async function semanticPoolOptions(
         const safeCommand = mcpCreatedTerminals.has(terminalId)
           ? sanitizeAgentCommand(command)
           : command
+        // A worker's agent as typed here: what its restart on another account starts again (§9).
+        noteWorkerCommand(terminalId, safeCommand)
         writeToTerminal(terminalId, safeCommand + '\r')
       },
       readOutput: (terminalId, lines) => {
@@ -3687,6 +3791,8 @@ async function semanticPoolOptions(
       },
       terminalSize: (terminalId) => getTerminalSize(terminalId),
       outputOffset: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
+      relaunchLock: (terminalId) => relaunchLockReason(terminalId),
+      carriedStop: (terminalId) => workerStopCarried(terminalId),
       shellAlone: (terminalId) => terminalShellAlone(terminalId),
       runAndWait: async ({ command, cwd, shell, timeoutMs }) => {
         if (!mcpExecRunner) return { exitCode: -1, output: '[run_and_wait] terminal runner not ready' }
@@ -3727,6 +3833,7 @@ async function semanticPoolOptions(
       },
       closeTerminal: (terminalId) => {
         killTerminal(terminalId)
+        forgetTerminalAccount(terminalId)
         terminalOutputBuffers.delete(terminalId)
         remoteNoteTerminalClosed(terminalId)
         mcpCreatedTerminals.delete(terminalId)
@@ -3735,6 +3842,8 @@ async function semanticPoolOptions(
       },
       writeToTerminal: (terminalId, text) => {
         writeToTerminal(terminalId, text)
+        // A prompt the conductor sends a worker is the worker's turn (R4).
+        try { noteWorkerInput(terminalId, text) } catch {}
       },
       getFileTree: async (path) => {
         return await listPathEntries(path)
@@ -5021,6 +5130,8 @@ async function semanticPoolOptions(
     // before the watchdog: a timer can't interrupt it anyway, and it shouldn't use up the
     // watchdog's 5s.
     try { secondOpinionRuns.stopAll() } catch { /* shutting down anyway */ }
+    // A sign-in the sheet left running (the hidden session's CLI and its tree) ends with the app.
+    try { endAccountSignIns() } catch { /* shutting down anyway */ }
     shutdownStep('agent runs')
     if (process.env.NODE_ENV === 'test') {
       // What Node still holds open. After `quit` no JS runs, this watchdog included, and Node's

@@ -1,4 +1,6 @@
 import { resolveAgentCommand, testDelay } from './testAgents'
+import { accountLaunchLine, accountsBridge, launchAccountFor } from './accountLaunch'
+import type { AccountsBridge, LaunchLine } from './accountLaunch'
 import { catalogForLaunch, defaultModelFor, droppedDefaultNotice } from './agentModelDefaults'
 import { useTerminalStore } from '../store/terminalStore'
 import { providerForCommand, type ModelCatalog } from './modelCatalog'
@@ -30,15 +32,28 @@ export interface AgentLaunchTarget {
   agentCommand?: string
   /** The folder the terminal was opened in — pre-approved for Claude before it launches. */
   cwd?: string
+  /** The terminal's shell: which shell's syntax the account line is in. */
+  shellType?: string
+  /** The account it launches on (a restored workspace's own); else the agent's preferred one. */
+  agentAccountId?: string
 }
 
 export interface AgentLaunchOptions {
   /** Writes to a terminal. Defaults to the preload bridge. */
   write?: (id: string, data: string) => void
-  /** Pre-approves a folder in Claude Code's config. Defaults to the preload bridge. */
-  trustClaudeWorkspace?: (cwd: string) => Promise<unknown>
+  /** Pre-approves a folder in Claude Code's config, in the account's profile when there is one.
+   *  Defaults to the preload bridge. */
+  trustClaudeWorkspace?: (cwd: string, accountId?: string) => Promise<unknown>
   /** Called once every agent has been typed and has had time to come up. */
   onSettled?: () => void
+  /** Main's account lines (accountLaunch.ts). Defaults to the preload's; null, or a preload
+   *  without them, launches every agent bare, as before accounts. */
+  accounts?: AccountsBridge | null
+  /** A target's agent was typed on an account: what to record on its terminal. Defaults to the
+   *  store's terminal. */
+  onLaunched?: (id: string, launched: { agentAccountId: string; agentSessionId?: string }) => void
+  /** A target's line was refused, and nothing typed: the sentence why. Defaults to a notice. */
+  onRefused?: (id: string, why: string) => void
   /** Shows a one-line notice. Defaults to the app's notice bar. */
   notify?: (message: string) => void
 }
@@ -57,7 +72,10 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
   const agents = agentTargets(targets)
   const write = options.write ?? ((id: string, data: string) => window.termpolis.writeToTerminal(id, data))
   const trustClaude = options.trustClaudeWorkspace
-    ?? ((cwd: string) => window.termpolis.claudeTrustWorkspace(cwd))
+    ?? ((cwd: string, ...accountId: [] | [string]) => window.termpolis.claudeTrustWorkspace(cwd, ...accountId))
+  const accounts = options.accounts === undefined ? accountsBridge() : options.accounts
+  const onLaunched = options.onLaunched ?? ((id, launched) => useTerminalStore.getState().updateTerminal(id, launched))
+  const onRefused = options.onRefused ?? ((_id, why) => useTerminalStore.getState().setMemoryNotice(`⚠️ ${why}`))
 
   if (agents.length === 0) {
     options.onSettled?.()
@@ -68,11 +86,22 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
   // dialog never renders — only once the user connected the agents, and never for the home
   // folder or a drive root (main decides, and otherwise writes nothing). Fire-and-forget is
   // safe here: the shell settle below is seconds long and this is a local file write, so the
-  // seed is on disk well before Claude reads it.
-  for (const t of agents) {
+  // seed is on disk well before Claude reads it. With accounts, it goes into the profile of the
+  // account the agent launches on, which main names first.
+  const trust = (t: AgentLaunchTarget, accountId?: string): void => {
     if (t.cwd && t.agentCommand!.startsWith('claude')) {
-      void Promise.resolve(trustClaude(t.cwd)).catch(() => { /* dialog handler covers it */ })
+      void Promise.resolve(accountId ? trustClaude(t.cwd, accountId) : trustClaude(t.cwd)).catch(() => { /* dialog handler covers it */ })
     }
+  }
+  const accountOf = new Map<string, Promise<string | undefined>>()
+  for (const t of agents) {
+    if (!accounts) {
+      trust(t)
+      continue
+    }
+    const account = launchAccountFor(t.agentCommand, t.agentAccountId, accounts)
+    accountOf.set(t.id, account)
+    void account.then((id) => trust(t, id))
   }
 
   // The agent's own list, for checking a saved Codex or Antigravity default against. Asked for now
@@ -83,18 +112,37 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
   void catalogForLaunch().then((c) => { catalog = c })
   const notify = options.notify ?? ((message: string) => useTerminalStore.getState().setMemoryNotice(message))
 
+  /** Types a target's agent: its command as is, or main's line on its account. */
+  const type = (t: AgentLaunchTarget): void => {
+    // Settings › General › Default Models: a new terminal starts on the model chosen for its
+    // agent, unless its command already picks one or resumes a session. It is part of the command
+    // the account line wraps, so the agent comes up on that account and that model.
+    const base = resolveAgentCommand(t.agentCommand!)
+    const model = defaultModelFor(base, catalog)
+    if (model.dropped) notify(droppedDefaultNotice(base, model.dropped))
+    const command = base + model.arg
+    const account = accountOf.get(t.id)
+    if (!account) {
+      write(t.id, command + '\r')
+      return
+    }
+    void account
+      .then((accountId) => accountLaunchLine(t.id, t.shellType ?? '', command, t.agentCommand!, accountId, accounts))
+      .then((built: LaunchLine) => {
+        if ('refused' in built) {
+          onRefused(t.id, built.refused)
+          return
+        }
+        write(t.id, built.line + '\r')
+        if (built.accountId) onLaunched(t.id, { agentAccountId: built.accountId, ...(built.sessionId ? { agentSessionId: built.sessionId } : {}) })
+      })
+  }
+
   // Send a no-op newline to flush shell init, then the real command.
   setTimeout(() => {
     for (const t of agents) write(t.id, '\r')
     setTimeout(() => {
-      for (const t of agents) {
-        // Settings › General › Default Models: a new terminal starts on the model chosen for its
-        // agent, unless its command already picks one or resumes a session.
-        const command = resolveAgentCommand(t.agentCommand!)
-        const model = defaultModelFor(command, catalog)
-        if (model.dropped) notify(droppedDefaultNotice(command, model.dropped))
-        write(t.id, command + model.arg + '\r')
-      }
+      for (const t of agents) type(t)
     }, COMMAND_DELAY_MS)
   }, testDelay(SHELL_SETTLE_MS))
 

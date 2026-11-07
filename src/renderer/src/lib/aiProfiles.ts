@@ -6,6 +6,8 @@ import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
 import { autoIndexRepo } from '../hooks/useAutoCodeIndex'
 import { useTerminalStore } from '../store/terminalStore'
 import { claudeModelArg } from './modelBroker'
+import { accountLaunchLine, launchTerminalArgs } from './accountLaunch'
+import { launchAccountAsked } from './launchAsk'
 import { catalogForLaunch, defaultModelFor, droppedDefaultNotice } from './agentModelDefaults'
 import { providerForCommand } from './modelCatalog'
 import { isShellSafeInstruction, type CodexLaunchContext } from '../../../shared/agentIntegration'
@@ -58,6 +60,8 @@ export interface LaunchAgentDeps {
   availableShells: ShellInfo[]
   addTerminal: (t: TerminalSession) => void
   setLaunchingAgent: (name: string | null) => void
+  /** Launch on this account (the sidebar's Launch on ▸); else on the agent's preferred one. */
+  accountId?: string
 }
 
 /**
@@ -80,7 +84,18 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // switched off, unhealthy, or the user already routes Anthropic traffic elsewhere.
   const isClaude = profile.id === 'claude' || profile.command.trim().toLowerCase().startsWith('claude')
   const isCodex = profile.id === 'codex' || profile.command.trim().toLowerCase().startsWith('codex')
-  const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude)
+  // The account it launches on, first: its proxy step-aside, folder trust and Codex prepare are
+  // that account's profile's. None for an agent with no accounts, and every call is today's.
+  // (Asked first, in a sheet, when it is the preferred account that is out of usage and another is free.)
+  const picked = await launchAccountAsked(profile.command, deps.accountId)
+  if (picked.cancelled) {
+    setLaunchingAgent(null)
+    return
+  }
+  const accountId = picked.accountId
+  const onAccount: [] | [string] = accountId ? [accountId] : []
+  // Watched for usage limits for its whole life (R6): main marks it so for the agent's hooks.
+  const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, ...launchTerminalArgs(accountId, profile.command))
   if (!res.success) {
     setLaunchingAgent(null)
     alert(`Failed to open terminal: ${res.error}`)
@@ -113,7 +128,11 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
           const query = project
             ? `recent work, decisions, conventions, and context for ${project}`
             : 'recent work, key decisions, and conventions'
-          const primerRes = await window.termpolis.memoryPreparePrimerFile(query, cwd)
+          // For the account the agent launches on: main seeds only one the user connected (R17). Nothing
+          // is added when there is no account, so a user who added none sees the same call as before.
+          const primerRes = accountId
+            ? await window.termpolis.memoryPreparePrimerFile(query, cwd, accountId)
+            : await window.termpolis.memoryPreparePrimerFile(query, cwd)
           if (primerRes?.success && primerRes.data?.file) {
             return { file: primerRes.data.file, count: primerRes.data.count }
           }
@@ -135,7 +154,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   const codexPromise: Promise<CodexLaunchContext | null> = isCodex
     ? (async () => {
         try {
-          const r = await window.termpolis.memoryPrepareCodexContext(cwd)
+          const r = await window.termpolis.memoryPrepareCodexContext(cwd, ...onAccount)
           return r?.success && r.data ? r.data : null
         } catch {
           return null // launch bare
@@ -150,7 +169,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // but AWAITED before the command is typed, because the seed only counts if it is on disk
   // before Claude reads it. See src/main/claudeTrust.ts for why typing Enter is not the answer.
   const claudeTrusted: Promise<void> = isClaude
-    ? (async () => { try { await window.termpolis.claudeTrustWorkspace(cwd) } catch { /* dialog handler covers it */ } })()
+    ? (async () => { try { await window.termpolis.claudeTrustWorkspace(cwd, ...onAccount) } catch { /* dialog handler covers it */ } })()
     : Promise.resolve()
 
   // Started HERE, next to the recall, so the two overlap. Replaces a blind 4 s sleep with the
@@ -209,6 +228,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     cwd,
     ...getTerminalDefaults(),
     agentCommand: profile.command,
+    ...(accountId ? { agentAccountId: accountId } : {}),
     launchPrimed,
   })
   // Deterministically index the picked repo for EVERY agent (Claude/Codex/Gemini) — the
@@ -238,6 +258,15 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // positive proof that input is being consumed rather than discarded. If nothing comes back, the
   // newline itself was the swallowed byte — the case this exists for — and the short ceiling lets
   // the command through regardless.
+  // Main builds the line on the account, now that the command is whole: with no accounts, the
+  // command itself. Refused, nothing is typed.
+  const built = await accountLaunchLine(id, shellType, launchCommand, profile.command, accountId)
+  if ('refused' in built) {
+    useTerminalStore.getState().setMemoryNotice(`⚠️ ${built.refused}`)
+    setLaunchingAgent(null)
+    return
+  }
+  if (built.sessionId) useTerminalStore.getState().updateTerminal(id, { agentSessionId: built.sessionId })
   await shellReady
   await claudeTrusted
   writeIfAlive('\r')
@@ -247,7 +276,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     quietMs: testDelay(SHELL_QUIET_MS),
     ceilingMs: testDelay(PROMPT_ECHO_CEILING_MS),
   })
-  writeIfAlive(launchCommand + '\r')
+  writeIfAlive(built.line + '\r')
   // Nothing is typed after the command. Codex used to get a blind `1⏎` on a timer, which accepted
   // its folder-trust prompt whether or not the user wanted that folder trusted, and Claude a blind
   // Enter, which since its dialog opens on "No, exit" quit the session instead. A trust prompt is

@@ -120,6 +120,8 @@ describe('endpoint activity guard', () => {
     expectOnly(hits(SECRET_STORE), {
       'src/main/importScanner.ts':
         'Safe Import detection rules: what it flags inside third-party skills and plugins. Nothing runs them.',
+      'src/main/accountFs.ts':
+        'The accounts code\'s deny-list: the sign-in files of Claude Code, Codex and Gemini, and git, that it REFUSES to open (CREDENTIAL_BASENAMES). The names are there so that no path to one is ever read; tests/electron/accountsCredentialTripwire.test.ts keeps it so.',
     })
   })
 

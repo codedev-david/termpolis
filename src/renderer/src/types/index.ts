@@ -2,6 +2,15 @@ import type { AppLogEntry, AppLogLevel } from '../../../shared/appLog'
 import type {
   AgentIntegrationSetRequest, AgentIntegrationSetResult, AgentIntegrationStatus, CodexLaunchContext,
 } from '../../../shared/agentIntegration'
+import type {
+  AccountAgent, AccountChangesResult, AccountPatch, AccountRowView, AccountsView, AddAccountRequest,
+  AddAccountResult, ImportPreview, ImportResult, LaunchLineRequest, LaunchLineResult, NoteLimitRequest,
+  PickFolderResult, ProfileAgent, RecopyView, 
+  TerminalAccountEvent,
+} from '../../../shared/agentAccounts'
+import type { AgyStepOutcome, AgyStepRequest, ModelHold, ModelHoldRequest, SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
+import type { SignInInput, SignInStartRequest, SignInState } from '../../../shared/signInScreens'
+import type { LimitLook } from '../../../shared/accountLimits'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
@@ -28,6 +37,16 @@ export interface TerminalSession {
   theme: string
   fontFamily: string
   agentCommand?: string
+  /** The account Termpolis launched or switched this terminal's agent on, as main answered it
+   *  (accounts:launch-line): kept in workspaces, so a restored one launches on the same account.
+   *  `agentCommand` stays the bare CLI line, which is how the agent is known. */
+  agentAccountId?: string
+  /** Claude Code: the session Termpolis started it with (--session-id) or resumed, which a switch
+   *  resumes when the agent printed no exit hint. */
+  agentSessionId?: string
+  /** A swarm worker's agent, as main recorded the command run_command started it with: a worker
+   *  has no agentCommand, and its terminal's name is the conductor's choice. */
+  swarmAgent?: AccountAgent
   isSwarm?: boolean
   hidden?: boolean
   isConductor?: boolean
@@ -318,7 +337,10 @@ export interface BillBreakdownView {
 }
 
 export interface TermpolisAPI {
-  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean) => Promise<IpcResponse>
+  /** `accountId`: the account a launch runs on (Settings ▸ Accounts), for the proxy's step-aside. */
+  /** `limitWatch`: the terminal is created to launch an agent Termpolis watches for usage limits (the
+   *  agent, or true for one not known yet): main marks it so for its whole life (§8.6, R6). */
+  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean, accountId?: string, limitWatch?: AccountAgent | true) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
   /** Whether nothing runs in the terminal but its shell, as the OS tells: true once an agent that
    *  was running there has exited, false while something still runs, null where main cannot tell
@@ -336,8 +358,10 @@ export interface TermpolisAPI {
   /** Tell main which project the sidebar is showing so its automatic triggers arm. */
   watchWorkflowProject: (cwd: string) => Promise<IpcResponse<void>>
   onWorkflowRunEvent: (cb: (event: WorkflowRunEvent) => void) => () => void
-  /** `t` is the echo trace's wall-clock stamp for a sampled key; omitted for every other write. */
-  writeToTerminal: (id: string, data: string, t?: number) => void
+  /** `t` is the echo trace's wall-clock stamp for a sampled key; omitted for every other write.
+   *  `key`: the model picker's hold on the terminal (§7.5), which lets its own writes through
+   *  while main holds the terminal for it. */
+  writeToTerminal: (id: string, data: string, t?: number, key?: string) => void
   resizeTerminal: (id: string, cols: number, rows: number) => void
   /** `end` is where the chunk ends in the terminal's output stream — absent for output main
    *  never buffered (a Strict-Mode banner). Comparable with readTerminalBuffer's `nextOffset`. */
@@ -408,6 +432,10 @@ export interface TermpolisAPI {
        *  drawn for. A poller reading on from its own offset gets it too, to see a resize by. */
       cols?: number
       rows?: number
+      /** The screen main keeps for a terminal an agent runs in, as all its output has drawn it: the
+       *  window above holds only the last 32 KB, and an agent that paints its input box once has none
+       *  in it after a minute of work. Absent for any other terminal. */
+      screen?: { lines: string[]; title: string }
     }>
   >
   /** Drops the main-process copy of a terminal's output so a cleared terminal stays
@@ -472,7 +500,8 @@ export interface TermpolisAPI {
   workspaceRevokeTrust: (cwd: string) => Promise<IpcResponse>
   workspaceListTrusted: () => Promise<IpcResponse<string[]>>
   /** Pre-approve a folder in Claude Code's ~/.claude.json so its trust dialog never opens. */
-  claudeTrustWorkspace: (cwd: string) => Promise<IpcResponse<{ changed: boolean; keys: string[]; skipped?: string }>>
+  /** `accountId`: trust the folder in that account's profile; refused for one not connected. */
+  claudeTrustWorkspace: (cwd: string, accountId?: string) => Promise<IpcResponse<{ changed: boolean; keys: string[]; skipped?: string }>>
 
   // Shared swarm memory (RAG)
   memoryWrite: (input: MemoryWriteInput) => Promise<IpcResponse<MemoryEntry>>
@@ -501,10 +530,10 @@ export interface TermpolisAPI {
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => Promise<IpcResponse<string | null>>
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
-  memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
+  memoryPreparePrimerFile: (query: string, cwd?: string, accountId?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
   /** Codex parity: the memory instruction Codex gets at launch via `-c developer_instructions=…`
    *  (never written into the repo), plus pre-approval of any memory tools not yet decided. */
-  memoryPrepareCodexContext: (cwd: string) => Promise<IpcResponse<CodexLaunchContext>>
+  memoryPrepareCodexContext: (cwd: string, accountId?: string) => Promise<IpcResponse<CodexLaunchContext>>
   /** Agent integration: what Termpolis writes into agent configs, and the consent gating it. */
   agentIntegrationStatus: () => Promise<IpcResponse<AgentIntegrationStatus>>
   agentIntegrationSet: (req: AgentIntegrationSetRequest) => Promise<IpcResponse<AgentIntegrationSetResult>>
@@ -514,7 +543,8 @@ export interface TermpolisAPI {
    * home, or a root.
    */
   agentFolderTrustAllowed: (terminalId: string, fallbackCwd: string) => Promise<IpcResponse<boolean>>
-  agentRemoveCodexHomeTrust: () => Promise<IpcResponse<{ changed: boolean; error?: string }>>
+  /** `accountId`: an account's own CODEX_HOME instead of the default one. */
+  agentRemoveCodexHomeTrust: (accountId?: string) => Promise<IpcResponse<{ changed: boolean; error?: string }>>
   /** Token Headroom: compression settings + measured savings receipt. */
   tokenSavingsGetSettings: () => Promise<IpcResponse<HeadroomSettingsView>>
   tokenSavingsSetSettings: (p: Partial<HeadroomSettingsView>) => Promise<IpcResponse<HeadroomSettingsView>>
@@ -1299,6 +1329,66 @@ export interface LinkedAPI {
   onShow(cb: () => void): () => void
 }
 
+/** `window.accounts`: Settings ▸ Accounts, more than one sign-in per agent. Main owns the
+ *  registry; the renderer never passes a path (a folder is picked with main's own dialog) and is
+ *  shown labels, emails, folders and states, never a config file. */
+export interface AccountsAPI {
+  list(): Promise<IpcResponse<AccountsView>>
+  /** Main's own folder dialog, on hidden folders; main remembers the folder for the next add. */
+  pickFolder(agent: ProfileAgent): Promise<IpcResponse<PickFolderResult>>
+  add(req: AddAccountRequest): Promise<IpcResponse<AddAccountResult>>
+  update(id: string, patch: AccountPatch): Promise<IpcResponse<AccountRowView | undefined>>
+  move(id: string, by: -1 | 1): Promise<IpcResponse<AccountsView>>
+  /** Forget the account and take Termpolis's entries out of its profile; the folder stays. */
+  remove(id: string): Promise<IpcResponse<AccountChangesResult>>
+  setConnect(id: string, connect: boolean): Promise<IpcResponse<AccountChangesResult>>
+  /** Take out the Termpolis entries a copied settings.json carries. */
+  stripCopied(id: string): Promise<IpcResponse<AccountChangesResult>>
+  /** Fresh stripped copies of the main profile's settings over the profile's own. */
+  recopy(id: string): Promise<IpcResponse<RecopyView>>
+  setPreferred(agent: AccountAgent, id: string | null): Promise<IpcResponse<AccountsView>>
+  setChooser(on: boolean): Promise<IpcResponse<AccountsView>>
+  hideAdvice(which: 'hookAdvice' | 'authEnvAdvice' | 'limitBanner'): Promise<IpcResponse<AccountsView>>
+  importPreview(): Promise<IpcResponse<ImportPreview>>
+  /** `keys`: the accounts.sh keys to import, null for all; `connect`: per key, Connect ticked. */
+  import(keys: string[] | null, connect: Record<string, boolean>): Promise<IpcResponse<ImportResult>>
+  /** "Signed in now": the agent's own status command, on demand. */
+  check(id: string): Promise<IpcResponse<AccountRowView | undefined>>
+  noteLimit(id: string, limit: NoteLimitRequest): Promise<IpcResponse<AccountRowView | undefined>>
+  /** "Mark available": forget the account's recorded limit. */
+  clearLimit(id: string): Promise<IpcResponse<AccountRowView | undefined>>
+  /** The account a launch of `agent` goes on: `accountId` while it is registered, else the
+   *  agent's preferred one; null for an agent with no accounts. */
+  launchAccount(agent: AccountAgent, accountId?: string | null): Promise<IpcResponse<{ accountId: string | null }>>
+  /** The line a launch types: main builds it (the renderer never builds a path or an env value)
+   *  and remembers it, so the terminal's account is main's own record. */
+  launchLine(req: LaunchLineRequest): Promise<IpcResponse<LaunchLineResult>>
+  /** A terminal's account as main now knows it: after a switch, or changed by hand. */
+  onTerminalAccount(cb: (e: TerminalAccountEvent) => void): () => void
+  /** Move the terminal's running agent to another account, in place: main exits it, types the
+   *  account line, resumes the conversation, and says how it went. */
+  switchAccount(req: SwitchRequest): Promise<IpcResponse<SwitchOutcome>>
+  /** The step a switch is at. */
+  onSwitchProgress(cb: (p: SwitchProgress) => void): () => void
+  /** One step of agy's guided switch: one Google sign-in for the computer user, so a sign-out,
+   *  the user's own sign-in, and the conversation resumed by its id. */
+  agySwitch(req: AgyStepRequest): Promise<IpcResponse<AgyStepOutcome>>
+  /** The model picker's half of the terminal's relaunch lock in main (§7.5): the key its writes
+   *  carry while it relaunches the agent. Refused while anything holds the terminal. */
+  modelHold(req: ModelHoldRequest): Promise<IpcResponse<ModelHold>>
+  /** Lets the model picker's hold go. */
+  modelRelease(terminalId: string, key: string): Promise<IpcResponse<boolean>>
+  /** The usage-limit chooser's look at an agent terminal whose screen changed (§8.1): judged in
+   *  main, beside its buffer, with main's record of the agent started there (R5). */
+  limitLook(terminalId: string): Promise<IpcResponse<LimitLook>>
+  /** Starts the CLI's own sign-in in main's hidden session: never a terminal. Its steps follow
+   *  onSignInState. */
+  signInStart(req: SignInStartRequest): Promise<IpcResponse<{ sessionId: string }>>
+  /** The user's own input to a sign-in: a pick, a code, Open again, the fallback's keys, cancel. */
+  signInInput(sessionId: string, input: SignInInput): Promise<IpcResponse<{ ok: true } | { ok: false; why: string }>>
+  onSignInState(cb: (s: SignInState) => void): () => void
+}
+
 /** Which of the three diffs a Changes-rail row refers to. */
 export type GitChangeMode = 'staged' | 'unstaged' | 'untracked'
 
@@ -1373,5 +1463,7 @@ declare global {
     /** Optional: only a preload that ships Linked machines defines it, so every
      *  reader has to cope with it being absent. */
     linked?: LinkedAPI
+    /** Optional for the same reason: Settings ▸ Accounts (v1.54.0). */
+    accounts?: AccountsAPI
   }
 }

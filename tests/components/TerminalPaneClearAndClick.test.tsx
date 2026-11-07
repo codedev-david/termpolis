@@ -1071,3 +1071,185 @@ describe('TerminalPane — click forwarding and clear (v1.39.1)', () => {
     })
   })
 })
+
+// =====================================================
+// The account switch in the pane (§7.1, R7): Ctrl+Shift+N opens its menu, the context menu
+// offers it on an agent terminal whose agent has accounts, and while a switch types into the
+// terminal the pane's overlay says so and takes no keys.  With no account, none of it (D13).
+// =====================================================
+describe('TerminalPane — the account switch', () => {
+  const openAccountSwitch = vi.fn()
+  const state = (over: Record<string, unknown> = {}) => ({
+    terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'claude' }],
+    addTerminal: mocks.mockAddTerminal,
+    removeTerminal: mocks.mockRemoveTerminal,
+    focusActiveTerminal: mocks.mockFocusActiveTerminal,
+    setShowSettings: mocks.mockSetShowSettings,
+    focusNonce: 0,
+    autocompleteEnabled: true,
+    allowAppMouseControl: false,
+    voiceSettings: { enabled: false },
+    keybindings: { ...DEFAULT_KEYBINDINGS },
+    customKeybindings: [],
+    openAccountSwitch,
+    accountsView: { accounts: [{ id: 'acc_a', agent: 'claude', label: 'personal' }], home: '/h' },
+    accountsByHand: {},
+    relaunching: {},
+    ...over,
+  })
+  const switchKey = (over: Partial<KeyboardEvent> = {}): KeyboardEvent =>
+    ({ type: 'keydown', key: 'N', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, preventDefault: vi.fn(), ...over }) as unknown as KeyboardEvent
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockKeyHandlerCb = null
+    mocks.mockTerminal.onData.mockImplementation(() => ({ dispose: vi.fn() }))
+    mocks.mockTerminal.attachCustomKeyEventHandler.mockImplementation((cb: (e: KeyboardEvent) => boolean) => {
+      mockKeyHandlerCb = cb
+      return { dispose: vi.fn() }
+    })
+    mocks.mockTerminal.onSelectionChange.mockImplementation(() => ({ dispose: vi.fn() }))
+    mocks.mockTerminal.getSelection.mockReturnValue('')
+    mocks.mockGetState.mockImplementation(() => state())
+    mockReadTerminalBuffer.mockResolvedValue({ success: true, data: { output: '' } })
+    mockDetectAgents.mockResolvedValue({ success: true, data: { claude: true, codex: true, agy: true } })
+  })
+
+  it('opens the switch dialog for this terminal on Ctrl+Shift+N, and sends the shell nothing', async () => {
+    await renderPane()
+    const e = switchKey()
+    let handled!: boolean
+    await act(async () => { handled = mockKeyHandlerCb!(e) })
+    expect(handled).toBe(false)
+    expect(e.preventDefault).toHaveBeenCalled()
+    expect(openAccountSwitch).toHaveBeenCalledWith('term-1')
+    // Its keyup, and Ctrl+N alone, are left alone.
+    openAccountSwitch.mockClear()
+    await act(async () => { mockKeyHandlerCb!(switchKey({ type: 'keyup' })) })
+    await act(async () => { mockKeyHandlerCb!(switchKey({ shiftKey: false, key: 'n' })) })
+    expect(openAccountSwitch).not.toHaveBeenCalled()
+  })
+
+  it("leaves Ctrl+Shift+N to the shell in a terminal that runs no agent with an account, though accounts are registered", async () => {
+    const view = { accounts: [{ id: 'acc_a', agent: 'claude', label: 'personal', order: 0 }], home: '/h' }
+    for (const terminals of [
+      [{ id: 'term-1', isSwarm: false }],
+      [{ id: 'term-1', isSwarm: false, agentCommand: 'codex' }],
+      [{ id: 'term-1', isSwarm: false, agentCommand: 'claude-sandbox' }],
+      [{ id: 'term-1', isSwarm: true, isConductor: true, agentCommand: 'claude' }],
+    ]) {
+      mocks.mockGetState.mockImplementation(() => state({ accountsView: view, terminals }))
+      const { unmount } = await renderPane()
+      const e = switchKey()
+      let handled!: boolean
+      await act(async () => { handled = mockKeyHandlerCb!(e) })
+      expect(handled).not.toBe(false)
+      expect(e.preventDefault).not.toHaveBeenCalled()
+      expect(openAccountSwitch).not.toHaveBeenCalled()
+      unmount()
+    }
+  })
+
+  it('leaves Ctrl+Shift+N to the shell with no account registered (D13)', async () => {
+    for (const accountsView of [null, { accounts: [], home: '/h' }]) {
+      mocks.mockGetState.mockImplementation(() => state({ accountsView }))
+      const { unmount } = await renderPane()
+      const e = switchKey()
+      let handled!: boolean
+      await act(async () => { handled = mockKeyHandlerCb!(e) })
+      expect(handled).not.toBe(false)
+      expect(e.preventDefault).not.toHaveBeenCalled()
+      expect(openAccountSwitch).not.toHaveBeenCalled()
+      unmount()
+    }
+  })
+
+  it('takes no key, and shows the switch overlay, while a switch types into the terminal (R7)', async () => {
+    const noteHeldKey = vi.fn()
+    const run = {
+      terminalId: 'term-1', agent: 'claude', from: { id: 'acc_a', label: 'personal', color: '#22D3EE' }, to: { id: 'acc_b', label: 'codedev', color: '#7ee2a3' },
+      reason: 'by hand', status: 'running', steps: ['working', 'pending', 'pending'], answers: {},
+    }
+    mocks.mockGetState.mockImplementation(() => state({ relaunching: { 'term-1': 'account' }, switchRuns: { 'term-1': run }, noteHeldKey }))
+    await renderPane()
+    expect(screen.getByTestId('switch-overlay')).toHaveTextContent('Switching Claude Code to codedev')
+    expect(screen.queryByTestId('relaunch-overlay')).toBeNull()
+    const e = switchKey({ key: 'a', ctrlKey: false, shiftKey: false })
+    let handled!: boolean
+    await act(async () => { handled = mockKeyHandlerCb!(e) })
+    expect(handled).toBe(false)
+    expect(e.preventDefault).toHaveBeenCalled()
+    // The overlay is told, so it can say the keys are held; a key's release is held, not counted.
+    expect(noteHeldKey).toHaveBeenCalledWith('term-1')
+    await act(async () => { handled = mockKeyHandlerCb!(switchKey({ type: 'keyup', key: 'a', ctrlKey: false, shiftKey: false })) })
+    expect(handled).toBe(false)
+    expect(noteHeldKey).toHaveBeenCalledTimes(1)
+  })
+
+  it("takes the user's keys, with no overlay, while agy's switch waits for their sign-in", async () => {
+    mocks.mockGetState.mockImplementation(() => state({ relaunching: { 'term-1': 'sign-in' } }))
+    await renderPane()
+    expect(screen.queryByTestId('relaunch-overlay')).toBeNull()
+    const e = switchKey({ key: 'a', ctrlKey: false, shiftKey: false })
+    let handled!: boolean
+    await act(async () => { handled = mockKeyHandlerCb!(e) })
+    expect(handled).not.toBe(false)
+    expect(e.preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('says a model change is under way while the model picker relaunches, and holds keys there too', async () => {
+    const noteHeldKey = vi.fn()
+    mocks.mockGetState.mockImplementation(() => state({ relaunching: { 'term-1': 'model' }, noteHeldKey }))
+    await renderPane({ agentCommand: 'claude' } as never)
+    expect(screen.getByTestId('relaunch-overlay')).toHaveTextContent('Changing model…')
+    expect(screen.queryByTestId('switch-overlay')).toBeNull()
+    const e = switchKey({ key: 'a', ctrlKey: false, shiftKey: false })
+    let handled!: boolean
+    await act(async () => { handled = mockKeyHandlerCb!(e) })
+    expect(handled).toBe(false)
+    expect(noteHeldKey).not.toHaveBeenCalled()
+  })
+
+  // MODELS-R2-5 (D13): a user who added no account sees no change from this feature. The model change holds the terminal's keys for
+  // every user (the picker's lock, §7.5: keys typed while it types would sit on the shell's line), but its overlay is drawn only
+  // for one who has accounts; v1.54.4's own word, "Restarting on …" in the picker, is all the others see.
+  it('draws no overlay for a model change when no account is registered, and still holds the keys', async () => {
+    const noteHeldKey = vi.fn()
+    for (const accountsView of [{ accounts: [], home: '/h' }, null]) {
+      mocks.mockGetState.mockImplementation(() => state({ relaunching: { 'term-1': 'model' }, noteHeldKey, accountsView }))
+      const { unmount } = await renderPane({ agentCommand: 'claude' } as never)
+      expect(screen.queryByTestId('relaunch-overlay')).toBeNull()
+      const e = switchKey({ key: 'a', ctrlKey: false, shiftKey: false })
+      let handled!: boolean
+      await act(async () => { handled = mockKeyHandlerCb!(e) })
+      expect(handled).toBe(false)
+      expect(e.preventDefault).toHaveBeenCalled()
+      unmount()
+    }
+  })
+
+  it('offers Switch account… in the context menu of an agent terminal whose agent has accounts', async () => {
+    const { container } = await renderPane()
+    fireEvent.contextMenu(paneOf(container), { clientX: 20, clientY: 20 })
+    const item = screen.getByTestId('context-switch-account')
+    expect(item).toHaveTextContent('Switch account…Ctrl+Shift+N')
+    fireEvent.click(item)
+    expect(openAccountSwitch).toHaveBeenCalledWith('term-1')
+    expect(screen.queryByTestId('context-switch-account')).toBeNull()
+  })
+
+  it('offers none for a plain shell, the conductor\'s terminal, an agent with no account, or before the accounts are read', async () => {
+    for (const over of [
+      { terminals: [{ id: 'term-1', isSwarm: false }] },
+      { terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'claude', isConductor: true }] },
+      { terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'codex' }] },
+      { accountsView: null },
+    ]) {
+      mocks.mockGetState.mockImplementation(() => state(over))
+      const { container, unmount } = await renderPane()
+      fireEvent.contextMenu(paneOf(container), { clientX: 20, clientY: 20 })
+      expect(screen.queryByTestId('context-switch-account')).toBeNull()
+      unmount()
+    }
+  })
+})

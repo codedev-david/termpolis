@@ -64,8 +64,9 @@ export interface CodexLaunchContext {
   /** Single-line, shell-safe text for `-c "developer_instructions='…'"`, or null to add nothing. */
   developerInstructions: string | null
   /** Why nothing is added: no consent, the user's config already sets developer_instructions,
-   *  or Codex isn't connected (no config.toml, or no `[mcp_servers.termpolis]` in it). */
-  skipped?: 'no-consent' | 'user-set' | 'disabled'
+   *  Codex isn't connected (no config.toml, or no `[mcp_servers.termpolis]` in it), or the
+   *  account it launches on is one the user didn't connect to Termpolis. */
+  skipped?: 'no-consent' | 'user-set' | 'disabled' | 'account-not-connected'
   /** Memory tools newly pre-approved in config.toml (never overwrites a value already there). */
   approvals: number
   /** A legacy Termpolis block was removed from `<cwd>/AGENTS.md`, or the whole file when that was all it held. */

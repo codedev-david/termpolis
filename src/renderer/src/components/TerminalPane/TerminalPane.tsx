@@ -35,6 +35,11 @@ import { decodeOsc7, normalizeShellPath, osc7PathPart, samePath } from '../../..
 import { hostHomedir } from '../../lib/platform'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
+import { AccountChip } from '../Accounts/AccountChip'
+import { SwitchOverlay } from '../Accounts/SwitchOverlay'
+import { LimitCard } from '../Accounts/LimitCard'
+import { SwarmRestartPaneCard } from '../Accounts/SwarmRestartOffers'
+import { agentOfCommand, canSwitchAccount, hasAccounts } from '../../lib/accountsView'
 import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
 import { setPendingSettingsTab } from '../../lib/settingsNav'
@@ -43,13 +48,14 @@ import { moveCaret, toLinearSelection, selectionKeyAction, isAnchorSelectClick, 
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { modelSwitchCommand } from '../../lib/modelBroker'
-import { relaunchAgentWithModel, EXIT_CEILING_MS } from '../../lib/modelRelaunch'
+import { relaunchHeld, modelHoldBridge, terminalRelaunchIo } from '../../lib/modelRelaunch'
+import { relaunchNotice } from '../../lib/modelRelaunchNotice'
 import { beginModelSwitch, endModelSwitch, useModelSwitch } from '../../lib/modelSwitchState'
 
 // Sentinel <option> shown while a model switch is under way (never a model id: it fails
 // isSafeModelId, so it cannot reach an argv).
 const SWITCHING_VALUE = '__switching__'
-import { carryLaunchArgs, modelOptionsFor, providerForAgent, PROVIDER_BIN, PROVIDER_INSTALL_KEY, PROVIDER_LABEL, REFRESH_MODELS_VALUE, type ModelCatalog } from '../../lib/modelCatalog'
+import { modelOptionsFor, providerForAgent, PROVIDER_INSTALL_KEY, PROVIDER_LABEL, REFRESH_MODELS_VALUE, type ModelCatalog } from '../../lib/modelCatalog'
 import { buildSecondOpinionMenu, parseSecondOpinion } from '../../lib/secondOpinion'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -512,6 +518,18 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // instead of consuming it, so that case keeps Claude's old /model hot-swap and gets no
   // picker at all for the other providers, which have no equivalent in-session command.
   const authoritativeProvider = providerForAgent(agentFromCommand(agentCommand)?.name)
+  // An agent Termpolis launched, whose agent has accounts: the context menu offers a switch.
+  // Never the conductor's terminal (it runs `claude -p` behind its script).
+  const isConductor = useTerminalStore((s) => s.terminals.find((t) => t.id === terminalId)?.isConductor)
+  const switchableAgent = useTerminalStore((s) => {
+    const agent = isConductor ? null : agentOfCommand(agentCommand)
+    return !!agent && !!s.accountsView?.accounts.some((r) => r.agent === agent)
+  })
+  // A relaunch typing into this terminal: the pane says so and takes no keys.
+  const relaunching = useTerminalStore((s) => s.relaunching?.[terminalId])
+  // The model change's overlay is drawn only for a user who has accounts: its keys are held for everyone (the picker's lock),
+  // but one who added none sees no change from this feature (D13), and the picker's own "Restarting on …" is what they had.
+  const anyAccount = useTerminalStore((s) => !!s.accountsView && hasAccounts(s.accountsView.accounts))
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
   // Seed a launched agent with recalled context (opt-out in Settings). The gate is what keeps
   // the pointer out of a line the user is still typing: output detection fires on the ECHO of
@@ -555,6 +573,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // outlives this pane (opening Settings, or toggling split or tab view, unmounts it mid-switch), so
   // it is kept per terminal in modelSwitchState and the next pane to mount sees it. The heuristic
   // /model hot-swap branch is a single synchronous write with no overlap window, so it needs none.
+  // This pane's own picks; the terminal's relaunch lock (relaunchHeld) keeps out everything else
+  // that types into it, an account switch too.
   const switchingTo = useModelSwitch(terminalId)
   const relaunchInFlight = switchingTo !== undefined
   const voiceToggleRef = useRef<() => void>(() => {})
@@ -1280,6 +1300,29 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     }
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      // A relaunch (an account switch, a model change) is typing into this terminal: keys typed
+      // meanwhile would sit on the shell's line, and its Enter would run them (R7).
+      const relaunch = useTerminalStore.getState().relaunching?.[terminalId]
+      if (relaunch === 'account' || relaunch === 'model') {
+        // An account switch's overlay says the keys are held.
+        if (relaunch === 'account' && e.type === 'keydown') useTerminalStore.getState().noteHeldKey?.(terminalId)
+        e.preventDefault()
+        return false
+      }
+
+      // The account switch dialog for this terminal (default Ctrl+Shift+N), so its shell gets no
+      // stray Ctrl+N.
+      // D13: with no account registered, the key is the shell's, as before accounts.
+      // And a terminal whose agent has no account is the shell's too: no menu could open, so the key is not taken.
+      if (e.type === 'keydown' && matchesKeybinding(e, useTerminalStore.getState().keybindings.switchAccount)) {
+        const s = useTerminalStore.getState()
+        if (canSwitchAccount(s.terminals.find((t) => t.id === terminalId), s.accountsView)) {
+          e.preventDefault()
+          s.openAccountSwitch(terminalId)
+          return false
+        }
+      }
+
       // Open the in-terminal find bar (default Ctrl+Shift+F). Keydown only — steal
       // the combo from the shell and let the find bar's own input take focus.
       if (e.type === 'keydown' && matchesKeybinding(e, useTerminalStore.getState().keybindings.terminalSearch)) {
@@ -2018,6 +2061,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
   return (
     <div
+      data-terminal-id={terminalId}
       className="absolute inset-0 flex flex-col"
       style={paneRootStyle(isVisible, skipHiddenRender)}
     >
@@ -2026,6 +2070,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           which under `box-sizing: border-box` reports the parent's BORDER box —
           padding on this element would be counted as usable space, so the rows
           overflowed to the right and painted over the scrollbar. */}
+      <SwitchOverlay terminalId={terminalId} />
+      <LimitCard terminalId={terminalId} />
+      <SwarmRestartPaneCard terminalId={terminalId} />
+      {relaunching === 'model' && anyAccount && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 pointer-events-none" data-testid="relaunch-overlay">
+          <span className="text-xs text-[#e0e0e0] bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-1.5">
+            Changing model…
+          </span>
+        </div>
+      )}
       <div
         ref={containerRef}
         className="flex-1 relative min-h-0 overflow-hidden"
@@ -2158,6 +2212,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           {/* Past AI Sessions / Model / Second Opinion only apply to AI terminals — an
               agent launched here, OR an AI CLI (claude/codex/…) the user started in a
               plain shell (picked up by output detection). `badgeAgent` captures both. */}
+          {/* Which account this terminal's agent runs on, once it has more than one. */}
+          <AccountChip terminalId={terminalId} />
           {/* Clear is offered on AI terminals because it is the only place it is hard to
               reach: a shell has `clear`, an agent owns the screen and redraws over it.
               The hotkey (default Ctrl+Shift+X) works in every terminal regardless. */}
@@ -2241,66 +2297,29 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                     const previous = liveModel
                     setLiveModel(alias)
                     const target = options.find((o) => o.alias === alias)?.label ?? alias
-                    void relaunchAgentWithModel(provider, alias, modelCatalog, {
-                      write: (data) => window.termpolis.writeToTerminal(terminalId, data),
-                      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-                      // The OS's own answer to "has the agent really exited?". Without it the
-                      // relaunch was typed on a timer, into a Claude Code still shutting down.
-                      shellAlone: async () => {
-                        const res = await window.termpolis.terminalShellAlone?.(terminalId)
-                        return res?.success ? res.data : null
-                      },
-                      // What the agent prints as it exits names the conversation to resume.
-                      outputMark: async () => {
-                        const res = await window.termpolis.readTerminalBuffer?.(terminalId)
-                        const at = res?.success && res.data ? res.data.nextOffset : null
-                        // A mark that is not a real offset would read as "nothing was printed".
-                        return typeof at === 'number' && Number.isFinite(at) ? at : null
-                      },
-                      outputSince: async (mark) => {
-                        const res = await window.termpolis.readTerminalBuffer?.(terminalId, mark ?? undefined)
-                        if (!res?.success || !res.data) return null
-                        // Output that fell out of the buffer between the mark and now is output
-                        // that was never read: not conclusive, so report it as unreadable.
-                        if (mark !== null && res.data.missed > 0) return null
-                        // A cursor-forward is how a TUI draws a space: keep it as one, or the words of
-                        // the exit line run together.
-                        return stripAnsi(res.data.output.replace(/\x1b\[\d*C/g, ' '))
-                      },
-                    }, agentCommand).then((outcome) => {
-                      // Options the launch command held that could not be repeated faithfully: the agent
-                      // came back on its defaults, which can be looser than what it was started with.
-                      const lostOptions = !carryLaunchArgs(provider, agentCommand).complete
-                      const lost = ' It was started with options Termpolis cannot repeat safely (quotes, operators or a prompt), so it came back with its defaults.'
-                      if (outcome === 'relaunched') {
-                        if (lostOptions) setMemoryNotice?.(`⚠️ ${label} restarted on ${target}.${lost}`)
+                    // Under the terminal's relaunch lock: nothing else types into it meanwhile, and a lock an
+                    // account switch already holds refuses this one before a key is typed.
+                    void relaunchHeld({
+                      terminalId,
+                      provider,
+                      modelId: alias,
+                      catalog: modelCatalog,
+                      launchCommand: agentCommand,
+                      begin: () => useTerminalStore.getState().beginRelaunch(terminalId, 'model'),
+                      end: () => useTerminalStore.getState().endRelaunch(terminalId),
+                      main: modelHoldBridge(),
+                      write: (id: string, data: string, key?: string) => (key === undefined ? window.termpolis.writeToTerminal(id, data) : window.termpolis.writeToTerminal(id, data, undefined, key)),
+                      io: terminalRelaunchIo(terminalId),
+                    }).then((result) => {
+                      if ('refused' in result) {
+                        setLiveModel(previous)
+                        setMemoryNotice?.(`⚠️ Termpolis didn't change the model: ${result.refused}.`)
                         return
                       }
-                      if (outcome === 'started-new') {
-                        // Quit before anything was said: there was nothing to lose, but say what happened.
-                        setMemoryNotice?.(`ℹ️ ${label} had nothing to resume, so it started a new session on ${target}.${lostOptions ? lost : ''}`)
-                        return
-                      }
-                      if (outcome === 'started-unsure') {
-                        setMemoryNotice?.(`ℹ️ Termpolis could not tell which ${label} conversation to resume, so it started a new session on ${target}. If there was an earlier conversation, it is still saved.${lostOptions ? lost : ''}`)
-                        return
-                      }
-                      if (outcome === 'started-fresh') {
-                        // The cause is not known (nothing to continue, a missing command, a crash): say only what is.
-                        setMemoryNotice?.(`ℹ️ ${label} was not running after the resume, so Termpolis started a new session on ${target}.${lostOptions ? lost : ''}`)
-                        return
-                      }
-                      // Nothing was started, so do not leave the picker claiming a model that is
-                      // not running; and when the agent would not quit, say why nothing happened.
-                      setLiveModel(previous)
-                      if (outcome === 'unsupported') {
-                        // `claude-sandbox`, `claudex`: it starts with the agent's name, but is another program.
-                        const ran = (agentCommand ?? '').trim().split(/\s+/)[0] || label
-                        setMemoryNotice?.(`⚠️ This ${label} terminal was started with "${ran}", not plain ${PROVIDER_BIN[provider]}, so Termpolis did not restart it: the bare agent would not run the way "${ran}" does. Open a new terminal on ${target} instead.`)
-                      }
-                      if (outcome === 'still-running') {
-                        setMemoryNotice?.(`⚠️ ${label} had not quit after ${EXIT_CEILING_MS / 1000} s, so Termpolis left it alone: it pressed Ctrl+C three times and typed nothing else. If it is still running, it is on its previous model; if it is at a prompt, start ${label} again.`)
-                      }
+                      const { text, reverted } = relaunchNotice(result.outcome, { provider, label, target, agentCommand })
+                      // Nothing was started: do not leave the picker claiming a model that is not running.
+                      if (reverted) setLiveModel(previous)
+                      if (text) setMemoryNotice?.(text)
                     }).catch(() => {
                       setLiveModel(previous)
                       setMemoryNotice?.(`⚠️ Switching ${label} to ${target} failed, so nothing more was typed. The terminal is as the failure left it.`)
@@ -2311,7 +2330,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                     if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
                   }
                 }}
-                disabled={relaunchInFlight}
+                disabled={relaunchInFlight || !!relaunching}
                 title={`Switch this ${label} agent's model (restarts this terminal's session on the new model and resumes your conversation, when Termpolis launched it; cheaper models save tokens).`}
                 className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-hidden disabled:opacity-60"
               >
@@ -2475,6 +2494,19 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               <i className="fa-solid fa-code-compare text-[10px] mr-1.5"></i>
               View as Diff
             </button>
+            {switchableAgent && (
+              <button
+                className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+                data-testid="context-switch-account"
+                onClick={() => {
+                  setContextMenu({ visible: false, x: 0, y: 0 })
+                  useTerminalStore.getState().openAccountSwitch(terminalId)
+                }}
+              >
+                <i className="fa-solid fa-user-group text-[10px] mr-1.5"></i>
+                Switch account…<span className="float-right text-[#999]">{useTerminalStore.getState().keybindings.switchAccount}</span>
+              </button>
+            )}
             {(onSplitRight || onSplitDown) && (
               <>
                 <div className="border-t border-[#454545] my-1"></div>

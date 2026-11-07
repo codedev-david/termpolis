@@ -34,7 +34,7 @@ vi.mock('child_process', async (importOriginal) => {
   return { ...actual, execSync: vi.fn() }
 })
 // What the OS says runs in a terminal is shellAlone.test.ts's; here, only whose question it gets.
-vi.mock('../../src/main/shellAlone', () => ({ shellAlone: vi.fn(async () => true) }))
+vi.mock('../../src/main/shellAlone', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../src/main/shellAlone')>()), shellAlone: vi.fn(async () => true) }))
 
 const { existsSync, writeFileSync } = await import('fs')
 const { execSync } = await import('child_process')
@@ -53,6 +53,7 @@ const {
   getTerminalSize,
   terminalShellAlone,
   computeWindowsPty,
+  isShellInForeground,
 } = await import('../../src/main/terminalManager')
 const { shellAlone } = await import('../../src/main/shellAlone')
 
@@ -357,6 +358,72 @@ describe('terminalManager', () => {
     spawnTerminal('t11', '/bin/bash', '/tmp', vi.fn())
     expect(getTerminalPid('t11')).toBe(12345)
     expect(getTerminalPid('missing')).toBeNull()
+  })
+
+  // The account switch's evidence that an agent exited on macOS and Linux (§7.2 step 4).
+  it('isShellInForeground: the shell back in the PTY\'s foreground on macOS and Linux, nothing on Windows', () => {
+    const originalPlatform = process.platform
+    const fake = mockPty as any
+    spawnTerminal('fg1', '/usr/bin/zsh', '/tmp', vi.fn())
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+      fake.process = 'claude'
+      expect(isShellInForeground('fg1')).toBe(false)
+      fake.process = '/usr/bin/zsh'
+      expect(isShellInForeground('fg1')).toBe(true)
+      // A login shell's name, as macOS reports it.
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+      fake.process = '-zsh'
+      expect(isShellInForeground('fg1')).toBe(true)
+      expect(isShellInForeground('missing')).toBeNull()
+      Object.defineProperty(fake, 'process', { get: () => { throw new Error('the pty is gone') }, configurable: true })
+      expect(isShellInForeground('fg1')).toBeNull()
+      Object.defineProperty(fake, 'process', { value: 'zsh', writable: true, configurable: true })
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+      expect(isShellInForeground('fg1')).toBeNull()
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+      delete fake.process
+    }
+  })
+
+  // A shell that keeps what it runs in its own process group (PowerShell and Nushell on Unix) is the
+  // PTY's foreground process while an agent runs in it, so "the shell is in the foreground" would
+  // read as an agent that exited, and a usage limit or a switch would act on the screen of one that
+  // is still there. Only a shell with job control (shellAlone.ts) has a foreground that means it.
+  it('isShellInForeground: says nothing for a shell that keeps what it runs in its own process group, or a program that is not a shell', () => {
+    const originalPlatform = process.platform
+    const fake = mockPty as any
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+      for (const [id, exe] of [['fgp', '/usr/bin/pwsh'], ['fgn', '/usr/bin/nu'], ['fga', '/usr/local/bin/claude']] as const) {
+        spawnTerminal(id, exe, '/tmp', vi.fn())
+        fake.process = exe.slice(exe.lastIndexOf('/') + 1)
+        expect(isShellInForeground(id)).toBeNull()
+      }
+      // ...while every shell with job control answers, whatever its path.
+      for (const [id, exe] of [['fgb', '/bin/bash'], ['fgs', '/bin/sh'], ['fgd', '/usr/bin/dash'], ['fgf', '/usr/bin/fish'], ['fgk', '/bin/ksh']] as const) {
+        spawnTerminal(id, exe, '/tmp', vi.fn())
+        fake.process = exe.slice(exe.lastIndexOf('/') + 1)
+        expect(isShellInForeground(id)).toBe(true)
+        fake.process = 'claude'
+        expect(isShellInForeground(id)).toBe(false)
+      }
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+      delete fake.process
+    }
+  })
+
+  // 12. getTerminalCwd returns null on Windows
+  it('getTerminalCwd returns null on Windows', () => {
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+
+    spawnTerminal('t12', 'cmd.exe', 'C:\\Users', vi.fn())
+    expect(getTerminalCwd('t12')).toBeNull()
+
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
   })
 
   // 13. onData callback is wired up correctly

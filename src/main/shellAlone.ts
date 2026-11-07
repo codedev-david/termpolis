@@ -167,13 +167,20 @@ async function readConsole(pid: number): Promise<number[] | null> {
  *  or Nushell on Unix, which keep what they run in their own group. */
 const JOB_CONTROL_SHELLS = new Set(['bash', 'sh', 'dash', 'zsh', 'fish', 'ksh'])
 
+/** Whether `executable` is a shell that gives what it runs the terminal (see JOB_CONTROL_SHELLS):
+ *  the only kind whose terminal-foreground group tells an agent running from one that exited. The
+ *  cheap foreground read (terminalManager.ts isShellInForeground) asks the same question. */
+export function hasJobControl(executable: string): boolean {
+  return JOB_CONTROL_SHELLS.has(basename(executable))
+}
+
 /** Unix: the shell is alone when its terminal's foreground process group is its own, and nothing
  *  else is in that group (a program a shell with job control turned off runs is). Not while the
  *  terminal's process is no longer its shell: `exec claude` made the agent the terminal's process,
  *  its group's leader. */
 async function aloneInForeground(pid: number, executable: string): Promise<boolean | null> {
   const name = basename(executable)
-  if (!JOB_CONTROL_SHELLS.has(name)) return null
+  if (!hasJobControl(executable)) return null
   try {
     // Two -o: macOS's ps reads the header text after "=" up to the end of the argument, commas too.
     const ps = await execCaptureOffThread('ps', ['-o', 'tpgid=', '-o', 'comm=', '-p', String(pid)], { timeout: 3000 })

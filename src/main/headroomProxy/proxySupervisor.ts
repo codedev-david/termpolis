@@ -125,20 +125,27 @@ export function setAgentEnvReader(read: (() => Record<string, unknown> | null) |
   agentEnvReader = read
 }
 
-/** The settings.json `env` block, as string values only; empty when unreadable or absent. */
-function agentSettingsEnv(): Record<string, string> {
-  let block: Record<string, unknown> | null = null
-  try { block = agentEnvReader ? agentEnvReader() : null } catch { /* unreadable: nothing set there */ }
+/** An `env` block's string values; empty when it is absent or not an object. */
+function stringValues(block: unknown): Record<string, string> {
   const out: Record<string, string> = {}
   if (!block || typeof block !== 'object') return out
   for (const [k, v] of Object.entries(block)) if (typeof v === 'string') out[k] = v
   return out
 }
 
-/** The first variable that routes the user's Anthropic traffic elsewhere, or null if none does. */
-export function userRoutingVar(env: Record<string, string | undefined> = process.env): string | null {
+/** The settings.json `env` block, as string values only; empty when unreadable or absent. */
+function agentSettingsEnv(): Record<string, string> {
+  let block: Record<string, unknown> | null = null
+  try { block = agentEnvReader ? agentEnvReader() : null } catch { /* unreadable: nothing set there */ }
+  return stringValues(block)
+}
+
+/** The first variable that routes the user's Anthropic traffic elsewhere, or null if none does.
+ *  `settingsEnv` is the `env` block of the profile the launch runs on: an account's own
+ *  settings.json (null when it has none) instead of the default profile's. */
+export function userRoutingVar(env: Record<string, string | undefined> = process.env, settingsEnv?: Record<string, unknown> | null): string | null {
   // settings.json wins over the launch env, the way Claude Code applies it.
-  env = { ...env, ...agentSettingsEnv() }
+  env = { ...env, ...(settingsEnv === undefined ? agentSettingsEnv() : stringValues(settingsEnv)) }
   for (const k of USER_ROUTING_ENV) {
     const v = env[k]
     if (typeof v !== 'string' || v.trim() === '') continue
@@ -153,9 +160,10 @@ export function userRoutingVar(env: Record<string, string | undefined> = process
 }
 
 /** The env a Claude launch should inherit — or null to launch direct: the switch is off, the proxy
- *  isn't healthy, or the user's environment already routes Anthropic traffic. */
-export function getProxyEnv(env: Record<string, string | undefined> = process.env): Record<string, string> | null {
-  if (!proxyEnabled || !isProxyHealthy() || userRoutingVar(env)) return null
+ *  isn't healthy, or the user's environment already routes Anthropic traffic. `settingsEnv`: as
+ *  for userRoutingVar, for a launch on an account's profile. */
+export function getProxyEnv(env: Record<string, string | undefined> = process.env, settingsEnv?: Record<string, unknown> | null): Record<string, string> | null {
+  if (!proxyEnabled || !isProxyHealthy() || userRoutingVar(env, settingsEnv)) return null
   const url = `http://127.0.0.1:${port}`
   return {
     ANTHROPIC_BASE_URL: url,

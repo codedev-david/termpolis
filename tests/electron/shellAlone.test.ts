@@ -13,7 +13,7 @@ const HELPER_PATH = 'C:\data\termpolis-console-list.cjs'
 vi.mock('../../src/main/procClient', () => ({ execCaptureOffThread: h.exec }))
 vi.mock('../../src/main/consoleListHelper', () => ({ ensureConsoleListHelper: h.ensure }))
 
-import { shellAlone, ownConsoleProcesses, parseConsoleList, primeShellAlone, readConsoleProcessList, consoleListCounters, CONSOLE_LIST_TIMEOUT_MS, CONSOLE_LIST_SHARE_MS, _resetShellAloneForTests } from '../../src/main/shellAlone'
+import { shellAlone, ownConsoleProcesses, hasJobControl, parseConsoleList, primeShellAlone, readConsoleProcessList, consoleListCounters, CONSOLE_LIST_TIMEOUT_MS, CONSOLE_LIST_SHARE_MS, _resetShellAloneForTests } from '../../src/main/shellAlone'
 
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const GIT_BASH = 'C:\\Program Files\\Git\\bin\\bash.exe'
@@ -334,5 +334,15 @@ describe('primeShellAlone', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
     await primeShellAlone()
     expect(h.ensure).not.toHaveBeenCalled()
+  })
+})
+
+describe('hasJobControl', () => {
+  it('is true for the shells that give what they run the terminal, whatever their path', () => {
+    for (const exe of ['/bin/bash', '/usr/bin/zsh', '/bin/sh', '/usr/bin/dash', '/usr/bin/fish', '/bin/ksh', 'bash']) expect(hasJobControl(exe)).toBe(true)
+  })
+
+  it('is false for PowerShell and Nushell on Unix, which keep what they run in their own group, and for any program that is not a shell', () => {
+    for (const exe of ['/usr/bin/pwsh', 'pwsh', '/usr/bin/nu', '/usr/local/bin/claude', '/usr/bin/bashful', '']) expect(hasJobControl(exe)).toBe(false)
   })
 })

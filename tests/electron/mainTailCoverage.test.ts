@@ -740,9 +740,32 @@ describe('aiSessions — listAISessions edges', () => {
       jsonl({ type: 'user', message: { role: 'user', content: 'from the default root' }, cwd: '/repos/home' }), 'utf8')
 
     hoisted.homedir = () => fakeHome
-    const sessions = await listAISessions() // no opts at all → the homedir fallback
+    // As in the app: no test run's agent home (tests/setup.ts sets one for every test).
+    const saved = process.env.TERMPOLIS_TEST_AGENT_HOME
+    delete process.env.TERMPOLIS_TEST_AGENT_HOME
+    let sessions: Awaited<ReturnType<typeof listAISessions>>
+    try {
+      sessions = await listAISessions() // no opts at all → the homedir fallback
+    } finally {
+      process.env.TERMPOLIS_TEST_AGENT_HOME = saved
+    }
     expect(sessions.map((s) => s.id)).toEqual(['sess-home'])
     expect(sessions[0].firstUserMessage).toBe('from the default root')
+  })
+
+  it("reads a test run's agent home before the real one: no test reads the developer's own sessions", async () => {
+    const testHome = tmp('agent-home')
+    const dir = join(testHome, '.claude', 'projects', 'proj-t')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'sess-test.jsonl'), jsonl({ type: 'user', message: { role: 'user', content: 'from the test home' }, cwd: '/repos/t' }), 'utf8')
+    hoisted.homedir = () => tmp('real-home')
+    const saved = process.env.TERMPOLIS_TEST_AGENT_HOME
+    process.env.TERMPOLIS_TEST_AGENT_HOME = testHome
+    try {
+      expect((await listAISessions()).map((s) => s.id)).toEqual(['sess-test'])
+    } finally {
+      process.env.TERMPOLIS_TEST_AGENT_HOME = saved
+    }
   })
 })
 

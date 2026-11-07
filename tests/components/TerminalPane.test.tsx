@@ -107,6 +107,19 @@ mocks.mockGetState.mockImplementation(() => ({
   customKeybindings: [],
 }))
 
+/** The terminal relaunch lock as the store keeps it (beginRelaunch / endRelaunch), for the model
+ *  picker's tests: one holder at a time. */
+function relaunchLock() {
+  const relaunching: Record<string, string> = {}
+  const begin = vi.fn((id: string, kind: string) => {
+    if (relaunching[id]) return false
+    relaunching[id] = kind
+    return true
+  })
+  const end = vi.fn((id: string) => { delete relaunching[id] })
+  return { begin, end, state: { relaunching, beginRelaunch: begin, endRelaunch: end } }
+}
+
 // --- Mock xterm.js and addons ---
 vi.mock('@xterm/xterm', () => ({
   Terminal: function (options: unknown) { mocks.lastTerminalOptions = options; return mocks.mockTerminal },
@@ -1355,7 +1368,9 @@ describe('TerminalPane', () => {
   }
 
   describe('live model picker (single-agent hot-swap)', () => {
-    function withClaudeTerminal(agentCommand: string | undefined) {
+    let lock: ReturnType<typeof relaunchLock>
+    function withClaudeTerminal(agentCommand: string | undefined, over: Record<string, unknown> = {}) {
+      lock = relaunchLock()
       mocks.mockGetState.mockImplementation(() => ({
         terminals: [{ id: 'term-1', isSwarm: false, agentCommand }],
         addTerminal: mocks.mockAddTerminal,
@@ -1367,6 +1382,8 @@ describe('TerminalPane', () => {
         focusNonce: 0,
         voiceSettings: { enabled: false },
         setMemoryNotice: mockSetMemoryNotice,
+        ...lock.state,
+        ...over,
       }))
     }
 
@@ -1766,6 +1783,64 @@ describe('TerminalPane', () => {
       expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', resumeLine('opus'))
       vi.useRealTimers()
     })
+
+    // --- §7.5: the picker holds the terminal's relaunch lock while it types, so the pane's
+    // overlay shows and nothing else (an account switch, the pollers, MCP) types meanwhile.
+    it('holds the terminal\'s relaunch lock while it types, and lets it go after', async () => {
+      vi.useFakeTimers()
+      withClaudeTerminal('claude --dangerously-skip-permissions')
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      expect(lock.begin).toHaveBeenCalledWith('term-1', 'model')
+      expect(lock.state.relaunching).toEqual({ 'term-1': 'model' })
+      await vi.runAllTimersAsync()
+      expect(lock.end).toHaveBeenCalledWith('term-1')
+      expect(lock.state.relaunching).toEqual({})
+      vi.useRealTimers()
+    })
+
+    it('is disabled while an account switch holds the terminal', () => {
+      withClaudeTerminal('claude --dangerously-skip-permissions', { relaunching: { 'term-1': 'account' } })
+      render(<TerminalPane {...defaultProps} />)
+      expect(screen.getByTestId('model-picker')).toBeDisabled()
+    })
+
+    it('types nothing, and says why, when something took the lock first', async () => {
+      const setMemoryNotice = vi.fn()
+      withClaudeTerminal('claude --dangerously-skip-permissions', { beginRelaunch: vi.fn(() => false), setMemoryNotice })
+      render(<TerminalPane {...defaultProps} />)
+      const picker = screen.getByTestId('model-picker') as HTMLSelectElement
+      fireEvent.change(picker, { target: { value: 'sonnet' } })
+      await waitFor(() => expect(setMemoryNotice).toHaveBeenCalledWith('⚠️ Termpolis didn\'t change the model: an account switch or another model change is running in this terminal.'))
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      // The picker is back at "Model…", not showing a model it never changed to, and takes a pick again.
+      expect(picker.value).toBe('')
+      await waitFor(() => expect(picker).not.toBeDisabled())
+    })
+
+    it('types with the key of main\'s hold, and lets it go after (R7: MCP and the phone are refused meanwhile)', async () => {
+      const modelHold = vi.fn(async () => ({ success: true, data: { key: 'k-picker' } }))
+      const modelRelease = vi.fn(async () => ({ success: true, data: true }))
+      ;(window as any).accounts = { modelHold, modelRelease }
+      vi.useFakeTimers()
+      try {
+        osSaysShellAlone(false, false, true)
+        exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+        withClaudeTerminal('claude --dangerously-skip-permissions')
+        render(<TerminalPane {...defaultProps} />)
+        fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+        await vi.runAllTimersAsync()
+        // Asked for with no line: what is typed is only known once Claude Code has exited and named its conversation.
+        expect(modelHold).toHaveBeenCalledWith({ terminalId: 'term-1' })
+        expect(mockWriteToTerminal.mock.calls).toEqual([
+          ['term-1', '\x03', undefined, 'k-picker'], ['term-1', '\x03', undefined, 'k-picker'], ['term-1', '\x03', undefined, 'k-picker'], ['term-1', resumeLine('sonnet'), undefined, 'k-picker'],
+        ])
+        expect(modelRelease).toHaveBeenCalledWith('term-1', 'k-picker')
+      } finally {
+        vi.useRealTimers()
+        delete (window as any).accounts
+      }
+    })
   })
 
   // =====================================================
@@ -1780,6 +1855,7 @@ describe('TerminalPane', () => {
     }
 
     function withAgentTerminal(agentCommand: string | undefined, catalog: unknown = CATALOG) {
+      const lock = relaunchLock()
       mocks.mockGetState.mockImplementation(() => ({
         terminals: [{ id: 'term-1', isSwarm: false, agentCommand }],
         addTerminal: mocks.mockAddTerminal,
@@ -1791,6 +1867,7 @@ describe('TerminalPane', () => {
         focusNonce: 0,
         voiceSettings: { enabled: false },
         setMemoryNotice: mockSetMemoryNotice,
+        ...lock.state,
       }))
       ;(window as any).termpolis.getModelCatalog = vi.fn(async () => ({ success: true, data: catalog }))
       // Reset the two APIs individual cases below override, so a stub cannot leak forward.

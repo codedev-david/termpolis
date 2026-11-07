@@ -52,14 +52,29 @@ import type { ShellInfo } from './types'
 import { testDelay, isClaudeCommand } from './lib/testAgents'
 import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
-import { noteWorkerStatus } from './lib/swarmStopReports'
-import { detectAgentStatus } from '../../shared/agentStatusDetector'
-import { screenOfReplay } from '../../shared/terminalScreen'
+import { noteSwarmStop, osNotify, pruneBanners, pruneChooser, pruneStops, showLimit, watchTerminal } from './lib/limitWatch'
+import { isStopCarried } from './lib/swarmStopReports'
+import { liveRestartDeps, noteConductorClosed, pruneSwarmRestarts } from './lib/swarmRestart'
+import { detectAgentStatus, limitWords, stopKind } from '../../shared/agentStatusDetector'
+import { viewOfReplay } from '../../shared/terminalScreen'
 import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
 import * as contextPressureLib from './lib/contextPressure'
 import * as redundancyLib from './lib/redundancyDetector'
 import * as efficiencyLib from './lib/efficiencyAnalyzer'
 import { requestSettingsTab } from './lib/settingsNav'
+import { watchAccounts } from './lib/accountsState'
+import { hasManyAccounts, terminalAgent } from './lib/accountSwitchFlow'
+import { agentOfName, canSwitchAccount } from './lib/accountsView'
+import { launchTerminalArgs } from './lib/accountLaunch'
+import { SignInSheet } from './components/Accounts/SignInSheet'
+import { LaunchAskSheet } from './components/Accounts/LaunchAskSheet'
+import { launchAccountAsked } from './lib/launchAsk'
+import { AddAccountSheet } from './components/Accounts/AddAccountSheet'
+import { AccountMenu } from './components/Accounts/AccountMenu'
+import { AgySwitchSheet } from './components/Accounts/AgySwitchSheet'
+import { installSwitchQueue } from './lib/accountSwitchRun'
+import { LimitBanners } from './components/Accounts/LimitBanners'
+import { SwarmRestartOffers } from './components/Accounts/SwarmRestartOffers'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
@@ -382,6 +397,19 @@ export default function App() {
         return
       }
 
+      // The account switch dialog for the active terminal (§7.1). A focused pane handles the key
+      // itself, so its shell gets no stray Ctrl+N.
+      // D13: with no account registered, the key is the terminal's, as before accounts.
+      if (useTerminalStore.getState().accountsView?.accounts.length && matchesKeybinding(e, kb.switchAccount)) {
+        const s = useTerminalStore.getState()
+        // A terminal whose agent has no account is the shell's, and the key goes to it.
+        if (canSwitchAccount(s.terminals.find((t) => t.id === s.activeTerminalId), s.accountsView)) {
+          e.preventDefault()
+          s.openAccountSwitch(s.activeTerminalId as string)
+          return
+        }
+      }
+
       // Wipe the active terminal the way `clear` does -- scrollback included. The
       // pane owns the reset (it holds the xterm instance), so this window-level
       // path only names the terminal; a focused pane handles the key itself.
@@ -638,6 +666,8 @@ export default function App() {
       // Status detection is handled by the agent status polling effect below
     })
     const unsubClosed = window.mcpEvents?.onTerminalClosed((terminalId) => {
+      // The conductor closed it: it knows, so a restart offer it was on says nothing of it (swarmRestart.ts).
+      noteConductorClosed(terminalId)
       stopBridgeForAgent(terminalId)
       // Remove from swarmAgents
       const store = useTerminalStore.getState()
@@ -668,6 +698,8 @@ export default function App() {
         // blocked agents so we can clear the status if the user restarts
         // the CLI and it starts producing fresh output again.
         if (agent.status === 'completed' || agent.status === 'errored') continue
+        // A relaunch is typing into it: nothing is answered, and nothing is read as a stop.
+        if (store.relaunching[agent.terminalId]) continue
 
         try {
           const bufferRes = await window.termpolis.readTerminalBuffer(agent.terminalId)
@@ -684,9 +716,12 @@ export default function App() {
           const dismissKey = screenKey(output)
           if (lastDismissedPrompt.get(agent.terminalId) !== dismissKey) {
             lastDismissedPrompt.set(agent.terminalId, dismissKey)
+            // Its agent as main recorded run_command's line, else as its name says (R10).
+            const worker = store.terminals.find((t) => t.id === agent.terminalId)
             const dismissChar = await replyToScreen(
               output, agent.agentName,
               () => mayTrustFolder(agent.terminalId), () => readScreen(agent.terminalId),
+              !hasManyAccounts(store.accountsView, worker?.swarmAgent ?? agentOfName(agent.agentName)),
             )
             if (dismissChar) {
               window.termpolis.writeToTerminal(agent.terminalId, dismissChar)
@@ -700,9 +735,15 @@ export default function App() {
           // leave "esc to interrupt" and its other furniture in the raw tail after they are gone
           // (GitHub #36). The screen also shows a usage limit or a menu, which the conductor is
           // told about once per stop.
-          const screen = screenOfReplay(bufferRes.data)
-          const result = detectAgentStatus(screen.lines().join('\n'), agent.agentName, agent.status, { screen: true, title: screen.title })
-          void noteWorkerStatus(agent, result)
+          // The screen main kept for it when it kept one: a replay of the window alone has lost the input box of
+          // an agent that worked a while (F-R2-2).
+          const screen = viewOfReplay(bufferRes.data)
+          const rows = screen.lines.join('\n')
+          let result = detectAgentStatus(rows, agent.agentName, agent.status, { screen: true, title: screen.title })
+          // A worker Termpolis restarted on another account draws the limit it stopped at again above its empty
+          // box: waiting, until it has taken a turn (N5; the conductor's follow-up is typed the same way).
+          if (stopKind(result) === 'limit' && await isStopCarried(agent.terminalId)) result = { status: 'idle', summary: 'Waiting at prompt' }
+          void noteSwarmStop(agent, result, () => limitWords(rows))
 
           // Only update if status or summary actually changed
           if (result.status !== agent.status || (result.summary && result.summary !== agent.summary)) {
@@ -764,8 +805,13 @@ export default function App() {
       const store = useTerminalStore.getState()
       const swarmIds = new Set(store.swarmAgents.map((a) => a.terminalId))
       const agentTerminals = store.terminals.filter(
-        (t) => t.agentCommand && !swarmIds.has(t.id),
+        (t) => t.agentCommand && !swarmIds.has(t.id) && !store.relaunching[t.id],
       )
+      pruneStops(new Set(store.terminals.map((t) => t.id)))
+      // A worker closed while on a restart offer leaves it, and the conductor waiting on it is told.
+      if (store.swarmRestarts.length > 0) void pruneSwarmRestarts(new Set(store.terminals.map((t) => t.id)), liveRestartDeps())
+      pruneChooser(store)
+      pruneBanners(store)
       if (agentTerminals.length === 0) return
 
       for (const term of agentTerminals) {
@@ -778,10 +824,29 @@ export default function App() {
           // Claimed before the consent lookup, so an overlapping tick can't answer twice;
           // replyToScreen reads the screen again first, so an answered dialog gets nothing.
           lastDismissedPrompt.set(term.id, dismissKey)
+          const agent = terminalAgent(term)
           const dismissChar = await replyToScreen(
             output, term.name, () => mayTrustFolder(term.id), () => readScreen(term.id),
+            !hasManyAccounts(store.accountsView, agent),
           )
-          if (dismissChar) window.termpolis.writeToTerminal(term.id, dismissChar)
+          if (dismissChar) {
+            window.termpolis.writeToTerminal(term.id, dismissChar)
+            continue
+          }
+          // The usage-limit chooser (§8.1): main judges the changed screen, beside its buffer, with
+          // what it knows of the agent there. Never the conductor's (terminalAgent).
+          if (agent && window.accounts?.limitLook) {
+            const looked = await watchTerminal(term.id, agent, store.accountsView, {
+              accounts: window.accounts,
+              now: Date.now,
+              onLimit: (note) => showLimit(note, {
+                store: useTerminalStore.getState, focused: () => document.hasFocus(), now: Date.now, newId: uuid, notify: osNotify,
+              }),
+            })
+            // A limit screen is still: a look that failed (main busy, an IPC error) must be tried again
+            // on the next tick, not passed by as a screen already judged.
+            if (!looked) lastDismissedPrompt.delete(term.id)
+          }
         } catch {
           // Terminal gone — skip
         }
@@ -790,6 +855,12 @@ export default function App() {
 
     return () => clearInterval(interval)
   }, [])
+
+  // The accounts the chips, the switch dialog and the sidebar show, and main's word on each
+  // terminal's account (a switch, or a change typed by hand).
+  useEffect(() => watchAccounts(), [])
+  // A switch waiting for a busy agent's turn to end runs once it is done.
+  useEffect(() => (window.accounts ? installSwitchQueue() : undefined), [])
 
   // A Linked machines job notification, clicked: main has brought the window forward, and this
   // opens the pane listing that job, where it can be stopped. Settings may be open already, on
@@ -893,6 +964,10 @@ export default function App() {
       case 'show_memory':
         setShowMemory(v => !v)
         break
+      case 'switch_account':
+        if (canSwitchAccount(state.terminals.find((t) => t.id === state.activeTerminalId), state.accountsView)) useTerminalStore.getState().openAccountSwitch(state.activeTerminalId as string)
+        else useTerminalStore.getState().setMemoryNotice('Open an agent terminal whose agent has an account to switch it.')
+        break
       case 'launch_claude':
       case 'launch_codex':
       case 'launch_gemini': {
@@ -903,10 +978,18 @@ export default function App() {
         const pCwd = dirRes.data
         const pId = uuid()
         const pShellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-        const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd, undefined, isClaudeCommand(prof.command))
+        // The account it will launch on (launchAgents resolves the same one): the proxy's step-aside and the
+        // folder trust are that account's profile's.
+        // (Asked first, in a sheet, when that account is out of usage and another is free: launchAsk.ts.)
+        const picked = await launchAccountAsked(prof.command)
+        if (picked.cancelled) break
+        const pAccount = picked.accountId
+        const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd, undefined, isClaudeCommand(prof.command), ...launchTerminalArgs(pAccount, prof.command))
         if (pRes.success) {
           addTerminal({ id: pId, name: agentTerminalName(prof.name, pCwd), color: prof.color, shellType: pShellType, cwd: pCwd, ...getTerminalDefaults(), agentCommand: prof.command })
-          launchAgents([{ id: pId, agentCommand: prof.command, cwd: pCwd }])
+          // The account the user answered with goes to the typed line too, or launchAgents asks main for the
+          // preferred one: the account that is out of usage.
+          launchAgents([{ id: pId, agentCommand: prof.command, cwd: pCwd, shellType: pShellType, ...(pAccount ? { agentAccountId: pAccount } : {}) }])
         }
         break
       }
@@ -936,10 +1019,16 @@ export default function App() {
     setLaunchingAgent(config.name)
     const id = uuid()
     const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-    const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(config.command))
+    const picked = await launchAccountAsked(config.command)
+    if (picked.cancelled) {
+      setLaunchingAgent(null)
+      return
+    }
+    const account = picked.accountId
+    const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(config.command), ...launchTerminalArgs(account, config.command))
     if (res.success) {
       addTerminal({ id, name: agentTerminalName(config.name, cwd), color: config.color, shellType, cwd, ...getTerminalDefaults(), agentCommand: config.command })
-      launchAgents([{ id, agentCommand: config.command, cwd }], { onSettled: () => setLaunchingAgent(null) })
+      launchAgents([{ id, agentCommand: config.command, cwd, shellType, ...(account ? { agentAccountId: account } : {}) }], { onSettled: () => setLaunchingAgent(null) })
     } else {
       setLaunchingAgent(null)
     }
@@ -1001,6 +1090,7 @@ export default function App() {
               </div>
             </div>
           )}
+          <LimitBanners />
           {memoryNotice && (
             <div className="px-4 py-2 flex items-center justify-between text-sm bg-[#D97706]/15 border-b border-[#D97706]/40 text-[#F0B86E]">
               <div className="flex items-center gap-2">
@@ -1083,6 +1173,12 @@ export default function App() {
       <Suspense fallback={null}>
         {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
         {showAppLog && <AppLogModal onClose={() => setShowAppLog(false)} />}
+        <SignInSheet />
+        <AddAccountSheet />
+        <AccountMenu />
+        <AgySwitchSheet />
+        <LaunchAskSheet />
+        <SwarmRestartOffers dashboardOpen={showSwarmDashboard} />
         {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
         {showAddModal && (
           <AddTerminalModal

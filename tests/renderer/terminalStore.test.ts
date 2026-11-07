@@ -934,3 +934,130 @@ describe('terminalStore', () => {
     })
   })
 })
+
+describe('the relaunch lock (one relaunch at a time per terminal)', () => {
+  it('is taken once, held for its kind, and let go', () => {
+    const st = useTerminalStore.getState()
+    expect(st.beginRelaunch('rl-1', 'model')).toBe(true)
+    expect(useTerminalStore.getState().relaunching['rl-1']).toBe('model')
+    expect(useTerminalStore.getState().beginRelaunch('rl-1', 'account')).toBe(false)
+    expect(useTerminalStore.getState().relaunching['rl-1']).toBe('model')
+    expect(useTerminalStore.getState().beginRelaunch('rl-2', 'account')).toBe(true)
+    useTerminalStore.getState().endRelaunch('rl-1')
+    expect(useTerminalStore.getState().relaunching).toEqual({ 'rl-2': 'account' })
+    useTerminalStore.getState().endRelaunch('rl-2')
+    expect(useTerminalStore.getState().relaunching).toEqual({})
+  })
+
+  it("keeps each terminal's change by hand, and the accounts view main sent", () => {
+    useTerminalStore.getState().setAccountByHand('h-1', true)
+    useTerminalStore.getState().setAccountByHand('h-2', true)
+    useTerminalStore.getState().setAccountByHand('h-1', false)
+    expect(useTerminalStore.getState().accountsByHand).toEqual({ 'h-2': true })
+    useTerminalStore.getState().setAccountsView(null)
+    expect(useTerminalStore.getState().accountsView).toBeNull()
+  })
+})
+
+describe('the usage-limit chooser and its banners (§8.4)', () => {
+  const ctx = (terminals: string[]) => ({
+    agent: 'claude' as const, accountId: 'acc_a', terminals, words: 'w', resetsAt: null, kind: { scope: 'account' as const, window: 'session' as const },
+  })
+  beforeEach(() => useTerminalStore.setState({ accountSwitch: null, limitBanners: [] }))
+
+  it('opens the switch dialog in limit mode, gathers the terminals the limit stopped, and moves on from each', () => {
+    const st = useTerminalStore.getState
+    st().openLimitChooser(ctx(['t1']))
+    expect(st().accountSwitch).toEqual({ terminalId: 't1', limit: ctx(['t1']) })
+    st().joinLimitChooser('t2')
+    st().joinLimitChooser('t2')
+    expect(st().accountSwitch).toEqual({ terminalId: 't1', limit: ctx(['t1', 't2']) })
+    st().leaveLimitChooser('t1')
+    expect(st().accountSwitch).toEqual({ terminalId: 't2', limit: ctx(['t2']) })
+    st().leaveLimitChooser('t2')
+    expect(st().accountSwitch).toBeNull()
+  })
+
+  it('joins and leaves nothing while no chooser is open, or one opened for no limit', () => {
+    const st = useTerminalStore.getState
+    st().joinLimitChooser('t2')
+    st().leaveLimitChooser('t2')
+    expect(st().accountSwitch).toBeNull()
+    useTerminalStore.setState({ accountSwitch: { terminalId: 't1' } })
+    st().joinLimitChooser('t2')
+    st().leaveLimitChooser('t1')
+    expect(st().accountSwitch).toEqual({ terminalId: 't1' })
+    st().closeAccountSwitch()
+    expect(st().accountSwitch).toBeNull()
+  })
+
+  it('opens the account menu for Switch account…, and closes it', () => {
+    const st = useTerminalStore.getState
+    st().openAccountSwitch('t1')
+    expect(st().accountMenu).toEqual({ terminalId: 't1' })
+    st().closeAccountMenu()
+    expect(st().accountMenu).toBeNull()
+  })
+
+  it('keeps each terminal\'s switch, its held key, the queue and agy\'s sheet', () => {
+    const st = useTerminalStore.getState
+    const run = { terminalId: 't1', agent: 'claude' as const, from: null, to: { id: 'b', label: 'b', color: '#fff' }, reason: 'by hand', status: 'running' as const, steps: ['working', 'pending', 'pending'] as ['working', 'pending', 'pending'], answers: {} }
+    st().noteHeldKey('t1')
+    expect(st().switchRuns).toEqual({})
+    st().putSwitchRun(run)
+    st().noteHeldKey('t1')
+    expect(st().switchRuns.t1.heldAt).toEqual(expect.any(Number))
+    st().dropSwitchRun('t1')
+    expect(st().switchRuns).toEqual({})
+    st().queueSwitch('t1', { targetId: 'b', reason: 'by hand' })
+    expect(st().queuedSwitches).toEqual({ t1: { targetId: 'b', reason: 'by hand' } })
+    st().dropQueuedSwitch('t1')
+    expect(st().queuedSwitches).toEqual({})
+    st().openAgySwitchSheet('g2')
+    expect(st().agySwitchSheet).toEqual({ targetId: 'g2' })
+    st().closeAgySwitchSheet()
+    expect(st().agySwitchSheet).toBeNull()
+    st().openAddAccount('codex')
+    expect(st().addAccountSheet).toEqual({ agent: 'codex' })
+    st().closeAddAccount()
+    expect(st().addAccountSheet).toBeNull()
+  })
+
+  it('shows a banner, replaces it by its id, and dismisses it', () => {
+    const st = useTerminalStore.getState
+    st().showLimitBanner({ id: 'b1', kind: 'choose', ctx: ctx(['t1']) })
+    st().showLimitBanner({ id: 'b2', kind: 'menu', ctx: ctx(['t3']) })
+    st().showLimitBanner({ id: 'b1', kind: 'choose', ctx: ctx(['t1', 't2']) })
+    expect(st().limitBanners.map((b) => [b.id, b.ctx.terminals])).toEqual([['b1', ['t1', 't2']], ['b2', ['t3']]])
+    st().dismissLimitBanner('b1')
+    expect(st().limitBanners.map((b) => b.id)).toEqual(['b2'])
+  })
+
+  it('shows a swarm restart offer, replaces it by its id, and takes it down (§9)', () => {
+    const st = useTerminalStore.getState
+    const offer = (id: string, workers: string[]) => ({
+      id, agent: 'claude' as const, accountId: 'acc_m', words: 'w', resetsAt: null, targets: ['acc_c'], phase: { kind: 'offered' as const },
+      workers: workers.map((terminalId) => ({ terminalId, agentName: 'Claude', role: 'r', summary: 's' })),
+    })
+    useTerminalStore.setState({ swarmRestarts: [] })
+    st().putSwarmRestart(offer('g1', ['w1']))
+    st().putSwarmRestart(offer('g2', ['w3']))
+    st().putSwarmRestart(offer('g1', ['w1', 'w2']))
+    expect(st().swarmRestarts.map((g) => [g.id, g.workers.map((w) => w.terminalId)])).toEqual([['g1', ['w1', 'w2']], ['g2', ['w3']]])
+    st().dropSwarmRestart('g1')
+    expect(st().swarmRestarts.map((g) => g.id)).toEqual(['g2'])
+  })
+})
+
+describe('the sign-in sheet', () => {
+  it('opens for an account, with what to do once it signed in, and closes', () => {
+    const st = useTerminalStore.getState
+    st().openSignInSheet('acc_b')
+    expect(st().signInSheet).toEqual({ accountId: 'acc_b' })
+    const then = vi.fn()
+    st().openSignInSheet('acc_c', then)
+    expect(st().signInSheet).toEqual({ accountId: 'acc_c', then })
+    st().closeSignInSheet()
+    expect(st().signInSheet).toBeNull()
+  })
+})

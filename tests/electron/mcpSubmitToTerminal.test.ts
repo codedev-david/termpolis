@@ -2362,6 +2362,36 @@ describe('write_to_terminal', () => {
   })
 })
 
+// R7: a relaunch can take a terminal while a submit to it waits for the agent (an account switch, a
+// swarm worker's restart on another account). From then on the submit types nothing: its text would
+// sit on the shell's line for the switch's Enter to run, or reach the agent started there.
+describe('submit while a relaunch takes the terminal', () => {
+  const HELD = "Termpolis is restarting this worker; wait for system's next message"
+
+  it('types nothing once the lock is taken while it waits for the agent, and answers with the lock\'s words', async () => {
+    let now = 0
+    const t = fakeTerminal((ms) => (ms < 5000 ? busy() : idle()))
+    const clock: SubmitClock = { now: () => now, sleep: async (ms) => { now += ms; await t.clock.sleep(ms) } }
+    ;(t.handlers as any).relaunchLock = vi.fn(() => (now >= 3000 ? HELD : null))
+    await expect(submitToTerminal(t.handlers, 't1', 'Continue your task.', clock)).rejects.toThrow(HELD)
+    expect(t.writes).toEqual([])
+  })
+
+  it('presses no Enter once the lock is taken after the text went in', async () => {
+    const t = fakeTerminal((_ms, typed) => idle(typed.join('')))
+    ;(t.handlers as any).relaunchLock = vi.fn(() => (t.writes.length > 0 ? HELD : null))
+    await expect(submitToTerminal(t.handlers, 't1', 'go', t.clock)).rejects.toThrow(HELD)
+    expect(t.writes).toEqual(['go'])
+  })
+
+  it('clears nothing once the lock is taken before a box that holds text is cleared', async () => {
+    const t = fakeTerminal(() => idle('left over'))
+    ;(t.handlers as any).relaunchLock = vi.fn(() => HELD)
+    await expect(submitToTerminal(t.handlers, 't1', 'go', t.clock)).rejects.toThrow(HELD)
+    expect(t.writes).toEqual([])
+  })
+})
+
 // The last frame Claude Code leaves when it exits, input box and all, read as the agent at its
 // input where nothing else on the screen said it was gone: a shell that reports no prompts (zsh,
 // fish), or an agent a person started. The task was typed at the shell's prompt, where bash and zsh
@@ -2486,5 +2516,61 @@ describe('write_to_terminal submit and what runs in the terminal', () => {
     expect((await submitToTerminal(handlers, 'plain-2', 'echo hi', clock)).submitted).toBe(true)
     expect(writes).toEqual(['echo hi', '\r'])
     expect(shellAlone).not.toHaveBeenCalled()
+  })
+})
+
+// SWARM-R1 N5: a session Termpolis resumed on another account (an account switch, a swarm worker's restart) draws
+// the limit it stopped at again above its fresh, empty box (real Claude Code 2.1.304: tests/fixtures/agentScreensLimit.json).
+// That old limit is no stop of the new run, so the conductor's follow-up is typed, not refused as blocked, until the
+// agent has taken a turn; a limit with no box under it, or one drawn after a turn, still blocks.
+describe('submit into an agent Termpolis relaunched, whose old limit is drawn again above its box', () => {
+  const OLD = "You've hit your session limit · resets 3pm (America/New_York)"
+  const resumed = (inBox = ''): string => frame(['❯ Build the page', `  ⎿  ${OLD}`, '', RULE, `❯ ${inBox}`, RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
+  const screenAt = (_ms: number, typedText: string[]): string => (typedText.includes('\r') ? busy() : resumed(typedText.join('')))
+  const withCarried = (carried: ((id: string) => boolean) | undefined): FakeTerminal => {
+    const t = fakeTerminal(screenAt)
+    if (carried) (t.handlers as { carriedStop?: (id: string) => boolean }).carriedStop = carried
+    return t
+  }
+
+  it('types the follow-up once the stop is carried, as it does for an idle agent', async () => {
+    const carried = vi.fn(() => true)
+    const t = withCarried(carried)
+    const res = await submitToTerminal(t.handlers, 't1', 'Continue your task.', t.clock)
+    expect(res.submitted).toBe(true)
+    expect(t.writes).toEqual(['Continue your task.', '\r'])
+    expect(carried).toHaveBeenCalledWith('t1')
+  })
+
+  it('still refuses it as blocked, as v1.54.0 did, when nothing says the stop was carried', async () => {
+    for (const t of [withCarried(vi.fn(() => false)), withCarried(undefined)]) {
+      const res = await submitToTerminal(t.handlers, 't1', 'Continue your task.', t.clock)
+      expect(res).toMatchObject({ submitted: false, waitedMs: 0 })
+      expect(res.error).toMatch(/^The agent is blocked: usage limit reached/)
+      expect(t.writes).toEqual([])
+    }
+  })
+
+  it('does not ask about a screen that shows no limit, and never reads another kind of stop as carried', async () => {
+    const carried = vi.fn(() => true)
+    const idleTerminal = fakeTerminal((_ms, typedText) => (typedText.includes('\r') ? busy() : idle(typedText.join(''))))
+    ;(idleTerminal.handlers as { carriedStop?: (id: string) => boolean }).carriedStop = carried
+    expect((await submitToTerminal(idleTerminal.handlers, 't1', 'go', idleTerminal.clock)).submitted).toBe(true)
+    expect(carried).not.toHaveBeenCalled()
+    // Not a limit: a CLI that has to be restarted is blocked whatever Termpolis relaunched.
+    const dead = fakeTerminal(() => '🎉 Update ran successfully! Please restart Codex.\r\nPS C:\\p> ', 'Codex (Build)')
+    ;(dead.handlers as { carriedStop?: (id: string) => boolean }).carriedStop = () => true
+    const res = await submitToTerminal(dead.handlers, 't1', 'go', dead.clock)
+    expect(res.submitted).toBe(false)
+    expect(res.error).toMatch(/blocked/)
+  })
+
+  it('still blocks on the rate-limit menu the resumed session opens: it is a menu, not the old limit drawn again', async () => {
+    // Real Claude Code's menu (agentScreensInput.json): "What do you want to do?" with no input box under it.
+    const t = fakeTerminal(() => input.rateLimitMenu.raw, 'Claude (Build)', { cols: 80, rows: 24 })
+    ;(t.handlers as { carriedStop?: (id: string) => boolean }).carriedStop = () => true
+    const res = await submitToTerminal(t.handlers, 't1', 'Continue your task.', t.clock)
+    expect(res).toMatchObject({ submitted: false, waitedMs: 0, error: expect.stringMatching(/^The agent is blocked: usage limit reached\./) })
+    expect(t.writes).toEqual([])
   })
 })
