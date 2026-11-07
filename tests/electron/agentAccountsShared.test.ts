@@ -289,6 +289,12 @@ describe('accountLine in real shells: a foreign line runs nothing (R1)', () => {
         const { ran, after } = run(shell, line)
         if (family === shell.family) {
           expect({ shell: shell.name, family, ran, after }).toEqual({ shell: shell.name, family, ran: VALUE, after: VALUE })
+        } else if (shell.name === 'pwsh' && family === 'posix') {
+          // pwsh 7 reading `-Command -` keeps the posix line's open '\'' quote going to the end of the
+          // input, blank lines included, so the second marker is swallowed into that string too: the
+          // old value can't be asked there. What matters holds: nothing ran, and nothing was set.
+          expect({ shell: shell.name, family, ran }).toEqual({ shell: shell.name, family, ran: null })
+          expect([null, 'old-account']).toContain(after)
         } else {
           // Nothing ran: the marker never wrote, and the old value is still the shell's.
           expect({ shell: shell.name, family, ran, after }).toEqual({ shell: shell.name, family, ran: null, after: 'old-account' })

@@ -153,7 +153,10 @@ test.describe.serial('Typing trace in the real app', () => {
     const before = await typing(page)
     const over1000Before = before.loopDelay.minute?.over1000 ?? 0
     // Playwright's app.evaluate runs in the MAIN process: this holds its event loop for 1.5 s.
+    // On Linux CI Playwright can lose its main-process context as the stall ends ("Execution context
+    // was destroyed"): the block has run by then, and the poll below is what checks it was seen.
     await app.evaluate(() => { const end = Date.now() + 1500; while (Date.now() < end) { /* hold the thread */ } })
+      .catch((e: Error) => { if (!/Execution context was destroyed/.test(e.message)) throw e })
     // The window the stall landed in closes on the next 5 s tick; poll rather than sleep.
     await expect.poll(async () => (await typing(page)).loopDelay.minute?.over1000 ?? 0, { timeout: 20_000 }).toBeGreaterThan(over1000Before)
     const after = await typing(page)
