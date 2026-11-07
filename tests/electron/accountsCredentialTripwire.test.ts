@@ -318,8 +318,12 @@ function seed(): void {
   decoy(join(home, '.aws', 'credentials'))
 
   // The CLIs, where a PATH lookup finds them: claude as an exe, codex as an npm shim with the
-  // vendor exe it runs. None of them is ever started (noProcess).
+  // vendor exe it runs. None of them is ever started (noProcess). On macOS and Linux a PATH lookup
+  // takes the bare name (no PATHEXT), so each CLI is there under that name as well: without it the
+  // sign-ins below find no CLI on those runners.
   const bin = join(sb.root, 'bin')
+  writeText(join(bin, 'claude'), '')
+  writeText(join(bin, 'codex'), '')
   writeText(join(bin, 'claude.exe'), '')
   writeText(join(bin, 'codex.cmd'), '')
   writeText(join(bin, 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'), '')
