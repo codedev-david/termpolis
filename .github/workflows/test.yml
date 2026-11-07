@@ -131,6 +131,15 @@ jobs:
       # node_modules and lands a fraction lower on the razor-thin branch gate).
       - name: Copy tree-sitter grammars
         run: node scripts/copy-grammars.cjs
+      # The accounts tests (accountsChooserE2eMock, signInSessionPty, accountsSignIn, realPtyLoad,
+      # accountsUiE2eMock) start shells and mock CLIs on a REAL node-pty. On macOS node-pty forks
+      # through its prebuilt spawn-helper, which npm can extract without +x, and every spawn then
+      # fails with "posix_spawnp failed". Same step as e2e-macos and release.yml; Linux forks
+      # without a helper.
+      - name: Fix spawn-helper permissions (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
       # Coverage gates run on Windows only. src/main has ~19
       # `process.platform === 'win32'` checks whose win32 side never
       # executes on Linux/macOS, so each platform lands at a slightly
