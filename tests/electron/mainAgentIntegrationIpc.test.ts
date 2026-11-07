@@ -884,6 +884,26 @@ describe('Settings ▸ Accounts wiring', () => {
     H.relaunchLockReason.mockImplementation(() => null)
   })
 
+  it('lets xterm\'s answers to the starting agent\'s queries through a switch\'s hold, and nothing typed (SW5-2)', () => {
+    const write = (data: string) => { for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-held', data }) }
+    H.relaunchLockReason.mockImplementation((id: string) => (id === 't-held' ? 'held' : null))
+    mockWriteToTerminal.mockClear()
+    try {
+      // Cursor position, device attributes, a colour answer, a mode report: the CLI starting under the lock asked for them.
+      for (const answer of ['\x1b[12;1R', '\x1b[?62;22c', '\x1b[>0;276;0c', '\x1b]11;rgb:0000/0000/0000\x07', '\x1b]10;rgb:ffff/ffff/ffff\x1b\\', '\x1b[?2004;2$y', '\x1b[12;1R\x1b[?62;22c']) {
+        write(answer)
+        expect(mockWriteToTerminal).toHaveBeenLastCalledWith('t-held', answer)
+      }
+      mockWriteToTerminal.mockClear()
+      // A key, a key with an answer stuck to it, a paste, and what the terminal sends of itself with no question asked
+      // (focus, mouse) could land on the shell's line while the switch types into it: all held.
+      for (const held of ['a', '\x1b[12;1Ra', 'claude\r', '\x1b[200~text\x1b[201~', '\x1b[I', '\x1b[O', '\x1b[M !!', '\x1b[<0;10;5M', '\x1b[A', '\x1b']) write(held)
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    } finally {
+      H.relaunchLockReason.mockImplementation(() => null)
+    }
+  })
+
   it('asks main whether a limit is the old one its relaunched agent draws again (SWARM-R1 N5)', () => {
     H.workerStopCarried.mockImplementation((id: string) => id === 't-restarted')
     expect(H.mcpHandlers!.carriedStop!('t-restarted')).toBe(true)

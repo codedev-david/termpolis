@@ -639,6 +639,7 @@ import {
   noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveLaunchTarget, withLimitChooser, workerStopCarried,
 } from './accountsIpc'
 import { relaunchLockReason } from './accountSwitch'
+import { isTerminalAnswer } from '../shared/terminalAnswers'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
 import {
   repairWindowsShortcuts,
@@ -1022,8 +1023,10 @@ ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data, key }: { id: str
   noteTyping() // background work (conversation ingest, the indexer) stands aside for 500 ms after this
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
   // A switch is typing into it itself (accountSwitch.ts, R7): nothing else may meanwhile. The model
-  // picker's own writes carry the key of its hold (§7.5).
-  if (relaunchLockReason(id, Date.now(), typeof key === 'string' ? key : undefined)) return
+  // picker's own writes carry the key of its hold (§7.5). xterm's answers to a query (the cursor
+  // position, device attributes, a colour) are no keys: the agent starting under the lock asked for
+  // them and may wait on them (SW5-2).
+  if (!isTerminalAnswer(data) && relaunchLockReason(id, Date.now(), typeof key === 'string' ? key : undefined)) return
   // The launch patterns below read what was typed or pasted, so a paste's bracketed-paste
   // markers come off first (see stripPasteMarkers). `data` itself still goes to the PTY as is.
   const typed = typeof data === 'string' ? stripPasteMarkers(data) : data
