@@ -124,6 +124,13 @@ function noteRestarted(terminalId: string): void {
   let restarted = false
   try { restarted = wiring.io?.restarted?.(terminalId) === true } catch { /* no sign read */ }
   if (restarted && !byHand.has(terminalId)) markByHand(terminalId)
+  // The banner is the wrapper's word that Claude Code started again here: a new run, which no typed line starts, while the old run's
+  // exit hint has ended its record. Watched from here like a launch whose options are unknown (CH4-3). The banner says it starts
+  // Claude, so it is a sign seen, not a guess: the record is not `unseen`.
+  if (restarted && agentStarts.get(terminalId)?.agent === 'claude') {
+    const end = wiring.outputEnd?.(terminalId)
+    if (end !== undefined) setStart(terminalId, { at: end, commands: ['claude'], agent: 'claude', time: wiring.io?.now() ?? Date.now(), unsure: true })
+  }
 }
 
 export function forgetTerminalAccount(terminalId: string): void {

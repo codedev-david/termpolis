@@ -11,14 +11,14 @@
 // The real wiring: registerAccountsIpc's limit look, the real noteTypedInput (terminal:write) and
 // the output buffers with their kept screen, as index.ts wires them.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { _resetTerminalAccountsForTest, noteTypedInput, registerAccountsIpc, terminalAgentStart } from '../../src/main/accountsIpc'
+import { _resetTerminalAccountsForTest, isAccountChangedByHand, noteTypedInput, registerAccountsIpc, terminalAgentStart } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { _resetSwitchLocksForTest } from '../../src/main/accountSwitch'
 import type { SwitchIO } from '../../src/main/accountSwitch'
 import { ACCOUNTS_IPC } from '../../src/shared/agentAccounts'
 import type { LimitLook } from '../../src/shared/accountLimits'
 import { stopKind } from '../../src/shared/agentStatusDetector'
-import { appendOutput, liveScreen, readOutputFrom, readOutputTail, reportedFamilies, watchScreen } from '../../src/main/terminalOutputBuffer'
+import { appendOutput, liveScreen, readOutputFrom, readOutputTail, reportedFamilies, takeRestarted, watchScreen } from '../../src/main/terminalOutputBuffer'
 import type { OutputBuffers } from '../../src/main/terminalOutputBuffer'
 import { createSandbox } from './_agentIntegrationManagerFixture'
 import type { Sandbox } from './_agentIntegrationManagerFixture'
@@ -65,6 +65,8 @@ function register(): void {
     screen: (id: string) => liveScreen(buffers, id),
     watch: (id: string) => { watchScreen(buffers, id, { cols: 80, rows: 24 }) },
     reported: (id: string) => reportedFamilies(buffers, id),
+    // As index.ts wires it.
+    restarted: (id: string) => takeRestarted(buffers, id),
     ...(shell === 'foreground' ? { atShell: () => atShell } : {}),
     write: () => undefined,
     sleep: async () => undefined,
@@ -209,4 +211,52 @@ describe('an edited line after an exit, where the exit can be seen (CH4-1)', () 
       expect(opens(await lookNow())).toBe(true)
     })
   }
+})
+
+// CH4-3: David's wrapper (~/.claude/claude-run.sh) restarts Claude Code in the same shell after /switch-account then /exit: the
+// exit hint (with the --effort it was started with), its banner, Claude's box again. No prompt is shown and no line typed, so
+// nothing but the banner says a new run began; the exit hint had already ended the record.
+describe("David's wrapper restarting Claude in the same shell (CH4-3)", () => {
+  for (const kind of ['silent', 'reports', 'foreground'] as const) {
+    it(`watches the restarted agent, and sees its limit (${kind})`, async () => {
+      shell = kind
+      register()
+      data('$ ')
+      type('claude\r'); atShell = false; clock += 100
+      data('claude\r\n' + paint(CLAUDE_UP))
+      await lookNow(); clock += 3000
+      type('go\r'); data(paint(['\u276f go', '', '\u25cf done.', '', ...CLAUDE_IDLE])); clock += 3000
+      await lookNow(); clock += 3000
+      type('/switch-account personal\r'); clock += 500
+      type('/exit\r'); data(paint(['\u276f /exit', '', 'Resume this session with:', `claude --effort max --resume ${SESSION}`])); clock += 1500
+      expect((await lookNow()).live).toBe(false)
+      clock += 800
+      data('\r\nSwitching this terminal to personal: starting Claude again on its profile and resuming the conversation...\r\n')
+      data(paint(['', '  Claude Code v2.1.317', '', '\u25cf done.', '', ...CLAUDE_IDLE])); clock += 3000
+      const after = await lookNow()
+      expect(after.live).toBe(true)
+      expect(after.turned).toBe(false)
+      expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', unsure: true })
+      expect(terminalAgentStart('t1')).not.toHaveProperty('unseen')
+      clock += 3000
+      type('go on\r'); data(paint(['\u276f go on', '', LIMIT_REPLY, '', ...CLAUDE_IDLE])); clock += 300
+      expect(opens(await lookNow())).toBe(true)
+      // The account the wrapper moved it to is still not one Termpolis knows.
+      expect(isAccountChangedByHand('t1')).toBe(true)
+    })
+  }
+
+  it('starts no record for a banner after a record of another agent, or with none', async () => {
+    shell = 'silent'
+    register()
+    data('$ ')
+    data('\r\nSwitching this terminal to personal: starting Claude again on its profile and resuming the conversation...\r\n')
+    await lookNow()
+    expect(terminalAgentStart('t1')).toBeUndefined()
+    type('codex\r'); clock += 100
+    data('codex\r\n' + paint(CODEX_UP)); clock += 3000
+    data('\r\nSwitching this terminal to personal: starting Claude again on its profile and resuming the conversation...\r\n')
+    await lookNow()
+    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex' })
+  })
 })
