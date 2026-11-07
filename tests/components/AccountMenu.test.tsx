@@ -411,6 +411,18 @@ describe('the keyboard', () => {
     expect(document.activeElement).toBe(screen.getByTestId('account-menu-manage'))
   })
 
+  it('lets a chord through to the app: no row is found by it, and the key is not taken (UI4-10)', async () => {
+    openMenu()
+    await settle()
+    const before = document.activeElement
+    for (const mod of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { ctrlKey: true, shiftKey: true }]) {
+      const notPrevented = fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'c', ...mod })
+      expect(notPrevented).toBe(true)
+      expect(document.activeElement).toBe(before)
+    }
+    expect(st().accountMenu).not.toBeNull()
+  })
+
   it('finds a row by its first letters', async () => {
     const now = vi.spyOn(Date, 'now')
     now.mockReturnValue(10_000)

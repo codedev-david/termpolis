@@ -262,6 +262,8 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
     else if (e.key === 'Enter' || e.key === ' ') activate(list[Math.max(0, active)])
     else if (e.key === 'ArrowRight' && list[active]?.kind === 'new-terminal') setSub(0)
     else if (e.key === 'Escape') close()
+    // A chord (Ctrl+C, Ctrl+Shift+N, Meta+Q) is the app's, not a letter of a label (UI4-10).
+    else if (e.ctrlKey || e.metaKey || e.altKey) return
     else if (e.key.length === 1 && e.key !== ' ') {
       const now = Date.now()
       const text = now - typed.current.at < TYPE_AHEAD_MS ? typed.current.text + e.key : e.key
