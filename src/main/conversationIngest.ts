@@ -20,7 +20,7 @@ import { performance } from 'perf_hooks'
 import { isDelegatedSession, openingSettled, ownDialogue } from '../shared/headlessPrompt'
 import type { FileStamp, IngestWatermark, MarkTier } from './ingestWatermark'
 import { getIngestRuntime, type IngestRuntime } from './ingestRuntime'
-import { isMemoryUnavailable } from './memoryFallbackGuard'
+import { skipPassWhileUnavailable } from './memoryFallbackGuard'
 
 export type ConversationSource = 'claude' | 'codex' | 'gemini'
 
@@ -1137,13 +1137,6 @@ export function _resetConversationIngestCountersForTests(): void {
   runCounters.unavailableSkips = runCounters.freshStampsReused = 0
 }
 
-/** MEM-F6: memory is unavailable (memoryFallbackGuard), so every store call of a pass would throw. The kill switch
- *  TERMPOLIS_INGEST_UNAVAILABLE_SKIP=off|0|false|no runs the pass anyway. */
-function skipWhileUnavailable(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (/^(off|0|false|no)$/i.test((env.TERMPOLIS_INGEST_UNAVAILABLE_SKIP ?? '').trim())) return false
-  return isMemoryUnavailable()
-}
-
 // Compose real ingestion: discover on disk + dedup/write via the memory store.
 // Kept decoupled from swarmMemory so the orchestration stays unit-testable.
 export async function runConversationIngest(
@@ -1159,7 +1152,8 @@ export async function runConversationIngest(
   // 8 MiB for nothing, on the machine whose starvation took the store down. Skip it, counted. Truncated with stop
   // 'stopped': the full tier must not take it for a pass that read every transcript (its linked-history recheck),
   // and the scheduler asks for no follow-up. Nothing is marked, so the first pass after the store is back reads it all.
-  if (skipWhileUnavailable()) {
+  // MEM-F6: memory is unavailable, so every store call of a pass would throw (switch: TERMPOLIS_INGEST_UNAVAILABLE_SKIP=off).
+  if (skipPassWhileUnavailable()) {
     runCounters.unavailableSkips++
     return { filesScanned: 0, chunksWritten: 0, chunksSkipped: 0, truncated: true, stop: 'stopped' }
   }

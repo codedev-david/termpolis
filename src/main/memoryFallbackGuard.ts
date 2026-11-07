@@ -165,6 +165,23 @@ export function isMemoryUnavailable(): boolean {
   return state !== null
 }
 
+/** The background passes that only add (conversation ingest, session reflection) stand down while memory
+ *  is unavailable: every write would fail, and a pass that records progress would skip what it never
+ *  saved. TERMPOLIS_INGEST_UNAVAILABLE_SKIP=off runs them anyway (the 1.54.4 behaviour). */
+export function skipPassWhileUnavailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (/^(off|0|false|no)$/i.test((env.TERMPOLIS_INGEST_UNAVAILABLE_SKIP ?? '').trim())) return false
+  return isMemoryUnavailable()
+}
+
+/** swarmMemory's LOCKED refusal starts with this. */
+export const LOCKED_PREFIX = 'Memory is locked ('
+
+/** A write the store refused as a whole (memory unavailable, or LOCKED): nothing was saved, and nothing
+ *  will be until that changes. Any other write failure is about that one write. */
+export function isWriteRefusedMessage(message: unknown): boolean {
+  return isMemoryUnavailableMessage(message) || (typeof message === 'string' && message.startsWith(LOCKED_PREFIX))
+}
+
 const REASON_MAX = 200
 
 /** The status record, or {} when memory is not unavailable (so the IPC payload spreading it is byte for

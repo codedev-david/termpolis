@@ -284,7 +284,7 @@ import {
   setVectorQuantization,
   setMemoryRetryGovernor,
 } from './memoryClient'
-import { memoryUnavailableInfo } from './memoryFallbackGuard'
+import { memoryUnavailableInfo, skipPassWhileUnavailable, isWriteRefusedMessage } from './memoryFallbackGuard'
 import { registerMemoryTraceSources } from './memoryTraceSources'
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
@@ -2691,8 +2691,16 @@ ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', asyn
     // LOCKED: every lesson write would be refused, yet the cursor would still advance past the turns —
     // and they would never be reflected. Leave the cursor where it is; the first pass after unlock does it.
     if (await memoryIsLocked()) return ok({ fired: false, lessons: 0 })
+    // UNAVAILABLE (MEM2-1): the memory host is down and the in-process fallback refused, so every write throws and
+    // getSyncStatus throws too (the LOCKED gate above lets it through). Same rule: read nothing, distil nothing,
+    // leave the cursor. TERMPOLIS_INGEST_UNAVAILABLE_SKIP=off runs the pass anyway.
+    if (skipPassWhileUnavailable()) return ok({ fired: false, lessons: 0 })
     const project = normalizeProjectSlug(opts.cwd)
     const cursorKey = sessionCursorKey(opts.cwd, opts.agent)
+    // A lesson write the store refused as a whole (unavailable, or LOCKED since the gate) means nothing of this pass
+    // was saved. groundEpisode swallows each failed write, so the pass is failed here instead: reflectSoloSession
+    // then leaves the cursor, and the next pass reflects the same turns. Any other write failure stays best effort.
+    let refused = false
     const res = await runSessionReflection(
       { terminalId: opts.terminalId, cwd: opts.cwd, agent: opts.agent, project },
       {
@@ -2708,7 +2716,12 @@ ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', asyn
           const edges = collectEdges()
           return onSessionEpisode(episode, {
             distill: (ep) => distillEpisode(ep, MNEME_DISTILLER_ENABLED && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
-            write: (input) => memoryWrite(input),
+            write: async (input) => {
+              try { return await memoryWrite(input) } catch (e: any) {
+                if (isWriteRefusedMessage(e?.message)) refused = true
+                throw e
+              }
+            },
             recordOutcome,
             now: Date.now(),
             link: edges.collect,
@@ -2716,6 +2729,7 @@ ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', asyn
             resolveCode: (names, project) => resolveCodeRefs(names, graphKeyForRoot(project ?? '')),
           }).then(async (r) => {
             await edges.flush()
+            if (refused) throw new LessonsNotSavedError()
             try { if (r.fired && r.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: r.lessons }) } catch { /* best effort */ }
             return { fired: r.fired, lessons: r.lessons }
           })
@@ -2723,8 +2737,16 @@ ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', asyn
       },
     )
     return ok(res)
-  } catch (e: any) { return err(e.message) }
+  } catch (e: any) {
+    if (e instanceof LessonsNotSavedError) return ok({ fired: false, lessons: 0 })
+    return err(e.message)
+  }
 }))
+
+/** memory:reflect-session: a lesson write was refused as a whole, so the pass is failed and its cursor stays. */
+class LessonsNotSavedError extends Error {
+  constructor() { super('the store refused the lesson writes; the cursor stays') }
+}
 
 // Cross-machine sync: the brain lives in device-sharded JSONL. Pointing it at a
 // folder the user already syncs (Syncthing/Dropbox/iCloud/git) makes the same

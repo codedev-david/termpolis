@@ -2350,6 +2350,91 @@ describe('a LOCKED brain — the bulk writers stand down', () => {
   })
 })
 
+// ===========================================================================
+// 1.54.5 (MEM2-1): memory UNAVAILABLE (the host is down and the in-process fallback refused). Every write
+// throws unavailableMessage(), and getSyncStatus throws too, so the LOCKED gate above lets the pass through.
+// A reflection that ran then distilled, failed every write (groundEpisode swallows each one) and still
+// moved the cursor past the turns: those lessons were gone for good.
+// ===========================================================================
+describe('reflect-session while memory is UNAVAILABLE or refuses the writes: the cursor never moves', () => {
+  const unavailable = async (): Promise<void> => {
+    const { setMemoryUnavailableState } = await import('../../src/main/memoryFallbackGuard')
+    setMemoryUnavailableState({
+      attempt: 1, nextRetryAt: Date.now() + 20_000, retrying: true,
+      storeBytes: 1, limitBytes: 2, reason: 'memory host exited during startup (code 9)', since: Date.now(),
+    })
+  }
+  afterEach(async () => {
+    const { setMemoryUnavailableState } = await import('../../src/main/memoryFallbackGuard')
+    setMemoryUnavailableState(null)
+    delete process.env.TERMPOLIS_INGEST_UNAVAILABLE_SKIP
+    const { resetSessionCursors } = await import('../../src/main/sessionCursorStore')
+    resetSessionCursors()
+  })
+
+  // The real reflectSoloSession over the handler's own deps, with a groundEpisode-shaped reflex: each write
+  // is tried, a throw is swallowed and counted out of `written`, exactly as mnemeGround does.
+  const realPass = async (): Promise<void> => {
+    const actual = await vi.importActual<typeof import('../../src/main/mnemeSession')>('../../src/main/mnemeSession')
+    mneme.reflectSoloSession.mockImplementationOnce(async (input: any, deps: any) =>
+      actual.reflectSoloSession(input, { ...deps, readDelta: undefined }))
+    mneme.onSessionEpisode.mockImplementationOnce(async (_ep: any, deps: any) => {
+      const written: string[] = []
+      try { const r = await deps.write({ agentId: 'mneme', kind: 'lesson', content: 'x' }); if (r?.id) written.push(r.id) } catch { /* swallowed */ }
+      return { fired: true, lessons: 1, written }
+    })
+  }
+
+  it('does not read, distil or move the cursor while memory is unavailable', async () => {
+    await unavailable()
+    const r = await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    expect(r).toEqual({ success: true, data: { fired: false, lessons: 0 } })
+    expect(mneme.reflectSoloSession).not.toHaveBeenCalled()
+    expect(mneme.readSessionTranscript).not.toHaveBeenCalled()
+  })
+
+  it('TERMPOLIS_INGEST_UNAVAILABLE_SKIP=off runs the pass anyway (the 1.54.4 behaviour), and still keeps the cursor', async () => {
+    await unavailable()
+    process.env.TERMPOLIS_INGEST_UNAVAILABLE_SKIP = 'off'
+    await realPass()
+    mem.memoryWrite.mockImplementationOnce(async () => { throw new Error((await import('../../src/main/memoryFallbackGuard')).unavailableMessage()) })
+    const r = await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(1)
+    expect(r).toEqual({ success: true, data: { fired: false, lessons: 0 } })
+    const { getSessionCursor, sessionCursorKey } = await import('../../src/main/sessionCursorStore')
+    expect(getSessionCursor(sessionCursorKey('/r', 'claude'))).toBeUndefined()
+  })
+
+  it.each([
+    ['unavailable', async () => (await import('../../src/main/memoryFallbackGuard')).unavailableMessage()],
+    ['locked', async () => 'Memory is locked (key-unreadable): the key cannot be read. Nothing new is being saved; open the Memory panel to see why.'],
+  ])('a write refused as %s during the pass leaves the cursor where it was, so the next pass reflects the turns again', async (_k, msg) => {
+    await realPass()
+    const text = await msg()
+    mem.memoryWrite.mockImplementationOnce(async () => { throw new Error(text) })
+    const r = await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    expect(r).toEqual({ success: true, data: { fired: false, lessons: 0 } })
+    const { getSessionCursor, sessionCursorKey } = await import('../../src/main/sessionCursorStore')
+    expect(getSessionCursor(sessionCursorKey('/r', 'claude'))).toBeUndefined()
+  })
+
+  it('control: a write that lands moves the cursor; a write that fails for another reason stays best effort', async () => {
+    const { getSessionCursor, sessionCursorKey } = await import('../../src/main/sessionCursorStore')
+    await realPass()
+    expect(await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' }))
+      .toEqual({ success: true, data: { fired: true, lessons: 1 } })
+    expect(getSessionCursor(sessionCursorKey('/r', 'claude'))).toMatchObject({ count: 1 })
+
+    const { resetSessionCursors } = await import('../../src/main/sessionCursorStore')
+    resetSessionCursors()
+    await realPass()
+    mem.memoryWrite.mockImplementationOnce(async () => { throw new Error('content too long') })
+    expect(await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' }))
+      .toEqual({ success: true, data: { fired: true, lessons: 1 } })
+    expect(getSessionCursor(sessionCursorKey('/r', 'claude'))).toMatchObject({ count: 1 })
+  })
+})
+
 describe('memory:start-new-key — the only way past LOCKED (Decision 1)', () => {
   it('returns the new status', async () => {
     expect(await invoke('memory:start-new-key')).toEqual({ success: true, data: { ownLocked: false, lockReason: null } })

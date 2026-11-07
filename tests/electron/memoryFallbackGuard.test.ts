@@ -17,6 +17,7 @@ import {
   RETRY_BASE_MS, RETRY_CAP_MS, retryDelayMs, retryReadyTimeoutMs,
   UNAVAILABLE_PREFIX, unavailableMessage, isMemoryUnavailableMessage,
   setMemoryUnavailableState, memoryUnavailableInfo, isMemoryUnavailable, type MemoryUnavailableState,
+  skipPassWhileUnavailable, isWriteRefusedMessage, LOCKED_PREFIX,
 } from '../../src/main/memoryFallbackGuard'
 import {
   initSwarmMemory, memoryWrite, memoryCount, _resetForTests, _setEmbeddingsAvailable, _setMaxShardBytesForTests,
@@ -280,5 +281,30 @@ describe('memoryUnavailableInfo — what the Settings panel reads', () => {
     const first = memoryUnavailableInfo(1_000_000) as { attempt: number }
     first.attempt = 99
     expect(memoryUnavailableInfo(1_000_000).attempt).toBe(3)
+  })
+})
+
+// 1.54.5 (MEM2-1): the passes that only add stand down while memory is unavailable (one switch for all of
+// them), and a write the store refused as a whole is told apart from a failure of that one write.
+describe('skipPassWhileUnavailable and isWriteRefusedMessage', () => {
+  const down: MemoryUnavailableState = {
+    attempt: 1, nextRetryAt: 0, retrying: true, storeBytes: 1, limitBytes: 2, reason: 'x', since: 0,
+  }
+  afterEach(() => setMemoryUnavailableState(null))
+
+  it('skips only while memory is unavailable, unless the switch says off', () => {
+    expect(skipPassWhileUnavailable({})).toBe(false)
+    setMemoryUnavailableState(down)
+    expect(skipPassWhileUnavailable({})).toBe(true)
+    expect(skipPassWhileUnavailable({ TERMPOLIS_INGEST_UNAVAILABLE_SKIP: '' })).toBe(true)
+    for (const v of ['off', '0', 'FALSE', ' no ']) expect(skipPassWhileUnavailable({ TERMPOLIS_INGEST_UNAVAILABLE_SKIP: v })).toBe(false)
+  })
+
+  it('a refusal is the unavailable or the LOCKED message; anything else is about one write', () => {
+    expect(isWriteRefusedMessage(unavailableMessage())).toBe(true)
+    expect(isWriteRefusedMessage(`${LOCKED_PREFIX}key-unreadable): no`)).toBe(true)
+    expect(isWriteRefusedMessage('content too long')).toBe(false)
+    expect(isWriteRefusedMessage(undefined)).toBe(false)
+    expect(isWriteRefusedMessage(42)).toBe(false)
   })
 })
