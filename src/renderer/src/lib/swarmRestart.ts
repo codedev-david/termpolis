@@ -321,6 +321,8 @@ async function takeBackLimit(terminalId: string, deps: RestartDeps): Promise<voi
   const accountId = recorded.get(terminalId)
   if (accountId === undefined) return
   recorded.delete(terminalId)
+  // The account's limit is one record that several workers' stops can stand on: it goes with the last of them (CH4-5).
+  for (const other of recorded.values()) if (other === accountId) return
   try {
     await deps.accounts.clearLimit(accountId)
     const fresh = await deps.accounts.list()

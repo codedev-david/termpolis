@@ -1749,6 +1749,22 @@ describe('a stop that recorded a limit, and the worker working again (SWARM-R3-4
     expect(cleared()).toEqual([])
   })
 
+  // CH4-5: the account's limit is one record, and two workers' stops can stand on it. One of them at work again says nothing of the other.
+  it('keeps the limit while another worker\'s stop on the same account still stands, and takes it back with the last one', async () => {
+    useTerminalStore.setState({ swarmAgents: [
+      { terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' },
+      { terminalId: 'w2', agentName: 'Claude', role: 'Tests', status: 'blocked' },
+    ] })
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    await offerRestart(W2, LIMIT, () => WORDS, deps)
+    expect(groups()[0].workers.map((w) => w.terminalId)).toEqual(['w1', 'w2'])
+    await withdrawFromOffer(W1, deps)
+    expect(cleared()).toEqual([])
+    expect(groups()[0].workers.map((w) => w.terminalId)).toEqual(['w2'])
+    await withdrawFromOffer(W2, deps)
+    expect(cleared()).toEqual(['acc_m'])
+  })
+
   it('never takes it back for a worker whose stop recorded nothing', async () => {
     await withdrawFromOffer(W1, deps)
     expect(cleared()).toEqual([])
