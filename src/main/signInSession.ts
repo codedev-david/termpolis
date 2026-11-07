@@ -381,7 +381,8 @@ function onExit(s: Session, deps: SessionDeps, code: number): void {
   const screen = current(s)
   if (screen.kind === 'error') return fail(s, deps, screen.message)
   if (screen.kind === 'done' || code === 0) return void confirm(s, deps)
-  fail(s, deps, `${name}'s sign-in ended before it signed in (exit code ${code})`)
+  // The sheet puts the agent's name before it ("Claude Code didn't sign in: ..."), so the sentence does not say it again (UI4-9).
+  fail(s, deps, `it exited before it signed in (exit code ${code})`)
 }
 
 /**

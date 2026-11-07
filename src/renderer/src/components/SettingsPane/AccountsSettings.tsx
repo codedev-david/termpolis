@@ -27,12 +27,12 @@ const TONE: Record<BadgeTone, string> = {
   muted: 'text-[#9ca3af] border-[#3c3c3c]',
 }
 
-/** The check a StopFailure hook needs to stand down inside Termpolis (design §8.6). */
 /** What Remove says of deleting the folder by hand: some of its subfolders are links into the main profile, which a tool that follows links
  *  (PowerShell 5.1's Remove-Item -Recurse) would delete the contents of (W3-0). The documentation has the steps. */
-export const DELETE_FOLDER_NOTE = 'To delete the folder yourself, remove its links first (see Removing an account in the documentation): they lead into your main profile.'
+export const DELETE_FOLDER_NOTE = 'To delete the folder yourself, remove any links in it first (see Removing an account in the documentation): they lead into your main profile.'
 
-export const HOOK_CHECK ='if [ "${TERMPOLIS_LIMIT_CHOOSER:-}" = "1" ]; then exit 0; fi'
+/** The check a StopFailure hook needs to stand down inside Termpolis (design §8.6). */
+export const HOOK_CHECK = 'if [ "${TERMPOLIS_LIMIT_CHOOSER:-}" = "1" ]; then exit 0; fi'
 
 const AGY_TEXT = 'The Antigravity CLI keeps one Google sign-in for your whole computer user, in the OS keyring, so it has no separate profiles. An account here is a name and the Google email it signs in with. Switching to one moves every agy terminal on this computer to it.'
 
@@ -275,8 +275,8 @@ export function AccountsSettings() {
             ? `Termpolis forgets ${r.label}. agy's own sign-in stays as it is.`
             : r.isDefault
               // The main profile holds no entries of its own to take out: Agent Integration connects it.
-              ? `Termpolis forgets ${r.label}. Your main profile stays connected through Agent Integration, and its folder, its sign-in and its links stay. ${DELETE_FOLDER_NOTE}`
-              : `Termpolis forgets ${r.label} and takes its entries out of the profile. The folder, its sign-in and its links stay. ${DELETE_FOLDER_NOTE}`}
+              ? `Termpolis forgets ${r.label}. Your main profile stays connected through Agent Integration, and its folder and its sign-in stay.`
+              : `Termpolis forgets ${r.label} and takes its entries out of the profile. The folder, its sign-in and any links in it stay. ${DELETE_FOLDER_NOTE}`}
         </span>
         <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { const c = must(await api.remove(r.id)).changes; setRowAction(null); return c }) }} data-testid={`account-remove-yes-${r.id}`}>Remove</button>
         <button className={BUTTON} onClick={() => setRowAction(null)}>Keep it</button>

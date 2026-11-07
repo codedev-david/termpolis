@@ -26,7 +26,7 @@
 import type { ModelProvider } from './modelCatalog'
 import { HINT_FLAG_WORD } from '../../../shared/accountSwitch'
 
-const UUID ='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 const UUID_ONLY = new RegExp(`^${UUID}$`, 'i')
 const UUID_ANYWHERE = new RegExp(UUID, 'i')
 

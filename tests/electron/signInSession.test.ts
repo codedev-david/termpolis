@@ -233,7 +233,7 @@ describe('Claude Code: claude auth login', () => {
     deps.spawn = () => fakePty((io) => { exit = io.exit; io.write('Something new\r\n'); return { input: () => undefined } })
     startSignInSession(spec(), deps)
     exit(3)
-    expect(last()).toMatchObject({ kind: 'error', message: "Claude Code's sign-in ended before it signed in (exit code 3)" })
+    expect(last()).toMatchObject({ kind: 'error', message: 'it exited before it signed in (exit code 3)' })
   })
 
   it('asks the status command when the CLI ends cleanly with no words of its own', async () => {
