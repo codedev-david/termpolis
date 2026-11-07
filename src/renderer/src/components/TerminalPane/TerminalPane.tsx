@@ -11,6 +11,7 @@ import { createChunkQueue } from '../../lib/chunkQueue'
 import { holdOutput, holdOutputLegacy, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
 import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER, SWITCH_FIT_FLOOR, SWITCH_RESIZE_TELL_FIRST, SWITCH_HIDDEN_PANES, SWITCH_PANE_EFFECTS } from '../../lib/paneSwitches'
 import { paneRootStyle } from '../../lib/paneHiding'
+import { holdHiddenSelectionRepaints, type HiddenSelectionHold } from '../../lib/hiddenSelectionHold'
 import { createPaneEffects, trackPaneEffects, paneEffectsSnapshot, type PaneEffects } from '../../lib/paneSideEffects'
 import { subscribeTerminalOutput } from '../../lib/paneRouting'
 import { createPaneFitter, type PaneFitter } from '../../lib/paneFitter'
@@ -369,6 +370,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   const paneEffectsRef = useRef<PaneEffects | null>(null)
   // This mount's output path, so a Clear can drop what is still queued for the screen it just cleared.
   const paneOutputRef = useRef<PaneOutput | null>(null)
+  // This mount's hold on xterm's selection repaints while the pane is hidden (hiddenSelectionHold.ts); null with the
+  // hidden-pane kill switch off, or on an xterm without the internals it wraps.
+  const hiddenSelectionHoldRef = useRef<HiddenSelectionHold | null>(null)
   const [skipHiddenRender] = useState(() => switchEnabled(SWITCH_HIDDEN_PANES))
   // The current mount's count of history writes still being parsed (see writeHistory) — so a
   // Clear's mode restore, made outside the mount effect, is counted where onData looks.
@@ -1103,6 +1107,11 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
     // 3. Open terminal (attach to DOM) — must come before WebGL
     term.open(containerRef.current)
+    // A hidden pane's renderer is paused, but xterm still repaints its whole viewport on every scroll through the
+    // selection path; hold that while the pane is hidden (the kill switch off = 1.54.4's behaviour).
+    const hiddenSelectionHold = skipHiddenRender ? holdHiddenSelectionRepaints(term) : null
+    hiddenSelectionHold?.setHidden(!isVisibleRef.current)
+    hiddenSelectionHoldRef.current = hiddenSelectionHold
 
     // 4. Renderer. xterm's default DOM renderer is the slowest and is the source
     // of typing/paint latency. The GPU WebGL renderer is far faster — BUT under a
@@ -1913,6 +1922,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // instance, and leaving a dead pane in the budget would hold a slot that a live
       // terminal needs for TERMINAL_DISPOSE_DELAY_MS.
       releaseWebglPane?.()
+      hiddenSelectionHold?.dispose()
+      if (hiddenSelectionHoldRef.current === hiddenSelectionHold) hiddenSelectionHoldRef.current = null
       // Everything above is synchronous, so `disposed` is already true and every pending
       // callback in this effect is a no-op — but the Terminal itself has to outlive the
       // cleanup by TERMINAL_DISPOSE_DELAY_MS (see the constant) so xterm's own uncancelled
@@ -1972,6 +1983,11 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // there, not per chunk), so what the user looks at, the prompt, the agent, the diff badge, is current.
   useEffect(() => {
     if (isVisible) paneEffectsRef.current?.flush()
+  }, [isVisible, terminalId])
+
+  // Shown: the selection repaint held while the pane was hidden is drawn now; hidden: the next ones are held.
+  useEffect(() => {
+    hiddenSelectionHoldRef.current?.setHidden(!isVisible)
   }, [isVisible, terminalId])
 
   // Put the cursor on the active terminal's command line so it's ready for input

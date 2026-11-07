@@ -370,6 +370,51 @@ describe('TerminalPane: the style of an inactive pane', () => {
   })
 })
 
+describe("TerminalPane: a hidden pane does not repaint its rows on every scroll", () => {
+  // xterm queues a selection refresh on EVERY scroll, selection or not, and RenderService hands it to the renderer without
+  // checking whether rendering is paused; the DOM renderer answers by repainting every row (hiddenSelectionHold.ts).
+  type SelectionSpy = ReturnType<typeof vi.fn>
+  const spySelectionRepaints = (t: Terminal): SelectionSpy => {
+    const renderer = (t as unknown as { _core: { _renderService: { _renderer: { value: { handleSelectionChanged: (...a: unknown[]) => void } } } } })
+      ._core._renderService._renderer.value
+    return vi.spyOn(renderer, 'handleSelectionChanged') as unknown as SelectionSpy
+  }
+  /** `n` messages of 40 lines each to terminal `id`, one frame apart: every one scrolls its viewport. */
+  const scroll = async (id: string, n: number): Promise<void> => {
+    for (let i = 0; i < n; i++) {
+      const lines = Array.from({ length: 40 }, (_, k) => `${id} line ${i * 40 + k}`).join('\r\n') + '\r\n'
+      await act(async () => { ipc.emit('terminal:data', id, lines, (i + 1) * 10); await vi.advanceTimersByTimeAsync(20) })
+    }
+    await settle(300)
+  }
+
+  it('hidden: no selection repaint at all; shown: exactly one, with the latest selection; the pane on screen still gets its own', async () => {
+    await mount(tabs(2, 0))
+    await settle(500)
+    const [onScreen, hidden] = [spySelectionRepaints(term(0)), spySelectionRepaints(term(1))]
+    await scroll('t1', 20)
+    expect(term(1).buffer.active.baseY).toBeGreaterThan(0) // it did scroll, 800 lines into a short viewport
+    expect(hidden).not.toHaveBeenCalled()
+    await scroll('t0', 5)
+    expect(onScreen.mock.calls.length).toBeGreaterThan(0) // the hold is for hidden panes only
+    await show(tabs(2, 1))
+    expect(hidden).toHaveBeenCalledTimes(1)
+    expect(hidden.mock.calls[0]).toEqual([undefined, undefined, false]) // nothing selected: the renderer is told so
+    // Shown, the pane is back to xterm's own behaviour.
+    await scroll('t1', 3)
+    expect(hidden.mock.calls.length).toBeGreaterThan(1)
+  })
+
+  it("NEGATIVE CONTROL: with 'termpolis.hiddenPanes' = '0' the hidden pane repaints on every scroll, as in 1.54.4", async () => {
+    window.localStorage.setItem(SWITCH_HIDDEN_PANES, '0')
+    await mount(tabs(2, 0))
+    await settle(500)
+    const hidden = spySelectionRepaints(term(1))
+    await scroll('t1', 20)
+    expect(hidden.mock.calls.length).toBeGreaterThanOrEqual(10)
+  })
+})
+
 describe('TerminalPane: how a pane hears its terminal', () => {
   it('10 panes: ONE ipcRenderer listener, and 1 message = 1 pane callback, 1 xterm write', async () => {
     await mount(tabs(10))
