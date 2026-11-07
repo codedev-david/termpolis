@@ -112,3 +112,25 @@ describe('closing a terminal on Windows asks the proc host, never forks', () => 
     expect(H.forks).toBe(0)
   })
 })
+
+describe('TERMPOLIS_CONSOLE_LIST_INPROC=1 (EDR2-3 kill switch): closing a terminal is node-pty\'s own again (1.54.4)', () => {
+  afterEach(() => { delete process.env.TERMPOLIS_CONSOLE_LIST_INPROC })
+
+  it('with the switch on, node-pty keeps its own console listing: it forks, and the proc host is never asked', async () => {
+    setPlatform('win32')
+    process.env.TERMPOLIS_CONSOLE_LIST_INPROC = '1'
+    tm.spawnTerminal('s1', 'C:\\Windows\\System32\\cmd.exe', 'C:\\', () => {})
+    expect(await H.agents[0]._getConsoleProcessList()).toEqual([9000])
+    expect(H.forks).toBe(1)
+    expect(H.hostAsks).toHaveLength(0)
+  })
+
+  it('any other value leaves the 1.54.5 path on', async () => {
+    setPlatform('win32')
+    process.env.TERMPOLIS_CONSOLE_LIST_INPROC = 'yes'
+    tm.spawnTerminal('s2', 'C:\\Windows\\System32\\cmd.exe', 'C:\\', () => {})
+    await H.agents[0]._getConsoleProcessList()
+    expect(H.forks).toBe(0)
+    expect(H.hostAsks).toHaveLength(1)
+  })
+})

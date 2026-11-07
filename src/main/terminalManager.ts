@@ -11,6 +11,7 @@ import { flushBeforeResize } from './ptyResizeFlush'
 import { sudoAskpassEnv } from './sudoAskpass'
 import { integrationScriptState, INTEGRATION_SCRIPT_NAME, type SpawnPrep } from './terminalSpawnPrep'
 import { shellAlone, readConsoleProcessList } from './shellAlone'
+import { consoleListInProc } from './consoleListInProc'
 import {
   detectShellKind,
   integrationArgs,
@@ -271,7 +272,8 @@ export function spawnTerminal(
     throw new Error(`Failed to open terminal: ${msg}`)
   }
 
-  if (process.platform === 'win32') endConsoleOffThread(proc)
+  // TERMPOLIS_CONSOLE_LIST_INPROC=1 leaves node-pty's own console listing in place (the 1.54.4 close).
+  if (process.platform === 'win32' && !consoleListInProc()) endConsoleOffThread(proc)
   const coalescer = createOutputCoalescer(onData)
   proc.onData((chunk) => coalescer.push(chunk))
   const pid = proc.pid

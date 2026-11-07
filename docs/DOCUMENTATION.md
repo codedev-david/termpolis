@@ -916,6 +916,7 @@ Every one of these mechanisms has a switch that puts back the 1.54.4 behaviour, 
 - `TERMPOLIS_NO_GOVERNOR=1`: no busy watchdog; nothing ever pauses.
 - `TERMPOLIS_NO_HOST_PRIORITY=1`: the background hosts (memory, proc) keep normal process priority. A comma list (`memory`, `proc`) keeps it for the hosts it names alone. The Headroom proxy and the remote bridge always run at normal priority: they carry model replies and phone typing.
 - `TERMPOLIS_CONSOLE_LIST_NORMAL=0`: the console-list helper (the check before typing into an agent on Windows) stays at the below-normal priority it inherits from the proc host, instead of putting itself back to normal.
+- `TERMPOLIS_CONSOLE_LIST_INPROC=1`: on Windows, the check before typing into an agent and the closing of a terminal read the terminal's console the 1.54.4 way, with node-pty's own helper started from the main process, instead of the console-list helper run by the proc host.
 - `TERMPOLIS_CODE_GRAPH_FILE_CAP=<KB>`: the code graph leaves out a source file longer than this (default 512 KB; its parse is one block on the main thread). `0` turns the cap off.
 - `TERMPOLIS_INGEST_UNAVAILABLE_SKIP=off`: conversation learning and learning from an agent session run their passes while memory is unavailable (every write fails), instead of skipping them until memory is back. Either way, a session pass whose lessons memory refused leaves its place in the transcript, so the next pass learns those turns again.
 - `TERMPOLIS_TYPING_TRACE=0`: the keystroke-to-echo trace is off and adds nothing.

@@ -3,6 +3,7 @@ import { basename, dirname } from 'path'
 import { execCaptureOffThread } from './procClient'
 import { ensureConsoleListHelper } from './consoleListHelper'
 import { createSingleFlight } from './singleFlight'
+import { consoleListInProc, forkConsoleList } from './consoleListInProc'
 
 /**
  * Whether nothing runs in a terminal but its shell: whatever was typed at its prompt, an agent
@@ -59,7 +60,8 @@ export function ownConsoleProcesses(executable: string): number | null {
 async function aloneOnConsole(pid: number, executable: string): Promise<boolean | null> {
   const own = ownConsoleProcesses(executable)
   if (own === null) return null
-  const attached = await consoleProcesses(pid, own)
+  // TERMPOLIS_CONSOLE_LIST_INPROC=1 (consoleListInProc.ts): the 1.54.4 read, node-pty's helper forked from main.
+  const attached = consoleListInProc() ? await forkConsoleList(pid, CONSOLE_LIST_TIMEOUT_MS) : await consoleProcesses(pid, own)
   return attached === null || !attached.includes(pid) ? null : attached.length <= own
 }
 
