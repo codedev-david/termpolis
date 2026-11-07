@@ -221,12 +221,18 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
   }
 
   const onKey = (e: React.KeyboardEvent): void => {
-    // Tab leaves the menu from every state, back to the terminal, as it does from the list: left open, the second question or the
-    // submenu kept the menu on screen with the focus on the page behind it, where Esc (handled here) did nothing (R3-3).
+    // Tab leaves the menu from the list and the submenu, back to the terminal: left open, the menu stayed on screen with the focus on
+    // the page behind it, where Esc (handled here) did nothing (R3-3). In the second question it goes round the answers instead: the
+    // focus starts on Cancel, and Tab is the keyboard's only way to the yes (UI4-1).
     if (e.key === 'Tab') {
       e.preventDefault()
       e.stopPropagation()
-      return close()
+      if (!confirm) return close()
+      const buttons = Array.from(root.current?.querySelectorAll<HTMLElement>('[data-testid="account-menu-confirm"] button') ?? [])
+      const at = buttons.indexOf(document.activeElement as HTMLElement)
+      const next = at < 0 ? (e.shiftKey ? buttons.length - 1 : 0) : (at + (e.shiftKey ? -1 : 1) + buttons.length) % buttons.length
+      buttons[next]?.focus()
+      return
     }
     if (confirm) {
       if (e.key === 'Escape') {

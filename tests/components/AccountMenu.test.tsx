@@ -759,7 +759,7 @@ describe('the work login in a profile asks the second question whatever the row 
   })
 })
 
-describe('Tab inside the menu closes it from every state, as it does from the list (R3-3)', () => {
+describe('Tab inside the menu closes it from the list and the submenu, and goes round the question\'s answers (R3-3, UI4-1)', () => {
   it('closes it from the list, with the keyboard back in the terminal', async () => {
     openMenu()
     await settle()
@@ -767,15 +767,51 @@ describe('Tab inside the menu closes it from every state, as it does from the li
     expect(st().accountMenu).toBeNull()
   })
 
-  it('closes it from the work account\'s second question, and takes the key as its own', async () => {
+  it('goes round the work account\'s second question with Tab, and takes the key as its own, so the keyboard reaches the yes (UI4-1)', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(rowOf('work'))
+    expect(screen.getByTestId('account-menu-confirm-no')).toHaveFocus()
+    const notPrevented = fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab' })
+    expect(notPrevented).toBe(false)
+    expect(st().accountMenu).not.toBeNull()
+    expect(screen.getByTestId('account-menu-confirm-yes')).toHaveFocus()
+    key('Tab')
+    expect(screen.getByTestId('account-menu-confirm-no')).toHaveFocus()
+    expect(startSwitch).not.toHaveBeenCalled()
+  })
+
+  it('switches onto the work account with the keyboard alone: Tab to the yes, Enter (UI4-1)', async () => {
     openMenu()
     await settle()
     fireEvent.click(rowOf('work'))
     expect(screen.getByTestId('account-menu-confirm')).toBeInTheDocument()
+    key('Tab')
+    const yes = screen.getByTestId('account-menu-confirm-yes')
+    expect(yes).toHaveFocus()
+    expect(yes).toHaveTextContent('Switch to work')
+    // A focused button's Enter is its click.
+    fireEvent.click(document.activeElement as HTMLElement)
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_w', { confirmed: true })
+  })
+
+  it('reaches every answer of the Carry it question with the keyboard, Shift+Tab going the other way round (UI4-1)', async () => {
+    openMenu({ byHand: true })
+    await settle()
+    fireEvent.click(rowOf('codedev'))
     expect(screen.getByTestId('account-menu-confirm-no')).toHaveFocus()
-    const notPrevented = fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab' })
-    expect(notPrevented).toBe(false)
-    expect(st().accountMenu).toBeNull()
+    key('Tab')
+    expect(screen.getByTestId('account-menu-confirm-yes')).toHaveFocus()
+    expect(screen.getByTestId('account-menu-confirm-yes')).toHaveTextContent('Carry it to codedev')
+    key('Tab')
+    expect(screen.getByTestId('account-menu-confirm-new')).toHaveFocus()
+    fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab', shiftKey: true })
+    fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab', shiftKey: true })
+    expect(screen.getByTestId('account-menu-confirm-no')).toHaveFocus()
+    fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab', shiftKey: true })
+    expect(screen.getByTestId('account-menu-confirm-new')).toHaveFocus()
+    fireEvent.click(document.activeElement as HTMLElement)
+    expect(newTerminalOn).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }), expect.objectContaining({ id: 'acc_b' }))
     expect(startSwitch).not.toHaveBeenCalled()
   })
 
@@ -790,12 +826,13 @@ describe('Tab inside the menu closes it from every state, as it does from the li
     expect(newTerminalOn).not.toHaveBeenCalled()
   })
 
-  it('and Shift+Tab does the same from the question and from the submenu', async () => {
+  it('and Shift+Tab closes it from the submenu, while in the question it goes round its answers', async () => {
     openMenu()
     await settle()
     fireEvent.click(rowOf('work'))
     fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab', shiftKey: true })
-    expect(st().accountMenu).toBeNull()
+    expect(st().accountMenu).not.toBeNull()
+    expect(screen.getByTestId('account-menu-confirm-yes')).toHaveFocus()
     cleanup()
     openMenu()
     await settle()
