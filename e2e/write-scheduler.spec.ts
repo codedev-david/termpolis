@@ -88,7 +88,8 @@ async function createTerminal(page: Page, name: string): Promise<void> {
   await page.waitForTimeout(400)
   const nameInput = page.locator('h2:has-text("New Terminal")').locator('..').locator('input').first()
   await nameInput.fill(name)
-  await page.keyboard.press('Enter')
+  // The dialog has no Enter-to-create: Enter in the name field left it open, and its backdrop took the next click.
+  await page.getByRole('button', { name: 'Create', exact: true }).click()
   await page.waitForTimeout(1200)
 }
 
