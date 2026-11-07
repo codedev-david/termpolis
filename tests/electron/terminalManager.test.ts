@@ -73,11 +73,18 @@ describe('terminalManager', () => {
     mockPty.write.mockReset()
     mockPty.resize.mockReset()
     mockPty.kill.mockReset()
+    // killTerminal/killAll end the shell with process.kill(pty.pid), and 12345 is a made-up pid that a REAL process
+    // on a CI runner may hold: an unguarded SIGTERM to it can kill a vitest worker or the runner. Nothing real is
+    // signalled; a test that spies process.kill itself gets this same spy back.
+    vi.spyOn(process, 'kill').mockImplementation(() => true)
   })
 
   afterEach(() => {
-    // Clean up all terminals between tests so the internal map is fresh
+    // Clean up all terminals between tests so the internal map is fresh. Spied again first: a test may have
+    // restored process.kill, and killAll still signals each shell's pid.
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
     killAll()
+    kill.mockRestore()
   })
 
   // 1. spawnTerminal creates a pty with correct args and stores it

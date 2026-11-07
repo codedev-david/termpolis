@@ -511,7 +511,13 @@ async function simulate(events: Ev[], opts: { w1: number; rows: number }): Promi
   }
 }
 
+let killSpy: ReturnType<typeof vi.spyOn> | null = null
+
 beforeEach(() => {
+  // killTerminal ends the shell with process.kill(pty.pid). The pid here is a made-up number, and on a CI runner
+  // a REAL process may hold it: an unguarded SIGTERM to it killed the Ubuntu job's vitest worker ("Worker exited
+  // unexpectedly") and, on the run before, the runner itself ("received a shutdown signal"). Nothing real is signalled.
+  killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-resize-flush-'))
   setSafeStorage(fakeSafeStorage())
@@ -535,6 +541,8 @@ afterEach(() => {
   _resetSupervisorForTests()
   _resetRemoteHostForTests()
   killAll()
+  killSpy?.mockRestore()
+  killSpy = null
   setSafeStorage(null)
   vi.useRealTimers()
   delete process.env[KILL_SWITCH]

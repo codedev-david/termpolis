@@ -53,8 +53,14 @@ afterAll(async () => {
   rmSync(USER_DATA, { recursive: true, force: true })
 })
 
+let killSpy: ReturnType<typeof vi.spyOn> | null = null
+
 beforeEach(() => {
   vi.clearAllMocks()
+  // killTerminal ends the shell with process.kill(pty.pid). The pid here is a made-up number, and on a CI runner
+  // a REAL process may hold it: an unguarded SIGTERM to it killed the Ubuntu job's vitest worker ("Worker exited
+  // unexpectedly") and, on the run before, the runner itself ("received a shutdown signal"). Nothing real is signalled.
+  killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
   vi.mocked(execSync).mockReturnValue(Buffer.from(''))
   vi.mocked(existsSync).mockReturnValue(true)
   mockPty.onData.mockReset()
@@ -69,6 +75,8 @@ afterEach(() => {
   delete process.env[RESIZE_FLUSH_DISABLE_FLAG]
   // Clean up all terminals between tests so the internal map is fresh
   killAll()
+  killSpy?.mockRestore()
+  killSpy = null
 })
 
 /** A terminal that logs, in the order they happen, what it emits, what reads it before a resize and

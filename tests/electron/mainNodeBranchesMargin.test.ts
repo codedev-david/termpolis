@@ -297,15 +297,20 @@ type ExecCallback = (err: Error | null, stdout: string, stderr: string) => void
 
 describe('terminalManager — async cwd probe', () => {
   let platformDescriptor: PropertyDescriptor | undefined
+  let killSpy: ReturnType<typeof vi.spyOn> | null = null
 
   beforeEach(() => {
     platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
     h.exec.mockReset()
     h.spawn.mockClear()
+    // killTerminal signals pty.pid, a made-up number here that a real process on the machine may hold.
+    killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
   })
 
   afterEach(() => {
     if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor)
+    killSpy?.mockRestore()
+    killSpy = null
   })
 
   function setPlatform(value: NodeJS.Platform): void {

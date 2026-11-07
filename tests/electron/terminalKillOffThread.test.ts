@@ -52,8 +52,14 @@ beforeEach(() => {
   H.noAgent = false
   H.noInner = false
   H.hostReply = { stdout: JSON.stringify({ self: 55, list: [55, 9000, 9101, 9102] }), stderr: '' }
+  // killTerminal ends the shell with process.kill(pty.pid), and 9000+ is a made-up pid that a REAL process on a CI
+  // runner may hold: an unguarded SIGTERM to it can kill a vitest worker or the runner. Nothing real is signalled.
+  vi.spyOn(process, 'kill').mockImplementation(() => true)
 })
-afterEach(() => { Object.defineProperty(process, 'platform', realPlatform) })
+afterEach(() => {
+  Object.defineProperty(process, 'platform', realPlatform)
+  vi.mocked(process.kill).mockRestore()
+})
 
 describe('closing a terminal on Windows asks the proc host, never forks', () => {
   it('node-pty\'s console listing is answered by the proc host, with the helper left out and the shell in', async () => {
