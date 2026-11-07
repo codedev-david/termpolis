@@ -43,6 +43,7 @@ function makeWinFixture(appOutDir: string, includeAdapter: boolean, size = 123) 
   mkdirSync(join(res, 'mcp-adapter'), { recursive: true })
   if (includeAdapter) {
     writeFileSync(join(res, 'mcp-adapter', 'stdio-adapter.cjs'), 'x'.repeat(size))
+    writeFileSync(join(res, 'mcp-adapter', 'termpolis-console-list.cjs'), 'x'.repeat(size))
   }
   return res
 }
@@ -52,6 +53,7 @@ function makeMacFixture(appOutDir: string, includeAdapter: boolean) {
   mkdirSync(join(res, 'mcp-adapter'), { recursive: true })
   if (includeAdapter) {
     writeFileSync(join(res, 'mcp-adapter', 'stdio-adapter.cjs'), 'x'.repeat(100))
+    writeFileSync(join(res, 'mcp-adapter', 'termpolis-console-list.cjs'), 'x'.repeat(100))
   }
   return res
 }
@@ -310,6 +312,10 @@ describe('verifyPackagedResources — REQUIRED_RESOURCE_FILES contract', () => {
 
   it('includes the stdio adapter — every other check is cosmetic if this is missing', () => {
     expect(verifier.REQUIRED_RESOURCE_FILES).toContain('mcp-adapter/stdio-adapter.cjs')
+  })
+
+  it('includes the Windows console-list helper (1.54.5, EDR2-1): without it every submit check is "cannot tell"', () => {
+    expect(verifier.REQUIRED_RESOURCE_FILES).toContain('mcp-adapter/termpolis-console-list.cjs')
   })
 
   it('every required file has a matching source file in the repo so the build can actually ship it', () => {

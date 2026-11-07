@@ -29,8 +29,11 @@ const path = require('path')
  *   - stdio-adapter.cjs is what Claude Code spawns via ~/.mcp.json.
  *     If it's missing, the swarm conductor has no MCP tools and silently
  *     falls back to direct answering.
+ *   - main/consoleListHelper.ts resolves `<resources>/mcp-adapter/termpolis-console-list.cjs` (1.54.5).
+ *     If it's missing, every Windows check before typing into an agent answers
+ *     "cannot tell" and every terminal close ends the shell alone.
  */
-const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs']
+const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs', 'mcp-adapter/termpolis-console-list.cjs']
 
 // The bundled offline embedding model + its WASM runtime. Verified SEPARATELY
 // (not in REQUIRED_RESOURCE_FILES) because a build without the model downloaded
