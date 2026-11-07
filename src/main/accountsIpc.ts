@@ -445,7 +445,7 @@ function noteUnseenLaunch(terminalId: string, end: number, now: number, lookNow:
   if (!io || !prev?.agent) return
   if (!agentGone(io, terminalId, prev, now, lookNow())) return
   prev.ended = true
-  setStart(terminalId, { at: end, commands: [prev.agent], agent: prev.agent, time: now, unsure: true })
+  setStart(terminalId, { at: end, commands: [prev.agent], agent: prev.agent, time: now, unsure: true, unseen: true })
   if (prev.agent === 'claude') noteTerminalSession(terminalId, null)
 }
 

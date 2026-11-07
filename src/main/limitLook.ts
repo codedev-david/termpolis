@@ -33,6 +33,9 @@ export interface LiveStart {
   /** The line was made with the shell's own editing (a history recall, Tab completion, a cursor move), so what ran can differ
    *  from the keys Termpolis saw: `commands` name only the agent, and its model and flags are not known (MODELS-R2-4). */
   unsure?: boolean
+  /** No start was seen at all: an edited line after the agent's exit may have run it again (accountsIpc.ts noteUnseenLaunch).
+   *  Kept for the switch; the chooser counts it only where this terminal can show the agent's exit (CH4-1). */
+  unseen?: boolean
   /** Seen gone since: latched until the next start. */
   ended?: boolean
   /** Took a turn since: a prompt entered in its box, or seen at work. */
@@ -76,6 +79,14 @@ export function agentGone(io: SwitchIO, id: string, start: LiveStart, now: numbe
   return now - (start.time ?? 0) >= FOREGROUND_GRACE_MS && io.atShell?.(id) === true
 }
 
+/** Can this terminal ever show an agent's exit? A shell that reports its prompts, or a PTY whose foreground can be read
+ *  (macOS, Linux). Git Bash on Windows with a PROMPT_COMMAND of its own shows neither: a guessed start there would stay
+ *  live for the life of the terminal, so a `cat` of a limit screen, or another agent's limit, would read as its stop. */
+function exitVisible(io: SwitchIO, id: string): boolean {
+  const r = io.reported?.(id)
+  return !!(r && (r.posix || r.windows)) || io.atShell?.(id) != null
+}
+
 /** What a look reads off the terminal itself; accountsIpc.ts adds main's account record. */
 export type LimitLookResult = Omit<LimitLook, 'accountId' | 'byHand'>
 
@@ -89,7 +100,7 @@ export function lookForLimit(io: SwitchIO, id: string, start: LiveStart | undefi
   const status = detectAgentStatus(l.lines.join('\n'), start?.agent ? ACCOUNT_AGENT_LABEL[start.agent] : '', 'idle', { screen: true, title: l.title })
   if (!start) return { agent: null, live: false, turned: false, startAt: null, status, words: null }
   if (agentGone(io, id, start, now, l)) start.ended = true
-  const live = !start.ended
+  const live = !start.ended && !(start.unseen === true && !exitVisible(io, id))
   // Codex says "model: loading" in its header until it is up, with its box already drawn, and the detector reads
   // that as work (the real fresh-launch streams do, at 0.7 s): no prompt was taken, so it is no turn.
   const starting = start.agent === 'codex' && CODEX_STARTING.test(l.lines.join('\n'))
@@ -135,7 +146,8 @@ export function noteEnteredLine(
   }
   if (!launched && (!start || start.ended || start.turned || line.startsWith('/'))) return null
   const l = lookNow()
-  const gone = !start || agentGone(io, id, start, now, l)
+  // A guessed start (unseen) gives way to a launch typed after it wherever its exit could never be seen, or no agent box is up.
+  const gone = !start || (start.unseen === true && (l.box < 0 || !exitVisible(io, id))) || agentGone(io, id, start, now, l)
   if (start && gone) start.ended = true
   // A line the shell edited is an agent started, but not the one the keys say: its flags are left as unknown.
   if (launched && gone) return edited ? { at, commands: [launched], agent: launched, time: now, unsure: true } : { at, commands: [line], agent: launched, time: now }
