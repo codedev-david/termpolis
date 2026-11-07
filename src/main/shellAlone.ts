@@ -98,9 +98,11 @@ const consoleLists = createSingleFlight()
 
 /** What the console helper did since start-up (EDR-2): the runs, the runs that came back "cannot tell", and those of them
  *  that ran out of time (the helper killed at CONSOLE_LIST_TIMEOUT_MS, or the proc host never answering). The helper is run
- *  by the below-normal proc host; these say whether that ever costs a submit its answer. */
-export interface ConsoleListCounters { runs: number; failures: number; timeouts: number }
-const counters: ConsoleListCounters = { runs: 0, failures: 0, timeouts: 0 }
+ *  by the below-normal proc host; these say whether that ever costs a submit its answer. missingHelper (EDR2-2): asks that
+ *  ran nothing because the helper script could not be found or written, each one "cannot tell" too. In diagnostics:collect
+ *  as typing.extra.consoleList (index.ts). */
+export interface ConsoleListCounters { runs: number; failures: number; timeouts: number; missingHelper: number }
+const counters: ConsoleListCounters = { runs: 0, failures: 0, timeouts: 0, missingHelper: 0 }
 
 export function consoleListCounters(): ConsoleListCounters {
   return { ...counters }
@@ -115,7 +117,7 @@ export function readConsoleProcessList(pid: number): Promise<number[] | null> {
 /** @internal test-only */
 export function _resetShellAloneForTests(): void {
   consoleLists.clear()
-  counters.runs = counters.failures = counters.timeouts = 0
+  counters.runs = counters.failures = counters.timeouts = counters.missingHelper = 0
 }
 
 /** The processes on the console of the shell `pid`, the helper left out; null where the helper
@@ -132,32 +134,32 @@ function consoleProcesses(pid: number, own: number): Promise<number[] | null> {
 }
 
 async function readConsole(pid: number): Promise<number[] | null> {
-  try {
-    const helper = await ensureConsoleListHelper()
-    if (!helper) return null
-    // Termpolis run as Node (ELECTRON_RUN_AS_NODE) on the shipped script, by the proc host. A failure of any kind (the host is down, the
-    // helper could not load node-pty, the time ran out and it was killed) is "cannot tell", never "alone".
-    counters.runs++
-    let r: Awaited<ReturnType<typeof execCaptureOffThread>>
-    try {
-      r = await execCaptureOffThread(process.execPath, [helper, String(pid), nodePtyLibDir()], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-        timeout: CONSOLE_LIST_TIMEOUT_MS,
-      })
-    } catch (err) {
-      counters.failures++
-      if (/timed out/.test(String(err))) counters.timeouts++
-      return null
-    }
-    if (r.error) {
-      counters.failures++
-      if (r.error.killed || r.error.signal) counters.timeouts++
-      return null
-    }
-    return parseConsoleList(r.stdout)
-  } catch {
+  // A helper that cannot be found or written runs nothing: "cannot tell", counted (EDR2-2).
+  const helper = await ensureConsoleListHelper().catch(() => null)
+  if (!helper) {
+    counters.missingHelper++
     return null
   }
+  // Termpolis run as Node (ELECTRON_RUN_AS_NODE) on the shipped script, by the proc host. A failure of any kind (the host is down, the
+  // helper could not load node-pty, the time ran out and it was killed) is "cannot tell", never "alone".
+  counters.runs++
+  let r: Awaited<ReturnType<typeof execCaptureOffThread>>
+  try {
+    r = await execCaptureOffThread(process.execPath, [helper, String(pid), nodePtyLibDir()], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      timeout: CONSOLE_LIST_TIMEOUT_MS,
+    })
+  } catch (err) {
+    counters.failures++
+    if (/timed out/.test(String(err))) counters.timeouts++
+    return null
+  }
+  if (r.error) {
+    counters.failures++
+    if (r.error.killed || r.error.signal) counters.timeouts++
+    return null
+  }
+  return parseConsoleList(r.stdout)
 }
 
 /** The shells that give each program they run the terminal, in a process group of its own (job

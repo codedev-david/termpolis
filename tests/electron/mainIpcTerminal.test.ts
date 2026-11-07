@@ -1800,5 +1800,7 @@ describe('typing trace wiring', () => {
     expect(r.data.appVersion).toBe('9.9.9')
     expect(r.data.typing.started).toBe(true)
     expect(typeof r.data.typing.ipc['terminal:write'].count).toBe('number')
+    // EDR2-2: the console helper's counters ride along, numbers only
+    expect(Object.keys(r.data.typing.extra.consoleList).sort()).toEqual(['failures', 'missingHelper', 'runs', 'timeouts'])
   })
 })

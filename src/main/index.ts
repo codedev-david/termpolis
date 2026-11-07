@@ -129,7 +129,7 @@ import {
 } from './terminalOutputBuffer'
 import { registerTerminalDataRouting, sendTerminalData } from './terminalDataRouting'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
-import { primeShellAlone } from './shellAlone'
+import { primeShellAlone, consoleListCounters } from './shellAlone'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -4045,6 +4045,8 @@ async function semanticPoolOptions(
     // The memory passes' counters and the brain's host mode go into the same record (typing.extra.passes and
     // .memoryHost in diagnostics:collect). Read only when a snapshot is asked for: no timer, nothing on a hot path.
     registerMemoryTraceSources(registerTypingTraceSource, { hostMode: memoryHostMode, unavailable: memoryUnavailableInfo })
+    // The console helper's counters (EDR2-2: runs, failures, timeouts, missingHelper) as typing.extra.consoleList.
+    registerTypingTraceSource('consoleList', () => consoleListCounters())
     initAuditLog(app.getPath('userData'))
     initEventBus(app.getPath('userData'))
     initContextPinStore(app.getPath('userData'))
