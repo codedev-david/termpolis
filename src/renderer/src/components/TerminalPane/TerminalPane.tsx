@@ -1304,6 +1304,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // meanwhile would sit on the shell's line, and its Enter would run them (R7).
       const relaunch = useTerminalStore.getState().relaunching?.[terminalId]
       if (relaunch === 'account' || relaunch === 'model') {
+        // Alt+1..9 is the app's, not this terminal's (1.54.5): the user can still leave a terminal
+        // that is switching. Nothing reaches its pty, and the relaunch goes on in the background.
+        const leaveTo = matchTerminalSwitch(e)
+        if (leaveTo !== null) {
+          e.preventDefault()
+          const st = useTerminalStore.getState()
+          const target = st.terminals[leaveTo]
+          if (target) st.setActiveTerminal(target.id)
+          return false
+        }
         // An account switch's overlay says the keys are held.
         if (relaunch === 'account' && e.type === 'keydown') useTerminalStore.getState().noteHeldKey?.(terminalId)
         e.preventDefault()

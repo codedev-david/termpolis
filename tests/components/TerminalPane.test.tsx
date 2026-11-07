@@ -2803,6 +2803,40 @@ describe('TerminalPane', () => {
       expect(setActiveTerminal).toHaveBeenCalledTimes(1)
     })
 
+    // SW5-1 / MODELS-546-1 / MERGE-1: a relaunch holds the keys meant for this terminal, not the
+    // 1.54.5 Alt+1..9 switch, which is the app's. Leaving the switching terminal must still work.
+    it.each(['account', 'model'] as const)('Alt+2 still switches terminals while a %s relaunch holds this terminal, and nothing reaches its PTY', (kind) => {
+      const setActiveTerminal = vi.fn()
+      const noteHeldKey = vi.fn()
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }, { id: 'term-2', isSwarm: false }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+        setActiveTerminal,
+        noteHeldKey,
+        relaunching: { 'term-1': kind },
+      }))
+      render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      const ev = new KeyboardEvent('keydown', { altKey: true, key: '2', cancelable: true })
+      expect(mockKeyHandlerCb?.(ev)).toBe(false)
+      expect(ev.defaultPrevented).toBe(true) // App's window handler skips it: one switch, not two
+      expect(setActiveTerminal).toHaveBeenCalledWith('term-2')
+      expect(noteHeldKey).not.toHaveBeenCalled() // a switch is not a held key
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+
+      // Any other key is still held: nothing to the PTY, and an account switch counts it.
+      const typed = new KeyboardEvent('keydown', { key: 'a', cancelable: true })
+      expect(mockKeyHandlerCb?.(typed)).toBe(false)
+      expect(typed.defaultPrevented).toBe(true)
+      expect(setActiveTerminal).toHaveBeenCalledTimes(1)
+      expect(noteHeldKey).toHaveBeenCalledTimes(kind === 'account' ? 1 : 0)
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    })
+
     it('a custom macro combo writes its text into this terminal and is consumed', () => {
       mocks.mockGetState.mockImplementation(() => ({
         terminals: [{ id: 'term-1', isSwarm: false }],
