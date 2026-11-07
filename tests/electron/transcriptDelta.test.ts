@@ -57,9 +57,11 @@ const saved: Record<string, string | undefined> = {}
 beforeAll(async () => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-delta-home-'))
   work = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-delta-work-'))
-  for (const k of ['USERPROFILE', 'HOME']) saved[k] = process.env[k]
+  for (const k of ['USERPROFILE', 'HOME', 'TERMPOLIS_TEST_AGENT_HOME']) saved[k] = process.env[k]
   process.env.USERPROFILE = home
   process.env.HOME = home
+  // The agent folders follow the test agent home before the OS home (conversationIngest defaultRoot).
+  process.env.TERMPOLIS_TEST_AGENT_HOME = home
   watcher = await import('../../src/main/transcriptWatchers/claudeCodeWatcher')
   list = await import('../../src/main/claudeSessionList')
   delta = await import('../../src/main/transcriptDelta')
@@ -72,7 +74,7 @@ beforeAll(async () => {
 })
 
 afterAll(() => {
-  for (const k of ['USERPROFILE', 'HOME']) {
+  for (const k of ['USERPROFILE', 'HOME', 'TERMPOLIS_TEST_AGENT_HOME']) {
     if (saved[k] === undefined) delete process.env[k]
     else process.env[k] = saved[k]
   }
