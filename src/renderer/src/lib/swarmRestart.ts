@@ -321,6 +321,10 @@ async function takeBackLimit(terminalId: string, deps: RestartDeps): Promise<voi
   const accountId = recorded.get(terminalId)
   if (accountId === undefined) return
   recorded.delete(terminalId)
+  // A worker that left the swarm (its pane closed, by the user or by the conductor after a reassign, D13 included) stands on
+  // nothing any more: its stop says nothing of the account now, and would bench it until its reset time (SWARM-m2).
+  const live = new Set(deps.store().terminals.map((t) => t.id))
+  for (const [id] of [...recorded]) if (!live.has(id)) recorded.delete(id)
   // The account's limit is one record that several workers' stops can stand on: it goes with the last of them (CH4-5).
   for (const other of recorded.values()) if (other === accountId) return
   try {
@@ -338,7 +342,10 @@ export async function pruneSwarmRestarts(liveIds: ReadonlySet<string>, deps: Res
     if (g.phase.kind !== 'offered' && g.phase.kind !== 'confirm') continue
     const gone = g.workers.filter((w) => !liveIds.has(w.terminalId))
     if (gone.length === 0) continue
-    for (const w of gone) stopClock(w.terminalId, deps)
+    for (const w of gone) {
+      stopClock(w.terminalId, deps)
+      recorded.delete(w.terminalId)
+    }
     const rest = g.workers.filter((w) => liveIds.has(w.terminalId))
     if (rest.length > 0) s.putSwarmRestart({ ...g, workers: rest })
     else s.dropSwarmRestart(g.id)
@@ -714,6 +721,9 @@ async function tookTurn(terminalId: string, deps: RestartDeps): Promise<boolean>
  *  (R4), and the conductor is told it resumed or started without its conversation. */
 export async function noteWorkerSwitched(terminalId: string, outcome: SwitchOutcome, deps: RestartDeps): Promise<void> {
   if (outcome.kind !== 'switched' && outcome.kind !== 'fresh') return
+  // As the offer's restart: the user chose to leave the account, so its limit is no false stop, and the worker at work
+  // on another account says nothing of it (SWARM-M1).
+  recorded.delete(terminalId)
   const s = deps.store()
   const w = s.swarmAgents.find((a) => a.terminalId === terminalId)
   if (!w) return

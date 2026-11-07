@@ -1809,3 +1809,75 @@ describe('a stop that recorded a limit, and the worker working again (SWARM-R3-4
     }
   })
 })
+
+describe('a stop record of a worker that left the swarm stands on nothing (SWARM-m2)', () => {
+  const cleared = (): string[] => (deps.accounts.clearLimit as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string)
+  it('a worker whose pane was closed no longer stands on the account limit', async () => {
+    useTerminalStore.setState({ swarmAgents: [
+      { terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' },
+      { terminalId: 'w2', agentName: 'Claude', role: 'Tests', status: 'blocked' },
+    ] })
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    await offerRestart(W2, LIMIT, () => WORDS, deps)
+    // w1's pane is closed (by the user or the conductor)
+    useTerminalStore.setState({ terminals: [worker('w2')] })
+    await pruneSwarmRestarts(new Set(['w2']), deps)
+    expect(groups()[0].workers.map((w) => w.terminalId)).toEqual(['w2'])
+    await withdrawFromOffer(W2, deps)
+    expect(cleared()).toEqual(['acc_m'])
+  })
+  it('a worker timed out, reassigned and closed no longer stands on the account limit', async () => {
+    useTerminalStore.setState({ swarmAgents: [
+      { terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' },
+      { terminalId: 'w2', agentName: 'Claude', role: 'Tests', status: 'blocked' },
+    ] })
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS + 10)
+    expect(groups()).toEqual([])
+    useTerminalStore.setState({ terminals: [worker('w2')] })
+    await offerRestart(W2, LIMIT, () => WORDS, deps)
+    await withdrawFromOffer(W2, deps)
+    expect(cleared()).toEqual(['acc_m'])
+  })
+  it('with no other account to offer (D13), a closed worker no longer stands on the limit', async () => {
+    useTerminalStore.setState({ accountsView: view([MAIN, WORK]), swarmAgents: [
+      { terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' },
+      { terminalId: 'w2', agentName: 'Claude', role: 'Tests', status: 'blocked' },
+    ] })
+    expect(await offerRestart(W1, LIMIT, () => WORDS, deps)).toBe(false)
+    useTerminalStore.setState({ terminals: [worker('w2')] })
+    expect(await offerRestart(W2, LIMIT, () => WORDS, deps)).toBe(false)
+    await withdrawFromOffer(W2, deps)
+    expect(cleared()).toEqual(['acc_m'])
+  })
+  it('a worker still open on the account keeps its limit up (CH4-5)', async () => {
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    await offerRestart(W2, LIMIT, () => WORDS, deps)
+    await withdrawFromOffer(W2, deps)
+    expect(cleared()).toEqual([])
+  })
+})
+
+describe('a worker switched by hand off a limited account (SWARM-M1)', () => {
+  const cleared = (): string[] => (deps.accounts.clearLimit as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string)
+  it('does not take that account\'s real limit back once at work elsewhere', async () => {
+    useTerminalStore.setState({ swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' }] })
+    const off = installSwarmRestart(() => deps)
+    // the swarm loop reads its limit: recorded against acc_m, offer opened
+    await noteSwarmStop(W1, LIMIT, () => WORDS)
+    await vi.advanceTimersByTimeAsync(0)
+    expect((deps.accounts.noteLimit as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('acc_m')
+    expect(groups().length).toBe(1)
+    // the user switches w1 by hand (chip menu) to codedev; main reports switched
+    useTerminalStore.setState({ terminals: [worker('w1', { agentAccountId: 'acc_c' }), worker('w2')] })
+    await noteWorkerSwitched('w1', { kind: 'switched', resumed: true } as never, deps)
+    expect(groups()).toEqual([])
+    // w1 works on codedev: two reads at work end the carried stop
+    await noteSwarmStop(W1, { status: 'working', summary: 'Thinking' } as never)
+    await noteSwarmStop(W1, { status: 'working', summary: 'Thinking' } as never)
+    await vi.advanceTimersByTimeAsync(0)
+    off()
+    // acc_m truly ran out: its limit must stand
+    expect(cleared()).toEqual([])
+  })
+})
