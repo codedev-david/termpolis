@@ -3,7 +3,7 @@
 // (typing there says so); then a toast with Switch back for 10 s; or, when it didn't finish, an
 // error card that says what happened and what the terminal shows now, with the next steps.
 // The plumbing main types (exit, account line, resume) runs under the overlay.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ACCOUNT_AGENT_LABEL } from '../../../../shared/agentAccounts'
 import { useTerminalStore } from '../../store/terminalStore'
 import { actOnRun, stepLabels } from '../../lib/accountSwitchRun'
@@ -67,6 +67,14 @@ function Progress({ run, now }: { run: SwitchRun; now: number }) {
 function Card({ run }: { run: SwitchRun }) {
   const [steps, setSteps] = useState(false)
   const card = run.card!
+  // The card takes the keyboard only from where the user was waiting on this switch (this pane, or nowhere): a switch that fails while
+  // they type in another pane must not turn their next Space or Enter into a press of Try again there (UI4-2). role=alert still says it.
+  const first = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const at = document.activeElement
+    const pane = first.current?.closest('[data-terminal-id]')
+    if (!at || at === document.body || (pane && pane.contains(at))) first.current?.focus()
+  }, [])
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40" data-testid="switch-error">
       <div role="alert" className="w-[380px] max-w-[90%] bg-[#252526] border border-[#e06c75]/60 rounded-lg shadow-2xl p-4 flex flex-col gap-2">
@@ -75,7 +83,7 @@ function Card({ run }: { run: SwitchRun }) {
         {steps && <Steps run={run} />}
         <div className="flex flex-wrap gap-2 pt-1">
           {card.actions.map((a, i) => (
-            <button key={a.kind + a.label} type="button" className={i === 0 && a.kind !== 'close' ? SMALL_PRIMARY : SMALL_BUTTON} autoFocus={i === 0} onClick={() => { void actOnRun(run.terminalId, a.kind); focusTerminal(run.terminalId) }} data-testid={`switch-action-${a.kind}`}>
+            <button key={a.kind + a.label} type="button" className={i === 0 && a.kind !== 'close' ? SMALL_PRIMARY : SMALL_BUTTON} ref={i === 0 ? first : undefined} onClick={() => { void actOnRun(run.terminalId, a.kind); focusTerminal(run.terminalId) }} data-testid={`switch-action-${a.kind}`}>
               {a.label}
             </button>
           ))}

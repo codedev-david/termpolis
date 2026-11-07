@@ -192,3 +192,29 @@ describe('SwitchStatusLine (a swarm worker\'s, in the swarm dashboard)', () => {
     expect(actOnRun).toHaveBeenCalledWith('t1', 'retry')
   })
 })
+
+// UI4-2: a switch that fails while the user types in another pane must not hand their next Space or Enter to this card's Try again.
+const FAILED = run({
+  status: 'failed', steps: ['failed', 'pending', 'pending'],
+  card: { what: 'Claude Code didn\'t confirm it exited, so Termpolis typed nothing more.', now: 'Claude Code may still be running here, on personal.', actions: [{ kind: 'retry', label: 'Try again' }, { kind: 'close', label: 'Close' }] },
+})
+
+describe('the error card and the keyboard (UI4-2)', () => {
+  it('leaves the focus where the user is typing: in another pane', () => {
+    render(<div><textarea data-testid="other-pane" /><div data-terminal-id="t1"><SwitchOverlay terminalId="t1" /></div></div>)
+    const other = screen.getByTestId('other-pane')
+    other.focus()
+    expect(document.activeElement).toBe(other)
+    put(FAILED)
+    expect(screen.getByTestId('switch-error')).toBeInTheDocument()
+    // The user is typing in the other pane: a key they type next must not press this card's "Try again".
+    expect(document.activeElement).toBe(other)
+  })
+
+  it('takes the keyboard when it was in this pane (the user was waiting on this switch), or nowhere', () => {
+    render(<div><div data-terminal-id="t1"><textarea data-testid="own-pane" /><SwitchOverlay terminalId="t1" /></div></div>)
+    screen.getByTestId('own-pane').focus()
+    put(FAILED)
+    expect(document.activeElement).toBe(screen.getByTestId('switch-action-retry'))
+  })
+})
