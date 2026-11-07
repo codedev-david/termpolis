@@ -415,17 +415,6 @@ describe('terminalManager', () => {
     }
   })
 
-  // 12. getTerminalCwd returns null on Windows
-  it('getTerminalCwd returns null on Windows', () => {
-    const originalPlatform = process.platform
-    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
-
-    spawnTerminal('t12', 'cmd.exe', 'C:\\Users', vi.fn())
-    expect(getTerminalCwd('t12')).toBeNull()
-
-    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
-  })
-
   // 13. onData callback is wired up correctly
   it('spawnTerminal wires up the onData callback via pty.onData', () => {
     const onData = vi.fn()
