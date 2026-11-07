@@ -172,7 +172,11 @@ test('an unchanged transcript is skipped, an appended one is read alone, and the
     const first = await ingest(l.page)
     expect(first.success, first.error).toBe(true)
     expect(first.data!.filesScanned).toBe(s.files.length)
-    expect(first.data!.chunksWritten).toBeGreaterThan(s.files.length)
+    // Every file gave at least one chunk and none was taken for a duplicate. One synthetic session (6 short turns, about
+    // 600 characters, one working folder) fits in ONE chunk of 2,000, so 6 files make exactly 6: "more chunks than files"
+    // was never what the chunker does, and CI's first run of this spec said so (received 6).
+    expect(first.data!.chunksWritten).toBeGreaterThanOrEqual(s.files.length)
+    expect(first.data!.chunksSkipped).toBe(0)
     expect(first.data!.unchanged ?? 0).toBe(0)
     await expect.poll(() => fs.existsSync(watermarkFile(s.userDataDir)), { timeout: 15_000 }).toBe(true)
 
