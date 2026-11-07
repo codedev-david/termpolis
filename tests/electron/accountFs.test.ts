@@ -4,8 +4,8 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
-  CREDENTIAL_BASENAMES, CredentialPathError, accountFs, assertNotCredential, isCredentialPath, isSameOrInside,
-  readClaudeJsonFields,
+  CREDENTIAL_BASENAMES, CredentialPathError, MAX_READ_BYTES, accountFs, accountFsAsync, assertNotCredential, isCredentialPath,
+  isSameOrInside, readClaudeJsonFields,
 } from '../../src/main/accountFs'
 
 let root: string
@@ -66,6 +66,44 @@ describe('the credential tripwire', () => {
     }
     // Nothing was created by any of those calls.
     expect(readdirSync(root)).toEqual([])
+  })
+
+  // SAFETY-M1: the ingest timer's async seam (loadAccountsAsync, liveProfileDirAsync, profileTranscriptRootsAsync) is a door
+  // of its own, and refuses the same paths. The files exist, so a seam that stopped refusing would find or read them.
+  it('the async seam refuses a sign-in file or a credential folder that exists, and reads nothing of it', async () => {
+    const planted = 'planted-' + 'a'.repeat(30)
+    mkdirSync(join(root, 'p'))
+    mkdirSync(join(root, '.ssh'))
+    mkdirSync(join(root, '.aws'))
+    const bad = [
+      ...CREDENTIAL_BASENAMES.map((n) => join(root, 'p', n)),
+      join(root, '.ssh', 'config'),
+      join(root, '.aws', 'credentials'),
+    ]
+    for (const p of bad) writeFileSync(p, planted)
+    for (const p of [...bad, join(root, '.ssh'), join(root, '.aws')]) {
+      await expect(accountFsAsync.exists(p)).rejects.toThrow(CredentialPathError)
+      await expect(accountFsAsync.readText(p)).rejects.toThrow(CredentialPathError)
+    }
+  })
+
+  it('the async seam reads .claude.json only through readClaudeJsonFields', async () => {
+    const file = join(root, '.claude.json')
+    writeFileSync(file, JSON.stringify({ oauthAccount: { emailAddress: 'a@example.com' } }))
+    await expect(accountFsAsync.readText(file)).rejects.toThrow(/\.claude\.json/)
+    // Telling whether it is there is no read of it.
+    await expect(accountFsAsync.exists(file)).resolves.toBe(true)
+  })
+
+  it('the async seam reads a plain file up to its cap, and answers null for a missing one', async () => {
+    const file = join(root, 'agent-accounts.json')
+    writeFileSync(file, '{"accounts":[]}')
+    await expect(accountFsAsync.exists(file)).resolves.toBe(true)
+    await expect(accountFsAsync.readText(file)).resolves.toBe('{"accounts":[]}')
+    await expect(accountFsAsync.readText(file, 4)).rejects.toThrow('larger than 4 bytes')
+    expect(MAX_READ_BYTES).toBe(4 * 1024 * 1024)
+    await expect(accountFsAsync.exists(join(root, 'none.json'))).resolves.toBe(false)
+    await expect(accountFsAsync.readText(join(root, 'none.json'))).resolves.toBeNull()
   })
 
   // SAFETY-R2-3 (b): the source of a copy is guarded on its own. The carry stats each source first, so no live path reaches
