@@ -81,8 +81,11 @@ function toolProbe(cmd: string): string {
  * The three probes run in parallel here, in the host, rather than short-circuiting: off the main
  * thread the cost of asking all three is wall-clock free, and the answer is identical.
  */
-export async function primeBundledToolsCheck(): Promise<boolean> {
-  if (bundledToolsNeeded !== null) return bundledToolsNeeded
+export function primeBundledToolsCheck(): Promise<boolean> {
+  if (bundledToolsNeeded !== null) return Promise.resolve(bundledToolsNeeded)
+  // Single-flight (HP2-02): the start-up prime and every terminal created while it runs (a session restore, a
+  // swarm opening N terminals) share ONE set of three probes instead of launching three each.
+  if (bundledToolsPrime) return bundledToolsPrime
   const has = async (cmd: string): Promise<boolean> => {
     try {
       const r = await execShellCaptureOffThread(toolProbe(cmd), { timeout: 2000 })
@@ -93,9 +96,22 @@ export async function primeBundledToolsCheck(): Promise<boolean> {
       return false
     }
   }
-  const found = await Promise.all([has('jq'), has('yq'), has('nano')])
-  bundledToolsNeeded = found.some((ok) => !ok)
-  return bundledToolsNeeded
+  bundledCounters.primes++
+  bundledToolsPrime = Promise.all([has('jq'), has('yq'), has('nano')]).then((found) => {
+    bundledToolsNeeded = found.some((ok) => !ok)
+    bundledToolsPrime = null
+    return bundledToolsNeeded
+  })
+  return bundledToolsPrime
+}
+
+/** The prime in flight, so concurrent callers share it (singleFlight.ts pattern, one key). */
+let bundledToolsPrime: Promise<boolean> | null = null
+const bundledCounters = { primes: 0 }
+
+/** Counters for the bundled-tools probe: `primes` = probe sets started on the proc host (3 probes each). */
+export function bundledToolsCounters(): { primes: number } {
+  return { ...bundledCounters }
 }
 
 function checkBundledToolsNeeded(): boolean {
