@@ -67,10 +67,17 @@ function accountsModules(): string[] {
   return out.sort()
 }
 
+/** A source file as text with LF line ends. A Windows checkout (core.autocrlf) hands the file
+ *  over with CRLF, and the deny-list patterns below anchor on bare newlines. */
+function readSource(file: string): string {
+  return realFs.readFileSync(file, 'utf-8').replace(/\r\n/g, '\n')
+}
+
 /** accountFs.ts with its two deny-list constants taken out: the one place the names belong. */
 function withoutDenyList(file: string, text: string): string {
   if (!file.endsWith('accountFs.ts')) return text
   return text
+    .replace(/\r\n/g, '\n')
     .replace(/export const CREDENTIAL_BASENAMES[\s\S]*?\n\]\n/, '')
     .replace(/const CREDENTIAL_FOLDERS[^\n]*\n/, '')
 }
@@ -92,7 +99,7 @@ describe('the accounts source (D11)', () => {
   it('names no sign-in file or credential folder outside accountFs.ts\'s deny-list', () => {
     const found: string[] = []
     for (const f of files) {
-      const text = withoutDenyList(f, realFs.readFileSync(f, 'utf-8')).toLowerCase()
+      const text = withoutDenyList(f, readSource(f)).toLowerCase()
       for (const n of SIGN_IN_FILES) if (text.includes(n)) found.push(`${f}: ${n}`)
       for (const d of CREDENTIAL_FOLDERS) if (new RegExp(`(^|[^\\w.-])\\${d}([\\\\/'"\`\\s]|$)`).test(text)) found.push(`${f}: ${d}`)
     }
@@ -101,7 +108,7 @@ describe('the accounts source (D11)', () => {
 
   it('still finds the names in accountFs.ts\'s deny-list, so the scan can see them', () => {
     const seam = files.find((f) => f.endsWith('accountFs.ts')) as string
-    const text = realFs.readFileSync(seam, 'utf-8')
+    const text = readSource(seam)
     for (const n of SIGN_IN_FILES) expect(text).toContain(`'${n}'`)
     expect(withoutDenyList(seam, text)).not.toContain(`'${SIGN_IN_FILES[0]}'`)
   })
