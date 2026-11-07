@@ -30,10 +30,11 @@
  * is read in real Electron by e2e/loop-governor.spec.ts (unverified until CI runs it).
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'fs'
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
-import { spawn } from 'child_process'
+import { join, dirname } from 'path'
+import { createRequire } from 'module'
+import { spawn, spawnSync } from 'child_process'
 import ts from 'typescript'
 
 const MAIN = join(__dirname, '..', '..', 'src', 'main')
@@ -236,6 +237,50 @@ export async function probe(blockers) {
 }
 `
 
+// WHICH RUNTIME THE PROBE RUNS ON. On Windows, libuv before 1.52.0 read UV_THREADPOOL_SIZE with the C
+// runtime's getenv(), which only sees the environment the process STARTED with: process.env writes go through
+// SetEnvironmentVariableW and never reach it, so on such a runtime nothing a module does can size the pool and
+// the probe would measure that runtime, not this module. libuv 1.52.0 ("unix,win: look up UV_THREADPOOL_SIZE
+// with uv_os_getenv") fixed it. The app runs on Electron, whose Node (43.7.9: Node 24.21, libuv 1.52.1) has the
+// fix; the test runner may not (CI's setup-node 22.23.4 does not: that is why this failed there on its first
+// run). So the probe runs on the installed Electron in Node mode when it is the version package.json pins (CI),
+// else on the runner's own Node (a stale local Electron would measure a runtime the app no longer ships), and
+// on Windows the runtime it picks must have the fix: on CI that is asserted, never skipped.
+const PKG = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')) as { devDependencies?: Record<string, string>; dependencies?: Record<string, string> }
+
+function libuvAtLeast(version: string, min: [number, number]): boolean {
+  const [maj, minor] = version.split('.').map(Number)
+  return maj > min[0] || (maj === min[0] && minor >= min[1])
+}
+
+interface ProbeRuntime { exe: string; env: NodeJS.ProcessEnv; label: string; uv: string }
+
+function libuvOf(exe: string, env: NodeJS.ProcessEnv): string | null {
+  const r = spawnSync(exe, ['-p', 'process.versions.uv'], { env, windowsHide: true, encoding: 'utf8', timeout: 30_000 })
+  return r.status === 0 ? r.stdout.trim() : null
+}
+
+function pickProbeRuntime(): ProbeRuntime {
+  const pinned = PKG.devDependencies?.electron ?? PKG.dependencies?.electron
+  try {
+    // Resolved by hand, not require('electron'): the unit config may alias or mock that module.
+    const pkgJson = createRequire(__filename).resolve('electron/package.json')
+    const installed = (JSON.parse(readFileSync(pkgJson, 'utf8')) as { version: string }).version
+    const exe = join(dirname(pkgJson), 'dist', readFileSync(join(dirname(pkgJson), 'path.txt'), 'utf8').trim())
+    if (pinned && installed === pinned.replace(/^[\^~]/, '') && existsSync(exe)) {
+      const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+      const uv = libuvOf(exe, env)
+      if (uv) return { exe, env, label: `Electron ${installed} (Node mode)`, uv }
+    }
+  } catch {
+    // no Electron binary here: fall through to the runner's Node
+  }
+  return { exe: process.execPath, env: { ...process.env }, label: `Node ${process.versions.node}`, uv: process.versions.uv ?? '0.0.0' }
+}
+
+const probeRuntime = process.platform === 'win32' ? pickProbeRuntime() : null
+const probeRuntimeSizesPool = probeRuntime !== null && libuvAtLeast(probeRuntime.uv, [1, 52])
+
 function transpiledEnvModule(): string {
   return ts.transpileModule(read('threadpoolEnv.ts'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText
 }
@@ -245,11 +290,12 @@ function runChild(entrySource: string, allowMs: number): Promise<{ seventhOperat
   writeFileSync(join(dir, 'threadpoolEnv.mjs'), transpiledEnvModule())
   writeFileSync(join(dir, 'probe.mjs'), PROBE)
   writeFileSync(join(dir, 'entry.mjs'), entrySource)
-  const env: NodeJS.ProcessEnv = { ...process.env, PROBE_ALLOW_MS: String(allowMs) }
+  if (!probeRuntime) throw new Error('the pool probe is Windows only')
+  const env: NodeJS.ProcessEnv = { ...probeRuntime.env, PROBE_ALLOW_MS: String(allowMs) }
   delete env.UV_THREADPOOL_SIZE
   delete env.TERMPOLIS_NO_GOVERNOR
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [join(dir, 'entry.mjs')], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(probeRuntime.exe, [join(dir, 'entry.mjs')], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
     let err = ''
     child.stdout.on('data', (d) => { out += String(d) })
@@ -265,7 +311,16 @@ function runChild(entrySource: string, allowMs: number): Promise<{ seventhOperat
   })
 }
 
-describe.skipIf(process.platform !== 'win32')('effect in a real Node process (Windows named pipes park pool threads without any timing assumption)', () => {
+describe.skipIf(process.platform !== 'win32')('the runtime the pool probe runs on', () => {
+  it('can size the pool from process.env (libuv >= 1.52.0 on Windows); on CI this is required, never a silent skip', () => {
+    if (process.env.CI || probeRuntimeSizesPool) {
+      expect({ runtime: probeRuntime?.label, libuv: probeRuntime?.uv, sizesPool: probeRuntimeSizesPool })
+        .toEqual({ runtime: probeRuntime?.label, libuv: probeRuntime?.uv, sizesPool: true })
+    }
+  })
+})
+
+describe.skipIf(!probeRuntimeSizesPool)('effect in a real Node process (Windows named pipes park pool threads without any timing assumption)', () => {
   it('imported FIRST: 6 parked operations leave the pool able to run a 7th (pool is 16), although the variable is already gone again', async () => {
     const r = await runChild(
       "import './threadpoolEnv.mjs'\nimport { probe } from './probe.mjs'\nawait probe(6)\n",
