@@ -7,6 +7,7 @@
 //    bundled tools (the answer that can only add tools, never take one away) and leaves the prime to finish.
 //  - control: a caller that did not prepare (a test, a spawner given no prepare()) still gets the sync probe.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { join } from 'path'
 
 const h = vi.hoisted(() => {
   const ptyProc = { onData: vi.fn(), onExit: vi.fn(), write: vi.fn(), resize: vi.fn(), kill: vi.fn(), pid: 4242 }
@@ -31,6 +32,8 @@ type TM = typeof import('../../src/main/terminalManager')
 async function fresh(): Promise<TM> { vi.resetModules(); return import('../../src/main/terminalManager') }
 
 const prep = { cwd: process.cwd(), integrationScript: null } as never
+// The bundled tools go FIRST on PATH (this test may itself run inside a Termpolis terminal, whose PATH carries them later on).
+const TOOLS_DIR = join(__dirname, '../../resources', 'tools', process.platform)
 const pathOf = (): string => {
   const env = (h.spawn.mock.calls.at(-1)![2] as { env: Record<string, string> }).env
   return env.PATH ?? env.Path ?? ''
@@ -80,5 +83,53 @@ describe('primeBundledToolsCheck is single-flight', () => {
     expect(await tm.primeBundledToolsCheck()).toBe(true)
     expect(await tm.primeBundledToolsCheck()).toBe(true)
     expect(h.offThread).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('a prepared spawn never runs the probe on the main thread', () => {
+  it('while the start-up prime is still in flight: no execSync, the bundled tools are on PATH, the prime is shared', async () => {
+    const tm = await fresh()
+    const pending = probesAnswer(true)
+    const startup = tm.primeBundledToolsCheck() // index.ts start-up: `void primeBundledToolsCheck()`
+    tm.spawnTerminal('wf-step', process.execPath, process.cwd(), vi.fn(), undefined, undefined, undefined, prep)
+    expect(h.execSync).not.toHaveBeenCalled()
+    expect(pathOf().startsWith(TOOLS_DIR)).toBe(true)
+    expect(tm.bundledToolsCounters()).toMatchObject({ unprimedPreparedSpawns: 1, primes: 1 })
+    expect(h.offThread).toHaveBeenCalledTimes(3) // the spawn joined the start-up prime, it did not start another
+    pending.forEach((answer) => answer())
+    expect(await startup).toBe(false)
+    // primed now: the next prepared spawn reads the answer (tools installed, so no bundled dir)
+    tm.spawnTerminal('wf-step-2', process.execPath, process.cwd(), vi.fn(), undefined, undefined, undefined, prep)
+    expect(pathOf().startsWith(TOOLS_DIR)).toBe(false)
+    expect(tm.bundledToolsCounters()).toMatchObject({ unprimedPreparedSpawns: 1 })
+    expect(h.execSync).not.toHaveBeenCalled()
+  })
+
+  it('with no prime at all, the spawn starts one on the proc host instead of probing on main', async () => {
+    const tm = await fresh()
+    const pending = probesAnswer(false)
+    tm.spawnTerminal('run-and-wait', process.execPath, process.cwd(), vi.fn(), undefined, undefined, undefined, prep)
+    expect(h.execSync).not.toHaveBeenCalled()
+    expect(h.offThread).toHaveBeenCalledTimes(3)
+    pending.forEach((answer) => answer())
+    expect(await tm.primeBundledToolsCheck()).toBe(true)
+  })
+
+  it('TERMPOLIS_BUNDLED_TOOLS_SYNC_PROBE=1 puts back the sync probe for a prepared spawn (the 1.54.4 behaviour)', async () => {
+    const tm = await fresh()
+    process.env.TERMPOLIS_BUNDLED_TOOLS_SYNC_PROBE = '1'
+    try {
+      tm.spawnTerminal('wf-step', process.execPath, process.cwd(), vi.fn(), undefined, undefined, undefined, prep)
+    } finally { delete process.env.TERMPOLIS_BUNDLED_TOOLS_SYNC_PROBE }
+    expect(h.execSync).toHaveBeenCalledTimes(3)
+    expect(h.offThread).not.toHaveBeenCalled()
+    expect(tm.bundledToolsCounters()).toMatchObject({ unprimedPreparedSpawns: 0 })
+  })
+
+  it('control: a caller that did not prepare still gets the synchronous probe (the 1.54.4 path)', async () => {
+    const tm = await fresh()
+    tm.spawnTerminal('test', process.execPath, process.cwd(), vi.fn())
+    expect(h.execSync).toHaveBeenCalledTimes(3)
+    expect(tm.bundledToolsCounters()).toMatchObject({ unprimedPreparedSpawns: 0, primes: 0 })
   })
 })

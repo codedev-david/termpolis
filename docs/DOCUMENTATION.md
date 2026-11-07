@@ -923,6 +923,7 @@ Every one of these mechanisms has a switch that puts back the 1.54.4 behaviour, 
 - `TERMPOLIS_INGEST_FAST=off`: conversation ingest reads whole files and the whole corpus each pass, as before. It also lets a drain re-read a transcript that is still growing on every follow-up, with no cap on the number of follow-ups (by default a drain reads a file once and stops after 400 follow-ups).
 - `TERMPOLIS_REFLECT_FAST=off`: learning from an agent session reads its whole transcript, as before.
 - `TERMPOLIS_SCOPED_WATCH=0`: one plain recursive file watch per repository again, with no storm limit.
+- `TERMPOLIS_BUNDLED_TOOLS_SYNC_PROBE=1`: a workflow step or `run_and_wait` terminal opened in the first seconds after start, before Termpolis has checked whether jq, yq and nano are installed, checks for them in the main process, instead of putting Termpolis's own copies first on that terminal's PATH.
 - `TERMPOLIS_SYNC_WORKFLOW_LIST=1`: the workflow list and triggers of the active terminal's project are read in the main process again on each `cd` and tab switch.
 - `TERMPOLIS_DISABLE_RESIZE_FLUSH=1`: no output flush before a terminal resize.
 - `TERMPOLIS_TERMINAL_DATA_ROUTING=0`: every terminal's output is sent to the window, shown or not.

@@ -107,11 +107,28 @@ export function primeBundledToolsCheck(): Promise<boolean> {
 
 /** The prime in flight, so concurrent callers share it (singleFlight.ts pattern, one key). */
 let bundledToolsPrime: Promise<boolean> | null = null
-const bundledCounters = { primes: 0 }
+const bundledCounters = { primes: 0, unprimedPreparedSpawns: 0 }
 
-/** Counters for the bundled-tools probe: `primes` = probe sets started on the proc host (3 probes each). */
-export function bundledToolsCounters(): { primes: number } {
+/** Counters for the bundled-tools probe: `primes` = probe sets started on the proc host (3 probes each);
+ *  `unprimedPreparedSpawns` = prepared spawns that came before any answer and took the bundled tools. */
+export function bundledToolsCounters(): { primes: number; unprimedPreparedSpawns: number } {
   return { ...bundledCounters }
+}
+
+/**
+ * The answer for a PREPARED spawn (HP2-01). Every app path prepares (a click, create_terminal, a workflow command
+ * or agent step, the trigger supervisor, run_and_wait), and the click and create_terminal paths also await the
+ * prime; the workflow paths do not. Before the prime has answered, the sync probe would run `where` three times on
+ * the main thread, up to 2 s each. Instead: take the bundled tools (the answer that can only add tools, never take
+ * one away; the bundled dir goes first on PATH for this terminal) and let the shared prime finish for the next one.
+ * TERMPOLIS_BUNDLED_TOOLS_SYNC_PROBE=1 puts back the 1.54.4 sync probe.
+ */
+function bundledToolsForPreparedSpawn(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (bundledToolsNeeded !== null) return bundledToolsNeeded
+  if (env.TERMPOLIS_BUNDLED_TOOLS_SYNC_PROBE === '1') return checkBundledToolsNeeded()
+  bundledCounters.unprimedPreparedSpawns++
+  void primeBundledToolsCheck()
+  return true
 }
 
 function checkBundledToolsNeeded(): boolean {
@@ -149,7 +166,7 @@ export function spawnTerminal(
   )
   const sep = process.platform === 'win32' ? ';' : ':'
   const existingPath = process.env.PATH || process.env.Path || ''
-  const needsBundled = checkBundledToolsNeeded()
+  const needsBundled = prep ? bundledToolsForPreparedSpawn() : checkBundledToolsNeeded()
   const extraPathStr = extraPaths?.length ? extraPaths.join(sep) + sep : ''
   // On Windows, ensure System32 + PowerShell 1.0 are on PATH so nested
   // `powershell` / `cmd` invocations resolve even when the parent Electron
