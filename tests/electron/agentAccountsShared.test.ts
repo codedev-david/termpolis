@@ -271,7 +271,13 @@ describe('accountLine in real shells: a foreign line runs nothing (R1)', () => {
   const run = (shell: Shell, line: string): { ran: string | null; after: string | null } => {
     const out1 = join(work, `o${++n}a.json`)
     const out2 = join(work, `o${n}b.json`)
-    const input = `${line.replace('MARK', markCmd(out1))}\n${shell.family === 'cmd' ? 'call ' : ''}${markCmd(out2)}\nexit\n`
+    // The blank line ends the line as a statement in every shell. pwsh 7 reading `-Command -` takes
+    // input the way its console does: a line it can't finish parsing (the posix line's '\'' leaves
+    // a quote open there) waits for more, and only a blank line hands it over, where it fails to
+    // parse and runs nothing. Without it the marker line after it is swallowed into that string,
+    // and "is the old value still the shell's" can't be asked. Bash, zsh, cmd and PowerShell 5.1
+    // read a blank line as nothing.
+    const input = `${line.replace('MARK', markCmd(out1))}\n\n${shell.family === 'cmd' ? 'call ' : ''}${markCmd(out2)}\nexit\n`
     spawnSync(shell.exe, shell.args, { input, env: env(), cwd: work, timeout: 60000, windowsHide: true, encoding: 'utf8' })
     return { ran: read(out1), after: read(out2) }
   }
