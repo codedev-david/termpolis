@@ -131,16 +131,31 @@ function noteReports(win: OutputWindow, data: string): void {
  *  box, or recalled from its history, never reaches main as the keys that spell it). */
 const RESTART_MARK = ': starting Claude again on its profile'
 
-/** The end of the last chunk each terminal printed, as long as the mark less one character: a chunk can end inside the mark. Kept
- *  beside the window, not in it, so that a window that never saw the line keeps its old shape. */
+/** The whole line around the mark, at a line start (after any colour or cursor codes): a `cat` or grep of claude-run.sh itself has
+ *  `echo "` before it and a literal `$account`, and a sentence that quotes it has words before it (CH4-4). */
+const RESTART_LINE = /(?:^|[\r\n])(?:\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))*Switching this terminal to [\w.@+-]+: starting Claude again on its profile/g
+
+/** How much of a terminal's last output is kept to read the line around a mark that a chunk completes: the line's head, an
+ *  account name or e-mail and a run of escape codes before it. */
+const LINE_KEEP = 256
+
+/** The end of the last chunk each terminal printed (LINE_KEEP characters): a chunk can end inside the line. Kept beside the window,
+ *  not in it, so that a window that never saw the line keeps its old shape. A terminal's first chunk starts a line. */
 const markTails = new WeakMap<OutputWindow, string>()
 
-/** Notes the restart line in `data`, whole or cut between two chunks. A chunk without it costs one search. */
+/** Notes the restart line in `data`, whole or cut between chunks. A chunk without the mark costs one search; only a chunk that
+ *  completes the mark reads the line around it, and a line is latched once, by the chunk that completes its mark. */
 function noteRestart(win: OutputWindow, data: string): void {
   const keep = RESTART_MARK.length - 1
-  const tail = markTails.get(win)
-  if (data.includes(RESTART_MARK) || (tail !== undefined && (tail + data.slice(0, keep)).includes(RESTART_MARK))) win.restarted = true
-  markTails.set(win, data.length >= keep ? data.slice(data.length - keep) : ((tail ?? '') + data).slice(-keep))
+  const tail = markTails.get(win) ?? '\n'
+  if (data.includes(RESTART_MARK) || (tail.slice(-keep) + data.slice(0, keep)).includes(RESTART_MARK)) {
+    const text = tail + data
+    RESTART_LINE.lastIndex = 0
+    for (let m = RESTART_LINE.exec(text); m !== null; m = RESTART_LINE.exec(text)) {
+      if (m.index + m[0].length > tail.length) { win.restarted = true; break }
+    }
+  }
+  markTails.set(win, data.length >= LINE_KEEP ? data.slice(data.length - LINE_KEEP) : (tail + data).slice(-LINE_KEEP))
 }
 
 /** Whether the restart line was printed in this terminal since the last time this was asked: the latch is given up with the answer. */

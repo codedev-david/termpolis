@@ -73,7 +73,7 @@ describe('the restart banner of ~/.claude/claude-run.sh (SW3-3)', () => {
     const b = mark()
     appendOutput(b, 't1', BANNER)
     expect(takeRestarted(b, 't1')).toBe(true)
-    appendOutput(b, 't1', BANNER)
+    appendOutput(b, 't1', `\r\n${BANNER}`)
     expect(takeRestarted(b, 't1')).toBe(true)
   })
 
@@ -82,6 +82,32 @@ describe('the restart banner of ~/.claude/claude-run.sh (SW3-3)', () => {
     appendOutput(b, 't1', BANNER)
     appendOutput(b, 't2', 'nothing')
     expect(takeRestarted(b, 't2')).toBe(false)
+    expect(takeRestarted(b, 't1')).toBe(true)
+  })
+
+  // CH4-4: the line is the wrapper's only at a line start, with the account it names. Its own source, shown by cat or grep, and a
+  // sentence quoting it are not a restart.
+  it('is not latched by a cat or grep of claude-run.sh, or by a sentence that quotes the line', () => {
+    const src = '    echo "Switching this terminal to $account: starting Claude again on its profile and resuming the conversation..."'
+    for (const shown of [`${src}\r\n`, `claude-run.sh:77:${src}\r\n`, `\r\nThe wrapper says Switching this terminal to work: starting Claude again on its profile\r\n`]) {
+      const b = mark()
+      appendOutput(b, 't1', `$ cat ~/.claude/claude-run.sh\r\n${shown}`)
+      expect(takeRestarted(b, 't1')).toBe(false)
+    }
+    const b = mark()
+    for (const ch of `claude-run.sh:77:${src}\r\n`) appendOutput(b, 't1', ch)
+    expect(takeRestarted(b, 't1')).toBe(false)
+  })
+
+  it('is latched after the colour and cursor codes a line can start with, and for an account named by its e-mail', () => {
+    for (const lead of ['\x1b[?25h\x1b[0m', '\x1b]0;bash\x07', '\x1b[2K\x1b[1G']) {
+      const b = mark()
+      appendOutput(b, 't1', `\r\n${lead}Switching this terminal to someone.else@example.com: starting Claude again on its profile and resuming the conversation...`)
+      expect(takeRestarted(b, 't1')).toBe(true)
+    }
+    const b = mark()
+    appendOutput(b, 't1', 'output\r\n\x1b[0mSwitching this terminal to wo')
+    appendOutput(b, 't1', 'rk: starting Claude again on its profile')
     expect(takeRestarted(b, 't1')).toBe(true)
   })
 })
