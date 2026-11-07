@@ -53,8 +53,17 @@ describe('src/main/index.ts footprint', () => {
     expect(imports).toHaveLength(1)
     const named = (imports[0].importClause?.namedBindings as ts.NamedImports).elements.map((e) => e.name.text)
     expect(named).toEqual(['installLoopGovernor', 'whenNotShed'])
-    // 1.54.5 wire step: whenNotShed is awaited in exactly one place (memory:reflect-session), never on the typing path.
-    expect(callsTo(text, 'whenNotShed')).toHaveLength(1)
+    // 1.54.5: whenNotShed is awaited only by background passes, never on the typing path: memory:reflect-session (wire
+    // step), and the code index of memory:ingest-code (before the sweep, and as its pause) and code-graph:build (HP-3).
+    const channelOf = (n: ts.Node): string | null => {
+      for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
+        if (ts.isCallExpression(p) && p.expression.getText() === 'ipcMain.handle' && ts.isStringLiteral(p.arguments[0])) return p.arguments[0].text
+      }
+      return null
+    }
+    expect(callsTo(text, 'whenNotShed').map(channelOf).sort()).toEqual([
+      'code-graph:build', 'memory:ingest-code', 'memory:ingest-code', 'memory:reflect-session',
+    ])
   })
 
   it('registers the other lanes’ pausables once, right after the governor is installed (shedRegistrations.ts)', () => {
