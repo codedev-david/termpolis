@@ -54,10 +54,14 @@ export function resolveInprocGuard(env: Record<string, string | undefined> = pro
 // only, so swarm-memory.archive.jsonl (the cold archive, not loaded at init) is never counted, and
 // neither is any other .jsonl that lives in the same folder (agent-events.jsonl, audit logs...).
 const OWN_SHARD = /^swarm-memory(\.\d+)?\.jsonl$/
+/** The store's ANN index (swarmMemory HNSW_FILE), always in userData. Loaded at init beside the shards (MEM-F5). */
+const HNSW_FILE = 'memory-hnsw.json'
 
 /**
  * How many bytes of memory store the host would load, counted the way swarmMemory.shardFiles() picks
- * its files: in local mode the own shard set; with a sync folder every *.jsonl in it, peers' too.
+ * its files: in local mode the own shard set; with a sync folder every *.jsonl in it, peers' too. Plus the
+ * ANN index memory-hnsw.json in userData (MEM-F5), which init loads too. Not counted: a rebuild of a missing or
+ * stale index, which is CPU over the shards already counted.
  *
  * Async on purpose: this runs while the app is starting, beside the host's own spawn, and must never
  * add a synchronous file call to the main thread. Resolves null when it cannot tell (a folder that
@@ -73,6 +77,7 @@ export async function measureMemoryStoreBytes(userDataPath: string, syncDir: str
     for (const n of shards) {
       try { total += (await fs.promises.stat(path.join(dir, n))).size } catch { /* gone since the listing */ }
     }
+    try { total += (await fs.promises.stat(path.join(userDataPath, HNSW_FILE))).size } catch { /* no index yet */ }
     return total
   } catch {
     return null

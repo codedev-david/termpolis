@@ -129,6 +129,24 @@ describe('the fixed text an agent sees', () => {
 })
 
 describe('measureMemoryStoreBytes — exactly the files the store loads', () => {
+  // MEM-F5: the store also loads its ANN index (memory-hnsw.json, in userData whatever the sync mode) at init, and that
+  // load is on main too when the store falls back in process. It counts toward the limit.
+  it('MEM-F5: counts memory-hnsw.json from userData, in local and in sync mode; none there counts nothing', async () => {
+    fs.writeFileSync(path.join(tmp, 'swarm-memory.jsonl'), 'x'.repeat(1_000))
+    expect(await measureMemoryStoreBytes(tmp, null)).toBe(1_000)
+    fs.writeFileSync(path.join(tmp, 'memory-hnsw.json'), 'x'.repeat(600))
+    expect(await measureMemoryStoreBytes(tmp, null)).toBe(1_600)
+    const sync = path.join(tmp, 'share-hnsw')
+    fs.mkdirSync(sync)
+    fs.writeFileSync(path.join(sync, 'peer.jsonl'), 'x'.repeat(2_000))
+    expect(await measureMemoryStoreBytes(tmp, sync)).toBe(2_600)
+  })
+
+  it("MEM-F5: the file it counts is the one swarmMemory loads (same name)", () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'main', 'swarmMemory.ts'), 'utf8')
+    expect(src).toContain("const HNSW_FILE = 'memory-hnsw.json'")
+  })
+
   it('matches a real store, rotated by the real swarmMemory, and ignores everything else in the folder', async () => {
     _resetForTests()
     _setEmbeddingsAvailable(false)
