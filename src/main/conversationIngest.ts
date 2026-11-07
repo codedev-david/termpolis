@@ -20,6 +20,7 @@ import { performance } from 'perf_hooks'
 import { isDelegatedSession, openingSettled, ownDialogue } from '../shared/headlessPrompt'
 import type { FileStamp, IngestWatermark, MarkTier } from './ingestWatermark'
 import { getIngestRuntime, type IngestRuntime } from './ingestRuntime'
+import { isMemoryUnavailable } from './memoryFallbackGuard'
 
 export type ConversationSource = 'claude' | 'codex' | 'gemini'
 
@@ -350,7 +351,8 @@ export function chunkTurns(turns: IngestTurn[], opts: ChunkOptions = {}): Ingest
 
 // ---- Orchestration ----
 
-/** Why a truncated pass stopped: its chunk cap, its byte budget, or a stop (the app is quitting, or the pause switch). */
+/** Why a truncated pass stopped: its chunk cap, its byte budget, or a stop (the app is quitting, the pause switch, or the
+ *  memory store is unavailable: MEM-F6). */
 export type IngestStop = 'chunks' | 'bytes' | 'stopped'
 
 export interface IngestStats {
@@ -1008,7 +1010,13 @@ function filePattern(source: ConversationSource): RegExp {
 
 // Recursively discover transcript files for a source (bounded depth, tolerant
 // of unreadable dirs). The on-disk roots differ per agent.
-export async function discoverTranscriptFiles(source: ConversationSource, root?: string, freshSinceTs?: number): Promise<string[]> {
+export async function discoverTranscriptFiles(
+  source: ConversationSource,
+  root?: string,
+  freshSinceTs?: number,
+  /** MEM-F7: given, the freshness filter's stat of each fresh file is kept here, to be the pass's stamp for it. */
+  stamps?: Map<string, FileStamp>,
+): Promise<string[]> {
   const base = root ?? defaultRoot(source)
   if (!base) return []
   const pattern = filePattern(source)
@@ -1030,7 +1038,11 @@ export async function discoverTranscriptFiles(source: ConversationSource, root?:
         // a stat is far cheaper than re-reading + re-parsing every transcript on
         // disk. Unset (default) = scan everything, the original full-pass behavior.
         if (freshSinceTs !== undefined) {
-          try { if ((await fsp.stat(full)).mtimeMs < freshSinceTs) continue } catch { continue }
+          try {
+            const st = await fsp.stat(full)
+            if (st.mtimeMs < freshSinceTs) continue
+            if (stamps && st.isFile()) stamps.set(full, { size: st.size, mtimeMs: st.mtimeMs })
+          } catch { continue }
         }
         out.push(full)
       }
@@ -1108,6 +1120,30 @@ async function runtimeDeps(
   }
 }
 
+/** What runConversationIngest did besides passes: numbers only. */
+export interface ConversationIngestCounters {
+  /** MEM-F6: passes skipped before touching a file because the memory store was unavailable. */
+  unavailableSkips: number
+  /** MEM-F7: stamps taken from the fast tier's freshness stat instead of a second stat of the same file. */
+  freshStampsReused: number
+}
+const runCounters: ConversationIngestCounters = { unavailableSkips: 0, freshStampsReused: 0 }
+
+export function conversationIngestCounters(): ConversationIngestCounters {
+  return { ...runCounters }
+}
+
+export function _resetConversationIngestCountersForTests(): void {
+  runCounters.unavailableSkips = runCounters.freshStampsReused = 0
+}
+
+/** MEM-F6: memory is unavailable (memoryFallbackGuard), so every store call of a pass would throw. The kill switch
+ *  TERMPOLIS_INGEST_UNAVAILABLE_SKIP=off|0|false|no runs the pass anyway. */
+function skipWhileUnavailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (/^(off|0|false|no)$/i.test((env.TERMPOLIS_INGEST_UNAVAILABLE_SKIP ?? '').trim())) return false
+  return isMemoryUnavailable()
+}
+
 // Compose real ingestion: discover on disk + dedup/write via the memory store.
 // Kept decoupled from swarmMemory so the orchestration stays unit-testable.
 export async function runConversationIngest(
@@ -1119,6 +1155,14 @@ export async function runConversationIngest(
   // are skipped (this closure isn't called for them) and upsertEdge dedups repeats.
   // A fresh map per run — cross-pass continuity isn't needed for the backbone.
   const lastIdBySession = new Map<string, string>()
+  // MEM-F6: while the store is unavailable every write throws, and the pass would walk, stat, read and parse up to
+  // 8 MiB for nothing, on the machine whose starvation took the store down. Skip it, counted. Truncated with stop
+  // 'stopped': the full tier must not take it for a pass that read every transcript (its linked-history recheck),
+  // and the scheduler asks for no follow-up. Nothing is marked, so the first pass after the store is back reads it all.
+  if (skipWhileUnavailable()) {
+    runCounters.unavailableSkips++
+    return { filesScanned: 0, chunksWritten: 0, chunksSkipped: 0, truncated: true, stop: 'stopped' }
+  }
   // Set once at start-up (ingestRuntime.configureConversationIngest); null in tests and in anything that
   // never configured it, and then a pass is exactly what it was in 1.54.4.
   const rt = getIngestRuntime()
@@ -1128,13 +1172,26 @@ export async function runConversationIngest(
   }
   const stopped = rt ? (): boolean => pausedNow() || opts.stopped?.() === true : opts.stopped
   const extra = rt ? await runtimeDeps(rt, opts, pausedNow()) : {}
+  // MEM-F7: the fast tier's freshness filter has already stat'ed each fresh file; that stat (taken before the read, as
+  // a stamp must be) is the file's stamp, once. Only when the pass takes stamps at all (not under TERMPOLIS_INGEST_FAST=off).
+  const rtStat = extra.statFile
+  const freshStamps = opts.freshSinceTs !== undefined && rtStat ? new Map<string, FileStamp>() : undefined
+  if (freshStamps && rtStat) {
+    extra.statFile = (filePath) => {
+      const st = freshStamps.get(filePath)
+      if (!st) return rtStat(filePath)
+      freshStamps.delete(filePath)
+      runCounters.freshStampsReused++
+      return Promise.resolve(st)
+    }
+  }
   return ingestConversations({
     sources: opts.sources,
     chunkOptions: opts.chunkOptions,
     maxChunks: opts.maxChunks,
     stopped,
     onDelegated: opts.onDelegated,
-    listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source], opts.freshSinceTs),
+    listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source], opts.freshSinceTs, freshStamps),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,
     hasHashes: memory.hasHashes,
