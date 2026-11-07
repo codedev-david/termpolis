@@ -614,6 +614,8 @@ describe('agy: the switch-all sign-in, in a hidden agy', () => {
     for (const [index, label] of [[3, 'x'], [-1, 'x'], [0, 'Use a Google Cloud project'], [0.5, 'Continue with Google']] as const) {
       expect(await signInInput(sessionId, { kind: 'pick', index, label })).toEqual({ ok: false, why: 'that choice isn\'t on the screen now' })
     }
+    // UI4-5 (f): a pick with no label past the last option, which only the range check refuses (no label matches no option).
+    expect(await signInInput(sessionId, { kind: 'pick', index: 3, label: undefined as unknown as string })).toEqual({ ok: false, why: "that choice isn't on the screen now" })
     expect(ptys[0].writes).toEqual([])
   })
 

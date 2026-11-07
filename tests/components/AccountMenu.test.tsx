@@ -779,6 +779,29 @@ describe('Tab inside the menu closes it from the list and the submenu, and goes 
     expect(st().accountMenu).toBeNull()
   })
 
+  // UI4-5 (a, b): what the title says, pinned: the terminal's input has the keyboard, and the Tab went nowhere else.
+  it('hands the keyboard to the terminal\'s input when Tab closes it, and keeps the key from the window', async () => {
+    const pane = document.createElement('div')
+    pane.setAttribute('data-terminal-id', 't1')
+    const input = document.createElement('textarea')
+    pane.appendChild(input)
+    document.body.appendChild(pane)
+    const seen: string[] = []
+    const onWindow = (e: KeyboardEvent): void => { seen.push(e.key) }
+    window.addEventListener('keydown', onWindow)
+    try {
+      openMenu()
+      await settle()
+      key('Tab')
+      expect(st().accountMenu).toBeNull()
+      expect(document.activeElement).toBe(input)
+      expect(seen).toEqual([])
+    } finally {
+      window.removeEventListener('keydown', onWindow)
+      pane.remove()
+    }
+  })
+
   it('goes round the work account\'s second question with Tab, and takes the key as its own, so the keyboard reaches the yes (UI4-1)', async () => {
     openMenu()
     await settle()
