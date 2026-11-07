@@ -39,7 +39,7 @@ import { Welcome } from './components/Welcome/Welcome'
 import { useTerminalStore, buildPaneTree } from './store/terminalStore'
 import { startRepoResweep } from './hooks/useAutoCodeIndex'
 import { useShallow } from 'zustand/react/shallow'
-import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, withReservedDefaults } from './lib/keybindings'
+import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, matchTerminalSwitch, isEditableTarget, withReservedDefaults } from './lib/keybindings'
 import { primaryModifier } from './lib/platform'
 import { DEFAULT_AI_PROFILES, agentLaunchConfig, launchAgentProfile } from './lib/aiProfiles'
 
@@ -503,11 +503,11 @@ export default function App() {
         return
       }
 
-      // Alt+1 through Alt+9 to jump to terminal by index
-      if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
+      // Alt+1 through Alt+9 to jump to terminal by index (a focused terminal switches in its own key handler)
+      const idx = matchTerminalSwitch(e)
+      if (idx !== null) {
         e.preventDefault()
         const { terminals: terms } = useTerminalStore.getState()
-        const idx = parseInt(e.key) - 1
         if (idx < terms.length) {
           setActiveTerminal(terms[idx].id)
         }

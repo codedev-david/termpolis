@@ -37,7 +37,7 @@ import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
 import { setPendingSettingsTab } from '../../lib/settingsNav'
-import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, RESERVED_COPY_ACTIONS, KEYBINDING_LABELS, DEFAULT_KEYBINDINGS } from '../../lib/keybindings'
+import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, matchTerminalSwitch, isEditableTarget, RESERVED_COPY_ACTIONS, KEYBINDING_LABELS, DEFAULT_KEYBINDINGS } from '../../lib/keybindings'
 import { moveCaret, toLinearSelection, selectionKeyAction, isAnchorSelectClick, cellFromOffsets, type GridCtx, type GridPos, type SelectionAction } from '../../lib/terminalSelection'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
@@ -1426,6 +1426,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // return false so xterm emits nothing; App's window handler skips events
       // we've already defaultPrevented. The launch needs App's deps, so signal
       // it via a window event; a macro just types into this focused terminal.
+      // Alt+1..9 switches terminals. Left to xterm it became ESC+digit for the shell and the event stopped at the
+      // terminal, so App's window handler never switched from inside a terminal, the one place it is pressed.
+      const switchTo = matchTerminalSwitch(e)
+      if (switchTo !== null) {
+        e.preventDefault()
+        const st = useTerminalStore.getState()
+        const target = st.terminals[switchTo]
+        if (target) st.setActiveTerminal(target.id)
+        return false
+      }
       const launchSlot = matchLaunchAgentSlot(e, kb)
       if (launchSlot !== null) {
         e.preventDefault()

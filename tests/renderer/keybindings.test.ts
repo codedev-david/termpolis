@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, findKeybindingConflict, describeBinding, matchLaunchAgentSlot, matchCustomKeybinding, customComboHasModifier, isEditableTarget, RESERVED_COPY_ACTIONS, isReservedAction, isReservedCombo, withReservedDefaults } from '../../src/renderer/src/lib/keybindings'
+import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, findKeybindingConflict, describeBinding, matchLaunchAgentSlot, matchTerminalSwitch, matchCustomKeybinding, customComboHasModifier, isEditableTarget, RESERVED_COPY_ACTIONS, isReservedAction, isReservedCombo, withReservedDefaults } from '../../src/renderer/src/lib/keybindings'
 import type { CustomKeybinding } from '../../src/renderer/src/types'
 import { DEFAULT_VOICE_SETTINGS } from '../../src/renderer/src/lib/voice/voiceTypes'
 
@@ -336,6 +336,26 @@ describe('findKeybindingConflict', () => {
 
   it('treats an empty combo as no conflict', () => {
     expect(findKeybindingConflict('', DEFAULT_KEYBINDINGS, custom)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// matchTerminalSwitch — Alt+1..9 to the index of the terminal to switch to
+// ---------------------------------------------------------------------------
+
+describe('matchTerminalSwitch', () => {
+  it('maps Alt+1..Alt+9 to the indexes 0..8', () => {
+    expect(matchTerminalSwitch(key({ altKey: true, key: '1' }))).toBe(0)
+    expect(matchTerminalSwitch(key({ altKey: true, key: '9' }))).toBe(8)
+  })
+
+  it('is null without Alt, with Ctrl or Shift, for 0 and for keys that are not one digit', () => {
+    expect(matchTerminalSwitch(key({ key: '1' }))).toBeNull()
+    expect(matchTerminalSwitch(key({ altKey: true, ctrlKey: true, key: '1' }))).toBeNull() // Ctrl+Alt (AltGr) stays text
+    expect(matchTerminalSwitch(key({ altKey: true, shiftKey: true, key: '1' }))).toBeNull()
+    expect(matchTerminalSwitch(key({ altKey: true, key: '0' }))).toBeNull()
+    expect(matchTerminalSwitch(key({ altKey: true, key: 'F1' }))).toBeNull()
+    expect(matchTerminalSwitch(key({ altKey: true, key: 'a' }))).toBeNull()
   })
 })
 

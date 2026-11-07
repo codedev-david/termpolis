@@ -2701,6 +2701,31 @@ describe('TerminalPane', () => {
       }
     })
 
+    it('Alt+2 switches to the second terminal, leaks no ESC+digit and is consumed (xterm stopped it before App heard it)', () => {
+      const setActiveTerminal = vi.fn()
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false }, { id: 'term-2', isSwarm: false }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+        setActiveTerminal,
+      }))
+      render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      const ev = new KeyboardEvent('keydown', { altKey: true, key: '2', cancelable: true })
+      expect(mockKeyHandlerCb?.(ev)).toBe(false) // xterm emits nothing and does not stop the event
+      expect(ev.defaultPrevented).toBe(true) // App's window handler skips it: one switch, not two
+      expect(setActiveTerminal).toHaveBeenCalledWith('term-2')
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+
+      // A number with no terminal behind it is still consumed (App did the same), and switches nothing.
+      const none = new KeyboardEvent('keydown', { altKey: true, key: '7', cancelable: true })
+      expect(mockKeyHandlerCb?.(none)).toBe(false)
+      expect(setActiveTerminal).toHaveBeenCalledTimes(1)
+    })
+
     it('a custom macro combo writes its text into this terminal and is consumed', () => {
       mocks.mockGetState.mockImplementation(() => ({
         terminals: [{ id: 'term-1', isSwarm: false }],

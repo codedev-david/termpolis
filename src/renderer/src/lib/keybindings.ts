@@ -175,6 +175,18 @@ export function matchLaunchAgentSlot(e: KeyboardEvent, keybindings: KeybindingMa
 }
 
 /**
+ * Alt+1..Alt+9 (no Ctrl or Shift): the index of the terminal to switch to, else null. A built-in app shortcut, not a
+ * KeybindingMap action. It is matched in two places: App's window handler (nothing focused, or a field) and the
+ * focused terminal's own key handler, because xterm turns Alt+<digit> into ESC+digit for the shell and stops the
+ * event there, so the window handler never hears it from inside a terminal.
+ */
+export function matchTerminalSwitch(e: KeyboardEvent): number | null {
+  if (!e.altKey || e.ctrlKey || e.shiftKey) return null
+  if (e.key.length !== 1 || e.key < '1' || e.key > '9') return null
+  return Number(e.key) - 1
+}
+
+/**
  * Whether a custom-macro combo carries a "real" modifier (Ctrl or Alt). Shift
  * alone doesn't count: a bare key — or Shift+key — would hijack ordinary typing
  * the moment a terminal is active, so such combos are rejected/ignored.
