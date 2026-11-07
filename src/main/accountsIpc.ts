@@ -39,7 +39,7 @@ import { copySources, createProfile, recopyProfile } from './accountProfiles'
 import {
   AccountsRefusal, accountProfileTargets, accountsShDrift, accountsShLines, activeLimit, checkProfileFolder,
   claudeJsonOf, cleanLimit, comparisonKey, cooldownFor, defaultProfileDir, discoverShares, findAccount, isAccountConnected,
-  lastSignedInAs, limitedMarker, liveProfileDir, loadAccounts, newAccountId, previewAccountsSh, profileDirOf,
+  lastSignedInAs, limitedMarker, liveProfileDir, liveProfileDirAsync, loadAccounts, loadAccountsAsync, newAccountId, previewAccountsSh, profileDirOf,
   readAccountsSh, updateAccounts,
 } from './agentAccounts'
 import type { AccountsDoc, ProfileTarget } from './agentAccounts'
@@ -249,6 +249,24 @@ export function profileTranscriptRoots(source: ConversationSource): string[] {
   for (const a of loaded.doc.file.accounts) {
     if (a.agent !== source || a.profile === null) continue
     const dir = liveProfileDir(a, home, wiring.fsx)
+    if (dir) roots.push(join(dir, source === 'claude' ? 'projects' : 'sessions'))
+  }
+  return roots
+}
+
+/** profileTranscriptRoots for the ingest pass and the Past AI Sessions list, which run on a timer:
+ *  the same answer, read without a synchronous file call (1.54.5's main-thread rule). A test that
+ *  wires its own filesystem gets the synchronous answer from it. */
+export async function profileTranscriptRootsAsync(source: ConversationSource): Promise<string[]> {
+  if (source === 'gemini' || !wiring.paths) return []
+  if (wiring.fsx && wiring.fsx !== accountFs) return profileTranscriptRoots(source)
+  const { home, userData } = wiring.paths()
+  const loaded = await loadAccountsAsync(userData)
+  if (!loaded.ok) return []
+  const roots: string[] = []
+  for (const a of loaded.doc.file.accounts) {
+    if (a.agent !== source || a.profile === null) continue
+    const dir = await liveProfileDirAsync(a, home)
     if (dir) roots.push(join(dir, source === 'claude' ? 'projects' : 'sessions'))
   }
   return roots
@@ -914,7 +932,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   wiring.env = env
   wiring.fsx = fsx
   // Learning and Past AI Sessions read every registered profile's conversations from now on.
-  setExtraTranscriptRoots(profileTranscriptRoots)
+  setExtraTranscriptRoots(profileTranscriptRoots, profileTranscriptRootsAsync)
 
   const view = (doc: AccountsDoc): AccountsView => {
     const p = deps.paths()

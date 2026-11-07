@@ -1009,9 +1009,16 @@ function defaultRoot(source: ConversationSource): string {
  *  projects/ (Claude Code) or sessions/ (Codex). Set by accountsIpc.ts once the registry is wired;
  *  none until then. */
 let extraRoots: (source: ConversationSource) => string[] = () => []
+/** The same folders, read without a synchronous file call: what the ingest pass and the Past AI
+ *  Sessions list use, since they run on a timer (1.54.5's main-thread rule). Unset, the sync one. */
+let extraRootsAsync: ((source: ConversationSource) => Promise<string[]>) | null = null
 
-export function setExtraTranscriptRoots(fn: ((source: ConversationSource) => string[]) | null): void {
+export function setExtraTranscriptRoots(
+  fn: ((source: ConversationSource) => string[]) | null,
+  asyncFn?: ((source: ConversationSource) => Promise<string[]>) | null,
+): void {
   extraRoots = fn ?? (() => [])
+  extraRootsAsync = fn ? (asyncFn ?? null) : null
 }
 
 /** Every folder a source's transcripts live in: its default one, and each registered profile's own
@@ -1019,6 +1026,14 @@ export function setExtraTranscriptRoots(fn: ((source: ConversationSource) => str
 export function transcriptRoots(source: ConversationSource): string[] {
   let extra: string[] = []
   try { extra = extraRoots(source) } catch { /* the default folder still is one */ }
+  return [defaultRoot(source), ...extra].filter((r) => !!r)
+}
+
+/** transcriptRoots for a timer path: the profiles' folders read asynchronously when that reader is wired. */
+export async function transcriptRootsAsync(source: ConversationSource): Promise<string[]> {
+  if (!extraRootsAsync) return transcriptRoots(source)
+  let extra: string[] = []
+  try { extra = await extraRootsAsync(source) } catch { /* the default folder still is one */ }
   return [defaultRoot(source), ...extra].filter((r) => !!r)
 }
 
@@ -1064,7 +1079,7 @@ export async function discoverTranscriptFiles(
   /** MEM-F7: given, the freshness filter's stat of each fresh file is kept here, to be the pass's stamp for it. */
   stamps?: Map<string, FileStamp>,
 ): Promise<string[]> {
-  const bases = root !== undefined ? (root ? [root] : []) : await walkRoots(transcriptRoots(source))
+  const bases = root !== undefined ? (root ? [root] : []) : await walkRoots(await transcriptRootsAsync(source))
   if (bases.length === 0) return []
   const pattern = filePattern(source)
   const out: string[] = []

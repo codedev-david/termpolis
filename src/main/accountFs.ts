@@ -12,6 +12,7 @@ import {
   renameSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'fs'
 import type { Dirent, Stats } from 'fs'
+import { promises as fsp } from 'fs'
 import { basename, resolve, sep } from 'path'
 import { renameWithRetry } from './agentConfigIO'
 
@@ -164,6 +165,27 @@ export const accountFs: AccountFs = {
       try { unlinkSync(tmp) } catch { /* never created */ }
       throw e
     }
+  },
+}
+
+/** The reads a timer path makes (the conversation-ingest pass asks for every profile's transcript
+ *  folders each time it runs): the same tripwire, off the main thread's synchronous calls. */
+export interface AccountFsAsync {
+  exists(p: string): Promise<boolean>
+  readText(p: string, cap?: number): Promise<string | null>
+}
+
+export const accountFsAsync: AccountFsAsync = {
+  async exists(p) {
+    assertNotCredential(p)
+    try { await fsp.access(p); return true } catch { return false }
+  },
+  async readText(p, cap = MAX_READ_BYTES) {
+    assertReadable(p)
+    let size: number
+    try { size = (await fsp.stat(p)).size } catch { return null }
+    if (size > cap) throw new Error(`larger than ${cap} bytes`)
+    return fsp.readFile(p, 'utf-8')
   },
 }
 

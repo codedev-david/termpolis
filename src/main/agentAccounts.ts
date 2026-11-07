@@ -18,8 +18,8 @@ import type {
   ImportPreviewRow, ProfileAgent,
 } from '../shared/agentAccounts'
 import type { AgentIntegrationPaths } from './agentIntegrationManager'
-import { accountFs, isSameOrInside, readClaudeJsonFields } from './accountFs'
-import type { AccountFs } from './accountFs'
+import { accountFs, accountFsAsync, isSameOrInside, readClaudeJsonFields } from './accountFs'
+import type { AccountFs, AccountFsAsync } from './accountFs'
 
 export const ACCOUNTS_FILE = 'agent-accounts.json'
 
@@ -182,6 +182,24 @@ export function loadAccounts(userData: string, fsx: AccountFs = accountFs): Load
   } catch {
     return { ok: false, error: `${ACCOUNTS_FILE} can't be read` }
   }
+  return parseLoadedAccounts(text)
+}
+
+/** loadAccounts without a synchronous file call, for a timer path (the ingest pass's transcript folders). */
+export async function loadAccountsAsync(userData: string, fsx: AccountFsAsync = accountFsAsync): Promise<LoadResult> {
+  const file = accountsFilePath(userData)
+  if (!file) return { ok: false, error: 'the folder Termpolis keeps its settings in is not a full path' }
+  let text: string | null
+  try {
+    text = await fsx.readText(file, MAX_FILE_BYTES)
+  } catch {
+    return { ok: false, error: `${ACCOUNTS_FILE} can't be read` }
+  }
+  return parseLoadedAccounts(text)
+}
+
+/** The registry from its file's text: null when there is no file. */
+function parseLoadedAccounts(text: string | null): LoadResult {
   if (text === null) return { ok: true, doc: parseAccountsDoc({}), exists: false }
   let raw: unknown
   try {
@@ -284,6 +302,12 @@ export function claudeJsonOf(account: Pick<AgentAccount, 'agent' | 'profile'>, h
 export function liveProfileDir(account: AgentAccount, home: string, fsx: AccountFs = accountFs): string | null {
   const dir = profileDirOf(account, home)
   return dir && isReachable(dir) && fsx.exists(dir) ? dir : null
+}
+
+/** liveProfileDir without a synchronous file call. */
+export async function liveProfileDirAsync(account: AgentAccount, home: string, fsx: AccountFsAsync = accountFsAsync): Promise<string | null> {
+  const dir = profileDirOf(account, home)
+  return dir && isReachable(dir) && (await fsx.exists(dir)) ? dir : null
 }
 
 export interface FolderContext {

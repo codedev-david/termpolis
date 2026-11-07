@@ -22,7 +22,7 @@
 
 import { promises as fsp } from 'fs'
 import { join } from 'path'
-import { transcriptRoots, walkRoots } from './conversationIngest'
+import { transcriptRootsAsync, walkRoots } from './conversationIngest'
 
 const HEAD_BYTES = 64 * 1024
 const SCAN_CONCURRENCY = 16
@@ -144,7 +144,7 @@ async function mapWithConcurrency<T, U>(items: T[], limit: number, fn: (t: T) =>
 export async function listAISessions(opts?: { projectsRoot?: string }): Promise<AISessionSummary[]> {
   // Every account's: the default projects/ folder and each registered profile's own, each read
   // once (a profile's projects/ is usually a link to the default one).
-  const roots = opts?.projectsRoot !== undefined ? [opts.projectsRoot] : await walkRoots(transcriptRoots('claude'))
+  const roots = opts?.projectsRoot !== undefined ? [opts.projectsRoot] : await walkRoots(await transcriptRootsAsync('claude'))
   // Collect (filePath, projectFolder) pairs first, then process in parallel.
   const targets: { filePath: string; projectFolder: string }[] = []
   for (const root of roots) {

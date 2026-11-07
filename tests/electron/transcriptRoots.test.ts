@@ -9,10 +9,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, promises as fsPromises, utimesSync, writeFileSync } from 'fs'
 import { join, parse } from 'path'
 import {
-  discoverTranscriptFiles, isInTranscriptRoot, newestTranscriptFiles, setExtraTranscriptRoots, transcriptRoots, walkRoots,
+  discoverTranscriptFiles, isInTranscriptRoot, newestTranscriptFiles, setExtraTranscriptRoots, transcriptRoots, transcriptRootsAsync, walkRoots,
 } from '../../src/main/conversationIngest'
 import { listAISessions } from '../../src/main/aiSessions'
-import { _resetTerminalAccountsForTest, profileTranscriptRoots, registerAccountsIpc } from '../../src/main/accountsIpc'
+import { _resetTerminalAccountsForTest, profileTranscriptRoots, profileTranscriptRootsAsync, registerAccountsIpc } from '../../src/main/accountsIpc'
 import { ACCOUNTS_IPC } from '../../src/shared/agentAccounts'
 import { createSandbox } from './_agentIntegrationManagerFixture'
 import type { Sandbox } from './_agentIntegrationManagerFixture'
@@ -210,6 +210,11 @@ describe("profileTranscriptRoots: the registry's profiles (accountsIpc.ts)", () 
     expect(profileTranscriptRoots('codex')).toEqual([join(cx.account.profile, 'sessions')])
     expect(profileTranscriptRoots('gemini')).toEqual([])
     expect(transcriptRoots('claude')).toContain(join(b.account.profile, 'projects'))
+    // The timer path's reader (the ingest pass, Past AI Sessions) gives the same answer, read without a sync call.
+    expect(await profileTranscriptRootsAsync('claude')).toEqual([join(b.account.profile, 'projects')])
+    expect(await profileTranscriptRootsAsync('codex')).toEqual([join(cx.account.profile, 'sessions')])
+    expect(await profileTranscriptRootsAsync('gemini')).toEqual([])
+    expect(await transcriptRootsAsync('claude')).toEqual(transcriptRoots('claude'))
   })
 
   it('names none for a profile whose folder is gone, or while the registry is unreadable', async () => {
@@ -219,7 +224,9 @@ describe("profileTranscriptRoots: the registry's profiles (accountsIpc.ts)", () 
     const { rmSync } = await import('fs')
     rmSync(b.account.profile, { recursive: true, force: true })
     expect(profileTranscriptRoots('claude')).toEqual([])
+    expect(await profileTranscriptRootsAsync('claude')).toEqual([])
     writeFileSync(join(sb.paths.userData, 'agent-accounts.json'), '{ not json')
     expect(profileTranscriptRoots('claude')).toEqual([])
+    expect(await profileTranscriptRootsAsync('claude')).toEqual([])
   })
 })
