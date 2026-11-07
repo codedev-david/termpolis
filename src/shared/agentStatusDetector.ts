@@ -526,8 +526,9 @@ const FOLDED_READS = /\([^()]+ to expand\)$/
  *  under it: "Ran 1 shell command", "Read 2 files", "Searched for 1 pattern", "Listed 1 directory" (a Bash ls, ls -la or tree),
  *  and them joined by commas ("Searched for 2 patterns, read 1 file, listed 1 directory, ran 3 shell commands"). The whole of the
  *  rows between the turn's text and the reply must be such a group, so a sentence that only starts like one is not (F-R2-1).
- *  "Listed N directories" was captured live on 2.1.317 (F-R3-1): the verbs of the next release are re-captured the same way. */
-const FOLDED_GROUP = /^(?:Searched for \d+ patterns?|[Rr]ead \d+ files?|[Ll]isted \d+ director(?:y|ies)|[Rr]an \d+ shell commands?)(?:, (?:searched for \d+ patterns?|read \d+ files?|listed \d+ director(?:y|ies)|ran \d+ shell commands?))*$/
+ *  "Listed N directories" was captured live on 2.1.317 (F-R3-1), and so was "Called <server>" ("Called <server> N times"), the row
+ *  an MCP tool's calls fold into, alone or after the others (CH4-2): the verbs of the next release are re-captured the same way. */
+const FOLDED_GROUP = /^(?:Searched for \d+ patterns?|[Rr]ead \d+ files?|[Ll]isted \d+ director(?:y|ies)|[Rr]an \d+ shell commands?|[Cc]alled [\w.:@/-]+(?: \d+ times)?)(?:, (?:searched for \d+ patterns?|read \d+ files?|listed \d+ director(?:y|ies)|ran \d+ shell commands?|called [\w.:@/-]+(?: \d+ times)?))*$/
 
 function turnEndLimit(rows: readonly string[], box: number): string | null {
   // The last thing above the box: up past its top rule and the blank rows under the transcript, and

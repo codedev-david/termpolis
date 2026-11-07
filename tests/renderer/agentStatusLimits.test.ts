@@ -410,6 +410,32 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     expect(onScreen(rows, 'Claude').status).not.toBe('blocked')
   })
 
+  // CH4-2: the same Claude Code folds an MCP tool's calls into "Called <server>" ("Called <server> N times"), alone or after the other
+  // verbs ("Read 1 file, called termpolis"), captured live with a loopback fake API and a local stdio MCP server. A limit that ended such
+  // a run read idle. CH4-6 (D04): the plural listing after a comma is pinned with it.
+  it.each([
+    ['one call', ['  Called r4fake']],
+    ['repeated calls', ['  Called r4fake 2 times']],
+    ['a read and a call', ['  Read 1 file, called termpolis']],
+    ['a plugin server', ['  Called plugin:fake:fake']],
+    ['a hyphenated server', ['  Called my-server']],
+    ['a call after a listing and a command', ['  Listed 2 directories, ran 1 shell command, called my-server 3 times']],
+    ['a read and a plural listing', ['  Read 2 files, listed 2 directories']],
+  ])("reads Claude Code's reply under a folded group with an MCP call in it: %s (CH4-2)", (_name, group) => {
+    const rows = ['❯ go', '', '● I will check the folder first.', '', ...group, LIMIT_REPLY, '', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
+  it.each([
+    ['a call with more said after it', ['  Called termpolis and got nothing back']],
+    ['a call counted in words', ['  Called r4fake two times']],
+    ['a call that is only part of a sentence', ['  I then called termpolis']],
+    ['a call with a semicolon before it', ['  Read 1 file; called termpolis']],
+  ])('does not read the reply under a row that only looks like an MCP call: %s (CH4-2)', (_name, group) => {
+    const rows = ['❯ go', '', '● I will check the folder first.', '', ...group, LIMIT_REPLY, '', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude').status).not.toBe('blocked')
+  })
+
   // F-R3-3: guards the F-R2-1 tests did not pin (mutants without an anchor, with a single digit, with any text between the items).
   it.each([
     ['a sentence that ENDS like a group', ['  and I then ran 1 shell command']],
