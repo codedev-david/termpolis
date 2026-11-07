@@ -265,7 +265,9 @@ describe('accounts:recopy ("Re-copy from main profile")', () => {
   it('offers it once the main settings changed since the copy, then re-copies, reconnects, and stops offering', async () => {
     mainClaude()
     grant()
-    clock = Date.now()
+    // A second past the main files' writes: APFS keeps sub-millisecond mtimes, so a file written in
+    // the same millisecond as a whole-ms Date.now() stamp would read as changed since the copy.
+    clock = Date.now() + 1000
     const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new', connect: true })
     const rowOf = async (): Promise<AccountRowView> => (await list()).accounts.find((a) => a.id === r.account.id) as AccountRowView
     expect((await rowOf()).recopyAvailable).toBe(false)
