@@ -285,8 +285,10 @@ describe('TerminalPane resize: real xterm, real FitAddon, real output throttle',
       await settle(300)
       const [cols, rows] = sizeOf(t)
       expect([cols, rows]).not.toEqual([90, 30])
-      // the replay was parsed at the pty's size (xterm 90x30), THEN the pane was fitted, THEN the pty was told
-      expect(log).toEqual(['xterm 90x30', `xterm ${cols}x${rows}`, `pty ${cols}x${rows}`])
+      // the replay was parsed at the pty's size (xterm 90x30), THEN the pane was fitted. The pty was told the new size
+      // when the fit was asked for (RZ2-1): what it redraws for that size queues behind the replay, so the replay is
+      // still parsed at 90x30, and the fit does not tell it a second time.
+      expect(log).toEqual(['xterm 90x30', `pty ${cols}x${rows}`, `xterm ${cols}x${rows}`])
     })
 
     it('a reply that fails still lets the pane fit: the hold is never left up', async () => {
@@ -510,8 +512,9 @@ describe('TerminalPane resize: real xterm, real FitAddon, real output throttle',
     const OSC = 9999
     const frame = (id: number): string => `\x1b]${OSC};${id}\x07` + 'x'.repeat(9000) + '\r\n' // over the 8 KB bypass: it queues
 
-    /** 60 frames the child drew for the old size are queued when the window is narrowed; 5 more follow once the pty has been told. */
-    async function scenario(): Promise<{ wrong: number; oldFrames: number; parsedWhenTold: number | null; told: number; newGrid: [number, number]; oldGrid: [number, number] }> {
+    /** 60 frames the child drew for the old size are queued when the window is narrowed; 5 more (100-104) come while the
+     *  resize waits in line, drawn for whatever size the pty has been told by then (RZ2-1); 5 more after the resize. */
+    async function scenario(): Promise<{ wrong: number; wrongDuringWait: number; oldFrames: number; parsedWhenTold: number | null; told: number; newGrid: [number, number]; oldGrid: [number, number] }> {
       await mount([['a', true]])
       await settle(500)
       const t = term()
@@ -519,15 +522,22 @@ describe('TerminalPane resize: real xterm, real FitAddon, real output throttle',
       const parsedAt = new Map<number, [number, number]>()
       t.parser.registerOscHandler(OSC, (payload) => { parsedAt.set(Number(payload), [t.cols, t.rows]); return true })
       let parsedWhenTold: number | null = null
+      let toldGrid: [number, number] | null = null
       mockResizeTerminal.mockClear()
-      mockResizeTerminal.mockImplementation(() => { if (parsedWhenTold === null) parsedWhenTold = parsedAt.size })
+      mockResizeTerminal.mockImplementation((_id: string, c: number, r: number) => {
+        if (parsedWhenTold === null) parsedWhenTold = parsedAt.size
+        toldGrid = [c, r]
+      })
 
       await act(async () => { for (let i = 0; i < 30; i++) dataCbs[0]('a', frame(i)) }) // 270 KB in the throttle
       layout.set(containerOf(t), { width: 800, height: 500 })
       fireObservers() // the request is made 100 ms from now
       await settle(95)
       await act(async () => { for (let i = 30; i < 60; i++) dataCbs[0]('a', frame(i)) }) // more, still drawn for the old size
-      await settle(3500) // the request, the drain, the resize
+      await settle(10) // the request has been made, and waits for the backlog
+      const duringGrid: [number, number] = toldGrid ?? oldGrid
+      await act(async () => { for (let i = 100; i < 105; i++) dataCbs[0]('a', frame(i)) }) // drawn while the resize waits
+      await settle(3490) // the drain, the resize
       const told = mockResizeTerminal.mock.calls.length
       const newGrid = sizeOf(t)
       await act(async () => { for (let i = 60; i < 65; i++) dataCbs[0]('a', frame(i)) }) // what the pty draws for the new size
@@ -539,15 +549,30 @@ describe('TerminalPane resize: real xterm, real FitAddon, real output throttle',
         const got = parsedAt.get(i)
         if (!got || got[0] !== want[0] || got[1] !== want[1]) wrong++
       }
-      return { wrong, oldFrames: 60, parsedWhenTold, told, newGrid, oldGrid }
+      let wrongDuringWait = 0
+      for (let i = 100; i < 105; i++) {
+        const got = parsedAt.get(i)
+        if (!got || got[0] !== duringGrid[0] || got[1] !== duringGrid[1]) wrongDuringWait++
+      }
+      return { wrong, wrongDuringWait, oldFrames: 60, parsedWhenTold, told, newGrid, oldGrid }
     }
 
-    it('every frame is parsed at the geometry it was drawn for: 0 of 65 wrong, and the pty is told only after the 60 old frames were parsed', async () => {
+    it('every frame is parsed at the geometry it was drawn for: 0 of 70 wrong, and the pty is told once, when the resize is asked for (RZ2-1)', async () => {
       const r = await scenario()
       expect(r.newGrid).not.toEqual(r.oldGrid) // the window really was narrowed
       expect(r.told).toBe(1)
+      expect(r.parsedWhenTold).toBeLessThan(r.oldFrames) // told while the old frames still waited in line...
+      expect(r.wrong).toBe(0) // ...which are still parsed at the old size
+      expect(r.wrongDuringWait).toBe(0) // and what the pty drew for the new size during the wait is parsed at the new one
+    })
+
+    it('NEGATIVE CONTROL: with termpolis.resizeTellFirst off the pty is told only after the 60 old frames, and what it drew during the wait is parsed at the wrong size', async () => {
+      window.localStorage.setItem('termpolis.resizeTellFirst', '0')
+      const r = await scenario()
+      expect(r.told).toBe(1)
       expect(r.parsedWhenTold).toBe(r.oldFrames)
       expect(r.wrong).toBe(0)
+      expect(r.wrongDuringWait).toBeGreaterThan(0)
     })
 
     it('NEGATIVE CONTROL: with the resize switch off the same window narrows under the backlog and frames are parsed at the wrong size (key s8)', async () => {
@@ -568,10 +593,10 @@ describe('TerminalPane resize: real xterm, real FitAddon, real output throttle',
       layout.set(containerOf(term()), { width: 800, height: 500 })
       fireObservers()
       await settle(110) // the request is made and is waiting
-      expect(mockResizeTerminal).not.toHaveBeenCalled()
+      expect(mockResizeTerminal).toHaveBeenCalledTimes(1) // the pty was told when the resize was asked for (RZ2-1)
       act(() => { cleanup() })
       await settle(5000)
-      expect(mockResizeTerminal).not.toHaveBeenCalled()
+      expect(mockResizeTerminal).toHaveBeenCalledTimes(1) // the resize that waited sends nothing on its way out
     })
   })
 

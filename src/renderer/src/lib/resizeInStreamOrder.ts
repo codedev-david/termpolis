@@ -38,9 +38,14 @@ import { reportFailure } from './reportFailure'
  * NOT fixed here, and not fixable here: bytes ConPTY has already put in its pipe when the pty is told
  * the new size are drawn for the old one (there is no in-band marker), and conhost's own repaint heals
  * the viewport but not the scrollback. The same goes for output that ARRIVES while the resize waits in
- * line: the pty has not been told yet, so it is drawn for the old size, but it queues behind the
+ * line: unless the pty has been told already, it is drawn for the old size, but it queues behind the
  * resize and is parsed at the new one. Waiting for it too would never end under a flood; the cap
- * bounds the wait instead, and the redraw the pty makes once it is told puts the screen right.
+ * bounds the wait instead. A pane's fit (paneFitter.ts, RZ2-1) therefore tells the pty the new size
+ * when the resize is asked for and leaves only xterm's resize to `apply`: output drawn for the new size
+ * then queues behind the barrier and is parsed at the size it was drawn for. The write scheduler ends a
+ * slice exactly at a wait's target, so the barrier goes in before anything pushed after the request. What
+ * is left: ConPTY's own pipe (above), and with the write scheduler off, the per-pane throttle can hand
+ * up to one slice past the target ahead of the empty write.
  */
 
 /** How long a resize waits, in all, for the output ahead of it to be parsed before it goes ahead anyway. */

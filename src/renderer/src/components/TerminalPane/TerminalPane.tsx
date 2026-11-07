@@ -9,7 +9,7 @@ import { getTheme } from '../../themes/terminalThemes'
 import { createPaneOutput, type PaneOutput } from '../../lib/paneOutput'
 import { createChunkQueue } from '../../lib/chunkQueue'
 import { holdOutput, holdOutputLegacy, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
-import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER, SWITCH_FIT_FLOOR, SWITCH_HIDDEN_PANES, SWITCH_PANE_EFFECTS } from '../../lib/paneSwitches'
+import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER, SWITCH_FIT_FLOOR, SWITCH_RESIZE_TELL_FIRST, SWITCH_HIDDEN_PANES, SWITCH_PANE_EFFECTS } from '../../lib/paneSwitches'
 import { paneRootStyle } from '../../lib/paneHiding'
 import { createPaneEffects, trackPaneEffects, paneEffectsSnapshot, type PaneEffects } from '../../lib/paneSideEffects'
 import { subscribeTerminalOutput } from '../../lib/paneRouting'
@@ -1785,6 +1785,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           addon: fitAddon,
           send: (cols, rows) => window.termpolis.resizeTerminal(terminalId, cols, rows),
           floor: switchEnabled(SWITCH_FIT_FLOOR),
+          tellFirst: switchEnabled(SWITCH_RESIZE_TELL_FIRST),
         })
       : null
     fitterRef.current = fitter

@@ -200,7 +200,7 @@ describe('paneFitter', () => {
     })
 
     it('hidden while the resize waited in line: the fit is skipped when it comes up, and owed', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       const f = sizedThenHidden(r)
       r.s.visible = true
       r.s.throttlePending = 100_000
@@ -431,7 +431,7 @@ describe('paneFitter', () => {
       createPaneFitter(r.deps).request()
       expect(r.log).toContain('term.write')
       expect(() => r.s.xtermCb!()).not.toThrow()
-      expect(r.sent).toEqual([[80, 24]])
+      expect(r.sent).toEqual([[100, 30], [80, 24]]) // told the proposal first (RZ2-1), then put back to what xterm has
       expect(r.errors.length).toBe(1)
     })
   })
@@ -448,9 +448,9 @@ describe('paneFitter', () => {
     })
   })
 
-  describe('in stream order', () => {
+  describe('in stream order (termpolis.resizeTellFirst off: the pty waits with xterm, as the first 1.54.5 builds)', () => {
     it('behind a backlog the fit waits for the throttle, and the hold is flushed before the wait', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.throttlePending = 150_000
       const f = createPaneFitter(r.deps)
       f.request()
@@ -464,7 +464,7 @@ describe('paneFitter', () => {
     })
 
     it('behind xterm\'s queue it writes the empty marker and fits in its callback', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.xtermPending = 40_000
       const f = createPaneFitter(r.deps)
       f.request()
@@ -475,7 +475,7 @@ describe('paneFitter', () => {
     })
 
     it('a request while one waits in line is folded into it: one wait, one fit, measured when it runs', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.throttlePending = 100_000
       const f = createPaneFitter(r.deps)
       f.request()
@@ -490,7 +490,7 @@ describe('paneFitter', () => {
     })
 
     it('a request that arrives once the resize has run starts a new one', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.throttlePending = 100_000
       const f = createPaneFitter(r.deps)
       f.request()
@@ -501,7 +501,7 @@ describe('paneFitter', () => {
     })
 
     it('the wait is capped: a throttle that never drains cannot hold the resize back for ever', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.throttlePending = 100_000
       const f = createPaneFitter(r.deps)
       f.request()
@@ -511,7 +511,7 @@ describe('paneFitter', () => {
     })
 
     it('a stream of requests (a window dragged while a backlog drains) cannot postpone the resize past the cap', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.throttlePending = 100_000
       const f = createPaneFitter(r.deps)
       f.request()
@@ -524,7 +524,7 @@ describe('paneFitter', () => {
     })
 
     it('a selection that begins while the resize waits in line defers it, instead of reflowing the selection away', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.throttlePending = 100_000
       const f = createPaneFitter(r.deps)
       f.request()
@@ -539,7 +539,7 @@ describe('paneFitter', () => {
     })
 
     it('...but only for the allowance: past the cap it fits once, selection or not (and does not loop)', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.throttlePending = 100_000
       const f = createPaneFitter(r.deps)
       f.request()
@@ -554,7 +554,7 @@ describe('paneFitter', () => {
     })
 
     it('cancel drops the wait and the retry: nothing runs afterwards', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.throttlePending = 100_000
       const f = createPaneFitter(r.deps)
       f.request()
@@ -562,7 +562,7 @@ describe('paneFitter', () => {
       r.s.drain!()
       vi.advanceTimersByTime(RESIZE_DRAIN_CAP_MS * 2)
       expect(r.sent).toEqual([])
-      const sel = rig()
+      const sel = rig({ tellFirst: false })
       sel.s.selecting = true
       const g = createPaneFitter(sel.deps)
       g.request()
@@ -573,20 +573,247 @@ describe('paneFitter', () => {
     })
 
     it('a pane disposed, or held again, while the resize waited does not resize on its way out', () => {
-      const r = rig()
+      const r = rig({ tellFirst: false })
       r.s.throttlePending = 100_000
       const f = createPaneFitter(r.deps)
       f.request()
       r.s.held = true // a new replay took the hold
       r.s.drain!()
       expect(r.sent).toEqual([])
-      const d = rig()
+      const d = rig({ tellFirst: false })
       d.s.throttlePending = 100_000
       const g = createPaneFitter(d.deps)
       g.request()
       d.s.disposed = true
       d.s.drain!()
       expect(d.sent).toEqual([])
+    })
+  })
+
+  // RZ2-1: a resize behind a backlog used to leave the pty at the old size for the whole wait (up to the 3 s cap), so
+  // everything it drew meanwhile was parsed at the new size. The pty is told when the resize is asked for; only
+  // xterm's resize waits in line.
+  describe('RZ2-1: the pty is told first, xterm resizes in stream order', () => {
+    const count = (r: Rig, what: string): number => r.log.filter((l) => l === what).length
+
+    it('behind a backlog the pty is told the proposed size at once, and the fit does not tell it again', () => {
+      const r = rig()
+      r.s.throttlePending = 150_000
+      const f = createPaneFitter(r.deps)
+      f.request()
+      expect(r.log).toEqual(['onFit', 'flushHold', 'whenDrained', 'send'])
+      expect(r.sent).toEqual([[100, 30]]) // while the resize still waits
+      expect(f.waiting).toBe(true)
+      expect([r.s.cols, r.s.rows]).toEqual([80, 24]) // xterm has not moved: the backlog is parsed at the size it was drawn for
+      r.s.throttlePending = 0
+      r.s.drain!()
+      expect(r.log).toEqual(['onFit', 'flushHold', 'whenDrained', 'send', 'fit'])
+      expect(r.sent).toEqual([[100, 30]])
+      expect([r.s.cols, r.s.rows]).toEqual([100, 30])
+    })
+
+    it('...also behind xterm\'s own queue', () => {
+      const r = rig()
+      r.s.xtermPending = 40_000
+      createPaneFitter(r.deps).request()
+      expect(r.log).toEqual(['onFit', 'flushHold', 'term.write', 'send'])
+      r.s.xtermCb!()
+      expect(r.sent).toEqual([[100, 30]])
+    })
+
+    it('nothing queued: fit, then tell, as before (no early tell, no timer)', () => {
+      const r = rig()
+      createPaneFitter(r.deps).request()
+      expect(r.log).toEqual(['onFit', 'flushHold', 'fit', 'send'])
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('a request while the resize waits tells the pty a moved container at once, and the same size only once', () => {
+      const r = rig()
+      r.s.throttlePending = 100_000
+      const f = createPaneFitter(r.deps)
+      f.request()
+      r.s.proposal = { cols: 77, rows: 22 }
+      f.request()
+      f.request()
+      expect(r.sent).toEqual([[100, 30], [77, 22]])
+      expect(count(r, 'whenDrained')).toBe(1) // still one wait
+      r.s.throttlePending = 0
+      r.s.drain!()
+      expect(r.sent).toEqual([[100, 30], [77, 22]])
+      expect([r.s.cols, r.s.rows]).toEqual([77, 22])
+    })
+
+    it('a container that moved with no request since: the fit tells the pty the size the grid came out at', () => {
+      const r = rig()
+      r.s.throttlePending = 100_000
+      createPaneFitter(r.deps).request()
+      r.s.proposal = { cols: 90, rows: 20 }
+      r.s.throttlePending = 0
+      r.s.drain!()
+      expect(r.sent).toEqual([[100, 30], [90, 20]])
+    })
+
+    it.each([
+      ['a 0 px container', { cols: 2, rows: 1 }],
+      ['an unmeasurable one', undefined],
+      ['NaN', { cols: Number.NaN, rows: Number.NaN }],
+    ])('%s is never told early', (_name, proposal) => {
+      const r = rig()
+      r.deps.nextFrame = () => () => {}
+      r.s.proposal = proposal
+      r.s.throttlePending = 100_000
+      createPaneFitter(r.deps).request()
+      expect(r.sent).toEqual([])
+    })
+
+    it('with no proposeDimensions there is nothing to tell early: the fit tells the pty, as before', () => {
+      const r = rig()
+      r.s.proposal = 'absent'
+      r.s.throttlePending = 100_000
+      createPaneFitter(r.deps).request()
+      expect(r.sent).toEqual([])
+      r.s.throttlePending = 0
+      r.s.drain!()
+      expect(r.sent).toEqual([[100, 30]])
+    })
+
+    it('the termpolis.fitFloor switch (floor: false): a 2 x 1 proposal is told early too, as the fit would take it', () => {
+      const r = rig({ floor: false })
+      r.s.proposal = { cols: 2, rows: 1 }
+      r.s.throttlePending = 100_000
+      createPaneFitter(r.deps).request()
+      expect(r.sent).toEqual([[2, 1]])
+    })
+
+    it('a proposeDimensions that throws is reported, not thrown, and the resize still runs', () => {
+      const r = rig()
+      const boom = new Error('no core')
+      let calls = 0
+      const fit = r.deps.addon.fit
+      r.deps.addon = { fit, proposeDimensions: () => { if (calls++ === 0) throw boom; return { cols: 100, rows: 30 } } }
+      r.s.throttlePending = 100_000
+      const f = createPaneFitter(r.deps)
+      expect(() => f.request()).not.toThrow()
+      expect(r.errors).toEqual([boom])
+      expect(r.sent).toEqual([])
+      r.s.throttlePending = 0
+      r.s.drain!()
+      expect(r.sent).toEqual([[100, 30]])
+    })
+
+    it('a pane hidden while the resize waited: no fit, and the pty is put back to the size xterm has', () => {
+      const r = rig()
+      const f = sizedThenHidden(r) // xterm 100 x 30
+      r.s.visible = true
+      r.s.proposal = { cols: 90, rows: 20 }
+      r.s.throttlePending = 100_000
+      f.request()
+      expect(r.sent).toEqual([[90, 20]])
+      r.s.visible = false
+      r.s.throttlePending = 0
+      r.s.drain!()
+      expect(r.log).not.toContain('fit')
+      expect(r.sent).toEqual([[90, 20], [100, 30]])
+      expect(f.needsFit).toBe(true)
+    })
+
+    it('held again, or a 0 px container by the time the resize comes up: the pty is put back too', () => {
+      const held = rig()
+      held.s.throttlePending = 100_000
+      createPaneFitter(held.deps).request()
+      held.s.held = true
+      held.s.drain!()
+      expect(held.sent).toEqual([[100, 30], [80, 24]])
+      const zero = rig()
+      zero.s.throttlePending = 100_000
+      createPaneFitter(zero.deps).request()
+      zero.s.proposal = { cols: 2, rows: 1 }
+      zero.s.drain!()
+      expect(zero.log).not.toContain('fit')
+      expect(zero.sent).toEqual([[100, 30], [80, 24]])
+    })
+
+    it('NEGATIVE CONTROL: nothing to put back when the early size is what xterm already has, or the pane is gone', () => {
+      const same = rig()
+      same.s.cols = 100
+      same.s.rows = 30
+      same.s.throttlePending = 100_000
+      createPaneFitter(same.deps).request()
+      same.s.held = true
+      same.s.drain!()
+      expect(same.sent).toEqual([[100, 30]])
+      const gone = rig()
+      gone.s.throttlePending = 100_000
+      createPaneFitter(gone.deps).request()
+      gone.s.disposed = true
+      gone.s.drain!()
+      expect(gone.sent).toEqual([[100, 30]])
+    })
+
+    it('RZ-2 still holds: a pane hidden from mount is fitted once behind a backlog, told once', () => {
+      const r = rig()
+      r.s.visible = false
+      r.s.throttlePending = 100_000
+      const f = createPaneFitter(r.deps)
+      f.request()
+      r.s.throttlePending = 0
+      r.s.drain!()
+      expect(count(r, 'fit')).toBe(1)
+      expect(r.sent).toEqual([[100, 30]])
+      f.request()
+      expect(r.sent).toEqual([[100, 30]]) // sized now: hidden, it waits for the show
+    })
+
+    it('requests while the resize waits tell nothing while the pane may not fit (hidden, held, selecting, disposed)', () => {
+      for (const flip of ['visible', 'held', 'selecting', 'disposed'] as const) {
+        const r = rig()
+        const f = sizedThenHidden(r)
+        r.s.visible = true
+        r.s.throttlePending = 100_000
+        f.request()
+        expect(r.sent).toEqual([[100, 30]])
+        r.s.proposal = { cols: 70, rows: 20 }
+        if (flip === 'visible') r.s.visible = false
+        else r.s[flip] = true
+        f.request()
+        expect(r.sent).toEqual([[100, 30]])
+      }
+    })
+
+    it('a selection that begins while the resize waits: the fit is deferred, and tells the pty when it runs', () => {
+      const r = rig()
+      r.s.throttlePending = 100_000
+      const f = createPaneFitter(r.deps)
+      f.request()
+      r.s.selecting = true
+      r.s.throttlePending = 0
+      r.s.drain!()
+      expect(r.log).not.toContain('fit')
+      r.s.selecting = false
+      vi.advanceTimersByTime(SELECTION_RETRY_MS)
+      expect(r.sent).toEqual([[100, 30], [100, 30]]) // early, then the deferred fit's own (a same-size resize is still sent)
+    })
+
+    it('cancel forgets the early size: the next fit tells the pty again', () => {
+      const r = rig()
+      r.s.throttlePending = 100_000
+      const f = createPaneFitter(r.deps)
+      f.request()
+      f.cancel()
+      r.s.throttlePending = 0
+      f.request()
+      expect(r.sent).toEqual([[100, 30], [100, 30]])
+    })
+
+    it('the cap still bounds xterm\'s resize; the pty had the size from the start', () => {
+      const r = rig()
+      r.s.throttlePending = 100_000
+      createPaneFitter(r.deps).request()
+      expect(r.sent).toEqual([[100, 30]])
+      vi.advanceTimersByTime(RESIZE_DRAIN_CAP_MS)
+      expect([r.s.cols, r.s.rows]).toEqual([100, 30])
+      expect(r.sent).toEqual([[100, 30]])
     })
   })
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { switchEnabled, SWITCH_FIT_FLOOR, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER } from '../../src/renderer/src/lib/paneSwitches'
+import { switchEnabled, SWITCH_FIT_FLOOR, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER, SWITCH_RESIZE_TELL_FIRST } from '../../src/renderer/src/lib/paneSwitches'
 
 // The kill switches of the 1.54.5 typing fixes: '0' turns a fix off, nothing else does.
 describe('switchEnabled', () => {
@@ -35,6 +35,15 @@ describe('switchEnabled', () => {
     localStorage.setItem(SWITCH_FIT_FLOOR, '0')
     expect(switchEnabled(SWITCH_FIT_FLOOR)).toBe(false)
     expect(switchEnabled(SWITCH_RESIZE_ORDER)).toBe(true)
+  })
+
+  it('termpolis.resizeTellFirst (RZ2-1) is its own switch: off only for 0, and off leaves the resize order and the floor on', () => {
+    expect(SWITCH_RESIZE_TELL_FIRST).toBe('termpolis.resizeTellFirst')
+    expect(switchEnabled(SWITCH_RESIZE_TELL_FIRST)).toBe(true)
+    localStorage.setItem(SWITCH_RESIZE_TELL_FIRST, '0')
+    expect(switchEnabled(SWITCH_RESIZE_TELL_FIRST)).toBe(false)
+    expect(switchEnabled(SWITCH_RESIZE_ORDER)).toBe(true)
+    expect(switchEnabled(SWITCH_FIT_FLOOR)).toBe(true)
   })
 
   it('NEGATIVE CONTROL: storage that cannot be read leaves the fix ON, it never switches one off by accident', () => {

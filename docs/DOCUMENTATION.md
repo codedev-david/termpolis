@@ -930,7 +930,7 @@ Every one of these mechanisms has a switch that puts back the 1.54.4 behaviour, 
 - `TERMPOLIS_TERMINAL_DATA_ROUTING=0`: every terminal's output is sent to the window, shown or not.
 - `TERMPOLIS_DISABLE_PHONE_RESYNC=1` and `TERMPOLIS_DISABLE_FLATTENER_PARITY=1`: the phone bridge as before.
 
-Window switches are `localStorage` keys set to `0` (for example from the developer tools console), then reload the window: `termpolis.outputChunks` (the old output buffer, which also turns off the write scheduler), `termpolis.writeScheduler` (a separate output throttle per pane), `termpolis.resizeOrder` (fit and resize at once), `termpolis.fitFloor` (a pane's fit declines nothing, not even a collapsed pane's 2 x 1 grid), `termpolis.hiddenPanes` (hidden panes keep rendering), `termpolis.dataRouting` (one output listener per pane) and `termpolis.paneEffects` (the per-chunk work runs for every chunk).
+Window switches are `localStorage` keys set to `0` (for example from the developer tools console), then reload the window: `termpolis.outputChunks` (the old output buffer, which also turns off the write scheduler), `termpolis.writeScheduler` (a separate output throttle per pane), `termpolis.resizeOrder` (fit and resize at once), `termpolis.fitFloor` (a pane's fit declines nothing, not even a collapsed pane's 2 x 1 grid), `termpolis.resizeTellFirst` (a resize behind a backlog tells the pty the new size when xterm's resize comes up, not at once, and the write scheduler no longer ends a slice at the resize's wait), `termpolis.hiddenPanes` (hidden panes keep rendering), `termpolis.dataRouting` (one output listener per pane) and `termpolis.paneEffects` (the per-chunk work runs for every chunk).
 
 ### Session corruption & reset
 

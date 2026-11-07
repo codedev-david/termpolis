@@ -26,6 +26,18 @@ import { reportFailure } from './reportFailure'
  * and when it does, it does it in stream order (resizeInStreamOrder), with the pty told the size xterm
  * ended up with even if fit() throws.
  *
+ * The pty is told FIRST (RZ2-1): when the resize has to wait for a backlog, the pty is told the size the
+ * container proposes as soon as the resize is asked for, and only xterm's own resize waits in line. Until
+ * then a resize behind a backlog left the pty at the old size for the whole wait (up to the 3 s cap), and
+ * everything it drew meanwhile queued behind the resize and was parsed at the new size (probe: 74 frames
+ * at the wrong size in a flood, against 0 or 1 told first). Output drawn for the new size now queues
+ * behind the barrier, so it is parsed at the size it was drawn for. A request while the resize waits tells
+ * the pty again if the container moved. The fit then tells the pty only if the grid came out different
+ * (fit() threw, the container moved after the last request), or if the fit does not run at all (hidden, held,
+ * a 0 px container): the pty is put back to the size xterm has. Nothing waiting, nothing changes: the
+ * fast path fits and tells the pty in that order, as before. `tellFirst: false` (the termpolis.resizeTellFirst
+ * switch) waits with the pty too, as the first 1.54.5 builds did.
+ *
  * It does NOT skip a resize because the size is unchanged. conhost repaints the whole viewport on every
  * resize, including to the same size (measured: 1,752 chars on build 26200), and that repaint is the
  * only thing that heals a remounted pane's viewport.
@@ -66,6 +78,9 @@ export interface PaneFitterDeps {
   onError?: (error: unknown) => void
   /** Decline a degenerate (0 px container) grid. Default true; false is the termpolis.fitFloor switch. */
   floor?: boolean
+  /** Tell the pty the new size when a resize that must wait is asked for (RZ2-1). Default true; false is the
+   *  termpolis.resizeTellFirst switch (the pty waits with xterm). */
+  tellFirst?: boolean
   /** Run cb on the next frame; returns a canceller. Default: requestAnimationFrame. */
   nextFrame?: (cb: () => void) => () => void
 }
@@ -110,7 +125,35 @@ export function createPaneFitter(deps: PaneFitterDeps): PaneFitter {
   let unmeasured = 0
   let frame: (() => void) | undefined
   const floor = deps.floor !== false
+  const tellFirst = deps.tellFirst !== false
   const nextFrame = deps.nextFrame ?? defaultNextFrame
+  /** The size the pty was told ahead of the waiting resize (RZ2-1), until that resize comes up. */
+  let told: { cols: number; rows: number } | undefined
+
+  const degenerate = (p: { cols: number; rows: number }): boolean => floor && (p.cols <= DEGENERATE_COLS || p.rows <= DEGENERATE_ROWS)
+
+  /** Tell the pty the size the container proposes now, ahead of xterm's resize. Not a size that cannot be measured
+   *  or that the fit would decline, and not the same size twice for one waiting resize. */
+  const tellEarly = (): void => {
+    const propose = deps.addon.proposeDimensions
+    if (!propose) return
+    let p: { cols: number; rows: number } | undefined
+    try {
+      p = propose.call(deps.addon)
+    } catch (error) {
+      report(error)
+      return
+    }
+    if (!p || !(p.cols > 0) || !(p.rows > 0) || degenerate(p)) return
+    if (told && told.cols === p.cols && told.rows === p.rows) return
+    told = { cols: p.cols, rows: p.rows }
+    deps.send(p.cols, p.rows)
+  }
+
+  /** The waiting resize came up and will not fit: a pty told early goes back to the size xterm has. */
+  const realign = (early: { cols: number; rows: number } | undefined): void => {
+    if (early && (early.cols !== deps.term.cols || early.rows !== deps.term.rows)) deps.send(deps.term.cols, deps.term.rows)
+  }
 
   const clearRetry = (): void => {
     clearTimeout(retry)
@@ -125,10 +168,17 @@ export function createPaneFitter(deps: PaneFitterDeps): PaneFitter {
   /** The resize itself, once the output ahead of it has been parsed. Runs inside xterm's write callback: it must not throw. */
   const finish = (forced: boolean): void => {
     wait = undefined
+    const early = told
+    told = undefined
     // The world may have changed while the resize waited in line.
-    if (deps.isDisposed() || deps.isHeld()) return
+    if (deps.isDisposed()) return
+    if (deps.isHeld()) {
+      realign(early)
+      return
+    }
     if (skipHidden()) {
       needsFit = true
+      realign(early)
       return
     }
     if (!forced && deps.isSelectionActive()) {
@@ -150,7 +200,10 @@ export function createPaneFitter(deps: PaneFitterDeps): PaneFitter {
       return
     }
     unmeasured = 0
-    if (floor && proposal && (proposal.cols <= DEGENERATE_COLS || proposal.rows <= DEGENERATE_ROWS)) return // keep the last good size
+    if (proposal && degenerate(proposal)) {
+      realign(early)
+      return // keep the last good size
+    }
     needsFit = false
     sized = true
     try {
@@ -158,6 +211,8 @@ export function createPaneFitter(deps: PaneFitterDeps): PaneFitter {
     } catch (error) {
       report(error) // the pty is still told what xterm has: a half-done fit must not leave the two apart
     }
+    // Told first, and the grid came out at that size: the pty already has it.
+    if (early && early.cols === deps.term.cols && early.rows === deps.term.rows) return
     deps.send(deps.term.cols, deps.term.rows)
   }
 
@@ -195,17 +250,24 @@ export function createPaneFitter(deps: PaneFitterDeps): PaneFitter {
       onError: report,
     })
     wait = handle.settled ? undefined : handle
+    if (wait && tellFirst) tellEarly() // the resize waits in line; the pty does not (RZ2-1)
   }
 
   return {
     request: () => {
-      if (wait) return // folded into the resize already waiting: fit() measures the container when it runs
+      if (wait) {
+        // Folded into the resize already waiting: fit() measures the container when it runs. The pty hears of a move
+        // now, unless the pane may not fit at the moment (the resize decides when it comes up).
+        if (tellFirst && !deps.isDisposed() && !deps.isHeld() && !skipHidden() && !deps.isSelectionActive()) tellEarly()
+        return
+      }
       unmeasured = 0 // a new request (a resize, a show) gets the whole frame allowance again
       attempt()
     },
     cancel: () => {
       clearRetry()
       deferStart = null
+      told = undefined
       const w = wait
       wait = undefined
       w?.cancel()

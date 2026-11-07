@@ -1,6 +1,7 @@
 import { createChunkQueue, type ChunkQueue } from './chunkQueue'
 import { MAX_WRITE_RETRIES, retryDelayMs, type ThrottleErrorInfo } from './writeRetry'
 import { reportFailure } from './reportFailure'
+import { switchEnabled, SWITCH_RESIZE_TELL_FIRST } from './paneSwitches'
 
 /**
  * The renderer's write scheduler (1.54.5, plan package P8): ONE per renderer, every terminal pane registers.
@@ -135,6 +136,12 @@ export interface SchedulerOptions {
   limits?: Partial<SchedulerLimits>
   /** Told about the scheduler's own failures (never about a refused write: that is `PaneDeps.onError`). Default: reportError, else the console. */
   onInternalError?: (error: unknown) => void
+  /**
+   * End a slice at a wait's target (RZ2-1), so `drained(id)` runs before anything pushed after it is handed to xterm:
+   * a resize's barrier then sits exactly where the pty was told the new size. Default true; false (the
+   * termpolis.resizeTellFirst switch) hands whole slices, and output pushed just after the wait can go in ahead of it.
+   */
+  endSliceAtWaits?: boolean
 }
 
 export interface PaneDeps {
@@ -297,6 +304,7 @@ const byLeastRecentlyServed = (a: PaneState, b: PaneState): number => a.servedAt
 export function createWriteScheduler(options: SchedulerOptions = {}): WriteScheduler {
   const clock: SchedulerClock = { ...defaultClock, ...options.clock }
   const limits: SchedulerLimits = { ...DEFAULT_LIMITS, ...options.limits }
+  const endSliceAtWaits = options.endSliceAtWaits !== false
   const reportInternal = (error: unknown): void => {
     try {
       ;(options.onInternalError ?? ((e: unknown) => reportFailure(e, 'write scheduler')))(error)
@@ -406,6 +414,17 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
   function settle(p: PaneState): void {
     if (p.waiters.length === 0) return
     for (const w of p.waiters.slice()) if (w.target <= p.handed) runWaiter(p, w)
+  }
+
+  /** Chars from what has been handed to the nearest wait's target (RZ2-1); unbounded with no wait, or with endSliceAtWaits off. */
+  function untilWait(p: PaneState): number {
+    let edge = Number.POSITIVE_INFINITY
+    if (!endSliceAtWaits) return edge
+    for (const w of p.waiters) {
+      const d = w.target - p.handed
+      if (d > 0 && d < edge) edge = d
+    }
+    return edge
   }
 
   function drainedPane(p: PaneState, cb: () => void, maxWaitMs: number): () => void {
@@ -529,7 +548,7 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
       while (total < limit && p.queue.length > 0) {
         if (p.inflight >= cap && p.inflight > 0 && now - p.progressAt >= limits.ackTimeoutMs) giveUpOnAcks(p)
         const room = cap - p.inflight
-        const n = Math.min(slice, room, limit - total, p.queue.length)
+        const n = Math.min(slice, room, limit - total, p.queue.length, untilWait(p))
         if (!(n > 0)) break // no room (or a limit that allows nothing): wait for acks
         const out = p.queue.take(n)
         if (!handOver(p, out, now)) break
@@ -794,7 +813,7 @@ let shared: WriteScheduler | null = null
 
 /** The renderer's scheduler: created on first use. */
 export function getWriteScheduler(): WriteScheduler {
-  if (!shared) shared = createWriteScheduler()
+  if (!shared) shared = createWriteScheduler({ endSliceAtWaits: switchEnabled(SWITCH_RESIZE_TELL_FIRST) })
   return shared
 }
 

@@ -515,7 +515,9 @@ describe('TerminalPane output through the write scheduler: real xterm, real sche
     const OSC = 9999
     const frame = (id: number): string => `\x1b]${OSC};${id}\x07` + 'x'.repeat(9000) + '\r\n'
 
-    async function scenario(): Promise<{ wrong: number; parsedWhenTold: number | null; told: number; newGrid: [number, number]; oldGrid: [number, number] }> {
+    /** 60 frames drawn for the old size are queued when the window narrows; 5 (100-104) come while the resize waits, drawn
+     *  for whatever size the pty has been told by then (RZ2-1); 5 more after the resize. */
+    async function scenario(): Promise<{ wrong: number; wrongDuringWait: number; parsedWhenTold: number | null; told: number; newGrid: [number, number]; oldGrid: [number, number] }> {
       await mount([['a', true]])
       await settle(500)
       const t = term()
@@ -523,14 +525,21 @@ describe('TerminalPane output through the write scheduler: real xterm, real sche
       const parsedAt = new Map<number, [number, number]>()
       t.parser.registerOscHandler(OSC, (payload) => { parsedAt.set(Number(payload), [t.cols, t.rows]); return true })
       let parsedWhenTold: number | null = null
+      let toldGrid: [number, number] | null = null
       mockResizeTerminal.mockClear()
-      mockResizeTerminal.mockImplementation(() => { if (parsedWhenTold === null) parsedWhenTold = parsedAt.size })
+      mockResizeTerminal.mockImplementation((_id: string, c: number, r: number) => {
+        if (parsedWhenTold === null) parsedWhenTold = parsedAt.size
+        toldGrid = [c, r]
+      })
       await act(async () => { for (let i = 0; i < 30; i++) dataCbs[0]('a', frame(i)) })
       layout.set(containerOf(t), { width: 800, height: 500 })
       fireObservers()
       await settle(95)
       await act(async () => { for (let i = 30; i < 60; i++) dataCbs[0]('a', frame(i)) })
-      await settle(3500)
+      await settle(10) // the request has been made, and waits for the backlog
+      const duringGrid: [number, number] = toldGrid ?? oldGrid
+      await act(async () => { for (let i = 100; i < 105; i++) dataCbs[0]('a', frame(i)) })
+      await settle(3490)
       const told = mockResizeTerminal.mock.calls.length
       const newGrid = sizeOf(t)
       await act(async () => { for (let i = 60; i < 65; i++) dataCbs[0]('a', frame(i)) })
@@ -541,14 +550,28 @@ describe('TerminalPane output through the write scheduler: real xterm, real sche
         const got = parsedAt.get(i)
         if (!got || got[0] !== want[0] || got[1] !== want[1]) wrong++
       }
-      return { wrong, parsedWhenTold, told, newGrid, oldGrid }
+      let wrongDuringWait = 0
+      for (let i = 100; i < 105; i++) {
+        const got = parsedAt.get(i)
+        if (!got || got[0] !== duringGrid[0] || got[1] !== duringGrid[1]) wrongDuringWait++
+      }
+      return { wrong, wrongDuringWait, parsedWhenTold, told, newGrid, oldGrid }
     }
 
-    it('every frame is parsed at the geometry it was drawn for, and the pty is told once, after the 60 old frames were parsed', async () => {
+    it('every frame is parsed at the geometry it was drawn for, and the pty is told once, when the resize is asked for (RZ2-1)', async () => {
       const r = await scenario()
       expect(r.newGrid).not.toEqual(r.oldGrid)
       expect(r.told).toBe(1)
-      expect(r.parsedWhenTold).toBe(60)
+      expect(r.parsedWhenTold).toBeLessThan(60) // told while the old frames still waited in line
+      expect(r.wrong).toBe(0)
+      expect(r.wrongDuringWait).toBe(0) // what the pty drew for the new size meanwhile: parsed at the new size
+    })
+
+    it('NEGATIVE CONTROL: with termpolis.resizeTellFirst off the pty is told only once the 60 old frames were parsed (the first 1.54.5 order)', async () => {
+      window.localStorage.setItem('termpolis.resizeTellFirst', '0')
+      const r = await scenario()
+      expect(r.told).toBe(1)
+      expect(r.parsedWhenTold).toBeGreaterThanOrEqual(60)
       expect(r.wrong).toBe(0)
     })
 
@@ -566,10 +589,13 @@ describe('TerminalPane output through the write scheduler: real xterm, real sche
       layout.set(containerOf(term()), { width: 800, height: 500 })
       mockResizeTerminal.mockClear()
       fireObservers()
+      const before = sizeOf(term())
       await settle(110)
-      expect(mockResizeTerminal).not.toHaveBeenCalled() // waiting in line behind the output
+      expect(sizeOf(term())).toEqual(before) // xterm's resize waits in line behind the output...
+      expect(mockResizeTerminal).toHaveBeenCalledTimes(1) // ...the pty was told when it was asked for (RZ2-1)
       await settle(3000)
-      expect(mockResizeTerminal).toHaveBeenCalledTimes(1)
+      expect(sizeOf(term())).not.toEqual(before)
+      expect(mockResizeTerminal).toHaveBeenCalledTimes(1) // and is not told again: the grid came out at that size
       expect(sched().queuedChars).toBe(0)
     })
   })

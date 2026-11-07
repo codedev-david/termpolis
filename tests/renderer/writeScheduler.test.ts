@@ -924,6 +924,60 @@ describe('drained', () => {
     expect(cb).toHaveBeenCalledTimes(1) // the first 50 KB are out: that is all it waited for
   })
 
+  // RZ2-1: a resize waits on drained() and then writes its barrier straight to xterm. A slice that ran past the wait's
+  // target handed later output (drawn by the pty for the NEW size, which it was told first) ahead of that barrier, so
+  // xterm parsed it at the OLD size. The slice now ends at the target: the callback runs before a later char is handed.
+  function sliceEdge(endSliceAtWaits?: boolean): { joined: string; handedAtCb: number; ranAfter: number } {
+    const clock = makeManualClock()
+    const sch = createWriteScheduler({ clock, endSliceAtWaits })
+    const t = makeFakeTerm('v')
+    const w = sch.attach('v', { write: t.write, classify: () => 'visible' })
+    w('a'.repeat(50_000)) // drawn at the old size
+    let handedAtCb = -1
+    w.whenDrained(() => {
+      handedAtCb = t.joined().length
+      t.write('|', () => {}) // the resize's barrier, written to xterm directly
+    }, 60_000)
+    w('b'.repeat(500_000)) // drawn for the new size
+    clock.frame()
+    for (let i = 0; i < 40 && t.unacked.length > 0; i++) t.ack(t.unacked.length)
+    clock.advance(1_000)
+    const joined = t.joined()
+    return { joined, handedAtCb, ranAfter: joined.indexOf('b') }
+  }
+
+  it('RZ2-1: the slice ends at the wait, so the callback runs (and its barrier lands) before any later char is handed', () => {
+    const r = sliceEdge()
+    expect(r.handedAtCb).toBe(50_000) // exactly the old output, none of the new
+    expect(r.joined.indexOf('|')).toBe(50_000) // the barrier sits between the two
+    expect(r.ranAfter).toBe(50_001)
+    const rest = r.joined.slice(50_001)
+    expect(rest.length).toBeGreaterThan(0)
+    expect(/^b+$/.test(rest)).toBe(true) // only the new output after the barrier, in one run
+  })
+
+  it('RZ2-1 NEGATIVE CONTROL: with endSliceAtWaits off the slice straddles the target and later chars go ahead of the barrier', () => {
+    const r = sliceEdge(false)
+    expect(r.handedAtCb).toBeGreaterThan(50_000)
+    expect(r.joined.indexOf('|')).toBeGreaterThan(50_000)
+    expect(r.ranAfter).toBe(50_000)
+  })
+
+  it('RZ2-1: with two waits the slices end at each target in turn', () => {
+    const clock = makeManualClock()
+    const sch = createWriteScheduler({ clock })
+    const t = makeFakeTerm('v')
+    const w = sch.attach('v', { write: t.write, classify: () => 'visible' })
+    const at: number[] = []
+    w('a'.repeat(10_000))
+    w.whenDrained(() => at.push(t.joined().length), 60_000)
+    w('b'.repeat(20_000))
+    w.whenDrained(() => at.push(t.joined().length), 60_000)
+    w('c'.repeat(200_000))
+    clock.frame()
+    expect(at).toEqual([10_000, 30_000])
+  })
+
   it('gives up after maxWaitMs, once, and never again', () => {
     const r = makeRig({ ackTimeoutMs: Number.POSITIVE_INFINITY })
     const v = r.add('v', 'visible')

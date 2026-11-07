@@ -17,6 +17,9 @@ export const SWITCH_RESIZE_ORDER = 'termpolis.resizeOrder'
 /** Resize: the fit declines nothing, not even a 0 px container's 2 x 1 grid (the rest of the resize order stays on). */
 export const SWITCH_FIT_FLOOR = 'termpolis.fitFloor'
 
+/** Resize: a resize behind a backlog tells the pty when xterm's resize comes up, not when it is asked for (RZ2-1 off). */
+export const SWITCH_RESIZE_TELL_FIRST = 'termpolis.resizeTellFirst'
+
 /**
  * Write scheduler: '0' gives every pane its own output throttle again (the chunk-list one of 1.54.5) instead of
  * the renderer's one write scheduler, which serves the focused terminal first, bounds what xterm holds per
