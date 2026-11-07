@@ -360,6 +360,11 @@ test.describe.serial('Claude Code: what the switch does at each state of the age
 
   test('2. R2: an agent that has already exited gets no key at all, and the shell goes straight to the resume', async () => {
     setMockControl(w.home, {})
+    // A turn first: a session with no turns has no transcript (and real Claude Code prints no resume
+    // hint for it), so the other profile could not see it and the resume ends in "No conversation
+    // found". The unit counterpart in accountsChooserE2eMock.test.ts takes the same first turn.
+    await say(w, term, 'a first turn')
+    await expect.poll(() => screenOf(w.page, term), { timeout: 30_000 }).toContain('Done.')
     // The user ends it by hand: its hint is printed and the shell is at its prompt.
     await say(w, term, '/exit')
     await expect.poll(() => eventsOf(w, 'claude', 'exit').length, { timeout: 30_000 }).toBe(1)
