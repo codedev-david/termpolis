@@ -697,6 +697,16 @@ describe('how the keys of one write are gathered into lines (CHOOSER-R1-5)', () 
 
   // F-R2-4: a line is kept to 4096 characters. A longer one is a paste or a runaway, whose first 4096 are the line (the rest is
   // not held, so a flood of typed text costs a terminal no more than that), and what is typed after it still reaches its Enter.
+  // CH4-6 (G-P08): a pasted body is held to the same 4096, whatever was typed before it, and the Enter after it still ends the line.
+  it('keeps no more than 4096 characters of a pasted body either', () => {
+    const lines: string[] = []
+    _gatherLinesForTest('t9', `\x1b[200~${'p'.repeat(5000)}\x1b[201~\r`, (l) => lines.push(l))
+    expect(lines).toEqual(['p'.repeat(4096)])
+    _gatherLinesForTest('t9', `echo \x1b[200~${'q'.repeat(4094)}\nmore\x1b[201~ tail\r`, (l) => lines.push(l))
+    expect(lines[1]).toHaveLength(4096)
+    expect(lines[1]).toBe(`echo ${'q'.repeat(4091)}`)
+  })
+
   it('keeps no more than 4096 characters of a line, and still ends it at its Enter', () => {
     const lines: string[] = []
     _gatherLinesForTest('t8', `${'a'.repeat(5000)}\r`, (l) => lines.push(l))

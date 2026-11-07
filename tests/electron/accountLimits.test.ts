@@ -360,6 +360,12 @@ describe('the login in a profile decides which account it is (SWARM-R3-1)', () =
       expect(t.map((x) => x.row.id)).toEqual(['personal'])
     })
 
+    // CH4-6 (A08): a check that found a sign-in but no email says nothing of whose it is: the login the view last read still decides.
+    it('still drops the profile that holds the work login when a check finds it signed in with no email', () => {
+      const t = limitTargets(rows, 'claude', { accountId: 'codedev', email: 'me@icloud.test' }, now, { personal: { kind: 'signed-in', email: null } })
+      expect(t.map((x) => x.row.id)).toEqual(['codedev'])
+    })
+
     it('changes nothing for the layout the registry was imported with', () => {
       const nominal = [{ ...personal, lastEmail: 'me@gmail.test' }, codedev, { ...work, lastEmail: 'me@corp.test' }]
       const t = limitTargets(nominal, 'claude', { accountId: 'codedev', email: 'me@icloud.test' }, now)
