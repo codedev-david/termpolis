@@ -179,7 +179,10 @@ async function expectCard(w: World, id: string) {
       }, id))
       await w.page.waitForTimeout(2000)
     }
-    throw new Error(`${(e as Error).message}\nLIMIT-LOOKS ${JSON.stringify(looks)}`)
+    const raw = await w.page.evaluate(async (terminalId) => {
+      try { return await (window as unknown as { termpolis: { readTerminalBuffer: (id: string, from: number) => Promise<unknown> } }).termpolis.readTerminalBuffer(terminalId, 0) } catch (err) { return String(err) }
+    }, id)
+    throw new Error(`${(e as Error).message}\nLIMIT-LOOKS ${JSON.stringify(looks)}\nRAW-OUTPUT ${JSON.stringify(raw)}`)
   }
   return card
 }
