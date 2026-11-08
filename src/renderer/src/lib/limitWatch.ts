@@ -92,6 +92,25 @@ export function noteLook(terminalId: string, agent: AccountAgent, look: LimitLoo
 /** Terminals closed since the last tick: their stops go with them. */
 export function pruneStops(open: ReadonlySet<string>): void {
   for (const id of stops.keys()) if (!open.has(id)) stops.delete(id)
+  for (const id of unsure.keys()) if (!open.has(id)) unsure.delete(id)
+}
+
+/** How many more looks a still screen that shows a stop main did not count yet gets (2 s apart): main's word on the
+ *  agent can change while its screen does not. The prompt that led to the stop is a turn from the Enter, and a start
+ *  main had not yet seen is recorded as the shell echoes the line, both possibly after the limit was drawn; a loop
+ *  that judged that screen only once never opened the chooser (Windows CI, Codex, 2026-11-07). */
+export const UNSETTLED_LOOKS = 10
+const unsure = new Map<string, number>()
+
+/** Is this look of a stop main did not count one to take again on the next tick, though the screen stays the same? */
+function unsettled(terminalId: string, look: LimitLook): boolean {
+  if (stopKind(look.status) === null || (look.live && look.turned)) {
+    unsure.delete(terminalId)
+    return false
+  }
+  const n = (unsure.get(terminalId) ?? 0) + 1
+  unsure.set(terminalId, n)
+  return n <= UNSETTLED_LOOKS
 }
 
 /** A banner's terminals that no longer show the stop it is about (the agent is at work again, or the
@@ -119,6 +138,7 @@ export function pruneChooser(s: { accountSwitch: ShowStore['accountSwitch']; ter
 
 export function _resetLimitWatchForTest(): void {
   stops.clear()
+  unsure.clear()
   swarmOffer = null
 }
 
@@ -330,7 +350,8 @@ export async function watchTerminal(terminalId: string, agent: AccountAgent, vie
     return false
   }
   const note = noteLook(terminalId, agent, look, deps.now())
-  if (note.kind === 'none') return true
+  if (note.kind === 'none') return !unsettled(terminalId, look)
+  unsure.delete(terminalId)
   const row = note.ctx.accountId ? view?.accounts.find((r) => r.id === note.ctx.accountId) : undefined
   if (note.kind === 'limit' && row) {
     const email = row.lastEmail ?? (agent === 'agy' ? row.email : undefined)
