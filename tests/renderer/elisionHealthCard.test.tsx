@@ -1,0 +1,1057 @@
+// @vitest-environment jsdom
+import React from 'react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import { ElisionHealthCard } from '../../src/renderer/src/components/SettingsPane/ElisionHealthCard'
+import { TokenSavingsSettings } from '../../src/renderer/src/components/SettingsPane/TokenSavingsSettings'
+import type { ArmComparisonView, ArmSummaryView, ElisionClassView, ElisionHealthView } from '../../src/renderer/src/types'
+
+/**
+ * R1 criterion 5. The card answers the question the app could not answer before: how often does
+ * the model ask for elided text back, by kind of result, and does eliding it at first sight pay at
+ * that rate. These fixtures are what the main process sends; the card's job is to say it plainly.
+ */
+
+const cls = (over: Partial<ElisionClassView> = {}): ElisionClassView => ({
+  key: 'compact|Read|4-10k', kind: 'compact', tool: 'Read', band: '4-10k', policy: 'legacy',
+  elided: 100, redeemed: 66, ratePct: 66, recentElided: 0, recentRedeemed: 0, recentRatePct: null,
+  breakEvenPct: 40.2, netUnitsPer1000: -8_635_000, verdict: 'costs', basis: 'all-time',
+  ...over,
+})
+const arm = (over: Partial<ArmSummaryView> = {}): ArmSummaryView => ({
+  requests: 0, working: 0, turns: 0, groups: 0, sharePct: null, turnUnitSharePct: null, unitsPerRequest: null, unitsPerWorking: null, turnUnitsPerWorking: null, ...over,
+})
+const arms = (over: Partial<ArmComparisonView> = {}): ArmComparisonView => ({
+  minRequests: 500, late: arm(), holdout: arm(), legacy: arm(),
+  verdict: 'not-enough-data', costDeltaPct: null, costMarginPct: null, moreDataFactor: null, turnVerdict: null, shareDeltaPts: null, shareMarginPts: null,
+  ...over,
+})
+const view = (over: Partial<ElisionHealthView> = {}): ElisionHealthView => ({
+  windowSize: 2000, classes: [cls()], elided: 100, redeemed: 66, legacyRedeemed: 0, recentElided: 0, recentRedeemed: 0,
+  firstSight: { policy: 'legacy', verdict: 'costs', basis: 'all-time', elided: 100, ratePct: 66, breakEvenPct: 40.2, netUnits: -863_500 },
+  oldBehaviour: null,
+  regime: 'unknown',
+  turns: { count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', hops: 0, observed: 1000, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: 23 },
+  arms: arms(),
+  agedEarly: { requests: 0, stubs: 0 },
+  ...over,
+})
+
+/** A run on Late, which is what the comparison of the arms is about: the policy in force decides what its verdict line says. */
+const lateView = (over: Partial<ElisionHealthView> = {}): ElisionHealthView =>
+  view({ firstSight: { policy: 'late', verdict: 'unknown', basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 }, ...over })
+
+type Api = Record<string, ReturnType<typeof vi.fn> | undefined>
+const api = (): Api => (window as unknown as { termpolis: Api }).termpolis
+const serve = (v: ElisionHealthView | null): void => {
+  api().tokenSavingsGetElisionHealth = vi.fn().mockResolvedValue(v ? { success: true, data: v } : { success: false, error: 'boom' })
+}
+beforeEach(() => { ;(window as unknown as { termpolis: Api }).termpolis = {} })
+
+describe('Elision health card — what it says', () => {
+  it('shows the redemption rate and the break-even for each class', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const row = await screen.findByTestId('hr-elision-row-compact|Read|4-10k')
+    expect(row).toHaveTextContent('Read')
+    expect(row).toHaveTextContent('4-10k')
+    expect(within(row).getByTestId('hr-elision-elided')).toHaveTextContent('100')
+    expect(within(row).getByTestId('hr-elision-rate')).toHaveTextContent('66%')
+    expect(within(row).getByTestId('hr-elision-breakeven')).toHaveTextContent('40%')
+    expect(within(row).getByTestId('hr-elision-verdict-cell')).toHaveTextContent('Costs')
+  })
+
+  it('says in a sentence that eliding at first sight is costing money, with the rate and the break-even', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-elision-verdict')
+    expect(v).toHaveTextContent('costing')
+    expect(v).toHaveTextContent('863,500 billed units')
+    expect(v).toHaveTextContent('the model asked for 66% of them back')
+    expect(v).toHaveTextContent('pays only below 40%')
+    expect(v.getAttribute('data-verdict')).toBe('costs')
+  })
+
+  it('says it is paying when it is', async () => {
+    serve(view({
+      classes: [cls({ ratePct: 13, redeemed: 13, breakEvenPct: 40.2, netUnitsPer1000: 9_120_000, verdict: 'pays' })],
+      firstSight: { verdict: 'pays', basis: 'all-time', elided: 100, ratePct: 13, breakEvenPct: 40.2, netUnits: 912_000 },
+    }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-elision-verdict')
+    expect(v).toHaveTextContent('saving')
+    expect(v).toHaveTextContent('912,000 billed units')
+    expect(v).toHaveTextContent('pays up to 40%')
+    expect(v.getAttribute('data-verdict')).toBe('pays')
+  })
+
+  it('names the window when the verdict rests on the recent results, and all time when it does not', async () => {
+    serve(view({ firstSight: { ...view().firstSight, basis: 'recent', elided: 640 } }))
+    const { unmount } = render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-verdict')).toHaveTextContent('last 640 results of this run')
+    unmount()
+    serve(view({ firstSight: { ...view().firstSight, basis: 'all-time', elided: 5000 } }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-verdict')).toHaveTextContent('all 5,000 results so far')
+  })
+
+  it('declines to give a verdict with too few results, and says how many it needs', async () => {
+    serve(view({
+      classes: [cls({ elided: 12, redeemed: 9, ratePct: 75, breakEvenPct: null, netUnitsPer1000: null, verdict: 'unknown', basis: null })],
+      firstSight: { verdict: 'unknown', basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 },
+    }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-elision-verdict')
+    expect(v).toHaveTextContent('Not enough results yet to say')
+    expect(v).toHaveTextContent('30')
+    expect(v.getAttribute('data-verdict')).toBe('unknown')
+    const row = screen.getByTestId('hr-elision-row-compact|Read|4-10k')
+    expect(within(row).getByTestId('hr-elision-rate')).toHaveTextContent('75%')
+    expect(within(row).getByTestId('hr-elision-verdict-cell')).toHaveTextContent('Too few')
+    expect(within(row).getByTestId('hr-elision-breakeven')).toHaveTextContent('—')
+  })
+
+  it('shows rates but no verdict for the kinds a policy does not choose between', async () => {
+    serve(view({ classes: [
+      cls(),
+      cls({ key: 'decay|Bash|1.6-4k', kind: 'decay', tool: 'Bash', band: '1.6-4k', elided: 900, redeemed: 90, ratePct: 10, breakEvenPct: null, netUnitsPer1000: null, verdict: 'unknown', basis: null }),
+    ] }))
+    render(<ElisionHealthCard />)
+    const row = await screen.findByTestId('hr-elision-row-decay|Bash|1.6-4k')
+    expect(row).toHaveTextContent('Aged out')
+    expect(within(row).getByTestId('hr-elision-rate')).toHaveTextContent('10%')
+    expect(within(row).getByTestId('hr-elision-breakeven')).toHaveTextContent('—')
+    expect(within(row).getByTestId('hr-elision-verdict-cell')).toHaveTextContent('—')
+  })
+
+  it('labels every kind in words', async () => {
+    const kinds: Array<[ElisionClassView['kind'], string]> = [['compact', 'Compacted at first sight'], ['dedup', 'Repeat collapsed'], ['diff', 'Sent as a patch'], ['decay', 'Aged out']]
+    serve(view({ classes: kinds.map(([kind], i) => cls({ key: `${kind}|Read|4-10k`, kind, elided: 100 - i })) }))
+    render(<ElisionHealthCard />)
+    for (const [kind, label] of kinds) expect(await screen.findByTestId(`hr-elision-row-${kind}|Read|4-10k`)).toHaveTextContent(label)
+  })
+
+  it('names tools and sizes the way a person would', async () => {
+    serve(view({ classes: [
+      cls({ key: 'compact|mcp|<1.6k', tool: 'mcp', band: '<1.6k', elided: 50 }),
+      cls({ key: 'compact|other|40k+', tool: 'other', band: '40k+', elided: 40 }),
+    ] }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-row-compact|mcp|<1.6k')).toHaveTextContent('MCP tools')
+    expect(screen.getByTestId('hr-elision-row-compact|mcp|<1.6k')).toHaveTextContent('under 1.6k chars')
+    expect(screen.getByTestId('hr-elision-row-compact|other|40k+')).toHaveTextContent('Other tools')
+    expect(screen.getByTestId('hr-elision-row-compact|other|40k+')).toHaveTextContent('40k+ chars')
+  })
+
+  it('shows the recent rate beside the all-time one when the window has results', async () => {
+    serve(view({ classes: [cls({ recentElided: 200, recentRedeemed: 150, recentRatePct: 75 })] }))
+    render(<ElisionHealthCard />)
+    const row = await screen.findByTestId('hr-elision-row-compact|Read|4-10k')
+    expect(within(row).getByTestId('hr-elision-recent')).toHaveTextContent('75%')
+    expect(within(row).getByTestId('hr-elision-recent')).toHaveTextContent('200')
+  })
+
+  it('shows a dash for a recent rate with nothing behind it', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    expect(within(await screen.findByTestId('hr-elision-row-compact|Read|4-10k')).getByTestId('hr-elision-recent')).toHaveTextContent('—')
+  })
+})
+
+describe('Elision health card — regime, turns and notes', () => {
+  it('calls out a rise in the rate the model asks for text back', async () => {
+    serve(view({ regime: 'rising' }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-regime')).toHaveTextContent('asking for elided text back more often')
+  })
+
+  it('calls out a fall, and says nothing when steady or unknown', async () => {
+    serve(view({ regime: 'falling' }))
+    const { unmount } = render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-regime')).toHaveTextContent('less often')
+    unmount()
+    for (const regime of ['steady', 'unknown'] as const) {
+      serve(view({ regime }))
+      const r = render(<ElisionHealthCard />)
+      await screen.findByTestId('hr-elision-verdict')
+      expect(screen.queryByTestId('hr-elision-regime')).toBeNull()
+      r.unmount()
+    }
+  })
+
+  it('reports the retrieval turns: how many, what they cost and what share of responses', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('230 turns that only fetched elided text')
+    expect(t).toHaveTextContent('23% of responses')
+    expect(t).toHaveTextContent('3,910,000 billed units')
+    expect(t).toHaveTextContent('about 17,000 each.')
+    // Measured enough: the table uses the measured cost, so there is no assumption to state.
+    expect(t).not.toHaveTextContent('charges')
+    expect(t).not.toHaveTextContent('assumed')
+  })
+
+  it('says what the break-even charges instead, until enough turns have been seen, and prints the measured cost beside the measured total', async () => {
+    serve(view({ turns: { count: 4, units: 70_000, unitsPerTurn: 16_800, costBasis: 'assumed', hops: 0, observed: 90, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: 4.4 } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('4 turns')
+    expect(t).toHaveTextContent('4.4% of responses')
+    expect(t).toHaveTextContent('cost 70,000 billed units, about 17,500 each.')
+    expect(t).toHaveTextContent('The break-even in the table does not use that yet: until it has seen 20 such turns it charges 16,800 billed units for each.')
+  })
+
+  it('does not set an assumed figure beside a measured total: 12 turns that cost 94,000 units are 7,833 each, and the 16,800 is the table\'s', async () => {
+    // The sentence used to read "cost 94,000 billed units, about 16,800 each (assumed)": 94,000 / 12 is not 16,800.
+    serve(view({ turns: { count: 12, units: 94_000, unitsPerTurn: 16_800, costBasis: 'assumed', hops: 4, observed: 87, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: 13.8 } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('cost 94,000 billed units, about 7,833 each.')
+    expect(t).not.toHaveTextContent('16,800 each')
+    expect(t).not.toHaveTextContent('(assumed)')
+    expect(t).toHaveTextContent('it charges 16,800 billed units for each')
+  })
+
+  it('says there are none yet rather than showing zeros', async () => {
+    serve(view({ turns: { count: 0, units: 0, unitsPerTurn: 16_800, costBasis: 'assumed', hops: 0, observed: 0, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: null } }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-turns')).toHaveTextContent('No turns that only fetched elided text yet')
+  })
+
+  it('counts a single turn in the singular and leaves out a share it cannot compute', async () => {
+    serve(view({ turns: { count: 1, units: 20_000, unitsPerTurn: 16_800, costBasis: 'assumed', hops: 0, observed: 0, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: null } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('1 turn that only fetched elided text')
+    expect(t).not.toHaveTextContent('of responses')
+  })
+
+  // R1 criterion 10 on the card: the rate is over the requests that could ask, and the card says so.
+  it('takes the share over the requests that could ask, and says how many could not', async () => {
+    serve(view({ turns: { count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', hops: 0, observed: 1000, askable: 800, unaskable: 200, shareBasis: 'could-ask', sharePct: 28.8 } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('230 turns that only fetched elided text')
+    expect(t).toHaveTextContent('28.8% of the 800 responses to requests that could ask')
+    expect(t).not.toHaveTextContent('of responses)')
+    expect(t).toHaveTextContent('200 responses came from requests with no way to ask, and are left out of the rate')
+  })
+
+  it('does not mention requests that could not ask when there were none', async () => {
+    serve(view({ turns: { count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', hops: 0, observed: 800, askable: 800, unaskable: 0, shareBasis: 'could-ask', sharePct: 28.8 } }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-turns')).not.toHaveTextContent('no way to ask')
+  })
+
+  it('says how many asks took a second turn to load the tool first, and that the cost includes it', async () => {
+    serve(view({ turns: { count: 100, units: 2_000_000, unitsPerTurn: 20_000, costBasis: 'measured', hops: 40, observed: 1000, askable: 1000, unaskable: 0, shareBasis: 'could-ask', sharePct: 10 } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('40 of them were preceded by a turn that only loaded the tool')
+    expect(t).toHaveTextContent('that turn is in the cost')
+  })
+
+  it('says the one response with no way to ask in the singular', async () => {
+    serve(view({ turns: { count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', hops: 0, observed: 801, askable: 800, unaskable: 1, shareBasis: 'could-ask', sharePct: 28.8 } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('1 response came from requests with no way to ask, and is left out of the rate.')
+    expect(t).not.toHaveTextContent('1 responses')
+  })
+
+  it('says it in the singular for one', async () => {
+    serve(view({ turns: { count: 3, units: 60_000, unitsPerTurn: 20_000, costBasis: 'assumed', hops: 1, observed: 10, askable: 10, unaskable: 0, shareBasis: 'could-ask', sharePct: 30 } }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-turns')).toHaveTextContent('1 of them was preceded by a turn that only loaded the tool')
+  })
+
+  it('leaves the hop sentence out when no ask needed one', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-turns')).not.toHaveTextContent('only loaded the tool')
+  })
+
+  it('notes the redemptions of text the ledger could not class (stored by an older version), only when there are some', async () => {
+    serve(view({ legacyRedeemed: 1234 }))
+    const { unmount } = render(<ElisionHealthCard />)
+    // An earlier launch of this version is not in the sentence: its stash carries the class, so those are counted in their rows.
+    expect(await screen.findByTestId('hr-elision-legacy')).toHaveTextContent('1,234 retrievals were of text elided before this version counted by kind, so no row above includes them')
+    expect(screen.getByTestId('hr-elision-legacy')).not.toHaveTextContent('earlier launch')
+    unmount()
+    serve(view({ legacyRedeemed: 1 }))
+    const one = render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-legacy')).toHaveTextContent('1 retrieval was of text elided before this version counted by kind, so no row above includes it')
+    one.unmount()
+    serve(view({ legacyRedeemed: 0 }))
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-verdict')
+    expect(screen.queryByTestId('hr-elision-legacy')).toBeNull()
+  })
+
+  it('states that the break-even is an estimate and what it assumes', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const note = await screen.findByTestId('hr-elision-estimate')
+    expect(note).toHaveTextContent('estimate')
+    expect(note).toHaveTextContent('11 billed units')
+    expect(note).toHaveTextContent('counts 4 characters to a token')
+    expect(note).toHaveTextContent('or the research’s 16,800 units until it has seen 20.')
+  })
+
+  it('says how the loading turn is matched to the retrieval turn, and that interleaved conversations with the same opening can leave one uncharged', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const note = await screen.findByTestId('hr-elision-estimate')
+    expect(note).toHaveTextContent('matched to the retrieval turn after it by the conversation’s opening message')
+    expect(note).toHaveTextContent('conversations that open with the same message run at the same time')
+    expect(note).toHaveTextContent('the retrieval-turn figures are a lower bound there')
+  })
+})
+
+describe('Elision health card — states and controls', () => {
+  it('explains each column of the table in its header, the first as counting a result sent in several conversations once', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const table = await screen.findByTestId('hr-elision-table')
+    const titles = Array.from(table.querySelectorAll('th')).map((h) => h.getAttribute('title') ?? '')
+    expect(titles).toContain('Distinct results of this kind elided, all time. A result sent in several conversations counts once.')
+    expect(titles).toContain('Share of those distinct results the model later asked for back, all time')
+    expect(titles).toContain('The asked-back rate above which eliding this kind at first sight loses money')
+    expect(titles.some((t) => t.startsWith('The same over the last 2,000 elisions of this run'))).toBe(true)
+  })
+
+  it('shows an empty state before anything has been elided', async () => {
+    serve(view({ classes: [], elided: 0, redeemed: 0, firstSight: { verdict: 'unknown', basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 } }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-empty')).toHaveTextContent('Nothing has been elided yet')
+    expect(screen.queryByTestId('hr-elision-table')).toBeNull()
+  })
+
+  it('says it is unavailable when the main process cannot answer', async () => {
+    serve(null)
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-unavailable')).toHaveTextContent('unavailable')
+  })
+
+  it('says it is unavailable when the bridge does not exist, or throws', async () => {
+    const { unmount } = render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-unavailable')).toBeInTheDocument()
+    unmount()
+    api().tokenSavingsGetElisionHealth = vi.fn().mockRejectedValue(new Error('ipc closed'))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-unavailable')).toBeInTheDocument()
+  })
+
+  it('shows the busiest classes and lets the rest be opened', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => cls({ key: `compact|Read|4-10k#${i}`, elided: 1000 - i }))
+    serve(view({ classes: many }))
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-table')
+    expect(screen.getAllByTestId(/^hr-elision-row-/)).toHaveLength(8)
+    const more = screen.getByTestId('hr-elision-more')
+    expect(more).toHaveTextContent('Show all 12')
+    fireEvent.click(more)
+    expect(screen.getAllByTestId(/^hr-elision-row-/)).toHaveLength(12)
+    expect(screen.getByTestId('hr-elision-more')).toHaveTextContent('Show fewer')
+    fireEvent.click(screen.getByTestId('hr-elision-more'))
+    expect(screen.getAllByTestId(/^hr-elision-row-/)).toHaveLength(8)
+  })
+
+  it('has no show-all control when everything already fits', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-table')
+    expect(screen.queryByTestId('hr-elision-more')).toBeNull()
+  })
+
+  it('refreshes on demand', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-verdict')
+    const get = api().tokenSavingsGetElisionHealth as ReturnType<typeof vi.fn>
+    expect(get).toHaveBeenCalledTimes(1)
+    get.mockResolvedValueOnce({ success: true, data: view({ firstSight: { ...view().firstSight, verdict: 'pays', netUnits: 5000 } }) })
+    fireEvent.click(screen.getByTestId('hr-elision-refresh'))
+    await waitFor(() => expect(screen.getByTestId('hr-elision-verdict').getAttribute('data-verdict')).toBe('pays'))
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  // The card reads once when it opens and again when the person asks. It never polls: a timer would wake the
+  // renderer, and the main process would build the whole view again, for counts that move a few at a time. Held
+  // two ways: an hour of clock passes with no second read, and the source starts no timer at all.
+  it('never polls: it reads once when it opens, and an hour of clock passes without another read', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      serve(view())
+      render(<ElisionHealthCard />)
+      // The clock is faked and advances with real time, so this wait is on the machine's pace: given room for a loaded one.
+      await screen.findByTestId('hr-elision-verdict', {}, { timeout: 8_000 })
+      const get = api().tokenSavingsGetElisionHealth as ReturnType<typeof vi.fn>
+      expect(get).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(3_600_000)
+      expect(get).toHaveBeenCalledTimes(1)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('has no timer in its source, so nothing can be waking the renderer in the background', () => {
+    const src = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'components', 'SettingsPane', 'ElisionHealthCard.tsx'), 'utf8')
+    expect(src).not.toMatch(/\bset(?:Interval|Timeout)\s*\(/)
+    expect(src).not.toMatch(/requestAnimationFrame|requestIdleCallback/)
+  })
+
+  it('keeps what it had when a refresh fails, instead of blanking the card', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-verdict')
+    const get = api().tokenSavingsGetElisionHealth as ReturnType<typeof vi.fn>
+    get.mockResolvedValueOnce({ success: false, error: 'busy' })
+    fireEvent.click(screen.getByTestId('hr-elision-refresh'))
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId('hr-elision-verdict')).toBeInTheDocument()
+    expect(screen.queryByTestId('hr-elision-unavailable')).toBeNull()
+  })
+})
+
+describe('Elision health card — late compared with the holdout', () => {
+  const late = arm({ requests: 1_800, working: 1_700, turns: 100, groups: 18, sharePct: 5.6, unitsPerRequest: 31_000, unitsPerWorking: 32_800, turnUnitsPerWorking: 900 })
+  const holdout = arm({ requests: 600, working: 450, turns: 150, groups: 9, sharePct: 25, unitsPerRequest: 28_400, unitsPerWorking: 37_900, turnUnitsPerWorking: 6_000 })
+
+  it('says so when it has too little to compare, with how far each arm has got', async () => {
+    serve(lateView({ arms: arms({ late: arm({ requests: 212, groups: 4, working: 200 }), holdout: arm({ requests: 31, groups: 2, working: 30 }) }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v.getAttribute('data-verdict')).toBe('not-enough-data')
+    expect(v).toHaveTextContent('Not enough data yet')
+    expect(v).toHaveTextContent('500 requests')
+    expect(v).toHaveTextContent('5 different groups')
+    expect(v).toHaveTextContent('late 212 requests in 4 groups')
+    expect(v).toHaveTextContent('the holdout 31 in 2 groups')
+  })
+
+  it('says "1 group" in the singular', async () => {
+    serve(lateView({ arms: arms({ late: arm({ requests: 600, groups: 1, working: 600 }), holdout: arm({ requests: 1, groups: 1, working: 1 }) }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v).toHaveTextContent('late 600 requests in 1 group,')
+    expect(v).toHaveTextContent('the holdout 1 in 1 group.')
+  })
+
+  it('says there is nothing to compare when the whole run is on the Legacy setting', async () => {
+    // Not a run on Late: this is the one test of the group about the Legacy setting being in force, which view() is by default.
+    serve(view({ arms: arms({ legacy: arm({ requests: 4_200, working: 3_300, turns: 900, groups: 1, sharePct: 21.4 }) }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v).toHaveTextContent('Legacy setting')
+    expect(v).toHaveTextContent('nothing to compare')
+    expect(v.getAttribute('data-verdict')).toBe('not-enough-data')
+  })
+
+  // The arm ledger outlives the setting. A run on Late that follows one on Legacy starts with Legacy history
+  // and none of its own, and the sentence has to be about the policy in force, not about the ledger.
+  it('does not say the run is on Legacy when Late is in force and the ledger holds only the history of a Legacy run', async () => {
+    const lateInForce = { policy: 'late' as const, verdict: 'unknown' as const, basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 }
+    serve(view({ firstSight: lateInForce, arms: arms({ legacy: arm({ requests: 4_000, working: 3_100, turns: 900, groups: 1, sharePct: 22.5 }) }) }))
+    const { unmount } = render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v).toHaveTextContent('No request has run under Late in this ledger yet; the 4,000 requests from the Legacy setting are not compared.')
+    expect(v).not.toHaveTextContent('This run is on the Legacy setting')
+    expect(v.getAttribute('data-verdict')).toBe('not-enough-data')
+    unmount()
+    serve(view({ firstSight: lateInForce, arms: arms({ legacy: arm({ requests: 1, working: 1, turns: 0, groups: 1, sharePct: 0 }) }) }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-arms-verdict')).toHaveTextContent('the 1 request from the Legacy setting is not compared.')
+  })
+
+  it('still says the run is on Legacy when Legacy is in force, and compares nothing', async () => {
+    const legacyInForce = { policy: 'legacy' as const, verdict: 'unknown' as const, basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 }
+    serve(view({ firstSight: legacyInForce, arms: arms({ legacy: arm({ requests: 4_000, working: 3_100, turns: 900, groups: 1, sharePct: 22.5 }) }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v).toHaveTextContent('This run is on the Legacy setting, so every request ran the old behavior and there is nothing to compare (4,000 requests so far).')
+    expect(v).not.toHaveTextContent('No request has run under Late')
+  })
+
+  it('says late is cheaper, by how much and with what margin', async () => {
+    serve(lateView({ arms: arms({ late, holdout, verdict: 'late-cheaper', costDeltaPct: -13.5, costMarginPct: 6.2, turnVerdict: 'fewer', shareDeltaPts: -19.4, shareMarginPts: 7.1 }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v.getAttribute('data-verdict')).toBe('late-cheaper')
+    expect(v).toHaveTextContent('Late is cheaper')
+    expect(v).toHaveTextContent('13.5% fewer billed units per unit of work')
+    expect(v).toHaveTextContent('give or take 6.2 points')
+  })
+
+  it('says plainly, and in red, that late is costing more when it is', async () => {
+    serve(lateView({ arms: arms({ late, holdout, verdict: 'late-costlier', costDeltaPct: 9.8, costMarginPct: 4.1 }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v.getAttribute('data-verdict')).toBe('late-costlier')
+    expect(v).toHaveTextContent('Late is costing more')
+    // Where to act on it: the setting is named by its label, not by "the setting above", and the delay is stated.
+    expect(v).toHaveTextContent('You can switch to Legacy in Settings > Token Savings > Shorten tool results; it applies the next time Termpolis starts.')
+    expect(v).toHaveTextContent('9.8% more billed units per unit of work')
+    expect(v).toHaveTextContent('give or take 4.1 points')
+    expect(v).toHaveTextContent('Legacy')
+    expect(v.getAttribute('style')).toContain('rgb(248, 113, 113)')
+  })
+
+  it('does not claim a difference inside the margin: it says the gap could be chance', async () => {
+    serve(lateView({ arms: arms({ late, holdout, verdict: 'no-clear-difference', costDeltaPct: -3.1, costMarginPct: 9.4 }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v.getAttribute('data-verdict')).toBe('no-clear-difference')
+    expect(v).toHaveTextContent('No clear difference yet')
+    expect(v).toHaveTextContent('3.1% cheaper than the holdout')
+    expect(v).toHaveTextContent('give or take 9.4 points')
+    expect(v).toHaveTextContent('could be chance')
+  })
+
+  it('says "level with" for a gap of exactly nothing', async () => {
+    serve(lateView({ arms: arms({ late, holdout, verdict: 'no-clear-difference', costDeltaPct: 0, costMarginPct: 0 }) }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-arms-verdict')).toHaveTextContent('running level with the holdout')
+  })
+
+  it('says a gap the other way is dearer', async () => {
+    serve(lateView({ arms: arms({ late, holdout, verdict: 'no-clear-difference', costDeltaPct: 2.4, costMarginPct: 8 }) }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-arms-verdict')).toHaveTextContent('2.4% dearer than the holdout')
+  })
+
+  describe('retrieval turns', () => {
+    const turns = async (a: Partial<ArmComparisonView>): Promise<HTMLElement> => {
+      serve(lateView({ arms: arms({ late, holdout, ...a }) }))
+      render(<ElisionHealthCard />)
+      return screen.findByTestId('hr-arms-turns')
+    }
+
+    it('says late needed fewer round trips, with both shares', async () => {
+      const t = await turns({ turnVerdict: 'fewer', shareDeltaPts: -19.4, shareMarginPts: 7.1 })
+      expect(t).toHaveTextContent('5.6% of late')
+      expect(t).toHaveTextContent('25% of the holdout')
+      expect(t).toHaveTextContent('clearly fewer round trips')
+      expect(t.getAttribute('data-verdict')).toBe('fewer')
+    })
+
+    it('says, in red, when late needed MORE, because that is the opposite of what it is for', async () => {
+      const t = await turns({ turnVerdict: 'more', shareDeltaPts: 12, shareMarginPts: 3 })
+      expect(t).toHaveTextContent('MORE round trips under late')
+      expect(t).toHaveTextContent('opposite of what it is for')
+      expect(t.getAttribute('style')).toContain('rgb(248, 113, 113)')
+    })
+
+    it('says there is no clear difference', async () => {
+      expect(await turns({ turnVerdict: 'no-clear-difference', shareDeltaPts: -1, shareMarginPts: 5 })).toHaveTextContent('no clear difference yet')
+    })
+
+    it('says the data is not there yet when there is no verdict', async () => {
+      expect(await turns({ turnVerdict: null })).toHaveTextContent('not enough data yet')
+    })
+  })
+
+  describe('the table', () => {
+    it('gives each arm its requests, its retrieval turns and its cost per request and per working request', async () => {
+      serve(lateView({ arms: arms({ late, holdout, verdict: 'late-cheaper', costDeltaPct: -13.5, costMarginPct: 6.2 }) }))
+      render(<ElisionHealthCard />)
+      const l = await screen.findByTestId('hr-arm-late')
+      expect(l).toHaveTextContent('1,800')
+      expect(l).toHaveTextContent('100 (5.6%)')
+      expect(within(l).getByTestId('hr-arm-per-request')).toHaveTextContent('31,000')
+      expect(within(l).getByTestId('hr-arm-per-working')).toHaveTextContent('32,800')
+      const h = screen.getByTestId('hr-arm-holdout')
+      expect(h).toHaveTextContent('600')
+      expect(h).toHaveTextContent('150 (25%)')
+      expect(within(h).getByTestId('hr-arm-per-request')).toHaveTextContent('28,400')
+      expect(within(h).getByTestId('hr-arm-per-working')).toHaveTextContent('37,900')
+    })
+
+    it('shows a dash where an arm has nothing yet', async () => {
+      serve(lateView({ arms: arms({ late: arm({ requests: 3, working: 3, groups: 1 }) }) }))
+      render(<ElisionHealthCard />)
+      const h = await screen.findByTestId('hr-arm-holdout')
+      expect(within(h).getByTestId('hr-arm-per-request')).toHaveTextContent('—')
+      expect(within(h).getByTestId('hr-arm-per-working')).toHaveTextContent('—')
+    })
+
+    it('lists the Legacy setting only when a run on it has produced requests, and says it is not compared', async () => {
+      serve(lateView({ arms: arms({ late, holdout }) }))
+      const { unmount } = render(<ElisionHealthCard />)
+      await screen.findByTestId('hr-arm-late')
+      expect(screen.queryByTestId('hr-arm-legacy')).toBeNull()
+      unmount()
+      serve(lateView({ arms: arms({ late, holdout, legacy: arm({ requests: 77, working: 70, turns: 7, groups: 1, sharePct: 9.1, unitsPerRequest: 20_000, unitsPerWorking: 22_000 }) }) }))
+      render(<ElisionHealthCard />)
+      const g = await screen.findByTestId('hr-arm-legacy')
+      expect(g).toHaveTextContent('Legacy setting')
+      expect(g).toHaveTextContent('not compared')
+      expect(g).toHaveTextContent('77')
+    })
+  })
+
+  it('explains the measure: working requests, why cost per request misleads, groups, and what it cannot see', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const n = await screen.findByTestId('hr-arms-note')
+    expect(n).toHaveTextContent('working request')
+    expect(n).toHaveTextContent('only on fetching elided text')
+    expect(n).toHaveTextContent('look dearer')
+    expect(n).toHaveTextContent('between groups of conversations')
+    expect(n).toHaveTextContent('500 requests')
+    expect(n).toHaveTextContent('quality of an answer')
+  })
+
+  it('says how the holdout is chosen and that it runs the old behavior whichever setting is on', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const n = await screen.findByTestId('hr-arms-holdout-note')
+    // One distinct opening message in ten, not one conversation in ten: the arm follows the whole first message as the
+    // API receives it. Claude Code puts the date and the project's instructions in it, so a first message with exactly
+    // the same text keeps its arm, and the same words typed on another day are a new draw: the card says that, and not
+    // that an opener used again and again keeps landing in the same arm.
+    expect(n).toHaveTextContent('about one distinct opening message in ten')
+    expect(n).toHaveTextContent('A first message that is exactly the same, character for character, always lands in the same arm')
+    expect(n).toHaveTextContent('Claude Code puts more than your words in that message (your project instructions, the date, the state of your repository), so the same words typed in another session often start a new draw')
+    expect(n).not.toHaveTextContent('again and again')
+    expect(n).toHaveTextContent('first message')
+    expect(n).toHaveTextContent('old behavior')
+  })
+})
+
+describe('Elision health card — in Token Savings settings', () => {
+  const base: Api = {
+    tokenSavingsGetSettings: vi.fn().mockResolvedValue({ success: true, data: { enabled: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: false, floorControl: true, prefixDecay: true, wireProxy: true } }),
+    tokenSavingsSetSettings: vi.fn(),
+    tokenSavingsGetReceipt: vi.fn().mockResolvedValue({ success: true, data: { session: { netSaved: 0, events: 0, byTool: {} }, cumulative: { netSaved: 0, events: 0, byTool: {} } } }),
+    tokenSavingsGetProxyReceipt: vi.fn().mockResolvedValue({ success: false, error: 'none' }),
+    tokenSavingsGetUnifiedReceipt: vi.fn().mockResolvedValue({ success: false, error: 'none' }),
+  }
+
+  it('sits between the headline receipt and the proxy card', async () => {
+    ;(window as unknown as { termpolis: Api }).termpolis = { ...base }
+    serve(view())
+    const { container } = render(<TokenSavingsSettings />)
+    const card = await screen.findByTestId('hr-elision-health')
+    const order = Array.from(container.querySelectorAll('.hr-unified-receipt, [data-testid="hr-elision-health"], .hr-proxy-receipt'))
+    expect(order).toHaveLength(3)
+    expect(order[0].className).toContain('hr-unified-receipt')
+    expect(order[1]).toBe(card)
+    expect(order[2].className).toContain('hr-proxy-receipt')
+  })
+
+  it('does not take the rest of the settings down with it when the card has nothing', async () => {
+    ;(window as unknown as { termpolis: Api }).termpolis = { ...base }
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-elision-unavailable')).toBeInTheDocument()
+    expect(await screen.findByTestId('hr-toggle-proxy')).toBeInTheDocument()
+  })
+})
+
+describe('Elision health card — the verdict is about the policy in force', () => {
+  const lateRow = cls({ key: 'compact|Read|40k+|late', band: '40k+', policy: 'late', elided: 40, redeemed: 12, ratePct: 30, breakEvenPct: 89, netUnitsPer1000: 90_000, verdict: 'pays' })
+  const holdoutRow = cls({ key: 'compact|Bash|4-10k', tool: 'Bash', policy: 'legacy', elided: 300, redeemed: 240, ratePct: 80, breakEvenPct: 35, verdict: 'costs' })
+  const none = { verdict: 'unknown' as const, basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 }
+  const holdoutCosts = { verdict: 'costs' as const, basis: 'all-time' as const, elided: 300, ratePct: 80, breakEvenPct: 35, netUnits: -579_820 }
+
+  it("does not tell a user running Late, in red, that the holdout cost them: nothing of Late's own to judge yet", async () => {
+    serve(view({ classes: [holdoutRow], firstSight: { policy: 'late', ...none }, oldBehaviour: holdoutCosts }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-elision-verdict')
+    expect(v.getAttribute('data-verdict')).toBe('unknown')
+    expect(v).toHaveTextContent('Late shortens a result at first sight only from 40,000 characters')
+    expect(v).toHaveTextContent('at least 30')
+    expect(v).not.toHaveTextContent('costing you')
+    expect(v.style.color).not.toBe('rgb(248, 113, 113)')
+  })
+
+  it('shows the old behavior beside it, labelled as the holdout and not as what the setting does, and not in red', async () => {
+    serve(view({ classes: [holdoutRow], firstSight: { policy: 'late', ...none }, oldBehaviour: holdoutCosts }))
+    render(<ElisionHealthCard />)
+    const old = await screen.findByTestId('hr-elision-old')
+    expect(old).toHaveTextContent('conversations kept on the old behavior')
+    // The old behavior is the holdout and also any earlier run on the Legacy setting, and its floor is the tier's own.
+    expect(old).toHaveTextContent('(the holdout, and any earlier run on the Legacy setting)')
+    expect(old).toHaveTextContent('from the size of the tier’s floor up')
+    expect(old).not.toHaveTextContent('1,600')
+    expect(old).toHaveTextContent('cost about 579,820 billed units')
+    expect(old).toHaveTextContent('asked for 80% of them back')
+    expect(old).toHaveTextContent('35%')
+    expect(old).toHaveTextContent('not what your setting does')
+    expect(old.getAttribute('data-verdict')).toBe('costs')
+    expect(old.style.color).toBe('')
+  })
+
+  it('says the old behavior paid, when it did', async () => {
+    serve(view({ classes: [holdoutRow], firstSight: { policy: 'late', ...none }, oldBehaviour: { ...holdoutCosts, verdict: 'pays', netUnits: 120_000, ratePct: 12, breakEvenPct: 35 } }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-old')).toHaveTextContent('saved about 120,000 billed units')
+  })
+
+  it('leaves the old-behaviour line out when the holdout has nothing to judge yet, and under the Legacy setting', async () => {
+    serve(view({ classes: [lateRow], firstSight: { policy: 'late', ...none }, oldBehaviour: none }))
+    const { unmount } = render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-verdict')
+    expect(screen.queryByTestId('hr-elision-old')).toBeNull()
+    unmount()
+    serve(view())
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-verdict')
+    expect(screen.queryByTestId('hr-elision-old')).toBeNull()
+  })
+
+  it("reports Late's own compactions when it has them: green when they pay, naming the 40,000 characters", async () => {
+    serve(view({ classes: [lateRow, holdoutRow], firstSight: { policy: 'late', verdict: 'pays', basis: 'all-time', elided: 40, ratePct: 30, breakEvenPct: 89, netUnits: 130_000 }, oldBehaviour: holdoutCosts }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-elision-verdict')
+    expect(v.getAttribute('data-verdict')).toBe('pays')
+    expect(v).toHaveTextContent('Under Late, shortening results of 40,000 characters or more at first sight is saving you about 130,000 billed units over all 40 results so far')
+    expect(v).toHaveTextContent('asked for 30% of them back')
+    expect(v.style.color).toBe('rgb(74, 222, 128)')
+  })
+
+  it("and red when Late's own compactions cost", async () => {
+    serve(view({ classes: [lateRow], firstSight: { policy: 'late', verdict: 'costs', basis: 'recent', elided: 60, ratePct: 95, breakEvenPct: 89, netUnits: -50_000 } }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-elision-verdict')
+    expect(v).toHaveTextContent('Under Late, shortening results of 40,000 characters or more at first sight is costing you about 50,000 billed units over the last 60 results of this run')
+    expect(v.style.color).toBe('rgb(248, 113, 113)')
+  })
+
+  it('keeps the old wording under the Legacy setting, where the old behavior is what runs', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-verdict')).toHaveTextContent('Eliding results at first sight is costing you about 863,500 billed units over all 100 results so far')
+  })
+
+  it("tags the rows by policy under Late: Late's own, and the old behavior; a repeat or a patch is not tagged", async () => {
+    const dedup = cls({ key: 'dedup|Read|4-10k', kind: 'dedup', policy: 'legacy', elided: 50, redeemed: 5, ratePct: 10, breakEvenPct: null, verdict: 'unknown', netUnitsPer1000: null, basis: null })
+    serve(view({ classes: [lateRow, holdoutRow, dedup], firstSight: { policy: 'late', ...none }, oldBehaviour: holdoutCosts }))
+    render(<ElisionHealthCard />)
+    const late = await screen.findByTestId('hr-elision-row-compact|Read|40k+|late')
+    expect(late).toHaveTextContent('Compacted at first sight')
+    expect(late).toHaveTextContent('(Late)')
+    const old = screen.getByTestId('hr-elision-row-compact|Bash|4-10k')
+    expect(old).toHaveTextContent('(old behavior)')
+    const rep = screen.getByTestId('hr-elision-row-dedup|Read|4-10k')
+    expect(rep).not.toHaveTextContent('(Late)')
+    expect(rep).not.toHaveTextContent('(old behavior)')
+  })
+
+  it('does not tag a row of the setting\'s own under the Legacy setting', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const row = await screen.findByTestId('hr-elision-row-compact|Read|4-10k')
+    expect(row).not.toHaveTextContent('(old behavior)')
+    expect(row).not.toHaveTextContent('(Late)')
+  })
+
+  // The mirror of the run on Late that holds Legacy history. A person who follows the card's own advice and restarts on
+  // Legacy leaves a ledger that holds the period Late was in force: two compaction rows for the same tool and size,
+  // one made by each policy, which used to read exactly the same.
+  describe('after the person switches to Legacy, with Late\'s period still in the ledger', () => {
+    const legacyIn = { policy: 'legacy' as const, ...none }
+    const legacyRow = cls({ key: 'compact|Read|40k+', band: '40k+', policy: 'legacy', elided: 80, redeemed: 60, ratePct: 75, breakEvenPct: 87, netUnitsPer1000: 50_000, verdict: 'pays' })
+    const lateRead = cls({ key: 'compact|Read|40k+|late', band: '40k+', policy: 'late', elided: 80, redeemed: 60, ratePct: 75, breakEvenPct: 87, netUnitsPer1000: 50_000, verdict: 'pays' })
+    const side = arm({ requests: 800, working: 700, turns: 100, groups: 12, sharePct: 5, unitsPerRequest: 31_000, unitsPerWorking: 32_800, turnUnitsPerWorking: 900 })
+    const hold = arm({ requests: 600, working: 450, turns: 150, groups: 9, sharePct: 25, unitsPerRequest: 28_400, unitsPerWorking: 37_900, turnUnitsPerWorking: 6_000 })
+    const after = 'You are on the Legacy setting now, so this compares the period Late was in force.'
+
+    it('does not tell a person who is on Legacy to switch to Legacy: the red verdict says Late cost more, in the past, and that this is the period it was in force', async () => {
+      serve(view({ firstSight: legacyIn, arms: arms({ late: side, holdout: hold, verdict: 'late-costlier', costDeltaPct: 9.8, costMarginPct: 4.1 }) }))
+      render(<ElisionHealthCard />)
+      const v = await screen.findByTestId('hr-arms-verdict')
+      expect(v.getAttribute('data-verdict')).toBe('late-costlier')
+      expect(v).toHaveTextContent('Late cost more while it was in force. It used about 9.8% more billed units per unit of work than the holdout (give or take 4.1 points at 99% confidence), which is more than chance explains.')
+      expect(v).toHaveTextContent(after)
+      expect(v).not.toHaveTextContent('You can switch to Legacy')
+      expect(v).not.toHaveTextContent('applies the next time Termpolis starts')
+      expect(v).not.toHaveTextContent('Late is costing more')
+      // It is still a finding about Late, so it is still red: a person weighing a return to Late should see it.
+      expect(v.style.color).toBe('rgb(248, 113, 113)')
+    })
+
+    it('says in the past that Late was cheaper, and the same one sentence about what is compared', async () => {
+      serve(view({ firstSight: legacyIn, arms: arms({ late: side, holdout: hold, verdict: 'late-cheaper', costDeltaPct: -13.5, costMarginPct: 6.2 }) }))
+      render(<ElisionHealthCard />)
+      const v = await screen.findByTestId('hr-arms-verdict')
+      expect(v).toHaveTextContent('Late was cheaper while it was in force. It used about 13.5% fewer billed units per unit of work than the holdout (give or take 6.2 points at 99% confidence).')
+      expect(v).toHaveTextContent(after)
+      expect(v).not.toHaveTextContent('Late is cheaper')
+    })
+
+    it('says no clear difference without promising more data: none arrives while Late is not in force', async () => {
+      serve(view({ firstSight: legacyIn, arms: arms({ late: side, holdout: hold, verdict: 'no-clear-difference', costDeltaPct: -3.1, costMarginPct: 9.4, moreDataFactor: 11 }) }))
+      render(<ElisionHealthCard />)
+      const v = await screen.findByTestId('hr-arms-verdict')
+      expect(v).toHaveTextContent('No clear difference. While Late was in force it ran 3.1% cheaper than the holdout, give or take 9.4 points at 99% confidence, so this could be chance.')
+      expect(v).toHaveTextContent(after)
+      expect(v).not.toHaveTextContent('times as many conversations')
+      expect(v).not.toHaveTextContent('No clear difference yet')
+    })
+
+    it('says the same for a gap of nothing, and for a gap too small to need a number of conversations', async () => {
+      serve(view({ firstSight: legacyIn, arms: arms({ late: side, holdout: hold, verdict: 'no-clear-difference', costDeltaPct: 0, costMarginPct: 0 }) }))
+      const { unmount } = render(<ElisionHealthCard />)
+      expect(await screen.findByTestId('hr-arms-verdict')).toHaveTextContent('it ran level with the holdout')
+      unmount()
+      serve(view({ firstSight: legacyIn, arms: arms({ late: side, holdout: hold, verdict: 'no-clear-difference', costDeltaPct: 4, costMarginPct: 9.4 }) }))
+      render(<ElisionHealthCard />)
+      expect(await screen.findByTestId('hr-arms-verdict')).toHaveTextContent('it ran 4% dearer than the holdout')
+    })
+
+    it('says that "not enough data yet" will not change on its own: the counts only grow while Late is in force', async () => {
+      serve(view({ firstSight: legacyIn, arms: arms({ late: arm({ requests: 300, groups: 3 }), holdout: arm({ requests: 40, groups: 1 }), legacy: arm({ requests: 900, groups: 4 }) }) }))
+      const { unmount } = render(<ElisionHealthCard />)
+      const v = await screen.findByTestId('hr-arms-verdict')
+      expect(v).toHaveTextContent('Not enough data yet to compare.')
+      expect(v).toHaveTextContent('So far: late 300 requests in 3 groups, the holdout 40 in 1 group.')
+      expect(v).toHaveTextContent('You are on the Legacy setting now, so these only grow while Late is in force.')
+      unmount()
+      // Under Late the counts do grow, so the sentence is not there.
+      serve(view({ firstSight: { policy: 'late' as const, ...none }, arms: arms({ late: arm({ requests: 300, groups: 3 }), holdout: arm({ requests: 40, groups: 1 }) }) }))
+      render(<ElisionHealthCard />)
+      const w = await screen.findByTestId('hr-arms-verdict')
+      expect(w).toHaveTextContent('Not enough data yet to compare.')
+      expect(w).not.toHaveTextContent('only grow while Late is in force')
+    })
+
+    it('leaves the sentence about the run alone, where nothing from Late was ever recorded', async () => {
+      serve(view({ firstSight: legacyIn, arms: arms({ legacy: arm({ requests: 4_000, working: 3_100, turns: 900, groups: 1, sharePct: 22.5 }) }) }))
+      render(<ElisionHealthCard />)
+      const v = await screen.findByTestId('hr-arms-verdict')
+      expect(v).toHaveTextContent('This run is on the Legacy setting, so every request ran the old behavior and there is nothing to compare (4,000 requests so far).')
+      expect(v).not.toHaveTextContent('only grow while Late is in force')
+    })
+
+    it('keeps saying what it said under Late: the advice to switch, in the present tense', async () => {
+      serve(view({ firstSight: { policy: 'late' as const, ...none }, arms: arms({ late: side, holdout: hold, verdict: 'late-costlier', costDeltaPct: 9.8, costMarginPct: 4.1 }) }))
+      render(<ElisionHealthCard />)
+      const v = await screen.findByTestId('hr-arms-verdict')
+      expect(v).toHaveTextContent('Late is costing more.')
+      expect(v).toHaveTextContent('You can switch to Legacy in Settings > Token Savings > Shorten tool results; it applies the next time Termpolis starts.')
+      expect(v).not.toHaveTextContent('while it was in force')
+      expect(v).not.toHaveTextContent('You are on the Legacy setting now')
+    })
+
+    it('tells the two compaction rows apart: the one Late made is tagged, the one the Legacy setting made is the setting\'s own and is not', async () => {
+      serve(view({ classes: [lateRead, legacyRow], firstSight: legacyIn }))
+      render(<ElisionHealthCard />)
+      const l = await screen.findByTestId('hr-elision-row-compact|Read|40k+|late')
+      const o = screen.getByTestId('hr-elision-row-compact|Read|40k+')
+      expect(l).toHaveTextContent('Compacted at first sight (Late)')
+      expect(o).toHaveTextContent('Compacted at first sight')
+      expect(o).not.toHaveTextContent('(Late)')
+      expect(o).not.toHaveTextContent('(old behavior)')
+      expect(l.textContent).not.toBe(o.textContent)
+    })
+
+    it('tags a repeat, a patch and an aged-out result under neither policy: they are made the same way by both', async () => {
+      const dedup = cls({ key: 'dedup|Read|4-10k', kind: 'dedup', policy: 'legacy', elided: 50, redeemed: 5, ratePct: 10, breakEvenPct: null, verdict: 'unknown', netUnitsPer1000: null, basis: null })
+      serve(view({ classes: [lateRead, dedup], firstSight: legacyIn }))
+      render(<ElisionHealthCard />)
+      const rep = await screen.findByTestId('hr-elision-row-dedup|Read|4-10k')
+      expect(rep).not.toHaveTextContent('(Late)')
+      expect(rep).not.toHaveTextContent('(old behavior)')
+    })
+  })
+})
+
+describe('Elision health card — aged-out stubs that decay could not have made', () => {
+  it('is left out when there are none, which is the expected answer', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-verdict')
+    expect(screen.queryByTestId('hr-elision-aged-early')).toBeNull()
+  })
+
+  it('says how many requests and stubs, and why it matters', async () => {
+    serve(view({ agedEarly: { requests: 14, stubs: 31 } }))
+    render(<ElisionHealthCard />)
+    const e = await screen.findByTestId('hr-elision-aged-early')
+    expect(e).toHaveTextContent('14 requests')
+    expect(e).toHaveTextContent('31 stubs')
+    expect(e).toHaveTextContent('shorter than 128 messages')
+    expect(e).toHaveTextContent('should be none')
+  })
+
+  it('says it in the singular for one', async () => {
+    serve(view({ agedEarly: { requests: 1, stubs: 1 } }))
+    render(<ElisionHealthCard />)
+    const e = await screen.findByTestId('hr-elision-aged-early')
+    expect(e).toHaveTextContent('1 request')
+    expect(e).not.toHaveTextContent('1 requests')
+    expect(e).toHaveTextContent('1 stub')
+    expect(e).not.toHaveTextContent('1 stubs')
+  })
+})
+
+describe('Elision health card — late against the holdout, read at 99%', () => {
+  const side = { requests: 2000, working: 1800, turns: 200, groups: 18, sharePct: 10, turnUnitSharePct: 4.1, unitsPerRequest: 20_000, unitsPerWorking: 22_000, turnUnitsPerWorking: 900 }
+  const hold = { ...side, turns: 500, sharePct: 25, turnUnitSharePct: 12.8, unitsPerRequest: 24_000, unitsPerWorking: 26_000 }
+
+  it('describes the arms as conversations split at random, not the same work run twice', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm(hold) }) }))
+    render(<ElisionHealthCard />)
+    const a = await screen.findByTestId('hr-arms')
+    expect(a).toHaveTextContent('conversations split at random')
+    expect(a).not.toHaveTextContent('the same work, run both ways')
+  })
+
+  it('states the confidence the margin is given at', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm(hold), verdict: 'late-cheaper', costDeltaPct: -13.5, costMarginPct: 6.2 }) }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-arms-verdict')).toHaveTextContent('give or take 6.2 points at 99% confidence')
+  })
+
+  it('says the margin is wider than a plain 99% interval, why, how often it then names a difference falsely, and what that costs in data', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm(hold) }) }))
+    render(<ElisionHealthCard />)
+    const note = await screen.findByTestId('hr-arms-note')
+    expect(note).toHaveTextContent('The margin is deliberately wider than a plain 99% interval, because the holdout is small and its costs lean one way')
+    expect(note).toHaveTextContent('on simulated arms that were the same it named a difference falsely in fewer than 1 read in 100 in each direction')
+    // Not one number: the fewer groups the thinner side has, the more data the wider margin costs (3.5 at five, 1.8 at twenty).
+    expect(note).toHaveTextContent('it takes more data to name a real difference: about 3.5 times as much when the side with fewer groups has five, falling to about 1.8 times as much at twenty')
+    expect(note).not.toHaveTextContent('about 1.8 times the data')
+  })
+
+  it('says how much more data would settle a gap it cannot yet', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm(hold), verdict: 'no-clear-difference', costDeltaPct: -9.1, costMarginPct: 14, moreDataFactor: 11 }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v).toHaveTextContent('about 11 times as many conversations as so far')
+    expect(v).not.toHaveTextContent('far more conversations')
+  })
+
+  it('says a gap too small to quote takes far more, and does not invent a number', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm(hold), verdict: 'no-clear-difference', costDeltaPct: -0.4, costMarginPct: 14, moreDataFactor: null }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v).toHaveTextContent('far more conversations')
+    expect(v).not.toHaveTextContent('times as many')
+  })
+
+  it('puts the retrieval-turn share of billed units beside the share of requests, because that settles first', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm(hold), turnVerdict: 'fewer', shareDeltaPts: -15, shareMarginPts: 4 }) }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-arms-turns')
+    expect(t).toHaveTextContent('10% of late’s requests against 25% of the holdout’s')
+    expect(t).toHaveTextContent('4.1% of late’s billed units against 12.8% of the holdout’s')
+  })
+
+  it('leaves the units sentence out when either side has no cost to take a share of', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm({ ...hold, turnUnitSharePct: null }), turnVerdict: 'fewer' }) }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-arms-turns')).not.toHaveTextContent('billed units against')
+  })
+
+  it('tells the reader that cost takes long to read and the turn lines settle first', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm(hold) }) }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-arms-note')).toHaveTextContent('A difference in cost takes many conversations to read; the retrieval-turn lines settle first')
+  })
+
+  it('says "one distinct opening message in ten", because the arm follows the first message', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm(hold) }) }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-arms-holdout-note')).toHaveTextContent('about one distinct opening message in ten')
+  })
+
+  it('shows how much of the traffic the holdout really is, so a skewed share is visible', async () => {
+    serve(lateView({ arms: arms({ late: arm(side), holdout: arm(hold) }) }))
+    render(<ElisionHealthCard />)
+    // 2,000 of 4,000 requests is 50%: far from a tenth, and it is said.
+    expect(await screen.findByTestId('hr-arms-holdout-note')).toHaveTextContent('50% of the requests so far')
+  })
+})
+
+describe('Elision health card — states a screen reader and a keyboard meet', () => {
+  it('announces loading and failure', async () => {
+    api().tokenSavingsGetElisionHealth = vi.fn().mockReturnValue(new Promise(() => { /* never answers */ }))
+    const { unmount } = render(<ElisionHealthCard />)
+    expect(screen.getByTestId('hr-elision-loading').getAttribute('role')).toBe('status')
+    unmount()
+    serve(null)
+    render(<ElisionHealthCard />)
+    expect((await screen.findByTestId('hr-elision-unavailable')).getAttribute('role')).toBe('status')
+  })
+
+  // The two tables measured 413 px (432 with very large counts) in a card that is 360 px wide at the narrowest window with the
+  // sidebar open, so the table spilled past the card's border. Each sits in a box that scrolls sideways instead, so a narrow
+  // pane scrolls the table inside the card and the pane itself keeps no horizontal scrollbar. jsdom lays nothing out, so what
+  // is held is that each table's parent is that box.
+  it('scrolls each table sideways inside the card instead of spilling out of it', async () => {
+    serve(lateView({ arms: arms({ late: arm({ requests: 10 }), holdout: arm({ requests: 10 }) }) }))
+    render(<ElisionHealthCard />)
+    for (const id of ['hr-elision-table', 'hr-arms-table']) {
+      const table = await screen.findByTestId(id)
+      const box = table.parentElement as HTMLElement
+      expect(box.getAttribute('data-testid'), id).toBe(`${id}-scroll`)
+      expect(box, id).toHaveStyle({ overflowX: 'auto' })
+      expect(table, id).toHaveStyle({ width: '100%' })
+    }
+  })
+
+  it('names its tables and their columns', async () => {
+    serve(lateView({ arms: arms({ late: arm({ requests: 10 }), holdout: arm({ requests: 10 }) }) }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-table')
+    expect(t.getAttribute('aria-label')).toBe('Elision by kind of result')
+    for (const th of Array.from(t.querySelectorAll('th'))) expect(th.getAttribute('scope')).toBe('col')
+    const a = screen.getByTestId('hr-arms-table')
+    expect(a.getAttribute('aria-label')).toBe('Late compared with the holdout')
+    for (const th of Array.from(a.querySelectorAll('th'))) expect(th.getAttribute('scope')).toBe('col')
+  })
+
+  it('says whether the long list is open', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => cls({ key: `compact|Read|4-10k#${i}`, elided: 100 - i }))
+    serve(view({ classes: many }))
+    render(<ElisionHealthCard />)
+    const more = await screen.findByTestId('hr-elision-more')
+    expect(more.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(more)
+    expect(more.getAttribute('aria-expanded')).toBe('true')
+    expect(more).toHaveTextContent('Show fewer')
+  })
+
+  it('says so when a refresh fails and the numbers on the screen are the last good read', async () => {
+    const fn = vi.fn().mockResolvedValueOnce({ success: true, data: view() }).mockResolvedValueOnce({ success: false, error: 'boom' })
+    api().tokenSavingsGetElisionHealth = fn
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-verdict')
+    expect(screen.queryByTestId('hr-elision-stale')).toBeNull()
+    fireEvent.click(screen.getByTestId('hr-elision-refresh'))
+    const stale = await screen.findByTestId('hr-elision-stale')
+    expect(stale).toHaveTextContent('Could not refresh. These numbers are from the last read.')
+    expect(stale.getAttribute('role')).toBe('status')
+    expect(screen.getByTestId('hr-elision-verdict')).toBeTruthy() // still shown
+  })
+
+  it('clears that notice when the next refresh works', async () => {
+    const fn = vi.fn().mockResolvedValueOnce({ success: true, data: view() }).mockResolvedValueOnce({ success: false, error: 'x' }).mockResolvedValueOnce({ success: true, data: view() })
+    api().tokenSavingsGetElisionHealth = fn
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-verdict')
+    fireEvent.click(screen.getByTestId('hr-elision-refresh'))
+    await screen.findByTestId('hr-elision-stale')
+    fireEvent.click(screen.getByTestId('hr-elision-refresh'))
+    await waitFor(() => expect(screen.queryByTestId('hr-elision-stale')).toBeNull())
+  })
+
+  it('disables Refresh while it is reading, so it cannot be stacked', async () => {
+    let resolve: (v: unknown) => void = () => undefined
+    const fn = vi.fn().mockResolvedValueOnce({ success: true, data: view() }).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    api().tokenSavingsGetElisionHealth = fn
+    render(<ElisionHealthCard />)
+    await screen.findByTestId('hr-elision-verdict')
+    const btn = screen.getByTestId('hr-elision-refresh') as HTMLButtonElement
+    expect(btn.disabled).toBe(false)
+    fireEvent.click(btn)
+    await waitFor(() => expect(btn.disabled).toBe(true))
+    fireEvent.click(btn)
+    expect(fn).toHaveBeenCalledTimes(2) // the second click did nothing
+    resolve({ success: true, data: view() })
+    await waitFor(() => expect(btn.disabled).toBe(false))
+  })
+})

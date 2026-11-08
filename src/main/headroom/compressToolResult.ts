@@ -1,6 +1,6 @@
 import { estimateTokens } from '../memoryEconomy'
 import { getSettings, thresholdsFor, MAX_COMPRESS_BYTES } from './config'
-import { route } from './router'
+import { route, bareToolName } from './router'
 import { compressArray, compressObject, type Compressed } from './compressors'
 import { ccrStash, ccrRetrieveRecord, ccrMarkRedeemed, ccrIsIssuableToken, ccrNoteMiss } from './ccrStore'
 import { logToApp } from '../appLog'
@@ -16,6 +16,12 @@ function footer(token: string): string {
  * Fail-open: any error returns the pretty-printed original. Never throws.
  */
 export function compressToolResult(name: string, result: unknown): string {
+  // retrieve_full hands back text the model asked for, and for a stash the proxy made that text is a
+  // string. Quoting it as JSON turned every newline, tab and quote into a two character escape (about
+  // 2.6% more characters on sampled payloads, which the model reads as extra tokens), so a string
+  // original comes back as itself. Only this tool: agent_exec's result is parsed by termpolis-cli
+  // and stays JSON, as does every other exempt tool, and an object original is still pretty JSON.
+  if (typeof result === 'string' && bareToolName(name) === 'retrieve_full') return result
   let pretty: string
   try {
     pretty = JSON.stringify(result, null, 2)
@@ -109,7 +115,7 @@ export async function retrieveFull(token: string): Promise<unknown> {
   if (ccrMarkRedeemed(token)) {
     try {
       const cost = estimateTokens(typeof rec.value === 'string' ? rec.value : JSON.stringify(rec.value, null, 2))
-      if (rec.origin === 'proxy') recordProxyGiveback(cost)
+      if (rec.origin === 'proxy') recordProxyGiveback(cost, { token, meta: rec.meta })
       else recordEvent({ tool: 'retrieve_full', kind: 'retrieve', savedTokens: -cost })
     } catch { /* best effort */ }
   }

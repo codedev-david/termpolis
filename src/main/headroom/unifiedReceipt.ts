@@ -1,5 +1,5 @@
 import { summarizeSavings, type SavingsTotals } from './savingsLedger'
-import { summarizeProxySavings, type ProxyTotals } from '../headroomProxy/proxyLedger'
+import { summarizeProxySavings, stubKindsOf, type ProxyTotals, type StubKinds } from '../headroomProxy/proxyLedger'
 import { billBreakdown, type BillBreakdown } from './effectiveUnits'
 import { depthAdvice, type DepthAdvice } from './sessionDepth'
 import { ccrStats } from './ccrStore'
@@ -32,6 +32,18 @@ export interface UnifiedTotals {
   /** What reversing compression cost, summed across both layers. */
   retrieves: number
   givebackTokens: number
+  /** The turns that only fetched elided text, and what they cost in effective units. Not in
+   *  `givebackTokens`: that prices the text that came back, this prices the turn that asked. */
+  retrievalTurns: number
+  retrievalTurnUnits: number
+  /** Responses whose shape was read for retrieval turns, counted from v1.55 while `requests` counts every
+   *  response since v1.29: the share of the history the turns above have been netted from. */
+  turnRequests: number
+  /** Tokens credited as kept off the wire whose text the conversation had fetched back, taken out of
+   *  `netSavedTokens`. The give-back above prices the fetch once; this stops the stub earning after it. */
+  askedBackTokens: number
+  /** What the tool results in forwarded requests were, summed over requests (see ProxyTotals). */
+  stubKinds: StubKinds
   /** The bottom line. */
   grossSavedTokens: number
   netSavedTokens: number
@@ -125,7 +137,7 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
   const retrieves = proxy.retrieves + tool.retrieves
   const givebackTokens = proxy.givebackTokens + tool.givebackTokens
   const grossSavedTokens = wireSavedTokens + toolSavedTokens
-  const netSavedTokens = grossSavedTokens - givebackTokens
+  const netSavedTokens = grossSavedTokens - givebackTokens - proxy.askedBackTokens
   const denom = wireOrigTokens + toolOrigTokens
   return {
     requests: proxy.requests,
@@ -140,6 +152,11 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     byTool: { ...tool.byTool },
     retrieves,
     givebackTokens,
+    retrievalTurns: proxy.retrievalTurns,
+    retrievalTurnUnits: proxy.retrievalTurnUnits,
+    turnRequests: proxy.turnRequests,
+    askedBackTokens: proxy.askedBackTokens,
+    stubKinds: stubKindsOf(proxy),
     grossSavedTokens,
     netSavedTokens,
     savedPct: denom > 0 ? Math.round((netSavedTokens / denom) * 100) : 0,
@@ -154,8 +171,10 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     outputTokens: proxy.outputTokens,
     // Net, not gross: tokens handed back through retrieve_full were re-billed, and a savings
     // figure that ignores its own giveback is the same species of lie as a compressible-only
-    // denominator. Only the proxy counters are priced here — the tool-layer ledger never touches
-    // the wire, so its savings show up as prefix tokens that were never sent.
+    // denominator. The turns that fetched them were billed too, and are netted inside
+    // billBreakdown from the proxy's own counters. Only the proxy counters are priced here — the
+    // tool-layer ledger never touches the wire, so its savings show up as prefix tokens that were
+    // never sent.
     bill: billBreakdown(proxy, netSavedTokens),
     retrieveMisses: tool.retrieveMisses,
     retrieveBadTokens: tool.retrieveBadTokens,

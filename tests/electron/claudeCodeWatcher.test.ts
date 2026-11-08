@@ -203,6 +203,62 @@ describe('processClaudeLine', () => {
     }), 't1')
     const events = query({ kind: 'compaction' })
     expect(events).toHaveLength(1)
+    // No size in the line, so none is claimed: the summary and payload are what they always were.
+    expect(events[0].summary).toBe('context compacted')
+    expect(events[0].payload).toEqual({ subtype: 'compact_boundary' })
+  })
+
+  // Claude Code writes the size of the conversation when it compacted, and whether it chose to, on the line
+  // itself. Showing it is how a person who set a smaller context window checks where compaction really happens.
+  describe('the size at which Claude Code compacted', () => {
+    const line = (compactMetadata: unknown): string => JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: '2026-04-19T12:00:00Z', compactMetadata })
+
+    it('puts the size and the trigger in the summary the feed shows, and in the payload', () => {
+      processClaudeLine(line({ trigger: 'auto', preTokens: 297_412 }), 't1')
+      const [e] = query({ kind: 'compaction' })
+      expect(e.summary).toBe('context compacted at 297,412 tokens (auto)')
+      expect(e.payload).toEqual({ subtype: 'compact_boundary', preTokens: 297_412, trigger: 'auto' })
+    })
+
+    it('says so when the person asked for it', () => {
+      processClaudeLine(line({ trigger: 'manual', preTokens: 120_000 }), 't1')
+      expect(query({ kind: 'compaction' })[0].summary).toBe('context compacted at 120,000 tokens (manual)')
+    })
+
+    it('keeps the size when the trigger is missing or is not one it knows, and the trigger when the size is missing', () => {
+      processClaudeLine(line({ preTokens: 5_000 }), 't1')
+      processClaudeLine(line({ trigger: 'sometimes', preTokens: 6_000 }), 't1')
+      processClaudeLine(line({ trigger: 'auto' }), 't1')
+      const events = query({ kind: 'compaction' })
+      expect(events.map((e) => e.summary).sort()).toEqual(['context compacted', 'context compacted at 5,000 tokens', 'context compacted at 6,000 tokens'])
+      expect(events.find((e) => e.summary === 'context compacted')!.payload).toEqual({ subtype: 'compact_boundary', trigger: 'auto' })
+      expect(events.find((e) => e.summary === 'context compacted at 6,000 tokens')!.payload).toEqual({ subtype: 'compact_boundary', preTokens: 6_000 })
+    })
+
+    it('prints exactly what the guide shows as its example, so the guide cannot describe a line the feed does not print', () => {
+      const guide = fs.readFileSync(path.join(__dirname, '..', '..', 'docs', 'DOCUMENTATION.md'), 'utf8')
+      const example = /`(context compacted at [\d,]+ tokens \(auto\))`/.exec(guide)
+      expect(example, 'the guide shows no example of the compaction line').not.toBeNull()
+      processClaudeLine(line({ trigger: 'auto', preTokens: 246_000 }), 't1')
+      expect(query({ kind: 'compaction' })[0].summary).toBe((example as RegExpExecArray)[1])
+    })
+
+    it('takes only a whole, non-negative number of tokens, and nothing else from the line', () => {
+      for (const bad of [-1, 1.5, '297000', null, true, {}, [], Number.MAX_SAFE_INTEGER + 2, 1e21]) {
+        processClaudeLine(line({ trigger: 'auto', preTokens: bad, summary: 'the whole conversation, in words', messages: ['secret-like text'] }), 't1')
+      }
+      processClaudeLine(line('not an object'), 't1')
+      processClaudeLine(line(null), 't1')
+      processClaudeLine(line([]), 't1')
+      const events = query({ kind: 'compaction' })
+      expect(events).toHaveLength(9 + 3)
+      for (const e of events) {
+        expect(e.summary === 'context compacted' || /^context compacted( at [\d,]+ tokens)?( \(auto\))?$/.test(e.summary)).toBe(true)
+        expect(Object.keys(e.payload as object).sort().every((k) => ['subtype', 'preTokens', 'trigger'].includes(k))).toBe(true)
+      }
+      expect(JSON.stringify(events)).not.toContain('whole conversation')
+      expect(JSON.stringify(events)).not.toContain('secret-like')
+    })
   })
 
   it('ignores unknown types silently', () => {

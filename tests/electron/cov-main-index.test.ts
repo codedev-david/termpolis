@@ -160,6 +160,8 @@ const M = vi.hoisted(() => ({
   setProxyMode: vi.fn(),
   setProxyThinkingCap: vi.fn(),
   setProxyDecay: vi.fn(),
+  setProxyFirstSight: vi.fn(),
+  getProxyFirstSight: vi.fn((): string => 'legacy'),
   setProxyEnabled: vi.fn(),
   setAgentEnvReader: vi.fn(),
   isProxyEnabled: vi.fn(() => true),
@@ -533,6 +535,12 @@ vi.mock('../../src/main/headroomProxy/proxyLedger', () => ({
   recordProxyResult: M.recordProxyResult, summarizeProxySavings: M.summarizeProxySavings,
   loadProxyBaseFromDisk: M.loadProxyBaseFromDisk, saveProxyTotalsToDisk: M.saveProxyTotalsToDisk,
   setProxyLedgerFlush: M.setProxyLedgerFlush, resetProxyCounters: M.resetProxyCounters,
+  // The Elision health view reads the stub-kind counters off the totals through this; a ledger mocked without
+  // them reads as zero, as a ledger file from before them does.
+  stubKindsOf: (t: Record<string, number | undefined>) => ({
+    plain: t.stubPlain ?? 0, compact: t.stubCompact ?? 0, dedup: t.stubDedup ?? 0, diff: t.stubDiff ?? 0,
+    aged: t.stubAged ?? 0, agedEarly: t.stubAgedEarly ?? 0, agedEarlyRequests: t.stubAgedEarlyRequests ?? 0,
+  }),
 }))
 vi.mock('../../src/main/headroomProxy/proxySupervisor', () => ({
   getProxyEnv: M.getProxyEnv, startProxy: M.startProxy, stopProxy: M.stopProxy,
@@ -540,6 +548,7 @@ vi.mock('../../src/main/headroomProxy/proxySupervisor', () => ({
   setProxySpawner: M.setProxySpawner, createProxyTransport: M.createProxyTransport,
   pickFreePort: M.pickFreePort, setProxyMode: M.setProxyMode,
   setProxyThinkingCap: M.setProxyThinkingCap, setProxyDecay: M.setProxyDecay,
+  setProxyFirstSight: M.setProxyFirstSight, getProxyFirstSight: M.getProxyFirstSight,
   setProxyEnabled: M.setProxyEnabled, isProxyEnabled: M.isProxyEnabled, isProxyStarted: M.isProxyStarted,
   isProxyHealthy: M.isProxyHealthy, userRoutingVar: M.userRoutingVar, getProxyMode: M.getProxyMode,
   setAgentEnvReader: M.setAgentEnvReader,
@@ -705,7 +714,7 @@ async function withPlatform(platform: NodeJS.Platform, fn: () => Promise<void> |
 
 const BASE_HR = {
   enabled: true, wireProxy: true, steering: true, mode: 'balanced', adaptiveSteering: false,
-  thinkingCap: 0, prefixDecay: false, floorControl: true,
+  thinkingCap: 0, prefixDecay: false, floorControl: true, firstSightElision: 'late', contextCap: 0,
 }
 
 let exitSpy: ReturnType<typeof vi.spyOn>
@@ -1036,7 +1045,7 @@ describe('tokenSavings IPC', () => {
     M.resolveWireMode.mockReturnValueOnce('max')
     M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, mode: 'aggressive', floorControl: true } as never)
     await invoke('tokenSavings:set-settings', { mode: 'aggressive' })
-    expect(M.resolveWireMode).toHaveBeenCalledWith('aggressive', expect.anything())
+    expect(M.resolveWireMode).toHaveBeenCalledWith('aggressive', expect.anything(), 'legacy')
     expect(M.setProxyMode).toHaveBeenCalledWith('max')
     // Turning the floor off drops straight to the selector's tier, no ledger consulted.
     M.setProxyMode.mockClear(); M.resolveWireMode.mockClear()
@@ -1044,6 +1053,65 @@ describe('tokenSavings IPC', () => {
     await invoke('tokenSavings:set-settings', { floorControl: false })
     expect(M.resolveWireMode).not.toHaveBeenCalled()
     expect(M.setProxyMode).toHaveBeenCalledWith('aggressive')
+  })
+
+  it('set-settings asks the floor about the policy the proxy RUNS, not the one Settings now selects', async () => {
+    // The proxy froze `late` at launch; Settings has since been switched to legacy for the next start.
+    // Escalating the running proxy's window on the strength of the selection would change a live run.
+    M.setProxyMode.mockClear(); M.resolveWireMode.mockClear()
+    M.getProxyFirstSight.mockReturnValueOnce('late')
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, mode: 'aggressive', floorControl: true, firstSightElision: 'legacy' } as never)
+    await invoke('tokenSavings:set-settings', { mode: 'aggressive' })
+    expect(M.resolveWireMode).toHaveBeenCalledWith('aggressive', expect.anything(), 'late')
+  })
+
+  it('set-settings saves a change of the first-sight policy and pushes nothing live: it is frozen for the run', async () => {
+    M.setProxyMode.mockClear(); M.resolveWireMode.mockClear(); M.setProxyFirstSight.mockClear(); M.saveSettingsToDisk.mockClear()
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, firstSightElision: 'legacy' } as never)
+    const r = await invoke('tokenSavings:set-settings', { firstSightElision: 'legacy' })
+    expect(r.success).toBe(true)
+    expect(r.data.firstSightElision).toBe('legacy')
+    expect(M.saveSettingsToDisk).toHaveBeenCalled()
+    expect(M.setProxyFirstSight).not.toHaveBeenCalled()
+    expect(M.setProxyMode).not.toHaveBeenCalled()
+    expect(M.resolveWireMode).not.toHaveBeenCalled()
+  })
+
+  it('set-settings takes the context cap through the real validator, saves it, and pushes nothing to the proxy: it is read at launch', async () => {
+    // The mocked setter is routed to the real settings module here, so the channel is proved end to end:
+    // what Settings sends is what the validator accepts, and nothing about the cap reaches the proxy child.
+    const real = await vi.importActual<typeof import('../../src/main/headroom/config')>('../../src/main/headroom/config')
+    real.resetSettings()
+    try {
+      const send = async (payload: unknown) => {
+        M.setHeadroomSettings.mockImplementationOnce(((p: Record<string, unknown>) => real.setSettings(p as never)) as never)
+        return invoke('tokenSavings:set-settings', payload)
+      }
+      M.setProxyMode.mockClear(); M.setProxyDecay.mockClear(); M.setProxyThinkingCap.mockClear()
+      M.setProxyFirstSight.mockClear(); M.setProxyEnabled.mockClear(); M.saveSettingsToDisk.mockClear(); M.resolveWireMode.mockClear()
+
+      expect((await send({})).data.contextCap).toBe(0)
+      expect((await send({ contextCap: 300_000 })).data.contextCap).toBe(300_000)
+      expect(M.saveSettingsToDisk).toHaveBeenCalled()
+      // A value the validator refuses leaves the choice where it was, whatever shape it arrives in.
+      for (const bad of [12, 50_000, 5_000_000, 250_000.5, '400000', null, true, {}, []]) {
+        expect((await send({ contextCap: bad })).data.contextCap, JSON.stringify(bad)).toBe(300_000)
+      }
+      // A payload about something else, or none, leaves it too.
+      expect((await send({ steering: false })).data.contextCap).toBe(300_000)
+      expect((await send(null)).data.contextCap).toBe(300_000)
+      expect((await send({ contextCap: 200_000 })).data.contextCap).toBe(200_000)
+      expect((await send({ contextCap: 0 })).data.contextCap).toBe(0)
+
+      // Nothing about a window reaches the proxy: not the tier, not the policy, not as any argument.
+      expect(M.setProxyMode).not.toHaveBeenCalled()
+      expect(M.setProxyFirstSight).not.toHaveBeenCalled()
+      expect(M.resolveWireMode).not.toHaveBeenCalled()
+      const pushed = JSON.stringify([...M.setProxyDecay.mock.calls, ...M.setProxyThinkingCap.mock.calls, ...M.setProxyEnabled.mock.calls])
+      expect(pushed).not.toMatch(/300000|200000|400000/)
+    } finally {
+      real.resetSettings()
+    }
   })
 
   it('set-settings leaves a floor-raised tier alone when an unrelated box changes', async () => {
@@ -1067,9 +1135,13 @@ describe('tokenSavings IPC', () => {
     M.isProxyEnabled.mockReturnValueOnce(true); M.isProxyStarted.mockReturnValueOnce(true)
     M.isProxyHealthy.mockReturnValueOnce(false); M.userRoutingVar.mockReturnValueOnce('HTTPS_PROXY')
     M.getProxyMode.mockReturnValueOnce('max')
+    M.getProxyFirstSight.mockReturnValueOnce('legacy')
     expect(await invoke('tokenSavings:get-proxy-status')).toEqual({
       success: true,
-      data: { enabled: true, running: true, healthy: false, bypassVar: 'HTTPS_PROXY', selectedMode: 'aggressive', effectiveMode: 'max' },
+      data: {
+        enabled: true, running: true, healthy: false, bypassVar: 'HTTPS_PROXY', selectedMode: 'aggressive', effectiveMode: 'max',
+        selectedFirstSight: 'late', effectiveFirstSight: 'legacy',
+      },
     })
   })
 
@@ -1105,6 +1177,19 @@ describe('tokenSavings IPC', () => {
   it('get-proxy-receipt reports the wire layer', async () => {
     expect(await invoke('tokenSavings:get-proxy-receipt'))
       .toEqual({ success: true, data: { cumulative: { outputTokens: 1000, requests: 10, savedTokens: 7 } } })
+  })
+
+  it('get-elision-health reports the live elision view, reading a proxy ledger with no turn counters as zero', async () => {
+    const r = await invoke('tokenSavings:get-elision-health')
+    expect(r.success).toBe(true)
+    expect(r.data).toMatchObject({ windowSize: 2000, classes: [], firstSight: { verdict: 'unknown' }, regime: 'unknown' })
+    // The proxy ledger is mocked here without retrievalTurns, so the view must not need them.
+    expect(r.data.turns).toMatchObject({ count: 0, units: 0, costBasis: 'assumed', sharePct: null })
+  })
+
+  it('get-elision-health returns err() rather than throwing into the IPC bridge', async () => {
+    M.summarizeProxySavings.mockImplementationOnce(() => { throw new Error('ledger unreadable') })
+    expect(await invoke('tokenSavings:get-elision-health')).toEqual({ success: false, error: 'ledger unreadable' })
   })
 
   it('get-output-economy passes a set thinking cap through', async () => {
@@ -1234,10 +1319,13 @@ describe('headroom proxy wiring', () => {
     const onStash = cbOf(M.onProxyStash)
     M.ccrPut.mockClear()
     M.ccrPut.mockImplementationOnce(() => { throw new Error('disk full') })
-    onStash({ stashes: [{ token: 't1', original: 'A' }, { token: 't2', original: 'B' }] })
+    const meta = { kind: 'compact', tool: 'Read', chars: 5000, view: 1100 }
+    onStash({ stashes: [{ token: 't1', original: 'A' }, { token: 't2', original: 'B', meta }] })
     // Second stash still lands: retrieve_full on t2 must work even though t1 could not be written.
     expect(M.ccrPut).toHaveBeenCalledTimes(2)
-    expect(M.ccrPut).toHaveBeenLastCalledWith('t2', 'B', 'proxy')
+    // ...and carries what the proxy recorded about how it was elided, for the elision ledger.
+    expect(M.ccrPut).toHaveBeenLastCalledWith('t2', 'B', 'proxy', meta)
+    expect(M.ccrPut).toHaveBeenNthCalledWith(1, 't1', 'A', 'proxy', undefined)
   })
 
   it('restores the measured totals and the fitted depth curve from disk at boot', () => {

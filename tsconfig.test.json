@@ -6,10 +6,12 @@
   // type-level assertion in a test could not fail and a test helper could drift
   // from the type it was standing in for with nothing to catch it.
   //
-  // The scope is deliberately the remote bridge and nothing else. Turning this
-  // on for the whole suite surfaces 328 pre-existing errors, overwhelmingly
-  // implicit-any on test callbacks -- worth fixing, but not as a side effect of
-  // a protocol change. Widen the include as files are cleaned, one at a time.
+  // The scope is deliberately the remote bridge and the few files named in
+  // `include`. Turning this on for the whole suite surfaces 328 pre-existing
+  // errors, overwhelmingly implicit-any on test callbacks -- worth fixing, but
+  // not as a side effect of a protocol change. Widen the include as files are
+  // cleaned, one at a time (receiptArtifact.test.ts stands in for the receipt's
+  // UnifiedTotals, so a field added to the type breaks it here, not silently).
   "compilerOptions": {
     "skipLibCheck": true,
     "module": "ESNext",
@@ -22,5 +24,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["tests/electron/remote*.ts", "tests/electron/linked*.ts", "src/main/remoteBridge/**/*", "mobile/src/wire/**/*"]
+  "include": ["tests/electron/remote*.ts", "tests/electron/linked*.ts", "tests/electron/receiptArtifact.test.ts", "tests/electron/mainIndexBranchesA.test.ts", "src/main/remoteBridge/**/*", "mobile/src/wire/**/*"]
 }

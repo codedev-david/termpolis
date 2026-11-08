@@ -1,8 +1,10 @@
 import * as http from 'http'
 import * as https from 'https'
-import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, type WireStats } from './wireCompress'
-import { parseUsageFromSse, decodeBody, type Usage } from './usageParse'
+import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, setFirstSightPolicy, type WireStats } from './wireCompress'
+import { parseUsageFromSse, parseTurnShapeFromSse, decodeBody, type Usage, type TurnShape } from './usageParse'
 import { compressImage } from './imageCodec'
+import type { StashEntry } from '../headroom/elisionMeta'
+import type { ProxyResultMsg, ProxyStashMsg } from './proxySupervisor'
 
 /**
  * Prefix decay, opt-in. Module scope rather than a closure because the HTTP server is built once
@@ -12,11 +14,33 @@ import { compressImage } from './imageCodec'
 let decayEnabled = false
 export function setPrefixDecay(on: unknown): void { decayEnabled = on === true }
 
+/**
+ * Apply a config frame from the main process (on init, again on every respawn, and live on a
+ * Settings change). Each field is validated where it lands: an unknown tier leaves the window as it
+ * is, so a garbled frame can never downgrade it, a cap that is not a number leaves the ceiling in
+ * place, and the first-sight policy is taken from the first frame that carries a usable one and then
+ * frozen (wireCompress.setFirstSightPolicy). Total: a frame that is not an object changes nothing.
+ */
+export function applyProxyConfig(msg: unknown): void {
+  if (!msg || typeof msg !== 'object') return
+  const m = msg as { mode?: unknown; thinkingCap?: unknown; decay?: unknown; firstSight?: unknown }
+  // Translate a mode string to the wire window; unknown or garbled gives null, setWireWindow no-ops
+  // on it, and the aggressive default holds (never downgrades on a bad message).
+  if (typeof m.mode === 'string') setWireWindow(windowForMode(m.mode))
+  // The thinking cap rides the same message as the mode; setThinkingCap validates, so a garbled
+  // or absent value simply leaves the current ceiling in place.
+  setThinkingCap(m.thinkingCap)
+  setPrefixDecay(m.decay)
+  setFirstSightPolicy(m.firstSight)
+}
+
 export interface ProxyResult {
   changed: boolean
   stats: WireStats
   usage: Usage
-  stashes: Array<{ token: string; original: string }>
+  /** Which tools the answer called, so a turn spent only on retrieve_full can be charged. */
+  turn: TurnShape
+  stashes: StashEntry[]
   status: number
 }
 export interface ProxyOpts {
@@ -24,7 +48,7 @@ export interface ProxyOpts {
   upstreamPort?: number
   useHttps?: boolean
   onResult?: (r: ProxyResult) => void
-  onStash?: (stashes: Array<{ token: string; original: string }>) => void
+  onStash?: (stashes: StashEntry[]) => void
 }
 
 /**
@@ -54,7 +78,7 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
 
     async function handle(): Promise<void> {
       let body = Buffer.concat(chunks)
-      let rewritten: { changed: boolean; stats: WireStats; stashes: Array<{ token: string; original: string }> } | null = null
+      let rewritten: { changed: boolean; stats: WireStats; stashes: StashEntry[] } | null = null
       if (isMessages) {
         try {
           const r = rewriteMessagesBody(body.toString('utf8'), { compressImage, decay: decayEnabled })
@@ -85,7 +109,11 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
                 try {
                   const sse = decodeBody(Buffer.concat(respChunks), String(up.headers['content-encoding'] || ''))
                   const usage = parseUsageFromSse(sse)
-                  opts.onResult({ changed: rewritten.changed, stats: rewritten.stats, usage, stashes: rewritten.stashes, status: up.statusCode || 0 })
+                  // The shape of the turn is bookkeeping for the retrieval charge. If reading it ever
+                  // failed, the usage must still arrive, as it did before the turn was read at all.
+                  let turn: TurnShape = { toolCalls: 0, retrieveCalls: 0, pure: false }
+                  try { turn = parseTurnShapeFromSse(sse) } catch { /* the usage still counts */ }
+                  opts.onResult({ changed: rewritten.changed, stats: rewritten.stats, usage, turn, stashes: rewritten.stashes, status: up.statusCode || 0 })
                 } catch { /* best effort */ }
               }
             })
@@ -117,6 +145,21 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
   })
 }
 
+/**
+ * The two messages the child posts to the main process. They are built here, in the open, and not
+ * inline in the child entry below, because that entry is excluded from coverage and a field dropped
+ * from either one would silently zero a whole class of the ledger: the retrieval-turn charge rides on
+ * `turn`, the stub-kind tally and the first-sight arms on `stats`, and the stash metadata on `stashes`.
+ * Typed against the receiving side's own message types, so a field the ledger reads cannot go missing
+ * without the compiler saying so.
+ */
+export function resultFrame(r: ProxyResult): ProxyResultMsg {
+  return { kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status }
+}
+export function stashFrame(stashes: StashEntry[]): ProxyStashMsg {
+  return { kind: 'stash', stashes }
+}
+
 /* v8 ignore start -- utilityProcess child entry: exercised at runtime in the fork, not unit-testable */
 const parentPort = (process as unknown as { parentPort?: { on: (ev: string, cb: (e: { data: unknown }) => void) => void; postMessage: (m: unknown) => void } }).parentPort
 if (parentPort) {
@@ -129,18 +172,12 @@ if (parentPort) {
   process.on('unhandledRejection', (err) => { try { parentPort.postMessage({ kind: 'error', message: 'rejection: ' + String(err) }) } catch { /* ignore */ } })
 
   let server: http.Server | null = null
-  // Translate a mode string → wire window. Unknown/garbled → windowForMode returns null →
-  // setWireWindow no-ops, so the aggressive default holds (never downgrades on a bad message).
-  const applyMode = (mode: unknown): void => { if (typeof mode === 'string') setWireWindow(windowForMode(mode)) }
-  // The thinking cap rides the same message as the mode; setThinkingCap validates, so a garbled
-  // or absent value simply leaves the current ceiling in place.
-  const applyConfig = (msg: { mode?: unknown; thinkingCap?: unknown; decay?: unknown }): void => { applyMode(msg.mode); setThinkingCap(msg.thinkingCap); setPrefixDecay(msg.decay) }
   parentPort.on('message', (e) => {
-    const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string; mode?: unknown; thinkingCap?: unknown; decay?: unknown })
+    const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string })
     if (!msg) return
-    if (msg.kind === 'config') { applyConfig(msg); return } // live mode/cap change (Settings → supervisor)
+    if (msg.kind === 'config') { applyProxyConfig(msg); return } // live mode/cap change (Settings → supervisor)
     if (msg.kind !== 'init' || server) return
-    applyConfig(msg) // honor the config carried on init — and re-applied on every respawn
+    applyProxyConfig(msg) // honor the config carried on init — and re-applied on every respawn
     const targetPort = msg.port || 0
     let attempts = 0
     const start = (): void => {
@@ -150,7 +187,7 @@ if (parentPort) {
         // Request-path commit — the main process must be able to answer retrieve_full for a token
         // that is already on the wire, not only once the response has finished streaming.
         onStash: (stashes) => {
-          try { parentPort.postMessage({ kind: 'stash', stashes }) } catch (err) {
+          try { parentPort.postMessage(stashFrame(stashes)) } catch (err) {
             // The tokens for these originals are ALREADY in the body heading upstream. If the
             // commit cannot cross to MAIN, every one of them is a handle nothing can ever redeem —
             // the only way this proxy can mint an unredeemable token. It still must not fail the
@@ -163,7 +200,7 @@ if (parentPort) {
         },
         // Still carried on the result as an idempotent backstop: ccrPut is content-hash keyed, so
         // a re-put of the same original is a no-op.
-        onResult: (r) => { try { parentPort.postMessage({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, stashes: r.stashes, status: r.status }) } catch { /* ignore */ } },
+        onResult: (r) => { try { parentPort.postMessage(resultFrame(r)) } catch { /* ignore */ } },
       })
       server = s
       s.on('error', () => {

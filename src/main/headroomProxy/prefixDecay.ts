@@ -51,6 +51,7 @@
 
 import crypto from 'crypto'
 import { isExempt } from '../headroom/router'
+import { makeMeta, type StashEntry } from '../headroom/elisionMeta'
 import { mapOutsideReminders } from './reminders'
 
 /** Messages before which decay starts applying at all. Below this a break can't repay itself. */
@@ -93,10 +94,11 @@ function decayToken(s: string): string {
   return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16)
 }
 
-function stubFor(text: string, stashes: Array<{ token: string; original: string }>): string {
+function stubFor(text: string, stashes: StashEntry[], tool: string | undefined): string {
   const token = decayToken(text)
-  stashes.push({ token, original: text })
-  return `[headroom] Aged out of this conversation's active context — call the retrieve_full tool with token "${token}" to expand it.`
+  const stub = `[headroom] Aged out of this conversation's active context — call the retrieve_full tool with token "${token}" to expand it.`
+  stashes.push({ token, original: text, meta: makeMeta('decay', tool, text.length, stub.length) })
+  return stub
 }
 
 export interface DecayCounts {
@@ -110,11 +112,11 @@ export interface DecayCounts {
  * worth it. A reminder is an instruction to the model riding inside the result, so age is no
  * reason to hide it; without one this is exactly the old whole-text stub.
  */
-function decayText(text: string, stashes: Array<{ token: string; original: string }>, counts: DecayCounts): string {
+function decayText(text: string, stashes: StashEntry[], counts: DecayCounts, tool: string | undefined): string {
   return mapOutsideReminders(text, (seg) => {
     if (seg.length < DECAY_MIN_CHARS) return { text: seg, changed: false }
     counts.blocks++; counts.origChars += seg.length
-    const stub = stubFor(seg, stashes)
+    const stub = stubFor(seg, stashes, tool)
     counts.compChars += stub.length
     return { text: stub, changed: true }
   }).text
@@ -132,7 +134,7 @@ function decayText(text: string, stashes: Array<{ token: string; original: strin
  */
 export function applyPrefixDecay(
   messages: Array<{ content?: unknown }>,
-  stashes: Array<{ token: string; original: string }>,
+  stashes: StashEntry[],
   resultToolName?: (toolUseId: string) => string | undefined,
 ): DecayCounts {
   const counts: DecayCounts = {
@@ -150,11 +152,11 @@ export function applyPrefixDecay(
         const tool = typeof b.tool_use_id === 'string' ? resultToolName?.(b.tool_use_id) : undefined
         if (tool && isExempt(tool)) continue
         if (typeof b.content === 'string' && b.content.length >= DECAY_MIN_CHARS) {
-          b.content = decayText(b.content, stashes, counts)
+          b.content = decayText(b.content, stashes, counts, tool)
         } else if (Array.isArray(b.content)) {
           for (const item of b.content as Array<Record<string, unknown>>) {
             if (item && item.type === 'text' && typeof item.text === 'string' && item.text.length >= DECAY_MIN_CHARS) {
-              item.text = decayText(item.text, stashes, counts)
+              item.text = decayText(item.text, stashes, counts, tool)
             }
           }
         }

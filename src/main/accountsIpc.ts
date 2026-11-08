@@ -49,6 +49,7 @@ import {
 } from './agentIntegrationManager'
 import { err, ok } from './ipcResult'
 import { userRoutingVar } from './headroomProxy/proxySupervisor'
+import { CONTEXT_WINDOW_VAR, pickWindowSettings, windowOwner } from './headroom/shapingEnv'
 import { getExtendedPath } from './agentPaths'
 
 export interface AccountsIpcLike {
@@ -697,6 +698,15 @@ export function connectedProfileTargets(paths: Pick<AgentIntegrationPaths, 'home
 
 /** The `env` block of a Claude account's own settings.json, for the proxy's step-aside: undefined
  *  for no account or the default profile (the default reader decides), null when it has none. */
+/** Whether a Claude account's profile settings hold a context window of their own: the window variable in
+ *  their `env` block, or a saved window. A profile Termpolis can't read holds none it knows of. */
+export function profileHoldsWindow(paths: Pick<AgentIntegrationPaths, 'home' | 'userData'>, accountId: unknown, fsx: AccountFs = accountFs): boolean {
+  const { account, target } = resolveAccountTarget(paths, accountId, fsx)
+  if (!account || account.agent !== 'claude' || !target) return false
+  const picked = pickWindowSettings(readSettings(target.dir, fsx))
+  return windowOwner({}, () => picked.env, () => picked.savedWindow) !== null
+}
+
 export function accountSettingsEnv(paths: Pick<AgentIntegrationPaths, 'home' | 'userData'>, accountId: unknown, fsx: AccountFs = accountFs): Record<string, unknown> | null | undefined {
   const { account, target } = resolveAccountTarget(paths, accountId, fsx)
   if (!account || account.agent !== 'claude' || account.profile === null) return undefined
@@ -1512,6 +1522,19 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     const sourceProjects = source && !isAccountChangedByHand(terminalId)
       ? [projectsOf(source)]
       : [...new Set([join(defaultProfileDir('claude', home), 'projects'), ...doc.file.accounts.filter((a) => a.agent === 'claude').map(projectsOf)])]
+    // A profile that routes Anthropic traffic itself (a base URL, an outbound proxy or a cloud
+    // provider in its settings) takes the compression proxy's variables out of the line: the terminal's
+    // spawn env set them for the profile it started on (design 5.2). Only where the proxy was Termpolis's:
+    // when its own environment routes (a company gateway) the terminal inherited that, and the proxy
+    // stepped aside, so there is nothing of Termpolis's to take out and the user's route must stay.
+    // The same holds for the opt-in context window: a profile that holds a window of its own takes
+    // Termpolis's variable out, since Claude Code lets the variable beat every window settings hold. Only
+    // when the variable was Termpolis's: one in Termpolis's own environment is the user's and stays.
+    const extraUnset = agent !== 'claude' ? [] : [
+      ...(userRoutingVar(env, {}) === null && userRoutingVar(env, accountSettingsEnv(deps.paths(), target.id, fsx)) !== null
+        ? ['ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY'] : []),
+      ...(env[CONTEXT_WINDOW_VAR] === undefined && profileHoldsWindow(deps.paths(), target.id, fsx) ? [CONTEXT_WINDOW_VAR] : []),
+    ]
     const outcome = await runAccountSwitch(req, {
       io: { ...io, progress: (p) => deps.send(ACCOUNTS_IPC.switchProgress, p) },
       target,
@@ -1526,13 +1549,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       },
       // A swarm worker's restart says so to the conductor, while it holds the worker (§9, R7).
       ...(workers.has(terminalId) ? { lockKind: 'worker' as const } : {}),
-      // A profile that routes Anthropic traffic itself (a base URL, an outbound proxy or a cloud
-      // provider in its settings) takes the compression proxy's variables out of the line: the terminal's
-      // spawn env set them for the profile it started on (design 5.2). Only where the proxy was Termpolis's:
-      // when its own environment routes (a company gateway) the terminal inherited that, and the proxy
-      // stepped aside, so there is nothing of Termpolis's to take out and the user's route must stay.
-      ...(agent === 'claude' && userRoutingVar(env, {}) === null && userRoutingVar(env, accountSettingsEnv(deps.paths(), target.id, fsx)) !== null
-        ? { extraUnset: ['ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY'] } : {}),
+      ...(extraUnset.length ? { extraUnset } : {}),
       newSessionId: () => randomUUID(),
       record: (r) => {
         noteTerminalAccount(terminalId, r.accountId)

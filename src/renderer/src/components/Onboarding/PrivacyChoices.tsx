@@ -5,6 +5,10 @@ import { useEffect, useState, type ReactNode } from 'react'
 // one). The proxy switch applies at once, as it does in Settings ▸ Token Savings: it is on by
 // default and needs no answer to stay that way, so the point here is to say so, not to ask.
 
+// The size from which the proxy shortens a tool result under its default policy (Late). Quoted here as in the Settings
+// pane and the Elision health card; tests/electron/headroomMirroredConstants.test.ts holds all three to the main process's.
+const LATE_FLOOR = '40,000'
+
 // One wording for each tier, wherever it is asked (tour, review, Settings ▸ General ▸ Privacy).
 export const CRASH_LABEL = 'Send crash reports'
 export const CRASH_DETAIL =
@@ -93,9 +97,10 @@ export function PrivacyChoices({ crash, usage, onCrashChange, onUsageChange, slo
         <span className="text-xs font-medium text-[#d4d4d4]">Compression proxy for Claude Code — on by default</span>
         <span className="text-[11px] text-[#9ca3af]">
           Each Claude Code session Termpolis launches sends its API requests through a small proxy on
-          127.0.0.1, which shrinks tool-result text (large Read/Bash output, search dumps, MCP results) and
-          pasted images, then forwards them to api.anthropic.com and nowhere else. What the agent writes or
-          runs is forwarded byte-for-byte. If you have set your own <code>ANTHROPIC_BASE_URL</code>, an
+          127.0.0.1, which shrinks very large tool-result text (big file reads, fetched pages, MCP results;
+          from {LATE_FLOOR} characters by default) and pasted images, reads the token counts and tool names
+          of each answer as it streams back (counts only), and forwards the request to api.anthropic.com
+          and nowhere else. What the agent writes or runs is forwarded byte-for-byte. If you have set your own <code>ANTHROPIC_BASE_URL</code>, an
           HTTP(S) proxy, or Bedrock, Vertex or Foundry, the proxy steps aside and leaves your route alone.
         </span>
         <label className="flex items-center gap-2 text-[11px] text-[#d4d4d4] cursor-pointer">

@@ -101,6 +101,20 @@ describe('PrivacyChoices', () => {
     expect(text).toMatch(/Settings → Token Savings/)
   })
 
+  // What the proxy does by default changed in v1.55: a tool result is left whole until 40,000 characters (Claude Code
+  // trims command output at about 30,000 itself, so almost all of what is shortened is a big file read or a fetched
+  // page), and it reads each answer's token counts and tool names as it streams back. The first-run blurb and the
+  // consent review say so in the terms of the privacy policy, and no longer say it shrinks "large Read/Bash output".
+  it('says the proxy shortens very large results only, from 40,000 characters, and reads each answer\'s token counts and tool names', () => {
+    renderChoices()
+    const text = (screen.getByTestId('privacy-proxy').textContent ?? '').replace(/\s+/g, ' ')
+    expect(text).toContain('shrinks very large tool-result text (big file reads, fetched pages, MCP results; from 40,000 characters by default)')
+    expect(text).toContain('reads the token counts and tool names of each answer as it streams back (counts only)')
+    expect(text).toContain('forwards the request to api.anthropic.com and nowhere else')
+    expect(text).not.toContain('large Read/Bash output')
+    expect(text).not.toContain('search dumps')
+  })
+
   it('renders the slot under the caller’s test id, with any children', () => {
     render(
       <PrivacyChoices crash={false} usage={false} onCrashChange={() => {}} onUsageChange={() => {}} slotTestId="my-slot">

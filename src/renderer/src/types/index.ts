@@ -230,6 +230,10 @@ export interface ProxyStatusView {
   selectedMode: HeadroomSettingsView['mode']
   /** The tier actually in force — floor control can raise it above selectedMode. */
   effectiveMode: HeadroomSettingsView['mode']
+  /** The first-sight policy Settings holds now, and the one the proxy froze at launch and runs. They
+   *  differ between a change in Settings and the next start. Absent from a main process that predates it. */
+  selectedFirstSight?: HeadroomSettingsView['firstSightElision']
+  effectiveFirstSight?: HeadroomSettingsView['firstSightElision']
 }
 export interface HeadroomSettingsView {
   enabled: boolean
@@ -241,10 +245,19 @@ export interface HeadroomSettingsView {
   thinkingCap: number
   /** Let launch-time steering strength follow measured output volume. */
   adaptiveSteering: boolean
-  /** Let the launch-time wire tier escalate when the measured 50% savings floor isn't holding. */
+  /** Under the Legacy first-sight policy only: let the launch-time wire tier escalate when the measured
+   *  50% savings floor isn't holding. The default Late policy removes less tool text on purpose and ignores it. */
   floorControl: boolean
   /** Age the oldest half of a long conversation down to retrievable stubs. On by default since v1.36.0. */
   prefixDecay: boolean
+  /** When a tool result may be shortened the first time the model sees it: `late` leaves it whole
+   *  until 40,000 characters (the default since v1.55), `legacy` shortens from the tier's own size.
+   *  Takes effect when Termpolis next starts. */
+  firstSightElision: 'late' | 'legacy'
+  /** A smaller window for Claude Code's own auto-compaction, in tokens (100,000 to 1,000,000); 0 = Off, the
+   *  default. Opt-in: a long conversation then compacts sooner. Reaches new Claude terminals only. Absent
+   *  from a main process that predates it, which is Off. */
+  contextCap?: number
 }
 
 /** What a conversation costs per turn at its current depth, against what the same user's own
@@ -275,6 +288,28 @@ export interface UnifiedTotalsView {
   byTool: Record<string, number>
   retrieves: number
   givebackTokens: number
+  /** Turns whose only tool calls were `retrieve_full`, and what they cost in effective units. The
+   *  headline nets these; `givebackTokens` prices the text that came back, not the turn. */
+  retrievalTurns: number
+  retrievalTurnUnits: number
+  /** Responses whose shape was read for retrieval turns. Counted from v1.55, while `requests` has counted
+   *  every response since v1.29, so the share of the history the headline has netted is this over `requests`. */
+  turnRequests: number
+  /** Tokens a request kept off the wire that its own conversation had already fetched back: the credit
+   *  is withdrawn for them, since the text was on the wire again. Already out of `netSavedTokens`. */
+  askedBackTokens: number
+  /** What the tool results in forwarded requests were, by what was done to them, summed over requests. */
+  stubKinds: {
+    plain: number
+    compact: number
+    dedup: number
+    diff: number
+    aged: number
+    /** Aged-out stubs in a body too short for the decay pass to have made them. */
+    agedEarly: number
+    /** Requests that carried at least one of those. */
+    agedEarlyRequests: number
+  }
   grossSavedTokens: number
   netSavedTokens: number
   savedPct: number
@@ -285,7 +320,8 @@ export interface UnifiedTotalsView {
   /** The tool_use (agent's own output, re-read from the prefix) half of the wire figures. */
   toolUseOrigTokens: number
   toolUseSavedTokens: number
-  /** Per-request floor evidence: the worst single request, and how many missed the 50% floor. */
+  /** Per-request floor evidence: the worst single request, and how many missed the 50% floor. Counted over
+   *  the requests that ran the Legacy behaviour (the Settings kill switch and the holdout); Late is not held to a floor. */
   worstSavedPct: number
   belowFloorRequests: number
   floorEligibleRequests: number
@@ -332,8 +368,113 @@ export interface BillBreakdownView {
   inputPct: number
   outputPct: number
   prefixTokenWeight: number
+  /** Units kept off the bill before the cost of the retrieval turns. */
+  grossAvoided: number
+  /** Units the turns that only fetched elided text cost. */
+  retrievalTurnUnits: number
+  /** `grossAvoided - retrievalTurnUnits`: the headline. Negative when the turns cost more. */
   avoided: number
   totalBillSavedPct: number
+}
+
+/** One class of elided result: how it was replaced, which tool, how big, and how often the model asked
+ *  for the text back. Mirrors the main-process `ElisionClassView`. */
+export interface ElisionClassView {
+  key: string
+  kind: 'compact' | 'dedup' | 'diff' | 'decay'
+  tool: 'Read' | 'Bash' | 'Grep' | 'Glob' | 'PowerShell' | 'WebFetch' | 'WebSearch' | 'mcp' | 'other'
+  band: '<1.6k' | '1.6-4k' | '4-10k' | '10-40k' | '40k+'
+  /** The first-sight policy a compaction was made under: `late`, or `legacy` for the old behaviour (the
+   *  holdout, the Legacy setting, a ledger from before). Every other kind reports `legacy`. */
+  policy: 'late' | 'legacy'
+  elided: number
+  redeemed: number
+  ratePct: number | null
+  recentElided: number
+  recentRedeemed: number
+  recentRatePct: number | null
+  /** The redemption rate above which eliding this class at first sight loses; first-sight classes only. */
+  breakEvenPct: number | null
+  netUnitsPer1000: number | null
+  verdict: 'pays' | 'costs' | 'unknown'
+  basis: 'recent' | 'all-time' | null
+}
+
+/** One arm of the late-against-holdout comparison. Mirrors the main-process `ArmSummary`. */
+export interface ArmSummaryView {
+  requests: number
+  working: number
+  turns: number
+  groups: number
+  sharePct: number | null
+  /** The share of billed units that went on retrieval turns, percent. */
+  turnUnitSharePct: number | null
+  unitsPerRequest: number | null
+  unitsPerWorking: number | null
+  turnUnitsPerWorking: number | null
+}
+
+/** Late against the conversations held out on the old behaviour, with a plain verdict. Mirrors the
+ *  main-process `ArmComparison`. */
+export interface ArmComparisonView {
+  minRequests: number
+  late: ArmSummaryView
+  holdout: ArmSummaryView
+  legacy: ArmSummaryView
+  verdict: 'not-enough-data' | 'late-cheaper' | 'late-costlier' | 'no-clear-difference'
+  costDeltaPct: number | null
+  /** Half the width of the 99% interval round the cost gap, in points. */
+  costMarginPct: number | null
+  /** How many times as much data as so far would settle a gap the data cannot yet; null when clear, absent or too large to quote. */
+  moreDataFactor: number | null
+  turnVerdict: 'fewer' | 'more' | 'no-clear-difference' | null
+  shareDeltaPts: number | null
+  shareMarginPts: number | null
+}
+
+/** First-sight compaction as a whole, for the compactions of one policy. */
+export interface FirstSightSummaryView {
+  verdict: 'pays' | 'costs' | 'unknown'
+  basis: 'recent' | 'all-time' | null
+  elided: number
+  ratePct: number | null
+  breakEvenPct: number | null
+  netUnits: number
+}
+
+/** The Elision health card's data: redemption by class, the break-even verdict and the retrieval
+ *  turns. Mirrors the main-process `ElisionHealthView`. */
+export interface ElisionHealthView {
+  windowSize: number
+  classes: ElisionClassView[]
+  elided: number
+  redeemed: number
+  legacyRedeemed: number
+  recentElided: number
+  recentRedeemed: number
+  /** First-sight compaction under the policy in force. */
+  firstSight: FirstSightSummaryView & { policy: 'late' | 'legacy' }
+  /** The same for the old behaviour (the holdout) when the policy in force is Late; null under Legacy. */
+  oldBehaviour: FirstSightSummaryView | null
+  regime: 'rising' | 'falling' | 'steady' | 'unknown'
+  turns: {
+    /** Asks for elided text back (a ToolSearch turn and the retrieve_full turn after it are one ask). */
+    count: number
+    units: number
+    unitsPerTurn: number
+    costBasis: 'measured' | 'assumed'
+    /** Of the asks, how many took two turns because retrieve_full had to be loaded first. */
+    hops: number
+    observed: number
+    /** Responses to requests on which the model could ask (retrieve_full listed, or loadable) and could not. */
+    askable: number
+    unaskable: number
+    shareBasis: 'could-ask' | 'responses'
+    sharePct: number | null
+  }
+  arms: ArmComparisonView
+  /** Aged-out stubs found in conversations too short for the decay pass to have made them. */
+  agedEarly: { requests: number; stubs: number }
 }
 
 export interface TermpolisAPI {
@@ -553,6 +694,7 @@ export interface TermpolisAPI {
   tokenSavingsGetProxyStatus: () => Promise<IpcResponse<ProxyStatusView>>
   /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
   tokenSavingsGetUnifiedReceipt: () => Promise<IpcResponse<{ session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null }>>
+  tokenSavingsGetElisionHealth: () => Promise<IpcResponse<ElisionHealthView>>
   /** Where the memory store is running. Two in-memory reads in main — no work, no disk. Read on tab
    *  open and on Refresh; the ONLY timer allowed against it is the bounded re-probe that leaves the
    *  transitional 'starting' state, which stops itself as soon as the mode settles. */

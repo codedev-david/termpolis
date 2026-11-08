@@ -7,8 +7,15 @@ import { mapOutsideReminders } from './reminders'
 import { bestDiff, makeCandidate, type DiffCandidate } from '../headroom/diffEncode'
 import { compactJson } from './jsonCompact'
 import { familyForPath, looksLikeCode, outlineCode } from './codeOutline'
-import { isExempt } from '../headroom/router'
+import { bareToolName, isExempt } from '../headroom/router'
 import { STEERING_MARK } from '../headroom/outputSteering'
+import { makeMeta, stampModel, stampPolicy, type ElisionKind, type StashEntry } from '../headroom/elisionMeta'
+import { armOf, effectiveFloor, isFirstSightPolicy, LEGACY_POLICY, policyFor, type ElisionPolicy, type FirstSightPolicy } from '../headroom/elisionPolicy'
+import { classifyMessages, emptyKinds, type StubKindCounts } from './forwardedKinds'
+
+// The same tally for a caller holding a body as a string. The rewriter never uses this entry: it
+// reads the messages it has already parsed (classifyMessages), so the tally adds no second parse.
+export { classifyForwardedResults } from './forwardedKinds'
 
 export interface WireStats {
   trBlocks: number
@@ -46,12 +53,36 @@ export interface WireStats {
    *  largest single bucket on the bill; steering is the only lever aimed at it, and until now
    *  nothing recorded whether it was even present, let alone what it earned. */
   steered: boolean
+  /** What the forwarded body's tool results were, by what was done to them (forwardedKinds.ts).
+   *  Zero for a body that could not be read as a Messages request. */
+  kinds: StubKindCounts
+  /** Which first-sight policy this request ran under (elisionPolicy.ts): `late`, or `holdout` for
+   *  the conversations kept on the old behaviour to be measured against, or `legacy` when the whole
+   *  run is on the kill switch. `none` for a request the rewriter did not transform. Recorded per
+   *  request so the two policies can be compared on what they cost afterwards. */
+  arm: 'none' | 'late' | 'holdout' | 'legacy'
+  /** The group of conversations, within the arm, this request's conversation falls in. 0 unless the
+   *  arm is late or holdout. */
+  armCluster: number
+  /** The conversation this request belongs to: a hash of its first user message (elisionPolicy.armOf),
+   *  the same on every turn of it. It lets the ledger pair a ToolSearch turn with the retrieve_full
+   *  turn after it. 0 when there was nothing to hash or the request was not read. */
+  convKey: number
+  /** Characters this request's stubs kept off the wire that the conversation had already fetched back
+   *  with retrieve_full: the text is on the wire again (in that call's result), so the saving is not one.
+   *  Each distinct token counts once. Measurement only: nothing about the forwarded bytes depends on it. */
+  askedBackChars: number
+  /** Whether the model could ask for elided text back on this request: `direct` when retrieve_full is
+   *  in its `tools` list under any of its names, `deferred` when it is not but a ToolSearch tool is
+   *  (the client loads tools through it), `absent` when neither. `unknown` for a body not read as a
+   *  Messages request. Measurement only: nothing about the forwarded bytes depends on it. */
+  retrieveOffer: 'unknown' | 'direct' | 'deferred' | 'absent'
 }
 export interface WireResult {
   body: string
   changed: boolean
   stats: WireStats
-  stashes: Array<{ token: string; original: string }>
+  stashes: StashEntry[]
 }
 export type ImageCompressor = (dataB64: string, mediaType: string) => { data: string; mediaType: string; changed: boolean }
 
@@ -60,6 +91,7 @@ function emptyStats(): WireStats {
     trBlocks: 0, trOrigChars: 0, trCompChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
     images: 0, imgOrigBytes: 0, imgCompBytes: 0,
     sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, msgCount: 0, thinkBudget: 0, steered: false,
+    kinds: emptyKinds(), arm: 'none', armCluster: 0, convKey: 0, askedBackChars: 0, retrieveOffer: 'unknown',
   }
 }
 function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
@@ -108,6 +140,28 @@ let wireWindow: WireWindow = { headLines: 12, tailLines: 6, maxChars: 1000, floo
  * resolution unspent for a later push rather than locking in the fail-safe default.
  */
 let floorResolved = false
+
+/**
+ * The first-sight policy (elisionPolicy.ts), resolved once per process and then frozen, for the same
+ * reason as the floor above: it decides WHICH tool results are shortened, so changing it while a
+ * session is live would bring every result between the two floors back shortened (or whole) on the
+ * next turn and rewrite the cached prefix. The proxy child serves every Claude session of an app
+ * run, so it takes the policy from the first push that carries a usable one and ignores the rest.
+ * Settings changes it for the NEXT launch.
+ *
+ * `legacy` until a push says otherwise: a module nothing has configured is v1.54, and a failure to
+ * read settings can never be what changes what the model sees. The default the app ships (`late`)
+ * arrives with the config the main process sends before the first request.
+ */
+let firstSight: FirstSightPolicy = 'legacy'
+let firstSightResolved = false
+
+export function setFirstSightPolicy(v: unknown): void {
+  if (firstSightResolved || !isFirstSightPolicy(v)) return
+  firstSight = v
+  firstSightResolved = true
+}
+export function getFirstSightPolicy(): FirstSightPolicy { return firstSight }
 
 export function setWireWindow(w: WireWindow | null | undefined): void {
   if (w && Number.isFinite(w.headLines) && Number.isFinite(w.tailLines) && Number.isFinite(w.maxChars)
@@ -182,16 +236,42 @@ export function hintFromInput(input: unknown, name?: unknown): ContentHint {
  * Index tool_use blocks by id so a tool_result can be told which file it came from. Built in one
  * pass over the whole body before any rewriting, so it is complete regardless of block order.
  */
-export function collectToolUseHints(messages: Array<{ content?: unknown }>): Map<string, ContentHint> {
+export function collectToolUseHints(messages: Array<{ content?: unknown }>, retrieved?: Set<string>): Map<string, ContentHint> {
   const map = new Map<string, ContentHint>()
   for (const m of messages) {
     if (!m || !Array.isArray(m.content)) continue
     for (const b of m.content as Array<Record<string, unknown>>) {
       if (!b || typeof b !== 'object' || b.type !== 'tool_use' || typeof b.id !== 'string') continue
       map.set(b.id, hintFromInput(b.input, b.name))
+      // The text this conversation has already fetched back, noted in the same pass: the token each
+      // retrieve_full call was given. Only read, for the ledger (askedBackChars); it changes no byte.
+      if (retrieved && typeof b.name === 'string' && bareToolName(b.name) === 'retrieve_full') {
+        const token = (b.input as { token?: unknown } | null | undefined)?.token
+        if (typeof token === 'string') retrieved.add(token)
+      }
     }
   }
   return map
+}
+
+/**
+ * The characters this request's stubs removed that the conversation has since asked for back. A fetched
+ * result rides in the history in full (retrieve_full is exempt from compression), so for as long as the
+ * request carries both the stub and the fetch, the stub saves nothing. The headline withdraws that credit
+ * instead of crediting every request that re-sends the stub, which is what let a result the model asked
+ * straight back keep earning (research 5.5). Each distinct token counts once however many stubs name it:
+ * the text came back once. Pure, and it reads the stashes the walk has already made.
+ */
+export function charsAskedBack(stashes: readonly StashEntry[], retrieved: ReadonlySet<string>): number {
+  if (retrieved.size === 0) return 0
+  let n = 0
+  const counted = new Set<string>()
+  for (const s of stashes) {
+    if (!s.meta || !retrieved.has(s.token) || counted.has(s.token)) continue
+    counted.add(s.token)
+    n += Math.max(0, s.meta.chars - s.meta.view)
+  }
+  return n
 }
 
 /**
@@ -236,8 +316,9 @@ export function windowStructured(s: string, win: WireWindow): { text: string; el
  * head/tail window (wireWindow). When it elides content it appends a footer with a CONTENT-HASH
  * token (so re-compression is byte-identical → cache-safe) and returns the original to stash.
  */
-export function compactToolText(text: string, hint?: ContentHint): { text: string; stash?: { token: string; original: string } } {
-  if (text.length < wireWindow.floorChars) return { text }
+export function compactToolText(text: string, hint?: ContentHint, policy: ElisionPolicy = processPolicy()): { text: string; stash?: { token: string; original: string } } {
+  // The floor for THIS result: the tier's, or under `late` the larger first-sight floor of its tool.
+  if (text.length < effectiveFloor(wireWindow.floorChars, policy, hint?.toolName)) return { text }
   // Content-aware pre-pass, one branch per shape. Each reduces the block to its meaningful
   // structure BEFORE the window, so the surviving bytes are chosen rather than sliced:
   //   HTML  → readable text          (a line window barely helps markup-dense, few-newline HTML)
@@ -293,6 +374,24 @@ export function compactToolText(text: string, hint?: ContentHint): { text: strin
   return { text: withNotice, stash: { token, original: text } }
 }
 
+/** The policy this process runs under, for a caller with no request to read an arm from. */
+function processPolicy(): ElisionPolicy {
+  return firstSight === 'late' ? policyFor('late') : LEGACY_POLICY
+}
+
+/**
+ * The policy ONE request runs under, and the arm to record for it. Under `late` about one
+ * conversation in ten, chosen by its first user message, stays on the old behaviour so the two can
+ * be compared (elisionPolicy.ts armOf). Read off the body already parsed: no second parse.
+ */
+function requestPolicy(obj: { model?: unknown; messages?: unknown }): { policy: ElisionPolicy; arm: WireStats['arm']; cluster: number; key: number } {
+  const a = armOf(obj)
+  // The key names the conversation whatever the policy, so a run on the kill switch pairs a ToolSearch
+  // turn with its retrieve_full turn like any other. The arm is what the kill switch overrides.
+  if (firstSight !== 'late') return { policy: LEGACY_POLICY, arm: 'legacy', cluster: 0, key: a.key }
+  return { policy: a.arm === 'holdout' ? LEGACY_POLICY : policyFor('late', obj.model), arm: a.arm, cluster: a.cluster, key: a.key }
+}
+
 /** Blocks already met in THIS body: hashes for exact-duplicate collapse, texts as diff bases. */
 export interface SeenIndex { keys: Set<string>; blocks: DiffCandidate[] }
 export function emptySeen(): SeenIndex { return { keys: new Set<string>(), blocks: [] } }
@@ -313,8 +412,9 @@ function compactOrDedup(
   text: string,
   seen: SeenIndex,
   stats: WireStats,
-  stashes: Array<{ token: string; original: string }>,
+  stashes: StashEntry[],
   hint?: ContentHint,
+  policy: ElisionPolicy = LEGACY_POLICY,
 ): { text: string; changed: boolean } {
   stats.trOrigChars += text.length
   let out = text
@@ -327,16 +427,18 @@ function compactOrDedup(
     out = `[headroom] Identical to an earlier tool result in this conversation — call the retrieve_full tool with token "${key}" to expand it.`
     changed = true
     stats.trBlocks++
-    stashes.push({ token: key, original: text })
+    stashes.push({ token: key, original: text, meta: makeMeta('dedup', hint?.toolName, text.length, out.length) })
   } else {
-    const c = compactToolText(text, hint)
+    const c = compactToolText(text, hint, policy)
     let best = c.text
     let stash = c.stash
+    // What replaced the text, for the elision ledger: the window compaction unless a patch beats it.
+    let kind: ElisionKind = 'compact'
     if (text.length >= wireWindow.floorChars) {
       const cand = makeCandidate(text)
       // Diff BEFORE recording this block, so it can never be its own base.
       const p = bestDiff(seen.blocks, cand.lines, text.length, key)
-      if (p && p.text.length < best.length) { best = p.text; stash = { token: key, original: text } }
+      if (p && p.text.length < best.length) { best = p.text; stash = { token: key, original: text }; kind = 'diff' }
       seen.keys.add(key)
       seen.blocks.push(cand)
     }
@@ -344,7 +446,7 @@ function compactOrDedup(
       out = best
       changed = true
       stats.trBlocks++
-      if (stash) stashes.push(stash)
+      if (stash) stashes.push({ ...stash, meta: makeMeta(kind, hint?.toolName, text.length, best.length) })
     }
   }
   stats.trCompChars += out.length
@@ -466,24 +568,34 @@ function measurePrefixHead(obj: Record<string, unknown>, stats: WireStats): void
   stats.thinkBudget =
     thinking?.type === 'enabled' && typeof thinking.budget_tokens === 'number' ? thinking.budget_tokens : 0
   const tools = obj.tools
-  if (!Array.isArray(tools)) return
+  // No tools at all: the model cannot call retrieve_full, however it is named or loaded.
+  if (!Array.isArray(tools)) { stats.retrieveOffer = 'absent'; return }
   stats.toolCount = tools.length
+  let direct = false
+  let search = false
   for (const t of tools) {
+    const name = (t as { name?: unknown } | null)?.name
+    // Whether the model could ask for text back: the tool is listed, or the client can load it.
+    if (typeof name === 'string') {
+      const bare = bareToolName(name)
+      if (bare === 'retrieve_full') direct = true
+      else if (bare === 'ToolSearch') search = true
+    }
     let size: number
     try { size = JSON.stringify(t)?.length ?? 0 } catch { continue } // a cyclic tool is not ours to count
     stats.toolsChars += size
-    const name = (t as { name?: unknown })?.name
     if (typeof name === 'string' && name.startsWith(TP_TOOL_PREFIX)) stats.tpToolsChars += size
   }
+  stats.retrieveOffer = direct ? 'direct' : search ? 'deferred' : 'absent'
 }
 
 export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCompressor; maxBodyChars?: number; decay?: boolean } = {}): WireResult {
   const stats = emptyStats()
-  const stashes: Array<{ token: string; original: string }> = []
+  const stashes: StashEntry[] = []
   const seen = emptySeen() // per-body dedup/diff index over earlier tool_result text + tool_use artifacts, filled left-to-right
   const maxChars = opts.maxBodyChars ?? 10_000_000
   if (raw.length > maxChars) return { body: raw, changed: false, stats, stashes }
-  let obj: { messages?: unknown[]; thinking?: unknown }
+  let obj: { messages?: unknown[]; thinking?: unknown; model?: unknown }
   try { obj = JSON.parse(raw) } catch { return { body: raw, changed: false, stats, stashes } }
   if (!obj || !Array.isArray(obj.messages)) return { body: raw, changed: false, stats, stashes }
   // Measured here, BEFORE the round-trip guard below can fail us open: the prefix head is an
@@ -498,11 +610,21 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   /* v8 ignore next -- the catch is unreachable here: `obj` is the untouched JSON.parse result and
      nothing has mutated it yet, so stringify cannot throw. Kept as a fail-open guard. */
   try { reserialized = JSON.stringify(obj) } catch { return { body: raw, changed: false, stats, stashes } }
-  if (reserialized !== raw) return { body: raw, changed: false, stats, stashes }
+  if (reserialized !== raw) {
+    // Forwarded untouched, so what the model sees is what the client sent: still worth counting.
+    stats.kinds = classifyMessages(obj.messages as unknown[])
+    return { body: raw, changed: false, stats, stashes }
+  }
+  // The policy and arm are read from the first user message BEFORE anything below rewrites a block.
+  const { policy, arm, cluster, key } = requestPolicy(obj)
+  stats.arm = arm
+  stats.armCluster = cluster
+  stats.convKey = key
   let changed = clampThinkingBudget(obj)
   // Built once, up front: a tool_result's file hint lives in the tool_use it answers, which sits
   // in an EARLIER message, and the lookup must not depend on how far the walk has got.
-  const hints = collectToolUseHints(obj.messages as Array<{ content?: unknown }>)
+  const retrieved = new Set<string>()
+  const hints = collectToolUseHints(obj.messages as Array<{ content?: unknown }>, retrieved)
   try {
     // Decay runs BEFORE the main walk so aged-out blocks never enter the dedup/diff index — a
     // later block must not be encoded as a patch against something no longer on the wire.
@@ -530,7 +652,7 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
           if (hint?.toolName && isExempt(hint.toolName)) continue
           // Harness <system-reminder> blocks inside the result are instructions to the model, not
           // tool output — only the text around them is compressed (see reminders.ts).
-          const compact = (seg: string) => compactOrDedup(seg, seen, stats, stashes, hint)
+          const compact = (seg: string) => compactOrDedup(seg, seen, stats, stashes, hint, policy)
           if (typeof b.content === 'string') {
             const r = mapOutsideReminders(b.content, compact)
             if (r.changed) { b.content = r.text; changed = true }
@@ -556,6 +678,20 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   } catch {
     return { body: raw, changed: false, stats: emptyStats(), stashes: [] } // fail-open
   }
+  // What is recorded about the request after the rewrite is observation, and an observation that
+  // fails must not undo the compression it describes: the tokens in the shortened body are promises
+  // the stashes keep, and a body already rewritten is only worth sending whole.
+  try {
+    // The model is one field of the body, so naming it on each stash keeps the metadata a function
+    // of the body alone. It rides beside the stash and never enters the forwarded bytes.
+    stampModel(stashes, obj.model)
+    // And the policy the request ran under, so the ledger can tell a compaction the policy in force
+    // made from one the holdout made on the old behaviour.
+    stampPolicy(stashes, policy.kind)
+    stats.askedBackChars = charsAskedBack(stashes, retrieved)
+    // Read off the REWRITTEN messages, which are what `out` serializes; classifyMessages only reads.
+    stats.kinds = classifyMessages(obj.messages as unknown[])
+  } catch { /* the rewrite stands; only its bookkeeping is lost */ }
   if (!changed) return { body: raw, changed: false, stats, stashes }
   let out: string
   try { out = JSON.stringify(obj) } catch { return { body: raw, changed: false, stats: emptyStats(), stashes: [] } }

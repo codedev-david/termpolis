@@ -2,10 +2,14 @@ import { readFileSync, mkdirSync, readdirSync, statSync, promises as fsp } from 
 import { join } from 'path'
 import * as crypto from 'crypto'
 import { offMainFiles } from '../offMainFiles'
+import { sanitizeMeta, type ElisionMeta } from './elisionMeta'
+import { recordElision } from './elisionLedger'
 
 /** Which compression layer issued a token — so its give-back is charged to the right ledger. */
 export type CcrOrigin = 'mcp' | 'proxy'
-export interface CcrRecord { value: unknown; origin: CcrOrigin }
+/** `meta` says how the wire proxy elided the text (see elisionMeta.ts). Absent on an MCP-layer
+ *  stash and on any stash written before v1.55, which still resolve exactly as they did. */
+export interface CcrRecord { value: unknown; origin: CcrOrigin; meta?: ElisionMeta }
 
 /**
  * The reversible-compression cache: the escape hatch behind every `retrieve_full` token.
@@ -127,6 +131,7 @@ function saveForgotten(): void {
 
 function loadForgotten(): void {
   forgotten.clear()
+  /* v8 ignore next -- setCcrDir is the only caller and has set dir by then */
   if (!dir) return
   try {
     const raw = JSON.parse(readFileSync(join(dir, FORGOTTEN_FILE), 'utf8')) as unknown
@@ -134,6 +139,7 @@ function loadForgotten(): void {
       for (const [t, cause] of Object.entries(raw as Record<string, unknown>)) {
         // An unrecognised cause is read as the milder one. Guessing "defect" from a file this
         // version does not understand would raise exactly the unfounded alarm all this is about.
+        /* v8 ignore next -- Object.entries keys are always strings; the test only narrows the type */
         if (typeof t === 'string') forgotten.set(t, cause === 'evicted' ? 'evicted' : 'expired')
       }
     }
@@ -148,6 +154,7 @@ function forgetOnly(token: string, cause: CcrLossCause): boolean {
   forgotten.set(token, cause)
   while (forgotten.size > FORGOTTEN_MAX) {
     const oldest = forgotten.keys().next().value
+    /* v8 ignore next -- the loop condition means forgotten is not empty */
     if (oldest === undefined) break
     forgotten.delete(oldest)
   }
@@ -177,6 +184,7 @@ function memPut(token: string, rec: CcrRecord): void {
     // Every resident is unbacked: the cap still wins (an unbounded map is its own outage), but this
     // is the one path that can actually lose content, so it is counted rather than left silent.
     if (victim === undefined) { victim = store.keys().next().value; if (victim !== undefined) { unbackedEvictions++; if (forgetOnly(victim, 'evicted')) dirty = true } }
+    /* v8 ignore next -- the loop condition means the store is not empty, so a victim exists */
     if (victim === undefined) break
     store.delete(victim)
     memoryOnly.delete(victim)
@@ -206,6 +214,7 @@ function evictDisk(): void {
   for (const [token, entry] of bySeq) {
     if (diskBytes <= diskCapBytes) break
     const f = fileFor(token)
+    /* v8 ignore next -- an indexed token passed TOKEN_RE and a dir was set when it was indexed */
     if (f) removeFile(f)
     diskIndex.delete(token)
     inFlight.delete(token)
@@ -216,6 +225,7 @@ function evictDisk(): void {
     if (store.has(token)) memoryOnly.add(token)
     else if (forgetOnly(token, 'expired')) dirty = true
   }
+  /* v8 ignore next -- the sum of the indexed sizes never goes below zero; this is only a floor */
   if (diskBytes < 0) diskBytes = 0
   if (dirty) saveForgotten() // once, not once per evicted entry
 }
@@ -281,7 +291,11 @@ function diskGet(token: string): CcrRecord | undefined {
   try {
     const rec = JSON.parse(inFlight.get(token) ?? readFileSync(f, 'utf8')) as CcrRecord
     if (!rec || typeof rec !== 'object' || !('value' in rec)) throw new Error('not a record')
-    return { value: rec.value, origin: rec.origin === 'proxy' ? 'proxy' : 'mcp' }
+    // A file from before v1.55 has no meta, and a damaged one reads as none: the value is what
+    // retrieve_full promises, and it must never fail to resolve over its bookkeeping.
+    const origin: CcrOrigin = rec.origin === 'proxy' ? 'proxy' : 'mcp'
+    const meta = sanitizeMeta(rec.meta)
+    return meta ? { value: rec.value, origin, meta } : { value: rec.value, origin }
   } catch {
     // Indexed but unreadable — truncated by a hard kill mid-write, or corrupted underneath us.
     // Leaving it indexed makes the damage PERMANENT: diskPut short-circuits on `diskIndex.has` for
@@ -341,11 +355,44 @@ export function ccrStash(value: unknown, origin: CcrOrigin = 'mcp'): string {
   return token
 }
 
-/** Stash under a caller-provided (already deterministic) token — used by the wire proxy, whose
- *  content-hash tokens must resolve through the same `retrieve_full` tool. */
-export function ccrPut(token: string, value: unknown, origin: CcrOrigin = 'proxy'): void {
-  const rec: CcrRecord = { value, origin }
-  put(token, rec)
+/**
+ * Stash under a caller-provided (already deterministic) token — used by the wire proxy, whose
+ * content-hash tokens must resolve through the same `retrieve_full` tool.
+ *
+ * The proxy re-sends a conversation's whole history every turn, so the same token arrives again
+ * and again, from the request path and from the result. Only the FIRST put of a token counts as an
+ * elision and only its `meta` is kept: a token the store already holds keeps the class it was
+ * first stored with, and one the disk tier holds from an earlier run counts as nothing now.
+ *
+ * What is STORED is exactly what it was before the ledger existed: the value goes to memory on every
+ * put, and the file is written only when there is none. That memory copy is what keeps a token
+ * resolving when its file was truncated by a hard kill, so the ledger must never skip it.
+ */
+export function ccrPut(token: string, value: unknown, origin: CcrOrigin = 'proxy', meta?: ElisionMeta): void {
+  const resident = store.get(token)
+  let m: ElisionMeta | undefined
+  let fresh = false
+  try {
+    if (resident !== undefined || diskIndex.has(token)) {
+      // Already stored, here or in an earlier run: not an elision now, and the class it was stored
+      // with is the one that counts. A record read back from the file keeps its meta on disk only (a
+      // read here would be a synchronous one per token per request), so one from an earlier run takes
+      // the class from the request that has just sent it again, with the same content and so the same
+      // class: the memory record then knows it and a redemption lands in it, not in "legacy".
+      m = resident?.meta ?? sanitizeMeta(meta)
+    } else {
+      m = sanitizeMeta(meta)
+      fresh = m !== undefined
+    }
+  } catch {
+    m = undefined // bookkeeping about the promise must never break the promise
+    fresh = false
+  }
+  put(token, m ? { value, origin, meta: m } : { value, origin })
+  // After the store, so the stash is kept whatever the ledger does: this token is already on the wire.
+  if (fresh && m) {
+    try { recordElision(token, m) } catch { /* stored; only the count is lost */ }
+  }
 }
 
 /**

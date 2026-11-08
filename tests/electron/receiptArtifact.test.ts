@@ -26,6 +26,7 @@ import {
   resetReceiptIdentity,
 } from '../../src/main/headroom/receiptStore'
 import type { UnifiedTotals } from '../../src/main/headroom/unifiedReceipt'
+import { billBreakdown } from '../../src/main/headroom/effectiveUnits'
 import { isoFromEpochMs } from '../../src/main/isoTime'
 
 function totals(over: Partial<UnifiedTotals> = {}): UnifiedTotals {
@@ -52,6 +53,28 @@ function totals(over: Partial<UnifiedTotals> = {}): UnifiedTotals {
     toolUseOrigTokens: 0,
     toolUseSavedTokens: 0,
     worstSavedPct: 12.5,
+    // The rest of the type. The receipt reads none of it, so these are zeros, and the bill is the real function's.
+    retrievalTurns: 0,
+    retrievalTurnUnits: 0,
+    turnRequests: 0,
+    askedBackTokens: 0,
+    stubKinds: { plain: 0, compact: 0, dedup: 0, diff: 0, aged: 0, agedEarly: 0, agedEarlyRequests: 0 },
+    belowFloorRequests: 0,
+    floorEligibleRequests: 0,
+    bill: billBreakdown({ cacheReadTokens: 2_000_000, cacheCreationTokens: 100_000, inputTokens: 50_000, outputTokens: 40_000 }, 450_000),
+    retrieveMisses: 0,
+    retrieveBadTokens: 0,
+    retrieveUnknownTokens: 0,
+    retrieveExpired: 0,
+    unbackedEvictions: 0,
+    sysTokensPerRequest: 0,
+    toolsTokensPerRequest: 0,
+    tpToolsTokensPerRequest: 0,
+    toolCount: 0,
+    steeredRequests: 0,
+    unsteeredRequests: 0,
+    steeredAvgOutput: 0,
+    unsteeredAvgOutput: 0,
     ...over,
   }
 }
@@ -207,6 +230,33 @@ describe('receiptArtifact rendering', () => {
     expect(md).toContain('Self-signed')
     expect(md).toContain('termpolis-cli receipt --verify')
     expect(md).toContain('450,000')
+  })
+
+  it('says what its figure leaves out: the turns that fetched shortened text, which only the headline in the app subtracts', () => {
+    const md = renderReceiptMarkdown(r)
+    expect(md).toContain('These are tokens of text, not billed units.')
+    expect(md).toContain('The saved figure already has the give-back and the credit for text already asked back taken out')
+    expect(md).toContain('it does not subtract the turns that fetched shortened text, which the headline in Settings → Token Savings does')
+    // The old note said the asked-back credit was NOT in the figure. It is, so the document must not say otherwise.
+    expect(md).not.toContain('before two costs')
+    expect(md).not.toContain('net of both')
+    // It sits beside the table it qualifies, ahead of the section on the remaining bill.
+    expect(md.indexOf('These are tokens of text')).toBeGreaterThan(md.indexOf('Retrieval rate'))
+    expect(md.indexOf('These are tokens of text')).toBeLessThan(md.indexOf('## Where the remaining bill is'))
+    // The signed payload and its verification are untouched: the note is not part of what is signed.
+    expect(renderReceiptJson(r)).not.toContain('These are tokens of text')
+    expect(JSON.parse(renderReceiptJson(r)).payload.version).toBe(r.payload.version)
+  })
+
+  it('labels the saved row for everything its figure is net of, and the figure is net of exactly that', () => {
+    // textSaved 3,000,000 + toolUseSaved 200,000 = gross 3,200,000; give-back 400,000; asked back 100,000.
+    const t = totals({ grossSavedTokens: 3_200_000, givebackTokens: 400_000, askedBackTokens: 100_000, netSavedTokens: 2_700_000, wireOrigTokens: 9_000_000, toolOrigTokens: 0, savedPct: 30 })
+    const payload = buildPayload(t, { installHash: 'abcdef0123456789', now: 1_700_000_000_000 })
+    // What buildPayload signs is what unifiedReceipt netted, asked-back credit included.
+    expect(payload.netSavedTokens).toBe(payload.grossSavedTokens - payload.givebackTokens - 100_000)
+    const md = renderReceiptMarkdown(signReceipt(payload, 'k'))
+    expect(md).toContain('| Saved (net of give-back and text asked back) | **2,700,000** (30%) |')
+    expect(md).not.toContain('Saved (net of give-back) |')
   })
 
   it('states the failure in the document rather than rendering a clean-looking lie', () => {

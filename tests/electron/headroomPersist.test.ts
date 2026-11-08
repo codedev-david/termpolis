@@ -18,7 +18,7 @@ describe('headroom persist', () => {
     await offMainFiles.idle()
     resetSettings()
     loadSettingsFromDisk(dir)
-    expect(getSettings()).toEqual({ enabled: true, wireProxy: true, mode: 'aggressive', steering: false, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true })
+    expect(getSettings()).toEqual({ enabled: true, wireProxy: true, mode: 'aggressive', steering: false, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late', contextCap: 0 })
   })
 
   it('round-trips the cumulative ledger baseline through disk', async () => {

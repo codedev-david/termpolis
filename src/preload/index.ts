@@ -262,13 +262,14 @@ const api: TermpolisAPI = {
   agentRemoveCodexHomeTrust: (accountId?: string) =>
     (accountId ? ipcRenderer.invoke('agents:remove-codex-home-trust', { accountId }) : ipcRenderer.invoke('agents:remove-codex-home-trust')),
   tokenSavingsGetSettings: () => ipcRenderer.invoke('tokenSavings:get-settings'),
-  tokenSavingsSetSettings: (p: { enabled?: boolean; wireProxy?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean; floorControl?: boolean; prefixDecay?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
+  tokenSavingsSetSettings: (p: { enabled?: boolean; wireProxy?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean; floorControl?: boolean; prefixDecay?: boolean; firstSightElision?: 'late' | 'legacy'; contextCap?: number }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
   tokenSavingsGetReceipt: () => ipcRenderer.invoke('tokenSavings:get-receipt'),
   tokenSavingsGetProxyReceipt: () => ipcRenderer.invoke('tokenSavings:get-proxy-receipt'),
   /** Whether the wire proxy is on, running, stepped aside for the user's own routing, and at which tier. */
   tokenSavingsGetProxyStatus: () => ipcRenderer.invoke('tokenSavings:get-proxy-status'),
   /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
   tokenSavingsGetUnifiedReceipt: () => ipcRenderer.invoke('tokenSavings:get-unified-receipt'),
+  tokenSavingsGetElisionHealth: () => ipcRenderer.invoke('tokenSavings:get-elision-health'),
   /** Vector count + what they cost as float32 vs int8. A one-shot read (tab open / Refresh) —
    *  it carries no process health and must never be put on a timer. */
   memoryHostStatus: () => ipcRenderer.invoke('memory:host-status'),

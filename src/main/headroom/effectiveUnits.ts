@@ -30,6 +30,13 @@ export interface BillableTokens {
   cacheCreationTokens: number
   inputTokens: number
   outputTokens: number
+  /**
+   * Effective units the turns that only fetched elided text cost (the proxy ledger's
+   * `retrievalTurnUnits`). Already inside the four counters above, because those turns were billed;
+   * it is named here so the saving can be netted of what eliding made the session spend. Absent
+   * reads as none, which is every ledger written before v1.55.
+   */
+  retrievalTurnUnits?: number
 }
 
 export interface BillBreakdown {
@@ -52,10 +59,19 @@ export interface BillBreakdown {
    * the best available estimate of how many times "later" happens.
    */
   prefixTokenWeight: number
-  /** Effective units the compressor kept off the invoice, valued at `prefixTokenWeight`. */
+  /** Effective units the compressor kept off the invoice, valued at `prefixTokenWeight`, BEFORE the
+   *  cost of the turns that fetched elided text. `netSavedTokens` already carries the text that
+   *  came back, but not the turn that asked for it. */
+  grossAvoided: number
+  /** Effective units those turns cost: the cached prefix they re-read and the call they wrote. */
+  retrievalTurnUnits: number
+  /** `grossAvoided - retrievalTurnUnits`: billed units avoided, net of the retrieval turns. This is
+   *  the headline, and it can be negative: the turns can cost more than the eliding saved. */
   avoided: number
   /**
    * `avoided / (total + avoided)` — the share of the counterfactual bill that never arrived.
+   * The invoice already contains the retrieval turns, so what the bill would have been without
+   * eliding is `total + avoided`, with `avoided` net of them.
    * This is the only savings figure in the codebase whose denominator is the whole invoice.
    */
   totalBillSavedPct: number
@@ -83,7 +99,9 @@ export function billBreakdown(t: BillableTokens, netSavedTokens: number): BillBr
   // With no cache activity observed there is no blend to infer, and an uncached token bills as
   // fresh input by definition — so W_INPUT is the answer, not a fallback.
   const prefixTokenWeight = prefixTokens > 0 ? (cacheRead + cacheCreation) / prefixTokens : W_INPUT
-  const avoided = netSavedTokens * prefixTokenWeight
+  const grossAvoided = netSavedTokens * prefixTokenWeight
+  const retrievalTurnUnits = t.retrievalTurnUnits ?? 0
+  const avoided = grossAvoided - retrievalTurnUnits
 
   const counterfactual = total + avoided
   return {
@@ -93,6 +111,8 @@ export function billBreakdown(t: BillableTokens, netSavedTokens: number): BillBr
     inputPct: pct(input, total),
     outputPct: pct(output, total),
     prefixTokenWeight,
+    grossAvoided,
+    retrievalTurnUnits,
     avoided,
     totalBillSavedPct: counterfactual > 0 ? Math.round((avoided / counterfactual) * 1000) / 10 : 0,
   }

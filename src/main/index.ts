@@ -211,10 +211,14 @@ import { buildInjectedInstruction } from './headroom/injectedInstruction'
 import { adaptSteeringMode, steeringDirective, type SteeringMode } from './headroom/outputSteering'
 import { initOutputEconomy, armForSession, flushOutputEconomy, outputEconomyReport } from './headroom/outputEconomyStore'
 import { resolveWireMode } from './headroom/savingsFloor'
+import { describeWireTier } from './headroom/wireTier'
 import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader } from './headroomProxy/proxySupervisor'
+import { summarizeElisionHealth } from './headroom/elisionHealth'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight } from './headroomProxy/proxySupervisor'
 import { readJsonObject } from './agentConfigIO'
+import { claudeLaunchEnv as buildClaudeLaunchEnv } from './headroom/shapingEnv'
+import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
 import { fileURLToPath } from 'url'
@@ -636,7 +640,7 @@ import {
 } from './agentIntegrationManager'
 import {
   accountSettingsEnv, codexHomeFor, connectedProfileTargets, endAccountSignIns, forgetTerminalAccount, isTerminalAccountConnected,
-  noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveLaunchTarget, withLimitChooser, workerStopCarried,
+  noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveAccountTarget, resolveLaunchTarget, withLimitChooser, workerStopCarried,
 } from './accountsIpc'
 import { relaunchLockReason } from './accountSwitch'
 import { isTerminalAnswer } from '../shared/terminalAnswers'
@@ -827,11 +831,33 @@ ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; htm
 // Which terminals the renderer listens to (terminal:subscribe / terminal:unsubscribe): main sends terminal:data for those only.
 registerTerminalDataRouting(ipcMain)
 
+// The extra environment of a Claude terminal: the proxy route, when the proxy is up, and the user's opt-in
+// context window, which has nothing to do with the proxy (headroom/shapingEnv.ts). The only place the proxy
+// route is taken, so a spawn site cannot carry one and miss the other.
+//
+// A launch on an account (1.54.6 switcher) reads that account's profile on both counts: the proxy steps aside
+// for the profile's own routing (accountSettingsEnv), and a window the profile's settings already hold beats
+// ours (readSettings from the profile folder, not Termpolis's default Claude folder). No account = the
+// default folder, as before. A terminal moved to another sign-in LATER, by a typed line, keeps the env it
+// was created with: docs/DOCUMENTATION.md names that limit.
+const claudeLaunchEnv = (cwd: string, accountId?: unknown) => {
+  const paths = agentIntegrationPaths()
+  const profileDir = accountId === undefined ? null : (resolveAccountTarget(paths, accountId).target?.dir ?? null)
+  return buildClaudeLaunchEnv(cwd, {
+    settings: getHeadroomSettings,
+    proxyEnv: getProxyEnv,
+    env: process.env,
+    settingsEnv: accountId === undefined ? undefined : () => accountSettingsEnv(paths, accountId),
+    readSettings: (dir) => readClaudeWindowSettings(profileDir ?? paths.claudeDir, dir),
+  })
+}
+
 ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
     if (!shell) return err('No shell available')
+    const launchEnv = claudeHeadroom ? await claudeLaunchEnv(cwd, accountId) : undefined
     // No folder trust is seeded here any more. Opening a terminal is not agreeing to let
     // an agent run in that folder unasked; Claude Code's own trust prompt stays the gate
     // unless the user connected the agents, and then only where Termpolis launches Claude
@@ -862,9 +888,9 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           // paired phone never adds work proportional to PTY chatter -- and with no
           // phone subscribed this is a set lookup that finds nothing.
           remoteNoteTerminalOutput(id)
-          // A launch on an account steps aside for that profile's own routing, not the default one's.
+          // A launch on an account steps aside for that profile's own routing, not the default one's (claudeLaunchEnv).
           // A terminal launched to run an agent Termpolis watches carries the chooser's marker (R6).
-        }, allExtraPaths, withLimitChooser(claudeHeadroom ? (getProxyEnv(process.env, accountSettingsEnv(agentIntegrationPaths(), accountId)) ?? undefined) : undefined, limitWatch), undefined, prep)
+        }, allExtraPaths, withLimitChooser(launchEnv, limitWatch), undefined, prep)
         resolve()
       } catch (e) {
         reject(e)
@@ -3752,6 +3778,7 @@ async function semanticPoolOptions(
           const mcpAgentPaths = await getAgentExtraPathsAsync()
           const mcpPrep = await prepareSpawn(resolvedCwd, shellInfo.executable)
           await primeBundledToolsCheck()
+          const launchEnv = await claudeLaunchEnv(resolvedCwd)
           spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
             // Buffer first: the event carries the chunk's end offset (see terminal:create).
             const end = appendOutput(terminalOutputBuffers, id, data)
@@ -3762,9 +3789,10 @@ async function semanticPoolOptions(
           // reveals the real command, and the conductor may name a Claude worker anything ("Backend
           // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
           // (codex/gemini read OPENAI_*/Google env), so this compresses every Claude worker and
-          // no-ops the rest; getProxyEnv() is null when the proxy is unhealthy → direct launch.
+          // no-ops the rest; the proxy route is absent when the proxy is unhealthy → direct launch. The opt-in
+          // context window rides in the same env, proxy or not, and is just as inert for a Codex or Gemini worker.
           // A swarm worker is watched, by the swarm's loop (R6); a phone's terminal isn't.
-          }, mcpAgentPaths, withLimitChooser(getProxyEnv() ?? undefined, !remote), undefined, mcpPrep)
+          }, mcpAgentPaths, withLimitChooser(launchEnv, !remote), undefined, mcpPrep)
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)
@@ -4241,7 +4269,7 @@ async function semanticPoolOptions(
         const patch = (p || {}) as Record<string, unknown>
         if ('mode' in patch || 'floorControl' in patch) {
           try {
-            const wm = next.floorControl ? resolveWireMode(next.mode, summarizeProxySavings().cumulative) : next.mode
+            const wm = next.floorControl ? resolveWireMode(next.mode, summarizeProxySavings().cumulative, getProxyFirstSight()) : next.mode
             setProxyMode(wm)
           } catch { /* proxy honors the new mode live; aggressive default holds if this fails */ }
         }
@@ -4255,6 +4283,11 @@ async function semanticPoolOptions(
       // The one honest number: wire proxy + MCP tool compressor, minus retrieve_full give-backs,
       // counted once. The two legacy per-layer handlers stay for back-compat.
       ipcMain.handle('tokenSavings:get-unified-receipt', () => ok(summarizeUnifiedSavings()))
+      // How often the model asks for elided text back, by class, and whether eliding it pays.
+      ipcMain.handle('tokenSavings:get-elision-health', () => {
+        try { return ok(summarizeElisionHealth()) }
+        catch (e) { return err((e as Error).message) }
+      })
       // The output side of the bill. Separate from the unified receipt on purpose: the
       // receipt reports what was saved, this reports whether the thing believed to be saving
       // it actually is — including the verdict that it is not.
@@ -4304,7 +4337,7 @@ async function semanticPoolOptions(
       onProxyResult((r) => { try { recordProxyResult(r) } catch { /* best effort */ } })
       // The result only lands once the upstream response ends, but Claude can call retrieve_full
       // the moment the token streams back — so the originals are committed on the request path too.
-      onProxyStash((s) => { for (const st of s.stashes) { try { ccrPut(st.token, st.original, 'proxy') } catch { /* best effort */ } } })
+      onProxyStash((s) => { for (const st of s.stashes) { try { ccrPut(st.token, st.original, 'proxy', st.meta) } catch { /* best effort */ } } })
       // A route set in Claude Code's own settings.json `env` block counts like one in our env.
       setAgentEnvReader(() => {
         // A blank home leaves claudeDir '', and joined that would read a settings.json
@@ -4323,26 +4356,32 @@ async function semanticPoolOptions(
         return ok({
           enabled: isProxyEnabled(), running: isProxyStarted(), healthy: isProxyHealthy(),
           bypassVar: userRoutingVar(), selectedMode: hs.mode, effectiveMode: getProxyMode(),
+          selectedFirstSight: hs.firstSightElision, effectiveFirstSight: getProxyFirstSight(),
         })
       })
       const hrProxyEntry = fileURLToPath(new URL('./headroomProxy.js', import.meta.url))
       setProxySpawner(() => createProxyTransport(hrProxyEntry))
       // Carry the user's mode + thinking cap into the proxy child from its very first init
       // (defaults: mode 'aggressive', cap 0 = off). When floor control is on, the ledger — not
-      // the selector alone — decides the tier: it escalates if the measured 50% floor isn't
-      // holding. Resolved HERE, before the first request, and frozen for the session, because a
+      // the selector alone — decides the tier under the Legacy policy (Late leaves it as selected):
+      // it escalates if the measured 50% floor isn't holding. Resolved HERE, before the first request, and frozen for the session, because a
       // mid-conversation re-tier would rewrite already-cached history and bust the prompt cache.
       try {
         const hs = getHeadroomSettings()
         let wireMode = hs.mode
+        // The first-sight policy is taken once per run, here, and frozen (proxySupervisor): it is
+        // pushed before anything is resolved from it. A Settings change takes effect at the next start.
+        setProxyFirstSight(hs.firstSightElision)
         if (hs.floorControl) {
           const cum = summarizeProxySavings().cumulative
-          wireMode = resolveWireMode(wireMode, cum)
+          wireMode = resolveWireMode(wireMode, cum, getProxyFirstSight())
         }
         setProxyMode(wireMode)
         setProxyThinkingCap(hs.thinkingCap)
         setProxyDecay(hs.prefixDecay)
         setProxyEnabled(hs.wireProxy)
+        // Last, and once per launch: which tier this run's proxy uses and from what size it elides.
+        logToApp('info', 'main', [describeWireTier(hs.mode, wireMode, hs.floorControl, getProxyFirstSight())])
       } catch { /* defaults hold */ }
       // Switched off → no child at all. Settings starts it the moment the user turns it back on.
       if (getHeadroomSettings().wireProxy) ensureHeadroomProxy()

@@ -751,6 +751,48 @@ describe('accounts:switch, a profile that routes Anthropic traffic itself (desig
   })
 })
 
+// The opt-in context window (headroom/shapingEnv.ts) rides in a terminal's spawn env, decided for the profile it
+// started on; Claude Code lets the variable beat every window settings hold, so a switch to a profile with a
+// window of its own takes Termpolis's variable out of the line.
+describe('accounts:switch, a profile that holds a context window of its own', () => {
+  const typedLine = (): string => term.ran[term.ran.length - 1]
+
+  async function profileWith(settings: Record<string, unknown> | null): Promise<string> {
+    const { main, b, bDir } = await twoClaude()
+    if (settings) writeJson(join(bDir, 'settings.json'), settings)
+    noteTerminalAccount('t1', main)
+    return b
+  }
+
+  it.each([
+    ['in its env block', { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '250000' } }],
+    ['saved', { autoCompactWindow: 250000 }],
+  ])("takes Termpolis's window variable out of the line when the window is %s", async (_name, settings) => {
+    const b = await profileWith(settings)
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(typedLine()).toMatch(/unset CLAUDE_CODE_AUTO_COMPACT_WINDOW && claude/)
+  })
+
+  it('takes out the proxy route and the window together for a profile with both', async () => {
+    const b = await profileWith({ env: { ANTHROPIC_BASE_URL: 'https://gateway.example.test/v1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '250000' } })
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(typedLine()).toMatch(/unset ANTHROPIC_BASE_URL TERMPOLIS_HEADROOM_PROXY CLAUDE_CODE_AUTO_COMPACT_WINDOW && claude/)
+  })
+
+  it("leaves a window the user set in Termpolis's own environment alone: it is theirs, not Termpolis's", async () => {
+    register({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '400000' } })
+    const b = await profileWith({ autoCompactWindow: 250000 })
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(typedLine()).not.toContain('unset')
+  })
+
+  it('leaves the line alone for a profile with no window, or settings that are not valid JSON', async () => {
+    const b = await profileWith({ env: { SOMETHING_ELSE: '1' } })
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(typedLine()).not.toContain('CLAUDE_CODE_AUTO_COMPACT_WINDOW')
+  })
+})
+
 describe('accounts:switch, after a relaunch that did not settle (round 1)', () => {
   async function ready(relaunch: Array<'box' | 'sign-in' | 'nothing' | 'asks'>): Promise<{ main: string; b: string }> {
     term = new FakeTerminal(claude({ relaunch }))

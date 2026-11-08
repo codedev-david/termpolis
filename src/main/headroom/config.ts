@@ -1,3 +1,6 @@
+import { isFirstSightPolicy, type FirstSightPolicy } from './elisionPolicy'
+import { isContextCapSetting } from './shapingEnv'
+
 export type Mode = 'conservative' | 'balanced' | 'aggressive' | 'max'
 export interface HeadroomSettings {
   enabled: boolean
@@ -34,8 +37,39 @@ export interface HeadroomSettings {
    * isn't being held. Escalates only — never drops below the configured mode. Like adaptive
    * steering, it is resolved once per launch and frozen, because the compressed history rides in
    * the cached prefix and re-tiering mid-conversation would invalidate it.
+   *
+   * Only meaningful under the `legacy` first-sight policy: `late` removes less tool text on purpose,
+   * so the measure this controller reads would always look like a shortfall.
    */
   floorControl: boolean
+  /**
+   * When a tool result may be shortened the first time the model sees it (headroom/elisionPolicy.ts).
+   *
+   * `late` (the default since v1.55) leaves a result whole until it reaches 40,000 characters,
+   * because since late August the model asks for about two thirds of the results Termpolis shortens
+   * and each ask is a whole extra turn. `legacy` shortens from the tier's own floor, as v1.54 did;
+   * it is the kill switch. About one conversation in ten runs `legacy` whichever is chosen, so the
+   * two can be compared on your own work.
+   *
+   * Resolved once per run and then frozen, like the tier floor, because the proxy serves every
+   * Claude session of a run and changing it would rewrite each cached prefix: a change made in
+   * Settings takes effect the next time Termpolis starts.
+   */
+  firstSightElision: FirstSightPolicy
+  /**
+   * A smaller window for Claude Code's own auto-compaction, in tokens. 0 = Off, which is the default.
+   *
+   * Opt-in on purpose. A smaller window makes a long conversation compact sooner, so the model
+   * remembers less of it in full and relies on a summary; whether that is neutral for the work cannot
+   * be proved from token counts, and the saving (modelled from one person's history) is not worth
+   * changing anyone's sessions unasked. Everything else here shortens what the model is shown and can
+   * be brought back with retrieve_full. This cannot.
+   *
+   * Unlike the settings above it is not pushed to the proxy and not frozen for a run: it is read when a
+   * Claude terminal is created (see shapingEnv.ts), so it reaches new terminals only, at once, whether or
+   * not the proxy is on. A value outside Anthropic's documented 100,000..1,000,000 is ignored.
+   */
+  contextCap: number
   /**
    * Prefix decay: age the oldest half of a long conversation down to retrievable stubs.
    *
@@ -64,7 +98,7 @@ const MODES: Mode[] = ['conservative', 'balanced', 'aggressive', 'max']
 // compresses the tool-output slice as hard as the profile allows (keeps the head + tail an
 // agent needs; the rest is recoverable via retrieve_full). Users who want more inline context
 // can dial to balanced/conservative — the selector now drives the live wire (see proxySupervisor).
-const DEFAULTS: HeadroomSettings = { enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true }
+const DEFAULTS: HeadroomSettings = { enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late', contextCap: 0 }
 
 let current: HeadroomSettings = { ...DEFAULTS }
 
@@ -80,6 +114,13 @@ export function setSettings(p: Partial<HeadroomSettings>): HeadroomSettings {
   if (typeof p.adaptiveSteering === 'boolean') next.adaptiveSteering = p.adaptiveSteering
   if (typeof p.floorControl === 'boolean') next.floorControl = p.floorControl
   if (typeof p.prefixDecay === 'boolean') next.prefixDecay = p.prefixDecay
+  // A word that is not a policy is ignored, so a settings file written before this release (which has
+  // none) and a damaged one both read as the default instead of as a choice.
+  if (isFirstSightPolicy(p.firstSightElision)) next.firstSightElision = p.firstSightElision
+  // 0 (Off) or a whole number of tokens inside Anthropic's documented range; anything else keeps what is
+  // there, so a v1.54 file (which has none) and a damaged one both read as Off, and a garbled value
+  // can never become a window.
+  if (isContextCapSetting(p.contextCap)) next.contextCap = p.contextCap
   // Negative / NaN / non-numeric are rejected outright rather than coerced: a garbled cap must
   // never become a real ceiling on someone's reasoning budget.
   if (typeof p.thinkingCap === 'number' && Number.isFinite(p.thinkingCap) && p.thinkingCap >= 0) next.thinkingCap = Math.floor(p.thinkingCap)

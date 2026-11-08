@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { ProxyTotalsView, UnifiedTotalsView, HeadroomSettingsView, DepthAdviceView, ProxyStatusView } from '../../types'
+import { ElisionHealthCard } from './ElisionHealthCard'
 
 /** Mirrors CCR_MAX_BYTES in src/main/headroom/ccrStore.ts — the pane names the real limit. */
 const CCR_CAP_MB = 200
@@ -11,7 +12,8 @@ interface Receipt { session: Totals; cumulative: Totals }
 interface ProxyReceipt { session: ProxyTotalsView; cumulative: ProxyTotalsView }
 interface UnifiedReceipt { session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null }
 
-const fmt = (n: number): string => n.toLocaleString('en-US')
+// + 0 turns a negative zero into 0: a figure that rounds to nothing (Math.round(-0.4) is -0) must not print "-0".
+const fmt = (n: number): string => (n + 0).toLocaleString('en-US')
 
 // Thinking-budget ceilings offered in the UI. 0 = off (the default). Anthropic's own floor is
 // 1024, so nothing lower is worth listing — the wire clamp raises anything under it anyway.
@@ -22,6 +24,30 @@ const THINKING_CAPS: Array<{ value: number; label: string }> = [
   { value: 4000, label: '4,000 tokens' },
   { value: 2000, label: '2,000 tokens' },
 ]
+
+// The windows offered for the opt-in context cap (R3), each with the research's modeled saving: a share of
+// the bill, replayed from one person's October history with a compaction at that window and 15,000 to
+// 80,000 tokens lost to each one. 500,000 lies between the two nearest modeled windows (400,000 and
+// 600,000), so its figure is estimated. Off first, then the largest window down.
+//
+// Mirrors CONTEXT_CAP_CHOICES in src/main/headroom/shapingEnv.ts. The renderer cannot import from main, so
+// the pane lists them itself; tests/renderer/contextCapSettings.test.tsx keeps the two lists one list.
+const CONTEXT_CAPS: Array<{ value: number; label: string }> = [
+  { value: 0, label: 'Off — Claude Code decides (default)' },
+  { value: 500000, label: '500,000 tokens — estimated saving about 5 to 7%, for a 1M-window model' },
+  { value: 400000, label: '400,000 tokens — modeled saving about 10 to 13%, for a 1M-window model' },
+  { value: 300000, label: '300,000 tokens — modeled saving about 16 to 21%, for a 1M-window model' },
+  { value: 200000, label: '200,000 tokens — modeled saving about 20 to 29%, for a 1M-window model' },
+]
+
+/** The choices, with a window set outside Settings (a hand-edited file) shown as itself and in its place,
+ *  never as one of the windows it is not. */
+function contextCapChoices(current: number): Array<{ value: number; label: string }> {
+  if (CONTEXT_CAPS.some((c) => c.value === current)) return CONTEXT_CAPS
+  const extra = { value: current, label: `${fmt(current)} tokens — set outside Settings` }
+  const at = CONTEXT_CAPS.findIndex((c) => c.value > 0 && c.value < current)
+  return at === -1 ? [...CONTEXT_CAPS, extra] : [...CONTEXT_CAPS.slice(0, at), extra, ...CONTEXT_CAPS.slice(at)]
+}
 
 // Honest "share of your TOTAL input" — textSavedTokens over the full ingested
 // prompt volume (uncached + cache-read + cache-create), pre-compression. This is
@@ -69,6 +95,34 @@ const outputCostShare = (t?: UnifiedTotalsView): number | null =>
 
 const MODE_LABEL: Record<Mode, string> = { conservative: 'Conservative', balanced: 'Balanced', aggressive: 'Aggressive', max: 'Maximum' }
 
+/** At or above this share of responses read for retrieval turns, the all-time figure counts as netted. */
+const COVERED_SHARE = 0.99
+
+/** Mirrors LATE_FLOOR_CHARS in src/main/headroom/elisionPolicy.ts — the pane names the real size. */
+const LATE_FLOOR = '40,000'
+type FirstSight = HeadroomSettingsView['firstSightElision']
+const FIRST_SIGHT_LABEL: Record<FirstSight, string> = { late: 'Late', legacy: 'Legacy' }
+
+/**
+ * Which first-sight policy is running, and which will after the next start. The proxy freezes its
+ * policy at launch (changing it under a live session would rewrite every cached prefix), so a change
+ * made here is not what runs until Termpolis restarts, and the pane says so rather than implying it.
+ */
+function FirstSightStatus({ selected, status }: { selected: FirstSight; status: ProxyStatusView | null }) {
+  const running = status?.effectiveFirstSight
+  if (!status || !running) return null
+  const pending = running !== selected
+  // The policy is frozen into the proxy at launch, but while the proxy is off, stepping aside for the
+  // user's own route or down, there is nothing for it to act on, and "Running" would not be true.
+  const live = status.enabled && !status.bypassVar && status.running && status.healthy
+  return (
+    <div data-testid="hr-first-sight-status" role="status" data-pending={pending ? 'true' : 'false'} data-live={live ? 'true' : 'false'} style={{ fontSize: 13, opacity: 0.85, margin: '4px 0 4px' }}>
+      {live ? <>Running: <b>{FIRST_SIGHT_LABEL[running]}</b>.</> : <>Not in effect right now: the proxy is off, stepping aside or not running.</>}
+      {pending && <> {FIRST_SIGHT_LABEL[selected]} applies the next time Termpolis starts.</>}
+    </div>
+  )
+}
+
 /** One line on what the proxy is actually doing — the switch alone can't say it stepped aside. */
 function ProxyStatusLine({ status }: { status: ProxyStatusView | null }) {
   if (!status) return null
@@ -79,9 +133,15 @@ function ProxyStatusLine({ status }: { status: ProxyStatusView | null }) {
   } else if (!status.running || !status.healthy) text = 'Not running right now — Claude Code sessions launch direct until it recovers.'
   else {
     const raised = status.effectiveMode !== status.selectedMode
-    text = <>Running at the <b>{MODE_LABEL[status.effectiveMode] ?? status.effectiveMode}</b> tier{raised ? <> (raised from {MODE_LABEL[status.selectedMode] ?? status.selectedMode} by the savings floor)</> : null}.</>
+    // Which results the tier applies to depends on the first-sight policy the proxy froze at launch.
+    const policy = status.effectiveFirstSight === 'late'
+      ? <> Tool results are left whole until {LATE_FLOOR} characters (Late).</>
+      : status.effectiveFirstSight === 'legacy'
+        ? <> Tool results are shortened from the size of the tier (Legacy).</>
+        : null
+    text = <>Running at the <b>{MODE_LABEL[status.effectiveMode] ?? status.effectiveMode}</b> tier{raised ? <> (raised from {MODE_LABEL[status.selectedMode] ?? status.selectedMode} by the savings floor)</> : null}.{policy}</>
   }
-  return <div data-testid="hr-proxy-status" style={{ fontSize: 13, opacity: 0.8, margin: '0 0 8px' }}>{text}</div>
+  return <div data-testid="hr-proxy-status" role="status" style={{ fontSize: 13, opacity: 0.8, margin: '0 0 8px' }}>{text}</div>
 }
 
 export function TokenSavingsSettings() {
@@ -114,6 +174,18 @@ export function TokenSavingsSettings() {
 
   const cacheHealthy = (proxy?.cumulative.cacheReadTokens ?? 0) >= (proxy?.cumulative.cacheCreationTokens ?? 0)
   const outShare = outputCostShare(unified?.cumulative)
+  // The headline: billed units avoided, NET of the turns that only fetched elided text.
+  const bill = unified?.cumulative.bill
+  const turnUnits = unified?.cumulative.retrievalTurnUnits ?? 0
+  const turns = unified?.cumulative.retrievalTurns ?? 0
+  // The retrieval turns are netted from the history they were read for, which starts at v1.55. A
+  // ledger from before has responses and none of them, so its all-time figure is not net of anything.
+  const responses = unified?.cumulative.requests ?? 0
+  const responsesRead = unified?.cumulative.turnRequests ?? 0
+  const partlyNetted = responses > 0 && responsesRead < responses * COVERED_SHARE
+  const askedBackTokens = unified?.cumulative.askedBackTokens ?? 0
+  // 0 = Off. A main process that predates the setting sends none, which is Off as well.
+  const contextCap = typeof settings?.contextCap === 'number' && Number.isFinite(settings.contextCap) && settings.contextCap > 0 ? settings.contextCap : 0
 
   return (
     <div className="settings-section">
@@ -124,24 +196,52 @@ export function TokenSavingsSettings() {
           which layer issued the token, and the receipt could read deeply negative while the proxy
           beside it had genuinely saved hundreds of millions. This block is the merged total. */}
       <div className="hr-unified-receipt" style={{ border: '1px solid #8884', borderRadius: 8, padding: 14, marginBottom: 18 }}>
-        <h4 style={{ margin: '0 0 6px' }}>Net tokens saved <span style={{ fontWeight: 400, opacity: 0.65 }}>— everything Headroom does, counted once</span></h4>
+        <h4 style={{ margin: '0 0 6px' }}>Billed units avoided <span style={{ fontWeight: 400, opacity: 0.65 }}>— everything Headroom does, counted once, net of the turns that fetched elided text and of text asked back</span></h4>
         <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'baseline' }}>
           <div>
-            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-unified-net">{fmt(unified?.cumulative.netSavedTokens ?? 0)}</div>
-            <div style={{ opacity: 0.7 }}>tokens saved · all-time</div>
-            <div style={{ opacity: 0.7, fontSize: 13 }}>
-              <span data-testid="hr-unified-gross">{fmt(unified?.cumulative.grossSavedTokens ?? 0)}</span> removed
-              {' '}− <span data-testid="hr-unified-giveback">{fmt(unified?.cumulative.givebackTokens ?? 0)}</span> given back by{' '}
-              {fmt(unified?.cumulative.retrieves ?? 0)} <code>retrieve_full</code> calls
+            {/* + 0 turns a negative zero into 0: a figure that rounds to nothing must not print "-0". */}
+            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-bill-avoided">{fmt(Math.round(bill?.avoided ?? 0) + 0)}</div>
+            <div style={{ opacity: 0.7 }}>billed units avoided · all-time</div>
+            <div style={{ opacity: 0.7, fontSize: 13 }} data-testid="hr-bill-parts">
+              <span data-testid="hr-bill-gross">{fmt(Math.round(bill?.grossAvoided ?? 0))}</span> kept off the bill
+              {' '}− <span data-testid="hr-bill-turn-units">{fmt(Math.round(turnUnits))}</span> spent on{' '}
+              <span data-testid="hr-bill-turns">{fmt(turns)}</span> {turns === 1 ? 'turn' : 'turns'} that only fetched elided text
+              {partlyNetted && <> (counted from v1.55)</>}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-unified-pct">{unified?.cumulative.savedPct ?? 0}%</div>
-            <div style={{ opacity: 0.7 }}>of compressible volume</div>
+            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-bill-pct">{(bill?.totalBillSavedPct ?? 0) + 0}%</div>
+            <div style={{ opacity: 0.7 }}>of what your usage would have cost</div>
             <div style={{ opacity: 0.7, fontSize: 13 }} data-testid="hr-unified-session">
-              this session: {fmt(unified?.session.netSavedTokens ?? 0)} tokens
+              this session: {fmt(Math.round(unified?.session.bill?.avoided ?? 0) + 0)} units
             </div>
           </div>
+        </div>
+        {partlyNetted && (
+          <div style={{ marginTop: 8, fontSize: 13, color: '#fbbf24' }} data-testid="hr-bill-coverage">
+            Retrieval turns are counted from v1.55 on, and have been read for {fmt(responsesRead)} of the {fmt(responses)} responses behind this
+            all-time figure. Earlier history was never netted, so this number is higher than your bill supports, and it stays higher: it carries
+            that history as it was, and only what is added from now on is net. This session’s figure is fully measured.
+          </div>
+        )}
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }} data-testid="hr-bill-note">
+          One unit is what a fresh input token costs at Anthropic&rsquo;s rates: cache reads count 0.1, cache writes 1.25, output 5.
+          A turn that only fetches elided text re-reads the whole cached prefix, so it is charged here, not just the text it brings back
+          (a turn that first had to load the tool through ToolSearch is charged with it), and once a conversation has asked for a result back,
+          that result is no longer credited as saved. It is an estimate: the short view that stays behind in the conversation is not charged.
+        </div>
+        {(bill?.avoided ?? 0) < 0 && (
+          <div style={{ marginTop: 8, fontSize: 13, color: '#f87171' }} data-testid="hr-bill-negative">
+            Negative: the turns that fetched elided text cost more than eliding them saved. It is shown as it is, not rounded up to zero;
+            the Elision health card below shows which kinds of result are being asked back.
+          </div>
+        )}
+        <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }} data-testid="hr-unified-tokens">
+          In tokens: <b data-testid="hr-unified-net">{fmt(unified?.cumulative.netSavedTokens ?? 0)}</b> net ={' '}
+          <span data-testid="hr-unified-gross">{fmt(unified?.cumulative.grossSavedTokens ?? 0)}</span> removed from the wire
+          {' '}− <span data-testid="hr-unified-giveback">{fmt(unified?.cumulative.givebackTokens ?? 0)}</span> given back by{' '}
+          {fmt(unified?.cumulative.retrieves ?? 0)} <code>retrieve_full</code> calls
+          {askedBackTokens > 0 && <>{' '}− <span data-testid="hr-unified-asked-back">{fmt(askedBackTokens)}</span> already asked back</>}, <b data-testid="hr-unified-pct">{unified?.cumulative.savedPct ?? 0}%</b> of the text Headroom is allowed to touch.
         </div>
 
         {/* THREE denominators, not one.
@@ -150,17 +250,19 @@ export function TokenSavingsSettings() {
             — the flattering one — is how a compression feature ends up quoted as a bill cut it
             never delivered, so all three are stated here, largest to smallest, side by side. */}
         <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }} data-testid="hr-denominators">
-          <div style={{ fontWeight: 600, opacity: 0.8, marginBottom: 4 }}>The same saving, measured three ways:</div>
-          <div><b data-testid="hr-denom-wire">{unified?.cumulative.savedPct ?? 0}%</b> of the text Headroom is allowed to touch (tool results + the agent&rsquo;s own tool inputs) — how well compression works.</div>
-          <div><b data-testid="hr-denom-input">{shareOfTotalInput(proxy?.cumulative) ?? 0}%</b> of every input token you sent — the rest is system prompt, tool schemas and conversation history.</div>
-          <div><b data-testid="hr-denom-cost">{effectiveCostShare(unified?.cumulative) ?? 0}%</b> of what the conversation actually cost, at Anthropic&rsquo;s rates — the smallest figure, and the only spendable one.</div>
+          <div style={{ fontWeight: 600, opacity: 0.8, marginBottom: 4 }}>The saving, measured three ways (each on its own basis, below; only the last subtracts the turns that fetched elided text):</div>
+          <div><b data-testid="hr-denom-wire">{unified?.cumulative.savedPct ?? 0}%</b> of the text Headroom is allowed to touch (tool results + the agent&rsquo;s own tool inputs), net of the text fetched back — how well compression works.</div>
+          <div><b data-testid="hr-denom-input">{shareOfTotalInput(proxy?.cumulative) ?? 0}%</b> of every input token you sent, counting every token removed, none of it taken back — the rest is system prompt, tool schemas and conversation history.</div>
+          <div><b data-testid="hr-denom-cost">{effectiveCostShare(unified?.cumulative) ?? 0}%</b> of what the conversation actually cost, at Anthropic&rsquo;s rates, net of the text fetched back and of the turns that fetched it — the smallest figure, and the only spendable one.</div>
         </div>
 
         {/* Floor evidence. A lifetime average of 50% is compatible with half of all requests
-            sitting under it; only the worst single request can settle whether a floor holds. */}
+            sitting under it; only the worst single request can settle whether a floor holds.
+            Counted over the requests that ran the old behavior only: the Late policy removes less
+            tool text on purpose and is not held to a floor, so its requests are not in these numbers. */}
         {(unified?.cumulative.floorEligibleRequests ?? 0) > 0 && (
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }} data-testid="hr-floor-evidence">
-            Floor check: worst single request kept <b data-testid="hr-floor-worst">{unified?.cumulative.worstSavedPct ?? 0}%</b>
+            Floor check, Legacy and holdout requests only (Late is not held to a floor): worst single request kept <b data-testid="hr-floor-worst">{unified?.cumulative.worstSavedPct ?? 0}%</b>
             {' '}· <span data-testid="hr-floor-below">{fmt(unified?.cumulative.belowFloorRequests ?? 0)}</span> of{' '}
             {fmt(unified?.cumulative.floorEligibleRequests ?? 0)} substantial requests came in under 50%.
           </div>
@@ -253,6 +355,8 @@ export function TokenSavingsSettings() {
         )}
       </div>
 
+      <ElisionHealthCard />
+
       <div className="hr-proxy-receipt" style={{ border: '1px solid #8884', borderRadius: 8, padding: 14, marginBottom: 18 }}>
         <h4 style={{ margin: '0 0 6px' }}>Claude Code compression proxy</h4>
         <label style={{ display: 'block', margin: '8px 0' }}>
@@ -268,9 +372,11 @@ export function TokenSavingsSettings() {
           <span style={{ opacity: 0.6 }}>— off means Claude talks to Anthropic directly; a session that is already running keeps its route until it ends</span>
         </label>
         <ProxyStatusLine status={status} />
-        <p style={{ opacity: 0.8, marginTop: 0 }}>
+        <p data-testid="hr-proxy-note" style={{ opacity: 0.8, marginTop: 0 }}>
           When on, each Claude Code session Termpolis launches sends its API requests to a small proxy on 127.0.0.1, which
-          shrinks tool-result text (large Read/Bash output, search dumps, MCP results) and pasted images, then forwards the
+          shortens the largest tool results (large file reads, fetched pages, search dumps and MCP results, and command output
+          where Claude Code has not already trimmed it, which it does at about 30,000 characters; from {LATE_FLOOR} characters under
+          Late, the default, and from the size of the tier under Legacy) and pasted images, then forwards the
           request to api.anthropic.com and nowhere else. Repeat results collapse to a reference and near-identical ones (a
           re-read edited file) are sent as a patch, so the model sees a shorter version; <code>retrieve_full</code> brings
           any compressed block back in full. Whatever the agent writes to disk or runs — file bodies, commands, both sides of
@@ -324,7 +430,7 @@ export function TokenSavingsSettings() {
           if (s == null && c == null) return null
           return (
             <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }} data-testid="hr-proxy-share-total">
-              That’s ≈{s ?? 0}% of all input tokens you sent this session{c != null ? ` · ≈${c}% all-time` : ''}. Compression reaches tool output and tool inputs — about 86% of message bytes, measured on real transcripts. What it never touches: the system prompt, the tool schemas, your own words, and the model’s own replies. Repeated context is billed at ~10% through the prompt cache, so a token removed here is removed from every later re-read of it too.
+              That’s ≈{s ?? 0}% of all input tokens you sent this session{c != null ? ` · ≈${c}% all-time` : ''}. Compression reaches large tool results (from {LATE_FLOOR} characters under Late), repeats, aged-out history and pasted images. What it never touches: the system prompt, the tool schemas, your own words, the model’s own replies, and the input of any tool call. Repeated context is billed at ~10% through the prompt cache, so a token removed here is removed from every later re-read of it too.
             </div>
           )
         })()}
@@ -340,6 +446,9 @@ export function TokenSavingsSettings() {
             <input data-testid="hr-toggle-enabled" type="checkbox" checked={settings.enabled} onChange={() => update({ enabled: !settings.enabled })} />
             {' '}Compress Termpolis MCP tool outputs (code_search, file trees, …)
           </label>
+          <div data-testid="hr-tool-output-savings" style={{ fontSize: 13, opacity: 0.8, margin: '0 0 8px 22px' }}>
+            Tool-output savings — session <span data-testid="hr-session-saved">{fmt(receipt?.session.netSaved ?? 0)}</span> · all-time <span data-testid="hr-cumulative-saved">{fmt(receipt?.cumulative.netSaved ?? 0)}</span> tokens
+          </div>
           <label style={{ display: 'block', margin: '8px 0' }}>
             Aggressiveness:{' '}
             {/* Explicit dark bg + light text: an unstyled native select inherited the theme's light-grey
@@ -358,14 +467,48 @@ export function TokenSavingsSettings() {
               <option value="max" className="bg-[#2d2d2d] text-[#d4d4d4]">Maximum</option>
             </select>
           </label>
+          <div data-testid="hr-first-sight" style={{ margin: '12px 0' }}>
+            <label style={{ display: 'block', margin: '8px 0 4px' }}>
+              Shorten tool results:{' '}
+              <select
+                data-testid="hr-first-sight-select"
+                value={settings.firstSightElision ?? 'late'}
+                onChange={(e) => update({ firstSightElision: e.target.value as FirstSight })}
+                className="max-w-full bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
+              >
+                <option value="late" className="bg-[#2d2d2d] text-[#d4d4d4]">Late — only from {LATE_FLOOR} characters (recommended)</option>
+                <option value="legacy" className="bg-[#2d2d2d] text-[#d4d4d4]">Legacy — from the size of the tier, as in v1.54</option>
+              </select>
+            </label>
+            <FirstSightStatus selected={settings.firstSightElision ?? 'late'} status={status} />
+            <div data-testid="hr-first-sight-note" style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+              On the author’s machine, since late August, the model asked for about two thirds of the results Termpolis shortened
+              (about 69% on Opus 5.5 and 44% on Sonnet 5.5), and each ask is a whole extra turn that reads the entire cached prefix
+              again. Late leaves a result whole until it reaches {LATE_FLOOR} characters. Modeled on that history it saves about 10% of
+              the bill where the model asks that often. It saves less where the model asks for fewer results back, and it costs a little
+              below roughly a third to a half. That is a modeled figure from one person’s history, not a promise for your work. The
+              Elision health card, in the receipt section near the top of this tab, above the proxy settings, compares Late with the holdout on yours. It
+              changes only which results are shortened: repeats are still collapsed, old history still ages out in a long
+              conversation, and anything shortened can still be brought back with <code>retrieve_full</code>. Termpolis cannot measure
+              the effect on the quality of answers on your work; under Late the model is shown at least as much of every result as under
+              Legacy, and every result under {LATE_FLOOR} characters whole the first time it appears (a repeat of one already shown is a
+              reference to it, a near-repeat a patch against it, and old history in a long conversation ages out, as under Legacy).
+              Under Late the Aggressiveness setting still decides how hard a result of {LATE_FLOOR} characters or more is cut, and the
+              size from which a repeat becomes a reference and a near-repeat a patch. Claude Code already trims long command output to
+              about 30,000 characters itself, so in practice Late mostly shortens large file reads and fetched pages.
+              About one distinct opening message in ten always runs Legacy so the two can be compared. A change takes effect the next time
+              Termpolis starts, because one proxy serves every Claude session of a run and a change in the middle would rewrite each
+              session’s prompt cache.
+            </div>
+          </div>
           <label style={{ display: 'block', margin: '8px 0' }}>
             <input data-testid="hr-toggle-floor" type="checkbox" checked={settings.floorControl} onChange={() => update({ floorControl: !settings.floorControl })} />
-            {' '}Hold a 50% savings floor — raise the tier automatically if the ledger shows it slipping{' '}
-            <span style={{ opacity: 0.6 }}>— only ever compresses harder than the setting above, never softer, and is decided at launch and frozen for the session (re-tiering mid-conversation would break the prompt cache)</span>
+            {' '}Under Legacy, hold a 50% savings floor — raise the tier automatically if the ledger shows it slipping{' '}
+            <span style={{ opacity: 0.6 }}>— only used when Legacy is what runs: Late removes less tool text on purpose, so it leaves the tier as selected. Only ever compresses harder than the Aggressiveness setting, never softer, and is decided at launch and frozen for the session (re-tiering mid-conversation would break the prompt cache)</span>
           </label>
           <label style={{ display: 'block', margin: '8px 0' }}>
             <input data-testid="hr-toggle-decay" type="checkbox" checked={settings.prefixDecay} onChange={() => update({ prefixDecay: !settings.prefixDecay })} />
-            {' '}Age out old history in very long conversations <span style={{ opacity: 0.6 }}>— on by default. Everything else here is free; this one pays a one-off prompt-cache rebuild to buy a smaller prefix on every later turn. It waits for 128 messages before the first cut, about 3x the ~44-turn break-even, and aged blocks stay recoverable with <code>retrieve_full</code>.</span>
+            {' '}Age out old history in very long conversations <span style={{ opacity: 0.6 }}>— on by default. Most of the rest here is free; this one pays a one-off prompt-cache rebuild to buy a smaller prefix on every later turn. It waits for 128 messages before the first cut, about 3x the ~44-turn break-even, and aged blocks stay recoverable with <code>retrieve_full</code>.</span>
           </label>
 
           <h4 style={{ margin: '18px 0 6px' }}>Output tokens <span style={{ fontWeight: 400, opacity: 0.65 }}>— what Claude writes back (billed 5× input)</span></h4>
@@ -394,8 +537,75 @@ export function TokenSavingsSettings() {
               and unlike everything else here it trades reasoning depth, not inline context, so it is off by default.
             </div>
           </label>
-          <div style={{ fontSize: 13, opacity: 0.8, marginTop: 8 }}>
-            Tool-output savings — session <span data-testid="hr-session-saved">{fmt(receipt?.session.netSaved ?? 0)}</span> · all-time <span data-testid="hr-cumulative-saved">{fmt(receipt?.cumulative.netSaved ?? 0)}</span> tokens
+          {/* Claude Code's own compaction window, not a compression setting: it needs neither the proxy nor the
+              tool-output compression above, so nothing here is disabled by them. Off until chosen, because it
+              changes what the model keeps of a long conversation and Termpolis cannot see what that does to answers. */}
+          <div data-testid="hr-context-cap" style={{ margin: '12px 0' }}>
+            <h4 style={{ margin: '18px 0 6px' }}>Long conversations <span style={{ fontWeight: 400, opacity: 0.65 }}>— when Claude Code summarizes one (opt-in)</span></h4>
+            <label style={{ display: 'block', margin: '8px 0 4px' }}>
+              Compact long Claude Code conversations at:{' '}
+              <select
+                data-testid="hr-context-cap-select"
+                value={String(contextCap)}
+                onChange={(e) => update({ contextCap: Number(e.target.value) })}
+                className="max-w-full bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
+              >
+                {contextCapChoices(contextCap).map((c) => (
+                  <option key={c.value} value={String(c.value)} className="bg-[#2d2d2d] text-[#d4d4d4]">{c.label}</option>
+                ))}
+              </select>
+            </label>
+            <div data-testid="hr-context-cap-status" role="status" style={{ fontSize: 13, opacity: 0.85, margin: '4px 0 4px' }}>
+              {contextCap === 0
+                ? <>Off: Claude Code decides when to compact a conversation, as it always has.</>
+                : <>Set to <b>{fmt(contextCap)} tokens</b> for new Claude Code terminals, unless you already have a window of your own: they compact a long conversation once it nears this size. Terminals that are already open are unchanged.</>}
+            </div>
+            <div data-testid="hr-context-cap-note" style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+              <p style={{ margin: '0 0 6px' }}>
+                Claude Code compacts a long conversation into a summary when it nears the model’s context window, and every request until then
+                re-reads the whole history. A smaller window makes it compact sooner, so later requests carry less. The cost is that the model
+                keeps less of a long conversation word for word and works from the summary instead. Termpolis cannot measure what that does to
+                the quality of answers on your work, so this is off until you choose it.
+              </p>
+              <p style={{ margin: '0 0 6px' }}>
+                The saving beside each window is modeled, not measured: a replay of one person’s October Claude Code history, with a compaction at
+                that window and 15,000 to 80,000 tokens lost to each one, as a share of the bill. It is not a promise for your work. Anthropic does
+                not say how close to the window a conversation compacts, so the real saving may differ. It is zero on a model whose own window is
+                already this size or smaller, because Claude Code never uses a window larger than the model’s. The 500,000 figure is estimated
+                between two modeled windows. Late and a smaller window overlap, so together they save less than the two figures added. Context meters, in Claude Code’s status line and in Termpolis, keep measuring against the model’s
+                full window, so they do not show how near the smaller one is.
+              </p>
+              <p style={{ margin: '0 0 6px' }}>
+                It applies to new Claude Code terminals only; a terminal that is already open keeps what it started with. It works with or without
+                the compression proxy. Termpolis sets Claude Code’s own <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> variable, and never overrides a
+                window you set yourself: in your environment, in the env block of your Claude Code <code>settings.json</code>, or with{' '}
+                <code>/autocompact</code>. To tell, it reads
+                the window variable in the env block, and any saved window, of your Claude Code settings files (your own, and the project’s in the
+                folder a terminal opens in) when a terminal opens, and nothing else in them. A file it cannot read for a moment is tried once more,
+                and if it still cannot be read the window is left unset, because Termpolis cannot tell. Terminals that swarm workers, agents and a paired
+                phone open through Termpolis get the variable too, because the command they will run is not known when they are created; Codex and Gemini
+                CLI ignore it.
+              </p>
+              {/* The limits: where it does not look and what else it touches. Folded so the paragraphs above stay readable, and labeled with what
+                  is inside. What a person decides on, and what Termpolis reads and where the variable reaches, is above; this is what they would
+                  look up afterwards if they have a window of their own somewhere Termpolis cannot see. */}
+              <details data-testid="hr-context-cap-limits">
+                <summary style={{ cursor: 'pointer', opacity: 0.9 }}>Where it does not look, and what else it affects</summary>
+                <p style={{ margin: '6px 0 0' }}>
+                  It cannot see a <code>--autocompact</code> flag typed on a command line, and Claude Code lets this variable
+                  win over that flag, so to use the flag turn this Off first. While it is on, <code>/autocompact</code> typed inside a session is
+                  reported as overridden and not saved. It also wins over a window saved in a subagent’s definition, in a{' '}
+                  <code>--settings</code> argument, or in your organization’s managed settings (the managed-settings file included), none of
+                  which Termpolis reads; an <code>env</code>{' '}
+                  entry in the last two that sets the variable itself is different, and wins over this setting. Claude Code’s subagents use the
+                  variable’s window too, so they compact sooner as well. Anthropic does not say what a resumed conversation that is already longer
+                  than the window does. If you also set{' '}
+                  <code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code>, it is a percentage of the window in force, so with a smaller window compaction comes
+                  sooner than you chose. A Claude session the Workflow Orchestrator’s agent steps start themselves gets neither this variable nor
+                  the proxy route.
+                </p>
+              </details>
+            </div>
           </div>
         </>
       )}
