@@ -36,6 +36,7 @@ import {
   getExtendedPath,
   getExtendedPathAsync,
   primeInteractiveShellPath,
+  windowsPathTail,
   __resetShellPathCacheForTests,
 } from '../../src/main/agentPaths'
 import { join } from 'path'
@@ -145,13 +146,31 @@ describe('getAgentExtraPaths', () => {
   it('on Windows returns the Windows install dirs (incl. the Antigravity CLI) and nothing else', () => {
     setPlatform('win32')
     const paths = getAgentExtraPaths()
-    expect(paths).toHaveLength(4)
-    expect(paths[0]).toMatch(/AppData[\\/]Roaming[\\/]npm$/)
-    expect(paths[1]).toMatch(/AppData[\\/]Local[\\/]pnpm$/)
-    expect(paths[2]).toMatch(/Google[\\/]Cloud SDK[\\/]bin$/)
-    expect(paths[3]).toMatch(/AppData[\\/]Local[\\/]agy[\\/]bin$/) // agy (Antigravity CLI) — Gemini's headless access
+    expect(paths).toHaveLength(5)
+    expect(paths[0]).toMatch(/[\\/]\.local[\\/]bin$/) // Claude Code's native install, ahead of npm's (maybe dead) shim
+    expect(paths[1]).toMatch(/AppData[\\/]Roaming[\\/]npm$/)
+    expect(paths[2]).toMatch(/AppData[\\/]Local[\\/]pnpm$/)
+    expect(paths[3]).toMatch(/Google[\\/]Cloud SDK[\\/]bin$/)
+    expect(paths[4]).toMatch(/AppData[\\/]Local[\\/]agy[\\/]bin$/) // agy (Antigravity CLI) — Gemini's headless access
     // No fs scan should run on Windows.
     expect(mockReaddirSync).not.toHaveBeenCalled()
+  })
+
+  // WindowsApps (Store Python, for agents' hooks) only ever goes LAST, and only when missing: without
+  // Store Python its python.exe is the "install from the Store" alias, which must not shadow a real one.
+  it('on Windows puts WindowsApps at the end of a PATH that lacks it, and nowhere else', () => {
+    setPlatform('win32')
+    mockHomedir.mockReturnValue('C:\\Users\\dev')
+    const apps = join('C:\\Users\\dev', 'AppData', 'Local', 'Microsoft', 'WindowsApps')
+    process.env.PATH = 'C:\\Python312;C:\\Windows\\System32'
+    const dirs = getExtendedPath().split(';')
+    expect(dirs[dirs.length - 1]).toBe(apps)
+    expect(dirs.indexOf(apps)).toBeGreaterThan(dirs.indexOf('C:\\Python312'))
+    process.env.PATH = `C:\\Windows\\System32;${apps}\\`
+    expect(getExtendedPath().split(';').filter((d) => d.toLowerCase().startsWith(apps.toLowerCase()))).toHaveLength(1)
+    expect(windowsPathTail(apps.toUpperCase(), 'C:\\Users\\dev')).toEqual([])
+    setPlatform('linux')
+    expect(windowsPathTail('', '/home/dev')).toEqual([])
   })
 
   it('on macOS includes Homebrew + every version-manager dir', () => {
@@ -273,7 +292,7 @@ describe('getExtendedPath', () => {
     mockHomedir.mockReturnValue('C:\\Users\\dev')
     delete process.env.PATH
     const out = getExtendedPath()
-    expect(out.startsWith(`${WIN_NPM_DIR};`)).toBe(true)
+    expect(out.startsWith(`${join('C:\\Users\\dev', '.local', 'bin')};${WIN_NPM_DIR};`)).toBe(true)
     expect(out.startsWith(';')).toBe(false)
   })
 

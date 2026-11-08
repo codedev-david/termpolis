@@ -8,7 +8,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   CHECK_TIMEOUT_MS, checkEnv, claudeSignedInNow, codexAccountRead, codexSignedInNow, codexVendorExe, findOnPath,
-  resolveCli, runCli,
+  isDeadShim, resolveCli, runCli,
 } from '../../src/main/accountIdentity'
 import type { CheckDeps, Spawner } from '../../src/main/accountIdentity'
 import { accountFs } from '../../src/main/accountFs'
@@ -138,6 +138,44 @@ describe('findOnPath and resolveCli', () => {
     expect(resolveCli('claude', { env: { PATH: join(root, 'none') }, platform: 'win32' })).toBeNull()
     const fsx: AccountFs = { ...accountFs, stat: (p) => (p === join('/usr/local/bin', 'codex') ? ({ isFile: () => true } as never) : null) }
     expect(resolveCli('codex', { env: { PATH: '/usr/local/bin' }, platform: 'darwin', fsx })).toEqual({ kind: 'exe', file: join('/usr/local/bin', 'codex') })
+  })
+
+  // 1.54.6: Claude Code's move to its native install renamed npm's claude.exe away and left
+  // claude.cmd, so Sign in ran a shim that failed with "'…claude.exe' is not recognized".
+  const SHIM = '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"   %*\r\n'
+  const NODE_SHIM = '@ECHO off\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n)\r\nendLocal & "%_prog%"  "%dp0%\\node_modules\\x\\cli.js" %*\r\n'
+
+  it('passes over an npm shim whose program is gone, for the next CLI on PATH', () => {
+    const npm = join(root, 'npm')
+    const local = join(root, 'local')
+    mkdirSync(npm)
+    mkdirSync(local)
+    writeFileSync(join(npm, 'claude.cmd'), SHIM)
+    const env = { PATH: `${npm};${local}`, PATHEXT: '.EXE;.CMD' }
+    expect(isDeadShim(join(npm, 'claude.cmd'))).toBe(true)
+    expect(resolveCli('claude', { env, platform: 'win32' })).toBeNull()
+    writeFileSync(join(local, 'claude.exe'), '')
+    expect(resolveCli('claude', { env, platform: 'win32' })).toEqual({ kind: 'exe', file: join(local, 'claude.exe') })
+    const bin = join(npm, 'node_modules', '@anthropic-ai', 'claude-code', 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'claude.exe'), '')
+    expect(isDeadShim(join(npm, 'claude.cmd'))).toBe(false)
+    expect(resolveCli('claude', { env, platform: 'win32' })).toEqual({ kind: 'shim', file: join(npm, 'claude.cmd') })
+  })
+
+  it('reads a shim\'s last %dp0% path as its program, and counts one it can\'t read as alive', () => {
+    const npm = join(root, 'npm')
+    mkdirSync(join(npm, 'node_modules', 'x'), { recursive: true })
+    writeFileSync(join(npm, 'x.cmd'), NODE_SHIM)
+    expect(isDeadShim(join(npm, 'x.cmd'))).toBe(true)
+    writeFileSync(join(npm, 'node_modules', 'x', 'cli.js'), '')
+    expect(isDeadShim(join(npm, 'x.cmd'))).toBe(false)
+    writeFileSync(join(npm, 'plain.cmd'), '@node "C:\\elsewhere\\cli.js" %*')
+    expect(isDeadShim(join(npm, 'plain.cmd'))).toBe(false)
+    expect(isDeadShim(join(npm, 'missing.cmd'))).toBe(false)
+    // A scanner holding the shim (EBUSY) must not fail Sign in: alive, like an unreadable one.
+    const busy = { readText: () => { throw Object.assign(new Error('busy'), { code: 'EBUSY' }) } } as unknown as Parameters<typeof isDeadShim>[1]
+    expect(isDeadShim(join(npm, 'x.cmd'), busy)).toBe(false)
   })
 
   it('looks on the process\'s own PATH by default', () => {

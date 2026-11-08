@@ -68,11 +68,30 @@ export function getInteractiveShellPath(): string {
 
 function windowsExtraPaths(home: string): string[] {
   return [
+    // Claude Code's native installer. Ahead of npm: Claude Code's own move from npm to the native
+    // install leaves npm's claude.cmd behind with its claude.exe renamed away (1.54.6, a User PATH
+    // that had lost both folders found only that dead shim).
+    join(home, '.local', 'bin'),
     join(home, 'AppData', 'Roaming', 'npm'),                      // npm global (claude, codex)
     join(home, 'AppData', 'Local', 'pnpm'),                       // pnpm global
     join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin'), // gemini via gcloud
     join(home, 'AppData', 'Local', 'agy', 'bin'),                 // Antigravity CLI (agy) — Gemini's headless access; its installer only adds this to .bashrc
   ]
+}
+
+/**
+ * What goes at the END of a Windows PATH that lacks it: Windows's own default User PATH entry,
+ * %LOCALAPPDATA%\Microsoft\WindowsApps (Store Python's python.exe, winget). Agents' hooks run
+ * `python`, and a User PATH rewritten without it left every hook with "command not found" (1.54.6).
+ * Last, never ahead: without Store Python its python.exe is only the "install from the Store"
+ * alias, which must not shadow a python.org / conda / pyenv-win Python earlier on PATH.
+ */
+export function windowsPathTail(existingPath: string, home: string = homedir()): string[] {
+  if (process.platform !== 'win32') return []
+  const dir = join(home, 'AppData', 'Local', 'Microsoft', 'WindowsApps')
+  const norm = (p: string): string => p.replace(/[\\/]+$/, '').trim().toLowerCase()
+  const present = existingPath.split(';').some((e) => norm(e) === norm(dir))
+  return present ? [] : [dir]
 }
 
 /** The static part of the Unix list. */
@@ -155,7 +174,9 @@ export async function getAgentExtraPathsAsync(): Promise<string[]> {
 //   Linked machines jobs alike.
 function searchPath(shellPath: string): string {
   const currentPath = process.env.PATH || ''
-  if (process.platform === 'win32') return [currentPath, ...getAgentExtraPaths()].filter(Boolean).join(';')
+  if (process.platform === 'win32') {
+    return [currentPath, ...getAgentExtraPaths(), ...windowsPathTail(currentPath)].filter(Boolean).join(';')
+  }
   return [...getAgentExtraPaths(), shellPath, currentPath].filter(Boolean).join(':')
 }
 

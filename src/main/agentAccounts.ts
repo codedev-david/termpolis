@@ -534,7 +534,13 @@ export function accountsShDrift(home: string, doc: AccountsDoc, fsx: AccountFs =
         lines.push(`accounts.sh gives ${a.importedAs} another email than Termpolis has for ${a.label}.`)
       }
       const shDir = shProfile(sh, a.importedAs, home)
-      if (shDir !== undefined && !sameFolder(a.profile, shDir, home, fsx)) {
+      // accounts.sh's folders are login slots (resolve_profiles): an account that followed its
+      // login into another of them (reslotClaudeAccounts) is where accounts.sh would put it too.
+      const inSlot = sh.accounts.some((k) => {
+        const p = shProfile(sh, k, home)
+        return p !== undefined && sameFolder(a.profile, p, home, fsx)
+      })
+      if (shDir !== undefined && !inSlot && !sameFolder(a.profile, shDir, home, fsx)) {
         lines.push(`accounts.sh puts ${a.importedAs} in another folder than Termpolis has for ${a.label}.`)
       }
     }
@@ -607,6 +613,65 @@ export function lastSignedInAs(account: AgentAccount, home: string, doc: Account
   const r = readClaudeJsonFields(file, ['oauthAccount.emailAddress'])
   const email = r.kind === 'ok' ? r.values['oauthAccount.emailAddress'] : undefined
   return isPlainEmail(email) ? email : null
+}
+
+/** What belongs to a profile folder rather than to the account that uses it. */
+const FOLDER_FIELDS = ['profile', 'connect', 'origin', 'links', 'copiedAt'] as const
+type FolderFields = Pick<AgentAccount, (typeof FOLDER_FIELDS)[number]>
+
+/** Claude Code accounts follow their login between the profile folders they hold, as
+ *  ~/.claude/accounts.sh's resolve_profiles does: the folders are login slots, not names. An
+ *  account whose email is the login in one of the folders gets that folder (its own first); an
+ *  account signed in nowhere keeps its own folder if that is free, else takes the first free one.
+ *  So "personal" whose login sits in ~/.claude-work moves there, rather than showing ~/.claude's
+ *  other login as "signed in to … instead!". Only Claude accounts with an email, two or more, each
+ *  in its own folder. A moved account's checked identity is dropped (it described the old folder).
+ *  Returns the labels of the accounts moved; [] leaves the registry as it was. */
+export function reslotClaudeAccounts(doc: AccountsDoc, home: string, fsx: AccountFs = accountFs): string[] {
+  const accts = doc.file.accounts.filter((a) => a.agent === 'claude' && isPlainEmail(a.email))
+  if (accts.length < 2) return []
+  const keys = accts.map((a) => {
+    const dir = profileDirOf(a, home)
+    return dir ? comparisonKey(dir, fsx) : null
+  })
+  if (keys.some((k) => !k) || new Set(keys).size !== keys.length) return []
+  const owner = (email: string | null): number =>
+    email ? accts.findIndex((a) => a.email!.toLowerCase() === email.toLowerCase()) : -1
+  const login = accts.map((a) => owner(lastSignedInAs(a, home, doc, fsx)))
+  // holder[slot] = the account that gets slot's folder; slot i is accts[i]'s folder now.
+  const holder: number[] = accts.map(() => -1)
+  accts.forEach((_, a) => {
+    for (const s of [a, ...accts.keys()]) {
+      if (login[s] === a && holder[s] < 0) {
+        holder[s] = a
+        return
+      }
+    }
+  })
+  accts.forEach((_, a) => {
+    if (holder.includes(a)) return
+    holder[holder[a] < 0 ? a : holder.indexOf(-1)] = a
+  })
+  if (holder.every((a, s) => a === s)) return []
+  const folders: FolderFields[] = accts.map((a) => {
+    const f = {} as Record<string, unknown>
+    for (const k of FOLDER_FIELDS) f[k] = a[k]
+    return f as unknown as FolderFields
+  })
+  // A usage limit was hit by the login in the folder, so it moves with the folder too.
+  const limits = accts.map((a) => doc.file.limits[a.id])
+  const moved: string[] = []
+  holder.forEach((a, s) => {
+    if (a === s) return
+    const acct = accts[a]
+    for (const k of FOLDER_FIELDS) delete (acct as unknown as Record<string, unknown>)[k]
+    Object.assign(acct, folders[s])
+    delete doc.file.identity[acct.id]
+    if (limits[s]) doc.file.limits[acct.id] = limits[s]
+    else delete doc.file.limits[acct.id]
+    moved.push(acct.label)
+  })
+  return accts.filter((a) => moved.includes(a.label)).map((a) => a.label)
 }
 
 /** The account a usage limit or a check is recorded against, by id. */

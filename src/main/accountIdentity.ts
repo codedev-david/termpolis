@@ -51,6 +51,12 @@ export type CliPath = { kind: 'exe'; file: string } | { kind: 'shim'; file: stri
 
 /** `name` on PATH as the shell finds it: on Windows each PATHEXT extension in each folder, in turn. */
 export function findOnPath(name: string, env: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform, fsx: AccountFs = accountFs): string | null {
+  for (const file of everyOnPath(name, env, platform, fsx)) return file
+  return null
+}
+
+/** Every `name` on PATH, in the order the shell would try them. */
+function* everyOnPath(name: string, env: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform, fsx: AccountFs): Generator<string> {
   const pathVar = env.PATH ?? env.Path ?? ''
   const sep = platform === 'win32' ? ';' : ':'
   const exts = platform === 'win32' ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean) : ['']
@@ -59,10 +65,29 @@ export function findOnPath(name: string, env: Readonly<Record<string, string | u
     for (const ext of exts) {
       const file = join(dir, name + ext.toLowerCase())
       const s = fsx.stat(file)
-      if (s && s.isFile()) return file
+      if (s && s.isFile()) yield file
     }
   }
-  return null
+}
+
+/** An npm `.cmd` shim whose program is gone: cmd-shim names it as `"%dp0%\…"`, last on its line
+ *  (a node script after `"%dp0%\node.exe"`, or the binary itself). Claude Code's move from npm to
+ *  its native install renames npm's claude.exe away and leaves the shim, which then fails with
+ *  "'…claude.exe' is not recognized". A shim Termpolis can't read, or one naming no %dp0% path,
+ *  counts as alive. */
+export function isDeadShim(shim: string, fsx: AccountFs = accountFs): boolean {
+  let text: string | null = null
+  try {
+    text = fsx.readText(shim, 64 * 1024)
+  } catch {
+    return false // EBUSY / EPERM while a scanner holds it: alive, as an unreadable shim is
+  }
+  if (!text) return false
+  const targets = [...text.matchAll(/"%dp0%\\([^"%\r\n]+)"/gi)].map((m) => m[1])
+  if (targets.length === 0) return false
+  const target = join(dirname(shim), ...targets[targets.length - 1].split(/[\\/]/))
+  const s = fsx.stat(target)
+  return !(s && s.isFile())
 }
 
 /** The codex.exe an npm `codex.cmd` shim runs: the platform package next to the main one, or
@@ -83,16 +108,18 @@ export function resolveCli(agent: ProfileAgent, deps: Pick<CheckDeps, 'env' | 'p
   const env = deps.env ?? process.env
   const platform = deps.platform ?? process.platform
   const fsx = deps.fsx ?? accountFs
-  const found = findOnPath(agent, env, platform, fsx)
-  if (!found) return null
-  if (platform !== 'win32') return { kind: 'exe', file: found }
-  const ext = extname(found).toLowerCase()
-  if (ext === '.exe' || ext === '.com') return { kind: 'exe', file: found }
-  if (agent === 'codex') {
-    const exe = codexVendorExe(found, deps.arch ?? process.arch, fsx)
-    if (exe) return { kind: 'exe', file: exe }
+  for (const found of everyOnPath(agent, env, platform, fsx)) {
+    if (platform !== 'win32') return { kind: 'exe', file: found }
+    const ext = extname(found).toLowerCase()
+    if (ext === '.exe' || ext === '.com') return { kind: 'exe', file: found }
+    if (agent === 'codex') {
+      const exe = codexVendorExe(found, deps.arch ?? process.arch, fsx)
+      if (exe) return { kind: 'exe', file: exe }
+    }
+    // A dead shim is passed over for the next one on PATH, as the native install usually is.
+    if (!isDeadShim(found, fsx)) return { kind: 'shim', file: found }
   }
-  return { kind: 'shim', file: found }
+  return null
 }
 
 /** Only what a CLI needs to find itself and its own sign-in. Never a key, a token or a proxy. */

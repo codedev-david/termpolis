@@ -196,6 +196,17 @@ export function spawnTerminal(
       })()
     : ''
   const winSystemPrefix = winSystemPath ? winSystemPath + sep : ''
+  // Windows's own default User PATH entry (Store Python's python.exe, winget), put back at the END
+  // when the User PATH lost it: Claude Code's hooks run `python` (1.54.6, "python: command not
+  // found"). Never ahead: without Store Python its python.exe is only the "install from the Store"
+  // alias, which must not shadow a python.org / conda / pyenv-win Python. Same rule as
+  // agentPaths.windowsPathTail, kept inline so this module needs nothing from agentPaths.
+  const winAppsSuffix: string = (() => {
+    if (process.platform !== 'win32') return ''
+    const dir = join(homedir(), 'AppData', 'Local', 'Microsoft', 'WindowsApps')
+    const norm = (p: string): string => p.replace(/[\\/]+$/, '').trim().toLowerCase()
+    return existingPath.split(sep).some((e) => norm(e) === norm(dir)) ? '' : sep + dir
+  })()
   // Git Bash hardening: if the user is launching `C:\Program Files\Git\bin\bash.exe`,
   // make sure Git's sibling `/usr/bin` is on PATH so POSIX helpers (sed, dirname,
   // uname) are always resolvable. Default Git Bash pulls these in via /etc/profile,
@@ -227,7 +238,7 @@ export function spawnTerminal(
     : ''
   const baseEnv = {
     ...process.env,
-    PATH: `${testShimPath}${extraPathStr}${basePath}`,
+    PATH: `${testShimPath}${extraPathStr}${basePath}${winAppsSuffix}`,
     OLLAMA_API_BASE: process.env.OLLAMA_API_BASE || 'http://localhost:11434',
     BASH_SILENCE_DEPRECATION_WARNING: '1',
     // Where `sudo -A` finds Termpolis's password dialog (sudoAskpass.ts), on Linux and macOS.

@@ -136,6 +136,55 @@ describe('every channel answers in the IPC envelope', () => {
     expect((await list()).accounts).toHaveLength(2)
   })
 
+  it('moves each Claude account into the folder its login sits in, and saves it (1.54.6)', async () => {
+    mainClaude() // the default profile holds a@example.test
+    const other = join(sb.home, '.claude-other')
+    mkdirSync(other, { recursive: true })
+    writeJson(join(other, '.claude.json'), { oauthAccount: { emailAddress: 'b@example.test' } })
+    const acc = (id: string, label: string, email: string, profile: string | null): AgentAccount =>
+      ({ id, agent: 'claude', label, email, profile, autoOffer: true, order: 0, connect: true, origin: 'adopted', links: [] })
+    writeJson(join(sb.paths.userData, 'agent-accounts.json'), {
+      version: 1, chooser: true, preferred: {}, cooldownSec: {}, limits: {}, identity: {},
+      accounts: [acc('acc_000000000001', 'b', 'b@example.test', null), acc('acc_000000000002', 'a', 'a@example.test', other)],
+    })
+    // Terminals run in a folder: each follows its folder to the account that now has it.
+    noteTerminalAccount('t-default', 'acc_000000000001')
+    noteTerminalAccount('t-other', 'acc_000000000002')
+    noteTerminalAccount('t-none', null)
+    noteTerminalAccount('t-gone', 'acc_00000000dead')
+    const rows = (await list()).accounts.map((r) => [r.label, r.profile])
+    expect([terminalAccountId('t-default'), terminalAccountId('t-other'), terminalAccountId('t-none'), terminalAccountId('t-gone')])
+      .toEqual(['acc_000000000002', 'acc_000000000001', null, 'acc_00000000dead'])
+    expect(sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount).map((s) => s.payload)).toEqual([
+      { terminalId: 't-default', accountId: 'acc_000000000002', byHand: false },
+      { terminalId: 't-other', accountId: 'acc_000000000001', byHand: false },
+    ])
+    expect(rows).toEqual(expect.arrayContaining([['b', other], ['a', null]]))
+    const saved = loadAccounts(sb.paths.userData)
+    expect(saved.ok && saved.doc.file.accounts.map((a) => [a.label, a.profile])).toEqual([['b', other], ['a', null]])
+    // Settled: the next list reads it as it is.
+    expect((await list()).accounts.map((r) => [r.label, r.profile])).toEqual(rows)
+  })
+
+  it('still lists the accounts, unmoved, when the moves cannot be saved', async () => {
+    mainClaude() // the default profile holds a@example.test
+    const other = join(sb.home, '.claude-other')
+    mkdirSync(other, { recursive: true })
+    writeJson(join(other, '.claude.json'), { oauthAccount: { emailAddress: 'b@example.test' } })
+    const acc = (id: string, label: string, email: string, profile: string | null): AgentAccount =>
+      ({ id, agent: 'claude', label, email, profile, autoOffer: true, order: 0, connect: true, origin: 'adopted', links: [] })
+    writeJson(join(sb.paths.userData, 'agent-accounts.json'), {
+      version: 1, chooser: true, preferred: {}, cooldownSec: {}, limits: {}, identity: {},
+      accounts: [acc('acc_000000000001', 'b', 'b@example.test', null), acc('acc_000000000002', 'a', 'a@example.test', other)],
+    })
+    // OneDrive or a scanner holds agent-accounts.json.
+    const fsx: AccountFs = { ...accountFs, writePrivate: () => { throw Object.assign(new Error('locked'), { code: 'EPERM' }) } }
+    register({ fsx })
+    noteTerminalAccount('t-default', 'acc_000000000001')
+    expect((await list()).accounts.map((r) => [r.label, r.profile])).toEqual(expect.arrayContaining([['b', null], ['a', other]]))
+    expect(terminalAccountId('t-default')).toBe('acc_000000000001')
+  })
+
   it('reads a missing input as empty, and turns a thrown error into { success: false }', async () => {
     expect(await fails(ACCOUNTS_IPC.add)).toBe('unknown agent')
     expect(await fails(ACCOUNTS_IPC.add, 'not an object')).toBe('unknown agent')

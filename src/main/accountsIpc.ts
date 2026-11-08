@@ -39,7 +39,7 @@ import { copySources, createProfile, recopyProfile } from './accountProfiles'
 import {
   AccountsRefusal, accountProfileTargets, accountsShDrift, accountsShLines, activeLimit, checkProfileFolder,
   claudeJsonOf, cleanLimit, comparisonKey, cooldownFor, defaultProfileDir, discoverShares, findAccount, isAccountConnected,
-  lastSignedInAs, limitedMarker, liveProfileDir, liveProfileDirAsync, loadAccounts, loadAccountsAsync, newAccountId, previewAccountsSh, profileDirOf,
+  lastSignedInAs, limitedMarker, liveProfileDir, liveProfileDirAsync, loadAccounts, loadAccountsAsync, newAccountId, previewAccountsSh, profileDirOf, reslotClaudeAccounts,
   readAccountsSh, updateAccounts,
 } from './agentAccounts'
 import type { AccountsDoc, ProfileTarget } from './agentAccounts'
@@ -1009,7 +1009,37 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     return label
   }
 
-  handle(ACCOUNTS_IPC.list, () => view(loadDoc()))
+  /** The registry with every Claude account in the folder its login sits in (saved when one moved). */
+  const reslottedDoc = (): AccountsDoc => {
+    const doc = loadDoc()
+    if (reslotClaudeAccounts(structuredClone(doc), deps.paths().home, fsx).length === 0) return doc
+    let next: AccountsDoc
+    try {
+      next = update((d) => reslotClaudeAccounts(d, deps.paths().home, fsx)).doc
+    } catch (err) {
+      // agent-accounts.json held by OneDrive or a scanner: the page still loads, unmoved, and the next list tries again.
+      console.warn('[accounts] could not save the accounts moved to their logins:', err)
+      return doc
+    }
+    followFolders(doc, next)
+    return next
+  }
+
+  /** A terminal runs in a folder, not under a name: after a reslot each open Claude terminal is on the
+   *  account that now has its folder. Else the switch guard reads the wrong folder's login (a work
+   *  conversation carried without asking) and Check runs in a folder a terminal is using. */
+  const followFolders = (before: AccountsDoc, after: AccountsDoc): void => {
+    for (const [terminalId, id] of [...terminalAccounts]) {
+      const was = before.file.accounts.find((a) => a.id === id && a.agent === 'claude')
+      if (!was) continue
+      const now = after.file.accounts.find((a) => a.agent === 'claude' && (a.profile ?? null) === (was.profile ?? null))
+      if (!now || now.id === id) continue
+      terminalAccounts.set(terminalId, now.id)
+      deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: now.id, byHand: byHand.has(terminalId) })
+    }
+  }
+
+  handle(ACCOUNTS_IPC.list, () => view(reslottedDoc()))
 
   handle(ACCOUNTS_IPC.pickFolder, async (input) => {
     const agent = input.agent === 'codex' ? 'codex' : 'claude'

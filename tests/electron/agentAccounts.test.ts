@@ -8,7 +8,7 @@ import {
   accountsShPath, checkProfileFolder, claudeJsonOf, comparisonKey, cooldownFor, defaultProfileDir, discoverShares,
   emptyAccountsFile, findAccount, isAccountConnected, isReachable, lastSignedInAs, launchString, limitedMarker,
   liveProfileDir, loadAccounts, newAccountId, parseAccountsDoc, parseAccountsSh, previewAccountsSh, profileDirOf,
-  readAccountsSh, saveAccounts, serializeAccountsDoc, updateAccounts,
+  readAccountsSh, reslotClaudeAccounts, saveAccounts, serializeAccountsDoc, updateAccounts,
 } from '../../src/main/agentAccounts'
 import type { AccountsDoc } from '../../src/main/agentAccounts'
 import type { AgentAccount } from '../../src/shared/agentAccounts'
@@ -618,6 +618,80 @@ describe('lastSignedInAs', () => {
     expect(lastSignedInAs(codex, home, doc)).toBe('x@example.test')
     const agy = acct({ id: ID(4), label: 'g', agent: 'agy' })
     expect(lastSignedInAs(agy, home, docWith(agy))).toBeNull()
+  })
+})
+
+describe('reslotClaudeAccounts (the folders are login slots, as accounts.sh resolve_profiles)', () => {
+  const signIn = (file: string, email: string): void => writeFileSync(file, JSON.stringify({ oauthAccount: { emailAddress: email } }))
+  const three = (): AccountsDoc => {
+    for (const d of ['.claude', '.claude-codedev', '.claude-work']) mkdirSync(join(home, d), { recursive: true })
+    const doc = docWith(
+      acct({ id: ID(1), label: 'personal', email: 'p@example.test', connect: true, origin: 'accounts-sh', importedAs: 'personal' }),
+      acct({ id: ID(2), label: 'codedev', email: 'c@example.test', profile: join(home, '.claude-codedev'), order: 1, importedAs: 'codedev' }),
+      acct({ id: ID(3), label: 'work', email: 'w@example.test', profile: join(home, '.claude-work'), order: 2, autoOffer: false, links: [{ name: 'projects', target: 'x' }], importedAs: 'work' }),
+    )
+    doc.file.preferred.claude = ID(1)
+    return doc
+  }
+
+  it('1.54.6: personal\'s login in the work folder and codedev\'s in the default one: each account moves to its login', () => {
+    const doc = three()
+    signIn(join(home, '.claude.json'), 'c@example.test')
+    signIn(join(home, '.claude-codedev', '.claude.json'), 'c@example.test')
+    signIn(join(home, '.claude-work', '.claude.json'), 'P@example.test')
+    doc.file.identity[ID(1)] = { email: 'c@example.test', signedIn: true, checkedAt: 1, source: 'auth-status' }
+    expect(reslotClaudeAccounts(doc, home)).toEqual(['personal', 'work'])
+    const [p, c, w] = doc.file.accounts
+    expect(p).toMatchObject({ label: 'personal', profile: join(home, '.claude-work'), links: [{ name: 'projects', target: 'x' }], autoOffer: true, importedAs: 'personal' })
+    expect(c).toMatchObject({ label: 'codedev', profile: join(home, '.claude-codedev') })
+    // work is signed in nowhere: it takes the one free folder, the default profile.
+    expect(w).toMatchObject({ label: 'work', profile: null, connect: true, origin: 'accounts-sh', links: [], autoOffer: false })
+    expect(doc.file.identity[ID(1)]).toBeUndefined()
+    expect(doc.file.preferred.claude).toBe(ID(1))
+    expect(lastSignedInAs(p, home, doc)).toBe('P@example.test')
+    // Settled: a second pass moves nothing.
+    expect(reslotClaudeAccounts(doc, home)).toEqual([])
+  })
+
+  it('swaps two accounts whose logins sit in each other\'s folders, and leaves a matching registry alone', () => {
+    const doc = three()
+    signIn(join(home, '.claude.json'), 'w@example.test')
+    signIn(join(home, '.claude-codedev', '.claude.json'), 'c@example.test')
+    signIn(join(home, '.claude-work', '.claude.json'), 'p@example.test')
+    // The limit was hit by the work login in the default folder: it moves to work with that folder.
+    const limit = { seenAt: 1, text: 'limit reached', email: 'w@example.test' } as unknown as AccountsDoc['file']['limits'][string]
+    doc.file.limits[ID(1)] = limit
+    expect(reslotClaudeAccounts(doc, home)).toEqual(['personal', 'work'])
+    expect(doc.file.accounts.map((a) => a.profile)).toEqual([join(home, '.claude-work'), join(home, '.claude-codedev'), null])
+    expect(doc.file.limits[ID(3)]).toEqual(limit)
+    expect(doc.file.limits[ID(1)]).toBeUndefined()
+    expect(reslotClaudeAccounts(doc, home)).toEqual([])
+    const fresh = three()
+    rmSync(join(home, '.claude.json'))
+    // No logins anywhere: everyone keeps their own folder.
+    for (const f of ['.claude-codedev', '.claude-work']) rmSync(join(home, f, '.claude.json'))
+    expect(reslotClaudeAccounts(fresh, home)).toEqual([])
+  })
+
+  it('leaves alone fewer than two Claude accounts with an email, or two sharing a folder', () => {
+    mkdirSync(join(home, '.claude'))
+    signIn(join(home, '.claude.json'), 'b@example.test')
+    const lone = docWith(acct({ id: ID(1), label: 'a', email: 'a@example.test' }), acct({ id: ID(2), label: 'b', profile: join(home, '.claude-b') }))
+    expect(reslotClaudeAccounts(lone, home)).toEqual([])
+    const shared = docWith(acct({ id: ID(1), label: 'a', email: 'a@example.test' }), acct({ id: ID(2), label: 'b', email: 'b@example.test' }))
+    expect(reslotClaudeAccounts(shared, home)).toEqual([])
+    const noHome = docWith(acct({ id: ID(1), label: 'a', email: 'a@example.test' }), acct({ id: ID(2), label: 'b', email: 'b@example.test', profile: join(home, '.claude-b') }))
+    expect(reslotClaudeAccounts(noHome, '')).toEqual([])
+  })
+
+  it('accounts.sh sees no drift in an account that moved into another of its folders', () => {
+    writeAccountsSh()
+    const doc = docWith(
+      acct({ id: ID(1), label: 'personal', importedAs: 'personal', email: 'personal@example.test', profile: launchString(home + sep + '.claude-work') }),
+      acct({ id: ID(2), label: 'codedev', importedAs: 'codedev', email: 'codedev@example.test', profile: launchString(home + sep + '.claude-codedev') }),
+      acct({ id: ID(3), label: 'work', importedAs: 'work' }),
+    )
+    expect(accountsShDrift(home, doc)).toEqual({ lines: [], unlisted: 0 })
   })
 })
 
