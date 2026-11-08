@@ -95,21 +95,25 @@ export function pruneStops(open: ReadonlySet<string>): void {
   for (const id of unsure.keys()) if (!open.has(id)) unsure.delete(id)
 }
 
-/** How many more looks a still screen that shows a stop main did not count yet gets (2 s apart): main's word on the
- *  agent can change while its screen does not. The prompt that led to the stop is a turn from the Enter, and a start
- *  main had not yet seen is recorded as the shell echoes the line, both possibly after the limit was drawn; a loop
- *  that judged that screen only once never opened the chooser (Windows CI, Codex, 2026-11-07). */
+/** How many more looks a still screen gets (2 s apart) while main has not counted a stop on it: main's word on the
+ *  agent can change while the screen the loop keys on does not. Main judges its own parse of the screen, which can
+ *  trail the output the loop reads, so the limit may show there only a look later; the prompt that led to the stop
+ *  is a turn from the Enter, and a start main had not yet seen is recorded as the shell echoes the line, both
+ *  possibly after the limit was drawn. A loop that judged that screen only once never opened the chooser (Windows
+ *  CI, Codex, 2026-11-07). A new screen starts the count again. */
 export const UNSETTLED_LOOKS = 10
-const unsure = new Map<string, number>()
+const unsure = new Map<string, { screen: string | undefined; n: number }>()
 
-/** Is this look of a stop main did not count one to take again on the next tick, though the screen stays the same? */
-function unsettled(terminalId: string, look: LimitLook): boolean {
-  if (stopKind(look.status) === null || (look.live && look.turned)) {
+/** Is this look, of a screen main counted no stop on, one to take again on the next tick, though the screen stays
+ *  the same? */
+function unsettled(terminalId: string, look: LimitLook, screen: string | undefined): boolean {
+  if (stopKind(look.status) !== null && look.live && look.turned) {
     unsure.delete(terminalId)
     return false
   }
-  const n = (unsure.get(terminalId) ?? 0) + 1
-  unsure.set(terminalId, n)
+  const last = unsure.get(terminalId)
+  const n = last && last.screen === screen ? last.n + 1 : 1
+  unsure.set(terminalId, { screen, n })
   return n <= UNSETTLED_LOOKS
 }
 
@@ -332,6 +336,8 @@ export interface WatchDeps {
   now: () => number
   /** What follows a new stop: its record against the account, and what the user sees. */
   onLimit: (note: Exclude<LimitNote, { kind: 'none' }>) => void
+  /** The screen the loop judged (its key): a new one starts the count of looks again (UNSETTLED_LOOKS). */
+  screen?: string
 }
 
 /**
@@ -350,7 +356,7 @@ export async function watchTerminal(terminalId: string, agent: AccountAgent, vie
     return false
   }
   const note = noteLook(terminalId, agent, look, deps.now())
-  if (note.kind === 'none') return !unsettled(terminalId, look)
+  if (note.kind === 'none') return !unsettled(terminalId, look, deps.screen)
   unsure.delete(terminalId)
   const row = note.ctx.accountId ? view?.accounts.find((r) => r.id === note.ctx.accountId) : undefined
   if (note.kind === 'limit' && row) {

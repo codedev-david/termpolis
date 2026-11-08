@@ -839,12 +839,13 @@ export default function App() {
             const looked = await watchTerminal(term.id, agent, store.accountsView, {
               accounts: window.accounts,
               now: Date.now,
+              screen: dismissKey,
               onLimit: (note) => showLimit(note, {
                 store: useTerminalStore.getState, focused: () => document.hasFocus(), now: Date.now, newId: uuid, notify: osNotify,
               }),
             })
-            // A limit screen is still: a look that failed (main busy, an IPC error) must be tried again
-            // on the next tick, not passed by as a screen already judged.
+            // A limit screen is still: a look that failed (main busy, an IPC error), or one main has not
+            // caught up with yet, must be tried again on the next tick, not passed by as a screen already judged.
             if (!looked) lastDismissedPrompt.delete(term.id)
           }
         } catch {
