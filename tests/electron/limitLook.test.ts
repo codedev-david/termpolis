@@ -374,3 +374,49 @@ describe('where a turn began (R4): an old limit is not the answer to it', () => 
     expect(noteEnteredLine(io, 't1', undefined, '/resume', 77, 1234)).toBeNull()
   })
 })
+
+describe('a long launch line Git Bash on Windows echoes late (the CI run of 2026-11-07)', () => {
+  const LINE = `unset CODEX_HOME && codex -c "developer_instructions='${'Termpolis project memory: saved background context exists. '.repeat(12)}'"`
+  const report = `${E}]7;file://host/tmp/project\x07`
+  const prompt = `${E}[32m\r\nrunner@host ${E}[35mUCRT64 ${E}[33m/tmp/project${E}[m\r\n$ `
+  /** Bash at its prompt when the line is entered (at), one more prompt it prints before the echo, then the echo. */
+  const BEFORE = `${report}${prompt}${E}[?2004h`
+  const AFTER = `${E}[?2004l${report}${prompt}`
+  function io(out: string): SwitchIO {
+    return {
+      output: () => ({ raw: out, end: out.length }),
+      outputFrom: (_id, from) => out.slice(from),
+      end: () => out.length,
+      size: () => ({ cols: 98, rows: 36 }),
+      write: () => undefined,
+      sleep: async () => undefined,
+      now: () => 0,
+    }
+  }
+  const start: LiveStart = { at: BEFORE.length, commands: [LINE], agent: 'codex', time: 0 }
+
+  it('is no exit at the prompt printed before the echo, in the moment the shell takes to start the agent', () => {
+    expect(agentGone(io(BEFORE + AFTER), 't', start, FOREGROUND_GRACE_MS - 1)).toBe(false)
+    // Past it, a prompt and nothing more is the shell back: the line never ran.
+    expect(agentGone(io(BEFORE + AFTER), 't', start, FOREGROUND_GRACE_MS)).toBe(true)
+  })
+
+  it('is no exit with the line half echoed, at any moment', () => {
+    for (const cut of [40, 100, LINE.length - 5]) {
+      expect(agentGone(io(BEFORE + AFTER + LINE.slice(0, cut)), 't', start, FOREGROUND_GRACE_MS * 10)).toBe(false)
+    }
+    expect(agentGone(io(BEFORE + AFTER + LINE + '\r\n'), 't', start, FOREGROUND_GRACE_MS * 10)).toBe(false)
+  })
+
+  it('still reads an agent that printed something and exited in that moment as gone', () => {
+    expect(agentGone(io(`${BEFORE}${LINE}\r\nError: no such model${AFTER}`), 't', start, 0)).toBe(true)
+  })
+
+  it('reads a prompt that only ends like the line, or like a line too short to tell, as the shell back', () => {
+    expect(agentGone(io(BEFORE + AFTER + LINE.slice(0, 20)), 't', start, FOREGROUND_GRACE_MS)).toBe(true)
+    const brief: LiveStart = { ...start, commands: ['codex -m o3'] }
+    expect(agentGone(io(BEFORE + AFTER + 'codex -m'), 't', brief, FOREGROUND_GRACE_MS)).toBe(true)
+    // The line's head twice, the second time not followed by the rest of it.
+    expect(agentGone(io(BEFORE + AFTER + LINE.slice(0, 40) + ' ' + LINE.slice(0, 30) + 'zzz'), 't', start, FOREGROUND_GRACE_MS)).toBe(true)
+  })
+})

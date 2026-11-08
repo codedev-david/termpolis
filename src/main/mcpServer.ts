@@ -880,6 +880,26 @@ function agentCommands(command: string): string[] {
 /** Whether `rows` show one of the commands, by its letters and digits. */
 const showsCommand = (rows: readonly string[], commands: readonly string[]): boolean => commands.some((c) => bare(rows.join('')).includes(bare(c)))
 
+/** How many of a command's letters and digits must end the rows before they read as its start (echoing): more than
+ *  any folder a prompt ends in shares with a launch line by chance. */
+const ECHO_HEAD = 16
+
+/** Whether `rows` end in the start of one of the commands, of more than one word: the shell still echoing the line
+ *  typed at its prompt. Git Bash on Windows echoes a long launch line (Termpolis's own, with its instructions) in
+ *  pieces, and a look between two of them saw the prompt, part of the line and nothing else (the CI run of
+ *  2026-11-07: the agent read as gone before it started). */
+function echoing(rows: readonly string[], commands: readonly string[]): boolean {
+  const text = bare(rows.join(''))
+  return commands.some((c) => {
+    const want = bare(c)
+    if (c.trim().split(/\s+/).length < 2 || want.length < ECHO_HEAD) return false
+    for (let at = text.indexOf(want.slice(0, ECHO_HEAD)); at >= 0; at = text.indexOf(want.slice(0, ECHO_HEAD), at + 1)) {
+      if (want.startsWith(text.slice(at))) return true
+    }
+    return false
+  })
+}
+
 /** What the output since an agent was started says, `from` on in `raw` (the shell's very first
  *  output when `whole`): whether its shell is back at its prompt (shell), and whether the agent drew
  *  its input box (started). The prompts that count are the ones printed after the command was typed:
@@ -907,7 +927,8 @@ export function sinceStarted(raw: string, from: number, whole: boolean, size: Sc
   }
   const switches = [...after.matchAll(ALT_SCREEN)]
   const onAlt = switches.length > 0 && switches[switches.length - 1][1] === 'h'
-  return { shell: !onAlt && inputBoxRow(upTo(REPAINT)) < 0 && !showsCommand(upTo(WIPE), commands), started }
+  const shown = upTo(WIPE)
+  return { shell: !onAlt && inputBoxRow(upTo(REPAINT)) < 0 && !showsCommand(shown, commands) && !echoing(shown, commands), started }
 }
 
 /** What a terminal shows, and what the agent in it is doing; null for a terminal with no output.
