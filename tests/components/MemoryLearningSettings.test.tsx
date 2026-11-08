@@ -35,6 +35,55 @@ function stub(data: MemoryMetrics | null, ok = true, error = ''): ReturnType<typ
 }
 
 describe('MemoryLearningSettings', () => {
+  // 1.55.0: Claude Code's saved notes get their own panel here, beside the vector-memory one. It reads on open and on
+  // Refresh like the rest of the tab, and a bridge that lacks it must not take the dashboard down with it.
+  it('shows the saved-notes panel, reading its settings once on open and again on Refresh', async () => {
+    stub(metrics())
+    const notes = vi.fn(async () => ({
+      success: true,
+      data: { indexClaudeNotes: true, shareNotesAcrossProjects: false, connected: true, status: { notes: 3, chunks: 4, projects: 2, lastAt: 1, noProject: 0, secretsRedacted: 0, pending: 0 } },
+    }))
+    ;(window as unknown as { termpolis: Record<string, unknown> }).termpolis.memoryGetNotesSettings = notes
+    render(<MemoryLearningSettings />)
+    const panel = await screen.findByTestId('claude-notes-panel')
+    expect(panel.textContent).toContain('3 notes from 2 projects')
+    expect(notes).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByTestId('ml-refresh'))
+    await waitFor(() => expect(notes).toHaveBeenCalledTimes(2))
+  })
+
+  it('still renders the dashboard when the bridge has no saved-notes calls (an older preload)', async () => {
+    stub(metrics({ store: { total: 40, capacity: 500000, byType: { episodic: 40 }, bySource: { claude: 40 }, lessons: 0, timeline: [] } }))
+    render(<MemoryLearningSettings />)
+    expect((await screen.findByTestId('claude-notes-error')).textContent).toBe('Could not read the saved-notes settings')
+    expect(await screen.findByTestId('ml-receipts')).toBeTruthy()
+  })
+
+  // 1.55.0: the activity record (what memory did) gets its own panel under the saved notes: its size, and clearing it. It reads on
+  // open and on Refresh, like the panels around it, and a bridge that lacks it must not take the dashboard down either.
+  it('shows the activity-record panel, reading its size once on open and again on Refresh', async () => {
+    const metricsFn = stub(metrics())
+    const size = vi.fn(async () => ({ success: true, data: { files: 2, bytes: 4096 } }))
+    ;(window as unknown as { termpolis: Record<string, unknown> }).termpolis.memoryAuditSize = size
+    render(<MemoryLearningSettings />)
+    const panel = await screen.findByTestId('activity-record-panel')
+    expect(panel.textContent).toContain('Activity record')
+    expect(screen.getByTestId('activity-record-status').textContent).toContain('4.0 KB')
+    expect(size).toHaveBeenCalledTimes(1)
+    const notes = screen.getByTestId('claude-notes-error') // no notes bridge in this stub: its error stands where its panel would
+    expect(notes.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy() // under the saved notes
+    fireEvent.click(screen.getByRole('button', { name: /refresh/i }))
+    await waitFor(() => expect(size).toHaveBeenCalledTimes(2))
+    expect(metricsFn).toHaveBeenCalled()
+  })
+
+  it('keeps the dashboard when the activity record cannot be read', async () => {
+    stub(metrics({ store: { total: 40, capacity: 500000, byType: { episodic: 40 }, bySource: { claude: 40 }, lessons: 0, timeline: [] } }))
+    render(<MemoryLearningSettings />)
+    expect((await screen.findByTestId('activity-record-error')).textContent).toBe('Could not read the activity record')
+    expect(await screen.findByTestId('ml-receipts')).toBeTruthy()
+  })
+
   it('renders the populated dashboard with real receipt numbers', async () => {
     stub(metrics({
       store: { total: 12847, capacity: 500000, byType: { episodic: 9000, semantic: 2000 }, bySource: { claude: 6000, codex: 2000 }, lessons: 2920, timeline: [{ t: 1, total: 100, lessons: 5 }, { t: 2, total: 12847, lessons: 2920 }] },

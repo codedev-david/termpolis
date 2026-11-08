@@ -444,6 +444,10 @@ describe('memoryDashboard — uncovered branches', () => {
     it('still prefers the friendly name for a known agent', () => {
       expect(sourceLabel('mneme')).toBe('Reflection')
     })
+
+    it('names the imported Claude Code notes, not the raw source id', () => {
+      expect(sourceLabel('claude-notes')).toBe('Claude notes')
+    })
   })
 
   describe('typeColor', () => {

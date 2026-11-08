@@ -280,6 +280,13 @@ const api: TermpolisAPI = {
   memorySetPrimerLimit: (value: number) => ipcRenderer.invoke('memory:set-primer-limit', { value }),
   memoryGetLearnConversations: () => ipcRenderer.invoke('memory:get-learn-conversations'),
   memorySetLearnConversations: (value: boolean) => ipcRenderer.invoke('memory:set-learn-conversations', { value }),
+  // Claude Code's saved notes (claudeNotesIpc.ts): the two switches, what was imported, and the undo.
+  memoryGetNotesSettings: () => ipcRenderer.invoke('memory:get-notes-settings'),
+  memorySetNotesSettings: (p: { indexClaudeNotes?: boolean; shareNotesAcrossProjects?: boolean }) => ipcRenderer.invoke('memory:set-notes-settings', p),
+  memoryRemoveImportedNotes: () => ipcRenderer.invoke('memory:remove-imported-notes'),
+  // The record of what memory did (memoryAuditIpc.ts): how big it is, and clearing it.
+  memoryAuditSize: () => ipcRenderer.invoke('memory:audit-size'),
+  memoryClearAudit: () => ipcRenderer.invoke('memory:audit-clear'),
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => ipcRenderer.invoke('memory:reflect-session', { terminalId, cwd, agent }),
   memorySyncStatus: () => ipcRenderer.invoke('memory:sync-status'),
   memorySetSyncDir: (dir: string | null) => ipcRenderer.invoke('memory:set-sync-dir', { dir }),

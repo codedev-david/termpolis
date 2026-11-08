@@ -18,6 +18,9 @@
 // `now` clock like the sibling modules do rather than reaching for the wall clock.
 
 export interface AgentLesson {
+  /** The stored lesson's memory id, when it has one: what memory_link needs to say one lesson
+   *  `supersedes` another, which is how memory_conflicts tells an agent to resolve a conflict. */
+  id?: string
   /** Which agent learned it (e.g. 'claude', 'codex', 'gemini'). */
   source: string
   content: string
@@ -31,6 +34,10 @@ export interface PooledLesson {
   sources: string[]
   corroboration: number
   importance: number
+  /** The id of the lesson whose wording `content` is (the longest phrasing), when it carried one. */
+  id?: string
+  /** The ids of every lesson that fed this one, in arrival order, when they carried ids. Absent when none did. */
+  ids?: string[]
 }
 
 export interface LessonConflict {
@@ -165,6 +172,8 @@ export interface PoolOptions {
 interface PoolAccumulator {
   key: string
   representative: string
+  representativeId?: string
+  ids: string[]
   sources: string[]
   seen: Set<string>
   maxImportance: number
@@ -207,14 +216,16 @@ export function poolLessons(lessons: AgentLesson[], opts?: PoolOptions): PooledL
       if (group) groups.set(key, group) // remember the alias so a third copy short-circuits
     }
     if (!group) {
-      group = { key, representative: lesson.content, sources: [], seen: new Set(), maxImportance: -Infinity }
+      group = { key, representative: lesson.content, representativeId: lesson.id, ids: [], sources: [], seen: new Set(), maxImportance: -Infinity }
       groups.set(key, group)
       order.push(group)
     }
-    // Best-worded representative = the longest phrasing (ties keep the earlier one).
+    // Best-worded representative = the longest phrasing (ties keep the earlier one). Its id moves with it.
     if (lesson.content.length > group.representative.length) {
       group.representative = lesson.content
+      group.representativeId = lesson.id
     }
+    if (lesson.id && !group.ids.includes(lesson.id)) group.ids.push(lesson.id)
     // Distinct sources, first-appearance order.
     if (!group.seen.has(lesson.source)) {
       group.seen.add(lesson.source)
@@ -235,6 +246,8 @@ export function poolLessons(lessons: AgentLesson[], opts?: PoolOptions): PooledL
       sources: group.sources,
       corroboration,
       importance: round3(clamp01(group.maxImportance * boost)),
+      ...(group.representativeId ? { id: group.representativeId } : {}),
+      ...(group.ids.length > 0 ? { ids: group.ids } : {}),
     })
   }
 
@@ -338,6 +351,6 @@ export async function detectConflictsAsync(
 /** Map a stored memory row to an AgentLesson for pooling / conflict detection — the
  *  source is the authoring agent, falling back to the raw agentId then 'unknown'. Shared
  *  by the memory_pool and memory_conflicts wiring so the projection lives in one tested place. */
-export function toAgentLesson(m: { source?: string; agentId?: string; content: string; memoryType?: string; importance?: number }): AgentLesson {
-  return { source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance }
+export function toAgentLesson(m: { id?: string; source?: string; agentId?: string; content: string; memoryType?: string; importance?: number }): AgentLesson {
+  return { ...(m.id ? { id: m.id } : {}), source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance }
 }

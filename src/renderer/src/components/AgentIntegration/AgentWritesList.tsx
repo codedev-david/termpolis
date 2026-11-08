@@ -73,6 +73,12 @@ export function AgentWritesList({ status }: { status?: AgentIntegrationStatus | 
           </div>
         )
       })}
+      <p className="text-[11px] text-[#9ca3af] leading-relaxed" data-testid="agent-reads-note">
+        Connecting also lets Termpolis read Claude Code&rsquo;s saved notes for each project (
+        <code className="bg-[#3c3c3c] px-1 rounded">~/.claude/projects/&hellip;/memory/*.md</code>) and keep a copy in its memory, so Codex
+        and Gemini can find them too. Nothing is written back into Claude&rsquo;s folders. Turn it off any time in Settings &rsaquo;
+        Memory &amp; Learning.
+      </p>
     </div>
   )
 }

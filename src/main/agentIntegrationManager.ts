@@ -26,7 +26,8 @@ import type {
   AgentId, AgentIntegrationAgentStatus, AgentIntegrationChange, AgentIntegrationConsent,
   AgentIntegrationSetRequest, AgentIntegrationSetResult, AgentIntegrationStatus, CodexLaunchContext,
 } from '../shared/agentIntegration'
-import { atomicWriteText, editJsonObject, errorText, readJsonObject, readTextFile } from './agentConfigIO'
+import { stat, readFile } from 'fs/promises'
+import { MAX_CONFIG_BYTES, atomicWriteText, editJsonObject, errorText, parseJsonObjectText, readJsonObject, readTextFile, type JsonObjectRead } from './agentConfigIO'
 import {
   FOREIGN_SERVER, applyAgyAllowRules, applyAllowRules, applyPrimerHook, hasPluginEnablement, hasPrimerHook,
   hasServerEntry, hasTermpolisAllowRule, isAdapterPath, isPrimerHookCommand, isTermpolisPluginManifest,
@@ -211,7 +212,11 @@ function stringList(v: unknown): string[] {
 function readLedger(paths: AgentIntegrationPaths): Ledger | null {
   const file = ledgerPath(paths)
   if (file === null) return null
-  const r = readJsonObject(file)
+  return ledgerFrom(readJsonObject(file))
+}
+
+/** The ledger a read of its file holds, or null when it holds none this version can read. */
+function ledgerFrom(r: JsonObjectRead): Ledger | null {
   if (r.kind !== 'ok' || r.value.version !== 1) return null
   const v = r.value
   const ledger: Ledger = {
@@ -1073,6 +1078,40 @@ export function getAgentIntegrationStatus(paths: AgentIntegrationPaths): AgentIn
       autoAllowedTools: [...MCP_TOOLS_AUTO_ALLOWED], trustedFolders: [], codexHomeTrusted: false,
     }
   }
+}
+
+/** Has the user SAID yes? Stricter than the status's `connected`, which also counts an install an older Termpolis connected
+ *  and nobody has asked since: that one keeps working, in the narrower form v1.49 gave it, until its owner answers the one-time
+ *  review. A read that did not exist before 1.55 (the saved-notes import) does not start for that install; it waits for the
+ *  answer. Once the ledger exists this reads it alone, so a background pass can ask on every tick; the first ever call makes
+ *  the ledger (loadLedger), which looks once at the agents' configs to see whether an older Termpolis connected them.
+ *  False when unreadable. */
+export function isAgentIntegrationGranted(paths: AgentIntegrationPaths): boolean {
+  try {
+    return loadLedger(paths).consent === 'granted'
+  } catch {
+    return false
+  }
+}
+
+/** isAgentIntegrationGranted for a background pass that asks on every tick: the ledger is read on the thread pool, so the
+ *  question costs the main thread no file call (the typing-lag rule). Only when there is no ledger it can read does it fall
+ *  back to the synchronous path, which makes one once, so every later tick reads it here. */
+export async function isAgentIntegrationGrantedAsync(paths: AgentIntegrationPaths): Promise<boolean> {
+  try {
+    const file = ledgerPath(paths)
+    if (file !== null) {
+      let text: string | null = null
+      try {
+        if ((await stat(file)).size <= MAX_CONFIG_BYTES) text = await readFile(file, 'utf-8')
+      } catch { /* none yet */ }
+      const saved = text === null ? null : ledgerFrom(parseJsonObjectText(text))
+      if (saved) return saved.consent === 'granted'
+    }
+  } catch {
+    return false
+  }
+  return isAgentIntegrationGranted(paths)
 }
 
 /** Onboarding, the review and Settings: record the answer, then apply or disconnect. Never throws.

@@ -13,6 +13,8 @@ import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
 import { rerankEnabled, getRerankScorer, rerankByScorer } from './crossEncoderRerank'
 import { initMemoryAudit, auditMemory, redactPreview } from './memoryAudit'
+import { CANDIDATE_HASH_PREFIX, CANDIDATE_TAG, isCandidate } from './lessonSubstance'
+import { isClaudeNote } from './claudeNotesParse'
 import { mmrRerank } from './mmrRerank'
 import { compactGraphLog, initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
@@ -1480,7 +1482,11 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   // F14: hash over the ORIGINAL (untruncated) content so a corrected/identical long
   // note dedups to one entry instead of proliferating truncated fragments. WP-G: over the
   // SCRUBBED text, so re-pasting the same note with a rotated key dedups to one redacted entry.
-  const effectiveHash = input.hash || contentHash(scrub.content)
+  // A held-back lesson (the substance gate's middle band) hashes in a space of its own: an agent that writes the same sentence as a
+  // note of its own meant it to be found, and a lesson stored before 1.55 with these words is being shown. De-duplicated into the hidden
+  // row, the note would be hidden with it, and its tag would be lost at the next restart (a dedup merge is held in memory only).
+  const heldBack = !input.hash && isCandidate({ tags: input.tags, agentId: input.agentId || 'unknown' })
+  const effectiveHash = input.hash || (heldBack ? CANDIDATE_HASH_PREFIX : '') + contentHash(scrub.content)
   if (seenHashes.has(effectiveHash)) {
     const existing = entries.find(e => e.hash === effectiveHash)
     if (existing) {
@@ -1488,8 +1494,13 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
       // agent believes it filed the note under THIS project/tags/task. Backfill what's missing.
       let changed = false
       if (!existing.project && projectSlug) { existing.project = projectSlug; changed = true }
-      if (input.tags && input.tags.length > 0) {
-        const merged = Array.from(new Set([...(existing.tags || []), ...input.tags])).slice(0, 20)
+      // The substance gate's hold-back mark is the one tag that is not scoping metadata: added to a row that did not have it, it would
+      // take away a lesson that was being shown (a resumed session derives the same sentence again). A row is held back when it
+      // is WRITTEN so, never by a later write of the same words. (A row that has the mark keeps it through the merge below, so the
+      // mark is never one of the tags to merge in.)
+      const incoming = (Array.isArray(input.tags) ? input.tags : []).filter((t) => t !== CANDIDATE_TAG) // memory_write hands `tags` over as the model sent it
+      if (incoming.length > 0) {
+        const merged = Array.from(new Set([...(existing.tags || []), ...incoming])).slice(0, 20)
         if (merged.length !== (existing.tags?.length ?? 0)) { existing.tags = merged; changed = true }
       }
       if (!existing.taskId && input.taskId) { existing.taskId = input.taskId; changed = true }
@@ -1560,8 +1571,10 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   if (orphans > 0 && orphans / vectorStore.size > 0.45 && !hnswBuilding) compactVectorStore()
 
   bumpSearchGen() // a new entry invalidates cached searches
-  // WP-E: audit what the brain stored (secret-redacted preview; full content stays only in the store).
-  if (durable) auditMemory({ event: 'write', id: stored.id, kind: stored.kind, agentId: stored.agentId, preview: redactPreview(stored.content) })
+  // WP-E: audit what the brain stored (secret-redacted preview; full content stays only in the store). No preview for a
+  // row the product holds back from agents (a candidate lesson) or promises to take out whole (an imported note): the
+  // audit file is plain text and would keep their words after the row is gone.
+  if (durable) auditMemory({ event: 'write', id: stored.id, kind: stored.kind, agentId: stored.agentId, preview: isCandidate(stored) || isClaudeNote(stored) ? '' : redactPreview(stored.content) })
 
   // Knowledge graph: auto-link a curated memory to its nearest neighbours so the
   // graph grows passively as you work. High-value kinds only (transcript/code
@@ -2631,6 +2644,9 @@ export interface ListOptions {
   projectKey?: string
   /** Only entries strictly OLDER than this ts: a cursor for paging back past the 500 cap. */
   before?: number
+  /** Leave out what a search would not return: a memory a later one supersedes, and one whose net feedback has fallen
+   *  to the suppression bar. Off by default (the Memory panel lists everything); the primer's freshness lane asks. */
+  active?: boolean
 }
 
 export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
@@ -2653,6 +2669,8 @@ export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
     const key = opts.projectKey ?? projectKeyOf(opts.project)
     pool = pool.filter(e => matchesProject(e, { query: '', project: slug, projectKey: key }))
   }
+  // The same two exclusions memorySearch applies to its results, applied to the (by now narrow) pool before it is cut.
+  if (opts.active && pool.length > 0) pool = filterSuperseded(pool, getAllEdges()).filter(e => (usageMap.get(e.id) ?? 0) > SUPPRESS_THRESHOLD)
   return pool.slice(0, limit)
 }
 

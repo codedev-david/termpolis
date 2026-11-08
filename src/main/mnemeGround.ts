@@ -12,6 +12,7 @@
 
 import { extractEntities, type Episode, type Lesson } from './mnemeReflect'
 import type { CodeRef } from './codeGraph'
+import { CANDIDATE_IMPORTANCE, CANDIDATE_TAG, LESSON_AGENT_ID, importanceForScore, lessonSubstance, substanceBand } from './lessonSubstance'
 
 /** Minimal write contract — satisfied structurally by swarmMemory.memoryWrite. */
 export interface LessonWriteInput {
@@ -24,20 +25,25 @@ export interface LessonWriteInput {
   project?: string
   source: string
   codeRefs?: CodeRef[] // v1.23 C2 — code anchors, resolved from the lesson's entities
+  tags?: string[] // 1.55: `candidate` on a lesson the substance gate stores but never surfaces
 }
 
 export type MemoryWriter = (input: LessonWriteInput) => Promise<{ id: string }>
 export type EpisodeDistiller = (episode: Episode) => Promise<Lesson[]>
 
 export interface GroundResult {
+  /** Ids stored: the keepers and the lessons held back as candidates. */
   written: string[]
+  /** How many lessons the distiller produced. */
   lessons: number
+  /** How many the substance gate refused to store at all (a write that failed is not counted here). */
+  skipped: number
 }
 
 /** Map one distilled Lesson to a store write input, grounded to its episode. */
 export function lessonToWriteInput(lesson: Lesson, episode: Episode): LessonWriteInput {
   return {
-    agentId: 'mneme',
+    agentId: LESSON_AGENT_ID,
     kind: lesson.kind,
     content: lesson.content,
     memoryType: lesson.memoryType,
@@ -75,7 +81,13 @@ export interface GroundDeps {
  * Distill an episode and write each lesson to the store as a grounded typed
  * memory. When graph deps are provided, each written lesson also mints edges to
  * its resolved link targets and to entity nodes for the things it references.
- * Returns the ids written and the total lesson count.
+ *
+ * Every lesson first passes the substance gate (lessonSubstance.ts): a keeper is written with an importance
+ * that follows its score; one just under the bar is written at CANDIDATE_IMPORTANCE under the `candidate` tag,
+ * which every read path that hands memories to an agent hides. It is given no code anchors and none of the
+ * entity or typed edges below, so nothing is built on it (the store's own automatic relates-to links still
+ * form, and are harmless: a graph read drops the tagged row). One below that is not written, and counted.
+ * Returns the ids written, how many lessons the distiller produced and how many the gate refused.
  */
 export async function groundEpisode(episode: Episode, deps: GroundDeps): Promise<GroundResult> {
   let lessons: Lesson[] = []
@@ -86,27 +98,41 @@ export async function groundEpisode(episode: Episode, deps: GroundDeps): Promise
   }
 
   const written: string[] = []
+  let skipped = 0
   for (const lesson of lessons) {
+    // Not an object, so not a lesson the gate could refuse. Skipped uncounted, as the write's try/catch below skipped it before the
+    // gate existed; a bad entry never costs the batch.
+    if (!lesson || typeof lesson !== 'object') continue
+    const verdict = lessonSubstance(lesson.content)
+    const band = substanceBand(verdict.score)
+    if (band === 'drop') { skipped++; continue }
+    const held = band === 'candidate'
     let id: string | undefined
     try {
       const input = lessonToWriteInput(lesson, episode)
-      // v1.23 C2: stamp the lesson with structured code anchors resolved from its entities,
-      // so the stored memory knows WHERE it lives (symbolHistory reads these back).
-      if (deps.resolveCode && lesson.entities && lesson.entities.length) {
-        try {
-          const refs = deps.resolveCode(lesson.entities, episode.project)
-          if (refs.length) input.codeRefs = refs
-        } catch { /* best effort — a resolver hiccup never costs the lesson */ }
+      if (held) {
+        input.importance = CANDIDATE_IMPORTANCE
+        input.tags = [CANDIDATE_TAG]
+      } else {
+        input.importance = importanceForScore(verdict.score)
+        // v1.23 C2: stamp the lesson with structured code anchors resolved from its entities,
+        // so the stored memory knows WHERE it lives (symbolHistory reads these back).
+        if (deps.resolveCode && lesson.entities && lesson.entities.length) {
+          try {
+            const refs = deps.resolveCode(lesson.entities, episode.project)
+            if (refs.length) input.codeRefs = refs
+          } catch { /* best effort — a resolver hiccup never costs the lesson */ }
+        }
       }
       const res = await deps.write(input)
       if (res && res.id) { id = res.id; written.push(res.id) }
     } catch {
       continue // best effort — skip this lesson, keep the rest
     }
-    if (!id) continue
+    if (!id || held) continue
     await connectLesson(id, lesson, episode, deps)
   }
-  return { written, lessons: lessons.length }
+  return { written, lessons: lessons.length, skipped }
 }
 
 /** Turn a written lesson's typed links + referenced entities into graph edges.

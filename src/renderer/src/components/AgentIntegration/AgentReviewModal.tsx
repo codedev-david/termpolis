@@ -98,7 +98,9 @@ export function AgentReviewModal({ status, onDone }: { status: AgentIntegrationS
             Earlier versions changed Claude Code, Codex and Gemini CLI settings without asking. This
             version already removed the wildcard permission that let agents run any Termpolis tool
             without asking, its duplicate Claude Code plugin, and trust for your home folder, and no
-            longer writes AGENTS.md into projects. Staying connected keeps exactly the list below.
+            longer writes AGENTS.md into projects. Staying connected keeps the list below. It also lets
+            Termpolis read Claude Code&rsquo;s saved notes into its memory, which is new in this version:
+            that read starts when you choose to stay connected.
           </p>
         ) : (
           <p className="text-xs text-[#bbb] leading-relaxed" data-testid="agent-review-intro">

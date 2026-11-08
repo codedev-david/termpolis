@@ -167,7 +167,7 @@ import {
   RULES as SECRET_RULES,
 } from './aiSecurity'
 import { scanStagedDiff, scanPushRange, blockMessage } from './commitScan'
-import { deriveOutcome, type WorkEvent } from './outcomeSignals'
+import { deriveOutcome, outcomeAuditDetail, type WorkEvent } from './outcomeSignals'
 // Safe Import — static scan -> hash-pinned approval -> install into the agent configs.
 import { scanImportArtifact, type Finding as ImportFinding, type RiskLevel as ImportRiskLevel } from './importScanner'
 import { initImportTrust, artifactHash, isApproved, approveArtifact, revokeArtifact, listImported } from './importTrust'
@@ -258,7 +258,13 @@ import { registerMcpIpc } from './mcpIpc'
 import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
-import { recheckMarker, recheckStoredLessons } from './mnemeLessonRecheck'
+import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2_MARKER } from './mnemeLessonRecheck'
+import { withoutCandidates } from './lessonSubstance'
+import { runClaudeNotesIngest, removeImportedNotes, finishQueuedRemovals, clearNotesRecord, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
+import { registerClaudeNotesIpc } from './claudeNotesIpc'
+import { registerMemoryAuditIpc } from './memoryAuditIpc'
+import { withBorrowedNotes, withoutUnshareableNotes, type NoteRow } from './claudeNotesShare'
+import { fillVisible, type FillBounds } from './doorFill'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
 import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
@@ -307,7 +313,7 @@ import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer, nudgeIndexer } from './memoryIndexer'
 import { runWeave, WEAVE_NEIGHBOUR_K, type WeaveStats } from './mnemeWeave'
-import { auditMemory } from './memoryAudit' // WP-E: audit learning events (reflection / consolidation)
+import { auditMemory, initMemoryAudit } from './memoryAudit' // WP-E: audit learning events (reflection / consolidation)
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
 import { onTaskComplete, onSessionEpisode } from './mnemeReflex'
@@ -398,6 +404,52 @@ function ingestMemoryDeps() {
   }
 }
 
+/**
+ * The saved notes (claudeNotesIngest.ts) a read may hand an agent. A search or a listing that names a project is scoped by the
+ * store and left as it gave it. One that names none, and a walk of the graph (which starts from a memory, not a project), cannot
+ * say whose notes it may have: it gets none while "let general notes help in other projects" is off, and only the general kinds
+ * once it is on, which is what memory_anticipate does too (claudeNotesShare.ts). A lesson the substance gate holds back is
+ * never handed to an agent, whichever door it reads through.
+ */
+function visibleNotes<T extends NoteRow>(rows: T[], project?: string): T[] {
+  return withoutCandidates(project ? rows : withoutUnshareableNotes(rows, getShareNotesAcrossProjects()))
+}
+
+// The store cuts a read to its limit before visibleNotes drops anything, so each door asks again, deeper, when that left it
+// short (doorFill.ts). These are the numbers the store itself reads a missing limit and a large one by (swarmMemory.ts); the
+// graph walk has no clamp of its own, so a deeper read of it stops at the same 100 the search doors do.
+const SEARCH_READ: FillBounds = { fallback: 10, ceiling: 100 }
+const LIST_READ: FillBounds = { fallback: 50, ceiling: 500 }
+const RELATED_READ: FillBounds = { fallback: 5, ceiling: 100 }
+const GRAPH_READ: FillBounds = { fallback: 20, ceiling: 100 }
+
+/**
+ * The saved-notes pass's deps (claudeNotesIngest.ts): one definition for the indexer tick, the "Remove imported
+ * notes" undo and the switch that starts a pass at once. The pass reads nothing unless the switch is on AND the user has said
+ * yes to connecting their agents (the consent every agent integration is gated on). An install an older version connected, that
+ * nobody has asked yet, does not count: it keeps working in the narrower form v1.49 gave it, and this read is new.
+ *
+ * `roots: noteRoots` is the ONE call site that names the roots: once fix/accounts154 merges, noteRoots() (claudeNotesIngest.ts)
+ * returns `walkRoots(transcriptRoots('claude'))`, so every sign-in profile's notes are read. Its comment lists what that switch
+ * needs besides (the removal of a note that is gone must first be made to work per root).
+ */
+function claudeNotesDeps(): NotesDeps {
+  return {
+    enabled: getIndexClaudeNotes,
+    connected: () => isAgentIntegrationGrantedAsync(agentIntegrationPaths()),
+    roots: noteRoots,
+    fs: realNotesFs,
+    manifest: fileManifest(app.getPath('userData')),
+    store: { write: memoryWrite, remove: memoryDelete, list: memoryList },
+    stopped: () => appQuitting,
+    // The id the store stamps on this computer's entries once memory sync has one (fix/memsync); until then, none.
+    ownOrigin: async () => {
+      const id = ((await getSyncStatus()) as { deviceId?: unknown }).deviceId
+      return typeof id === 'string' && id ? id : undefined
+    },
+  }
+}
+
 // Mneme entity layer: upsert an `entity` node by name (idempotent via content-hash)
 // and return its id, so a distilled lesson can link to the files/functions/errors it
 // references — the connective tissue the knowledge graph was missing. Low importance
@@ -454,7 +506,9 @@ async function locateIssueSites(issue: string, projectKey?: string, limit?: numb
     const histories = new Map<string, LocatorMemory[]>()
     await Promise.all([...queries].map(async (q) => {
       try {
-        const rows = await symbolHistory(q, projectKey)
+        // The locator's `why` is lesson text read straight from the store, past every correction filter, so a
+        // lesson the substance gate holds back (the `candidate` tag) is dropped here.
+        const rows = withoutCandidates(await symbolHistory(q, projectKey))
         histories.set(q, rows.map((e) => ({ id: e.id, content: e.content, importance: e.importance, ts: e.ts, memoryType: e.memoryType })))
       } catch { histories.set(q, []) }
     }))
@@ -522,7 +576,7 @@ async function reflectOnTask(
     await edges.flush()
     try {
       if (res.fired && res.lessons > 0) {
-        recordMetric({ t: 'reflect', ts: Date.now(), lessons: res.lessons })
+        recordMetric({ t: 'reflect', ts: Date.now(), lessons: res.lessons, skipped: res.skipped })
         auditMemory({ event: 'learn', kind: 'reflect', detail: `${res.lessons} lesson(s) distilled from a task` }) // WP-E
       }
     } catch { /* best effort */ }
@@ -536,7 +590,8 @@ async function reflectOnTask(
 // newly-appended turns. In-memory (terminal ids are per-session uuids); a lost cursor
 // just re-reads, and the content-addressed store dedups any overlap.
 import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
-import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations } from './memorySettings'
+import { createPrimerRecent } from './primerLane'
+import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import { scheduleNoNewPrivsNotice } from './noNewPrivs'
 import { installSudoAskpass, sudoAskpassPath } from './sudoAskpass'
@@ -627,6 +682,7 @@ import {
   bootAgentIntegration,
   disconnectAgentIntegration,
   getAgentIntegrationStatus,
+  isAgentIntegrationGrantedAsync,
   setAgentIntegration,
   isFolderTrustAllowed,
   trustFolderForAgents,
@@ -1700,11 +1756,7 @@ function groundOutcomeInMemories(project: string, success: boolean, now: number)
     void Promise.resolve(memoryFeedback({ id, helpful: success })).catch(() => { /* best effort */ })
   }
   try {
-    auditMemory({
-      event: 'learn',
-      kind: 'feedback',
-      detail: `outcome ${success ? 'success' : 'FAILURE'} in ${project} → ${ids.length} recalled memories ${success ? 'reinforced' : 'demoted'}`,
-    })
+    auditMemory({ event: 'learn', kind: 'feedback', detail: outcomeAuditDetail(success, ids.length) }) // a count only: memory_audit hands this to every agent
   } catch { /* best effort */ }
 }
 
@@ -2226,7 +2278,7 @@ ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string
 // structured-clonable — the renderer gets a clone error or an empty object, i.e. "your memory is
 // gone". An un-awaited memoryClear() would also return success before the store had cleared.
 ipcMain.handle('memory:count', async () => { try { return ok(await memoryCount()) } catch (e: any) { return err(e.message) } })
-ipcMain.handle('memory:clear', async () => { try { await memoryClear(); return ok() } catch (e: any) { return err(e.message) } })
+ipcMain.handle('memory:clear', async () => { try { await clearNotesRecord({ manifest: fileManifest(app.getPath('userData')) }, memoryClear); return ok() } catch (e: any) { return err(e.message) } })
 /** What the last Weave pass drew. Null until the indexer has run one — which is itself the
  *  signal worth surfacing, because "the Weave has never run" and "the Weave runs and mints
  *  nothing" used to look identical from outside. */
@@ -2545,16 +2597,23 @@ ipcMain.handle('brain:import', async () => {
 // digest also has to answer "where did we leave off", and only a time-ordered read can.
 // Measured before this existed: a live primer for the termpolis repo returned hits aged
 // 12 days to 1 month and nothing from that same day, while the store held that day's work.
-const primerRecent: PrimerRecent = async (o) =>
-  (await memoryList({ limit: o.limit, project: o.project, since: o.since })).map(e => ({
-    content: e.content,
-    source: e.source,
-    kind: e.kind,
-    score: 0, // not a scored hit — the lane is ordered by time, on purpose
-    id: e.id,
-    project: e.project,
-    ts: e.ts,
-  }))
+// 1.55.0: the listing leaves out what a search would (superseded, suppressed, retracted) — see primerLane.ts.
+const primerRecent: PrimerRecent = createPrimerRecent({ list: (o) => memoryList(o), correct: (rows) => applyEntryCorrections(rows) })
+
+/** `memorySearch` with the in-flow correction overlay already applied.
+ *
+ *  A correction binds to the MEMORY, not to the one tool the user noticed the bad fact in,
+ *  so every path that reaches agents goes through this rather than the raw search — every
+ *  primer (the Memory panel's preview, the launch check, a headless run's, the MCP one) and
+ *  `memory_anticipate` included. Through v1.46 only `memory_search` applied the overlay, so a
+ *  retracted fact still reached agents through the other five tools; through v1.54 three of
+ *  the four primers still searched raw.
+ *
+ *  The overlay drops what was retracted and every lesson the substance gate holds back AFTER the store has cut the read to
+ *  its limit, best rows first, so a read whose best rows were of that kind came back short, or empty, with rows an agent may
+ *  have sitting just behind them. It asks again, deeper, while that is so (doorFill.ts), as the four doors do. */
+const correctedSearch: typeof memorySearch = (opts) =>
+  fillVisible(opts.limit, (limit) => memorySearch({ ...opts, limit }), (rows) => applyCorrections(rows), SEARCH_READ)
 
 // Pre-context primer: pull the most relevant memories for a query (e.g. the
 // user's first ask or the active project) so it can be injected as an agent's
@@ -2565,7 +2624,7 @@ ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: n
     // Current-directory precedence: context for the cwd's project leads the
     // primer; unrelated global hits are labeled "may NOT apply".
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit ?? getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
+    const primer = await buildContextPrimer(correctedSearch, { query: opts?.query ?? '', limit: opts?.limit ?? getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
     // Economics SLI: a built primer that gets returned is context injected on the
     // agent's behalf — record the (estimated) tokens so "tokens injected" is real.
     try { if (primer) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primer.length / 4) }) } catch { /* best effort */ }
@@ -2595,6 +2654,21 @@ ipcMain.handle('memory:set-learn-conversations', async (_, opts: { value: boolea
     return ok(settings)
   } catch (e: any) { return err(e.message) }
 })
+
+// Claude Code's saved notes in memory (claudeNotesIngest.ts): the two switches, what was imported, and the undo.
+registerClaudeNotesIpc(ipcMain, {
+  index: { get: getIndexClaudeNotes, set: setIndexClaudeNotes },
+  share: { get: getShareNotesAcrossProjects, set: setShareNotesAcrossProjects },
+  connected: () => isAgentIntegrationGrantedAsync(agentIntegrationPaths()),
+  locked: () => memoryIsLocked(),
+  status: () => notesStatus(fileManifest(app.getPath('userData'))),
+  remove: () => removeImportedNotes(claudeNotesDeps()),
+  // Turning the notes on starts a pass now, not at the next 30-minute tick; a locked memory just waits.
+  passSoon: () => { void memoryIsLocked().then((locked) => (locked ? undefined : runClaudeNotesIngest(claudeNotesDeps()))).catch(() => {}) },
+})
+
+// The record of what memory did (memoryAudit.ts): how big it is, and clearing it. Settings > Memory & Learning > Activity record.
+registerMemoryAuditIpc(ipcMain, { dir: () => app.getPath('userData') })
 
 // Vector quantization — the RAM/exactness dial for the packed vector store.
 //
@@ -2648,7 +2722,7 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
     // connect (a work account) gets none of it (R17), the same gate Codex's launch has.
     if (!resolveLaunchTarget(agentIntegrationPaths(), opts?.accountId, 'claude').connected) return ok({ file: null, count: 0 })
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
+    const digest = await buildContextPrimer(correctedSearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
     if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding
     try { recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(digest.length / 4) }) } catch { /* best effort */ }
     const dir = join(app.getPath('userData'), 'primers')
@@ -2793,7 +2867,7 @@ ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', asyn
           }).then(async (r) => {
             await edges.flush()
             if (refused) throw new LessonsNotSavedError()
-            try { if (r.fired && r.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: r.lessons }) } catch { /* best effort */ }
+            try { if (r.fired && r.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: r.lessons, skipped: r.skipped }) } catch { /* best effort */ }
             return { fired: r.fired, lessons: r.lessons }
           })
         },
@@ -3434,7 +3508,7 @@ const linkedNoPersist = createNoPersistProbe({ deliver: deliverSecondOpinion })
  *  for `termpolis exec` and for jobs a linked computer starts here, so both start equally warm. */
 async function headlessPrimer(cwd: string): Promise<string | null> {
   const project = cwd ? normalizeProjectSlug(cwd) : ''
-  return await buildContextPrimer(memorySearch, {
+  return await buildContextPrimer(correctedSearch, {
     query: project
       ? `recent work, decisions, conventions, and context for ${project}`
       : 'recent work, key decisions, and conventions',
@@ -3702,13 +3776,6 @@ if (!gotTheLock) {
     // Check GitHub releases for updates, auto-download in background,
     // notify renderer when ready to install.
     initAutoUpdater(() => mainWindow, { onBeforeQuitAndInstall: (armed?: boolean) => { quittingForUpdate = armed !== false } })
-/** `memorySearch` with the in-flow correction overlay already applied.
- *
- *  A correction binds to the MEMORY, not to the one tool the user noticed the bad fact in,
- *  so every path that reaches agents goes through this rather than the raw search — the
- *  primer and `memory_anticipate` included. Through v1.46 only `memory_search` applied the
- *  overlay, so a retracted fact still reached agents through the other five tools. */
-const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(await memorySearch(opts))
 
 /**
  * Embedding-backed grouping for memory_pool.
@@ -3945,16 +4012,16 @@ async function semanticPoolOptions(
       },
       memorySearch: async (opts) => {
         const started = Date.now()
-        const res = await memorySearch({
+        const res = await fillVisible(opts.limit, (limit) => memorySearch({
           query: opts.query,
-          limit: opts.limit,
+          limit,
           agentId: opts.agentId,
           kind: opts.kind as MemoryEntry['kind'] | undefined,
           taskId: opts.taskId,
           project: opts.project,
           diversify: opts.diversify, // agent-facing recall is gated + diversified (executeTool defaults it on)
           fuseGraph: opts.fuseGraph, // …and fuses graph-connected neighbours one hop out
-        })
+        }), (rows) => visibleNotes(rows, opts.project), SEARCH_READ)
         // Capture latency BEFORE the readiness probe (a second memory-process RPC) so the probe's
         // round-trip does not inflate the recall-latency SLI.
         const ms = Date.now() - started
@@ -3973,19 +4040,28 @@ async function semanticPoolOptions(
         // waiting for a re-index would mean the wrong fact gets used again in the same
         // session it was corrected in. Retracted entries are dropped; amended ones carry
         // the replacement text; demoted ones keep their place in the list but not their rank.
-        const served = applyCorrections(res)
+        // 1.55.0: with "let general notes help in other projects" on, a project-scoped search is also handed up to two
+        // reference / feedback / user notes from another project, after its own results (claudeNotesShare.ts).
+        const served = await withBorrowedNotes(applyCorrections(res), {
+          // Not to a caller that asked for something narrower than notes: one agent's memories, one kind, one task's.
+          enabled: getShareNotesAcrossProjects() && !opts.agentId && !opts.kind && !opts.taskId,
+          project: opts.project ? normalizeProjectSlug(opts.project) : '',
+          query: opts.query,
+          limit: opts.limit,
+          search: async (o) => applyCorrections(await memorySearch(o)),
+        })
         // Note what the agent actually received, not what the store returned: a retracted entry
         // was never served, so an outcome must not be charged to it.
         noteServed(opts.project, served)
         return served
       },
-      memoryList: async (opts) => applyEntryCorrections(await memoryList({
-        limit: opts.limit,
+      memoryList: async (opts) => applyEntryCorrections(await fillVisible(opts.limit, (limit) => memoryList({
+        limit,
         agentId: opts.agentId,
         kind: opts.kind as MemoryEntry['kind'] | undefined,
         since: opts.since,
         project: opts.project,
-      })),
+      }), (rows) => visibleNotes(rows, opts.project), LIST_READ)),
       // Behind-the-scenes memory load: agents call this (prompted by the one-line
       // launch pointer) instead of having the digest pasted into the terminal.
       // Current-directory context leads; cross-project hits follow, labeled.
@@ -4023,19 +4099,19 @@ async function semanticPoolOptions(
         try { if (primerOut) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primerOut.length / 4) }) } catch { /* best effort */ }
         return { project: project || null, primer: primerOut }
       },
-      memoryRelated: async (opts) => applyEntryCorrections(await memoryRelated({
+      memoryRelated: async (opts) => applyEntryCorrections(await fillVisible(opts.limit, (limit) => memoryRelated({
         id: opts.id,
         query: opts.query,
-        limit: opts.limit,
-      })),
+        limit,
+      }), (rows) => visibleNotes(rows), RELATED_READ)),
       memoryLink: (opts) => memoryLink({ from: opts.from, to: opts.to, relation: opts.relation, createdBy: 'agent' }),
-      memoryGraph: async (opts) => applyEntryCorrections(await memoryGraphQuery({
+      memoryGraph: async (opts) => applyEntryCorrections(await fillVisible(opts.limit, (limit) => memoryGraphQuery({
         id: opts.id,
         query: opts.query,
         relation: opts.relation,
         depth: opts.depth,
-        limit: opts.limit,
-      })),
+        limit,
+      }), (rows) => visibleNotes(rows), GRAPH_READ)),
       memoryFeedback: async (opts) => {
         const helpful = opts.helpful !== false
         try {
@@ -4062,7 +4138,7 @@ async function semanticPoolOptions(
         // actively-ingesting brain floods with non-lesson message chunks, hiding real corroboration).
         // poolLessons takes an ARRAY — .map() on the un-awaited Promise would throw.
         const rows = applyEntryCorrections(await memoryLessons(opts.limit ?? 200))
-        const lessons = rows.map((m) => ({ source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance }))
+        const lessons = rows.map((m) => ({ id: m.id, source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance }))
         return poolLessons(lessons, await semanticPoolOptions(rows))
       },
       memoryAnticipate: async (opts) => {
@@ -4071,7 +4147,11 @@ async function semanticPoolOptions(
         const limit = opts.limit ?? 5
         // F12: over-fetch, THEN filter to procedural/high-importance and cap — otherwise a lesson
         // ranked just below the naive top-`limit` is a false negative and the fleet re-derives it.
-        const hits = await correctedSearch({ query: q, limit: limit * 8 })
+        // 1.55.0: this door names no project, so a saved note (importance 0.9) would reach every project: none does unless
+        // the user lets general notes help in other projects, and then only the general kinds (claudeNotesShare.ts).
+        // The window is of rows an agent may be handed: a crowd of saved notes at the top does not eat it (doorFill.ts).
+        const sharing = getShareNotesAcrossProjects()
+        const hits = await fillVisible(limit * 8, (window) => correctedSearch({ query: q, limit: window }), (rows) => withoutUnshareableNotes(rows, sharing), SEARCH_READ)
         return hits.filter((h) => h.memoryType === 'procedural' || (h.importance ?? 0) >= 0.6).slice(0, limit)
       },
       memoryConflicts: async (opts) => {
@@ -4080,9 +4160,10 @@ async function semanticPoolOptions(
         // it's been explicitly enabled + bundled (opt-in, per the learning-soundness rule).
         const lessons = applyEntryCorrections(await memoryLessons(opts.limit ?? 200)).map(toAgentLesson)
         const conflicts = await detectConflictsNli(lessons)
+        // Each side carries its memory id: memory_link needs it for the `supersedes` this tool advises.
         return conflicts.map((c) => ({
-          a: { source: c.a.source, content: c.a.content },
-          b: { source: c.b.source, content: c.b.content },
+          a: { id: c.a.id, source: c.a.source, content: c.a.content },
+          b: { id: c.b.id, source: c.b.source, content: c.b.content },
         }))
       },
       // Native code graph — structural "what/where" over the repo (complements the semantic
@@ -4447,6 +4528,10 @@ async function semanticPoolOptions(
     setInterval(() => { compactSelfShard().catch(() => { /* best effort */ }) }, 30 * 60 * 1000)
     initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
     initMetrics(app.getPath('userData')) // Memory & Learning dashboard: device-local metrics ledger
+    // The audit's other half. What agents recalled and were injected is raised HERE, in main, whose copy of the
+    // module was never initialised (the memory host initialises its own), so memory_audit showed only the host's
+    // writes. Its own file, merged with the host's on read; counts, ids and kinds only, never a query.
+    try { initMemoryAudit(app.getPath('userData'), 'main') } catch { /* best effort: the audit never blocks launch */ }
     initIdentity(app.getPath('userData')) // Mneme: load the continuous-identity store
     // A native fatal (V8 abort, OOM kill) never becomes a JS exception, so the Sentry→GitHub alert —
     // which matches catchable JS errors — files NOTHING: v1.27.4's 3-second crash-loop made the app
@@ -4532,6 +4617,17 @@ async function semanticPoolOptions(
         )
         // "Learn from conversations" went OFF while the pass ran: it ends here, planners included.
         if (stats.stop === 'stopped' && !getLearnFromConversations()) return passResult(stats)
+        // 1.55.0: Claude Code's saved notes into shared memory (claudeNotesIngest.ts). The pass checks the switch and the
+        // agent-connection consent itself and reads nothing when either is off. Best effort, like the rest of this tick.
+        let notesWritten = 0
+        let notesMore = false
+        try {
+          const notes = await runClaudeNotesIngest(claudeNotesDeps())
+          notesWritten = notes.chunksWritten
+          notesMore = notes.truncated
+          // An idle pass reads nothing, so it cannot retry a removal that memory being locked left queued: this does.
+          if (notes.idle) await finishQueuedRemovals(claudeNotesDeps())
+        } catch { /* the next tick tries again */ }
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { await persistMemoryIndex() } catch { /* best effort */ }
         // Once per install: demote the sessions other computers' jobs left in memory through 1.52
@@ -4557,6 +4653,16 @@ async function semanticPoolOptions(
             isCorrected: (id) => correctionForMemory(id) !== null,
             demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
             ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join),
+          })
+        } catch { /* the store wasn't readable: the next pass tries again */ }
+        // 1.55.0: and once more, now also judged by the substance gate groundEpisode applies at write time.
+        // Its own marker, so a store that already ran the pass above runs this one too.
+        try {
+          await recheckStoredLessonsV2({
+            list: (opts) => memoryList(opts),
+            isCorrected: (id) => correctionForMemory(id) !== null,
+            demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
+            ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join, RECHECK_V2_MARKER, 2),
           })
         } catch { /* the store wasn't readable: the next pass tries again */ }
 
@@ -4666,7 +4772,8 @@ async function semanticPoolOptions(
           }
           await weaveEdges.flush()
         } catch { /* best effort */ }
-        return passResult(stats)
+        const result = passResult(stats)
+        return { ...result, written: result.written + notesWritten, more: result.more || notesMore }
       },
       // Fast tier (#2 live-session lag): every 90s, ingest ONLY transcripts touched
       // in the last 10 min — i.e. the ACTIVE session — so its new turns become

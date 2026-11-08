@@ -19,11 +19,13 @@ import {
   correctMemory,
   revokeMemoryCorrection,
   applyCorrections,
+  applyEntryCorrections,
   correctionForMemory,
   memoryCorrectionStats,
   resetMemoryCorrections,
 } from '../../src/main/memoryCorrectionStore'
 import { offMainFiles } from '../../src/main/offMainFiles'
+import { CANDIDATE_TAG } from '../../src/main/lessonSubstance'
 
 const cand = (id: string, score: number, content = `content ${id}`) => ({ id, content, score })
 
@@ -94,6 +96,22 @@ describe('memoryCorrection/revokeCorrection', () => {
     expect(applyOverlayToRecall(o, [cand('m1', 1)])).toHaveLength(0)
     revokeCorrection(o, 'm1', 2)
     expect(applyOverlayToRecall(o, [cand('m1', 1)])).toHaveLength(1)
+  })
+
+  // revokeCorrection has no caller in the app: no tool, panel or IPC reaches it. What a person (or an agent for them) can do with a
+  // demotion that was a mistake, such as one the lesson recheck made, is correct the memory again, and the newer correction replaces the
+  // live one. Said in the docs and in mnemeLessonRecheck.ts, so it is pinned here.
+  it('lets an amendment replace a demotion: the memory is back at full rank, under the words it was amended to', () => {
+    const o = emptyOverlay()
+    applyCorrection(o, { id: 'm1', kind: 'demote', reason: 'recheck', by: 'termpolis', ts: 1 })
+    const [low] = applyOverlayToRecall(o, [cand('m1', 0.8)])
+    expect(low.score).toBeLessThan(0.8)
+    applyCorrection(o, { id: 'm1', kind: 'amend', replacement: 'The stale lock file was the cause.', reason: 'it was a real lesson', by: 'david', ts: 2 })
+    const [back] = applyOverlayToRecall(o, [cand('m1', 0.8)])
+    expect(back.score).toBe(0.8)
+    expect(back.content).toBe('The stale lock file was the cause.')
+    expect(back.correction?.kind).toBe('amend')
+    expect(correctionFor(o, 'm1')).toMatchObject({ kind: 'amend', by: 'david' })
   })
 
   it('defaults the revoke timestamp to now', () => {
@@ -302,6 +320,15 @@ describe('memoryCorrectionStore', () => {
     expect(memoryCorrectionStats().live).toBe(1)
   })
 
+  it('starts with no corrections when the log cannot be read, instead of failing to start', () => {
+    resetMemoryCorrections()
+    const unreadable = fs.mkdtempSync(path.join(tmp, 'unreadable-'))
+    fs.mkdirSync(path.join(unreadable, 'memory-corrections.jsonl')) // exists, but reading it throws
+    expect(() => initMemoryCorrections(unreadable)).not.toThrow()
+    expect(memoryCorrectionStats().live).toBe(0)
+    expect(applyCorrections([cand('a', 1)])).toHaveLength(1)
+  })
+
   it('starts clean when no log exists yet', () => {
     expect(memoryCorrectionStats().live).toBe(0)
     expect(correctionForMemory('anything')).toBeNull()
@@ -321,5 +348,53 @@ describe('memoryCorrectionStore', () => {
     expect(() => initMemoryCorrections(blocked)).not.toThrow()
     expect(correctMemory({ id: 'a', kind: 'retract', reason: 'r' }).ok).toBe(true)
     expect(applyCorrections([cand('a', 1)])).toHaveLength(0)
+  })
+})
+
+// 1.55: the substance gate (lessonSubstance.ts) stores a borderline lesson under the `candidate` tag and
+// promises it is never shown to an agent. Every read path that hands memories to an agent already runs
+// through this store's two filters, so that is where the promise is kept: with NO correction on file at all.
+describe('memoryCorrectionStore: lessons the substance gate holds back never reach an agent', () => {
+  beforeEach(() => resetMemoryCorrections())
+  afterEach(() => resetMemoryCorrections())
+
+  const held = (id: string) => ({ ...cand(id, 0.9), tags: [CANDIDATE_TAG] })
+
+  it('drops a held-back lesson from a ranked recall, with an empty overlay', () => {
+    const out = applyCorrections([cand('a', 0.9), held('c'), cand('b', 0.5)])
+    expect(out.map((r) => r.id)).toEqual(['a', 'b'])
+  })
+
+  it('drops it from an unranked listing too', () => {
+    const rows = [{ id: 'a', content: 'x' }, { id: 'c', content: 'y', tags: [CANDIDATE_TAG] }, { id: 'b', content: 'z', tags: ['note:x'] }]
+    expect(applyEntryCorrections(rows).map((r) => r.id)).toEqual(['a', 'b'])
+  })
+
+  it('still applies a real correction to the rows that remain', () => {
+    correctMemory({ id: 'a', kind: 'retract', reason: 'wrong' })
+    correctMemory({ id: 'b', kind: 'demote', reason: 'shaky' })
+    const out = applyCorrections([cand('a', 0.9), held('c'), cand('b', 1)])
+    expect(out.map((r) => r.id)).toEqual(['b'])
+    expect(out[0].score).toBeCloseTo(DEMOTE_FACTOR)
+    const rows = applyEntryCorrections([{ id: 'a', content: 'x' }, { id: 'c', content: 'y', tags: [CANDIDATE_TAG] }, { id: 'b', content: 'z' }])
+    expect(rows.map((r) => r.id)).toEqual(['b'])
+  })
+
+  it('hands back the very same rows when nothing is held back, as before', () => {
+    const rows = [{ id: 'a', content: 'x' }, { id: 'b', content: 'y', tags: ['note:x'] }]
+    expect(applyEntryCorrections(rows)).toBe(rows)
+  })
+
+  it('does not hide a note an agent or the user tagged "candidate" themselves', () => {
+    const own = { id: 'own', content: 'interview candidate shortlist', tags: [CANDIDATE_TAG, 'hiring'], agentId: 'claude' }
+    const panel = { id: 'panel', content: 'a candidate fix to try', tags: [CANDIDATE_TAG], agentId: 'user' }
+    const held = { id: 'held', content: 'a held-back lesson', tags: [CANDIDATE_TAG], agentId: 'mneme' }
+    expect(applyEntryCorrections([own, panel, held]).map((r) => r.id)).toEqual(['own', 'panel'])
+    expect(applyCorrections([{ ...own, score: 0.9 }, { ...held, score: 0.8 }]).map((r) => r.id)).toEqual(['own'])
+  })
+
+  it('does not hide a memory that merely mentions the word in its text', () => {
+    const rows = [{ id: 'a', content: 'the candidate tag marks a held-back lesson', tags: ['docs'] }]
+    expect(applyEntryCorrections(rows)).toHaveLength(1)
   })
 })

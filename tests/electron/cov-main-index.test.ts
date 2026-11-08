@@ -88,6 +88,11 @@ const M = vi.hoisted(() => ({
   setVectorQuantize: vi.fn((v: boolean) => v),
   getLearnFromConversations: vi.fn(() => true),
   setLearnFromConversations: vi.fn((v: boolean) => ({ learnFromConversations: v })),
+  getIndexClaudeNotes: vi.fn(() => true),
+  setIndexClaudeNotes: vi.fn((v: boolean) => v),
+  getShareNotesAcrossProjects: vi.fn(() => false),
+  setShareNotesAcrossProjects: vi.fn((v: boolean) => v),
+  isAgentIntegrationGranted: vi.fn<(...a: unknown[]) => boolean>(() => true),
   // context pins
   listPins: vi.fn(() => [] as unknown[]),
   addPin: vi.fn(() => ({ id: 'pin-1' })),
@@ -373,6 +378,8 @@ vi.mock('../../src/main/memorySettings', () => ({
   getVectorQuantize: M.getVectorQuantize, setVectorQuantize: M.setVectorQuantize,
   initMemorySettings: vi.fn(),
   getLearnFromConversations: M.getLearnFromConversations, setLearnFromConversations: M.setLearnFromConversations,
+  getIndexClaudeNotes: M.getIndexClaudeNotes, setIndexClaudeNotes: M.setIndexClaudeNotes,
+  getShareNotesAcrossProjects: M.getShareNotesAcrossProjects, setShareNotesAcrossProjects: M.setShareNotesAcrossProjects,
 }))
 vi.mock('../../src/main/contextPinStore', () => ({
   initContextPinStore: vi.fn(),
@@ -386,6 +393,7 @@ vi.mock('../../src/main/agentIntegrationManager', () => ({
   bootAgentIntegration: M.bootAgentIntegration,
   disconnectAgentIntegration: M.disconnectAgentIntegration,
   getAgentIntegrationStatus: M.getAgentIntegrationStatus,
+  isAgentIntegrationGranted: M.isAgentIntegrationGranted,
   setAgentIntegration: M.setAgentIntegration,
   isFolderTrustAllowed: M.isFolderTrustAllowed,
   trustFolderForAgents: M.trustFolderForAgents,
@@ -1458,7 +1466,19 @@ describe('MCP tool table — operator verbs', () => {
       expect(opts.projectPath).toBe('/work/termpolis')
       expect(opts.limit).toBe(12)
       expect(opts.maxSnippetChars).toBe(400)
+      expect(typeof opts.recent).toBe('function') // the freshness lane, as in every other digest
       expect(r).toEqual({ primer: 'PRIMER TEXT' })
+    })
+
+    it('searches through the correction overlay, like every other path that reaches an agent', async () => {
+      // A memory someone retracted must not reach a headless run's digest: a correction binds to the memory, not to the tool.
+      M.runHeadless.mockImplementationOnce(async (_req: any, deps: any) => ({ primer: await deps.primer('/work/termpolis') }))
+      await mcp().agentExec({ prompt: 'p' })
+      const [search] = M.buildContextPrimer.mock.calls.at(-1)!
+      const { applyCorrections } = await import('../../src/main/memoryCorrectionStore')
+      vi.mocked(applyCorrections).mockImplementationOnce(((rows: Array<{ id: string }>) => rows.filter((r) => r.id !== 'gone')) as never)
+      MEMC.memorySearch.mockResolvedValueOnce([{ id: 'gone' }, { id: 'kept' }] as never)
+      expect(await search({ query: 'q' })).toEqual([{ id: 'kept' }])
     })
 
     it('falls back to a generic primer query when there is no cwd', async () => {

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync } from 'fs'
 import { homedir } from 'os'
 import { join, parse } from 'path'
 import {
-  bootAgentIntegration, conductorMcpConfig, getAgentIntegrationStatus, isFolderTrustAllowed,
+  bootAgentIntegration, conductorMcpConfig, getAgentIntegrationStatus, isAgentIntegrationGranted, isFolderTrustAllowed,
   prepareCodexLaunch, removeCodexHomeTrust, resolveAgentIntegrationPaths, setAgentIntegration,
   trustFolderForAgents,
 } from '../../src/main/agentIntegrationManager'
@@ -258,6 +258,56 @@ describe('getAgentIntegrationStatus', () => {
     expect(getAgentIntegrationStatus(sb.paths)).toMatchObject({ consent: null, connected: false })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not save agent-integration.json'))
     expect(existsSync(sb.ledgerFile)).toBe(false)
+  })
+})
+
+// A read that did not exist before 1.55 (the saved-notes import) waits for an answer. An install an older Termpolis connected, and
+// nobody has asked since, keeps working in the narrower form v1.49 gave it (the status says connected), and does not gain a new
+// read until its owner has said yes. The gate must not open an agent's config to say so.
+describe('isAgentIntegrationGranted', () => {
+  it.each<[string, Record<string, unknown>, boolean]>([
+    ['granted', { consent: 'granted' }, true],
+    ['granted on a legacy install', { consent: 'granted', legacy: true }, true],
+    ['declined', { consent: 'declined' }, false],
+    ['declined on a legacy install', { consent: 'declined', legacy: true }, false],
+    ['a legacy install not yet asked', { consent: null, legacy: true }, false],
+    ['not asked, not legacy', { consent: null }, false],
+    ['hand-edited values', { consent: 'maybe', legacy: 'yes' }, false],
+  ])('says %s: %s', (_label, fields, expected) => {
+    writeLedger(sb, fields)
+    expect(isAgentIntegrationGranted(sb.paths)).toBe(expected)
+  })
+
+  it('is the one place it parts from the status\'s connected: an install not yet asked', () => {
+    writeLedger(sb, { consent: null, legacy: true })
+    expect([getAgentIntegrationStatus(sb.paths).connected, isAgentIntegrationGranted(sb.paths)]).toEqual([true, false])
+    writeLedger(sb, { consent: 'granted' })
+    expect([getAgentIntegrationStatus(sb.paths).connected, isAgentIntegrationGranted(sb.paths)]).toEqual([true, true])
+  })
+
+  it('first call creates the ledger, as the status does, and says no', () => {
+    expect(isAgentIntegrationGranted(sb.paths)).toBe(false)
+    expect(readText(sb.ledgerFile)).toBe(JSON.stringify(freshLedger, null, 2) + '\n')
+  })
+
+  it('becomes true when the owner answers the review with yes, and false again at a disconnect', () => {
+    writeLedger(sb, { consent: null, legacy: true })
+    expect(isAgentIntegrationGranted(sb.paths)).toBe(false)
+    setAgentIntegration(sb.rt, { connect: true, primerHook: false })
+    expect(isAgentIntegrationGranted(sb.paths)).toBe(true)
+    setAgentIntegration(sb.rt, { connect: false })
+    expect(isAgentIntegrationGranted(sb.paths)).toBe(false)
+  })
+
+  it('opens no agent config: with every one of them unreadable the answer is the same', () => {
+    writeLedger(sb, { consent: 'granted' })
+    for (const f of [sb.files.claudeJson, sb.files.codex, sb.files.gemini]) mkdirSync(f, { recursive: true })
+    expect(isAgentIntegrationGranted(sb.paths)).toBe(true)
+  })
+
+  it('is false, never a throw, when the paths are unusable', () => {
+    expect(isAgentIntegrationGranted({ ...sb.paths, userData: undefined as never })).toBe(false)
+    expect(isAgentIntegrationGranted(undefined as never)).toBe(false)
   })
 })
 

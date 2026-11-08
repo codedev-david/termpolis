@@ -114,7 +114,9 @@ export class BertTokenizer {
   private cfg: BertTokenizerConfig
 
   constructor(cfg: BertTokenizerConfig) {
-    this.cfg = cfg
+    // A vocab parsed from JSON is a plain object, so `vocab['constructor']` (or `toString`) would find Object.prototype's
+    // members and hand a function back as a token id. Own keys only, on an object with no prototype.
+    this.cfg = { ...cfg, vocab: Object.assign(Object.create(null) as Record<string, number>, cfg.vocab) }
   }
 
   static fromJSON(tokenizerJson: RawTokenizerJson, tokenizerConfig: RawTokenizerConfig): BertTokenizer {

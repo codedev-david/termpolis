@@ -22,6 +22,8 @@ import {
 import { ConnectionsGraph } from './ConnectionsGraph'
 import { VectorRamPanel } from './VectorRamPanel'
 import { BrainProcessPanel } from './BrainProcessPanel'
+import { ClaudeNotesPanel } from './ClaudeNotesPanel'
+import { ActivityRecordPanel } from './ActivityRecordPanel'
 import { InfoTip } from './InfoTip'
 
 const STATUS_COLOR: Record<SliStatus, string> = { good: '#7ee2a3', warn: '#e2c08d', bad: '#f48771', idle: '#9ca3af' }
@@ -111,6 +113,10 @@ export function MemoryLearningSettings() {
           no timer. (The tiles that did both are what v1.25.16 deleted.) */}
       <BrainProcessPanel refreshToken={refreshToken} />
       <VectorRamPanel refreshToken={refreshToken} />
+      {/* Claude Code's saved notes: two switches and an undo, read on open and on Refresh like the panel above. */}
+      <ClaudeNotesPanel refreshToken={refreshToken} />
+      {/* The activity record: how much of what memory did is kept, and clearing it. Read on open and on Refresh as well. */}
+      <ActivityRecordPanel refreshToken={refreshToken} />
 
       <div className="flex items-start gap-3">
         <i className="fa-solid fa-brain text-[#22D3EE] text-lg mt-0.5" />

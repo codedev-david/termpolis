@@ -11,6 +11,8 @@ describe('AgentConnectStep', () => {
     render(<AgentConnectStep connect primerHook onChange={vi.fn()} />)
     expect(screen.getByRole('heading', { name: 'Connect your coding agents' })).toBeInTheDocument()
     expect(screen.getByTestId('agent-writes-list')).toBeInTheDocument()
+    // Connecting also starts the read of Claude Code's saved notes: the first-run list has to show the person that, not merely hold it.
+    expect(screen.getByTestId('agent-reads-note')).toBeVisible()
     // No status here, so nothing claims an agent is or is not installed.
     expect(screen.queryByTestId('agent-writes-claude-installed')).toBeNull()
     expect(screen.getByTestId('onboarding-agent-step')).toHaveTextContent(

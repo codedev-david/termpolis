@@ -3,12 +3,17 @@ import { join } from 'path'
 import {
   RECHECK_REASON,
   _resetRecheckMarkersForTests,
+  RECHECK_V2_MARKER,
+  RECHECK_V2_REASON,
   recheckMarker,
   recheckStoredLessons,
+  recheckStoredLessonsV2,
   wouldStillWrite,
+  wouldStillWriteV2,
   type RecheckDeps,
   type StoredLesson,
 } from '../../src/main/mnemeLessonRecheck'
+import { lessonSubstance, substanceBand } from '../../src/main/lessonSubstance'
 
 let n = 0
 const lesson = (content: string, memoryType: string, kind = 'fact', ts = 1000 - n): StoredLesson =>
@@ -129,6 +134,16 @@ describe('recheckStoredLessons', () => {
     expect(yieldFn).toHaveBeenCalledTimes(2) // after the 25th and the 50th
   })
 
+  // Any interval from 21 to 30 gives two yields over 60 demotions, so the count alone does not say the interval is 25.
+  it('yields after exactly the 25th and the 50th demotion', async () => {
+    const many = Array.from({ length: 51 }, (_, i) => ({ id: `w${i}`, ts: 100 - i, agentId: 'mneme', kind: 'decision', content: '- decide later.', memoryType: 'semantic' }))
+    const d = deps(many)
+    const at: number[] = []
+    d.yield = async () => { at.push(d.demoted.length) }
+    await recheckStoredLessons(d)
+    expect(at).toEqual([25, 50])
+  })
+
   it('yields with a real macrotask by default', async () => {
     const many = Array.from({ length: 26 }, (_, i) => ({ id: `z${i}`, ts: 100 - i, agentId: 'mneme', kind: 'decision', content: '- decide later.', memoryType: 'semantic' }))
     let ticks = 0
@@ -156,6 +171,168 @@ describe('recheckStoredLessons', () => {
     const d = deps([], { list: vi.fn(async () => { throw new Error('memory host stopped') }) })
     await expect(recheckStoredLessons(d)).rejects.toThrow('memory host stopped')
     expect(d.marked()).toBe(false)
+  })
+})
+
+// ── 1.55.0: the second pass, judged by the substance gate (lessonSubstance.ts) ──────────────────────────
+// Invented lessons. The first pass asked "would the 1.50.1 extractor still write this?"; this one also asks
+// "would the substance gate still store it?". It demotes, as the first did, and never deletes.
+const GATE_DROP: Array<[string, string, string]> = [
+  ['an announcement', 'Root cause found.', 'semantic'],
+  ['narration', "I'll start with the failing spec and then look through the logs.", 'semantic'],
+  ['a progress report', 'Still in progress today; waiting on the reviewer, will pick it up this afternoon.', 'semantic'],
+  ['a question to the user', 'Want me to open the pull request now, or should I wait for the other branch to land?', 'semantic'],
+  ['a stapled pair with nothing in it', 'Problem: the build failed again. → Fix: I fixed the build and pushed it.', 'procedural'],
+]
+const GATE_KEEP: Array<[string, string, string]> = [
+  ['a rule with identifiers', 'Never call `app.quit()` from the `will-quit` handler because it re-enters the quit sequence.', 'semantic'],
+  ['a recipe', 'Problem: npm install dies with EACCES on the global prefix. → Fix: Fixed by switching to a user-level prefix with `npm config set prefix`.', 'procedural'],
+  ['a borderline lesson (stored as a candidate today, so not failing)', 'Check the defaults in `memorySettings.ts` before changing the primer size.', 'semantic'],
+]
+
+describe('wouldStillWriteV2', () => {
+  it.each(GATE_DROP)('demotes %s', (_what, content, memoryType) => {
+    expect(substanceBand(lessonSubstance(content).score)).toBe('drop') // the fixture is what it says it is
+    expect(wouldStillWriteV2(lesson(content, memoryType, 'fact'))).toBe(false)
+  })
+
+  it.each(GATE_KEEP)('keeps %s', (_what, content, memoryType) => {
+    expect(wouldStillWriteV2(lesson(content, memoryType, 'fact'))).toBe(true)
+  })
+
+  it('still applies the 1.50.1 extractor rules first', () => {
+    // Plenty of substance, but the old rules read the first sentence as a to-do, not a decision.
+    const todo = lesson('Decide with `OrchDebug` and `Mike` whether the retry helper in retryHelper.ts goes beyond dev, because it is risky.', 'semantic', 'decision')
+    expect(substanceBand(lessonSubstance(todo.content).score)).toBe('keep')
+    expect(wouldStillWrite(todo)).toBe(false)
+    expect(wouldStillWriteV2(todo)).toBe(false)
+  })
+
+  it('never judges what is not a lesson the distiller writes: entity stubs, summaries, untyped rows', () => {
+    expect(wouldStillWriteV2(lesson('EACCES', 'entity'))).toBe(true)
+    expect(wouldStillWriteV2(lesson('Summary of 3 related memories:\n- a\n- b\n- c', 'summary', 'note'))).toBe(true)
+    expect(wouldStillWriteV2({ id: 'x', ts: 1, content: 'Done.' })).toBe(true)
+    expect(wouldStillWriteV2(lesson('Done.', 'episodic'))).toBe(true)
+  })
+
+  it('leaves a row that is not text alone, rather than throw and abort the whole pass for good', () => {
+    // A pass that throws on one bad row never reaches its marker, so it would stop at that row on every launch.
+    for (const content of [undefined, null, 42, { text: 'x' }]) {
+      expect(wouldStillWriteV2({ id: 'x', ts: 1, content: content as unknown as string, memoryType: 'semantic' })).toBe(true)
+      expect(wouldStillWriteV2({ id: 'x', ts: 1, content: content as unknown as string, memoryType: 'procedural' })).toBe(true)
+    }
+  })
+
+  it('judges an empty lesson as the gate does: nothing in it', () => {
+    expect(wouldStillWriteV2(lesson('', 'semantic'))).toBe(false)
+    expect(wouldStillWriteV2(lesson('   ', 'procedural'))).toBe(false)
+  })
+})
+
+describe('recheckStoredLessonsV2', () => {
+  const store = (): StoredLesson[] => [
+    ...GATE_DROP.map(([, content, memoryType]) => lesson(content, memoryType)),
+    ...GATE_KEEP.map(([, content, memoryType]) => lesson(content, memoryType)),
+    lesson('EACCES', 'entity'),
+    lesson('Summary of 3 related memories:\n- a\n- b\n- c', 'summary', 'note'),
+  ]
+
+  it('demotes exactly the lessons the gate would refuse, with its own reason, and marks the pass done', async () => {
+    const all = store()
+    const failing = all.slice(0, GATE_DROP.length)
+    const d = deps(all)
+    expect(await recheckStoredLessonsV2(d)).toEqual({ checked: all.length, demoted: failing.length })
+    expect(new Set(d.demoted)).toEqual(new Set(failing.map((l) => l.id)))
+    expect(d.demote).toHaveBeenCalledWith(failing[0].id, RECHECK_V2_REASON)
+    expect(RECHECK_V2_REASON).not.toBe(RECHECK_REASON)
+    expect(RECHECK_V2_REASON).toMatch(/1\.55/)
+    expect(RECHECK_V2_REASON).toMatch(/demoted, not deleted/)
+    expect(d.marked()).toBe(true)
+  })
+
+  it('is idempotent: a second pass over the same store demotes nothing more', async () => {
+    const all = store()
+    const demoted = new Set<string>()
+    const d = deps(all, { isCorrected: (id) => demoted.has(id), demote: vi.fn((id: string) => { demoted.add(id); return { ok: true } }) })
+    const first = await recheckStoredLessonsV2(d)
+    expect(first.demoted).toBe(GATE_DROP.length)
+    // The marker is gone (a reinstall, a deleted file): the pass runs again and finds them already corrected.
+    const again = deps(all, { isCorrected: (id) => demoted.has(id), demote: d.demote })
+    const second = await recheckStoredLessonsV2(again)
+    expect(second).toEqual({ checked: all.length, demoted: 0 })
+    expect(d.demote).toHaveBeenCalledTimes(GATE_DROP.length)
+  })
+
+  it('runs once per device: a marked pass reads nothing', async () => {
+    const d = deps(store(), { done: () => true })
+    expect(await recheckStoredLessonsV2(d)).toEqual({ checked: 0, demoted: 0, skipped: 'already-run' })
+    expect(d.list).not.toHaveBeenCalled()
+    expect(d.demote).not.toHaveBeenCalled()
+  })
+
+  it('honours an existing correction: a lesson someone already decided about is left as they left it', async () => {
+    const all = store()
+    const [first, second] = all
+    const d = deps(all, { isCorrected: (id) => id === first.id })
+    await recheckStoredLessonsV2(d)
+    expect(d.demoted).not.toContain(first.id)
+    expect(d.demoted).toContain(second.id)
+  })
+
+  it('never deletes: the only thing it can do to a lesson is demote it', async () => {
+    const d = deps(store())
+    await recheckStoredLessonsV2(d)
+    // RecheckDeps has no delete, archive or write: the whole surface it was handed is these five.
+    expect(Object.keys(d).sort()).toEqual(['demote', 'demoted', 'done', 'isCorrected', 'list', 'markDone', 'marked'].sort())
+    expect(d.demote).toHaveBeenCalledTimes(GATE_DROP.length)
+  })
+
+  it('yields to the event loop every 25 demotions, like the first pass', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({ id: `g${i}`, ts: 100 - i, agentId: 'mneme', kind: 'fact', content: 'Root cause found.', memoryType: 'semantic' }))
+    const yieldFn = vi.fn(async () => {})
+    expect(await recheckStoredLessonsV2(deps(many, { yield: yieldFn }))).toEqual({ checked: 60, demoted: 60 })
+    expect(yieldFn).toHaveBeenCalledTimes(2) // after the 25th and the 50th
+  })
+
+  it('yields after exactly the 25th and the 50th demotion', async () => {
+    const many = Array.from({ length: 51 }, (_, i) => ({ id: `h${i}`, ts: 100 - i, agentId: 'mneme', kind: 'fact', content: 'Root cause found.', memoryType: 'semantic' }))
+    const d = deps(many)
+    const at: number[] = []
+    d.yield = async () => { at.push(d.demoted.length) }
+    await recheckStoredLessonsV2(d)
+    expect(at).toEqual([25, 50])
+  })
+
+  it('pages through more lessons than one listing returns', async () => {
+    const many: StoredLesson[] = Array.from({ length: 1203 }, (_, i) => ({ id: `p${i}`, ts: 10_000 - Math.floor(i / 3), agentId: 'mneme', kind: 'fact', content: 'Next:', memoryType: 'semantic' }))
+    const d = deps(many)
+    expect(await recheckStoredLessonsV2(d)).toEqual({ checked: 1203, demoted: 1203 })
+    expect(new Set(d.demoted).size).toBe(1203)
+  })
+
+  it('leaves the pass unmarked when the store cannot be listed, so it runs again', async () => {
+    const d = deps([], { list: vi.fn(async () => { throw new Error('memory host stopped') }) })
+    await expect(recheckStoredLessonsV2(d)).rejects.toThrow('memory host stopped')
+    expect(d.marked()).toBe(false)
+  })
+
+  it('keeps going when a demotion fails, and does not count it', async () => {
+    const all = store()
+    const d = deps(all, { demote: vi.fn((id: string) => { if (id === all[0].id) throw new Error('log unwritable'); return { ok: id !== all[1].id } }) })
+    expect(await recheckStoredLessonsV2(d)).toEqual({ checked: all.length, demoted: GATE_DROP.length - 2 })
+  })
+
+  it('does not change the first pass: same judge, same reason', async () => {
+    const d = deps([...JUNK, ...KEEP])
+    await recheckStoredLessons(d)
+    expect(d.demote).toHaveBeenCalledWith(JUNK[0].id, RECHECK_REASON)
+    expect(d.demote).not.toHaveBeenCalledWith(expect.anything(), RECHECK_V2_REASON)
+  })
+
+  it('lets a caller bring its own judge and reason to the shared pass', async () => {
+    const d = deps([lesson('anything at all', 'semantic'), lesson('keep me', 'semantic')], { judge: (l) => l.content === 'keep me', reason: 'because I said so' })
+    expect(await recheckStoredLessons(d)).toEqual({ checked: 2, demoted: 1 })
+    expect(d.demote).toHaveBeenCalledWith(expect.any(String), 'because I said so')
   })
 })
 
@@ -215,6 +392,19 @@ describe('recheckMarker', () => {
     expect(m.done()).toBe(true)
     expect(m.done()).toBe(true)
     expect(asks).toBe(3)
+  })
+
+  it('keeps the second pass in its own file, so a store that ran the first still runs it', () => {
+    const files = new Map<string, string>()
+    const fs = { exists: (p: string) => files.has(p), write: (p: string, t: string) => { files.set(p, t) } }
+    recheckMarker('/data', fs, join).markDone() // the 1.50.1 pass has run
+    const v2 = recheckMarker('/data', fs, join, RECHECK_V2_MARKER, 2)
+    expect(RECHECK_V2_MARKER).toBe('mneme-lesson-recheck-v2.json')
+    expect(v2.done()).toBe(false)
+    v2.markDone()
+    expect(files.get(join('/data', 'mneme-lesson-recheck-v2.json'))).toBe('{"version":2}')
+    expect(files.get(join('/data', 'mneme-lesson-recheck.json'))).toBe('{"version":1}') // untouched
+    expect(v2.done()).toBe(true)
   })
 
   it('never throws', () => {

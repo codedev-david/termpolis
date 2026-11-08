@@ -25,6 +25,15 @@ export interface Outcome {
   reason: string
 }
 
+/**
+ * The memory audit's line for an outcome charged back to the memories that were recalled for it. It takes a count and nothing
+ * else, on purpose: memory_audit hands the audit to every agent, and a line that could be given a project name or a path would
+ * tell one project's agent which other projects are being worked on.
+ */
+export function outcomeAuditDetail(success: boolean, recalled: number): string {
+  return `outcome ${success ? 'success' : 'FAILURE'} → ${recalled} recalled memories ${success ? 'reinforced' : 'demoted'}`
+}
+
 export function deriveOutcome(e: WorkEvent): Outcome | null {
   const domain = (e.project || '').trim()
   if (!domain) return null

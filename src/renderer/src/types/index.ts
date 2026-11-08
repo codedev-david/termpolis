@@ -721,6 +721,16 @@ export interface TermpolisAPI {
   /** "Learn from conversations": whether conversation ingest and the indexer passes run (default true). */
   memoryGetLearnConversations: () => Promise<IpcResponse<boolean>>
   memorySetLearnConversations: (value: boolean) => Promise<IpcResponse<{ learnFromConversations: boolean }>>
+  /** Claude Code's saved notes in memory: the two switches, what was imported, whether the agents are connected. */
+  memoryGetNotesSettings: () => Promise<IpcResponse<ClaudeNotesSettings>>
+  /** Change either switch (only a real boolean counts). Answers with the new state. */
+  memorySetNotesSettings: (p: { indexClaudeNotes?: boolean; shareNotesAcrossProjects?: boolean }) => Promise<IpcResponse<ClaudeNotesSettings>>
+  /** Take every imported note out of memory and turn the import off. */
+  memoryRemoveImportedNotes: () => Promise<IpcResponse<{ removed: number; failed: number; unchecked?: boolean; settings: ClaudeNotesSettings }>>
+  /** The record of what memory did, in the app-data folder: how many of its files exist and their size together. */
+  memoryAuditSize: () => Promise<IpcResponse<{ files: number; bytes: number }>>
+  /** Forget the record. `failed` counts files that exist and could not be removed. */
+  memoryClearAudit: () => Promise<IpcResponse<{ removed: number; failed: number }>>
   /** Reflect a solo agent session's transcript delta into the learning brain (idle-settle / on close). */
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => Promise<IpcResponse<{ fired: boolean; lessons: number }>>
   memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>
@@ -1004,6 +1014,9 @@ export interface MemoryMetrics {
     feedbackCount: number
     feedbackHelpfulRate: number
     lessonsLearned: number
+    /** Lessons the distiller produced that the substance gate refused to store (1.55.0). Optional so a
+     *  main process that predates the field still deserialises; absent is read as 0. */
+    lessonsSkipped?: number
     crossAgentRecalls: number
     teachingMatrix: Record<string, Record<string, number>>
   }
@@ -1148,6 +1161,31 @@ export interface VectorRamInfo {
   ramBytesInt8: number
   /** The persisted choice — what will be applied at the next launch. */
   persisted: boolean
+}
+
+/** Settings > Memory > Claude Code's saved notes (main: claudeNotesIpc.ts). */
+export interface ClaudeNotesSettings {
+  /** Bring the notes into memory. On by default, and only acted on while the agents are connected. */
+  indexClaudeNotes: boolean
+  /** Lend reference / feedback / user notes to other projects' searches. Off by default. */
+  shareNotesAcrossProjects: boolean
+  /** The user's agents are connected: until they are, no note is read. */
+  connected: boolean
+  /** Memory is locked: the import and every removal wait until it opens. */
+  locked: boolean
+  status: {
+    notes: number
+    chunks: number
+    projects: number
+    /** When the last pass finished, or null before the first. */
+    lastAt: number | null
+    /** Notes left alone because no session says which project their folder belongs to. */
+    noProject: number
+    /** Secrets redacted out of notes as they were stored. */
+    secretsRedacted: number
+    /** Removals waiting to be retried. */
+    pending: number
+  }
 }
 
 // ─── Workflow Orchestrator ───────────────────────────────────────────────

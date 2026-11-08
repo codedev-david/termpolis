@@ -14,6 +14,18 @@
 // drops is ARCHIVED rather than deleted — recoverable, never a tombstone.
 
 import { planForget, planMerges, planSummaries, type ConsolEntry } from './mnemeConsolidate'
+import { withoutCandidates } from './lessonSubstance'
+import { withoutNotes } from './claudeNotesParse'
+
+// A lesson the substance gate stores but holds back (the `candidate` tag) is INERT to both passes below. Agents are
+// never shown it, so it must not leave a trace they can see: the summary pass copies the head of every member into a
+// new untagged memory, and a merge keeps the highest-importance member of a group and archives the rest, which would
+// let a hidden lesson take the place of a visible one.
+//
+// So is a note imported from Claude Code's memory folder (its `note:<file>` tag). It belongs to one project: a merge
+// with a near-duplicate note of another project (the same "how I like to work" note often exists in several) would
+// archive one project's copy, and a summary would copy its words into a memory that has no project at all.
+const live = (entries: ConsolEntry[]): ConsolEntry[] => withoutNotes(withoutCandidates(entries))
 
 export interface ConsolidateDeps {
   candidates: () => ConsolEntry[]
@@ -28,7 +40,7 @@ export interface ConsolidateResult {
 }
 
 export function runConsolidation(deps: ConsolidateDeps, opts?: { forgetCap?: number }): ConsolidateResult {
-  const entries = deps.candidates()
+  const entries = live(deps.candidates())
   const done = new Set<string>()
 
   // 1. Merge near-duplicates: keep the best of each group, forget the rest.
@@ -85,7 +97,7 @@ export function defaultSummarize(members: ConsolEntry[]): string {
  * Best-effort: a write/link failure never aborts the pass.
  */
 export async function runSummarization(deps: SummarizeDeps, opts?: { minSize?: number }): Promise<{ summarized: number }> {
-  const entries = deps.candidates()
+  const entries = live(deps.candidates())
   const byId = new Map(entries.map((e) => [e.id, e]))
   const groups = planMerges(entries, deps.simOf).map((g) => ({
     key: g.keep,

@@ -190,6 +190,7 @@ export function svgLine(values: number[], w: number, h: number, pad = 0): { line
 
 const KNOWN_SOURCE: Record<string, string> = {
   claude: 'Claude', codex: 'Codex', gemini: 'Gemini', code: 'Code index', mneme: 'Reflection', swarm: 'Swarm', unknown: 'Unknown',
+  'claude-notes': 'Claude notes', // Claude Code's saved notes, imported (claudeNotesIngest.ts)
 }
 
 /** Friendly display name for a memory's source/author. Known agents get proper names;

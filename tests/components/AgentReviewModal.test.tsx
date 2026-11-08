@@ -131,6 +131,21 @@ describe('AgentReviewModal', () => {
     expect(disconnectButton()).toHaveTextContent('Disconnect')
   })
 
+  // For this install the review is the moment of consent for a read that earlier versions never made: it must not say that
+  // staying connected changes nothing, and it must say that the read starts with the answer.
+  it('tells a legacy install that staying connected also starts the read of Claude Code\'s saved notes', () => {
+    bridge()
+    render(<AgentReviewModal status={status({ legacyDetected: true, connected: true })} onDone={vi.fn()} />)
+    const legacy = screen.getByTestId('agent-review-legacy')
+    expect(legacy).not.toHaveTextContent('exactly the list below')
+    expect(legacy).toHaveTextContent('Staying connected keeps the list below')
+    expect(legacy).toHaveTextContent('Claude Code’s saved notes')
+    expect(legacy).toHaveTextContent('new in this version')
+    expect(legacy).toHaveTextContent('starts when you choose to stay connected')
+    expect(screen.getByTestId('agent-reads-note')).toHaveTextContent('Connecting also lets Termpolis read Claude Code')
+    expect(screen.getByTestId('agent-reads-note')).toBeVisible()
+  })
+
   it('offers to keep or undo a connection that is already in place', () => {
     bridge()
     render(<AgentReviewModal status={status({ connected: true })} onDone={vi.fn()} />)

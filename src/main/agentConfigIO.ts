@@ -50,6 +50,12 @@ export function readJsonObject(path: string, cap = MAX_CONFIG_BYTES): JsonObject
   } catch (e) {
     return { kind: 'error', error: errorText(e) }
   }
+  return parseJsonObjectText(text)
+}
+
+/** Parse the text of a JSON file whose top level must be an object, as readJsonObject does: for a caller that read it itself
+ *  (off the main thread). An empty text reads as `{}`. */
+export function parseJsonObjectText(text: string): JsonObjectRead {
   const body = text.replace(/^\uFEFF/, '')
   if (!body.trim()) return { kind: 'ok', value: {}, text }
   let value: unknown

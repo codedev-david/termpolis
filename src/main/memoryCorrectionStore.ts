@@ -26,6 +26,7 @@ import {
   type RecallCandidate,
   type CorrectableEntry,
 } from './memoryCorrection'
+import { withoutCandidates } from './lessonSubstance'
 
 let dir: string | null = null
 let overlay: CorrectionOverlay = emptyOverlay()
@@ -85,17 +86,22 @@ export function revokeMemoryCorrection(id: string): { ok: boolean; error?: strin
 }
 
 /** Filter/annotate a ranked recall list. Called on the read path so a corrected memory
- *  stops reaching agents immediately, without waiting for a re-index. */
+ *  stops reaching agents immediately, without waiting for a re-index.
+ *
+ *  Also where a lesson the substance gate stored but held back (the `candidate` tag, lessonSubstance.ts)
+ *  is kept from an agent: this and applyEntryCorrections are the two doors every agent-facing read
+ *  path already goes through, and that lesson needs no correction on file to be hidden. */
 export function applyCorrections<T extends RecallCandidate>(candidates: T[]): ReturnType<typeof applyOverlayToRecall<T>> {
-  return applyOverlayToRecall(overlay, candidates)
+  return applyOverlayToRecall(overlay, withoutCandidates(candidates))
 }
 
 /** Same overlay, for the read paths that hand back stored memories rather than a ranking
  *  (`memory_list`, `memory_related`, `memory_graph`, `memory_pool`, `memory_anticipate`,
  *  `memory_primer`). A correction binds to the MEMORY, so every one of them has to honour
- *  it — a retracted fact reaching an agent through a different tool is the bug. */
+ *  it — a retracted fact reaching an agent through a different tool is the bug. Held-back
+ *  lessons are dropped here for the same reason (see applyCorrections). */
 export function applyEntryCorrections<T extends CorrectableEntry>(rows: T[]): ReturnType<typeof applyOverlayToEntries<T>> {
-  return applyOverlayToEntries(overlay, rows)
+  return applyOverlayToEntries(overlay, withoutCandidates(rows))
 }
 
 export function correctionForMemory(id: string): Correction | null {

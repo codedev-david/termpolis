@@ -13,6 +13,8 @@
 // be reached by calling it with no args at all.
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import * as path from 'path'
+import { NOTES_MANIFEST_FILE } from '../../src/main/claudeNotesIngest'
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -47,7 +49,8 @@ const {
     rmSync: vi.fn(),
     watch: vi.fn(() => ({ close: vi.fn() })),
     // The code-graph sweep MUST read through this, not readFileSync — see the reader tests below.
-    promises: { readFile: vi.fn(async () => '{}') },
+    // The saved-notes record is read and written through these too (claudeNotesIngest.ts fileManifest), off the main thread.
+    promises: { readFile: vi.fn(async () => '{}'), writeFile: vi.fn(async () => {}), rename: vi.fn(async () => {}), unlink: vi.fn(async () => {}), readdir: vi.fn(async () => []) },
   }
   return {
     mockShowOpenDialog: vi.fn(),
@@ -63,7 +66,9 @@ vi.mock('fs', () => ({ ...fsMock, default: fsMock }))
 
 vi.mock('electron', () => ({
   app: {
-    getPath: vi.fn(() => USER_DATA),
+    // Only 'userData' is USER_DATA; every other name has a folder of its own. (USER_DATA is the OS temp folder, so answering every
+    // name with it let a call that asked for 'temp' by mistake pass for one that asked for 'userData'.)
+    getPath: vi.fn((name: string) => (name === 'userData' ? USER_DATA : `${USER_DATA}-not-user-data-${name}`)),
     getVersion: vi.fn(() => '1.25.3'),
     whenReady: () => Promise.resolve(),
     requestSingleInstanceLock: () => true,
@@ -298,12 +303,13 @@ const mneme = vi.hoisted(() => ({
   runConsolidation: vi.fn(), runSummarization: vi.fn(async () => {}),
   runWeave: vi.fn(),
   poolLessons: vi.fn(() => [{ content: 'pooled', corroboration: 2 }]),
-  toAgentLesson: vi.fn((m: any) => ({ source: m.source, content: m.content })),
+  toAgentLesson: vi.fn((m: any) => ({ ...(m.id ? { id: m.id } : {}), source: m.source, content: m.content })),
   detectConflictsNli: vi.fn(async () => [{
-    a: { source: 'claude', content: 'always X', extra: 'dropped' },
-    b: { source: 'codex', content: 'never X', extra: 'dropped' },
+    a: { id: 'ca', source: 'claude', content: 'always X', extra: 'dropped' },
+    b: { id: 'cb', source: 'codex', content: 'never X', extra: 'dropped' },
   }]),
   auditMemory: vi.fn(),
+  initMemoryAudit: vi.fn(),
   proactiveQuery: vi.fn((t: string) => (t ? `signals:${t}` : '')),
   proactiveSignals: vi.fn((t: string) => (t ? [t] : [])),
   codeLocate: vi.fn(() => [{ file: 'a.ts', score: 1, why: [] }]),
@@ -323,7 +329,12 @@ vi.mock('../../src/main/codeWatch', () => ({
 vi.mock('../../src/main/brainIpc', () => ({
   buildBrainArchive: mneme.buildBrainArchive, mergeBrainArchive: mneme.mergeBrainArchive, realBrainFs: mneme.realBrainFs,
 }))
-vi.mock('../../src/main/mnemeReflect', () => ({ distillEpisode: mneme.distillEpisode, isHighValueEpisode: mneme.isHighValueEpisode }))
+// The sentence rules stay REAL: the lesson rechecks in the indexer pass judge stored lessons with them, and a
+// stubbed splitSentences would make every one of those throw (into a catch that hides it).
+vi.mock('../../src/main/mnemeReflect', async () => ({
+  ...(await vi.importActual<typeof import('../../src/main/mnemeReflect')>('../../src/main/mnemeReflect')),
+  distillEpisode: mneme.distillEpisode, isHighValueEpisode: mneme.isHighValueEpisode,
+}))
 vi.mock('../../src/main/mnemeDistiller', () => ({ makeHeadlessDistiller: mneme.makeHeadlessDistiller }))
 vi.mock('../../src/main/mnemeReflex', () => ({ onTaskComplete: mneme.onTaskComplete, onSessionEpisode: mneme.onSessionEpisode }))
 vi.mock('../../src/main/mnemeSession', () => ({ reflectSoloSession: mneme.reflectSoloSession }))
@@ -336,6 +347,44 @@ vi.mock('../../src/main/mnemeCompetence', () => ({
 vi.mock('../../src/main/mnemeIdentity', () => ({ initIdentity: mneme.initIdentity, identitySummary: mneme.identitySummary }))
 vi.mock('../../src/main/mnemeCuriosity', () => ({ findGaps: mneme.findGaps, curiosityPrompts: mneme.curiosityPrompts }))
 vi.mock('../../src/main/mnemeConsolidateRun', () => ({ runConsolidation: mneme.runConsolidation, runSummarization: mneme.runSummarization }))
+// Claude Code's saved notes (1.55.0): the pass, the undo and the status are spies, so this suite tests the WIRING in
+// index.ts (when the pass runs, what it is handed, how the settings IPC answers). The module's own behaviour is in
+// claudeNotesIngest*.test.ts; the real file, manifest and noteRoots stay real.
+const notesMock = vi.hoisted(() => ({
+  runClaudeNotesIngest: vi.fn(async (_deps?: any) => ({ chunksWritten: 0, truncated: false })),
+  removeImportedNotes: vi.fn(async (_deps?: any) => ({ removed: 2, failed: 0 })),
+  finishQueuedRemovals: vi.fn(async (_deps?: any) => ({ removed: 0, failed: 0 })),
+  // "Clear memory" runs the store's clear inside it; the real one is in claudeNotesIngest.test.ts. This spy runs the clear as it does.
+  clearNotesRecord: vi.fn(async (_deps: any, clear: () => Promise<unknown>) => { await clear() }),
+  notesStatus: vi.fn((_io?: any) => ({ notes: 3, chunks: 4, projects: 2, lastAt: 1700000000000, noProject: 0, secretsRedacted: 0, pending: 0 })),
+}))
+vi.mock('../../src/main/claudeNotesIngest', async () => ({
+  ...(await vi.importActual<typeof import('../../src/main/claudeNotesIngest')>('../../src/main/claudeNotesIngest')),
+  runClaudeNotesIngest: notesMock.runClaudeNotesIngest,
+  removeImportedNotes: notesMock.removeImportedNotes,
+  finishQueuedRemovals: notesMock.finishQueuedRemovals,
+  clearNotesRecord: notesMock.clearNotesRecord,
+  notesStatus: notesMock.notesStatus,
+}))
+// The saved-notes import waits for a yes (isAgentIntegrationGranted), not for the broader "connected" that an install an older
+// version connected, and nobody has asked, also has. This file runs the real module against a mocked fs, where no ledger exists:
+// this lets a test say what the ledger would, and leaves everything else to the real module.
+const integration = vi.hoisted(() => ({ granted: undefined as boolean | undefined }))
+vi.mock('../../src/main/agentIntegrationManager', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/agentIntegrationManager')>()
+  return {
+    ...real,
+    isAgentIntegrationGranted: (...a: Parameters<typeof real.isAgentIntegrationGranted>) => integration.granted ?? real.isAgentIntegrationGranted(...a),
+    isAgentIntegrationGrantedAsync: async (...a: Parameters<typeof real.isAgentIntegrationGrantedAsync>) => integration.granted ?? real.isAgentIntegrationGrantedAsync(...a),
+  }
+})
+// A commit has to land for an outcome to be charged back to the memories recalled for it ("recall noting" below). git is a
+// spy that answers with nothing, so the commit shield sees an empty staged diff and the commit itself succeeds; no process runs.
+const gitMock = vi.hoisted(() => ({ safeGitAsync: vi.fn(async (_args?: string[], _opts?: unknown) => '') }))
+vi.mock('../../src/main/gitCommand', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/main/gitCommand')>()),
+  safeGitAsync: gitMock.safeGitAsync,
+}))
 // WEAVE_NEIGHBOUR_K is a real export index.ts now reads (so the k it pre-fetches neighbours with
 // cannot drift from the k runWeave uses). Omitting it here makes vitest's mock proxy THROW on access
 // — inside the weave's best-effort catch, so the whole pass would silently do nothing.
@@ -348,7 +397,18 @@ vi.mock('../../src/main/mnemeSociety', async () => {
   return { ...real, poolLessons: mneme.poolLessons, toAgentLesson: mneme.toAgentLesson }
 })
 vi.mock('../../src/main/nliContradict', () => ({ detectConflictsNli: mneme.detectConflictsNli }))
-vi.mock('../../src/main/memoryAudit', () => ({ auditMemory: mneme.auditMemory }))
+// The record of what memory did: its size and clearing it (Settings > Memory & Learning > Activity record). Main hands both the
+// app-data folder; the real functions are in memoryAudit.test.ts.
+const auditRecord = vi.hoisted(() => ({
+  size: vi.fn((_dir: string) => ({ files: 2, bytes: 10 })),
+  clear: vi.fn((_dir: string) => ({ removed: 2, failed: 0 })),
+}))
+vi.mock('../../src/main/memoryAudit', () => ({
+  auditMemory: mneme.auditMemory,
+  initMemoryAudit: mneme.initMemoryAudit,
+  memoryAuditSize: auditRecord.size,
+  clearMemoryAudit: auditRecord.clear,
+}))
 vi.mock('../../src/main/mnemeRetrieval', () => ({ proactiveQuery: mneme.proactiveQuery, proactiveSignals: mneme.proactiveSignals }))
 vi.mock('../../src/main/codeLocate', () => ({ codeLocate: mneme.codeLocate }))
 
@@ -372,10 +432,16 @@ let eventFeed: Function
 // read from mock.calls (which every test's clearAllMocks() wipes).
 let recalls: typeof import('../../src/main/recallLedger')
 let recheckModule: typeof import('../../src/main/mnemeLessonRecheck')
+/** What index.ts told the audit at startup, captured for the same reason. */
+let auditInit: unknown[] | undefined
+/** The quit handler index.ts registers at startup: it tears the module down, so only the LAST describe of this file fires it. */
+let onBeforeQuit: (() => void) | undefined
 
 beforeAll(async () => {
   vi.resetModules()
   await import('../../src/main/index')
+  auditInit = mneme.initMemoryAudit.mock.calls[0]
+  onBeforeQuit = ((await import('electron')) as any).app.on.mock.calls.find((c: unknown[]) => c[0] === 'before-quit')?.[1]
   // Same post-reset registry index.ts loaded from — a statically imported ledger would be a
   // different module object holding a different Map.
   recalls = await import('../../src/main/recallLedger')
@@ -402,6 +468,12 @@ it('registers the memory brain with the MCP server, the indexer and the event bu
   expect(mcp).toBeTruthy()
   expect(indexer).toBeTruthy()
   expect(typeof eventFeed).toBe('function')
+})
+
+// The events about what agents recalled and were injected are raised in main, so main's copy of the audit has
+// to be pointed at the data folder, as its own writer (the memory host keeps the other file).
+it('starts the main process\'s side of the memory audit at launch, in the user-data folder, as the main writer', () => {
+  expect(auditInit).toEqual([USER_DATA, 'main'])
 })
 
 beforeEach(() => {
@@ -467,10 +539,10 @@ beforeEach(() => {
   mneme.findGaps.mockReturnValue([{ domain: 'gap' }])
   mneme.curiosityPrompts.mockReturnValue(['what breaks CI?'])
   mneme.poolLessons.mockReturnValue([{ content: 'pooled', corroboration: 2 }])
-  mneme.toAgentLesson.mockImplementation((m: any) => ({ source: m.source, content: m.content }))
+  mneme.toAgentLesson.mockImplementation((m: any) => ({ ...(m.id ? { id: m.id } : {}), source: m.source, content: m.content }))
   mneme.detectConflictsNli.mockResolvedValue([{
-    a: { source: 'claude', content: 'always X', extra: 'dropped' },
-    b: { source: 'codex', content: 'never X', extra: 'dropped' },
+    a: { id: 'ca', source: 'claude', content: 'always X', extra: 'dropped' },
+    b: { id: 'cb', source: 'codex', content: 'never X', extra: 'dropped' },
   }])
   mneme.proactiveQuery.mockImplementation((t: string) => (t ? `signals:${t}` : ''))
   mneme.proactiveSignals.mockImplementation((t: string) => (t ? [t] : []))
@@ -620,6 +692,53 @@ describe('memory:count / memory:clear / memory:stats', () => {
     const r = await invoke('memory:clear')
     expect(mem.memoryClear).toHaveBeenCalledTimes(1)
     expect(r).toEqual({ success: true, data: undefined })
+  })
+
+  // The store's clear goes through the saved-notes record, so Settings stops counting notes that were in the store it just emptied.
+  // It runs the clear itself (inside the turn-taking that keeps a pass from writing meanwhile), and hands over the manifest only.
+  it('clear runs through the saved-notes record, so that Settings does not go on counting notes that are gone', async () => {
+    notesMock.clearNotesRecord.mockClear()
+    mem.memoryClear.mockClear()
+    await invoke('memory:clear')
+    expect(notesMock.clearNotesRecord).toHaveBeenCalledTimes(1)
+    const [deps] = notesMock.clearNotesRecord.mock.calls[0] as unknown as [{ manifest: { read: unknown; write: unknown } }]
+    expect(typeof deps.manifest.read).toBe('function')
+    expect(typeof deps.manifest.write).toBe('function')
+    expect(mem.memoryClear).toHaveBeenCalledTimes(1)
+  })
+
+  // Settings > Memory & Learning > Activity record asks main how big the record of what memory did is, and to clear it. Both work on
+  // the app-data folder main holds, never on anything the renderer sends.
+  it('serves the activity record on the app-data folder, whatever the renderer sends along', async () => {
+    auditRecord.size.mockClear()
+    auditRecord.clear.mockClear()
+    expect(await invoke('memory:audit-size', { dir: 'C:\\elsewhere' })).toEqual({ success: true, data: { files: 2, bytes: 10 } })
+    expect(auditRecord.size).toHaveBeenCalledWith(USER_DATA)
+    expect(await invoke('memory:audit-clear', { dir: 'C:\\elsewhere' })).toEqual({ success: true, data: { removed: 2, failed: 0 } })
+    expect(auditRecord.clear).toHaveBeenCalledWith(USER_DATA)
+  })
+
+  // The manifest it hands over has to be the one the passes keep (<userData>/claude-notes-manifest.json): a stand-in would leave
+  // Settings counting notes that are gone, and no other test would notice. `fs` is a spy in this file, so what it saw is the proof.
+  it('hands the record over as the one file the passes keep, in the user data folder', async () => {
+    notesMock.clearNotesRecord.mockClear()
+    await invoke('memory:clear')
+    const [deps] = notesMock.clearNotesRecord.mock.calls[0] as unknown as [{ manifest: { read: () => Promise<string | null>; write: (text: string) => Promise<void> } }]
+    const file = path.join(USER_DATA, NOTES_MANIFEST_FILE)
+    fsMock.promises.readFile.mockClear()
+    fsMock.promises.writeFile.mockClear()
+    await deps.manifest.read()
+    expect(fsMock.promises.readFile.mock.calls.map((c: unknown[]) => String(c[0]))).toEqual([file])
+    await deps.manifest.write('{"version":1}')
+    const written = fsMock.promises.writeFile.mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(written).toHaveLength(1)
+    expect(written[0].startsWith(file)).toBe(true) // the atomic write goes through a temporary file beside it, then renames onto it
+    expect(String((fsMock.promises.rename.mock.calls.at(-1) as unknown[] | undefined)?.[1])).toBe(file)
+  })
+
+  it('clear that the store refuses (locked) is reported and the record is left as it was', async () => {
+    mem.memoryClear.mockRejectedValueOnce(new Error('memory is locked'))
+    expect(await invoke('memory:clear')).toEqual({ success: false, error: 'memory is locked' })
   })
 
   it('stats returns the store stats, plus what the last Weave pass drew', async () => {
@@ -1069,6 +1188,22 @@ describe('code-graph:locate', () => {
     mneme.codeLocate.mockImplementationOnce(() => { throw new Error('locator exploded') })
     expect(await invoke('code-graph:locate', { issue: 'x' })).toEqual({ success: true, data: [] })
   })
+
+  // 1.55: the locator's `why` is lesson TEXT, read straight from the store through symbolHistory, a path none of
+  // the correction filters sit on. A lesson the substance gate holds back must not come out of it either.
+  it('history() leaves out a lesson the substance gate holds back, for the panel and for an agent alike', async () => {
+    const rows = [
+      { id: 'held', content: 'held back lesson', importance: 0.45, ts: 3, memoryType: 'semantic', tags: ['candidate'] },
+      { id: 'h1', content: 'hist', importance: 0.5, ts: 1, memoryType: 'procedural', tags: ['note:x'] },
+    ]
+    mem.symbolHistory.mockReturnValue(rows)
+    await invoke('code-graph:locate', { issue: 'boom', projectKey: 'pk1' })
+    expect(mneme.codeLocate.mock.calls[0][1].history('foo').map((m: any) => m.id)).toEqual(['h1'])
+
+    mneme.codeLocate.mockClear()
+    await mcp.codeLocate({ issue: 'crash' })
+    expect(mneme.codeLocate.mock.calls[0][1].history('foo').map((m: any) => m.id)).toEqual(['h1'])
+  })
 })
 
 // ===========================================================================
@@ -1166,7 +1301,7 @@ describe('memory:build-primer', () => {
     primer.buildContextPrimer.mockResolvedValueOnce('- [claude] did a thing')
     const r = await invoke('memory:build-primer', { query: 'what were we doing', cwd: 'C:/repos/Termpolis' })
     expect(r).toEqual({ success: true, data: '- [claude] did a thing' })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
       // projectPath carries the FULL cwd so the digest scopes by projectKey, not just the
       // basename slug; `recent` is the newest-first lane that guarantees a session-start
       // digest can answer "where did we leave off" and not only "what is most similar".
@@ -1177,14 +1312,14 @@ describe('memory:build-primer', () => {
 
   it('passes project: undefined (not "") when there is no cwd', async () => {
     await invoke('memory:build-primer', { query: 'q' })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
       query: 'q', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function),
     })
   })
 
   it('coerces a missing query to "" rather than passing undefined to the builder', async () => {
     await invoke('memory:build-primer', {})
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({ query: '' }))
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ query: '' }))
   })
 
   it('returns null and injects NOTHING when there is no relevant memory', async () => {
@@ -1202,12 +1337,117 @@ describe('memory:build-primer', () => {
 
   it('honours an explicit limit over the persisted primer size', async () => {
     await invoke('memory:build-primer', { query: 'q', limit: 3 })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({ limit: 3 }))
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ limit: 3 }))
   })
 
   it('degrades to {success:false,error} when the builder throws', async () => {
     primer.buildContextPrimer.mockRejectedValueOnce(new Error('embedder unavailable'))
     expect(await invoke('memory:build-primer', { query: 'q' })).toEqual({ success: false, error: 'embedder unavailable' })
+  })
+})
+
+// 1.55.0: every primer carries the same freshness lane (primerRecent), a newest-first LISTING. It used to skip every
+// filter a search applies; now it asks the store for what a search would return and runs the rows through the
+// correction overlay (primerLane.ts), and the builder drops what is left marked as corrected.
+describe('the freshness lane behind every primer', () => {
+  afterEach(async () => {
+    const { resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+  })
+
+  const laneOf = async (channel: string, ...args: unknown[]) => {
+    await invoke(channel, ...args)
+    const calls = primer.buildContextPrimer.mock.calls as unknown as Array<[unknown, { recent: (o: unknown) => Promise<Array<{ id: string; content: string }>> }]>
+    return calls[calls.length - 1][1].recent
+  }
+
+  it('asks the store for what a search would return, in the window and scope the primer asked for', async () => {
+    const recent = await laneOf('memory:build-primer', { query: 'q', cwd: 'C:/repos/Termpolis' })
+    mem.memoryList.mockClear()
+    mem.memoryList.mockResolvedValueOnce([])
+    await recent({ limit: 24, project: 'C:/repos/Termpolis', since: 99 })
+    expect(mem.memoryList).toHaveBeenCalledWith({ limit: 24, project: 'C:/repos/Termpolis', since: 99, active: true })
+  })
+
+  it('hands the builder the fields it reads, including what tells a lesson from a chunk', async () => {
+    const recent = await laneOf('memory:build-primer', { query: 'q' })
+    mem.memoryList.mockResolvedValueOnce([
+      { id: 'a', content: 'Never call app.quit() because it re-enters.', source: 'claude', kind: 'fact', project: 'termpolis', projectKey: 'k', ts: 5, tags: ['t'], agentId: 'mneme', memoryType: 'procedural' },
+    ])
+    expect(await recent({ limit: 3 })).toEqual([
+      { id: 'a', content: 'Never call app.quit() because it re-enters.', source: 'claude', kind: 'fact', score: 0, project: 'termpolis', projectKey: 'k', ts: 5, tags: ['t'], agentId: 'mneme', memoryType: 'procedural', correction: undefined },
+    ])
+  })
+
+  it('lets a retraction take a row out of the lane, and marks a demoted one for the builder', async () => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    correctMemory({ id: 'gone', kind: 'retract', reason: 'wrong', by: 'david' })
+    correctMemory({ id: 'weak', kind: 'demote', reason: 'unreliable', by: 'david' })
+    const recent = await laneOf('memory:build-primer', { query: 'q' })
+    mem.memoryList.mockResolvedValueOnce([{ id: 'live', content: 'a' }, { id: 'gone', content: 'b' }, { id: 'weak', content: 'c' }])
+    const out = (await recent({ limit: 5 })) as Array<{ id: string; correction?: { kind: string } }>
+    expect(out.map((h) => h.id)).toEqual(['live', 'weak'])
+    expect(out[1].correction?.kind).toBe('demote')
+  })
+
+  it('is the one lane every primer path hands the builder', async () => {
+    const lanes = [
+      await laneOf('memory:build-primer', { query: 'q' }),
+      await laneOf('memory:prepare-primer-file', { query: 'q', cwd: '/repos/x' }),
+    ]
+    mem.memoryList.mockClear()
+    mem.memoryList.mockResolvedValue([])
+    for (const recent of lanes) await recent({ limit: 4 })
+    expect((mem.memoryList.mock.calls as unknown[][]).every(([o]) => (o as { active?: boolean }).active === true)).toBe(true)
+    expect(mem.memoryList).toHaveBeenCalledTimes(2)
+  })
+})
+
+// 1.55.0: a correction binds to the memory, not to the tool that served it (correctedSearch in index.ts). The MCP primer
+// always searched through the overlay; the Memory panel's preview, the launch check and the headless run's primer used
+// the raw search, so a memory someone had retracted still led their digest and a demoted lesson still led the project
+// block (the builder reads the overlay's demote marker to decide that).
+describe('the search behind every primer applies corrections', () => {
+  afterEach(async () => {
+    const { resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+  })
+
+  type Served = Array<{ id: string; score: number; correction?: { kind: string } }>
+  const searchOf = async (channel: string, args: unknown): Promise<(o: { query: string }) => Promise<Served>> => {
+    await invoke(channel, args)
+    const calls = primer.buildContextPrimer.mock.calls as unknown as Array<[(o: { query: string }) => Promise<Served>, unknown]>
+    return calls[calls.length - 1][0]
+  }
+
+  it.each([
+    ['the Memory panel preview', 'memory:build-primer', { query: 'q', cwd: 'C:/repos/Termpolis' }],
+    ['the launch check', 'memory:prepare-primer-file', { query: 'q', cwd: '/repos/x' }],
+  ])('drops a retracted memory and marks a demoted one: %s', async (_name, channel, args) => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    correctMemory({ id: 'gone', kind: 'retract', reason: 'wrong', by: 'david' })
+    correctMemory({ id: 'weak', kind: 'demote', reason: 'unreliable', by: 'david' })
+    const search = await searchOf(channel, args)
+    mem.memorySearch.mockResolvedValueOnce([{ id: 'live', score: 0.9 }, { id: 'gone', score: 0.8 }, { id: 'weak', score: 0.7 }])
+    const hits = await search({ query: 'q' })
+    expect(hits.map((h) => h.id).sort()).toEqual(['live', 'weak'])
+    expect(hits.find((h) => h.id === 'weak')?.correction?.kind).toBe('demote')
+    expect(hits.find((h) => h.id === 'live')?.correction).toBeUndefined()
+  })
+
+  it('hands the builder the same overlay-applied search the MCP primer uses', async () => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    correctMemory({ id: 'gone', kind: 'retract', reason: 'wrong', by: 'david' })
+    await invoke('memory:build-primer', { query: 'q' })
+    mneme.competenceSummary.mockReturnValueOnce('')
+    mneme.curiosityPrompts.mockReturnValueOnce([])
+    mneme.identitySummary.mockReturnValueOnce('')
+    await mcp.memoryPrimer({ query: 'q', cwd: '/repos/x' })
+    const calls = primer.buildContextPrimer.mock.calls as unknown as Array<[(o: { query: string }) => Promise<Served>]>
+    for (const [search] of calls.slice(-2)) {
+      mem.memorySearch.mockResolvedValueOnce([{ id: 'gone', score: 0.9 }, { id: 'live', score: 0.5 }])
+      expect((await search({ query: 'q' })).map((h) => h.id)).toEqual(['live'])
+    }
   })
 })
 
@@ -1221,29 +1461,29 @@ describe('memory:get-primer-limit / memory:set-primer-limit', () => {
   })
 
   it('clamps a too-small value up to the minimum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true })
-    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true })
+    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
   })
 
   it('clamps a too-large value down to the maximum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false, learnFromConversations: true })
+    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
   })
 
   it('rounds a fractional value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false, learnFromConversations: true })
+    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
   })
 
   it('falls back to the default for junk and for a missing value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true })
-    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true })
-    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true })
+    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
   })
 
   it('a new limit is what the NEXT primer is built with', async () => {
     await invoke('memory:set-primer-limit', { value: 4 })
     expect((await invoke('memory:get-primer-limit')).data).toBe(4)
     await invoke('memory:build-primer', { query: 'q' })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({ limit: 4 }))
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ limit: 4 }))
   })
 })
 
@@ -1270,7 +1510,7 @@ describe('memory:prepare-primer-file', () => {
 
   it('coerces a missing query to "" rather than passing undefined to the builder', async () => {
     const r = await invoke('memory:prepare-primer-file', {})
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
       query: '', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function),
     })
     expect(r.data).toEqual({ file: null, count: 0 })
@@ -1318,7 +1558,7 @@ describe('memory:prepare-primer-file', () => {
     primer.buildContextPrimer.mockResolvedValueOnce('- [claude] one')
     await invoke('memory:prepare-primer-file', { query: 'q' })
     expect(writtenInstruction()).not.toContain('(cwd')
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({ project: undefined }))
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ project: undefined }))
   })
 
   it('sweeps STALE primer files and leaves fresh ones alone', async () => {
@@ -1455,6 +1695,56 @@ describe('memory:reflect-session', () => {
     mneme.onSessionEpisode.mockResolvedValueOnce({ fired: false, lessons: 3, written: [] })
     expect(await deps.reflect({ id: 'ep3' })).toEqual({ fired: false, lessons: 3 })
     expect(metricsOfType('reflect')).toEqual([]) // didn't fire → nothing learned
+  })
+
+  // 1.55: the substance gate refuses some lessons outright; the ledger has to say so, or "N distilled"
+  // reads as "N learned" and a gate that drops 70% of them looks like a reflection that found nothing.
+  it('records how many distilled lessons the substance gate refused, and still returns the same shape', async () => {
+    await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    const deps = mneme.reflectSoloSession.mock.calls[0][1]
+    ledger.recordMetric.mockClear()
+    mneme.onSessionEpisode.mockResolvedValueOnce({ fired: true, lessons: 5, written: ['w1', 'w2'], skipped: 3 })
+    expect(await deps.reflect({ id: 'ep4' })).toEqual({ fired: true, lessons: 5 })
+    expect(metricsOfType('reflect')).toEqual([expect.objectContaining({ t: 'reflect', lessons: 5, skipped: 3 })])
+  })
+
+  // The other producer of the same metric: a swarm task that finishes, whether an agent finishes it (MCP) or the user (IPC).
+  // The acceptance criterion is that the ledger carries `skipped` from BOTH, or "N distilled" overstates what was learned.
+  describe('a finished swarm task', () => {
+    const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 25))
+
+    it.each([
+      ['an agent finishes it (swarm_update_task)', async () => { await mcp.swarmUpdateTask('t1', 'completed', 'done') }],
+      ['the user finishes it (swarm:update-task)', async () => { await invoke('swarm:update-task', { taskId: 't1', status: 'failed', result: 'no' }) }],
+    ])('records how many lessons the gate refused when %s', async (_who, finish) => {
+      ledger.recordMetric.mockClear()
+      // The IPC route answers "Task not found" (and learns nothing) unless the swarm has the task; the same registry index.ts loaded.
+      const { updateTask } = await import('../../src/main/swarmManager')
+      vi.mocked(updateTask).mockReturnValueOnce({ id: 't1', title: 'tidy the retry helper' } as never)
+      mneme.onTaskComplete.mockResolvedValueOnce({ fired: true, lessons: 3, written: [], skipped: 2 })
+      await finish()
+      await settle()
+      expect(metricsOfType('reflect')).toEqual([expect.objectContaining({ t: 'reflect', lessons: 3, skipped: 2 })])
+    })
+
+    it('records nothing when no lesson was distilled, and nothing when the reflex did not fire', async () => {
+      ledger.recordMetric.mockClear()
+      mneme.onTaskComplete.mockResolvedValueOnce({ fired: true, lessons: 0, written: [], skipped: 0 })
+      mneme.onTaskComplete.mockResolvedValueOnce({ fired: false, lessons: 4, written: [], skipped: 4 })
+      await mcp.swarmUpdateTask('t2', 'completed', 'done')
+      await mcp.swarmUpdateTask('t3', 'completed', 'done')
+      await settle()
+      expect(metricsOfType('reflect')).toEqual([])
+    })
+  })
+
+  it('records a reflection whose every lesson the gate refused: lessons found, none learned', async () => {
+    await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    const deps = mneme.reflectSoloSession.mock.calls[0][1]
+    ledger.recordMetric.mockClear()
+    mneme.onSessionEpisode.mockResolvedValueOnce({ fired: true, lessons: 2, written: [], skipped: 2 })
+    await deps.reflect({ id: 'ep5' })
+    expect(metricsOfType('reflect')).toEqual([expect.objectContaining({ lessons: 2, skipped: 2 })])
   })
 
   it('wires the reflex deps to the real store, graph and code resolver', async () => {
@@ -1839,11 +2129,20 @@ describe('MCP memory_selfcheck / memory_pool / memory_conflicts', () => {
     mem.entrySimMatrix.mockResolvedValueOnce([1, 0, 0, 0, 1, 0, 0, 0, 1])
     await expect(mcp.memoryPool({})).resolves.toEqual([{ content: 'pooled', corroboration: 2 }])
     expect(mem.memoryLessons).toHaveBeenCalledWith(200)
+    // Each lesson carries its memory id, so the pooled answer can name the lessons it fused (and an agent
+    // can say one of them `supersedes` another with memory_link).
     expect(mneme.poolLessons).toHaveBeenCalledWith([
-      { source: 'claude', content: 'a', memoryType: 'procedural', importance: 0.9 },
-      { source: 'codex', content: 'b', memoryType: 'semantic', importance: 0.5 },
-      { source: 'unknown', content: 'c', memoryType: undefined, importance: undefined },
+      { id: 'L1', source: 'claude', content: 'a', memoryType: 'procedural', importance: 0.9 },
+      { id: 'L2', source: 'codex', content: 'b', memoryType: 'semantic', importance: 0.5 },
+      { id: 'L3', source: 'unknown', content: 'c', memoryType: undefined, importance: undefined },
     ], expect.objectContaining({ similar: expect.any(Function), threshold: expect.any(Number) }))
+  })
+
+  it('pool returns what poolLessons made of them, ids included, untouched', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([{ id: 'L1', source: 'claude', content: 'a' }])
+    const pooled = [{ content: 'a', sources: ['claude', 'codex'], corroboration: 2, importance: 0.8, id: 'L1', ids: ['L1', 'L2'] }]
+    mneme.poolLessons.mockReturnValueOnce(pooled)
+    expect(await mcp.memoryPool({})).toBe(pooled)
   })
 
   // Cross-agent corroboration only pays off if two agents SAYING the same thing pool together.
@@ -1905,12 +2204,22 @@ describe('MCP memory_selfcheck / memory_pool / memory_conflicts', () => {
     expect(mem.memoryLessons).toHaveBeenCalledWith(25)
   })
 
-  it('conflicts returns only the two contradicting sides — read-only, nothing else leaks', async () => {
-    mem.memoryLessons.mockResolvedValueOnce([{ source: 'claude', content: 'always X' }])
+  it('conflicts returns only the two contradicting sides, each with its id — read-only, nothing else leaks', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([{ id: 'ca', source: 'claude', content: 'always X' }])
     const out = await mcp.memoryConflicts({})
-    expect(out).toEqual([{ a: { source: 'claude', content: 'always X' }, b: { source: 'codex', content: 'never X' } }])
+    // The ids are what the advised `supersedes` memory_link needs; memoryType, importance and the rest stay out.
+    expect(out).toEqual([{ a: { id: 'ca', source: 'claude', content: 'always X' }, b: { id: 'cb', source: 'codex', content: 'never X' } }])
     expect(mem.memoryLessons).toHaveBeenCalledWith(200)
-    expect(mneme.detectConflictsNli).toHaveBeenCalledWith([{ source: 'claude', content: 'always X' }])
+    expect(mneme.detectConflictsNli).toHaveBeenCalledWith([{ id: 'ca', source: 'claude', content: 'always X' }])
+  })
+
+  it('conflicts says nothing about an id a side does not have, rather than inventing one', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([{ source: 'claude', content: 'always X' }])
+    mneme.detectConflictsNli.mockResolvedValueOnce([{ a: { source: 'claude', content: 'always X' }, b: { source: 'codex', content: 'never X' } }])
+    const [pair] = await mcp.memoryConflicts({})
+    expect(pair.a.id).toBeUndefined()
+    expect(pair.b.id).toBeUndefined()
+    expect(Object.keys(JSON.parse(JSON.stringify(pair.a)))).toEqual(['source', 'content']) // as it goes over the wire
   })
 })
 
@@ -2031,6 +2340,95 @@ describe('memory indexer passes', () => {
     expect(correctionForMemory('own-0')).toBeNull()
     expect(fsMock.writeFileSync).toHaveBeenCalledWith(require('path').join(USER_DATA, LINKED_RECHECK_MARKER), JSON.stringify({ version: 1 }))
     resetMemoryCorrections()
+    mem.memoryList.mockReset()
+    mem.memoryList.mockReturnValue([{ id: 'l1' }])
+  })
+
+  // 1.55.0: the second lesson recheck, judged by the substance gate. Same page of mneme lessons, its own marker.
+  it('the full pass re-judges the stored lessons by the substance gate, demoting what it would refuse and marking the pass', async () => {
+    const { RECHECK_V2_MARKER, RECHECK_V2_REASON } = await import('../../src/main/mnemeLessonRecheck')
+    const { correctionForMemory, resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+    const keeper = 'Never call `app.quit()` from the `will-quit` handler because it re-enters the quit sequence.'
+    mem.memoryList.mockImplementation(async (opts: { agentId?: string }) =>
+      opts.agentId === 'mneme'
+        ? [
+            { id: 'junk-1', ts: 9, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: 'Root cause found.' },
+            { id: 'junk-2', ts: 8, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: "I'll start with the failing spec and then look through the logs." },
+            { id: 'good-1', ts: 7, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: keeper },
+            { id: 'stub-1', ts: 6, agentId: 'mneme', kind: 'note', memoryType: 'entity', content: 'EACCES' },
+          ]
+        : [],
+    )
+    await indexerOpts().run()
+    for (const id of ['junk-1', 'junk-2']) {
+      expect(correctionForMemory(id)).toMatchObject({ kind: 'demote', by: 'termpolis', reason: RECHECK_V2_REASON })
+    }
+    expect(correctionForMemory('good-1')).toBeNull()
+    expect(correctionForMemory('stub-1')).toBeNull()
+    expect(fsMock.writeFileSync).toHaveBeenCalledWith(require('path').join(USER_DATA, RECHECK_V2_MARKER), JSON.stringify({ version: 2 }))
+    resetMemoryCorrections()
+    mem.memoryList.mockReset()
+    mem.memoryList.mockReturnValue([{ id: 'l1' }])
+  })
+
+  // A correction is the user's (or an agent's) word on a memory. The recheck sees every lesson, including ones someone amended or
+  // retracted, and a demotion REPLACES the live correction, so skipping them is what keeps the recheck from overwriting a person.
+  it('the second recheck lists whole pages of lessons and leaves alone one that somebody has already corrected', async () => {
+    const { correctMemory, correctionForMemory, resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+    correctMemory({ id: 'mine-1', kind: 'amend', replacement: 'The root cause was the stale lock file.', reason: 'rewritten by hand', by: 'david' })
+    correctMemory({ id: 'mine-2', kind: 'retract', reason: 'wrong', by: 'david' })
+    correctMemory({ id: 'mine-3', kind: 'amend', replacement: 'Decide on the retry budget before the release.', reason: 'rewritten by hand', by: 'david' })
+    mem.memoryList.mockClear()
+    mem.memoryList.mockImplementation(async (opts: { agentId?: string }) =>
+      opts.agentId === 'mneme'
+        ? [
+            { id: 'mine-1', ts: 9, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: 'Root cause found.' },
+            { id: 'mine-2', ts: 8, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: 'Next:' },
+            { id: 'junk-1', ts: 7, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: 'Root cause found.' },
+            // what the 1.50.1 pass refuses too (a to-do read as a decision), so that pass's own skip of a corrected lesson shows
+            { id: 'mine-3', ts: 6, agentId: 'mneme', kind: 'decision', memoryType: 'semantic', content: '- decide later.' },
+          ]
+        : [],
+    )
+    await indexerOpts().run()
+    expect(correctionForMemory('mine-1')).toMatchObject({ kind: 'amend', by: 'david' }) // not turned into a demotion
+    expect(correctionForMemory('mine-2')).toMatchObject({ kind: 'retract', by: 'david' })
+    expect(correctionForMemory('mine-3')).toMatchObject({ kind: 'amend', by: 'david' }) // by neither pass
+    expect(correctionForMemory('junk-1')).toMatchObject({ kind: 'demote', by: 'termpolis' })
+    // Both passes list the whole page the module pages by, not a few rows (one call each: the two markers are absent).
+    const pages = mem.memoryList.mock.calls.map(([o]) => o as { agentId?: string; limit?: number }).filter((o) => o?.agentId === 'mneme')
+    expect(pages).toEqual([{ agentId: 'mneme', limit: 500 }, { agentId: 'mneme', limit: 500 }])
+    resetMemoryCorrections()
+    mem.memoryList.mockReset()
+    mem.memoryList.mockReturnValue([{ id: 'l1' }])
+  })
+
+  it('runs the second lesson recheck even when the first is already marked done, and skips it once its own marker exists', async () => {
+    const { RECHECK_V2_MARKER } = await import('../../src/main/mnemeLessonRecheck')
+    const lessonPages = () => mem.memoryList.mock.calls.filter(([o]) => (o as { agentId?: string })?.agentId === 'mneme')
+    const marker = require('path').join(USER_DATA, RECHECK_V2_MARKER)
+    const first = require('path').join(USER_DATA, 'mneme-lesson-recheck.json')
+
+    mem.memoryList.mockClear()
+    fsMock.existsSync.mockImplementation((p: string) => p === first) // the 1.50.1 pass has run; the new one has not
+    await indexerOpts().run()
+    expect(lessonPages()).toHaveLength(1) // only the new pass listed the lessons
+
+    mem.memoryList.mockClear()
+    fsMock.existsSync.mockImplementation((p: string) => p === first || p === marker) // both marked
+    await indexerOpts().run()
+    expect(lessonPages()).toHaveLength(0)
+    fsMock.existsSync.mockReturnValue(false)
+  })
+
+  it('leaves the second lesson recheck for a later pass when the store cannot be listed, and the pass carries on', async () => {
+    const { RECHECK_V2_MARKER } = await import('../../src/main/mnemeLessonRecheck')
+    const marked = () => fsMock.writeFileSync.mock.calls.filter(([f]) => String(f).endsWith(RECHECK_V2_MARKER))
+    mem.memoryList.mockRejectedValue(new Error('host down'))
+    await expect(indexerOpts().run()).resolves.toEqual({ written: 4, more: false })
+    expect(marked()).toHaveLength(0)
     mem.memoryList.mockReset()
     mem.memoryList.mockReturnValue([{ id: 'l1' }])
   })
@@ -2649,6 +3047,224 @@ describe('MCP read paths honour in-flow corrections', () => {
   })
 })
 
+// 1.55: a lesson the substance gate stores but holds back (the `candidate` tag) must not reach an agent
+// through ANY tool, with no correction on file for it. One test per tool, because the bug this prevents is
+// "hidden in the tool the author thought of, quoted back through the one they did not".
+describe('MCP read paths never serve a lesson the substance gate holds back', () => {
+  const held = { id: 'held', content: 'held back lesson', tags: ['candidate'], score: 1, memoryType: 'procedural', source: 'claude' }
+  const kept = { id: 'kept', content: 'a kept lesson', tags: ['note:x'], score: 0.9, memoryType: 'procedural', source: 'claude' }
+
+  it('memory_search', async () => {
+    mem.memorySearch.mockResolvedValueOnce([held, kept])
+    expect((await mcp.memorySearch({ query: 'q' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_list', async () => {
+    mem.memoryList.mockReturnValueOnce([held, kept])
+    expect((await mcp.memoryList({ limit: 5 })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_related', async () => {
+    mem.memoryRelated.mockResolvedValueOnce([held, kept])
+    expect((await mcp.memoryRelated({ id: 'seed' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_graph', async () => {
+    mem.memoryGraphQuery.mockResolvedValueOnce([held, kept])
+    expect((await mcp.memoryGraph({ id: 'seed' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_anticipate', async () => {
+    mem.memorySearch.mockResolvedValueOnce([held, kept])
+    expect((await mcp.memoryAnticipate({ task: 'the deploy fails with ENOENT' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_primer searches through it', async () => {
+    mem.memorySearch.mockResolvedValueOnce([held, kept])
+    primer.buildContextPrimer.mockResolvedValueOnce('- digest')
+    mneme.competenceSummary.mockReturnValueOnce('')
+    mneme.curiosityPrompts.mockReturnValueOnce([])
+    await mcp.memoryPrimer({ cwd: 'C:/repos/termpolis' })
+    const search = primer.buildContextPrimer.mock.calls.at(-1)![0] as (o: any) => Promise<any[]>
+    expect((await search({ query: 'q' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_pool never pools one', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([held, kept])
+    await mcp.memoryPool({})
+    const pooled = mneme.poolLessons.mock.calls.at(-1)![0] as Array<{ content: string }>
+    expect(pooled.map((l) => l.content)).toEqual(['a kept lesson'])
+  })
+
+  it('memory_conflicts never compares one', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([held, kept])
+    await mcp.memoryConflicts({})
+    const compared = mneme.detectConflictsNli.mock.calls.at(-1)![0] as Array<{ content: string }>
+    expect(compared.map((l) => l.content)).toEqual(['a kept lesson'])
+  })
+
+  // The freshness lane lister is a read like the others: since 1.55.0 it goes through the same door (the correction
+  // overlay), so a held-back lesson never leaves it, and the tags of what does are still handed to the primer.
+  it('the primer\'s freshness lane goes through the same door: a held-back lesson never leaves it, and the tags of the rest are handed along', async () => {
+    mem.memoryList.mockResolvedValueOnce([
+      { id: 'h', content: 'x', kind: 'note', tags: ['candidate'], ts: 5 },
+      { id: 'k', content: 'y', kind: 'note', ts: 4 },
+      { id: 't', content: 'z', kind: 'note', tags: ['note:x'], ts: 3 },
+    ])
+    await invoke('memory:build-primer', { query: 'q', cwd: 'C:/repos/termpolis' })
+    const opts = primer.buildContextPrimer.mock.calls.at(-1)![1] as { recent: (o: any) => Promise<any[]> }
+    const lane = await opts.recent({ limit: 8, project: 'C:/repos/termpolis', since: 0 })
+    expect(lane.map((h) => [h.id, h.tags])).toEqual([['k', undefined], ['t', ['note:x']]])
+  })
+
+  it('...and who wrote each, because only a lesson Termpolis itself held back is dropped, not any note carrying the word', async () => {
+    mem.memoryList.mockResolvedValueOnce([
+      { id: 'h', content: 'x', kind: 'note', agentId: 'mneme', tags: ['candidate'], ts: 5 },
+      { id: 'own', content: 'y', kind: 'note', agentId: 'claude', tags: ['candidate'], ts: 4 },
+    ])
+    await invoke('memory:build-primer', { query: 'q', cwd: 'C:/repos/termpolis' })
+    const opts = primer.buildContextPrimer.mock.calls.at(-1)![1] as { recent: (o: any) => Promise<any[]> }
+    const lane = await opts.recent({ limit: 8, project: 'C:/repos/termpolis', since: 0 })
+    expect(lane.map((h) => [h.id, h.agentId])).toEqual([['own', 'claude']])
+  })
+
+  it('an agent\'s own note that carries the word as a tag still comes back from every read', async () => {
+    const own = { id: 'own', content: 'interview candidate shortlist', tags: ['candidate'], agentId: 'claude', score: 0.8, memoryType: 'procedural' }
+    mem.memorySearch.mockResolvedValueOnce([own])
+    expect((await mcp.memorySearch({ query: 'q' })).map((r: any) => r.id)).toEqual(['own'])
+    mem.memoryList.mockReturnValueOnce([own])
+    expect((await mcp.memoryList({ limit: 5 })).map((r: any) => r.id)).toEqual(['own'])
+  })
+})
+
+// The searches behind every digest and memory_anticipate drop a retracted memory and a lesson the gate holds back AFTER the
+// store has cut the read to its limit, best rows first. A read whose best rows were of that kind used to come back short, or
+// empty, with rows the agent may have sitting just behind them (the four doors had the same defect: see doorFill.ts). The store
+// here answers the way the real one does: the best rows first, cut to the limit it is given, at most 100.
+describe('the searches behind a digest and memory_anticipate ask again, deeper, when hidden rows crowd the page', () => {
+  const held = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ id: `k${i + 1}`, content: `held back lesson ${i + 1}`, tags: ['candidate'], agentId: 'mneme', score: 1, memoryType: 'procedural', source: 'claude', importance: 0.9 }))
+  const kept = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ id: `c${i + 1}`, content: `a kept lesson ${i + 1}`, tags: ['note:x'], score: 0.8, memoryType: 'procedural', source: 'claude', importance: 0.7 }))
+  const notes = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ id: `n${i + 1}`, content: `note ${i + 1}`, source: 'claude-notes', agentId: 'claude-notes', tags: ['type:reference', `note:n${i + 1}.md`], score: 1, memoryType: 'summary', importance: 0.9, project: 'billing' }))
+  const faithful = (rows: any[]) => async (o: any) => rows.slice(0, Math.min(Math.max(o.limit ?? 10, 1), 100)) as never
+  const asked = (): unknown[] => mem.memorySearch.mock.calls.map((c) => (c[0] as { limit?: number }).limit)
+  /** The very search function every digest is built from (the Memory panel's, the launch check's, memory_primer's, exec's). */
+  const digestSearch = async (): Promise<(o: any) => Promise<any[]>> => {
+    primer.buildContextPrimer.mockResolvedValueOnce('- digest')
+    await invoke('memory:build-primer', { query: 'q', cwd: 'C:/repos/termpolis' })
+    return primer.buildContextPrimer.mock.calls.at(-1)![0] as (o: any) => Promise<any[]>
+  }
+
+  // The correction overlay is module state: a retraction made here must not reach the next test.
+  const forgetCorrections = async (): Promise<void> => { (await import('../../src/main/memoryCorrectionStore')).resetMemoryCorrections() }
+  beforeEach(async () => {
+    await forgetCorrections()
+    mem.memorySearch.mockReset()
+    mem.memorySearch.mockImplementation(async () => [] as any[])
+    await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: false })
+  })
+  afterEach(async () => {
+    await forgetCorrections()
+    mem.memorySearch.mockReset()
+    mem.memorySearch.mockImplementation(async () => [] as any[])
+  })
+
+  it.each([5, 10, 40])('gives a digest the %i rows it asks for when 30 held-back lessons hold the best places', async (limit) => {
+    mem.memorySearch.mockImplementation(faithful([...held(30), ...kept(60)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    const got = await search({ query: 'q', limit })
+    expect(got.map((r: any) => r.id)).toEqual(Array.from({ length: limit }, (_, i) => `c${i + 1}`))
+  })
+
+  it('asks for what the digest asked for first, then twice that, and never above the most the store gives', async () => {
+    mem.memorySearch.mockImplementation(faithful([...held(150), ...kept(5)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    expect(await search({ query: 'q', limit: 40 })).toEqual([]) // 150 held back ahead of everything: nothing it may show within the store's reach
+    expect(asked()).toEqual([40, 80, 100])
+  })
+
+  it('starts from the store\'s own default when no limit is named', async () => {
+    mem.memorySearch.mockImplementation(faithful([...held(15), ...kept(12)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    const got = await search({ query: 'q' })
+    expect(got.map((r: any) => r.id)).toEqual(Array.from({ length: 10 }, (_, i) => `c${i + 1}`)) // the 10 it would have read
+    expect(asked()).toEqual([undefined, 20, 40]) // a page of 20 that came back cut short may have more behind it: one more ask finds there is not
+  })
+
+  it('asks the store once when nothing was hidden', async () => {
+    mem.memorySearch.mockImplementation(faithful(kept(60)))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    expect(await search({ query: 'q', limit: 5 })).toHaveLength(5)
+    expect(asked()).toEqual([5])
+  })
+
+  it('asks the store once when it had no more to give than was asked for', async () => {
+    mem.memorySearch.mockImplementation(faithful([...held(2), ...kept(2)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    expect((await search({ query: 'q', limit: 10 })).map((r: any) => r.id)).toEqual(['c1', 'c2'])
+    expect(asked()).toEqual([10])
+  })
+
+  it('does the same for what someone retracted, which the overlay drops after the cut as well', async () => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    for (const id of ['c1', 'c2']) correctMemory({ id, kind: 'retract', reason: 'wrong', by: 'david' })
+    mem.memorySearch.mockImplementation(faithful(kept(20)))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    expect((await search({ query: 'q', limit: 3 })).map((r: any) => r.id)).toEqual(['c3', 'c4', 'c5'])
+    expect(asked()).toEqual([3, 6])
+  })
+
+  it('leaves the options it was given alone but for the limit', async () => {
+    mem.memorySearch.mockImplementation(faithful([...held(4), ...kept(10)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    await search({ query: 'q', limit: 4, project: 'C:/repos/termpolis' })
+    expect(mem.memorySearch.mock.calls.map((c) => c[0])).toEqual([
+      { query: 'q', limit: 4, project: 'C:/repos/termpolis' },
+      { query: 'q', limit: 8, project: 'C:/repos/termpolis' },
+    ])
+  })
+
+  describe('memory_anticipate', () => {
+    const task = 'the deploy fails with ENOENT'
+
+    it('reads its window of rows an agent may be handed: 30 saved notes at the top do not eat it', async () => {
+      mem.memorySearch.mockImplementation(faithful([...notes(30), ...kept(10)]))
+      const got = await mcp.memoryAnticipate({ task, limit: 2 })
+      expect(got.map((r: any) => r.id)).toEqual(['c1', 'c2'])
+      expect(asked().slice(0, 2)).toEqual([16, 32]) // 2 x 8, then twice that
+    })
+
+    // The default limit is 5, so the window is 40. The most the store gives is 100: a first read of 40 still has room to go deeper,
+    // 40 -> 80 -> 100. (With a ceiling of 40 the first read would be the last, and 60 notes at the top would leave an empty answer.)
+    it('at the default limit reads a window of 40 and goes deeper, to the most the store gives, under a crowd of notes', async () => {
+      mem.memorySearch.mockImplementation(faithful([...notes(60), ...kept(60)]))
+      const got = await mcp.memoryAnticipate({ task })
+      expect(got.map((r: any) => r.id)).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
+      expect(asked().slice(0, 3)).toEqual([40, 80, 100])
+    })
+
+    it('still reads the window once when there was nothing to hide', async () => {
+      mem.memorySearch.mockImplementation(faithful(kept(30)))
+      expect((await mcp.memoryAnticipate({ task, limit: 2 })).map((r: any) => r.id)).toEqual(['c1', 'c2'])
+      expect(asked()).toEqual([16])
+    })
+
+    it('hands the general notes along once notes may help in other projects, and reads the window once', async () => {
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      mem.memorySearch.mockImplementation(faithful([...notes(30), ...kept(10)]))
+      const got = await mcp.memoryAnticipate({ task, limit: 2 })
+      expect(got.map((r: any) => r.id)).toEqual(['n1', 'n2']) // type:reference travels; the importance bar (0.6) holds
+      expect(asked()).toEqual([16])
+    })
+  })
+})
+
 // =========================================================================
 // recall noting — the half that makes outcome grounding possible
 // =========================================================================
@@ -2656,6 +3272,32 @@ describe('MCP read paths honour in-flow corrections', () => {
 // WHICH memories were served into that project. These are the two recall paths that carry a
 // project: everything else (memory_anticipate, memory_list) has no attribution key, and guessing
 // one would charge a failure to memories that had nothing to do with it.
+
+// The outcome is written into the activity record, which memory_audit hands to every agent: it says HOW MANY memories an outcome
+// was charged to and never which project, or one project's agent would learn what else is being worked on. PRIVACY.md and
+// DOCUMENTATION.md say "never which project".
+describe('the activity record\'s line for an outcome', () => {
+  beforeEach(() => recalls.resetRecallLedger())
+
+  const learnLines = (): unknown[] => mneme.auditMemory.mock.calls.map((c: any[]) => c[0]).filter((e: any) => e?.event === 'learn' && e.kind === 'feedback')
+
+  it('charges a commit that landed to the recalled memories and names no project', async () => {
+    mem.memorySearch.mockResolvedValueOnce([{ id: 'm1', content: 'a' }, { id: 'm2', content: 'b' }])
+    await mcp.memorySearch({ query: 'q', project: 'C:\\w\\billing-ledger-team' })
+    mneme.auditMemory.mockClear()
+    mem.memoryFeedback.mockClear()
+    expect((await invoke('git:commit', { cwd: 'C:\\w\\billing-ledger-team', message: 'feat: x' })).success).toBe(true)
+    expect(learnLines()).toEqual([{ event: 'learn', kind: 'feedback', detail: 'outcome success → 2 recalled memories reinforced' }])
+    expect(JSON.stringify(learnLines())).not.toMatch(/billing|ledger|team/i)
+    expect(mem.memoryFeedback).toHaveBeenCalledTimes(2)
+  })
+
+  it('writes no line when nothing was recalled for the project', async () => {
+    mneme.auditMemory.mockClear()
+    await invoke('git:commit', { cwd: 'C:\\w\\nothing-recalled', message: 'feat: x' })
+    expect(learnLines()).toEqual([])
+  })
+})
 
 describe('recall noting — a recall is remembered long enough for the outcome to find it', () => {
   beforeEach(() => recalls.resetRecallLedger())
@@ -2681,5 +3323,522 @@ describe('recall noting — a recall is remembered long enough for the outcome t
     })
     await mcp.memoryPrimer({ cwd: 'C:/repos/termpolis' })
     expect(recalls.claimRecalled('termpolis', Date.now())).toEqual(['p1'])
+  })
+})
+
+// ===========================================================================
+// Claude Code's saved notes (1.55.0): how index.ts wires them. The pass, the undo and the status are spies
+// (see notesMock); the settings, the sync status and the corrections are the real ones.
+// ===========================================================================
+describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
+  const NO_RUN = { chunksWritten: 0, truncated: false }
+  const lockedOnce = (): void => { mem.getSyncStatus.mockResolvedValueOnce({ ownLocked: true, lockReason: 'key-unreadable' } as never) }
+  const depsOfLastPass = (): any => { const calls = notesMock.runClaudeNotesIngest.mock.calls; return calls[calls.length - 1][0] }
+
+  afterEach(async () => {
+    integration.granted = undefined
+    notesMock.runClaudeNotesIngest.mockReset()
+    notesMock.runClaudeNotesIngest.mockImplementation(async () => NO_RUN)
+    notesMock.removeImportedNotes.mockClear()
+    notesMock.finishQueuedRemovals.mockReset()
+    notesMock.finishQueuedRemovals.mockImplementation(async () => ({ removed: 0, failed: 0 }))
+    // Back to the defaults, whatever a test chose: notes on, sharing off.
+    await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false })
+  })
+
+  it('the full pass runs the notes pass, adds what it stored to the pass total, and carries its backlog forward', async () => {
+    notesMock.runClaudeNotesIngest.mockResolvedValueOnce({ chunksWritten: 3, truncated: true })
+    expect(await indexer.run()).toEqual({ written: 4 + 3, more: true }) // the conversation ingest wrote 4
+    expect(notesMock.runClaudeNotesIngest).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs it before the index is persisted, so the notes are in the persisted graph', async () => {
+    const order: string[] = []
+    notesMock.runClaudeNotesIngest.mockImplementationOnce(async () => { order.push('notes'); return NO_RUN })
+    mem.persistMemoryIndex.mockImplementationOnce(async () => { order.push('persist') })
+    await indexer.run()
+    expect(order).toEqual(['notes', 'persist'])
+  })
+
+  it('a failing notes pass costs the tick nothing else', async () => {
+    notesMock.runClaudeNotesIngest.mockRejectedValueOnce(new Error('disk gone'))
+    mneme.runConsolidation.mockClear()
+    expect(await indexer.run()).toEqual({ written: 4, more: false })
+    expect(mneme.runConsolidation).toHaveBeenCalled()
+    expect(mneme.runWeave).toHaveBeenCalled()
+  })
+
+  // v1.49 left an install an older Termpolis connected, and nobody has asked since, working in a narrower form until its owner
+  // answers the one-time review. The saved notes are a read that did not exist then, so they wait for the answer: the pass, and
+  // the panel that says whether it can run, ask whether the user said yes.
+  it('waits for a yes: an install connected by an older version that nobody has asked does not start the import', async () => {
+    integration.granted = false // what an unasked older install answers to "said yes"
+    await indexer.run()
+    const d = depsOfLastPass()
+    expect(await d.connected()).toBe(false)
+    expect((await invoke('memory:get-notes-settings')).data.connected).toBe(false)
+    integration.granted = true // the owner answers the review with yes
+    expect(await d.connected()).toBe(true)
+    expect((await invoke('memory:get-notes-settings')).data.connected).toBe(true)
+  })
+
+  it('asks whether the user said yes and nothing broader: the answer is the ledger\'s, whatever the agents\' configs say', async () => {
+    // The mocked fs holds no ledger, so any other question (the status's connected) would answer no here: only the granted
+    // answer says yes.
+    integration.granted = true
+    await indexer.run()
+    expect(await depsOfLastPass().connected()).toBe(true)
+  })
+
+  it('the fast pass never runs it: notes are checked on the slow tick only', async () => {
+    await indexer.fastRun()
+    expect(notesMock.runClaudeNotesIngest).not.toHaveBeenCalled()
+  })
+
+  it('a locked brain does not run it', async () => {
+    lockedOnce()
+    await expect(indexer.run()).resolves.toEqual({ written: 0 })
+    expect(notesMock.runClaudeNotesIngest).not.toHaveBeenCalled()
+  })
+
+  it('hands the pass the real switch, the real consent, the noteRoots seam, the real store calls and the quit signal', async () => {
+    const { noteRoots, realNotesFs } = await import('../../src/main/claudeNotesIngest')
+    await indexer.run()
+    const d = depsOfLastPass()
+    expect(d.roots).toBe(noteRoots)
+    expect(d.fs).toBe(realNotesFs)
+    // The switch is memorySettings' (on by default); consent is the agent-integration ledger's (not granted here).
+    expect(d.enabled()).toBe(true)
+    await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
+    expect(d.enabled()).toBe(false)
+    expect(await d.connected()).toBe(false)
+    // The store: the memory client's own write / delete / list.
+    mem.memoryWrite.mockClear()
+    await d.store.write({ agentId: 'claude-notes', content: 'x' })
+    expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'claude-notes', content: 'x' })
+    await d.store.remove('mem-1')
+    expect(mem.memoryDelete).toHaveBeenCalledWith('mem-1')
+    await d.store.list({ agentId: 'claude-notes', limit: 5 })
+    expect(mem.memoryList).toHaveBeenCalledWith({ agentId: 'claude-notes', limit: 5 })
+    expect(d.stopped()).toBe(false)
+    // The manifest lives beside the other app data, and a read of an absent one is null.
+    expect(typeof d.manifest.read).toBe('function')
+  })
+
+  // An idle pass (the switch is off, or the agents are not connected) reads nothing, so it cannot retry a removal that memory
+  // being locked left queued ("Remove imported notes" turns the switch off first). The tick finishes those itself.
+  describe('a pass that stayed idle', () => {
+    it('is followed by finishing the removals still queued, handed the same deps', async () => {
+      for (const idle of ['off', 'not-connected']) {
+        notesMock.finishQueuedRemovals.mockClear()
+        notesMock.runClaudeNotesIngest.mockResolvedValueOnce({ chunksWritten: 0, truncated: false, idle })
+        await indexer.run()
+        expect(notesMock.finishQueuedRemovals, idle).toHaveBeenCalledTimes(1)
+        const d = notesMock.finishQueuedRemovals.mock.calls[0][0]
+        expect(typeof d.store.remove).toBe('function')
+        expect(d.enabled).toBe(depsOfLastPass().enabled)
+      }
+    })
+
+    it('is not, when the pass ran: its own first step retires the queue', async () => {
+      await indexer.run()
+      expect(notesMock.runClaudeNotesIngest).toHaveBeenCalled()
+      expect(notesMock.finishQueuedRemovals).not.toHaveBeenCalled()
+    })
+
+    it('costs the tick nothing when the finishing fails', async () => {
+      const baseline = await indexer.run() // what a tick with a quiet notes pass does
+      notesMock.runClaudeNotesIngest.mockResolvedValueOnce({ chunksWritten: 0, truncated: false, idle: 'off' })
+      notesMock.finishQueuedRemovals.mockRejectedValueOnce(new Error('memory is locked'))
+      await expect(indexer.run()).resolves.toEqual(baseline)
+      expect(notesMock.finishQueuedRemovals).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('tells the pass which computer this is once the store says so (memory sync), and none before', async () => {
+    await indexer.run()
+    const d = depsOfLastPass()
+    expect(await d.ownOrigin()).toBeUndefined() // the store reports no device id today
+    mem.getSyncStatus.mockResolvedValueOnce({ deviceId: 'laptop-7' } as never)
+    expect(await d.ownOrigin()).toBe('laptop-7')
+    mem.getSyncStatus.mockResolvedValueOnce({ deviceId: '' } as never)
+    expect(await d.ownOrigin()).toBeUndefined()
+    mem.getSyncStatus.mockResolvedValueOnce({ deviceId: 42 } as never)
+    expect(await d.ownOrigin()).toBeUndefined()
+  })
+
+  describe('memory:get-notes-settings / memory:set-notes-settings / memory:remove-imported-notes', () => {
+    it('says whether memory is locked, from the same answer every other writer is held by', async () => {
+      expect((await invoke('memory:get-notes-settings')).data.locked).toBe(false)
+      lockedOnce()
+      expect((await invoke('memory:get-notes-settings')).data.locked).toBe(true)
+      expect((await invoke('memory:get-notes-settings')).data.locked).toBe(false) // and only the once
+    })
+
+    // Three places hand the notes record to something: the pass, the Settings status and Clear memory. If any asked a folder other than
+    // the app-data one, the pass would keep one record and Settings count another, and nothing else would notice. `fs` is a spy in this
+    // file and the other folder names answer with folders of their own, so the file each one reads is the proof.
+    it('reads the same record in the pass, in the Settings status and in Clear memory: the one file in the user data folder', async () => {
+      const file = path.join(USER_DATA, NOTES_MANIFEST_FILE)
+      const readsOf = async (io: { read: () => Promise<string | null> }): Promise<string[]> => {
+        fsMock.promises.readFile.mockClear()
+        await io.read()
+        return fsMock.promises.readFile.mock.calls.map((c: unknown[]) => String(c[0]))
+      }
+      notesMock.notesStatus.mockClear()
+      await invoke('memory:get-notes-settings')
+      expect(await readsOf(notesMock.notesStatus.mock.calls[0][0])).toEqual([file])
+      await indexer.run()
+      expect(await readsOf(depsOfLastPass().manifest)).toEqual([file])
+      notesMock.clearNotesRecord.mockClear()
+      await invoke('memory:clear')
+      expect(await readsOf((notesMock.clearNotesRecord.mock.calls[0] as unknown as [{ manifest: { read: () => Promise<string | null> } }])[0].manifest)).toEqual([file])
+    })
+
+    it('answers with both switches at their defaults, whether the agents are connected, and the status', async () => {
+      const res = await invoke('memory:get-notes-settings')
+      expect(res).toEqual({
+        success: true,
+        data: {
+          indexClaudeNotes: true,
+          shareNotesAcrossProjects: false,
+          connected: false,
+          locked: false,
+          status: { notes: 3, chunks: 4, projects: 2, lastAt: 1700000000000, noProject: 0, secretsRedacted: 0, pending: 0 },
+        },
+      })
+    })
+
+    it('changes a switch, and the change is the real setting, kept on disk', async () => {
+      const res = await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect(res.data).toMatchObject({ indexClaudeNotes: true, shareNotesAcrossProjects: true })
+      // The settings file is replaced whole: the new text is written to a copy beside it, and the copy renamed over the file.
+      const copy = fsMock.writeFileSync.mock.calls.find(([f, text]) => /memory-settings\.json\.termpolis-\d+\.tmp$/.test(String(f)) && JSON.parse(String(text)).shareNotesAcrossProjects === true)
+      expect(copy).toBeDefined()
+      expect(fsMock.renameSync.mock.calls.some(([from, to]) => from === copy![0] && String(to).endsWith('memory-settings.json'))).toBe(true)
+    })
+
+    it('turning the notes on starts a pass at once, unless memory is locked', async () => {
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
+      notesMock.runClaudeNotesIngest.mockClear()
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true })
+      await vi.waitFor(() => expect(notesMock.runClaudeNotesIngest).toHaveBeenCalledTimes(1), { timeout: 10_000 })
+
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
+      notesMock.runClaudeNotesIngest.mockClear()
+      lockedOnce()
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true })
+      await new Promise((r) => setTimeout(r, 30))
+      expect(notesMock.runClaudeNotesIngest).not.toHaveBeenCalled()
+    })
+
+    it('a pass started that way which fails is not an unhandled rejection', async () => {
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
+      notesMock.runClaudeNotesIngest.mockRejectedValueOnce(new Error('boom'))
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true })
+      await new Promise((r) => setTimeout(r, 30))
+      expect(notesMock.runClaudeNotesIngest).toHaveBeenCalled()
+    })
+
+    it('"Remove imported notes" turns the import off, then removes with the same deps a pass gets', async () => {
+      const res = await invoke('memory:remove-imported-notes')
+      expect(res.success).toBe(true)
+      expect(res.data).toMatchObject({ removed: 2, failed: 0, settings: { indexClaudeNotes: false } })
+      expect(notesMock.removeImportedNotes).toHaveBeenCalledTimes(1)
+      expect(typeof notesMock.removeImportedNotes.mock.calls[0][0].store.remove).toBe('function')
+      expect((await invoke('memory:get-notes-settings')).data.indexClaudeNotes).toBe(false)
+    })
+  })
+
+  describe('memory_search lends general notes to another project only when both switches say so', () => {
+    const own = { id: 'own1', content: 'billing own result', score: 0.9, project: 'billing', source: 'claude', agentId: 'claude-history', tags: [] as string[] }
+    const lendable = { id: 'note1', content: 'a reference note from the app project', score: 0.8, project: 'app', source: 'claude-notes', agentId: 'claude-notes', tags: ['type:reference', 'note:a.md'] }
+    const projectNote = { ...lendable, id: 'note2', tags: ['type:project', 'note:b.md'] }
+    const backend = (): void => {
+      mem.memorySearch.mockImplementation(async (o: any) => (o.agentId === 'claude-notes' ? [projectNote, lendable] : [own]) as never)
+    }
+    const ask = (over: Record<string, unknown> = {}) => mcp.memorySearch({ query: 'cache', limit: 5, project: 'C:\\w\\billing', ...over })
+
+    afterEach(() => { mem.memorySearch.mockReset(); mem.memorySearch.mockImplementation(async () => [] as any[]) })
+
+    it('does not, by default', async () => {
+      backend()
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
+      expect(mem.memorySearch).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not when only the import switch is on', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false })
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
+    })
+
+    it('goes by the sharing switch alone: copies already made stay in use after the import is turned off', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: false, shareNotesAcrossProjects: true })
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1', 'note1'])
+    })
+
+    it('does, after the project\'s own results, one project note left out, when sharing is on', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1', 'note1'])
+      expect(mem.memorySearch).toHaveBeenLastCalledWith({ query: 'cache', limit: 6, agentId: 'claude-notes' })
+    })
+
+    it('lends nothing to a search that names no project', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect((await ask({ project: undefined })).map((r: any) => r.id)).toEqual(['own1'])
+    })
+
+    // A caller that asked for one agent's memories, one kind, or one task's, asked for something narrower than the notes it
+    // would be handed: the extra notes would be more than it asked for.
+    it.each([['an agent', { agentId: 'codex' }], ['a kind', { kind: 'result' }], ['a task', { taskId: 'T-123' }]])(
+      'lends nothing to a search that is filtered to %s',
+      async (_name, filter) => {
+        backend()
+        await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+        expect((await ask(filter)).map((r: any) => r.id)).toEqual(['own1'])
+        expect(mem.memorySearch).toHaveBeenCalledTimes(1) // and no extra search was even made
+      },
+    )
+
+    it('never lends beyond the limit the search was given', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect((await ask({ limit: 1 })).map((r: any) => r.id)).toEqual(['own1']) // the project's own result fills it
+      expect((await ask({ limit: 2 })).map((r: any) => r.id)).toEqual(['own1', 'note1'])
+      expect((await ask({ limit: 'abc' })).map((r: any) => r.id)).toEqual(['own1']) // a limit the store cannot read gets nothing lent
+    })
+
+    // The project the model passes is usually its working directory, a path. Notes are told apart by slug, so the lender has to
+    // compare THIS project's slug and not the path it was given: a path never equals a slug, and a note of the project's own
+    // name would be lent back to it as if it came from another project.
+    it('compares the project by its slug when the model passes a path', async () => {
+      const sameName = { ...lendable, id: 'note3', project: 'billing', tags: ['type:reference', 'note:c.md'] }
+      mem.memorySearch.mockImplementation(async (o: any) => (o.agentId === 'claude-notes' ? [sameName, lendable] : [own]) as never)
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect((await ask({ project: 'C:\\work\\billing' })).map((r: any) => r.id)).toEqual(['own1', 'note1'])
+    })
+
+    // The wall is at every door an agent reads through, not only the two that know which project is asking. A read that names no
+    // project (memory_search and memory_list without `project`, and the graph walks, which start from a memory and not a
+    // project) cannot say whose notes it may have: it gets none while the switch is off, and the general kinds once it is on.
+    // What the store itself scopes to a project (a search or a listing that names one) is left as the store gave it.
+    describe('the doors that name no project', () => {
+      const mine = { id: 'mine', content: 'billing own result', ts: 5, score: 0.9, project: 'billing', source: 'claude-notes', agentId: 'claude-notes', tags: ['type:project', 'note:own.md'] }
+      const ref = { ...lendable, id: 'ref1' }
+      const chunk = { ...own, id: 'chunk1' }
+      const everything = (): any[] => [chunk, ref, projectNote, { ...ref, id: 'user1', tags: ['type:user', 'note:u.md'] }, { ...ref, id: 'untyped1', tags: ['type:untyped', 'note:x.md'] }]
+      const ids = (rows: any[]): string[] => rows.map((r) => r.id)
+      const sharing = (on: boolean) => invoke('memory:set-notes-settings', { shareNotesAcrossProjects: on })
+
+      afterEach(async () => {
+        const { resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+        resetMemoryCorrections()
+        mem.memoryList.mockReset(); mem.memoryList.mockImplementation(async () => [{ id: 'l1' }] as any[])
+        mem.memoryRelated.mockReset(); mem.memoryRelated.mockImplementation(async () => [{ id: 'r1' }] as any[])
+        mem.memoryGraphQuery.mockReset(); mem.memoryGraphQuery.mockImplementation(async () => ({ nodes: [], edges: [] }) as any)
+      })
+
+      describe.each([
+        ['memory_search', (over: Record<string, unknown>) => mcp.memorySearch({ query: 'cache', limit: 20, ...over }), (rows: any[]) => mem.memorySearch.mockImplementation(async () => rows as never)],
+        ['memory_list', (over: Record<string, unknown>) => mcp.memoryList({ limit: 20, ...over }), (rows: any[]) => mem.memoryList.mockImplementation(async () => rows as never)],
+      ])('%s', (_name, call, backend) => {
+        it('returns no saved note by default, and everything else', async () => {
+          backend(everything())
+          expect(ids(await call({}))).toEqual(['chunk1'])
+        })
+
+        it('returns the general kinds once notes may help in other projects, never a project note or an untyped one', async () => {
+          backend(everything())
+          await sharing(true)
+          expect(ids(await call({}))).toEqual(['chunk1', 'ref1', 'user1'])
+        })
+
+        it('leaves what the store scoped to the named project alone, this project\'s own notes included', async () => {
+          backend([chunk, mine])
+          expect(ids(await call({ project: 'C:\\w\\billing' }))).toEqual(['chunk1', 'mine'])
+        })
+      })
+
+      describe.each([
+        ['memory_related', (over: Record<string, unknown> = {}) => mcp.memoryRelated({ id: 'seed', ...over }), (rows: any[]) => mem.memoryRelated.mockImplementation(async () => rows as never)],
+        ['memory_graph', (over: Record<string, unknown> = {}) => mcp.memoryGraph({ id: 'seed', ...over }), (rows: any[]) => mem.memoryGraphQuery.mockImplementation(async () => rows as never)],
+      ])('%s, a walk the store auto-links across projects', (_name, call, backend) => {
+        it('reaches no saved note by default, and every other memory', async () => {
+          backend(everything())
+          expect(ids(await call())).toEqual(['chunk1'])
+        })
+
+        it('reaches the general kinds once notes may help in other projects', async () => {
+          backend(everything())
+          await sharing(true)
+          expect(ids(await call())).toEqual(['chunk1', 'ref1', 'user1'])
+        })
+
+        it('still hides what was retracted, whatever the notes switch says', async () => {
+          const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+          correctMemory({ id: 'chunk1', kind: 'retract', reason: 'wrong', by: 'david' })
+          backend([chunk, { ...chunk, id: 'chunk2' }])
+          expect(ids(await call())).toEqual(['chunk2'])
+        })
+      })
+
+      // The store cuts a read to its limit, best first, BEFORE the door drops what the agent may not be handed. A note is stored at
+      // importance 0.9 and matches the topic it was written about, so a read whose best rows were notes used to come back short,
+      // or empty, with rows the agent may have sitting just behind them. The store here answers the way the real one does: the
+      // best rows first, cut to the limit it is given.
+      describe('a read whose best rows are ones the agent may not be handed', () => {
+        const noteRows = (n: number, type = 'reference'): any[] => Array.from({ length: n }, (_, i) => ({ ...lendable, id: `n${i + 1}`, tags: [`type:${type}`, `note:n${i + 1}.md`] }))
+        const chunks = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ ...chunk, id: `c${i + 1}` }))
+        const held = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ ...chunk, id: `k${i + 1}`, agentId: 'mneme', tags: ['candidate'] }))
+        const faithful = (rows: any[], dflt: number, ceiling: number) => async (o: any) => rows.slice(0, Math.min(Math.max(o.limit ?? dflt, 1), ceiling)) as never
+        const sharing = (on: boolean) => invoke('memory:set-notes-settings', { shareNotesAcrossProjects: on })
+
+        beforeEach(async () => { await sharing(false) })
+        afterEach(() => {
+          mem.memorySearch.mockReset(); mem.memorySearch.mockImplementation(async () => [] as any[])
+        })
+
+        // The numbers each door reads a missing limit and a deep one by are the store's own (swarmMemory.ts): what it reads when
+        // none is named (10, 50, 5, 20), and the most it gives in one read (100, 500, 100; the graph walk has no clamp and is held to 100).
+        const LADDERS = {
+          memory_search: { asked30: [30, 60, 100], none: [undefined, 20, 40, 80, 100] },
+          memory_list: { asked30: [30, 60, 120, 240, 480, 500], none: [undefined, 100, 200, 400, 500] },
+          memory_related: { asked30: [30, 60, 100], none: [undefined, 10, 20, 40, 80, 100] },
+          memory_graph: { asked30: [30, 60, 100], none: [undefined, 40, 80, 100] },
+        } as const
+        describe.each([
+          ['memory_search', (over: Record<string, unknown>) => mcp.memorySearch({ query: 'cache', ...over }), (rows: any[]) => mem.memorySearch.mockImplementation(faithful(rows, 10, 100)), () => mem.memorySearch],
+          ['memory_list', (over: Record<string, unknown>) => mcp.memoryList({ ...over }), (rows: any[]) => mem.memoryList.mockImplementation(faithful(rows, 50, 500)), () => mem.memoryList],
+          ['memory_related', (over: Record<string, unknown>) => mcp.memoryRelated({ id: 'seed', ...over }), (rows: any[]) => mem.memoryRelated.mockImplementation(faithful(rows, 5, 100)), () => mem.memoryRelated],
+          ['memory_graph', (over: Record<string, unknown>) => mcp.memoryGraph({ id: 'seed', ...over }), (rows: any[]) => mem.memoryGraphQuery.mockImplementation(faithful(rows, 20, 1000)), () => mem.memoryGraphQuery],
+        ])('%s', (name, call, backend, spy) => {
+          it('never asks the store for more than it gives in one read, and starts from the number it would have used', async () => {
+            const ladder = LADDERS[name as keyof typeof LADDERS]
+            backend(noteRows(700))
+            await sharing(false)
+            spy().mockClear()
+            expect(await call({ limit: 30 })).toEqual([])
+            expect(spy().mock.calls.map((c: any[]) => c[0].limit)).toEqual(ladder.asked30)
+            spy().mockClear()
+            expect(await call({})).toEqual([])
+            expect(spy().mock.calls.map((c: any[]) => c[0].limit)).toEqual(ladder.none)
+          })
+
+          it.each([3, 5, 10])('still gives an agent %i rows when 12 notes hold the best places and notes may not travel', async (limit) => {
+            backend([...noteRows(12), ...chunks(30)])
+            await sharing(false)
+            const got = ids(await call({ limit }))
+            expect(got).toEqual(Array.from({ length: limit }, (_, i) => `c${i + 1}`))
+          })
+
+          it('does the same when the notes are project notes, which never travel even once notes may', async () => {
+            backend([...noteRows(12, 'project'), ...chunks(30)])
+            await sharing(true)
+            expect(ids(await call({ limit: 5 }))).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
+          })
+
+          it('counts the general notes as results once notes may help in other projects, and never goes above the limit', async () => {
+            backend([...noteRows(2), ...noteRows(6, 'project').map((n, i) => ({ ...n, id: `p${i + 1}` })), ...chunks(30)])
+            await sharing(true)
+            // (memory_search puts what it serves in score order, which differs between a note and a chunk in these fixtures)
+            expect(ids(await call({ limit: 5 })).sort()).toEqual(['c1', 'c2', 'c3', 'n1', 'n2'])
+          })
+
+          it('asks the store once when there was nothing to hide', async () => {
+            backend(chunks(30))
+            await sharing(false)
+            spy().mockClear()
+            expect(ids(await call({ limit: 4 }))).toEqual(['c1', 'c2', 'c3', 'c4'])
+            expect(spy()).toHaveBeenCalledTimes(1)
+          })
+
+          it('returns what there is when everything the store holds is hidden, and stops asking', async () => {
+            backend(noteRows(4))
+            await sharing(false)
+            spy().mockClear()
+            expect(await call({ limit: 3 })).toEqual([])
+            expect(spy().mock.calls.length).toBeLessThanOrEqual(3) // 3, then 6, which came back with 4: that is all of it
+          })
+        })
+
+        // Lessons the gate stores but holds back are dropped at every door too, and shrank a read the same way.
+        describe.each([
+          ['memory_search', (over: Record<string, unknown>) => mcp.memorySearch({ query: 'cache', ...over }), (rows: any[]) => mem.memorySearch.mockImplementation(faithful(rows, 10, 100))],
+          ['memory_list', (over: Record<string, unknown>) => mcp.memoryList({ ...over }), (rows: any[]) => mem.memoryList.mockImplementation(faithful(rows, 50, 500))],
+        ])('%s, with a project named, and held-back lessons at the top', (_name, call, backend) => {
+          it('gives the limit asked for', async () => {
+            backend([...held(8), ...chunks(20)])
+            expect(ids(await call({ limit: 3, project: 'C:\\w\\billing' }))).toEqual(['c1', 'c2', 'c3'])
+          })
+
+          it('leaves the project\'s own notes as the store scoped them, and fills the rest', async () => {
+            backend([...held(3), { ...chunk, id: 'mine', source: 'claude-notes', agentId: 'claude-notes', tags: ['type:project', 'note:own.md'] }, ...chunks(20)])
+            expect(ids(await call({ limit: 3, project: 'C:\\w\\billing' }))).toEqual(['mine', 'c1', 'c2'])
+          })
+        })
+
+        it('keeps a note someone tagged candidate: only the lesson writer\'s rows are held back', async () => {
+          mem.memorySearch.mockImplementation(faithful([{ ...chunk, id: 'mine', agentId: 'claude', tags: ['candidate'] }, ...chunks(5)], 10, 100))
+          expect(ids(await mcp.memorySearch({ query: 'cache', limit: 2, project: 'C:\\w\\billing' }))).toEqual(['mine', 'c1'])
+        })
+      })
+    })
+
+    // memory_anticipate names no project and keeps anything with importance >= 0.6, which a note (0.9) is.
+    describe('memory_anticipate, which cannot tell which project is asking', () => {
+      const lesson = { id: 'les1', content: 'a procedural lesson', score: 0.9, memoryType: 'procedural', importance: 0.5, tags: [] as string[], source: 'claude', agentId: 'mneme' }
+      const noteOf = (id: string, type: string) => ({ ...lendable, id, importance: 0.9, memoryType: 'summary', tags: [`type:${type}`, 'note:x.md'] })
+      const hits = (): any[] => [noteOf('n-ref', 'reference'), noteOf('n-proj', 'project'), noteOf('n-fb', 'feedback'), lesson, noteOf('n-user', 'user'), noteOf('n-untyped', 'untyped')]
+      const ids = async (): Promise<string[]> => (await mcp.memoryAnticipate({ task: 'the deploy fails with ENOENT', limit: 10 })).map((r: any) => r.id)
+
+      it('returns no saved note by default, only the lesson', async () => {
+        mem.memorySearch.mockResolvedValueOnce(hits() as never)
+        expect(await ids()).toEqual(['les1'])
+      })
+
+      it('returns the general kinds once notes may help in other projects, never a project or untyped note', async () => {
+        await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+        mem.memorySearch.mockResolvedValueOnce(hits() as never)
+        expect(await ids()).toEqual(['les1', 'n-ref', 'n-fb', 'n-user']) // by score: the lesson 0.9, the notes 0.8
+      })
+    })
+
+    it('a retracted note is not lent: the lending search goes through the same corrections', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      const { correctMemory, resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+      resetMemoryCorrections()
+      correctMemory({ id: 'note1', kind: 'retract', reason: 'wrong', by: 'user' })
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
+      resetMemoryCorrections()
+    })
+  })
+
+  describe('the freshness lane carries the project key, so a saved note reaches only its own project\'s primer', () => {
+    it('hands the primer the key of each recent entry', async () => {
+      mem.memoryList.mockResolvedValueOnce([{ id: 'r1', content: 'recent', kind: 'note', ts: 5, project: 'app', projectKey: 'pk:app', tags: [], agentId: 'a' }] as never)
+      const { buildContextPrimer } = await import('../../src/main/contextPrimer')
+      ;(buildContextPrimer as any).mockClear()
+      await invoke('memory:build-primer', { query: 'q', cwd: 'C:\\w\\app' })
+      const recent = (buildContextPrimer as any).mock.calls[0][1].recent
+      expect(await recent({ limit: 3, project: 'app' })).toEqual([expect.objectContaining({ id: 'r1', projectKey: 'pk:app' })])
+    })
+  })
+})
+
+// LAST in the file, on purpose: before-quit tears the module down (the memory host stops, the terminals are killed).
+describe('the saved-notes pass and the app quitting', () => {
+  it('ends its pass when the app quits: the pass is handed a quit signal that turns true at before-quit', async () => {
+    expect(typeof onBeforeQuit).toBe('function')
+    notesMock.runClaudeNotesIngest.mockClear()
+    await indexer.run()
+    const d = notesMock.runClaudeNotesIngest.mock.calls[notesMock.runClaudeNotesIngest.mock.calls.length - 1][0]
+    expect(d.stopped()).toBe(false)
+    onBeforeQuit!()
+    expect(d.stopped()).toBe(true)
   })
 })

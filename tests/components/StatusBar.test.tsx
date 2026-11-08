@@ -330,6 +330,22 @@ describe('StatusBar', () => {
     expect(screen.getByText('memory_primer')).toBeInTheDocument()
   })
 
+  it('help dialog says the current project leads with its saved notes and best lessons, and only then its past conversations', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    // Since 1.55 the project's block of the launch primer leads with its saved notes, then the lessons worth keeping, then the
+    // past conversations (contextPrimer.ts; README and DOCUMENTATION say the same). This line used to say the conversations lead.
+    const line = screen.getByText('This repo/directory first').parentElement?.textContent ?? ''
+    expect(line).toMatch(/saved notes/i)
+    expect(line).toMatch(/lessons/i)
+    expect(line).toMatch(/past conversations/i)
+    expect(line.search(/saved notes/i)).toBeLessThan(line.search(/past conversations/i))
+    expect(line.search(/lessons/i)).toBeLessThan(line.search(/past conversations/i))
+    expect(line).not.toMatch(/past conversations\s*leading/i)
+    // Nothing else in the help says the conversations lead the project's block.
+    expect(screen.queryByText(/past conversations\s*leading/i)).not.toBeInTheDocument()
+  })
+
   it('help dialog shows workspaces section', () => {
     render(<StatusBar />)
     fireEvent.click(screen.getByText('Help / Support'))

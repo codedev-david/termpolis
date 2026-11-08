@@ -6,7 +6,21 @@
 // every domain read "unproven" forever (attempts: 0) and the dashboard's competence
 // panel stayed permanently empty. These tests pin the real-work signals.
 import { describe, it, expect } from 'vitest'
-import { deriveOutcome } from '../../src/main/outcomeSignals'
+import { deriveOutcome, outcomeAuditDetail } from '../../src/main/outcomeSignals'
+
+// The line the activity record gets when an outcome is charged back to the memories recalled for it. memory_audit hands that
+// record to every agent, so the line says how many and in which direction, and cannot say which project: it is given neither.
+describe('outcomeSignals — the activity record\'s line for an outcome', () => {
+  it('says which way it went and how many memories it was charged to', () => {
+    expect(outcomeAuditDetail(true, 3)).toBe('outcome success → 3 recalled memories reinforced')
+    expect(outcomeAuditDetail(false, 1)).toBe('outcome FAILURE → 1 recalled memories demoted')
+  })
+
+  it('takes a count and a direction and nothing else, so it cannot carry a project', () => {
+    expect(outcomeAuditDetail.length).toBe(2)
+    expect(outcomeAuditDetail(true, 0)).not.toMatch(/[/\\:]\w|\bin \w/) // no path, no "in <project>"
+  })
+})
 
 describe('outcomeSignals — a landed commit is evidence', () => {
   it('a git commit that succeeded is a SUCCESS signal for the project domain', () => {

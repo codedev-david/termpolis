@@ -24,6 +24,11 @@ describe('BertTokenizer (deterministic)', () => {
     expect(makeTok().encode('hello world')).toEqual([2, 4, 5, 3])
   })
 
+  it('tokenizer handles the word constructor', () => {
+    // Object.prototype members are not words in the vocab: each reads as [UNK], never as a function for an id.
+    expect(makeTok().encode('constructor hello tostring valueof')).toEqual([2, 1, 4, 1, 1, 3])
+  })
+
   it('does greedy WordPiece with ## continuation', () => {
     expect(makeTok().encode('playing')).toEqual([2, 7, 8, 3])
   })

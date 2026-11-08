@@ -167,6 +167,8 @@ export function mergeRelated(input: {
 }
 
 const norm = (s: string): string => (s || '').replace(/\s+/g, ' ').trim().toLowerCase()
+/** The text two hits are compared on to tell whether they say the same thing: case and every run of whitespace folded. */
+export const normText = norm
 
 /** Lowercased word-token set (len > 2) for cheap Jaccard similarity. */
 function tokenSet(s: string): Set<string> {
@@ -229,6 +231,93 @@ export function dedupeHits<T extends { content: string }>(hits: T[]): T[] {
     out.push(h)
   }
   return out
+}
+
+// A letter, a digit or an underscore from any script: what a word, a number or an identifier is made of.
+const WORD_CHAR = /[\p{L}\p{N}_]/u
+
+/** Whether `a` is a strict head of `b`, both already folded by normText: `b` begins with `a`, says more, and the cut
+ *  falls between words. */
+function isHead(a: string, b: string): boolean {
+  if (!a || b.length <= a.length || !b.startsWith(a)) return false
+  return !(WORD_CHAR.test(a[a.length - 1]) && WORD_CHAR.test(b[a.length]))
+}
+
+/**
+ * Whether `shorter` is a strict head of `longer`. Both are folded by {@link normText} first; then `longer` has to begin
+ * with `shorter`, say more, and carry on past a word boundary, so a text is never taken for the head of one that merely
+ * shares its letters ("content 1" is not the head of "content 10", "v1" not of "v10"). Equal text is not a head:
+ * {@link dedupeHits} owns that. Pure.
+ */
+export function isStrictPrefix(shorter: string, longer: string): boolean {
+  return isHead(norm(shorter), norm(longer))
+}
+
+/**
+ * `rows` without the passages that overlap one already `kept`: a strict head of a kept passage (the kept one carries it in its
+ * fuller form) and one that a kept passage is a strict head of (the kept one stands for it). Each text is folded once, where
+ * isStrictPrefix folds both on every call, which a list of a few dozen against a few dozen should not pay. The rows that stay keep
+ * their order and are the same objects; the SAME array comes back when nothing overlaps. Pure.
+ */
+export function dropOverlapping<T extends { content: string }>(kept: ReadonlyArray<{ content: string }>, rows: T[]): T[] {
+  if (kept.length === 0 || rows.length === 0) return rows
+  const folded = kept.map((k) => norm(k.content))
+  const out = rows.filter((row) => {
+    const text = norm(row.content)
+    return !folded.some((k) => isHead(text, k) || isHead(k, text))
+  })
+  return out.length === rows.length ? rows : out
+}
+
+/**
+ * Drop every hit whose text is a strict head of another hit's, keeping the fuller one.
+ *
+ * The 30-minute ingest pass stores the trailing partial chunk of a session that is still going, and a later pass stores
+ * the fuller chunk that begins with the same turns: 11-12% of the newest chunks of a busy project are such heads, and a
+ * search returns both, so one passage takes two slots. The fuller chunk is the one kept, and it takes the better of the
+ * two scores: it holds the same words, and a longer text only dilutes the match, so letting it keep its own lower score
+ * could push the passage under the relevance cut and lose both.
+ *
+ * Survivors keep their order. Returns the SAME array when nothing is dropped, so the usual case costs one scan. A hit
+ * that is the head of several fuller chunks is dropped once; the longest of them (the first of equals) takes its score.
+ * Quadratic, which is fine for what reaches it: a search returns at most 100 hits and a lane lists a few dozen. Pure.
+ *
+ * `atFirst` is for a list that is a RANKING nobody sorts again: the fuller hit then takes the place of the earliest head
+ * it replaces, so a passage ranked first stays first. (A list that is sorted by score afterwards needs no such thing:
+ * the fuller hit already carries the best score.)
+ *
+ * `sameGroup` is for a list of two kinds of hit, where one kind must not take the place of the other: a head then gives
+ * way only to a fuller hit the predicate accepts it with, and stays (beside the fuller one) otherwise.
+ */
+export function dropPrefixDuplicates<T extends { content: string; score?: number }>(hits: T[], atFirst = false, sameGroup?: (a: T, b: T) => boolean): T[] {
+  if (hits.length < 2) return hits
+  const texts = hits.map((h) => norm(h.content))
+  const fuller: number[] = new Array(hits.length).fill(-1) // the hit each one is the head of: the longest, the first of equals
+  let heads = 0
+  for (let i = 0; i < hits.length; i++) {
+    for (let j = 0; j < hits.length; j++) {
+      if (j !== i && isHead(texts[i], texts[j]) && (!sameGroup || sameGroup(hits[i], hits[j])) && (fuller[i] < 0 || texts[j].length > texts[fuller[i]].length)) fuller[i] = j
+    }
+    if (fuller[i] >= 0) heads++
+  }
+  if (heads === 0) return hits
+  const best = hits.map((h) => h.score)
+  for (let i = 0; i < hits.length; i++) {
+    const score = hits[i].score
+    if (fuller[i] < 0 || typeof score !== 'number') continue
+    const held = best[fuller[i]]
+    if (typeof held !== 'number' || score > held) best[fuller[i]] = score
+  }
+  const keep: number[] = []
+  for (let i = 0; i < hits.length; i++) if (fuller[i] < 0) keep.push(i)
+  if (atFirst) {
+    const place = hits.map((_, i) => i)
+    for (let i = 0; i < hits.length; i++) if (fuller[i] >= 0 && i < place[fuller[i]]) place[fuller[i]] = i
+    // Two kept hits never share a place: a head belongs to one fuller chunk, so only that chunk takes its index, and the head
+    // itself is not kept. (And the sort is stable, so equal places could not reorder anything anyway.)
+    keep.sort((x, y) => place[x] - place[y])
+  }
+  return keep.map((i) => (best[i] === hits[i].score ? hits[i] : { ...hits[i], score: best[i] }))
 }
 
 /** Cap a string to maxChars, marking truncation with a single ellipsis char. */

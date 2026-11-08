@@ -269,6 +269,75 @@ describe('mnemeSociety', () => {
     })
   })
 
+  // 1.55.0: memory_conflicts tells an agent to "mark the loser with a `supersedes` memory_link", and memory_link
+  // takes ids. Neither tool returned one, so the advised link could not be made. The ids ride along when the
+  // lessons carry them; a lesson without one (a test, a caller with bare text) is pooled exactly as before.
+  describe('ids — so the supersedes link the tools advise can actually be made', () => {
+    const I = (id: string, source: string, content: string, importance?: number): AgentLesson => ({ id, source, content, importance })
+
+    it('returns the id of every lesson that fed a pooled one, in arrival order, and of the one whose wording it is', () => {
+      const [p] = poolLessons([
+        I('m1', 'claude', 'Rebuild the cache.'),
+        I('m2', 'codex', 'rebuild the cache after changing the schema version'),
+        I('m3', 'gemini', 'Rebuild the cache'),
+      ], { similar: () => 1, threshold: 0.5 })
+      expect(p.content).toBe('rebuild the cache after changing the schema version') // the longest phrasing
+      expect(p.id).toBe('m2') // ...and the id of THAT lesson, the one to link to
+      expect(p.ids).toEqual(['m1', 'm2', 'm3'])
+    })
+
+    it('moves the representative, and its id, to a later phrasing that is longer', () => {
+      const [p] = poolLessons([I('m1', 'claude', 'Always guard nulls in store.ts'), I('m2', 'codex', 'always guard nulls in store.ts.')])
+      expect(p.corroboration).toBe(2)
+      expect(p.content).toBe('always guard nulls in store.ts.') // the longer, by one character
+      expect(p.id).toBe('m2')
+      expect(p.ids).toEqual(['m1', 'm2'])
+    })
+
+    // Equal in length (23 characters each), so neither is "longer": the earlier one stays, whichever id sorts first.
+    it.each([['a', 'b'], ['b', 'a']])('on a tie in length keeps the earlier phrasing and its id (%s, then %s)', (first, second) => {
+      const [p] = poolLessons([I(first, 'claude', 'rebuild the cache first'), I(second, 'codex', 'rebuild the cache later')], { similar: () => 1, threshold: 0.5 })
+      expect(p.content).toBe('rebuild the cache first')
+      expect(p.id).toBe(first)
+      expect(p.ids).toEqual([first, second])
+    })
+
+    it('gives a lesson that is alone in its group its own id', () => {
+      const out = poolLessons([I('a', 'claude', 'first distinct lesson'), I('b', 'codex', 'completely other lesson')])
+      expect(out.map((p) => [p.id, p.ids])).toEqual([['a', ['a']], ['b', ['b']]])
+    })
+
+    it('lists a repeated id once, and never invents one for a lesson that has none', () => {
+      const out = poolLessons([I('m1', 'claude', 'same lesson here'), I('m1', 'codex', 'same lesson here'), { source: 'gemini', content: 'same lesson here' }])
+      expect(out).toHaveLength(1)
+      expect(out[0].ids).toEqual(['m1'])
+      expect(out[0].corroboration).toBe(3)
+    })
+
+    it('says no id when the representative is a lesson that has none', () => {
+      const [p] = poolLessons([I('m1', 'claude', 'short'), { source: 'codex', content: 'short but a longer phrasing of it', }], { similar: () => 1, threshold: 0.5 })
+      expect(p.content).toBe('short but a longer phrasing of it')
+      expect(p.id).toBeUndefined()
+      expect(p.ids).toEqual(['m1'])
+    })
+
+    it('pools lessons that carry no ids exactly as before: no id or ids key at all', () => {
+      const [p] = poolLessons([{ source: 'claude', content: 'x lesson' }, { source: 'codex', content: 'x lesson.' }])
+      expect(Object.keys(p).sort()).toEqual(['content', 'corroboration', 'importance', 'sources'])
+    })
+
+    it('returns the id of both sides of a conflict', () => {
+      const [c] = detectConflicts([I('m1', 'claude', 'always X'), I('m2', 'codex', 'never X')], () => true)
+      expect(c.a.id).toBe('m1')
+      expect(c.b.id).toBe('m2')
+    })
+
+    it('carries an id through toAgentLesson, and leaves the key off when the row has none', () => {
+      expect(toAgentLesson({ id: 'mem-9', source: 's', content: 'c' })).toEqual({ id: 'mem-9', source: 's', content: 'c', memoryType: undefined, importance: undefined })
+      expect('id' in toAgentLesson({ source: 's', content: 'c' })).toBe(false)
+    })
+  })
+
   describe('toAgentLesson — source projection for pooling/conflicts', () => {
     it('prefers the explicit source', () => {
       expect(toAgentLesson({ source: 'codex', agentId: 'a1', content: 'x' }).source).toBe('codex')
