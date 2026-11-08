@@ -182,7 +182,8 @@ async function expectCard(w: World, id: string) {
     const raw = await w.page.evaluate(async (terminalId) => {
       try { return await (window as unknown as { termpolis: { readTerminalBuffer: (id: string, from: number) => Promise<unknown> } }).termpolis.readTerminalBuffer(terminalId, 0) } catch (err) { return String(err) }
     }, id)
-    throw new Error(`${(e as Error).message}\nLIMIT-LOOKS ${JSON.stringify(looks)}\nRAW-OUTPUT ${JSON.stringify(raw)}`)
+    const st = await w.page.evaluate(() => { try { return (window as unknown as { __termpolis_test_state: () => { diag: unknown } }).__termpolis_test_state().diag } catch (err) { return String(err) } })
+    throw new Error(`${(e as Error).message}\nSTORE-DIAG ${JSON.stringify(st)}\nLIMIT-LOOKS ${JSON.stringify(looks)}`)
   }
   return card
 }

@@ -724,7 +724,6 @@ export default function App() {
             lastDismissedPrompt.set(agent.terminalId, dismissKey)
             // Its agent as main recorded run_command's line, else as its name says (R10).
             const worker = store.terminals.find((t) => t.id === agent.terminalId)
-            const tr = ((window as any).__limitTrace ??= []) as unknown[]
           const dismissChar = await replyToScreen(
               output, agent.agentName,
               () => mayTrustFolder(agent.terminalId), () => readScreen(agent.terminalId),
