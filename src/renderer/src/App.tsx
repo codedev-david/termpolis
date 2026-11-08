@@ -231,6 +231,12 @@ export default function App() {
         swarmAgents: s.swarmAgents,
         swarmCompletionSummary: s.swarmCompletionSummary,
         swarmNotification: s.swarmNotification,
+        diag: {
+          accountSwitch: s.accountSwitch, limitBanners: s.limitBanners, relaunching: s.relaunching, viewMode: s.viewMode,
+          activeTerminalId: s.activeTerminalId, showSettings: s.showSettings, focused: document.hasFocus(),
+          view: s.accountsView && { chooser: s.accountsView.chooser, hidden: s.accountsView.hidden, accounts: s.accountsView.accounts.map((r) => ({ id: r.id, agent: r.agent, label: r.label })) },
+          trace: (window as any).__limitTrace ?? [],
+        },
       }
     }
     // Bundled observability libs, exposed for e2e tests so they exercise
@@ -718,7 +724,8 @@ export default function App() {
             lastDismissedPrompt.set(agent.terminalId, dismissKey)
             // Its agent as main recorded run_command's line, else as its name says (R10).
             const worker = store.terminals.find((t) => t.id === agent.terminalId)
-            const dismissChar = await replyToScreen(
+            const tr = ((window as any).__limitTrace ??= []) as unknown[]
+          const dismissChar = await replyToScreen(
               output, agent.agentName,
               () => mayTrustFolder(agent.terminalId), () => readScreen(agent.terminalId),
               !hasManyAccounts(store.accountsView, worker?.swarmAgent ?? agentOfName(agent.agentName)),
@@ -825,10 +832,13 @@ export default function App() {
           // replyToScreen reads the screen again first, so an answered dialog gets nothing.
           lastDismissedPrompt.set(term.id, dismissKey)
           const agent = terminalAgent(term)
+          const tr = ((window as any).__limitTrace ??= []) as unknown[]
           const dismissChar = await replyToScreen(
             output, term.name, () => mayTrustFolder(term.id), () => readScreen(term.id),
             !hasManyAccounts(store.accountsView, agent),
           )
+          tr.push({ at: Date.now(), id: term.id, agent, dismissChar, out: output.length })
+          if (tr.length > 200) tr.splice(0, tr.length - 200)
           if (dismissChar) {
             window.termpolis.writeToTerminal(term.id, dismissChar)
             continue
@@ -839,10 +849,11 @@ export default function App() {
             const looked = await watchTerminal(term.id, agent, store.accountsView, {
               accounts: window.accounts,
               now: Date.now,
-              onLimit: (note) => showLimit(note, {
+              onLimit: (note) => { tr.push({ at: Date.now(), onLimit: note.kind, ctx: note.ctx }); showLimit(note, {
                 store: useTerminalStore.getState, focused: () => document.hasFocus(), now: Date.now, newId: uuid, notify: osNotify,
-              }),
+              }) },
             })
+            tr.push({ at: Date.now(), looked })
             // A limit screen is still: a look that failed (main busy, an IPC error) must be tried again
             // on the next tick, not passed by as a screen already judged.
             if (!looked) lastDismissedPrompt.delete(term.id)
