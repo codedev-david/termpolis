@@ -848,6 +848,7 @@ export default function App() {
             const looked = await watchTerminal(term.id, agent, store.accountsView, {
               accounts: window.accounts,
               now: Date.now,
+              screen: dismissKey,
               onLimit: (note) => { tr.push({ at: Date.now(), onLimit: note.kind, ctx: note.ctx }); showLimit(note, {
                 store: useTerminalStore.getState, focused: () => document.hasFocus(), now: Date.now, newId: uuid, notify: osNotify,
               }) },

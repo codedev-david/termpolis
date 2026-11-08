@@ -444,9 +444,9 @@ describe('watchTerminal: the view the next chooser reads (round 1)', () => {
 describe('watchTerminal: whether the look was answered (round 1)', () => {
   const lookApi = (limitLook: () => Promise<unknown>) => ({ limitLook: vi.fn(limitLook as never), noteLimit: vi.fn(async () => ({ success: true })) })
 
-  it('says true for a look main answered, whatever it saw, and false for one that failed', async () => {
+  it('says true for a stop main counted, and false for a look that failed or a screen it may not have caught up with', async () => {
     const idle = lookApi(async () => ({ success: true, data: look({ status: IDLE }) }))
-    expect(await watchTerminal('t1', 'claude', null, { accounts: idle, now: () => 1, onLimit: vi.fn() })).toBe(true)
+    expect(await watchTerminal('t1', 'claude', null, { accounts: idle, now: () => 1, onLimit: vi.fn() })).toBe(false)
     const stop = lookApi(async () => ({ success: true, data: look() }))
     expect(await watchTerminal('t1', 'claude', view([A, B]), { accounts: stop, now: () => Date.parse('2026-10-23T18:00:00Z'), onLimit: vi.fn() })).toBe(true)
     expect(await watchTerminal('t1', 'claude', null, { accounts: lookApi(async () => ({ success: false, error: 'busy' })), now: () => 1, onLimit: vi.fn() })).toBe(false)
@@ -470,17 +470,32 @@ describe('watchTerminal: a still limit screen main did not count yet (Windows CI
     expect(onLimit).toHaveBeenCalledTimes(1)
   })
 
-  it('gives up after a few looks, a stop main never counts (the last frame of an agent that exited)', async () => {
+  it('is looked at again while main still shows no stop on a screen that already holds the limit, its parse behind', async () => {
+    let now = look({ status: IDLE })
+    const accounts = api(() => now)
+    const onLimit = vi.fn()
+    const deps = { accounts, now: () => Date.parse('2026-10-23T18:00:00Z'), onLimit, screen: 'k1' }
+    expect(await watchTerminal('t1', 'claude', view([A, B]), deps)).toBe(false)
+    now = look()
+    expect(await watchTerminal('t1', 'claude', view([A, B]), deps)).toBe(true)
+    expect(onLimit).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up after a few looks of one screen, a stop main never counts (the last frame of an agent that exited)', async () => {
     const accounts = api(() => look({ live: false }))
-    const deps = { accounts, now: () => 1, onLimit: vi.fn() }
+    const deps = { accounts, now: () => 1, onLimit: vi.fn(), screen: 'k1' }
     for (let i = 0; i < UNSETTLED_LOOKS; i++) expect(await watchTerminal('t1', 'claude', null, deps)).toBe(false)
     expect(await watchTerminal('t1', 'claude', null, deps)).toBe(true)
-    // A screen with no stop starts the count again; so does a closed terminal.
-    expect(await watchTerminal('t1', 'claude', null, { ...deps, accounts: api(() => look({ status: IDLE })) })).toBe(true)
-    expect(await watchTerminal('t1', 'claude', null, deps)).toBe(false)
+    // A screen with no stop is judged a few times too, and passed by after.
+    const idle = { ...deps, accounts: api(() => look({ status: IDLE })) }
+    expect(await watchTerminal('t1', 'claude', null, idle)).toBe(true)
+    // A new screen starts the count again; so does a closed terminal; so does a counted stop.
+    expect(await watchTerminal('t1', 'claude', null, { ...idle, screen: 'k2' })).toBe(false)
     pruneStops(new Set())
-    for (let i = 0; i < UNSETTLED_LOOKS; i++) expect(await watchTerminal('t1', 'claude', null, deps)).toBe(false)
-    expect(deps.onLimit).not.toHaveBeenCalled()
+    for (let i = 0; i < UNSETTLED_LOOKS; i++) expect(await watchTerminal('t1', 'claude', null, idle)).toBe(false)
+    expect(await watchTerminal('t1', 'claude', null, { ...idle, accounts: api(() => look()) })).toBe(true)
+    expect(await watchTerminal('t1', 'claude', null, idle)).toBe(false)
+    expect(deps.onLimit).toHaveBeenCalledTimes(1)
   })
 })
 
