@@ -36,7 +36,7 @@ jobs:
         shell: bash
         env:
           TERMPOLIS_E2E_PREBUILT: '1'
-        run: npx playwright test e2e/account-chooser.spec.ts -g "Codex at its usage limit" --reporter=list --retries=0
+        run: npx playwright test e2e/account-chooser.spec.ts -g "Codex at its usage limit" --repeat-each=3 --reporter=list --retries=0
       - name: Upload failure traces
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
