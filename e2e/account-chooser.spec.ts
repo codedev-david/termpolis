@@ -168,7 +168,19 @@ const cardOf = (w: World, id: string) => paneOf(w, id).locator('[data-testid="li
 /** Waits for the card that offers a way out of a usage limit. */
 async function expectCard(w: World, id: string) {
   const card = cardOf(w, id)
-  await expect(card).toBeVisible({ timeout: 60_000 })
+  try {
+    await expect(card).toBeVisible({ timeout: 60_000 })
+  } catch (e) {
+    // What main's look at the terminal says, a few times: which of live, turned and the status kept the card away.
+    const looks: unknown[] = []
+    for (let i = 0; i < 4; i++) {
+      looks.push(await w.page.evaluate(async (terminalId) => {
+        try { return await (window as unknown as { accounts: { limitLook: (id: string) => Promise<unknown> } }).accounts.limitLook(terminalId) } catch (err) { return String(err) }
+      }, id))
+      await w.page.waitForTimeout(2000)
+    }
+    throw new Error(`${(e as Error).message}\nLIMIT-LOOKS ${JSON.stringify(looks)}`)
+  }
   return card
 }
 
