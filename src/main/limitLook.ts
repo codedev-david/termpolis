@@ -72,11 +72,22 @@ export { agentOfLaunch }
 export function agentGone(io: SwitchIO, id: string, start: LiveStart, now: number, l: Look = look(io, id)): boolean {
   if (start.ended) return true
   if (start.agent && hintAtFoot(l, start.agent) && HINT_HEAD[start.agent].test(plain(io.outputFrom(id, start.at)))) return true
+  const fresh = now - (start.time ?? 0) < FOREGROUND_GRACE_MS
   const from = indexOf(l, start.at)
   // The replay is read only once a shell reported a prompt since the start: David's Git Bash, zsh
   // and fish report none.
-  if (l.raw.slice(from).search(PROMPT_REPORT) >= 0 && sinceStarted(l.raw, from, false, io.size(id), start.commands).shell) return true
-  return now - (start.time ?? 0) >= FOREGROUND_GRACE_MS && io.atShell?.(id) === true
+  const since = l.raw.slice(from)
+  if (since.search(PROMPT_REPORT) >= 0 && !(fresh && quietUpToPrompt(since)) && sinceStarted(l.raw, from, false, io.size(id), start.commands).shell) return true
+  return !fresh && io.atShell?.(id) === true
+}
+
+/** Nothing printed between the start and the shell's last prompt report since: the shell printed one more prompt
+ *  after the line was entered and before it echoed that line (Git Bash on Windows CI did), not an agent that ran and
+ *  exited. A look in that moment latched the agent gone before it started; in the moment the shell takes to start
+ *  the agent (FOREGROUND_GRACE_MS) it is no exit. */
+function quietUpToPrompt(since: string): boolean {
+  const reports = [...since.matchAll(PROMPT_REPORT)]
+  return plain(since.slice(0, reports[reports.length - 1].index)).trim() === ''
 }
 
 /** Can this terminal ever show an agent's exit? A shell that reports its prompts, or a PTY whose foreground can be read
