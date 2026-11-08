@@ -35,7 +35,7 @@ vi.mock('../../src/renderer/src/hooks/useAutoCodeIndex', () => ({ startRepoReswe
 
 import App from '../../src/renderer/src/App'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
-import { _resetLimitWatchForTest } from '../../src/renderer/src/lib/limitWatch'
+import { _resetLimitWatchForTest, UNSETTLED_LOOKS } from '../../src/renderer/src/lib/limitWatch'
 import { _resetStopReportsForTest } from '../../src/renderer/src/lib/swarmStopReports'
 
 const LIMIT_ROWS = ['❯ Build the login page.', "  ⎿  You've hit your session limit · resets 3pm (America/New_York)", '', '─'.repeat(80), '❯ ', '─'.repeat(80)]
@@ -101,25 +101,31 @@ async function ticks(output: string, limitLook: ReturnType<typeof vi.fn>, count:
 }
 
 describe('App: the usage-limit look is tried again when it failed', () => {
-  it('control: a look main answered is made once for a screen that does not change', async () => {
-    const limitLook = vi.fn(async () => ({ success: true, data: NONE }))
+  it('control: a stop main counted is looked at once, for a screen that does not change', async () => {
+    const limitLook = vi.fn(async () => ({ success: true, data: { ...NONE, status: { status: 'blocked', summary: 'usage limit reached' } } }))
     await ticks(LIMIT_SCREEN, limitLook, 3)
     expect(limitLook).toHaveBeenCalledTimes(1)
   })
 
-  it('a look that threw is made again on the next tick, with the screen unchanged', async () => {
+  it('a still screen main shows no stop on is looked at a few more times, its parse maybe behind, then left alone', async () => {
+    const limitLook = vi.fn(async () => ({ success: true, data: NONE }))
+    await ticks(LIMIT_SCREEN, limitLook, UNSETTLED_LOOKS + 4)
+    expect(limitLook).toHaveBeenCalledTimes(UNSETTLED_LOOKS + 1)
+  })
+
+  it('a look that threw is made again on the next tick, with the screen unchanged, and does not count as a look', async () => {
     const limitLook = vi.fn(async () => ({ success: true, data: NONE }))
     limitLook.mockRejectedValueOnce(new Error('ipc'))
-    await ticks(LIMIT_SCREEN, limitLook, 3)
-    expect(limitLook.mock.calls.length).toBe(2)
+    await ticks(LIMIT_SCREEN, limitLook, UNSETTLED_LOOKS + 4)
+    expect(limitLook.mock.calls.length).toBe(UNSETTLED_LOOKS + 2)
   })
 
   it('a look main answered with a failure is made again too, until it is answered', async () => {
     const limitLook = vi.fn(async () => ({ success: true, data: NONE }))
     limitLook.mockResolvedValueOnce({ success: false, error: 'busy' } as never)
     limitLook.mockResolvedValueOnce({ success: false, error: 'busy' } as never)
-    await ticks(LIMIT_SCREEN, limitLook, 4)
-    expect(limitLook.mock.calls.length).toBe(3)
+    await ticks(LIMIT_SCREEN, limitLook, UNSETTLED_LOOKS + 5)
+    expect(limitLook.mock.calls.length).toBe(UNSETTLED_LOOKS + 3)
   })
 
   it('puts a banner up for a one-account agent that ran out, and takes it down when the agent is at work again', async () => {
