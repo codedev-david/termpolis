@@ -227,3 +227,20 @@ export async function claudeLaunchEnv(cwd: string, sources: LaunchEnvSources): P
   const { settingsEnv } = sources
   return composeLaunchEnv(attempt(() => sources.proxyEnv(sources.env, settingsEnv ? attempt(settingsEnv) : undefined)), shaping)
 }
+
+/** The model Claude Code's subagents run on when the session's model was picked by Auto. */
+export const AUTO_SUBAGENT_MODEL = 'sonnet'
+
+/** v1.55.0 Auto: an Opus main session would otherwise run every subagent on Opus too. Sets
+ *  CLAUDE_CODE_SUBAGENT_MODEL only for an Auto launch, and never over a value the user's own
+ *  environment (or the launch env) already holds. A subagent's own `model:` frontmatter still wins;
+ *  the _FORCE variant, which would override it, is never set. */
+export function withAutoSubagent(
+  extra: Record<string, string> | undefined,
+  auto: unknown,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string> | undefined {
+  if (auto !== true) return extra
+  if (env.CLAUDE_CODE_SUBAGENT_MODEL !== undefined || extra?.CLAUDE_CODE_SUBAGENT_MODEL !== undefined) return extra
+  return { ...(extra ?? {}), CLAUDE_CODE_SUBAGENT_MODEL: AUTO_SUBAGENT_MODEL }
+}

@@ -339,6 +339,30 @@ describe('AIProfiles', () => {
       expect(mockAddTerminal).toHaveBeenCalled()
     })
 
+    it('shows no task box unless the Claude default is Auto', () => {
+      render(<AIProfiles availableShells={defaultShells} />)
+      expect(screen.queryByTestId('ai-task-input')).toBeNull()
+    })
+
+    it('with Auto, Enter in the task box launches Claude with that task as its first prompt', async () => {
+      localStorage.setItem('termpolis.agent.modelDefaults', JSON.stringify({ claude: 'auto' }))
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => expect(document.querySelectorAll('.fa-circle-check').length).toBeGreaterThan(0))
+      const box = screen.getByTestId('ai-task-input') as HTMLInputElement
+      expect(box.placeholder).toBe("What's the task? (optional)")
+      // An empty box, or any key but Enter, launches nothing.
+      fireEvent.keyDown(box, { key: 'Enter' })
+      fireEvent.change(box, { target: { value: 'x' } })
+      fireEvent.keyDown(box, { key: 'a' })
+      expect((window as any).termpolis.pickDirectory).not.toHaveBeenCalled()
+      fireEvent.change(box, { target: { value: 'find where X is defined' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect((window as any).termpolis.createTerminal).toHaveBeenCalled())
+      await waitFor(() => expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('"find where X is defined"')))
+      expect(box.value).toBe('')
+      localStorage.clear()
+    })
+
     it('does not launch if pickDirectory is cancelled', async () => {
       ;(window as any).termpolis.pickDirectory = vi.fn().mockResolvedValue({ success: true, data: null })
       render(<AIProfiles availableShells={defaultShells} />)

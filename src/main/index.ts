@@ -217,7 +217,7 @@ import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
 import { summarizeElisionHealth } from './headroom/elisionHealth'
 import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight } from './headroomProxy/proxySupervisor'
 import { readJsonObject } from './agentConfigIO'
-import { claudeLaunchEnv as buildClaudeLaunchEnv } from './headroom/shapingEnv'
+import { claudeLaunchEnv as buildClaudeLaunchEnv, withAutoSubagent } from './headroom/shapingEnv'
 import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
@@ -908,7 +908,7 @@ const claudeLaunchEnv = (cwd: string, accountId?: unknown) => {
   })
 }
 
-ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch }) => {
+ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch, autoModel }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
@@ -946,7 +946,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           remoteNoteTerminalOutput(id)
           // A launch on an account steps aside for that profile's own routing, not the default one's (claudeLaunchEnv).
           // A terminal launched to run an agent Termpolis watches carries the chooser's marker (R6).
-        }, allExtraPaths, withLimitChooser(launchEnv, limitWatch), undefined, prep)
+        }, allExtraPaths, withLimitChooser(withAutoSubagent(launchEnv, claudeHeadroom === true && autoModel === true), limitWatch), undefined, prep)
         resolve()
       } catch (e) {
         reject(e)

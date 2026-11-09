@@ -5,6 +5,8 @@ import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo, ShellType } from '../../types'
 import { DEFAULT_AI_PROFILES, launchAgentProfile, resolveShellType } from '../../lib/aiProfiles'
 import { CLAUDE_MODEL_OPTIONS } from '../../lib/modelBroker'
+import { AUTO_MODEL, getAgentModelDefaults } from '../../lib/agentModelDefaults'
+import { TASK_ARG_MAX } from '../../../../shared/taskRouter'
 import { AGENT_COLOR, agentOfCommand } from '../../lib/accountsView'
 import { isAccountLimited, untilText } from '../../../../shared/accountLimits'
 
@@ -138,8 +140,21 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
 
   const allProfiles = [...DEFAULT_AI_PROFILES, ...aiProfiles]
 
-  const handleLaunch = (profile: AIProfile, accountId?: string) =>
-    launchAgentProfile(profile, { availableShells, addTerminal, setLaunchingAgent, ...(accountId ? { accountId } : {}) })
+  // v1.55.0 Auto: an optional task, shown while the Claude default is Auto. A Claude launch takes it
+  // (it picks the model and effort, then becomes the first prompt) and empties the box.
+  const [task, setTask] = useState('')
+  const autoOn = getAgentModelDefaults().claude === AUTO_MODEL
+  const isClaudeProfile = (profile: AIProfile): boolean => agentOfCommand(profile.command) === 'claude'
+
+  const handleLaunch = (profile: AIProfile, accountId?: string) => {
+    const withTask = autoOn && isClaudeProfile(profile) && task.trim() !== ''
+    if (withTask) setTask('')
+    return launchAgentProfile(profile, {
+      availableShells, addTerminal, setLaunchingAgent,
+      ...(accountId ? { accountId } : {}),
+      ...(withTask ? { task: task.trim() } : {}),
+    })
+  }
 
   /** The accounts a profile's agent has: Launch on ▸ lists them once there are two. */
   const accountsFor = (profile: AIProfile) => {
@@ -172,6 +187,26 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
       </div>
       {!collapsed && (
         <div className="px-2 pb-1 flex flex-col gap-0.5">
+          {autoOn && (
+            <input
+              type="text"
+              data-testid="ai-task-input"
+              aria-label="What's the task? (optional)"
+              placeholder="What's the task? (optional)"
+              title="Auto picks Claude's model and effort from this, and starts the session on it. Enter launches Claude."
+              value={task}
+              maxLength={TASK_ARG_MAX}
+              onChange={(e) => setTask(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' || !task.trim()) return
+                const claude = allProfiles.find((p) => p.id === 'claude') ?? allProfiles.find(isClaudeProfile)
+                if (!claude) return
+                e.preventDefault()
+                void handleLaunch(claude)
+              }}
+              className="mx-1 mb-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] placeholder:text-[#6b7280] focus:outline-hidden focus:border-[#22D3EE]"
+            />
+          )}
           {allProfiles.map(profile => {
             const isCustom = aiProfiles.some(p => p.id === profile.id)
             const accounts = accountsFor(profile)

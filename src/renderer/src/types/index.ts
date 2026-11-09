@@ -11,6 +11,7 @@ import type {
 import type { AgyStepOutcome, AgyStepRequest, ModelHold, ModelHoldRequest, SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
 import type { SignInInput, SignInStartRequest, SignInState } from '../../../shared/signInScreens'
 import type { LimitLook } from '../../../shared/accountLimits'
+import type { RouteDecision } from '../../../shared/taskRouter'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
@@ -53,6 +54,8 @@ export interface TerminalSession {
   /** Set when the terminal was seeded with project memory at launch (e.g. Claude
    *  via --append-system-prompt-file), so useAutoPrimer skips the typed pointer. */
   launchPrimed?: boolean
+  /** v1.55.0 Auto: the model and effort the task router picked at launch (the header chip). */
+  routed?: RouteDecision
   /** Set once the launch memory pointer has been pasted into THIS terminal. Lives
    *  on the terminal rather than in the pane's React state because the pane
    *  remounts — on a view-mode toggle, a hide/unhide, a workspace switch — and a
@@ -481,7 +484,7 @@ export interface TermpolisAPI {
   /** `accountId`: the account a launch runs on (Settings ▸ Accounts), for the proxy's step-aside. */
   /** `limitWatch`: the terminal is created to launch an agent Termpolis watches for usage limits (the
    *  agent, or true for one not known yet): main marks it so for its whole life (§8.6, R6). */
-  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean, accountId?: string, limitWatch?: AccountAgent | true) => Promise<IpcResponse>
+  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean, accountId?: string, limitWatch?: AccountAgent | true, autoModel?: boolean) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
   /** Whether nothing runs in the terminal but its shell, as the OS tells: true once an agent that
    *  was running there has exited, false while something still runs, null where main cannot tell

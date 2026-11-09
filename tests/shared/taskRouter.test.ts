@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  routeTask, recordMisroute, isClaudeModelWord, DEFAULT_ROUTER_TUNING, MISROUTE_LIMIT,
+  routeTask, recordMisroute, isClaudeModelWord, DEFAULT_ROUTER_TUNING, MISROUTE_LIMIT, taskPromptArg, TASK_ARG_MAX,
   type ClaudeModelWord, type RouterTuning,
 } from '../../src/shared/taskRouter'
 
@@ -74,5 +74,25 @@ describe('routeTask', () => {
     }
     expect(isClaudeModelWord('fable')).toBe(false)
     expect(isClaudeModelWord(7)).toBe(false)
+  })
+})
+
+describe('taskPromptArg', () => {
+  it('quotes the task as one argument no shell reads anything in', () => {
+    expect(taskPromptArg('find where X is defined')).toBe(' "find where X is defined"')
+    expect(taskPromptArg('a "b" $HOME `id` 100% !! c:\\x \u201csmart\u201d')).toBe(' "a b HOME id 100 c:x smart"')
+    expect(taskPromptArg('line one\r\nline two\ttab\u2028sep')).toBe(' "line one line two tab sep"')
+    expect(taskPromptArg('-- --resume abc')).toBe(' "resume abc"')
+  })
+
+  it('nothing left, or not a string, is no argument', () => {
+    expect(taskPromptArg('   ')).toBe('')
+    expect(taskPromptArg('"$`')).toBe('')
+    expect(taskPromptArg(undefined)).toBe('')
+    expect(taskPromptArg(42)).toBe('')
+  })
+
+  it('is capped', () => {
+    expect(taskPromptArg('x'.repeat(TASK_ARG_MAX + 50))).toBe(` "${'x'.repeat(TASK_ARG_MAX)}"`)
   })
 })

@@ -50,7 +50,7 @@ describe('DefaultModelsSettings', () => {
 
   it('offers Claude its four always-latest aliases, whatever the catalog says', async () => {
     render(<DefaultModelsSettings />)
-    expect(values(select('claude'))).toEqual(['', 'fable', 'opus', 'sonnet', 'haiku'])
+    expect(values(select('claude'))).toEqual(['', 'auto', 'fable', 'opus', 'sonnet', 'haiku'])
     expect(select('claude').textContent).toContain('Fable · most capable')
     expect(select('claude').textContent).toMatch(/Haiku · \d+% cheaper/)
   })
@@ -75,6 +75,17 @@ describe('DefaultModelsSettings', () => {
     expect(select('gemini').value).toBe('')
     fireEvent.change(select('gemini'), { target: { value: 'gemini-3.8-flash-high' } })
     expect(getAgentModelDefaults()).toEqual({ claude: 'haiku', codex: 'gpt-5.5', gemini: 'gemini-3.8-flash-high' })
+  })
+
+  it('offers Claude Auto, saves it, and explains it only while it is picked', async () => {
+    render(<DefaultModelsSettings />)
+    expect(screen.queryByTestId('settings-default-model-claude-auto-hint')).toBeNull()
+    fireEvent.change(select('claude'), { target: { value: 'auto' } })
+    expect(getAgentModelDefaults()).toEqual({ claude: 'auto' })
+    expect(select('claude').value).toBe('auto')
+    expect(screen.getByTestId('settings-default-model-claude-auto-hint').textContent).toContain('subagents run on Sonnet')
+    // Auto is a Claude choice only.
+    expect(values(select('codex'))).not.toContain('auto')
   })
 
   it('clears one agent when it goes back to "Agent\'s own default"', async () => {

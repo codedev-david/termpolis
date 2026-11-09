@@ -10,6 +10,7 @@ import { initSentry, syncConsentFromMain } from './lib/sentry'
 import { installRendererLogBridge, type ConsoleLike } from './lib/rendererLogBridge'
 import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary'
 import App from './App'
+import { seedAutoDefault } from './lib/autoModel'
 
 // Mirror this side's console into the app log BEFORE anything else runs, so a failure
 // during the very first render still ends up somewhere a user can read it (Ctrl+Shift+O).
@@ -25,6 +26,8 @@ installRendererLogBridge(
 // then main, which owns the consent, confirms it (and turns reporting off if it changed).
 initSentry()
 void syncConsentFromMain()
+// v1.55.0: a fresh install starts Claude on Auto; an existing one is told once that Auto exists.
+seedAutoDefault()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

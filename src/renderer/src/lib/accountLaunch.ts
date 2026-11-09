@@ -6,6 +6,7 @@ import { ACCOUNT_AGENT_LABEL } from '../../../shared/agentAccounts'
 import type { AccountAgent } from '../../../shared/agentAccounts'
 import type { AccountsAPI } from '../types'
 import { agentOfCommand } from './accountsView'
+import { taskPromptArg } from '../../../shared/taskRouter'
 
 export type AccountsBridge = Pick<AccountsAPI, 'launchAccount' | 'launchLine'>
 
@@ -57,14 +58,16 @@ export async function accountLaunchLine(
   agentCommand: string,
   accountId?: string,
   api: AccountsBridge | null = accountsBridge(),
+  task?: string,
 ): Promise<LaunchLine> {
   const agent = agentOfCommand(agentCommand)
-  if (!agent || !api) return { line: command }
+  // An Auto launch's task (v1.55.0) rides last on the line; main cleans it again on its side.
+  if (!agent || !api) return { line: command + (agent === 'claude' ? taskPromptArg(task) : '') }
   // Nothing is typed then: the bare command would start the agent on whatever account the shell
   // is on, which once the agent has accounts may be the wrong one.
   const refused = (why: string): LaunchLine => ({ refused: `Termpolis didn't start ${ACCOUNT_AGENT_LABEL[agent]}: ${why}` })
   try {
-    const res = await api.launchLine({ terminalId, agent, shellType, command, accountId: accountId ?? null })
+    const res = await api.launchLine({ terminalId, agent, shellType, command, accountId: accountId ?? null, ...(task?.trim() ? { task } : {}) })
     if (!res.success) return refused(res.error)
     const out: LaunchLine = { line: res.data.line }
     if (res.data.accountId) out.accountId = res.data.accountId

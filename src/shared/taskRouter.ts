@@ -83,3 +83,24 @@ export function routeTask(input: RouteInput, tune: RouterTuning = DEFAULT_ROUTER
 export function recordMisroute(rule: string, tune: RouterTuning): RouterTuning {
   return { ...tune, misroutes: { ...tune.misroutes, [rule]: (tune.misroutes[rule] ?? 0) + 1 } }
 }
+
+/** Longest task, in characters, typed onto a launch line. */
+export const TASK_ARG_MAX = 500
+
+/** The task as one double-quoted argument for a Claude launch line, safe in a POSIX shell,
+ *  PowerShell and cmd alike: control and line-break characters become spaces; double and curly
+ *  quotes, `$`, backtick, backslash, `%` and `!` are dropped (each is live inside double quotes in
+ *  one of the three shells); leading dashes go so the CLI can't read it as a flag. Capped at
+ *  TASK_ARG_MAX. '' when nothing is left. Main applies it again to whatever the renderer sent. */
+export function taskPromptArg(task: unknown): string {
+  if (typeof task !== 'string') return ''
+  const clean = task
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    .replace(/["`$%\\!\u201c-\u201f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[-\s]+/, '')
+    .slice(0, TASK_ARG_MAX)
+    .trim()
+  return clean ? ` "${clean}"` : ''
+}

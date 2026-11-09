@@ -352,3 +352,19 @@ describe('the module itself', () => {
     expect(src).not.toMatch(/CLAUDE_CODE_AUTO_COMPACT_WINDOW\s*=\s*['"`]\s*\d+\s*[kKmM]/)
   })
 })
+
+describe('withAutoSubagent', () => {
+  it('subagent env is set only with Auto, and never over the user\'s own', async () => {
+    const { withAutoSubagent, AUTO_SUBAGENT_MODEL } = await import('../../src/main/headroom/shapingEnv')
+    expect(AUTO_SUBAGENT_MODEL).toBe('sonnet')
+    expect(withAutoSubagent({ A: '1' }, true, {})).toEqual({ A: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })
+    expect(withAutoSubagent(undefined, true, {})).toEqual({ CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })
+    expect(withAutoSubagent({ A: '1' }, false, {})).toEqual({ A: '1' })
+    expect(withAutoSubagent(undefined, 'yes', {})).toBeUndefined()
+    expect(withAutoSubagent(undefined, true, { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' })).toBeUndefined()
+    expect(withAutoSubagent({ CLAUDE_CODE_SUBAGENT_MODEL: 'opus' }, true, {})).toEqual({ CLAUDE_CODE_SUBAGENT_MODEL: 'opus' })
+    expect(JSON.stringify(withAutoSubagent(undefined, true, {}))).not.toContain('FORCE')
+    expect(withAutoSubagent(undefined, true)).toEqual(
+      process.env.CLAUDE_CODE_SUBAGENT_MODEL === undefined ? { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' } : undefined)
+  })
+})

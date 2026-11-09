@@ -43,6 +43,7 @@ import {
   readAccountsSh, updateAccounts,
 } from './agentAccounts'
 import type { AccountsDoc, ProfileTarget } from './agentAccounts'
+import { taskPromptArg } from '../shared/taskRouter'
 import type { AgentIntegrationPaths, AgentIntegrationRuntime } from './agentIntegrationManager'
 import {
   connectAccountProfile, disconnectAccountProfile, profileConnection, stripCopiedEntries,
@@ -1421,20 +1422,22 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     if (!terminalId) throw new Error('which terminal?')
     if (!agent) throw new Error('unknown agent')
     if (!command) throw new Error('there is no command to run')
+    // The Auto launch's task (v1.55.0): last on the line, quoted, and cleaned here again.
+    const taskArg = agent === 'claude' ? taskPromptArg(input.task) : ''
     // With no account for the agent, or a registry that can't be read, the launch is today's: the
     // bare command on the default profile, and no account recorded (D13). The line is still
     // Termpolis's own, so the agent it starts is watched for a usage limit (limitLook.ts).
     const loaded = loadAccounts(userData(), fsx)
     const accounts = loaded.ok ? sortedAccounts(loaded.doc).filter((a) => a.agent === agent) : []
     if (!loaded.ok || accounts.length === 0) {
-      noteOwnLine(terminalId, command, now(), agent)
-      return { line: command, accountId: null, explicit: false }
+      noteOwnLine(terminalId, command + taskArg, now(), agent)
+      return { line: command + taskArg, accountId: null, explicit: false }
     }
     const account = launchAccountOf(loaded.doc, accounts, input.accountId)
     // Named on the line once the agent has more than one account: a CLAUDE_CONFIG_DIR a shell's rc
     // file exports can't then move the launch (§6.2). The default profile's line unsets it.
     const explicit = accounts.length > 1 || (isProfileAgent(agent) && account.profile !== null)
-    let line = command
+    let line = command + taskArg
     let sessionId: string | undefined
     // agy has no variable to set, so its line stays the bare command in every shell: wrapped, as
     // PowerShell's `& { agy }`, it would hide the launch from the audit.
@@ -1450,7 +1453,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       }
       const family = familyOf(String(input.shellType ?? ''))
       if (!family) throw new Error('Termpolis can\'t type an account line into that shell')
-      const built = accountLine(family, accountEnv(account, agent), typed)
+      const built = accountLine(family, accountEnv(account, agent), typed + taskArg)
       if ('refused' in built) throw new Error(`Termpolis won't type that line: ${built.refused}`)
       line = built.line
     }

@@ -171,8 +171,18 @@ describe('sanitizeAgentCommand', () => {
       .toBe('claude --dangerously-skip-permissions --model sonnet')
   })
 
+  it('opusplan and --effort are allowlisted, other words are dropped', () => {
+    const base = 'claude --dangerously-skip-permissions'
+    expect(sanitizeAgentCommand('claude --model opusplan')).toBe(`${base} --model opusplan`)
+    expect(sanitizeAgentCommand('claude --model haiku --effort low "find X"')).toBe(`${base} --model haiku --effort low`)
+    expect(sanitizeAgentCommand('claude --effort=high')).toBe(`${base} --effort high`)
+    expect(sanitizeAgentCommand('claude --effort turbo --model opus')).toBe(`${base} --model opus`)
+    expect(sanitizeAgentCommand('claude --effort "low;rm -rf /"')).toBe(base)
+    expect(sanitizeAgentCommand('codex --effort low')).toBe(CODEX)
+  })
+
   it('exposes Claude-only model aliases', () => {
-    expect(AGENT_MODEL_ALIASES.claude).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
+    expect(AGENT_MODEL_ALIASES.claude).toEqual(['fable', 'opus', 'sonnet', 'haiku', 'opusplan'])
     expect(AGENT_MODEL_ALIASES.gemini).toBeUndefined()
   })
 })

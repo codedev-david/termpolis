@@ -29,6 +29,9 @@ export const DEFAULT_MODEL_PROVIDERS: readonly ModelProvider[] = ['claude', 'cod
 
 const STORAGE_KEY = 'termpolis.agent.modelDefaults'
 
+/** v1.55.0: the Claude default that picks the model and effort per task (autoModel.ts). */
+export const AUTO_MODEL = 'auto'
+
 /**
  * Shape gate for an id that will become a `--model <id>` argv token. Mirrors main's
  * isSafeModelId (src/main/modelCatalog.ts), which the renderer cannot import — tsconfig.web.json
@@ -77,7 +80,7 @@ export function setAgentModelDefault(provider: ModelProvider, id: string | null 
  * discovered (never run, offline), not that nothing is allowed, so a shape-checked id passes.
  */
 export function isUsableDefault(provider: ModelProvider, id: string, catalog: ModelCatalog | null | undefined): boolean {
-  if (provider === 'claude') return claudeModelArg(id) !== ''
+  if (provider === 'claude') return id === AUTO_MODEL || claudeModelArg(id) !== ''
   if (!isSafeModelId(id)) return false
   const rows = catalog?.[provider]?.models ?? []
   return rows.length === 0 || rows.some((m) => m.id === id)
@@ -88,6 +91,8 @@ export interface LaunchModel {
   arg: string
   /** A saved default that was NOT applied because the agent no longer offers it. */
   dropped?: string
+  /** The Claude default is Auto: the launch routes the task (autoModel.ts) instead of adding a model. */
+  auto?: boolean
 }
 
 /**
@@ -99,6 +104,7 @@ export function defaultModelFor(command: string, catalog: ModelCatalog | null | 
   if (!provider || commandPicksModelOrSession(provider, command)) return { arg: '' }
   const id = getAgentModelDefaults()[provider]
   if (!id) return { arg: '' }
+  if (provider === 'claude' && id === AUTO_MODEL) return { arg: '', auto: true }
   return isUsableDefault(provider, id, catalog) ? { arg: ` --model ${id}` } : { arg: '', dropped: id }
 }
 

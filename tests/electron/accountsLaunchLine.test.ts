@@ -119,6 +119,18 @@ describe('accounts:launch-line', () => {
     expect(cmd.line).toBe(`set "CLAUDE_CONFIG_DIR=${bDir}" && call claude --session-id ${cmd.sessionId}`)
   })
 
+  it('Auto + task: the task goes last, quoted and cleaned, in every shell and with no account', async () => {
+    expect((await line({ command: 'claude --model haiku --effort low', task: 'find where X is defined' })).line)
+      .toBe('claude --model haiku --effort low "find where X is defined"')
+    expect((await line({ task: '--continue $(rm -rf ~) "x"' })).line).toBe('claude "continue (rm -rf ~) x"')
+    expect((await line({ agent: 'codex', command: 'codex', task: 'hi' })).line).toBe('codex')
+    const { b, bDir } = await twoClaude()
+    const posix = await line({ accountId: b, command: 'claude --model haiku', task: 'list 100% of it!' })
+    expect(posix.line).toBe(`export CLAUDE_CONFIG_DIR='${bDir}' && claude --model haiku --session-id ${posix.sessionId} "list 100 of it"`)
+    const cmd = await line({ accountId: b, shellType: 'cmd', command: 'claude', task: 'what is this' })
+    expect(cmd.line).toBe(`set "CLAUDE_CONFIG_DIR=${bDir}" && call claude --session-id ${cmd.sessionId} "what is this"`)
+  })
+
   it('keeps a resume\'s own id, and gives a --continue none (it can\'t tell which session it takes)', async () => {
     const { b } = await twoClaude()
     const id = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'

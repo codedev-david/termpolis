@@ -372,6 +372,9 @@ export interface LaunchLineRequest {
   command: string
   /** The account to launch on; none, or one no longer registered: the agent's preferred one. */
   accountId?: string | null
+  /** Claude only: the task the user typed at launch, passed as the session's first prompt. Goes
+   *  last on the line, after any `--session-id`, as one quoted argument (taskPromptArg). */
+  task?: string
 }
 
 export interface LaunchLineResult {

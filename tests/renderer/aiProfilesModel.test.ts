@@ -2,7 +2,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { launchAgentProfile } from '../../src/renderer/src/lib/aiProfiles'
 import type { AIProfile } from '../../src/renderer/src/types'
-import { setAgentModelDefault } from '../../src/renderer/src/lib/agentModelDefaults'
+import { AUTO_MODEL, setAgentModelDefault } from '../../src/renderer/src/lib/agentModelDefaults'
+import { unavailableModels } from '../../src/renderer/src/lib/autoModel'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 const CATALOG = {
@@ -147,6 +148,64 @@ describe('launchAgentProfile — single-agent model selection', () => {
       ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn(async () => ({ success: true, data: { file: 'C:\\tmp\\primer.txt', count: 3 } }))
       await launched(profile())
       expect(launchLine()).toBe('claude --append-system-prompt-file "C:/tmp/primer.txt" --model sonnet\r')
+    })
+  })
+
+  describe('Auto (best for the task)', () => {
+    const launchLine = (): string => writes.filter(d => d.endsWith('\r')).at(-1) ?? ''
+    const create = (): ReturnType<typeof vi.fn> => (window as unknown as { termpolis: { createTerminal: ReturnType<typeof vi.fn> } }).termpolis.createTerminal
+    const launchedWith = async (p: AIProfile, task?: string, add = vi.fn()): Promise<ReturnType<typeof vi.fn>> => {
+      const done = launchAgentProfile(p, { ...deps(), addTerminal: add, ...(task !== undefined ? { task } : {}) })
+      await vi.runAllTimersAsync()
+      await done
+      return add
+    }
+    beforeEach(() => setAgentModelDefault('claude', AUTO_MODEL))
+
+    it('Auto + task routes and passes the task as the first prompt', async () => {
+      const add = await launchedWith(profile(), 'find where X is defined')
+      expect(launchLine()).toBe('claude --model haiku --effort low "find where X is defined"\r')
+      expect(add.mock.calls[0][0].routed).toMatchObject({ model: 'haiku', effort: 'low', rule: 'lookup' })
+      expect(create().mock.calls[0]).toEqual(['x', 'bash', '/proj', undefined, true, undefined, 'claude', true].map((v, i) => (i === 0 ? expect.any(String) : v)))
+    })
+
+    it('Auto with no task plans first', async () => {
+      await launchedWith(profile())
+      expect(launchLine()).toBe('claude --model opusplan --effort high\r')
+    })
+
+    it("user's own --model wins over Auto", async () => {
+      const add = await launchedWith(profile({ command: 'claude --model opus' }), 'find X')
+      expect(launchLine()).toBe('claude --model opus\r')
+      expect(add.mock.calls[0][0].routed).toBeUndefined()
+      await launchedWith(profile({ model: 'sonnet' }), 'find X')
+      expect(launchLine()).toBe('claude --model sonnet\r')
+    })
+
+    it('subagent env is set only with Auto', async () => {
+      await launchedWith(profile(), 'find X')
+      expect(create().mock.calls[0]).toHaveLength(8)
+      setAgentModelDefault('claude', 'haiku')
+      await launchedWith(profile(), 'find X')
+      expect(create().mock.calls[1]).toHaveLength(7)
+      expect(launchLine()).toBe('claude --model haiku\r')
+    })
+
+    it('unavailable model falls back to the profile default once and is remembered per account', async () => {
+      // Claude Code prints its complaint a moment after the line is typed, inside the watch window.
+      const subs: Array<(id: string, d: string) => void> = []
+      const tp = (window as unknown as { termpolis: Record<string, unknown> }).termpolis
+      tp.onTerminalData = vi.fn((cb: (id: string, d: string) => void) => { subs.push(cb); return () => {} })
+      tp.writeToTerminal = vi.fn((id: string, data: string) => {
+        writes.push(data)
+        if (data.startsWith('claude')) setTimeout(() => { for (const cb of [...subs]) cb(id, "There's an issue with the selected model (haiku). It may not exist or you may not have access to it.") }, 50)
+      })
+      await launchedWith(profile(), 'find where X is defined')
+      expect(useTerminalStore.getState().memoryNotice).toContain("Haiku isn't available")
+      expect(unavailableModels(undefined)).toEqual(['haiku'])
+      await launchedWith(profile(), 'find where X is defined')
+      expect(launchLine()).toBe('claude --effort low "find where X is defined"\r')
+      expect(useTerminalStore.getState().memoryNotice).toContain('Auto picked Haiku')
     })
   })
 })

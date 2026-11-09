@@ -287,7 +287,9 @@ describe('isAllowedModel', () => {
 // test stops them drifting apart, which would silently offer a model one path rejects.
 describe('Claude alias lists stay in sync across every copy', () => {
   it('sanitizer, second-opinion, catalog and picker all agree', () => {
-    expect([...AGENT_MODEL_ALIASES.claude]).toEqual(CLAUDE_ALIASES)
+    // opusplan is a planning mode Auto launches with, not a model anyone picks from a list: the
+    // sanitizer lets it through, the pickers never offer it.
+    expect(AGENT_MODEL_ALIASES.claude.filter((a) => a !== 'opusplan')).toEqual(CLAUDE_ALIASES)
     expect([...CLAUDE_MODEL_ALIASES]).toEqual(CLAUDE_ALIASES)
     expect(CLAUDE_MODEL_OPTIONS.map((m) => m.alias)).toEqual(CLAUDE_ALIASES)
   })

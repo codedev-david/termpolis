@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  AUTO_MODEL,
   DEFAULT_MODEL_PROVIDERS,
   getAgentModelDefaults,
   setAgentModelDefault,
@@ -79,7 +80,8 @@ export function DefaultModelsSettings() {
       {DEFAULT_MODEL_PROVIDERS.map((provider) => {
         const options = modelOptionsFor(provider, catalog)
         const saved = defaults[provider] ?? ''
-        const listed = options.some((o) => o.alias === saved)
+        const auto = provider === 'claude'
+        const listed = options.some((o) => o.alias === saved) || (auto && saved === AUTO_MODEL)
         return (
           <div key={provider} className="flex flex-col gap-1">
             <label className="flex items-center gap-3 text-sm">
@@ -91,6 +93,7 @@ export function DefaultModelsSettings() {
                 className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden min-w-[16rem]"
               >
                 <option value="">{OWN_DEFAULT}</option>
+                {auto && <option value={AUTO_MODEL}>Auto (best for the task)</option>}
                 {saved && !listed && <option value={saved}>{saved} (not in the current list)</option>}
                 {options.map((m) => (
                   <option key={m.alias} value={m.alias}>
@@ -99,6 +102,15 @@ export function DefaultModelsSettings() {
                 ))}
               </select>
             </label>
+            {auto && saved === AUTO_MODEL && (
+              <span className="text-xs text-[#9ca3af] leading-relaxed pl-[8.75rem]" data-testid="settings-default-model-claude-auto-hint">
+                Each new Claude terminal starts on the model and effort that fit what you type in
+                &ldquo;What&rsquo;s the task?&rdquo;: Haiku for a quick lookup, Sonnet for building, Opus for design
+                and hard bugs, Opus Plan when there is no task yet. Its subagents run on Sonnet. The model
+                is set once, at the start: switching it mid-session reads the whole conversation again
+                at full price.
+              </span>
+            )}
             {options.length === 0 && NO_LIST_HINT[provider] && (
               <span className="text-xs text-[#9ca3af] leading-relaxed pl-[8.75rem]" data-testid={`settings-default-model-${provider}-hint`}>
                 {NO_LIST_HINT[provider]}

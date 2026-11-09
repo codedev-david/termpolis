@@ -8,7 +8,8 @@ import { useTerminalStore } from '../store/terminalStore'
 import { claudeModelArg } from './modelBroker'
 import { accountLaunchLine, launchTerminalArgs } from './accountLaunch'
 import { launchAccountAsked } from './launchAsk'
-import { catalogForLaunch, defaultModelFor, droppedDefaultNotice } from './agentModelDefaults'
+import { AUTO_MODEL, catalogForLaunch, defaultModelFor, droppedDefaultNotice, getAgentModelDefaults } from './agentModelDefaults'
+import { autoLaunchArgs, carriesModelOrEffort, rememberUnavailable, skippedNotice, unavailableModels, unavailableNotice, watchModelUnavailable } from './autoModel'
 import { providerForCommand } from './modelCatalog'
 import { isShellSafeInstruction, type CodexLaunchContext } from '../../../shared/agentIntegration'
 import {
@@ -62,6 +63,9 @@ export interface LaunchAgentDeps {
   setLaunchingAgent: (name: string | null) => void
   /** Launch on this account (the sidebar's Launch on ▸); else on the agent's preferred one. */
   accountId?: string
+  /** v1.55.0 Auto: what the user typed in "What's the task?". Routes the model and effort, and
+   *  becomes the session's first prompt. Ignored unless the Claude default is Auto. */
+  task?: string
 }
 
 /**
@@ -94,8 +98,19 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   }
   const accountId = picked.accountId
   const onAccount: [] | [string] = accountId ? [accountId] : []
+  // Auto (v1.55.0): the Claude default picks model and effort from the task. Decided now, so main
+  // can give an Auto session's subagents Sonnet. A profile's pinned model, or a command that names
+  // its own model, effort or conversation, keeps Auto out entirely.
+  const resolvedCommand = resolveAgentCommand(profile.command)
+  const auto = (isClaude || providerForCommand(resolvedCommand) === 'claude')
+    && !claudeModelArg(profile.model)
+    && getAgentModelDefaults().claude === AUTO_MODEL
+    && !carriesModelOrEffort(resolvedCommand)
   // Watched for usage limits for its whole life (R6): main marks it so for the agent's hooks.
-  const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, ...launchTerminalArgs(accountId, profile.command))
+  const terminalArgs = launchTerminalArgs(accountId, profile.command)
+  const res = auto
+    ? await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, terminalArgs[0], terminalArgs[1], true)
+    : await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, ...terminalArgs)
   if (!res.success) {
     setLaunchingAgent(null)
     alert(`Failed to open terminal: ${res.error}`)
@@ -106,7 +121,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // terminal. The prepare call is the relevance gate — it returns null when
   // there's no saved memory for this project, in which case we launch bare.
   // The other agents get the slim typed pointer via useAutoPrimer on detection.
-  let launchCommand = resolveAgentCommand(profile.command)
+  let launchCommand = resolvedCommand
   // Judged on the command as the user configured it, before any primer arguments are appended, so
   // text inside those can never read as a flag. Settings › General › Default Models.
   const baseCommand = launchCommand
@@ -211,8 +226,13 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // A Claude command is one however it is spelled (`C:\tools\claude.exe`): the pin and the default
   // must agree about that, or a pin would lose to a default that reads the command more carefully.
   const pinnedModel = isClaude || providerForCommand(baseCommand) === 'claude' ? claudeModelArg(profile.model) : ''
+  let routed: ReturnType<typeof autoLaunchArgs> | null = null
   if (pinnedModel) {
     launchCommand = launchCommand + pinnedModel
+  } else if (auto) {
+    routed = autoLaunchArgs(deps.task, baseCommand, unavailableModels(accountId))
+    launchCommand = launchCommand + routed.modelArg + routed.effortArg
+    if (routed.skipped) useTerminalStore.getState().setMemoryNotice(skippedNotice(routed.skipped))
   } else {
     const model = defaultModelFor(baseCommand, await catalogPromise)
     launchCommand = launchCommand + model.arg
@@ -230,6 +250,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     agentCommand: profile.command,
     ...(accountId ? { agentAccountId: accountId } : {}),
     launchPrimed,
+    ...(routed?.decision ? { routed: routed.decision } : {}),
   })
   // Deterministically index the picked repo for EVERY agent (Claude/Codex/Gemini) — the
   // folder was chosen explicitly, so don't wait on cwd-tracking (agent TUIs don't emit OSC 633).
@@ -260,7 +281,9 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // the command through regardless.
   // Main builds the line on the account, now that the command is whole: with no accounts, the
   // command itself. Refused, nothing is typed.
-  const built = await accountLaunchLine(id, shellType, launchCommand, profile.command, accountId)
+  const built = auto
+    ? await accountLaunchLine(id, shellType, launchCommand, profile.command, accountId, undefined, deps.task)
+    : await accountLaunchLine(id, shellType, launchCommand, profile.command, accountId)
   if ('refused' in built) {
     useTerminalStore.getState().setMemoryNotice(`⚠️ ${built.refused}`)
     setLaunchingAgent(null)
@@ -277,6 +300,19 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     ceilingMs: testDelay(PROMPT_ECHO_CEILING_MS),
   })
   writeIfAlive(built.line + '\r')
+  // An account without the routed model: Claude Code says so on screen. Remember it for this
+  // account, so the next Auto launch there leaves it off, and tell the user how to go on now.
+  const routedModel = routed?.decision && routed.modelArg ? routed.decision.model : null
+  if (routedModel) {
+    watchModelUnavailable({
+      terminalId: id,
+      subscribe: (cb) => window.termpolis.onTerminalData(cb),
+      onFound: () => {
+        rememberUnavailable(built.accountId ?? accountId, routedModel)
+        useTerminalStore.getState().setMemoryNotice(unavailableNotice(routedModel))
+      },
+    })
+  }
   // Nothing is typed after the command. Codex used to get a blind `1⏎` on a timer, which accepted
   // its folder-trust prompt whether or not the user wanted that folder trusted, and Claude a blind
   // Enter, which since its dialog opens on "No, exit" quit the session instead. A trust prompt is

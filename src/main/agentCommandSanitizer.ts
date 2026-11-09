@@ -18,24 +18,31 @@ export const AGENT_COMMAND_ALLOWLIST: Record<string, string> = {
 // the most-capable flagship — a manual pick ABOVE the tiers, so it is a valid alias
 // here but intentionally absent from modelBroker.ts AGENT_MODEL_TIERS, which the
 // swarm uses to DOWNSHIFT for savings and must never auto-upgrade). Keep this list =
-// the broker's tier aliases + fable. Agents absent here get no --model flag at all
-// (they run their own default model). An alias must match EXACTLY — nothing else can
-// ride along on the command.
+// the broker's tier aliases + fable, plus opusplan (v1.55.0: Opus while planning, Sonnet
+// while building, the task router's pick for a launch with no task yet). Agents absent here get
+// no --model flag at all (they run their own default model). An alias must match EXACTLY —
+// nothing else can ride along on the command.
 export const AGENT_MODEL_ALIASES: Record<string, string[]> = {
-  'claude': ['fable', 'opus', 'sonnet', 'haiku'],
+  'claude': ['fable', 'opus', 'sonnet', 'haiku', 'opusplan'],
 }
 
-// Find a single, exactly-allowlisted `--model <alias>` (or `--model=<alias>`) in a
-// command. Returns the alias, or null if none is present/valid. Whitespace-tokenized
+// v1.55.0: the effort levels Claude Code's `--effort` takes, the only other flag that may ride
+// along. Same rule: exact match, rebuilt onto the trusted base.
+export const AGENT_EFFORT_LEVELS: Record<string, string[]> = {
+  'claude': ['low', 'medium', 'high', 'xhigh', 'max'],
+}
+
+// Find a single, exactly-allowlisted `<flag> <value>` (or `<flag>=<value>`) in a
+// command. Returns the value, or null if none is present/valid. Whitespace-tokenized
 // and matched against the enum, so a quoted, concatenated, or injected value never
 // matches — the caller rebuilds the command from the trusted base + this alias.
-function extractModelAlias(command: string, aliases: string[]): string | null {
+function extractFlagValue(command: string, flag: string, aliases: string[]): string | null {
   const tokens = command.split(/\s+/)
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i]
     let candidate: string | null = null
-    if (t === '--model') candidate = tokens[i + 1] ?? null
-    else if (t.startsWith('--model=')) candidate = t.slice('--model='.length)
+    if (t === flag) candidate = tokens[i + 1] ?? null
+    else if (t.startsWith(`${flag}=`)) candidate = t.slice(flag.length + 1)
     if (candidate !== null) {
       const clean = candidate.replace(/^['"]/, '').replace(/['"]$/, '')
       if (aliases.includes(clean)) return clean
@@ -73,15 +80,15 @@ export function sanitizeAgentCommand(command: string): string {
   const allowed = AGENT_COMMAND_ALLOWLIST[agentKey]
   if (trimmed === allowed) return command
 
-  // The conductor added something. The ONLY permitted addition is a strictly-
-  // validated `--model <alias>` for agents that support model brokering — and we
-  // REBUILD the command from the trusted base so nothing the conductor appended
+  // The conductor added something. The ONLY permitted additions are a strictly-
+  // validated `--model <alias>` and `--effort <level>` for agents that support them — and
+  // we REBUILD the command from the trusted base so nothing the conductor appended
   // (a prompt, an injection, any other flag) can ride along.
   const aliases = AGENT_MODEL_ALIASES[agentKey]
-  if (aliases) {
-    const model = extractModelAlias(trimmed, aliases)
-    if (model) return `${allowed} --model ${model}`
-  }
+  const levels = AGENT_EFFORT_LEVELS[agentKey]
+  const model = aliases ? extractFlagValue(trimmed, '--model', aliases) : null
+  const effort = levels ? extractFlagValue(trimmed, '--effort', levels) : null
+  if (model || effort) return `${allowed}${model ? ` --model ${model}` : ''}${effort ? ` --effort ${effort}` : ''}`
 
   // Otherwise replace with the correct base command (strips -p, --sandbox, prompts).
   return allowed
