@@ -25,18 +25,20 @@ export function wantsSlice(ask?: SliceAsk): boolean {
   return !!ask && (given(ask.grep) || given(ask.lines))
 }
 
-/** `/body/` is a case-insensitive regex; anything else, or a regex that will not compile, is a literal. */
+/**
+ * Case-insensitive literal text; `/a|b/` matches a line holding any of the alternatives.
+ * Never a regex: the pattern comes from the model (and so, possibly, from a prompt-injected tool
+ * result) and runs over every line of a cached result on the main thread, where a backtracking
+ * pattern such as `/(a+)+$/` could freeze the app.
+ */
 export function lineMatcher(pattern: string): (line: string) => boolean {
   const p = pattern.trim().slice(0, GREP_PATTERN_CAP)
-  const re = /^\/(.+)\/[a-z]*$/s.exec(p)
-  if (re) {
-    try {
-      const compiled = new RegExp(re[1], 'i')
-      return (line) => compiled.test(line)
-    } catch { /* not a valid regex: match it as written */ }
+  const slashed = /^\/(.+)\/$/s.exec(p)
+  const alts = (slashed ? slashed[1].split('|') : [p]).map((a) => a.toLowerCase()).filter((a) => a !== '')
+  return (line) => {
+    const l = line.toLowerCase()
+    return alts.some((a) => l.includes(a))
   }
-  const lit = p.toLowerCase()
-  return (line) => line.toLowerCase().includes(lit)
 }
 
 /** "120-180", "120-" (to the end) or "120", 1-based and clamped to the text; null when unreadable. */

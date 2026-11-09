@@ -31,7 +31,8 @@ const assistant = (text: string): string =>
 
 /** An error and its fix: the shape the deterministic distiller turns into a lesson. */
 const problem = (name: string): string => user(`the build fails with Error: cannot find module ${name}`)
-const fix = (name: string): string => assistant(`Fixed it, the ${name} package was missing from package.json. I added it and the build passes now.`)
+// One sentence with the fix and its reason: a bare "I added it" is narration the substance gate (1.55) never stores.
+const fix = (name: string): string => assistant(`Fixed it by adding ${name} to dependencies in package.json, since \`require()\` resolves only declared packages.`)
 
 let seq = 0
 function newFile(initial: string): string {

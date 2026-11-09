@@ -25,10 +25,10 @@ describe('sliceResult', () => {
       '[1 matching line of 30]', '10-line 10', '11-line 11', '12:line 12 ERROR: disk full', '13-line 13', '14-line 14',
     ].join('\n'))
     // Matches close together share their context; apart, a -- separates them.
-    const two = sliceResult(TEXT, { grep: '/^line (3|5|20)$/' }).split('\n')
+    const two = sliceResult(TEXT, { grep: '/line 5|line 7|line 25/' }).split('\n')
     expect(two[0]).toBe('[3 matching lines of 30]')
-    expect(two).toContain('3:line 3')
     expect(two).toContain('5:line 5')
+    expect(two).toContain('25:line 25')
     expect(two.filter((l) => l === '--')).toHaveLength(1)
     expect(two.filter((l) => l.startsWith('4-'))).toHaveLength(1)
   })
@@ -43,7 +43,15 @@ describe('sliceResult', () => {
     expect(sliceResult(TEXT, { lines: '40-50' })).toContain('The result has 30 lines')
   })
 
-  it('a bad regex is treated as literal, and a long pattern is cut', () => {
+  it('a slashed pattern is literal alternatives, never a regex, and a long pattern is cut', () => {
+    expect(lineMatcher('/disk|quota/')('Quota exceeded')).toBe(true)
+    expect(lineMatcher('/disk|quota/')('memory low')).toBe(false)
+    expect(lineMatcher('/^line$/')('line')).toBe(false)
+    // A backtracking pattern is plain text: answered at once, matching only itself.
+    const t0 = Date.now()
+    expect(lineMatcher('/(a+)+$/')('a'.repeat(50_000) + '!')).toBe(false)
+    expect(Date.now() - t0).toBeLessThan(500)
+    expect(lineMatcher('/(a+)+$/')('see (a+)+$ here')).toBe(true)
     expect(lineMatcher('/a(b/')('x /a(b/ y')).toBe(true)
     expect(lineMatcher('/a(b/')('ab')).toBe(false)
     expect(lineMatcher('/DISK/')('disk full')).toBe(true)

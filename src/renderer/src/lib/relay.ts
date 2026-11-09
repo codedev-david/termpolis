@@ -56,6 +56,9 @@ export async function requestHandoff(io: RelayIO): Promise<RelayResult> {
   const now = io.now ?? Date.now
   let mark: number | null = null
   try { mark = io.outputMark ? await io.outputMark() : null } catch { mark = null }
+  // Without a mark, every id still in the buffer would count, and an older memory id could be
+  // taken for the handoff and this session quit on it.
+  if (mark === null) return { started: false, reason: "Termpolis couldn't mark this terminal's output, so nothing was restarted; this session keeps running." }
   io.write(`${BP_START}${HANDOFF_PROMPT}${BP_END}`)
   await io.sleep(RELAY_SUBMIT_SETTLE_MS)
   io.write('\r')

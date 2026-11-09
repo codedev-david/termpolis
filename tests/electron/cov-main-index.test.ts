@@ -1424,7 +1424,7 @@ describe('MCP tool table — operator verbs', () => {
     await mcp().gatewayCall({ server: 's', tool: 't', args: { a: 1 } })
     expect(M.gatewayCall).toHaveBeenCalledWith({ server: 's', tool: 't', args: { a: 1 } })
     expect(mcp().retrieveFull('hr_tok')).toEqual({ ok: true, text: 'full' })
-    expect(M.headroomRetrieveFull).toHaveBeenCalledWith('hr_tok')
+    expect(M.headroomRetrieveFull).toHaveBeenCalledWith('hr_tok', undefined)
   })
 
   describe('agentExec', () => {

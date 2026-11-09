@@ -72,6 +72,11 @@ describe('requestHandoff', () => {
     delete blind.outputMark
     delete blind.outputSince
     expect((await requestHandoff(blind)).started).toBe(false)
+    // No output mark: an older memory id in the buffer could pass for the handoff, so nothing is asked.
+    const unmarked = fakeIo({ output: () => 'saved mem-old123 earlier' })
+    unmarked.outputMark = async () => null
+    expect(await requestHandoff(unmarked)).toEqual({ started: false, reason: expect.stringContaining("couldn't mark") })
+    expect(unmarked.writes).toHaveLength(0)
   })
 })
 

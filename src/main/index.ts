@@ -307,7 +307,7 @@ import { isInTranscriptRoot, runConversationIngest } from './conversationIngest'
 import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult } from './ingestRuntime'
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
-import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES } from './outlineHint'
+import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYTES } from './outlineHint'
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch, promises as fsPromises } from 'fs'
@@ -4265,7 +4265,10 @@ async function semanticPoolOptions(
         symbols: fileSymbols,
         countLines: async (file) => {
           try {
-            if ((await fsPromises.stat(file)).size > OUTLINE_MAX_FILE_BYTES) return null
+            // The size alone settles most Reads, so the file is read only when it may be long.
+            const { size } = await fsPromises.stat(file)
+            if (size > OUTLINE_MAX_FILE_BYTES) return null
+            if (size < OUTLINE_MIN_FILE_BYTES) return 0
             return countLinesIn(await fsPromises.readFile(file))
           } catch { return null }
         },

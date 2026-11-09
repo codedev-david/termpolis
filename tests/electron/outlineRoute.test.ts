@@ -53,6 +53,9 @@ describe('fileSymbols', () => {
     expect(fileSymbols('C:\\Repo\\src\\a.ts').map((s) => s.name)).toEqual(['alpha'])
     expect(fileSymbols('c:/repo/src/a.ts').map((s) => s.name)).toEqual(['alpha'])
     expect(fileSymbols('c:/repo/src/b.ts')).toEqual([])
+    // A re-index that drops the file's symbols drops its other spelling too.
+    indexFileContent('C:\\Repo\\src\\a.ts', '// nothing here\n')
+    expect(fileSymbols('c:/repo/src/a.ts')).toEqual([])
   })
 })
 

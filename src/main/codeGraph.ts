@@ -79,6 +79,8 @@ interface GraphState {
   idsByBasename: Map<string, string[]> // basename(file) -> symbol ids in that file (C2 bridge)
   fileImports: Map<string, string[]>
   callEdges: CodeGraphEdge[]
+  /** normFileKey(file) -> the file key in idsByFile: an O(1) lookup for paths spelled another way. */
+  fileKeys: Map<string, string>
 }
 function newState(): GraphState {
   return {
@@ -88,6 +90,7 @@ function newState(): GraphState {
     idsByBasename: new Map(),
     fileImports: new Map(),
     callEdges: [],
+    fileKeys: new Map(),
   }
 }
 
@@ -122,6 +125,8 @@ const toHit = (s: SymbolRec): SymbolHit => ({
   id: s.id, name: s.name, kind: s.kind, file: s.file, startLine: s.startLine, endLine: s.endLine, lang: s.lang,
 })
 
+const normFileKey = (p: string): string => p.replace(/\\/g, '/').toLowerCase()
+
 function clearState(st: GraphState): void {
   st.symbolsById.clear()
   st.idsByFile.clear()
@@ -129,6 +134,7 @@ function clearState(st: GraphState): void {
   st.idsByBasename.clear()
   st.fileImports.clear()
   st.callEdges = []
+  st.fileKeys.clear()
 }
 
 function pushInto(map: Map<string, string[]>, key: string, id: string): void {
@@ -147,6 +153,7 @@ function removeFrom(map: Map<string, string[]>, key: string, id: string): void {
 function addSymbolRec(st: GraphState, s: SymbolRec): void {
   st.symbolsById.set(s.id, s)
   pushInto(st.idsByFile, s.file, s.id)
+  st.fileKeys.set(normFileKey(s.file), s.file)
   pushInto(st.idsByName, s.name, s.id)
   pushInto(st.idsByBasename, path.basename(s.file), s.id)
 }
@@ -163,6 +170,7 @@ function removeFile(st: GraphState, file: string): void {
       }
     }
     st.idsByFile.delete(file)
+    if (st.fileKeys.get(normFileKey(file)) === file) st.fileKeys.delete(normFileKey(file))
   }
   st.fileImports.delete(file)
 }
@@ -541,11 +549,10 @@ function impactIn(st: GraphState, name: string, maxDepth: number): SymbolHit[] {
 /** The symbols one indexed file defines (the v1.55.0 outline hint), looked up in every repo's graph by
  *  path, ignoring case and slash direction. Empty when no graph holds the file. */
 export function fileSymbols(file: string): SymbolHit[] {
-  const norm = (p: string): string => p.replace(/\\/g, '/').toLowerCase()
-  const want = norm(file)
+  const want = normFileKey(file)
   for (const st of graphs.values()) {
-    let ids = st.idsByFile.get(file)
-    if (!ids) for (const [f, v] of st.idsByFile) if (norm(f) === want) { ids = v; break }
+    const key = st.idsByFile.has(file) ? file : st.fileKeys.get(want)
+    const ids = key === undefined ? undefined : st.idsByFile.get(key)
     if (ids) return ids.map((id) => st.symbolsById.get(id)).filter((s): s is SymbolRec => !!s).map(toHit)
   }
   return []

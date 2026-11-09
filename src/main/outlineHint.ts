@@ -15,6 +15,8 @@ export const OUTLINE_MIN_FILE_LINES = 1500
 export const OUTLINE_MAX_LINES = 60
 /** Larger files are not counted, so a hint never makes main read a huge file. */
 export const OUTLINE_MAX_FILE_BYTES = 8 * 1024 * 1024
+/** Below this size a file is taken as short without reading it: 1,500 lines in 16 KB is under 11 bytes a line. */
+export const OUTLINE_MIN_FILE_BYTES = 16 * 1024
 
 export interface OutlineDeps {
   /** The indexed symbols of the file, any order; empty when it is not indexed. */

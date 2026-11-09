@@ -610,7 +610,7 @@ const TOOLS: McpTool[] = [
       type: 'object',
       properties: {
         token: { type: 'string', description: 'The hr_… token from a [headroom] footer' },
-        grep: { type: 'string', description: 'Text or /regex/; matching lines with context' },
+        grep: { type: 'string', description: 'Text, or /a|b/ for any of several; matching lines with context' },
         lines: { type: 'string', description: 'Line range, e.g. 120-180' },
       },
       required: ['token'],
