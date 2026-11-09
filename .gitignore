@@ -73,3 +73,6 @@ mobile/store/out/
 # this line matters more than tidiness -- a phone capture can carry a real
 # path, branch or shell prompt, and store assets are public forever.
 mobile/store/shots/
+
+# Router evaluation output (prompts from local transcripts)
+.router-eval/

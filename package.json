@@ -16,6 +16,7 @@
   },
   "main": "out/main/index.js",
   "scripts": {
+    "router:eval": "vitest run --config vitest.eval.config.ts",
     "postinstall": "install-electron",
     "dev": "electron-vite dev",
     "grammars": "node scripts/copy-grammars.cjs",
