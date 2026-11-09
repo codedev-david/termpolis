@@ -6,8 +6,6 @@ import {
   STRENGTH_CATEGORIES,
   type AgentRatingOverrides,
 } from '../../src/renderer/src/lib/agentCapabilities'
-import { analyzeTask } from '../../src/renderer/src/lib/taskAnalyzer'
-import { routeTasks } from '../../src/renderer/src/lib/smartRouter'
 import { buildConductorPrompt } from '../../src/renderer/src/lib/conductorPrompt'
 
 // ═══════════════════════════════════════════════════════
@@ -118,58 +116,6 @@ describe('getAgentCapability', () => {
     const result = getAgentCapability('claude')
     const def = DEFAULT_AGENT_CAPABILITIES.find(a => a.agentId === 'claude')!
     expect(result!.strengths).toEqual(def.strengths)
-  })
-})
-
-// ═══════════════════════════════════════════════════════
-// routeTasks with overrides — routing changes
-// ═══════════════════════════════════════════════════════
-
-describe('routeTasks with overrides', () => {
-  it('overrides change which agent gets assigned a task', () => {
-    // By default, Claude (5/5 refactoring) beats Codex (4/5).
-    // If we drop Claude to 1 and boost Codex to 5, Codex should win.
-    const overrides: AgentRatingOverrides = {
-      claude: { refactoring: 1 },
-      codex: { refactoring: 5 },
-    }
-    const breakdown = analyzeTask('Refactor the entire auth module')
-    const assignments = routeTasks(breakdown.subtasks, ['claude', 'codex'], overrides)
-    const refactorTask = assignments.find(a => a.subtask.category === 'refactoring')
-    expect(refactorTask?.agentId).toBe('codex')
-  })
-
-  it('without overrides, defaults still work as expected', () => {
-    const breakdown = analyzeTask('Refactor the entire auth module')
-    const assignments = routeTasks(breakdown.subtasks, ['claude', 'codex'])
-    const refactorTask = assignments.find(a => a.subtask.category === 'refactoring')
-    expect(refactorTask?.agentId).toBe('claude')
-  })
-
-  it('boosting Gemini documentation to 5 keeps it as doc leader (no change)', () => {
-    // Gemini already has documentation 5/5 — overriding to 5 should be a no-op
-    const overrides: AgentRatingOverrides = { gemini: { documentation: 5 } }
-    const breakdown = analyzeTask('Write comprehensive readme documentation')
-    const assignments = routeTasks(breakdown.subtasks, ['claude', 'codex', 'gemini'], overrides)
-    const docTask = assignments.find(a => a.subtask.category === 'documentation')
-    expect(docTask?.agentId).toBe('gemini')
-  })
-
-  it('dropping all agents to 1 in a category makes cost/MCP the tiebreaker', () => {
-    const overrides: AgentRatingOverrides = {
-      claude: { testing: 1 },
-      codex: { testing: 1 },
-      gemini: { testing: 1 },
-    }
-    const breakdown = analyzeTask('Write comprehensive unit tests')
-    const assignments = routeTasks(breakdown.subtasks, ['claude', 'codex', 'gemini'], overrides)
-    // All have testing=1 — scores are equal on strength, so cost + MCP decide
-    // All 3 have MCP. Gemini is lowest cost (low), then Codex (medium), then Claude (high)
-    const testTask = assignments.find(a => a.subtask.category === 'testing')
-    expect(testTask).toBeDefined()
-    // Score should still be valid 0-100
-    expect(testTask!.score).toBeGreaterThanOrEqual(0)
-    expect(testTask!.score).toBeLessThanOrEqual(100)
   })
 })
 

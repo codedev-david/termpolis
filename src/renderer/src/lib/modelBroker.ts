@@ -11,6 +11,8 @@
 // (src/main/agentCommandSanitizer.ts AGENT_MODEL_ALIASES) — this module is the
 // renderer-side brain that recommends and the conductor prompt that instructs.
 
+import { routeTask, type ClaudeModelWord, type RouterTuning } from '../../../shared/taskRouter'
+
 export type ModelTier = 'economy' | 'standard' | 'premium'
 
 export interface AgentModelTiers {
@@ -79,8 +81,12 @@ export interface BrokerDecision {
   modelFlag: string
   savingsPct: number
 }
-export function brokerModel(agentId: string, signals: TaskSignals): BrokerDecision {
-  const tier = recommendTier(signals)
+const TIER_OF: Record<ClaudeModelWord, ModelTier> = { opus: 'premium', opusplan: 'premium', sonnet: 'standard', haiku: 'economy' }
+
+/** With the task's text, the shared task router (src/shared/taskRouter.ts) decides; without it,
+ *  the swarm's complexity signals do. */
+export function brokerModel(agentId: string, signals: TaskSignals & { prompt?: string }, tune?: RouterTuning): BrokerDecision {
+  const tier = signals.prompt?.trim() ? TIER_OF[routeTask({ prompt: signals.prompt }, tune).model] : recommendTier(signals)
   return { tier, modelFlag: resolveModelFlag(agentId, tier), savingsPct: estimateSavingsPct(agentId, tier) }
 }
 

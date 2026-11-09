@@ -72,6 +72,12 @@ describe('modelBroker', () => {
         savingsPct: 0,
       })
     })
+    it('routes by the task text when it has one', () => {
+      expect(brokerModel('claude', { complexity: 5, tokenIntensity: 'low', prompt: 'what is the coverage gate?' }).tier).toBe('economy')
+      expect(brokerModel('claude', { complexity: 1, tokenIntensity: 'low', prompt: 'design the relay protocol' }).modelFlag).toBe('--model opus')
+      expect(brokerModel('claude', { complexity: 1, tokenIntensity: 'low', prompt: 'fix the flaky test' }).tier).toBe('standard')
+      expect(brokerModel('claude', { complexity: 1, tokenIntensity: 'low', prompt: '  ' }).tier).toBe('economy')
+    })
     it('recommends a tier but no flag for an agent without model control', () => {
       const d = brokerModel('gemini', { complexity: 1, tokenIntensity: 'low' })
       expect(d.tier).toBe('economy')
