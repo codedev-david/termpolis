@@ -377,3 +377,13 @@ describe('buildConductorPrompt: the swarm restart offer', () => {
     expect(buildDefault({ restartOffer: true }).replace(`- ${SENTENCE}\n`, '')).toBe(buildDefault())
   })
 })
+
+describe('review loop policy (v1.55.0)', () => {
+  it('conductor prompt names sonnet reviewers and command checks', () => {
+    const p = buildDefault()
+    expect(p).toContain('REVIEW LOOPS')
+    expect(p).toContain("Reviewers use '--model sonnet --effort medium'")
+    expect(p).toContain('Run tests, lint and typecheck as commands')
+    expect(p).toContain('--effort <low|medium|high|xhigh|max>')
+  })
+})

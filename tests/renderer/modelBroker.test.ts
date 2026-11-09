@@ -125,7 +125,7 @@ describe('modelBroker', () => {
       expect(g).toContain('--model haiku')
       expect(g).toContain('--model sonnet')
       expect(g).toContain('--model opus')
-      expect(g).toContain('ONLY optional flag')
+      expect(g).toContain('ONLY optional flags')
     })
     it('stays in sync with the registry (built from AGENT_MODEL_TIERS, not hardcoded)', () => {
       expect(claudeModelGuidance()).toContain(`--model ${AGENT_MODEL_TIERS.claude.standard}`)

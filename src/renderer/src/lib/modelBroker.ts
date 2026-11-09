@@ -147,7 +147,7 @@ export function claudeModelGuidance(): string | null {
   if (!t?.economy || !t.standard || !t.premium) return null
   return [
     `  MODEL SELECTION (Claude only) — conserve tokens by matching the model to the task.`,
-    `  A Claude command MAY append exactly one model flag; it is the ONLY optional flag allowed:`,
+    `  A Claude command MAY append one model flag (and one --effort flag); these are the ONLY optional flags allowed:`,
     `    • simple / boilerplate / large-but-routine subtasks → '--model ${t.economy}' (cheapest)`,
     `    • moderate subtasks                                  → '--model ${t.standard}'`,
     `    • complex / architectural / correctness-critical     → '--model ${t.premium}' (use this if unsure)`,

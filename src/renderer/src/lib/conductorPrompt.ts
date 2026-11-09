@@ -1,5 +1,6 @@
 import { CATEGORY_LABELS, getEffectiveCapabilities, type AgentRatingOverrides } from './agentCapabilities'
 import { claudeModelGuidance } from './modelBroker'
+import { reviewPolicyText } from '../../../shared/reviewPolicy'
 
 interface ConductorPromptOptions {
   taskDescription: string
@@ -32,7 +33,9 @@ export function buildConductorPrompt(options: ConductorPromptOptions): string {
   // Optional model-tiering guidance for Claude agents, generated from the broker
   // registry so the aliases never drift. Empty when no Claude tiers are configured.
   const modelGuidance = claudeModelGuidance()
-  const modelGuidanceBlock = modelGuidance ? `${modelGuidance}\n` : ''
+  // v1.55.0: how review loops spend tokens (shared/reviewPolicy.ts). It names Claude models, so it
+  // goes with the Claude guidance.
+  const modelGuidanceBlock = modelGuidance ? `${modelGuidance}\n${reviewPolicyText()}\n` : ''
   const restartRule = options.restartOffer
     ? '- If system says Termpolis is restarting a worker on another account, wait for its next message about that worker.\n'
     : ''
@@ -157,7 +160,7 @@ IMPORTANT RULES:
 - Always use from='conductor' when sending messages.
 - Be decisive. Do not ask the user for input.
 - If only one agent type is installed, run multiple instances with different roles.
-- NEVER add -p, --sandbox, or --print. The ONLY optional flag is a Claude --model <opus|sonnet|haiku> (STEP 4) — add nothing else.
+- NEVER add -p, --sandbox, or --print. The ONLY optional flags are a Claude --model <opus|sonnet|haiku> and --effort <low|medium|high|xhigh|max> (STEP 4) — add nothing else.
 - NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex).
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
