@@ -33,7 +33,7 @@ describe('buildSecondOpinionMenu', () => {
     expect(byProvider.claude).toEqual(['claude', ...CLAUDE_VALUES])
     expect(byProvider.codex).toEqual(['codex', 'codex:gpt-5.6-sol', 'codex:gpt-5.5'])
     expect(byProvider.gemini).toEqual(['gemini', 'gemini:gemini-3.8-flash-high'])
-    expect(menu.groups[0].options[0].label).toBe('Claude · default')
+    expect(menu.groups[0].options[0].label).toBe('Claude · default (Sonnet)')
     expect(menu.groups[1].options[0].label).toBe('OpenAI Codex · default')
   })
 
@@ -95,5 +95,30 @@ describe('parseSecondOpinion', () => {
     expect(parseSecondOpinion('bogus')).toBeNull()
     expect(parseSecondOpinion('bogus:opus')).toBeNull()
     expect(parseSecondOpinion('claude:')).toEqual({ agent: 'claude' })
+  })
+})
+
+// v1.55.0: groups follow the model's family, not the CLI that lists it.
+describe('Second Opinion groups by model family', () => {
+  const AGY = { gemini: { models: [{ id: 'gemini-3-pro', label: 'Gemini 3 Pro' }, { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }, { id: 'gpt-oss-120b', label: 'GPT-OSS 120B' }] } } as unknown as Parameters<typeof buildSecondOpinionMenu>[1]
+  const values = (menu: ReturnType<typeof buildSecondOpinionMenu>, p: string) => menu.groups.find((g) => g.provider === p)?.options.map((o) => o.value)
+
+  it("agy's claude models are listed under Claude, not Gemini", () => {
+    const menu = buildSecondOpinionMenu({ claude: true, agy: true }, AGY)
+    expect(values(menu, 'claude')).toEqual(['claude', 'claude:fable', 'claude:opus', 'claude:sonnet', 'claude:haiku', 'gemini:claude-sonnet-4-5'])
+    expect(values(menu, 'gemini')).toEqual(['gemini', 'gemini:gemini-3-pro', 'gemini:gpt-oss-120b'])
+    const claude = menu.groups.find((g) => g.provider === 'claude')!
+    expect(claude.options[0].label).toBe('Claude · default (Sonnet)')
+    expect(claude.options.at(-1)!.label).toBe('Claude Sonnet 4.5 · via Antigravity')
+  })
+
+  it('claude group still appears with only agy installed', () => {
+    const menu = buildSecondOpinionMenu({ agy: true }, AGY)
+    expect(values(menu, 'claude')).toEqual(['gemini:claude-sonnet-4-5'])
+    expect(values(menu, 'gemini')).toEqual(['gemini', 'gemini:gemini-3-pro', 'gemini:gpt-oss-120b'])
+  })
+
+  it('no Claude group with neither Claude Code nor agy Claude models', () => {
+    expect(values(buildSecondOpinionMenu({ codex: true }, AGY), 'claude')).toBeUndefined()
   })
 })

@@ -8,7 +8,8 @@
 // the only place their fast-moving versioned ids exist. A provider with no discovered
 // models still gets its group — just the default row.
 
-import { PROVIDER_INSTALL_KEY, PROVIDER_LABEL, modelOptionsFor, type ModelCatalog, type ModelProvider } from './modelCatalog'
+import { PROVIDER_INSTALL_KEY, PROVIDER_LABEL, modelFamily, modelOptionsFor, type ModelCatalog, type ModelProvider } from './modelCatalog'
+import { REVIEW_POLICY } from '../../../shared/reviewPolicy'
 
 export type SecondOpinionAgent = 'claude' | 'codex' | 'gemini'
 
@@ -25,6 +26,7 @@ export interface SoMenu {
 }
 
 const MENU_ORDER: ModelProvider[] = ['claude', 'codex', 'gemini']
+const titleCase = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
 
 /**
  * Build the Second Opinion menu from the install map and the model catalog.
@@ -39,15 +41,27 @@ export function buildSecondOpinionMenu(
   catalog: ModelCatalog | null | undefined,
 ): SoMenu {
   const inst = installed || {}
+  // Groups follow the model's family, not the CLI that lists it (v1.55.0): agy's Claude models go
+  // under Claude, still run through agy (`gemini:<id>`), the account that serves them.
+  const agyModels = inst[PROVIDER_INSTALL_KEY.gemini] ? modelOptionsFor('gemini', catalog) : []
+  const agyClaude = agyModels.filter((m) => modelFamily(m.alias) === 'claude')
   const groups: SoGroup[] = []
   for (const provider of MENU_ORDER) {
-    if (!inst[PROVIDER_INSTALL_KEY[provider]]) continue
+    const installedHere = !!inst[PROVIDER_INSTALL_KEY[provider]]
     const label = PROVIDER_LABEL[provider]
-    const options: SoOption[] = [{ value: provider, label: `${label} · default` }]
-    for (const m of modelOptionsFor(provider, catalog)) {
-      options.push({ value: `${provider}:${m.alias}`, label: m.label })
+    const options: SoOption[] = []
+    if (provider === 'claude') {
+      if (installedHere) {
+        options.push({ value: 'claude', label: `${label} · default (${titleCase(REVIEW_POLICY.reviewer.model)})` })
+        for (const m of modelOptionsFor('claude', catalog)) options.push({ value: `claude:${m.alias}`, label: m.label })
+      }
+      for (const m of agyClaude) options.push({ value: `gemini:${m.alias}`, label: `${m.label} · via Antigravity` })
+    } else if (installedHere) {
+      options.push({ value: provider, label: `${label} · default` })
+      const models = provider === 'gemini' ? agyModels.filter((m) => modelFamily(m.alias) !== 'claude') : modelOptionsFor(provider, catalog)
+      for (const m of models) options.push({ value: `${provider}:${m.alias}`, label: m.label })
     }
-    groups.push({ provider, label, options })
+    if (options.length > 0) groups.push({ provider, label, options })
   }
   return { groups, hasAny: groups.length > 0 }
 }

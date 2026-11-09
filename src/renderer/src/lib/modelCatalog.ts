@@ -89,6 +89,15 @@ export function modelOptionsFor(provider: ModelProvider | null, catalog: ModelCa
   }))
 }
 
+/**
+ * The family a model id belongs to, whichever CLI lists it (v1.55.0). `agy models` lists the
+ * account's Claude models next to Gemini's, so a menu that grouped by CLI put Claude under Gemini.
+ */
+export function modelFamily(id: string): 'claude' | 'gemini' | 'other' {
+  const s = id.trim().toLowerCase()
+  return s.startsWith('claude') ? 'claude' : s.startsWith('gemini') ? 'gemini' : 'other'
+}
+
 /** Is `id` offered for `provider`? The renderer's mirror of main's isAllowedModel. Pure. */
 export function isOfferedModel(provider: ModelProvider | null, id: string, catalog: ModelCatalog | null | undefined): boolean {
   if (!provider || !id) return false

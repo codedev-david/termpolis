@@ -500,3 +500,13 @@ describe('REFRESH_MODELS_VALUE', () => {
     expect(relaunchCommandFor('codex', REFRESH_MODELS_VALUE, CAT)).toBe('')
   })
 })
+
+describe('modelFamily (v1.55.0)', () => {
+  it('reads the family from the id prefix', async () => {
+    const { modelFamily } = await import('../../src/renderer/src/lib/modelCatalog')
+    expect(modelFamily('claude-sonnet-4-5')).toBe('claude')
+    expect(modelFamily(' Claude-Opus ')).toBe('claude')
+    expect(modelFamily('gemini-3-pro')).toBe('gemini')
+    expect(modelFamily('gpt-oss-120b')).toBe('other')
+  })
+})

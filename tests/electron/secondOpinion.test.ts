@@ -134,11 +134,11 @@ describe('secondOpinionCommand', () => {
   it('claude: plan mode, no tools at all, the mutating built-ins denied, no MCP servers', () => {
     const { bin, args } = secondOpinionCommand('claude')
     expect(bin).toBe('claude')
-    expect(args).toEqual(['--permission-mode', 'plan', '--tools', '', '--disallowedTools', DENY, '--strict-mcp-config', '-p', PROMPT_TOKEN])
+    expect(args).toEqual(['--permission-mode', 'plan', '--tools', '', '--disallowedTools', DENY, '--strict-mcp-config', '--model', 'sonnet', '--effort', 'medium', '-p', PROMPT_TOKEN])
   })
   it('claude: a validated --model goes ahead of the prompt', () => {
     expect(secondOpinionCommand('claude', 'fable').args)
-      .toEqual(['--permission-mode', 'plan', '--tools', '', '--disallowedTools', DENY, '--strict-mcp-config', '--model', 'fable', '-p', PROMPT_TOKEN])
+      .toEqual(['--permission-mode', 'plan', '--tools', '', '--disallowedTools', DENY, '--strict-mcp-config', '--model', 'fable', '--effort', 'medium', '-p', PROMPT_TOKEN])
   })
   it('claude: drops an invalid model alias (injection guard)', () => {
     expect(secondOpinionCommand('claude', 'evil; rm -rf /').args).toEqual(secondOpinionCommand('claude').args)
@@ -250,7 +250,7 @@ describe('secondOpinionSpawnPlan', () => {
   it('windows: keeps an empty argv entry as a real empty argument', () => {
     // PowerShell 5.1 drops a bare '' when calling a native command; '""' reaches it as "".
     const script = secondOpinionSpawnPlan(true, 'claude', secondOpinionCommand('claude').args, PROMPT_TOKEN, 'x').cmdArgs[3]
-    expect(script).toContain(`& $c '--permission-mode' 'plan' '--tools' '""' '--disallowedTools' '${DENY}' '--strict-mcp-config' '-p' $p`)
+    expect(script).toContain(`& $c '--permission-mode' 'plan' '--tools' '""' '--disallowedTools' '${DENY}' '--strict-mcp-config' '--model' 'sonnet' '--effort' 'medium' '-p' $p`)
   })
   it('windows: escapes single quotes in the binary name and in argv entries (defensive)', () => {
     const script = secondOpinionSpawnPlan(true, "ev'il", ["it's", PROMPT_TOKEN], PROMPT_TOKEN, 'x').cmdArgs[3]
@@ -548,5 +548,19 @@ describe('reviewCommand: what a Second Opinion review runs', () => {
     const [, args, , , opts] = deliver.mock.calls[0] as unknown as [string, string[], string, string, { env: Record<string, string> }]
     expect(args).toEqual(expect.arrayContaining([...CODEX_ISOLATE_MCP_ARGS]))
     expect(opts.env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
+  })
+})
+
+describe('Claude reviews follow the review policy (v1.55.0)', () => {
+  it('default claude review uses sonnet medium', () => {
+    const { args } = reviewCommand('claude')
+    expect(args.join(' ')).toContain('--model sonnet')
+    expect(args.join(' ')).toContain('--effort medium')
+    expect(args.slice(-2)).toEqual(['-p', PROMPT_TOKEN])
+  })
+
+  it('a picked alias keeps the same effort', () => {
+    const { args } = reviewCommand('claude', 'opus')
+    expect(args.join(' ')).toContain('--model opus --effort medium')
   })
 })

@@ -56,7 +56,7 @@ import { beginModelSwitch, endModelSwitch, useModelSwitch } from '../../lib/mode
 // Sentinel <option> shown while a model switch is under way (never a model id: it fails
 // isSafeModelId, so it cannot reach an argv).
 const SWITCHING_VALUE = '__switching__'
-import { modelOptionsFor, providerForAgent, PROVIDER_INSTALL_KEY, PROVIDER_LABEL, REFRESH_MODELS_VALUE, type ModelCatalog } from '../../lib/modelCatalog'
+import { modelFamily, modelOptionsFor, providerForAgent, PROVIDER_INSTALL_KEY, PROVIDER_LABEL, REFRESH_MODELS_VALUE, type ModelCatalog } from '../../lib/modelCatalog'
 import { buildSecondOpinionMenu, parseSecondOpinion } from '../../lib/secondOpinion'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -2408,9 +2408,21 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                 )}
                 <option value="">{options.length === 0 ? 'Model — none found' : 'Model…'}</option>
                 {options.length === 0 && <option value={REFRESH_MODELS_VALUE}>Retry discovery</option>}
-                {options.map((m) => (
-                  <option key={m.alias} value={m.alias}>{m.label}{m.note ? ` · ${m.note}` : m.savingsPct > 0 ? ` · ${m.savingsPct}% cheaper` : ''}</option>
-                ))}
+                {(() => {
+                  // agy lists the account's Claude models too: they stay pickable (agy runs them) but
+                  // sit in their own group rather than among Gemini's (v1.55.0).
+                  const row = (m: typeof options[number]) => (
+                    <option key={m.alias} value={m.alias}>{m.label}{m.note ? ` · ${m.note}` : m.savingsPct > 0 ? ` · ${m.savingsPct}% cheaper` : ''}</option>
+                  )
+                  const viaAgy = provider === 'gemini' ? options.filter((m) => modelFamily(m.alias) === 'claude') : []
+                  if (viaAgy.length === 0) return options.map(row)
+                  return (
+                    <>
+                      {options.filter((m) => modelFamily(m.alias) !== 'claude').map(row)}
+                      <optgroup label="Claude (via Antigravity)">{viaAgy.map(row)}</optgroup>
+                    </>
+                  )
+                })()}
               </select>
               {provider === 'claude' && reroute && !relaunchInFlight && (
                 <span

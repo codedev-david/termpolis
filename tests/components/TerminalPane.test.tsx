@@ -1994,6 +1994,16 @@ describe('TerminalPane', () => {
       return picker
     }
 
+    it('puts agy\'s Claude models in their own group in a Gemini terminal, still pickable (v1.55.0)', async () => {
+      withAgentTerminal('agy', { ...CATALOG, gemini: { ...CATALOG.gemini, models: [...CATALOG.gemini.models, { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }] } })
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await pickerWithModels()
+      const group = picker.querySelector('optgroup[label="Claude (via Antigravity)"]')!
+      expect([...group.querySelectorAll('option')].map((o) => o.value)).toEqual(['claude-sonnet-4-5'])
+      expect(picker.querySelector('optgroup option[value="gemini-3.8-flash-high"]')).toBeNull()
+      expect(picker.querySelector('option[value="gemini-3.8-flash-high"]')).not.toBeNull()
+    })
+
     it('lists Codex\'s discovered models in a Codex terminal', async () => {
       withAgentTerminal('codex --yolo')
       render(<TerminalPane {...defaultProps} />)
@@ -2175,7 +2185,7 @@ describe('TerminalPane', () => {
       // Claude's rows are its four builtin aliases; Codex/Gemini have no catalog in this
       // test, so they contribute only their "run the CLI's own default" row.
       expect(Array.from(groups[0].querySelectorAll('option')).map((o) => o.textContent))
-        .toEqual(['Claude · default', 'Fable', 'Opus', 'Sonnet', 'Haiku'])
+        .toEqual(['Claude · default (Sonnet)', 'Fable', 'Opus', 'Sonnet', 'Haiku'])
       expect(Array.from(groups[1].querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value)).toEqual(['codex'])
       expect(Array.from(groups[2].querySelectorAll('option')).map((o) => (o as HTMLOptionElement).value)).toEqual(['gemini'])
       // Only the placeholder sits outside a group now.

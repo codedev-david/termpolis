@@ -15,6 +15,7 @@
 
 import path from 'path'
 import { isSafeModelId } from './modelCatalog'
+import { REVIEW_POLICY } from '../shared/reviewPolicy'
 import { psQuote } from '../shared/shellQuote'
 
 export type SecondOpinionAgent = 'claude' | 'codex' | 'gemini'
@@ -142,8 +143,13 @@ export function agyReadOnlyArgs(model: string | undefined, timeoutMs: number, ex
  */
 export function secondOpinionCommand(agent: SecondOpinionAgent, model?: string, timeoutMs: number = SECOND_OPINION_TIMEOUT_MS): { bin: string; args: string[] } {
   switch (agent) {
-    case 'claude':
-      return { bin: 'claude', args: claudeReadOnlyArgs(model, '') }
+    case 'claude': {
+      // v1.55.0 review policy: with no model picked a review runs on Sonnet; every review at medium effort.
+      const picked = model && (CLAUDE_MODEL_ALIASES as readonly string[]).includes(model) ? model : REVIEW_POLICY.reviewer.model
+      const args = claudeReadOnlyArgs(picked, '')
+      args.splice(args.indexOf('-p'), 0, '--effort', REVIEW_POLICY.reviewer.effort)
+      return { bin: 'claude', args }
+    }
     case 'codex':
       return { bin: 'codex', args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...modelArgs('codex', model), PROMPT_TOKEN] }
     case 'gemini':
