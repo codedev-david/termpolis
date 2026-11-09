@@ -74,3 +74,18 @@ describe('output steering — the anti-restatement directive is universal', () =
     }
   })
 })
+
+// v1.55.0 lean output: no whole file echoed back at any tier; a short report closes a task (balanced).
+describe('lean output rules', () => {
+  it('every mode asks for the changed lines, not a whole file', async () => {
+    const { steeringDirective, D_DIFFS } = await import('../../src/main/headroom/outputSteering')
+    for (const m of ['conservative', 'balanced', 'aggressive', 'max'] as const) expect(steeringDirective(m)).toContain(D_DIFFS)
+  })
+
+  it('only balanced asks for the 5-line report: aggressive and max drop closing summaries', async () => {
+    const { steeringDirective, D_DONE } = await import('../../src/main/headroom/outputSteering')
+    expect(steeringDirective('balanced')).toContain(D_DONE)
+    expect(steeringDirective()).toContain(D_DONE)
+    for (const m of ['conservative', 'aggressive', 'max'] as const) expect(steeringDirective(m)).not.toContain(D_DONE)
+  })
+})

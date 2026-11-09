@@ -23,6 +23,11 @@ export const STEERING_MARK = 'Output style: be terse and information-dense.'
 const D_TERSE = STEERING_MARK
 const D_DEPTH = 'Reserve depth for genuinely hard or ambiguous work.'
 const D_NO_RESTATE = 'Never repeat content already visible in tool output — reference it instead.'
+// v1.55.0 lean output. Like D_NO_RESTATE, every tier: a whole file echoed back costs output tokens
+// (5x input) and tells the reader nothing the diff does not.
+export const D_DIFFS = 'Show a diff or the changed lines, never a whole file back.'
+// Balanced only: aggressive and max drop closing summaries entirely.
+export const D_DONE = 'When a task is done, say what changed, how it was verified, and anything left, in at most 5 lines.'
 
 const BASE = [
   D_TERSE,
@@ -36,6 +41,7 @@ const BASE = [
   // version of that instruction that only a max-mode user needs — it costs nothing in
   // fidelity, because the content it suppresses is by definition already on screen.
   D_NO_RESTATE,
+  D_DIFFS,
 ]
 
 const MAX_EXTRA = [
@@ -84,13 +90,13 @@ export function steeringDirective(mode: SteeringMode = 'balanced'): string {
   // Conservative keeps D_NO_RESTATE even though it drops everything else: restating tool
   // output is the one verbosity that costs the reader nothing to lose, because the content is
   // by definition already on their screen. Trimming it is not a fidelity trade at any tier.
-  if (mode === 'conservative') return [D_TERSE, D_DEPTH, D_NO_RESTATE].join(' ')
+  if (mode === 'conservative') return [D_TERSE, D_DEPTH, D_NO_RESTATE, D_DIFFS].join(' ')
   // Max: everything aggressive says, plus the hardest cuts. The wire tier and the steering tier
   // share one setting, so selecting the hardest compression must not hand back a WEAKER directive
   // than aggressive — which is exactly what an unhandled mode would do by falling through to BASE.
   if (mode === 'max') return [...BASE, ...AGGRESSIVE_EXTRA, ...MAX_EXTRA].join(' ')
   // Aggressive: the full base plus harder cuts to output length.
   if (mode === 'aggressive') return [...BASE, ...AGGRESSIVE_EXTRA].join(' ')
-  // Balanced (default): byte-identical to the historical directive — no behavior change.
-  return BASE.join(' ')
+  // Balanced (default): the base plus the short report at the end of a task (v1.55.0).
+  return [...BASE, D_DONE].join(' ')
 }
