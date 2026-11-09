@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: November 8, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it)
+Last updated: November 8, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the memory hook also runs on a session's first prompt, around a compaction and before a whole-file read, and sends what it reads only to Termpolis on this computer; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it)
 
 ## Overview
 
@@ -461,7 +461,21 @@ Connected, Termpolis:
   folder or a drive root. Optionally, it adds a SessionStart hook to
   `settings.json` that loads your project memory whenever a Claude Code
   session starts, including sessions started outside Termpolis. The hook
-  does nothing once Termpolis is gone.
+  does nothing once Termpolis is gone. From 1.55.0 the same hook script is
+  also registered for UserPromptSubmit, PreCompact, PostCompact and
+  PreToolUse (Read only). On a session's first prompt, and on the last prompt
+  again right after Claude Code compacts, it sends the prompt text (with
+  credentials redacted) to Termpolis's own control server on this computer
+  (127.0.0.1), which classifies it in memory to pick memory notes and to offer
+  a better-fitting model; the text is never stored and never sent anywhere
+  else. PreCompact prints a short instruction for Claude Code's summary and
+  sends nothing. Before Claude Code reads a whole file, the Read hook sends the
+  file's path, and nothing of its contents, to the same local server, which
+  answers with an outline of the file when it is over 1,500 lines. When a
+  Claude terminal is launched with the model set to Auto, Termpolis sets
+  `CLAUDE_CODE_SUBAGENT_MODEL=sonnet` for that terminal, unless your own
+  environment already sets it. No output-style file is written: shorter
+  answers come from the steering lines the compression proxy already adds.
 - **Codex** — adds the Termpolis MCP server to `config.toml`, pre-approves
   the 14 memory tools unless you already chose a setting for them, and
   answers the folder-trust prompt for folders you open agents in, never your

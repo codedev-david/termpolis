@@ -79,7 +79,9 @@ export function claimFirstPrompt(sessionId: string, now: number): boolean {
   const cur = prompted.get(sessionId)
   if (cur && now - cur.at < PROMPTED_TTL_MS) return false
   prompted.delete(sessionId)
-  prompted.set(sessionId, { at: now, arm: armOf(sessionId) })
+  const arm = armOf(sessionId)
+  prompted.set(sessionId, { at: now, arm })
+  counts[arm]++
   if (prompted.size > MAX_KEYS) prompted.delete(prompted.keys().next().value as string)
   return true
 }
@@ -99,6 +101,10 @@ export function claimOffer(sessionId: string, now: number): boolean {
   return true
 }
 
+// What the receipt's lever rows count since launch (leverRows.ts): sessions by arm, and relays.
+const counts = { focused: 0, holdout: 0, relays: 0 }
+export function primerCounts(): { focused: number; holdout: number; relays: number } { return { ...counts } }
+
 /** The arm a session was tagged with at its first prompt, or null when it has had none here. */
 export function sessionArm(sessionId: string): PrimerArm | null {
   return prompted.get(sessionId)?.arm ?? null
@@ -116,6 +122,7 @@ export function onFirstPrompt(fn: FirstPromptListener): () => void {
 }
 
 export function emitFirstPrompt(sessionId: string, prompt: string, cwd: string | undefined, terminalId?: string, afterCompact?: boolean): void {
+  if (afterCompact) counts.relays++
   for (const fn of firstPromptListeners) {
     try { fn(sessionId, prompt, cwd, terminalId, afterCompact) } catch { /* a listener never stops the primer */ }
   }
@@ -127,6 +134,7 @@ export function resetPrimerGuard(): void {
   prompted.clear()
   offered.clear()
   firstPromptListeners.clear()
+  counts.focused = 0; counts.holdout = 0; counts.relays = 0
 }
 
 /** The line a repeat primer starts with, in place of the notes the session already holds. */

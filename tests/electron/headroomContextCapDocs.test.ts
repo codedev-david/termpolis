@@ -744,7 +744,8 @@ describe('only the places that start an agent tell the main process a terminal i
       `${R}components/Sidebar/WorkspaceList.tsx`,
       // The account switcher's fresh terminals for an agent (1.54.6).
       `${R}lib/accountSwitchFlow.ts`, `${R}lib/accountSwitchFlow.ts`,
-      `${R}lib/aiProfiles.ts`,
+      // An agent launch, and the same launch with Auto's task as the first prompt (1.55.0).
+      `${R}lib/aiProfiles.ts`, `${R}lib/aiProfiles.ts`,
       `${R}lib/conductorManager.ts`,
     ])
     // A plain new terminal (the app's new-terminal action, the sidebar's, a split pane) passes the shell and the folder only.

@@ -1,8 +1,12 @@
 import { summarizeSavings, type SavingsTotals } from './savingsLedger'
-import { summarizeProxySavings, stubKindsOf, type ProxyTotals, type StubKinds } from '../headroomProxy/proxyLedger'
+import { summarizeProxySavings, stubKindsOf, currentModelTotals, type ProxyTotals, type StubKinds } from '../headroomProxy/proxyLedger'
 import { billBreakdown, type BillBreakdown } from './effectiveUnits'
 import { depthAdvice, type DepthAdvice } from './sessionDepth'
 import { ccrStats } from './ccrStore'
+import { compareArms } from './armCompare'
+import { armState } from './armLedger'
+import { primerCounts } from '../primerSessionGuard'
+import { leverRows, type LeverRow } from './leverRows'
 
 /**
  * ONE honest savings number.
@@ -100,7 +104,7 @@ export interface UnifiedTotals {
  *  neither a session sum nor a lifetime sum. The curve behind it is lifetime, but the reading is
  *  about the conversation happening right now, and folding it into either bucket would invite
  *  someone to add it to something. */
-export interface UnifiedReceipt { session: UnifiedTotals; cumulative: UnifiedTotals; depth: DepthAdvice | null }
+export interface UnifiedReceipt { session: UnifiedTotals; cumulative: UnifiedTotals; depth: DepthAdvice | null; levers: LeverRow[] }
 
 /** Chars summed over N requests → tokens on a typical one. The ~4 chars/token ratio is the same
  *  estimate the rest of the wire layer uses; consistency matters more here than precision. */
@@ -199,5 +203,15 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
 export function summarizeUnifiedSavings(): UnifiedReceipt {
   const p = summarizeProxySavings()
   const t = summarizeSavings()
-  return { session: merge(p.session, t.session), cumulative: merge(p.cumulative, t.cumulative), depth: depthAdvice() }
+  const cumulative = merge(p.cumulative, t.cumulative)
+  const levers = leverRows({
+    arms: compareArms(armState()),
+    byModel: currentModelTotals(),
+    steeredRequests: cumulative.steeredRequests,
+    unsteeredRequests: cumulative.unsteeredRequests,
+    steeredAvgOutput: cumulative.steeredAvgOutput,
+    unsteeredAvgOutput: cumulative.unsteeredAvgOutput,
+    primer: primerCounts(),
+  })
+  return { session: merge(p.session, t.session), cumulative, depth: depthAdvice(), levers }
 }

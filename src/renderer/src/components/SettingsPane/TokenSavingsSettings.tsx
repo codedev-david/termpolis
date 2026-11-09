@@ -10,7 +10,22 @@ type Settings = HeadroomSettingsView
 interface Totals { netSaved: number; events: number; byTool: Record<string, number> }
 interface Receipt { session: Totals; cumulative: Totals }
 interface ProxyReceipt { session: ProxyTotalsView; cumulative: ProxyTotalsView }
-interface UnifiedReceipt { session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null }
+type LeverStatusView =
+  | { kind: 'collecting'; n: number; of: number }
+  | { kind: 'measured' | 'no-clear-difference'; deltaPct: number; marginPct: number }
+  | { kind: 'observed' }
+interface LeverRowView { id: string; label: string; detail: string; status: LeverStatusView }
+interface UnifiedReceipt { session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null; levers?: LeverRowView[] }
+
+/** What a lever row says about itself: a measurement only once its comparison cleared 99% (main's leverRows.ts). */
+function leverStatusText(s: LeverStatusView): string {
+  switch (s.kind) {
+    case 'collecting': return `collecting (${fmt(s.n)} of ${fmt(s.of)})`
+    case 'measured': return `measured against the holdout: ${s.deltaPct > 0 ? '+' : ''}${s.deltaPct}% ± ${s.marginPct} (99%)`
+    case 'no-clear-difference': return `no clear difference yet: ${s.deltaPct > 0 ? '+' : ''}${s.deltaPct}% ± ${s.marginPct}`
+    default: return 'observed'
+  }
+}
 
 // + 0 turns a negative zero into 0: a figure that rounds to nothing (Math.round(-0.4) is -0) must not print "-0".
 const fmt = (n: number): string => (n + 0).toLocaleString('en-US')
@@ -302,6 +317,18 @@ export function TokenSavingsSettings() {
             across {fmt(unified?.cumulative.steeredRequests ?? 0)}; unsteered averaged{' '}
             <b data-testid="hr-steer-off">{fmt(unified?.cumulative.unsteeredAvgOutput ?? 0)}</b> across {fmt(unified?.cumulative.unsteeredRequests ?? 0)}.
             Observed, not a controlled comparison — different sessions ask different questions.
+          </div>
+        )}
+
+        {/* One row per lever. "Measured" appears only once a comparison against its holdout cleared 99%. */}
+        {(unified?.levers?.length ?? 0) > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }} data-testid="hr-levers">
+            <div>Levers:</div>
+            {unified?.levers?.map((r) => (
+              <div key={r.id} data-testid={`hr-lever-${r.id}`}>
+                <b>{r.label}</b>: {leverStatusText(r.status)}. {r.detail}
+              </div>
+            ))}
           </div>
         )}
 

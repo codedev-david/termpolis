@@ -171,6 +171,31 @@ describe('TokenSavingsSettings — honest reporting', () => {
     expect(screen.getByTestId('hr-steering-observed')).toHaveTextContent('not a controlled comparison')
   })
 
+  it('shows one row per lever, and "measured" only for a comparison that cleared 99%', async () => {
+    const api = (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis
+    api.tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        session: unifiedTotals({}), cumulative: unifiedTotals({}),
+        levers: [
+          { id: 'late-elision', label: 'Late elision', detail: 'Cost.', status: { kind: 'collecting', n: 1200, of: 500 } },
+          { id: 'lean-output', label: 'Lean output', detail: 'Means.', status: { kind: 'measured', deltaPct: -9, marginPct: 4 } },
+          { id: 'routing', label: 'Routing', detail: 'Shares.', status: { kind: 'measured', deltaPct: 3, marginPct: 2 } },
+          { id: 'relay', label: 'Relay', detail: 'Count.', status: { kind: 'no-clear-difference', deltaPct: 2, marginPct: 5 } },
+          { id: 'graph-first', label: 'Graph first', detail: 'Offered.', status: { kind: 'no-clear-difference', deltaPct: -1, marginPct: 5 } },
+          { id: 'focused-recall', label: 'Focused recall', detail: 'Sessions.', status: { kind: 'observed' } },
+        ],
+      },
+    })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-lever-late-elision')).toHaveTextContent('Late elision: collecting (1,200 of 500). Cost.')
+    expect(screen.getByTestId('hr-lever-lean-output')).toHaveTextContent('measured against the holdout: -9% ± 4 (99%)')
+    expect(screen.getByTestId('hr-lever-routing')).toHaveTextContent('+3% ± 2')
+    expect(screen.getByTestId('hr-lever-relay')).toHaveTextContent('no clear difference yet: +2% ± 5')
+    expect(screen.getByTestId('hr-lever-graph-first')).toHaveTextContent('no clear difference yet: -1% ± 5')
+    expect(screen.getByTestId('hr-lever-focused-recall')).toHaveTextContent('Focused recall: observed. Sessions.')
+  })
+
   it('will not compare steering against an arm with no requests in it', async () => {
     withData({}, { steeredRequests: 900, unsteeredRequests: 0, steeredAvgOutput: 640 })
     render(<TokenSavingsSettings />)
