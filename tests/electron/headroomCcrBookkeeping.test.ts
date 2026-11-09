@@ -118,6 +118,8 @@ describe('a stash that outlives a launch is still counted in its class when it i
     expect(a.ccrRetrieveRecord(TOKEN)?.meta).toMatchObject({ kind: 'compact', tool: 'Read' })
     // Launch 2: nothing in memory, the file on disk. The proxy re-sends the identical body, and with it
     // the identical metadata, before the model asks.
+    // Launch 1 writes its stash off the main thread; a restart only sees it once that write has landed.
+    await (await import('../../src/main/offMainFiles')).offMainFiles.idle()
     vi.resetModules()
     const b = await import('../../src/main/headroom/ccrStore')
     b.resetCcr(); b.setCcrDir(dir)
@@ -133,6 +135,8 @@ describe('a stash that outlives a launch is still counted in its class when it i
     const a = await import('../../src/main/headroom/ccrStore')
     a.resetCcr(); a.setCcrDir(dir)
     a.ccrPut(TOKEN, 'the original text '.repeat(200), 'proxy', meta)
+    // Launch 1 writes its stash off the main thread; a restart only sees it once that write has landed.
+    await (await import('../../src/main/offMainFiles')).offMainFiles.idle()
     vi.resetModules()
     const store = await import('../../src/main/headroom/ccrStore')
     store.resetCcr(); store.setCcrDir(dir)
@@ -151,6 +155,8 @@ describe('a stash that outlives a launch is still counted in its class when it i
     const a = await import('../../src/main/headroom/ccrStore')
     a.resetCcr(); a.setCcrDir(dir)
     a.ccrPut(TOKEN, 'old stash', 'proxy') // from before the ledger: no metadata
+    // Launch 1 writes its stash off the main thread; a restart only sees it once that write has landed.
+    await (await import('../../src/main/offMainFiles')).offMainFiles.idle()
     vi.resetModules()
     const b = await import('../../src/main/headroom/ccrStore')
     b.resetCcr(); b.setCcrDir(dir)
