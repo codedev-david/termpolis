@@ -177,6 +177,9 @@ export function recentSlotCount(limit: number): number {
 // number the Memory panel / accounting reads. Zero until the first successful build.
 let lastPrimerCost: PrimerCost = { chars: 0, tokens: 0, lines: 0 }
 export function getLastPrimerCost(): PrimerCost { return lastPrimerCost }
+let lastPrimerIds: string[] = []
+/** The ids of the memories the last digest showed, in the order it showed them (the per-session primer guard records them). */
+export function getLastPrimerIds(): string[] { return lastPrimerIds }
 
 // A code memory's content begins with "<path>:<start>[-<end>]". The path may
 // contain a Windows drive colon, so strip only the trailing ":<digits>[-<digits>]"
@@ -291,6 +294,7 @@ function renderLine(h: PrimerHit, maxSnip: number, fileExists: (p: string) => bo
 
 export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptions): Promise<string | null> {
   lastPrimerCost = { chars: 0, tokens: 0, lines: 0 }
+  lastPrimerIds = []
   if (!opts.query || !opts.query.trim()) return null
   const limit = Math.min(Math.max(opts.limit ?? DEFAULT_PRIMER_LIMIT, 1), 100)
   const maxSnip = opts.maxSnippetChars ?? 400
@@ -537,6 +541,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     else section(part.title, part.lines)
   }
   if (body.length === 0) return null
+  lastPrimerIds = [...recentHits.filter((h) => lineOf(h) !== null), ...block.shown].map((h) => h.id).filter((id): id is string => typeof id === 'string' && id !== '')
 
   // F24: only the flat (score-sorted) path is truly "most relevant first"; the project
   // path leads with its notes, lessons and conversations under its own sub-headers, so

@@ -45,11 +45,15 @@ export interface AgentIntegrationStatus {
   /** Codex's own config trusts the home folder — which Termpolis's old blind answer to
    *  Codex's trust prompt could have caused. The UI offers to remove it. */
   codexHomeTrusted: boolean
+  /** Other memory primers in Claude's SessionStart hooks besides Termpolis's own (v1.55.0). Absent when there are none. */
+  foreignPrimerHooks?: string[]
 }
 
 export interface AgentIntegrationSetRequest {
   connect: boolean
   primerHook?: boolean
+  /** One-shot: also take the other memory primers (`foreignPrimerHooks`) out of Claude's settings. */
+  removeForeignPrimerHooks?: boolean
 }
 
 export interface AgentIntegrationSetResult {

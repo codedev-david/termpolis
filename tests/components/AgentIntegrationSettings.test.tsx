@@ -167,6 +167,20 @@ describe('AgentIntegrationSettings: connecting and disconnecting', () => {
     expect(screen.getByTestId('agent-integration-disconnect')).toBeInTheDocument()
   })
 
+  it('warns about another memory hook and removes it on request', async () => {
+    const api = bridge(status({ primerHook: true, foreignPrimerHooks: ['bash ~/.claude/hooks/memory-primer.sh'] }))
+    await renderLoaded()
+    expect(screen.getByTestId('agent-integration-foreign-primer')).toHaveTextContent('memory-primer.sh')
+    fireEvent.click(screen.getByTestId('agent-integration-foreign-primer-remove'))
+    await waitFor(() => expect(api.agentIntegrationSet).toHaveBeenCalledWith({ connect: true, primerHook: true, removeForeignPrimerHooks: true }))
+  })
+
+  it('shows no warning when there is no other memory hook', async () => {
+    bridge(status({ primerHook: true }))
+    await renderLoaded()
+    expect(screen.queryByTestId('agent-integration-foreign-primer')).toBeNull()
+  })
+
   it('turns the hook on and off while connected', async () => {
     const api = bridge(status({ primerHook: true }))
     await renderLoaded()

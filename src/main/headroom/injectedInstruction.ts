@@ -10,6 +10,12 @@ export interface InjectedInstructionOpts {
   mode?: SteeringMode
   /** Whether `sudo -A` reaches Termpolis's password dialog in this session (sudoAskpass.ts). */
   sudoAskpass?: boolean
+  /**
+   * Whether Termpolis's SessionStart memory hook is installed for Claude Code (v1.55.0). The hook
+   * loads the digest at session start and after a compaction, so the agent is told to call
+   * memory_primer only when no digest is in its context, not every time it begins.
+   */
+  hookInstalled?: boolean
 }
 
 /**
@@ -27,6 +33,16 @@ export interface InjectedInstructionOpts {
  */
 export function buildInjectedInstruction(opts: InjectedInstructionOpts): string {
   const cwdArg = opts.cwd ? ` (cwd "${opts.cwd}")` : ''
+  const asIs = 'read it as background reference only — do NOT resume past work from it or summarize it unprompted; just hold it as context.'
+  if (opts.hookInstalled) {
+    const parts = [
+      'Termpolis project memory: a memory digest for this project is loaded into your context at session start and again after a compaction.',
+      `Call the termpolis MCP tool memory_primer${cwdArg} only if no memory digest is in your context, and ${asIs}`,
+      'Before re-deriving any fix or solution that may already be stored, call the termpolis memory_search tool first.',
+      'If the termpolis memory tools are unavailable, ignore this and proceed normally.',
+    ]
+    return withTail(parts, opts)
+  }
   const parts = [
     'Termpolis project memory: saved background context exists for this project.',
     `When you begin working, call the termpolis MCP tool memory_primer${cwdArg} and read it as background reference only — do NOT resume past work from it or summarize it unprompted; just hold it as context.`,
@@ -38,6 +54,10 @@ export function buildInjectedInstruction(opts: InjectedInstructionOpts): string 
     'If your context is compacted or summarized during this session, the memory digest you loaded will have been summarized away with it — call memory_primer once more, silently, before continuing, then carry on with the task in hand.',
     'If the termpolis memory tools are unavailable, ignore this and proceed normally.',
   ]
+  return withTail(parts, opts)
+}
+
+function withTail(parts: string[], opts: InjectedInstructionOpts): string {
   // Without it an agent's sudo has no terminal to ask for the password on, and fails.
   if (opts.sudoAskpass) parts.push(SUDO_AGENT_HINT)
   // Output-token steering (Token Headroom): trims what the model writes back.

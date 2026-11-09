@@ -29,11 +29,11 @@ import type {
 import { stat, readFile } from 'fs/promises'
 import { MAX_CONFIG_BYTES, atomicWriteText, editJsonObject, errorText, parseJsonObjectText, readJsonObject, readTextFile, type JsonObjectRead } from './agentConfigIO'
 import {
-  FOREIGN_SERVER, applyAgyAllowRules, applyAllowRules, applyPrimerHook, hasPluginEnablement, hasPrimerHook,
+  FOREIGN_SERVER, applyAgyAllowRules, applyAllowRules, applyPrimerHook, foreignPrimerHooks, hasPluginEnablement, hasPrimerHook,
   hasServerEntry, hasTermpolisAllowRule, isAdapterPath, isPrimerHookCommand, isTermpolisPluginManifest,
   isTermpolisServerEntry, localMarketplaceNames, primerHookCommand, removeAgyAllowRules, removeAllowRules,
   removeInstalledPlugin, removeLegacyAllowRules, removeMarketplaceEntry, removePluginEnablement,
-  removePrimerHooks, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
+  removeForeignPrimerHooks, removePrimerHooks, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
   upsertClaudeUserServer, upsertServerEntry,
 } from './agentMcpRegistry'
 import type { EntryEdit, NodeSpec, ServerEntry } from './agentMcpRegistry'
@@ -964,6 +964,7 @@ export function codexHasTermpolisServer(paths: AgentIntegrationPaths): boolean {
 }
 
 function statusOf(paths: AgentIntegrationPaths, ledger: Ledger): AgentIntegrationStatus {
+  let foreign: string[] = []
   const status = (agents: AgentIntegrationStatus['agents'], codexHomeTrusted: boolean): AgentIntegrationStatus => ({
     consent: ledger.consent,
     legacyDetected: ledger.legacy,
@@ -973,9 +974,12 @@ function statusOf(paths: AgentIntegrationPaths, ledger: Ledger): AgentIntegratio
     autoAllowedTools: [...MCP_TOOLS_AUTO_ALLOWED],
     trustedFolders: [...ledger.trustedByTermpolis],
     codexHomeTrusted,
+    ...(foreign.length > 0 ? { foreignPrimerHooks: foreign } : {}),
   })
   // With no home folder no config is read, so no agent shows as installed.
   if (!agentPaths(paths)) return status({ claude: noAgent(), codex: noAgent(), gemini: noAgent() }, false)
+  const claudeSettings = readJson(join(paths.claudeDir, 'settings.json'))
+  foreign = claudeSettings ? foreignPrimerHooks(claudeSettings) : []
   const claudeJson = readJson(paths.claudeJson)
   const codexFile = join(paths.codexHome, 'config.toml')
   const read = readText(codexFile)
@@ -1134,6 +1138,15 @@ export function setAgentIntegration(
     const saveError = writeLedger(rt.paths, ledger)
     if (saveError !== null) return { status: getAgentIntegrationStatus(rt.paths), changes: [], saveError }
     const changes = applyAll(rt, ledger.primerHook, ledger.consent, ledger).filter(isChange)
+    // Asked for from the Settings warning: the other memory primers come out of the same settings files,
+    // through the same read-modify-write, and show in the same list of changes.
+    if (req.removeForeignPrimerHooks && agentPaths(rt.paths)) {
+      for (const dir of claudeDirs(rt.paths)) {
+        changes.push(...editConfig('claude', join(dir, 'settings.json'), [
+          { what: 'Other memory hook', run: removeForeignPrimerHooks },
+        ], false).filter(isChange))
+      }
+    }
     return { status: statusOf(rt.paths, ledger), changes }
   } catch (e) {
     return failed(rt, e, [])

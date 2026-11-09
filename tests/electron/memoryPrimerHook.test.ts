@@ -21,17 +21,18 @@ const hook = require(HOOK_PATH) as {
 }
 
 describe('memory-primer-hook', () => {
-  describe('shouldPrime — only fresh start / resume', () => {
+  describe('shouldPrime — start, resume, compact and clear', () => {
     it('primes on startup', () => expect(hook.shouldPrime('startup')).toBe(true))
     it('primes on resume', () => expect(hook.shouldPrime('resume')).toBe(true))
     it('defaults a missing/empty source to prime', () => {
       expect(hook.shouldPrime(undefined)).toBe(true)
       expect(hook.shouldPrime('')).toBe(true)
     })
-    it('does NOT prime on compact (the app re-primes itself → no double-inject)', () =>
-      expect(hook.shouldPrime('compact')).toBe(false))
-    it('does NOT prime on clear or unknown sources', () => {
-      expect(hook.shouldPrime('clear')).toBe(false)
+    it('primes again after a compaction or /clear, which drop the digest', () => {
+      expect(hook.shouldPrime('compact')).toBe(true)
+      expect(hook.shouldPrime('clear')).toBe(true)
+    })
+    it('does NOT prime on unknown sources', () => {
       expect(hook.shouldPrime('whatever')).toBe(false)
     })
   })

@@ -348,6 +348,22 @@ describe('setAgentIntegration: connect', () => {
     })
   })
 
+  it('shows another memory hook and takes it out when asked, leaving the rest', () => {
+    installAll()
+    const other = { hooks: [{ type: 'command', command: 'bash ~/.claude/hooks/memory-primer.sh' }] }
+    const keep = { hooks: [{ type: 'command', command: 'bash ~/.claude/hooks/permissions_guard.sh' }] }
+    writeJson(sb.files.settings, { hooks: { SessionStart: [other, keep] } })
+    const first = setAgentIntegration(sb.rt, { connect: true })
+    expect(first.status.foreignPrimerHooks).toEqual(['bash ~/.claude/hooks/memory-primer.sh'])
+    const r = setAgentIntegration(sb.rt, { connect: true, removeForeignPrimerHooks: true })
+    expect(r.changes.some((c) => c.what === 'Other memory hook')).toBe(true)
+    expect(r.status.foreignPrimerHooks).toBeUndefined()
+    const groups = (readJson(sb.files.settings) as { hooks: { SessionStart: unknown[] } }).hooks.SessionStart
+    expect(groups).toContainEqual(keep)
+    expect(groups).toContainEqual(ourHookGroup())
+    expect(groups).toHaveLength(2)
+  })
+
   it('is idempotent: connecting again changes nothing on disk', () => {
     installAll()
     writeLedger(sb)

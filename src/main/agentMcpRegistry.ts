@@ -175,6 +175,12 @@ export function isPrimerHookCommand(command: unknown): boolean {
   return typeof command === 'string' && /memory-primer-hook\.cjs/.test(command)
 }
 
+/** Another memory primer in the same SessionStart list (a hand-written `memory-primer.sh`, say): it
+ *  loads a second digest into every session on top of Termpolis's own (v1.55.0). */
+export function isForeignPrimerHookCommand(command: unknown): boolean {
+  return typeof command === 'string' && /memory[_-]primer/i.test(command) && !isPrimerHookCommand(command)
+}
+
 export interface ServerEntry {
   command: string
   args: string[]
@@ -363,14 +369,14 @@ function sessionStart(root: Json): unknown[] | null | { skipped: string } {
 }
 
 /** Where each Termpolis hook sits: a group's `hooks[i]`, or (item -1) a flat group that is one. */
-function primerHookSites(groups: unknown[]): Array<{ group: number; item: number }> {
-  const sites: Array<{ group: number; item: number }> = []
+function primerHookSites(groups: unknown[], match: (command: unknown) => boolean = isPrimerHookCommand): Array<{ group: number; item: number; command: string }> {
+  const sites: Array<{ group: number; item: number; command: string }> = []
   groups.forEach((g, group) => {
     if (!isObject(g)) return
-    if (isPrimerHookCommand(g.command)) sites.push({ group, item: -1 })
+    if (match(g.command)) sites.push({ group, item: -1, command: g.command as string })
     if (Array.isArray(g.hooks)) {
       g.hooks.forEach((h: unknown, item: number) => {
-        if (isObject(h) && isPrimerHookCommand(h.command)) sites.push({ group, item })
+        if (isObject(h) && match(h.command)) sites.push({ group, item, command: h.command as string })
       })
     }
   })
@@ -423,6 +429,22 @@ export function removePrimerHooks(root: Json): EntryEdit {
   const groups = sessionStart(root)
   if (!Array.isArray(groups)) return groups ?? 'unchanged'
   const sites = primerHookSites(groups)
+  if (sites.length === 0) return 'unchanged'
+  removeSites(root, sites)
+  return 'remove'
+}
+
+/** The commands of every other memory primer in SessionStart, for the Settings warning. */
+export function foreignPrimerHooks(root: Json): string[] {
+  const groups = sessionStart(root)
+  return Array.isArray(groups) ? primerHookSites(groups, isForeignPrimerHookCommand).map((s) => s.command) : []
+}
+
+/** Take the other memory primers out of SessionStart, leaving Termpolis's own and every other hook. */
+export function removeForeignPrimerHooks(root: Json): EntryEdit {
+  const groups = sessionStart(root)
+  if (!Array.isArray(groups)) return groups ?? 'unchanged'
+  const sites = primerHookSites(groups, isForeignPrimerHookCommand)
   if (sites.length === 0) return 'unchanged'
   removeSites(root, sites)
   return 'remove'

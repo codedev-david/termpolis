@@ -675,7 +675,7 @@ import {
   listTrustedWorkspaces,
   ensureWorkspaceTrust,
 } from './workspaceTrust'
-import { resolveNodeCommand, resolveNodeRunner, termpolisServerEntry, type ServerEntry } from './agentMcpRegistry'
+import { resolveNodeCommand, resolveNodeRunner, termpolisServerEntry, hasPrimerHook, type ServerEntry } from './agentMcpRegistry'
 import { createLinkedJobMcp } from './linkedJobMcp'
 import {
   resolveAgentIntegrationPaths,
@@ -2720,7 +2720,8 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
   try {
     // The primer points the session at the project's saved memory, so an account the user didn't
     // connect (a work account) gets none of it (R17), the same gate Codex's launch has.
-    if (!resolveLaunchTarget(agentIntegrationPaths(), opts?.accountId, 'claude').connected) return ok({ file: null, count: 0 })
+    const launch = resolveLaunchTarget(agentIntegrationPaths(), opts?.accountId, 'claude')
+    if (!launch.connected) return ok({ file: null, count: 0 })
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
     const digest = await buildContextPrimer(correctedSearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
     if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding
@@ -2765,7 +2766,14 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
       // keyed by cwd so a project stays on one side for the life of the experiment.
       if (steering && armForSession(opts?.cwd || 'default') === 'holdout') steering = false
     } catch { /* steering optional */ }
-    const instruction = buildInjectedInstruction({ cwd: opts?.cwd, steering, mode: steeringMode, sudoAskpass: sudoAskpassPath() !== null })
+    // With Termpolis's SessionStart hook in this profile, the digest arrives on its own at session start
+    // and after a compaction, so the launch text stops asking for a primer every time (v1.55.0).
+    let hookInstalled = false
+    try {
+      const settingsFile = join(launch.target?.dir ?? agentIntegrationPaths().claudeDir, 'settings.json')
+      hookInstalled = hasPrimerHook(JSON.parse(await fsPromises.readFile(settingsFile, 'utf8')))
+    } catch { /* no settings, or unreadable: keep asking for the primer */ }
+    const instruction = buildInjectedInstruction({ cwd: opts?.cwd, steering, mode: steeringMode, sudoAskpass: sudoAskpassPath() !== null, hookInstalled })
     const file = join(dir, `primer-${uuidv4()}.txt`)
     writeFileSync(file, instruction, 'utf8')
     // Count the memories in the digest so the launch banner can show how much
@@ -3078,7 +3086,8 @@ ipcMain.handle(AGENT_INTEGRATION_IPC.set, async (_, req: AgentIntegrationSetRequ
   try {
     if (!req || typeof req.connect !== 'boolean') return err('connect must be true or false')
     const primerHook = typeof req.primerHook === 'boolean' ? req.primerHook : undefined
-    const result = setAgentIntegration(agentIntegrationRuntime(), { connect: req.connect, primerHook })
+    const removeForeignPrimerHooks = req.removeForeignPrimerHooks === true ? true : undefined
+    const result = setAgentIntegration(agentIntegrationRuntime(), { connect: req.connect, primerHook, ...(removeForeignPrimerHooks ? { removeForeignPrimerHooks } : {}) })
     // The swarm conductor's config is Termpolis's own and is kept either way.
     writeConductorMcpConfig()
     return ok(result)
@@ -4087,6 +4096,7 @@ async function semanticPoolOptions(
           project: project || undefined,
           projectPath: opts.cwd || undefined, // F19: scope precisely by the full cwd (projectKey)
           recent: primerRecent,
+          ...(opts.excludeIds ? { excludeIds: opts.excludeIds } : {}),
         })
         // Metacognition + curiosity + identity (P1c/P5): augment the primer with the
         // brain's self-assessed weak spots, open questions worth exploring, and its

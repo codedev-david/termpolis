@@ -32,11 +32,13 @@ function tokenPath() {
   return dataFile('mcp-token')
 }
 
-// Prime on a fresh start or /resume; skip 'compact'/'clear' (the app re-primes after
-// a compaction itself) so we never double-inject. A missing source defaults to prime.
+// Prime on a fresh start, /resume, and after a compaction or /clear (v1.55.0): each of these
+// leaves the session without the digest. The call says source 'session-start', so the app starts
+// the session's record of shown notes afresh, and a later memory_primer call in the same session
+// gets only notes it has not seen. An unknown source is skipped; a missing one defaults to prime.
+const PRIME_SOURCES = new Set(['startup', 'resume', 'compact', 'clear'])
 function shouldPrime(source) {
-  const s = source || 'startup'
-  return s === 'startup' || s === 'resume'
+  return PRIME_SOURCES.has(source || 'startup')
 }
 
 // Parse the SessionStart hook JSON from stdin into an object; any non-object / bad
@@ -86,7 +88,7 @@ function memoryPrimer(token, cwd) {
   return new Promise((resolve) => {
     const body = JSON.stringify({
       jsonrpc: '2.0', method: 'tools/call', id: 1,
-      params: { name: 'memory_primer', arguments: { cwd, limit: LIMIT } },
+      params: { name: 'memory_primer', arguments: { cwd, limit: LIMIT, source: 'session-start' } },
     })
     const req = http.request({
       hostname: '127.0.0.1', port: PORT, path: '/mcp', method: 'POST',

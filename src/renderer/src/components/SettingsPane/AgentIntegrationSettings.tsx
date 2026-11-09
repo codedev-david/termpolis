@@ -181,6 +181,24 @@ export function AgentIntegrationSettings() {
         <span className="text-sm">{PRIMER_HOOK_LABEL}</span>
       </label>
 
+      {status.connected && status.primerHook && (status.foreignPrimerHooks?.length ?? 0) > 0 && (
+        <div className="flex items-start gap-3 p-3 border border-[#854d0e] rounded bg-[#2a2416]" data-testid="agent-integration-foreign-primer">
+          <div className="flex flex-col gap-1 flex-1 min-w-0">
+            <span className="text-sm">Another memory hook also loads memory into each session.</span>
+            <span className="text-xs text-[#9ca3af] break-all">{status.foreignPrimerHooks?.join(' · ')}</span>
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => { void apply({ connect: true, primerHook: true, removeForeignPrimerHooks: true }) }}
+            className="px-3 py-1 text-xs rounded border border-[#3c3c3c] hover:bg-[#333] disabled:opacity-50"
+            data-testid="agent-integration-foreign-primer-remove"
+          >
+            Remove it
+          </button>
+        </div>
+      )}
+
       {status.connected && (
         <div className="flex items-center gap-3">
           <button onClick={() => { void apply({ connect: false }) }} disabled={busy} className={BUTTON} data-testid="agent-integration-disconnect">

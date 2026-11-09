@@ -1,4 +1,6 @@
 import * as http from 'http'
+import { primerGuardKey, resetServed, servedIds, markServed, alreadyLoadedLine } from './primerSessionGuard'
+import { getLastPrimerIds } from './contextPrimer'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -693,7 +695,7 @@ export interface McpToolHandlers {
   memoryWrite: (input: { agentId: string; kind?: string; content: string; tags?: string[]; taskId?: string; project?: string }) => Promise<any>
   memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string; diversify?: boolean; fuseGraph?: boolean }) => Promise<any>
   memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number; project?: string }) => any
-  memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number }) => Promise<{ project: string | null; primer: string | null }>
+  memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number; excludeIds?: ReadonlySet<string> }) => Promise<{ project: string | null; primer: string | null }>
   memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
   memoryLink: (opts: { from: string; to: string; relation?: string }) => any
   memoryGraph: (opts: { id?: string; query?: string; relation?: string; depth?: number; limit?: number }) => Promise<any>
@@ -1492,11 +1494,26 @@ export async function executeTool(
       // The primer builder turns a failing search into an empty primer, which an agent that asked for
       // it would read as "no context saved". While memory is unavailable, say so (v1.54.5).
       if (isMemoryUnavailable()) throw new Error(unavailableMessage())
+      // One primer per session (v1.55.0): the SessionStart hook loads the digest and says so with
+      // source 'session-start', which starts the session's record afresh. A later call in the same
+      // folder (the agent asking again, or a second hook) gets only notes it was not shown yet.
+      const guardKey = primerGuardKey(typeof args.cwd === 'string' ? args.cwd : undefined)
+      const now = Date.now()
+      if (args.source === 'session-start') resetServed(guardKey)
+      const seen = servedIds(guardKey, now)
       const res = await handlers.memoryPrimer({
         cwd: args.cwd,
         query: args.query,
         limit: args.limit,
+        ...(seen.size > 0 ? { excludeIds: seen } : {}),
       })
+      markServed(guardKey, getLastPrimerIds(), now)
+      if (seen.size > 0 && res) {
+        const head = alreadyLoadedLine(seen.size)
+        res.primer = res.primer ? `${head}
+
+${res.primer}` : head
+      }
       // WP-E: audit what context was injected into an agent (the primer). Size only, no content.
       const primerText = res?.primer ?? ''
       auditMemory({ event: 'inject', target: 'primer', memoryIds: [], approxTokens: Math.ceil(primerText.length / 4) })
