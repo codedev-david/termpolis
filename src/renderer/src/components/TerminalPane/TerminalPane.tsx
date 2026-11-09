@@ -68,6 +68,7 @@ import type { ShellType } from '../../types'
 import '@xterm/xterm/css/xterm.css'
 
 import { hasHardwareWebgl } from '../../lib/webglSupport'
+import { routedChipText, routedChipTitle } from '../../lib/autoModel'
 
 interface Props {
   terminalId: string
@@ -506,6 +507,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // mislabels e.g. a Claude session that merely discusses "OpenAI" as "Codex".
   // Falls back to output detection for an agent started by hand in a plain shell.
   const agentCommand = useTerminalStore((s) => s.terminals.find((t) => t.id === terminalId)?.agentCommand)
+  // What Auto picked at launch (v1.55.0), for the header chip. Cleared when the model is switched.
+  const routed = useTerminalStore((s) => s.terminals.find((t) => t.id === terminalId)?.routed)
   const badgeAgent = agentFromCommand(agentCommand) ?? agent.detectedAgent
   // Which vendor's models this terminal's picker should list. Derived from the badge, so a
   // Codex or Gemini session gets ITS OWN models rather than Claude's aliases (which its CLI
@@ -2329,6 +2332,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                       const { text, reverted } = relaunchNotice(result.outcome, { provider, label, target, agentCommand })
                       // Nothing was started: do not leave the picker claiming a model that is not running.
                       if (reverted) setLiveModel(previous)
+                      else if (routed) useTerminalStore.getState().updateTerminal?.(terminalId, { routed: undefined })
                       if (text) setMemoryNotice?.(text)
                     }).catch(() => {
                       setLiveModel(previous)
@@ -2355,6 +2359,15 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               </select>
             )
           })()}
+          {routed && (!liveModel || liveModel === routed.model) && (
+            <span
+              data-testid="model-routed-chip"
+              title={routedChipTitle(routed)}
+              className="text-[10px] font-medium text-[#9ca3af] bg-[#2d2d2d]/90 border border-[#3c3c3c] rounded px-1.5 py-1 whitespace-nowrap"
+            >
+              {routedChipText(routed)}
+            </span>
+          )}
           {badgeAgent && (() => {
             // Second Opinion: one <optgroup> per INSTALLED provider, each with a "default"
             // row plus that vendor's discovered models — so a review can be asked of any

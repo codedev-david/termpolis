@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   claudeEffortArg, carriesModelOrEffort, autoLaunchArgs, unavailableModels, rememberUnavailable, UNAVAILABLE_KEY,
-  watchModelUnavailable, seedAutoDefault, AUTO_OFFERED_KEY, unavailableNotice, skippedNotice,
+  watchModelUnavailable, seedAutoDefault, AUTO_OFFERED_KEY, unavailableNotice, skippedNotice, routedChipText, routedChipTitle,
 } from '../../src/renderer/src/lib/autoModel'
 import { AUTO_MODEL, defaultModelFor, getAgentModelDefaults, isUsableDefault, setAgentModelDefault } from '../../src/renderer/src/lib/agentModelDefaults'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
+import { taskPromptArg } from '../../src/shared/taskRouter'
 
 beforeEach(() => {
   localStorage.clear()
@@ -125,6 +126,12 @@ describe('watchModelUnavailable', () => {
     expect(h.found).toHaveBeenCalledTimes(1)
   })
 
+  it("is not fooled by the echo of the user's own task", () => {
+    const h = harness()
+    h.emit('t1', 'claude --model haiku --effort low' + taskPromptArg('fix the issue with the selected model (haiku). It may not exist or you may not have access'))
+    expect(h.found).not.toHaveBeenCalled()
+  })
+
   it('stops watching after the window', () => {
     const h = harness()
     h.expire()
@@ -138,5 +145,18 @@ describe('watchModelUnavailable', () => {
   it('nothing to subscribe to is no watch', () => {
     const stop = watchModelUnavailable({ terminalId: 't', subscribe: () => { throw new Error('none') }, onFound: vi.fn() })
     expect(() => stop()).not.toThrow()
+  })
+})
+
+describe('routed chip', () => {
+  it('names model, effort and auto, and says why in words', () => {
+    const d = { model: 'opusplan' as const, effort: 'high' as const, rule: 'no-task', confidence: 1 }
+    expect(routedChipText(d)).toBe('Opus Plan · high · auto')
+    expect(routedChipTitle(d)).toContain('no task given, so it plans first')
+    expect(routedChipTitle(d)).toContain('full price')
+    // A rule or model it has no words for is shown as is, never dropped.
+    const odd = { model: 'x' as unknown as 'opus', effort: 'low' as const, rule: 'new-rule', confidence: 0 }
+    expect(routedChipText(odd)).toBe('x · low · auto')
+    expect(routedChipTitle(odd)).toContain('new-rule')
   })
 })

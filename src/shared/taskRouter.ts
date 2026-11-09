@@ -96,10 +96,10 @@ export function taskPromptArg(task: unknown): string {
   if (typeof task !== 'string') return ''
   const clean = task
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
-    .replace(/["`$%\\!\u201c-\u201f]/g, '')
+    .replace(/["`$%\\!()\u201c-\u201f]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/^[-\s]+/, '')
+    .replace(/^[-/\s]+/, '')
     .slice(0, TASK_ARG_MAX)
     .trim()
   return clean ? ` "${clean}"` : ''

@@ -1391,6 +1391,31 @@ describe('TerminalPane', () => {
     const FLAGS = 'claude --dangerously-skip-permissions'
     const resumeLine = (model: string) => `${FLAGS} --model ${model} --resume ${CLAUDE_SESSION_ID}\r`
 
+    it('header shows routed model, effort and why', () => {
+      withClaudeTerminal(FLAGS)
+      const { unmount } = render(<TerminalPane {...defaultProps} />)
+      // Not an Auto launch: no chip.
+      expect(screen.queryByTestId('model-routed-chip')).toBeNull()
+      unmount()
+      mocks.mockGetState.mockImplementation(() => ({
+        terminals: [{ id: 'term-1', isSwarm: false, agentCommand: FLAGS, routed: { model: 'haiku', effort: 'low', rule: 'lookup', confidence: 0.7 } }],
+        addTerminal: mocks.mockAddTerminal,
+        removeTerminal: mocks.mockRemoveTerminal,
+        autocompleteEnabled: true,
+        keybindings: { ...DEFAULT_KEYBINDINGS },
+        customKeybindings: [],
+        focusActiveTerminal: mocks.mockFocusActiveTerminal,
+        focusNonce: 0,
+        voiceSettings: { enabled: false },
+        setMemoryNotice: mockSetMemoryNotice,
+        ...lock.state,
+      }))
+      render(<TerminalPane {...defaultProps} />)
+      const chip = screen.getByTestId('model-routed-chip')
+      expect(chip.textContent).toBe('Haiku · low · auto')
+      expect(chip.getAttribute('title')).toContain('a short lookup')
+    })
+
     it('quits Claude with Ctrl+C and resumes EXACTLY the session it names as it exits', async () => {
       vi.useFakeTimers()
       const os = osSaysShellAlone(false, false, true) // running, still tearing down, gone

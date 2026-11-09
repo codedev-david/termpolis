@@ -83,6 +83,10 @@ describe('taskPromptArg', () => {
     expect(taskPromptArg('a "b" $HOME `id` 100% !! c:\\x \u201csmart\u201d')).toBe(' "a b HOME id 100 c:x smart"')
     expect(taskPromptArg('line one\r\nline two\ttab\u2028sep')).toBe(' "line one line two tab sep"')
     expect(taskPromptArg('-- --resume abc')).toBe(' "resume abc"')
+    // A leading slash would make the first prompt a slash command; parentheses go too (the
+    // unavailable-model watcher needs them to tell Claude's message from the echoed task).
+    expect(taskPromptArg('/clear then fix (x)')).toBe(' "clear then fix x"')
+    expect(taskPromptArg(' / -/login')).toBe(' "login"')
   })
 
   it('nothing left, or not a string, is no argument', () => {

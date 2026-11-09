@@ -122,7 +122,7 @@ describe('accounts:launch-line', () => {
   it('Auto + task: the task goes last, quoted and cleaned, in every shell and with no account', async () => {
     expect((await line({ command: 'claude --model haiku --effort low', task: 'find where X is defined' })).line)
       .toBe('claude --model haiku --effort low "find where X is defined"')
-    expect((await line({ task: '--continue $(rm -rf ~) "x"' })).line).toBe('claude "continue (rm -rf ~) x"')
+    expect((await line({ task: '--continue $(rm -rf ~) "x"' })).line).toBe('claude "continue rm -rf ~ x"')
     expect((await line({ agent: 'codex', command: 'codex', task: 'hi' })).line).toBe('codex')
     const { b, bDir } = await twoClaude()
     const posix = await line({ accountId: b, command: 'claude --model haiku', task: 'list 100% of it!' })

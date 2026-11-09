@@ -86,8 +86,11 @@ export function rememberUnavailable(account: string | null | undefined, word: Cl
   }
 }
 
-/** What Claude Code prints when the model on its command line isn't one the account has. */
-export const MODEL_UNAVAILABLE = /issue\s*with\s*the\s*selected\s*model|may\s*not\s*exist\s*or\s*you\s*may\s*not\s*have\s*access/i
+/** What Claude Code prints when the model on its command line isn't one the account has:
+ *  "There's an issue with the selected model (haiku). It may not exist or you may not have access
+ *  to it." The parenthesised model is required, and taskPromptArg strips parentheses from a task,
+ *  so the echo of the typed launch line (the task included) can never match. */
+export const MODEL_UNAVAILABLE = /selected\s*model\s*\([^)]{1,80}\)\.?\s*It\s*may\s*not\s*exist/i
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
 /** How long after an Auto launch the terminal is watched for that message. */
 export const UNAVAILABLE_WATCH_MS = 60_000
@@ -167,4 +170,25 @@ export function seedAutoDefault(): 'seeded' | 'offered' | 'none' {
   } catch {
     return 'none'
   }
+}
+
+const MODEL_WORDS: Record<string, string> = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', opusplan: 'Opus Plan' }
+const RULE_WORDS: Record<string, string> = {
+  lookup: 'a short lookup',
+  build: 'building or changing code',
+  deep: 'design work or a hard bug',
+  'no-task': 'no task given, so it plans first',
+  relay: 'picking up a handed-off session',
+  default: 'no rule matched, so the everyday default',
+}
+
+/** The agent header's chip for an Auto launch (v1.55.0): `Haiku · low · auto`. */
+export function routedChipText(d: RouteDecision): string {
+  return `${MODEL_WORDS[d.model] ?? d.model} · ${d.effort} · auto`
+}
+
+/** The chip's tooltip: why Auto picked it, in words. */
+export function routedChipTitle(d: RouteDecision): string {
+  return `Auto picked ${MODEL_WORDS[d.model] ?? d.model} at ${d.effort} effort: ${RULE_WORDS[d.rule] ?? d.rule}. `
+    + 'The model is set once, at the start; switching it mid-session reads the whole conversation again at full price.'
 }
