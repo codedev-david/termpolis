@@ -29,6 +29,28 @@ export const USER_WEIGHT = 2
 export const MIN_TOP_SIM = 0.55
 /** The classifier overrides a disagreeing rule from this share of the vote. */
 export const OVERRIDE_CONFIDENCE = 0.55
+/** v1.56.2: Haiku only on a clear vote for it. A hard task wrongly sent down costs a worse answer the user
+ *  may not notice; one wrongly kept on Sonnet costs a little money. The word rules alone never pick Haiku. */
+export const HAIKU_MIN_CONFIDENCE = 0.7
+/** ...and a short one. */
+export const HAIKU_MAX_WORDS = 20
+/** Words that turn a quick question into work: asking for something made or changed, a status check or a
+ *  "why", something not showing up, a file path or a link. Measured on 3,000 real prompts (npm run
+ *  router:eval): Haiku picks with one of these were 52% heavy turns (15+ tool calls or 12k+ output tokens),
+ *  those without 17%. */
+const WORK_WORDS = [
+  'can we', 'can you', 'could you', 'i want', 'i need', 'give me', 'make', 'create', 'build', 'write', 'set ?up',
+  'deploy', 'complete', 'wipe', 'remove', 'add', 'update', 'change', 'automat\\w*', 'commit', 'test', 'report',
+  'pdf', 'document', 'look at', 'look into', 'check', 'status', 'progress\\w*', "i don'?t see", 'remember', 'why',
+  'run', 'running',
+]
+const SOUNDS_LIKE_WORK = new RegExp(`\\b(?:${WORK_WORDS.join('|')})\\b|[a-z]:\\\\|https?://`, 'i')
+
+/** True when a message is short and asks nothing that sounds like work: the only kind Haiku gets. */
+export function quickQuestion(prompt: string): boolean {
+  const words = prompt.trim().split(/\s+/).filter(Boolean).length
+  return words > 0 && words <= HAIKU_MAX_WORDS && !SOUNDS_LIKE_WORK.test(prompt)
+}
 
 function dot(a: ArrayLike<number>, b: ArrayLike<number>): number {
   const n = Math.min(a.length, b.length)
@@ -75,19 +97,31 @@ function ruleLabel(d: RouteDecision): SeedLabel {
 
 /** One message's route: the classifier's vote where it is sure and the message looks like something it
  *  knows, the word rules otherwise. A confirmation ("yes", "go ahead") the classifier calls 'keep' stays
- *  on the session's model, whatever the rules would say about two words. */
+ *  on the session's model, whatever the rules would say about two words. Haiku needs a clear vote for it
+ *  (HAIKU_MIN_CONFIDENCE) on a short message that does not sound like work (quickQuestion); anything less
+ *  runs on Sonnet. */
 export function routeMessage(prompt: string, cls: Classification | null, tune?: RouterTuning): MessageRoute {
+  return capHaiku(prompt, decideRoute(prompt, cls, tune), cls)
+}
+
+function decideRoute(prompt: string, cls: Classification | null, tune?: RouterTuning): MessageRoute {
   const rule = routeTask({ prompt }, tune)
   const rl = ruleLabel(rule)
   const fromRules: MessageRoute = { label: rl, effort: rule.effort, confidence: rule.confidence, source: 'rules', rule: rule.rule }
   if (rule.rule === 'no-task') return { ...fromRules, label: 'keep' }
   if (!cls || cls.topSim < MIN_TOP_SIM) return fromRules
   if (cls.label === rl) return { ...fromRules, confidence: Math.max(cls.confidence, rule.confidence), source: 'both' }
-  if (cls.label === 'keep') return cls.confidence >= OVERRIDE_CONFIDENCE ? { label: 'keep', effort: rule.effort, confidence: cls.confidence, source: 'local-model' } : fromRules
-  if (cls.confidence >= OVERRIDE_CONFIDENCE && cls.confidence >= rule.confidence) {
-    return { label: cls.label, effort: EFFORT_OF[cls.label], confidence: cls.confidence, source: 'local-model' }
-  }
-  return fromRules
+  // v1.56.2: a sure vote beats any disagreeing rule. Measured on the seeds (npm run router:eval) the vote
+  // alone was right more often than the vote held back by a rule's own confidence ("why" forced Opus).
+  if (cls.confidence < OVERRIDE_CONFIDENCE) return fromRules
+  if (cls.label === 'keep') return { label: 'keep', effort: rule.effort, confidence: cls.confidence, source: 'local-model' }
+  return { label: cls.label, effort: EFFORT_OF[cls.label], confidence: cls.confidence, source: 'local-model' }
+}
+
+function capHaiku(prompt: string, r: MessageRoute, cls: Classification | null): MessageRoute {
+  if (r.label !== 'haiku') return r
+  if (cls && cls.label === 'haiku' && cls.topSim >= MIN_TOP_SIM && cls.confidence >= HAIKU_MIN_CONFIDENCE && quickQuestion(prompt)) return r
+  return { ...r, label: 'sonnet', effort: 'medium' }
 }
 
 /** One routed message, as main tells its pane (messageRouter.routePrompt → 'router:message'). */

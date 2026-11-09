@@ -157,6 +157,15 @@ it('router evaluation', async () => {
     '### Against the model that actually ran', '', '_What you had the terminal on, not what was needed._', '',
     table(['ran on \\ router', ...LABELS], vsUsed), '')
 
+  // Every scored prompt, for a closer look (stays in OUT, next to the report).
+  await fs.promises.writeFile(path.join(OUT, 'router-eval-rows.csv'), '\uFEFF' + toCsv(
+    ['id', 'tier', 'tools', 'out_tokens', 'ran_on', 'position', 'router', 'source', 'confidence', 'top_sim', 'knn', 'rules', 'prompt'],
+    rows.map((r) => ({
+      id: r.id, tier: r.tier, tools: r.toolCalls, out_tokens: r.outTokens, ran_on: r.model ?? '', position: r.position, router: r.router,
+      source: r.source, confidence: r.confidence.toFixed(2), top_sim: r.cls ? r.cls.topSim.toFixed(2) : '', knn: r.knn ?? '', rules: r.rules,
+      prompt: r.prompt.slice(0, 300),
+    }))))
+
   // 3. The labelling sheet.
   const header = ['id', 'tier', 'tools', 'out_tokens', 'ran_on', 'router', 'source', 'confidence', 'knn', 'rules', 'your_label', 'prompt']
   if (!fs.existsSync(LABEL_FILE)) {

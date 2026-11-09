@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { knnClassify, routeMessage, KNN_K, USER_WEIGHT, MIN_TOP_SIM, OVERRIDE_CONFIDENCE, type LabeledVec, type Classification } from '../../src/shared/smartRoute'
+import {
+  knnClassify, routeMessage, quickQuestion, KNN_K, USER_WEIGHT, MIN_TOP_SIM, OVERRIDE_CONFIDENCE, HAIKU_MIN_CONFIDENCE, HAIKU_MAX_WORDS,
+  type LabeledVec, type Classification,
+} from '../../src/shared/smartRoute'
 import { ROUTER_SEEDS, flatSeeds } from '../../src/shared/routerSeeds'
 import { MISROUTE_LIMIT, DEFAULT_ROUTER_TUNING } from '../../src/shared/taskRouter'
 
@@ -61,13 +64,36 @@ describe('routeMessage', () => {
     expect(routeMessage('sure lets push this', cls('keep', OVERRIDE_CONFIDENCE - 0.1)).source).toBe('rules')
   })
 
-  it('a sure classifier overrides a less sure rule', () => {
+  it('a sure vote overrides a disagreeing rule, however sure the rule', () => {
     const p = 'fix the failing terminalManager test' // rule: sonnet 0.75
     expect(routeMessage(p, cls('opus', 0.8))).toMatchObject({ label: 'opus', effort: 'high', source: 'local-model' })
-    expect(routeMessage(p, cls('haiku', 0.8))).toMatchObject({ label: 'haiku', effort: 'low' })
-    expect(routeMessage(p, cls('opus', 0.6)).source).toBe('rules')
+    expect(routeMessage(p, cls('opus', 0.6))).toMatchObject({ label: 'opus', source: 'local-model' })
+    expect(routeMessage(p, cls('opus', OVERRIDE_CONFIDENCE - 0.01)).source).toBe('rules')
     // the weak default rule (0.4) loses to a 0.55 vote
     expect(routeMessage('hmm interesting thought about the colour', cls('opus', 0.55))).toMatchObject({ label: 'opus', effort: 'high' })
+  })
+
+  it('Haiku only on a clear vote for a short question that does not sound like work', () => {
+    const q = 'what does the current release have?'
+    expect(routeMessage(q, cls('haiku', HAIKU_MIN_CONFIDENCE))).toMatchObject({ label: 'haiku', effort: 'low', source: 'local-model' })
+    // an unsure vote, a vote on a message unlike any example, or no vote at all: Sonnet
+    expect(routeMessage(q, cls('haiku', HAIKU_MIN_CONFIDENCE - 0.01))).toMatchObject({ label: 'sonnet', effort: 'medium' })
+    expect(routeMessage(q, cls('haiku', 1, MIN_TOP_SIM - 0.01))).toMatchObject({ label: 'sonnet', source: 'rules' })
+    expect(routeMessage('list the open ports', null)).toMatchObject({ label: 'sonnet', effort: 'medium', source: 'rules', rule: 'lookup' })
+    // a sure vote on something that sounds like work: Sonnet
+    expect(routeMessage('fix the failing terminalManager test', cls('haiku', 0.9))).toMatchObject({ label: 'sonnet', effort: 'medium' })
+    expect(routeMessage('what is the status?', cls('haiku', 0.9)).label).toBe('sonnet')
+  })
+
+  it('quickQuestion: short, and nothing that sounds like work', () => {
+    for (const p of ['what does the current release have?', 'did you put the markdown in that same folder?', 'the addon list?', 'which branch?'])
+      expect(quickQuestion(p), p).toBe(true)
+    for (const p of [
+      '', '   ', 'what is the status?', 'i dont see any builds?', "I don't see it", 'why is it red', 'Running?', 'make it blue',
+      'can you look at the slides', 'give me the above update in a pdf report', 'C:\\Users\\me\\shot.png what is this',
+      'see https://example.com', Array(HAIKU_MAX_WORDS + 1).fill('word').join(' '),
+    ]) expect(quickQuestion(p), p).toBe(false)
+    expect(quickQuestion(Array(HAIKU_MAX_WORDS).fill('word').join(' '))).toBe(true)
   })
 
   it('applies the misroute tuning through the rules', () => {
