@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { launchAgentProfile } from '../../src/renderer/src/lib/aiProfiles'
-import type { AIProfile } from '../../src/renderer/src/types'
+import type { AIProfile, TerminalSession } from '../../src/renderer/src/types'
 import { AUTO_MODEL, setAgentModelDefault } from '../../src/renderer/src/lib/agentModelDefaults'
 import { unavailableModels } from '../../src/renderer/src/lib/autoModel'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -154,7 +154,9 @@ describe('launchAgentProfile — single-agent model selection', () => {
   describe('Auto (best for the task)', () => {
     const launchLine = (): string => writes.filter(d => d.endsWith('\r')).at(-1) ?? ''
     const create = (): ReturnType<typeof vi.fn> => (window as unknown as { termpolis: { createTerminal: ReturnType<typeof vi.fn> } }).termpolis.createTerminal
-    const launchedWith = async (p: AIProfile, task?: string, add = vi.fn()): Promise<ReturnType<typeof vi.fn>> => {
+    // Backed by the real store: the pane is added first, and what Auto picked joins it later.
+    const routedOf = (add: ReturnType<typeof vi.fn>) => useTerminalStore.getState().terminals.find((t) => t.id === add.mock.calls[0][0].id)?.routed
+    const launchedWith = async (p: AIProfile, task?: string, add = vi.fn((t: TerminalSession) => useTerminalStore.getState().addTerminal(t))): Promise<ReturnType<typeof vi.fn>> => {
       const done = launchAgentProfile(p, { ...deps(), addTerminal: add, ...(task !== undefined ? { task } : {}) })
       await vi.runAllTimersAsync()
       await done
@@ -165,7 +167,7 @@ describe('launchAgentProfile — single-agent model selection', () => {
     it('Auto + task routes and passes the task as the first prompt', async () => {
       const add = await launchedWith(profile(), 'find where X is defined')
       expect(launchLine()).toBe('claude --model haiku --effort low "find where X is defined"\r')
-      expect(add.mock.calls[0][0].routed).toMatchObject({ model: 'haiku', effort: 'low', rule: 'lookup' })
+      expect(routedOf(add)).toMatchObject({ model: 'haiku', effort: 'low', rule: 'lookup' })
       expect(create().mock.calls[0]).toEqual(['x', 'bash', '/proj', undefined, true, undefined, 'claude', true].map((v, i) => (i === 0 ? expect.any(String) : v)))
     })
 
@@ -177,7 +179,7 @@ describe('launchAgentProfile — single-agent model selection', () => {
     it("user's own --model wins over Auto", async () => {
       const add = await launchedWith(profile({ command: 'claude --model opus' }), 'find X')
       expect(launchLine()).toBe('claude --model opus\r')
-      expect(add.mock.calls[0][0].routed).toBeUndefined()
+      expect(routedOf(add)).toBeUndefined()
       await launchedWith(profile({ model: 'sonnet' }), 'find X')
       expect(launchLine()).toBe('claude --model sonnet\r')
     })

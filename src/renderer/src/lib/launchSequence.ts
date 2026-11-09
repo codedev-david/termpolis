@@ -56,6 +56,15 @@ export const SHELL_QUIET_MS = 150
  */
 export const PROMPT_ECHO_CEILING_MS = 1000
 
+/**
+ * The longest a Claude launch waits for its memory recall (`memory:prepare-primer-file`) before
+ * typing the command without the primer file. A recall usually lands in ~300 ms, inside the shell
+ * wait, but its tail is unbounded while the memory host is busy (52 s and 116 s calls sit in this
+ * machine's log), and the launch used to wait for all of it. Not passed through testDelay: a zero
+ * budget would race the recall itself.
+ */
+export const PRIMER_WAIT_MS = 2500
+
 export interface ShellReadyOpts {
   /** Only output from this terminal counts — a busy neighbour must not release this launch. */
   terminalId: string

@@ -32,6 +32,7 @@ const mockSetLaunchingAgent = vi.fn()
 const mockAddAIProfile = vi.fn()
 const mockRemoveAIProfile = vi.fn()
 const mockSetMemoryNotice = vi.fn()
+const mockUpdateTerminal = vi.fn()
 let mockAiProfiles: any[] = []
 let mockAccountsView: any = null
 
@@ -57,6 +58,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         addTerminal: mockAddTerminal,
         setLaunchingAgent: mockSetLaunchingAgent,
         setMemoryNotice: mockSetMemoryNotice,
+        updateTerminal: mockUpdateTerminal,
       })),
       setState: vi.fn(),
     },
@@ -431,7 +433,7 @@ describe('AIProfiles', () => {
       })
       fireEvent.click(screen.getByText('Claude Code'))
       await waitFor(() => {
-        expect(mockAddTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: true }))
+        expect(mockUpdateTerminal).toHaveBeenCalledWith(mockAddTerminal.mock.calls[0]?.[0]?.id, { launchPrimed: true })
       })
       // The launch command carries the system-prompt file (forward-slashed path),
       // so the primer never gets typed visibly into the terminal.

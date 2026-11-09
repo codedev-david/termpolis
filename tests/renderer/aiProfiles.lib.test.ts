@@ -189,8 +189,13 @@ describe('launchAgentProfile', () => {
     ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockResolvedValue({
       success: true, data: { file: 'C:\\Users\\me\\primers\\p.txt', count: 7 },
     })
+    // Backed by the real store here, so the flag set after the recall lands is visible.
+    addTerminal = vi.fn((t) => useTerminalStore.getState().addTerminal(t))
     await launchAgentProfile(claude, deps())
-    expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: true }))
+    // The pane goes up unprimed (it no longer waits on the recall), then is marked once it lands.
+    expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ launchPrimed: false }))
+    const id = String(addTerminal.mock.calls[0][0].id)
+    expect(useTerminalStore.getState().terminals.find((t) => t.id === id)?.launchPrimed).toBe(true)
     // The silent Claude priming now surfaces a visible confirmation with the count.
     expect(useTerminalStore.getState().memoryNotice).toContain('Loaded 7 memories for')
     await vi.waitFor(() => {

@@ -14,7 +14,7 @@ import { providerForCommand } from './modelCatalog'
 import { isShellSafeInstruction, type CodexLaunchContext } from '../../../shared/agentIntegration'
 import {
   waitForShellReady, afterCommandDelay, SHELL_READY_CEILING_MS, SHELL_QUIET_MS,
-  PROMPT_ECHO_CEILING_MS,
+  PROMPT_ECHO_CEILING_MS, PRIMER_WAIT_MS,
 } from './launchSequence'
 import openaiIcon from '../assets/agents/openai.svg'
 import antigravityIcon from '../assets/agents/antigravity.svg'
@@ -116,6 +116,21 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     alert(`Failed to open terminal: ${res.error}`)
     return
   }
+  // The pane appears the moment its shell exists. It used to wait for the memory recall below,
+  // which has no floor on how long it takes: a busy brain held a new pane off screen for up to
+  // two minutes (116 s in this machine's own log). launchPrimed is set later, before the command
+  // is typed, which is the only point anything reads it.
+  addTerminal({
+    id,
+    name: agentTerminalName(profile.name, cwd),
+    color: profile.color,
+    shellType,
+    cwd,
+    ...getTerminalDefaults(),
+    agentCommand: profile.command,
+    ...(accountId ? { agentAccountId: accountId } : {}),
+    launchPrimed: false,
+  })
   // Claude: seed project memory invisibly at launch via a system-prompt file
   // (--append-system-prompt-file) instead of typing a visible primer into the
   // terminal. The prepare call is the relevance gate — it returns null when
@@ -125,7 +140,6 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // Judged on the command as the user configured it, before any primer arguments are appended, so
   // text inside those can never read as a flag. Settings › General › Default Models.
   const baseCommand = launchCommand
-  let launchPrimed = false
   const project = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
   const label = project || 'this project'
   // The agent's own list, for checking a saved Codex or Antigravity default against. Asked for now
@@ -136,8 +150,8 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // whole duration was added to the launch — usually ~275 ms, but the tail is long (a 24 s recall
   // sits in this machine's own metrics). Running it alongside the shell wait costs nothing and
   // removes that tail from the critical path entirely.
-  type PrimerOutcome = { file: string; count: number } | 'failed' | null
-  const primerPromise: Promise<PrimerOutcome> = isClaude && isAutoPrimerEnabled()
+  type PrimerOutcome = { file: string; count: number } | 'failed' | 'slow' | null
+  const recall: Promise<PrimerOutcome> = isClaude && isAutoPrimerEnabled()
     ? (async () => {
         try {
           const query = project
@@ -160,6 +174,15 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
         }
       })()
     : Promise.resolve(null)
+  // ...and never waits on it for more than PRIMER_WAIT_MS. The file it builds only points the
+  // session at memory_primer, so a launch that goes ahead without it is the same as one with no
+  // saved memory: the SessionStart hook and useAutoPrimer still bring memory in. A late answer is
+  // dropped (main sweeps its file within minutes).
+  let primerTimer: ReturnType<typeof setTimeout> | undefined
+  const primerPromise: Promise<PrimerOutcome> = Promise.race([
+    recall,
+    new Promise<PrimerOutcome>((resolve) => { primerTimer = setTimeout(() => resolve('slow'), PRIMER_WAIT_MS) }),
+  ]).finally(() => clearTimeout(primerTimer))
 
   // Codex parity. Codex takes no system-prompt flag, so the same instruction rides on its command
   // line for this one session (`-c developer_instructions=…`); nothing is written into the
@@ -200,10 +223,13 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   const codex = await codexPromise
   if (primer === 'failed') {
     useTerminalStore.getState().setMemoryNotice(`⚠️ Memory recall unavailable for "${label}" this session`)
+  } else if (primer === 'slow') {
+    useTerminalStore.getState().setMemoryNotice(`⏱️ Memory recall was slow for "${label}", so Claude started without it`)
   } else if (primer) {
     const fileArg = primer.file.replace(/\\/g, '/')
     launchCommand = `${launchCommand} --append-system-prompt-file "${fileArg}"`
-    launchPrimed = true
+    // Before the command is typed, so useAutoPrimer (which acts once Claude shows up) sees it.
+    useTerminalStore.getState().updateTerminal(id, { launchPrimed: true })
     // Claude's priming is invisible (system-prompt file + SessionStart hook),
     // so surface HOW MUCH recall was injected — otherwise a working memory load
     // looks like nothing happened (#1 observable recall). Auto-dismisses (App.tsx).
@@ -238,20 +264,8 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     launchCommand = launchCommand + model.arg
     if (model.dropped) useTerminalStore.getState().setMemoryNotice(droppedDefaultNotice(baseCommand, model.dropped))
   }
-  // Registered as soon as the recall lands — exactly as before — so the pane appears while the
-  // shell is still coming up rather than waiting on it.
-  addTerminal({
-    id,
-    name: agentTerminalName(profile.name, cwd),
-    color: profile.color,
-    shellType,
-    cwd,
-    ...getTerminalDefaults(),
-    agentCommand: profile.command,
-    ...(accountId ? { agentAccountId: accountId } : {}),
-    launchPrimed,
-    ...(routed?.decision && routed.modelArg ? { routed: routed.decision } : {}),
-  })
+  // The pane was added before any of this; what Auto picked joins it now, for the agent header.
+  if (routed?.decision && routed.modelArg) useTerminalStore.getState().updateTerminal(id, { routed: routed.decision })
   // Deterministically index the picked repo for EVERY agent (Claude/Codex/Gemini) — the
   // folder was chosen explicitly, so don't wait on cwd-tracking (agent TUIs don't emit OSC 633).
   // Deduped against the per-terminal effect, and it surfaces a "🧭 Code graph: N symbols" notice.

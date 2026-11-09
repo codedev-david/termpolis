@@ -15,8 +15,9 @@ vi.mock('../../src/renderer/src/hooks/useAutoCodeIndex', () => ({ autoIndexRepo:
 
 import { DEFAULT_AI_PROFILES, launchAgentProfile } from '../../src/renderer/src/lib/aiProfiles'
 import {
-  LEGACY_COMMAND_AT_MS, SHELL_QUIET_MS, SHELL_READY_CEILING_MS, PROMPT_ECHO_CEILING_MS,
+  LEGACY_COMMAND_AT_MS, SHELL_QUIET_MS, SHELL_READY_CEILING_MS, PROMPT_ECHO_CEILING_MS, PRIMER_WAIT_MS,
 } from '../../src/renderer/src/lib/launchSequence'
+import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import type { ShellInfo } from '../../src/renderer/src/types'
 
 const shells: ShellInfo[] = [{ type: 'bash', label: 'Bash', executable: '/bin/bash' }]
@@ -192,6 +193,32 @@ describe('launchAgentProfile — the memory primer overlaps the shell wait', () 
     emit(createdId(), '\r\n$ ')
     await vi.advanceTimersByTimeAsync(SHELL_QUIET_MS)
     expect(typed().find((s) => s.startsWith('claude'))).toContain('--append-system-prompt-file')
+    await vi.advanceTimersByTimeAsync(20_000)
+    await p
+  })
+
+  // A busy memory host once held a new pane off screen for 116 s: the pane, and the command, waited
+  // on a recall with no ceiling.
+  it('shows the pane as soon as the shell exists, without waiting on the recall', async () => {
+    api().memoryPreparePrimerFile = vi.fn(() => new Promise(() => { /* never answers */ }))
+    await startLaunch()
+    expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ id: createdId(), launchPrimed: false }))
+    await vi.advanceTimersByTimeAsync(20_000)
+  })
+
+  it('launches without the primer once the recall overruns PRIMER_WAIT_MS, and says so', async () => {
+    useTerminalStore.getState().setMemoryNotice(null)
+    api().memoryPreparePrimerFile = vi.fn(() => new Promise(() => { /* never answers */ }))
+    const p = launchAgentProfile(claude, deps())
+    await vi.advanceTimersByTimeAsync(0)
+    emit(createdId(), '$ ')
+    await vi.advanceTimersByTimeAsync(PRIMER_WAIT_MS - 1)
+    expect(typed()).toEqual([]) // still inside the budget
+    await vi.advanceTimersByTimeAsync(1)
+    emit(createdId(), '\r\n$ ')
+    await vi.advanceTimersByTimeAsync(SHELL_QUIET_MS)
+    expect(typed()).toEqual(['\r', 'claude\r'])
+    expect(useTerminalStore.getState().memoryNotice).toContain('Memory recall was slow')
     await vi.advanceTimersByTimeAsync(20_000)
     await p
   })
