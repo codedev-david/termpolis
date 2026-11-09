@@ -286,6 +286,8 @@ describe('baseWatcher — tailFile failure arms', () => {
     const seen: string[] = []
     // Both the startAtEnd stat and fs.watch fail here — neither may throw out of tailFile.
     const handle = tailFile(file, (l) => { seen.push(l) }, { startAtEnd: true })
+    // The start offset is fixed by an async stat; a write that beats it would be taken as already there.
+    await handle.ready
 
     fs.writeFileSync(file, 'written-after-attach\n')
     await vi.waitFor(() => expect(seen).toEqual(['written-after-attach']), waitOpts)
