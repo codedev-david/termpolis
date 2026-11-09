@@ -33,7 +33,7 @@ import {
   hasServerEntry, hasTermpolisAllowRule, isAdapterPath, isPrimerHookCommand, isTermpolisPluginManifest,
   isTermpolisServerEntry, localMarketplaceNames, primerHookCommand, removeAgyAllowRules, removeAllowRules,
   removeInstalledPlugin, removeLegacyAllowRules, removeMarketplaceEntry, removePluginEnablement,
-  removeForeignPrimerHooks, removePrimerHooks, type PrimerHookEvent, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
+  removeForeignPrimerHooks, removePrimerHooks, COMPACT_HOOK_EVENTS, type PrimerHookEvent, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
   upsertClaudeUserServer, upsertServerEntry,
 } from './agentMcpRegistry'
 import type { EntryEdit, NodeSpec, ServerEntry } from './agentMcpRegistry'
@@ -760,6 +760,24 @@ function applyClaude(rt: AgentIntegrationRuntime, dir: string, claudeJson: strin
             return typeof edit === 'string' ? edit : 'unchanged'
           }
           return hookScript ? applyHook(root, rt, hookScript, 'UserPromptSubmit') : 'unchanged'
+        },
+      },
+      {
+        // The relay (v1.55.0): compaction instructions, and the model offer after a compaction.
+        // Same consent as the first-prompt hook.
+        what: 'Compaction memory hooks',
+        run: (root) => {
+          if (!hooks.prompt) {
+            const edit = removePrimerHooks(root, COMPACT_HOOK_EVENTS)
+            return typeof edit === 'string' ? edit : 'unchanged'
+          }
+          if (!hookScript) return 'unchanged'
+          let out: EntryEdit = 'unchanged'
+          for (const event of COMPACT_HOOK_EVENTS) {
+            const edit = applyHook(root, rt, hookScript, event)
+            if (edit !== 'unchanged') out = edit
+          }
+          return out
         },
       },
       // Older versions put the server here, where Claude Code never looks for one.

@@ -911,9 +911,10 @@ const claudeLaunchEnv = (cwd: string, accountId?: unknown) => {
 
 // v1.55.0 early re-route: a Claude session's first prompt goes to the pane it runs in, so its header
 // can offer a better-fitting model while a switch still costs little (the conversation is one turn).
-onFirstPrompt((sessionId, prompt, _cwd, named) => {
+onFirstPrompt((sessionId, prompt, _cwd, named, afterCompact) => {
   const terminalId = firstPromptTerminal(sessionId, named, (t) => terminalOutputBuffers.has(t))
-  if (terminalId) mainWindow?.webContents.send('agent:first-prompt', { terminalId, prompt: prompt.slice(0, 2000) })
+  if (!terminalId) return
+  mainWindow?.webContents.send('agent:first-prompt', { terminalId, prompt: prompt.slice(0, 2000), ...(afterCompact ? { afterCompact: true } : {}) })
 })
 
 ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch, autoModel }) => {

@@ -84,13 +84,29 @@ export function claimFirstPrompt(sessionId: string, now: number): boolean {
   return true
 }
 
+// The early re-route offer (v1.55.0) is made once per session, on its first typed prompt of any length;
+// the focused primer above only claims prompts long enough to search with.
+const offered = new Map<string, number>()
+
+/** True the first time a session id comes with any prompt (within a day); false after, and for no id. */
+export function claimOffer(sessionId: string, now: number): boolean {
+  if (!sessionId) return false
+  const at = offered.get(sessionId)
+  if (at !== undefined && now - at < PROMPTED_TTL_MS) return false
+  offered.delete(sessionId)
+  offered.set(sessionId, now)
+  if (offered.size > MAX_KEYS) offered.delete(offered.keys().next().value as string)
+  return true
+}
+
 /** The arm a session was tagged with at its first prompt, or null when it has had none here. */
 export function sessionArm(sessionId: string): PrimerArm | null {
   return prompted.get(sessionId)?.arm ?? null
 }
 
-/** `terminalId`: the Termpolis pane the session runs in, when the hook could tell (TERMPOLIS_TERMINAL_ID). */
-export type FirstPromptListener = (sessionId: string, prompt: string, cwd: string | undefined, terminalId?: string) => void
+/** `terminalId`: the Termpolis pane the session runs in, when the hook could tell (TERMPOLIS_TERMINAL_ID).
+ *  `afterCompact`: the session's last prompt, sent right after a compaction (the relay). */
+export type FirstPromptListener = (sessionId: string, prompt: string, cwd: string | undefined, terminalId?: string, afterCompact?: boolean) => void
 const firstPromptListeners = new Set<FirstPromptListener>()
 
 /** Called with each session's first real prompt (the redacted text the hook sent). Returns an unsubscribe. */
@@ -99,9 +115,9 @@ export function onFirstPrompt(fn: FirstPromptListener): () => void {
   return () => { firstPromptListeners.delete(fn) }
 }
 
-export function emitFirstPrompt(sessionId: string, prompt: string, cwd: string | undefined, terminalId?: string): void {
+export function emitFirstPrompt(sessionId: string, prompt: string, cwd: string | undefined, terminalId?: string, afterCompact?: boolean): void {
   for (const fn of firstPromptListeners) {
-    try { fn(sessionId, prompt, cwd, terminalId) } catch { /* a listener never stops the primer */ }
+    try { fn(sessionId, prompt, cwd, terminalId, afterCompact) } catch { /* a listener never stops the primer */ }
   }
 }
 
@@ -109,6 +125,7 @@ export function emitFirstPrompt(sessionId: string, prompt: string, cwd: string |
 export function resetPrimerGuard(): void {
   served.clear()
   prompted.clear()
+  offered.clear()
   firstPromptListeners.clear()
 }
 

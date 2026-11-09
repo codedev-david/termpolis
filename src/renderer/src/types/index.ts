@@ -513,7 +513,8 @@ export interface TermpolisAPI {
   /** One terminal's output only, as `onTerminalData` (the callback keeps its three arguments). Every pane shares ONE
    *  listener, and main sends terminal:data for an id only while something listens for it (see terminalDataRouting.ts). */
   onTerminalDataFor: (id: string, cb: (id: string, data: string, end?: number) => void) => () => void
-  onAgentFirstPrompt?: (cb: (p: { terminalId: string; prompt: string }) => void) => () => void
+  /** A Claude session's first prompt, or (afterCompact) its last prompt right after a compaction. */
+  onAgentFirstPrompt?: (cb: (p: { terminalId: string; prompt: string; afterCompact?: boolean }) => void) => () => void
   /** Counters of that routing, numbers and one boolean only: for an e2e spec to read what the real bridge did. */
   terminalDataStats: () => { shared: boolean; ids: number; panes: number; all: number; delivered: number; dropped: number }
   getAvailableShells: () => Promise<IpcResponse<ShellInfo[]>>

@@ -534,6 +534,9 @@ describe('the SessionStart hook, in the shell Claude Code runs it in', () => {
     expect(readJson(sb.files.settings).hooks).toEqual({
       SessionStart: [{ hooks: [shHook(sb.hookScript)] }],
       UserPromptSubmit: [{ hooks: [shHook(sb.hookScript)] }],
+      // The relay's compaction hooks ride on the same consent (v1.55.0).
+      PreCompact: [{ hooks: [shHook(sb.hookScript)] }],
+      PostCompact: [{ hooks: [shHook(sb.hookScript)] }],
     })
   })
 })

@@ -1,5 +1,5 @@
 import * as http from 'http'
-import { primerGuardKey, resetServed, servedIds, markServed, alreadyLoadedLine, claimFirstPrompt, emitFirstPrompt, armOf, PROMPT_PRIMER_LIMIT } from './primerSessionGuard'
+import { primerGuardKey, resetServed, servedIds, markServed, alreadyLoadedLine, claimFirstPrompt, claimOffer, emitFirstPrompt, armOf, PROMPT_PRIMER_LIMIT } from './primerSessionGuard'
 import { getLastPrimerIds } from './contextPrimer'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
@@ -1501,12 +1501,21 @@ export async function executeTool(
       const now = Date.now()
       // The first-prompt hook (v1.55.0): notes matched to the session's first real prompt, minus what
       // the session start already showed. Nothing for a later prompt, or for a session in the holdout.
-      if (args.source === 'prompt') {
+      // The compaction hook (v1.55.0 relay): the session's last prompt, for a model offer while the
+      // cache is cold. No notes go back.
+      if (args.source === 'prompt' || args.source === 'post-compact') {
         const sessionId = typeof args.sessionId === 'string' ? args.sessionId : ''
         const query = typeof args.query === 'string' ? args.query.trim() : ''
         const cwd = typeof args.cwd === 'string' ? args.cwd : undefined
-        if (!query || !claimFirstPrompt(sessionId, now)) return { project: null, primer: null }
-        emitFirstPrompt(sessionId, query, cwd, typeof args.terminalId === 'string' ? args.terminalId : undefined)
+        const terminalId = typeof args.terminalId === 'string' ? args.terminalId : undefined
+        if (!query || !sessionId) return { project: null, primer: null }
+        if (args.source === 'post-compact') {
+          emitFirstPrompt(sessionId, query, cwd, terminalId, true)
+          return { project: null, primer: null }
+        }
+        // The offer goes with the first prompt of any length; a short one (prime: false) gets no notes.
+        if (claimOffer(sessionId, now)) emitFirstPrompt(sessionId, query, cwd, terminalId)
+        if (args.prime === false || !claimFirstPrompt(sessionId, now)) return { project: null, primer: null }
         if (armOf(sessionId) === 'holdout') return { project: null, primer: null }
         const shownAlready = servedIds(guardKey, now)
         const focused = await handlers.memoryPrimer({

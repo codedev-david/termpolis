@@ -361,8 +361,10 @@ export function removeAgyAllowRules(root: Json): EntryEdit {
 // ── Claude Code settings.json: the SessionStart memory hook ────────────────────────────
 
 /** The events the memory hook runs on: session start, and (v1.55.0) the first prompt of a session. */
-export type PrimerHookEvent = 'SessionStart' | 'UserPromptSubmit'
-export const PRIMER_HOOK_EVENTS: readonly PrimerHookEvent[] = ['SessionStart', 'UserPromptSubmit']
+export type PrimerHookEvent = 'SessionStart' | 'UserPromptSubmit' | 'PreCompact' | 'PostCompact'
+/** The v1.55.0 relay's events: they ride on the first-prompt hook's consent. */
+export const COMPACT_HOOK_EVENTS: readonly PrimerHookEvent[] = ['PreCompact', 'PostCompact']
+export const PRIMER_HOOK_EVENTS: readonly PrimerHookEvent[] = ['SessionStart', 'UserPromptSubmit', ...COMPACT_HOOK_EVENTS]
 
 function hookGroups(root: Json, event: PrimerHookEvent = 'SessionStart'): unknown[] | null | { skipped: string } {
   if (root.hooks === undefined) return null

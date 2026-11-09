@@ -5,7 +5,7 @@ import { executeTool } from '../../src/main/mcpServer'
 import { buildContextPrimer } from '../../src/main/contextPrimer'
 import {
   PRIMER_GUARD_TTL_MS, alreadyLoadedLine, markServed, primerGuardKey, resetPrimerGuard, servedIds,
-  armOf, onFirstPrompt, sessionArm, PROMPT_PRIMER_LIMIT, claimFirstPrompt, emitFirstPrompt,
+  armOf, onFirstPrompt, sessionArm, PROMPT_PRIMER_LIMIT, claimFirstPrompt, claimOffer, emitFirstPrompt,
 } from '../../src/main/primerSessionGuard'
 import { buildInjectedInstruction } from '../../src/main/headroom/injectedInstruction'
 import { foreignPrimerHooks, removeForeignPrimerHooks, hasPrimerHook, applyPrimerHook, removePrimerHooks } from '../../src/main/agentMcpRegistry'
@@ -144,6 +144,45 @@ describe('the first-prompt primer', () => {
     await ask(sessionIn('focused'))
     expect(heard).toEqual([`${id}:how`, `${sessionIn('focused')}:how`])
     off()
+  })
+
+  it('a short first prompt reaches listeners without notes; the next long one still gets its primer, with no second offer', async () => {
+    const heard: string[] = []
+    const off = onFirstPrompt((_sid, prompt, _cwd, terminalId, afterCompact) => heard.push(`${prompt}|${terminalId ?? ''}|${afterCompact ?? ''}`))
+    const id = sessionIn('focused')
+    const short = await executeTool('memory_primer', { cwd: '/repo', query: 'fix the typo', source: 'prompt', sessionId: id, prime: false, terminalId: 'term-1' }, handlers) as { primer: string | null }
+    expect(short.primer).toBeNull()
+    expect(calls).toHaveLength(0)
+    expect(heard).toEqual(['fix the typo|term-1|'])
+    expect((await ask(id)).primer).not.toBeNull()
+    expect(heard).toHaveLength(1)
+    off()
+  })
+
+  it('PostCompact offers a reroute with turns=0: the last prompt reaches listeners after every compaction, with no notes', async () => {
+    const heard: Array<boolean | undefined> = []
+    const off = onFirstPrompt((_sid, _p, _cwd, _t, afterCompact) => heard.push(afterCompact))
+    const id = sessionIn('focused')
+    await ask(id)
+    const compact = (): Promise<{ primer: string | null }> =>
+      executeTool('memory_primer', { cwd: '/repo', query: 'design the plugin layer', source: 'post-compact', sessionId: id }, handlers) as Promise<{ primer: string | null }>
+    const before = calls.length
+    expect((await compact()).primer).toBeNull()
+    expect((await compact()).primer).toBeNull()
+    expect(calls.length).toBe(before)
+    expect(heard).toEqual([undefined, true, true])
+    expect((await executeTool('memory_primer', { cwd: '/repo', query: 'x', source: 'post-compact' }, handlers) as { primer: null }).primer).toBeNull()
+    expect(heard).toHaveLength(3)
+    off()
+  })
+
+  it('the offer is claimed once a day per session, and the oldest of too many is forgotten', () => {
+    expect(claimOffer('', 0)).toBe(false)
+    expect(claimOffer('o', 0)).toBe(true)
+    expect(claimOffer('o', 1000)).toBe(false)
+    expect(claimOffer('o', 25 * 60 * 60 * 1000)).toBe(true)
+    for (let i = 0; i < 201; i++) claimOffer(`o-${i}`, 5)
+    expect(claimOffer('o', 25 * 60 * 60 * 1000 + 1000)).toBe(true)
   })
 
   it('about one session in ten is in the holdout, and a session never changes arm', () => {

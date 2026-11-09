@@ -7,7 +7,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 const require = createRequire(import.meta.url)
@@ -203,5 +203,85 @@ describe('memory-primer-hook on the first prompt', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+// v1.55.0 Task 10: the relay's compaction hooks.
+describe('memory-primer-hook around a compaction', () => {
+  const h = require(HOOK_PATH) as {
+    COMPACT_INSTRUCTIONS: string
+    isTypedPrompt: (p: unknown) => boolean
+    typedText: (e: unknown) => string
+    lastUserPrompt: (p: unknown) => Promise<string>
+  }
+  const quietEnv = (dir: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = { ...process.env, APPDATA: dir, XDG_CONFIG_HOME: dir, HOME: dir, USERPROFILE: dir, ...extra }
+    if (!extra.TERMPOLIS_LINKED_JOB) delete env.TERMPOLIS_LINKED_JOB
+    delete env.TERMPOLIS_READ_ONLY_RUN
+    return env
+  }
+
+  it('PreCompact prints the instructions and exits 0', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tp-compact-hook-'))
+    try {
+      const input = JSON.stringify({ hook_event_name: 'PreCompact', trigger: 'auto', custom_instructions: null, session_id: 's1', cwd: dir })
+      const r = spawnSync(process.execPath, [HOOK_PATH], { input, env: quietEnv(dir), encoding: 'utf8', timeout: 10_000 })
+      expect(r.status).toBe(0)
+      expect(r.stdout).toBe(h.COMPACT_INSTRUCTIONS)
+      expect(h.COMPACT_INSTRUCTIONS.length).toBeLessThan(1500)
+      expect(h.COMPACT_INSTRUCTIONS).toContain('memory_search')
+      const quiet = spawnSync(process.execPath, [HOOK_PATH], { input, env: quietEnv(dir, { TERMPOLIS_LINKED_JOB: '1' }), encoding: 'utf8', timeout: 10_000 })
+      expect(quiet.status).toBe(0)
+      expect(quiet.stdout).toBe('')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('PostCompact is silent and exits 0 when Termpolis is down', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tp-compact-hook-'))
+    try {
+      const transcript = join(dir, 't.jsonl')
+      writeFileSync(transcript, JSON.stringify({ type: 'user', message: { content: 'refactor the sync engine' } }) + '\n')
+      const input = JSON.stringify({ hook_event_name: 'PostCompact', trigger: 'auto', compact_summary: 'x', session_id: 's1', cwd: dir, transcript_path: transcript })
+      const r = spawnSync(process.execPath, [HOOK_PATH], { input, env: quietEnv(dir), encoding: 'utf8', timeout: 10_000 })
+      expect(r.status).toBe(0)
+      expect(r.stdout).toBe('')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads the last prompt the person typed from the transcript tail', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tp-compact-hook-'))
+    try {
+      const lines = [
+        { type: 'user', message: { content: 'first ask' } },
+        { type: 'user', message: { content: [{ type: 'text', text: 'design the' }, { type: 'text', text: 'plugin layer' }] } },
+        { type: 'assistant', message: { content: 'ok' } },
+        { type: 'user', message: { content: [{ type: 'tool_result', content: 'big output' }] } },
+        { type: 'user', isMeta: true, message: { content: 'meta' } },
+        { type: 'user', message: { content: '<command-name>/compact</command-name>' } },
+        { type: 'user', isCompactSummary: true, message: { content: 'summary' } },
+      ]
+      const transcript = join(dir, 't.jsonl')
+      writeFileSync(transcript, lines.map((l) => JSON.stringify(l)).join('\n') + '\nnot json\n')
+      expect(await h.lastUserPrompt(transcript)).toBe('design the plugin layer')
+      writeFileSync(transcript, JSON.stringify(lines[3]) + '\n')
+      expect(await h.lastUserPrompt(transcript)).toBe('')
+      expect(await h.lastUserPrompt(join(dir, 'missing.jsonl'))).toBe('')
+      expect(await h.lastUserPrompt(undefined)).toBe('')
+      expect(h.typedText({ type: 'user' })).toBe('')
+      expect(h.typedText({ type: 'user', message: { content: 42 } })).toBe('')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('any typed prompt but a slash command goes to the app', () => {
+    expect(h.isTypedPrompt('fix it')).toBe(true)
+    expect(h.isTypedPrompt('  /compact ')).toBe(false)
+    expect(h.isTypedPrompt('   ')).toBe(false)
+    expect(h.isTypedPrompt(7)).toBe(false)
   })
 })

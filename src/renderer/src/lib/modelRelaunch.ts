@@ -226,6 +226,15 @@ export async function relaunchHeld(r: HeldRelaunch): Promise<HeldResult> {
   // refuse; neither is worth holding the terminal for.
   if (!relaunchCommandFor(r.provider, r.modelId, r.catalog, r.launchCommand)) return { outcome: 'invalid' }
   if (r.launchCommand?.trim() && providerForCommand(r.launchCommand) !== r.provider) return { outcome: 'unsupported' }
+  return holdTerminal(r, async (write) => ({ outcome: await relaunchAgentWithModel(r.provider, r.modelId, r.catalog, { ...r.io, write }, r.launchCommand) }))
+}
+
+/** The lock alone: `run` gets a write that carries main's key, and both halves are let go on every
+ *  outcome. Shared by the picker's relaunch and the v1.55.0 relay (lib/relay.ts). */
+export async function holdTerminal<T>(
+  r: Pick<HeldRelaunch, 'terminalId' | 'begin' | 'end' | 'main' | 'write'>,
+  run: (write: (data: string) => void) => Promise<T>,
+): Promise<T | { refused: string }> {
   if (!r.begin()) return { refused: MODEL_HELD }
   let key: string | null = null
   try {
@@ -235,8 +244,7 @@ export async function relaunchHeld(r: HeldRelaunch): Promise<HeldResult> {
       key = res.data.key
     }
     const held = key
-    const write = held ? (data: string) => r.write(r.terminalId, data, held) : (data: string) => r.write(r.terminalId, data)
-    return { outcome: await relaunchAgentWithModel(r.provider, r.modelId, r.catalog, { ...r.io, write }, r.launchCommand) }
+    return await run(held ? (data: string) => r.write(r.terminalId, data, held) : (data: string) => r.write(r.terminalId, data))
   } finally {
     if (r.main && key) r.main.modelRelease(r.terminalId, key).catch(() => { /* it lapses by itself (MODEL_HOLD_MS) */ })
     r.end()

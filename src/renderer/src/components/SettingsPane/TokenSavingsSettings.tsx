@@ -290,6 +290,8 @@ export function TokenSavingsSettings() {
             That figure already includes the cost of writing a new prefix. It assumes the work
             splits — the memory brain is what makes it split — and it is a correlation across your
             own sessions, not a controlled comparison.
+            When Claude compacts a Termpolis-launched session, its header offers <b>Fresh session</b>,
+            which carries the work over through a memory handoff note.
           </div>
         )}
 

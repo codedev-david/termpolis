@@ -359,6 +359,7 @@ describe('setAgentIntegration: connect', () => {
     expect(fresh.status).toMatchObject({ promptHook: true })
     expect(fresh.status.promptHookNotice).toBeUndefined()
     expect((readJson(sb.files.settings) as Hooks).hooks?.UserPromptSubmit).toEqual([ourHookGroup()])
+    expect((readJson(sb.files.settings) as { hooks?: Record<string, unknown> }).hooks?.PostCompact).toEqual([ourHookGroup()])
 
     writeLedger(sb, { consent: 'granted' }) // saved by 1.54: never asked
     const old = setAgentIntegration(sb.rt, { connect: true })
@@ -374,6 +375,8 @@ describe('setAgentIntegration: connect', () => {
     const off = setAgentIntegration(sb.rt, { connect: true, promptHook: false })
     expect(off.status.promptHookNotice).toBeUndefined()
     expect(off.changes).toContainEqual({ agent: 'claude', file: sb.files.settings, action: 'remove', what: 'First-prompt memory hook' })
+    expect(off.changes).toContainEqual({ agent: 'claude', file: sb.files.settings, action: 'remove', what: 'Compaction memory hooks' })
+    expect((readJson(sb.files.settings) as { hooks?: Record<string, unknown> }).hooks?.PreCompact).toBeUndefined()
     expect((readJson(sb.files.settings) as Hooks).hooks?.SessionStart).toEqual([ourHookGroup()])
   })
 

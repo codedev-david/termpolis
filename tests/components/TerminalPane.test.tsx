@@ -1438,6 +1438,51 @@ describe('TerminalPane', () => {
       delete (window as any).termpolis.onAgentFirstPrompt
     })
 
+    it('after a compaction it offers a fresh session; dismissing it types nothing', () => {
+      const feed = firstPromptFeed()
+      withClaudeTerminal(`${FLAGS} --model opus`)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'explain what the release workflow does', afterCompact: true } as never))
+      expect(screen.getByTestId('model-relay-chip').textContent).toContain('Fresh session')
+      expect(screen.getByTestId('model-reroute-chip').textContent).toContain('Continue on Haiku?')
+      fireEvent.click(screen.getByTestId('model-relay-dismiss'))
+      expect(screen.queryByTestId('model-relay-chip')).toBeNull()
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      delete (window as any).termpolis.onAgentFirstPrompt
+    })
+
+    it('Fresh session asks for a handoff note, quits Claude and starts the offered model on it', async () => {
+      vi.useFakeTimers()
+      const ID = 'mem-1762600000000-3-a1b2c3'
+      osSaysShellAlone(false, true)
+      exitPrints(`Saved the handoff as ${ID}`)
+      const feed = firstPromptFeed()
+      withClaudeTerminal(`${FLAGS} --model opus`)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'explain what the release workflow does', afterCompact: true } as never))
+      fireEvent.click(screen.getByTestId('model-relay-start'))
+      expect(screen.queryByTestId('model-relay-chip')).toBeNull()
+      expect(screen.queryByTestId('model-reroute-chip')).toBeNull()
+      await vi.runAllTimersAsync()
+      const sent = mockWriteToTerminal.mock.calls.map((c) => c[1])
+      expect(sent[0]).toContain('handoff')
+      expect(sent[1]).toBe('\r')
+      expect(sent.slice(2, 5)).toEqual(['\x03', '\x03', '\x03'])
+      expect(sent[5]).toBe(`${FLAGS} --model haiku "Continue from handoff ${ID}: call memory_search for it first."\r`)
+      expect(mockSetMemoryNotice).toHaveBeenLastCalledWith(`Fresh session started from handoff ${ID}.`)
+      delete (window as any).termpolis.onAgentFirstPrompt
+      vi.useRealTimers()
+    })
+
+    it('a terminal Termpolis did not launch gets no fresh-session offer', () => {
+      const feed = firstPromptFeed()
+      withClaudeTerminal(undefined)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'explain what the release workflow does', afterCompact: true } as never))
+      expect(screen.queryByTestId('model-relay-chip')).toBeNull()
+      delete (window as any).termpolis.onAgentFirstPrompt
+    })
+
     it('up click records a misroute and switches through the picker', async () => {
       vi.useFakeTimers()
       localStorage.clear()

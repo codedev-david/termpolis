@@ -48,7 +48,8 @@ import { moveCaret, toLinearSelection, selectionKeyAction, isAnchorSelectClick, 
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { modelSwitchCommand } from '../../lib/modelBroker'
-import { relaunchHeld, modelHoldBridge, terminalRelaunchIo } from '../../lib/modelRelaunch'
+import { relaunchHeld, holdTerminal, modelHoldBridge, terminalRelaunchIo } from '../../lib/modelRelaunch'
+import { requestHandoff, launchFromHandoff } from '../../lib/relay'
 import { relaunchNotice } from '../../lib/modelRelaunchNotice'
 import { beginModelSwitch, endModelSwitch, useModelSwitch } from '../../lib/modelSwitchState'
 
@@ -571,6 +572,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   const [liveModel, setLiveModel] = useState('')
   // v1.55.0 early re-route: a better-fitting model offered after the session's first prompt.
   const [reroute, setReroute] = useState<RerouteOffer | null>(null)
+  // v1.55.0 relay: after a compaction, offer a fresh session started from a handoff note.
+  const [relayReady, setRelayReady] = useState(false)
   // Re-entrancy guard for the authoritative relaunch path only: relaunchAgentWithModel is an
   // async multi-step PTY sequence that runs for seconds (Ctrl+C x3, a wait for the OS to say the
   // agent has exited, the retype). A second pick landing before the first settles would interleave
@@ -2081,9 +2084,40 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     if (badgeProvider !== 'claude') return
     return window.termpolis.onAgentFirstPrompt?.((p) => {
       if (p.terminalId !== terminalId) return
-      setReroute(rerouteOffer(p.prompt, runningClaudeModel({ liveModel, routed, agentCommand }), 1, routerTuning()))
+      // Right after a compaction the cache is cold, so a switch costs nothing extra: turn 0.
+      setReroute(rerouteOffer(p.prompt, runningClaudeModel({ liveModel, routed, agentCommand }), p.afterCompact ? 0 : 1, routerTuning()))
+      // Quitting the agent is safe only when Termpolis launched it.
+      if (p.afterCompact && authoritativeProvider === 'claude') setRelayReady(true)
     })
-  }, [terminalId, badgeProvider, liveModel, routed, agentCommand])
+  }, [terminalId, badgeProvider, liveModel, routed, agentCommand, authoritativeProvider])
+
+  // The relay: the agent writes a handoff note, then a new session starts on it (lib/relay.ts), on the
+  // model the re-route offer names, else the one running. The quit and launch run under the
+  // terminal's relaunch lock, like a model pick; the wait for the note does not hold it.
+  const startRelay = (): void => {
+    setRelayReady(false)
+    const model = reroute?.model ?? runningClaudeModel({ liveModel, routed, agentCommand })
+    setReroute(null)
+    setMemoryNotice?.('Asking Claude for a handoff note for the fresh session…')
+    const io = terminalRelaunchIo(terminalId)
+    void (async () => {
+      const asked = await requestHandoff({ ...io, write: (d) => window.termpolis.writeToTerminal(terminalId, d) })
+      if (!asked.started) { setMemoryNotice?.(`⚠️ ${asked.reason}`); return }
+      const handoffId = asked.id
+      const res = await holdTerminal({
+        terminalId,
+        begin: () => useTerminalStore.getState().beginRelaunch(terminalId, 'model'),
+        end: () => useTerminalStore.getState().endRelaunch(terminalId),
+        main: modelHoldBridge(),
+        write: (id: string, data: string, key?: string) => (key === undefined ? window.termpolis.writeToTerminal(id, data) : window.termpolis.writeToTerminal(id, data, undefined, key)),
+      }, (write) => launchFromHandoff({ ...io, write }, handoffId, model, modelCatalog, agentCommand))
+      if ('refused' in res) { setMemoryNotice?.(`⚠️ Termpolis didn't start the fresh session: ${res.refused}. The handoff is saved as ${handoffId}.`); return }
+      if (!res.started) { setMemoryNotice?.(`⚠️ ${res.reason}`); return }
+      if (model) setLiveModel(model)
+      if (routed) useTerminalStore.getState().updateTerminal?.(terminalId, { routed: undefined })
+      setMemoryNotice?.(`Fresh session started from handoff ${handoffId}.`)
+    })().catch(() => setMemoryNotice?.('⚠️ The fresh session failed partway, so nothing more was typed.'))
+  }
 
   return (
     <div
@@ -2404,6 +2438,32 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                     aria-label="Keep the current model"
                     className="px-1 rounded hover:bg-[#3c3c3c] text-[#9ca3af]"
                     onClick={(e) => { e.stopPropagation(); setReroute(null) }}
+                  >
+                    <i className="fa-solid fa-xmark text-[9px]"></i>
+                  </button>
+                </span>
+              )}
+              {provider === 'claude' && relayReady && !relaunchInFlight && (
+                <span
+                  data-testid="model-relay-chip"
+                  className="flex items-center gap-1 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 border border-[#1177bb] rounded px-1.5 py-0.5 whitespace-nowrap"
+                  title="Claude just compacted this conversation, so its cache is cold. A fresh session started from a short handoff note reads less on every turn from here on."
+                >
+                  Compacted.
+                  <button
+                    type="button"
+                    data-testid="model-relay-start"
+                    className="px-1 rounded bg-[#0e639c] hover:bg-[#1177bb] text-white"
+                    onClick={(e) => { e.stopPropagation(); startRelay() }}
+                  >
+                    Fresh session
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="model-relay-dismiss"
+                    aria-label="Keep this session"
+                    className="px-1 rounded hover:bg-[#3c3c3c] text-[#9ca3af]"
+                    onClick={(e) => { e.stopPropagation(); setRelayReady(false) }}
                   >
                     <i className="fa-solid fa-xmark text-[9px]"></i>
                   </button>

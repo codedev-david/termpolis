@@ -56,7 +56,7 @@ const api: TermpolisAPI = {
   onTerminalDataFor: terminalData.onFor,
   terminalDataStats: terminalData.stats,
   /** v1.55.0: a Claude session's first prompt, for the pane it runs in (early re-route). */
-  onAgentFirstPrompt: (cb: (p: { terminalId: string; prompt: string }) => void) => {
+  onAgentFirstPrompt: (cb: (p: { terminalId: string; prompt: string; afterCompact?: boolean }) => void) => {
     const handler = (_e: unknown, p: { terminalId: string; prompt: string }) => cb(p)
     ipcRenderer.on('agent:first-prompt', handler)
     return () => ipcRenderer.removeListener('agent:first-prompt', handler)

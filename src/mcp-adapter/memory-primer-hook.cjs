@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Termpolis memory hook (SessionStart, and from v1.55.0 UserPromptSubmit) — ships with the app, registered into every
+// Termpolis memory hook (SessionStart, and from v1.55.0 UserPromptSubmit, PreCompact and PostCompact) — ships with the app, registered into every
 // user's Claude Code settings.json by agentMcpRegistry (alongside the MCP server).
 //
 // WHY: Termpolis' whole point is that the AI remembers across sessions. Relying on
@@ -30,6 +30,12 @@ const PROMPT_TIMEOUT_MS = 3000
 const PROMPT_LIMIT = 6
 const PROMPT_QUERY_CHARS = 400
 const MIN_PROMPT_WORDS = 12
+// v1.55.0 relay. PreCompact: Claude Code uses the hook's plain stdout as instructions for the summary
+// (under 10,000 characters; this stays under 1,500). PostCompact: the last prompt goes to the app,
+// which may offer the pane a better-fitting model while the cache is cold anyway.
+const COMPACT_INSTRUCTIONS = 'Keep decisions made and why, file paths touched, the open next step, and failing test names. ' +
+  'Drop tool output bodies. Durable facts live in Termpolis memory (memory_search), so they need not be repeated here.'
+const TRANSCRIPT_TAIL_BYTES = 512 * 1024
 
 // Location of Termpolis's local-server bearer token. Shared with the CLI and the MCP adapter so the
 // win32/darwin/linux logic (lowercase name, XDG_CONFIG_HOME on Linux) cannot drift — dataDir.cjs.
@@ -53,6 +59,55 @@ function isSubstantive(prompt) {
   const t = prompt.trim()
   if (!t || t.startsWith('/')) return false
   return t.split(/\s+/).length >= MIN_PROMPT_WORDS
+}
+
+// Any typed prompt that is not a slash command. A short one gets no primer, but the app still sees
+// it as the session's first prompt (the early re-route offer).
+function isTypedPrompt(prompt) {
+  if (typeof prompt !== 'string') return false
+  const t = prompt.trim()
+  return !!t && !t.startsWith('/')
+}
+
+// The text of a transcript user entry the person typed: not a tool result, the compaction summary,
+// a meta line, or a slash command's record (those start with '<').
+function typedText(entry) {
+  if (!entry || entry.type !== 'user' || entry.isMeta || entry.isCompactSummary || !entry.message) return ''
+  const c = entry.message.content
+  let text = ''
+  if (typeof c === 'string') text = c
+  else if (Array.isArray(c)) {
+    if (c.some((p) => p && p.type === 'tool_result')) return ''
+    text = c.filter((p) => p && p.type === 'text' && typeof p.text === 'string').map((p) => p.text).join(' ')
+  }
+  text = text.trim()
+  return text.startsWith('<') ? '' : text
+}
+
+// The last prompt the person typed, read from the transcript's last TRANSCRIPT_TAIL_BYTES only. '' when
+// there is none or the file cannot be read.
+async function lastUserPrompt(transcriptPath) {
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return ''
+  let fh
+  try {
+    fh = await fs.promises.open(transcriptPath, 'r')
+    const { size } = await fh.stat()
+    const len = Math.min(size, TRANSCRIPT_TAIL_BYTES)
+    const buf = Buffer.alloc(len)
+    await fh.read(buf, 0, len, size - len)
+    const lines = buf.toString('utf-8').split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let entry
+      try { entry = JSON.parse(lines[i]) } catch { continue }
+      const text = typedText(entry)
+      if (text) return text
+    }
+    return ''
+  } catch {
+    return ''
+  } finally {
+    if (fh) await fh.close().catch(() => {})
+  }
 }
 
 // The prompt as it goes to the app's memory search: secrets matched by the scanner's rules are
@@ -154,26 +209,35 @@ function promptArgs(cwd, query, sessionId, env) {
 async function main() {
   try {
     const hook = parseHookInput(await readStdin())
-    const onPrompt = hook.hook_event_name === 'UserPromptSubmit'
-    if (onPrompt) {
-      if (quietRun(process.env) || !isSubstantive(hook.prompt) || typeof hook.session_id !== 'string') return
+    const event = hook.hook_event_name
+    if (event === 'PreCompact') {
+      if (!quietRun(process.env)) process.stdout.write(COMPACT_INSTRUCTIONS)
+      return
+    }
+    const onPrompt = event === 'UserPromptSubmit'
+    const afterCompact = event === 'PostCompact'
+    if (onPrompt || afterCompact) {
+      if (quietRun(process.env) || typeof hook.session_id !== 'string') return
+      if (onPrompt && !isTypedPrompt(hook.prompt)) return
     } else if (!shouldPrime(hook.source)) return
 
     const cwd = hook.cwd || process.cwd()
     let args = { cwd, limit: LIMIT, source: 'session-start' }
-    if (onPrompt) {
-      const query = redactPrompt(hook.prompt)
+    if (onPrompt || afterCompact) {
+      const query = redactPrompt(afterCompact ? await lastUserPrompt(hook.transcript_path) : hook.prompt)
       if (!query.trim()) return
       args = promptArgs(cwd, query, hook.session_id, process.env)
+      if (afterCompact) args.source = 'post-compact'
+      else if (!isSubstantive(hook.prompt)) args.prime = false
     }
 
     let token
     try { token = fs.readFileSync(tokenPath(), 'utf-8').trim() } catch { return } // not installed/running
     if (!token) return
 
-    const resp = await memoryPrimer(token, args, onPrompt ? PROMPT_TIMEOUT_MS : TIMEOUT_MS)
+    const resp = await memoryPrimer(token, args, onPrompt || afterCompact ? PROMPT_TIMEOUT_MS : TIMEOUT_MS)
     const primer = extractPrimer(resp)
-    if (!primer) return
+    if (!primer || afterCompact) return
 
     process.stdout.write(buildOutput(primer, onPrompt ? 'UserPromptSubmit' : 'SessionStart'))
   } catch {
@@ -183,4 +247,4 @@ async function main() {
 
 if (require.main === module) main()
 
-module.exports = { tokenPath, shouldPrime, parseHookInput, extractPrimer, buildOutput, isSubstantive, redactPrompt, quietRun, promptArgs }
+module.exports = { tokenPath, shouldPrime, parseHookInput, extractPrimer, buildOutput, isSubstantive, redactPrompt, quietRun, promptArgs, isTypedPrompt, typedText, lastUserPrompt, COMPACT_INSTRUCTIONS }
