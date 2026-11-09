@@ -806,7 +806,7 @@ describe('through the real proxy server and the result frame', () => {
     answer = stream([search('select:retrieve_full')], { input: 10, read: 52_000, create: 500, output: 90 })
     await post({ model: 'm', tools: [toolSearchTool], messages: [first] })
     const r = results[0]
-    expect(resultFrame(r)).toEqual({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status })
+    expect(resultFrame(r)).toEqual({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status, model: r.model })
     expect(resultFrame(r).turn).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false, hop: true })
     expect(resultFrame(r).usage).toEqual({ input_tokens: 10, cache_read_input_tokens: 52_000, cache_creation_input_tokens: 500, output_tokens: 90 })
   })

@@ -128,3 +128,30 @@ export function dominantBucket(b: BillBreakdown): BillBucket {
   for (const p of pairs) if (p[1] > best[1]) best = p
   return best[0]
 }
+
+/** The Claude model families a request is told by. Only the family word is ever kept (no build ids), so nothing
+ *  identifying a model version reaches the ledger file or telemetry. */
+export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'other'
+
+/** The family a model id belongs to: `claude-opus-5-5` is opus, `opusplan` is opus, anything unrecognised is other. */
+export function modelFamily(id: unknown): ModelFamily {
+  if (typeof id !== 'string') return 'other'
+  const s = id.toLowerCase()
+  if (s.includes('opus')) return 'opus'
+  if (s.includes('sonnet')) return 'sonnet'
+  if (s.includes('haiku')) return 'haiku'
+  if (s.includes('fable')) return 'fable'
+  return 'other'
+}
+
+/** Per-family weight against opus, from the API list-price ratio. Anthropic publishes no subscription weights, so
+ *  wherever these are shown they carry MODEL_WEIGHT_NOTE. Unknown families weigh as opus: never under-count. */
+export const MODEL_WEIGHTS: Readonly<Record<ModelFamily, number>> = { opus: 1, sonnet: 0.5, haiku: 0.1, fable: 1, other: 1 }
+export const MODEL_WEIGHT_NOTE = 'API-price weighting; subscription weights unpublished'
+
+/** Effective units of a set of billed tokens, weighted for the model family that billed them. */
+export function modelUnits(t: BillableTokens, model: string): number {
+  const units = t.cacheReadTokens * W_CACHE_READ + t.cacheCreationTokens * W_CACHE_WRITE + t.inputTokens * W_INPUT + t.outputTokens * W_OUTPUT
+  const w = MODEL_WEIGHTS[model as ModelFamily] ?? MODEL_WEIGHTS[modelFamily(model)]
+  return units * w
+}

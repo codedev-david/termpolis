@@ -167,10 +167,10 @@ describe('the frames carry every field the ledgers read', () => {
     answer = sseAnswer('Read')
     await post(withBigResult())
     const r = results[0]
-    expect(resultFrame(r)).toStrictEqual({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status })
+    expect(resultFrame(r)).toStrictEqual({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status, model: r.model })
     expect(stashFrame(stashes[0])).toStrictEqual({ kind: 'stash', stashes: stashes[0] })
     // Everything the ledger reads off a result is really in there.
-    expect(Object.keys(resultFrame(r)).sort()).toEqual(['changed', 'kind', 'stashes', 'stats', 'status', 'turn', 'usage'])
+    expect(Object.keys(resultFrame(r)).sort()).toEqual(['changed', 'kind', 'model', 'stashes', 'stats', 'status', 'turn', 'usage'])
     expect(resultFrame(r).turn).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
     expect(resultFrame(r).stats.kinds.compact).toBe(1)
     expect(resultFrame(r).stashes[0].meta).toBeDefined()

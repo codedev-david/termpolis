@@ -1,5 +1,6 @@
 import * as zlib from 'zlib'
 import { bareToolName } from '../headroom/router'
+import { modelFamily, type ModelFamily } from '../headroom/effectiveUnits'
 
 export interface Usage {
   input_tokens: number
@@ -162,4 +163,29 @@ export function parseTurnShapeFromSse(sse: string): TurnShape {
     for (const q of searchInput.values()) if (NAMES_RETRIEVE_FULL.test(q)) { shape.hop = true; break }
   }
   return shape
+}
+
+const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
+// The request's own `model`: a string value right after the key. A `model` inside message text is escaped (\"model\")
+// and does not match; Claude Code writes the top-level key first, so the first match is the request's.
+const MODEL_RE = /"model"\s*:\s*"([^"\\]{1,120})"/
+const EFFORT_RE = /"effort"\s*:\s*"([a-z]{1,10})"/
+
+/**
+ * The model family and effort a /v1/messages request asked for, read with a substring scan of the body as it came: the
+ * forward path never parses it (a parse and re-stringify can corrupt integers above 2^53). The effort is read from
+ * `output_config`, the last top-level key Claude Code writes, so the scan starts at its last occurrence. An effort that
+ * is not one of the known levels is left out rather than recorded.
+ */
+export function requestModelAndEffort(body: string): { model?: ModelFamily; effort?: string } {
+  const out: { model?: ModelFamily; effort?: string } = {}
+  if (typeof body !== 'string' || body.length === 0) return out
+  const m = MODEL_RE.exec(body)
+  if (m) out.model = modelFamily(m[1])
+  const at = body.lastIndexOf('"output_config"')
+  if (at >= 0) {
+    const e = EFFORT_RE.exec(body.slice(at, at + 400))
+    if (e && EFFORTS.has(e[1])) out.effort = e[1]
+  }
+  return out
 }

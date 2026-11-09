@@ -16,6 +16,9 @@ export interface ProxyResultMsg {
   turn: TurnShape
   stashes: StashEntry[]
   status: number
+  /** The request's model family and effort (proxyMain.requestModelAndEffort); absent from a child older than the app. */
+  model?: string
+  effort?: string
 }
 
 /** Originals committed on the REQUEST path, ahead of the response the token rides back in — the

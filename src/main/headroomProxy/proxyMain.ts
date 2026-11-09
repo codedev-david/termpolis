@@ -1,7 +1,8 @@
 import * as http from 'http'
 import * as https from 'https'
 import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, setFirstSightPolicy, type WireStats } from './wireCompress'
-import { parseUsageFromSse, parseTurnShapeFromSse, decodeBody, type Usage, type TurnShape } from './usageParse'
+import { parseUsageFromSse, parseTurnShapeFromSse, decodeBody, requestModelAndEffort, type Usage, type TurnShape } from './usageParse'
+import type { ModelFamily } from '../headroom/effectiveUnits'
 import { compressImage } from './imageCodec'
 import type { StashEntry } from '../headroom/elisionMeta'
 import type { ProxyResultMsg, ProxyStashMsg } from './proxySupervisor'
@@ -42,6 +43,10 @@ export interface ProxyResult {
   turn: TurnShape
   stashes: StashEntry[]
   status: number
+  /** The family of the model the request asked for (opus, sonnet, haiku, fable, other), never a build id. */
+  model?: ModelFamily
+  /** The request's `output_config.effort`, when it is one of the known levels. */
+  effort?: string
 }
 export interface ProxyOpts {
   upstreamHost: string
@@ -79,9 +84,12 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
     async function handle(): Promise<void> {
       let body = Buffer.concat(chunks)
       let rewritten: { changed: boolean; stats: WireStats; stashes: StashEntry[] } | null = null
+      let asked: { model?: ModelFamily; effort?: string } = {}
       if (isMessages) {
         try {
-          const r = rewriteMessagesBody(body.toString('utf8'), { compressImage, decay: decayEnabled })
+          const text = body.toString('utf8')
+          try { asked = requestModelAndEffort(text) } catch { /* the turn still counts, without a model */ }
+          const r = rewriteMessagesBody(text, { compressImage, decay: decayEnabled })
           if (r.changed) body = Buffer.from(r.body, 'utf8')
           rewritten = { changed: r.changed, stats: r.stats, stashes: r.stashes }
         } catch { /* fail-open: forward original */ }
@@ -113,7 +121,7 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
                   // failed, the usage must still arrive, as it did before the turn was read at all.
                   let turn: TurnShape = { toolCalls: 0, retrieveCalls: 0, pure: false }
                   try { turn = parseTurnShapeFromSse(sse) } catch { /* the usage still counts */ }
-                  opts.onResult({ changed: rewritten.changed, stats: rewritten.stats, usage, turn, stashes: rewritten.stashes, status: up.statusCode || 0 })
+                  opts.onResult({ changed: rewritten.changed, stats: rewritten.stats, usage, turn, stashes: rewritten.stashes, status: up.statusCode || 0, ...asked })
                 } catch { /* best effort */ }
               }
             })
@@ -154,7 +162,10 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
  * without the compiler saying so.
  */
 export function resultFrame(r: ProxyResult): ProxyResultMsg {
-  return { kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status }
+  const msg: ProxyResultMsg = { kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status }
+  if (r.model) msg.model = r.model
+  if (r.effort) msg.effort = r.effort
+  return msg
 }
 export function stashFrame(stashes: StashEntry[]): ProxyStashMsg {
   return { kind: 'stash', stashes }

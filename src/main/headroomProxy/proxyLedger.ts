@@ -169,6 +169,39 @@ function empty(): ProxyTotals {
 
 let session = empty()
 let base = empty() // cumulative baseline loaded from disk
+
+/** One model family's billed tokens. Kept beside ProxyTotals rather than in it: every ProxyTotals key is a number the
+ *  base and session add up key by key, and the receipt walks them so. */
+export interface UsageTotals { requests: number; inputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; outputTokens: number }
+const USAGE_KEYS = ['requests', 'inputTokens', 'cacheReadTokens', 'cacheCreationTokens', 'outputTokens'] as const
+const MODEL_FAMILIES = new Set(['opus', 'sonnet', 'haiku', 'fable', 'other'])
+let modelSession: Record<string, UsageTotals> = {}
+let modelBase: Record<string, UsageTotals> = {}
+const emptyUsage = (): UsageTotals => ({ requests: 0, inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 0 })
+
+/** Billed tokens by model family (opus, sonnet, haiku, fable, other), lifetime: what the router (Tasks 6, 9) and the
+ *  receipt read to price a session by the model that ran it. Requests from a proxy child too old to say are not in it. */
+export function currentModelTotals(): Record<string, UsageTotals> {
+  const out: Record<string, UsageTotals> = {}
+  for (const fam of new Set([...Object.keys(modelBase), ...Object.keys(modelSession)])) {
+    const t = emptyUsage()
+    for (const k of USAGE_KEYS) t[k] = (modelBase[fam]?.[k] ?? 0) + (modelSession[fam]?.[k] ?? 0)
+    out[fam] = t
+  }
+  return out
+}
+
+/** The by-model totals read back from disk: known families only, each counter a finite number above zero. */
+function loadModelBase(raw: unknown): void {
+  modelBase = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+  for (const [fam, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!MODEL_FAMILIES.has(fam) || !v || typeof v !== 'object') continue
+    const t = emptyUsage()
+    for (const k of USAGE_KEYS) t[k] = counter((v as Record<string, unknown>)[k])
+    modelBase[fam] = t
+  }
+}
 let flush: (() => void) | null = null
 
 export function setProxyLedgerFlush(fn: (() => void) | null): void { flush = fn }
@@ -239,6 +272,14 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   const s = r.stats || ({} as ProxyResultMsg['stats'])
   const u = r.usage || ({} as ProxyResultMsg['usage'])
   session.requests += 1
+  if (typeof r.model === 'string' && MODEL_FAMILIES.has(r.model)) {
+    const t = (modelSession[r.model] ??= emptyUsage())
+    t.requests += 1
+    t.inputTokens += counter(u.input_tokens)
+    t.cacheReadTokens += counter(u.cache_read_input_tokens)
+    t.cacheCreationTokens += counter(u.cache_creation_input_tokens)
+    t.outputTokens += counter(u.output_tokens)
+  }
   session.textOrigTokens += Math.ceil((s.trOrigChars || 0) / 4)
   const credited = Math.max(0, Math.ceil(((s.trOrigChars || 0) - (s.trCompChars || 0)) / 4))
   session.textSavedTokens += credited
@@ -396,15 +437,16 @@ export function loadProxyBaseFromDisk(dir: string): void {
     // The first-sight arms ride in the same file: they change as often as the totals do, so they
     // cost no write of their own. A file without them (v1.54) reads as empty.
     loadArmState(raw?.arms)
+    loadModelBase(raw?.byModel)
   } catch { /* start at zero */ }
   loadElisionFromDisk(dir)
 }
 export function saveProxyTotalsToDisk(dir: string): void {
-  try { void offMainFiles.write(join(dir, 'proxy-totals.json'), JSON.stringify({ ...currentProxyTotals(), arms: armState() })).catch(() => { /* best effort */ }) } catch { /* best effort */ }
+  try { void offMainFiles.write(join(dir, 'proxy-totals.json'), JSON.stringify({ ...currentProxyTotals(), arms: armState(), byModel: currentModelTotals() })).catch(() => { /* best effort */ }) } catch { /* best effort */ }
   saveElisionToDisk(dir)
 }
 /** Zero the lifetime meter (session + on-disk base) WITHOUT dropping the flush wiring, so the
  *  ledger keeps persisting afterward. Used for a live "reset lifetime savings" (e.g. after a
  *  compression-methodology change) — unlike resetProxyLedger(), which also nulls flush for tests. */
-export function resetProxyCounters(): void { session = empty(); base = empty(); pendingHops.clear(); resetElisionLedger(); resetArmLedger() }
-export function resetProxyLedger(): void { session = empty(); base = empty(); flush = null; pendingHops.clear(); resetElisionLedger(); resetArmLedger() }
+export function resetProxyCounters(): void { session = empty(); base = empty(); modelSession = {}; modelBase = {}; pendingHops.clear(); resetElisionLedger(); resetArmLedger() }
+export function resetProxyLedger(): void { session = empty(); base = empty(); modelSession = {}; modelBase = {}; flush = null; pendingHops.clear(); resetElisionLedger(); resetArmLedger() }
