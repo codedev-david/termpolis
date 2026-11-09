@@ -3087,7 +3087,12 @@ ipcMain.handle(AGENT_INTEGRATION_IPC.set, async (_, req: AgentIntegrationSetRequ
     if (!req || typeof req.connect !== 'boolean') return err('connect must be true or false')
     const primerHook = typeof req.primerHook === 'boolean' ? req.primerHook : undefined
     const removeForeignPrimerHooks = req.removeForeignPrimerHooks === true ? true : undefined
-    const result = setAgentIntegration(agentIntegrationRuntime(), { connect: req.connect, primerHook, ...(removeForeignPrimerHooks ? { removeForeignPrimerHooks } : {}) })
+    const promptHook = typeof req.promptHook === 'boolean' ? req.promptHook : undefined
+    const result = setAgentIntegration(agentIntegrationRuntime(), {
+      connect: req.connect, primerHook,
+      ...(promptHook !== undefined ? { promptHook } : {}),
+      ...(removeForeignPrimerHooks ? { removeForeignPrimerHooks } : {}),
+    })
     // The swarm conductor's config is Termpolis's own and is kept either way.
     writeConductorMcpConfig()
     return ok(result)
@@ -4095,9 +4100,14 @@ async function semanticPoolOptions(
           maxSnippetChars: 600,
           project: project || undefined,
           projectPath: opts.cwd || undefined, // F19: scope precisely by the full cwd (projectKey)
-          recent: primerRecent,
+          // The first-prompt primer is only what the prompt asks about: no recent-work lane.
+          ...(opts.focused ? {} : { recent: primerRecent }),
           ...(opts.excludeIds ? { excludeIds: opts.excludeIds } : {}),
         })
+        if (opts.focused) {
+          try { if (primer) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primer.length / 4) }) } catch { /* best effort */ }
+          return { project: project || null, primer }
+        }
         // Metacognition + curiosity + identity (P1c/P5): augment the primer with the
         // brain's self-assessed weak spots, open questions worth exploring, and its
         // continuous-identity digest. All no-ops until that state accrues.

@@ -53,7 +53,7 @@ const WRITE_ERROR = /EISDIR|EPERM|EACCES/
 const OUR_TRUST = 'Folder trust Termpolis added'
 const NONE = { installed: false, configPath: '', registered: false }
 const DISCONNECTED = {
-  consent: null, legacyDetected: false, connected: false, primerHook: true,
+  consent: null, legacyDetected: false, connected: false, primerHook: true, promptHook: true,
   agents: { claude: NONE, codex: NONE, gemini: NONE },
   autoAllowedTools: [...MCP_TOOLS_AUTO_ALLOWED], trustedFolders: [], codexHomeTrusted: false,
 }
@@ -530,7 +530,11 @@ describe('the SessionStart hook, in the shell Claude Code runs it in', () => {
     writeJson(sb.files.settings, { env: { CLAUDE_CODE_GIT_BASH_PATH: bash } })
 
     withPlatform('win32', () => setAgentIntegration(sb.rt, { connect: true }))
-    expect(readJson(sb.files.settings).hooks).toEqual({ SessionStart: [{ hooks: [shHook(sb.hookScript)] }] })
+    // A new install: the first-prompt hook goes in as well, in the same shell.
+    expect(readJson(sb.files.settings).hooks).toEqual({
+      SessionStart: [{ hooks: [shHook(sb.hookScript)] }],
+      UserPromptSubmit: [{ hooks: [shHook(sb.hookScript)] }],
+    })
   })
 })
 

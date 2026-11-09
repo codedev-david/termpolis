@@ -49,8 +49,67 @@ export function servedIds(key: string, now: number): ReadonlySet<string> {
   return new Set(cur.ids) // a copy: the caller reads it after recording the next primer
 }
 
+// ── The first-prompt primer (v1.55.0) ────────────────────────────────────────────────────────
+// The UserPromptSubmit hook asks once per Claude session, by its session id, with the prompt as the
+// query. Only a session's first real prompt gets notes; one session in ten (by a hash of its id, so
+// a session never changes arm) gets none, so the receipt can compare sessions with and without.
+
+/** Notes the first-prompt primer shows, at most. */
+export const PROMPT_PRIMER_LIMIT = 6
+export const PROMPT_HOLDOUT_PERCENT = 10
+const PROMPTED_TTL_MS = 24 * 60 * 60 * 1000
+
+export type PrimerArm = 'focused' | 'holdout'
+interface Prompted { at: number; arm: PrimerArm }
+const prompted = new Map<string, Prompted>()
+
+/** The arm a session is in: 'holdout' for PROMPT_HOLDOUT_PERCENT of session ids, else 'focused'. */
+export function armOf(sessionId: string): PrimerArm {
+  let h = 0x811c9dc5 // FNV-1a, 32-bit
+  for (let i = 0; i < sessionId.length; i++) {
+    h ^= sessionId.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h % 100 < PROMPT_HOLDOUT_PERCENT ? 'holdout' : 'focused'
+}
+
+/** True the first time a session id comes with a prompt (within a day); false after, and for no id. */
+export function claimFirstPrompt(sessionId: string, now: number): boolean {
+  if (!sessionId) return false
+  const cur = prompted.get(sessionId)
+  if (cur && now - cur.at < PROMPTED_TTL_MS) return false
+  prompted.delete(sessionId)
+  prompted.set(sessionId, { at: now, arm: armOf(sessionId) })
+  if (prompted.size > MAX_KEYS) prompted.delete(prompted.keys().next().value as string)
+  return true
+}
+
+/** The arm a session was tagged with at its first prompt, or null when it has had none here. */
+export function sessionArm(sessionId: string): PrimerArm | null {
+  return prompted.get(sessionId)?.arm ?? null
+}
+
+export type FirstPromptListener = (sessionId: string, prompt: string, cwd: string | undefined) => void
+const firstPromptListeners = new Set<FirstPromptListener>()
+
+/** Called with each session's first real prompt (the redacted text the hook sent). Returns an unsubscribe. */
+export function onFirstPrompt(fn: FirstPromptListener): () => void {
+  firstPromptListeners.add(fn)
+  return () => { firstPromptListeners.delete(fn) }
+}
+
+export function emitFirstPrompt(sessionId: string, prompt: string, cwd: string | undefined): void {
+  for (const fn of firstPromptListeners) {
+    try { fn(sessionId, prompt, cwd) } catch { /* a listener never stops the primer */ }
+  }
+}
+
 /** For tests. */
-export function resetPrimerGuard(): void { served.clear() }
+export function resetPrimerGuard(): void {
+  served.clear()
+  prompted.clear()
+  firstPromptListeners.clear()
+}
 
 /** The line a repeat primer starts with, in place of the notes the session already holds. */
 export function alreadyLoadedLine(count: number): string {

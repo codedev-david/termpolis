@@ -362,7 +362,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
           page = (await search(scope === undefined ? { query: opts.query, limit: asked } : { query: opts.query, limit: asked, project: scope })) || []
           // Never more rows than were asked for (best first, so these are the ones the search meant): the folding below is quadratic in
           // the rows, and a search that ignores its limit must not hand it thousands ('primer stays linear on hostile prefixes').
-          if (Array.isArray(page) && page.length > asked) page = page.slice(0, asked)
+          if (Array.isArray(page) && asked !== undefined && page.length > asked) page = page.slice(0, asked)
         } catch (e) {
           if (!haveFirstPage) throw e
         }

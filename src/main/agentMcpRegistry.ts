@@ -360,12 +360,16 @@ export function removeAgyAllowRules(root: Json): EntryEdit {
 
 // ── Claude Code settings.json: the SessionStart memory hook ────────────────────────────
 
-function sessionStart(root: Json): unknown[] | null | { skipped: string } {
+/** The events the memory hook runs on: session start, and (v1.55.0) the first prompt of a session. */
+export type PrimerHookEvent = 'SessionStart' | 'UserPromptSubmit'
+export const PRIMER_HOOK_EVENTS: readonly PrimerHookEvent[] = ['SessionStart', 'UserPromptSubmit']
+
+function hookGroups(root: Json, event: PrimerHookEvent = 'SessionStart'): unknown[] | null | { skipped: string } {
   if (root.hooks === undefined) return null
   if (!isObject(root.hooks)) return { skipped: '`hooks` is not an object' }
-  if (root.hooks.SessionStart === undefined) return null
-  if (!Array.isArray(root.hooks.SessionStart)) return { skipped: '`hooks.SessionStart` is not an array' }
-  return root.hooks.SessionStart
+  if (root.hooks[event] === undefined) return null
+  if (!Array.isArray(root.hooks[event])) return { skipped: `\`hooks.${event}\` is not an array` }
+  return root.hooks[event]
 }
 
 /** Where each Termpolis hook sits: a group's `hooks[i]`, or (item -1) a flat group that is one. */
@@ -383,9 +387,9 @@ function primerHookSites(groups: unknown[], match: (command: unknown) => boolean
   return sites
 }
 
-/** Remove these sites, then any group, SessionStart list or hooks object that leaves empty. */
-function removeSites(root: Json, sites: Array<{ group: number; item: number }>): void {
-  const groups: Json[] = root.hooks.SessionStart
+/** Remove these sites, then any group, event list or hooks object that leaves empty. */
+function removeSites(root: Json, sites: Array<{ group: number; item: number }>, event: PrimerHookEvent = 'SessionStart'): void {
+  const groups: Json[] = root.hooks[event]
   const dropGroup = new Set<number>()
   for (const s of [...sites].reverse()) {
     const g = groups[s.group]
@@ -395,19 +399,19 @@ function removeSites(root: Json, sites: Array<{ group: number; item: number }>):
       if (g.hooks.length === 0) dropGroup.add(s.group)
     }
   }
-  root.hooks.SessionStart = groups.filter((_, i) => !dropGroup.has(i))
-  if (root.hooks.SessionStart.length === 0) delete root.hooks.SessionStart
+  root.hooks[event] = groups.filter((_, i) => !dropGroup.has(i))
+  if (root.hooks[event].length === 0) delete root.hooks[event]
   if (Object.keys(root.hooks).length === 0) delete root.hooks
 }
 
-/** Exactly one Termpolis SessionStart hook, running `command`. */
-export function applyPrimerHook(root: Json, command: string): EntryEdit {
-  const groups = sessionStart(root)
+/** Exactly one Termpolis hook on `event`, running `command`. */
+export function applyPrimerHook(root: Json, command: string, event: PrimerHookEvent = 'SessionStart'): EntryEdit {
+  const groups = hookGroups(root, event)
   if (groups !== null && !Array.isArray(groups)) return groups
   const sites = primerHookSites(groups ?? [])
   if (sites.length === 0) {
     const entry = { hooks: [{ type: 'command', command }] }
-    root.hooks = { ...(root.hooks ?? {}), SessionStart: [...(groups ?? []), entry] }
+    root.hooks = { ...(root.hooks ?? {}), [event]: [...(groups ?? []), entry] }
     return 'add'
   }
   const [keep, ...extra] = sites
@@ -419,30 +423,37 @@ export function applyPrimerHook(root: Json, command: string): EntryEdit {
     changed = true
   }
   if (extra.length) {
-    removeSites(root, extra)
+    removeSites(root, extra, event)
     changed = true
   }
   return changed ? 'update' : 'unchanged'
 }
 
-export function removePrimerHooks(root: Json): EntryEdit {
-  const groups = sessionStart(root)
-  if (!Array.isArray(groups)) return groups ?? 'unchanged'
-  const sites = primerHookSites(groups)
-  if (sites.length === 0) return 'unchanged'
-  removeSites(root, sites)
-  return 'remove'
+/** Take Termpolis's hook off these events (by default every one it runs on). */
+export function removePrimerHooks(root: Json, events: readonly PrimerHookEvent[] = PRIMER_HOOK_EVENTS): EntryEdit {
+  let removed = false
+  let skipped: { skipped: string } | null = null
+  for (const event of events) {
+    const groups = hookGroups(root, event)
+    if (groups === null) continue
+    if (!Array.isArray(groups)) { skipped ??= groups; continue }
+    const sites = primerHookSites(groups)
+    if (sites.length === 0) continue
+    removeSites(root, sites, event)
+    removed = true
+  }
+  return removed ? 'remove' : skipped ?? 'unchanged'
 }
 
 /** The commands of every other memory primer in SessionStart, for the Settings warning. */
 export function foreignPrimerHooks(root: Json): string[] {
-  const groups = sessionStart(root)
+  const groups = hookGroups(root)
   return Array.isArray(groups) ? primerHookSites(groups, isForeignPrimerHookCommand).map((s) => s.command) : []
 }
 
 /** Take the other memory primers out of SessionStart, leaving Termpolis's own and every other hook. */
 export function removeForeignPrimerHooks(root: Json): EntryEdit {
-  const groups = sessionStart(root)
+  const groups = hookGroups(root)
   if (!Array.isArray(groups)) return groups ?? 'unchanged'
   const sites = primerHookSites(groups, isForeignPrimerHookCommand)
   if (sites.length === 0) return 'unchanged'
@@ -450,8 +461,8 @@ export function removeForeignPrimerHooks(root: Json): EntryEdit {
   return 'remove'
 }
 
-export function hasPrimerHook(root: Json): boolean {
-  const groups = sessionStart(root)
+export function hasPrimerHook(root: Json, event: PrimerHookEvent = 'SessionStart'): boolean {
+  const groups = hookGroups(root, event)
   return Array.isArray(groups) && primerHookSites(groups).length > 0
 }
 

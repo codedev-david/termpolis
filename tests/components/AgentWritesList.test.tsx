@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest'
 import {
   AGENT_INTEGRATION_WRITES,
   PRIMER_HOOK_DESCRIPTION,
+  PROMPT_HOOK_DESCRIPTION,
   type AgentId,
   type AgentIntegrationStatus,
 } from '../../src/shared/agentIntegration'
@@ -75,7 +76,7 @@ describe('AgentWritesList', () => {
       expect(g).toHaveTextContent(AGENT_LABELS[id])
       const items = within(g).getAllByRole('listitem').map(li => li.textContent)
       const expected = [...AGENT_INTEGRATION_WRITES[id]]
-      if (id === 'claude') expected.push(`Optional: ${PRIMER_HOOK_DESCRIPTION}`)
+      if (id === 'claude') expected.push(`Optional: ${PRIMER_HOOK_DESCRIPTION}`, `Optional: ${PROMPT_HOOK_DESCRIPTION}`)
       expect(items).toEqual(expected)
     }
     expect(AGENT_LABELS).toEqual({ claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini / Antigravity CLI' })

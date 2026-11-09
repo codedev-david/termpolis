@@ -1,5 +1,5 @@
 import * as http from 'http'
-import { primerGuardKey, resetServed, servedIds, markServed, alreadyLoadedLine } from './primerSessionGuard'
+import { primerGuardKey, resetServed, servedIds, markServed, alreadyLoadedLine, claimFirstPrompt, emitFirstPrompt, armOf, PROMPT_PRIMER_LIMIT } from './primerSessionGuard'
 import { getLastPrimerIds } from './contextPrimer'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
@@ -695,7 +695,7 @@ export interface McpToolHandlers {
   memoryWrite: (input: { agentId: string; kind?: string; content: string; tags?: string[]; taskId?: string; project?: string }) => Promise<any>
   memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string; diversify?: boolean; fuseGraph?: boolean }) => Promise<any>
   memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number; project?: string }) => any
-  memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number; excludeIds?: ReadonlySet<string> }) => Promise<{ project: string | null; primer: string | null }>
+  memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number; excludeIds?: ReadonlySet<string>; focused?: boolean }) => Promise<{ project: string | null; primer: string | null }>
   memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
   memoryLink: (opts: { from: string; to: string; relation?: string }) => any
   memoryGraph: (opts: { id?: string; query?: string; relation?: string; depth?: number; limit?: number }) => Promise<any>
@@ -1499,6 +1499,27 @@ export async function executeTool(
       // folder (the agent asking again, or a second hook) gets only notes it was not shown yet.
       const guardKey = primerGuardKey(typeof args.cwd === 'string' ? args.cwd : undefined)
       const now = Date.now()
+      // The first-prompt hook (v1.55.0): notes matched to the session's first real prompt, minus what
+      // the session start already showed. Nothing for a later prompt, or for a session in the holdout.
+      if (args.source === 'prompt') {
+        const sessionId = typeof args.sessionId === 'string' ? args.sessionId : ''
+        const query = typeof args.query === 'string' ? args.query.trim() : ''
+        const cwd = typeof args.cwd === 'string' ? args.cwd : undefined
+        if (!query || !claimFirstPrompt(sessionId, now)) return { project: null, primer: null }
+        emitFirstPrompt(sessionId, query, cwd)
+        if (armOf(sessionId) === 'holdout') return { project: null, primer: null }
+        const shownAlready = servedIds(guardKey, now)
+        const focused = await handlers.memoryPrimer({
+          cwd: args.cwd,
+          query,
+          limit: PROMPT_PRIMER_LIMIT,
+          focused: true,
+          ...(shownAlready.size > 0 ? { excludeIds: shownAlready } : {}),
+        })
+        markServed(guardKey, getLastPrimerIds(), now)
+        auditMemory({ event: 'inject', target: 'primer', memoryIds: [], approxTokens: Math.ceil((focused?.primer ?? '').length / 4) })
+        return focused
+      }
       if (args.source === 'session-start') resetServed(guardKey)
       const seen = servedIds(guardKey, now)
       const res = await handlers.memoryPrimer({

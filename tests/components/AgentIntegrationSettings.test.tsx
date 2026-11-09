@@ -13,6 +13,7 @@ function status(over: Partial<AgentIntegrationStatus> = {}): AgentIntegrationSta
     legacyDetected: false,
     connected: true,
     primerHook: true,
+    promptHook: false,
     agents: {
       claude: { installed: true, configPath: `${HOME}/.claude/settings.json`, registered: true },
       codex: { installed: true, configPath: `${HOME}/.codex/config.toml`, registered: true },
@@ -173,6 +174,23 @@ describe('AgentIntegrationSettings: connecting and disconnecting', () => {
     expect(screen.getByTestId('agent-integration-foreign-primer')).toHaveTextContent('memory-primer.sh')
     fireEvent.click(screen.getByTestId('agent-integration-foreign-primer-remove'))
     await waitFor(() => expect(api.agentIntegrationSet).toHaveBeenCalledWith({ connect: true, primerHook: true, removeForeignPrimerHooks: true }))
+  })
+
+  it('offers the first-prompt hook once to an existing install and turns it on', async () => {
+    const api = bridge(status({ promptHook: false, promptHookNotice: true }))
+    await renderLoaded()
+    expect(screen.getByTestId('agent-integration-prompt-hook-new')).toHaveTextContent('New in 1.55')
+    const box = screen.getByTestId('agent-integration-prompt-hook')
+    expect(box).not.toBeChecked()
+    fireEvent.click(box)
+    await waitFor(() => expect(api.agentIntegrationSet).toHaveBeenCalledWith({ connect: true, promptHook: true }))
+  })
+
+  it('shows the first-prompt hook ticked, with no note, once it is on', async () => {
+    bridge(status({ promptHook: true }))
+    await renderLoaded()
+    expect(screen.getByTestId('agent-integration-prompt-hook')).toBeChecked()
+    expect(screen.queryByTestId('agent-integration-prompt-hook-new')).toBeNull()
   })
 
   it('shows no warning when there is no other memory hook', async () => {

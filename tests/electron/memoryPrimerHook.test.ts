@@ -148,3 +148,53 @@ describe('memory-primer-hook', () => {
     })
   })
 })
+
+// v1.55.0 Task 5: the same script on UserPromptSubmit.
+describe('memory-primer-hook on the first prompt', () => {
+  const h = require(HOOK_PATH) as {
+    isSubstantive: (p: unknown) => boolean
+    redactPrompt: (p: string) => string
+    quietRun: (env: Record<string, string | undefined>) => boolean
+    buildOutput: (primer: string, event?: string) => string
+  }
+  const long = 'please look at how the release workflow signs the windows installer and why it failed today'
+
+  it('asks only for a real prompt: twelve words or more, and not a slash command', () => {
+    expect(h.isSubstantive(long)).toBe(true)
+    expect(h.isSubstantive('fix the build')).toBe(false)
+    expect(h.isSubstantive(`/review ${long}`)).toBe(false)
+    expect(h.isSubstantive(undefined)).toBe(false)
+  })
+
+  it('takes secrets out and cuts the query before it leaves the hook', () => {
+    const q = h.redactPrompt(`${long} with key ghp_${'a1B2'.repeat(9)} ${'x'.repeat(600)}`)
+    expect(q).not.toContain('ghp_')
+    expect(q).toContain('[redacted]')
+    expect(q.length).toBeLessThanOrEqual(400)
+  })
+
+  it('stays quiet in a linked job or a read-only run', () => {
+    expect(h.quietRun({ TERMPOLIS_LINKED_JOB: 'j1' })).toBe(true)
+    expect(h.quietRun({ TERMPOLIS_READ_ONLY_RUN: '1' })).toBe(true)
+    expect(h.quietRun({})).toBe(false)
+  })
+
+  it('answers as UserPromptSubmit', () => {
+    expect(JSON.parse(h.buildOutput('notes', 'UserPromptSubmit')).hookSpecificOutput.hookEventName).toBe('UserPromptSubmit')
+  })
+
+  it('hook is silent and fast when Termpolis is down', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tp-prompt-hook-'))
+    try {
+      const env = { ...process.env, APPDATA: dir, XDG_CONFIG_HOME: dir, HOME: dir, USERPROFILE: dir }
+      const input = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: dir, prompt: long })
+      const t0 = Date.now()
+      const r = spawnSync(process.execPath, [HOOK_PATH], { input, env, encoding: 'utf8', timeout: 10_000 })
+      expect(r.status).toBe(0)
+      expect(r.stdout).toBe('')
+      expect(Date.now() - t0).toBeLessThan(5000)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

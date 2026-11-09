@@ -6,7 +6,7 @@ import type {
   AgentIntegrationStatus,
 } from '../../../../shared/agentIntegration'
 import { noteAgentAnswerSaved } from '../AgentIntegration/AgentReviewModal'
-import { AgentWritesList, PRIMER_HOOK_LABEL, homeFromStatus, tildify } from '../AgentIntegration/AgentWritesList'
+import { AgentWritesList, PRIMER_HOOK_LABEL, PROMPT_HOOK_LABEL, homeFromStatus, tildify } from '../AgentIntegration/AgentWritesList'
 
 // Settings ▸ Agent Integration: what Termpolis has written into the Claude Code, Codex and
 // Gemini / Antigravity CLI configs, and the switch that connects or disconnects them. Main applies each change
@@ -179,6 +179,25 @@ export function AgentIntegrationSettings() {
           data-testid="agent-integration-primer-hook"
         />
         <span className="text-sm">{PRIMER_HOOK_LABEL}</span>
+      </label>
+
+      <label className={`flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526] ${status.connected ? 'cursor-pointer' : 'opacity-50'}`}>
+        <input
+          type="checkbox"
+          checked={status.promptHook}
+          disabled={!status.connected || busy}
+          onChange={e => { void apply({ connect: true, promptHook: e.target.checked }) }}
+          className="mt-0.5 w-4 h-4 accent-[#22D3EE]"
+          data-testid="agent-integration-prompt-hook"
+        />
+        <span className="flex flex-col gap-1">
+          <span className="text-sm">{PROMPT_HOOK_LABEL}</span>
+          {status.promptHookNotice && (
+            <span className="text-xs text-[#9ca3af]" data-testid="agent-integration-prompt-hook-new">
+              New in 1.55: off until you turn it on. It searches memory with your first prompt, secrets removed, and adds at most six notes.
+            </span>
+          )}
+        </span>
       </label>
 
       {status.connected && status.primerHook && (status.foreignPrimerHooks?.length ?? 0) > 0 && (

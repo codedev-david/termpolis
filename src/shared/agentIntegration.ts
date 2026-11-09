@@ -37,6 +37,10 @@ export interface AgentIntegrationStatus {
   connected: boolean
   /** Claude Code SessionStart hook that loads the memory primer. A sub-option of connect. */
   primerHook: boolean
+  /** v1.55.0: the hook also adds notes matched to a session's first real prompt. */
+  promptHook: boolean
+  /** Connected before the first-prompt hook existed and not yet asked: show the one-time note. */
+  promptHookNotice?: boolean
   agents: Record<AgentId, AgentIntegrationAgentStatus>
   /** Termpolis tools Claude Code runs without asking. Everything else asks first. */
   autoAllowedTools: string[]
@@ -52,6 +56,7 @@ export interface AgentIntegrationStatus {
 export interface AgentIntegrationSetRequest {
   connect: boolean
   primerHook?: boolean
+  promptHook?: boolean
   /** One-shot: also take the other memory primers (`foreignPrimerHooks`) out of Claude's settings. */
   removeForeignPrimerHooks?: boolean
 }
@@ -150,6 +155,10 @@ export const AGENT_INTEGRATION_WRITES: Readonly<Record<AgentId, readonly string[
 /** The optional Claude Code SessionStart hook, as the UI describes it. */
 export const PRIMER_HOOK_DESCRIPTION =
   'Loads your project memory whenever a Claude Code session starts, including sessions started outside Termpolis (a SessionStart hook in settings.json)'
+
+/** The first-prompt hook (v1.55.0), as the "what is written" list words it. */
+export const PROMPT_HOOK_DESCRIPTION =
+  'Adds the few notes that match the first real prompt of each session, with secrets taken out before it is searched (a UserPromptSubmit hook in settings.json)'
 
 /** Longest Codex launch instruction Termpolis will type into a shell. */
 export const CODEX_INSTRUCTION_MAX_CHARS = 1500

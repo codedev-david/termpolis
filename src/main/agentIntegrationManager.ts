@@ -33,7 +33,7 @@ import {
   hasServerEntry, hasTermpolisAllowRule, isAdapterPath, isPrimerHookCommand, isTermpolisPluginManifest,
   isTermpolisServerEntry, localMarketplaceNames, primerHookCommand, removeAgyAllowRules, removeAllowRules,
   removeInstalledPlugin, removeLegacyAllowRules, removeMarketplaceEntry, removePluginEnablement,
-  removeForeignPrimerHooks, removePrimerHooks, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
+  removeForeignPrimerHooks, removePrimerHooks, type PrimerHookEvent, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
   upsertClaudeUserServer, upsertServerEntry,
 } from './agentMcpRegistry'
 import type { EntryEdit, NodeSpec, ServerEntry } from './agentMcpRegistry'
@@ -162,6 +162,9 @@ interface Ledger {
   version: 1
   consent: AgentIntegrationConsent
   primerHook: boolean
+  /** The first-prompt memory hook (v1.55.0). Unset: connected before it existed and not asked yet,
+   *  so it stays off and Settings shows a one-time note. A new install starts with it on. */
+  promptHook?: boolean
   /** An older Termpolis had connected the agents before this ledger existed. */
   legacy: boolean
   /** One-time migrations that have completed. */
@@ -227,6 +230,7 @@ function ledgerFrom(r: JsonObjectRead): Ledger | null {
     migrations: stringList(v.migrations),
     trustedByTermpolis: stringList(v.trustedByTermpolis),
   }
+  if (typeof v.promptHook === 'boolean') ledger.promptHook = v.promptHook
   const profiles = Array.isArray(v.profiles) ? v.profiles.filter(isLedgerProfile) : []
   if (profiles.length) {
     ledger.profiles = profiles.map((p) => ({
@@ -272,6 +276,7 @@ function loadLedger(paths: AgentIntegrationPaths): Ledger {
     version: 1,
     consent: null,
     primerHook: legacy.found ? legacy.primerHook : true,
+    ...(legacy.found ? {} : { promptHook: true }),
     legacy: legacy.found,
     migrations: [],
     trustedByTermpolis: [],
@@ -696,9 +701,16 @@ function guardedHookCommand(node: NodeSpec, script: string, shell: HookShell): s
   return `if [ -f "${file}" ] && ${hasRunner}; then ${primerHookCommand(node, script)}; fi`
 }
 
+/** Which memory hooks a profile gets. */
+interface HookChoice { primer: boolean; prompt: boolean }
+
+function hookChoice(ledger: Ledger): HookChoice {
+  return { primer: ledger.primerHook, prompt: ledger.promptHook === true }
+}
+
 /** The one Termpolis hook applyPrimerHook leaves: in a group's `hooks`, or a flat group. */
-function keptPrimerHook(root: Json): Json | undefined {
-  const groups: Json[] = root.hooks?.SessionStart ?? []
+function keptPrimerHook(root: Json, event: PrimerHookEvent): Json | undefined {
+  const groups: Json[] = root.hooks?.[event] ?? []
   const hooks = groups.flatMap((g) => [g, ...(Array.isArray(g?.hooks) ? g.hooks : [])])
   return hooks.find((h) => isPrimerHookCommand(h?.command))
 }
@@ -709,12 +721,12 @@ function keptPrimerHook(root: Json): Json | undefined {
  * none, so that Claude Code's default runs it, in every version, as it always has. The `shell`
  * is compared as the command is, so a hook in any older form is rewritten once.
  */
-function applyHook(root: Json, rt: AgentIntegrationRuntime, script: string): EntryEdit {
+function applyHook(root: Json, rt: AgentIntegrationRuntime, script: string, event: PrimerHookEvent = 'SessionStart'): EntryEdit {
   const shell = rt.hookShell ?? claudeHookShell(process.platform, root.env)
-  const edit = applyPrimerHook(root, guardedHookCommand(rt.node, script, shell))
+  const edit = applyPrimerHook(root, guardedHookCommand(rt.node, script, shell), event)
   // None is left when the hook kept was a flat group whose own `hooks` held only copies of it:
   // dropping the copies drops the group. The next start adds it back.
-  const hook = typeof edit === 'string' ? keptPrimerHook(root) : undefined
+  const hook = typeof edit === 'string' ? keptPrimerHook(root, event) : undefined
   if (!hook) return edit
   const was = hook.shell
   if (shell === 'powershell') hook.shell = 'powershell'
@@ -724,7 +736,7 @@ function applyHook(root: Json, rt: AgentIntegrationRuntime, script: string): Ent
 
 /** Claude Code's entries in one profile: the MCP server in its `.claude.json`, the tool
  *  permissions and the memory hook in its settings.json. */
-function applyClaude(rt: AgentIntegrationRuntime, dir: string, claudeJson: string, primerHook: boolean, entry: ServerEntry): AgentIntegrationChange[] {
+function applyClaude(rt: AgentIntegrationRuntime, dir: string, claudeJson: string, hooks: HookChoice, entry: ServerEntry): AgentIntegrationChange[] {
   const hookScript = rt.hookScriptPath
   return [
     ...editConfig('claude', claudeJson, [
@@ -735,8 +747,19 @@ function applyClaude(rt: AgentIntegrationRuntime, dir: string, claudeJson: strin
       {
         what: 'SessionStart memory hook',
         run: (root) => {
-          if (!primerHook) return removePrimerHooks(root)
+          if (!hooks.primer) return removePrimerHooks(root, ['SessionStart'])
           return hookScript ? applyHook(root, rt, hookScript) : 'unchanged'
+        },
+      },
+      {
+        what: 'First-prompt memory hook',
+        run: (root) => {
+          // Off: take ours out. A `hooks` of the wrong shape holds none of ours, so it is not reported.
+          if (!hooks.prompt) {
+            const edit = removePrimerHooks(root, ['UserPromptSubmit'])
+            return typeof edit === 'string' ? edit : 'unchanged'
+          }
+          return hookScript ? applyHook(root, rt, hookScript, 'UserPromptSubmit') : 'unchanged'
         },
       },
       // Older versions put the server here, where Claude Code never looks for one.
@@ -748,12 +771,12 @@ function applyClaude(rt: AgentIntegrationRuntime, dir: string, claudeJson: strin
 /** Connect every agent that is installed (its config folder exists), then every connected
  *  account's profile. Idempotent: a second run writes nothing. With no home folder, touches
  *  nothing and says so. */
-function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean, consent: AgentIntegrationConsent, ledger: Ledger): AgentIntegrationChange[] {
+function applyAll(rt: AgentIntegrationRuntime, hooks: HookChoice, consent: AgentIntegrationConsent, ledger: Ledger): AgentIntegrationChange[] {
   const { paths } = rt
   if (!agentPaths(paths)) return [noHomeRow()]
   const entry = termpolisServerEntry(rt.node, rt.adapterPath)
   const rows: AgentIntegrationChange[] = []
-  if (existsSync(paths.claudeDir)) rows.push(...applyClaude(rt, paths.claudeDir, paths.claudeJson, primerHook, entry))
+  if (existsSync(paths.claudeDir)) rows.push(...applyClaude(rt, paths.claudeDir, paths.claudeJson, hooks, entry))
   if (existsSync(paths.codexHome)) rows.push(...applyCodex(entry, join(paths.codexHome, 'config.toml')))
   if (existsSync(paths.geminiDir)) {
     rows.push(...editConfig('gemini', join(paths.geminiDir, 'settings.json'), [
@@ -763,7 +786,7 @@ function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean, consent: Age
   // Only with consent on record: an install that predates the review keeps what older versions
   // wrote until its owner answers, and older versions never wrote these.
   if (consent === 'granted') rows.push(...applyAntigravity(paths.geminiDir, entry))
-  for (const t of extraProfiles(rt)) rows.push(...applyTarget(rt, t, primerHook, entry, ledger))
+  for (const t of extraProfiles(rt)) rows.push(...applyTarget(rt, t, hooks, entry, ledger))
   return rows
 }
 
@@ -813,7 +836,7 @@ const NOT_RECORDED = 'Termpolis could not record this profile in its ledger firs
 /** Termpolis's entries in one account profile. Its first connect also runs, once, the cleanups
  *  the default profile got as migrations: an older Termpolis started under CLAUDE_CONFIG_DIR may
  *  have written its wildcard permission there, or pre-trusted the home folder. */
-function applyTarget(rt: AgentIntegrationRuntime, t: ProfileTarget, primerHook: boolean, entry: ServerEntry, ledger: Ledger): AgentIntegrationChange[] {
+function applyTarget(rt: AgentIntegrationRuntime, t: ProfileTarget, hooks: HookChoice, entry: ServerEntry, ledger: Ledger): AgentIntegrationChange[] {
   if (!recordProfile(rt.paths, ledger, t)) return [change(t.agent, t.dir, 'skipped', 'Account profile', NOT_RECORDED)]
   if (t.agent === 'codex') return applyCodex(entry, join(t.dir, 'config.toml'))
   const claudeJson = t.claudeJson as string
@@ -832,7 +855,7 @@ function applyTarget(rt: AgentIntegrationRuntime, t: ProfileTarget, primerHook: 
       writeLedger(rt.paths, ledger)
     }
   }
-  rows.push(...applyClaude(rt, t.dir, claudeJson, primerHook, entry))
+  rows.push(...applyClaude(rt, t.dir, claudeJson, hooks, entry))
   return rows
 }
 
@@ -849,7 +872,7 @@ export function connectAccountProfile(rt: AgentIntegrationRuntime, t: ProfileTar
     if (isDefaultProfile(rt.paths, t)) return []
     if (t.agent === 'claude' && !(t.claudeJson && isAbsolute(t.claudeJson))) return []
     const entry = termpolisServerEntry(rt.node, rt.adapterPath)
-    return applyTarget(rt, t, ledger.primerHook, entry, ledger).filter(isChange)
+    return applyTarget(rt, t, hookChoice(ledger), entry, ledger).filter(isChange)
   } catch (e) {
     return [change(t.agent, t.dir, 'skipped', 'Account profile', errorTextSafe(e))]
   }
@@ -970,6 +993,8 @@ function statusOf(paths: AgentIntegrationPaths, ledger: Ledger): AgentIntegratio
     legacyDetected: ledger.legacy,
     connected: isConnected(ledger),
     primerHook: ledger.primerHook,
+    promptHook: ledger.promptHook === true,
+    ...(ledger.promptHook === undefined && isConnected(ledger) ? { promptHookNotice: true } : {}),
     agents,
     autoAllowedTools: [...MCP_TOOLS_AUTO_ALLOWED],
     trustedFolders: [...ledger.trustedByTermpolis],
@@ -1039,7 +1064,7 @@ export function bootAgentIntegration(rt: AgentIntegrationRuntime): AgentIntegrat
       // A migration that could not finish runs again next start.
       if (!rows.some((r) => r.action === 'skipped')) ledger.migrations.push(m.id)
     }
-    if (isConnected(ledger)) changes.push(...applyAll(rt, ledger.primerHook, ledger.consent, ledger))
+    if (isConnected(ledger)) changes.push(...applyAll(rt, hookChoice(ledger), ledger.consent, ledger))
     if (JSON.stringify(ledger) !== before) writeLedger(rt.paths, ledger)
     return { status: statusOf(rt.paths, ledger), changes: changes.filter(isChange) }
   } catch (e) {
@@ -1077,7 +1102,7 @@ export function getAgentIntegrationStatus(paths: AgentIntegrationPaths): AgentIn
   } catch {
     const none = { installed: false, configPath: '', registered: false }
     return {
-      consent: null, legacyDetected: false, connected: false, primerHook: true,
+      consent: null, legacyDetected: false, connected: false, primerHook: true, promptHook: true,
       agents: { claude: none, codex: none, gemini: none },
       autoAllowedTools: [...MCP_TOOLS_AUTO_ALLOWED], trustedFolders: [], codexHomeTrusted: false,
     }
@@ -1133,11 +1158,12 @@ export function setAgentIntegration(
     const ledger = loadLedger(rt.paths)
     ledger.consent = 'granted'
     if (typeof req.primerHook === 'boolean') ledger.primerHook = req.primerHook
+    if (typeof req.promptHook === 'boolean') ledger.promptHook = req.promptHook
     // Connected without the answer on record, the agents would stay connected at the next start
     // with no consent saved for it. Nothing is written until the answer can be kept.
     const saveError = writeLedger(rt.paths, ledger)
     if (saveError !== null) return { status: getAgentIntegrationStatus(rt.paths), changes: [], saveError }
-    const changes = applyAll(rt, ledger.primerHook, ledger.consent, ledger).filter(isChange)
+    const changes = applyAll(rt, hookChoice(ledger), ledger.consent, ledger).filter(isChange)
     // Asked for from the Settings warning: the other memory primers come out of the same settings files,
     // through the same read-modify-write, and show in the same list of changes.
     if (req.removeForeignPrimerHooks && agentPaths(rt.paths)) {
@@ -1237,6 +1263,7 @@ function disconnect(paths: AgentIntegrationPaths, recordDecline: boolean): { row
     version: 1,
     consent: recordDecline ? 'declined' : null,
     primerHook: saved?.primerHook ?? true,
+    ...(saved?.promptHook !== undefined ? { promptHook: saved.promptHook } : {}),
     legacy: false,
     migrations: saved?.migrations ?? [],
     trustedByTermpolis: trustKept ? trusted : [],

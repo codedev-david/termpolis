@@ -1,6 +1,7 @@
 import {
   AGENT_INTEGRATION_WRITES,
   PRIMER_HOOK_DESCRIPTION,
+  PROMPT_HOOK_DESCRIPTION,
   type AgentId,
   type AgentIntegrationStatus,
 } from '../../../../shared/agentIntegration'
@@ -19,6 +20,7 @@ export const AGENT_LABELS: Readonly<Record<AgentId, string>> = {
 
 /** The hook checkbox, worded the same everywhere it appears. */
 export const PRIMER_HOOK_LABEL = 'Also load project memory when any Claude Code session starts'
+export const PROMPT_HOOK_LABEL = 'Also add the notes that match the first prompt of each session'
 
 /** The home folder, read off Gemini's config path: main always keeps that at
  *  `<home>/.gemini/settings.json`, whatever CLAUDE_CONFIG_DIR or CODEX_HOME say. */
@@ -68,6 +70,9 @@ export function AgentWritesList({ status }: { status?: AgentIntegrationStatus | 
               {AGENT_INTEGRATION_WRITES[id].map(line => <li key={line}>{line}</li>)}
               {id === 'claude' && (
                 <li data-testid="agent-writes-hook">Optional: {PRIMER_HOOK_DESCRIPTION}</li>
+              )}
+              {id === 'claude' && (
+                <li data-testid="agent-writes-prompt-hook">Optional: {PROMPT_HOOK_DESCRIPTION}</li>
               )}
             </ul>
           </div>

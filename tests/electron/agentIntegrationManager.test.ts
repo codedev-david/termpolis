@@ -61,7 +61,9 @@ function snapshot(): Record<string, string | null> {
   return Object.fromEntries(files.map((f) => [f, existsSync(f) ? readText(f) : null]))
 }
 
-const freshLedger = { version: 1, consent: null, primerHook: true, legacy: false, migrations: [], trustedByTermpolis: [] }
+const freshLedger = { version: 1, consent: null, primerHook: true, promptHook: true, legacy: false, migrations: [], trustedByTermpolis: [] }
+// A ledger saved before v1.55.0 (writeLedger's default): no first-prompt hook answer yet.
+const savedLedger = { version: 1, consent: null, primerHook: true, legacy: false, migrations: [], trustedByTermpolis: [] }
 
 describe('test sandbox', () => {
   it('resolves every agent path inside the per-test temp home, never a real agent config', () => {
@@ -150,6 +152,7 @@ describe('getAgentIntegrationStatus', () => {
       legacyDetected: false,
       connected: false,
       primerHook: true,
+      promptHook: true,
       agents: {
         claude: { installed: false, configPath: sb.paths.claudeJson, registered: false },
         codex: { installed: false, configPath: sb.files.codex, registered: false },
@@ -245,6 +248,7 @@ describe('getAgentIntegrationStatus', () => {
       legacyDetected: false,
       connected: false,
       primerHook: true,
+      promptHook: true,
       agents: { claude: none, codex: none, gemini: none },
       autoAllowedTools: [...MCP_TOOLS_AUTO_ALLOWED],
       trustedFolders: [],
@@ -336,7 +340,7 @@ describe('setAgentIntegration: connect', () => {
     for (const tool of CODEX_AUTO_APPROVED_TOOLS) expect(toml).toContain(approval(tool))
     expect(toml.match(/approval_mode = "auto"/g)).toHaveLength(CODEX_AUTO_APPROVED_TOOLS.length)
     expect(readJson(sb.files.gemini)).toEqual({ mcpServers: { termpolis: { command: 'node', args: [sb.adapter] } } })
-    expect(readJson(sb.ledgerFile)).toEqual({ ...freshLedger, consent: 'granted', migrations: [...ALL_MIGRATIONS] })
+    expect(readJson(sb.ledgerFile)).toEqual({ ...savedLedger, consent: 'granted', migrations: [...ALL_MIGRATIONS] })
     expect(r.status).toMatchObject({
       consent: 'granted',
       connected: true,
@@ -346,6 +350,31 @@ describe('setAgentIntegration: connect', () => {
         gemini: { installed: true, registered: true },
       },
     })
+  })
+
+  it('first-prompt hook: on for a new install, offered once to an existing one, and follows the checkbox', () => {
+    installAll()
+    type Hooks = { hooks?: { SessionStart?: unknown[]; UserPromptSubmit?: unknown[] } }
+    const fresh = setAgentIntegration(sb.rt, { connect: true })
+    expect(fresh.status).toMatchObject({ promptHook: true })
+    expect(fresh.status.promptHookNotice).toBeUndefined()
+    expect((readJson(sb.files.settings) as Hooks).hooks?.UserPromptSubmit).toEqual([ourHookGroup()])
+
+    writeLedger(sb, { consent: 'granted' }) // saved by 1.54: never asked
+    const old = setAgentIntegration(sb.rt, { connect: true })
+    expect(old.status).toMatchObject({ promptHook: false, promptHookNotice: true })
+    expect((readJson(sb.files.settings) as Hooks).hooks?.UserPromptSubmit).toBeUndefined()
+    expect((readJson(sb.files.settings) as Hooks).hooks?.SessionStart).toEqual([ourHookGroup()])
+
+    const on = setAgentIntegration(sb.rt, { connect: true, promptHook: true })
+    expect(on.status).toMatchObject({ promptHook: true })
+    expect(on.status.promptHookNotice).toBeUndefined()
+    expect(on.changes).toContainEqual({ agent: 'claude', file: sb.files.settings, action: 'add', what: 'First-prompt memory hook' })
+
+    const off = setAgentIntegration(sb.rt, { connect: true, promptHook: false })
+    expect(off.status.promptHookNotice).toBeUndefined()
+    expect(off.changes).toContainEqual({ agent: 'claude', file: sb.files.settings, action: 'remove', what: 'First-prompt memory hook' })
+    expect((readJson(sb.files.settings) as Hooks).hooks?.SessionStart).toEqual([ourHookGroup()])
   })
 
   it('shows another memory hook and takes it out when asked, leaving the rest', () => {
@@ -653,7 +682,7 @@ describe('setAgentIntegration: decline', () => {
     expect(readJson(sb.files.settings)).toEqual({})
     expect(readJson(sb.files.gemini)).toEqual({})
     expect(readText(sb.files.codex)).not.toContain('termpolis')
-    expect(readJson(sb.ledgerFile)).toEqual({ ...freshLedger, consent: 'declined', migrations: [...ALL_MIGRATIONS] })
+    expect(readJson(sb.ledgerFile)).toEqual({ ...savedLedger, consent: 'declined', migrations: [...ALL_MIGRATIONS] })
     expect(r.status).toMatchObject({
       consent: 'declined',
       connected: false,
@@ -674,7 +703,7 @@ describe('bootAgentIntegration', () => {
   it('granted: re-applies at every start, and rewrites nothing once current', () => {
     mkdirSync(sb.paths.claudeDir, { recursive: true })
     // Compact on purpose: a rewrite would pretty-print it.
-    writeText(sb.ledgerFile, JSON.stringify({ ...freshLedger, consent: 'granted', migrations: ALL_MIGRATIONS }))
+    writeText(sb.ledgerFile, JSON.stringify({ ...savedLedger, consent: 'granted', migrations: ALL_MIGRATIONS }))
     const ledger = readText(sb.ledgerFile)
 
     const first = bootAgentIntegration(sb.rt)
@@ -699,7 +728,7 @@ describe('bootAgentIntegration', () => {
     ])
     expect(readJson(sb.files.settings)).toEqual({ permissions: { allow: ['Bash(ls)'] } })
     expect(existsSync(sb.files.claudeJson)).toBe(false)
-    expect(readJson(sb.ledgerFile)).toEqual({ ...freshLedger, consent: 'declined', migrations: [...ALL_MIGRATIONS] })
+    expect(readJson(sb.ledgerFile)).toEqual({ ...savedLedger, consent: 'declined', migrations: [...ALL_MIGRATIONS] })
   })
 
   it('an older install not asked yet stays connected, in the narrower form', () => {
@@ -723,7 +752,7 @@ describe('bootAgentIntegration', () => {
       hooks: { SessionStart: [ourHookGroup()] },
     })
     expect(readJson(sb.files.claudeJson)).toEqual({ mcpServers: { termpolis: ourClaudeServer() } })
-    expect(readJson(sb.ledgerFile)).toEqual({ ...freshLedger, legacy: true, migrations: [...ALL_MIGRATIONS] })
+    expect(readJson(sb.ledgerFile)).toEqual({ ...savedLedger, legacy: true, migrations: [...ALL_MIGRATIONS] })
     expect(r.status).toMatchObject({ consent: null, legacyDetected: true, connected: true, primerHook: true })
   })
 
