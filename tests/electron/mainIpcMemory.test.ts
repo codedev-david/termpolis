@@ -154,6 +154,10 @@ vi.mock('uuid', () => ({ v4: vi.fn(() => 'mock-uuid') }))
 const mem = vi.hoisted(() => ({
   // memoryClient-only surface (lifecycle + the batched calls)
   startMemoryHost: vi.fn(async () => 'host'),
+  // v1.56.0 per-message router
+  routerClassify: vi.fn(async () => ({ cls: { label: 'haiku', confidence: 0.9, topSim: 0.9 }, ms: 2 })),
+  routerLearn: vi.fn(async () => true),
+  routerWarm: vi.fn(async () => true),
   setMemoryHostSpawner: vi.fn(),
   createMemoryHostTransport: vi.fn(),
   stopMemoryHost: vi.fn(),
@@ -3827,6 +3831,53 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
       const recent = (buildContextPrimer as any).mock.calls[0][1].recent
       expect(await recent({ limit: 3, project: 'app' })).toEqual([expect.objectContaining({ id: 'r1', projectKey: 'pk:app' })])
     })
+  })
+})
+
+// v1.56.0 per-message routing: the router's IPC and the MCP hook into it.
+describe('router IPC', () => {
+  it('configure validates the mode and the tuning; status reports it', async () => {
+    expect(await invoke('router:configure', { mode: 'all', tuning: { haikuMaxWords: 10, misroutes: {} } })).toEqual({ success: true, data: 'all' })
+    expect(await invoke('router:status')).toEqual({ success: true, data: 'all' })
+    expect(await invoke('router:configure', { mode: 'bogus', tuning: 'nope' })).toEqual({ success: true, data: 'all' })
+    expect(await invoke('router:configure', { tuning: { haikuMaxWords: 'x' } })).toEqual({ success: true, data: 'all' })
+    expect(await invoke('router:configure')).toEqual({ success: true, data: 'all' })
+    expect(await invoke('router:configure', { mode: 'auto-panes' })).toEqual({ success: true, data: 'auto-panes' })
+  })
+
+  it('pin and unpin a pane', async () => {
+    expect(await invoke('router:pin', { terminalId: 't1' })).toEqual({ success: true })
+    expect(await invoke('router:pin', { terminalId: 't1', pinned: false })).toEqual({ success: true })
+    expect(await invoke('router:pin')).toEqual({ success: true })
+  })
+
+  it('learn validates the example and forwards it capped', async () => {
+    mem.routerLearn.mockClear()
+    expect((await invoke('router:learn', { prompt: '  ', label: 'haiku' })).success).toBe(false)
+    expect((await invoke('router:learn', { prompt: 'x', label: 'fable' })).success).toBe(false)
+    expect((await invoke('router:learn')).success).toBe(false)
+    expect(await invoke('router:learn', { prompt: 'y'.repeat(3000), label: 'keep' })).toEqual({ success: true, data: true })
+    expect(mem.routerLearn).toHaveBeenCalledWith(USER_DATA, 'y'.repeat(2000), 'keep')
+    mem.routerLearn.mockRejectedValueOnce(new Error('host down'))
+    expect(await invoke('router:learn', { prompt: 'z', label: 'opus' })).toEqual({ success: false, error: 'host down' })
+    mem.routerLearn.mockRejectedValueOnce({})
+    expect(await invoke('router:learn', { prompt: 'z', label: 'opus' })).toEqual({ success: false, error: 'Could not learn' })
+  })
+
+  it('the MCP handler routes a registered pane through the classifier and the proxy', async () => {
+    expect(typeof mcp.routePrompt).toBe('function')
+    // an unknown pane is not routed
+    expect(await mcp.routePrompt({ terminalId: 'nope', prompt: 'what branch am I on' })).toBeNull()
+    // the same module instance index.ts loaded (imported after its vi.resetModules)
+    const mr = await import('../../src/main/messageRouter')
+    await invoke('router:configure', { mode: 'all', tuning: { haikuMaxWords: 25, misroutes: {} } })
+    mr.registerTerminal('rt-1', false)
+    mem.routerClassify.mockClear()
+    const e = await mcp.routePrompt({ terminalId: 'rt-1', prompt: 'what branch am I on' })
+    expect(mem.routerClassify).toHaveBeenCalledWith(USER_DATA, 'what branch am I on')
+    expect(e).toMatchObject({ terminalId: 'rt-1', model: 'haiku', reason: 'first' })
+    mr.forgetTerminal('rt-1')
+    await invoke('router:configure', { mode: 'auto-panes' })
   })
 })
 

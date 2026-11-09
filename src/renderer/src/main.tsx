@@ -11,6 +11,7 @@ import { installRendererLogBridge, type ConsoleLike } from './lib/rendererLogBri
 import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary'
 import App from './App'
 import { seedAutoDefault } from './lib/autoModel'
+import { applyRouterSettings } from './lib/messageRoute'
 
 // Mirror this side's console into the app log BEFORE anything else runs, so a failure
 // during the very first render still ends up somewhere a user can read it (Ctrl+Shift+O).
@@ -28,6 +29,8 @@ initSentry()
 void syncConsentFromMain()
 // v1.55.0: a fresh install starts Claude on Auto; an existing one is told once that Auto exists.
 seedAutoDefault()
+// v1.56.0: tell main which Claude terminals get a model per message (Settings › Default Models).
+applyRouterSettings()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

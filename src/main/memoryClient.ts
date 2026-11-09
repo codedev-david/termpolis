@@ -105,7 +105,9 @@ const CALL_TIMEOUT_MS = 60_000
 // The weave's neighbour batch (300 exact scans of the store) hands the host's thread back between
 // scans so searches are not stuck behind it. That makes it the one call that is long by design, so
 // it gets a longer leash than a search; a timeout would only throw the whole pass away.
-const CALL_TIMEOUT_OVERRIDES_MS = new Map<string, number>([['weaveNeighboursBatch', 300_000]])
+// The router's calls are quick by design (one embedding); the caller gives up long before this, and the
+// short leash only keeps a stuck one from sitting in the pending table for a minute.
+const CALL_TIMEOUT_OVERRIDES_MS = new Map<string, number>([['weaveNeighboursBatch', 300_000], ['routerClassify', 5_000], ['routerLearn', 10_000]])
 // A call slower than this goes in the app log with its name and how many calls were waiting with
 // it. A slow call is almost always one stuck behind another, and the log is where that shows.
 const SLOW_CALL_MS = 2_000
@@ -887,6 +889,10 @@ export const exportGraphEdges = (): Promise<string> => call('exportGraphEdges', 
 export const importGraphEdges = (jsonl: string): Promise<number> => call('importGraphEdges', [jsonl])
 export const memoryRecentActivity = (limit = 14): Promise<ActivityRow[]> => call('memoryRecentActivity', [limit])
 export const embeddingsReady = (): Promise<boolean> => call('embeddingsReady', [])
+// v1.56.0 per-message model router (routerModel.ts), run where the embedder lives.
+export const routerClassify = (dir: string, text: string): Promise<import('./routerModel').ClassifyResult> => call('routerClassify', [dir, text])
+export const routerLearn = (dir: string, text: string, label: string): Promise<boolean> => call('routerLearn', [dir, text, label])
+export const routerWarm = (dir: string): Promise<boolean> => call('routerWarm', [dir])
 export const memorySourceById = (id: string): Promise<string | undefined> => call('memorySourceById', [id])
 export const memoryDelete = (id: string): Promise<void> => call('memoryDelete', [id])
 export const memoryArchive = (id: string): Promise<void> => call('memoryArchive', [id])

@@ -244,3 +244,22 @@ export function withAutoSubagent(
   if (env.CLAUDE_CODE_SUBAGENT_MODEL !== undefined || extra?.CLAUDE_CODE_SUBAGENT_MODEL !== undefined) return extra
   return { ...(extra ?? {}), CLAUDE_CODE_SUBAGENT_MODEL: AUTO_SUBAGENT_MODEL }
 }
+
+/** Claude Code adds each `Name: value` line of this variable to every API request. */
+export const CUSTOM_HEADERS_ENV = 'ANTHROPIC_CUSTOM_HEADERS'
+
+/** v1.56.0 per-message routing: tag a session with the terminal it runs in, so the proxy can tell its
+ *  requests apart (headroomProxy/modelRoute.ts). Only when the launch goes through Termpolis's proxy
+ *  (the env carries its marker): the proxy strips the tag, so it never reaches Anthropic. A value the
+ *  user already sets is kept, with the tag added as one more line. */
+export function withRouteHeader(
+  extra: Record<string, string> | undefined,
+  terminalId: unknown,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string> | undefined {
+  if (!extra || !extra.TERMPOLIS_HEADROOM_PROXY || typeof terminalId !== 'string' || !/^[\w-]{1,128}$/.test(terminalId)) return extra
+  const prior = (extra[CUSTOM_HEADERS_ENV] ?? env[CUSTOM_HEADERS_ENV] ?? '')
+    .split(/\r?\n/)
+    .filter((l) => l.trim() !== '' && !/^\s*x-termpolis-terminal\s*:/i.test(l))
+  return { ...extra, [CUSTOM_HEADERS_ENV]: [...prior, `X-Termpolis-Terminal: ${terminalId}`].join('\n') }
+}

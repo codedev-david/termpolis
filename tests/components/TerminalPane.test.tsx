@@ -1502,6 +1502,43 @@ describe('TerminalPane', () => {
       vi.useRealTimers()
     })
 
+    // v1.56.0 per-message routing: main reports each pick; the chip shows it and learns a correction.
+    it('shows the per-message route, learns a correction, and a hand pick pins the pane', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      const feed: { send?: (e: unknown) => void } = {}
+      const routerLearn = vi.fn(async () => ({ success: true, data: true }))
+      const routerPin = vi.fn(async () => ({ success: true }))
+      Object.assign((window as any).termpolis, {
+        onRouterMessage: vi.fn((cb: (e: unknown) => void) => { feed.send = cb; return () => {} }),
+        routerLearn, routerPin,
+      })
+      withClaudeTerminal(`${FLAGS} --model opus`)
+      render(<TerminalPane {...defaultProps} />)
+      const ev = { terminalId: 'term-1', prompt: 'what branch am I on', model: 'haiku', from: 'opus', switched: true, reason: 'cheaper', label: 'haiku', source: 'local-model', confidence: 0.9, ms: 4, saving: 0.01 }
+      act(() => feed.send?.({ ...ev, terminalId: 'other' }))
+      act(() => feed.send?.(null))
+      expect(screen.queryByTestId('model-route-chip')).toBeNull()
+      act(() => feed.send?.(ev))
+      const chip = screen.getByTestId('model-route-chip')
+      expect(chip.textContent).toContain('Opus → Haiku · 4 ms')
+      expect(chip.getAttribute('title')).toContain('by the local model')
+      const teach = screen.getByTestId('model-route-teach')
+      fireEvent.click(teach)
+      fireEvent.change(teach, { target: { value: '' } })
+      expect(routerLearn).not.toHaveBeenCalled()
+      fireEvent.change(teach, { target: { value: 'sonnet' } })
+      expect(routerLearn).toHaveBeenCalledWith({ prompt: 'what branch am I on', label: 'sonnet' })
+      expect(mockSetMemoryNotice).toHaveBeenLastCalledWith(expect.stringContaining('The router will send messages like that one'))
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      expect(routerPin).toHaveBeenCalledWith({ terminalId: 'term-1', pinned: true })
+      expect(screen.queryByTestId('model-route-chip')).toBeNull()
+      await vi.runAllTimersAsync()
+      for (const k of ['onRouterMessage', 'routerLearn', 'routerPin']) delete (window as any).termpolis[k]
+      vi.useRealTimers()
+    })
+
     it('quits Claude with Ctrl+C and resumes EXACTLY the session it names as it exits', async () => {
       vi.useFakeTimers()
       const os = osSaysShellAlone(false, false, true) // running, still tearing down, gone

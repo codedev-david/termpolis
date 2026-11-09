@@ -19,6 +19,11 @@ export interface ProxyResultMsg {
   /** The request's model family and effort (proxyMain.requestModelAndEffort); absent from a child older than the app. */
   model?: string
   effort?: string
+  /** v1.56.0 routing (proxyMain.routeFields): the terminal, main request, hour cache, a refused routed model. */
+  terminal?: string
+  main?: boolean
+  ttl1h?: boolean
+  refused?: string
 }
 
 /** Originals committed on the REQUEST path, ahead of the response the token rides back in — the
@@ -70,6 +75,9 @@ let cooldownTimer: ReturnType<typeof setTimeout> | null = null
 let cooldownGate: ShedGate | null = null
 let resultCb: ((r: ProxyResultMsg) => void) | null = null
 let stashCb: ((s: ProxyStashMsg) => void) | null = null
+// v1.56.0: the model each routed terminal's next requests run on. Kept here, so a respawned child gets
+// them all back with its init instead of quietly sending every session on its own model.
+const routes = new Map<string, string>()
 
 export function setProxySpawner(fn: Spawner | null): void { spawner = fn }
 export function onProxyResult(cb: ((r: ProxyResultMsg) => void) | null): void { resultCb = cb }
@@ -80,6 +88,13 @@ export function onProxyStash(cb: ((s: ProxyStashMsg) => void) | null): void { st
 export function setProxyMode(m: string): void {
   proxyMode = m
   try { transport?.postMessage(configMessage()) } catch { /* best effort */ }
+}
+
+/** Route a terminal's main requests to a model family (modelRoute.ts), or stop routing it (null). */
+export function setProxyRoute(terminal: string, family: string | null): void {
+  if (family) routes.set(terminal, family)
+  else routes.delete(terminal)
+  try { transport?.postMessage({ kind: 'route', terminal, family }) } catch { /* best effort: the session runs on its own model */ }
 }
 
 /** Every frame carries all of the config, so no frame can undo what another set. */
@@ -244,6 +259,7 @@ function spawnOnce(): void {
     t.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay, firstSight: proxyFirstSight })
     // The child freezes what its first init carries, so from here this is the policy for the run.
     firstSightResolved = true
+    for (const [terminal, family] of routes) t.postMessage({ kind: 'route', terminal, family })
   } catch { healthy = false }
 }
 
@@ -325,4 +341,5 @@ export function _resetProxyForTest(): void {
   disposeCooldown()
   transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; shutDown = false; resultCb = null; stashCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'; proxyEnabled = true; started = false
   proxyFirstSight = 'legacy'; firstSightResolved = false
+  routes.clear()
 }

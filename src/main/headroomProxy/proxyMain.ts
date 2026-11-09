@@ -6,6 +6,7 @@ import type { ModelFamily } from '../headroom/effectiveUnits'
 import { compressImage } from './imageCodec'
 import type { StashEntry } from '../headroom/elisionMeta'
 import type { ProxyResultMsg, ProxyStashMsg } from './proxySupervisor'
+import { planRequest, noteRefused, isRefusal, asksHourCache, setRoute, ROUTE_HEADER, type RoutePlan } from './modelRoute'
 
 /**
  * Prefix decay, opt-in. Module scope rather than a closure because the HTTP server is built once
@@ -47,6 +48,28 @@ export interface ProxyResult {
   model?: ModelFamily
   /** The request's `output_config.effort`, when it is one of the known levels. */
   effort?: string
+  /** v1.56.0 routing: the terminal the session runs in, when it carries the header. */
+  terminal?: string
+  /** One of the session's main requests (with tools, on its main model), whose context size counts. */
+  main?: boolean
+  /** The request asked for the hour-long cache. */
+  ttl1h?: boolean
+  /** The routed model the API refused (the request then went out as asked). */
+  refused?: ModelFamily
+}
+
+type RouteFields = Pick<ProxyResult, 'terminal' | 'main' | 'ttl1h' | 'refused'>
+
+/** The routing fields of a result: who sent it, and what the router should learn from it. */
+export function routeFields(plan: RoutePlan | null, payload: Buffer, refused?: ModelFamily): RouteFields {
+  const out: RouteFields = {}
+  if (!plan || !plan.terminal) return out
+  out.terminal = plan.terminal
+  if (plan.main) out.main = true
+  // Only the head of a large body is read: cache_control sits on the system prompt and the tools.
+  if (asksHourCache(payload.subarray(0, 200_000).toString('utf8'))) out.ttl1h = true
+  if (refused) out.refused = refused
+  return out
 }
 export interface ProxyOpts {
   upstreamHost: string
@@ -85,14 +108,27 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
       let body = Buffer.concat(chunks)
       let rewritten: { changed: boolean; stats: WireStats; stashes: StashEntry[] } | null = null
       let asked: { model?: ModelFamily; effort?: string } = {}
+      let plan: RoutePlan | null = null
       if (isMessages) {
+        let text: string | null = null
         try {
-          const text = body.toString('utf8')
+          text = body.toString('utf8')
           try { asked = requestModelAndEffort(text) } catch { /* the turn still counts, without a model */ }
           const r = rewriteMessagesBody(text, { compressImage, decay: decayEnabled })
-          if (r.changed) body = Buffer.from(r.body, 'utf8')
+          if (r.changed) { body = Buffer.from(r.body, 'utf8'); text = r.body }
           rewritten = { changed: r.changed, stats: r.stats, stashes: r.stashes }
         } catch { /* fail-open: forward original */ }
+        // v1.56.0: the model the router picked for this message, swapped in after compression so a retry
+        // can send the compressed body on the model it asked for.
+        if (text !== null) {
+          try {
+            plan = planRequest(text, req.headers)
+            if (plan.original !== undefined) {
+              body = Buffer.from(plan.body, 'utf8')
+              if (plan.used) asked = { ...asked, model: plan.used }
+            }
+          } catch { plan = null }
+        }
       }
       // Commit the originals BEFORE the rewritten body leaves: the retrieve_full token is already
       // IN that body, and with fine-grained tool streaming Claude calls the tool while the response
@@ -102,53 +138,70 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
         try { opts.onStash(rewritten.stashes) } catch { /* best effort — a bad consumer must not fail the request */ }
       }
       const headers: http.OutgoingHttpHeaders = { ...req.headers, host: opts.upstreamHost }
-      headers['content-length'] = Buffer.byteLength(body)
-      let upReq: http.ClientRequest
-      try {
-        upReq = agentMod.request(
-          { hostname: opts.upstreamHost, port: upstreamPort, path: req.url, method: req.method, headers },
-          (up) => {
-            try { res.writeHead(up.statusCode || 502, up.headers) } catch { try { res.destroy() } catch { /* ignore */ } return }
-            const respChunks: Buffer[] = []
-            up.on('data', (c) => { respChunks.push(c); try { res.write(c) } catch { /* client gone */ } })
-            up.on('end', () => {
-              try { res.end() } catch { /* ignore */ }
-              if (isMessages && rewritten && opts.onResult) {
-                try {
-                  const sse = decodeBody(Buffer.concat(respChunks), String(up.headers['content-encoding'] || ''))
-                  const usage = parseUsageFromSse(sse)
-                  // The shape of the turn is bookkeeping for the retrieval charge. If reading it ever
-                  // failed, the usage must still arrive, as it did before the turn was read at all.
-                  let turn: TurnShape = { toolCalls: 0, retrieveCalls: 0, pure: false }
-                  try { turn = parseTurnShapeFromSse(sse) } catch { /* the usage still counts */ }
-                  opts.onResult({ changed: rewritten.changed, stats: rewritten.stats, usage, turn, stashes: rewritten.stashes, status: up.statusCode || 0, ...asked })
-                } catch { /* best effort */ }
-              }
-            })
-            // An answer the upstream breaks off must reach the client as a broken connection, the way
-            // it would without the proxy. Ending the response instead makes the cut-short body look
-            // finished, and that body is usually gzip-encoded, so Claude Code fails it as
-            // "Decompression error: ZlibError" rather than as a connection error it retries.
-            up.on('error', () => { try { res.destroy() } catch { /* ignore */ } })
-          },
-        )
-      } catch (e) {
-        if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }) } catch { /* ignore */ } }
-        try { res.end('headroom proxy request error: ' + (e as Error).message) } catch { /* ignore */ }
-        return
-      }
+      delete headers[ROUTE_HEADER] // Termpolis's own routing tag, never sent on
+      let upReq: http.ClientRequest | null = null
+      let refusedFamily: ModelFamily | undefined
       // A client that hangs up before the answer is done (Esc in Claude Code) ends the turn: stop the
       // upstream request too, as a direct connection would. Otherwise the model goes on generating,
       // and counting against the user's usage, an answer nobody reads.
-      res.on('close', () => { if (!res.writableFinished) { try { upReq.destroy() } catch { /* ignore */ } } })
-      upReq.on('error', (e) => {
-        // Once the answer has started, nothing may follow it: its body may be gzip-encoded, and text
-        // written now would land inside the compressed stream. Break the connection instead.
-        if (res.headersSent) { try { res.destroy() } catch { /* ignore */ } return }
-        try { res.writeHead(502, { 'content-type': 'text/plain' }) } catch { /* ignore */ }
-        try { res.end('headroom proxy upstream error: ' + (e as Error).message) } catch { /* ignore */ }
-      })
-      upReq.end(body)
+      res.on('close', () => { if (!res.writableFinished) { try { upReq?.destroy() } catch { /* ignore */ } } })
+      const send = (payload: Buffer, routed: boolean): void => {
+        headers['content-length'] = Buffer.byteLength(payload)
+        let r: http.ClientRequest
+        try {
+          r = agentMod.request(
+            { hostname: opts.upstreamHost, port: upstreamPort, path: req.url, method: req.method, headers },
+            (up) => {
+              // The API would not take the routed model: send the request again as Claude Code asked it,
+              // before a byte of the refusal reaches the client.
+              if (routed && plan && plan.original !== undefined && isRefusal(up.statusCode)) {
+                up.resume()
+                refusedFamily = plan.used ?? undefined
+                noteRefused(plan.terminal, plan.used)
+                asked = { ...asked, model: plan.asked ?? undefined }
+                send(Buffer.from(plan.original, 'utf8'), false)
+                return
+              }
+              try { res.writeHead(up.statusCode || 502, up.headers) } catch { try { res.destroy() } catch { /* ignore */ } return }
+              const respChunks: Buffer[] = []
+              up.on('data', (c) => { respChunks.push(c); try { res.write(c) } catch { /* client gone */ } })
+              up.on('end', () => {
+                try { res.end() } catch { /* ignore */ }
+                if (isMessages && rewritten && opts.onResult) {
+                  try {
+                    const sse = decodeBody(Buffer.concat(respChunks), String(up.headers['content-encoding'] || ''))
+                    const usage = parseUsageFromSse(sse)
+                    // The shape of the turn is bookkeeping for the retrieval charge. If reading it ever
+                    // failed, the usage must still arrive, as it did before the turn was read at all.
+                    let turn: TurnShape = { toolCalls: 0, retrieveCalls: 0, pure: false }
+                    try { turn = parseTurnShapeFromSse(sse) } catch { /* the usage still counts */ }
+                    opts.onResult({ changed: rewritten.changed, stats: rewritten.stats, usage, turn, stashes: rewritten.stashes, status: up.statusCode || 0, ...asked, ...routeFields(plan, payload, refusedFamily) })
+                  } catch { /* best effort */ }
+                }
+              })
+              // An answer the upstream breaks off must reach the client as a broken connection, the way
+              // it would without the proxy. Ending the response instead makes the cut-short body look
+              // finished, and that body is usually gzip-encoded, so Claude Code fails it as
+              // "Decompression error: ZlibError" rather than as a connection error it retries.
+              up.on('error', () => { try { res.destroy() } catch { /* ignore */ } })
+            },
+          )
+        } catch (e) {
+          if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }) } catch { /* ignore */ } }
+          try { res.end('headroom proxy request error: ' + (e as Error).message) } catch { /* ignore */ }
+          return
+        }
+        upReq = r
+        r.on('error', (e) => {
+          // Once the answer has started, nothing may follow it: its body may be gzip-encoded, and text
+          // written now would land inside the compressed stream. Break the connection instead.
+          if (res.headersSent) { try { res.destroy() } catch { /* ignore */ } return }
+          try { res.writeHead(502, { 'content-type': 'text/plain' }) } catch { /* ignore */ }
+          try { res.end('headroom proxy upstream error: ' + (e as Error).message) } catch { /* ignore */ }
+        })
+        r.end(payload)
+      }
+      send(body, plan?.original !== undefined)
     }
   })
 }
@@ -165,6 +218,10 @@ export function resultFrame(r: ProxyResult): ProxyResultMsg {
   const msg: ProxyResultMsg = { kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status }
   if (r.model) msg.model = r.model
   if (r.effort) msg.effort = r.effort
+  if (r.terminal) msg.terminal = r.terminal
+  if (r.main) msg.main = true
+  if (r.ttl1h) msg.ttl1h = true
+  if (r.refused) msg.refused = r.refused
   return msg
 }
 export function stashFrame(stashes: StashEntry[]): ProxyStashMsg {
@@ -187,6 +244,7 @@ if (parentPort) {
     const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string })
     if (!msg) return
     if (msg.kind === 'config') { applyProxyConfig(msg); return } // live mode/cap change (Settings → supervisor)
+    if (msg.kind === 'route') { const r = msg as { terminal?: unknown; family?: unknown }; setRoute(r.terminal, r.family); return } // v1.56.0 per-message routing
     if (msg.kind !== 'init' || server) return
     applyProxyConfig(msg) // honor the config carried on init — and re-applied on every respawn
     const targetPort = msg.port || 0

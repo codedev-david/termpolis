@@ -384,7 +384,7 @@ describe('every spawn site that carries the proxy env also carries the window (R
 
   it('the terminal:create site asks only for a terminal that will run Claude, and the swarm site for every worker, as the proxy route always did', () => {
     const src = readFileSync(indexFile, 'utf8')
-    expect(src).toContain('const launchEnv = claudeHeadroom ? await claudeLaunchEnv(cwd, accountId) : undefined')
+    expect(src).toContain('const launchEnv = claudeHeadroom ? withRouteHeader(await claudeLaunchEnv(cwd, accountId), id) : undefined')
     expect(src).toContain('const launchEnv = await claudeLaunchEnv(resolvedCwd)')
   })
 

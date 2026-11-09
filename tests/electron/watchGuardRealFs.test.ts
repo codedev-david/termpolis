@@ -95,11 +95,15 @@ describe('codeWatch on the real fs.watch', () => {
     const reindex = vi.fn()
     const w = watchRepo(root, { ...fsBackedWatchDeps(fs.watch as never, reindex), debounceMs: 100 })
     try {
-      put('.WORKTREES-UPPER/src/c.ts')
-      put('my_node_modules/d.ts')
+      const want = ['.WORKTREES-UPPER/src/c.ts', 'my_node_modules/d.ts']
+      for (const f of want) put(f)
+      // macOS FSEvents drops what lands before its stream is live, so a file not named yet is written
+      // again: this checks the ignore filter, not how soon the OS starts delivering.
+      let tick = 0
       await vi.waitFor(() => {
         const named = reindex.mock.calls.flatMap((c) => c[1] as string[]).map(norm)
-        expect(named).toEqual(expect.arrayContaining(['.WORKTREES-UPPER/src/c.ts', 'my_node_modules/d.ts']))
+        if (++tick % 20 === 0) for (const f of want) if (!named.includes(f)) put(f, `x${tick}`)
+        expect(named).toEqual(expect.arrayContaining(want))
       }, { timeout: 20_000, interval: 25 })
     } finally {
       w.close()

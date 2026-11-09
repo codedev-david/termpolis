@@ -204,4 +204,18 @@ describe('DefaultModelsSettings', () => {
     expect(spy).not.toHaveBeenCalled()
     spy.mockRestore()
   })
+  it('Model per message: shows the saved mode, stores a change and tells main', async () => {
+    localStorage.setItem('termpolis.agent.messageRouting', 'all')
+    const routerConfigure = vi.fn(async () => ({ success: true }))
+    ;(window as any).termpolis.routerConfigure = routerConfigure
+    render(<DefaultModelsSettings />)
+    const sel = screen.getByTestId('settings-message-routing') as HTMLSelectElement
+    expect(values(sel)).toEqual(['auto-panes', 'all', 'off'])
+    expect(sel.value).toBe('all')
+    expect(screen.getByTestId('settings-message-routing-hint').textContent).toContain('nothing is sent anywhere')
+    fireEvent.change(sel, { target: { value: 'off' } })
+    expect(sel.value).toBe('off')
+    expect(localStorage.getItem('termpolis.agent.messageRouting')).toBe('off')
+    expect(routerConfigure).toHaveBeenCalledWith(expect.objectContaining({ mode: 'off' }))
+  })
 })

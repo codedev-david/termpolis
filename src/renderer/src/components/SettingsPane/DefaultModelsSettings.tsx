@@ -6,6 +6,7 @@ import {
   setAgentModelDefault,
 } from '../../lib/agentModelDefaults'
 import { modelOptionsFor, type ModelCatalog, type ModelProvider } from '../../lib/modelCatalog'
+import { getRouterMode, setRouterMode, ROUTER_MODES, type RouterMode } from '../../lib/messageRoute'
 
 // Settings › General › Default Models. The model each AI agent starts on when Termpolis opens a NEW
 // terminal for it (sidebar, shortcuts, Welcome screen, palette, restored workspaces, handoffs).
@@ -33,6 +34,7 @@ export function DefaultModelsSettings() {
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
+  const [routing, setRouting] = useState<RouterMode>(() => getRouterMode())
 
   // The same two reads the terminal header's picker makes: the list as it stands, then whatever
   // the launch-time discovery pushes once it lands.
@@ -106,9 +108,8 @@ export function DefaultModelsSettings() {
               <span className="text-xs text-[#9ca3af] leading-relaxed pl-[8.75rem]" data-testid="settings-default-model-claude-auto-hint">
                 Each new Claude terminal starts on the model and effort that fit what you type in
                 &ldquo;What&rsquo;s the task?&rdquo;: Haiku for a quick lookup, Sonnet for building, Opus for design
-                and hard bugs, Opus Plan when there is no task yet. Its subagents run on Sonnet. The model
-                is set once, at the start: switching it mid-session reads the whole conversation again
-                at full price.
+                and hard bugs, Opus Plan when there is no task yet. Its subagents run on Sonnet. With
+                per-message routing on (below), each message you send then runs on the model it needs.
               </span>
             )}
             {options.length === 0 && NO_LIST_HINT[provider] && (
@@ -119,6 +120,28 @@ export function DefaultModelsSettings() {
           </div>
         )
       })}
+      <div className="flex flex-col gap-1">
+        <label className="flex items-center gap-3 text-sm">
+          <span className="w-32 shrink-0">Model per message</span>
+          <select
+            data-testid="settings-message-routing"
+            value={routing}
+            onChange={(e) => setRouting(setRouterMode(e.target.value as RouterMode))}
+            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden min-w-[16rem]"
+          >
+            {ROUTER_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        </label>
+        <span className="text-xs text-[#9ca3af] leading-relaxed pl-[8.75rem]" data-testid="settings-message-routing-hint">
+          Each message you send to Claude runs on the model it needs: Haiku for a quick question, Sonnet
+          for building, Opus for design and hard bugs. A small model on this computer decides in a few
+          milliseconds; nothing is sent anywhere to decide. It moves down only when that saves money
+          after re-reading the conversation, and a &ldquo;yes, go ahead&rdquo; stays on the model doing the work.
+          The pane header shows each pick; tell it what a message should have been and it learns.
+          Picking a model in a pane&rsquo;s Model menu turns this off for that pane. Applies to Claude
+          terminals Termpolis opens with token compression on.
+        </span>
+      </div>
       <div className="flex items-center gap-3">
         <button
           type="button"

@@ -71,6 +71,7 @@ import '@xterm/xterm/css/xterm.css'
 import { hasHardwareWebgl } from '../../lib/webglSupport'
 import { noteMisroute, routedChipText, routedChipTitle, routerTuning } from '../../lib/autoModel'
 import { rerouteOffer, runningClaudeModel, type RerouteOffer } from '../../lib/earlyReroute'
+import { pinRoute, routeChipText, routeChipTitle, teachRoute, type RouteEvent, type RouteLabel } from '../../lib/messageRoute'
 
 interface Props {
   terminalId: string
@@ -572,6 +573,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   const [liveModel, setLiveModel] = useState('')
   // v1.55.0 early re-route: a better-fitting model offered after the session's first prompt.
   const [reroute, setReroute] = useState<RerouteOffer | null>(null)
+  // v1.56.0: the model main routed this pane's last message to (lib/messageRoute.ts).
+  const [routeEvent, setRouteEvent] = useState<RouteEvent | null>(null)
   // v1.55.0 relay: after a compaction, offer a fresh session started from a handoff note.
   const [relayReady, setRelayReady] = useState(false)
   // Re-entrancy guard for the authoritative relaunch path only: relaunchAgentWithModel is an
@@ -2091,6 +2094,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     })
   }, [terminalId, badgeProvider, liveModel, routed, agentCommand, authoritativeProvider])
 
+  // v1.56.0 per-message routing: main says which model each message in this pane runs on.
+  useEffect(() => {
+    return window.termpolis.onRouterMessage?.((e) => {
+      if (e?.terminalId === terminalId) setRouteEvent(e)
+    })
+  }, [terminalId])
+
   // The relay: the agent writes a handoff note, then a new session starts on it (lib/relay.ts), on the
   // model the re-route offer names, else the one running. The quit and launch run under the
   // terminal's relaunch lock, like a model pick; the wait for the note does not hold it.
@@ -2348,6 +2358,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               // The "Model…" placeholder is not a choice: leave the picker on what it shows.
               if (!alias) return
               setReroute(null)
+              // A model picked by hand holds: the router stops moving this pane's messages.
+              if (provider === 'claude' && routeEvent) { pinRoute(terminalId); setRouteEvent(null) }
               if (authoritativeProvider === provider) {
                 // Claim the terminal first: one call both checks and takes it, so two picks
                 // cannot both pass, and a pane remounted mid-switch is refused too.
@@ -2453,6 +2465,36 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                   >
                     <i className="fa-solid fa-xmark text-[9px]"></i>
                   </button>
+                </span>
+              )}
+              {provider === 'claude' && routeEvent && !reroute && !relaunchInFlight && (
+                <span
+                  data-testid="model-route-chip"
+                  className="flex items-center gap-1 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 border border-[#3c3c3c] rounded pl-1.5 whitespace-nowrap"
+                  title={routeChipTitle(routeEvent)}
+                >
+                  <i className="fa-solid fa-bolt text-[9px] text-[#d7ba7d]" aria-hidden="true"></i>
+                  {routeChipText(routeEvent)}
+                  <select
+                    data-testid="model-route-teach"
+                    aria-label="What this message should have run on"
+                    value=""
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => {
+                      e.stopPropagation()
+                      const label = e.target.value as RouteLabel
+                      if (!label) return
+                      teachRoute(routeEvent, label)
+                      setMemoryNotice?.('Thanks. The router will send messages like that one there from now on.')
+                    }}
+                    className="bg-transparent text-[#9ca3af] hover:text-white border-l border-[#3c3c3c] px-0.5 py-0.5 outline-hidden w-4"
+                  >
+                    <option value="">Should have been…</option>
+                    <option value="haiku">Haiku</option>
+                    <option value="sonnet">Sonnet</option>
+                    <option value="opus">Opus</option>
+                    <option value="keep">The model it was on</option>
+                  </select>
                 </span>
               )}
               {provider === 'claude' && relayReady && !relaunchInFlight && (

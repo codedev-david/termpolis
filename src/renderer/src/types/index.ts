@@ -515,6 +515,11 @@ export interface TermpolisAPI {
   onTerminalDataFor: (id: string, cb: (id: string, data: string, end?: number) => void) => () => void
   /** A Claude session's first prompt, or (afterCompact) its last prompt right after a compaction. */
   onAgentFirstPrompt?: (cb: (p: { terminalId: string; prompt: string; afterCompact?: boolean }) => void) => () => void
+  /** v1.56.0 per-message routing (lib/messageRoute.ts). */
+  onRouterMessage?: (cb: (e: import('../../../shared/smartRoute').RouteEvent) => void) => () => void
+  routerConfigure?: (opts: { mode?: string; tuning?: unknown }) => Promise<IpcResponse<string>>
+  routerPin?: (opts: { terminalId: string; pinned?: boolean }) => Promise<IpcResponse>
+  routerLearn?: (opts: { prompt: string; label: string }) => Promise<IpcResponse<boolean>>
   /** Counters of that routing, numbers and one boolean only: for an e2e spec to read what the real bridge did. */
   terminalDataStats: () => { shared: boolean; ids: number; panes: number; all: number; delivered: number; dropped: number }
   getAvailableShells: () => Promise<IpcResponse<ShellInfo[]>>

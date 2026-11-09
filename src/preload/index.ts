@@ -61,6 +61,15 @@ const api: TermpolisAPI = {
     ipcRenderer.on('agent:first-prompt', handler)
     return () => ipcRenderer.removeListener('agent:first-prompt', handler)
   },
+  /** v1.56.0 per-message routing: the model a submitted message runs on, for its pane's chip. */
+  onRouterMessage: (cb: (e: import('../shared/smartRoute').RouteEvent) => void) => {
+    const handler = (_e: unknown, e: import('../shared/smartRoute').RouteEvent) => cb(e)
+    ipcRenderer.on('router:message', handler)
+    return () => ipcRenderer.removeListener('router:message', handler)
+  },
+  routerConfigure: (opts: { mode?: string; tuning?: unknown }) => ipcRenderer.invoke('router:configure', opts),
+  routerPin: (opts: { terminalId: string; pinned?: boolean }) => ipcRenderer.invoke('router:pin', opts),
+  routerLearn: (opts: { prompt: string; label: string }) => ipcRenderer.invoke('router:learn', opts),
 
   getAvailableShells: () =>
     ipcRenderer.invoke('shell:available'),

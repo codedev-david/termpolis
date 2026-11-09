@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: November 8, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the memory hook also runs on a session's first prompt, around a compaction and before a whole-file read, and sends what it reads only to Termpolis on this computer; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it)
+Last updated: November 9, 2026 (per-message model routing decides on this computer and keeps only vectors of your corrections, never their text; an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the memory hook also runs on a session's first prompt, around a compaction and before a whole-file read, and sends what it reads only to Termpolis on this computer; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it)
 
 ## Overview
 
@@ -81,6 +81,16 @@ upload it.
   groups of conversations that Settings → Token Savings compares (inside
   `userData/headroom/proxy-totals.json`). Counts, sizes and names only, never
   the content of a conversation.
+- For **Model per message** (Settings → General → Default Models), the local
+  embedding model's vectors of the router's built-in examples
+  (`userData/router-seeds.json`) and of the messages you correct with the pane
+  header's **Should have been…** menu, each with the model you picked
+  (`userData/router-examples.json`, the newest 300). A vector is a list of
+  numbers, never the message's text. The decision is made on this computer and
+  nothing is sent anywhere to make it; the proxy changes only the model named in
+  the request it already forwards to Anthropic, and drops the
+  `X-Termpolis-Terminal` header it uses to tell terminals apart before the
+  request leaves this computer.
 - The Activity Feed's event log (`userData/agent-events.jsonl`, plus
   `agent-events.jsonl.old` once it passes 5 MB), which Termpolis builds from
   the transcripts that Claude Code, Codex and Gemini CLI write: one line per

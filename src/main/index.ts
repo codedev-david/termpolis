@@ -215,9 +215,12 @@ import { describeWireTier } from './headroom/wireTier'
 import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
 import { summarizeElisionHealth } from './headroom/elisionHealth'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight } from './headroomProxy/proxySupervisor'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight, setProxyRoute } from './headroomProxy/proxySupervisor'
 import { readJsonObject } from './agentConfigIO'
-import { claudeLaunchEnv as buildClaudeLaunchEnv, withAutoSubagent } from './headroom/shapingEnv'
+import { claudeLaunchEnv as buildClaudeLaunchEnv, withAutoSubagent, withRouteHeader } from './headroom/shapingEnv'
+import { configureRouter, registerTerminal, forgetTerminal, pinTerminal, noteProxyResult, routePrompt, setRouterMode, getRouterMode } from './messageRouter'
+import { isRouteFamily } from './headroomProxy/modelRoute'
+import type { RouterTuning } from '../shared/taskRouter'
 import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
@@ -299,6 +302,7 @@ import {
   vectorRamStats,
   setVectorQuantization,
   setMemoryRetryGovernor,
+  routerClassify, routerLearn, routerWarm,
 } from './memoryClient'
 import { memoryUnavailableInfo, skipPassWhileUnavailable, isWriteRefusedMessage } from './memoryFallbackGuard'
 import { registerMemoryTraceSources } from './memoryTraceSources'
@@ -920,12 +924,43 @@ onFirstPrompt((sessionId, prompt, _cwd, named, afterCompact) => {
   mainWindow?.webContents.send('agent:first-prompt', { terminalId, prompt: prompt.slice(0, 2000), ...(afterCompact ? { afterCompact: true } : {}) })
 })
 
+// v1.56.0 per-message routing (messageRouter.ts): the submit hook asks for each message's model, the
+// local classifier in the memory host votes, and the proxy runs the message on the pick.
+let routerTuning: RouterTuning | undefined
+configureRouter({
+  classify: (text) => routerClassify(app.getPath('userData'), text),
+  setRoute: (terminal, family) => setProxyRoute(terminal, family),
+  notify: (e) => mainWindow?.webContents.send('router:message', e),
+  tuning: () => routerTuning,
+})
+ipcMain.handle('router:configure', (_, opts: { mode?: unknown; tuning?: unknown } = {}) => {
+  const t = opts?.tuning as RouterTuning | undefined
+  if (t && typeof t === 'object' && typeof t.haikuMaxWords === 'number' && t.misroutes && typeof t.misroutes === 'object') routerTuning = t
+  return ok(setRouterMode(opts?.mode))
+})
+ipcMain.handle('router:status', () => ok(getRouterMode()))
+// The user picked this pane's model by hand: stop routing it (or start again with pinned: false).
+ipcMain.handle('router:pin', (_, opts: { terminalId?: unknown; pinned?: unknown } = {}) => {
+  pinTerminal(opts?.terminalId, opts?.pinned !== false)
+  return ok()
+})
+// The user moved a message to another model: the classifier keeps its vector (never its text) as an example.
+ipcMain.handle('router:learn', async (_, opts: { prompt?: unknown; label?: unknown } = {}) => {
+  const label = opts?.label
+  if (typeof opts?.prompt !== 'string' || !opts.prompt.trim() || !(label === 'keep' || isRouteFamily(label))) return err('Invalid example')
+  try { return ok(await routerLearn(app.getPath('userData'), opts.prompt.slice(0, 2000), label)) } catch (e: any) { return err(e?.message ?? 'Could not learn') }
+})
+
 ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch, autoModel }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
     if (!shell) return err('No shell available')
-    const launchEnv = claudeHeadroom ? await claudeLaunchEnv(cwd, accountId) : undefined
+    // The terminal's id rides in a header only through Termpolis's proxy, which strips it (withRouteHeader).
+    const launchEnv = claudeHeadroom ? withRouteHeader(await claudeLaunchEnv(cwd, accountId), id) : undefined
+    // Only a session the proxy can tell apart is routed: one launched through it, carrying the header.
+    if (launchEnv?.TERMPOLIS_HEADROOM_PROXY) registerTerminal(id, autoModel === true)
+    else forgetTerminal(id)
     // No folder trust is seeded here any more. Opening a terminal is not agreeing to let
     // an agent run in that folder unasked; Claude Code's own trust prompt stays the gate
     // unless the user connected the agents, and then only where Termpolis launches Claude
@@ -1021,6 +1056,7 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
     mcpCreatedTerminals.delete(id)
     remoteTerminals.remove(id)
     forgetTerminalAccount(id)
+    forgetTerminal(id)
     try { detachWatchers(id) } catch {}
     if (recentlyAuditedTerminals.has(id)) {
       recentlyAuditedTerminals.delete(id)
@@ -4098,6 +4134,7 @@ async function semanticPoolOptions(
       // Behind-the-scenes memory load: agents call this (prompted by the one-line
       // launch pointer) instead of having the digest pasted into the terminal.
       // Current-directory context leads; cross-project hits follow, labeled.
+      routePrompt: (opts) => routePrompt(opts),
       memoryPrimer: async (opts) => {
         const project = opts.cwd ? normalizeProjectSlug(opts.cwd) : ''
         const query = (opts.query || '').trim() ||
@@ -4467,7 +4504,10 @@ async function semanticPoolOptions(
         // two must never disagree about which requests happened, and one timer guarantees it.
         hrProxyFlushTimer = setTimeout(() => { hrProxyFlushTimer = null; saveProxyTotalsToDisk(hrProxyDir); saveDepthCurveToDisk(hrProxyDir); flushOutputEconomy() }, 3000)
       })
-      onProxyResult((r) => { try { recordProxyResult(r) } catch { /* best effort */ } })
+      onProxyResult((r) => {
+        try { recordProxyResult(r) } catch { /* best effort */ }
+        try { noteProxyResult(r) } catch { /* routing reads what it can */ }
+      })
       // The result only lands once the upstream response ends, but Claude can call retrieve_full
       // the moment the token streams back — so the originals are committed on the request path too.
       onProxyStash((s) => { for (const st of s.stashes) { try { ccrPut(st.token, st.original, 'proxy', st.meta) } catch { /* best effort */ } } })
@@ -4543,6 +4583,8 @@ async function semanticPoolOptions(
     }).then((m) => {
       // Say which side is serving. An in-process fallback is a real regression in launch latency and
       // typing lag, so it must never be silent — this is the line that tells us the child died.
+      // Embed the router's examples now, so the first message's decision is as quick as the rest.
+      if (m === 'host' || m === 'inproc') void Promise.resolve(app.getPath('userData')).then((d) => routerWarm(d)).catch(() => false)
       if (m === 'host') console.log(`[termpolis][memory] brain is OFF the main thread (mode=${m})`)
       else if (m === 'unstarted') { /* the app quit before the host came up: nothing to report */ }
       else if (m === 'unavailable') console.warn(`[termpolis][memory] UNAVAILABLE — the brain could not start and its store is too large to load on the main thread; retrying in the background (mode=${m})`)

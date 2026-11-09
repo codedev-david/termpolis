@@ -49,6 +49,8 @@ import { graphStats, graphRelationStats, graphCreatorStats, edgeKeysIncident, ex
 import { setSafeStorage } from './secureKeyStore'
 import { lowerHostPriority } from './hostPriority'
 import type { WeaveNeighbour } from './mnemeWeave'
+// v1.56.0: the per-message model router's classifier runs beside the embedder it uses.
+import { routerClassify, routerLearn, routerWarm } from './routerModel'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
 // Discriminated on `kind` rather than "the first message is init, the rest are calls" — an ordering
@@ -266,6 +268,8 @@ export const HOST_HANDLERS: Record<string, HostHandler> = {
   // composites (not 1:1 swarmMemory exports — see above). Each collapses a per-item RPC that the
   // consumer calls from INSIDE a sync loop into one round trip.
   consolidationSimMatrix, entrySimMatrix, weaveNeighboursBatch, memoryKnownHashes,
+  // the per-message model router (routerModel.ts)
+  routerClassify, routerLearn, routerWarm,
 }
 
 // ── Fail-CLOSED keychain guard ───────────────────────────────────────────────────────────────────

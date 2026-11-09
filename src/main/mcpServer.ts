@@ -700,6 +700,8 @@ export interface McpToolHandlers {
   memorySearch: (opts: { query: string; limit?: number; agentId?: string; kind?: string; taskId?: string; project?: string; diversify?: boolean; fuseGraph?: boolean }) => Promise<any>
   memoryList: (opts: { limit?: number; agentId?: string; kind?: string; since?: number; project?: string }) => any
   memoryPrimer: (opts: { cwd?: string; query?: string; limit?: number; excludeIds?: ReadonlySet<string>; focused?: boolean }) => Promise<{ project: string | null; primer: string | null }>
+  /** v1.56.0: pick the model a submitted message runs on (messageRouter.routePrompt); null = not routed. */
+  routePrompt?: (opts: { terminalId?: unknown; prompt?: unknown }) => Promise<unknown>
   memoryRelated: (opts: { id?: string; query?: string; limit?: number }) => Promise<any>
   memoryLink: (opts: { from: string; to: string; relation?: string }) => any
   memoryGraph: (opts: { id?: string; query?: string; relation?: string; depth?: number; limit?: number }) => Promise<any>
@@ -1498,6 +1500,12 @@ export async function executeTool(
         project: args.project,
       })
     case 'memory_primer': {
+      // v1.56.0 per-message routing: the submit hook is here before Claude Code sends the message, so the
+      // pane's model is picked first (messageRouter.ts, capped at a few hundred ms). It needs no memory.
+      let routed = false
+      if (args.source === 'prompt' && handlers.routePrompt) {
+        try { routed = (await handlers.routePrompt({ terminalId: args.terminalId, prompt: args.query })) != null } catch { /* the message runs where it is */ }
+      }
       // The primer builder turns a failing search into an empty primer, which an agent that asked for
       // it would read as "no context saved". While memory is unavailable, say so (v1.54.5).
       if (isMemoryUnavailable()) throw new Error(unavailableMessage())
@@ -1521,7 +1529,8 @@ export async function executeTool(
           return { project: null, primer: null }
         }
         // The offer goes with the first prompt of any length; a short one (prime: false) gets no notes.
-        if (claimOffer(sessionId, now)) emitFirstPrompt(sessionId, query, cwd, terminalId)
+        // A routed pane already runs the message on the model it fits: no offer to switch on top of that.
+        if (claimOffer(sessionId, now) && !routed) emitFirstPrompt(sessionId, query, cwd, terminalId)
         if (args.prime === false || !claimFirstPrompt(sessionId, now)) return { project: null, primer: null }
         if (armOf(sessionId) === 'holdout') return { project: null, primer: null }
         const shownAlready = servedIds(guardKey, now)
