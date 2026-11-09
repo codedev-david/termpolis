@@ -244,6 +244,9 @@ export function spawnTerminal(
     // Where `sudo -A` finds Termpolis's password dialog (sudoAskpass.ts), on Linux and macOS.
     ...sudoAskpassEnv(),
     ...(extraEnv || {}),
+    // Names this pane to the memory hook's first-prompt call (v1.55.0 early re-route), so the
+    // header can offer a better-fitting model even in a session started by hand.
+    TERMPOLIS_TERMINAL_ID: id,
   } as Record<string, string>
 
   // Shell integration: teach the shell to announce its working directory every time it

@@ -156,8 +156,15 @@ describe('memory-primer-hook on the first prompt', () => {
     redactPrompt: (p: string) => string
     quietRun: (env: Record<string, string | undefined>) => boolean
     buildOutput: (primer: string, event?: string) => string
+    promptArgs: (cwd: string, query: string, sessionId: string, env: Record<string, string | undefined>) => Record<string, unknown>
   }
   const long = 'please look at how the release workflow signs the windows installer and why it failed today'
+
+  it('names the Termpolis pane the session runs in, and only a well-formed one (v1.55.0 early re-route)', () => {
+    expect(h.promptArgs('/r', 'q', 's1', { TERMPOLIS_TERMINAL_ID: 'term-4_a' })).toMatchObject({ source: 'prompt', sessionId: 's1', terminalId: 'term-4_a' })
+    expect(h.promptArgs('/r', 'q', 's1', {})).not.toHaveProperty('terminalId')
+    expect(h.promptArgs('/r', 'q', 's1', { TERMPOLIS_TERMINAL_ID: 'a b;c' })).not.toHaveProperty('terminalId')
+  })
 
   it('asks only for a real prompt: twelve words or more, and not a slash command', () => {
     expect(h.isSubstantive(long)).toBe(true)

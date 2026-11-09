@@ -157,6 +157,15 @@ export function terminalSessionId(terminalId: string): string | undefined {
   return sessionIds.get(terminalId)
 }
 
+/** The pane a Claude session's first prompt belongs to (v1.55.0 early re-route): the one the hook
+ *  named, when that pane exists; else the one Termpolis started that session in (--session-id). */
+export function firstPromptTerminal(sessionId: string, named: string | undefined, exists: (id: string) => boolean): string | undefined {
+  if (named && exists(named)) return named
+  if (!sessionId) return undefined
+  for (const [terminalId, id] of sessionIds) if (id === sessionId && exists(terminalId)) return terminalId
+  return undefined
+}
+
 export function noteTerminalSession(terminalId: string, sessionId: string | null): void {
   if (sessionId) sessionIds.set(terminalId, sessionId)
   else sessionIds.delete(terminalId)

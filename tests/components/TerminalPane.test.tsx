@@ -1416,6 +1416,47 @@ describe('TerminalPane', () => {
       expect(chip.getAttribute('title')).toContain('a short lookup')
     })
 
+    // v1.55.0 Task 9: the first prompt arrives from main; the chip only offers.
+    function firstPromptFeed() {
+      const feed: { send?: (p: { terminalId: string; prompt: string }) => void } = {}
+      ;(window as any).termpolis.onAgentFirstPrompt = vi.fn((cb: (p: { terminalId: string; prompt: string }) => void) => { feed.send = cb; return () => {} })
+      return feed
+    }
+
+    it('offers a better model after the first prompt, and dismissing it changes nothing', () => {
+      const feed = firstPromptFeed()
+      withClaudeTerminal(`${FLAGS} --model opus`)
+      render(<TerminalPane {...defaultProps} />)
+      expect(screen.queryByTestId('model-reroute-chip')).toBeNull()
+      act(() => feed.send?.({ terminalId: 'other', prompt: 'explain what the release workflow does' }))
+      expect(screen.queryByTestId('model-reroute-chip')).toBeNull()
+      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'explain what the release workflow does' }))
+      expect(screen.getByTestId('model-reroute-chip').textContent).toContain('Continue on Haiku?')
+      fireEvent.click(screen.getByTestId('model-reroute-dismiss'))
+      expect(screen.queryByTestId('model-reroute-chip')).toBeNull()
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      delete (window as any).termpolis.onAgentFirstPrompt
+    })
+
+    it('up click records a misroute and switches through the picker', async () => {
+      vi.useFakeTimers()
+      localStorage.clear()
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      const feed = firstPromptFeed()
+      withClaudeTerminal(FLAGS, { terminals: [{ id: 'term-1', isSwarm: false, agentCommand: FLAGS, routed: { model: 'haiku', effort: 'low', rule: 'lookup', confidence: 0.7 } }] })
+      render(<TerminalPane {...defaultProps} />)
+      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'design the plugin architecture for the new sync engine' }))
+      expect(screen.getByTestId('model-reroute-chip').textContent).toContain('Switch to Opus?')
+      fireEvent.click(screen.getByTestId('model-reroute-accept'))
+      await vi.runAllTimersAsync()
+      expect(JSON.parse(localStorage.getItem('termpolis.agent.routerTuning') ?? '{}').misroutes).toEqual({ lookup: 1 })
+      expect(mockWriteToTerminal.mock.calls).toEqual([...CTRL_C_x3, ['term-1', resumeLine('opus')]])
+      expect(screen.queryByTestId('model-reroute-chip')).toBeNull()
+      delete (window as any).termpolis.onAgentFirstPrompt
+      vi.useRealTimers()
+    })
+
     it('quits Claude with Ctrl+C and resumes EXACTLY the session it names as it exits', async () => {
       vi.useFakeTimers()
       const os = osSaysShellAlone(false, false, true) // running, still tearing down, gone

@@ -476,6 +476,12 @@ describe('terminalManager', () => {
     expect(env?.BASH_SILENCE_DEPRECATION_WARNING).toBe('1')
   })
 
+  it('names the pane in every terminal, over anything the caller passed (v1.55.0 early re-route)', () => {
+    spawnTerminal('pane-7', '/bin/bash', '/tmp', vi.fn(), [], { TERMPOLIS_TERMINAL_ID: 'other' })
+    const env = vi.mocked(pty.spawn).mock.calls[0][2]?.env as Record<string, string>
+    expect(env.TERMPOLIS_TERMINAL_ID).toBe('pane-7')
+  })
+
   // 23. spawnTerminal accepts extra PATH entries
   it('spawnTerminal prepends extra paths to PATH env var', () => {
     spawnTerminal('t23', '/bin/bash', '/tmp', vi.fn(), ['/opt/custom/bin'])

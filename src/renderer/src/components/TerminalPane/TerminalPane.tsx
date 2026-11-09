@@ -68,7 +68,8 @@ import type { ShellType } from '../../types'
 import '@xterm/xterm/css/xterm.css'
 
 import { hasHardwareWebgl } from '../../lib/webglSupport'
-import { routedChipText, routedChipTitle } from '../../lib/autoModel'
+import { noteMisroute, routedChipText, routedChipTitle, routerTuning } from '../../lib/autoModel'
+import { rerouteOffer, runningClaudeModel, type RerouteOffer } from '../../lib/earlyReroute'
 
 interface Props {
   terminalId: string
@@ -568,6 +569,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // authoritativeProvider above); falls back to a plain /model hot-swap for a
   // heuristically-detected Claude session we can't safely interrupt.
   const [liveModel, setLiveModel] = useState('')
+  // v1.55.0 early re-route: a better-fitting model offered after the session's first prompt.
+  const [reroute, setReroute] = useState<RerouteOffer | null>(null)
   // Re-entrancy guard for the authoritative relaunch path only: relaunchAgentWithModel is an
   // async multi-step PTY sequence that runs for seconds (Ctrl+C x3, a wait for the OS to say the
   // agent has exited, the retype). A second pick landing before the first settles would interleave
@@ -2072,6 +2075,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     try { term.focus() } catch { /* terminal disposed before the effect ran */ }
   }, [isActiveTerminal, isVisible, terminalId, focusNonce])
 
+  // The first prompt of a Claude session in this pane (main sends it from the memory hook's call):
+  // offer a better-fitting model while switching still costs little. Only an offer.
+  useEffect(() => {
+    if (badgeProvider !== 'claude') return
+    return window.termpolis.onAgentFirstPrompt?.((p) => {
+      if (p.terminalId !== terminalId) return
+      setReroute(rerouteOffer(p.prompt, runningClaudeModel({ liveModel, routed, agentCommand }), 1, routerTuning()))
+    })
+  }, [terminalId, badgeProvider, liveModel, routed, agentCommand])
+
   return (
     <div
       data-terminal-id={terminalId}
@@ -2268,7 +2281,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
             if (installedAgents?.[PROVIDER_INSTALL_KEY[provider]] === false) {
               // Recognized agent terminal, but its CLI isn't on PATH — no models to offer;
               // the tooltip explains why (matches the Second Opinion install-gating).
+              // A fragment like the ready branch's, so React keeps the same <select> when the CLI turns up.
               return (
+                <>
                 <select
                   data-testid="model-picker"
                   value=""
@@ -2279,70 +2294,76 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                 >
                   <option value="">Model — needs {label}</option>
                 </select>
+                </>
               )
             }
             const options = modelOptionsFor(provider, modelCatalog)
+            // One pick, from the dropdown or the re-route chip.
+            const pick = (alias: string): void => {
+              if (alias === REFRESH_MODELS_VALUE) {
+                // Discovery found nothing for this provider — Codex has never been run
+                // (so it has published no cache), or `agy models` has not run yet (only
+                // this refresh runs it) or failed offline. Give the otherwise-dead
+                // dropdown one honest action rather than waiting out the 12h TTL. Never
+                // becomes liveModel: it is not a model.
+                void window.termpolis.refreshModelCatalog?.()
+                  ?.then((res) => { if (res?.success && res.data) setModelCatalog(res.data) })
+                  ?.catch(() => { /* still nothing to offer — the row stays */ })
+                return
+              }
+              // The "Model…" placeholder is not a choice: leave the picker on what it shows.
+              if (!alias) return
+              setReroute(null)
+              if (authoritativeProvider === provider) {
+                // Claim the terminal first: one call both checks and takes it, so two picks
+                // cannot both pass, and a pane remounted mid-switch is refused too.
+                if (!beginModelSwitch(terminalId, alias)) return
+                const previous = liveModel
+                setLiveModel(alias)
+                const target = options.find((o) => o.alias === alias)?.label ?? alias
+                // Under the terminal's relaunch lock: nothing else types into it meanwhile, and a lock an
+                // account switch already holds refuses this one before a key is typed.
+                void relaunchHeld({
+                  terminalId,
+                  provider,
+                  modelId: alias,
+                  catalog: modelCatalog,
+                  launchCommand: agentCommand,
+                  begin: () => useTerminalStore.getState().beginRelaunch(terminalId, 'model'),
+                  end: () => useTerminalStore.getState().endRelaunch(terminalId),
+                  main: modelHoldBridge(),
+                  write: (id: string, data: string, key?: string) => (key === undefined ? window.termpolis.writeToTerminal(id, data) : window.termpolis.writeToTerminal(id, data, undefined, key)),
+                  io: terminalRelaunchIo(terminalId),
+                }).then((result) => {
+                  if ('refused' in result) {
+                    setLiveModel(previous)
+                    setMemoryNotice?.(`⚠️ Termpolis didn't change the model: ${result.refused}.`)
+                    return
+                  }
+                  const { text, reverted } = relaunchNotice(result.outcome, { provider, label, target, agentCommand })
+                  // Nothing was started: do not leave the picker claiming a model that is not running.
+                  if (reverted) setLiveModel(previous)
+                  else if (routed) useTerminalStore.getState().updateTerminal?.(terminalId, { routed: undefined })
+                  if (text) setMemoryNotice?.(text)
+                }).catch(() => {
+                  setLiveModel(previous)
+                  setMemoryNotice?.(`⚠️ Switching ${label} to ${target} failed, so nothing more was typed. The terminal is as the failure left it.`)
+                }).finally(() => endModelSwitch(terminalId))
+              } else if (provider === 'claude') {
+                setLiveModel(alias)
+                const cmd = modelSwitchCommand(alias)
+                if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
+              }
+            }
             return (
+              <>
               <select
                 data-testid="model-picker"
                 value={relaunchInFlight ? SWITCHING_VALUE : liveModel}
                 onClick={(e) => e.stopPropagation()}
                 onChange={(e) => {
                   e.stopPropagation()
-                  const alias = e.target.value
-                  if (alias === REFRESH_MODELS_VALUE) {
-                    // Discovery found nothing for this provider — Codex has never been run
-                    // (so it has published no cache), or `agy models` has not run yet (only
-                    // this refresh runs it) or failed offline. Give the otherwise-dead
-                    // dropdown one honest action rather than waiting out the 12h TTL. Never
-                    // becomes liveModel: it is not a model.
-                    void window.termpolis.refreshModelCatalog?.()
-                      ?.then((res) => { if (res?.success && res.data) setModelCatalog(res.data) })
-                      ?.catch(() => { /* still nothing to offer — the row stays */ })
-                    return
-                  }
-                  // The "Model…" placeholder is not a choice: leave the picker on what it shows.
-                  if (!alias) return
-                  if (authoritativeProvider === provider) {
-                    // Claim the terminal first: one call both checks and takes it, so two picks
-                    // cannot both pass, and a pane remounted mid-switch is refused too.
-                    if (!beginModelSwitch(terminalId, alias)) return
-                    const previous = liveModel
-                    setLiveModel(alias)
-                    const target = options.find((o) => o.alias === alias)?.label ?? alias
-                    // Under the terminal's relaunch lock: nothing else types into it meanwhile, and a lock an
-                    // account switch already holds refuses this one before a key is typed.
-                    void relaunchHeld({
-                      terminalId,
-                      provider,
-                      modelId: alias,
-                      catalog: modelCatalog,
-                      launchCommand: agentCommand,
-                      begin: () => useTerminalStore.getState().beginRelaunch(terminalId, 'model'),
-                      end: () => useTerminalStore.getState().endRelaunch(terminalId),
-                      main: modelHoldBridge(),
-                      write: (id: string, data: string, key?: string) => (key === undefined ? window.termpolis.writeToTerminal(id, data) : window.termpolis.writeToTerminal(id, data, undefined, key)),
-                      io: terminalRelaunchIo(terminalId),
-                    }).then((result) => {
-                      if ('refused' in result) {
-                        setLiveModel(previous)
-                        setMemoryNotice?.(`⚠️ Termpolis didn't change the model: ${result.refused}.`)
-                        return
-                      }
-                      const { text, reverted } = relaunchNotice(result.outcome, { provider, label, target, agentCommand })
-                      // Nothing was started: do not leave the picker claiming a model that is not running.
-                      if (reverted) setLiveModel(previous)
-                      else if (routed) useTerminalStore.getState().updateTerminal?.(terminalId, { routed: undefined })
-                      if (text) setMemoryNotice?.(text)
-                    }).catch(() => {
-                      setLiveModel(previous)
-                      setMemoryNotice?.(`⚠️ Switching ${label} to ${target} failed, so nothing more was typed. The terminal is as the failure left it.`)
-                    }).finally(() => endModelSwitch(terminalId))
-                  } else if (provider === 'claude') {
-                    setLiveModel(alias)
-                    const cmd = modelSwitchCommand(alias)
-                    if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
-                  }
+                  pick(e.target.value)
                 }}
                 disabled={relaunchInFlight || !!relaunching}
                 title={`Switch this ${label} agent's model (restarts this terminal's session on the new model and resumes your conversation, when Termpolis launched it; cheaper models save tokens).`}
@@ -2357,6 +2378,38 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                   <option key={m.alias} value={m.alias}>{m.label}{m.note ? ` · ${m.note}` : m.savingsPct > 0 ? ` · ${m.savingsPct}% cheaper` : ''}</option>
                 ))}
               </select>
+              {provider === 'claude' && reroute && !relaunchInFlight && (
+                <span
+                  data-testid="model-reroute-chip"
+                  className="flex items-center gap-1 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 border border-[#1177bb] rounded px-1.5 py-0.5 whitespace-nowrap"
+                  title="Switching now costs little: the conversation is still short, so the new model reads only a little of it again at full price."
+                >
+                  {reroute.text}
+                  <button
+                    type="button"
+                    data-testid="model-reroute-accept"
+                    className="px-1 rounded bg-[#0e639c] hover:bg-[#1177bb] text-white"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const offer = reroute
+                      if (offer.direction === 'up' && routed) noteMisroute(routed.rule)
+                      pick(offer.model)
+                    }}
+                  >
+                    Switch
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="model-reroute-dismiss"
+                    aria-label="Keep the current model"
+                    className="px-1 rounded hover:bg-[#3c3c3c] text-[#9ca3af]"
+                    onClick={(e) => { e.stopPropagation(); setReroute(null) }}
+                  >
+                    <i className="fa-solid fa-xmark text-[9px]"></i>
+                  </button>
+                </span>
+              )}
+              </>
             )
           })()}
           {routed && (!liveModel || liveModel === routed.model) && (

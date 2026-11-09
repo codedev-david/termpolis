@@ -2,7 +2,7 @@
 // effort per launch from the task the user typed (src/shared/taskRouter.ts). Everything here is the
 // renderer's half: the launch arguments, the per-account memory of models an account can't use,
 // the watch that spots Claude Code saying so, and the one-time seeding of Auto as the default.
-import { routeTask, isClaudeModelWord, type ClaudeModelWord, type EffortLevel, type RouteDecision, type RouterTuning } from '../../../shared/taskRouter'
+import { DEFAULT_ROUTER_TUNING, recordMisroute, routeTask, isClaudeModelWord, type ClaudeModelWord, type EffortLevel, type RouteDecision, type RouterTuning } from '../../../shared/taskRouter'
 import { commandPicksModelOrSession } from '../../../shared/launchCarry'
 import { useTerminalStore } from '../store/terminalStore'
 import { AUTO_MODEL, getAgentModelDefaults, setAgentModelDefault } from './agentModelDefaults'
@@ -41,10 +41,45 @@ export function autoLaunchArgs(
   tune?: RouterTuning,
 ): AutoLaunch {
   if (carriesModelOrEffort(carried)) return { modelArg: '', effortArg: '', decision: null }
-  const decision = routeTask({ prompt: task ?? '' }, tune)
+  const decision = routeTask({ prompt: task ?? '' }, tune ?? routerTuning())
   const effortArg = claudeEffortArg(decision.effort)
   if (unavailable.includes(decision.model)) return { modelArg: '', effortArg, decision, skipped: decision.model }
   return { modelArg: ` --model ${decision.model}`, effortArg, decision }
+}
+
+// ── Router tuning: rules the user overrode route one tier up (v1.55.0 Task 9) ───────────────
+
+export const ROUTER_TUNING_KEY = 'termpolis.agent.routerTuning'
+
+/** The saved tuning, or the default when there is none or it is malformed. */
+export function routerTuning(): RouterTuning {
+  try {
+    const raw = localStorage.getItem(ROUTER_TUNING_KEY)
+    const saved = raw ? (JSON.parse(raw) as { haikuMaxWords?: unknown; misroutes?: unknown }) : null
+    if (!saved || typeof saved !== 'object') return DEFAULT_ROUTER_TUNING
+    const words = saved.haikuMaxWords
+    const misroutes: Record<string, number> = {}
+    if (saved.misroutes && typeof saved.misroutes === 'object' && !Array.isArray(saved.misroutes)) {
+      for (const [rule, n] of Object.entries(saved.misroutes as Record<string, unknown>)) {
+        if (typeof n === 'number' && Number.isInteger(n) && n > 0) misroutes[rule] = n
+      }
+    }
+    return {
+      haikuMaxWords: typeof words === 'number' && Number.isInteger(words) && words > 0 && words <= 200 ? words : DEFAULT_ROUTER_TUNING.haikuMaxWords,
+      misroutes,
+    }
+  } catch {
+    return DEFAULT_ROUTER_TUNING
+  }
+}
+
+/** The user moved a session up from what `rule` picked: count it, so the rule routes higher after MISROUTE_LIMIT. */
+export function noteMisroute(rule: string): void {
+  try {
+    localStorage.setItem(ROUTER_TUNING_KEY, JSON.stringify(recordMisroute(rule, routerTuning())))
+  } catch {
+    /* storage unavailable: the rule keeps routing as it did */
+  }
 }
 
 // ── Models an account can't use ───────────────────────────────────────────────────────────

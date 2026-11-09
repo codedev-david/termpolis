@@ -250,7 +250,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     agentCommand: profile.command,
     ...(accountId ? { agentAccountId: accountId } : {}),
     launchPrimed,
-    ...(routed?.decision ? { routed: routed.decision } : {}),
+    ...(routed?.decision && routed.modelArg ? { routed: routed.decision } : {}),
   })
   // Deterministically index the picked repo for EVERY agent (Claude/Codex/Gemini) — the
   // folder was chosen explicitly, so don't wait on cwd-tracking (agent TUIs don't emit OSC 633).

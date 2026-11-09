@@ -1506,7 +1506,7 @@ export async function executeTool(
         const query = typeof args.query === 'string' ? args.query.trim() : ''
         const cwd = typeof args.cwd === 'string' ? args.cwd : undefined
         if (!query || !claimFirstPrompt(sessionId, now)) return { project: null, primer: null }
-        emitFirstPrompt(sessionId, query, cwd)
+        emitFirstPrompt(sessionId, query, cwd, typeof args.terminalId === 'string' ? args.terminalId : undefined)
         if (armOf(sessionId) === 'holdout') return { project: null, primer: null }
         const shownAlready = servedIds(guardKey, now)
         const focused = await handlers.memoryPrimer({

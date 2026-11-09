@@ -141,6 +141,16 @@ function memoryPrimer(token, args, timeoutMs) {
   })
 }
 
+// The first-prompt call. TERMPOLIS_TERMINAL_ID, set in every Termpolis terminal, names the pane the
+// session runs in, so the app can offer that pane a better-fitting model (v1.55.0 early re-route),
+// a session started by hand included.
+function promptArgs(cwd, query, sessionId, env) {
+  const args = { cwd, query, limit: PROMPT_LIMIT, source: 'prompt', sessionId }
+  const terminalId = env && env.TERMPOLIS_TERMINAL_ID
+  if (typeof terminalId === 'string' && /^[\w-]{1,128}$/.test(terminalId)) args.terminalId = terminalId
+  return args
+}
+
 async function main() {
   try {
     const hook = parseHookInput(await readStdin())
@@ -154,7 +164,7 @@ async function main() {
     if (onPrompt) {
       const query = redactPrompt(hook.prompt)
       if (!query.trim()) return
-      args = { cwd, query, limit: PROMPT_LIMIT, source: 'prompt', sessionId: hook.session_id }
+      args = promptArgs(cwd, query, hook.session_id, process.env)
     }
 
     let token
@@ -173,4 +183,4 @@ async function main() {
 
 if (require.main === module) main()
 
-module.exports = { tokenPath, shouldPrime, parseHookInput, extractPrimer, buildOutput, isSubstantive, redactPrompt, quietRun }
+module.exports = { tokenPath, shouldPrime, parseHookInput, extractPrimer, buildOutput, isSubstantive, redactPrompt, quietRun, promptArgs }

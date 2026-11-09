@@ -89,7 +89,8 @@ export function sessionArm(sessionId: string): PrimerArm | null {
   return prompted.get(sessionId)?.arm ?? null
 }
 
-export type FirstPromptListener = (sessionId: string, prompt: string, cwd: string | undefined) => void
+/** `terminalId`: the Termpolis pane the session runs in, when the hook could tell (TERMPOLIS_TERMINAL_ID). */
+export type FirstPromptListener = (sessionId: string, prompt: string, cwd: string | undefined, terminalId?: string) => void
 const firstPromptListeners = new Set<FirstPromptListener>()
 
 /** Called with each session's first real prompt (the redacted text the hook sent). Returns an unsubscribe. */
@@ -98,9 +99,9 @@ export function onFirstPrompt(fn: FirstPromptListener): () => void {
   return () => { firstPromptListeners.delete(fn) }
 }
 
-export function emitFirstPrompt(sessionId: string, prompt: string, cwd: string | undefined): void {
+export function emitFirstPrompt(sessionId: string, prompt: string, cwd: string | undefined, terminalId?: string): void {
   for (const fn of firstPromptListeners) {
-    try { fn(sessionId, prompt, cwd) } catch { /* a listener never stops the primer */ }
+    try { fn(sessionId, prompt, cwd, terminalId) } catch { /* a listener never stops the primer */ }
   }
 }
 

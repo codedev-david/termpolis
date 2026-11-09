@@ -696,9 +696,10 @@ import {
 } from './agentIntegrationManager'
 import {
   accountSettingsEnv, codexHomeFor, connectedProfileTargets, endAccountSignIns, forgetTerminalAccount, isTerminalAccountConnected,
-  noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveAccountTarget, resolveLaunchTarget, withLimitChooser, workerStopCarried,
+  firstPromptTerminal, noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveAccountTarget, resolveLaunchTarget, withLimitChooser, workerStopCarried,
 } from './accountsIpc'
 import { relaunchLockReason } from './accountSwitch'
+import { onFirstPrompt } from './primerSessionGuard'
 import { isTerminalAnswer } from '../shared/terminalAnswers'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
 import {
@@ -907,6 +908,13 @@ const claudeLaunchEnv = (cwd: string, accountId?: unknown) => {
     readSettings: (dir) => readClaudeWindowSettings(profileDir ?? paths.claudeDir, dir),
   })
 }
+
+// v1.55.0 early re-route: a Claude session's first prompt goes to the pane it runs in, so its header
+// can offer a better-fitting model while a switch still costs little (the conversation is one turn).
+onFirstPrompt((sessionId, prompt, _cwd, named) => {
+  const terminalId = firstPromptTerminal(sessionId, named, (t) => terminalOutputBuffers.has(t))
+  if (terminalId) mainWindow?.webContents.send('agent:first-prompt', { terminalId, prompt: prompt.slice(0, 2000) })
+})
 
 ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch, autoModel }) => {
   try {

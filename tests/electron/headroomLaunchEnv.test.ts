@@ -293,11 +293,12 @@ describe('every spawn site that carries the proxy env also carries the window (R
   walk(index, (n) => { if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'spawnTerminal') spawnCalls.push(n) })
   // The env a terminal site passes, seen through the limit chooser's marker (accountsIpc.withLimitChooser),
   // which only adds a key of its own to what it is handed.
-  const sixth = (c: ts.CallExpression): string => {
-    const a = c.arguments[5]
-    if (a && ts.isCallExpression(a) && ts.isIdentifier(a.expression) && a.expression.text === 'withLimitChooser') return a.arguments[0]?.getText(index) ?? ''
-    return a?.getText(index) ?? ''
-  }
+  // The env the site passes, seen through the wrappers that only add a marker or a variable
+  // to it: the limit chooser's (R6) and Auto's subagent model (v1.55.0).
+  const WRAPPERS = new Set(['withLimitChooser', 'withAutoSubagent'])
+  const unwrap = (a: ts.Expression | undefined): ts.Expression | undefined =>
+    a && ts.isCallExpression(a) && ts.isIdentifier(a.expression) && WRAPPERS.has(a.expression.text) ? unwrap(a.arguments[0]) : a
+  const sixth = (c: ts.CallExpression): string => unwrap(c.arguments[5])?.getText(index) ?? ''
 
   it('the proxy env is taken in one place only: the helper both sites call', () => {
     const offenders: string[] = []
