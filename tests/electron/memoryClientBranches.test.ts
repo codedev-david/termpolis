@@ -28,7 +28,7 @@ import type { HostRequest, HostResponse } from '../../src/main/memoryHost'
 import {
   startMemoryHost, setMemoryHostSpawner, _resetMemoryClientForTests, memoryHostMode, memoryHostPid,
   provisionMemoryKey, memoryWrite, memoryCount, memoryList, getSyncStatus, enableLocalEncryption,
-  consolidationSimOf, stopMemoryHost,
+  consolidationSimOf, stopMemoryHost, weaveNeighboursBatch,
   type MemoryHostTransport,
 } from '../../src/main/memoryClient'
 import {
@@ -513,5 +513,67 @@ describe('memoryClient — app shutdown is final', () => {
     const spawned = counting('ready')
     expect(await startMemoryHost({ userDataPath: tmp })).toBe('unstarted')
     expect(spawned).toHaveLength(0)
+  })
+})
+
+describe('memoryClient — slow calls leave a trace', () => {
+  it('logs a call that took 2 s or more, with what was still waiting behind it', async () => {
+    // When an agent launch waited a minute for its memory recall, the log said nothing about which
+    // host call held the line. Now the slow one names itself, and the calls queued with it.
+    const h = makeManualHost() // answers nothing: the test replies by hand
+    setMemoryHostSpawner(() => h.transport)
+    expect(await startMemoryHost({ userDataPath: tmp })).toBe('host')
+    let clock = 1_000
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    const loud = captureLoud()
+    try {
+      const count = memoryCount()
+      const list = memoryList()
+      await flush()
+      const calls = h.posted.filter((m): m is HostCall => m.kind === 'call')
+      clock += 2_500
+      h.push({ kind: 'result', id: calls[0].id, ok: true, result: 3 })
+      expect(await count).toBe(3)
+      h.push({ kind: 'result', id: calls[1].id, ok: true, result: [] })
+      await list
+      expect(loud.lines.filter((l) => l.includes('slow call'))).toEqual([
+        '[termpolis][memory] slow call: memoryCount took 2500 ms (1 still waiting: memoryList)',
+        '[termpolis][memory] slow call: memoryList took 2500 ms',
+      ])
+    } finally { loud.restore() }
+  })
+
+  it('says nothing about a call that came back quickly', async () => {
+    const h = makeManualHost({ answer: (c) => ({ kind: 'result', id: c.id, ok: true, result: 1 }) })
+    setMemoryHostSpawner(() => h.transport)
+    await startMemoryHost({ userDataPath: tmp })
+    const loud = captureLoud()
+    try {
+      expect(await memoryCount()).toBe(1)
+      expect(loud.lines.some((l) => l.includes('slow call'))).toBe(false)
+    } finally { loud.restore() }
+  })
+})
+
+describe('memoryClient — the weave batch gets a longer leash', () => {
+  it('waits past the usual 60 s for weaveNeighboursBatch, and still times out in the end', async () => {
+    // The batch hands the host's thread back between its 300 scans so searches get through, which
+    // makes it long by design. Cutting it at 60 s would throw the whole idle pass away.
+    const h = makeManualHost()
+    setMemoryHostSpawner(() => h.transport)
+    await startMemoryHost({ userDataPath: tmp })
+    vi.useFakeTimers()
+    try {
+      const batch = weaveNeighboursBatch(['m-1'], 6).then(() => null, (e: Error) => e)
+      await vi.advanceTimersByTimeAsync(61_000)
+      const call = h.posted.find((m): m is HostCall => m.kind === 'call' && m.fn === 'weaveNeighboursBatch')
+      expect(call).toBeDefined()
+      let settled = false
+      void batch.then(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(settled).toBe(false) // a search would have timed out by now
+      await vi.advanceTimersByTimeAsync(240_000)
+      expect((await batch)?.message).toBe('memory host timed out after 300000ms (fn "weaveNeighboursBatch")')
+    } finally { vi.useRealTimers() }
   })
 })

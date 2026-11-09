@@ -212,6 +212,8 @@ const entryRow = new WeakMap<MemoryEntry, number>()  // live entry → store row
 // brute-force scan until the graph is ready) and kept fresh incrementally on write.
 let hnsw: HnswIndex | null = null
 let hnswStale = false
+let hnswAdds = 0 // incremental adds to the live graph; with the graph and the entry fingerprint, says what's on disk
+let hnswSaved: { graph: HnswIndex; fp: string; adds: number } | null = null
 let hnswDeletedSinceBuild = 0                   // Tier-2: deletions excluded by the search-time `allow` filter but not yet rebuilt out of the graph
 const HNSW_REPAIR_RATIO = 0.15                  // rebuild the graph once >15% of indexed rows are dead (below that the allow-filter handles it cheaply)
 let hnswThreshold = 50_000
@@ -950,6 +952,8 @@ export function _resetForTests(): void {
   hnsw = null
   hnswStale = false
   hnswDeletedSinceBuild = 0
+  hnswAdds = 0
+  hnswSaved = null
   archiveCache = null
   archiveCacheKey = ''
   archiveReadCount = 0
@@ -1448,13 +1452,17 @@ export function weaveCandidates(limit = 300): WeaveEntry[] {
 /** Cross-store nearest neighbours of a memory (by its packed embedding), each tagged with its
  *  repo key so the miner can gate on CROSS-repo. Empty when the memory has no packed vector. */
 export function weaveNeighbours(id: string, k = 6): WeaveNeighbour[] {
-  const self = entries.find((e) => e.id === id)
+  // Newest first: the weave asks about the newest memories, so this stops within a few hundred steps
+  // instead of walking the whole store from the oldest end.
+  let self: MemoryEntry | undefined
+  for (let i = entries.length - 1; i >= 0; i--) if (entries[i].id === id) { self = entries[i]; break }
   if (!self) return []
   const row = entryRow.get(self)
   const v = row !== undefined ? vectorStore.get(row) : null
   if (!v) return []
-  const byId = new Map(entries.map((e) => [e.id, e]))
-  return nearestNeighbours(Array.from(v), k, id).map((n) => ({ id: n.id, score: n.score, projectKey: byId.get(n.id)?.projectKey }))
+  // The repo key comes off the hit's own entry. This used to rebuild an id->entry Map of the WHOLE
+  // store per call (~40 ms at 200k memories, x300 candidates per idle pass) just to read it back.
+  return nearestNeighbours(Array.from(v), k, id).map((n) => ({ id: n.id, score: n.score, projectKey: n.projectKey }))
 }
 
 export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
@@ -1813,7 +1821,7 @@ function indexEntryVector(entry: MemoryEntry): void {
   delete entry.embedding
   delete entry.emb // both on-disk forms freed — the vector lives in the packed store now
   if (hnswBuilding) buildGen++ // Wave2 (hnsw-build-freshness-by-count): a live add during a build must abort it — the count check alone is fooled by a concurrent add+delete
-  if (hnsw && !hnswStale) hnsw.add(row)                        // keep the graph fresh incrementally
+  if (hnsw && !hnswStale) { hnsw.add(row); hnswAdds++ }        // keep the graph fresh incrementally
   else if (vectorStore.size >= hnswThreshold) hnswStale = true // crossed the threshold → (re)build on next search
 }
 
@@ -1901,7 +1909,7 @@ function compactVectorStore(): void {
     rowToEntry.set(nr, liveEntries[i])
     entryRow.set(liveEntries[i], nr) // overwrite the stale row
   }
-  try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
+  hnswSaved = null; try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
   hnsw = null
   hnswStale = vectorStore.size >= hnswThreshold
 }
@@ -1922,7 +1930,7 @@ async function ensureHnsw(): Promise<void> {
   // Try the on-disk graph first — skips the O(n log n) rebuild when the store is
   // unchanged since it was saved (e.g. a fresh launch over a large store).
   const loaded = loadPersistedHnsw()
-  if (loaded) { hnsw = loaded; hnswStale = false; hnswDeletedSinceBuild = 0; return }
+  if (loaded) { hnsw = loaded; hnswStale = false; hnswDeletedSinceBuild = 0; hnswSaved = { graph: loaded, fp: entriesFingerprint(), adds: hnswAdds }; return }
   hnswBuilding = true
   const gen = buildGen // F34: capture the store generation; abort if a sync reload swaps the store under us
   hnswBuildDone = (async () => {
@@ -1991,8 +1999,15 @@ function savePersistedHnsw(): void {
   // LOCKED: the graph over a hot window missing everything we can't decrypt must not replace the
   // persisted one built over the whole brain.
   if (!p || !hnsw || ownLock) return
+  // persistMemoryIndex runs on every 90 s tick. The graph file is tens of MB of JSON at 200k
+  // memories, and stringifying it blocks the memory host's one thread. Write it only when it would
+  // say something different: another graph, a graph that grew, or a changed entry set. (Every place
+  // that deletes the file clears hnswSaved, so a deleted file is always written again.)
+  const fp = entriesFingerprint()
+  if (hnswSaved && hnswSaved.graph === hnsw && hnswSaved.adds === hnswAdds && hnswSaved.fp === fp) return
   try {
-    fs.writeFileSync(p, JSON.stringify({ fp: entriesFingerprint(), graph: hnsw!.toJSON() }))
+    fs.writeFileSync(p, JSON.stringify({ fp, graph: hnsw!.toJSON() }))
+    hnswSaved = { graph: hnsw, fp, adds: hnswAdds }
   } catch { /* best effort */ }
 }
 
@@ -2604,7 +2619,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 // background graph build) and never persists, so auto-linking can grow the
 // knowledge graph on every curated write without disturbing the search index's
 // build/persist lifecycle. Exact brute-force, which is what such writes want.
-function nearestNeighbours(queryEmb: number[], k: number, excludeId: string): Array<{ id: string; score: number }> {
+function nearestNeighbours(queryEmb: number[], k: number, excludeId: string): Array<{ id: string; score: number; projectKey?: string }> {
   // Packed path: real EMBED_DIM vectors live in the Float32 store. Exact
   // brute-force top-k (the same fallback memorySearch uses) — no graph build.
   if (queryEmb.length === EMBED_DIM && vectorStore.size > 0) {
@@ -2613,19 +2628,19 @@ function nearestNeighbours(queryEmb: number[], k: number, excludeId: string): Ar
       const e = rowToEntry.get(row)
       return !!e && e.id !== excludeId
     }
-    const out: Array<{ id: string; score: number }> = []
+    const out: Array<{ id: string; score: number; projectKey?: string }> = []
     for (const h of vectorStore.searchTopK(queryF32, k, allow)) {
       const e = rowToEntry.get(h.row)
-      if (e) out.push({ id: e.id, score: h.score })
+      if (e) out.push({ id: e.id, score: h.score, projectKey: e.projectKey })
     }
     return out
   }
   // Legacy path: entries still carrying a number[] embedding (e.g. tests with
   // injected non-EMBED_DIM vectors). One-pass cosine, top-k.
-  const out: Array<{ id: string; score: number }> = []
+  const out: Array<{ id: string; score: number; projectKey?: string }> = []
   for (const e of entries) {
     if (e.id === excludeId || !e.embedding || e.embedding.length !== queryEmb.length) continue
-    out.push({ id: e.id, score: cosineSimilarity(queryEmb, e.embedding) })
+    out.push({ id: e.id, score: cosineSimilarity(queryEmb, e.embedding), projectKey: e.projectKey })
   }
   out.sort((a, b) => b.score - a.score)
   return out.slice(0, k)
@@ -2720,7 +2735,7 @@ export function memoryClear(): void {
   lexBuildLive = null
   hnsw = null
   hnswStale = false
-  try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
+  hnswSaved = null; try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
   clearMemoryGraph() // Wave2 (clear-doesnt-reset-graph): don't leave dangling edges / a growing graph file
   bumpSearchGen() // Wave2: a cleared store must not serve pre-clear results from the search cache
   if (!memPath) return
@@ -2953,7 +2968,7 @@ function hnswStaleAfterDelete(): void {
   if (hnswDeletedSinceBuild > HNSW_REPAIR_RATIO * Math.max(1, vectorStore.size)) {
     hnswStale = true
     hnswDeletedSinceBuild = 0
-    try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
+    hnswSaved = null; try { const hp = hnswFile(); if (hp) fs.rmSync(hp, { force: true }) } catch { /* best effort */ }
   }
 }
 

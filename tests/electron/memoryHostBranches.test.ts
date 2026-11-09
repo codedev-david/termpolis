@@ -90,26 +90,26 @@ describe('serializeError — an RPC failure must never arrive as a blank', () =>
 })
 
 describe('weaveNeighboursBatch — the batch is only as trustworthy as the id list', () => {
-  it('a non-list ids payload answers {} without firing a single ANN query', () => {
+  it('a non-list ids payload answers {} without firing a single ANN query', async () => {
     weaveNeighboursSpy.mockImplementation(() => [{ id: 'n1', score: 1 }])
 
-    expect(weaveNeighboursBatch(null as unknown as string[], 6)).toEqual({})
-    expect(weaveNeighboursBatch(undefined as unknown as string[], 6)).toEqual({})
+    expect(await weaveNeighboursBatch(null as unknown as string[], 6)).toEqual({})
+    expect(await weaveNeighboursBatch(undefined as unknown as string[], 6)).toEqual({})
     // The string is the dangerous one: it has .slice() AND is iterable, so without the Array.isArray
     // gate a client that posted ONE id instead of a list would run an ANN query per CHARACTER and
     // answer with a map keyed by letters.
-    expect(weaveNeighboursBatch('m-42' as unknown as string[], 6)).toEqual({})
+    expect(await weaveNeighboursBatch('m-42' as unknown as string[], 6)).toEqual({})
 
     expect(weaveNeighboursSpy).not.toHaveBeenCalled()
   })
 
-  it('ids that are not non-empty strings are skipped, never keyed into the result', () => {
+  it('ids that are not non-empty strings are skipped, never keyed into the result', async () => {
     weaveNeighboursSpy.mockImplementation((id) => [{ id: `${id}-n`, score: 0.5 }])
 
     // Left unguarded, `out[null]` coins the literal key "null" and `out[{…}]` coins
     // "[object Object]". The caller turns this Record into a SYNC `(id) => map[id]` lookup for
     // runWeave, so a bogus key is not merely untidy — it is a neighbourhood nobody can ever read.
-    const out = weaveNeighboursBatch(
+    const out = await weaveNeighboursBatch(
       ['m-1', '', 42, null, undefined, { id: 'm-2' }] as unknown as string[],
       3,
     )
@@ -118,7 +118,7 @@ describe('weaveNeighboursBatch — the batch is only as trustworthy as the id li
     expect(weaveNeighboursSpy.mock.calls).toEqual([['m-1', 3]])
   })
 
-  it('a repeated id is answered once — including when the first answer was an empty list', () => {
+  it('a repeated id is answered once — including when the first answer was an empty list', async () => {
     // The empty-list case is the subtle half: a vector-less memory legitimately weaves to [], and []
     // is truthy, so the guard still holds. If it were written `if (out[id]?.length)` a cold id would
     // be re-queried on every repeat — the exact per-candidate round trip the batch exists to remove.
@@ -128,10 +128,45 @@ describe('weaveNeighboursBatch — the batch is only as trustworthy as the id li
     ])
     weaveNeighboursSpy.mockImplementation((id) => answers.get(id) ?? [])
 
-    const out = weaveNeighboursBatch(['warm', 'cold', 'warm', 'cold', 'warm'], 4)
+    const out = await weaveNeighboursBatch(['warm', 'cold', 'warm', 'cold', 'warm'], 4)
 
     expect(out).toEqual({ warm: [{ id: 'w2', score: 0.9 }], cold: [] })
     expect(weaveNeighboursSpy.mock.calls).toEqual([['warm', 4], ['cold', 4]])
+  })
+
+  it('hands the thread back between slow queries, so a search arriving mid-batch is not stuck behind all of them', async () => {
+    // Each exact neighbour scan is ~100 ms at 200k memories, and the host has one thread. Run 300 of
+    // them back to back and every search waits for the lot: the app log showed memory_primer taking
+    // 52 s and 116 s that way, ending the second the weave finished. Here each query "takes" 25 ms of
+    // clock, and a callback queued during the first one has to run before the batch is over.
+    let clock = 1_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    const order: string[] = []
+    weaveNeighboursSpy.mockImplementation((id) => {
+      order.push(id)
+      clock += 25
+      if (id === 'a') setImmediate(() => order.push('search'))
+      return [{ id: `${id}-n`, score: 0.5 }]
+    })
+
+    const out = await weaveNeighboursBatch(['a', 'b', 'c'], 6)
+
+    expect(order).toEqual(['a', 'search', 'b', 'c'])
+    expect(Object.keys(out)).toEqual(['a', 'b', 'c']) // same answers, same order: only the timing changed
+  })
+
+  it('does not yield while the queries are fast (a small store pays nothing)', async () => {
+    vi.spyOn(Date, 'now').mockImplementation(() => 5) // the clock never moves
+    const order: string[] = []
+    weaveNeighboursSpy.mockImplementation((id) => {
+      order.push(id)
+      if (id === 'a') setImmediate(() => order.push('search'))
+      return []
+    })
+
+    await weaveNeighboursBatch(['a', 'b', 'c'], 6)
+
+    expect(order).toEqual(['a', 'b', 'c']) // the queued callback waited for the whole (fast) batch
   })
 })
 

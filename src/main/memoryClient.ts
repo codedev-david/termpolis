@@ -102,6 +102,13 @@ export interface StartMemoryHostOptions {
 
 const READY_TIMEOUT_MS = 120_000 // init is ~4.3s on the real 475MB store, but rebuildVectorIndex has hit 18.8s
 const CALL_TIMEOUT_MS = 60_000
+// The weave's neighbour batch (300 exact scans of the store) hands the host's thread back between
+// scans so searches are not stuck behind it. That makes it the one call that is long by design, so
+// it gets a longer leash than a search; a timeout would only throw the whole pass away.
+const CALL_TIMEOUT_OVERRIDES_MS = new Map<string, number>([['weaveNeighboursBatch', 300_000]])
+// A call slower than this goes in the app log with its name and how many calls were waiting with
+// it. A slow call is almost always one stuck behind another, and the log is where that shows.
+const SLOW_CALL_MS = 2_000
 const MAX_RESTARTS = 3           // within RESTART_WINDOW_MS, then we stop flapping and go in-process
 const RESTART_WINDOW_MS = 60_000
 
@@ -111,6 +118,7 @@ type Mode = 'unstarted' | 'starting' | 'host' | 'inproc' | 'unavailable'
 
 interface Pending {
   fn: string
+  startedAt: number
   resolve: (v: unknown) => void
   reject: (e: Error) => void
   timer: ReturnType<typeof setTimeout>
@@ -527,6 +535,11 @@ function onChildMessage(msg: HostResponse): void {
   if (!p) return // a late reply to a call we already timed out / rejected — drop it
   pending.delete(msg.id)
   clearTimeout(p.timer)
+  const tookMs = Date.now() - p.startedAt
+  if (tookMs >= SLOW_CALL_MS) {
+    const others = [...pending.values()].map((o) => o.fn)
+    logLoud(`slow call: ${p.fn} took ${tookMs} ms` + (others.length ? ` (${others.length} still waiting: ${[...new Set(others)].slice(0, 6).join(', ')})` : ''))
+  }
   if (msg.ok) p.resolve(msg.result)
   else p.reject(rehydrate(msg.error, `memory host: ${p.fn} failed`))
 }
@@ -769,13 +782,14 @@ async function call<T>(fn: string, args: unknown[] = []): Promise<T> {
 
   const t = transport
   const id = nextId++
+  const limitMs = CALL_TIMEOUT_OVERRIDES_MS.get(fn) ?? CALL_TIMEOUT_MS
   return await new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id)
       // A timeout is NOT a silent empty result. Say which call, and how long we waited.
-      reject(new Error(`memory host timed out after ${CALL_TIMEOUT_MS}ms (fn "${fn}")`))
-    }, CALL_TIMEOUT_MS)
-    pending.set(id, { fn, resolve: resolve as (v: unknown) => void, reject, timer })
+      reject(new Error(`memory host timed out after ${limitMs}ms (fn "${fn}")`))
+    }, limitMs)
+    pending.set(id, { fn, startedAt: Date.now(), resolve: resolve as (v: unknown) => void, reject, timer })
     try {
       t.postMessage({ kind: 'call', id, fn, args })
     } catch (err) {

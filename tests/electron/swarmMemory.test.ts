@@ -1095,10 +1095,32 @@ describe('HNSW persistence', () => {
     await memorySearch({ query: 'q' })
     await _whenHnswSettledForTests()
     fs.rmSync(graphFile(), { force: true })
+    await fillStore(1, 100) // the live graph grows, so the saved copy is out of date
     persistMemoryIndex() // graph is fresh → re-saves
     expect(fs.existsSync(graphFile())).toBe(true)
     memoryClear()
     expect(fs.existsSync(graphFile())).toBe(false)
+  })
+
+  it('persistMemoryIndex leaves the file alone when the graph has not changed, and rewrites it once it has', async () => {
+    // It runs every 90 s. At 200k memories the graph is tens of MB of JSON, and stringifying it holds
+    // the memory host's only thread, so an idle tick must not rewrite an identical file.
+    _setHnswThresholdForTests(4)
+    await fillStore(8)
+    _setEmbedFnForTests(async () => vec384(0))
+    await memorySearch({ query: 'q' })
+    await _whenHnswSettledForTests()
+    const before = fs.readFileSync(graphFile(), 'utf8')
+    fs.writeFileSync(graphFile(), 'marker') // a rewrite would replace this
+    persistMemoryIndex()
+    persistMemoryIndex()
+    expect(fs.readFileSync(graphFile(), 'utf8')).toBe('marker')
+
+    await fillStore(1, 100) // the live graph grows by one row
+    persistMemoryIndex()
+    const after = fs.readFileSync(graphFile(), 'utf8')
+    expect(after).not.toBe('marker')
+    expect(after).not.toBe(before)
   })
 })
 

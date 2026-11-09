@@ -184,12 +184,22 @@ export function entrySimMatrix(ids: string[]): number[] {
 // the payload is inspectable in the same way every other handler's is.)
 const MAX_NEIGHBOUR_IDS = 1000 // the real caller passes 300; bounds the payload at ids × k
 
-export function weaveNeighboursBatch(ids: string[], k: number): Record<string, WeaveNeighbour[]> {
+// Each neighbour query is an exact scan of the whole packed store: ~100 ms at 200k memories. The host
+// has ONE thread, so 300 of them back to back held every search behind this call for 45-115 s (the
+// app log showed memory_primer calls taking exactly that, ending the second the weave finished, and
+// agent launches waiting on them). Handing the thread back between queries lets a search or a primer
+// that arrives mid-batch run after at most one query. Same queries, same order, same answers.
+const WEAVE_YIELD_MS = 20
+const yieldToQueue = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+
+export async function weaveNeighboursBatch(ids: string[], k: number): Promise<Record<string, WeaveNeighbour[]>> {
   const out: Record<string, WeaveNeighbour[]> = {}
   if (!Array.isArray(ids)) return out
+  let slice = Date.now()
   for (const id of ids.slice(0, MAX_NEIGHBOUR_IDS)) {
     if (typeof id !== 'string' || !id) continue
     if (out[id]) continue // a duplicate id would re-run the ANN query for nothing
+    if (Date.now() - slice >= WEAVE_YIELD_MS) { await yieldToQueue(); slice = Date.now() }
     // Per-id try/catch: one bad id must not lose the other 299 neighbourhoods. An empty list is
     // exactly what the in-process weaveNeighbours returns for a vector-less memory, so a failure
     // here degrades to "no analogies for this one", never to a wrong edge.
