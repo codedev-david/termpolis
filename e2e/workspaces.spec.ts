@@ -195,7 +195,8 @@ test.describe.serial('Workspaces', () => {
     await page.waitForTimeout(300)
 
     // An input should appear for editing the name
-    const editInput = page.locator('div.px-2 input').first()
+    // The rename row is div.px-2.py-1; the sidebar's Auto task box (1.55) sits in a div.px-2.pb-1.
+    const editInput = page.locator('div.px-2.py-1 > input').first()
     await expect(editInput).toBeVisible()
 
     // Clear and type new name

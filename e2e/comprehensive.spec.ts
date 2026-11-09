@@ -156,7 +156,8 @@ test.describe.serial('3. Terminal Creation', () => {
   })
 
   test('3.2 modal has name input with default', async () => {
-    const input = page.locator('input').first()
+    // Scoped to the modal: the sidebar's Auto task box (1.55) is an earlier input on the page.
+    const input = page.locator('h2:has-text("New Terminal")').locator('..').locator('input').first()
     const value = await input.inputValue()
     expect(value).toContain('Terminal')
   })
