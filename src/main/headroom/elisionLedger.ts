@@ -26,8 +26,13 @@ export interface ClassCounts {
   /** Characters of the view left in their place, summed over the class. */
   view: number
 }
+/** Asks for part of a result (retrieve_full with grep or lines, v1.55.0): how many, and the characters
+ *  they returned. Kept apart from `redeemed`, which counts each token's first whole read once. */
+export interface PartialCounts { asks: number; chars: number }
 export interface ElisionState {
   classes: Record<string, ClassCounts>
+  /** By class; present only once a part was asked for. */
+  partial?: Record<string, PartialCounts>
   /** Redemptions of a token whose class nothing recorded: a stash written before v1.55, which carries no
    *  class. A stash written by this version does, in the file that answers the redemption, so one from an
    *  earlier launch is counted in its class. Kept apart so the per-class rates stay exact. */
@@ -38,6 +43,7 @@ const zero = (): ClassCounts => ({ elided: 0, redeemed: 0, chars: 0, view: 0 })
 
 let classes = new Map<string, ClassCounts>()
 let legacyRedeemed = 0
+let partials = new Map<string, PartialCounts>()
 /** Moves on every change to the lifetime counts, so a writer can tell that there is something new to
  *  save without comparing them. A counter and not a clock: nothing under here may read one. */
 let revision = 0
@@ -73,10 +79,19 @@ export function recordElision(token: string, meta: ElisionMeta): void {
  * ledger or the window: it still counts for life, and the class then shows more asked than elided,
  * which is the honest reading of a ledger that started late.
  */
-export function recordRedemption(token: string | undefined, meta?: ElisionMeta): void {
+export function recordRedemption(token: string | undefined, meta?: ElisionMeta, partial = false, chars = 0): void {
   revision++
   const live = token === undefined ? undefined : recent.get(token)
   const key = live?.key ?? (meta ? classKey(meta) : undefined)
+  if (partial) {
+    // A part leaves the token unredeemed: the whole may still be asked for, and counted, later.
+    if (key === undefined) return
+    const p = partials.get(key) ?? { asks: 0, chars: 0 }
+    p.asks += 1
+    p.chars += Math.max(0, chars)
+    partials.set(key, p)
+    return
+  }
   if (key === undefined) { legacyRedeemed += 1; return }
   const c = classes.get(key) ?? zero()
   c.redeemed += 1
@@ -102,7 +117,10 @@ export function recentByClass(): Map<string, ClassCounts> {
 export function elisionState(): ElisionState {
   const out: Record<string, ClassCounts> = {}
   for (const [k, v] of classes) out[k] = { ...v }
-  return { classes: out, legacyRedeemed }
+  if (partials.size === 0) return { classes: out, legacyRedeemed }
+  const partial: Record<string, PartialCounts> = {}
+  for (const [k, v] of partials) partial[k] = { ...v }
+  return { classes: out, legacyRedeemed, partial }
 }
 
 /** A count read back from disk: a finite number above zero, else zero. */
@@ -117,9 +135,18 @@ export function loadElisionState(raw: unknown): void {
   revision++
   classes = new Map()
   legacyRedeemed = 0
+  partials = new Map()
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
-  const r = raw as { classes?: unknown; legacyRedeemed?: unknown }
+  const r = raw as { classes?: unknown; legacyRedeemed?: unknown; partial?: unknown }
   legacyRedeemed = count(r.legacyRedeemed)
+  const ps = r.partial
+  if (ps && typeof ps === 'object' && !Array.isArray(ps)) {
+    for (const [key, v] of Object.entries(ps as Record<string, unknown>)) {
+      if (parseClassKey(key) === null || !v || typeof v !== 'object' || Array.isArray(v)) continue
+      const o = v as Record<string, unknown>
+      partials.set(key, { asks: count(o.asks), chars: count(o.chars) })
+    }
+  }
   const cs = r.classes
   if (!cs || typeof cs !== 'object' || Array.isArray(cs)) return
   for (const [key, v] of Object.entries(cs as Record<string, unknown>)) {
@@ -134,5 +161,6 @@ export function resetElisionLedger(): void {
   revision++
   classes = new Map()
   legacyRedeemed = 0
+  partials = new Map()
   recent.clear()
 }

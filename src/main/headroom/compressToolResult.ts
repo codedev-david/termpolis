@@ -6,6 +6,7 @@ import { ccrStash, ccrRetrieveRecord, ccrMarkRedeemed, ccrIsIssuableToken, ccrNo
 import { logToApp } from '../appLog'
 import { recordEvent, recordRetrieveFailure } from './savingsLedger'
 import { recordProxyGiveback } from '../headroomProxy/proxyLedger'
+import { sliceResult, wantsSlice, type SliceAsk } from './retrieveSlice'
 
 function footer(token: string): string {
   return `\n\n[headroom] Full result cached — call the retrieve_full tool with token "${token}" to expand it.`
@@ -85,7 +86,7 @@ export function compressToolResult(name: string, result: unknown): string {
 const LATE_STASH_ATTEMPTS = 10
 const LATE_STASH_POLL_MS = 25
 
-export async function retrieveFull(token: string): Promise<unknown> {
+export async function retrieveFull(token: string, ask?: SliceAsk): Promise<unknown> {
   let rec = ccrRetrieveRecord(token)
   // Only a shape we could have minted is worth waiting for; anything else cannot be in flight.
   if (rec === undefined && ccrIsIssuableToken(token)) {
@@ -107,6 +108,17 @@ export async function retrieveFull(token: string): Promise<unknown> {
     // and that stamp against the CCR file's mtime is exactly what exposed the 2 ms race above.
     logToApp('warn', 'main', [`[headroom] retrieve_full could not resolve ${token} (${kind})`])
     return { error: 'expired', message: 'This result has expired — re-run the original tool.' }
+  }
+  // A part (v1.55.0): only the lines asked for go back, and each part is billed by its own size.
+  // It does not spend the token's one full redemption, so a later whole read is still counted.
+  if (wantsSlice(ask)) {
+    const part = sliceResult(typeof rec.value === 'string' ? rec.value : JSON.stringify(rec.value, null, 2), ask as SliceAsk)
+    try {
+      const cost = estimateTokens(part)
+      if (rec.origin === 'proxy') recordProxyGiveback(cost, { token, meta: rec.meta, partial: true, chars: part.length })
+      else recordEvent({ tool: 'retrieve_full', kind: 'retrieve', savedTokens: -cost })
+    } catch { /* best effort */ }
+    return part
   }
   // Billed on the FIRST redemption only. One token stands for one compression event, so its
   // give-back can only be given back once — but an agent re-reads a token freely (a retry after a

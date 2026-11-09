@@ -4212,7 +4212,7 @@ async function semanticPoolOptions(
       // upstream server's traffic passes the app's policy, secret scan and audit log.
       gatewayListTools: () => gatewayListTools(),
       gatewayCall: (opts) => gatewayCall(opts),
-      retrieveFull: (token: string) => headroomRetrieveFull(token),
+      retrieveFull: (token: string, ask?: { grep?: unknown; lines?: unknown }) => headroomRetrieveFull(token, ask),
       // Ask a linked computer's agents to do work, and wait for the answer (linkedHost.ts). Safe
       // before the service starts: it then answers, as data, that Linked machines is off.
       linkedMachines: (opts) => linkedToolCall(opts),

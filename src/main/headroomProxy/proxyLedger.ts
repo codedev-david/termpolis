@@ -394,10 +394,10 @@ export function recordProxyResult(r: ProxyResultMsg): void {
  *  `redeemed` names the token and what its stash recorded, so the elision ledger counts the same
  *  redemption by class. It is counted here, in the same call as the retrieve it belongs to, so the
  *  two ledgers cannot drift apart: a give-back with no token is a legacy redemption. */
-export function recordProxyGiveback(tokens: number, redeemed?: { token: string; meta?: ElisionMeta }): void {
+export function recordProxyGiveback(tokens: number, redeemed?: { token: string; meta?: ElisionMeta; partial?: boolean; chars?: number }): void {
   session.retrieves += 1
   session.givebackTokens += Math.max(0, tokens)
-  recordRedemption(redeemed?.token, redeemed?.meta)
+  recordRedemption(redeemed?.token, redeemed?.meta, redeemed?.partial === true, redeemed?.chars ?? 0)
   try { flush?.() } catch { /* best effort */ }
 }
 

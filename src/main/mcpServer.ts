@@ -605,10 +605,14 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'retrieve_full',
-    description: 'When a tool result ends with a [headroom] note and a token, call this with that token to recover the full, uncompressed result.',
+    description: 'When a tool result ends with a [headroom] note and token, call this with it to recover the full result. Optional grep or lines (e.g. 120-180) returns only part.',
     inputSchema: {
       type: 'object',
-      properties: { token: { type: 'string', description: 'The hr_… token from a [headroom] footer' } },
+      properties: {
+        token: { type: 'string', description: 'The hr_… token from a [headroom] footer' },
+        grep: { type: 'string', description: 'Text or /regex/; matching lines with context' },
+        lines: { type: 'string', description: 'Line range, e.g. 120-180' },
+      },
       required: ['token'],
     },
   },
@@ -715,7 +719,7 @@ export interface McpToolHandlers {
   gatewayCall: (opts: { tool: string; arguments?: unknown }) => Promise<unknown>
   /** Async since 1.41: a redemption waits out a stash that may still be crossing from the proxy
    *  child, so an in-flight original is not reported as content this app destroyed. */
-  retrieveFull: (token: string) => Promise<unknown>
+  retrieveFull: (token: string, ask?: { grep?: unknown; lines?: unknown }) => Promise<unknown>
   /** Never rejects: a failure comes back as `{ error }` data, because handleJsonRpc masks a thrown
    *  message to 'Tool execution failed' and the agent would never learn, say, that the feature is off. */
   linkedMachines: (opts: LinkedToolArgs) => Promise<unknown>
@@ -1609,7 +1613,7 @@ ${res.primer}` : head
     case 'gateway_call':
       return await handlers.gatewayCall({ tool: args.tool, arguments: args.arguments })
     case 'retrieve_full':
-      return await handlers.retrieveFull(args.token)
+      return await handlers.retrieveFull(args.token, { grep: args.grep, lines: args.lines })
     case 'linked_machines':
       // Handed over whole: which fields matter depends on the action, and the handler checks
       // them. `?? {}` because a caller other than tools/call need not pass its default.
