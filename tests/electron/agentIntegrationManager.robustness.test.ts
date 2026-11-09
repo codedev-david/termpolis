@@ -537,6 +537,8 @@ describe('the SessionStart hook, in the shell Claude Code runs it in', () => {
       // The relay's compaction hooks ride on the same consent (v1.55.0).
       PreCompact: [{ hooks: [shHook(sb.hookScript)] }],
       PostCompact: [{ hooks: [shHook(sb.hookScript)] }],
+      // The outline hint, on Read only (v1.55.0).
+      PreToolUse: [{ matcher: 'Read', hooks: [shHook(sb.hookScript)] }],
     })
   })
 })

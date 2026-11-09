@@ -730,6 +730,9 @@ export interface McpToolHandlers {
   agentExec: (opts: { prompt: string; agent?: string; model?: string; cwd?: string; write?: boolean; timeoutMs?: number }) => Promise<unknown>
   savingsReceipt: (opts: { format?: string; verify?: string }) => unknown
   recallBench: (opts: { project?: string; limit?: number; save?: boolean }) => Promise<unknown>
+  /** The Read hook's outline hint (v1.55.0); the hook calls it, agents never see it. Optional so a
+   *  handler set without it answers with no hint. */
+  codeOutline?: (opts: { path?: unknown; sessionId?: unknown }) => Promise<string | null>
 }
 
 // write_to_terminal with `submit` (GitHub #36 item 4). A conductor that typed a task into a worker
@@ -1632,6 +1635,8 @@ ${res.primer}` : head
       return handlers.savingsReceipt({ format: args.format, verify: args.verify })
     case 'recall_bench':
       return await handlers.recallBench({ project: args.project, limit: args.limit, save: args.save })
+    case 'code_outline':
+      return { outline: (await handlers.codeOutline?.({ path: args.path, sessionId: args.sessionId })) ?? null }
     default:
       throw new Error(`Unknown tool: ${name}`)
   }

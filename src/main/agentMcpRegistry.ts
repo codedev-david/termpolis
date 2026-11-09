@@ -361,10 +361,15 @@ export function removeAgyAllowRules(root: Json): EntryEdit {
 // ── Claude Code settings.json: the SessionStart memory hook ────────────────────────────
 
 /** The events the memory hook runs on: session start, and (v1.55.0) the first prompt of a session. */
-export type PrimerHookEvent = 'SessionStart' | 'UserPromptSubmit' | 'PreCompact' | 'PostCompact'
+export type PrimerHookEvent = 'SessionStart' | 'UserPromptSubmit' | 'PreCompact' | 'PostCompact' | 'PreToolUse'
+/** The tool a Termpolis hook on an event is limited to: the outline hint (v1.55.0) runs on Read only,
+ *  never on every tool call. */
+const HOOK_MATCHER: Partial<Record<PrimerHookEvent, string>> = { PreToolUse: 'Read' }
 /** The v1.55.0 relay's events: they ride on the first-prompt hook's consent. */
 export const COMPACT_HOOK_EVENTS: readonly PrimerHookEvent[] = ['PreCompact', 'PostCompact']
-export const PRIMER_HOOK_EVENTS: readonly PrimerHookEvent[] = ['SessionStart', 'UserPromptSubmit', ...COMPACT_HOOK_EVENTS]
+/** The outline hint's event (v1.55.0): it rides on the first-prompt hook's consent too. */
+export const OUTLINE_HOOK_EVENTS: readonly PrimerHookEvent[] = ['PreToolUse']
+export const PRIMER_HOOK_EVENTS: readonly PrimerHookEvent[] = ['SessionStart', 'UserPromptSubmit', ...COMPACT_HOOK_EVENTS, ...OUTLINE_HOOK_EVENTS]
 
 function hookGroups(root: Json, event: PrimerHookEvent = 'SessionStart'): unknown[] | null | { skipped: string } {
   if (root.hooks === undefined) return null
@@ -411,8 +416,9 @@ export function applyPrimerHook(root: Json, command: string, event: PrimerHookEv
   const groups = hookGroups(root, event)
   if (groups !== null && !Array.isArray(groups)) return groups
   const sites = primerHookSites(groups ?? [])
+  const matcher = HOOK_MATCHER[event]
   if (sites.length === 0) {
-    const entry = { hooks: [{ type: 'command', command }] }
+    const entry = { ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command }] }
     root.hooks = { ...(root.hooks ?? {}), [event]: [...(groups ?? []), entry] }
     return 'add'
   }
@@ -420,6 +426,10 @@ export function applyPrimerHook(root: Json, command: string, event: PrimerHookEv
   const g = (groups as Json[])[keep.group]
   const hook = keep.item === -1 ? g : g.hooks[keep.item]
   let changed = false
+  if (matcher && g.matcher !== matcher) {
+    g.matcher = matcher
+    changed = true
+  }
   if (hook.command !== command) {
     hook.command = command
     changed = true

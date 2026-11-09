@@ -7,7 +7,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 const require = createRequire(import.meta.url)
@@ -283,5 +283,49 @@ describe('memory-primer-hook around a compaction', () => {
     expect(h.isTypedPrompt('  /compact ')).toBe(false)
     expect(h.isTypedPrompt('   ')).toBe(false)
     expect(h.isTypedPrompt(7)).toBe(false)
+  })
+})
+
+// v1.55.0 Task 12: the outline hint before a whole-file Read.
+describe('memory-primer-hook before a Read', () => {
+  const h = require(HOOK_PATH) as { isWholeRead: (x: unknown) => boolean; extractOutline: (s: string) => string }
+
+  it('only a Read with no offset or limit asks for an outline', () => {
+    expect(h.isWholeRead({ tool_name: 'Read', tool_input: { file_path: '/r/a.ts' } })).toBe(true)
+    expect(h.isWholeRead({ tool_name: 'Read', tool_input: { file_path: '/r/a.ts', offset: 10 } })).toBe(false)
+    expect(h.isWholeRead({ tool_name: 'Read', tool_input: { file_path: '/r/a.ts', limit: 50 } })).toBe(false)
+    expect(h.isWholeRead({ tool_name: 'Edit', tool_input: { file_path: '/r/a.ts' } })).toBe(false)
+    expect(h.isWholeRead({ tool_name: 'Read', tool_input: { file_path: '' } })).toBe(false)
+    expect(h.isWholeRead({ tool_name: 'Read' })).toBe(false)
+    expect(h.isWholeRead(null)).toBe(false)
+  })
+
+  it('reads the outline out of the tool response', () => {
+    const resp = (inner: unknown): string => JSON.stringify({ result: { content: [{ type: 'text', text: JSON.stringify(inner) }] } })
+    expect(h.extractOutline(resp({ outline: 'a function (1-9)' }))).toBe('a function (1-9)')
+    expect(h.extractOutline(resp({ outline: null }))).toBe('')
+    expect(h.extractOutline('')).toBe('')
+    expect(h.extractOutline('{bad')).toBe('')
+  })
+
+  it('hook exits 0 in under 2 s when the server is down, and never blocks the read', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tp-read-hook-'))
+    try {
+      // A token file, so the hook gets as far as calling a server that is not there.
+      const tokenDir = process.platform === 'win32' ? join(dir, 'termpolis') : process.platform === 'darwin' ? join(dir, 'Library', 'Application Support', 'termpolis') : join(dir, 'termpolis')
+      mkdirSync(tokenDir, { recursive: true })
+      writeFileSync(join(tokenDir, 'mcp-token'), 'tok')
+      const env: NodeJS.ProcessEnv = { ...process.env, APPDATA: dir, XDG_CONFIG_HOME: dir, HOME: dir, USERPROFILE: dir }
+      delete env.TERMPOLIS_LINKED_JOB
+      delete env.TERMPOLIS_READ_ONLY_RUN
+      const input = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: join(dir, 'big.ts') }, session_id: 's1', cwd: dir })
+      const started = Date.now()
+      const r = spawnSync(process.execPath, [HOOK_PATH], { input, env, encoding: 'utf8', timeout: 10_000 })
+      expect(r.status).toBe(0)
+      expect(r.stdout).toBe('')
+      expect(Date.now() - started).toBeLessThan(2000)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -538,6 +538,19 @@ function impactIn(st: GraphState, name: string, maxDepth: number): SymbolHit[] {
   return [...result].map((id) => st.symbolsById.get(id)).filter((s): s is SymbolRec => !!s).map(toHit)
 }
 
+/** The symbols one indexed file defines (the v1.55.0 outline hint), looked up in every repo's graph by
+ *  path, ignoring case and slash direction. Empty when no graph holds the file. */
+export function fileSymbols(file: string): SymbolHit[] {
+  const norm = (p: string): string => p.replace(/\\/g, '/').toLowerCase()
+  const want = norm(file)
+  for (const st of graphs.values()) {
+    let ids = st.idsByFile.get(file)
+    if (!ids) for (const [f, v] of st.idsByFile) if (norm(f) === want) { ids = v; break }
+    if (ids) return ids.map((id) => st.symbolsById.get(id)).filter((s): s is SymbolRec => !!s).map(toHit)
+  }
+  return []
+}
+
 /** Symbols that call any symbol named `name`. */
 export function codeCallers(name: string, projectKey?: string): SymbolHit[] {
   return readStates(projectKey).flatMap((st) => callersIn(st, name))

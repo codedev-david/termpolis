@@ -27,6 +27,8 @@ const LIMIT = 12
 // v1.55.0 first-prompt primer: Claude Code waits for a UserPromptSubmit hook before it sends the
 // prompt, so this one gets a shorter budget and fewer notes, matched to what the prompt asks.
 const PROMPT_TIMEOUT_MS = 3000
+// The Read hook runs before every whole-file Read, so it gives up fast (v1.55.0 outline hint).
+const OUTLINE_TIMEOUT_MS = 1200
 const PROMPT_LIMIT = 6
 const PROMPT_QUERY_CHARS = 400
 const MIN_PROMPT_WORDS = 12
@@ -171,11 +173,11 @@ function readStdin() {
   })
 }
 
-function memoryPrimer(token, args, timeoutMs) {
+function memoryPrimer(token, args, timeoutMs, tool) {
   return new Promise((resolve) => {
     const body = JSON.stringify({
       jsonrpc: '2.0', method: 'tools/call', id: 1,
-      params: { name: 'memory_primer', arguments: args },
+      params: { name: tool || 'memory_primer', arguments: args },
     })
     const req = http.request({
       hostname: '127.0.0.1', port: PORT, path: '/mcp', method: 'POST',
@@ -196,6 +198,26 @@ function memoryPrimer(token, args, timeoutMs) {
   })
 }
 
+// A Read with no offset or limit reads the whole file: worth an outline hint when the file is large.
+function isWholeRead(hook) {
+  if (!hook || hook.tool_name !== 'Read') return false
+  const input = hook.tool_input
+  if (!input || typeof input !== 'object' || typeof input.file_path !== 'string' || !input.file_path) return false
+  return input.offset === undefined && input.limit === undefined
+}
+
+// result.content[0].text is JSON whose .outline is the hint, or null.
+function extractOutline(respString) {
+  if (!respString) return ''
+  try {
+    const text = JSON.parse(respString).result.content[0].text
+    const inner = JSON.parse(text)
+    return inner && typeof inner.outline === 'string' ? inner.outline : ''
+  } catch {
+    return ''
+  }
+}
+
 // The first-prompt call. TERMPOLIS_TERMINAL_ID, set in every Termpolis terminal, names the pane the
 // session runs in, so the app can offer that pane a better-fitting model (v1.55.0 early re-route),
 // a session started by hand included.
@@ -210,6 +232,17 @@ async function main() {
   try {
     const hook = parseHookInput(await readStdin())
     const event = hook.hook_event_name
+    if (event === 'PreToolUse') {
+      // Context only: never a permission decision, so the read itself goes ahead unchanged.
+      if (quietRun(process.env) || typeof hook.session_id !== 'string' || !isWholeRead(hook)) return
+      let token
+      try { token = fs.readFileSync(tokenPath(), 'utf-8').trim() } catch { return }
+      if (!token) return
+      const resp = await memoryPrimer(token, { path: hook.tool_input.file_path, sessionId: hook.session_id }, OUTLINE_TIMEOUT_MS, 'code_outline')
+      const outline = extractOutline(resp)
+      if (outline) process.stdout.write(buildOutput(outline, 'PreToolUse'))
+      return
+    }
     if (event === 'PreCompact') {
       if (!quietRun(process.env)) process.stdout.write(COMPACT_INSTRUCTIONS)
       return
@@ -247,4 +280,4 @@ async function main() {
 
 if (require.main === module) main()
 
-module.exports = { tokenPath, shouldPrime, parseHookInput, extractPrimer, buildOutput, isSubstantive, redactPrompt, quietRun, promptArgs, isTypedPrompt, typedText, lastUserPrompt, COMPACT_INSTRUCTIONS }
+module.exports = { tokenPath, shouldPrime, parseHookInput, extractPrimer, buildOutput, isSubstantive, redactPrompt, quietRun, promptArgs, isTypedPrompt, typedText, lastUserPrompt, COMPACT_INSTRUCTIONS, isWholeRead, extractOutline }

@@ -33,7 +33,7 @@ import {
   hasServerEntry, hasTermpolisAllowRule, isAdapterPath, isPrimerHookCommand, isTermpolisPluginManifest,
   isTermpolisServerEntry, localMarketplaceNames, primerHookCommand, removeAgyAllowRules, removeAllowRules,
   removeInstalledPlugin, removeLegacyAllowRules, removeMarketplaceEntry, removePluginEnablement,
-  removeForeignPrimerHooks, removePrimerHooks, COMPACT_HOOK_EVENTS, type PrimerHookEvent, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
+  removeForeignPrimerHooks, removePrimerHooks, COMPACT_HOOK_EVENTS, OUTLINE_HOOK_EVENTS, type PrimerHookEvent, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
   upsertClaudeUserServer, upsertServerEntry,
 } from './agentMcpRegistry'
 import type { EntryEdit, NodeSpec, ServerEntry } from './agentMcpRegistry'
@@ -763,17 +763,17 @@ function applyClaude(rt: AgentIntegrationRuntime, dir: string, claudeJson: strin
         },
       },
       {
-        // The relay (v1.55.0): compaction instructions, and the model offer after a compaction.
-        // Same consent as the first-prompt hook.
-        what: 'Compaction memory hooks',
+        // The relay (v1.55.0): compaction instructions, and the model offer after a compaction; and the
+        // outline hint on a large whole-file Read. Same consent as the first-prompt hook.
+        what: 'Compaction and Read memory hooks',
         run: (root) => {
           if (!hooks.prompt) {
-            const edit = removePrimerHooks(root, COMPACT_HOOK_EVENTS)
+            const edit = removePrimerHooks(root, [...COMPACT_HOOK_EVENTS, ...OUTLINE_HOOK_EVENTS])
             return typeof edit === 'string' ? edit : 'unchanged'
           }
           if (!hookScript) return 'unchanged'
           let out: EntryEdit = 'unchanged'
-          for (const event of COMPACT_HOOK_EVENTS) {
+          for (const event of [...COMPACT_HOOK_EVENTS, ...OUTLINE_HOOK_EVENTS]) {
             const edit = applyHook(root, rt, hookScript, event)
             if (edit !== 'unchanged') out = edit
           }

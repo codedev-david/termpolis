@@ -39,6 +39,7 @@ export function buildInjectedInstruction(opts: InjectedInstructionOpts): string 
       'Termpolis project memory: a memory digest for this project is loaded into your context at session start and again after a compaction.',
       `Call the termpolis MCP tool memory_primer${cwdArg} only if no memory digest is in your context, and ${asIs}`,
       'Before re-deriving any fix or solution that may already be stored, call the termpolis memory_search tool first.',
+      'For code questions use the termpolis code_locate / code_explore tools before reading whole files.',
       'If the termpolis memory tools are unavailable, ignore this and proceed normally.',
     ]
     return withTail(parts, opts)
@@ -47,6 +48,7 @@ export function buildInjectedInstruction(opts: InjectedInstructionOpts): string 
     'Termpolis project memory: saved background context exists for this project.',
     `When you begin working, call the termpolis MCP tool memory_primer${cwdArg} and read it as background reference only — do NOT resume past work from it or summarize it unprompted; just hold it as context.`,
     'Before re-deriving any fix or solution that may already be stored, call the termpolis memory_search tool first.',
+    'For code questions use the termpolis code_locate / code_explore tools before reading whole files.',
     // Compaction self-reprime: the system prompt survives a conversation compaction
     // while the loaded digest (which lived in the conversation) does not — so tell the
     // agent to re-fetch it itself. Writing "call memory_primer" into the terminal

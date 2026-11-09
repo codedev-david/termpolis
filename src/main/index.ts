@@ -307,7 +307,8 @@ import { isInTranscriptRoot, runConversationIngest } from './conversationIngest'
 import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult } from './ingestRuntime'
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
-import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
+import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES } from './outlineHint'
+import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -4259,6 +4260,16 @@ async function semanticPoolOptions(
       // signals already in the data (graph edges, distinctive terms, write-time
       // adjacency), so the benchmark measures this install's real corpus rather than a
       // synthetic set that would drift away from it.
+      // The Read hook's outline hint (v1.55.0): the symbols of a large file read whole.
+      codeOutline: (opts) => outlineHint(opts, {
+        symbols: fileSymbols,
+        countLines: async (file) => {
+          try {
+            if ((await fsPromises.stat(file)).size > OUTLINE_MAX_FILE_BYTES) return null
+            return countLinesIn(await fsPromises.readFile(file))
+          } catch { return null }
+        },
+      }),
       recallBench: async (opts) => {
         const limit = Math.min(Math.max(opts.limit ?? 200, 20), 1000)
         const entries = await memoryList({ limit, project: opts.project })
