@@ -741,7 +741,9 @@ function occupy(port: number): Promise<http.Server> {
 const closeAll = (servers: http.Server[]): Promise<void> =>
   Promise.all(servers.map((s) => new Promise<void>((r) => s.close(() => r())))).then(() => undefined)
 
-async function waitFor(predicate: () => boolean, ms = 2000): Promise<void> {
+// 10 s, not 2: the rotation tests reread files of 2 MB and more every 20 ms under eight concurrent requests, and a
+// macOS runner missed 2 s on v1.55.4. A passing wait returns as soon as it holds, so the margin costs nothing.
+async function waitFor(predicate: () => boolean, ms = 10_000): Promise<void> {
   const deadline = Date.now() + ms
   while (Date.now() < deadline) {
     if (predicate()) return
