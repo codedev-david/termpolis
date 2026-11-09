@@ -78,6 +78,9 @@ export default defineConfig({
           // git spawn, which is where ten seconds of typing lag came from. Every child process main
           // wants is forked from HERE instead.
           procHost: resolve(__dirname, 'src/main/procHost.ts'),
+          // v1.56: the terminal process host (perf155 P14). node-pty's spawn (ConPTY + CreateProcess on Windows) blocks the
+          // thread that calls it for 0.1-1.6 s, and main echoes every keystroke; terminals open from HERE instead.
+          ptyHost: resolve(__dirname, 'src/main/ptyHost.ts'),
           // Remote bridge, forked by remoteBridgeSupervisor. Its whole input is
           // an untrusted network, so a crash there must not take the app down, and
           // main stays free to pump PTY.

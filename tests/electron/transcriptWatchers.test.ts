@@ -503,11 +503,16 @@ describe('baseWatcher — tailFile', () => {
     fs.writeFileSync(f, 'original-line\nfollow-up\n')
     const lines: string[] = []
     const handle = tailFile(f, (l) => lines.push(l), { startAtEnd: true })
+    // The start offset is fixed by an async stat; a write that beats it would be taken as already there (macOS CI,
+    // v1.55.3: the offset landed at the new file's end and nothing was read).
+    await handle.ready
     // Write a shorter file — triggers truncation branch
     fs.writeFileSync(f, 'new\n')
-    await new Promise((r) => setTimeout(r, 1800))
-    handle.stop()
-    expect(lines).toContain('new')
+    try {
+      await vi.waitFor(() => expect(lines).toContain('new'), { timeout: 8000, interval: 50 })
+    } finally {
+      handle.stop()
+    }
   })
 
   it('stop() swallows watcher close errors', async () => {

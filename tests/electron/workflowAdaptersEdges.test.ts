@@ -58,3 +58,58 @@ describe('workflow agent step: finishing', () => {
     }
   })
 })
+
+// perf155 P14: with the pty host up a spawn RETURNS a promise, and a shell the host could not start rejects it instead
+// of throwing. The runners await it after their writes.
+describe('workflow steps: a spawn that rejects (the pty host could not start it)', () => {
+  it('a command step falls back to the default shell, and with none left fails with 127', async () => {
+    const spawn = vi.fn((_id, exe: string) => (exe === 'pwsh' ? Promise.reject(new Error('File not found: pwsh')) : Promise.reject('still no')))
+    const runner = makeTerminalRunner({ spawnTerminal: spawn as any, writeToTerminal: vi.fn(), killTerminal: vi.fn(), defaultShell: 'cmd.exe' })
+    const res = await runner.run({ ...cmdSpec, shell: 'pwsh' })
+    expect(spawn.mock.calls.map((c) => c[1])).toEqual(['pwsh', 'cmd.exe'])
+    expect(res.exitCode).toBe(127)
+    expect(res.output).toContain('File not found: pwsh')
+    expect(res.output).toContain('falling back to default shell "cmd.exe"')
+    expect(res.output).toContain('still no')
+  })
+
+  it('a command step cancelled while the host starts it neither retries nor reports the failure', async () => {
+    let fail: (e: Error) => void = () => {}
+    const spawn = vi.fn(() => new Promise<void>((_r, rej) => { fail = rej }))
+    const runner = makeTerminalRunner({ spawnTerminal: spawn as any, writeToTerminal: vi.fn(), killTerminal: vi.fn(), defaultShell: 'cmd.exe' })
+    const run = runner.run(cmdSpec)
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1))
+    runner.cancel(cmdSpec.stepId)
+    fail(new Error('late'))
+    const res = await run
+    expect(res.exitCode).toBe(130)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(spawn).toHaveBeenCalledTimes(1)
+  })
+
+  it('an agent step whose spawn rejects rejects the run', async () => {
+    const spawn = vi.fn(() => Promise.reject(new Error('Failed to open terminal: gone')))
+    const runner = makeAgentRunner({ spawnTerminal: spawn as any, writeToTerminal: vi.fn(), killTerminal: vi.fn() }, () => ({ status: 'working', summary: '' }), () => 'claude')
+    await expect(runner.run(agentSpec)).rejects.toThrow('Failed to open terminal: gone')
+  })
+
+  it('an agent step that finished while the host started it starts no poll', async () => {
+    vi.useFakeTimers()
+    try {
+      let spawned: () => void = () => {}
+      const detect = vi.fn(() => ({ status: 'working', summary: '' }))
+      const spawn = vi.fn(() => new Promise<void>((r) => { spawned = r }))
+      const runner = makeAgentRunner({ spawnTerminal: spawn as any, writeToTerminal: vi.fn(), killTerminal: vi.fn() }, detect, () => 'claude')
+      const run = runner.run(agentSpec)
+      await vi.advanceTimersByTimeAsync(0)
+      runner.cancel(agentSpec.stepId)
+      expect((await run).error).toBe('cancelled')
+      spawned()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(detect).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

@@ -3,7 +3,7 @@ import type { McpToolHandlers } from '../mcpServer'
 import type { SpawnPrep } from '../terminalSpawnPrep'
 
 type SpawnDeps = {
-  spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void, prep?: SpawnPrep) => void
+  spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void, prep?: SpawnPrep) => void | Promise<void>
   // What opening a terminal looks up (does the folder exist, is the shell integration script written, which tools are
   // bundled) asked on the thread pool BEFORE the spawn, and handed to it. Optional: without it the spawn does the
   // lookups itself, synchronously (a caller with no preparation, and the unit tests).
@@ -46,13 +46,16 @@ export function makeTerminalRunner(sp: SpawnDeps): TerminalRunner {
             if (done) return // cancelled or timed out while the lookups ran: there is nothing to start
           }
           try {
-            sp.spawnTerminal(spec.stepId, shell, spec.cwd, onData,
+            const started = sp.spawnTerminal(spec.stepId, shell, spec.cwd, onData,
               undefined, undefined,
               (code) => finish({ exitCode: code, output: buf }), prep)
             // Non-interactive: write the command + newline, then signal EOF via `exit`.
             sp.writeToTerminal(spec.stepId, `${spec.command}\n`)
             if (!spec.visible) sp.writeToTerminal(spec.stepId, `exit $?\n`)
+            // A shell the pty host could not start says so here, not as a throw (the writes above went nowhere).
+            await started
           } catch (e: any) {
+            if (done) return // cancelled or timed out while the host was starting it: no retry, nothing to report
             const note = `\n[spawn error] ${e?.message ?? e}`
             if (!isFallback && sp.defaultShell && sp.defaultShell !== shell) {
               buf = (buf + note + `\n[retry] falling back to default shell "${sp.defaultShell}"`).slice(-CAP)
@@ -134,12 +137,15 @@ export function makeAgentRunner(
             try { prep = await sp.prepare(launch(spec.agent), spec.cwd) } catch { /* the spawn looks things up itself */ }
             if (done) return // cancelled or timed out while the lookups ran: there is nothing to start
           }
-          sp.spawnTerminal(spec.stepId, launch(spec.agent), spec.cwd,
+          const started = sp.spawnTerminal(spec.stepId, launch(spec.agent), spec.cwd,
             (d) => {
               buf = (buf + d).slice(-CAP); onChunk?.(d)
               if (spec.doneMarker && buf.includes(spec.doneMarker)) return finish({ output: buf, ok: true })
             }, undefined, undefined, undefined, prep)
           sp.writeToTerminal(spec.stepId, `${spec.prompt}\n`)
+          // A spawn the pty host could not make rejects the run, as one that throws does.
+          await started
+          if (done) return // finished (marker, cancel, timeout) while the host was starting it: no poll to leak
           poll = setInterval(() => {
             const st = detect(buf, spec.agent).status
             if (st === 'errored' || st === 'blocked') return finish({ output: buf, ok: false, error: `agent ${st}` })

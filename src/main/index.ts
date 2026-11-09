@@ -662,6 +662,8 @@ import { getAgentExtraPaths, getAgentExtraPathsAsync, getExtendedPath, primeInte
 import { safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommandAsync } from './gitCommand'
 import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcHost } from './procClient'
 import { createProcHostTransport } from './procHostTransport'
+import { setPtyHostSpawner, startPtyHost, shutdownPtyHost } from './ptyHostClient'
+import { createPtyHostTransport } from './ptyHostTransport'
 import { cachedGit, invalidateGitCache } from './gitCache'
 import { createGitWatcherRegistry } from './gitWatcher'
 import { WATCH_MIN_INTERVAL_MS, setWatchGatesPaused } from './watchGuard'
@@ -943,7 +945,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
       // a hang guard and provided none, which is worse than no guard at all.
       try {
         const allExtraPaths = [...agentPaths, ...(extraPaths || [])]
-        spawnTerminal(id, shell.executable, cwd, (data) => {
+        Promise.resolve(spawnTerminal(id, shell.executable, cwd, (data) => {
           // Buffer first, so the event can carry where this chunk ENDS in the stream: a pane
           // replaying the buffer on mount compares it with the reply's nextOffset, to drop a
           // chunk that is both in its replay and on its way live instead of drawing it twice.
@@ -956,8 +958,9 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           remoteNoteTerminalOutput(id)
           // A launch on an account steps aside for that profile's own routing, not the default one's (claudeLaunchEnv).
           // A terminal launched to run an agent Termpolis watches carries the chooser's marker (R6).
-        }, allExtraPaths, withLimitChooser(withAutoSubagent(launchEnv, claudeHeadroom === true && autoModel === true), limitWatch), undefined, prep)
-        resolve()
+        }, allExtraPaths, withLimitChooser(withAutoSubagent(launchEnv, claudeHeadroom === true && autoModel === true), limitWatch), undefined, prep))
+          // Settles when the shell started: at once here, or when the pty host says so (a spawn there rejects).
+          .then(resolve, reject)
       } catch (e) {
         reject(e)
       }
@@ -3709,6 +3712,12 @@ if (!gotTheLock) {
     // the thread that calls it, and this thread is the one pumping every PTY; that is where the ten
     // seconds of typing lag came from. See procHost.ts for the measurements.
     setProcSpawner(() => createProcHostTransport())
+    // Windows: the terminal process host (ptyHost.ts), started now so it is ready (about 1.3 s) before most first
+    // terminals. Until it is, and if it ever dies, terminals open in this process as before. TERMPOLIS_NO_PTY_HOST=1: never.
+    if (process.platform === 'win32') {
+      setPtyHostSpawner(() => createPtyHostTransport())
+      startPtyHost()
+    }
     // Warm the shell-PATH cache off-thread so the sync readers of it never fork a login shell.
     // No-op on Windows, where PATH is global and the sync version short-circuits anyway.
     void primeInteractiveShellPath()
@@ -3870,7 +3879,7 @@ async function semanticPoolOptions(
           const mcpPrep = await prepareSpawn(resolvedCwd, shellInfo.executable)
           await primeBundledToolsCheck()
           const launchEnv = await claudeLaunchEnv(resolvedCwd)
-          spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
+          await spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
             // Buffer first: the event carries the chunk's end offset (see terminal:create).
             const end = appendOutput(terminalOutputBuffers, id, data)
             sendTerminalData(mainWindow, id, data, end)
@@ -5276,6 +5285,8 @@ async function semanticPoolOptions(
     // are still polling as the window goes, and without it the next poll forks a REPLACEMENT host
     // out of a process that is trying to exit.
     try { shutdownProcHost() } catch {}
+    // The terminal host goes too: killAll above already asked it to end every shell, and its going ends any left.
+    try { shutdownPtyHost() } catch {}
     shutdownStep('hosts')
     try { stopProxy() } catch { /* ignore */ }
     try { saveProxyTotalsToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }

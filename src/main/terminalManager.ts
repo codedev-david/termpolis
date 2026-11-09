@@ -12,6 +12,7 @@ import { sudoAskpassEnv } from './sudoAskpass'
 import { integrationScriptState, INTEGRATION_SCRIPT_NAME, type SpawnPrep } from './terminalSpawnPrep'
 import { hasJobControl, shellAlone, readConsoleProcessList } from './shellAlone'
 import { consoleListInProc } from './consoleListInProc'
+import { isHostPty, ptyHostReady, spawnInPtyHost, type HostPty } from './ptyHostClient'
 import {
   detectShellKind,
   integrationArgs,
@@ -21,8 +22,11 @@ import {
   POWERSHELL_INTEGRATION_SCRIPT,
 } from './shellIntegration'
 
+/** What a terminal's pty is to this module: node-pty's own (in this process), or one in the pty host (ptyHostClient.ts). */
+type TerminalPty = pty.IPty | HostPty
+
 interface PtyProcess {
-  pty: pty.IPty
+  pty: TerminalPty
   /** Batches this terminal's output before it crosses to the renderer. Disposed on
    *  exit and on kill so trailing output is delivered, never dropped. */
   coalescer: OutputCoalescer
@@ -154,7 +158,7 @@ export function spawnTerminal(
   onExit?: (exitCode: number) => void,
   /** What a caller on a hot path looked up on the thread pool (terminalSpawnPrep.ts); without it, the lookups are synchronous. */
   prep?: SpawnPrep,
-): void {
+): Promise<void> {
   const resolvedCwd = prep ? prep.cwd : (() => {
     try { return existsSync(cwd) ? cwd : homedir() }
     catch { return homedir() }
@@ -271,15 +275,14 @@ export function spawnTerminal(
     ...(integrate ? integrationArgs(shellKind, scriptPath) : []),
   ]
 
+  const spawnOpts = { name: 'xterm-256color', cols: SPAWN_COLS, rows: SPAWN_ROWS, cwd: resolvedCwd, env }
+  // Windows, once the pty host is up (perf155 P14): the shell starts there, and ConPTY's CreateProcess blocks that
+  // process instead of this thread. Until then, or with TERMPOLIS_NO_PTY_HOST=1, or after the host died, here as always.
+  if (process.platform === 'win32' && ptyHostReady()) return spawnHosted(id, executable, resolvedCwd, args, spawnOpts, onData, onExit)
+
   let proc: pty.IPty
   try {
-    proc = pty.spawn(executable, args, {
-      name: 'xterm-256color',
-      cols: SPAWN_COLS,
-      rows: SPAWN_ROWS,
-      cwd: resolvedCwd,
-      env,
-    })
+    proc = pty.spawn(executable, args, spawnOpts)
   } catch (e: any) {
     const msg = e?.message || String(e)
     console.error(`[node-pty] Failed to spawn "${executable}" in "${resolvedCwd}": ${msg}`)
@@ -291,10 +294,10 @@ export function spawnTerminal(
   const coalescer = createOutputCoalescer(onData)
   proc.onData((chunk) => coalescer.push(chunk))
   const pid = proc.pid
-  if (pid) running.add(pid)
+  const shell: RunningShell = { pid }
+  if (pid) running.add(shell)
   proc.onExit((e: { exitCode: number }) => {
-    if (pid) running.delete(pid)
-    if (running.size === 0) for (const done of exitWaiters.splice(0)) done()
+    shellExited(shell)
     // Flush BEFORE the exit callback: a shell's last line (a prompt, an error, an exit
     // banner) is usually still inside the window when the process ends, and delivering
     // it after the terminal is torn down is the same as losing it.
@@ -302,6 +305,50 @@ export function spawnTerminal(
     try { onExit?.(e.exitCode) } finally { processes.delete(id) }
   })
   processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable })
+  return Promise.resolve()
+}
+
+/**
+ * The same terminal, its pty in the pty host. Everything but the pty stays here: the coalescer, the exit bookkeeping,
+ * the size. Writes and resizes made before the host says the shell started are sent behind the spawn and land in order.
+ * A spawn the host could not make rejects the returned promise with the same "Failed to open terminal" a spawn here
+ * throws, and the terminal is gone as if it had never been made: its onExit is not called, as for a throw here.
+ */
+function spawnHosted(
+  id: string,
+  executable: string,
+  resolvedCwd: string,
+  args: string[],
+  opts: { name: string; cols: number; rows: number; cwd: string; env: Record<string, string> },
+  onData: (data: string) => void,
+  onExit?: (exitCode: number) => void,
+): Promise<void> {
+  const proc = spawnInPtyHost(executable, args, opts)
+  const coalescer = createOutputCoalescer(onData)
+  proc.onData((chunk) => coalescer.push(chunk))
+  // Counted from now, not from the pid: a quit while the host is still starting the shell waits for it too.
+  const shell: RunningShell = { pid: 0 }
+  running.add(shell)
+  const entry: PtyProcess = { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable }
+  proc.onExit((e) => {
+    shellExited(shell)
+    try { coalescer.dispose() } catch {}
+    try { onExit?.(e.exitCode) } finally { if (processes.get(id) === entry) processes.delete(id) }
+  })
+  processes.set(id, entry)
+  const started = proc.spawned.then(
+    (pid) => { shell.pid = pid },
+    (e: Error) => {
+      shellExited(shell)
+      try { coalescer.dispose() } catch {}
+      if (processes.get(id) === entry) processes.delete(id)
+      console.error(`[pty host] Failed to spawn "${executable}" in "${resolvedCwd}": ${e.message}`)
+      throw new Error(`Failed to open terminal: ${e.message}`)
+    },
+  )
+  // A caller that does not await it must not raise an unhandled rejection; one that does still sees it.
+  started.catch(() => {})
+  return started
 }
 
 /**
@@ -332,7 +379,7 @@ function endConsoleOffThread(proc: pty.IPty): void {
  *  foreground group of its own (shellAlone.ts: PowerShell on Unix), or for no such terminal. */
 export function isShellInForeground(id: string): boolean | null {
   const proc = processes.get(id)
-  if (process.platform === 'win32' || !proc || !hasJobControl(proc.executable)) return null
+  if (process.platform === 'win32' || !proc || isHostPty(proc.pty) || !hasJobControl(proc.executable)) return null
   // A login shell's name can carry a leading '-'.
   const name = (s: string): string => basename(s).replace(/^-/, '')
   try {
@@ -346,10 +393,21 @@ export function killTerminal(id: string): void {
   const proc = processes.get(id)
   if (proc) {
     try { proc.coalescer.dispose() } catch {}
-    try { proc.pty.kill() } catch {}
-    try { proc.pty.pid && process.kill(proc.pty.pid) } catch {}
+    if (isHostPty(proc.pty)) killHosted(proc.pty)
+    else {
+      try { proc.pty.kill() } catch {}
+      try { proc.pty.pid && process.kill(proc.pty.pid) } catch {}
+    }
     processes.delete(id)
   }
+}
+
+/** Ends a terminal in the pty host with what runs on its console, read through the proc host as for a terminal here
+ *  (endConsoleOffThread); the shell alone when that can't be told, or when the host has not yet said the shell's pid. */
+function killHosted(p: HostPty): void {
+  const pid = p.pid
+  if (!pid) { p.kill(null); return }
+  void readConsoleProcessList(pid).then((list) => p.kill(list), () => p.kill(null))
 }
 
 export function writeToTerminal(id: string, data: string): void {
@@ -377,10 +435,17 @@ export function killAll(): void {
   for (const [id] of processes) killTerminal(id)
 }
 
-/** Shells started and not yet reported exited, by pid. Unlike `processes`, a kill leaves an
- *  entry here until node-pty sees the exit: that is what the app's own exit is waiting on. */
-const running = new Set<number>()
+/** Shells started and not yet reported exited. Unlike `processes`, a kill leaves an
+ *  entry here until node-pty sees the exit: that is what the app's own exit is waiting on.
+ *  pid 0: a shell the pty host is still starting. */
+interface RunningShell { pid: number }
+const running = new Set<RunningShell>()
 const exitWaiters: Array<() => void> = []
+
+function shellExited(shell: RunningShell): void {
+  if (!running.delete(shell)) return
+  if (running.size === 0) for (const done of exitWaiters.splice(0)) done()
+}
 
 /**
  * Resolves once every shell has exited, or after `timeoutMs` whatever is left.
@@ -403,7 +468,7 @@ export function whenTerminalsExit(timeoutMs = 2000): Promise<void> {
     }
     exitWaiters.push(finish)
     const force = setTimeout(() => {
-      for (const pid of running) { try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ } }
+      for (const { pid } of running) { if (pid) { try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ } } }
     }, timeoutMs / 2)
     const giveUp = setTimeout(finish, timeoutMs)
   })
@@ -422,7 +487,8 @@ export function _resetTerminalExitsForTests(): void {
 
 export function getTerminalPid(id: string): number | null {
   const proc = processes.get(id)
-  return proc?.pty.pid ?? null
+  // 0 is a shell the pty host is still starting: no pid yet.
+  return proc?.pty.pid || null
 }
 
 /** Whether nothing runs in terminal `id` but its shell (shellAlone.ts); null for no such terminal,

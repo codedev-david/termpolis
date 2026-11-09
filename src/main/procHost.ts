@@ -154,6 +154,12 @@ if (parentPort) {
   // The first thing a forked host does: lower its OWN priority (never another process's, never main's).
   // Kill switch TERMPOLIS_NO_HOST_PRIORITY=1. Inside this block, so main and the unit suite never run it.
   lowerHostPriority({ host: 'proc' })
+  // Every git this host starts skips git's OPTIONAL locks. `git status` otherwise takes .git/index.lock to refresh
+  // the index, and the git dot polls status every few seconds: a person's own `git commit` or `git add` landing in
+  // that window failed with "Unable to create '.git/index.lock': File exists" (the git-dot e2e hit it in CI on
+  // v1.55.3). Writes still take the locks they need; only the opportunistic refresh is skipped. Set in this host's
+  // own environment, so it never reaches a terminal (those inherit main's).
+  process.env.GIT_OPTIONAL_LOCKS = '0'
   // Electron 37 stopped ending a utility process on an unhandled rejection: it only warns now.
   // The parent restarts this child when it dies and falls back when it keeps dying, which assumes
   // a child in an unknown state goes away. So it still does. Inside this block, not at the top:

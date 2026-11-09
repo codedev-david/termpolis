@@ -11,7 +11,8 @@ import { MODEL_HELD, changesAccountByHand, completesSwitchAccount, isSessionId }
 import type { AgyStepOutcome, AgyStepRequest, ModelHold, SwitchOutcome, SwitchRequest } from '../shared/accountSwitch'
 import { AGY_ENV_AUTH, runAgyStep } from './agySwitch'
 import { endSignIns, endSignInsOf, signInInput, startSignInSession } from './signInSession'
-import type { SessionDeps } from './signInSession'
+import type { PtyLike, PtySpawnOptions, SessionDeps } from './signInSession'
+import { ptyHostReady, spawnInPtyHost } from './ptyHostClient'
 import { killProcessTree } from './processTree'
 import type { SignInInput, SignInState } from '../shared/signInScreens'
 import { carryTranscript, findTranscript } from './accountCarry'
@@ -90,6 +91,16 @@ export interface AccountsIpcDeps {
   signInCli?: (agent: AccountAgent, args: string[], env: Record<string, string>) => SignInCli
   /** For tests: the sign-in session's clock and its sleep. */
   sleep?: (ms: number) => Promise<void>
+}
+
+/**
+ * The hidden sign-in session's PTY. Windows, with the pty host up: there (ptyHostClient.ts), so starting the CLI never
+ * blocks the thread that echoes keystrokes. That spawn was the 1-1.6 s freezes in app.log at every account sign-in. A
+ * spawn the host cannot make reaches the session as output plus an exit, where node-pty's own throws.
+ */
+export function spawnSignInPty(file: string, args: string[] | string, opts: PtySpawnOptions, platform: NodeJS.Platform = process.platform): PtyLike {
+  if (platform === 'win32' && ptyHostReady()) return spawnInPtyHost(file, args, opts, { exitOnSpawnError: true })
+  return (require('node-pty') as { spawn: SessionDeps['spawn'] }).spawn(file, args, opts)
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -1354,7 +1365,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   // The hidden sign-in session (§3): never a Termpolis terminal, so nothing else can see or type
   // into it. The renderer names the account and the method; main builds everything else.
   const sessionDeps: SessionDeps = {
-    spawn: deps.signInSpawn ?? ((file, args, opts) => (require('node-pty') as { spawn: SessionDeps['spawn'] }).spawn(file, args, opts)),
+    spawn: deps.signInSpawn ?? spawnSignInPty,
     killTree: (pid) => { killProcessTree(pid) },
     send: (state: SignInState) => deps.send(ACCOUNTS_IPC.signInState, state),
     openExternal: (url) => deps.openExternal?.(url),
