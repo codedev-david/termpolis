@@ -218,6 +218,30 @@ describe('promptParser', () => {
     })
   })
 
+  // A prompt of just "<repo> (<branch>) $" (a PS1 built from the repo name and git branch) holds no
+  // path at all. The `/` inside a branch like feature/x once read as the cwd "/x)", which then
+  // went into the auto-primer pointer, the git dot and the Git panel.
+  describe('a slash inside the branch is not a path', () => {
+    it.each([
+      ['gitbash', 'MSI-PAS-CORE (feature/net10-migration) $ '],
+      ['gitbash', 'MSI-PAS-CORE/src (feature/net10-migration) $ '],
+      ['bash', 'repo (fix/a-b) $ '],
+      ['zsh', 'repo (feature/x) %'],
+    ])('%s: %j has no cwd but keeps the branch', (shell, output) => {
+      const result = parsePromptFromOutput(output, shell)
+      expect(result.cwd).toBeNull()
+      expect(result.gitBranch).toBe(output.match(/\(([^)]+)\)/)![1])
+    })
+
+    it('still reads a path that starts the line, follows a space, or follows user@host:', () => {
+      expect(parsePromptFromOutput('/home/u/repo $ ', 'bash').cwd).toBe('/home/u/repo')
+      expect(parsePromptFromOutput('(feature/x) /c/repos/app $ ', 'gitbash')).toMatchObject({ cwd: '/c/repos/app', gitBranch: null })
+      expect(parsePromptFromOutput('(venv) ~/repo $ ', 'bash').cwd).toBe('~/repo')
+      expect(parsePromptFromOutput('dev@box:/srv/app$ ', 'bash').cwd).toBe('/srv/app')
+      expect(parsePromptFromOutput('dave@mac:~/repo %', 'zsh').cwd).toBe('~/repo')
+    })
+  })
+
   // Whose `~` is it? Only the shell's own prompt pattern can say "this machine". The generic
   // catch-all also matches an ssh or WSL prompt running inside the terminal, whose `~` is the other
   // machine's home — TerminalPane must not expand that against this one's.

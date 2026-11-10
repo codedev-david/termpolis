@@ -70,7 +70,9 @@ const APPROVAL_PROMPTS: RegExp[] = [
   /\ballow\s+(?:once|always|execution|all\s+edits|for\s+this\s+session|this\s+(?:command|edit|action|request))\b/i,
   /\bapply\s+this\s+change\b/i,
   /\b(?:requires|needs|awaiting)\s+(?:your\s+)?(?:approval|permission)\b/i,
-  /\bbypass\s+permissions\b/i,
+  // The "Bypass Permissions mode" warning, but not that mode's footer ("⏵⏵ bypass permissions on"),
+  // which sits under every idle Claude prompt in the mode and would block typing into it.
+  /\bbypass\s+permissions\b(?!\s+on\b)/i,
   // MCP servers, including the ones a repo brings along in .mcp.json
   /\bnew\s+mcp\s+servers?\s+found\b/i,
   /\bmcp\s+servers?\s+(?:are\s+)?configured\s+but\s+not\s+trusted\b/i,

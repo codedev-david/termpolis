@@ -141,6 +141,7 @@ describe('promptAutoDismiss.detectDismissChar', () => {
       ['Claude Code fetch', 'Do you want to allow Claude to fetch this content?\n❯ 1. Yes'],
       ['Claude Code plan mode', 'Would you like to proceed?\n❯ 1. Yes, and auto-accept edits\n  2. Yes, and manually approve edits'],
       ['Claude Code bypass-permissions warning', 'WARNING: Claude Code running in Bypass Permissions mode\n❯ 1. No, exit\n  2. Yes, I accept'],
+      ['Claude Code bypass-permissions warning, lower case', 'claude code running in bypass permissions mode\n❯ 1. No, exit\n  2. Yes, I accept'],
       ['Claude Code terminal setup', "Use Claude Code's terminal setup?\n❯ 1. Yes, use recommended settings\n  2. No, maybe later with /terminal-setup"],
       ['Claude Code API key', 'Detected a custom API key in your environment\nDo you want to use this API key?\n❯ 1. No (recommended)\n  2. Yes'],
       ['Codex command', 'Would you like to run the following command?\n\n  $ git push\n\n› 1. Yes, proceed\n  2. Yes, and don\'t ask again for this command in this session\n  3. No, and tell Codex what to do differently'],
@@ -463,6 +464,20 @@ describe('promptAutoDismiss.isAwaitingAnswer', () => {
     expect(isAwaitingAnswer('')).toBe(false)
     expect(isAwaitingAnswer('>_ OpenAI Codex (v0.153.4)\n\n› \n  ? for shortcuts')).toBe(false)
     expect(isAwaitingAnswer('╭────────╮\n│ >      │\n╰────────╯\n  ? for shortcuts')).toBe(false)
+  })
+
+  // The mode footer under an idle Claude prompt. It once read as the Bypass Permissions warning, so
+  // the auto-primer pasted its pointer, saw a "prompt" and never pressed Enter: the pointer sat
+  // unsent in the input of every hand-launched `claude` in bypass mode.
+  it.each([
+    'bypass permissions on',
+    'accept edits on',
+    'plan mode on',
+  ])('is false for an idle Claude prompt with the "%s" footer, with or without text in it', (mode) => {
+    const rule = '─'.repeat(80)
+    const screen = (input: string): string => [rule, `❯ ${input}`, rule, '  [work | /switch-account]  Opus 5.5  repo main', `  ⏵⏵ ${mode} (shift+tab to cycle)`].join('\n')
+    expect(isAwaitingAnswer(tailSlice(screen('')))).toBe(false)
+    expect(isAwaitingAnswer(tailSlice(screen('Termpolis memory: call the termpolis MCP tool memory_primer with cwd set to "C:/repos/app"')))).toBe(false)
   })
 
   it.each([

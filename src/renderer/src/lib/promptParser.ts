@@ -14,8 +14,10 @@ const GIT_BASH_PROMPT = /MINGW\d*\s+([^\s(]+(?:\s[^\s(]+)*)\s*(?:\(([^)]+)\))?/
 // backslash path no ssh or WSL prompt prints, so that `~` is this machine's.
 const PS_PROMPT = /^PS\s+([A-Za-z]:\\[^>]+|~(?:\\[^>]*)?)>/
 
-// Generic path detection: lines ending with $ or > preceded by a path
-const GENERIC_PROMPT = /([~\/][^\s$>]+|\b[A-Za-z]:\\[^\s$>]+)\s*[$>]\s*$/
+// Generic path detection: lines ending with $ or > preceded by a path. The path must start a
+// token (line start, a space, or the `:` of `user@host:~/repo`): otherwise the `/` inside a
+// branch name, as in "repo (feature/x) $", reads as the path "/x)".
+const GENERIC_PROMPT = /((?<![^\s:])[~\/][^\s$>]+|\b[A-Za-z]:\\[^\s$>]+)\s*[$>]\s*$/
 
 // Git branch in parentheses: "(branch-name)" — common across many prompt
 // configs. The content must look like a git ref (no spaces, ref charset);
@@ -52,7 +54,7 @@ const CD_COMMAND = /[$>]\s*cd\s+(.+?)\s*$/
 // "repo" against the app's own working directory and report some OTHER
 // repository's changes as this terminal's. Matching nothing leaves the pid
 // probe in charge, which is the honest answer.
-const ZSH_PROMPT = /([~/][^\s%#]+)\s*[%#]\s*$/
+const ZSH_PROMPT = /((?<![^\s:])[~/][^\s%#]+)\s*[%#]\s*$/
 const ZSH_BRANCH_IN_PARENS = /\(([A-Za-z0-9][\w./-]*)\)\s*[%#]?\s*$/
 // `#` is deliberately NOT a prompt marker here: "# cd /somewhere" is an
 // ordinary shell comment in printed docs and READMEs, and honouring it would
