@@ -6,7 +6,7 @@ import type { ModelFamily } from '../headroom/effectiveUnits'
 import { compressImage } from './imageCodec'
 import type { StashEntry } from '../headroom/elisionMeta'
 import type { ProxyResultMsg, ProxyStashMsg } from './proxySupervisor'
-import { planRequest, noteRefused, isRefusal, asksHourCache, setRoute, ROUTE_HEADER, type RoutePlan } from './modelRoute'
+import { planRequest, noteRefused, isRefusal, asksHourCache, setRoute, setAgentRoute, setAgentAsker, waitAgentRoute, readConversation, ROUTE_HEADER, type RoutePlan, type ConvInfo } from './modelRoute'
 
 /**
  * Prefix decay, opt-in. Module scope rather than a closure because the HTTP server is built once
@@ -56,9 +56,13 @@ export interface ProxyResult {
   ttl1h?: boolean
   /** The routed model the API refused (the request then went out as asked). */
   refused?: ModelFamily
+  /** v1.57.0: a subagent's request (its context is not the session's). */
+  agent?: boolean
+  /** Levels the effort was raised because tool calls kept failing. */
+  escalated?: number
 }
 
-type RouteFields = Pick<ProxyResult, 'terminal' | 'main' | 'ttl1h' | 'refused'>
+type RouteFields = Pick<ProxyResult, 'terminal' | 'main' | 'ttl1h' | 'refused' | 'agent' | 'escalated'>
 
 /** The routing fields of a result: who sent it, and what the router should learn from it. */
 export function routeFields(plan: RoutePlan | null, payload: Buffer, refused?: ModelFamily): RouteFields {
@@ -69,6 +73,8 @@ export function routeFields(plan: RoutePlan | null, payload: Buffer, refused?: M
   // Only the head of a large body is read: cache_control sits on the system prompt and the tools.
   if (asksHourCache(payload.subarray(0, 200_000).toString('utf8'))) out.ttl1h = true
   if (refused) out.refused = refused
+  if (plan.agent) out.agent = true
+  if (plan.escalated) out.escalated = plan.escalated
   return out
 }
 export interface ProxyOpts {
@@ -109,23 +115,31 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
       let rewritten: { changed: boolean; stats: WireStats; stashes: StashEntry[] } | null = null
       let asked: { model?: ModelFamily; effort?: string } = {}
       let plan: RoutePlan | null = null
+      let conv: ConvInfo | null = null
       if (isMessages) {
         let text: string | null = null
         try {
           text = body.toString('utf8')
           try { asked = requestModelAndEffort(text) } catch { /* the turn still counts, without a model */ }
-          const r = rewriteMessagesBody(text, { compressImage, decay: decayEnabled })
+          const r = rewriteMessagesBody(text, { compressImage, decay: decayEnabled, inspect: (o) => { conv = readConversation(o) } })
           if (r.changed) { body = Buffer.from(r.body, 'utf8'); text = r.body }
           rewritten = { changed: r.changed, stats: r.stats, stashes: r.stashes }
         } catch { /* fail-open: forward original */ }
         // v1.56.0: the model the router picked for this message, swapped in after compression so a retry
         // can send the compressed body on the model it asked for.
+        // v1.57.0: the effort too, and a subagent's own route: its first request waits a moment for main
+        // to classify its task.
         if (text !== null) {
           try {
-            plan = planRequest(text, req.headers)
+            plan = planRequest(text, req.headers, conv)
+            if (plan.ask) {
+              await waitAgentRoute(plan.ask)
+              plan = planRequest(text, req.headers, conv)
+            }
             if (plan.original !== undefined) {
               body = Buffer.from(plan.body, 'utf8')
-              if (plan.used) asked = { ...asked, model: plan.used }
+              if (plan.modelChanged && plan.used) asked = { ...asked, model: plan.used }
+              if (plan.effortChanged && plan.effort) asked = { ...asked, effort: plan.effort }
             }
           } catch { plan = null }
         }
@@ -156,9 +170,9 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
               // before a byte of the refusal reaches the client.
               if (routed && plan && plan.original !== undefined && isRefusal(up.statusCode)) {
                 up.resume()
-                refusedFamily = plan.used ?? undefined
-                noteRefused(plan.terminal, plan.used)
-                asked = { ...asked, model: plan.asked ?? undefined }
+                if (plan.modelChanged) refusedFamily = plan.used ?? undefined
+                noteRefused(plan.terminal, plan.modelChanged ? plan.used : null, plan.effortChanged === true)
+                asked = { ...asked, model: plan.asked ?? undefined, effort: plan.askedEffort }
                 send(Buffer.from(plan.original, 'utf8'), false)
                 return
               }
@@ -222,6 +236,8 @@ export function resultFrame(r: ProxyResult): ProxyResultMsg {
   if (r.main) msg.main = true
   if (r.ttl1h) msg.ttl1h = true
   if (r.refused) msg.refused = r.refused
+  if (r.agent) msg.agent = true
+  if (r.escalated) msg.escalated = r.escalated
   return msg
 }
 export function stashFrame(stashes: StashEntry[]): ProxyStashMsg {
@@ -244,9 +260,12 @@ if (parentPort) {
     const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string })
     if (!msg) return
     if (msg.kind === 'config') { applyProxyConfig(msg); return } // live mode/cap change (Settings → supervisor)
-    if (msg.kind === 'route') { const r = msg as { terminal?: unknown; family?: unknown }; setRoute(r.terminal, r.family); return } // v1.56.0 per-message routing
+    if (msg.kind === 'route') { const r = msg as { terminal?: unknown; family?: unknown; effort?: unknown; on?: unknown }; setRoute(r.terminal, r.family, r.effort, r.on); return } // v1.56.0 per-message routing
+    if (msg.kind === 'agent-route') { const r = msg as { terminal?: unknown; key?: unknown; family?: unknown; effort?: unknown; on?: unknown }; setAgentRoute(r.terminal, r.key, r.family, r.effort, r.on); return } // v1.57.0 subagents
     if (msg.kind !== 'init' || server) return
     applyProxyConfig(msg) // honor the config carried on init — and re-applied on every respawn
+    // v1.57.0: a subagent's task goes to main, where the local classifier routes it (agent-route back).
+    setAgentAsker((q) => { try { parentPort.postMessage({ kind: 'agent-task', ...q }) } catch { /* it runs as it asked */ } })
     const targetPort = msg.port || 0
     let attempts = 0
     const start = (): void => {

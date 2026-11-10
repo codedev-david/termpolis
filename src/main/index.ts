@@ -215,10 +215,10 @@ import { describeWireTier } from './headroom/wireTier'
 import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
 import { summarizeElisionHealth } from './headroom/elisionHealth'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight, setProxyRoute } from './headroomProxy/proxySupervisor'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight, setProxyRoute, setProxyAgentRoute, onProxyAgentTask } from './headroomProxy/proxySupervisor'
 import { readJsonObject } from './agentConfigIO'
 import { claudeLaunchEnv as buildClaudeLaunchEnv, withAutoSubagent, withRouteHeader } from './headroom/shapingEnv'
-import { configureRouter, registerTerminal, forgetTerminal, pinTerminal, noteProxyResult, routePrompt, setRouterMode, getRouterMode } from './messageRouter'
+import { configureRouter, registerTerminal, forgetTerminal, pinTerminal, noteProxyResult, routePrompt, routeAgentTask, setRouterMode, getRouterMode } from './messageRouter'
 import { isRouteFamily } from './headroomProxy/modelRoute'
 import type { RouterTuning } from '../shared/taskRouter'
 import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
@@ -929,10 +929,13 @@ onFirstPrompt((sessionId, prompt, _cwd, named, afterCompact) => {
 let routerTuning: RouterTuning | undefined
 configureRouter({
   classify: (text) => routerClassify(app.getPath('userData'), text),
-  setRoute: (terminal, family) => setProxyRoute(terminal, family),
+  setRoute: (terminal, pick) => setProxyRoute(terminal, pick?.family ?? null, pick?.effort ?? null, pick !== null),
+  // v1.57.0: a subagent's task is routed on its own (its first request waits briefly for this).
+  setAgentRoute: (terminal, key, pick) => setProxyAgentRoute(terminal, key, pick?.family ?? null, pick?.effort ?? null, pick !== null),
   notify: (e) => mainWindow?.webContents.send('router:message', e),
   tuning: () => routerTuning,
 })
+onProxyAgentTask((q) => { void routeAgentTask(q).catch(() => null) })
 ipcMain.handle('router:configure', (_, opts: { mode?: unknown; tuning?: unknown } = {}) => {
   const t = opts?.tuning as RouterTuning | undefined
   if (t && typeof t === 'object' && typeof t.haikuMaxWords === 'number' && t.misroutes && typeof t.misroutes === 'object') routerTuning = t

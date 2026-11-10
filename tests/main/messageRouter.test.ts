@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   _resetMessageRouterForTests, configureRouter, isRouterMode, setRouterMode, getRouterMode, registerTerminal,
-  forgetTerminal, pinTerminal, noteProxyResult, routePrompt, FIRST_MIN_CONFIDENCE, type RouterDeps,
+  forgetTerminal, pinTerminal, noteProxyResult, routePrompt, routeAgentTask, FIRST_MIN_CONFIDENCE, AGENT_BUDGET_MS, type RouterDeps,
 } from '../../src/main/messageRouter'
 import type { ClassifyResult } from '../../src/main/routerModel'
 import { HAIKU_MAX_CTX } from '../../src/shared/switchEconomics'
@@ -91,8 +91,8 @@ describe('messageRouter', () => {
     const d = deps({ classify: vi.fn(async () => vote('haiku', 0.9)) })
     registerTerminal('t', true)
     const e = await routePrompt({ terminalId: 't', prompt: 'what branch am I on' })
-    expect(e).toMatchObject({ model: 'haiku', from: null, switched: true, reason: 'first', source: 'local-model', terminalId: 't' })
-    expect(d.setRoute).toHaveBeenCalledWith('t', 'haiku')
+    expect(e).toMatchObject({ model: 'haiku', effort: 'low', from: null, fromEffort: null, switched: true, reason: 'first', source: 'local-model', terminalId: 't' })
+    expect(d.setRoute).toHaveBeenCalledWith('t', { family: 'haiku', effort: 'low' })
     expect(d.notify).toHaveBeenCalledWith(e)
 
     _resetMessageRouterForTests()
@@ -101,7 +101,10 @@ describe('messageRouter', () => {
     // rules default is sonnet at 0.4 < FIRST_MIN_CONFIDENCE
     expect(0.4).toBeLessThan(FIRST_MIN_CONFIDENCE)
     expect(await routePrompt({ terminalId: 't', prompt: 'hmm interesting thought about the colour' })).toBeNull()
-    expect(d2.setRoute).not.toHaveBeenCalled()
+    // nothing to change, but the pane is routed: its subagents and a struggling message still are
+    expect(d2.setRoute).toHaveBeenCalledWith('t', { family: null, effort: null })
+    expect(await routePrompt({ terminalId: 't', prompt: 'hmm interesting thought about the colour' })).toBeNull()
+    expect(d2.setRoute).toHaveBeenCalledTimes(1) // sent once
   })
 
   it('keep: stays on the current model, and does nothing before one is known', async () => {
@@ -110,8 +113,9 @@ describe('messageRouter', () => {
     expect(await routePrompt({ terminalId: 't', prompt: 'yes please' })).toBeNull()
     main('t', 'opus')
     const e = await routePrompt({ terminalId: 't', prompt: 'yes please' })
-    expect(e).toMatchObject({ model: 'opus', from: 'opus', switched: false, reason: 'keep', saving: 0 })
-    expect(d.setRoute).not.toHaveBeenCalled()
+    expect(e).toMatchObject({ model: 'opus', from: 'opus', effort: null, switched: false, reason: 'keep', saving: 0 })
+    expect(d.setRoute).toHaveBeenCalledTimes(1)
+    expect(d.setRoute).toHaveBeenCalledWith('t', { family: null, effort: null })
     expect(d.notify).toHaveBeenCalledTimes(1)
   })
 
@@ -122,7 +126,7 @@ describe('messageRouter', () => {
     const e = await routePrompt({ terminalId: 't', prompt: 'what branch am I on' })
     expect(e).toMatchObject({ model: 'haiku', from: 'opus', switched: true, reason: 'cheaper' })
     expect(e!.saving).toBeGreaterThan(0)
-    expect(d.setRoute).toHaveBeenCalledWith('t', 'haiku')
+    expect(d.setRoute).toHaveBeenCalledWith('t', { family: 'haiku', effort: 'low' })
     // a huge conversation: haiku is out
     main('t', 'opus', { input_tokens: HAIKU_MAX_CTX + 1, cache_read_input_tokens: 0 })
     expect(await routePrompt({ terminalId: 't', prompt: 'what branch am I on' })).toMatchObject({ model: 'opus', switched: false, reason: 'too-big-for-haiku' })
@@ -141,9 +145,9 @@ describe('messageRouter', () => {
     noteProxyResult({ terminal: 't', refused: 'haiku' })
     noteProxyResult({ terminal: 't', refused: 'nonsense' })
     e = await routePrompt({ terminalId: 't', prompt: 'what branch am I on' })
-    // haiku refused for this pane: bumped to sonnet, which is what it is on
-    expect(e).toMatchObject({ model: 'sonnet', from: 'sonnet', reason: 'same' })
-    expect(d.setRoute).toHaveBeenLastCalledWith('t', 'sonnet')
+    // haiku refused for this pane: bumped to sonnet, which is what it is on, at the quick answer's effort
+    expect(e).toMatchObject({ model: 'sonnet', from: 'sonnet', effort: 'low', reason: 'lighter' })
+    expect(d.setRoute).toHaveBeenLastCalledWith('t', { family: 'sonnet', effort: 'low' })
   })
 
   it('every model refused: no route', async () => {
@@ -203,5 +207,124 @@ describe('messageRouter', () => {
     registerTerminal('t', true)
     const e = await routePrompt({ terminalId: 't', prompt: 'design ' + 'x'.repeat(5000) })
     expect(e!.prompt).toHaveLength(2000)
+  })
+
+  it('noteProxyResult keeps the effort, warms its own cache, and ignores a subagent', async () => {
+    const d = deps({ classify: vi.fn(async () => vote('opus', 0.9)) })
+    registerTerminal('t', true)
+    main('t', 'opus', undefined, { effort: 'high' })
+    // a subagent's result: neither its model nor its context count
+    noteProxyResult({ terminal: 't', main: true, agent: true, model: 'haiku', usage: { input_tokens: 999_999 } })
+    const e = await routePrompt({ terminalId: 't', prompt: 'design the sync protocol for the new storage layer' })
+    expect(e).toMatchObject({ from: 'opus', fromEffort: 'high' })
+    noteProxyResult({ terminal: 't', main: true, model: 'opus', effort: 'bogus' })
+    const e2 = await routePrompt({ terminalId: 't', prompt: 'design the sync protocol for the new storage layer' })
+    expect(e2).toMatchObject({ fromEffort: null })
+    expect(d.notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('a raised effort while tool calls fail shows as struggling, once per level, reset by the next message', async () => {
+    const d = deps({ classify: vi.fn(async () => vote('sonnet', 0.9)) })
+    registerTerminal('t', true)
+    // before any message: no last event, so the event is built from the result alone
+    main('t', 'sonnet', undefined, { effort: 'high', escalated: 1 })
+    expect(d.notify).toHaveBeenLastCalledWith(expect.objectContaining({ reason: 'struggling', model: 'sonnet', effort: 'high', prompt: '', source: 'rules', label: 'sonnet', confidence: 1 }))
+    const e = await routePrompt({ terminalId: 't', prompt: BUILD })
+    d.notify.mockClear()
+    main('t', 'sonnet', undefined, { effort: 'xhigh', escalated: 1 })
+    expect(d.notify).toHaveBeenCalledTimes(1)
+    expect(d.notify).toHaveBeenLastCalledWith(expect.objectContaining({ reason: 'struggling', switched: true, effort: 'xhigh', fromEffort: e!.effort, prompt: e!.prompt, label: e!.label, source: e!.source }))
+    main('t', 'sonnet', undefined, { effort: 'xhigh', escalated: 1 }) // the same level: no new event
+    expect(d.notify).toHaveBeenCalledTimes(1)
+    main('t', 'sonnet', undefined, { effort: 'max', escalated: 2 })
+    expect(d.notify).toHaveBeenCalledTimes(2)
+    // pinned: not shown
+    pinTerminal('t')
+    main('t', 'sonnet', undefined, { effort: 'max', escalated: 3 })
+    expect(d.notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('routeAgentTask: routes a subagent on its own and reports it', async () => {
+    const setAgentRoute = vi.fn()
+    const d = deps({ classify: vi.fn(async () => vote('haiku', 0.95)), setAgentRoute })
+    registerTerminal('t', true)
+    const e = await routeAgentTask({ terminal: 't', key: 5, task: 'find every file that imports the router', asked: 'opus', effort: 'high' })
+    expect(e).toMatchObject({ terminalId: 't', model: 'haiku', from: 'opus', fromEffort: 'high', agent: true, switched: true, reason: 'agent', saving: 0 })
+    expect(setAgentRoute).toHaveBeenCalledWith('t', 5, { family: 'haiku', effort: e!.effort })
+    expect(d.notify).toHaveBeenCalledWith(e)
+  })
+
+  it('routeAgentTask: the same model at its default effort is no switch; a refused model goes up', async () => {
+    const setAgentRoute = vi.fn()
+    deps({ classify: vi.fn(async () => vote('sonnet', 0.95)), setAgentRoute })
+    registerTerminal('t', true)
+    const e = await routeAgentTask({ terminal: 't', key: 1, task: BUILD, asked: 'sonnet', effort: 'nonsense' })
+    expect(e).toMatchObject({ model: 'sonnet', fromEffort: null })
+    expect(e!.switched).toBe(e!.effort !== 'high')
+    noteProxyResult({ terminal: 't', refused: 'sonnet' })
+    const up = await routeAgentTask({ terminal: 't', key: 2, task: BUILD, asked: 'sonnet' })
+    expect(up).toMatchObject({ model: 'opus', switched: true })
+    // every model refused: runs as it asked
+    noteProxyResult({ terminal: 't', refused: 'opus' })
+    expect(await routeAgentTask({ terminal: 't', key: 3, task: BUILD, asked: 'sonnet' })).toMatchObject({ model: 'sonnet' })
+  })
+
+  it('routeAgentTask: a confirmation-like task keeps the subagent as launched', async () => {
+    const setAgentRoute = vi.fn()
+    const d = deps({ classify: vi.fn(async () => vote('keep', 0.95)), setAgentRoute })
+    registerTerminal('t', true)
+    expect(await routeAgentTask({ terminal: 't', key: 4, task: 'yes go ahead', asked: 'opus' })).toBeNull()
+    expect(setAgentRoute).toHaveBeenCalledWith('t', 4, { family: null, effort: null })
+    expect(d.notify).not.toHaveBeenCalled()
+  })
+
+  it('routeAgentTask: leaves alone what it cannot route', async () => {
+    expect(await routeAgentTask({ terminal: 't', key: 1, task: BUILD, asked: 'opus' })).toBeNull() // no deps
+    deps() // no setAgentRoute
+    expect(await routeAgentTask({ terminal: 't', key: 1, task: BUILD, asked: 'opus' })).toBeNull()
+    const setAgentRoute = vi.fn()
+    deps({ setAgentRoute })
+    expect(await routeAgentTask(undefined as never)).toBeNull()
+    expect(await routeAgentTask({ terminal: 7, key: 1 })).toBeNull()
+    expect(await routeAgentTask({ terminal: 't', key: '1' })).toBeNull()
+    expect(setAgentRoute).not.toHaveBeenCalled()
+    // not a routed pane, no task, or a model it does not know: told to leave it alone
+    expect(await routeAgentTask({ terminal: 'nope', key: 1, task: BUILD, asked: 'opus' })).toBeNull()
+    registerTerminal('t', true)
+    expect(await routeAgentTask({ terminal: 't', key: 2, task: '   ', asked: 'opus' })).toBeNull()
+    expect(await routeAgentTask({ terminal: 't', key: 3, task: 42, asked: 'opus' })).toBeNull()
+    expect(await routeAgentTask({ terminal: 't', key: 4, task: BUILD, asked: 'fable' })).toBeNull()
+    expect(setAgentRoute.mock.calls).toEqual([['nope', 1, null], ['t', 2, null], ['t', 3, null], ['t', 4, null]])
+  })
+
+  it('routeAgentTask: the pane changed while the vote ran, and the vote gets the longer budget', async () => {
+    vi.useFakeTimers()
+    try {
+      const setAgentRoute = vi.fn()
+      deps({ classify: vi.fn(() => new Promise<ClassifyResult>(() => { /* never */ })), budgetMs: 50, setAgentRoute })
+      registerTerminal('t', true)
+      const p = routeAgentTask({ terminal: 't', key: 1, task: BUILD, asked: 'opus' })
+      let done = false
+      void p.then(() => { done = true })
+      await vi.advanceTimersByTimeAsync(60)
+      expect(done).toBe(false) // a subagent waits AGENT_BUDGET_MS, not the message budget
+      await vi.advanceTimersByTimeAsync(AGENT_BUDGET_MS)
+      expect(await p).toMatchObject({ source: 'rules', agent: true })
+      const p2 = routeAgentTask({ terminal: 't', key: 2, task: BUILD, asked: 'opus' })
+      pinTerminal('t')
+      await vi.advanceTimersByTimeAsync(AGENT_BUDGET_MS)
+      expect(await p2).toBeNull()
+      expect(setAgentRoute).toHaveBeenLastCalledWith('t', 2, null)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses the default clock for a subagent', async () => {
+    const setAgentRoute = vi.fn()
+    configureRouter({ classify: async () => ({ cls: null, ms: 7 }) as ClassifyResult, setRoute: vi.fn(), notify: vi.fn(), setAgentRoute })
+    registerTerminal('t', true)
+    const e = await routeAgentTask({ terminal: 't', key: 1, task: BUILD, asked: 'sonnet' })
+    expect(e!.ms).toBeGreaterThanOrEqual(7)
   })
 })

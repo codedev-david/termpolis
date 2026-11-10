@@ -155,6 +155,9 @@ const M = vi.hoisted(() => ({
   loadProxyBaseFromDisk: vi.fn(),
   resetProxyCounters: vi.fn(),
   onProxyResult: vi.fn(),
+  setProxyRoute: vi.fn(),
+  setProxyAgentRoute: vi.fn(),
+  onProxyAgentTask: vi.fn(),
   onProxyStash: vi.fn(),
   setProxySpawner: vi.fn(),
   createProxyTransport: vi.fn(() => ({ transport: true })),
@@ -560,6 +563,7 @@ vi.mock('../../src/main/headroomProxy/proxySupervisor', () => ({
   setProxyEnabled: M.setProxyEnabled, isProxyEnabled: M.isProxyEnabled, isProxyStarted: M.isProxyStarted,
   isProxyHealthy: M.isProxyHealthy, userRoutingVar: M.userRoutingVar, getProxyMode: M.getProxyMode,
   setAgentEnvReader: M.setAgentEnvReader,
+  setProxyRoute: M.setProxyRoute, setProxyAgentRoute: M.setProxyAgentRoute, onProxyAgentTask: M.onProxyAgentTask,
 }))
 
 // ---- workflow ----
@@ -1321,6 +1325,21 @@ describe('headroom proxy wiring', () => {
     M.recordProxyResult.mockImplementationOnce(() => { throw new Error('ledger wedged') })
     // A bookkeeping failure must not propagate into the response path that is mid-flight.
     expect(() => onResult({ savedTokens: 6 })).not.toThrow()
+  })
+
+  it('a subagent task from the proxy is routed, and its answer goes back to the proxy (v1.57.0)', async () => {
+    const onTask = cbOf(M.onProxyAgentTask)
+    M.setProxyAgentRoute.mockClear()
+    // an unrouted pane: told to leave the subagent alone
+    onTask({ terminal: 'nope', key: 3, task: 'find the callers', asked: 'opus' })
+    await vi.waitFor(() => expect(M.setProxyAgentRoute).toHaveBeenCalledWith('nope', 3, null, null, false))
+    const mr = await import('../../src/main/messageRouter')
+    // a pin stops routing the pane: the proxy is told so
+    M.setProxyRoute.mockClear()
+    mr.pinTerminal('pin-1')
+    expect(M.setProxyRoute).toHaveBeenCalledWith('pin-1', null, null, false)
+    mr.forgetTerminal('pin-1')
+    expect(() => onTask(undefined)).not.toThrow()
   })
 
   it('commits every stashed original, and one bad stash does not lose the rest', async () => {

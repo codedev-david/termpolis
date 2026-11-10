@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { withRouteHeader, CUSTOM_HEADERS_ENV } from '../../src/main/headroom/shapingEnv'
 import {
-  setProxySpawner, startProxy, stopProxy, setProxyRoute, setProxyThinkingCap, setProxyDecay, _resetProxyForTest,
+  setProxySpawner, startProxy, stopProxy, setProxyRoute, setProxyAgentRoute, onProxyAgentTask, setProxyThinkingCap, setProxyDecay, _resetProxyForTest,
   type ProxyTransport,
 } from '../../src/main/headroomProxy/proxySupervisor'
 import { executeTool } from '../../src/main/mcpServer'
@@ -37,17 +37,17 @@ describe('withRouteHeader', () => {
 })
 
 describe('the supervisor keeps the routes', () => {
-  interface FakeChild { posted: Array<Record<string, unknown>>; exit: () => void }
+  interface FakeChild { posted: Array<Record<string, unknown>>; exit: () => void; emit: (m: unknown) => void }
   let children: FakeChild[] = []
   let failPost = false
   function spawner(): ProxyTransport {
     let onMsg: (m: unknown) => void = () => {}
     let onExit: (c: number) => void = () => {}
-    const child: FakeChild = { posted: [], exit: () => onExit(1) }
+    const child: FakeChild = { posted: [], exit: () => onExit(1), emit: (m) => onMsg(m) }
     children.push(child)
     return {
       postMessage: (m: unknown) => {
-        if (failPost && (m as { kind?: string }).kind === 'route') throw new Error('post failed')
+        if (failPost && ['route', 'agent-route'].includes(String((m as { kind?: string }).kind))) throw new Error('post failed')
         child.posted.push(m as Record<string, unknown>)
         if ((m as { kind?: string })?.kind === 'init') onMsg({ kind: 'ready', port: (m as { port: number }).port })
       },
@@ -70,17 +70,50 @@ describe('the supervisor keeps the routes', () => {
   it('posts a route to the child and replays the table to a respawned one', async () => {
     setProxyRoute('early', 'opus') // before any child: kept for its init
     startProxy({ port: 7501 })
-    expect(routesOf(children[0])).toEqual([{ kind: 'route', terminal: 'early', family: 'opus' }])
-    setProxyRoute('t1', 'haiku')
+    expect(routesOf(children[0])).toEqual([{ kind: 'route', terminal: 'early', family: 'opus', effort: null, on: false }])
+    setProxyRoute('t1', 'haiku', 'low', true)
+    setProxyRoute('t2', null, null, true) // routed with nothing to change: kept, so its subagents route
+    setProxyRoute('t3', null, 'high')
     setProxyRoute('early', null)
     expect(routesOf(children[0]).slice(1)).toEqual([
-      { kind: 'route', terminal: 't1', family: 'haiku' },
-      { kind: 'route', terminal: 'early', family: null },
+      { kind: 'route', terminal: 't1', family: 'haiku', effort: 'low', on: true },
+      { kind: 'route', terminal: 't2', family: null, effort: null, on: true },
+      { kind: 'route', terminal: 't3', family: null, effort: 'high', on: false },
+      { kind: 'route', terminal: 'early', family: null, effort: null, on: false },
     ])
     children[0].exit()
     await vi.advanceTimersByTimeAsync(60_000)
     expect(children.length).toBeGreaterThan(1)
-    expect(routesOf(children[children.length - 1])).toEqual([{ kind: 'route', terminal: 't1', family: 'haiku' }])
+    expect(routesOf(children[children.length - 1])).toEqual([
+      { kind: 'route', terminal: 't1', family: 'haiku', effort: 'low', on: true },
+      { kind: 'route', terminal: 't2', family: null, effort: null, on: true },
+      { kind: 'route', terminal: 't3', family: null, effort: 'high', on: false },
+    ])
+  })
+
+  it('posts a subagent route (never replayed) and hands a subagent task to main', async () => {
+    setProxyAgentRoute('t1', 7, 'haiku', 'low') // no child yet: dropped, not thrown
+    startProxy({ port: 7503 })
+    setProxyAgentRoute('t1', 9, 'sonnet', null)
+    setProxyAgentRoute('t1', 11, null, null, false)
+    expect(children[0].posted.filter((m) => m.kind === 'agent-route')).toEqual([
+      { kind: 'agent-route', terminal: 't1', key: 9, family: 'sonnet', effort: null, on: true },
+      { kind: 'agent-route', terminal: 't1', key: 11, family: null, effort: null, on: false },
+    ])
+    const seen: unknown[] = []
+    const q = { kind: 'agent-task', terminal: 't1', key: 9, task: 'grep the repo', asked: 'opus', effort: null }
+    children[0].emit(q) // no listener yet: ignored
+    onProxyAgentTask((m) => { seen.push(m) })
+    children[0].emit(q)
+    expect(seen).toEqual([q])
+    onProxyAgentTask(() => { throw new Error('boom') })
+    expect(() => children[0].emit(q)).not.toThrow()
+    failPost = true
+    expect(() => setProxyAgentRoute('t1', 9, 'opus', 'max')).not.toThrow()
+    failPost = false
+    children[0].exit()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(children[children.length - 1].posted.some((m) => m.kind === 'agent-route')).toBe(false)
   })
 
   it('a post that fails does not throw', () => {

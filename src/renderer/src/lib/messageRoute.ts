@@ -3,6 +3,7 @@
 // that teaches the local classifier. The decision itself is made in main (messageRouter.ts).
 import { routerTuning } from './autoModel'
 import type { RouteEvent } from '../../../shared/smartRoute'
+import { effortOrDefault } from '../../../shared/effortLevels'
 
 export type RouterMode = 'auto-panes' | 'all' | 'off'
 export type RouteLabel = 'keep' | 'haiku' | 'sonnet' | 'opus'
@@ -52,11 +53,17 @@ export function modelName(m: RouteModel): string {
   return MODEL_NAME[m]
 }
 
-/** The chip: the model this message runs on, an arrow when it moved, and how long deciding took. */
+/** The chip: the model (and v1.57.0: the effort) this message runs on, an arrow on what moved, and how
+ *  long deciding took. A subagent's task says so; a raise for failing tool calls says that instead of a time. */
 export function routeChipText(e: RouteEvent): string {
-  const ms = `${Math.max(0, Math.round(e.ms))} ms`
-  if (e.switched && e.from && e.from !== e.model) return `${modelName(e.from)} → ${modelName(e.model)} · ${ms}`
-  return `${modelName(e.model)} · ${ms}`
+  const tail = e.reason === 'struggling' ? 'more thought' : `${Math.max(0, Math.round(e.ms))} ms`
+  const model = e.switched && e.from && e.from !== e.model ? `${modelName(e.from)} → ${modelName(e.model)}` : modelName(e.model)
+  let effort = ''
+  if (e.effort) {
+    const before = e.from ? effortOrDefault(e.from, e.fromEffort) : null
+    effort = e.switched && before && before !== e.effort && (!e.from || e.from === e.model) ? ` · ${before} → ${e.effort}` : ` · ${e.effort}`
+  }
+  return `${e.agent ? 'Subagent: ' : ''}${model}${effort} · ${tail}`
 }
 
 const REASON: Readonly<Record<string, string>> = {
@@ -69,6 +76,10 @@ const REASON: Readonly<Record<string, string>> = {
   'not-sure-enough': 'a stronger model might fit, but not surely enough to pay for the switch',
   'context-too-big': 'a stronger model might fit, but re-reading this long a conversation costs too much',
   'too-big-for-haiku': 'Haiku would fit, but the conversation is too long for it',
+  lighter: 'this message needs less thought, and the lower effort costs less even after re-reading the conversation',
+  'more-thought': 'this message needs more thought on the same model',
+  agent: "a subagent's task, routed on its own: its conversation is new, so nothing cached is lost",
+  struggling: 'its tool calls kept failing, so it gets more thought until your next message',
 }
 
 /** The chip's tooltip: why, who decided, and what it is expected to save. */
@@ -77,7 +88,9 @@ export function routeChipTitle(e: RouteEvent): string {
   const who = e.source === 'rules' ? 'the word rules' : e.source === 'both' ? 'the local model and the word rules' : 'the local model'
   const pct = Math.round(Math.max(0, Math.min(1, e.confidence)) * 100)
   const money = e.saving > 0.0005 ? ` Expected saving on this message: $${e.saving.toFixed(3)}.` : ''
-  return `This message runs on ${modelName(e.model)}: ${why}. Decided on this computer by ${who} (${pct}% sure).${money} Pick what it should have been to teach the router.`
+  const what = e.agent ? 'This subagent runs' : 'This message runs'
+  const effort = e.effort ? ` at ${e.effort} effort` : ''
+  return `${what} on ${modelName(e.model)}${effort}: ${why}. Decided on this computer by ${who} (${pct}% sure).${money} Pick what it should have been to teach the router.`
 }
 
 /** The user says the message should have gone to `label`: the classifier keeps it as an example. */

@@ -24,6 +24,19 @@ export interface ProxyResultMsg {
   main?: boolean
   ttl1h?: boolean
   refused?: string
+  /** v1.57.0: a subagent's request, and levels its effort was raised because tool calls kept failing. */
+  agent?: boolean
+  escalated?: number
+}
+
+/** v1.57.0: a subagent's first request, asking main to route its task (modelRoute.AgentAsk). */
+export interface ProxyAgentTaskMsg {
+  kind: 'agent-task'
+  terminal: string
+  key: number
+  task: string
+  asked: string
+  effort: string | null
 }
 
 /** Originals committed on the REQUEST path, ahead of the response the token rides back in — the
@@ -75,13 +88,16 @@ let cooldownTimer: ReturnType<typeof setTimeout> | null = null
 let cooldownGate: ShedGate | null = null
 let resultCb: ((r: ProxyResultMsg) => void) | null = null
 let stashCb: ((s: ProxyStashMsg) => void) | null = null
-// v1.56.0: the model each routed terminal's next requests run on. Kept here, so a respawned child gets
-// them all back with its init instead of quietly sending every session on its own model.
-const routes = new Map<string, string>()
+let agentTaskCb: ((q: ProxyAgentTaskMsg) => void) | null = null
+// v1.56.0: the model (v1.57.0: and effort) each routed terminal's next requests run on. Kept here, so a
+// respawned child gets them all back with its init instead of quietly sending every session as it asks.
+type RouteFrame = { kind: 'route'; terminal: string; family: string | null; effort: string | null; on: boolean }
+const routes = new Map<string, RouteFrame>()
 
 export function setProxySpawner(fn: Spawner | null): void { spawner = fn }
 export function onProxyResult(cb: ((r: ProxyResultMsg) => void) | null): void { resultCb = cb }
 export function onProxyStash(cb: ((s: ProxyStashMsg) => void) | null): void { stashCb = cb }
+export function onProxyAgentTask(cb: ((q: ProxyAgentTaskMsg) => void) | null): void { agentTaskCb = cb }
 /** Push the wire compression mode to the child: applied live if a transport is up, and re-sent
  *  on the next (re)spawn's init. Best-effort — a failed post just means the aggressive default
  *  holds in the child, so savings never silently drop. */
@@ -90,11 +106,19 @@ export function setProxyMode(m: string): void {
   try { transport?.postMessage(configMessage()) } catch { /* best effort */ }
 }
 
-/** Route a terminal's main requests to a model family (modelRoute.ts), or stop routing it (null). */
-export function setProxyRoute(terminal: string, family: string | null): void {
-  if (family) routes.set(terminal, family)
+/** Route a terminal's main requests to a model family and effort (modelRoute.setRoute). Both null with
+ *  `on` keeps the terminal routed with nothing to change; both null without it stops routing it. */
+export function setProxyRoute(terminal: string, family: string | null, effort: string | null = null, on = false): void {
+  const frame: RouteFrame = { kind: 'route', terminal, family, effort, on }
+  if (family || effort || on) routes.set(terminal, frame)
   else routes.delete(terminal)
-  try { transport?.postMessage({ kind: 'route', terminal, family }) } catch { /* best effort: the session runs on its own model */ }
+  try { transport?.postMessage(frame) } catch { /* best effort: the session runs on its own model */ }
+}
+
+/** Main's answer for one subagent (modelRoute.setAgentRoute); `on` false leaves it alone. Not kept for a
+ *  respawn: a new child asks again on the subagent's next request. */
+export function setProxyAgentRoute(terminal: string, key: number, family: string | null, effort: string | null, on = true): void {
+  try { transport?.postMessage({ kind: 'agent-route', terminal, key, family, effort, on }) } catch { /* it runs as it asked */ }
 }
 
 /** Every frame carries all of the config, so no frame can undo what another set. */
@@ -250,6 +274,7 @@ function spawnOnce(): void {
     else if (msg.kind === 'error') { if (transport === t) healthy = false }
     else if (msg.kind === 'result' && resultCb) { try { resultCb(m as ProxyResultMsg) } catch { /* best effort */ } }
     else if (msg.kind === 'stash' && stashCb) { try { stashCb(m as ProxyStashMsg) } catch { /* best effort */ } }
+    else if (msg.kind === 'agent-task' && agentTaskCb) { try { agentTaskCb(m as ProxyAgentTaskMsg) } catch { /* best effort */ } }
   })
   // Only the current child's exit counts. A replaced one dying late used to null out the
   // transport of the child that replaced it -- leaving that one running where stopProxy can't
@@ -259,7 +284,7 @@ function spawnOnce(): void {
     t.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay, firstSight: proxyFirstSight })
     // The child freezes what its first init carries, so from here this is the policy for the run.
     firstSightResolved = true
-    for (const [terminal, family] of routes) t.postMessage({ kind: 'route', terminal, family })
+    for (const frame of routes.values()) t.postMessage(frame)
   } catch { healthy = false }
 }
 
@@ -339,7 +364,7 @@ export function pickFreePort(): Promise<number> {
 export function _resetProxyForTest(): void {
   agentEnvReader = null
   disposeCooldown()
-  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; shutDown = false; resultCb = null; stashCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'; proxyEnabled = true; started = false
+  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; shutDown = false; resultCb = null; stashCb = null; agentTaskCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'; proxyEnabled = true; started = false
   proxyFirstSight = 'legacy'; firstSightResolved = false
   routes.clear()
 }

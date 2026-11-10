@@ -589,7 +589,9 @@ function measurePrefixHead(obj: Record<string, unknown>, stats: WireStats): void
   stats.retrieveOffer = direct ? 'direct' : search ? 'deferred' : 'absent'
 }
 
-export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCompressor; maxBodyChars?: number; decay?: boolean } = {}): WireResult {
+/** `inspect` (v1.57.0) sees the parsed body before anything touches it, so a reader (model routing)
+ *  needs no second parse of a large body. It must only read; anything it throws is ignored. */
+export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCompressor; maxBodyChars?: number; decay?: boolean; inspect?: (obj: unknown) => void } = {}): WireResult {
   const stats = emptyStats()
   const stashes: StashEntry[] = []
   const seen = emptySeen() // per-body dedup/diff index over earlier tool_result text + tool_use artifacts, filled left-to-right
@@ -598,6 +600,7 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   let obj: { messages?: unknown[]; thinking?: unknown; model?: unknown }
   try { obj = JSON.parse(raw) } catch { return { body: raw, changed: false, stats, stashes } }
   if (!obj || !Array.isArray(obj.messages)) return { body: raw, changed: false, stats, stashes }
+  if (opts.inspect) { try { opts.inspect(obj) } catch { /* a reader's failure never blocks the request */ } }
   // Measured here, BEFORE the round-trip guard below can fail us open: the prefix head is an
   // observation of what the client sent, not a claim about what we compressed, so it stays true
   // on requests we decline to touch. Those are exactly the requests whose cost was invisible.

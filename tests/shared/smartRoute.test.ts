@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  knnClassify, routeMessage, quickQuestion, KNN_K, USER_WEIGHT, MIN_TOP_SIM, OVERRIDE_CONFIDENCE, HAIKU_MIN_CONFIDENCE, HAIKU_MAX_WORDS,
+  knnClassify, routeMessage, routeSubagent, chooseEffort, EFFORT_RANGE, LONG_PROMPT_WORDS, quickQuestion, KNN_K, USER_WEIGHT, MIN_TOP_SIM, OVERRIDE_CONFIDENCE, HAIKU_MIN_CONFIDENCE, HAIKU_MAX_WORDS,
   type LabeledVec, type Classification,
 } from '../../src/shared/smartRoute'
 import { ROUTER_SEEDS, flatSeeds } from '../../src/shared/routerSeeds'
@@ -113,5 +113,59 @@ describe('routerSeeds', () => {
     }
     const texts = flat.map((s) => s.text.toLowerCase())
     expect(new Set(texts).size).toBe(texts.length)
+  })
+})
+
+describe('chooseEffort (v1.57.0)', () => {
+  const r = (label: 'haiku' | 'sonnet' | 'opus' | 'keep', effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max', confidence = 0.9) =>
+    ({ label, effort, confidence, source: 'local-model' as const })
+
+  it("keeps the level of a keep, and the model's range bounds the rest", () => {
+    expect(chooseEffort('ultrathink', r('keep', 'medium'))).toBe('medium')
+    expect(chooseEffort('ultrathink about this', r('sonnet', 'medium'))).toBe(EFFORT_RANGE.sonnet[1])
+    expect(chooseEffort('think as hard as you can', r('opus', 'high'))).toBe('max')
+    expect(chooseEffort('ultrathink', r('haiku', 'low'))).toBe('medium')
+  })
+
+  it('goes up for care and length, down for a sure small ask, never out of range', () => {
+    expect(chooseEffort('find the root cause of the race condition', r('sonnet', 'medium'))).toBe('high')
+    const long = Array(LONG_PROMPT_WORDS + 1).fill('word').join(' ')
+    expect(chooseEffort(long, r('sonnet', 'medium'))).toBe('high')
+    expect(chooseEffort(long, r('sonnet', 'medium'), { countLength: false })).toBe('medium')
+    expect(chooseEffort('carefully ' + long, r('sonnet', 'medium'))).toBe('xhigh')
+    expect(chooseEffort('fix a quick typo', r('sonnet', 'medium'))).toBe('low')
+    expect(chooseEffort('fix a quick typo', r('sonnet', 'medium', 0.3))).toBe('medium') // unsure: the safer level
+    expect(chooseEffort('quick fix', r('opus', 'medium'))).toBe('medium') // Opus's floor
+    expect(chooseEffort('carefully check this', r('haiku', 'medium'))).toBe('medium') // Haiku's ceiling
+  })
+})
+
+describe('routeSubagent (v1.57.0)', () => {
+  it('keep leaves the subagent as launched', () => {
+    expect(routeSubagent('yes go ahead', cls('keep', 0.95), 'opus').label).toBe('keep')
+  })
+
+  it("Haiku only on a clear vote for it, whatever the task's length", () => {
+    const long = 'list every test file under the tests folder and print their names ' + Array(40).fill('please').join(' ')
+    expect(routeSubagent(long, cls('haiku', 0.95), 'sonnet')).toMatchObject({ label: 'haiku' })
+    expect(routeSubagent(long, cls('haiku', 0.95, 0.1), 'sonnet').label).not.toBe('haiku')
+    expect(routeSubagent(long, cls('haiku', HAIKU_MIN_CONFIDENCE - 0.01), 'opus').label).not.toBe('haiku')
+  })
+
+  it("moves up only when sure, down only when very sure, and takes the new model's level", () => {
+    const t = 'design the architecture for the new sync protocol and its failure modes'
+    const up = routeSubagent(t, cls('opus', 0.95), 'sonnet')
+    expect(up.label).toBe('opus')
+    expect(['high', 'xhigh', 'max']).toContain(up.effort)
+    // a vote that beats the rules but is under UP_MIN_CONFIDENCE (0.6) does not move it up
+    const build = 'implement the settings toggle and its test'
+    expect(routeSubagent(build, cls('opus', 0.58), 'sonnet')).toMatchObject({ label: 'sonnet', effort: 'medium' })
+    expect(routeSubagent(build, cls('opus', 0.9), 'sonnet')).toMatchObject({ label: 'opus', effort: 'high' })
+    // a vote under OVERRIDE_CONFIDENCE leaves it to the rules; a lower model they pick is not taken unless sure
+    const vague = 'hmm interesting thought about the colour'
+    const ruled = routeMessage(vague, null)
+    const down = routeSubagent(vague, null, 'opus')
+    expect(down.label).toBe(ruled.confidence < OVERRIDE_CONFIDENCE ? 'opus' : ruled.label)
+    expect(routeSubagent(build, cls('sonnet', 0.99), 'opus')).toMatchObject({ label: 'sonnet' })
   })
 })

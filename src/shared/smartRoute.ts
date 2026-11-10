@@ -7,6 +7,8 @@
 
 import { routeTask, type RouteDecision, type RouterTuning, type EffortLevel } from './taskRouter'
 import type { SeedLabel } from './routerSeeds'
+import { bumpEffort, effortRank } from './effortLevels'
+import { UP_MIN_CONFIDENCE, type RouteFamily } from './switchEconomics'
 
 export interface LabeledVec {
   label: SeedLabel
@@ -95,13 +97,68 @@ function ruleLabel(d: RouteDecision): SeedLabel {
   return d.model === 'opusplan' ? 'opus' : d.model
 }
 
+/** v1.57.0: the lowest and highest effort each model is routed to. Haiku is for quick answers; Opus is
+ *  only worth its price with some thought behind it. */
+export const EFFORT_RANGE: Readonly<Record<RouteFamily, readonly [EffortLevel, EffortLevel]>> = {
+  haiku: ['low', 'medium'],
+  sonnet: ['low', 'xhigh'],
+  opus: ['medium', 'max'],
+}
+/** A message longer than this is a spec, not a question: one level more. */
+export const LONG_PROMPT_WORDS = 200
+/** Asked in so many words for the most thought there is. */
+const MAX_THINK = /\bultrathink\b|\bthink (?:as hard as|harder than)\b/i
+/** Asks for care: one level more. */
+const DEEP_THINK = /\b(?:think (?:hard|harder|deeply|carefully|it through)|step[- ]by[- ]step|thorough(?:ly)?|careful(?:ly)?|rigorous(?:ly)?|root cause|deep dive|edge cases?|prove|audit|security review|race conditions?|deadlock\w*|subtle)\b/i
+/** Says it is small: one level less, when the route is sure of itself. */
+const LIGHT = /\b(?:quick(?:ly)?|simple|briefly|tiny|trivial|typo|one[- ]liner)\b/i
+
+function clampEffort(label: RouteFamily, e: EffortLevel): EffortLevel {
+  const [lo, hi] = EFFORT_RANGE[label]
+  if (effortRank(e) < effortRank(lo)) return lo
+  return effortRank(e) > effortRank(hi) ? hi : e
+}
+
+/** How hard a routed message should think, on the model its route picked. It starts from the route's own
+ *  level (the rule's, or the model's usual one), goes up for a message that asks for care or is long, down
+ *  for one that says it is small (only when the route is sure: unsure keeps the safer level), and stays
+ *  in the model's range. 'keep' keeps the route's level: the session's own effort is not changed. */
+export function chooseEffort(prompt: string, r: MessageRoute, opts: { countLength?: boolean } = {}): EffortLevel {
+  if (r.label === 'keep') return r.effort
+  if (MAX_THINK.test(prompt)) return clampEffort(r.label, 'max')
+  const deep = DEEP_THINK.test(prompt)
+  let steps = deep ? 1 : 0
+  if (opts.countLength !== false && prompt.trim().split(/\s+/).length > LONG_PROMPT_WORDS) steps++
+  if (!deep && r.confidence >= OVERRIDE_CONFIDENCE && LIGHT.test(prompt)) steps--
+  return clampEffort(r.label, bumpEffort(r.effort, steps))
+}
+
 /** One message's route: the classifier's vote where it is sure and the message looks like something it
  *  knows, the word rules otherwise. A confirmation ("yes", "go ahead") the classifier calls 'keep' stays
  *  on the session's model, whatever the rules would say about two words. Haiku needs a clear vote for it
  *  (HAIKU_MIN_CONFIDENCE) on a short message that does not sound like work (quickQuestion); anything less
- *  runs on Sonnet. */
+ *  runs on Sonnet. v1.57.0: the effort is decided too (chooseEffort). */
 export function routeMessage(prompt: string, cls: Classification | null, tune?: RouterTuning): MessageRoute {
-  return capHaiku(prompt, decideRoute(prompt, cls, tune), cls)
+  const r = capHaiku(prompt, decideRoute(prompt, cls, tune), cls)
+  return { ...r, effort: chooseEffort(prompt, r) }
+}
+
+const RANK: Readonly<Record<RouteFamily, number>> = { haiku: 0, sonnet: 1, opus: 2 }
+
+/** v1.57.0: the route for a subagent, from the task its parent gave it, against the model it was launched
+ *  on. A subagent starts with an empty context, so moving it costs nothing yet, but whoever launched it
+ *  on a model had a reason: it moves up only from UP_MIN_CONFIDENCE, down only from OVERRIDE_CONFIDENCE,
+ *  and to Haiku only on a clear vote for it (a task is long by nature, so quickQuestion does not apply,
+ *  and neither does the length rule for effort). 'keep' leaves the model as launched. */
+export function routeSubagent(task: string, cls: Classification | null, asked: RouteFamily, tune?: RouterTuning): MessageRoute {
+  const r = decideRoute(task, cls, tune)
+  if (r.label === 'keep') return r
+  let label: RouteFamily = r.label
+  if (label === 'haiku' && !(cls && cls.label === 'haiku' && cls.topSim >= MIN_TOP_SIM && cls.confidence >= HAIKU_MIN_CONFIDENCE)) label = 'sonnet'
+  if (RANK[label] > RANK[asked] && r.confidence < UP_MIN_CONFIDENCE) label = asked
+  if (RANK[label] < RANK[asked] && r.confidence < OVERRIDE_CONFIDENCE) label = asked
+  const base: MessageRoute = { ...r, label, effort: label === r.label ? r.effort : EFFORT_OF[label] }
+  return { ...base, effort: chooseEffort(task, base, { countLength: false }) }
 }
 
 function decideRoute(prompt: string, cls: Classification | null, tune?: RouterTuning): MessageRoute {
@@ -133,8 +190,16 @@ export interface RouteEvent {
   model: 'opus' | 'sonnet' | 'haiku'
   /** The model the session was on before it; null for a session's first message. */
   from: 'opus' | 'sonnet' | 'haiku' | null
+  /** v1.57.0: the effort the message runs at; null = the session's own (nothing changed). */
+  effort?: EffortLevel | null
+  /** The effort the session ran at before it, when known. */
+  fromEffort?: EffortLevel | null
+  /** v1.57.0: a subagent's task, not a typed message: `from` is the model it was launched on. */
+  agent?: boolean
   switched: boolean
-  /** Why: first, keep, same, cheaper, switch-costs-more, needs-stronger, not-sure-enough, context-too-big, too-big-for-haiku. */
+  /** Why: first, keep, same, cheaper, lighter, switch-costs-more, needs-stronger, more-thought,
+   *  not-sure-enough, context-too-big, too-big-for-haiku; agent (a subagent's task); struggling (tool
+   *  calls kept failing, so the effort went up for the rest of the message). */
   reason: string
   /** What the message looked like. */
   label: SeedLabel

@@ -64,6 +64,14 @@ describe('the route chip', () => {
     expect(routeChipText(ev({ switched: false, from: 'haiku', reason: 'same' }))).toBe('Haiku · 4 ms')
     expect(routeChipText(ev({ from: null, reason: 'first' }))).toBe('Haiku · 4 ms')
     expect(routeChipText(ev({ ms: -2 }))).toBe('Opus → Haiku · 0 ms')
+    // v1.57.0: the effort, its move on the same model, a subagent, and more thought for failing calls
+    expect(routeChipText(ev({ effort: 'low' }))).toBe('Opus → Haiku · low · 4 ms')
+    expect(routeChipText(ev({ model: 'sonnet', from: 'sonnet', effort: 'low', reason: 'lighter' }))).toBe('Sonnet · high → low · 4 ms')
+    expect(routeChipText(ev({ model: 'sonnet', from: 'sonnet', effort: 'high', fromEffort: 'high', reason: 'same' }))).toBe('Sonnet · high · 4 ms')
+    expect(routeChipText(ev({ model: 'sonnet', from: null, effort: 'medium', reason: 'first' }))).toBe('Sonnet · medium · 4 ms')
+    expect(routeChipText(ev({ model: 'sonnet', from: 'sonnet', effort: 'xhigh', fromEffort: 'high', reason: 'struggling' }))).toBe('Sonnet · high → xhigh · more thought')
+    expect(routeChipText(ev({ effort: 'low', agent: true, reason: 'agent' }))).toBe('Subagent: Opus → Haiku · low · 4 ms')
+    expect(routeChipTitle(ev({ effort: 'low', agent: true, reason: 'agent' }))).toContain('This subagent runs on Haiku at low effort: a subagent')
   })
 
   it('explains why, who decided, how sure, and the saving', () => {
