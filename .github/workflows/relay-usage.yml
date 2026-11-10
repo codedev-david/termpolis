@@ -1,0 +1,73 @@
+# Read-only: how many pairings use the Termpolis Remote relay, and how many relay subscriptions are active.
+# The repo is public and so are these logs: the numbers are EMAILED to the owner, never printed.
+name: Relay usage
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Days of relay traffic to count (1-31)'
+        type: string
+        default: '30'
+
+concurrency:
+  group: relay-usage
+  cancel-in-progress: true
+
+jobs:
+  usage:
+    name: Count relay pairings and subscriptions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Same staging as asc-status.yml: the key lands in RUNNER_TEMP, never in the checkout, and is shredded below.
+      - name: Stage the App Store Connect key
+        id: asckey
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ -n "$ASC_KEY_P8" ]; then
+            key_path="$RUNNER_TEMP/AuthKey.p8"
+            printf '%s' "$ASC_KEY_P8" > "$key_path"
+            chmod 600 "$key_path"
+            echo "path=$key_path" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Count
+        env:
+          DAYS: ${{ inputs.days }}
+          REPORT_PATH: ${{ runner.temp }}/relay-usage.txt
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ASC_API_KEY_PATH: ${{ steps.asckey.outputs.path }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_VENDOR_NUMBER: ${{ secrets.ASC_VENDOR_NUMBER }}
+        run: node .github/scripts/relay-usage.mjs
+
+      - name: Shred the App Store Connect key
+        if: always()
+        run: |
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          if [ -f "$key_path" ]; then
+            shred -u "$key_path" 2>/dev/null || rm -f "$key_path"
+          fi
+
+      - name: Email the report
+        uses: dawidd6/action-send-mail@v5
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: Termpolis Releases <${{ secrets.MAIL_USERNAME }}>
+          to: engelhart.david.john@gmail.com
+          subject: Termpolis Remote usage
+          body: file://${{ runner.temp }}/relay-usage.txt
