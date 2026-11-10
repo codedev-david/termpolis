@@ -69,7 +69,8 @@ jobs:
             platform: win
           - os: macos-latest
             platform: mac
-          - os: ubuntu-latest
+          # Pinned: building on 26.04 would raise the glibc floor of the native modules.
+          - os: ubuntu-24.04
             platform: linux
     runs-on: ${{ matrix.os }}
 
