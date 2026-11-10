@@ -17,7 +17,7 @@
 import { CLAUDE_MODEL_OPTIONS, type ModelOption } from './modelBroker'
 import { isResumeId, type ResumeTarget } from './agentResume'
 
-import { LAUNCH_BIN, carriedLaunchArgs } from '../../../shared/launchCarry'
+import { LAUNCH_BIN, carriedLaunchArgs, codexProxyArg } from '../../../shared/launchCarry'
 import type { LaunchProvider } from '../../../shared/launchCarry'
 
 export type ModelProvider = LaunchProvider
@@ -131,7 +131,9 @@ export function relaunchCommandFor(
 ): string {
   if (!provider || !isOfferedModel(provider, id, catalog)) return ''
   if (resume.kind === 'id' && !isResumeId(resume.id)) return ''
-  const head = [PROVIDER_BIN[provider], ...carriedLaunchArgs(provider, launchCommand), '--model', id].join(' ')
+  // A routed Codex keeps talking to the local proxy (same terminal, same account).
+  const proxy = provider === 'codex' ? codexProxyArg(launchCommand) : null
+  const head = [PROVIDER_BIN[provider], ...carriedLaunchArgs(provider, launchCommand), ...(proxy ? [proxy] : []), '--model', id].join(' ')
   switch (resume.kind) {
     case 'none':
       return head

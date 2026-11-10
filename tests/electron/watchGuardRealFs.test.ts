@@ -15,6 +15,8 @@ import { createGitWatcherRegistry, type GitWatcherDeps } from '../../src/main/gi
 
 let root: string
 let raw: string[]
+/** Every raw event, in order, with its type. */
+let rawEvents: Array<{ e: string; f: string }>
 let rawWatcher: fs.FSWatcher | null
 
 const norm = (s: string): string => s.replace(/\\/g, '/')
@@ -36,6 +38,19 @@ async function putAll(rels: string[]): Promise<void> {
   await sleep(5)
 }
 
+/** Resolves once the raw watcher has heard nothing for `quietMs` (or `capMs` has passed). */
+async function settled(quietMs = 600, capMs = 8_000): Promise<void> {
+  const start = Date.now()
+  let seen = raw.length
+  let since = Date.now()
+  while (Date.now() - since < quietMs && Date.now() - start < capMs) {
+    await sleep(25)
+    if (raw.length !== seen) { seen = raw.length; since = Date.now() }
+  }
+}
+
+const isDir = (rel: string): boolean => { try { return fs.statSync(path.join(root, rel)).isDirectory() } catch { return false } }
+
 /** Has the raw watcher seen an event for a file whose name ends with `tail`? */
 const rawSaw = (tail: string): boolean => raw.some((n) => n.endsWith(tail))
 
@@ -49,7 +64,8 @@ beforeEach(() => {
   fs.mkdirSync(path.join(root, 'vendor', 'lib', 'src'), { recursive: true })
   fs.mkdirSync(path.join(root, 'vendor', 'lib', '.git'))
   raw = []
-  rawWatcher = fs.watch(root, { recursive: true }, (_e, f) => { if (f) raw.push(norm(String(f))) })
+  rawEvents = []
+  rawWatcher = fs.watch(root, { recursive: true }, (e, f) => { if (f) { raw.push(norm(String(f))); rawEvents.push({ e, f: norm(String(f)) }) } })
 })
 afterEach(() => {
   try { rawWatcher?.close() } catch { /* closed */ }
@@ -126,6 +142,12 @@ describe('gitWatcher on the real fs.watch', () => {
     const reg = registry(onChange)
     reg.add(root)
     try {
+      // The setup's folders still echo after the watch is live: macOS FSEvents delivers their creation
+      // late, and on Windows with last-access updates on, a scanner reading them moves their times. Those
+      // are not part of the burst, so wait until the root has been quiet for a while, then start counting.
+      await settled()
+      onChange.mockClear()
+      const mark = rawEvents.length
       const burst: string[] = []
       for (let i = 0; i < 30; i++) burst.push(`.worktrees/wt1/src/q${i}.ts`, `node_modules/x/q${i}.js`)
       for (let i = 0; i < 10; i++) burst.push(`.git/worktrees/wt1/index`)
@@ -133,7 +155,12 @@ describe('gitWatcher on the real fs.watch', () => {
       // The raw watcher has seen the whole burst, and the registry has had its turn.
       await vi.waitFor(() => expect(rawSaw('q29.ts') && rawSaw('q29.js') && rawSaw('worktrees/wt1/index')).toBe(true), { timeout: 20_000, interval: 25 })
       await sleep(300)
-      expect(onChange).not.toHaveBeenCalled()
+      // Only the burst may have happened, apart from a setup folder's own entry echoing again (a scanner
+      // read it). The watcher is right to pass that on, so a repaint is allowed only when one did.
+      const outside = rawEvents.slice(mark).filter((r) => !/^(\.worktrees|node_modules|\.git)(\/|$)/i.test(r.f))
+      const echoes = outside.filter((r) => isDir(r.f))
+      expect(outside).toEqual(echoes)
+      if (echoes.length === 0) expect(onChange).not.toHaveBeenCalled()
 
       put('src/a.ts') // a real edit
       await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 20_000, interval: 25 })

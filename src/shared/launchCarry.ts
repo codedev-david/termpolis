@@ -181,7 +181,8 @@ function splitSimpleWords(text: string): string[] | null {
  */
 export function carryLaunchArgs(provider: LaunchProvider, launchCommand: string | null | undefined): LaunchCarry {
   if (!launchCommand || providerForCommand(launchCommand) !== provider) return { args: [], complete: true }
-  const text = launchCommand.trim()
+  // The proxy argument a routed Codex got (v1.58.0) is Termpolis's, not the user's: the relaunch types it again.
+  const text = launchCommand.replace(CODEX_PROXY_ARG_ALL, '').trim()
   const hadOptions = text.split(/\s+/).filter(Boolean).length > 1
   const bare: LaunchCarry = { args: [], complete: !hadOptions }
   // A line break is whitespace to split() but a command separator to a shell: two commands are not
@@ -249,6 +250,11 @@ export function agentCommandIn(line: string): string | null {
   return command
 }
 
+/** The `-c "openai_base_url='…'"` a routed Codex is launched with (v1.58.0, codexProxyArg). */
+const CODEX_PROXY_SRC = /-c\s+"openai_base_url='http:\/\/127\.0\.0\.1:\d{1,5}\/termpolis-codex\/[\w-]{1,128}\/backend-api\/codex'"/.source
+const CODEX_PROXY_ARG_ALL = new RegExp(`\\s${CODEX_PROXY_SRC}`, 'g')
+const CODEX_PROXY_ARG = new RegExp(`\\s(${CODEX_PROXY_SRC})`)
+
 /** What Termpolis itself adds to the line it types for an agent, and the relaunch supplies again by
  *  itself where it applies: Claude Code's primer file (the SessionStart hook replaces it on a resume),
  *  Codex's `-c developer_instructions=` (the relaunch passes its own), and the quoted
@@ -258,10 +264,20 @@ const INJECTED: readonly RegExp[] = [
   /\s--append-system-prompt-file(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/g,
   /\s--worktree\s+"[A-Za-z0-9._-]{1,64}"/g,
   /\s-c\s+(?:"developer_instructions=[^"]*"|'developer_instructions=[^']*')/g,
+  // v1.58.0: the local proxy a routed Codex talks to (codexProxyArg).
+  CODEX_PROXY_ARG_ALL,
 ]
 
 export function withoutInjected(command: string): string {
   return INJECTED.reduce((text, re) => text.replace(re, ''), command)
+}
+
+
+/** The `-c "openai_base_url='…'"` Termpolis put on a Codex line to route its effort per message
+ *  (v1.58.0), exactly as typed, or null. A model relaunch in the same terminal types it again; an
+ *  account switch does not, because the other account's config may pick an endpoint of its own. */
+export function codexProxyArg(command: string | null | undefined): string | null {
+  return command ? CODEX_PROXY_ARG.exec(command)?.[1] ?? null : null
 }
 
 /** `'x'` and `"x"` as the plain word x. */
