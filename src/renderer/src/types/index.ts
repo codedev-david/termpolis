@@ -484,7 +484,9 @@ export interface TermpolisAPI {
   /** `accountId`: the account a launch runs on (Settings ▸ Accounts), for the proxy's step-aside. */
   /** `limitWatch`: the terminal is created to launch an agent Termpolis watches for usage limits (the
    *  agent, or true for one not known yet): main marks it so for its whole life (§8.6, R6). */
-  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean, accountId?: string, limitWatch?: AccountAgent | true, autoModel?: boolean) => Promise<IpcResponse>
+  /** `codexRoute` (v1.58.0): a Codex launch whose effort may be routed per message; the reply's
+   *  `codexBaseUrl`, when main allows it, goes on the command as `-c openai_base_url=…`. */
+  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean, accountId?: string, limitWatch?: AccountAgent | true, autoModel?: boolean, codexRoute?: boolean) => Promise<IpcResponse<{ codexBaseUrl?: string } | undefined>>
   killTerminal: (id: string) => Promise<IpcResponse>
   /** Whether nothing runs in the terminal but its shell, as the OS tells: true once an agent that
    *  was running there has exited, false while something still runs, null where main cannot tell

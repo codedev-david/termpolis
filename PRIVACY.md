@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: November 9, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the memory hook also runs on a session's first prompt, around a compaction and before a whole-file read, and sends what it reads only to Termpolis on this computer; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it; per-message model routing decides on this computer and keeps only vectors of your corrections, never their text)
+Last updated: November 9, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the memory hook also runs on a session's first prompt, around a compaction and before a whole-file read, and sends what it reads only to Termpolis on this computer; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it; per-message model routing decides on this computer and keeps only vectors of your corrections, never their text; November 10, 2026: Codex terminals Termpolis launches send their requests through the same local proxy so each message's reasoning effort can be picked, and config.toml in Codex's home is read to see whether you chose your own endpoint)
 
 ## Overview
 
@@ -217,10 +217,16 @@ Termpolis itself only makes network requests for:
    forwarded to `api.anthropic.com` and nowhere else. See [The Claude Code
    compression proxy](#the-claude-code-compression-proxy).
 
+6. **Codex's own API requests** (while per-message routing covers Codex) —
+   forwarded to `chatgpt.com` (signed in with ChatGPT) or `api.openai.com`
+   (an API key), the endpoints Codex itself uses, and nowhere else. See
+   [Codex through the local proxy](#codex-through-the-local-proxy).
+
 Tools and AI agents you launch inside Termpolis (Claude Code, Codex, Gemini
 CLI, your own shells) make their own network requests according
 to their own privacy policies. Termpolis does not intercept that traffic, with
-one exception you can turn off: the Claude Code compression proxy.
+two exceptions you can turn off: the Claude Code compression proxy, and Codex
+terminals while per-message routing covers them.
 
 ### The Claude Code compression proxy
 
@@ -246,7 +252,8 @@ can ask for it back; none of it is sent to Termpolis.
   (`~/.claude/settings.json`) — the proxy steps aside. Claude Code keeps the
   route you configured, nothing is compressed, and Settings → Token Savings
   shows which variable it found.
-- Codex, Gemini CLI and your shells never go through it.
+- Gemini CLI and your shells never go through it. Codex goes through it only
+  for per-message effort (next section), and nothing of Codex's is compressed.
 - **When it shortens a tool result.** Since v1.55 the proxy leaves a tool
   result whole until it reaches 40,000 characters and shortens it from there
   (Settings → Token Savings → Shorten tool results: **Late**, the default).
@@ -271,6 +278,32 @@ can ask for it back; none of it is sent to Termpolis.
   since the client asks again. It keeps counts only, and forwards the answer to
   Claude Code unchanged.
 
+
+### Codex through the local proxy
+
+Since v1.58, a Codex terminal Termpolis launches from the sidebar, while
+**Model per message** covers Codex (its default), is started with
+`openai_base_url` pointing at the same proxy on `127.0.0.1`. When you type a
+new message, the proxy reads that message's text from the request and hands
+it to the router on this computer, which picks a reasoning effort for it; the
+proxy then changes only the `"effort"` value in the request and forwards it to
+`chatgpt.com` or `api.openai.com`, exactly where Codex would have sent it. The
+model is never changed, nothing is compressed, nothing is stored, and the
+request's sign-in header is forwarded untouched (only its form, ChatGPT or API
+key, is looked at, to pick the endpoint). Requests Codex marks as its own
+internal work, the model list and compaction pass through as sent. The proxy
+answers Codex's WebSocket with "upgrade required", so Codex uses plain HTTP for
+the session.
+
+- **Your own route wins.** A Codex command that names its own endpoint,
+  provider or profile (`openai_base_url`, `model_provider`, `chatgpt_base_url`,
+  `--oss`, `--profile`), a `config.toml` in Codex's home that sets one of
+  those (Termpolis reads that file only, never Codex's sign-in), or
+  `OPENAI_BASE_URL`, `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY` in the
+  environment: Codex is launched as it is and talks to OpenAI directly.
+- **Turn it off** with Settings → General → Default Models → Model per message
+  → **Off**, or the compression proxy switch in Settings → Token Savings. New
+  Codex terminals then talk to OpenAI directly.
 ## Signing in to an account
 
 When you sign an account in from Termpolis (its card in Settings → Accounts,

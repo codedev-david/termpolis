@@ -74,6 +74,16 @@ describe('the route chip', () => {
     expect(routeChipTitle(ev({ effort: 'low', agent: true, reason: 'agent' }))).toContain('This subagent runs on Haiku at low effort: a subagent')
   })
 
+  it('a Codex turn shows only its effort (v1.58.0)', () => {
+    const cx = (codex: { from: string | null; effort: string }, o: Partial<RouteEvent> = {}): RouteEvent =>
+      ev({ reason: 'codex', codex: codex as RouteEvent['codex'], ...o })
+    expect(routeChipText(cx({ from: 'medium', effort: 'low' }))).toBe('Codex · medium → low · 4 ms')
+    expect(routeChipText(cx({ from: 'medium', effort: 'low' }, { switched: false }))).toBe('Codex · low · 4 ms')
+    expect(routeChipText(cx({ from: null, effort: 'high' }, { ms: 3.6 }))).toBe('Codex · high · 4 ms')
+    expect(routeChipText(cx({ from: 'low', effort: 'low' }, { ms: -1 }))).toBe('Codex · low · 0 ms')
+    expect(routeChipTitle(cx({ from: 'medium', effort: 'xhigh' }))).toContain('This message runs at xhigh effort in Codex: this message fits this effort; Codex keeps its model.')
+  })
+
   it('explains why, who decided, how sure, and the saving', () => {
     const t = routeChipTitle(ev())
     expect(t).toContain('runs on Haiku')

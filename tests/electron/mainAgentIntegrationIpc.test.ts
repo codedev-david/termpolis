@@ -102,6 +102,9 @@ const H = vi.hoisted(() => {
     resolveLaunchTarget: vi.fn((_paths: unknown, _id: unknown, _agent: string): { connected: boolean; target?: unknown } => ({ connected: true })),
     isTerminalAccountConnected: vi.fn((_paths: unknown, _id: unknown) => true),
     codexHomeFor: vi.fn((_paths: unknown, _id: unknown): { home?: string } | { error: string } => ({})),
+    // v1.58.0 Codex effort per message: the proxy URL a Codex terminal gets, and its config.toml check.
+    codexProxyBaseUrl: vi.fn((_id: string): string | null => null),
+    codexHomeRoutes: vi.fn(async (_home: string) => false),
     accountSettingsEnv: vi.fn((_paths: unknown, _id: unknown): Record<string, unknown> | null | undefined => undefined),
     forgetTerminalAccount: vi.fn((_id: string) => undefined),
     noteTypedInput: vi.fn((_id: string, _typed: string): 'own' | 'by-hand' | null => null),
@@ -483,8 +486,10 @@ vi.mock('../../src/main/headroomProxy/proxySupervisor', async (importOriginal) =
     setProxyThinkingCap: recorded('thinkingCap', real.setProxyThinkingCap),
     setProxyDecay: recorded('decay', real.setProxyDecay),
     setProxyEnabled: recorded('enabled', real.setProxyEnabled),
+    codexProxyBaseUrl: H.codexProxyBaseUrl,
   }
 })
+vi.mock('../../src/main/codexLaunch', () => ({ codexHomeRoutes: H.codexHomeRoutes }))
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -786,6 +791,48 @@ describe('agents:remove-codex-home-trust', () => {
     H.resolveAgentIntegrationPaths.mockImplementationOnce(() => { throw new Error('no home folder') })
     expect(await invoke(IPC.removeCodexHomeTrust)).toEqual({ success: false, error: 'no home folder' })
     expect(H.removeCodexHomeTrust).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// terminal:create for Codex (v1.58.0): the proxy URL its effort is routed through.
+// ===========================================================================
+describe('terminal:create with codexRoute', () => {
+  const URL = 'http://127.0.0.1:9999/termpolis-codex/t-cx/backend-api/codex'
+  const create = (extra: Record<string, unknown> = {}) =>
+    invoke('terminal:create', { id: 't-cx', shellType: 'powershell', cwd: '/scratch/home', codexRoute: true, ...extra })
+
+  beforeEach(() => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    H.resolveAgentIntegrationPaths.mockReturnValue(H.agentPaths)
+    H.codexHomeFor.mockReturnValue({})
+    H.codexProxyBaseUrl.mockReset().mockReturnValue(URL)
+    H.codexHomeRoutes.mockReset().mockResolvedValue(false)
+  })
+
+  it('hands back the URL when the proxy is up and the Codex home does not route Codex itself', async () => {
+    expect(await create()).toEqual({ success: true, data: { codexBaseUrl: URL } })
+    expect(H.codexProxyBaseUrl).toHaveBeenCalledWith('t-cx')
+    expect(H.codexHomeRoutes).toHaveBeenCalledWith(H.agentPaths.codexHome)
+    // An account's own CODEX_HOME is the one checked.
+    H.codexHomeFor.mockReturnValue({ home: '/scratch/home/.codex-b' })
+    await create({ accountId: 'acc_b' })
+    expect(H.codexHomeFor).toHaveBeenLastCalledWith(H.agentPaths, 'acc_b')
+    expect(H.codexHomeRoutes).toHaveBeenLastCalledWith('/scratch/home/.codex-b')
+  })
+
+  it('launches Codex as it is when it was not asked, the proxy is down, or the config, account or lookup says no', async () => {
+    const noUrl = { success: true }
+    expect(await invoke('terminal:create', { id: 't-cx', shellType: 'powershell', cwd: '/scratch/home' })).toEqual(noUrl)
+    expect(H.codexProxyBaseUrl).not.toHaveBeenCalled()
+    H.codexProxyBaseUrl.mockReturnValueOnce(null)
+    expect(await create()).toEqual(noUrl)
+    H.codexHomeRoutes.mockResolvedValueOnce(true)
+    expect(await create()).toEqual(noUrl)
+    H.codexHomeFor.mockReturnValueOnce({ error: 'gone' })
+    expect(await create()).toEqual(noUrl)
+    H.codexHomeRoutes.mockRejectedValueOnce(new Error('boom'))
+    expect(await create()).toEqual(noUrl)
   })
 })
 

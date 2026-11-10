@@ -15,8 +15,8 @@ export type { RouteEvent }
 export const ROUTER_MODE_KEY = 'termpolis.agent.messageRouting'
 export const DEFAULT_ROUTER_MODE: RouterMode = 'auto-panes'
 export const ROUTER_MODES: ReadonlyArray<{ value: RouterMode; label: string }> = [
-  { value: 'auto-panes', label: 'Terminals started on Auto' },
-  { value: 'all', label: 'Every Claude terminal' },
+  { value: 'auto-panes', label: 'Claude terminals started on Auto, and Codex' },
+  { value: 'all', label: 'Every Claude and Codex terminal' },
   { value: 'off', label: 'Off' },
 ]
 
@@ -56,6 +56,11 @@ export function modelName(m: RouteModel): string {
 /** The chip: the model (and v1.57.0: the effort) this message runs on, an arrow on what moved, and how
  *  long deciding took. A subagent's task says so; a raise for failing tool calls says that instead of a time. */
 export function routeChipText(e: RouteEvent): string {
+  // v1.58.0: a Codex turn keeps its model; only the effort moves.
+  if (e.codex) {
+    const effort = e.switched && e.codex.from && e.codex.from !== e.codex.effort ? `${e.codex.from} → ${e.codex.effort}` : e.codex.effort
+    return `Codex · ${effort} · ${Math.max(0, Math.round(e.ms))} ms`
+  }
   const tail = e.reason === 'struggling' ? 'more thought' : `${Math.max(0, Math.round(e.ms))} ms`
   const model = e.switched && e.from && e.from !== e.model ? `${modelName(e.from)} → ${modelName(e.model)}` : modelName(e.model)
   let effort = ''
@@ -80,6 +85,7 @@ const REASON: Readonly<Record<string, string>> = {
   'more-thought': 'this message needs more thought on the same model',
   agent: "a subagent's task, routed on its own: its conversation is new, so nothing cached is lost",
   struggling: 'its tool calls kept failing, so it gets more thought until your next message',
+  codex: 'this message fits this effort; Codex keeps its model',
 }
 
 /** The chip's tooltip: why, who decided, and what it is expected to save. */
@@ -90,7 +96,8 @@ export function routeChipTitle(e: RouteEvent): string {
   const money = e.saving > 0.0005 ? ` Expected saving on this message: $${e.saving.toFixed(3)}.` : ''
   const what = e.agent ? 'This subagent runs' : 'This message runs'
   const effort = e.effort ? ` at ${e.effort} effort` : ''
-  return `${what} on ${modelName(e.model)}${effort}: ${why}. Decided on this computer by ${who} (${pct}% sure).${money} Pick what it should have been to teach the router.`
+  const where = e.codex ? `at ${e.codex.effort} effort in Codex` : `on ${modelName(e.model)}${effort}`
+  return `${what} ${where}: ${why}. Decided on this computer by ${who} (${pct}% sure).${money} Pick what it should have been to teach the router.`
 }
 
 /** The user says the message should have gone to `label`: the classifier keeps it as an example. */

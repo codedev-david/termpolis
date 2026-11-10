@@ -2467,7 +2467,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                   </button>
                 </span>
               )}
-              {provider === 'claude' && routeEvent && !reroute && !relaunchInFlight && (
+              {routeEvent && !reroute && !relaunchInFlight && (provider === 'claude' ? !routeEvent.codex : provider === 'codex' && !!routeEvent.codex) && (
                 <span
                   data-testid="model-route-chip"
                   className="flex items-center gap-1 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 border border-[#3c3c3c] rounded pl-1.5 whitespace-nowrap"
@@ -2490,10 +2490,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                     className="bg-transparent text-[#9ca3af] hover:text-white border-l border-[#3c3c3c] px-0.5 py-0.5 outline-hidden w-4"
                   >
                     <option value="">Should have been…</option>
-                    <option value="haiku">Haiku</option>
-                    <option value="sonnet">Sonnet</option>
-                    <option value="opus">Opus</option>
-                    <option value="keep">The model it was on</option>
+                    <option value="haiku">{routeEvent.codex ? 'Low effort' : 'Haiku'}</option>
+                    <option value="sonnet">{routeEvent.codex ? 'Medium effort' : 'Sonnet'}</option>
+                    <option value="opus">{routeEvent.codex ? 'High effort' : 'Opus'}</option>
+                    <option value="keep">{routeEvent.codex ? 'The effort it was on' : 'The model it was on'}</option>
                   </select>
                 </span>
               )}

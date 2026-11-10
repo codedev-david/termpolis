@@ -68,6 +68,13 @@ export interface LaunchAgentDeps {
   task?: string
 }
 
+/** v1.58.0: does a Codex command choose its own endpoint, provider or profile? Then it is launched as it is. */
+export function codexCommandRoutes(command: string): boolean {
+  return /openai_base_url|model_provider|chatgpt_base_url|(^|\s)--oss(\s|$)|(^|\s)(--profile|-p)(=|\s|$)/.test(command)
+}
+
+const CODEX_BASE_URL_RE = /^http:\/\/127\.0\.0\.1:\d{1,5}\/termpolis-codex\/[\w-]{1,128}\/backend-api\/codex$/
+
 /**
  * Canonical AI-agent launch flow, shared by the sidebar click and the keyboard
  * launch shortcuts. Prompts for a directory, spawns the shell, seeds Claude's
@@ -108,9 +115,14 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     && !carriesModelOrEffort(resolvedCommand)
   // Watched for usage limits for its whole life (R6): main marks it so for the agent's hooks.
   const terminalArgs = launchTerminalArgs(accountId, profile.command)
+  // v1.58.0: a Codex launch may run through the proxy, which picks each message's effort. A command that
+  // sets its own effort is routed only when Settings routes every terminal.
+  const codexRoute = isCodex && !isClaude && !codexCommandRoutes(resolvedCommand)
   const res = auto
     ? await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, terminalArgs[0], terminalArgs[1], true)
-    : await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, ...terminalArgs)
+    : codexRoute
+      ? await window.termpolis.createTerminal(id, shellType, cwd, undefined, false, terminalArgs[0], terminalArgs[1], !/model_reasoning_effort/.test(resolvedCommand), true)
+      : await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, ...terminalArgs)
   if (!res.success) {
     setLaunchingAgent(null)
     alert(`Failed to open terminal: ${res.error}`)
@@ -241,6 +253,11 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   const codexText = codex?.developerInstructions
   if (codexText && isAutoPrimerEnabled() && isShellSafeInstruction(codexText)) {
     launchCommand = `${launchCommand} -c "developer_instructions='${codexText}'"`
+  }
+  // Main hands back the proxy URL only when it may be used (proxy healthy, routing on, no endpoint of the user's own).
+  const codexBaseUrl = codexRoute ? res.data?.codexBaseUrl : undefined
+  if (codexBaseUrl && CODEX_BASE_URL_RE.test(codexBaseUrl)) {
+    launchCommand = `${launchCommand} -c "openai_base_url='${codexBaseUrl}'"`
   }
   if (codex?.agentsMdCleaned) {
     useTerminalStore.getState().setMemoryNotice(codex.agentsMdCleaned === 'file-deleted'

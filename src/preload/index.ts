@@ -19,8 +19,8 @@ import { createTerminalDataRouter } from './terminalDataRouter'
 const terminalData = createTerminalDataRouter(ipcRenderer)
 
 const api: TermpolisAPI = {
-  createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch, autoModel) =>
-    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths, claudeHeadroom, ...(accountId ? { accountId } : {}), ...(limitWatch ? { limitWatch } : {}), ...(autoModel === true ? { autoModel } : {}) }),
+  createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch, autoModel, codexRoute) =>
+    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths, claudeHeadroom, ...(accountId ? { accountId } : {}), ...(limitWatch ? { limitWatch } : {}), ...(autoModel === true ? { autoModel } : {}), ...(codexRoute === true ? { codexRoute } : {}) }),
 
   killTerminal: (id) =>
     ipcRenderer.invoke('terminal:kill', { id }),

@@ -158,6 +158,10 @@ const M = vi.hoisted(() => ({
   setProxyRoute: vi.fn(),
   setProxyAgentRoute: vi.fn(),
   onProxyAgentTask: vi.fn(),
+  setProxyCodexRoute: vi.fn(),
+  onProxyCodexTurn: vi.fn(),
+  forgetProxyCodexTerminal: vi.fn(),
+  codexProxyBaseUrl: vi.fn(() => null),
   onProxyStash: vi.fn(),
   setProxySpawner: vi.fn(),
   createProxyTransport: vi.fn(() => ({ transport: true })),
@@ -564,6 +568,8 @@ vi.mock('../../src/main/headroomProxy/proxySupervisor', () => ({
   isProxyHealthy: M.isProxyHealthy, userRoutingVar: M.userRoutingVar, getProxyMode: M.getProxyMode,
   setAgentEnvReader: M.setAgentEnvReader,
   setProxyRoute: M.setProxyRoute, setProxyAgentRoute: M.setProxyAgentRoute, onProxyAgentTask: M.onProxyAgentTask,
+  setProxyCodexRoute: M.setProxyCodexRoute, onProxyCodexTurn: M.onProxyCodexTurn,
+  forgetProxyCodexTerminal: M.forgetProxyCodexTerminal, codexProxyBaseUrl: M.codexProxyBaseUrl,
 }))
 
 // ---- workflow ----
@@ -1340,6 +1346,25 @@ describe('headroom proxy wiring', () => {
     expect(M.setProxyRoute).toHaveBeenCalledWith('pin-1', null, null, false)
     mr.forgetTerminal('pin-1')
     expect(() => onTask(undefined)).not.toThrow()
+  })
+
+  it('a Codex turn from the proxy is routed, and a failure still answers it (v1.58.0)', async () => {
+    const onTurn = cbOf(M.onProxyCodexTurn)
+    M.setProxyCodexRoute.mockClear()
+    // an unknown terminal: told to run the turn as Codex asked
+    onTurn({ terminal: 'nope', key: 4, task: 'fix it', asked: 'medium' })
+    await vi.waitFor(() => expect(M.setProxyCodexRoute).toHaveBeenCalledWith('nope', 4, null))
+    // the router throwing (a bad frame) still answers null rather than leaving the turn waiting
+    M.setProxyCodexRoute.mockClear()
+    M.setProxyCodexRoute.mockImplementationOnce(() => { throw new Error('child gone') })
+    onTurn({ terminal: 'nope', key: 5, task: 'x', asked: 'low' })
+    await vi.waitFor(() => expect(M.setProxyCodexRoute).toHaveBeenCalledTimes(2))
+    expect(M.setProxyCodexRoute).toHaveBeenLastCalledWith('nope', 5, null)
+    const mr = await import('../../src/main/messageRouter')
+    // a closed Codex terminal is forgotten in the proxy too
+    mr.registerTerminal('cx-1', false, true)
+    mr.forgetTerminal('cx-1')
+    expect(M.forgetProxyCodexTerminal).toHaveBeenCalledWith('cx-1')
   })
 
   it('commits every stashed original, and one bad stash does not lose the rest', async () => {

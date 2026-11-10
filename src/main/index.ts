@@ -215,10 +215,11 @@ import { describeWireTier } from './headroom/wireTier'
 import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
 import { summarizeElisionHealth } from './headroom/elisionHealth'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight, setProxyRoute, setProxyAgentRoute, onProxyAgentTask } from './headroomProxy/proxySupervisor'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight, setProxyRoute, setProxyAgentRoute, onProxyAgentTask, onProxyCodexTurn, setProxyCodexRoute, forgetProxyCodexTerminal, codexProxyBaseUrl } from './headroomProxy/proxySupervisor'
+import { codexHomeRoutes } from './codexLaunch'
 import { readJsonObject } from './agentConfigIO'
 import { claudeLaunchEnv as buildClaudeLaunchEnv, withAutoSubagent, withRouteHeader } from './headroom/shapingEnv'
-import { configureRouter, registerTerminal, forgetTerminal, pinTerminal, noteProxyResult, routePrompt, routeAgentTask, setRouterMode, getRouterMode } from './messageRouter'
+import { configureRouter, registerTerminal, forgetTerminal, pinTerminal, noteProxyResult, routePrompt, routeAgentTask, routeCodexTurn, setRouterMode, getRouterMode } from './messageRouter'
 import { isRouteFamily } from './headroomProxy/modelRoute'
 import type { RouterTuning } from '../shared/taskRouter'
 import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
@@ -932,10 +933,14 @@ configureRouter({
   setRoute: (terminal, pick) => setProxyRoute(terminal, pick?.family ?? null, pick?.effort ?? null, pick !== null),
   // v1.57.0: a subagent's task is routed on its own (its first request waits briefly for this).
   setAgentRoute: (terminal, key, pick) => setProxyAgentRoute(terminal, key, pick?.family ?? null, pick?.effort ?? null, pick !== null),
+  // v1.58.0: a Codex turn's effort (codexRoute.ts in the proxy waits briefly for it).
+  setCodexRoute: (terminal, key, effort) => setProxyCodexRoute(terminal, key, effort),
+  forgetCodex: (terminal) => forgetProxyCodexTerminal(terminal),
   notify: (e) => mainWindow?.webContents.send('router:message', e),
   tuning: () => routerTuning,
 })
 onProxyAgentTask((q) => { void routeAgentTask(q).catch(() => null) })
+onProxyCodexTurn((q) => { void routeCodexTurn(q).catch(() => setProxyCodexRoute(q.terminal, q.key, null)) })
 ipcMain.handle('router:configure', (_, opts: { mode?: unknown; tuning?: unknown } = {}) => {
   const t = opts?.tuning as RouterTuning | undefined
   if (t && typeof t === 'object' && typeof t.haikuMaxWords === 'number' && t.misroutes && typeof t.misroutes === 'object') routerTuning = t
@@ -954,7 +959,7 @@ ipcMain.handle('router:learn', async (_, opts: { prompt?: unknown; label?: unkno
   try { return ok(await routerLearn(app.getPath('userData'), opts.prompt.slice(0, 2000), label)) } catch (e: any) { return err(e?.message ?? 'Could not learn') }
 })
 
-ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch, autoModel }) => {
+ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch, autoModel, codexRoute }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
@@ -962,7 +967,11 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
     // The terminal's id rides in a header only through Termpolis's proxy, which strips it (withRouteHeader).
     const launchEnv = claudeHeadroom ? withRouteHeader(await claudeLaunchEnv(cwd, accountId), id) : undefined
     // Only a session the proxy can tell apart is routed: one launched through it, carrying the header.
+    // v1.58.0: a Codex terminal is pointed at the proxy (the renderer adds the URL to its command) unless
+    // routing is off or the user already chose where Codex talks to (codexLaunch.ts).
+    const codexBaseUrl = codexRoute === true && !claudeHeadroom ? await codexLaunchUrl(id, accountId) : null
     if (launchEnv?.TERMPOLIS_HEADROOM_PROXY) registerTerminal(id, autoModel === true)
+    else if (codexBaseUrl) registerTerminal(id, autoModel === true, true)
     else forgetTerminal(id)
     // No folder trust is seeded here any more. Opening a terminal is not agreeing to let
     // an agent run in that folder unasked; Claude Code's own trust prompt stays the gate
@@ -1003,11 +1012,26 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
         reject(e)
       }
     })
-    return ok()
+    return ok(codexBaseUrl ? { codexBaseUrl } : undefined)
   } catch (e: any) {
     return err(e.message ?? 'Failed to create terminal')
   }
 })
+
+/** The base URL a new Codex terminal runs through, or null to launch it as it is (codexLaunch.ts). */
+async function codexLaunchUrl(id: unknown, accountId: unknown): Promise<string | null> {
+  try {
+    if (typeof id !== 'string' || getRouterMode() === 'off') return null
+    const url = codexProxyBaseUrl(id)
+    if (!url) return null
+    const paths = agentIntegrationPaths()
+    const home = codexHomeFor(paths, accountId)
+    if ('error' in home) return null
+    return (await codexHomeRoutes(home.home ?? paths.codexHome)) ? null : url
+  } catch {
+    return null
+  }
+}
 
 // Heuristic: when the user types `claude`, `codex`, `agy` or `gemini` as
 // the start of a command line, the next bytes typed are about to be a prompt

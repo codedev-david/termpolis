@@ -6,6 +6,7 @@ import type { ModelFamily } from '../headroom/effectiveUnits'
 import { compressImage } from './imageCodec'
 import type { StashEntry } from '../headroom/elisionMeta'
 import type { ProxyResultMsg, ProxyStashMsg } from './proxySupervisor'
+import { codexTarget, decodeRequest, encodeRequest, planCodexRequest, noteCodexRefused, setCodexAsker, setCodexRoute, forgetCodexTerminal, UPGRADE_REFUSAL, type CodexTarget } from './codexRoute'
 import { planRequest, noteRefused, isRefusal, asksHourCache, setRoute, setAgentRoute, setAgentAsker, waitAgentRoute, readConversation, ROUTE_HEADER, type RoutePlan, type ConvInfo } from './modelRoute'
 
 /**
@@ -83,7 +84,11 @@ export interface ProxyOpts {
   useHttps?: boolean
   onResult?: (r: ProxyResult) => void
   onStash?: (stashes: StashEntry[]) => void
+  /** Where a Codex request goes (codexRoute.codexTarget); tests point it at a local stub. */
+  codexUpstream?: (t: CodexTarget) => { hostname: string; port: number; https: boolean }
 }
+
+const realCodexUpstream = (t: CodexTarget): { hostname: string; port: number; https: boolean } => ({ hostname: t.host, port: 443, https: true })
 
 /**
  * Build the compression proxy HTTP server. Exported (not auto-listening) so it can be
@@ -102,13 +107,70 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
   const upstreamPort = opts.upstreamPort ?? (useHttps ? 443 : 80)
   const agentMod = useHttps ? https : http
 
-  return http.createServer((req, res) => {
+  const codexUpstream = opts.codexUpstream ?? realCodexUpstream
+  const server = http.createServer((req, res) => {
     const url = req.url || ''
+    // v1.58.0: a Codex terminal's requests (codexRoute.ts) take their own path.
+    const codex = codexTarget(url, req.method, req.headers)
     const isMessages = url.startsWith('/v1/messages') && !url.startsWith('/v1/messages/count_tokens') && req.method === 'POST'
     const chunks: Buffer[] = []
     req.on('data', (c) => chunks.push(c))
     req.on('error', () => { try { res.destroy() } catch { /* ignore */ } })
-    req.on('end', () => { void handle().catch(() => { try { if (!res.headersSent) res.writeHead(502); res.end() } catch { /* ignore */ } }) })
+    req.on('end', () => { void (codex ? handleCodex(codex) : handle()).catch(() => { try { if (!res.headersSent) res.writeHead(502); res.end() } catch { /* ignore */ } }) })
+
+    /** A Codex request: its effort routed on a model turn, everything else forwarded as sent. */
+    async function handleCodex(t: CodexTarget): Promise<void> {
+      const original = Buffer.concat(chunks)
+      const encoding = String(req.headers['content-encoding'] || '')
+      let routed: { payload: Buffer; effort: string } | null = null
+      let upReq: http.ClientRequest | null = null
+      let gone = false
+      // Watched before the wait for main's answer: Codex hanging up meanwhile (Esc) sends nothing upstream.
+      res.on('close', () => { if (!res.writableFinished) { gone = true; try { upReq?.destroy() } catch { /* ignore */ } } })
+      if (t.responses) {
+        const text = decodeRequest(original, encoding)
+        if (text !== null) {
+          // planCodexRequest never throws (a failed ask runs the turn as asked).
+          const plan = await planCodexRequest(t.terminal, text, req.headers)
+          if (plan) routed = { payload: encodeRequest(plan.body, encoding), effort: plan.effort }
+        }
+      }
+      if (gone) return
+      const up = codexUpstream(t)
+      const headers: http.OutgoingHttpHeaders = { ...req.headers, host: t.host }
+      /** `retryOf`: the routed effort this is a resend for, blamed only if the original then goes through
+       *  (a 400 for a long context or a bad image fails both ways, and says nothing about the effort). */
+      const send = (payload: Buffer, isRouted: boolean, retryOf: string | null = null): void => {
+        headers['content-length'] = payload.length
+        let r: http.ClientRequest
+        try {
+          r = (up.https ? https : http).request({ hostname: up.hostname, port: up.port, path: t.path, method: req.method, headers }, (answer) => {
+            // The API would not take the routed effort: send the request again as Codex asked it.
+            if (isRouted && routed && isRefusal(answer.statusCode)) {
+              answer.resume()
+              send(original, false, routed.effort)
+              return
+            }
+            if (retryOf && (answer.statusCode ?? 0) < 400) noteCodexRefused(t.terminal, retryOf)
+            try { res.writeHead(answer.statusCode || 502, answer.headers) } catch { try { res.destroy() } catch { /* ignore */ } return }
+            answer.pipe(res)
+            answer.on('error', () => { try { res.destroy() } catch { /* ignore */ } })
+          })
+        } catch (e) {
+          if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }) } catch { /* ignore */ } }
+          try { res.end('headroom proxy request error: ' + (e as Error).message) } catch { /* ignore */ }
+          return
+        }
+        upReq = r
+        r.on('error', (e) => {
+          if (res.headersSent) { try { res.destroy() } catch { /* ignore */ } return }
+          try { res.writeHead(502, { 'content-type': 'text/plain' }) } catch { /* ignore */ }
+          try { res.end('headroom proxy upstream error: ' + (e as Error).message) } catch { /* ignore */ }
+        })
+        r.end(payload)
+      }
+      send(routed ? routed.payload : original, routed !== null)
+    }
 
     async function handle(): Promise<void> {
       let body = Buffer.concat(chunks)
@@ -218,6 +280,14 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
       send(body, plan?.original !== undefined)
     }
   })
+  // Codex opens a WebSocket first; 426 is the answer it falls back to HTTP on. Nothing else here upgrades.
+  server.on('upgrade', (req: http.IncomingMessage, socket: import('stream').Duplex) => {
+    try {
+      if (codexTarget(req.url || '', 'GET', req.headers)) socket.end(UPGRADE_REFUSAL)
+      else socket.destroy()
+    } catch { /* the socket is gone */ }
+  })
+  return server
 }
 
 /**
@@ -261,11 +331,15 @@ if (parentPort) {
     if (!msg) return
     if (msg.kind === 'config') { applyProxyConfig(msg); return } // live mode/cap change (Settings → supervisor)
     if (msg.kind === 'route') { const r = msg as { terminal?: unknown; family?: unknown; effort?: unknown; on?: unknown }; setRoute(r.terminal, r.family, r.effort, r.on); return } // v1.56.0 per-message routing
+    if (msg.kind === 'codex-route') { const r = msg as { terminal?: unknown; key?: unknown; effort?: unknown }; setCodexRoute(r.terminal, r.key, r.effort); return } // v1.58.0 Codex effort
+    if (msg.kind === 'codex-forget') { forgetCodexTerminal((msg as { terminal?: unknown }).terminal); return }
     if (msg.kind === 'agent-route') { const r = msg as { terminal?: unknown; key?: unknown; family?: unknown; effort?: unknown; on?: unknown }; setAgentRoute(r.terminal, r.key, r.family, r.effort, r.on); return } // v1.57.0 subagents
     if (msg.kind !== 'init' || server) return
     applyProxyConfig(msg) // honor the config carried on init — and re-applied on every respawn
     // v1.57.0: a subagent's task goes to main, where the local classifier routes it (agent-route back).
     setAgentAsker((q) => { try { parentPort.postMessage({ kind: 'agent-task', ...q }) } catch { /* it runs as it asked */ } })
+    // v1.58.0: a Codex terminal's new typed message goes to main for its effort (codex-route back).
+    setCodexAsker((q) => { try { parentPort.postMessage({ kind: 'codex-turn', ...q }) } catch { /* it runs as it asked */ } })
     const targetPort = msg.port || 0
     let attempts = 0
     const start = (): void => {

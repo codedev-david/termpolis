@@ -181,6 +181,9 @@ function capHaiku(prompt: string, r: MessageRoute, cls: Classification | null): 
   return { ...r, label: 'sonnet', effort: 'medium' }
 }
 
+/** v1.58.0: the reasoning efforts Codex takes. */
+export type CodexEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+
 /** One routed message, as main tells its pane (messageRouter.routePrompt → 'router:message'). */
 export interface RouteEvent {
   terminalId: string
@@ -196,10 +199,13 @@ export interface RouteEvent {
   fromEffort?: EffortLevel | null
   /** v1.57.0: a subagent's task, not a typed message: `from` is the model it was launched on. */
   agent?: boolean
+  /** v1.58.0: a Codex turn. Only the effort moved (`from` = the one before: the last routed turn's, else
+   *  what Codex asked); `model` is just the message's label as a family and names no model. */
+  codex?: { effort: CodexEffort; from: string | null }
   switched: boolean
   /** Why: first, keep, same, cheaper, lighter, switch-costs-more, needs-stronger, more-thought,
    *  not-sure-enough, context-too-big, too-big-for-haiku; agent (a subagent's task); struggling (tool
-   *  calls kept failing, so the effort went up for the rest of the message). */
+   *  calls kept failing, so the effort went up for the rest of the message); codex (a Codex turn's effort). */
   reason: string
   /** What the message looked like. */
   label: SeedLabel

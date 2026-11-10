@@ -139,7 +139,8 @@ export function DefaultModelsSettings() {
           after re-reading the conversation, and a &ldquo;yes, go ahead&rdquo; stays on the model doing the work.
           The pane header shows each pick; tell it what a message should have been and it learns.
           Picking a model in a pane&rsquo;s Model menu turns this off for that pane. Applies to Claude
-          terminals Termpolis opens with token compression on.
+          terminals Termpolis opens with token compression on. In Codex terminals opened from the sidebar
+          it picks each message&rsquo;s reasoning effort instead, and keeps the model.
         </span>
       </div>
       <div className="flex items-center gap-3">

@@ -12,12 +12,16 @@
 // v1.57.0: the route carries an effort as well, a subagent's task is routed when its first request
 // reaches the proxy (routeAgentTask), and the proxy's raise of the effort while tool calls keep failing
 // is shown on the pane (reason 'struggling').
+//
+// v1.58.0: a Codex terminal's new typed message reaches the proxy as a request (codexRoute.ts), which
+// asks routeCodexTurn for the effort the turn runs at. Codex keeps its model; only the effort moves.
 
 import { routeMessage, routeSubagent, type RouteEvent } from '../shared/smartRoute'
 import { decideSwitch, emptyEconomy, warmKey, TTL_1H, TTL_5M, type Economy, type RouteFamily } from '../shared/switchEconomics'
 import { effortOrDefault, isEffort, type EffortLevel } from '../shared/effortLevels'
 import type { ClassifyResult } from './routerModel'
 import type { RouterTuning } from '../shared/taskRouter'
+import type { CodexEffort } from '../shared/smartRoute'
 
 export type RouterMode = 'auto-panes' | 'all' | 'off'
 export const ROUTER_MODES: readonly RouterMode[] = ['auto-panes', 'all', 'off']
@@ -42,6 +46,10 @@ export interface RouterDeps {
   setRoute: (terminal: string, pick: RoutePick | null) => void
   /** A subagent's route (null = leave it alone). Without it subagents are not routed. */
   setAgentRoute?: (terminal: string, key: number, pick: RoutePick | null) => void
+  /** v1.58.0: a Codex turn's effort (null = as Codex asked). Without it Codex terminals are not routed. */
+  setCodexRoute?: (terminal: string, key: number, effort: CodexEffort | null) => void
+  /** A routed Codex terminal closed: the proxy drops what it kept for it. */
+  forgetCodex?: (terminal: string) => void
   notify: (e: RouteEvent) => void
   now?: () => number
   budgetMs?: number
@@ -62,7 +70,15 @@ interface TerminalState {
   escalated: number
   /** The last message's event, the base of a 'struggling' one. */
   last: RouteEvent | null
+  /** v1.58.0: a Codex terminal (its turns come through routeCodexTurn). */
+  codex: boolean
+  /** The effort the Codex terminal's last routed turn ran at; a confirmation keeps it. */
+  codexEffort: CodexEffort | null
 }
+
+/** Codex's efforts for the router's: it has no max, so max asks for its highest. */
+export const CODEX_EFFORT_OF: Readonly<Record<EffortLevel, CodexEffort>> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh' }
+const CODEX_ASKED = new Set<string>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 
 let deps: RouterDeps | null = null
 let mode: RouterMode = 'auto-panes'
@@ -93,23 +109,30 @@ function isFamily(v: unknown): v is RouteFamily {
 function stateOf(id: string): TerminalState {
   let s = terminals.get(id)
   if (!s) {
-    s = { economy: emptyEconomy(), current: null, refused: new Set(), auto: false, pinned: false, effort: null, sent: false, escalated: 0, last: null }
+    s = { economy: emptyEconomy(), current: null, refused: new Set(), auto: false, pinned: false, effort: null, sent: false, escalated: 0, last: null, codex: false, codexEffort: null }
     terminals.set(id, s)
   }
   return s
 }
 
-/** A terminal was created; auto = it was launched on Auto (the router may route it in 'auto-panes' mode). */
-export function registerTerminal(id: unknown, auto: boolean): void {
+/** A terminal was created; auto = it was launched on Auto (the router may route it in 'auto-panes' mode).
+ *  codex = a Codex terminal pointed at the proxy (v1.58.0): its turns' effort is routed. */
+export function registerTerminal(id: unknown, auto: boolean, codex = false): void {
   if (typeof id !== 'string' || !TERMINAL_RE.test(id)) return
   const s = stateOf(id)
   s.auto = auto
   s.pinned = false
+  s.codex = codex
+  s.codexEffort = null
 }
 
 export function forgetTerminal(id: unknown): void {
   if (typeof id !== 'string') return
-  if (terminals.delete(id)) deps?.setRoute(id, null)
+  const s = terminals.get(id)
+  if (!s) return
+  terminals.delete(id)
+  deps?.setRoute(id, null)
+  if (s.codex) deps?.forgetCodex?.(id)
 }
 
 /** The user picked a model by hand for this pane: stop routing it until it is unpinned. */
@@ -167,6 +190,7 @@ export function noteProxyResult(r: ProxyResultLike, now = Date.now()): void {
 
 function eligible(s: TerminalState | undefined): s is TerminalState {
   if (!s || s.pinned || mode === 'off') return false
+  // A Codex terminal is registered auto unless its command sets its own effort (aiProfiles.ts).
   return mode === 'all' || s.auto
 }
 
@@ -193,7 +217,8 @@ export async function routePrompt(input: { terminalId?: unknown; prompt?: unknow
   const prompt = typeof input?.prompt === 'string' ? input.prompt.trim() : ''
   if (!deps || typeof id !== 'string' || !prompt) return null
   const s = terminals.get(id)
-  if (!eligible(s)) return null
+  // A Codex terminal's messages reach the router from its proxy (routeCodexTurn), never from here.
+  if (!eligible(s) || s.codex) return null
   const started = (deps.now ?? Date.now)()
   const res = await classifyWithin(prompt, deps.budgetMs ?? DEFAULT_BUDGET_MS)
   // Settings may have changed, the pane been pinned or closed, while the vote ran.
@@ -263,6 +288,50 @@ export async function routeAgentTask(q: { terminal?: unknown; key?: unknown; tas
     label: route.label, source: route.source, confidence: route.confidence,
     ms: Math.max(res?.ms ?? 0, (deps.now ?? Date.now)() - started), saving: 0,
   }
+  deps.notify(e)
+  return e
+}
+
+/**
+ * v1.58.0: a Codex terminal's user typed a new message, and its first request is waiting at the proxy:
+ * the effort the turn runs at. Always answers (null = as Codex asked). There is no cost gate: OpenAI's
+ * prompt cache is keyed on the input, so an effort change re-reads nothing, and the model never changes.
+ */
+export async function routeCodexTurn(q: { terminal?: unknown; key?: unknown; task?: unknown; asked?: unknown }): Promise<RouteEvent | null> {
+  const id = q?.terminal
+  const key = q?.key
+  if (!deps?.setCodexRoute || typeof id !== 'string' || typeof key !== 'number') return null
+  const set = deps.setCodexRoute
+  const task = typeof q.task === 'string' ? q.task.trim() : ''
+  const s = terminals.get(id)
+  if (!eligible(s) || !s.codex || !task) { set(id, key, null); return null }
+  const asked = typeof q.asked === 'string' && CODEX_ASKED.has(q.asked) ? q.asked : null
+  const started = (deps.now ?? Date.now)()
+  const res = await classifyWithin(task, deps.budgetMs ?? DEFAULT_BUDGET_MS)
+  if (!eligible(s) || terminals.get(id) !== s) { set(id, key, null); return null }
+  const route = routeMessage(task, res?.cls ?? null, deps.tuning?.())
+  let effort: CodexEffort | null
+  let reason: string
+  if (route.label === 'keep') {
+    // A confirmation carries on at the effort the work was running at.
+    effort = s.codexEffort; reason = 'keep'
+  } else if (route.confidence < FIRST_MIN_CONFIDENCE) {
+    effort = null; reason = 'not-sure-enough'
+  } else {
+    effort = route.label === 'haiku' ? 'low' : CODEX_EFFORT_OF[route.effort]
+    reason = 'codex'
+  }
+  set(id, key, effort)
+  if (!effort) return null
+  const from = s.codexEffort ?? asked
+  s.codexEffort = effort
+  const e: RouteEvent = {
+    terminalId: id, prompt: task.slice(0, 2000), model: route.label === 'keep' ? 'sonnet' : route.label, from: null,
+    codex: { effort, from }, switched: effort !== asked, reason,
+    label: route.label, source: route.source, confidence: route.confidence,
+    ms: Math.max(res?.ms ?? 0, (deps.now ?? Date.now)() - started), saving: 0,
+  }
+  s.last = e
   deps.notify(e)
   return e
 }

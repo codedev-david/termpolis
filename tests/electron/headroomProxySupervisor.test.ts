@@ -137,6 +137,20 @@ describe('proxy supervisor', () => {
     expect(p).toBeGreaterThan(0)
   })
 
+  it('pickFreePort asks for the preferred port first, and takes another when it is busy (v1.58.0)', async () => {
+    const net = await import('net')
+    const free = await pickFreePort(0)
+    expect(free).toBeGreaterThan(0)
+    expect(await pickFreePort(free)).toBe(free)
+    const busy = net.createServer()
+    await new Promise<void>((r) => busy.listen(free, '127.0.0.1', () => r()))
+    try {
+      const other = await pickFreePort(free)
+      expect(other).toBeGreaterThan(0)
+      expect(other).not.toBe(free)
+    } finally { busy.close() }
+  })
+
   it('carries the wire mode on the child init — default aggressive', () => {
     startProxy({ port: 5000 })
     expect(fakes[0].posted.find((m) => m.kind === 'init')).toMatchObject({ kind: 'init', mode: 'aggressive' })

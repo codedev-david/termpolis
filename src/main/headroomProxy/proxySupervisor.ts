@@ -39,6 +39,15 @@ export interface ProxyAgentTaskMsg {
   effort: string | null
 }
 
+/** v1.58.0: a Codex terminal's new typed message, asking main for its effort (codexRoute.CodexAsk). */
+export interface ProxyCodexTurnMsg {
+  kind: 'codex-turn'
+  terminal: string
+  key: number
+  task: string
+  asked: string
+}
+
 /** Originals committed on the REQUEST path, ahead of the response the token rides back in — the
  *  result message carries them too, but by then Claude may already have called retrieve_full. */
 export interface ProxyStashMsg {
@@ -89,6 +98,7 @@ let cooldownGate: ShedGate | null = null
 let resultCb: ((r: ProxyResultMsg) => void) | null = null
 let stashCb: ((s: ProxyStashMsg) => void) | null = null
 let agentTaskCb: ((q: ProxyAgentTaskMsg) => void) | null = null
+let codexTurnCb: ((q: ProxyCodexTurnMsg) => void) | null = null
 // v1.56.0: the model (v1.57.0: and effort) each routed terminal's next requests run on. Kept here, so a
 // respawned child gets them all back with its init instead of quietly sending every session as it asks.
 type RouteFrame = { kind: 'route'; terminal: string; family: string | null; effort: string | null; on: boolean }
@@ -98,6 +108,7 @@ export function setProxySpawner(fn: Spawner | null): void { spawner = fn }
 export function onProxyResult(cb: ((r: ProxyResultMsg) => void) | null): void { resultCb = cb }
 export function onProxyStash(cb: ((s: ProxyStashMsg) => void) | null): void { stashCb = cb }
 export function onProxyAgentTask(cb: ((q: ProxyAgentTaskMsg) => void) | null): void { agentTaskCb = cb }
+export function onProxyCodexTurn(cb: ((q: ProxyCodexTurnMsg) => void) | null): void { codexTurnCb = cb }
 /** Push the wire compression mode to the child: applied live if a transport is up, and re-sent
  *  on the next (re)spawn's init. Best-effort — a failed post just means the aggressive default
  *  holds in the child, so savings never silently drop. */
@@ -119,6 +130,32 @@ export function setProxyRoute(terminal: string, family: string | null, effort: s
  *  respawn: a new child asks again on the subagent's next request. */
 export function setProxyAgentRoute(terminal: string, key: number, family: string | null, effort: string | null, on = true): void {
   try { transport?.postMessage({ kind: 'agent-route', terminal, key, family, effort, on }) } catch { /* it runs as it asked */ }
+}
+
+/** v1.58.0: main's effort for one Codex turn (codexRoute.setCodexRoute); null runs it as Codex asked. */
+export function setProxyCodexRoute(terminal: string, key: number, effort: string | null): void {
+  try { transport?.postMessage({ kind: 'codex-route', terminal, key, effort }) } catch { /* it runs as it asked */ }
+}
+
+/** A closed Codex terminal: the child drops what it kept for it. */
+export function forgetProxyCodexTerminal(terminal: string): void {
+  try { transport?.postMessage({ kind: 'codex-forget', terminal }) } catch { /* evicted later */ }
+}
+
+/** Variables that mean the user already sends Codex's OpenAI traffic somewhere of their own. */
+export const CODEX_ROUTING_ENV: readonly string[] = [
+  'OPENAI_BASE_URL', 'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy',
+]
+
+/**
+ * v1.58.0: the base URL a Codex terminal is pointed at so its effort can be routed, or null to launch
+ * it as it is: the switch is off, the proxy is not healthy, the id cannot ride in a path, or the user's
+ * environment already routes OpenAI traffic (an outbound proxy the child would not go through).
+ */
+export function codexProxyBaseUrl(terminalId: string, env: Record<string, string | undefined> = process.env): string | null {
+  if (!proxyEnabled || !isProxyHealthy() || !/^[\w-]{1,128}$/.test(terminalId)) return null
+  for (const k of CODEX_ROUTING_ENV) { const v = env[k]; if (typeof v === 'string' && v.trim() !== '') return null }
+  return `http://127.0.0.1:${port}/termpolis-codex/${terminalId}/backend-api/codex`
 }
 
 /** Every frame carries all of the config, so no frame can undo what another set. */
@@ -275,6 +312,7 @@ function spawnOnce(): void {
     else if (msg.kind === 'result' && resultCb) { try { resultCb(m as ProxyResultMsg) } catch { /* best effort */ } }
     else if (msg.kind === 'stash' && stashCb) { try { stashCb(m as ProxyStashMsg) } catch { /* best effort */ } }
     else if (msg.kind === 'agent-task' && agentTaskCb) { try { agentTaskCb(m as ProxyAgentTaskMsg) } catch { /* best effort */ } }
+    else if (msg.kind === 'codex-turn' && codexTurnCb) { try { codexTurnCb(m as ProxyCodexTurnMsg) } catch { /* best effort */ } }
   })
   // Only the current child's exit counts. A replaced one dying late used to null out the
   // transport of the child that replaced it -- leaving that one running where stopProxy can't
@@ -348,12 +386,20 @@ export function createProxyTransport(entryPath: string): ProxyTransport {
 }
 /* v8 ignore stop */
 
-/** Find an OS-assigned free TCP port on loopback (resolves 0 on failure). */
-export function pickFreePort(): Promise<number> {
+/** v1.58.0: the port the proxy asks for first. A Codex launch types the proxy's URL into its command line, so
+ *  the same port across restarts keeps a command recalled from the shell's history working. */
+export const PREFERRED_PROXY_PORT = 47853
+
+/** A free TCP port on loopback: `preferred` when it is free, else one the OS assigns (0 on failure). */
+export async function pickFreePort(preferred: number = PREFERRED_PROXY_PORT): Promise<number> {
+  return (preferred > 0 ? await probePort(preferred) : 0) || probePort(0)
+}
+
+function probePort(want: number): Promise<number> {
   return new Promise((resolve) => {
     const srv = net.createServer()
     srv.on('error', () => resolve(0))
-    srv.listen(0, '127.0.0.1', () => {
+    srv.listen(want, '127.0.0.1', () => {
       const a = srv.address()
       const p = a && typeof a === 'object' ? a.port : 0
       srv.close(() => resolve(p))
@@ -364,7 +410,7 @@ export function pickFreePort(): Promise<number> {
 export function _resetProxyForTest(): void {
   agentEnvReader = null
   disposeCooldown()
-  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; shutDown = false; resultCb = null; stashCb = null; agentTaskCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'; proxyEnabled = true; started = false
+  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; shutDown = false; resultCb = null; stashCb = null; agentTaskCb = null; codexTurnCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'; proxyEnabled = true; started = false
   proxyFirstSight = 'legacy'; firstSightResolved = false
   routes.clear()
 }

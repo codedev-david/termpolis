@@ -1539,6 +1539,16 @@ describe('TerminalPane', () => {
       vi.useRealTimers()
     })
 
+    it('a Claude pane ignores a Codex route (v1.58.0)', () => {
+      const feed: { send?: (e: unknown) => void } = {}
+      Object.assign((window as any).termpolis, { onRouterMessage: vi.fn((cb: (e: unknown) => void) => { feed.send = cb; return () => {} }) })
+      withClaudeTerminal(FLAGS)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'x', model: 'haiku', from: null, switched: true, reason: 'codex', label: 'haiku', source: 'local-model', confidence: 0.9, ms: 3, saving: 0, codex: { from: 'medium', effort: 'low' } }))
+      expect(screen.queryByTestId('model-route-chip')).toBeNull()
+      delete (window as any).termpolis.onRouterMessage
+    })
+
     it('quits Claude with Ctrl+C and resumes EXACTLY the session it names as it exits', async () => {
       vi.useFakeTimers()
       const os = osSaysShellAlone(false, false, true) // running, still tearing down, gone
@@ -2049,6 +2059,30 @@ describe('TerminalPane', () => {
         .toEqual(['', 'gpt-5.6-sol', 'gpt-5.5'])
       // Claude's aliases must NOT leak into a Codex picker — its CLI rejects them.
       expect(picker.textContent).not.toContain('Sonnet')
+    })
+
+    it("shows a Codex turn's effort chip, offers efforts to teach, and ignores a Claude route (v1.58.0)", async () => {
+      const feed: { send?: (e: unknown) => void } = {}
+      const routerLearn = vi.fn(async () => ({ success: true, data: true }))
+      Object.assign((window as any).termpolis, {
+        onRouterMessage: vi.fn((cb: (e: unknown) => void) => { feed.send = cb; return () => {} }),
+        routerLearn,
+      })
+      withAgentTerminal('codex --yolo')
+      render(<TerminalPane {...defaultProps} />)
+      await pickerWithModels()
+      const ev = { terminalId: 'term-1', prompt: 'rename foo', model: 'haiku', from: null, switched: true, reason: 'codex', label: 'haiku', source: 'local-model', confidence: 0.9, ms: 3, saving: 0 }
+      act(() => feed.send?.(ev)) // a Claude-shaped route is not this pane's
+      expect(screen.queryByTestId('model-route-chip')).toBeNull()
+      act(() => feed.send?.({ ...ev, codex: { from: 'medium', effort: 'low' } }))
+      const chip = screen.getByTestId('model-route-chip')
+      expect(chip.textContent).toContain('Codex · medium → low · 3 ms')
+      expect(chip.getAttribute('title')).toContain('at low effort in Codex')
+      const teach = screen.getByTestId('model-route-teach')
+      expect(Array.from(teach.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['Should have been…', 'Low effort', 'Medium effort', 'High effort', 'The effort it was on'])
+      fireEvent.change(teach, { target: { value: 'opus' } })
+      expect(routerLearn).toHaveBeenCalledWith({ prompt: 'rename foo', label: 'opus' })
+      for (const k of ['onRouterMessage', 'routerLearn']) delete (window as any).termpolis[k]
     })
 
     it('relaunches Codex on the session it names, after quitting it with Ctrl+C (never Ctrl+D)', async () => {
