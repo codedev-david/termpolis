@@ -225,6 +225,7 @@ import type { RouterTuning } from '../shared/taskRouter'
 import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
+import { depthOfferFor } from './headroom/depthOffer'
 import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
 import { loadSettingsFromDisk, saveSettingsToDisk, loadLedgerBaseFromDisk, saveLedgerToDisk } from './headroom/persist'
@@ -4534,6 +4535,8 @@ async function semanticPoolOptions(
       onProxyResult((r) => {
         try { recordProxyResult(r) } catch { /* best effort */ }
         try { noteProxyResult(r) } catch { /* routing reads what it can */ }
+        // v1.59.0: after the ledger, so the depth curve already counts this request.
+        try { const offer = depthOfferFor(r); if (offer) mainWindow?.webContents.send('agent:depth-offer', offer) } catch { /* only an offer */ }
       })
       // The result only lands once the upstream response ends, but Claude can call retrieve_full
       // the moment the token streams back — so the originals are committed on the request path too.

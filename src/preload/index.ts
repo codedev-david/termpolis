@@ -61,6 +61,12 @@ const api: TermpolisAPI = {
     ipcRenderer.on('agent:first-prompt', handler)
     return () => ipcRenderer.removeListener('agent:first-prompt', handler)
   },
+  // v1.59.0: this terminal's conversation is deep enough that a fresh session saves savingPct per turn.
+  onAgentDepthOffer: (cb: (p: { terminalId: string; messages: number; savingPct: number }) => void) => {
+    const handler = (_e: unknown, p: { terminalId: string; messages: number; savingPct: number }) => cb(p)
+    ipcRenderer.on('agent:depth-offer', handler)
+    return () => ipcRenderer.removeListener('agent:depth-offer', handler)
+  },
   /** v1.56.0 per-message routing: the model a submitted message runs on, for its pane's chip. */
   onRouterMessage: (cb: (e: import('../shared/smartRoute').RouteEvent) => void) => {
     const handler = (_e: unknown, e: import('../shared/smartRoute').RouteEvent) => cb(e)

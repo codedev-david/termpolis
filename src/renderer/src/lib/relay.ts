@@ -8,7 +8,7 @@
 // If no id appears, nothing is quit: the agent keeps running and the caller says why.
 
 import { waitForExit, PROMPT_SETTLE_MS } from '../../../shared/agentExit'
-import { carriedLaunchArgs } from '../../../shared/launchCarry'
+import { agentCommandIn, agentOfLaunch, carriedLaunchArgs } from '../../../shared/launchCarry'
 import type { ClaudeModelWord } from '../../../shared/taskRouter'
 import { relaunchCommandFor, type ModelCatalog } from './modelCatalog'
 import { QUIT_PRESSES, QUIT_PRESS_GAP_MS, type RelaunchIO } from './modelRelaunch'
@@ -42,6 +42,21 @@ export function relayLaunchLine(model: ClaudeModelWord | null, catalog: ModelCat
   if (!head) return ''
   // No quotes, $, ` or ! inside: the same text is safe in bash, PowerShell and cmd.
   return `${head} "Continue from handoff ${id}: call memory_search for it first."`
+}
+
+/**
+ * What a line typed into a pane says about the Claude a fresh session should start like (v1.59.0):
+ * - the claude command in it, when the line starts Claude bare or with a flag or a quoted prompt after it;
+ * - null when it starts Claude in a way the relay can't retype faithfully: `CLAUDE_CONFIG_DIR=… claude` names an
+ *   account for that one command, and a retyped plain `claude` would start on another;
+ * - undefined when it says nothing, as with a prompt typed INTO Claude that begins with the word ("claude keeps timing
+ *   out"), whose prose must not replace the flags Claude was started with.
+ */
+export function claudeLaunchIn(line: string): string | null | undefined {
+  const command = agentOfLaunch(line) === 'claude' ? agentCommandIn(line) : null
+  if (command && /^\S+(?:\s*$|\s+["'-])/.test(command)) return command
+  if (/^\s*[A-Za-z_]\w*=\S*\s/.test(line) && /\bclaude\b/i.test(line)) return null
+  return undefined
 }
 
 export type RelayResult = { started: true; id: string } | { started: false; reason: string }

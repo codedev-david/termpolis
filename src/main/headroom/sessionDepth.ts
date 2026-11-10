@@ -153,7 +153,15 @@ function freshBandIndex(): number {
  * A receipt that prints a figure in those cases teaches the reader to ignore it.
  */
 export function depthAdvice(): DepthAdvice | null {
-  const messages = curve.lastMessages
+  return depthAdviceAt(curve.lastMessages)
+}
+
+/**
+ * The same advice for a given depth rather than the latest request's. The curve is global, but
+ * several terminals run conversations of different lengths at once, so a per-terminal offer has to
+ * ask about that terminal's own depth.
+ */
+export function depthAdviceAt(messages: number): DepthAdvice | null {
   if (!(messages > 0)) return null
   const nowIdx = bandFor(messages)
   const freshIdx = freshBandIndex()

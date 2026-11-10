@@ -1474,7 +1474,124 @@ describe('TerminalPane', () => {
       vi.useRealTimers()
     })
 
-    it('a terminal Termpolis did not launch gets no fresh-session offer', () => {
+    // v1.59.0: main offers a fresh session BEFORE compaction, once the depth curve says it pays.
+    function depthFeed() {
+      const feed: { send?: (p: { terminalId: string; messages: number; savingPct: number }) => void } = {}
+      ;(window as any).termpolis.onAgentDepthOffer = vi.fn((cb: (p: { terminalId: string; messages: number; savingPct: number }) => void) => { feed.send = cb; return () => {} })
+      return feed
+    }
+    const typeLine = (line: string) => { for (const ch of line) act(() => { mockOnDataCb?.(ch) }); act(() => { mockOnDataCb?.('\r') }) }
+
+    it('a long session gets a fresh-session offer naming the saving; dismissing it types nothing', () => {
+      const feed = depthFeed()
+      withClaudeTerminal(`${FLAGS} --model opus`)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => feed.send?.({ terminalId: 'other', messages: 120, savingPct: 55 }))
+      expect(screen.queryByTestId('model-relay-chip')).toBeNull()
+      act(() => feed.send?.({ terminalId: 'term-1', messages: 120, savingPct: 55 }))
+      const chip = screen.getByTestId('model-relay-chip')
+      expect(chip.textContent).toContain('Long session. A fresh one saves 55% a turn.')
+      expect(chip.getAttribute('title')).toContain('about 55% less per turn')
+      fireEvent.click(screen.getByTestId('model-relay-dismiss'))
+      expect(screen.queryByTestId('model-relay-chip')).toBeNull()
+      // the same saving again (a nested `claude -p` reset main's count) stays closed
+      act(() => feed.send?.({ terminalId: 'term-1', messages: 120, savingPct: 55 }))
+      expect(screen.queryByTestId('model-relay-chip')).toBeNull()
+      // a deeper band brings it back with the bigger saving
+      act(() => feed.send?.({ terminalId: 'term-1', messages: 210, savingPct: 68 }))
+      expect(screen.getByTestId('model-relay-chip').textContent).toContain('saves 68%')
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      delete (window as any).termpolis.onAgentDepthOffer
+    })
+
+    it('the compaction offer keeps its own wording', () => {
+      const feed = firstPromptFeed()
+      withClaudeTerminal(`${FLAGS} --model opus`)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => feed.send?.({ terminalId: 'term-1', prompt: 'explain what the release workflow does', afterCompact: true } as never))
+      const chip = screen.getByTestId('model-relay-chip')
+      expect(chip.textContent).toContain('Compacted.')
+      expect(chip.getAttribute('title')).toContain('just compacted')
+      delete (window as any).termpolis.onAgentFirstPrompt
+    })
+
+    it('a Claude typed by hand gets the offer, and the fresh session keeps the flags it was started with', async () => {
+      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
+      vi.useFakeTimers()
+      const ID = 'mem-1762600000000-4-d4e5f6'
+      osSaysShellAlone(false, true)
+      exitPrints(`Saved the handoff as ${ID}`)
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: { name: 'Claude Code', icon: 'fa-solid fa-robot', color: '#D97706' } })
+      const feed = depthFeed()
+      withClaudeTerminal(undefined)
+      render(<TerminalPane {...defaultProps} />)
+      // nothing typed that starts Claude: no offer
+      act(() => feed.send?.({ terminalId: 'term-1', messages: 120, savingPct: 55 }))
+      expect(screen.queryByTestId('model-relay-chip')).toBeNull()
+      typeLine(FLAGS)
+      typeLine('fix the flaky test')
+      typeLine('claude keeps timing out, why?')
+      act(() => feed.send?.({ terminalId: 'term-1', messages: 130, savingPct: 55 }))
+      mockWriteToTerminal.mockClear()
+      fireEvent.click(screen.getByTestId('model-relay-start'))
+      await vi.runAllTimersAsync()
+      const sent = mockWriteToTerminal.mock.calls.map((c) => c[1])
+      expect(sent[0]).toContain('handoff')
+      expect(sent.slice(2, 5)).toEqual(['\x03', '\x03', '\x03'])
+      expect(sent[5]).toBe(`${FLAGS} "Continue from handoff ${ID}: call memory_search for it first."\r`)
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: null })
+      delete (window as any).termpolis.onAgentDepthOffer
+      vi.useRealTimers()
+    })
+
+    it('a Claude started with an inline account prefix gets no offer: a retyped claude would start on another account', async () => {
+      const { useAgentDetection } = await import('../../src/renderer/src/hooks/useAgentDetection')
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: { name: 'Claude Code', icon: 'fa-solid fa-robot', color: '#D97706' } })
+      const feed = depthFeed()
+      withClaudeTerminal(undefined)
+      render(<TerminalPane {...defaultProps} />)
+      typeLine(FLAGS)
+      typeLine('CLAUDE_CONFIG_DIR=~/.claude-work claude')
+      act(() => feed.send?.({ terminalId: 'term-1', messages: 120, savingPct: 55 }))
+      expect(screen.queryByTestId('model-relay-chip')).toBeNull()
+      ;(useAgentDetection as any).mockReturnValue({ detectedAgent: null })
+      delete (window as any).termpolis.onAgentDepthOffer
+    })
+
+    it('a compaction or a fresh session reopens a closed depth offer', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(null)
+      const depth = depthFeed()
+      const first = firstPromptFeed()
+      withClaudeTerminal(`${FLAGS} --model opus`)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => depth.send?.({ terminalId: 'term-1', messages: 120, savingPct: 55 }))
+      fireEvent.click(screen.getByTestId('model-relay-dismiss'))
+      act(() => first.send?.({ terminalId: 'term-1', prompt: 'explain what the release workflow does', afterCompact: true } as never))
+      fireEvent.click(screen.getByTestId('model-relay-dismiss'))
+      act(() => depth.send?.({ terminalId: 'term-1', messages: 120, savingPct: 55 }))
+      expect(screen.getByTestId('model-relay-chip').textContent).toContain('saves 55%')
+      fireEvent.click(screen.getByTestId('model-relay-start'))
+      await vi.runAllTimersAsync()
+      act(() => depth.send?.({ terminalId: 'term-1', messages: 120, savingPct: 55 }))
+      expect(screen.getByTestId('model-relay-chip').textContent).toContain('saves 55%')
+      delete (window as any).termpolis.onAgentDepthOffer
+      delete (window as any).termpolis.onAgentFirstPrompt
+      vi.useRealTimers()
+    })
+
+    it('no depth offer reaches a pane that is not running Claude', () => {
+      const feed = depthFeed()
+      withClaudeTerminal(undefined)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => feed.send?.({ terminalId: 'term-1', messages: 120, savingPct: 55 }))
+      expect(screen.queryByTestId('model-relay-chip')).toBeNull()
+      expect((window as any).termpolis.onAgentDepthOffer).not.toHaveBeenCalled()
+      delete (window as any).termpolis.onAgentDepthOffer
+    })
+
+    it('a terminal where nothing started Claude gets no fresh-session offer', () => {
       const feed = firstPromptFeed()
       withClaudeTerminal(undefined)
       render(<TerminalPane {...defaultProps} />)

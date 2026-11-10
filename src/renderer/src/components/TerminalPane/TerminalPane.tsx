@@ -49,7 +49,7 @@ import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { modelSwitchCommand } from '../../lib/modelBroker'
 import { relaunchHeld, holdTerminal, modelHoldBridge, terminalRelaunchIo } from '../../lib/modelRelaunch'
-import { requestHandoff, launchFromHandoff } from '../../lib/relay'
+import { requestHandoff, launchFromHandoff, claudeLaunchIn } from '../../lib/relay'
 import { relaunchNotice } from '../../lib/modelRelaunchNotice'
 import { beginModelSwitch, endModelSwitch, useModelSwitch } from '../../lib/modelSwitchState'
 
@@ -438,6 +438,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   const [parsedCwd, setParsedCwd] = useState<string | null>(null)
   const [parsedBranch, setParsedBranch] = useState<string | null>(null)
   const lastCommandRef = useRef('')
+  // The last line typed here that starts Claude. lastCommandRef moves on to every prompt typed INTO Claude, so the
+  // fresh-session relay reads the launch line from here for a Claude the user started by hand.
+  const claudeLaunchRef = useRef<string | null>(null)
   // Snapshot of the selection + every derived copy payload, captured at
   // right-click time (handleContextMenu). The menu reads from this instead of
   // calling term.getSelection() lazily on click — xterm only guarantees the
@@ -575,8 +578,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   const [reroute, setReroute] = useState<RerouteOffer | null>(null)
   // v1.56.0: the model main routed this pane's last message to (lib/messageRoute.ts).
   const [routeEvent, setRouteEvent] = useState<RouteEvent | null>(null)
-  // v1.55.0 relay: after a compaction, offer a fresh session started from a handoff note.
-  const [relayReady, setRelayReady] = useState(false)
+  // v1.55.0 relay: after a compaction, offer a fresh session started from a handoff note. v1.59.0: also before one,
+  // once main's depth curve says this conversation is long enough that a fresh session costs savingPct less per turn.
+  const [relayOffer, setRelayOffer] = useState<{ savingPct?: number } | null>(null)
+  // The saving of a depth offer the user closed: one no bigger stays closed. Main sends one offer per band, but a nested
+  // `claude -p` in this terminal resets its count, and that offer would otherwise come straight back.
+  const relayDismissedPctRef = useRef(0)
   // Re-entrancy guard for the authoritative relaunch path only: relaunchAgentWithModel is an
   // async multi-step PTY sequence that runs for seconds (Ctrl+C x3, a wait for the OS to say the
   // agent has exited, the retype). A second pick landing before the first settles would interleave
@@ -1576,6 +1583,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         if (cmd) {
           window.termpolis.appendHistory(terminalId, terminalName, cmd)
           lastCommandRef.current = cmd
+          const launch = claudeLaunchIn(cmd)
+          if (launch !== undefined) claudeLaunchRef.current = launch
         }
         inputBufferRef.current = ''
         outputBufferRef.current = ''
@@ -2089,10 +2098,28 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       if (p.terminalId !== terminalId) return
       // Right after a compaction the cache is cold, so a switch costs nothing extra: turn 0.
       setReroute(rerouteOffer(p.prompt, runningClaudeModel({ liveModel, routed, agentCommand }), p.afterCompact ? 0 : 1, routerTuning()))
-      // Quitting the agent is safe only when Termpolis launched it.
-      if (p.afterCompact && authoritativeProvider === 'claude') setRelayReady(true)
+      if (p.afterCompact) relayDismissedPctRef.current = 0
+      if (p.afterCompact && relayLaunch() !== undefined) setRelayOffer({})
     })
   }, [terminalId, badgeProvider, liveModel, routed, agentCommand, authoritativeProvider])
+
+  // v1.59.0: main says this pane's conversation has grown long enough that restarting it pays (headroom/depthOffer.ts).
+  // Main sends a terminal one offer per depth band, so a dismissed offer comes back only once the saving has grown.
+  useEffect(() => {
+    if (badgeProvider !== 'claude') return
+    return window.termpolis.onAgentDepthOffer?.((p) => {
+      if (p.terminalId !== terminalId || relayLaunch() === undefined || p.savingPct <= relayDismissedPctRef.current) return
+      setRelayOffer({ savingPct: p.savingPct })
+    })
+  }, [terminalId, badgeProvider, agentCommand, authoritativeProvider])
+
+  // The line the relay starts the fresh session from, or undefined when Claude here can't be quit for one. Termpolis
+  // launched it, or the user typed `claude` here: either way the relay quits nothing until Claude has printed the
+  // handoff's id, and types nothing until the OS says the shell is alone again (lib/relay.ts).
+  function relayLaunch(): string | null | undefined {
+    if (authoritativeProvider === 'claude') return agentCommand
+    return claudeLaunchRef.current ?? undefined
+  }
 
   // v1.56.0 per-message routing: main says which model each message in this pane runs on.
   useEffect(() => {
@@ -2105,7 +2132,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // model the re-route offer names, else the one running. The quit and launch run under the
   // terminal's relaunch lock, like a model pick; the wait for the note does not hold it.
   const startRelay = (): void => {
-    setRelayReady(false)
+    setRelayOffer(null)
+    relayDismissedPctRef.current = 0
+    const launchCommand = relayLaunch() ?? null
     const model = reroute?.model ?? runningClaudeModel({ liveModel, routed, agentCommand })
     setReroute(null)
     setMemoryNotice?.('Asking Claude for a handoff note for the fresh session…')
@@ -2120,7 +2149,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         end: () => useTerminalStore.getState().endRelaunch(terminalId),
         main: modelHoldBridge(),
         write: (id: string, data: string, key?: string) => (key === undefined ? window.termpolis.writeToTerminal(id, data) : window.termpolis.writeToTerminal(id, data, undefined, key)),
-      }, (write) => launchFromHandoff({ ...io, write }, handoffId, model, modelCatalog, agentCommand))
+      }, (write) => launchFromHandoff({ ...io, write }, handoffId, model, modelCatalog, launchCommand))
       if ('refused' in res) { setMemoryNotice?.(`⚠️ Termpolis didn't start the fresh session: ${res.refused}. The handoff is saved as ${handoffId}.`); return }
       if (!res.started) { setMemoryNotice?.(`⚠️ ${res.reason}`); return }
       if (model) setLiveModel(model)
@@ -2497,13 +2526,15 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                   </select>
                 </span>
               )}
-              {provider === 'claude' && relayReady && !relaunchInFlight && (
+              {provider === 'claude' && relayOffer && !relaunchInFlight && (
                 <span
                   data-testid="model-relay-chip"
                   className="flex items-center gap-1 text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 border border-[#1177bb] rounded px-1.5 py-0.5 whitespace-nowrap"
-                  title="Claude just compacted this conversation, so its cache is cold. A fresh session started from a short handoff note reads less on every turn from here on."
+                  title={relayOffer.savingPct === undefined
+                    ? 'Claude just compacted this conversation, so its cache is cold. A fresh session started from a short handoff note reads less on every turn from here on.'
+                    : `This conversation is long, and Claude rereads all of it on every turn. Measured on your own sessions, a fresh session started from a short handoff note costs about ${relayOffer.savingPct}% less per turn. Termpolis saves the handoff in memory first.`}
                 >
-                  Compacted.
+                  {relayOffer.savingPct === undefined ? 'Compacted.' : `Long session. A fresh one saves ${relayOffer.savingPct}% a turn.`}
                   <button
                     type="button"
                     data-testid="model-relay-start"
@@ -2517,7 +2548,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                     data-testid="model-relay-dismiss"
                     aria-label="Keep this session"
                     className="px-1 rounded hover:bg-[#3c3c3c] text-[#9ca3af]"
-                    onClick={(e) => { e.stopPropagation(); setRelayReady(false) }}
+                    onClick={(e) => { e.stopPropagation(); relayDismissedPctRef.current = relayOffer.savingPct ?? 0; setRelayOffer(null) }}
                   >
                     <i className="fa-solid fa-xmark text-[9px]"></i>
                   </button>

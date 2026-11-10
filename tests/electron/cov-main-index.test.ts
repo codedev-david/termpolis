@@ -147,6 +147,7 @@ const M = vi.hoisted(() => ({
   resolveWireMode: vi.fn(() => 'aggressive'),
   saveDepthCurveToDisk: vi.fn(),
   loadDepthCurveFromDisk: vi.fn(),
+  depthOfferFor: vi.fn((): unknown => null),
   // headroom proxy
   summarizeProxySavings: vi.fn(() => ({ cumulative: { outputTokens: 1000, requests: 10, savedTokens: 7 } })),
   recordProxyResult: vi.fn(),
@@ -543,6 +544,7 @@ vi.mock('../../src/main/headroom/receiptStore', () => ({
 vi.mock('../../src/main/headroom/receiptArtifact', () => ({
   renderReceiptMarkdown: M.renderReceiptMarkdown, renderReceiptJson: M.renderReceiptJson,
 }))
+vi.mock('../../src/main/headroom/depthOffer', () => ({ depthOfferFor: M.depthOfferFor }))
 vi.mock('../../src/main/headroom/sessionDepth', () => ({
   loadDepthCurveFromDisk: M.loadDepthCurveFromDisk, saveDepthCurveToDisk: M.saveDepthCurveToDisk,
 }))
@@ -1331,6 +1333,20 @@ describe('headroom proxy wiring', () => {
     M.recordProxyResult.mockImplementationOnce(() => { throw new Error('ledger wedged') })
     // A bookkeeping failure must not propagate into the response path that is mid-flight.
     expect(() => onResult({ savedTokens: 6 })).not.toThrow()
+  })
+
+  it('a proxy result that earns a depth offer is sent to the window, and an offer fault is swallowed (v1.59.0)', async () => {
+    const onResult = cbOf(M.onProxyResult)
+    const offer = { terminalId: 't-1', messages: 120, savingPct: 55 }
+    M.depthOfferFor.mockReturnValueOnce(offer)
+    mockWebContents.send.mockClear()
+    onResult({ terminal: 't-1' })
+    expect(mockWebContents.send).toHaveBeenCalledWith('agent:depth-offer', offer)
+    mockWebContents.send.mockClear()
+    onResult({ terminal: 't-1' })
+    expect(mockWebContents.send).not.toHaveBeenCalledWith('agent:depth-offer', expect.anything())
+    M.depthOfferFor.mockImplementationOnce(() => { throw new Error('curve wedged') })
+    expect(() => onResult({ terminal: 't-1' })).not.toThrow()
   })
 
   it('a subagent task from the proxy is routed, and its answer goes back to the proxy (v1.57.0)', async () => {

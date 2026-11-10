@@ -1,6 +1,6 @@
 // v1.55.0 Task 10: the relay hands a session on through a memory handoff note.
 import { describe, it, expect } from 'vitest'
-import { HANDOFF_PROMPT, HANDOFF_WAIT_MS, handoffIdFrom, relayLaunchLine, requestHandoff, launchFromHandoff, type RelayIO } from '../../src/renderer/src/lib/relay'
+import { HANDOFF_PROMPT, HANDOFF_WAIT_MS, handoffIdFrom, relayLaunchLine, requestHandoff, claudeLaunchIn, launchFromHandoff, type RelayIO } from '../../src/renderer/src/lib/relay'
 
 const ID = 'mem-1762600000000-3-a1b2c3'
 let t0 = 0
@@ -96,5 +96,27 @@ describe('launchFromHandoff', () => {
     const bad = fakeIo({ alone: [true] })
     expect((await launchFromHandoff(bad, ID, 'nope' as never, null, 'claude')).started).toBe(false)
     expect(bad.writes).toEqual([])
+  })
+})
+
+describe('claudeLaunchIn (v1.59.0: a Claude typed by hand)', () => {
+  it.each([
+    ['claude', 'claude'],
+    ['claude --dangerously-skip-permissions', 'claude --dangerously-skip-permissions'],
+    ['claude "fix the build"', 'claude "fix the build"'],
+    ["claude 'fix it'", "claude 'fix it'"],
+    ['cd api && claude --verbose', 'claude --verbose'],
+    ['$env:CLAUDE_CONFIG_DIR="C:\p"; claude --verbose', 'claude --verbose'],
+  ])('%s starts Claude as %s', (line, command) => {
+    expect(claudeLaunchIn(line)).toBe(command)
+  })
+
+  it('an inline account prefix the shell will not keep clears the recorded line', () => {
+    expect(claudeLaunchIn('CLAUDE_CONFIG_DIR=~/.claude-work claude')).toBeNull()
+    expect(claudeLaunchIn('FOO=1 npx claude')).toBeNull()
+  })
+
+  it.each(['claude keeps timing out, why?', 'ls -la', 'git commit -m "claude"', 'X=1 make'])('%s says nothing', (line) => {
+    expect(claudeLaunchIn(line)).toBeUndefined()
   })
 })
