@@ -37,6 +37,19 @@ $exe = Join-Path $env:LOCALAPPDATA 'Programs\termpolis\Termpolis.exe'
 $result = [ordered]@{ installer = $Installer; failures = @() }
 function Add-Failure([string]$why) { $script:result.failures += $why }
 
+# Runs the installer and waits for it alone, for at most $Seconds. Start-Process -Wait would also
+# wait for every process the installer starts (build/installer.nsh starts ie4uinit.exe without
+# waiting for it), and one stuck child then hangs the CI step until the run is cancelled. Returns
+# the process with ExitCode $null when it timed out; it is then killed with its children.
+function Invoke-Installer([string[]]$Arguments, [int]$Seconds = 300) {
+  $p = Start-Process -FilePath $Installer -ArgumentList $Arguments -PassThru
+  $null = $p.Handle # keeps the exit code readable after the process ends
+  if ($p.WaitForExit($Seconds * 1000)) { return [pscustomobject]@{ Id = $p.Id; ExitCode = $p.ExitCode } }
+  $k = Start-Process taskkill -ArgumentList '/PID', $p.Id, '/T', '/F' -PassThru -NoNewWindow
+  [void]$k.WaitForExit(30000)
+  [pscustomobject]@{ Id = $p.Id; ExitCode = $null }
+}
+
 function Save-Result {
   $json = $script:result | ConvertTo-Json -Depth 4
   if ($Out) { $json | Set-Content -Encoding utf8 $Out }
@@ -52,9 +65,10 @@ if (-not (Test-Path $auditKey)) { New-Item -Path $auditKey | Out-Null }
 New-ItemProperty -Path $auditKey -Name ProcessCreationIncludeCmdLine_Enabled -Value 1 -PropertyType DWord -Force | Out-Null
 
 if (-not (Test-Path $exe)) {
-  $first = Start-Process -FilePath $Installer -ArgumentList '/S' -PassThru -Wait
+  $first = Invoke-Installer '/S'
   $result.installExit = $first.ExitCode
-  if ($first.ExitCode -ne 0) { Add-Failure "the first install exited $($first.ExitCode)" }
+  if ($null -eq $first.ExitCode) { Add-Failure 'the first install ran past 5 minutes and was killed' }
+  elseif ($first.ExitCode -ne 0) { Add-Failure "the first install exited $($first.ExitCode)" }
 }
 if (-not (Test-Path $exe)) {
   Add-Failure "Termpolis.exe is not installed at $exe"
@@ -74,10 +88,11 @@ if ($app.HasExited) { Add-Failure "the app exited by itself before the update (e
 if ($helper.HasExited) { Add-Failure "the Node-mode helper exited by itself before the update (exit $($helper.ExitCode))" }
 
 $since = (Get-Date).AddSeconds(-1)
-$update = Start-Process -FilePath $Installer -ArgumentList '/S', '--updated' -PassThru -Wait
+$update = Invoke-Installer '/S', '--updated'
 $result.updateExit = $update.ExitCode
 $result.updateSeconds = [int]((Get-Date) - $since).TotalSeconds
-if ($update.ExitCode -ne 0) { Add-Failure "the update exited $($update.ExitCode)" }
+if ($null -eq $update.ExitCode) { Add-Failure 'the update ran past 5 minutes and was killed' }
+elseif ($update.ExitCode -ne 0) { Add-Failure "the update exited $($update.ExitCode)" }
 Start-Sleep -Seconds 2
 $result.appClosed = $app.HasExited
 $result.helperClosed = $helper.HasExited

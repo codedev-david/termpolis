@@ -42,7 +42,7 @@ permissions:
 jobs:
   scan:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -173,34 +173,73 @@ jobs:
           $results | ConvertTo-Json | Set-Content (Join-Path $env:SCAN 'results.json')
           exit 0 # MpCmdRun exits 2 on a detection, which is a result here; the Verdict step judges
 
+      # Every wait here has a limit. This step used to hang until someone cancelled the run
+      # (v1.55.2, v1.56.2, v1.58.1): Start-Process -Wait waits for the installer AND every process
+      # it starts (build/installer.nsh starts ie4uinit.exe without waiting for it), so one stuck
+      # child held the step open. WaitForExit waits for the installer alone. A timed-out
+      # installer is killed with its children and run once more; anything that times out is
+      # recorded as a timeout, never as a clean result.
       - name: Install and run the subject with real-time protection on
         if: env.SUBJECT_INSTALLER != ''
+        timeout-minutes: 15
         shell: pwsh
         run: |
+          function Log([string]$m) { Write-Host "[$((Get-Date).ToUniversalTime().ToString('HH:mm:ss'))] $m" }
+          function Stop-Tree([int]$id) {
+            $k = Start-Process taskkill -ArgumentList '/PID', $id, '/T', '/F' -PassThru -NoNewWindow
+            if (-not $k.WaitForExit(30000)) { Log "taskkill of $id did not finish in 30s" }
+          }
           $start = Get-Date
-          $p = Start-Process -FilePath $env:SUBJECT_INSTALLER -ArgumentList '/S' -PassThru -Wait
-          Write-Host "installer exit code: $($p.ExitCode)"
+          $timeouts = @()
+          $installerExit = $null
+          foreach ($attempt in 1, 2) {
+            Log "installer attempt $attempt"
+            $p = Start-Process -FilePath $env:SUBJECT_INSTALLER -ArgumentList '/S' -PassThru
+            $null = $p.Handle # keeps the exit code readable after the process ends
+            if ($p.WaitForExit(300000)) { $installerExit = $p.ExitCode; Log "installer exit code: $installerExit"; break }
+            Log "installer still running after 5 minutes; killing it and its children"
+            $timeouts += "installer attempt $attempt ran past 5 minutes"
+            Stop-Tree $p.Id
+          }
           # Cinjo.O!cl used to land within about a minute of the install.
           Start-Sleep -Seconds 60
           $exe = Join-Path $env:LOCALAPPDATA 'Programs\termpolis\Termpolis.exe'
           $installed = Test-Path $exe
-          Write-Host "installed exe present after 60s: $installed"
+          Log "installed exe present after 60s: $installed"
           $ran = $false
           if ($installed) {
             $userData = Join-Path $env:RUNNER_TEMP 'termpolis-profile'
             $app = Start-Process -FilePath $exe -ArgumentList "--user-data-dir=$userData" -PassThru
             Start-Sleep -Seconds 45
             $ran = -not $app.HasExited
-            Write-Host "app still running after 45s: $ran"
-            taskkill /PID $app.Id /T /F | Out-Null
+            Log "app still running after 45s: $ran"
+            Stop-Tree $app.Id
             Start-Sleep -Seconds 5
             $installed = Test-Path $exe
           }
-          $detections = Get-MpThreatDetection | Where-Object { $_.InitialDetectionTime -ge $start }
-          $names = foreach ($d in $detections) { (Get-MpThreat -ThreatID $d.ThreatID).ThreatName + ' on ' + ($d.Resources -join ' ') }
+          # Defender's WMI provider can stall under load, so its threat list is read in a job with
+          # a limit, and the Defender event log (1116 detected, 1117 acted) is the fallback.
+          Log 'reading detections'
+          $job = Start-Job -ArgumentList $start -ScriptBlock {
+            param($since)
+            foreach ($d in (Get-MpThreatDetection | Where-Object { $_.InitialDetectionTime -ge $since })) {
+              (Get-MpThreat -ThreatID $d.ThreatID).ThreatName + ' on ' + ($d.Resources -join ' ')
+            }
+          }
+          if (Wait-Job $job -Timeout 120) {
+            $names = @(Receive-Job $job)
+            $source = 'Get-MpThreatDetection'
+          } else {
+            Log 'Get-MpThreatDetection did not answer in 120s; reading the Defender event log instead'
+            Stop-Job $job
+            $names = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Windows Defender/Operational'; Id = 1116, 1117; StartTime = $start } -ErrorAction SilentlyContinue |
+              ForEach-Object { ($_.Message -split "`n" | Where-Object { $_ -match '^\s*(Name|Path):' }) -join ' ' -replace '\s+', ' ' })
+            $source = 'Defender event log'
+          }
+          Remove-Job $job -Force
           $install = [pscustomobject]@{
-            installerExit = $p.ExitCode; presentAfter = $installed; ran = $ran
-            detections = ($names -join '; ')
+            installerExit = $installerExit; presentAfter = $installed; ran = $ran
+            detections = ($names -join '; '); detectionSource = $source; timeouts = $timeouts
           }
           $install | Format-List | Out-String
           $install | ConvertTo-Json | Set-Content (Join-Path $env:SCAN 'install.json')
@@ -212,6 +251,7 @@ jobs:
       # an unsigned build of every commit). Judged in the Verdict step.
       - name: Update over the running app
         if: env.SUBJECT_INSTALLER != ''
+        timeout-minutes: 12
         shell: pwsh
         run: |
           ./scripts/test-installer-update.ps1 -Installer $env:SUBJECT_INSTALLER -UserDataDir (Join-Path $env:RUNNER_TEMP 'termpolis-profile-update') -Out (Join-Path $env:SCAN 'update.json')
@@ -228,7 +268,8 @@ jobs:
           $installFile = Join-Path $env:SCAN 'install.json'
           $install = if (Test-Path $installFile) { Get-Content $installFile | ConvertFrom-Json } else { $null }
           if ($install) {
-            $summary += '', "Install + run: installer exit $($install.installerExit); installed exe present: $($install.presentAfter); app ran 45s: $($install.ran); detections: $(if ($install.detections) { $install.detections } else { 'none' })"
+            $summary += '', "Install + run: installer exit $($install.installerExit); installed exe present: $($install.presentAfter); app ran 45s: $($install.ran); detections ($($install.detectionSource)): $(if ($install.detections) { $install.detections } else { 'none' })"
+            foreach ($t in @($install.timeouts)) { if ($t) { $summary += "- timed out: $t" } }
           }
           $failures = @()
           $eicar = $results | Where-Object name -like 'control: EICAR*'
@@ -238,6 +279,9 @@ jobs:
             $summary += '', '> Note: no unsigned control was flagged. This runner''s Defender may not reproduce reputation-based cloud verdicts, so a clean subject proves less than it looks.'
           }
           foreach ($r in ($results | Where-Object { $_.name -like 'subject:*' -and $_.verdict -ne 'clean' })) { $failures += "$($r.name): $($r.verdict) $($r.threats)" }
+          if ($env:SUBJECT_INSTALLER -and -not $install) { $failures += 'the install step reported nothing (it timed out or crashed)' }
+          if ($install -and $null -eq $install.installerExit) { $failures += 'the installer never finished: ' + (@($install.timeouts) -join '; ') }
+          elseif ($install -and $install.installerExit -ne 0) { $failures += "the installer exited $($install.installerExit)" }
           if ($install -and (-not $install.presentAfter -or $install.detections)) { $failures += "the installed app was flagged or removed: $($install.detections)" }
           if ($install -and -not $install.ran) { $failures += 'the installed app did not stay running for 45s' }
           $updateFile = Join-Path $env:SCAN 'update.json'
