@@ -1,4 +1,4 @@
-# Read-only: how many pairings use the Termpolis Remote relay, and how many relay subscriptions are active.
+# Read-only: how many relay rooms (phone pairings, linked computers) are open, and how many relay subscriptions are active.
 # The repo is public and so are these logs: the numbers are EMAILED to the owner, never printed.
 name: Relay usage
 

@@ -1,10 +1,10 @@
-// Read-only: how many phone-desktop pairings use the relay, and how many relay subscriptions are active.
+// Read-only: how many relay rooms (phone pairings, linked computers) were open, and how many relay subscriptions are active.
 //
 // The repo is PUBLIC, so its Actions logs are too: this script writes the numbers to REPORT_PATH (mailed to the
 // owner by the workflow) and logs only whether each source answered. Never print a count, an object id or the key.
 //
 // Relay: every pairing is one Durable Object (relay/src/index.ts: PAIRING_ROOM.idFromName(pairingId)), so distinct
-// objects invoked on a day = pairings in use that day. Cloudflare's own analytics already count this; the relay logs
+// objects invoked on a day = rooms some desktop held open that day (not people, and not necessarily in use). Cloudflare's own analytics already count this; the relay logs
 // nothing new (PRIVACY.md: it sees a room id and frame sizes, nothing else).
 //
 // Subscriptions: App Store Connect's daily SUBSCRIPTION summary report, which needs the vendor number
@@ -61,11 +61,14 @@ async function relay() {
     d.requests += row.sum.requests
     byDay.set(date, d)
   }
-  say(`Relay, last ${DAYS} days: ${all.size} distinct pairings used it.`)
+  say(`Relay, last ${DAYS} days: ${all.size} distinct rooms were opened.`)
   if (namespaces.size > 1) say(`  (${namespaces.size} Durable Object namespaces on the account: counts include all of them.)`)
-  say('  Each pairing is one phone + one desktop. Subtract the pairings you own yourself; anything left is someone else.')
+  say('  A room is NOT a person. Each one is a phone paired to one desktop, two linked computers, or a one-time')
+  say('  pairing code. A running desktop holds a room open for EVERY phone paired to it (stale ones too, until they')
+  say('  expire after 30 days without contact), so a room counts on any day that desktop is on, used or not.')
+  say('  Count your own first: phones x desktops they are paired to, plus your linked computers.')
   say()
-  say('  date        pairings  requests')
+  say('  date           rooms  requests')
   for (const [date, d] of [...byDay].sort(([a], [b]) => (a < b ? 1 : -1))) {
     say(`  ${date}  ${String(d.rooms.size).padStart(8)}  ${String(d.requests).padStart(8)}`)
   }
