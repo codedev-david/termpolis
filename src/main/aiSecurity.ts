@@ -733,9 +733,9 @@ export const SCREEN_RULES: readonly RedactionRule[] = RULES.filter((rule) => !KE
  *  the cut falls among key lines. A longer key is taken from its END line.
  *
  *  `cutStart`: `input` is itself an end another computer cut. `true`: maybe before screening it, or
- *  with a screen that took keys by their layout (a version before 1.55): a key's tail at its start
+ *  with a screen that took keys by their layout (a version before 1.60.1): a key's tail at its start
  *  is removed with its END line however few of its lines the cut left, and a run of key lines there
- *  with no END line below it is reported. `'screened'`: after screening it with this screen (1.55
+ *  with no END line below it is reported. `'screened'`: after screening it with this screen (1.60.1
  *  or later), which took whole any key its cut ran through: nothing at its start is a key's tail,
  *  so random lines there above an END line (a dump, a list of hashes, a test key's made-up body)
  *  are only reported, as in the middle of a text. */

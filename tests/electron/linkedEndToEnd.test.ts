@@ -732,11 +732,11 @@ describe('delegating a job', () => {
     expect(b.audits).toEqual([])
   })
 
-  it("hands back a dump above an END line whole where the build box's cut fell inside it, both computers on 1.55", async () => {
+  it("hands back a dump above an END line whole where the build box's cut fell inside it, both computers on 1.60.1", async () => {
     // judge 1's C2 shape: a screenshot's base64 above a line holding only an END marker. The
     // build box reports it and keeps its end; this side knows that computer screened before it
     // cut, so the end's start is no key's tail (the round-0 review's FR-2 and FR-3).
-    const { a, b } = await linkedPair({ version: '1.55.0' })
+    const { a, b } = await linkedPair({ version: '1.60.1' })
     const dump = `Screenshot:\n${Array.from({ length: 100 }, () => randomBytes(48).toString('base64')).join('\n')}\n-----END PRIVATE KEY-----\n(the footer the parser expects)\n`
     // (the end kept, its last 200,000 characters, starts 3,000 characters into the dump)
     const rest = 'Step ok: the report is written.\n'.repeat(Math.ceil((200_000 - dump.length + 3_000) / 32))

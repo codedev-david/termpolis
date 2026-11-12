@@ -16,7 +16,7 @@
 // gateway's injection guard before an agent reads it. A job's output and error
 // always arrive under a label saying whose they are (`frame`): a failed run's
 // error is its stderr, as much the agent's own text as its output. A refusal
-// is masked for credentials first (a version before 1.55 repeats a refused
+// is masked for credentials first (a version before 1.60.1 repeats a refused
 // folder as it came) and then checked for injection (`inspect`).
 //
 // Credentials don't cross: the prompt is screened before it leaves, and the
@@ -120,7 +120,7 @@ const REFUSAL_MASKED_CHARS = MAX_REFUSAL_CHARS + SCREEN_LOOKBACK_CHARS
 
 /** The first version that screens an answer with the key detectors before it cuts it to its end,
  *  taking whole any key its cut runs through: the end it sends starts with nothing unscreened. */
-const SCREENS_BEFORE_CUT: readonly number[] = [1, 55, 0]
+const SCREENS_BEFORE_CUT: readonly number[] = [1, 60, 1]
 
 /** Whether a machine that says it runs `version` screens an answer so before it cuts it. A version
  *  it did not say, or one that reads as none, is taken for one that does not. */
@@ -315,8 +315,8 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
    *  screenTail, which the other machine runs on its side). A version that sent more than it may
    *  is not screened whole; the screen is told how far back to look rather than given a slice,
    *  where a rule would see the start of a word. `cut`: the other machine cut `text` from a longer
-   *  one (aiSecurity.screenText's cutStart): after it screened it with the key detectors (1.55 or
-   *  later), or maybe before (a version before 1.53.1 cut before it screened, and 1.53.1 and 1.54
+   *  one (aiSecurity.screenText's cutStart): after it screened it with the key detectors (1.60.1 or
+   *  later), or maybe before (a version before 1.53.1 cut before it screened, and 1.53.1 to 1.60.0
    *  screened keys by their layout), so it can start inside a key the cut ran through. */
   function screenTail(text: string, keep: number, cut: CutStart): SecretScreen {
     return deps.screen(text, keep, SCREEN_LOOKBACK_CHARS, cut)
@@ -372,7 +372,7 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
 
   /** Why a call to `name` failed, as a sentence. The bridge's own two words are
    *  translated; anything else was worded by the other machine and is checked for injection,
-   *  with anything in it that might be a credential masked first: a version before 1.55 repeats a
+   *  with anything in it that might be a credential masked first: a version before 1.60.1 repeats a
    *  refused folder as it came, and the agent may have passed a token as one. */
   function failure(message: string, name: string, agent: string): string {
     if (message === 'offline') return offline(name)

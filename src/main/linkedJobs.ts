@@ -235,7 +235,7 @@ export const WITHHELD = '[Termpolis could not check this for credentials, so it 
  *  anything in it that might be a credential taken out by `mask` (aiSecurity.maskForDisplay),
  *  then cut to 200 characters. A folder that exists runs, and is shown as it is, whatever its
  *  name; one refused can be anything a computer sent, a clone URL with a token in it from one on
- *  1.54 or older among them. A name with a control character in it is not one anybody types, and
+ *  1.60.0 or older among them. A name with a control character in it is not one anybody types, and
  *  none of it is repeated: a token the character splits matches no rule in its halves, or only
  *  one of them (a key's first 20 characters after `sk-`), and taking the character out to join
  *  them up again left the rest of the key to show. Nor is a name in which a character nobody sees

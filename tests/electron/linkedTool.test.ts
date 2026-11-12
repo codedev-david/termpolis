@@ -630,7 +630,7 @@ describe('run', () => {
   })
 
   it('masks what an older machine repeats in its refusal before the agent reads it', async () => {
-    // A version before 1.55 repeats a refused folder as it came: a token the agent passed as one
+    // A version before 1.60.1 repeats a refused folder as it came: a token the agent passed as one
     // came back whole (the round-0 review's MX-1). It is masked, then cut.
     const token = `ghp_${'a'.repeat(36)}`
     const h = setup({ mask: maskForDisplay })
@@ -1273,8 +1273,8 @@ describe('credentials, asking', () => {
     ])
   })
 
-  it('screens an end a 1.55 machine cut as one it screened first, and asks a machine its version once, only when such an end comes', async () => {
-    // From 1.55 the other machine screens an answer with the same key detectors before it cuts
+  it('screens an end a 1.60.1 machine cut as one it screened first, and asks a machine its version once, only when such an end comes', async () => {
+    // From 1.60.1 the other machine screens an answer with the same key detectors before it cuts
     // it, and takes whole any key its cut runs through: what it sends starts with nothing left to
     // take. Screened as an end that may start inside a key, a dump or a list of hashes above an END
     // line there was taken for a key's tail (the round-0 review's FR-3).
@@ -1283,7 +1283,7 @@ describe('credentials, asking', () => {
       seen.push([keep, cutStart])
       return { text, removed: {}, flagged: {}, markers: [] }
     }
-    const HELLO = { version: '1.55.0', agents: { codex: true }, grants: { run: true, write: false }, confirmed: true }
+    const HELLO = { version: '1.60.1', agents: { codex: true }, grants: { run: true, write: false }, confirmed: true }
     const h = setup({ screen })
     const hellos = () => h.calls.filter((c) => c.request.kind === 'peerHello')
     // (each its own job: a finished answer is screened once per job)
@@ -1305,11 +1305,11 @@ describe('credentials, asking', () => {
       [MAX_ERROR_CHARS, 'screened'],
       [MAX_OUTPUT_CHARS, 'screened'],
     ])
-    // what `list` heard is used, and a version before 1.55, none, or a machine that cannot say is
+    // what `list` heard is used, and a version before 1.60.1, none, or a machine that cannot say is
     // taken for one that may have cut first (one `list` could not reach is asked again)
     for (const [hello, expected, asked] of [
-      [{ ...HELLO, version: '1.56.2' }, 'screened', 1],
-      [{ ...HELLO, version: '1.54.0' }, true, 1],
+      [{ ...HELLO, version: '1.61.0' }, 'screened', 1],
+      [{ ...HELLO, version: '1.60.0' }, true, 1],
       [{ ...HELLO, version: undefined }, true, 1],
       [new Error('timed out'), true, 2],
     ] as Array<[unknown, CutStart, number]>) {
@@ -1328,23 +1328,23 @@ describe('credentials, asking', () => {
     }
   })
 
-  it('reads the version a machine reports: 1.55.0 and later screen before they cut', () => {
-    for (const v of ['1.55.0', '1.55.1', '1.56.0', '2.0.0', '1.100.3', '1.55.0-beta.2']) expect(screensBeforeCut(v), v).toBe(true)
-    for (const v of ['1.54.9', '1.54.0', '1.53.1', '1.50.0', '0.99.99', '1.55', 'v1.55.0', '', undefined]) expect(screensBeforeCut(v), String(v)).toBe(false)
+  it('reads the version a machine reports: 1.60.1 and later screen before they cut', () => {
+    for (const v of ['1.60.1', '1.60.2', '1.61.0', '2.0.0', '1.100.3', '1.60.1-beta.2']) expect(screensBeforeCut(v), v).toBe(true)
+    for (const v of ['1.60.0', '1.59.9', '1.55.0', '1.54.9', '1.53.1', '0.99.99', '1.60', 'v1.60.1', '', undefined]) expect(screensBeforeCut(v), String(v)).toBe(false)
   })
 
-  it("keeps a dump above an END line whole where a 1.55 machine's cut fell inside it, and reports it", async () => {
+  it("keeps a dump above an END line whole where a 1.60.1 machine's cut fell inside it, and reports it", async () => {
     const dump = Array.from({ length: 90 }, () => randomBytes(48).toString('base64')).join('\n')
     const output = `${dump.slice(1_500)}\n-----END PRIVATE KEY-----\n(the footer the parser expects)\n`
-    const HELLO = { version: '1.55.0', agents: { codex: true }, grants: { run: true, write: false }, confirmed: true }
+    const HELLO = { version: '1.60.1', agents: { codex: true }, grants: { run: true, write: false }, confirmed: true }
     const h = setup({ screen: screenText })
     scripted(h, [view({ status: 'done', output, truncated: true, durationMs: 5 })], view(), HELLO)
     const r = await run(h)
     expect(r.output).toBe(`[answer from linux/codex]\n${output}`)
     expect(r.note).toBe('Possible credential in this answer (private_key), not removed.')
-    // From a machine older than 1.55, the same end may start inside a key its cut ran through.
+    // From a machine older than 1.60.1, the same end may start inside a key its cut ran through.
     const old = setup({ screen: screenText })
-    scripted(old, [view({ status: 'done', output, truncated: true, durationMs: 5 })], view(), { ...HELLO, version: '1.54.0' })
+    scripted(old, [view({ status: 'done', output, truncated: true, durationMs: 5 })], view(), { ...HELLO, version: '1.60.0' })
     expect((await run(old)).output).toBe('[answer from linux/codex]\n[REDACTED:private_key]\n(the footer the parser expects)\n')
   })
 
