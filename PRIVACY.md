@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: November 9, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the memory hook also runs on a session's first prompt, around a compaction and before a whole-file read, and sends what it reads only to Termpolis on this computer; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it; per-message model routing decides on this computer and keeps only vectors of your corrections, never their text; November 10, 2026: Codex terminals Termpolis launches send their requests through the same local proxy so each message's reasoning effort can be picked, and config.toml in Codex's home is read to see whether you chose your own endpoint)
+Last updated: November 9, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the memory hook also runs on a session's first prompt, around a compaction and before a whole-file read, and sends what it reads only to Termpolis on this computer; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it; per-message model routing decides on this computer and keeps only vectors of your corrections, never their text; November 10, 2026: Codex terminals Termpolis launches send their requests through the same local proxy so each message's reasoning effort can be picked, and config.toml in Codex's home is read to see whether you chose your own endpoint; November 12, 2026: Linked machines recognises a private key by its decoded bytes, takes credentials out of a refused prompt's first line, and refuses a URL given as a folder)
 
 ## Overview
 
@@ -118,7 +118,8 @@ upload it.
   read-only or edit, the folder, the first line of the screened prompt (at most
   80 characters, with anything that might be a credential taken out), the
   credential rules matched, how it ended and why a request
-  was refused. Never the prompt or the answer.
+  was refused, with anything in it that might be a credential taken out. Never
+  the prompt or the answer.
 - If you add **accounts** (Settings → Accounts): the accounts you registered
   (`userData/agent-accounts.json`). For each one: its name and color, the email
   you gave it, its profile folder and the links Termpolis made in it, its place
@@ -447,12 +448,12 @@ locally and every log stays on the machine.
 - **Strict Mode — block free-tier Gemini.** When enabled, Termpolis
   intercepts `gemini` invocations from any terminal and refuses to forward
   them unless paid-tier credentials are detected.
-- **Auto-scan on every prompt.** Once the user types `claude`, `codex`,
-  `gemini` in a terminal, every subsequent keystroke is staged
-  in main-process memory and scanned with a 70+ rule regex catalog
-  on each Enter or paste-sized chunk (≥32 bytes). Hits are redacted in
-  place before reaching the PTY, audited as `redaction_hit` events, and
-  surfaced via a dismissable banner in the renderer. Catalog covers AWS
+- **Auto-scan on every prompt.** Once `claude`, `codex` or `gemini` runs in
+  a terminal, what you type or paste is checked, on each Enter or paste-sized
+  chunk, against the same 97 rules as Commit Shield. The text reaches the agent
+  unchanged. A hit is recorded in the audit log as a `prompt_secret_sent`
+  event, with the rule ids and variable names, never the value, and shown in a
+  dismissable banner. Catalog covers AWS
   (access keys, secrets, session tokens), GitHub (classic + fine-grained
   PATs, OAuth client secrets), GitLab, Bitbucket, Azure (Storage, SAS,
   AD client secret, DevOps PAT, connection strings), GCP (service-account
@@ -472,13 +473,16 @@ locally and every log stays on the machine.
   AI-agent terminal launch, optionally with byte counts and hit counts.
   Append-only, 10MB-rotated, wipeable from Settings.
 - **Linked machines.** A prompt or an answer passed between two of your
-  computers is screened with the same rules on both: a credential whose own
-  shape names it (a vendor token such as `sk-ant-` / `ghp_` / `AKIA`, a
-  private-key block) is replaced with `[REDACTED:<rule>]` before it leaves and
-  again when it arrives; a value that only looks like one (a password in a test
-  fixture, a URL with a user and password) is left in and named in a note to
-  the agent. Each finding adds a line to the audit log on the computer that
-  screened it, with the rule ids and counts only, never the value.
+  computers is screened on both. A vendor token whose own shape names it
+  (`sk-ant-` / `ghp_` / `AKIA` and the like) is replaced with
+  `[REDACTED:<rule>]` before it leaves and again when it arrives. So is a
+  private key, recognised by what its bytes decode to (PEM, OpenSSH, PGP,
+  PuTTY, a JWK, a base64 key file), in the ways its lines are usually written
+  out: as a file, in code, JSON or YAML, in a diff, a listing or a log. A value
+  that only looks like a credential (a password in a test fixture, a URL with a
+  user and password, a test key with a made-up body) is left in and named in a
+  note to the agent. Each finding adds a line to the audit log on the computer
+  that screened it, with the rule ids and counts only, never the value.
 
 The redaction scanner is **not a comprehensive DLP solution** — it targets
 high-confidence patterns to keep false-positive rates low. Custom corporate

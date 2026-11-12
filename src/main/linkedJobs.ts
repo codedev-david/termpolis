@@ -33,7 +33,7 @@ import {
 } from './headlessExec'
 import type { LinkTarget, PeerAgent, PeerHelloInfo, PeerJobView, PeerRequest } from './remoteBridge/protocol'
 import { normalizeGrants, refOf, type LinkedGrants, type LinkMeta } from './linkedStore'
-import type { SecretScreen } from './aiSecurity'
+import type { CutStart, SecretScreen } from './aiSecurity'
 
 /** What screening text on its way between two computers found, for the audit log: rule ids and
  *  counts, never the text. */
@@ -110,12 +110,14 @@ export interface LinkedJobsDeps {
   onActivity(a: LinkedActivity): void
   /** aiSecurity.screenText: credentials out of the prompt before it runs here, and out of the
    *  answer before it goes back. A computer on 1.50-1.52 sends its prompt unscreened. With `keep`,
-   *  only what the screen made of the last `keep` characters comes back, and with `lookback` no more
-   *  than that much before them is screened with them (screenTail). */
-  screen(text: string, keep?: number, lookback?: number): SecretScreen
+   *  only what the screen made of the last `keep` characters comes back, and with `lookback` the
+   *  rules look no further than that before them (screenTail). `cutStart`, for text another
+   *  computer cut, is never set here: what this computer screens is its own job's. */
+  screen(text: string, keep?: number, lookback?: number, cutStart?: CutStart): SecretScreen
   /** aiSecurity.maskForDisplay: every possible credential out of a job's summary, the ones
    *  screening leaves in for the agent too, before the activity view shows it, the job history
-   *  keeps it and a notification shows it (activitySummary). */
+   *  keeps it and a notification shows it (activitySummary); and out of a folder a refusal
+   *  repeats (shownFolder). */
   mask(text: string): string
   /** Told what a screen found, for the audit log. */
   onSecrets?(finding: LinkedSecretFinding): void
@@ -160,14 +162,13 @@ export const MAX_RESULT_WAIT_MS = 50_000
 /** An error is stderr, which can be a whole log; its end says what went wrong. */
 export const MAX_ERROR_CHARS = 4_000
 
-/** How much of an answer before the part that is kept is screened with it, so a credential the
- *  cut runs through is found whole. Most rules set no limit on how long a match is, so this
- *  reaches back past the longest one real text holds, a private-key block (aiSecurity's RULES): a
- *  rule takes its BEGIN line, at most 400 lines under it and its END line. That gives each of the
- *  400 lines 160 characters, over twice the 76 a key file writes at most (OpenPGP's limit; PEM
- *  and GnuPG write 64, OpenSSH 70), for indentation and line breaks, and 1,536 for the BEGIN and
- *  END lines. A token is a few hundred characters at most. */
-export const SCREEN_LOOKBACK_CHARS = 65_536
+/** How much of an answer before the part that is kept the rules look at with it, so a token the cut
+ *  runs through is found whole, its prefix and all: the longest match a rule screenText runs makes
+ *  in real text is a token of a few hundred characters (a PyPI token). A private key reaches further
+ *  back, and no rule finds it there: each key detector looks back for its own opener, a key block's
+ *  BEGIN line up to 256 KB back when the cut falls among key lines (keyMaterial's detectorStart),
+ *  and a longer key is taken from its END line. */
+export const SCREEN_LOOKBACK_CHARS = 4_096
 
 /** Longer than any real path; refused before it reaches the file system. */
 const MAX_CWD_CHARS = 4_096
@@ -223,15 +224,36 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
 /** Absent, for an optional field: JSON writers emit `null` for "not set". */
 const absent = (v: unknown): v is null | undefined => v === undefined || v === null
 
-/** A path as a refusal may show it: no control characters, and not a page long. */
-function printable(text: string): string {
-  const clean = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
-  return clean.length > MAX_ECHO_CHARS ? `${clean.slice(0, MAX_ECHO_CHARS - 1)}\u2026` : clean
-}
+/** What a refusal shows in place of a folder name that holds a control character, or a credential that a character nobody sees splits. */
+const FOLDER_WITH_CONTROLS = '[a folder name with control or invisible characters]'
 
 /** What goes back in place of output or an error that couldn't be checked for
  *  credentials: nothing leaves this computer unscreened. */
 export const WITHHELD = '[Termpolis could not check this for credentials, so it was withheld.]'
+
+/** A folder as a refusal repeats it, to the computer that asked and in the job history here: with
+ *  anything in it that might be a credential taken out by `mask` (aiSecurity.maskForDisplay),
+ *  then cut to 200 characters. A folder that exists runs, and is shown as it is, whatever its
+ *  name; one refused can be anything a computer sent, a clone URL with a token in it from one on
+ *  1.54 or older among them. A name with a control character in it is not one anybody types, and
+ *  none of it is repeated: a token the character splits matches no rule in its halves, or only
+ *  one of them (a key's first 20 characters after `sk-`), and taking the character out to join
+ *  them up again left the rest of the key to show. Nor is a name in which a character nobody sees
+ *  (a zero-width space, a soft hyphen, a no-break space) or a plain space splits a token the same
+ *  way: it is judged again with every character but the visible ASCII ones taken out, and a name
+ *  that holds a credential then is not repeated either. Withheld when it can't be masked. */
+function shownFolder(folder: string, mask: (text: string) => string): string {
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(folder)) return FOLDER_WITH_CONTROLS
+  let shown: string
+  try {
+    shown = mask(folder)
+    const joined = folder.replace(/[^\u0021-\u007e]/g, '')
+    if (joined !== folder && mask(joined) !== joined) return FOLDER_WITH_CONTROLS
+  } catch {
+    return WITHHELD
+  }
+  return shown.length > MAX_ECHO_CHARS ? `${shown.slice(0, MAX_ECHO_CHARS - 1)}\u2026` : shown
+}
 
 /** The first line of `text` with text in it, flattened to plain spaces. */
 function firstLine(text: string): string {
@@ -262,13 +284,19 @@ export function activitySummary(prompt: string, mask: (text: string) => string):
   return line.length > SUMMARY_CHARS ? `${line.slice(0, SUMMARY_CHARS - 1).trimEnd()}\u2026` : line
 }
 
-/** The longest marker keepEnd keeps whole: `[REDACTED:<rule>]` for a rule id of up to 53
- *  characters. Every one screenText puts in place of a credential is one: rule ids are lower-case
- *  words, 20 characters at most. */
+/** Screened text, and where in it the markers its screen put there are (SecretScreen.markers). */
+export type MarkedText = Pick<SecretScreen, 'text' | 'markers'>
+
+/** The longest marker-shaped text: `[REDACTED:<rule>]` for a rule id of up to 53 characters.
+ *  Every marker screenText puts in place of a credential is one (rule ids are lower-case words, 20
+ *  characters at most), and so is text that only reads like one: a log an earlier screen wrote,
+ *  printed again, or a marker the other computer's screen put there, which is text on this one.
+ *  keepEnd never starts an end inside one. */
 const MAX_MARKER_CHARS = 64
 const MARKER_RE = /\[REDACTED:[a-z0-9_]{1,53}\]/g
 
-/** Where the end of `text` from `cut` may start: `cut`, or the end of the marker it falls in. */
+/** Where the end of `text` from `cut` may start: `cut`, or the end of the marker-shaped text it
+ *  falls in. */
 function outsideMarker(text: string, cut: number): number {
   const re = new RegExp(MARKER_RE.source, 'g')
   re.lastIndex = Math.max(0, cut - MAX_MARKER_CHARS)
@@ -278,47 +306,71 @@ function outsideMarker(text: string, cut: number): number {
   return cut
 }
 
-/** Screened text cut to `max` characters from its start, with every marker in it kept whole: the
- *  characters cut are the first ones outside markers, as many as `max` asks for. A marker can be
- *  longer than what it replaced, so a screened end can be longer than its cap. Cut from the front
- *  as it is, `[REDACTED:gh_pat]` could arrive as `t]`, or be cut out by the markers further on
- *  that made the end too long, and nobody could tell a credential had been counted there. Never
- *  longer than `max`: where the markers alone are longer, the end starts where the cut falls, or
- *  after the marker it falls in. */
-export function keepEnd(text: string, max: number): string {
+/** Screened text cut to `max` characters from its start, with each marker its screen put there
+ *  (`markers`, SecretScreen.markers) kept whole: the characters cut are the first ones outside
+ *  those markers, as many as `max` asks for, and the markers among them stay, in order, in front
+ *  of what is kept. A marker can be longer than what it replaced, so a screened end can be longer
+ *  than its cap. Cut from the front as it is, `[REDACTED:gh_pat]` could arrive as `t]`, or be cut
+ *  out by the markers further on that made the end too long, and nobody could tell a credential
+ *  had been counted there. Everything else is cut as the text it is, whatever it looks like: an
+ *  answer that quotes a marker (a log an earlier screen wrote, printed again) keeps it in its line
+ *  or loses it with the rest of what is cut, and the end never starts inside one. Never longer
+ *  than `max`: where the markers alone are longer, the end starts where the cut falls, or after
+ *  the marker it falls in. What comes back says where the markers it kept now are. */
+export function keepEnd(text: string, max: number, markers: SecretScreen['markers']): MarkedText {
   const cut = text.length - Math.max(0, max)
-  if (cut <= 0) return text
-  const re = new RegExp(MARKER_RE.source, 'g')
+  if (cut <= 0) return { text, markers }
   let kept = ''
+  const front: SecretScreen['markers'] = []
   let left = cut
   let at = 0
-  for (let m = re.exec(text); m && m.index - at < left; m = re.exec(text)) {
-    left -= m.index - at
-    kept += m[0]
-    at = re.lastIndex
+  let i = 0
+  for (; i < markers.length && markers[i][0] - at < left; i++) {
+    const [start, end] = markers[i]
+    left -= start - at
+    front.push([kept.length, kept.length + end - start])
+    kept += text.slice(start, end)
+    at = end
   }
-  return text.length - at >= left ? kept + text.slice(at + left) : text.slice(outsideMarker(text, cut))
+  if (text.length - at < left) {
+    let from = cut
+    for (const [start, end] of markers) if (start < cut && end > cut) from = end
+    from = outsideMarker(text, from)
+    return { text: text.slice(from), markers: markers.filter(([start]) => start >= from).map(([start, end]) => [start - from, end - from]) }
+  }
+  // Every marker left starts at or after where the end does: that moved, if at all, past text
+  // shaped like a marker, and no marker overlaps another.
+  const from = outsideMarker(text, at + left)
+  const shift = kept.length - from
+  for (; i < markers.length; i++) front.push([markers[i][0] + shift, markers[i][1] + shift])
+  return { text: kept + text.slice(from), markers: front }
+}
+
+/** `end` behind an ellipsis for the text it was cut from, its markers where they then are. */
+export function behindEllipsis(end: MarkedText): MarkedText {
+  return { text: `\u2026${end.text}`, markers: end.markers.map(([start, stop]) => [start + 1, stop + 1]) }
 }
 
 const jsonBytes = (text: string): number => Buffer.byteLength(JSON.stringify(text), 'utf8')
 
 /** The tail of an answer that fits both caps. Each pass keeps the share of the
  *  tail that fits on average, a little under, and measures again: the tail may
- *  be denser than the whole. Every pass keeps at most 95%, so it ends. */
-function capOutput(output: string): { text: string; cut: boolean } {
-  let text = keepEnd(output, MAX_OUTPUT_CHARS)
-  let cut = output.length > MAX_OUTPUT_CHARS
-  let bytes = jsonBytes(text)
+ *  be denser than the whole. Every pass keeps at most 95%, so it ends. The
+ *  screen's markers go through each pass with it, so each keeps them whole. */
+function capOutput(output: MarkedText): { text: string; cut: boolean } {
+  let end = keepEnd(output.text, MAX_OUTPUT_CHARS, output.markers)
+  let cut = output.text.length > MAX_OUTPUT_CHARS
+  let bytes = jsonBytes(end.text)
   while (bytes > MAX_OUTPUT_JSON_BYTES) {
-    text = keepEnd(text, Math.floor((text.length * MAX_OUTPUT_JSON_BYTES * 0.95) / bytes))
+    end = keepEnd(end.text, Math.floor((end.text.length * MAX_OUTPUT_JSON_BYTES * 0.95) / bytes), end.markers)
     cut = true
-    bytes = jsonBytes(text)
+    bytes = jsonBytes(end.text)
   }
-  return { text, cut }
+  return { text: end.text, cut }
 }
 
-function capError(text: string): string {
-  return text.length > MAX_ERROR_CHARS ? `\u2026${keepEnd(text, MAX_ERROR_CHARS - 1)}` : text
+function capError(error: MarkedText): string {
+  return error.text.length > MAX_ERROR_CHARS ? `\u2026${keepEnd(error.text, MAX_ERROR_CHARS - 1, error.markers).text}` : error.text
 }
 
 function outcomeOf(r: ExecResult): Outcome {
@@ -361,16 +413,17 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     try {
       return deps.screen(text, keep, lookback)
     } catch {
-      return { text: WITHHELD, removed: {}, flagged: {} }
+      return { text: WITHHELD, removed: {}, flagged: {}, markers: [] }
     }
   }
 
   /** The last `keep` characters of `text`, screened before they are cut from the rest: with as much
-   *  before them in view as a credential the cut runs through can reach back (a key block's BEGIN
-   *  line, a token's prefix), so it is found whole. Cut first, what was left of it would match no
-   *  rule and go back as it is. No more than that is screened, however long `text` is: this runs
-   *  on the main thread. The screen is given all of `text` and told how far back to look, not a
-   *  slice of it: where a slice started, a rule would see the start of a word. */
+   *  before them in view as a credential the cut runs through can reach back (a token's prefix; a
+   *  key's own detectors look further, for its BEGIN line), so it is found whole. Cut first, what
+   *  was left of it would match nothing and go back as it is. No more than that is screened,
+   *  however long `text` is: this runs on the main thread. The screen is given all of `text` and
+   *  told how far back to look, not a slice of it: where a slice started, a rule would see the
+   *  start of a word. */
   function screenTail(text: string, keep: number): SecretScreen {
     return screenOrWithhold(text, keep, SCREEN_LOOKBACK_CHARS)
   }
@@ -431,12 +484,12 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     job.finishedAt = now
     job.durationMs = Math.max(0, now - job.startedAt)
     // Credentials go before the answer leaves. Its tail is screened with what came before it in
-    // view (screenTail), and capped again after, never into a marker (keepEnd): a marker can be
-    // longer than what it replaced.
+    // view (screenTail), and capped again after, never into one of the screen's markers (keepEnd):
+    // a marker can be longer than what it replaced.
     let output: SecretScreen | null = null
     if (outcome.output !== undefined) {
       output = screenTail(outcome.output, MAX_OUTPUT_CHARS)
-      const { text, cut } = capOutput(output.text)
+      const { text, cut } = capOutput(output)
       job.output = text
       if (outcome.output.length > MAX_OUTPUT_CHARS || cut) job.truncated = true
     }
@@ -445,7 +498,7 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       // The end of stderr, behind an ellipsis when there was more.
       const long = outcome.error.length > MAX_ERROR_CHARS
       error = screenTail(outcome.error, long ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS)
-      job.error = capError(long && error.text !== WITHHELD ? `\u2026${error.text}` : error.text)
+      job.error = capError(long && error.text !== WITHHELD ? behindEllipsis(error) : error)
     }
     const found = mergeScreens([output, error])
     job.answerRules = rulesOf(found)
@@ -481,10 +534,15 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     }
   }
 
+  /** A folder as a refusal repeats it (shownFolder). */
+  const echo = (folder: string): string => shownFolder(folder, (text) => deps.mask(text))
+
   /** The folder a job runs in: home when none is given; `~`, `~/x` (and the
    *  other spellings a shell might print, via cwdPath) expanded; then it must be
    *  absolute and exist. Checked here rather than left to runHeadless so the
-   *  asking machine is told which machine refused, and why. */
+   *  asking machine is told which machine refused, and why. Its name is not
+   *  screened: one a rule matches is a folder like any other, and is this
+   *  computer's own. */
   async function folderFor(raw: unknown): Promise<string> {
     let cwd = deps.homedir()
     if (!absent(raw) && !(typeof raw === 'string' && !raw.trim())) {
@@ -492,17 +550,17 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       if (raw.length > MAX_CWD_CHARS) throw new Error(`Invalid cwd: longer than ${MAX_CWD_CHARS} characters.`)
       const normal = normalizeShellPath(raw, { homedir: cwd })
       if (normal === null || !path.isAbsolute(normal)) {
-        throw new Error(`cwd must be an absolute folder path on ${here()}, or start with ~: ${printable(raw)}`)
+        throw new Error(`cwd must be an absolute folder path on ${here()}, or start with ~: ${echo(raw)}`)
       }
       // Refused before it is touched. On Windows, opening \\host\share hands
       // that host this user's NTLM hash, and an unreachable one can hold the
       // check for many seconds. A linked job runs in a folder on THIS machine.
       if (/^[\\/]{2}/.test(normal)) {
-        throw new Error(`cwd must be a folder on ${here()} itself, not a network path: ${printable(normal)}`)
+        throw new Error(`cwd must be a folder on ${here()} itself, not a network path: ${echo(normal)}`)
       }
       cwd = normal
     }
-    if (!(await isDir(cwd))) throw new Error(`Folder not found on ${here()}: ${printable(cwd)}`)
+    if (!(await isDir(cwd))) throw new Error(`Folder not found on ${here()}: ${echo(cwd)}`)
     return cwd
   }
 

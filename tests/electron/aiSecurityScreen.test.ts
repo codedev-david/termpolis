@@ -1,24 +1,42 @@
 // screenText: the two-tier screen for text crossing to another computer (Linked machines), and
 // the parts of the rule engine it added -- the literal pre-check every scan now runs, the bounded
-// lookaheads and whole private-key blocks. Fake keys only: 'a'.repeat(N)-style bodies pass the
-// patterns without looking like a real secret to push protection.
-import { describe, it, expect, vi } from 'vitest'
+// lookaheads and whole private-key blocks. Tokens are fake: 'a'.repeat(N)-style bodies pass the
+// patterns without looking like a real secret to push protection. A private key the screen must
+// remove is made fresh in memory by each run (fixtures/freshKeys.ts) and never printed: the screen
+// knows a key by what its bytes decode to, so a made-up body is no key and is only reported.
+import { describe, it, expect, vi, beforeAll } from 'vitest'
+import { generateKeyPairSync, randomBytes } from 'crypto'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
-import { RULES, maskForDisplay, requiredLiteral, scanText, screenText } from '../../src/main/aiSecurity'
-import { MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, keepEnd } from '../../src/main/linkedJobs'
+// Several tests here screen answers of hundreds of thousands of characters or keys in every layout: 2 to 5 s each alone and a few times
+// that under coverage beside the rest of the suite (one took 8 s of the default 30). A test's own timeout is only a guard against a hang,
+// and a synchronous loop cannot be interrupted by it anyway: the assertions are the bounds, as in keyMaterial.test.ts.
+vi.setConfig({ testTimeout: 600_000 })
 
-/** The most an answer is screened on: its tail, and the lookback before it. */
+import { RULES, SCREEN_RULES, maskForDisplay, requiredLiteral, scanText, screenText } from '../../src/main/aiSecurity'
+import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, activitySummary, keepEnd } from '../../src/main/linkedJobs'
+import { JOIN, leakedWindows, makeKeys, pgpPhotoExport, secretLinesOf, wrap, type KeySet } from './fixtures/freshKeys'
+
+/** The most of an answer the rules look at: its tail, and the lookback before it. (The key
+ *  detectors look further back, each for its own opener: linkedScreenCost.test.ts times that.) */
 const LARGEST = MAX_OUTPUT_CHARS + SCREEN_LOOKBACK_CHARS
 
 const ANTHROPIC = `sk-ant-${'a'.repeat(30)}`
 const GH = `ghp_${'b'.repeat(36)}`
 const AWS = `AKIA${'C'.repeat(16)}`
 const SLACK = `xoxb-${'1'.repeat(12)}`
+/** A key block with a made-up body, as main's tests wrote one: scanText, which every consumer but
+ *  the Linked screen runs, takes it by its layout. */
 const PEM = ['-----BEGIN RSA PRIVATE KEY-----', 'MIIEpAIBAAKCAQEA' + 'q'.repeat(48), 'r'.repeat(40) + '==', '-----END RSA PRIVATE KEY-----'].join('\n')
-/** A key's body lines, 64 characters each as PEM writes them. */
-const BODY = ['MIIEvQIBADANBgkq' + 'Q'.repeat(48), 'R'.repeat(64), 'S'.repeat(64), 'T'.repeat(40) + '==']
+
+/** Fresh keys in every format, made once for the file. */
+let K: KeySet
+beforeAll(() => {
+  K = makeKeys()
+})
+/** A key file's base64 lines: all but its BEGIN and END lines. */
+const bodyOf = (lines: string[]): string[] => lines.slice(1, -1)
 
 /** Test data a code-review or implement job hands back all the time: every one is a heuristic
  *  match, and removing any of them would corrupt the code. */
@@ -60,30 +78,30 @@ describe('screenText', () => {
   })
 
   it('takes a whole private-key block, not only its BEGIN line, and keeps what follows', () => {
-    const r = screenText(`Here it is:\n${PEM}\nThen restart the service.`)
+    const r = screenText(`Here it is:\n${K.F.pkcs1_rsa.join('\n')}\nThen restart the service.`)
     expect(r.text).toBe('Here it is:\n[REDACTED:private_key]\nThen restart the service.')
     expect(r.removed).toEqual({ private_key: 1 })
   })
 
   it('takes the key out of a JSON service-account file, whose lines are \\n escapes', () => {
-    const json = `{"type": "service_account", "private_key": "-----BEGIN PRIVATE KEY-----\\n${BODY.join('\\n')}\\n-----END PRIVATE KEY-----\\n", "client_id": "1"}`
+    const json = `{"type": "service_account", "private_key": "-----BEGIN PRIVATE KEY-----\\n${bodyOf(K.F.pkcs8_rsa).join('\\n')}\\n-----END PRIVATE KEY-----\\n", "client_id": "1"}`
     const r = screenText(json)
     expect(r.text).toBe('{"type": "service_account", "private_key": "[REDACTED:private_key]\\n", "client_id": "1"}')
     expect(r.removed).toEqual({ private_key: 1 })
     expect(r.flagged).toEqual({ gcp_sa_json: 1 })
     // ...and with \r\n escapes, cut short with no END line.
-    const crlf = `"-----BEGIN RSA PRIVATE KEY-----\\r\\n${BODY.join('\\r\\n')}"`
+    const crlf = `"-----BEGIN RSA PRIVATE KEY-----\\r\\n${bodyOf(K.F.pkcs1_rsa).join('\\r\\n')}"`
     expect(screenText(crlf).text).toBe('"[REDACTED:private_key]"')
   })
 
   it('takes an indented key block whole: a YAML block scalar, CRLF, or one cut short', () => {
-    const yaml = ['stringData:', '  tls.key: |', '    -----BEGIN RSA PRIVATE KEY-----', ...BODY.map((l) => `    ${l}`), '    -----END RSA PRIVATE KEY-----', '  tls.crt: x'].join('\n')
+    const yaml = ['stringData:', '  tls.key: |', '    -----BEGIN RSA PRIVATE KEY-----', ...bodyOf(K.F.pkcs1_rsa).map((l) => `    ${l}`), '    -----END RSA PRIVATE KEY-----', '  tls.crt: x'].join('\n')
     const r = screenText(yaml)
     expect(r.text).toBe('stringData:\n  tls.key: |\n    [REDACTED:private_key]\n  tls.crt: x')
     expect(r.removed).toEqual({ private_key: 1 })
     const crlf = yaml.replace(/\n/g, '\r\n')
     expect(screenText(crlf).text).toBe('stringData:\r\n  tls.key: |\r\n    [REDACTED:private_key]\r\n  tls.crt: x')
-    const cut = `\t-----BEGIN EC PRIVATE KEY-----\n${BODY.map((l) => `\t${l}`).join('\n')}`
+    const cut = `\t-----BEGIN EC PRIVATE KEY-----\n${bodyOf(K.F.sec1_ec).map((l) => `\t${l}`).join('\n')}`
     expect(screenText(cut).text).toBe('\t[REDACTED:private_key]')
   })
 
@@ -103,9 +121,11 @@ describe('screenText', () => {
     // A body too short to be key material, with no END line, is a header too (and a value right
     // after the words "private key", which the contextual rule reports)...
     const short = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\nThen run the tests.'
-    expect(screenText(short)).toEqual({ text: short, removed: {}, flagged: { private_key: 1, contextual_secret: 1 } })
-    // ...where an END line, however short the body, makes it a key.
-    expect(screenText('-----BEGIN DSA PRIVATE KEY-----\nMIIB\n-----END DSA PRIVATE KEY-----').removed).toEqual({ ssh_dsa_pubkey: 1 })
+    expect(screenText(short)).toEqual({ text: short, removed: {}, flagged: { private_key: 1, contextual_secret: 1 }, markers: [] })
+    // An END line under it makes it no key either: four characters decode to no DSA key, so it is
+    // reported and left as it is.
+    const dsa = '-----BEGIN DSA PRIVATE KEY-----\nMIIB\n-----END DSA PRIVATE KEY-----'
+    expect(screenText(dsa)).toEqual({ text: dsa, removed: {}, flagged: { ssh_dsa_pubkey: 1 }, markers: [] })
   })
 
   it('leaves heuristic matches byte for byte, and reports each rule that matched', () => {
@@ -138,6 +158,9 @@ describe('screenText', () => {
     const twice = screenText(once.text)
     expect(twice.text).toBe(once.text)
     expect(twice.removed).toEqual({})
+    // The first screen's markers are text to the second: none of them is its own.
+    expect(once.markers).toHaveLength(2)
+    expect(twice.markers).toEqual([])
     // The look-alikes are still reported; the markers' assignments are not.
     expect(twice.flagged).toEqual(once.flagged)
     expect(twice.flagged).toEqual({ password_literal: 1, contextual_secret: 1 })
@@ -147,20 +170,25 @@ describe('screenText', () => {
     const before = 'log line\n'.repeat(10)
     // A key block the cut runs through, 40 characters in (past its BEGIN line): found whole, and
     // the tail starts with its marker.
-    const block = `${before}${PEM}\nDone.`
+    const block = `${before}${K.F.pkcs1_rsa.join('\n')}\nDone.`
     const r = screenText(block, block.length - before.length - 40)
-    expect(r).toEqual({ text: '[REDACTED:private_key]\nDone.', removed: { private_key: 1 }, flagged: {} })
+    expect(r).toEqual({ text: '[REDACTED:private_key]\nDone.', removed: { private_key: 1 }, flagged: {}, markers: [[0, 22]] })
     // A token the cut runs through two characters in: the same.
     const token = `${before}use ${GH} now`
-    expect(screenText(token, token.length - before.length - 6)).toEqual({ text: '[REDACTED:gh_pat] now', removed: { gh_pat: 1 }, flagged: {} })
+    expect(screenText(token, token.length - before.length - 6)).toEqual({ text: '[REDACTED:gh_pat] now', removed: { gh_pat: 1 }, flagged: {}, markers: [[0, 17]] })
     // What is wholly before the cut is not counted: it is not in what is kept.
     const gone = `${GH}\nconst password = "hunter2hunter2"\n${before}${AWS}`
-    expect(screenText(gone, before.length + AWS.length)).toEqual({ text: `${before}[REDACTED:aws_access_key]`, removed: { aws_access_key: 1 }, flagged: {} })
+    expect(screenText(gone, before.length + AWS.length)).toEqual({
+      text: `${before}[REDACTED:aws_access_key]`,
+      removed: { aws_access_key: 1 },
+      flagged: {},
+      markers: [[before.length, before.length + 25]],
+    })
     // A possible credential the cut runs through is reported, and left as it is; one that ends
     // where the tail starts is not in it.
     const look = `${before}const password = "hunter2hunter2"`
-    expect(screenText(look, 10)).toEqual({ text: 'r2hunter2"', removed: {}, flagged: { password_literal: 1, contextual_secret: 1 } })
-    expect(screenText(`${look}\nDone.\n`, 7)).toEqual({ text: '\nDone.\n', removed: {}, flagged: {} })
+    expect(screenText(look, 10)).toEqual({ text: 'r2hunter2"', removed: {}, flagged: { password_literal: 1, contextual_secret: 1 }, markers: [] })
+    expect(screenText(`${look}\nDone.\n`, 7)).toEqual({ text: '\nDone.\n', removed: {}, flagged: {}, markers: [] })
     // A cut between two matches keeps the text between them as it is.
     expect(screenText(`${GH} middle ${AWS}`, ` middle ${AWS}`.length).text).toBe(' middle [REDACTED:aws_access_key]')
     // A tail as long as the text is the whole text.
@@ -171,7 +199,10 @@ describe('screenText', () => {
   it('makes for each rule a marker no cut to the end of an answer runs through', () => {
     for (const rule of RULES) {
       const marker = `[REDACTED:${rule.id}]`
-      expect(keepEnd(`x${marker}yz`, marker.length + 1), rule.id).toBe(`${marker}z`)
+      // One this computer's screen put there is kept whole in front of the end. One the other
+      // computer's put there is text here, and the end starts after it, never inside it.
+      expect(keepEnd(`x${marker}yz`, marker.length + 1, [[1, 1 + marker.length]]), rule.id).toEqual({ text: `${marker}z`, markers: [[0, marker.length]] })
+      expect(keepEnd(`x${marker}yz`, marker.length + 1, []).text, rule.id).toBe('yz')
     }
   })
 
@@ -183,12 +214,12 @@ describe('screenText', () => {
     // where no match starts, so the rule is run there.
     const run = `sk-${'a'.repeat(1_000)}Qsk-${'a'.repeat(100)}`
     expect(screenText(run, 100).removed).toEqual({ openai_key: 1 })
-    expect(screenText(run, 100, 100)).toEqual({ text: 'a'.repeat(100), removed: {}, flagged: {} })
+    expect(screenText(run, 100, 100)).toEqual({ text: 'a'.repeat(100), removed: {}, flagged: {}, markers: [] })
     expect(screenText(run, 100, 2_000)).toEqual(screenText(run, 100))
     // One that starts where the lookback does is found; a character further back, it is not.
     const reach = `${'.'.repeat(10)}${GH}`
-    expect(screenText(reach, 5, GH.length - 5)).toEqual({ text: '[REDACTED:gh_pat]', removed: { gh_pat: 1 }, flagged: {} })
-    expect(screenText(reach, 5, GH.length - 6)).toEqual({ text: GH.slice(-5), removed: {}, flagged: {} })
+    expect(screenText(reach, 5, GH.length - 5)).toEqual({ text: '[REDACTED:gh_pat]', removed: { gh_pat: 1 }, flagged: {}, markers: [[0, 17]] })
+    expect(screenText(reach, 5, GH.length - 6)).toEqual({ text: GH.slice(-5), removed: {}, flagged: {}, markers: [] })
     // Where the lookback starts, a rule still sees what comes before it. Here it starts on the `s`
     // of `Qsk-` in a base64url run, where no match starts in the whole text, a letter being before
     // it; screened as a text of its own, it would start with an OpenAI-shaped key that runs on
@@ -196,18 +227,37 @@ describe('screenText', () => {
     const blob = `{"data":"${'Ab0_'.repeat(50)}Qsk-${'b'.repeat(300)}"}\nDone.\n`
     const at = blob.indexOf('sk-')
     expect(screenText(blob.slice(at), 100).removed).toEqual({ openai_key: 1 })
-    expect(screenText(blob, 100, blob.length - 100 - at)).toEqual({ text: blob.slice(-100), removed: {}, flagged: {} })
+    expect(screenText(blob, 100, blob.length - 100 - at)).toEqual({ text: blob.slice(-100), removed: {}, flagged: {}, markers: [] })
     // A lookbehind the same: a name longer than password_literal takes, cut where the lookback starts.
     const named = `${'a'.repeat(80)}_password = "hunter2hunter2"\nDone.\n`
     expect(screenText(named.slice(70), 10).flagged).toEqual({ password_literal: 1 })
-    expect(screenText(named, 10, named.length - 10 - 70)).toEqual({ text: named.slice(-10), removed: {}, flagged: {} })
+    expect(screenText(named, 10, named.length - 10 - 70)).toEqual({ text: named.slice(-10), removed: {}, flagged: {}, markers: [] })
   })
 
   it('counts every occurrence, and returns empty text and nothing found for nothing', () => {
-    expect(screenText(`${GH} ${GH}`)).toEqual({ text: '[REDACTED:gh_pat] [REDACTED:gh_pat]', removed: { gh_pat: 2 }, flagged: {} })
-    expect(screenText('')).toEqual({ text: '', removed: {}, flagged: {} })
-    expect(screenText('plain prose with nothing in it')).toEqual({ text: 'plain prose with nothing in it', removed: {}, flagged: {} })
-    expect(screenText(undefined as unknown as string)).toEqual({ text: '', removed: {}, flagged: {} })
+    expect(screenText(`${GH} ${GH}`)).toEqual({ text: '[REDACTED:gh_pat] [REDACTED:gh_pat]', removed: { gh_pat: 2 }, flagged: {}, markers: [[0, 17], [18, 35]] })
+    expect(screenText('')).toEqual({ text: '', removed: {}, flagged: {}, markers: [] })
+    expect(screenText('plain prose with nothing in it')).toEqual({ text: 'plain prose with nothing in it', removed: {}, flagged: {}, markers: [] })
+    expect(screenText(undefined as unknown as string)).toEqual({ text: '', removed: {}, flagged: {}, markers: [] })
+  })
+
+  it('says where in its text each marker it put there is, and only those', () => {
+    // In order, one per removal, each the whole marker; with `keep`, where in the tail it returns.
+    const text = `a ${ANTHROPIC} b ${SLACK}\nc ${AWS} d ${GH}`
+    const r = screenText(text)
+    expect(r.markers.map(([s, e]) => r.text.slice(s, e))).toEqual([
+      '[REDACTED:openai_key]',
+      '[REDACTED:slack_token]',
+      '[REDACTED:aws_access_key]',
+      '[REDACTED:gh_pat]',
+    ])
+    for (let i = 1; i < r.markers.length; i++) expect(r.markers[i][0]).toBeGreaterThan(r.markers[i - 1][1])
+    const tail = screenText(`${'y'.repeat(5_000)} ${GH} ${'z'.repeat(150)}END`, 160)
+    expect(tail.text.startsWith('[REDACTED:gh_pat] zzz')).toBe(true)
+    expect(tail.markers).toEqual([[0, 17]])
+    // Text that is marker-shaped already, its own or an earlier screen's, is not one of its markers.
+    expect(screenText(r.text)).toEqual({ text: r.text, removed: {}, flagged: {}, markers: [] })
+    expect(screenText(`quoted: [REDACTED:gh_pat] then ${GH}`).markers).toEqual([[31, 48]])
   })
 
   it('stays fast on the most of a crafted answer it screens: thousands of tokens, near-miss lookaheads, open key blocks', () => {
@@ -245,6 +295,318 @@ describe('maskForDisplay', () => {
     expect(out).not.toContain('changeme')
     // A Mailchimp key starts inside a Mailgun-shaped one and ends four characters past it.
     expect(maskForDisplay(`key-${'a'.repeat(32)}-us1 done`)).toBe('[REDACTED:mailgun_key] done')
+  })
+
+  it('shows none of a key in a job summary, however the first line holds it', () => {
+    const body = K.F.pkcs1_rsa.filter((l) => /^[A-Za-z0-9+/=]{24,}$/.test(l))
+    // the six characters of a JSON line feed escape: a backslash, u, 000a
+    const lf = '\\' + 'u000a'
+    const tls = Buffer.from(`${K.F.sec1_ec.join('\n')}\n`).toString('base64')
+    const ec = K.J.ec
+    const prompts: Array<[string, string[]]> = [
+      [`Use this key: "-----BEGIN RSA PRIVATE KEY-----${lf}${body.join(lf)}${lf}-----END RSA PRIVATE KEY-----" and deploy`, body],
+      [`Deploy with "-----BEGIN RSA PRIVATE KEY-----\\n${body.join('\\n')}\\n-----END RSA PRIVATE KEY-----"`, body],
+      [`-----BEGIN RSA PRIVATE KEY----- ${body.join(' ')} -----END RSA PRIVATE KEY-----`, body],
+      [K.F.pkcs1_rsa.join('\n'), body],
+      // a Kubernetes Secret's tls.key: past the BEGIN line its base64 encodes
+      [`Apply this: tls.key: ${tls}`, [tls.slice(44)]],
+      [`Use {"kty":"EC","crv":"P-256","x":"${ec.x}","y":"${ec.y}","d":"${ec.d}"} to sign`, [ec.d as string]],
+    ]
+    for (const [i, [prompt, secret]] of prompts.entries()) {
+      // (the case's number only: a failure must not print what the summary shows)
+      expect(leakedWindows(activitySummary(prompt, maskForDisplay), secret), `prompt ${i}`).toBe(0)
+    }
+  })
+
+  it('masks every key the detectors find, a flagged one too, and a private-key BEGIN line to the end of its line', () => {
+    // A made-up body under a BEGIN line is only flagged by the screen; shown, it is masked.
+    const fake = `-----BEGIN RSA PRIVATE KEY----- ${'AbCd'.repeat(16)} ${'EfGh'.repeat(16)}`
+    expect(maskForDisplay(`${fake}\nnext line`)).toBe('[REDACTED:private_key]\nnext line')
+    // An SSH2 key, which no rule names, is masked under the detector's id.
+    expect(maskForDisplay(K.F.ssh2_real.join('\n'))).toBe('[REDACTED:ssh2_private_key]')
+    // A JWK's placeholder d, which the screen leaves in, is not shown.
+    expect(maskForDisplay('{"kty":"EC","crv":"P-256","d":"your-private-key-goes-here-xxxxxxxxxxx"}')).toBe('{"kty":"EC","crv":"P-256","d":"[REDACTED:jwk_private_key]"}')
+    // A key's tail with its END line, its BEGIN line not there.
+    expect(maskForDisplay(K.F.pkcs8_rsa.slice(-6).join('\n'))).toBe('[REDACTED:private_key]')
+    // A BEGIN line written with two spaces, which nothing else reads as one, to the end of its line.
+    expect(maskForDisplay('-----BEGIN  PRIVATE KEY----- abc\nok')).toBe('[REDACTED:private_key]\nok')
+  })
+})
+
+describe('the Linked screen finds a private key by what its bytes decode to', () => {
+  /** lnk3's answer F2 and its first lines (F1a): prose that names a BEGIN and an END line, with a
+   *  2,600-line report between them. */
+  const F1A =
+    "I searched every file for a `-----BEGIN RSA PRIVATE KEY-----` line. The two folders that hold PEM files:\n/Users/alice/Projects/PaymentService/src/main/resources\n/Users/alice/Projects/PaymentService/src/test/resources\nBoth only hold certificates (`server.crt`, `ca.crt`), no keys. Nothing ends with `-----END RSA PRIVATE KEY-----`,\nso there is no private key in the repository. The audit is complete."
+
+  it('runs every rule but the three that take a key block by its layout, which stay in RULES for every other consumer', () => {
+    expect(RULES).toHaveLength(97)
+    const three = ['private_key', 'gpg_block', 'ssh_dsa_pubkey']
+    expect(SCREEN_RULES.map((r) => r.id)).toEqual(RULES.map((r) => r.id).filter((id) => !three.includes(id)))
+    expect(SCREEN_RULES).toHaveLength(94)
+    // scanText, which every other consumer runs, still takes a key block by its layout.
+    expect(scanText(PEM).redacted).toBe('[REDACTED:private_key]')
+  })
+
+  it('removes a key however an answer writes its lines, and names it by its kind', () => {
+    const forms: Array<[keyof KeySet['F'], string]> = [
+      ['pkcs8_rsa', 'private_key'],
+      ['enc_pkcs8', 'private_key'],
+      ['openssh', 'private_key'],
+      ['dsa', 'ssh_dsa_pubkey'],
+      ['pgp_rsa_hdr', 'gpg_block'],
+      ['ssh2_real', 'ssh2_private_key'],
+      ['openvpn', 'openvpn_static_key'],
+    ]
+    for (const [format, rule] of forms) {
+      const lines = K.F[format]
+      const secret = secretLinesOf(lines)
+      for (const joining of ['lf', 'json_n', 'java_concat', 'rg_win', 'docker_t', 'diff_plus']) {
+        const r = screenText(`Here it is:\n${JOIN[joining](lines)}\nThen restart the service.`)
+        expect(leakedWindows(r.text, secret), `${format} ${joining}`).toBe(0)
+        expect(r.removed, `${format} ${joining}`).toEqual({ [rule]: 1 })
+        expect(r.text.endsWith('\nThen restart the service.'), `${format} ${joining}`).toBe(true)
+      }
+    }
+  })
+
+  it('removes the private members of a JWK and an RSAKeyValue as one key each, and a key file stored base64 encoded', () => {
+    const jwk = JSON.stringify({ keys: [K.J.rsa] })
+    const r = screenText(`jwks.json: ${jwk}`)
+    // d, p, q, dp, dq and qi are taken out, the public n and e stay: one key.
+    expect(r.removed).toEqual({ jwk_private_key: 1 })
+    expect(r.markers).toHaveLength(6)
+    expect(r.text).toContain(`"n":"${K.J.rsa.n}"`)
+    for (const m of ['d', 'p', 'q', 'dp', 'dq', 'qi'] as const) expect(r.text).not.toContain(K.J.rsa[m] as string)
+    const xml = screenText(K.xml)
+    expect(xml.removed).toEqual({ xml_private_key: 1 })
+    expect(xml.text.startsWith('<RSAKeyValue><Modulus>')).toBe(true)
+    const yaml = `data:\n  tls.key: ${K.k8s.plain}\n  tls.crt: x`
+    expect(screenText(yaml)).toEqual({ text: 'data:\n  tls.key: [REDACTED:private_key_b64]\n  tls.crt: x', removed: { private_key_b64: 1 }, flagged: {}, markers: [[17, 43]] })
+    const ppk = screenText(K.ppk.join('\n'))
+    expect(ppk.removed).toEqual({ putty_private_key: 1 })
+    expect(leakedWindows(ppk.text, secretLinesOf(K.ppk, true))).toBe(0)
+  })
+
+  it('leaves text between a BEGIN and an END mention byte for byte, an empty pair and a made-up body too, and reports them', () => {
+    expect(screenText(F1A)).toEqual({ text: F1A, removed: {}, flagged: { private_key: 1 }, markers: [] })
+    const empty = '-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n'
+    expect(screenText(empty)).toEqual({ text: empty, removed: {}, flagged: { private_key: 1 }, markers: [] })
+    const madeUp = ['-----BEGIN RSA PRIVATE KEY-----', ...Array.from({ length: 12 }, (_, i) => `${'AbCd'.repeat(14)}${String(i).padStart(8, '0')}`), '-----END RSA PRIVATE KEY-----'].join('\n')
+    // (and the words "private key" with a value after them, which the contextual rule reports)
+    expect(screenText(madeUp)).toEqual({ text: madeUp, removed: {}, flagged: { private_key: 1, contextual_secret: 1 }, markers: [] })
+    // A public key under a private BEGIN line decodes to no private key.
+    const spki = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
+    const pub = `-----BEGIN PRIVATE KEY-----\n${wrap(spki).join('\n')}\n-----END PRIVATE KEY-----`
+    expect(screenText(pub)).toEqual({ text: pub, removed: {}, flagged: { private_key: 1, contextual_secret: 1 }, markers: [] })
+  })
+
+  it("keeps every line of lnk3's 218,726-character report, as the doing side and as the asking side screen its end", () => {
+    const report = Array.from({ length: 2600 }, (_, i) => `test ${String(i).padStart(4, '0')} passed: parsePem accepts header ${i % 7} and rejects malformed input as expected`).join('\n')
+    const answer = `${F1A.split('\n').slice(0, 3).join('\n')}\n${report}\nSummary: nothing ends with \`-----END RSA PRIVATE KEY-----\`. All 2600 checks passed; the full report is above.`
+    expect(answer).toHaveLength(218_726)
+    // The doing side keeps its end, screened with what is before it in view...
+    const sent = screenText(answer, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS)
+    expect(sent).toEqual({ text: answer.slice(-MAX_OUTPUT_CHARS), removed: {}, flagged: {}, markers: [] })
+    // ...and the asking side screens that end again as one another computer cut, and its error's
+    // end behind an ellipsis the same.
+    expect(screenText(sent.text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)).toEqual(sent)
+    const error = `…${answer.slice(-(MAX_ERROR_CHARS - 1))}`
+    expect(screenText(error, MAX_ERROR_CHARS, SCREEN_LOOKBACK_CHARS, true)).toEqual({ text: error, removed: {}, flagged: {}, markers: [] })
+  })
+
+  it('takes a 9,420-line keyring export with a photo ID whole, and from its END line where only its end is kept', () => {
+    const lines = pgpPhotoExport(450_000)
+    const text = `Exported:\n${lines.join('\n')}\nDone.\n`
+    expect(text.length).toBeGreaterThan(600_000)
+    const secret = secretLinesOf(lines)
+    expect(screenText(text)).toEqual({ text: 'Exported:\n[REDACTED:gpg_block]\nDone.\n', removed: { gpg_block: 1 }, flagged: {}, markers: [[10, 30]] })
+    // Its BEGIN line is over 400,000 characters before the end kept, past the 256 KB a BEGIN line
+    // is looked for: the key is taken from its END line, and the end starts with its marker.
+    for (const keep of [MAX_OUTPUT_CHARS, MAX_ERROR_CHARS - 1]) {
+      const r = screenText(text, keep, SCREEN_LOOKBACK_CHARS)
+      expect(r, String(keep)).toEqual({ text: '[REDACTED:gpg_block]\nDone.\n', removed: { gpg_block: 1 }, flagged: {}, markers: [[0, 20]] })
+      expect(leakedWindows(r.text, secret)).toBe(0)
+    }
+  })
+
+  it('takes a key whose BEGIN line is 256 to 320 KB before the end kept: past where a BEGIN line is looked for, short of where the window starts', () => {
+    // The window of the key detectors starts 64 KB before the cut when the cut falls in a run of base64:
+    // a tail that stopped at that start was taken for a key whose BEGIN line is in reach, when K1's
+    // reach (256 KB from the cut) had not seen it, and crossed with a note only.
+    for (const distance of [264_000, 290_000, 315_000]) {
+      for (const keep of [MAX_ERROR_CHARS - 1, MAX_OUTPUT_CHARS]) {
+        const label = `BEGIN ${distance} before the end kept, keep ${keep}`
+        const lines = pgpPhotoExport(Math.round((distance + keep - 3_000) / 1.354))
+        const text = `${lines.join("\n")}\nDone.\n`
+        // (the premise: the end kept starts between the BEGIN line's reach and the window's start)
+        expect(text.length - keep, label).toBeGreaterThan(262_144 + 500)
+        expect(text.length - keep, label).toBeLessThan(327_680 - 500)
+        const r = screenText(text, keep, SCREEN_LOOKBACK_CHARS)
+        expect(leakedWindows(r.text, secretLinesOf(lines)), label).toBe(0)
+        expect(r.removed, label).toEqual({ gpg_block: 1 })
+        expect(r.text.startsWith('[REDACTED:gpg_block]'), label).toBe(true)
+      }
+    }
+  })
+
+  it("looks for a key block's BEGIN line 256 KB back where the cut falls among its lines, and for a token 4,096 back", () => {
+    expect(SCREEN_LOOKBACK_CHARS).toBe(4_096)
+    // A keyring export cut short, with no END line: the end kept starts in its last lines, its
+    // BEGIN line some 29,000 characters before it, behind armor headers. Found from there, it is
+    // removed whole; with no END line below, nothing else could take it.
+    const lines = pgpPhotoExport(20_000).slice(0, -2)
+    const text = `log\n${lines.join('\n')}\nThe export stopped here.\n`
+    const r = screenText(text, 300, SCREEN_LOOKBACK_CHARS)
+    expect(text.length - 300 - text.indexOf('-----BEGIN')).toBeGreaterThan(28_000)
+    expect(r).toEqual({ text: '[REDACTED:gpg_block]\nThe export stopped here.\n', removed: { gpg_block: 1 }, flagged: {}, markers: [[0, 20]] })
+    // A token further back than the lookback is not looked for.
+    const far = `ghp_${'q'.repeat(36)}${'.'.repeat(5_000)}`
+    expect(screenText(far, 100, SCREEN_LOOKBACK_CHARS)).toEqual({ text: '.'.repeat(100), removed: {}, flagged: {}, markers: [] })
+  })
+})
+
+describe('an END line named in a sentence or code ends no key, wherever a cut falls above it', () => {
+  // Found by the round-0 false-removal review (FR-1, FR-2): random lines of one width above a
+  // private-key END line were taken for a key's tail where a cut fell among them, though the END
+  // line was a sentence's or a constant's, or the lines' first one was in the answer.
+  const KEY_IDS = ['private_key', 'gpg_block', 'ssh_dsa_pubkey', 'ssh2_private_key', 'private_key_b64']
+  const keyRemoved = (removed: Record<string, number>): string[] => Object.keys(removed).filter((k) => KEY_IDS.includes(k))
+  const prose = (n: number): string => {
+    let s = ''
+    for (let i = 0; s.length < n; i++) s += `Paragraph ${i}: the build step copies the assets, runs the linter and writes the report to out/report-${i}.txt.\n`
+    return s.slice(0, n)
+  }
+  const b64 = (n: number): string => randomBytes(n).toString('base64')
+  const hex = (n: number): string => randomBytes(n).toString('hex')
+  /** The four ways an answer is screened: the doing side's end (and its error's), the asking side's
+   *  view of an end another computer cut, and its error behind an ellipsis. Returns which changed. */
+  function everyWay(answer: string, cut: number): string[] {
+    const changed: string[] = []
+    const kept = answer.slice(cut)
+    const doer = screenText(answer, kept.length, SCREEN_LOOKBACK_CHARS)
+    if (doer.text !== kept || keyRemoved(doer.removed).length) changed.push('doing side')
+    const view = screenText(kept, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)
+    if (view.text !== kept || keyRemoved(view.removed).length) changed.push('asking side, cut view')
+    const err = `…${answer.slice(Math.max(cut, answer.length - (MAX_ERROR_CHARS - 1)))}`
+    const error = screenText(err, MAX_ERROR_CHARS, SCREEN_LOOKBACK_CHARS, true)
+    if (error.text !== err || keyRemoved(error.removed).length) changed.push('asking side, error')
+    return changed
+  }
+
+  it("keeps lnk3's F1a where the doing side's cut falls on its first path line", () => {
+    const F1A =
+      "I searched every file for a `-----BEGIN RSA PRIVATE KEY-----` line. The two folders that hold PEM files:\n/Users/alice/Projects/PaymentService/src/main/resources\n/Users/alice/Projects/PaymentService/src/test/resources\nBoth only hold certificates (`server.crt`, `ca.crt`), no keys. Nothing ends with `-----END RSA PRIVATE KEY-----`,\nso there is no private key in the repository. The audit is complete."
+    const answer = `${prose(30_000)}\n${F1A}\n${prose(150_000)}`
+    const cut = answer.indexOf('/Users/alice/Projects/PaymentService/src/main')
+    const kept = answer.slice(cut)
+    expect(screenText(answer, kept.length, SCREEN_LOOKBACK_CHARS).text).toBe(kept)
+    expect(everyWay(answer, cut)).toEqual([])
+  })
+
+  it('keeps a lockfile integrity list and a digest diff above a sentence that names an END line', () => {
+    // a list of npm integrity values, then a summary naming an END line
+    const ints = Array.from({ length: 900 }, () => `  sha512-${b64(64)}`).join('\n')
+    const answer = `Integrity of the 900 packages in package-lock.json:\n${ints}\nNone of these is a key, and no file in the tree ends with -----END PRIVATE KEY-----.\nAudit complete.\n`
+    for (const at of [0.2, 0.5, 0.9]) {
+      const cut = answer.indexOf('\n', Math.floor(answer.length * at)) + 3
+      expect(everyWay(answer, cut), String(at)).toEqual([])
+    }
+    // a failed job's stderr: a test runner's diff of digests, then an assertion naming an END line
+    const rows = Array.from({ length: 160 }, () => `    "${b64(32)}",`).join('\n')
+    const stderr = `FAIL  tests/pem.test.ts > keeps every fixture digest\nAssertionError: expected [ …(160) ] to deeply equal [ …(160) ]\n\n- Expected\n+ Received\n\n  [\n${rows}\n  ]\nError: expected tests/fixtures/key.pem to end with '-----END PRIVATE KEY-----'\n ❯ tests/pem.test.ts:42:17\n`
+    expect(screenText(stderr, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS).text).toBe(stderr.slice(-(MAX_ERROR_CHARS - 1)))
+    expect(everyWay(stderr, stderr.length - (MAX_ERROR_CHARS - 1))).toEqual([])
+  })
+
+  it('keeps 15 kinds of report whose every line ends in a hash, an id or a digest, above a line naming an END line', () => {
+    const LINES: Record<string, (i: number) => string> = {
+      'sha256 hex after =': (i) => `  ok ${i} - fixture tests/fixtures/sample-${i}.pem sha256=${hex(32)}`,
+      'sha256 hex after a space': (i) => `fixture ${String(i).padStart(4, '0')} checked, digest ${hex(32)}`,
+      'git sha': (i) => `  commit ${i}: ${hex(20)}`,
+      'git log --format': (i) => `Fix flaky test number ${i} ${hex(20)}`,
+      'uuid with no dashes': (i) => `job ${i} finished, id ${hex(16)}`,
+      nanoid: (i) => `row ${i} saved as ${randomBytes(16).toString('base64url').slice(0, 21)}`,
+      'sri sha384 in a list': () => `  - sha384-${b64(48)}`,
+      'npm integrity line': () => `      "integrity": "sha512-${b64(64)}",`,
+      'yarn integrity line': () => `  integrity sha512-${b64(64)}`,
+      'json array of hex': () => `  "${hex(32)}",`,
+      'base64 sha256 pins': () => `  pin-sha256="${b64(32)}";`,
+      'docker image digests': (i) => `app-${i}  latest  sha256:${hex(32)}`,
+      'vitest lines, a word at the end': (i) => `   ✓ tests/electron/case${i}.test.ts > keeps the text byte for byte as expected`,
+      'cargo checksums': () => `checksum = "${hex(32)}"`,
+      'go.sum lines': (i) => `github.com/acme/mod${i} v1.${i}.0 h1:${b64(32)}`,
+    }
+    const ENDS = ['-----END PRIVATE KEY-----', '-----END RSA PRIVATE KEY-----', '-----END OPENSSH PRIVATE KEY-----', '-----END PGP PRIVATE KEY BLOCK-----']
+    const SUMMARIES = [
+      (end: string) => `Summary: none of the fixtures ends with ${end}; all checks passed.`,
+      (end: string) => `  expected the file to end with "${end}"`,
+      (end: string) => `grep found ${end} in 0 files`,
+    ]
+    for (const [shape, line] of Object.entries(LINES)) {
+      for (let t = 0; t < 4; t++) {
+        const lines = Array.from({ length: 80 + 60 * t }, (_, i) => line(i + 1)).join('\n')
+        const text = `Here is the report.\n${lines}\n${SUMMARIES[t % 3](ENDS[t])}\nDone.\n`
+        const cut = 20 + Math.floor(((t + 1) / 6) * (text.indexOf(ENDS[t]) - 20))
+        expect(everyWay(text, cut), `${shape} ${t}`).toEqual([])
+        expect(screenText(text).text, `${shape} ${t}`).toBe(text)
+      }
+    }
+  })
+
+  it('screens an end a 1.55 computer cut as one it screened: nothing at its start is taken for a key cut there', () => {
+    // That computer's screen took whole any key its cut ran through (the round-0 review's FR-3):
+    // a dump, a list of hashes or a made-up body above an END line at its start is reported, as in
+    // the middle of a text. An end an older computer cut may start inside a key, so there they go.
+    const dump = wrap(randomBytes(6_000).toString('base64')).join('\n')
+    const hashes = Array.from({ length: 60 }, () => `  "${b64(32)}",`).join('\n')
+    const fake = Array.from({ length: 10 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(2, '0')}`).join('\n')
+    for (const [name, body] of [['dump', dump], ['hashes', hashes], ['made-up body', fake]]) {
+      const view = `${body.slice(body.indexOf('\n', 700) + 1)}\n-----END PRIVATE KEY-----\n(the footer the parser expects)\n`
+      for (const [keep, text] of [[MAX_OUTPUT_CHARS, view], [MAX_ERROR_CHARS, `…${view.slice(-(MAX_ERROR_CHARS - 1))}`]] as const) {
+        const r = screenText(text, keep, SCREEN_LOOKBACK_CHARS, 'screened')
+        expect(r.text, `${name} ${keep}`).toBe(text)
+        expect(r.removed, `${name} ${keep}`).toEqual({})
+        // (random lines above an END line are reported; a made-up body is no key's to name)
+        expect(r.flagged, `${name} ${keep}`).toEqual(name === 'made-up body' ? {} : { private_key: 1 })
+      }
+      const old = screenText(view, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)
+      if (name === 'made-up body') expect(old.text, name).toBe(view)
+      else expect(old.removed, name).toEqual({ private_key: 1 })
+    }
+    // ...and an end a 1.55 computer kept starts with the marker of any key its cut ran through,
+    // which the second screen leaves as it is
+    const lines = K.F.pkcs8_rsa
+    const answer = `${prose(20_000)}\n${lines.join('\n')}\n${prose(5_000)}`
+    const kept = screenText(answer, answer.length - answer.indexOf(lines[4]), SCREEN_LOOKBACK_CHARS)
+    expect(kept.text.startsWith('[REDACTED:private_key]\n')).toBe(true)
+    expect(screenText(kept.text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, 'screened')).toEqual({ text: kept.text, removed: {}, flagged: {}, markers: [] })
+  })
+
+  it("keeps a dump or a list of hashes above a bare END line in the middle of an answer where the doing side's cut falls inside it", () => {
+    // judge 1's C2 (a 64-wide random dump above a line holding only an END marker): its first line
+    // is in the answer, so it is no key the cut ran through, whether the window's start fell under
+    // the dump's start (cut more than 4,096 characters into it) or inside a list longer than that.
+    const dump = wrap(randomBytes(60_000).toString('base64')).join('\n')
+    const hashes = Array.from({ length: 400 }, () => `  sha512-${b64(64)}`).join('\n')
+    for (const [name, body, above] of [
+      ['dump', dump, prose(20_000)],
+      ['hash list', hashes, prose(20_000)],
+      // (the line above it the answer's first: a whole line, where the text starts)
+      ['dump on the second line', dump, ''],
+    ]) {
+      const answer = `${above}The fixture parser's input:\n${body}\n-----END PRIVATE KEY-----\n(the footer the parser expects)\n${prose(3_000)}`
+      const from = answer.indexOf(body)
+      for (const into of [5_000, 12_000, 30_000]) {
+        if (into > body.length - 200) continue
+        const kept = answer.slice(from + into)
+        const r = screenText(answer, kept.length, SCREEN_LOOKBACK_CHARS)
+        expect(r.text, `${name} ${into}`).toBe(kept)
+        expect(r.removed, `${name} ${into}`).toEqual({})
+        // (reported: at its END line, and as the run of key-like lines the kept end starts with)
+        expect(Object.keys(r.flagged), `${name} ${into}`).toEqual(['private_key'])
+      }
+    }
   })
 })
 
@@ -288,10 +650,10 @@ describe('every rule in linear time on text another computer wrote', () => {
     }
   })
 
-  it('screens the most an answer is screened on, of any of them, in well under a second', () => {
-    // An answer keeps its last 200,000 characters, and is screened with the 65,536 before them
-    // (linkedJobs' MAX_OUTPUT_CHARS and SCREEN_LOOKBACK_CHARS): 265,536 in all.
-    expect(LARGEST).toBe(265_536)
+  it('screens the most of an answer the rules look at, of any of them, in well under a second', () => {
+    // An answer keeps its last 200,000 characters, and the rules look at the 4,096 before them
+    // (linkedJobs' MAX_OUTPUT_CHARS and SCREEN_LOOKBACK_CHARS): 204,096 in all.
+    expect(LARGEST).toBe(204_096)
     for (const unit of RUNS) {
       const text = run(unit, LARGEST)
       // A quadratic rule takes ten seconds here, which the test above can't always tell from noise.

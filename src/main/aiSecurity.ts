@@ -28,6 +28,7 @@ import * as electron from 'electron'
 import { promises as fs, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { offMainFiles } from './offMainFiles'
+import { detectorStart, headless, keySpans, type KeySpan } from './keyMaterial'
 
 const SETTINGS_FILE = 'ai-security-settings.json'
 const AUDIT_FILE = 'ai-security-audit.jsonl'
@@ -88,15 +89,17 @@ interface RedactionRule {
   label: string
   /** How sure a match is to be a live credential, which decides what screenText does with it.
    *  `high`: a token whose own shape names it (a vendor prefix or format that does not occur by
-   *  accident, or a private-key block), removed wherever text crosses to another computer.
+   *  accident), removed wherever text crosses to another computer. The three private-key block
+   *  rules are `high` too, but screenText does not run them (SCREEN_RULES).
    *  `heuristic`: a match that leans on a variable name, a nearby word, or a generic URL or
    *  assignment shape, or a value meant to sit in code (a publishable key, a client id, a DSN).
    *  Those are as often examples, fixtures and test data, and removing them corrupts the code a
    *  delegated job came back with, so they are only reported. */
   precision: 'high' | 'heuristic'
-  /** A `high` rule whose match holds a credential only when this matches inside it too: a
-   *  private-key block is key material once it has a long body line or its END line. Its header
-   *  alone is what a PEM parser or a test helper writes, so screenText reports that and leaves it. */
+  /** A key-block rule's test for key material in its match: a long body line or its END line.
+   *  Nothing reads it now. screenText, which did, leaves the three key-block rules out and finds a
+   *  key by what its bytes decode to (SCREEN_RULES); it stays so this table and the git hook's copy
+   *  (secretRules.cjs) stay the same. */
   keyMaterial?: RegExp
   pattern: RegExp
   /** Capture group holding the secret's NAME (e.g. `DB_PASSWORD`, `apiKey`). We log the name
@@ -126,9 +129,10 @@ interface RedactionRule {
 // starting inside a run, `pwd.pwd.…` or `eyJ-eyJ-…` cost seconds per 20,000 characters.
 // aiSecurityScreen.test.ts times every rule on such runs.
 //
-// An answer cut to its tail is screened with what came before the cut, as far back as the longest
-// match a rule makes in real text: a private-key block of 400 lines (linkedJobs'
-// SCREEN_LOOKBACK_CHARS). A rule that takes more needs that raised with it.
+// An answer cut to its tail is screened with what came before the cut. The rules screenText runs
+// look back as far as the longest match one makes in real text, a token of a few hundred characters
+// (linkedJobs' SCREEN_LOOKBACK_CHARS): a rule that takes more needs that raised with it. A private
+// key is found there by keyMaterial's detectors, which look back for its own opener instead.
 export const RULES: RedactionRule[] = [
   // === AWS ===
   { id: 'aws_access_key', label: 'AWS Access Key ID', precision: 'high', pattern: /\b(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA|ASCA)[0-9A-Z]{16}\b/g },
@@ -608,16 +612,21 @@ export function requiredLiteral(pattern: RegExp): string | null {
 /** Each rule's literal, worked out once. */
 const LITERALS = new Map<RedactionRule, string | null>(RULES.map((rule) => [rule, requiredLiteral(rule.pattern)]))
 
-/** Every match of every rule, rule by rule in table order, that starts at `start` or after (every
- *  rule is global, so its search starts there). The text before `start` is still the text's: a \b, a
+/** Every match of every rule in `rules` (RULES unless told), rule by rule in table order, that starts
+ *  at `start` or after (every rule is global, so its search starts there). The text before `start` is still the text's: a \b, a
  *  lookbehind or a line start there sees it, as in the whole text. A rule whose literal
  *  (requiredLiteral) is missing from the text it searches is not run: it cannot match. Most text
  *  carries none of the vendor prefixes, so most of the table is skipped by a substring search. */
-function forEachMatch(input: string, visit: (rule: RedactionRule, m: RegExpExecArray) => void, start = 0): void {
+function forEachMatch(
+  input: string,
+  visit: (rule: RedactionRule, m: RegExpExecArray) => void,
+  start = 0,
+  rules: readonly RedactionRule[] = RULES,
+): void {
   // A literal is where its match starts, so one that starts at `start` or after has it in here.
   const searched = start > 0 ? input.slice(start) : input
   let lower: string | undefined
-  for (const rule of RULES) {
+  for (const rule of rules) {
     const literal = LITERALS.get(rule)
     if (literal) {
       // Every literal is printable ASCII, which a case-insensitive pattern matches only as its
@@ -654,15 +663,27 @@ export function scanText(input: string): ScanResult {
 }
 
 /** What screenText found, by rule id: how many matches. */
+/** What screenText is told of where `input` starts (its `cutStart`): at no cut, or at a cut another
+ *  computer made before screening (`true`) or after screening with this screen (`'screened'`). */
+export type CutStart = boolean | 'screened'
+
 export interface SecretScreen {
-  /** The text with every high-precision match replaced by `[REDACTED:<rule>]`. Nothing else in it
-   *  changes: a heuristic match is left exactly as it was. */
+  /** The text with every credential it removed replaced by `[REDACTED:<rule>]`: a high-precision
+   *  rule's match, or a private key its bytes show to be one (keyMaterial). Nothing else in it
+   *  changes: what only looks like a credential is left exactly as it was. */
   text: string
-  /** High-precision rules, and how many of their matches were taken out. */
+  /** The rules, and how many credentials each took out. A JWK's or an RSAKeyValue's private
+   *  members are one credential. */
   removed: Record<string, number>
-  /** Heuristic rules, and a private-key header with no key under it, and how many matches were left
-   *  in. One that overlaps a removed match isn't counted: the credential in it went with that. */
+  /** The rules that matched what only looks like a credential, and how many times: the heuristic
+   *  rules, and anything key-shaped that is no key (a BEGIN line with no key under it, a made-up
+   *  body, a public key under a private BEGIN line, a placeholder). One that overlaps a removed
+   *  match isn't counted: the credential in it went with that. */
   flagged: Record<string, number>
+  /** Where in `text` each marker this screen put there starts and ends (`[start, end)`), in order.
+   *  Only those: text that only reads like a marker, one an earlier screen wrote included, is the
+   *  text's own. What cuts the text to its end keeps these whole (linkedJobs' keepEnd). */
+  markers: Array<[number, number]>
 }
 
 interface Span {
@@ -671,46 +692,78 @@ interface Span {
   to: number
 }
 
-/** Text that crosses to another computer (Linked machines), screened in two tiers by
- *  RedactionRule.precision. A credential whose own shape names it is removed; anything that only
- *  looks like one is reported and left alone, because the text is usually code and a removed
- *  fixture or example would corrupt it. Values are never returned: only rule ids and counts.
+/** What screenText takes out (`remove`) or leaves in and reports (`flag`): a rule's match, or what
+ *  a key detector found (keyMaterial's KeySpan). */
+type Finding = Span & Pick<KeySpan, 'cls' | 'group'>
+
+/** The rules that take a private-key block by how its lines are laid out. */
+const KEY_BLOCK_RULES: ReadonlySet<string> = new Set(['private_key', 'gpg_block', 'ssh_dsa_pubkey'])
+
+/** The rules screenText runs: all but the three key-block rules. Text that crosses to another
+ *  computer is screened for private keys by what their bytes decode to instead (keyMaterial). Taken
+ *  by its layout, a key in a listing, a log, string literals or a diff crossed, and ordinary text
+ *  between a BEGIN and an END mention was removed. The three stay in RULES for every other
+ *  consumer: the commit and push shield, the git hook, the prompt watch, the MCP gateway and the
+ *  memory scrub. */
+export const SCREEN_RULES: readonly RedactionRule[] = RULES.filter((rule) => !KEY_BLOCK_RULES.has(rule.id))
+
+/** Text that crosses to another computer (Linked machines), screened in two tiers. A credential
+ *  whose own shape names it is removed: a high-precision rule's match (RedactionRule.precision), or
+ *  a private key, recognised by what its bytes decode to (keyMaterial). Anything that only looks
+ *  like one is reported and left alone, because the text is usually code and a removed fixture or
+ *  example would corrupt it. Values are never returned: only rule ids and counts.
  *
  *  The other computer controls this text, so it runs in linear time: the output is built in one
- *  pass over the matches, where scanText rewrites the whole text once per match. Overlapping
- *  matches (an Anthropic key is an OpenAI-shaped one too) are taken once, under the first rule in
- *  table order.
+ *  pass over what was found, where scanText rewrites the whole text once per match. Overlapping
+ *  finds (an Anthropic key is an OpenAI-shaped one too) are taken once, under the first in table
+ *  order, the key detectors after the rules.
  *
  *  `keep`, for text that is cut to its tail: `input` is screened, and what comes back is what that
- *  made of its last `keep` characters, counting only the matches in them. Cut first, a credential
- *  the cut ran through would lose its start (a key block its BEGIN line, a token its prefix) and
- *  match no rule, and the rest of it would go out as it is. A match the cut runs through is taken
- *  whole, and the tail starts with its marker.
+ *  made of its last `keep` characters, counting only what is in them. Cut first, a credential the
+ *  cut ran through would lose its start (a key block its BEGIN line, a token its prefix) and match
+ *  nothing, and the rest of it would go out as it is. A credential the cut runs through is taken
+ *  whole, and the tail starts with its marker. Where each marker is comes back too (`markers`): a
+ *  tail cut again (keepEnd) keeps those whole, and cuts what the text spelled like one as text.
  *
- *  `lookback`, with `keep`: how much of `input` before the tail is screened with it, however long
- *  `input` is; all of it without. A match is looked for from there as in the whole text, where a
- *  \b or a lookbehind sees what comes before. Sliced off instead, the text there would start as a
- *  word does, and a rule could start a match in the middle of one. */
-export function screenText(input: string, keep?: number, lookback?: number): SecretScreen {
+ *  `lookback`, with `keep`: how much of `input` before the tail the rules look at with it, however
+ *  long `input` is; all of it without. A match is looked for from there as in the whole text, where
+ *  a \b or a lookbehind sees what comes before. Sliced off instead, the text there would start as a
+ *  word does, and a rule could start a match in the middle of one. The key detectors look further
+ *  back, each for its own opener (keyMaterial's detectorStart): a BEGIN line up to 256 KB back when
+ *  the cut falls among key lines. A longer key is taken from its END line.
+ *
+ *  `cutStart`: `input` is itself an end another computer cut. `true`: maybe before screening it, or
+ *  with a screen that took keys by their layout (a version before 1.55): a key's tail at its start
+ *  is removed with its END line however few of its lines the cut left, and a run of key lines there
+ *  with no END line below it is reported. `'screened'`: after screening it with this screen (1.55
+ *  or later), which took whole any key its cut ran through: nothing at its start is a key's tail,
+ *  so random lines there above an END line (a dump, a list of hashes, a test key's made-up body)
+ *  are only reported, as in the middle of a text. */
+export function screenText(input: string, keep?: number, lookback?: number, cutStart?: CutStart): SecretScreen {
   const removed: Record<string, number> = {}
   const flagged: Record<string, number> = {}
-  if (typeof input !== 'string' || !input) return { text: input ?? '', removed, flagged }
+  if (typeof input !== 'string' || !input) return { text: input ?? '', removed, flagged, markers: [] }
   const from = keep !== undefined && input.length > keep ? input.length - Math.max(0, keep) : 0
   const start = lookback !== undefined ? Math.max(0, from - Math.max(0, lookback)) : 0
-  const taken: Span[] = []
-  const looks: Span[] = []
+  const found: Finding[] = []
   forEachMatch(
     input,
-    (rule, m) => {
-      const span = { rule: rule.id, from: m.index, to: m.index + m[0].length }
-      if (rule.precision === 'high' && (!rule.keyMaterial || rule.keyMaterial.test(m[0]))) taken.push(span)
-      else looks.push(span)
-    },
+    (rule, m) => found.push({ rule: rule.id, cls: rule.precision === 'high' ? 'remove' : 'flag', from: m.index, to: m.index + m[0].length }),
     start,
+    SCREEN_RULES,
   )
-  // Sorted by start; a stable sort keeps table order among matches that start together.
-  taken.sort((a, b) => a.from - b.from)
-  const cuts: Span[] = []
+  const keysFrom = lookback !== undefined ? detectorStart(input, from, Math.max(0, lookback)) : 0
+  const keys = keySpans(input, keysFrom, cutStart === true)
+  // One at a time: spread into push(), a few hundred thousand finds overflow the call stack.
+  for (const span of keys.spans) found.push(span)
+  // Where the tail starts, unless a removal runs through it, a key's tail can sit right under it
+  // with its head out of view; a text another computer cut starts at 0.
+  const straddled = found.some((f) => f.cls === 'remove' && f.from < from && f.to > from)
+  const cutAt = cutStart === true ? 0 : from > 0 && !straddled ? from : undefined
+  for (const span of headless(input, keys.blocks, { start: keysFrom, cutAt, screenedStart: cutStart === 'screened' })) found.push(span)
+  // Sorted by start; a stable sort keeps table order among those that start together.
+  const taken = found.filter((f) => f.cls === 'remove').sort((a, b) => a.from - b.from)
+  const cuts: Finding[] = []
   for (const t of taken) {
     const last = cuts[cuts.length - 1]
     if (last && t.from < last.to) last.to = Math.max(last.to, t.to)
@@ -718,32 +771,57 @@ export function screenText(input: string, keep?: number, lookback?: number): Sec
   }
   let text = ''
   let at = from
+  const markers: Array<[number, number]> = []
+  // A JWK's or an RSAKeyValue's private members, each taken out, are counted as their one key.
+  const groups = new Set<string>()
   for (const cut of cuts) {
     // Wholly before the tail: not in what is kept.
     if (cut.to <= from) continue
-    removed[cut.rule] = (removed[cut.rule] ?? 0) + 1
-    text += `${input.slice(at, Math.max(at, cut.from))}[REDACTED:${cut.rule}]`
+    text += input.slice(at, Math.max(at, cut.from))
+    const marker = `[REDACTED:${cut.rule}]`
+    markers.push([text.length, text.length + marker.length])
+    text += marker
     at = cut.to
+    const group = cut.group === undefined ? undefined : `${cut.rule}@${cut.group}`
+    if (group === undefined || !groups.has(group)) removed[cut.rule] = (removed[cut.rule] ?? 0) + 1
+    if (group !== undefined) groups.add(group)
   }
   text += input.slice(at)
-  for (const look of looks) {
-    if (look.to <= from || overlapsCut(cuts, look)) continue
+  for (const look of found) {
+    if (look.cls !== 'flag' || look.to <= from || overlapsCut(cuts, look)) continue
     // Text screened once already is screened again where it arrives, and `KEY=[REDACTED:gh_pat]`
     // looks like an assignment: a match around a marker is about a value that is gone.
     if (input.slice(look.from, look.to).includes('[REDACTED:')) continue
     flagged[look.rule] = (flagged[look.rule] ?? 0) + 1
   }
-  return { text, removed, flagged }
+  return { text, removed, flagged, markers }
 }
 
+/** A private-key BEGIN line, which maskForDisplay takes to the end of its line. */
+const PRIVATE_BEGIN_RE = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----/g
+
 /** `input` for showing, not sending: every match of every rule replaced by `[REDACTED:<rule>]`, the
- *  heuristic ones too. For the few words of a job that are written to a local log or shown on screen
- *  (a notification can show on a lock screen): there nobody needs the code to stay usable, and a
- *  possible credential is as well left out. Linear, as screenText is. */
+ *  heuristic ones too, and every key the detectors find, whatever they made of it. For the few
+ *  words of a job that are written to a local log or shown on screen (a notification can show on a
+ *  lock screen): there nobody needs the code to stay usable, and a possible credential is as well
+ *  left out. From a private-key BEGIN line to the end of its line goes too, whatever follows it: a
+ *  key on one line, or its lines joined by escapes, is all on the line a summary shows. Linear, as
+ *  screenText is. */
 export function maskForDisplay(input: string): string {
   if (typeof input !== 'string' || !input) return input ?? ''
   const spans: Span[] = []
   forEachMatch(input, (rule, m) => spans.push({ rule: rule.id, from: m.index, to: m.index + m[0].length }))
+  const keys = keySpans(input)
+  for (const span of keys.spans) spans.push(span)
+  for (const span of headless(input, keys.blocks)) spans.push(span)
+  const begin = new RegExp(PRIVATE_BEGIN_RE.source, 'g')
+  // (each line's end is looked for once: BEGIN lines that share a line share it)
+  let eol = -2
+  for (let m = begin.exec(input); m !== null; m = begin.exec(input)) {
+    if (eol !== -1 && eol < m.index) eol = input.indexOf('\n', m.index)
+    spans.push({ rule: 'private_key', from: m.index, to: eol === -1 ? input.length : eol })
+  }
+  // Sorted by start; a stable sort names a cut after the first in table order that starts it.
   spans.sort((a, b) => a.from - b.from)
   let text = ''
   let at = 0

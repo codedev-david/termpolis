@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, vi } from 'vitest'
 import * as path from 'path'
+import { generateKeyPairSync } from 'crypto'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 import type { LinkTarget, PeerJobView } from '../../src/main/remoteBridge/protocol'
 import type { LinkMeta } from '../../src/main/linkedStore'
@@ -20,6 +21,7 @@ import {
   type LinkedJobsDeps,
   type LinkedSecretFinding,
 } from '../../src/main/linkedJobs'
+import { leakedWindows, pgpPhotoExport, secretLinesOf } from './fixtures/freshKeys'
 
 const HOME = path.resolve('/home/tester')
 const REPO = path.join(HOME, 'repos', 'app')
@@ -61,7 +63,7 @@ function setup(over: Partial<LinkedJobsDeps> = {}) {
     now: () => clock.t,
     randomId: () => (++seq).toString(16).padStart(12, '0'),
     onActivity: (a) => activity.push(a),
-    screen: (text) => ({ text, removed: {}, flagged: {} }),
+    screen: (text) => ({ text, removed: {}, flagged: {}, markers: [] }),
     mask: (text) => text,
     ...over,
   }
@@ -72,12 +74,19 @@ function setup(over: Partial<LinkedJobsDeps> = {}) {
  *  rule table (aiSecurityScreen.test.ts covers that). */
 const KEY = 'KEY-0123456789'
 function fakeScreen(text: string): SecretScreen {
-  const removed = text.split(KEY).length - 1
+  const [first, ...rest] = text.split(KEY)
   const flagged = text.split('maybe-pass').length - 1
+  let out = first
+  const markers: Array<[number, number]> = []
+  for (const part of rest) {
+    markers.push([out.length, out.length + '[REDACTED:fake_key]'.length])
+    out += `[REDACTED:fake_key]${part}`
+  }
   return {
-    text: text.split(KEY).join('[REDACTED:fake_key]'),
-    removed: removed ? { fake_key: removed } : {},
+    text: out,
+    removed: rest.length ? { fake_key: rest.length } : {},
     flagged: flagged ? { fake_pass: flagged } : {},
+    markers,
   }
 }
 
@@ -308,9 +317,9 @@ describe('peerRun working folder', () => {
     await expect(start(h, FROM, META, { cwd: 'repos/app' })).rejects.toThrow(
       'cwd must be an absolute folder path on linux, or start with ~: repos/app',
     )
-    // Control characters are never a path, and are not echoed back either.
+    // Control characters are never a path, and nothing of a folder with one is echoed back (not even the rest of it).
     await expect(start(h, FROM, META, { cwd: `${REPO}\u0000\u001b[2J` })).rejects.toThrow(
-      `cwd must be an absolute folder path on linux, or start with ~: ${REPO}[2J`,
+      'cwd must be an absolute folder path on linux, or start with ~: [a folder name with control or invisible characters]',
     )
   })
 
@@ -348,6 +357,128 @@ describe('peerRun working folder', () => {
     const deep = path.join(HOME, 'x'.repeat(300))
     const err = await start(setup(), FROM, META, { cwd: deep }).catch((e: Error) => e)
     expect((err as Error).message).toBe(`Folder not found on linux: ${deep.slice(0, 199)}\u2026`)
+  })
+
+  it('runs in a folder whose name a credential rule matches, and shows it as it is: a folder name is not screened', async () => {
+    // Folders named after a branch, a package or a project (lnk3's F3), here under home. The
+    // screen's rules take each name for a credential; none is one, and it is this computer's own.
+    const names = [
+      path.join('repos', 'app', '.worktrees', 'sk-1234-fix-login-redirect'),
+      'sk-hynix-firmware-tools',
+      'sk-python-sample-plugins',
+      'sk-learn-pipeline-experiments',
+      'azure-sk-agents-orchestration-demo',
+      'sk-hynix-memory-controller-fw',
+      'sk-python-samples-and-notebooks',
+      'rnd_ExperimentalPrototypeProjects2026',
+    ]
+    for (const name of names) {
+      const folder = path.join(HOME, name)
+      expect(screenText(folder).removed, name).not.toEqual({})
+      for (const cwd of [folder, `~/${name.split(path.sep).join('/')}`]) {
+        const h = setup({ screen: screenText, mask: maskForDisplay, isDirectory: (p) => p === folder })
+        expect((await start(h, FROM, META, { cwd })).status, cwd).toBe('running')
+        expect(h.runs[0].req.cwd).toBe(folder)
+        expect(h.activity[0].cwd).toBe(folder)
+      }
+    }
+  })
+
+  it('masks what it repeats of a folder, and repeats none of one that holds a control character', async () => {
+    const token = `ghp_${'a'.repeat(36)}`
+    /** Whether any 8 characters of the token show. */
+    const shows = (text: string): boolean => Array.from({ length: token.length - 7 }, (_, i) => token.slice(i, i + 8)).some((w) => text.includes(w))
+    const refusal = async (cwd: string, over: Partial<LinkedJobsDeps> = {}): Promise<string> =>
+      ((await start(setup({ mask: maskForDisplay, ...over }), FROM, META, { cwd }).catch((e: Error) => e)) as Error).message
+    // A clone URL with a token, from a computer that sends one (1.54 and older), and a bare token.
+    for (const cwd of [`https://x-access-token:${token}@github.com/acme/billing.git`, token]) {
+      const message = await refusal(cwd)
+      expect(message.startsWith('cwd must be an absolute folder path on linux, or start with ~: ')).toBe(true)
+      expect(shows(message), cwd).toBe(false)
+    }
+    // One that doesn't exist, named by its token, and one with a network path's token.
+    expect(shows(await refusal(path.join(HOME, token)))).toBe(false)
+    expect(shows(await refusal(`//fileserver/${token}/repo`))).toBe(false)
+    // A folder with a control character in it is no folder: none of it is repeated, so a token a control character splits
+    // can show nothing, wherever the cut to 200 characters would fall (k7b). Masking the two halves one after the other did not
+    // do it: a rule that takes the first half alone (`sk-` and 20 characters of an Anthropic key, an `xoxb-` token's first part)
+    // masked it, and the second half, rejoined, matched nothing and showed about half of the key.
+    const NOT_SHOWN = 'cwd must be an absolute folder path on linux, or start with ~: [a folder name with control or invisible characters]'
+    const families: Record<string, string> = {
+      'a GitHub token': token,
+      'an Anthropic key': `sk-ant-api03-${'Ab1x'.repeat(24)}`.slice(0, 108),
+      'an OpenAI project key': `sk-proj-${'Ab1x'.repeat(24)}`.slice(0, 100),
+      'a Slack bot token': `xoxb-${'1'.repeat(10)}-${'1'.repeat(13)}-${'Ab1x'.repeat(6)}`,
+      'a fine-grained GitHub token': `github_pat_${'Ab1x'.repeat(5)}_${'Cd2y'.repeat(16)}`,
+      'an AWS key id': `AKIA${'A'.repeat(16)}`,
+    }
+    for (const [label, key] of Object.entries(families)) {
+      const keyShows = (text: string): boolean => Array.from({ length: key.length - 7 }, (_, i) => key.slice(i, i + 8)).some((w) => text.includes(w))
+      for (const ctl of ['\u0001', '\n', '\u009b', '\u007f']) {
+        for (const at of [0, 20, 150, 170, 185, 199, 200, 250]) {
+          for (const split of [2, 5, 11, 20, 31, 47]) {
+            const cut = Math.min(split, key.length - 1)
+            const message = await refusal(`/srv/${'x'.repeat(at)}/${key.slice(0, cut)}${ctl}${key.slice(cut)}/app`)
+            expect(message, `${label}, at ${at}, split ${cut}`).toBe(NOT_SHOWN)
+            expect(keyShows(message), `${label}, at ${at}, split ${cut}`).toBe(false)
+          }
+        }
+      }
+    }
+    // A control character and then a letter after a key of the one length its rule takes: no longer a reason to show it
+    const aws = `AKIA${'A'.repeat(16)}`
+    const joined = await refusal(`relative/${aws}\u0001B/app`)
+    expect(joined).not.toContain(aws.slice(4, 12))
+    expect(joined).toBe(NOT_SHOWN)
+    // and a folder without one is masked and cut as before
+    expect(await refusal(`relative/${aws}/app`)).toBe('cwd must be an absolute folder path on linux, or start with ~: relative/[REDACTED:aws_access_key]/app')
+    const long = await refusal(`relative/${'x'.repeat(250)}`)
+    expect(long.length).toBe('cwd must be an absolute folder path on linux, or start with ~: '.length + 200)
+    expect(long.endsWith('\u2026')).toBe(true)
+    // A folder that can't be masked is not repeated at all.
+    const broken = await refusal(`relative/${token}`, { mask: () => { throw new Error('mask broke') } })
+    expect(broken).toBe(`cwd must be an absolute folder path on linux, or start with ~: ${WITHHELD}`)
+  })
+
+  it('withholds a folder name at each end of the two ranges of control characters, and shows the characters next to them', async () => {
+    const refusal = async (cwd: string): Promise<string> => ((await start(setup({ mask: maskForDisplay }), FROM, META, { cwd }).catch((e: Error) => e)) as Error).message
+    const SAY = 'cwd must be an absolute folder path on linux, or start with ~: '
+    // U+0000-U+001F (C0) and U+007F-U+009F (DEL and C1): the first and the last of each range
+    for (const ctl of ['\u0000', '\u0001', '\u001f', '\u007f', '\u0080', '\u009f']) {
+      expect(await refusal(`relative/a${ctl}b/app`), JSON.stringify(ctl)).toBe(`${SAY}[a folder name with control or invisible characters]`)
+    }
+    // and the characters just outside them are part of a name that is shown (a space, `~`, and the no-break space)
+    for (const ok of [' ', '~', '\u00a0']) {
+      expect(await refusal(`relative/a${ok}b/app`), JSON.stringify(ok)).toBe(`${SAY}relative/a${ok}b/app`)
+    }
+  })
+
+  it('withholds a folder name in which a character nobody sees splits a token, and shows one that holds no credential, whatever else it holds', async () => {
+    const SAY = 'cwd must be an absolute folder path on linux, or start with ~: '
+    const NOT_SHOWN = `${SAY}[a folder name with control or invisible characters]`
+    const refusal = async (cwd: string): Promise<string> => ((await start(setup({ mask: maskForDisplay }), FROM, META, { cwd }).catch((e: Error) => e)) as Error).message
+    const families: Record<string, string> = {
+      'a GitHub token': `ghp_${'a'.repeat(36)}`,
+      'an Anthropic key': `sk-ant-api03-${'Ab1x'.repeat(24)}`.slice(0, 108),
+      'a fine-grained GitHub token': `github_pat_${'Ab1x'.repeat(5)}_${'Cd2y'.repeat(16).slice(0, 61)}`,
+      'an AWS key id': `AKIA${'A'.repeat(16)}`,
+    }
+    // a zero-width space, joiner and non-joiner, a word joiner, a soft hyphen, the byte order mark, the line and paragraph separators, a no-break space,
+    // an ideographic space, a combining grapheme joiner, a variation selector, the Hangul filler, and a plain space
+    const splits = ['\u200b', '\u200c', '\u200d', '\u2060', '\u00ad', '\ufeff', '\u2028', '\u2029', '\u00a0', '\u3000', '\u034f', '\ufe0f', '\u3164', ' ']
+    for (const [label, key] of Object.entries(families)) {
+      for (const split of splits) {
+        for (const cut of [2, 5, 11, 20, 31]) {
+          const at = Math.min(cut, key.length - 1)
+          const message = await refusal(`/srv/work/${key.slice(0, at)}${split}${key.slice(at)}/app`)
+          expect(message, `${label}, ${JSON.stringify(split)} at ${at}`).toBe(NOT_SHOWN)
+        }
+      }
+    }
+    // a name that holds no credential is shown as it is, with its spaces and its characters from other scripts (an emoji's joiner, a Hebrew mark)
+    for (const name of ['My Documents', 'caf\u00e9 notes', 'family \u{1f468}\u200d\u{1f469}\u200d\u{1f467}', 'a\u200fb', 'new\u3000folder']) {
+      expect(await refusal(`relative/${name}/app`), name).toBe(`${SAY}relative/${name}/app`)
+    }
   })
 })
 
@@ -937,7 +1068,7 @@ describe('credentials on the way in and out', () => {
   })
 
   it('refuses a prompt that is too long once the credentials in it were replaced', async () => {
-    const grow = (text: string) => ({ text: text.replace(/x/g, 'xx'), removed: { grow: 1 }, flagged: {} })
+    const grow = (text: string) => ({ text: text.replace(/x/g, 'xx'), removed: { grow: 1 }, flagged: {}, markers: [] })
     const h = setup({ screen: grow })
     await expect(start(h, FROM, META, { prompt: 'x'.repeat(MAX_PROMPT_CHARS) })).rejects.toThrow(
       `Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`,
@@ -961,7 +1092,8 @@ describe('credentials on the way in and out', () => {
     const h = setup({
       screen: (text, keep, lookback) => {
         seen.push([text.length, keep, lookback])
-        return { text: `${keep === undefined ? text : text.slice(-keep)}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {} }
+        const kept = keep === undefined ? text : text.slice(-keep)
+        return { text: `${kept}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {}, markers: [[kept.length, kept.length + 16]] }
       },
     })
     const v = await start(h)
@@ -1003,14 +1135,20 @@ describe('credentials on the way in and out', () => {
   })
 })
 
-// The real rules, because what matters here is how they meet the cut: a credential the cut runs
+// The real screen, because what matters here is how it meets the cut: a credential the cut runs
 // through must still be found whole, BEGIN line or prefix and all.
 describe('an answer longer than it may be: screened, then cut', () => {
-  /** A key's body lines, in both cases as base64 is, each its own. */
-  const BODY = Array.from({ length: 25 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(8, '0')}`)
-  const BLOCK = ['-----BEGIN RSA PRIVATE KEY-----', ...BODY, '-----END RSA PRIVATE KEY-----', ''].join('\n')
-  /** Anything of a key's body: 12 characters of a line, or a line's own number. */
-  const BODY_PIECE = /(?:Ab){6}|\d{8}/
+  /** A fresh key, made for the run and never printed: the screen knows a key by what its bytes
+   *  decode to, so a made-up body would only be reported. */
+  let BLOCK = ''
+  /** Its base64 lines: no 12 characters of one may cross (leakedWindows). */
+  let KEY_LINES: string[] = []
+  beforeAll(() => {
+    const pem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }) as string
+    const lines = pem.trim().split('\n')
+    BLOCK = `${lines.join('\n')}\n`
+    KEY_LINES = secretLinesOf(lines)
+  })
   const SECRET = 'q'.repeat(36)
   const TOKEN = `ghp_${SECRET}`
   /** More log than the lookback reaches over, so what is screened is itself cut from the answer. */
@@ -1040,7 +1178,7 @@ describe('an answer longer than it may be: screened, then cut', () => {
     const { done, findings } = await answer({ output: across(BLOCK, 40, MAX_OUTPUT_CHARS) })
     expect(done.truncated).toBe(true)
     expect(done.output?.startsWith('[REDACTED:private_key]\n...')).toBe(true)
-    expect(done.output).not.toMatch(BODY_PIECE)
+    expect(leakedWindows(done.output as string, KEY_LINES)).toBe(0)
     expect(done.output).not.toContain('-----END')
     expect(findings).toEqual(removedOut({ private_key: 1 }))
   })
@@ -1055,7 +1193,7 @@ describe('an answer longer than it may be: screened, then cut', () => {
   it('does the same for stderr, cut to its last 4,000 characters', async () => {
     const block = await answer({ ok: false, output: '', error: across(BLOCK, 40, MAX_ERROR_CHARS - 1), code: 1 })
     expect(block.done.error?.startsWith('…[REDACTED:private_key]\n...')).toBe(true)
-    expect(block.done.error).not.toMatch(BODY_PIECE)
+    expect(leakedWindows(block.done.error as string, KEY_LINES)).toBe(0)
     expect(block.done.error?.length).toBeLessThanOrEqual(MAX_ERROR_CHARS)
     expect(block.findings).toEqual(removedOut({ private_key: 1 }))
     const token = await answer({ ok: false, output: '', error: across(`export GITHUB_TOKEN=${TOKEN}\n`, 'export GITHUB_TOKEN='.length + 2, MAX_ERROR_CHARS - 1), code: 1 })
@@ -1144,6 +1282,45 @@ describe('an answer longer than it may be: screened, then cut', () => {
     }
   })
 
+  it('cuts the markers an answer quotes as its own text, and moves none of them to the front', async () => {
+    // A log of an earlier screened run, printed again: 400 lines that each quote a marker, dense
+    // with control characters, so the cut to fit one relay frame takes most of them. Then two real
+    // tokens, which the screen removes. Only those two markers are the screen's own.
+    const quoted = Array.from({ length: 400 }, (_, i) => `audit ${i}: KEY=[REDACTED:gh_pat] was screened\u0001\u0002\u0003`.padEnd(250, '\u0001'))
+    const output = `${quoted.join('\n')}\nThe deploy used ${TOKEN} and ghp_${'r'.repeat(36)}.\n${'Result: ok\n'.repeat(9_000)}`
+    expect(output.length).toBeLessThan(MAX_OUTPUT_CHARS)
+    const { done, findings } = await answer({ output })
+    expect(done.truncated).toBe(true)
+    expect(Buffer.byteLength(JSON.stringify(done.output))).toBeLessThanOrEqual(MAX_OUTPUT_JSON_BYTES)
+    // What is kept is the screened answer's end as it is: no quoted marker torn from its line and
+    // put in front, and it starts after a quoted marker the cut fell in, never inside one.
+    const screened = output.replace(TOKEN, '[REDACTED:gh_pat]').replace(`ghp_${'r'.repeat(36)}`, '[REDACTED:gh_pat]')
+    const kept = done.output as string
+    expect(screened.endsWith(kept)).toBe(true)
+    const start = screened.length - kept.length
+    expect([...screened.matchAll(/\[REDACTED:[a-z0-9_]{1,53}\]/g)].some((m) => start > m.index && start < m.index + m[0].length)).toBe(false)
+    // The cut fell in the quoted log: each line of it is 250 characters and its line break.
+    expect(start).toBeGreaterThan(0)
+    expect(start).toBeLessThan(400 * 251)
+    expect(kept).toContain('\nThe deploy used [REDACTED:gh_pat] and [REDACTED:gh_pat].\n')
+    expect(findings).toEqual(removedOut({ gh_pat: 2 }))
+  })
+
+  it('cuts a marker an error quotes as its own text, where a marker the screen put further on made the end too long', async () => {
+    // The last 3,999 characters start with a quoted marker. An AWS key further on is 5 characters
+    // shorter than its marker, so the screened end, behind its ellipsis, is 6 characters too long:
+    // the ellipsis and 5 of the quoted marker. The quoted marker goes whole, as the text it is;
+    // kept in front, the 5 characters after it would have gone instead, out of the middle of a line.
+    const AWS = `AKIA${'A'.repeat(16)}`
+    const end = `[REDACTED:gh_pat] was printed by an earlier run\nexport KEY=${AWS}\n`
+    const error = `${'warn\n'.repeat(2_000)}${end}${'e'.repeat(MAX_ERROR_CHARS - 1 - end.length)}`
+    const { done, findings } = await answer({ ok: false, output: '', error, code: 1 })
+    const screened = error.slice(-(MAX_ERROR_CHARS - 1)).replace(AWS, '[REDACTED:aws_access_key]')
+    expect(screened.startsWith('[REDACTED:gh_pat] was printed')).toBe(true)
+    expect(done.error).toBe(`…${screened.slice('[REDACTED:gh_pat]'.length)}`)
+    expect(findings).toEqual(removedOut({ aws_access_key: 1 }))
+  })
+
   it('reads what it screens before the tail as part of the answer, as a rule would read the whole of it', async () => {
     // A base64url run longer than the lookback, with `Qsk-` in it where the lookback starts. In the
     // whole answer a letter comes before that `s`, so no rule starts a match there; screened as a
@@ -1170,73 +1347,222 @@ describe('an answer longer than it may be: screened, then cut', () => {
     expect(findings).toEqual([])
   })
 
-  it('reaches back past the longest key block a rule takes, to the BEGIN line of one cut through its last line', async () => {
-    // A rule takes at most 400 lines under the BEGIN line, and a key file writes them 76 characters
-    // wide at most. Here they are indented and end in CRLF, as in a YAML file saved on Windows, and
-    // the cut runs through the last of them, 32,817 characters past the BEGIN line.
-    const lines = Array.from({ length: 400 }, (_, i) => `    ${'Ab'.repeat(34)}${String(i).padStart(8, '0')}`)
-    const longest = ['    -----BEGIN PGP PRIVATE KEY BLOCK-----', ...lines, '    -----END PGP PRIVATE KEY BLOCK-----', ''].join('\r\n')
-    const at = longest.indexOf('\r\n    -----END') - 20
-    expect(at - longest.indexOf('-----BEGIN')).toBe(32_817)
-    const { done, findings } = await answer({ output: across(longest, at, MAX_OUTPUT_CHARS) })
-    expect(done.output?.startsWith('[REDACTED:gpg_block]\r\n...')).toBe(true)
-    expect(done.output).not.toMatch(BODY_PIECE)
+  it("keeps every line of lnk3's 218,726-character report, which names a BEGIN and an END line", async () => {
+    // F2: one false match of a key-block rule before the cut once took the whole end that was kept.
+    const report = Array.from({ length: 2600 }, (_, i) => `test ${String(i).padStart(4, '0')} passed: parsePem accepts header ${i % 7} and rejects malformed input as expected`).join('\n')
+    const intro = "I searched every file for a `-----BEGIN RSA PRIVATE KEY-----` line. The two folders that hold PEM files:\n/Users/alice/Projects/PaymentService/src/main/resources\n/Users/alice/Projects/PaymentService/src/test/resources"
+    const log = `${intro}\n${report}\nSummary: nothing ends with \`-----END RSA PRIVATE KEY-----\`. All 2600 checks passed; the full report is above.`
+    expect(log).toHaveLength(218_726)
+    const { done, findings } = await answer({ output: log })
+    expect(done.output).toBe(log.slice(-MAX_OUTPUT_CHARS))
+    expect(done.truncated).toBe(true)
+    expect(findings).toEqual([])
+    const failed = await answer({ ok: false, output: '', error: log, code: 1 })
+    expect(failed.done.error).toBe(`…${log.slice(-(MAX_ERROR_CHARS - 1))}`)
+    expect(failed.findings).toEqual([])
+  })
+
+  it('takes a keyring export whose BEGIN line is 430,000 characters before the end it keeps, from its END line', async () => {
+    // A `gpg --export-secret-keys -a` of a key with a photo ID: over 9,000 lines, not the 400 a
+    // rule once took. The end kept starts 430,000 characters past its BEGIN line, further back
+    // than one is looked for (256 KB): the key is taken from its END line, and the end that goes
+    // back starts with its marker.
+    const lines = pgpPhotoExport(450_000)
+    expect(lines.length).toBeGreaterThan(9_000)
+    const longest = `${lines.join('\n')}\n`
+    const { done, findings } = await answer({ output: across(longest, 430_000, MAX_OUTPUT_CHARS) })
+    expect(done.truncated).toBe(true)
+    expect(done.output).toBe(`[REDACTED:gpg_block]\n${'.'.repeat(MAX_OUTPUT_CHARS - (longest.length - 430_000))}`)
     expect(findings).toEqual(removedOut({ gpg_block: 1 }))
-    // What a rule takes ends 400 lines under the BEGIN line, so no key block it takes is longer:
-    // a rule that took more would need a longer lookback.
-    const over = [...lines, `    ${'Ab'.repeat(34)}00000400`]
-    for (const [rule, kind] of [['private_key', 'RSA PRIVATE KEY'], ['gpg_block', 'PGP PRIVATE KEY BLOCK'], ['ssh_dsa_pubkey', 'DSA PRIVATE KEY']]) {
-      const block = [`-----BEGIN ${kind}-----`, ...over, `-----END ${kind}-----`].join('\n')
-      expect(screenText(block).text, rule).toBe(`[REDACTED:${rule}]\n${over[400]}\n-----END ${kind}-----`)
-    }
   })
 })
 
 describe('keepEnd', () => {
   const GH = '[REDACTED:gh_pat]'
   const AWS = '[REDACTED:aws_access_key]'
+  const LONGEST = `[REDACTED:${'a'.repeat(53)}]`
+  /** No marker is this long, so this is no marker's shape: keepEnd is told where the screen's are. */
+  const TOO_LONG = `[REDACTED:${'b'.repeat(54)}]`
+
+  /** One of the screen's own markers, as `marked` takes it. */
+  const own = (marker: string) => ({ own: marker })
+
+  /** `parts` joined, and where in that each part given as `own(...)` is: a screened text and the
+   *  markers its screen reports. A part given as a plain string is the text's own, whatever it
+   *  looks like. */
+  function marked(...parts: Array<string | { own: string }>): { text: string; markers: Array<[number, number]> } {
+    let text = ''
+    const markers: Array<[number, number]> = []
+    for (const part of parts) {
+      if (typeof part === 'string') text += part
+      else {
+        markers.push([text.length, text.length + part.own.length])
+        text += part.own
+      }
+    }
+    return { text, markers }
+  }
+
+  /** keepEnd's answer, worked out a character at a time: the first `text.length - max` characters
+   *  outside the own markers go, and the own markers among them stay, in front. Where those
+   *  characters run out, the end starts where the cut falls, or after the own marker it falls in.
+   *  Either way it starts after any marker-shaped string the start would fall inside. */
+  function slowKeepEnd(text: string, max: number, markers: Array<[number, number]>): { text: string; markers: Array<[number, number]> } {
+    const cut = text.length - Math.max(0, max)
+    if (cut <= 0) return { text, markers }
+    const ownAt = new Map(markers.map(([s, e]) => [s, e]))
+    const shapes = [...text.matchAll(/\[REDACTED:[a-z0-9_]{1,53}\]/g)].map((m) => [m.index, m.index + m[0].length])
+    const pastShapes = (p: number): number => shapes.find(([s, e]) => s < p && p < e)?.[1] ?? p
+    // The own markers the characters cut run past, and where the cut ends.
+    const front: Array<[number, number]> = []
+    let dropped = 0
+    let p = 0
+    while (p < text.length && dropped < cut) {
+      const e = ownAt.get(p)
+      if (e !== undefined) {
+        front.push([p, e])
+        p = e
+      } else {
+        dropped++
+        p++
+      }
+    }
+    const kept = dropped === cut ? front : []
+    const start = pastShapes(dropped === cut ? p : (markers.find(([s, e]) => s < cut && cut < e)?.[1] ?? cut))
+    const head = kept.map(([s, e]) => text.slice(s, e)).join('')
+    const out: Array<[number, number]> = []
+    let at = 0
+    for (const [s, e] of kept) {
+      out.push([at, at + e - s])
+      at += e - s
+    }
+    for (const [s, e] of markers) if (s >= start) out.push([head.length + s - start, head.length + e - start])
+    return { text: head + text.slice(start), markers: out }
+  }
 
   it('keeps the last characters, all of a text that fits and none for nothing', () => {
-    expect(keepEnd('abcdef', 6)).toBe('abcdef')
-    expect(keepEnd('abcdef', 3)).toBe('def')
-    expect(keepEnd('abcdef', 0)).toBe('')
-    expect(keepEnd('abcdef', -1)).toBe('')
-    // A cut at a marker's start or end keeps it or leaves it out whole.
-    expect(keepEnd(`ab${GH}cd`, GH.length + 2)).toBe(`${GH}cd`)
-    expect(keepEnd(`ab${GH}cd`, 2)).toBe('cd')
+    expect(keepEnd('abcdef', 6, [])).toEqual({ text: 'abcdef', markers: [] })
+    expect(keepEnd('abcdef', 3, [])).toEqual({ text: 'def', markers: [] })
+    expect(keepEnd('abcdef', 0, [])).toEqual({ text: '', markers: [] })
+    expect(keepEnd('abcdef', -1, [])).toEqual({ text: '', markers: [] })
+    // A cut at an own marker's start or end keeps it or leaves it out whole.
+    const t = marked('ab', own(GH), 'cd')
+    expect(keepEnd(t.text, GH.length + 2, t.markers)).toEqual({ text: `${GH}cd`, markers: [[0, GH.length]] })
+    expect(keepEnd(t.text, 2, t.markers)).toEqual({ text: 'cd', markers: [] })
+    // A text that fits comes back as it is, its markers with it.
+    expect(keepEnd(t.text, t.text.length, t.markers)).toEqual(t)
   })
 
-  it('keeps a marker the cut runs through whole, and as many characters after it go instead', () => {
+  it("keeps an own marker the cut runs through whole, and as many characters after it go instead", () => {
     // Two characters into it, two characters after it go; one, one.
-    expect(keepEnd(`ab${GH}cdefgh`, GH.length + 4)).toBe(`${GH}efgh`)
-    expect(keepEnd(`ab${GH}cdefgh`, GH.length + 5)).toBe(`${GH}defgh`)
-    // A marker those characters run into is kept whole too, and the cut moves on past it.
-    expect(keepEnd(`a${GH}b${AWS}cdefghij`, GH.length + AWS.length + 4)).toBe(`${GH}${AWS}ghij`)
-    // So is one wholly in what is cut: the characters cut are all from outside markers.
-    expect(keepEnd(`${GH}x${AWS}${'y'.repeat(30)}`, 52)).toBe(`${GH}${AWS}${'y'.repeat(10)}`)
+    const t = marked('ab', own(GH), 'cdefgh')
+    expect(keepEnd(t.text, GH.length + 4, t.markers)).toEqual({ text: `${GH}efgh`, markers: [[0, GH.length]] })
+    expect(keepEnd(t.text, GH.length + 5, t.markers).text).toBe(`${GH}defgh`)
+    // An own marker those characters run into is kept whole too, and the cut moves on past it.
+    const two = marked('a', own(GH), 'b', own(AWS), 'cdefghij')
+    expect(keepEnd(two.text, GH.length + AWS.length + 4, two.markers)).toEqual({
+      text: `${GH}${AWS}ghij`,
+      markers: [[0, GH.length], [GH.length, GH.length + AWS.length]],
+    })
+    // So is one wholly in what is cut: the characters cut are all from outside own markers.
+    const gone = marked(own(GH), 'x', own(AWS), 'y'.repeat(30))
+    expect(keepEnd(gone.text, 52, gone.markers).text).toBe(`${GH}${AWS}${'y'.repeat(10)}`)
     // A marker is no longer than 64 characters, and one that long is kept whole like any other,
     // wherever in it the cut falls.
-    const longest = `[REDACTED:${'a'.repeat(53)}]`
-    expect(longest).toHaveLength(64)
-    const text = `ab${longest}${'c'.repeat(100)}`
-    expect(keepEnd(text, text.length - 3)).toBe(`${longest}${'c'.repeat(99)}`)
-    expect(keepEnd(text, text.length - 65)).toBe(`${longest}${'c'.repeat(37)}`)
-    // Text that only ends like a marker is cut as any text is, and so is one too long to be one.
-    expect(keepEnd('REDACTED:gh_pat]cd', 4)).toBe('t]cd')
-    const long = `[REDACTED:${'a'.repeat(54)}]`
-    expect(keepEnd(`${long}cd`, 4)).toBe('a]cd')
+    expect(LONGEST).toHaveLength(64)
+    const long = marked('ab', own(LONGEST), 'c'.repeat(100))
+    expect(keepEnd(long.text, long.text.length - 3, long.markers).text).toBe(`${LONGEST}${'c'.repeat(99)}`)
+    expect(keepEnd(long.text, long.text.length - 65, long.markers).text).toBe(`${LONGEST}${'c'.repeat(37)}`)
+    // An own marker the kept end holds is told where it now is.
+    const later = marked('ab', own(GH), 'cdef', own(AWS), 'gh')
+    const r = keepEnd(later.text, later.text.length - 3, later.markers)
+    expect(r).toEqual({ text: `${GH}def${AWS}gh`, markers: [[0, GH.length], [GH.length + 3, GH.length + 3 + AWS.length]] })
   })
 
-  it('is never longer than it may be: where the markers alone are longer, those at the start go whole', () => {
+  it("cuts marker-shaped text that is the answer's own as text, and never moves it to the front", () => {
+    // A log line quoting two markers an earlier screen put there, cut to 200: the end is the
+    // answer's last 200 characters, as they are. (keepEnd once kept every marker-shaped string and
+    // moved both to the front of the end, torn from their line.)
+    const answer = `log 1: KEY=[REDACTED:openai_key] TOKEN=${GH}\n${'j'.repeat(2_400)}\n${'x'.repeat(1_500)}\nFINAL ANSWER: the build passed.`
+    expect(keepEnd(answer, 200, [])).toEqual({ text: answer.slice(-200), markers: [] })
+    // An own marker among them goes to the front alone.
+    const mixed = marked(`log: ${GH} `, own(AWS), ` and ${GH}${'z'.repeat(40)}`)
+    expect(keepEnd(mixed.text, AWS.length + 30, mixed.markers)).toEqual({ text: `${AWS}${'z'.repeat(30)}`, markers: [[0, AWS.length]] })
+    // Text that only ends like a marker is cut as any text is.
+    expect(keepEnd('REDACTED:gh_pat]cd', 4, []).text).toBe('t]cd')
+  })
+
+  it("never starts inside a marker-shaped string, wherever in one the cut falls: the other machine's, or the answer's", () => {
+    // What the asking side cuts again holds the doing side's markers as text: a cut inside one
+    // starts the end after it, and the end is that much shorter.
+    const text = `${'p'.repeat(1_000)}${GH}${'r'.repeat(2_990)}`
+    for (let at = 995; at <= 1_000 + GH.length + 3; at++) {
+      const r = keepEnd(text, text.length - at, [])
+      const inside = at > 1_000 && at < 1_000 + GH.length
+      expect(r, String(at)).toEqual({ text: text.slice(inside ? 1_000 + GH.length : at), markers: [] })
+    }
+    // The longest marker-shaped string too, a cut one character into it or one before its end;
+    // what is longer than that is no marker's shape, and is cut as any text is.
+    const long = `ab${LONGEST}cd`
+    expect(keepEnd(long, long.length - 3, []).text).toBe('cd')
+    expect(keepEnd(long, 3, []).text).toBe('cd')
+    expect(keepEnd(`ab${TOO_LONG}cd`, 4, []).text).toBe('b]cd')
+    // And where the own markers alone are longer than the end may be.
+    const over = marked(own(GH), own(GH), '[REDACTED:quoted]x')
+    expect(keepEnd(over.text, 10, over.markers)).toEqual({ text: 'x', markers: [] })
+  })
+
+  it('is never longer than it may be: where the own markers alone are longer, those at the start go whole', () => {
     // 18 characters to cut, and two outside markers: the end starts where the cut falls, or after
     // the marker it falls in.
-    expect(keepEnd(`ab${GH}${GH}`, GH.length + 1)).toBe(GH)
-    expect(keepEnd(`${GH}x${GH}`, GH.length + 1)).toBe(`x${GH}`)
+    const two = marked('ab', own(GH), own(GH))
+    expect(keepEnd(two.text, GH.length + 1, two.markers)).toEqual({ text: GH, markers: [[0, GH.length]] })
+    const split = marked(own(GH), 'x', own(GH))
+    expect(keepEnd(split.text, GH.length + 1, split.markers)).toEqual({ text: `x${GH}`, markers: [[1, 1 + GH.length]] })
     // Exactly as long as the end may be, they all stay.
-    expect(keepEnd(`a${GH}b${AWS}c`, GH.length + AWS.length)).toBe(`${GH}${AWS}`)
+    const fits = marked('a', own(GH), 'b', own(AWS), 'c')
+    expect(keepEnd(fits.text, GH.length + AWS.length, fits.markers).text).toBe(`${GH}${AWS}`)
     // Found wherever in a marker the cut falls, the longest one too.
-    const longest = `[REDACTED:${'a'.repeat(53)}]`
-    expect(keepEnd(`${longest}${longest}`, 70)).toBe(longest)
+    const longest = marked(own(LONGEST), own(LONGEST))
+    expect(keepEnd(longest.text, 70, longest.markers)).toEqual({ text: LONGEST, markers: [[0, 64]] })
+    // By where the screen says it is: one longer than any marker shape is stepped over the same.
+    const odd = marked('ab', own(TOO_LONG), own(GH))
+    expect(keepEnd(odd.text, 20, odd.markers)).toEqual({ text: GH, markers: [[0, GH.length]] })
+    // Twenty tokens a space apart, screened, kept to 50: the last two markers and the spaces.
+    const screened = screenText(Array.from({ length: 20 }, () => `ghp_${'b'.repeat(36)}`).join(' '))
+    expect(screened.markers).toHaveLength(20)
+    expect(keepEnd(screened.text, 50, screened.markers)).toEqual({ text: ` ${GH} ${GH}`, markers: [[1, 18], [19, 36]] })
+  })
+
+  it('agrees with the character-by-character answer on random marker-dense text', () => {
+    // mulberry32, seeded, so a failure is the same on every run.
+    let seed = 0x5eed1e55
+    const random = (): number => {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)]
+    const OWN = [GH, AWS, LONGEST, '[REDACTED:a]', TOO_LONG]
+    // The answer's own text: plain, marker-shaped, and near misses that are not.
+    const TEXT = ['', 'a', 'bb', 'ccc ', '[', ']', '[REDACTED:', 'REDACTED:x]', '[REDACTED:quoted]', GH, '[REDACTED:X]', TOO_LONG, LONGEST]
+    for (let n = 0; n < 2_000; n++) {
+      const parts: Array<string | { own: string }> = []
+      for (let k = Math.floor(random() * 10); k > 0; k--) {
+        parts.push(pick(TEXT).padEnd(Math.floor(random() * 30), 'w'))
+        if (random() < 0.5) parts.push(own(pick(OWN)))
+      }
+      parts.push(pick(TEXT))
+      const t = marked(...parts)
+      const max = Math.floor(random() * (t.text.length + 8)) - 2
+      const r = keepEnd(t.text, max, t.markers)
+      const label = JSON.stringify({ t, max })
+      expect(r, label).toEqual(slowKeepEnd(t.text, max, t.markers))
+      // Never longer than it may be, unless it fits whole; every marker it reports is whole.
+      if (t.text.length > max) expect(r.text.length, label).toBeLessThanOrEqual(Math.max(0, max))
+      for (const [s, e] of r.markers) expect(OWN, label).toContain(r.text.slice(s, e))
+    }
   })
 })
 
@@ -1252,7 +1578,7 @@ describe('a screen that fails', () => {
     const h = setup({
       screen: (text) => {
         if (++calls > 1) throw new Error('screen broke')
-        return { text, removed: {}, flagged: {} }
+        return { text, removed: {}, flagged: {}, markers: [] }
       },
     })
     const v = await start(h)

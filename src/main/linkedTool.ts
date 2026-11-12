@@ -16,7 +16,8 @@
 // gateway's injection guard before an agent reads it. A job's output and error
 // always arrive under a label saying whose they are (`frame`): a failed run's
 // error is its stderr, as much the agent's own text as its output. A refusal
-// is checked for injection only (`inspect`).
+// is masked for credentials first (a version before 1.55 repeats a refused
+// folder as it came) and then checked for injection (`inspect`).
 //
 // Credentials don't cross: the prompt is screened before it leaves, and the
 // answer when it arrives, in case the other machine runs a version that doesn't
@@ -24,7 +25,7 @@
 // a possible one is left in and named in a note, because the text is usually
 // code and its fixtures and examples look like credentials too.
 import type { LinkTarget, PeerAgent, PeerJobView, PeerRequest } from './remoteBridge/protocol'
-import type { SecretScreen } from './aiSecurity'
+import type { CutStart, SecretScreen } from './aiSecurity'
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
 import { resolveMachine, type LinkedMachineView } from './linkedDirectory'
 import { refOf, targetOf } from './linkedStore'
@@ -34,11 +35,13 @@ import {
   MAX_PROMPT_CHARS,
   SCREEN_LOOKBACK_CHARS,
   activitySummary,
+  behindEllipsis,
   foundAny,
   keepEnd,
   mergeScreens,
   type LinkedActivity,
   type LinkedSecretFinding,
+  type MarkedText,
 } from './linkedJobs'
 
 export interface LinkedToolArgs {
@@ -65,10 +68,12 @@ export interface LinkedToolDeps {
   /** peerAnswerBanner(inspectResult(text, 210_000), machine, agent): a job's output or error,
    *  always labelled. */
   frame(text: string, machine: string, agent: string): string
-  /** aiSecurity.screenText; with `keep`, only what it made of the last `keep` characters, and with
-   *  `lookback`, screening no more than that much before them. */
-  screen(text: string, keep?: number, lookback?: number): SecretScreen
-  /** aiSecurity.maskForDisplay, for a job's summary in the activity view (activitySummary). */
+  /** aiSecurity.screenText; with `keep`, only what it made of the last `keep` characters, with
+   *  `lookback`, the rules looking no further than that before them, and with `cutStart`, for an
+   *  end the other machine cut (before screening it, or after: aiSecurity.CutStart). */
+  screen(text: string, keep?: number, lookback?: number, cutStart?: CutStart): SecretScreen
+  /** aiSecurity.maskForDisplay, for a job's summary in the activity view (activitySummary), and
+   *  for a refusal the other machine worded before the agent reads it. */
   mask(text: string): string
   /** Told what a screen found, for the audit log. */
   onSecrets?(finding: LinkedSecretFinding): void
@@ -108,6 +113,26 @@ const MAX_REMEMBERED_JOBS = 100
 const MAX_CHECKED_ANSWERS = 8
 
 const MAX_REFUSAL_CHARS = 1_000
+/** How much of a refusal is masked: what is shown, and the stretch before a credential's end that the
+ *  screen looks back over. A refusal is any string up to a relay frame (a megabyte); masked whole, it
+ *  cost the main thread its whole length before all but the first MAX_REFUSAL_CHARS were dropped. */
+const REFUSAL_MASKED_CHARS = MAX_REFUSAL_CHARS + SCREEN_LOOKBACK_CHARS
+
+/** The first version that screens an answer with the key detectors before it cuts it to its end,
+ *  taking whole any key its cut runs through: the end it sends starts with nothing unscreened. */
+const SCREENS_BEFORE_CUT: readonly number[] = [1, 55, 0]
+
+/** Whether a machine that says it runs `version` screens an answer so before it cuts it. A version
+ *  it did not say, or one that reads as none, is taken for one that does not. */
+export function screensBeforeCut(version: string | undefined): boolean {
+  const m = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})/.exec(version ?? '')
+  if (!m) return false
+  for (let i = 0; i < 3; i++) {
+    const v = Number(m[i + 1])
+    if (v !== SCREENS_BEFORE_CUT[i]) return v > SCREENS_BEFORE_CUT[i]
+  }
+  return true
+}
 
 const PEER_AGENTS: readonly PeerAgent[] = ['claude', 'codex', 'gemini']
 const JOB_STATUSES: readonly PeerJobView['status'][] = ['running', 'done', 'failed', 'cancelled']
@@ -140,6 +165,30 @@ const stillRunning = (name: string, jobId: string): string =>
 const checkLater = (jobId: string): string =>
   `The job may still be running there: call linked_machines with action "result" and jobId "${jobId}" to check on it.`
 const tooLongScreened = `Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`
+const urlCwd = (name: string): string => `cwd is a URL, not a folder on "${name}"; nothing was sent. A clone URL can carry a token.`
+const refusedUnshown = (name: string): string => `"${name}" refused the request. Its reason could not be checked for credentials, so it is not shown.`
+
+/** A URL's start: a scheme and two slashes (`https://`, `ssh://`, `file://`, `https:\\user:x@host\org` with backslashes), two slashes and a user and a password before an `@`
+ *  (`//user:token@host/org`, a protocol-relative URL: a UNC path has no `:` before its first slash), or a user and a password before an `@` (`user:token@host:repo`, an
+ *  scp-style remote), the user not a drive letter (`C:x@y` is a folder on drive C). No folder starts as any of these: one starts with `/`, `\` or `~`, or a drive letter. (The
+ *  other machine would read a `file://` URL as the folder it names; written as that folder, it runs.) A clone URL that stands inside a path (`/srv/x/https://user:token@host/org`) is
+ *  one too: no folder name holds a scheme, `://` and a password before an `@`. */
+const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]{1,31}:[\\/]{2}/i
+const URL_USERINFO_RE = /^(?![A-Za-z]:)[^\s/\\:@]{1,256}:[^\s/\\@]{1,512}@/
+const URL_RELATIVE_RE = /^[\\/]{2}[^\s/\\:@]{1,256}:[^\s/\\@]{1,512}@/
+const URL_INSIDE_RE = /[a-z][a-z0-9+.-]{1,31}:[\\/]{2}[^\s/\\:@]{0,256}:[^\s/\\@]{1,512}@/i
+/** What a copy of a URL out of a page or a chat carries between its characters: zero-width spaces and joiners, a word joiner, a byte order mark. No scheme is written with them. */
+const ZERO_WIDTH = new RegExp('[' + String.fromCharCode(0x200b) + '-' + String.fromCharCode(0x200d) + String.fromCharCode(0x2060) + String.fromCharCode(0xfeff) + ']', 'g')
+
+/** Whether `cwd` is written as a URL, read as the other machine reads a folder: trimmed, and out of
+ *  the quotes a shell puts around one (cwdPath). A folder's name is not screened for credentials:
+ *  the rules match branch and project names. A clone URL can carry a token, which the other
+ *  machine would repeat in its refusal and keep in its job history. */
+function isUrl(cwd: string): boolean {
+  let p = cwd.replace(ZERO_WIDTH, '').trim()
+  if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) p = p.slice(1, -1).trim()
+  return URL_SCHEME_RE.test(p) || URL_USERINFO_RE.test(p) || URL_RELATIVE_RE.test(p) || URL_INSIDE_RE.test(p)
+}
 
 /** What an edit job could do over there, for the agent that started one to pass on: Claude and
  *  Gemini run with full access as that computer's user, Codex in its own sandbox (spec §4.6). */
@@ -221,10 +270,11 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
-/** `text`'s end, behind an ellipsis, when it is longer than `max`; screened text, so no marker in it
- *  is cut short (keepEnd). */
-function clipEnd(text: string, max: number): string {
-  return text.length > max ? `…${keepEnd(text, max - 1)}` : text
+/** `end`'s text, behind an ellipsis, when it is longer than `max`: screened here, so no marker this
+ *  computer's screen put in it is cut short, and the end never starts inside text shaped like one
+ *  (keepEnd). A marker the other computer's screen put there is text here. */
+function clipEnd(end: MarkedText, max: number): string {
+  return end.text.length > max ? `…${keepEnd(end.text, max - 1, end.markers).text}` : end.text
 }
 
 function jobViewOf(v: unknown, expectedId?: string): JobView | null {
@@ -248,6 +298,8 @@ function jobViewOf(v: unknown, expectedId?: string): JobView | null {
 export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolArgs): Promise<unknown> } {
   const sent = new Map<string, SentJob>()
   const checked = new Map<string, Checked>()
+  /** What each machine said its app version is (`peerHello`), by ref: '' when it could not say. */
+  const versions = new Map<string, string>()
 
   function reportSecrets(finding: LinkedSecretFinding): void {
     if (!deps.onSecrets || !foundAny(finding)) return
@@ -262,9 +314,31 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
    *  before them in view as a credential the cut runs through can reach back (linkedJobs'
    *  screenTail, which the other machine runs on its side). A version that sent more than it may
    *  is not screened whole; the screen is told how far back to look rather than given a slice,
-   *  where a rule would see the start of a word. */
-  function screenTail(text: string, keep: number): SecretScreen {
-    return deps.screen(text, keep, SCREEN_LOOKBACK_CHARS)
+   *  where a rule would see the start of a word. `cut`: the other machine cut `text` from a longer
+   *  one (aiSecurity.screenText's cutStart): after it screened it with the key detectors (1.55 or
+   *  later), or maybe before (a version before 1.53.1 cut before it screened, and 1.53.1 and 1.54
+   *  screened keys by their layout), so it can start inside a key the cut ran through. */
+  function screenTail(text: string, keep: number, cut: CutStart): SecretScreen {
+    return deps.screen(text, keep, SCREEN_LOOKBACK_CHARS, cut)
+  }
+
+  /** How an end `job`'s machine cut is screened here: as one cut after its own screen took what the
+   *  cut ran through, when it said it runs a version that does (screensBeforeCut), or else as one
+   *  that may start inside a key. */
+  const cutBy = (job: Followed): CutStart => (screensBeforeCut(versions.get(refOf(job.target))) ? 'screened' : true)
+
+  /** Asks `job`'s machine its version when an answer it cut has come and this computer does not
+   *  know it yet (an agent that called `list` first told it): once per machine, never throwing, and
+   *  for no longer than a `list` waits. */
+  async function learnVersion(job: Followed, view: JobView): Promise<void> {
+    const ref = refOf(job.target)
+    if (versions.has(ref) || !(view.truncated === true || view.error?.startsWith('…') === true)) return
+    try {
+      const hello = await deps.call(job.target, { kind: 'peerHello' }, HELLO_TIMEOUT_MS)
+      versions.set(ref, isRecord(hello) && typeof hello.version === 'string' ? hello.version : '')
+    } catch {
+      versions.set(ref, '')
+    }
   }
 
   /** A job's output and error as an agent may read them: screened and labelled, with notes for
@@ -274,17 +348,19 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     const known = finished ? checked.get(job.jobId) : undefined
     if (known) return known
     // The tails, as the other machine keeps them: the output's, and the error's behind an ellipsis.
+    // Each is an end that machine cut when it says so: the output when the view is truncated, the
+    // error when it starts with the ellipsis that machine's cut puts in front.
     const long = view.output !== undefined && view.output.length > MAX_OUTPUT_CHARS
-    const output = view.output === undefined ? null : screenTail(view.output, MAX_OUTPUT_CHARS)
+    const output = view.output === undefined ? null : screenTail(view.output, MAX_OUTPUT_CHARS, view.truncated === true && cutBy(job))
     const longError = view.error !== undefined && view.error.length > MAX_ERROR_CHARS
-    const error = view.error === undefined ? null : screenTail(view.error, longError ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS)
+    const error = view.error === undefined ? null : screenTail(view.error, longError ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS, view.error.startsWith('…') && cutBy(job))
     const found = mergeScreens([output, error])
     reportSecrets({ hop: 'answer-in', machine: job.name, agent: view.agent, removed: found.removed, flagged: found.flagged })
     const out: Checked = {
       ...(output ? { output: deps.frame(output.text, job.name, view.agent) } : {}),
       ...(long ? { truncated: true } : {}),
       // Cut again after, from the end: a marker can be longer than what it replaced.
-      ...(error ? { error: deps.frame(clipEnd(longError ? `…${error.text}` : error.text, MAX_ERROR_CHARS), job.name, view.agent) } : {}),
+      ...(error ? { error: deps.frame(clipEnd(longError ? behindEllipsis(error) : error, MAX_ERROR_CHARS), job.name, view.agent) } : {}),
       notes: secretNotes(found, 'this answer'),
     }
     if (finished) {
@@ -295,14 +371,22 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
   }
 
   /** Why a call to `name` failed, as a sentence. The bridge's own two words are
-   *  translated; anything else was worded by the other machine and is checked for injection. */
+   *  translated; anything else was worded by the other machine and is checked for injection,
+   *  with anything in it that might be a credential masked first: a version before 1.55 repeats a
+   *  refused folder as it came, and the agent may have passed a token as one. */
   function failure(message: string, name: string, agent: string): string {
     if (message === 'offline') return offline(name)
     if (message === 'timed out') return `"${name}" did not answer in time.`
     if (message === OLD_VERSION_REFUSAL) {
       return `"${name}" runs a version of Termpolis without Linked machines. Update Termpolis there.`
     }
-    return deps.inspect(clip(message, MAX_REFUSAL_CHARS), name, agent)
+    let shown: string
+    try {
+      shown = deps.mask(message.length > REFUSAL_MASKED_CHARS ? message.slice(0, REFUSAL_MASKED_CHARS) : message)
+    } catch {
+      return refusedUnshown(name)
+    }
+    return deps.inspect(clip(shown, MAX_REFUSAL_CHARS), name, agent)
   }
 
   /** Record a job's status for the activity view, once per change. */
@@ -391,6 +475,7 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     }
     // Reached only with a view: the first pass always polls when there is none.
     const final = view as JobView
+    await learnVersion(job, final)
     return answer(job, final, final.status === 'running' ? stillRunning(job.name, job.jobId) : undefined)
   }
 
@@ -433,6 +518,7 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
         if (!isRecord(hello) || !isRecord(hello.agents) || !isRecord(hello.grants) || typeof hello.confirmed !== 'boolean') {
           return { ...base, ...unknown, note: malformed(m.name) }
         }
+        versions.set(refOf(target), typeof hello.version === 'string' ? hello.version : '')
         if (!hello.confirmed) {
           return {
             ...base,
@@ -477,6 +563,8 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
 
     const { cwd, write, model } = args
     if (!absent(cwd) && typeof cwd !== 'string') return { error: BAD_CWD }
+    // Not repeated: the URL may hold a token.
+    if (typeof cwd === 'string' && isUrl(cwd)) return { error: urlCwd(view.name), machine: view.name }
     if (!absent(write) && typeof write !== 'boolean') return { error: BAD_WRITE }
     if (!absent(model) && typeof model !== 'string') return { error: BAD_MODEL }
     const waitSec = waitOf(args.waitSec)

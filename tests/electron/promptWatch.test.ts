@@ -262,4 +262,14 @@ describe('the secret-rule count is derived, never written down', () => {
     expect(md).toContain(`${RULE_COUNT}-rule`)
     for (const stale of ['~70-rule', '91-rule', '70+ rule']) expect(md).not.toContain(stale)
   })
+
+  it('the privacy policy cites the real count for the prompt watch, and no redaction it does not do', () => {
+    // The watch scans a copy and the text reaches the agent as typed (processOutboundChunk's
+    // writeChunk is always the input); a hit is a `prompt_secret_sent` event. PRIVACY.md said a
+    // "70+ rule" catalog redacted hits in place as `redaction_hit` events, the design it replaced.
+    // Read as one line with its code marks gone: the policy wraps its sentences anywhere.
+    const md = read('PRIVACY.md').replace(/\s+/g, ' ').replace(/`/g, '')
+    expect(md).toContain(`against the same ${RULE_COUNT} rules as Commit Shield`)
+    for (const stale of ['70+ rule', 'redacted in place', 'redaction_hit events']) expect(md).not.toContain(stale)
+  })
 })

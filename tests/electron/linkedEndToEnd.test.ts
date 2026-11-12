@@ -15,6 +15,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { generateKeyPairSync, randomBytes } from 'crypto'
 import { createBridgeCore, type BridgeCore } from '../../src/main/remoteBridge/entry'
 import type { BridgeToHost, HostToBridge } from '../../src/main/remoteBridge/protocol'
 import {
@@ -32,6 +33,7 @@ import type { LinkedAuditEntry, LinkedEvent, LinkedJobRecord, LinkedStatusView }
 import type { LinkedGrants } from '../../src/main/linkedStore'
 import type { LinkedToolArgs } from '../../src/main/linkedTool'
 import { createMemoryRelay, relayOpener, type MemoryRelay } from './fixtures/memoryRelay'
+import { leakedWindows, secretLinesOf } from './fixtures/freshKeys'
 
 type LinkedStoreModule = typeof import('../../src/main/linkedStore')
 type Pending = Extract<LinkedEvent, { kind: 'pending' }>
@@ -178,13 +180,15 @@ const idOf = (ref: string): string => ref.slice(ref.indexOf(':') + 1)
  * One Termpolis desktop: main's remote host and linked host, and the bridge
  * child main supervises, with only the process boundary faked. `from` starts
  * it again on the folders of one that quit -- the same computer, restarted --
- * and `keychain` is the keyring it comes up with.
+ * `keychain` is the keyring it comes up with, and `version` the app version
+ * it tells the other computer.
  */
 async function machine(
   relay: MemoryRelay,
   name: string,
   from?: Machine,
   keychain = fakeSafeStorage(),
+  version = '1.50.0',
 ): Promise<Machine> {
   // Each computer is its own copy of main's modules: linkedHost keeps its
   // service in a module singleton, exactly as in the app, so a second computer
@@ -305,7 +309,7 @@ async function machine(
   // it for the bridge's init.
   linked.startLinkedHost({
     userDataDir: dir,
-    version: '1.50.0',
+    version,
     sendStatus: () => undefined,
     sendEvent: (e) => events.push(e),
     runHeadless: (req) => {
@@ -391,10 +395,10 @@ async function allowEdit(m: Machine, ref: string): Promise<void> {
 
 /** The laptop and the build box, linked and confirmed on both sides. Edit, where asked for, is
  *  turned on after the confirmation, the only way it can be. */
-async function linkedPair(grants: { onA?: LinkedGrants; onB?: LinkedGrants } = {}) {
+async function linkedPair(grants: { onA?: LinkedGrants; onB?: LinkedGrants; version?: string } = {}) {
   const relay = newRelay()
-  const a = await machine(relay, LAPTOP)
-  const b = await machine(relay, BUILDBOX)
+  const a = await machine(relay, LAPTOP, undefined, undefined, grants.version)
+  const b = await machine(relay, BUILDBOX, undefined, undefined, grants.version)
   await enable(a)
   await enable(b)
   const l = await link(a, b, grants)
@@ -661,18 +665,90 @@ describe('delegating a job', () => {
 
   it('takes a key out of an answer too long to send whole, though the cut to its tail runs through it', async () => {
     const { a, b } = await linkedPair()
-    const body = Array.from({ length: 25 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(8, '0')}`)
-    const block = ['-----BEGIN RSA PRIVATE KEY-----', ...body, '-----END RSA PRIVATE KEY-----', ''].join('\n')
+    // A fresh key: the screen knows one by what its bytes decode to.
+    const pem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }) as string
+    const lines = pem.trim().split('\n')
+    const block = `${lines.join('\n')}\n`
     // The tail an answer keeps is its last 200,000 characters: it starts 40 characters into the block,
     // after more log than the build box screens before a tail.
     const rest = 'step ok\n'.repeat(25_000).slice(0, 200_000 - (block.length - 40))
     b.agent = async (req) => finished(req, `${'log line\n'.repeat(10_000)}${block}${rest}`)
     const answer = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Print the deploy log.', cwd: b.work })
     expect(answer).toMatchObject({ status: 'done', truncated: true, output: answered(BUILDBOX_ON_LAPTOP, 'codex', `[REDACTED:private_key]\n${rest}`) })
-    expect(answer.output).not.toMatch(/(?:Ab){6}|\d{8}/)
+    expect(leakedWindows(answer.output as string, secretLinesOf(lines))).toBe(0)
     // One finding, on the build box, which took it out; this side had nothing left to find.
     expect(b.audits).toEqual([{ agent: 'codex', event: 'linked_secret_removed', hitCount: 1, notes: `answer to "${LAPTOP_ON_BUILDBOX}": private_key x1` }])
     expect(a.audits).toEqual([])
+  })
+
+  it('takes a key out of an answer and of an error that lists it in a JSON string, its lines joined by written-out breaks, whatever name starts each line', async () => {
+    // What the agent reads of a tool result: `{"stdout": "id.pem-1-<line>\\n id.pem-2-<line> ..."}`. After each break comes the next key line's own frame, which a Windows path goes on
+    // with, and the end of a base64 line is what a piece of a path looks like: the screen read them as paths, and a key crossed whole, reported and not removed.
+    const pem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }) as string
+    const lines = pem.trim().split('\n')
+    const NL = String.fromCharCode(92) + 'n'
+    const frames: Record<string, (i: number, l: string) => string> = {
+      'a context line of rg': (i, l) => `id.pem-${i + 1}-${l}`,
+      'an indented line of rg': (i, l) => `values.yaml:${i + 1}:    ${l}`,
+      'a pod and a container': (_i, l) => `cronjob-27890123-x7q2p app ${l}`,
+    }
+    for (const [name, frame] of Object.entries(frames)) {
+      const listing = '{"stdout": "' + lines.map((l, i) => frame(i, l)).join(NL) + '"}'
+      const { a, b } = await linkedPair()
+      b.agent = async (req) => finished(req, listing)
+      const done = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'List the key.', cwd: b.work })
+      expect(done, name).toMatchObject({ status: 'done' })
+      expect(leakedWindows(JSON.stringify(done), secretLinesOf(lines)), name).toBe(0)
+      // the build box took it out; this side had nothing left to find
+      expect(b.audits, name).toEqual([{ agent: 'codex', event: 'linked_secret_removed', hitCount: 1, notes: `answer to "${LAPTOP_ON_BUILDBOX}": private_key x1` }])
+      expect(a.audits, name).toEqual([])
+      // the same in an error
+      const second = await linkedPair()
+      second.b.agent = async (req) => ({ ...finished(req, ''), ok: false, error: listing, code: 1 })
+      const failed = await second.a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'List the key.', cwd: second.b.work })
+      expect(failed, `${name}, error`).toMatchObject({ status: 'failed' })
+      expect(leakedWindows(JSON.stringify(failed), secretLinesOf(lines)), `${name}, error`).toBe(0)
+    }
+  })
+
+  it("hands back the end of lnk3's 218,726-character report with every line of it, screened on both computers", async () => {
+    // F2: a 2,600-line report whose every line ends in the same word, between a BEGIN line and an
+    // END line its summary names. The build box keeps its end; this side screens that again as an
+    // end the build box cut, its output and its error the same. Neither finds a key in it.
+    const { a, b } = await linkedPair()
+    const report = Array.from({ length: 2600 }, (_, i) => `test ${String(i).padStart(4, '0')} passed: parsePem accepts header ${i % 7} and rejects malformed input as expected`).join('\n')
+    const intro = "I searched every file for a `-----BEGIN RSA PRIVATE KEY-----` line. The two folders that hold PEM files:\n/Users/alice/Projects/PaymentService/src/main/resources\n/Users/alice/Projects/PaymentService/src/test/resources"
+    const log = `${intro}\n${report}\nSummary: nothing ends with \`-----END RSA PRIVATE KEY-----\`. All 2600 checks passed; the full report is above.`
+    expect(log).toHaveLength(218_726)
+    b.agent = async (req) => finished(req, log)
+    const done = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Run the parser tests.', cwd: b.work })
+    expect(done).toMatchObject({ status: 'done', truncated: true, output: answered(BUILDBOX_ON_LAPTOP, 'codex', log.slice(-200_000)) })
+    expect(done.note).toBeUndefined()
+    b.agent = async (req) => ({ ...finished(req, ''), ok: false, error: log, code: 1 })
+    const failed = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Run the parser tests.', cwd: b.work })
+    expect(failed).toMatchObject({ status: 'failed', error: answered(BUILDBOX_ON_LAPTOP, 'codex', `…${log.slice(-3_999)}`) })
+    expect(failed.note).toBeUndefined()
+    expect(a.audits).toEqual([])
+    expect(b.audits).toEqual([])
+  })
+
+  it("hands back a dump above an END line whole where the build box's cut fell inside it, both computers on 1.55", async () => {
+    // judge 1's C2 shape: a screenshot's base64 above a line holding only an END marker. The
+    // build box reports it and keeps its end; this side knows that computer screened before it
+    // cut, so the end's start is no key's tail (the round-0 review's FR-2 and FR-3).
+    const { a, b } = await linkedPair({ version: '1.55.0' })
+    const dump = `Screenshot:\n${Array.from({ length: 100 }, () => randomBytes(48).toString('base64')).join('\n')}\n-----END PRIVATE KEY-----\n(the footer the parser expects)\n`
+    // (the end kept, its last 200,000 characters, starts 3,000 characters into the dump)
+    const rest = 'Step ok: the report is written.\n'.repeat(Math.ceil((200_000 - dump.length + 3_000) / 32))
+    const log = `${'Step ok: the build copied the assets.\n'.repeat(1_000)}${dump}${rest}`
+    const cut = log.length - 200_000
+    expect(cut).toBeGreaterThan(log.indexOf(dump) + 2_000)
+    expect(cut).toBeLessThan(log.indexOf('-----END'))
+    b.agent = async (req) => finished(req, log)
+    const done = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Print the build log.', cwd: b.work })
+    expect(done).toMatchObject({ status: 'done', truncated: true, output: answered(BUILDBOX_ON_LAPTOP, 'codex', log.slice(-200_000)) })
+    expect(done.note).toBe('Possible credential in this answer (private_key), not removed.')
+    expect([...a.audits, ...b.audits].map((x) => x.event)).toEqual(['linked_secret_flagged', 'linked_secret_flagged'])
   })
 
   it('hands back code with test fixtures in it byte for byte, naming what looked like credentials', async () => {

@@ -1112,6 +1112,14 @@ describe('LinkedMachinesSettings: job history', () => {
     expect(screen.getAllByTestId(/^linked-history-0123456789ab$/)).toHaveLength(1)
   })
 
+  it('names the keys the Linked machines screen found by their own rule ids, as it names any rule', async () => {
+    const ids = ['ssh2_private_key', 'openvpn_static_key', 'private_key_b64', 'putty_private_key', 'jwk_private_key', 'xml_private_key']
+    api.jobLog.mockResolvedValue(ok([record({ agent: 'codex', summary: 'Rotate the deploy key', secretRules: ids })]))
+    await mount()
+    await screen.findByTestId('linked-history-0123456789ab')
+    expect(screen.getByTestId('linked-history-secrets-0123456789ab').textContent).toBe(`credentials screened: ${[...ids].sort().join(', ')}`)
+  })
+
   it('shows a job known only by its end, and a folder that is a root as it is', async () => {
     api.jobLog.mockResolvedValue(
       ok([

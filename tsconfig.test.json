@@ -28,5 +28,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["tests/electron/remote*.ts", "tests/electron/linked*.ts", "tests/electron/receiptArtifact.test.ts", "tests/electron/mainIndexBranchesA.test.ts", "tests/electron/*headroom*.ts", "tests/electron/*Headroom*.ts", "src/main/remoteBridge/**/*", "mobile/src/wire/**/*"]
+  "include": ["tests/electron/remote*.ts", "tests/electron/linked*.ts", "tests/electron/receiptArtifact.test.ts", "tests/electron/mainIndexBranchesA.test.ts", "tests/electron/*headroom*.ts", "tests/electron/*Headroom*.ts", "src/main/remoteBridge/**/*", "mobile/src/wire/**/*", "tests/electron/keyMaterial*.ts"]
 }

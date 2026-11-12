@@ -1498,7 +1498,16 @@ Agents get one MCP tool, `linked_machines`, with three actions:
   (up to 6,000 characters), so its answer can quote that machine's memory.
 - **`cwd`** is a folder on the other machine, absolute or starting with `~`.
   It defaults to the home folder and must exist there. UNC network paths
-  (`\\server\share`) are refused.
+  (`\\server\share`) are refused. A URL is refused before anything is sent (a
+  clone URL can carry a token): one that starts with a scheme and two slashes
+  or backslashes (`https://…`, `ssh://…`) or with a user and a password before
+  an `@` (`user:token@host:repo`, `//user:token@host/org`), and a scheme with a
+  user and a password after a path (`/srv/work/https://user:token@host/org`);
+  zero-width characters in it are ignored. A folder's name is not screened for
+  credentials; where a refusal repeats one, anything in it that looks like a
+  credential is taken out first, and a name with a control character in it
+  (one nobody types), or one that holds a credential once everything but its
+  visible ASCII characters is taken out, is not repeated at all.
 - **`write: true`** works only if that machine lets this one edit.
 - **`model`** picks the agent's model there. By default the agent uses its own.
 
@@ -1675,50 +1684,156 @@ audit log.
   it arrives, the answer and its error before they leave and when they arrive
   (in case the other computer runs a version that doesn't screen). The screen
   has two tiers:
-  - **A credential whose own shape names it is removed** and replaced with
-    `[REDACTED:<rule>]`: vendor tokens such as `sk-ant-…`, `ghp_…`,
-    `github_pat_…`, `AKIA…`, `xox…`, and whole private-key blocks, including
-    an indented one (a YAML secret) and one whose lines are `\n` escapes (a JSON
-    service-account file). A key block counts once it holds key material: a
-    long body line or its END line. A note tells your agent how many this
-    computer removed, and by which rules, from the prompt it sent and from an
-    answer that arrived with one still in it; one the other computer removed
-    shows only as its marker.
-  - **Anything that only looks like a credential is left as it is**, because a
+  - **Removed, and replaced with `[REDACTED:<rule>]`:** vendor tokens such as
+    `sk-ant-…`, `ghp_…`, `github_pat_…`, `AKIA…`, `xox…`; and private keys,
+    recognised by what their bytes are, not how their lines are laid out. The
+    base64 under a private-key BEGIN line must decode to a private key's
+    structure: PKCS#8, encrypted PKCS#8, PKCS#1 RSA, DSA, SEC1 EC, OpenSSH,
+    OpenPGP or SSH2. An OpenVPN static key (its 2,048 random bits, as lines of
+    exactly 32 hex digits, or all 512 digits in one run right under its BEGIN line) is removed too, and so is a legacy encrypted PEM key
+    with its Proc-Type and DEK-Info lines. A key's lines count when they are
+    framed in any of these ways: indented, as string literals (one to a line) joined with `+`, `.`, `&`
+    or a newline constant, as `\n` escapes in a JSON string or one JSON string per
+    line (with `/` or `+` escaped too, as PHP and .NET write them), behind comment
+    or quote marks, in a diff (a coloured one too), behind `cat -n`, in grep or rg
+    output with paths, with or without line numbers (Windows paths too: a
+    folder named like `repos` or `r123456` is no line break), behind a `NAME=` (a
+    properties file, journalctl's `MESSAGE=`), or behind log timestamps and container
+    prefixes. A key file stored base64 encoded (a Kubernetes Secret's `tls.key`,
+    a `.env` file's `TLS_KEY_B64=`) is removed the same way. So are a PuTTY
+    `.ppk`'s private lines, a JWK's private members (`d`, `k`, ...), a .NET
+    `RSAKeyValue`'s private members (of those two only the values, so the JSON or
+    XML stays well formed) and a key file URL-encoded whole. (A variable name of 22
+    characters or more after an `oct` key's `k` can be read as its value. A JWK
+    with no braces around it, in YAML, TOML or a properties file, is read up to
+    16 KB around its `kty` line: a member there named like a private member,
+    with a long random-looking value, is read as the key's.) A block runs from
+    its BEGIN line to its END line, or with no END line in view to its last key
+    line. One whose lines are laid out unevenly (one indented, split or joined,
+    or re-wrapped) still runs to its END line once the lines before the uneven
+    one show it is a key, and with no END line is removed up to the uneven line
+    and the rest named in a note (but for an uneven line that is the key's last,
+    split in two, whose second half crosses); when too few lines come before it
+    to show that, it is named in a note. A key's tail is
+    removed with its END line even when its BEGIN line is out of view: where
+    the end of the text that is kept starts inside the key, where the text
+    starts with two or more of its lines (its last line or two alone can cross,
+    or three when the last is a few characters long, and so can an Ed25519 key
+    in OpenSSH's format, whose few lines are too regular to tell from other
+    base64), and wherever lines that decode to a key's first bytes run down to
+    its END line (a key whose BEGIN line was lost). So are key lines right under
+    a key block that was removed, down to an END line of its kind: the new key
+    in a diff that rotates one. A note tells your agent how many this computer
+    removed, and by which rules, from the prompt it sent and from an answer that
+    arrived with one still in it; one the other computer removed shows only as
+    its marker.
+  - **Left as it is, and named in a note** (*possible credential, not
+    removed*): everything that only looks like a credential, because a
     delegated job's answer is usually code, and its test fixtures and examples
     look like credentials too (`password = "hunter2"`, a `postgres://user:pass@`
     URL, a JWT, a value assigned to `API_KEY`, a shape with no vendor's name in
-    it such as a Discord or Telegram bot token, or a private-key header with no
-    key under it, as a PEM parser writes). The answer gets a note naming the
-    rules that matched: *possible credential, not removed*.
+    it such as a Discord or Telegram bot token); and everything key-shaped that
+    is not a key. That includes a BEGIN line with no key under it, or a BEGIN and
+    an END line with none between them (as a PEM parser or a test writes them,
+    empty pairs included); a public key, certificate or CSR under a private-key
+    BEGIN line; a test key whose body is made up (zeros, or one byte repeated;
+    a made-up private value that looks random, such as counting bytes or a
+    phrase, can be taken for a real one);
+    prose or code between a BEGIN and an END line; a placeholder
+    JWK value (such as `REPLACE_ME`, or a name or
+    description of a key such as `JWT_SIGNING_SECRET_BASE64URL`, or a sentence in
+    an `RSAKeyValue` member, which the XML reader reads across its spaces; named
+    in the note when it is written in a key's own characters), and a JWK or `RSAKeyValue`
+    value that is base64 of a phrase a person typed (`my-super-secret-key`: a
+    sentence, a word that names a secret, a slug of words, a repeat; an `oct`
+    key's `k` that is a secret kept as text, such as the hex of `openssl rand
+    -hex 32`, base64 text, a generated password or a UUID, is removed); and
+    base64 in a
+    format Termpolis can't check under a private-key BEGIN line. The note names
+    the rules that matched.
   Both tiers write a line to the AI Security audit log on the computer that
   screened: the rule ids and how often each matched, never the value. A
   credential you deliberately want on the other computer should live in a file
   there, not in the prompt.
-  An answer and its error are screened before they are cut to their ends, with
-  up to 65,536 characters before the cut in view. That reaches back past the
-  BEGIN line of any key block a rule takes (at most 400 lines under it, which a
-  key file writes 64 to 76 characters wide) and the start of any token, so a
-  key or token the cut runs through is still found and removed whole, and the
-  end that is kept starts with its whole marker. A credential wholly before
-  the end is not counted.
-  Where the end is cut again from its start (markers made it longer than it may
-  be, or it must fit one relay frame), the characters cut are ones outside
-  markers: every marker in its way stays, whole, so each credential counted
-  still shows. A marker can be longer than the credential it replaced; where
-  that makes the end too long, the characters cut are the ones before the
-  marker, and where there are fewer of those than the marker added, the first
-  ones after it (a cut 2 characters before an AWS key, which is 20 characters
-  with a marker of 25, takes those 2 and the next 3). Only where the markers
-  alone are longer than the end may be do the first of them go, whole; they
-  are still counted. Text in the answer that already reads like a marker
-  (`[REDACTED:…]` in a log printed again, say) is kept the same way, so when
-  the end is cut to fit a relay frame, such text from the part cut off can
-  move to its front.
-  This holds where the computer doing the job runs a version after 1.53: 1.53
-  cut first and screened what was left, and 1.50 to 1.52 sent it unscreened,
-  so a key or token their cut ran through arrives without its start (a BEGIN
-  line, a `ghp_` prefix), which no rule recognises, and the rest of it crosses.
+  Not recognised: a private key in a format Termpolis can't decode, or whose
+  lines were re-wrapped to alternating widths, or to under 16 characters (all
+  reported, as above); the first line alone of an RSA, DSA, Diffie-Hellman,
+  OpenSSH, OpenPGP, SSH2 or encrypted private key, with no END line and nothing
+  of the key under that line (reported: it holds public numbers, parameters or
+  a salt, not the private value), and that of a PKCS#8 key on a brainpool curve
+  (reported: the curve's long identifier leaves 9 to 11 bytes of the private
+  value in the line, where 12 or more are removed, as for every other EC curve
+  and for an EdDSA or post-quantum key); a key
+  written on one line with a `NAME=` in front of each of its lines (reported);
+  a key written one `NAME=<line>` to a line when the name is 63 characters or
+  more (64 for all but an armored OpenPGP key); a key written on one line
+  with a newline constant between its lines (reported); a key file
+  URL-encoded twice, or with its base64 characters written as HTML
+  entities (`&#43;`); key lines that a few other layouts alter or break apart (a
+  word diff, a `git diff` that alternates context and changed lines, email
+  quoted-printable, `cat -A` of a tab-indented key); relative Windows paths in
+  a JSON string (its line breaks written out), listed as context lines
+  (`path-12-`) or as indented lines with no line number (`grep -H`, `findstr`),
+  when a folder in the path has a name that starts with n or r (`repos`,
+  `notes`) and 16 characters or more stand in front of it (reported); key lines alone, with
+  neither a BEGIN nor an END line (what `grep --color` prints for a match
+  inside every key line: not reported); a key whose lines each start with a
+  token and a blank, such as a request id or a log stream's name of 16
+  characters or more (reported), or a commit hash of 4 to 15 characters that
+  changes from line to line (what `git blame` prints for a file of many
+  commits: partly removed, and reported; the same hash on every line is
+  removed with the key); a private key stored as bare base64 DER
+  with no BEGIN line (the value of a `.properties`, `.env`, YAML or JSON key:
+  reported when its name has the word secret, password, token, credential, api
+  key or private key in it, or, in `NAME=value` form, is upper case and ends in
+  KEY, TOKEN, SECRET or PASSWORD, and not otherwise: not `ssh_key`, `tls.key`,
+  `auth_token` or `key_data`); an SSH2, PuTTY
+  or OpenVPN key file URL-encoded whole; a PuTTY key's lines joined by colons
+  (reported), or its private lines run together with no separator, when the
+  first of them starts with a digit (which can read as part of the line count);
+  a key shown by `hexdump -C`,
+  or with U+0085 between its lines; a JWK in upper-case environment variables
+  (`JWK_D=`); a PKCS#12 (`.pfx`) file or a
+  binary OpenPGP export in base64; a key file base64 encoded twice, or from
+  UTF-16 text (Windows PowerShell's `>`); a JWK or an `RSAKeyValue` stored
+  base64 encoded or URL-encoded; a JWK nested inside another
+  JWK, or one whose start (its `kty`) an older computer's cut took; the hex
+  components `openssl rsa -text` prints; a key block longer than 256 KB with no
+  END line, once the end that is kept starts more than 256 KB after its BEGIN
+  line; age, Tailscale and WireGuard keys.
+  An answer and its error are screened before they are cut to their ends.
+  Tokens are looked for 4,096 characters before the cut. A key the cut runs
+  through is found from its BEGIN line, looked for up to 256 KB back when the
+  cut falls among key lines, and a longer one from its END line. So it is still
+  removed whole, and the end that is kept starts with its marker. A credential
+  wholly before the end is not counted. Where the end is cut again (markers
+  made it longer than it may be, or it must fit one relay frame), Termpolis's
+  own markers are kept whole, and in order, and still counted; only where the
+  markers alone are longer than the end may be do the first of them go, whole.
+  Text in the answer that only reads like a marker (`[REDACTED:…]` in a log
+  printed again) is cut as text, never moved.
+  What an older computer sends is screened again here when it arrives, so a
+  credential its screen missed is taken out before your agent sees it. It has
+  still crossed between your two computers, sealed. Versions 1.50 to 1.53.0
+  cut an answer to its end before screening it (1.50 to 1.52 don't screen it
+  at all). A private key their cut ran through is still removed here if its
+  END line and a line of it, or the end of one, of 16 characters or more are
+  in what arrived, and reported if two or more of its lines of 8 characters or
+  more, 80 characters or more in all, arrived without its END line. Not so for
+  an OpenVPN static key or a PuTTY
+  key, which have no private-key END line to find the rest from (what arrived
+  of one crosses, with a note in some cuts and none in others); for a key
+  written all on one line, echoed into a file line by line or URL-encoded whole; for a
+  key whose lines carry markup, colour codes or a blame prefix (a coloured
+  `git diff`, `git blame`, HTML tags or table cells) or another language's
+  string concatenation (SQL, Lua, MATLAB); for a
+  key with no END line whose cut fell inside its BEGIN line, its header lines
+  (`Version`, `Comment`, `Proc-Type`, `DEK-Info`) or a string literal's line break, which
+  crosses without a note; for the last line of a key written as a template
+  literal with no END line, which a 1.54 computer's own removal left behind its
+  marker; and (with no END line) for an Ed25519 key in OpenSSH's format, whose
+  few lines are too regular to tell from other base64. A token whose start the
+  cut took arrives without its prefix and is not recognised.
 - **Memory.** The agent doing the work starts with that computer's own memory
   primer (up to 6,000 characters), as a local run would, so its answer can
   quote that machine's memory. Nothing of the job becomes that computer's own
@@ -1740,8 +1855,9 @@ audit log.
   the data directory: a line when a job starts (the machine, agent, read-only or
   edit, folder, the first line of the screened prompt and the credential rules
   matched), a line when it ends (how, and how long it took), and a line for each
-  refusal with its reason. Calls the MCP server refused while a job ran are in
-  the MCP audit log. The prompt's first line is kept, and shown in the
+  refusal with its reason, with anything in it that might be a credential taken
+  out. Calls the MCP server refused while a job ran are in the MCP audit log.
+  The prompt's first line is kept, and shown in the
   job's notification, with anything that might be a credential taken out, even
   what the agent was given because it only looked like one. A computer's
   refusals within one minute after the

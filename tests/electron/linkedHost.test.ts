@@ -10,7 +10,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { setSafeStorage } from '../../src/main/secureKeyStore'
-import { maskForDisplay, screenText } from '../../src/main/aiSecurity'
+import { maskForDisplay, screenText, type SecretScreen } from '../../src/main/aiSecurity'
 import { deriveVerificationPhrase, fromHex, generateIdentity, toHex } from '../../src/main/remoteBridge/sealedChannel'
 import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
 import { createPairingOffer } from '../../src/main/remoteBridge/pairing'
@@ -31,7 +31,7 @@ import type { KeyStorageView, LinkedBridgePort } from '../../src/main/remoteBrid
 import { REMOTE_KEYS_NOT_LOCKED, _resetRemoteHostForTests } from '../../src/main/remoteHost'
 import { localDesktopName } from '../../src/main/remoteBridge/desktopName'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
-import { MAX_OUTPUT_CHARS, type LinkedActivity } from '../../src/main/linkedJobs'
+import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, type LinkedActivity } from '../../src/main/linkedJobs'
 import { loadLinkedSettings, saveLinkedSettings } from '../../src/main/linkedSettings'
 import {
   DEFAULT_GRANTS,
@@ -265,6 +265,8 @@ interface BootOptions {
   holdMcp?: () => () => void
   /** aiSecurity.maskForDisplay by default. */
   maskSecrets?: (text: string) => string
+  /** aiSecurity.screenText by default. */
+  screenSecrets?: (text: string, keep?: number, lookback?: number, cutStart?: boolean) => SecretScreen
 }
 
 function boot(opts: BootOptions = {}) {
@@ -295,7 +297,7 @@ function boot(opts: BootOptions = {}) {
     sendEvent: (e) => events.push(e),
     runHeadless,
     agentsInstalled,
-    screenSecrets: screenText,
+    screenSecrets: opts.screenSecrets ?? screenText,
     maskSecrets: opts.maskSecrets ?? maskForDisplay,
     ...(audit ? { audit } : {}),
     bridge: bridge.access,
@@ -2106,6 +2108,30 @@ describe('credentials between two computers', () => {
     expect(h.audit).not.toHaveBeenCalled()
   })
 
+  it('tells the screen when the machine that ran a job cut what it sent: an output it says is truncated, an error behind its ellipsis', async () => {
+    const told: unknown[][] = []
+    const screenSecrets = (text: string, ...rest: [number?, number?, boolean?]): SecretScreen => {
+      told.push(rest)
+      return screenText(text, ...rest)
+    }
+    const L = joined()
+    const h = boot({ enabled: true, screenSecrets, state: { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] } })
+    h.bridge.emit({ kind: 'linkStateChanged', id: L.id, attached: true })
+    h.bridge.answer = (call) => {
+      const view = { jobId: 'a1b2c3d4e5f6', agent: 'codex', startedAt: 1 }
+      if (call.request.kind === 'peerRun') return { kind: 'linkCallResult', callId: call.callId, ok: true, data: { ...view, status: 'running' } }
+      return { kind: 'linkCallResult', callId: call.callId, ok: true, data: { ...view, status: 'failed', output: 'the end of it', truncated: true, error: '…the end of stderr', durationMs: 5 } }
+    }
+    const r = (await linkedToolCall({ action: 'run', machine: 'linux', agent: 'codex', prompt: 'p', waitSec: 5 })) as Record<string, unknown>
+    expect(r).toMatchObject({ status: 'failed', truncated: true })
+    // The prompt as it is, then the output's end and the error's end, each an end that machine cut.
+    expect(told).toEqual([
+      [undefined, undefined, undefined],
+      [MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true],
+      [MAX_ERROR_CHARS, SCREEN_LOOKBACK_CHARS, true],
+    ])
+  })
+
   it("audits what it took out of another machine's answer, and still answers when the log fails", async () => {
     const L = joined()
     const h = boot({
@@ -2167,6 +2193,8 @@ describe('the job history, notifications and Stop', () => {
       notifyJob?: (n: LinkedJobNotice) => void
       /** Each job ends as soon as it starts: past the cap of two running per computer. */
       instant?: boolean
+      /** This computer's own name. */
+      machineName?: string
     } = {},
   ) {
     const P = peer()
@@ -2176,6 +2204,7 @@ describe('the job history, notifications and Stop', () => {
       state: { links: [], meta: [meta(devRef(P), { name: opts.name ?? 'build-box', grants: opts.grants ?? { run: true, write: false } })] },
       ...(opts.now ? { now: opts.now } : {}),
       ...(opts.notifyJob ? { notifyJob: opts.notifyJob } : {}),
+      ...(opts.machineName ? { machineName: opts.machineName } : {}),
       runHeadless: (req) =>
         new Promise((resolve) => {
           const end = () => resolve({ ok: true, agent: req.agent ?? 'claude', output: 'done', code: 0, durationMs: 5, primerChars: 0 })
@@ -2442,6 +2471,41 @@ describe('the job history, notifications and Stop', () => {
     expect(lines).toHaveLength(3)
     expect(lines[0]).not.toHaveProperty('agent')
     expect(lines[0].reason).toBe('Invalid agent: expected claude, codex or gemini.')
+  })
+
+  it("keeps no credential in a refusal's reason: masked whole, and only then cut to 200 characters", async () => {
+    const token = `ghs_${'a'.repeat(36)}`
+    /** Whether any 8 characters of the token show. */
+    const shows = (text: string): boolean => Array.from({ length: token.length - 7 }, (_, i) => token.slice(i, i + 8)).some((w) => text.includes(w))
+    // A clone URL with a token as the folder, from a computer that sends one (1.54 and older).
+    const { h, run } = serving()
+    const url = await run({ cwd: `https://x-access-token:${token}@github.com/acme/billing.git` })
+    expect(url.ok).toBe(false)
+    const [refused] = await history(h)
+    expect(refused.reason?.startsWith('cwd must be an absolute folder path on laptop, or start with ~: ')).toBe(true)
+    expect(shows(JSON.stringify(refused))).toBe(false)
+    // Whatever else a reason repeats, this computer's own name included: here the cut to 200
+    // characters runs through the second time the name is in it.
+    _resetLinkedHostForTests()
+    const reasonFor = (name: string): string =>
+      `${name} does not let this computer run agents there. Turn on "Run agents here" for it under Settings \u25b8 Linked machines on ${name}.`
+    const name = `${'n'.repeat(14)}-${token}`
+    const second = reasonFor(name).lastIndexOf(token)
+    expect(second).toBeLessThan(199)
+    expect(second + token.length).toBeGreaterThan(199)
+    const named = serving({ machineName: name, grants: { run: false, write: false } })
+    const reply = await named.run()
+    expect(reply.ok === false && reply.message).toBe(reasonFor(name))
+    const [line] = await history(named.h)
+    expect(line.reason).toBe(`${'n'.repeat(14)}-[REDACTED:gh_pat] does not let this computer run agents there. Turn on "Run agents here" for it under Settings \u25b8 Linked machines on ${'n'.repeat(14)}-[REDACTED:gh_pat].`)
+    expect(shows(line.reason as string)).toBe(false)
+    // One that can't be masked is not kept.
+    _resetLinkedHostForTests()
+    const broken = boot({ enabled: true, maskSecrets: () => { throw new Error('mask broke') } })
+    asked(broken, 'b1', { via: 'device', id: peer().id }, { kind: 'peerRun', agent: 'codex', prompt: 'x' })
+    await vi.waitFor(() => expect(broken.replyTo('b1')).toBeDefined())
+    expect(broken.replyTo('b1')).toMatchObject({ ok: false })
+    expect((await history(broken))[0]).toMatchObject({ event: 'refused', reason: '' })
   })
 
   it('writes the refusals still being counted when the service stops', async () => {
