@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 
 const mockSetDefaultShell = vi.fn()
@@ -495,6 +495,39 @@ describe('SettingsPane', () => {
     await waitFor(() => {
       expect(screen.getByText(/Saved/)).toBeInTheDocument()
     })
+  })
+
+  it('drops the timer of the Saved mark when the pane closes, so nothing fires into it afterwards', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const view = render(<SettingsPane />)
+      openTab('shell')
+      fireEvent.click(await screen.findByText('Save'))
+      await screen.findByText(/Saved/)
+      const before = vi.getTimerCount()
+      const cleared = vi.spyOn(globalThis, 'clearTimeout')
+      view.unmount()
+      expect(cleared).toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBeLessThan(before)
+      expect(() => vi.advanceTimersByTime(2100)).not.toThrow()
+      cleared.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the Saved mark when its two seconds are up', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      render(<SettingsPane />)
+      openTab('shell')
+      fireEvent.click(await screen.findByText('Save'))
+      await screen.findByText(/Saved/)
+      await act(async () => { vi.advanceTimersByTime(2100) })
+      expect(screen.queryByText(/✓ Saved/)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('ignores shell list when getAvailableShells fails', async () => {

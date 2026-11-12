@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Editor from '@monaco-editor/react'
 import { useShallow } from 'zustand/react/shallow'
 import { useTerminalStore } from '../../store/terminalStore'
@@ -215,12 +215,23 @@ export function SettingsPane() {
     return () => { try { unsub?.() } catch {} }
   }, [])
 
+  // The "Saved" marks' timers, cleared when the pane closes so none sets state after it is gone.
+  const savedTimers = useRef(new Set<ReturnType<typeof setTimeout>>())
+  useEffect(() => {
+    const timers = savedTimers.current
+    return () => { timers.forEach(clearTimeout); timers.clear() }
+  }, [])
+
   const handleSave = async (filePath: string) => {
     setSaving(prev => ({ ...prev, [filePath]: true }))
     await window.termpolis.writeConfigFile(filePath, fileContents[filePath] ?? '')
     setSaving(prev => ({ ...prev, [filePath]: false }))
     setSaved(prev => ({ ...prev, [filePath]: true }))
-    setTimeout(() => setSaved(prev => ({ ...prev, [filePath]: false })), 2000)
+    const timer = setTimeout(() => {
+      savedTimers.current.delete(timer)
+      setSaved(prev => ({ ...prev, [filePath]: false }))
+    }, 2000)
+    savedTimers.current.add(timer)
   }
 
   return (
