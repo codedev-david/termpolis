@@ -418,7 +418,8 @@ describe('peerRun working folder', () => {
         for (const at of [0, 20, 150, 170, 185, 199, 200, 250]) {
           for (const split of [2, 5, 11, 20, 31, 47]) {
             const cut = Math.min(split, key.length - 1)
-            const message = await refusal(`/srv/${'x'.repeat(at)}/${key.slice(0, cut)}${ctl}${key.slice(cut)}/app`)
+            // relative, so every platform refuses it as not absolute (`/srv/...` is looked for on Linux and macOS): same length
+            const message = await refusal(`srv_/${'x'.repeat(at)}/${key.slice(0, cut)}${ctl}${key.slice(cut)}/app`)
             expect(message, `${label}, at ${at}, split ${cut}`).toBe(NOT_SHOWN)
             expect(keyShows(message), `${label}, at ${at}, split ${cut}`).toBe(false)
           }
@@ -470,7 +471,8 @@ describe('peerRun working folder', () => {
       for (const split of splits) {
         for (const cut of [2, 5, 11, 20, 31]) {
           const at = Math.min(cut, key.length - 1)
-          const message = await refusal(`/srv/work/${key.slice(0, at)}${split}${key.slice(at)}/app`)
+          // relative, so every platform refuses it as not absolute (`/srv/...` is looked for on Linux and macOS)
+          const message = await refusal(`srv_/work/${key.slice(0, at)}${split}${key.slice(at)}/app`)
           expect(message, `${label}, ${JSON.stringify(split)} at ${at}`).toBe(NOT_SHOWN)
         }
       }
