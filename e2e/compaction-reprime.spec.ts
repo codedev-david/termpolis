@@ -10,6 +10,11 @@
  * marker, then asserts a bracketed-paste re-prime actually reached the terminal — the
  * one bit unit tests couldn't cover (the TerminalPane wiring + the real paste).
  * The launch primer is disabled so the only bracketed paste is the re-prime.
+ *
+ * The pointer is typed only where something runs in the terminal besides its shell: the app asks
+ * the OS (terminalShellAlone, shellAlone.ts) before the paste and before the Enter. The injected
+ * output above is no process, so the first terminal gets a real one to stand in for the agent,
+ * and a second terminal with none proves that nothing is typed at a bare shell prompt.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
@@ -79,6 +84,52 @@ async function createTerminal(name: string): Promise<void> {
   await page.waitForTimeout(1500)
 }
 
+/** The id of the terminal created last. */
+async function lastTerminalId(): Promise<string> {
+  return page.evaluate(() => {
+    const ts = (window as any).__termpolis_test_state?.()?.terminals || []
+    return ts.length ? ts[ts.length - 1].id : ''
+  })
+}
+
+/**
+ * Asks the OS "does nothing run in this terminal but its shell?" until the answer is the one
+ * wanted or `ms` is up, and returns the last answer: true, false, null (it cannot tell) or
+ * undefined (the call failed). `alone` wants a definite yes. `running` wants anything else: a
+ * process seen there, or an OS that cannot tell (the re-primer then types as it always did).
+ * On Windows each answer takes a second or two, so this is a deadline, not a count. For `alone` it
+ * also stops once the OS has said nothing six times running: a shell it cannot read is not going
+ * to be read, and waiting out the whole budget for it only delays the skip.
+ */
+async function askShellAlone(termId: string, wanted: 'alone' | 'running', ms: number): Promise<boolean | null | undefined> {
+  return page.evaluate(async ({ id, want, budget }) => {
+    const api = (window as any).termpolis
+    const until = Date.now() + budget
+    let last: boolean | null | undefined
+    let silent = 0 // answers in a row that were null (it cannot tell) or undefined (the call failed)
+    while (Date.now() < until) {
+      const r = await api.terminalShellAlone(id)
+      last = r && r.success ? r.data : undefined
+      if (want === 'alone' ? last === true : last !== true) break
+      silent = last === null || last === undefined ? silent + 1 : 0
+      if (want === 'alone' && silent >= 6) break
+      await new Promise((res) => setTimeout(res, 500))
+    }
+    return last
+  }, { id: termId, want: wanted, budget: ms })
+}
+
+/** The bracketed pastes written to one terminal so far (a pointer is one). */
+async function pastesTo(termId: string): Promise<number> {
+  return page.evaluate(async ({ id, bp }) => {
+    const r = await (window as any).termpolis.__testTerminalWrites()
+    return ((r && r.data) || []).filter((w: any) => w.id === id && typeof w.data === 'string' && w.data.includes(bp)).length
+  }, { id: termId, bp: BP_START })
+}
+
+// How long the first test saw the re-prime take, so the last one waits longer than that.
+let rePrimeMs = 8000
+
 test.describe.serial('Compaction re-primer (real app, full flow)', () => {
   test('seeded memory produces a non-empty primer (precondition)', async () => {
     const primer = await page.evaluate(async (marker) => {
@@ -95,12 +146,18 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
 
   test('a "Compacting conversation" marker triggers a re-prime paste into the terminal', async () => {
     await createTerminal('Reprime1')
-    const termId: string = await page.evaluate(() => {
-      const s = (window as any).__termpolis_test_state?.()
-      const ts = s?.terminals || []
-      return ts.length ? ts[ts.length - 1].id : ''
-    })
+    const termId = await lastTerminalId()
     expect(termId).toBeTruthy()
+
+    // 0) A real process in the terminal, for the OS to find there. The injected output below is
+    //    no agent, and the pointer is not typed where nothing runs but the shell. Not mock-claude:
+    //    it opens on a trust prompt, which the re-primer waits out.
+    await page.evaluate((id) => (window as any).termpolis.writeToTerminal(id, 'node -e "setInterval(Boolean,1e3)"\r'), termId)
+    const running = await askShellAlone(termId, 'running', 45_000)
+    expect(running, 'expected the OS to see node running in the terminal (is `node` on the PATH of the terminals the app opens?)').not.toBe(true)
+    // Where the OS cannot read the shell the pointer is typed as it always was, so this test runs
+    // the flow without exercising the guard. Say so in the report instead of passing silently.
+    if (running === null) test.info().annotations.push({ type: 'note', description: 'the OS cannot tell what runs in this shell: the guard was not exercised here' })
 
     // 1) Detect an agent (the re-primer only fires when an agent is present). The
     //    launch primer is disabled, so this does NOT paste.
@@ -112,11 +169,14 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
     //    (~3s debounce), fires injectAutoPrimer.
     await page.evaluate((id) => (window as any).termpolis.__testTerminalData(id, '✻ Compacting conversation… (2m 30s)\r\n'),
       termId)
+    const fedAt = Date.now()
 
-    // 3) Poll the recorded terminal writes for the bracketed-paste re-prime.
+    // 3) Poll the recorded terminal writes for the bracketed-paste re-prime. The deadline covers
+    //    the 3s debounce, the screen reads and the OS question before the paste (a second or two on Windows).
     const pasted: string | null = await page.evaluate(async ({ id, bp }) => {
       const api = (window as any).termpolis
-      for (let i = 0; i < 40; i++) { // up to ~8s (covers the 3s debounce + processing)
+      const until = Date.now() + 40_000
+      while (Date.now() < until) {
         const r = await api.__testTerminalWrites()
         const writes = (r && r.data) || []
         const hit = writes.find((w: any) => w.id === id && typeof w.data === 'string' && w.data.includes(bp))
@@ -125,6 +185,7 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
       }
       return null
     }, { id: termId, bp: BP_START })
+    rePrimeMs = Date.now() - fedAt
 
     expect(pasted, 'expected a bracketed-paste re-prime to reach the terminal').toBeTruthy()
     // The paste is the one-line pointer (content loads behind the scenes via MCP),
@@ -151,6 +212,37 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
       return ((r && r.data) || []).filter((w: any) => typeof w.data === 'string' && w.data.includes('\x1b[200~')).length
     })
     expect(after).toBe(before) // cooldown held — no extra paste
+  })
+
+  test('nothing is typed at the prompt of a terminal whose agent has exited', async () => {
+    // Only the shell runs here: what an agent that died at startup leaves behind. The same
+    // signals as above (an agent on screen, a compaction marker) and the same app, so the one
+    // difference is what the OS says runs in the terminal.
+    await createTerminal('Reprime2')
+    const termId = await lastTerminalId()
+    expect(termId).toBeTruthy()
+    const alone = await askShellAlone(termId, 'alone', 15_000)
+    // The OS reads a terminal's processes only for the shells it knows (bash, zsh, fish, sh, ksh,
+    // and PowerShell, cmd and Git Bash on Windows). For any other shell it answers null, and the
+    // guard has nothing to act on: the pointer is typed, as it always was.
+    test.skip(alone === null, "the OS cannot tell what runs in this terminal's shell, so the guard has nothing to act on")
+    expect(alone, 'expected the OS to say only the shell runs in the idle terminal').toBe(true)
+
+    await page.evaluate((id) => (window as any).termpolis.__testTerminalData(id, 'claude code v1.0 starting\r\n'),
+      termId)
+    await page.waitForTimeout(1200)
+    await page.evaluate((id) => (window as any).termpolis.__testTerminalData(id, '✻ Compacting conversation… (2m 30s)\r\n'),
+      termId)
+
+    // Longer than the first test saw the same flow take, so a pointer that was going to be typed has been.
+    // That first test is this one's control: the describe is serial, so this runs only after the same
+    // flow, fed the same two signals, typed its pointer where a process ran. The unit tests
+    // (useAutoPrimer.test.tsx) show the flow reaching the OS question here; this shows the real OS
+    // answering it for an idle terminal and the real app honouring the answer.
+    await page.waitForTimeout(Math.max(12_000, rePrimeMs * 2 + 3000))
+    expect(await pastesTo(termId), 'a pointer was typed at a bare shell prompt').toBe(0)
+    // Still only a shell: the silence is the OS's answer, not an agent that came and went.
+    expect(await askShellAlone(termId, 'alone', 10_000)).toBe(true)
   })
 })
 

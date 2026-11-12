@@ -643,16 +643,15 @@ describe('SettingsPane', () => {
     localStorage.removeItem('termpolis.memory.autoReprimeOnCompaction')
   })
 
-  it('the compaction note matches the re-primer: sent, skipped for a launched Claude, never over a draft', () => {
+  it('auto-reprime says the note is sent for you, and when it is not typed at all', () => {
+    // It used to say "(not sent automatically)": the pointer is typed AND submitted, so the copy is
+    // the only place that says when it will not be.
     render(<SettingsPane />)
-    const note = screen.getByTestId('settings-auto-reprime-toggle').parentElement!.textContent!
-    // reprimeAfterCompaction sends the pointer with an Enter, so the note must not say it isn't sent.
-    expect(note).not.toMatch(/not sent automatically/i)
-    expect(note).toMatch(/types the one-line memory_primer pointer and sends it/)
-    // Rule 1: a launch-primed Claude terminal is left alone.
-    expect(note).toMatch(/Claude terminal that Termpolis launched reloads it by itself/)
-    // Rule 2: never over a draft or an open prompt.
-    expect(note).toMatch(/never types over a draft/)
+    const copy = screen.getByTestId('settings-auto-reprime-toggle').parentElement?.textContent ?? ''
+    expect(copy).toContain('types the one-line memory_primer note and sends it for you')
+    expect(copy).toContain('never while the agent is waiting for an answer, only its shell is left, or you are typing or pasting')
+    expect(copy).toContain('nothing is typed for it')
+    expect(copy).not.toContain('not sent automatically')
   })
 
   it('auto-reprime toggle reflects a stored opt-out on mount', () => {

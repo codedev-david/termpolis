@@ -10,7 +10,11 @@
  *     `security` or `secret-tool` lookups. Termpolis protects its own keys only through Electron's
  *     safeStorage.
  *  2. Listing processes with their command lines, or the network-connection table, happens only in
- *     the modules allowed below, each reached only from an explicit action.
+ *     the modules allowed below, each reached only from an explicit action. The exception is
+ *     shellAlone, which names the processes of ONE terminal (never a command line, never anyone
+ *     else's): it is also asked before Termpolis types the memory pointer into an agent, twice per
+ *     launch or compaction re-prime (before the paste and before the Enter), up to four times when
+ *     only the shell seems to run, with nobody pressing anything (test 2b pins who asks).
  *  3. Termpolis's own PowerShell never bypasses the execution policy or hides what it runs.
  *
  * Related guards: the Processes panel scans only on Scan or Refresh
@@ -142,7 +146,8 @@ describe('endpoint activity guard', () => {
       'src/main/egressAudit.ts':
         'Per-agent egress audit: nothing calls it (asserted below).',
       'src/main/shellAlone.ts':
-        'macOS/Linux: the terminal\'s own shell and process group (ps -p, pgrep -g), before typing into an agent.',
+        'macOS/Linux: the terminal\'s own shell and process group (ps -p, pgrep -g), before typing into an agent: ' +
+        'when a model is switched, when write_to_terminal submits, and, unprompted, before the memory pointer is typed (2b).',
       'src/main/terminalManager.ts':
         'macOS: the working directory of the terminal\'s own shell (lsof -p <pid>), so the git badge follows cd.',
       'src/main/sudoAskpass.ts':
@@ -157,6 +162,22 @@ describe('endpoint activity guard', () => {
       .filter((f) => /\.egress\b/.test(readFileSync(f.path, 'utf8')))
       .map((f) => relative(ROOT, f.path))
     expect(callers).toEqual([])
+  })
+
+  it('2b. only two renderer files ask the OS what runs in a terminal: the model switcher and the memory pointer', () => {
+    // shellAlone names the processes of one terminal. The model switcher asks on a click (through
+    // terminalRelaunchIo, shared with the usage-limit card's model row). The memory
+    // pointer asks on its own, twice per agent launch or compaction re-prime (before the paste and
+    // before the Enter) and up to four times when only the shell seems to run, so a third caller
+    // changes what the fact sheet given to IT may say: add it here on purpose, and update the sheet.
+    const callers = FILES.filter((f) => f.path.includes(join('src', 'renderer')))
+      .filter((f) => /\bterminalShellAlone\s*(\?\.)?\(/.test(readFileSync(f.path, 'utf8')))
+      .map((f) => relative(ROOT, f.path).split(sep).join('/'))
+      .sort()
+    expect(callers).toEqual([
+      'src/renderer/src/hooks/useAutoPrimer.ts', // the memory pointer (unprompted, 2 to 4 times per prime)
+      'src/renderer/src/lib/modelRelaunch.ts', // the model switcher and the usage-limit card's model row (a click)
+    ])
   })
 
   it('3. never bypasses PowerShell\'s execution policy or hides what it runs', () => {

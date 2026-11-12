@@ -45,6 +45,8 @@ const H = vi.hoisted(() => {
     clearSelection: vi.fn(),
     selectAll: vi.fn(),
     select: vi.fn(),
+    reset: vi.fn(),
+    scrollToBottom: vi.fn(),
     loadAddon: vi.fn(),
     parser: { registerCsiHandler: vi.fn(), registerOscHandler: vi.fn() },
     unicode: { activeVersion: '11', register: vi.fn() },
@@ -475,7 +477,9 @@ const keyUp = (init: KeyboardEventInit): boolean | undefined => {
   return r
 }
 const typeIntoPty = (d: string): void => { act(() => { H.dataCbs[H.dataCbs.length - 1]?.(d) }) }
-const emitPty = (d: string, id = 'term-1', idx = -1): void => {
+/** What xterm hands onData for a paste into an agent that asked for bracketed paste: one chunk, markers and all. */
+const PASTED = '\x1b[200~fix the failing test\x1b[201~'
+const emitPty =(d: string, id = 'term-1', idx = -1): void => {
   const cb = idx < 0 ? H.ptyCbs[H.ptyCbs.length - 1] : H.ptyCbs[idx]
   act(() => { cb?.(id, d) })
 }
@@ -1743,6 +1747,109 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(mockWriteToTerminal).not.toHaveBeenCalled() // a paste would corrupt the draft
     })
 
+    // The OS question before the paste takes a second or two on Windows, and the person types into
+    // the pane meanwhile. The pane's own draft (what onData recorded) is what the re-primer reads.
+    describe('a draft that starts while the OS is still answering', () => {
+      /** An OS that answers "an agent runs" and, on its nth answer, has the user put `input` into the pane. */
+      const userTypesDuring = (nth: number, input = 'fix the'): void => {
+        let asks = 0
+        ;(window as any).termpolis.terminalShellAlone = vi.fn(async () => {
+          if (++asks === nth) H.dataCbs[H.dataCbs.length - 1]?.(input)
+          return { success: true, data: false }
+        })
+      }
+
+      it('is not pasted over', async () => {
+        useTimers()
+        claudeAgentPane(false)
+        userTypesDuring(1)
+        render(<TerminalPane {...defaultProps} />)
+
+        emitPty('Compacting conversation… (esc to interrupt)\n')
+        await settle(10_000)
+
+        expect(mockMemoryBuildPrimer).toHaveBeenCalledTimes(1) // the re-prime ran…
+        expect(mockWriteToTerminal.mock.calls.map((c) => String(c[1]))).toEqual(['fix the']) // …and typed nothing of its own
+      })
+
+      it('is not submitted with the pointer', async () => {
+        useTimers()
+        claudeAgentPane(false)
+        userTypesDuring(2)
+        render(<TerminalPane {...defaultProps} />)
+
+        emitPty('Compacting conversation… (esc to interrupt)\n')
+        await settle(10_000)
+
+        const sent = mockWriteToTerminal.mock.calls.map((c) => String(c[1]))
+        expect(sent).toHaveLength(2)
+        expect(sent[0]).toContain('memory_primer') // the paste went in…
+        expect(sent[1]).toBe('fix the') // …then only the user's keystrokes: the pointer's Enter was held back
+      })
+
+      // A PASTE is not keystrokes: xterm hands onData one chunk wrapped in the bracketed-paste
+      // markers (the agent asked for them), which the pane's keystroke record skips. It is a draft
+      // all the same, and the pointer's Enter would send it along.
+      describe('as a paste', () => {
+        it('is not pasted over', async () => {
+          useTimers()
+          claudeAgentPane(false)
+          userTypesDuring(1, PASTED)
+          render(<TerminalPane {...defaultProps} />)
+
+          emitPty('Compacting conversation… (esc to interrupt)\n')
+          await settle(10_000)
+
+          expect(mockMemoryBuildPrimer).toHaveBeenCalledTimes(1) // the re-prime ran…
+          expect(mockWriteToTerminal.mock.calls.map((c) => String(c[1]))).toEqual([PASTED]) // …and typed nothing of its own
+        })
+
+        it('is not submitted with the pointer', async () => {
+          useTimers()
+          claudeAgentPane(false)
+          userTypesDuring(2, PASTED)
+          render(<TerminalPane {...defaultProps} />)
+
+          emitPty('Compacting conversation… (esc to interrupt)\n')
+          await settle(10_000)
+
+          const sent = mockWriteToTerminal.mock.calls.map((c) => String(c[1]))
+          expect(sent).toHaveLength(2)
+          expect(sent[0]).toContain('memory_primer') // the pointer went in…
+          expect(sent[1]).toBe(PASTED) // …then only the user's paste: the pointer's Enter was held back
+        })
+
+        it('does not hold the re-prime back once the paste has been sent with an Enter', async () => {
+          useTimers()
+          claudeAgentPane(false)
+          render(<TerminalPane {...defaultProps} />)
+          typeIntoPty(PASTED)
+          typeIntoPty('\r') // the person sends it: the line is empty again
+
+          emitPty('Compacting conversation… (esc to interrupt)\n')
+          await settle(10_000)
+
+          const sent = mockWriteToTerminal.mock.calls.map((c) => String(c[1]))
+          expect(sent).toHaveLength(4)
+          expect(sent.slice(0, 2)).toEqual([PASTED, '\r'])
+          expect(sent[2]).toContain('memory_primer')
+          expect(sent[3]).toBe('\r')
+        })
+
+        it('does not re-prime over a paste that has not been sent', async () => {
+          useTimers()
+          claudeAgentPane(false)
+          render(<TerminalPane {...defaultProps} />)
+          typeIntoPty(PASTED) // no Enter: it sits on the agent's input line
+
+          emitPty('Compacting conversation… (esc to interrupt)\n')
+          await settle(10_000)
+
+          expect(mockWriteToTerminal.mock.calls.map((c) => String(c[1]))).toEqual([PASTED])
+        })
+      })
+    })
+
     it('ordinary output never arms the re-primer', async () => {
       useTimers()
       claudeAgentPane(false)
@@ -1893,7 +2000,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       const writes = primerWrites()
       expect(writes).toHaveLength(1)
       expect(String(writes[0][1]).startsWith('\x1b[200~')).toBe(true)
-      expect(String(writes[0][1])).not.toContain('\r') // never auto-submitted
+      expect(String(writes[0][1])).not.toContain('\r') // the Enter is a separate write, after a pause
     })
 
     it('never pastes when the name only appeared in output (a filename, a grep hit, an MOTD)', async () => {
@@ -1913,6 +2020,106 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await settle(10_000)
 
       expect(primerWrites()).toHaveLength(1)
+    })
+
+    // The OS question before each write takes a second or two on Windows, and the person types
+    // into a fresh agent meanwhile; what they put on the line, typed or pasted, is looked at last.
+    describe('a draft that starts while the OS is still answering', () => {
+      /** An OS that answers "an agent runs" and, on its nth answer, has the user put `input` into the pane. */
+      const userInputDuring = (nth: number, input: string): void => {
+        let asks = 0
+        ;(window as any).termpolis.terminalShellAlone = vi.fn(async () => {
+          if (++asks === nth) H.dataCbs[H.dataCbs.length - 1]?.(input)
+          return { success: true, data: false }
+        })
+      }
+      const written = (): string[] => mockWriteToTerminal.mock.calls.map((c) => String(c[1]))
+
+      beforeEach(() => {
+        setStore({ terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'codex' }] })
+      })
+
+      it.each([
+        ['typed', 'fix the'],
+        ['pasted', PASTED],
+      ])('is not pasted over when it is %s before the first write', async (_how, input) => {
+        useTimers()
+        userInputDuring(1, input)
+        render(<TerminalPane {...defaultProps} />)
+        await settle(10_000)
+
+        expect(mockMemoryBuildPrimer).toHaveBeenCalledTimes(1) // the prime ran…
+        expect(written()).toEqual([input]) // …and typed nothing of its own
+        expect(H.setMemoryNotice).not.toHaveBeenCalled() // and announced no recall
+      })
+
+      it.each([
+        ['typed', 'fix the'],
+        ['pasted', PASTED],
+      ])('is not submitted with the pointer when it is %s before the Enter', async (_how, input) => {
+        useTimers()
+        userInputDuring(2, input)
+        render(<TerminalPane {...defaultProps} />)
+        await settle(10_000)
+
+        const sent = written()
+        expect(sent).toHaveLength(2)
+        expect(sent[0]).toContain('memory_primer') // the pointer went in…
+        expect(sent[1]).toBe(input) // …then only the person's own input: the pointer's Enter was held back
+        expect(H.setMemoryNotice).not.toHaveBeenCalled()
+      })
+    })
+
+    // A paste is not keystrokes (xterm hands onData one chunk in bracketed-paste markers), and it
+    // is a draft all the same: the pointer waits until the line is sent or cleared.
+    describe('a paste on the input line', () => {
+      /** The person pastes their first prompt before the agent has shown on screen; the prime starts after. */
+      const pasteThenDetect = (): void => {
+        setStore({ terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'codex' }] })
+        setAgent(null)
+        const view = render(<TerminalPane {...defaultProps} />)
+        typeIntoPty(PASTED)
+        setAgent(CLAUDE)
+        // The pane is memoised: a new prop is what makes it read the agent that was just detected.
+        view.rerender(<TerminalPane {...defaultProps} terminalName="Terminal 1 (codex)" />)
+      }
+
+      it('holds the pointer back until it is sent with an Enter', async () => {
+        useTimers()
+        pasteThenDetect()
+        await settle(20_000)
+        expect(primerWrites()).toHaveLength(0) // nothing is typed over it
+        expect(mockMemoryBuildPrimer).not.toHaveBeenCalled()
+
+        typeIntoPty('\r')
+        await settle(10_000)
+        expect(primerWrites()).toHaveLength(1)
+        expect(mockWriteToTerminal.mock.calls[mockWriteToTerminal.mock.calls.length - 1]).toEqual(['term-1', '\r'])
+      })
+
+      it('is forgotten when the terminal is cleared, as typed text is', async () => {
+        useTimers()
+        pasteThenDetect()
+        await settle(5_000)
+        expect(primerWrites()).toHaveLength(0)
+
+        await act(async () => { window.dispatchEvent(new CustomEvent('termpolis:clear-terminal', { detail: 'term-1' })) })
+        await settle(10_000)
+        expect(H.term.reset).toHaveBeenCalled() // the clear ran…
+        expect(primerWrites()).toHaveLength(1) // …and the line counts as empty again
+      })
+
+      it('is given up on for a prime that finds it only after its boot delay, as typed text is', async () => {
+        useTimers()
+        setStore({ terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'codex' }] })
+        render(<TerminalPane {...defaultProps} />)
+        await settle(500) // the prime is in its boot delay…
+        typeIntoPty(PASTED) // …when the person pastes
+        await settle(10_000)
+
+        expect(primerWrites()).toHaveLength(0)
+        expect(mockMemoryBuildPrimer).not.toHaveBeenCalled()
+      })
     })
   })
 })

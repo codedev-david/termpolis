@@ -553,12 +553,13 @@ export function SettingsPane() {
             <div className="flex flex-col gap-0.5">
               <span className="text-sm font-medium">Re-recall context after compaction</span>
               <span className="text-xs text-[#9ca3af] leading-relaxed">
-                When an agent compacts its conversation to fit the context window, it summarizes
-                detail away, but that detail is still in the memory brain. A Claude terminal that
-                Termpolis launched reloads it by itself, so nothing is typed there. In other agent
-                terminals, once the compaction settles and the input line is empty, Termpolis types
-                the one-line memory_primer pointer and sends it, so the agent reloads what it lost.
-                It never types over a draft or a prompt that is waiting for an answer.
+                When Claude compacts its conversation to fit the context window, it summarizes detail
+                away — but that detail still lives in the memory brain. Once the compaction settles,
+                Termpolis types the one-line memory_primer note and sends it for you (never while the
+                agent is waiting for an answer, only its shell is left, or you are typing or pasting) so the
+                agent can reload what it lost behind the scenes. A Claude that Termpolis started does
+                this itself from its system prompt, so nothing is typed for it. Your durable memory
+                is the large working set; the model&rsquo;s window only holds the active task.
               </span>
             </div>
           </div>

@@ -11,12 +11,16 @@ import {
   primeOnLaunch,
   selfRecordsLessons,
   promptShowing,
+  shellAloneNow,
+  ALONE_ASKS,
+  ALONE_RECHECK_MS,
   PRIMER_GATE_POLL_MS,
   PRIMER_GATE_MAX_WAIT_MS,
   PRIMER_SUBMIT_SETTLE_MS,
   type PrimerGate,
 } from '../../src/renderer/src/hooks/useAutoPrimer'
 import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
+import { psQuote } from '../../src/shared/shellQuote'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 const KEY = 'termpolis.memory.autoPrimerOnLaunch'
@@ -84,7 +88,9 @@ describe('injectAutoPrimer', () => {
     // The digest content is NOT pasted — the agent loads it via MCP behind the scenes.
     expect(payload).not.toContain('RECALLED CONTEXT')
     expect(payload).toContain('memory_primer')
-    expect(payload).toContain('"/home/me/myproject"')
+    // The folder is named in single quotes: between double quotes a shell would expand it.
+    expect(payload).toContain("'/home/me/myproject'")
+    expect(payload).not.toContain('"/home/me/myproject"')
   })
 
   // SAFETY-R2-1 (R17): a profile the user did not connect holds no Termpolis server, so the agent there can't call
@@ -535,6 +541,8 @@ describe('memories-loaded banner (Codex / Gemini typed-pointer path)', () => {
     vi.useFakeTimers()
     renderHook(() => useAutoPrimer('term-codex', { name: 'OpenAI Codex' } as any, '/home/me/proj', openGate()))
     await vi.advanceTimersByTimeAsync(1500)
+    expect(useTerminalStore.getState().memoryNotice).toBeNull() // the pointer is pasted, not yet submitted
+    await vi.advanceTimersByTimeAsync(PRIMER_SUBMIT_SETTLE_MS)  // the Enter goes in, and then the banner
     expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 4 memories for "proj"')
   })
 
@@ -949,5 +957,1013 @@ describe('selfRecordsLessons: which agents record their own lessons', () => {
       expect(await primeOnLaunch('t', '/p', gateFor(command), { inject, sleep: noSleep, awaiting: async () => false })).toBe(true)
       expect(inject).toHaveBeenCalledWith('t', '/p', expected)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// The pointer goes in with an Enter, and at a SHELL's prompt that Enter runs it as a command. An
+// agent that died while it started leaves exactly that prompt behind (a missing binary, a failed
+// sign-in, a crash on boot), and the screen cannot always tell it from an agent at its input:
+// Claude Code and Antigravity leave their last frame on screen when they exit. So the OS is asked,
+// before the paste and again before the Enter, whether anything but the shell runs in the terminal
+// (terminalShellAlone, shellAlone.ts: the same question the model switcher asks).
+// ---------------------------------------------------------------------------------------------
+describe('the pointer is never typed at a shell prompt', () => {
+  /** A terminalShellAlone that answers each call in turn and then repeats its last answer; an Error is thrown. */
+  const asking = (...answers: unknown[]) => {
+    let at = 0
+    return vi.fn(async (_id: string) => {
+      const next = answers[Math.min(at++, answers.length - 1)]
+      if (next instanceof Error) throw next
+      return next
+    })
+  }
+  const alone = (data: unknown) => ({ success: true, data })
+  const quick = async (): Promise<void> => {}
+  const writes = (): string[] => (window as any).termpolis.writeToTerminal.mock.calls.map((c: unknown[]) => c[1] as string)
+
+  beforeEach(() => {
+    useTerminalStore.setState({ memoryNotice: null, terminals: [] })
+  })
+
+  // The OS's answer as the primer reads it: true (only the shell runs), false (something else
+  // does) or null (it cannot tell). Only a definite answer is anything but "cannot tell".
+  describe('shellAloneNow', () => {
+    it('is true when the OS says nothing runs in the terminal but its shell', async () => {
+      mockApi({ terminalShellAlone: asking(alone(true)) })
+      expect(await shellAloneNow('t1')).toBe(true)
+      expect((window as any).termpolis.terminalShellAlone).toHaveBeenCalledWith('t1')
+    })
+
+    it('is false when the OS says something else runs there', async () => {
+      mockApi({ terminalShellAlone: asking(alone(false)) })
+      expect(await shellAloneNow('t1')).toBe(false)
+    })
+
+    it.each([
+      ['the OS cannot tell', alone(null)],
+      ['the call failed', { success: false, error: 'Invalid terminal id' }],
+      ['the call answers nothing', undefined],
+      ['a data that is not a boolean', alone('true')],
+      ['a count', alone(1)],
+      ['a success that is not a boolean', { success: 'yes', data: true }],
+    ])('is null when %s', async (_why, answer) => {
+      mockApi({ terminalShellAlone: asking(answer) })
+      expect(await shellAloneNow('t1')).toBeNull()
+    })
+
+    it('is null when the call throws or rejects', async () => {
+      mockApi({ terminalShellAlone: asking(new Error('ipc gone')) })
+      expect(await shellAloneNow('t1')).toBeNull()
+      mockApi({ terminalShellAlone: vi.fn(() => { throw new Error('thrown at once') }) })
+      expect(await shellAloneNow('t1')).toBeNull()
+    })
+
+    it('is null on a bridge without the call (an older preload) and with no bridge at all', async () => {
+      mockApi() // the default test bridge has no terminalShellAlone
+      expect(await shellAloneNow('t1')).toBeNull()
+      ;(window as any).termpolis = undefined
+      expect(await shellAloneNow('t1')).toBeNull()
+    })
+  })
+
+  describe('injectAutoPrimer', () => {
+    it('asks the OS about this terminal before the paste and again before the Enter', async () => {
+      const log: string[] = []
+      mockApi({
+        terminalShellAlone: vi.fn(async (id: string) => { log.push(`ask ${id}`); return alone(false) }),
+        writeToTerminal: vi.fn((_id: string, data: string) => { log.push(data === '\r' ? 'enter' : 'paste') }),
+      })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+      expect(log).toEqual(['ask t1', 'paste', 'ask t1', 'enter'])
+    })
+
+    it('types nothing, and says nothing, when only the shell runs in the terminal', async () => {
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(false)
+      expect(writes()).toEqual([]) // no paste and no Enter
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS) // it is asked until it has been sure
+      // A launch prime that never happened must not announce "Loaded N memories".
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+      // The recall check ran first: it is what says there is anything to point at.
+      expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+    })
+
+    it('leaves the Enter out when the agent exits between the paste and the Enter', async () => {
+      const terminalShellAlone = asking(alone(false), alone(true))
+      mockApi({ terminalShellAlone })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(false)
+      const sent = writes()
+      expect(sent).toHaveLength(1) // the paste went in; the Enter did not
+      expect(sent[0]).toContain('memory_primer')
+      expect(sent).not.toContain('\r')
+      expect(terminalShellAlone).toHaveBeenCalledTimes(2)
+    })
+
+    it('asks the OS only after it has a pointer to type (no memory, no question)', async () => {
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone, memoryBuildPrimer: vi.fn(async () => ({ success: true, data: null })) })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(false)
+      expect(terminalShellAlone).not.toHaveBeenCalled()
+    })
+
+    it('asks the OS first and looks at the screen last, before the paste and before the Enter', async () => {
+      // The OS takes a second or two on Windows. The screen look is what keeps the Enter from
+      // answering a prompt, so a prompt that comes up while the OS answers must still be seen.
+      const log: string[] = []
+      mockApi({
+        terminalShellAlone: vi.fn(async () => { log.push('os'); return alone(false) }),
+        readTerminalBuffer: vi.fn(async () => { log.push('screen'); return { success: true, data: { output: IDLE_SCREEN } } }),
+        writeToTerminal: vi.fn((_id: string, data: string) => { log.push(data === '\r' ? 'enter' : 'paste') }),
+      })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+      expect(log).toEqual(['os', 'screen', 'paste', 'os', 'screen', 'enter'])
+    })
+
+    it('types nothing when a prompt is on screen, however the OS answers', async () => {
+      const terminalShellAlone = asking(alone(false))
+      mockApi({ terminalShellAlone, readTerminalBuffer: vi.fn(async () => ({ success: true, data: { output: TRUST_SCREEN } })) })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(false)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(1)
+      expect(writes()).toEqual([])
+    })
+
+    it('holds the Enter back when a prompt comes up while the OS is answering', async () => {
+      const terminalShellAlone = asking(alone(false))
+      const read = vi.fn()
+        .mockResolvedValueOnce({ success: true, data: { output: IDLE_SCREEN } })
+        .mockResolvedValue({ success: true, data: { output: TRUST_SCREEN } })
+      mockApi({ terminalShellAlone, readTerminalBuffer: read })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(false)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(2)
+      expect(read).toHaveBeenCalledTimes(2)
+      expect(writes()).toHaveLength(1) // the paste went in; the Enter did not
+    })
+
+    it('does not look at the screen once the OS says only the shell runs', async () => {
+      const read = vi.fn(async () => ({ success: true, data: { output: IDLE_SCREEN } }))
+      mockApi({ terminalShellAlone: asking(alone(true)), readTerminalBuffer: read })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(false)
+      expect(read).not.toHaveBeenCalled()
+    })
+
+    // On Windows an agent's process is not on the console the moment the launch command echoes, and
+    // that early answer is the one for an agent that has gone: the prime was dropped for good (it is
+    // never retried). So before the paste "only the shell runs" has to be said again, a little
+    // later, and a dead agent is still a dead one.
+    describe('an agent that is still starting', () => {
+      // The tests below compare with these constants, so they would follow a change of either.
+      // docs/DOCUMENTATION.md tells the reader "up to three times, two seconds apart", and that is
+      // also how often Termpolis asks the OS about a terminal by itself.
+      it('is asked about up to three times, two seconds apart', () => {
+        expect(ALONE_ASKS).toBe(3)
+        expect(ALONE_RECHECK_MS).toBe(2000)
+      })
+
+      it('is asked about again before it is taken for one that has gone', async () => {
+        const terminalShellAlone = asking(alone(true))
+        const read = vi.fn(async () => ({ success: true, data: { output: IDLE_SCREEN } }))
+        mockApi({ terminalShellAlone, readTerminalBuffer: read })
+        const sleep = vi.fn(async (_ms: number) => {})
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, sleep)).toBe(false)
+        expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
+        expect(sleep.mock.calls).toEqual(Array.from({ length: ALONE_ASKS - 1 }, () => [ALONE_RECHECK_MS]))
+        expect(read).not.toHaveBeenCalled()
+        expect(writes()).toEqual([])
+        expect(useTerminalStore.getState().memoryNotice).toBeNull()
+      })
+
+      it('is primed when the second answer finds it', async () => {
+        const terminalShellAlone = asking(alone(true), alone(false))
+        mockApi({ terminalShellAlone })
+        const sleep = vi.fn(async (_ms: number) => {})
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, sleep)).toBe(true)
+        expect(writes()).toHaveLength(2)
+        expect(terminalShellAlone).toHaveBeenCalledTimes(3) // two before the paste, one before the Enter
+        expect(sleep.mock.calls).toEqual([[ALONE_RECHECK_MS], [PRIMER_SUBMIT_SETTLE_MS]])
+      })
+
+      it('is primed when the last answer finds it', async () => {
+        mockApi({ terminalShellAlone: asking(alone(true), alone(true), alone(false)) })
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+        expect(writes()).toHaveLength(2)
+      })
+
+      // Once the OS has said that only the shell runs, a later answer that cannot tell (the helper
+      // timed out under load, the shell was going away, the call failed) is no better news, and is
+      // not taken for an agent that runs. A FIRST answer that cannot tell is the OS not reading this
+      // shell at all, and the pointer goes in as it always did (the cases further down).
+      describe('after the OS has said that only the shell runs', () => {
+        it.each([
+          ['the OS cannot tell', alone(null)],
+          ['the call failed', { success: false, error: 'Invalid terminal id' }],
+          ['the call answers nothing', undefined],
+          ['the call rejects', new Error('ipc gone')],
+        ])('a later answer, when %s, is not taken for an agent that runs', async (_why, later) => {
+          const terminalShellAlone = asking(alone(true), later)
+          mockApi({ terminalShellAlone })
+          useTerminalStore.setState({ memoryNotice: null })
+          expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(false)
+          expect(writes()).toEqual([]) // no paste and no Enter
+          expect(terminalShellAlone).toHaveBeenCalledTimes(2) // and it is not asked a third time
+          expect(useTerminalStore.getState().memoryNotice).toBeNull()
+        })
+
+        it('holds for the last of the answers as well', async () => {
+          const terminalShellAlone = asking(alone(true), alone(true), alone(null))
+          mockApi({ terminalShellAlone })
+          expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(false)
+          expect(writes()).toEqual([])
+          expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
+        })
+
+        it('is no reason to hold back a pointer the OS then finds an agent for', async () => {
+          mockApi({ terminalShellAlone: asking(alone(true), alone(true), alone(false)) })
+          expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+          expect(writes()).toHaveLength(2)
+        })
+      })
+
+      it('is not held back before the Enter by an answer that cannot tell, after one that found the agent', async () => {
+        const terminalShellAlone = asking(alone(true), alone(false), alone(null))
+        mockApi({ terminalShellAlone })
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+        expect(writes()).toHaveLength(2) // the sequence before the Enter is a new one
+        expect(terminalShellAlone).toHaveBeenCalledTimes(3)
+      })
+
+      it('is asked about once, not again, before the Enter', async () => {
+        const terminalShellAlone = asking(alone(false), alone(true))
+        mockApi({ terminalShellAlone })
+        const sleep = vi.fn(async (_ms: number) => {})
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, sleep)).toBe(false)
+        expect(terminalShellAlone).toHaveBeenCalledTimes(2)
+        expect(sleep.mock.calls).toEqual([[PRIMER_SUBMIT_SETTLE_MS]]) // no second chance for an agent that was there
+        expect(writes()).toHaveLength(1)
+      })
+
+      it('still waits out a prompt and a draft once it has been found', async () => {
+        mockApi({ terminalShellAlone: asking(alone(true), alone(false)), readTerminalBuffer: vi.fn(async () => ({ success: true, data: { output: TRUST_SCREEN } })) })
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(false)
+        mockApi({ terminalShellAlone: asking(alone(true), alone(false)) })
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, () => false)).toBe(false)
+        expect(writes()).toEqual([])
+      })
+    })
+
+    // Anything short of a definite "only the shell runs" is today's behaviour: the pointer is typed.
+    it.each([
+      ['the OS cannot tell', alone(null)],
+      ['the call failed', { success: false, error: 'Invalid terminal id' }],
+      ['the call answers nothing', undefined],
+      ['the call rejects', new Error('ipc gone')],
+    ])('types the pointer and presses Enter as before when %s', async (_why, answer) => {
+      const terminalShellAlone = asking(answer)
+      mockApi({ terminalShellAlone })
+      useTerminalStore.setState({ memoryNotice: null })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(true)
+      const sent = writes()
+      expect(sent).toHaveLength(2)
+      expect(sent[0]).toContain('memory_primer')
+      expect(sent[1]).toBe('\r')
+      expect(terminalShellAlone).toHaveBeenCalledTimes(2)
+      expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 0 memories for "proj"')
+    })
+
+    it('types the pointer as before on a bridge that has no terminalShellAlone', async () => {
+      mockApi()
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+      expect(writes()).toHaveLength(2)
+    })
+
+    it('announces the load once the Enter is in, not before', async () => {
+      const log: string[] = []
+      mockApi({
+        terminalShellAlone: vi.fn(async () => { log.push(`ask, banner ${useTerminalStore.getState().memoryNotice}`); return alone(false) }),
+        writeToTerminal: vi.fn((_id: string, data: string) => { log.push(`${data === '\r' ? 'enter' : 'paste'}, banner ${useTerminalStore.getState().memoryNotice}`) }),
+      })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(true)
+      expect(log).toEqual(['ask, banner null', 'paste, banner null', 'ask, banner null', 'enter, banner null'])
+      expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 0 memories for "proj"')
+    })
+
+    // A banner for a recall that did not happen: the pasted line is left unsent, so nothing was loaded.
+    it.each([
+      ['the agent exits after the paste', { terminalShellAlone: asking(alone(false), alone(true)) }, undefined],
+      [
+        'a prompt comes up after the paste',
+        {
+          terminalShellAlone: asking(alone(false)),
+          readTerminalBuffer: vi.fn()
+            .mockResolvedValueOnce({ success: true, data: { output: IDLE_SCREEN } })
+            .mockResolvedValue({ success: true, data: { output: TRUST_SCREEN } }),
+        },
+        undefined,
+      ],
+      ['the user starts typing after the paste', {}, vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false)],
+    ])('does not announce the load when %s', async (_why, api, idle) => {
+      mockApi(api)
+      useTerminalStore.setState({ memoryNotice: null })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick, idle)).toBe(false)
+      expect(writes()).toHaveLength(1) // the paste went in; the Enter did not
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('does not announce the load when the Enter cannot be written', async () => {
+      mockApi({
+        writeToTerminal: vi.fn((_id: string, data: string) => { if (data === '\r') throw new Error('terminal closed') }),
+      })
+      useTerminalStore.setState({ memoryNotice: null })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(false)
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+  })
+
+  describe('on every path that types the pointer', () => {
+    it('the launch prime types nothing at the prompt of an agent that exited', async () => {
+      vi.useFakeTimers() // the OS is asked again a little later before it is believed
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone })
+      const done = primeOnLaunch('t1', '/home/me/proj', openGate(), { sleep: quick, awaiting: async () => false, delayMs: 0 })
+      await vi.advanceTimersByTimeAsync(ALONE_RECHECK_MS * ALONE_ASKS)
+      expect(await done).toBe(false)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
+      expect(writes()).toEqual([])
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('the launch prime types the pointer as before while the agent runs', async () => {
+      mockApi({ terminalShellAlone: asking(alone(false)) })
+      const ok = await primeOnLaunch('t1', '/home/me/proj', openGate(), { sleep: quick, awaiting: async () => false, delayMs: 0 })
+      expect(ok).toBe(true)
+      expect(writes()).toHaveLength(2)
+    })
+
+    it('the compaction re-prime types nothing at the prompt of an agent that exited', async () => {
+      vi.useFakeTimers()
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone })
+      const done = reprimeAfterCompaction('t1', '/home/me/proj', {
+        isLaunchPrimed: () => false, pending: async () => false, awaiting: async () => false, sleep: quick,
+      })
+      await vi.advanceTimersByTimeAsync(ALONE_RECHECK_MS * ALONE_ASKS)
+      expect(await done).toBe(false)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
+      expect(writes()).toEqual([])
+    })
+
+    it('the compaction re-prime types the pointer as before while the agent runs', async () => {
+      mockApi({ terminalShellAlone: asking(alone(false)) })
+      const ok = await reprimeAfterCompaction('t1', '/home/me/proj', {
+        isLaunchPrimed: () => false, pending: async () => false, awaiting: async () => false, sleep: quick,
+      })
+      expect(ok).toBe(true)
+      expect(writes()).toHaveLength(2)
+    })
+
+    it('useAutoPrimer: an agent that died while it started gets nothing typed', async () => {
+      vi.useFakeTimers()
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone })
+      renderHook(() => useAutoPrimer('term-dead', agent, '/home/me/proj', openGate()))
+      await vi.advanceTimersByTimeAsync(10_000) // the boot delay, then the OS asked until it is sure
+      expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
+      expect(writes()).toEqual([])
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('useAutoPrimer: an agent that takes its time to start is primed once it shows', async () => {
+      vi.useFakeTimers()
+      mockApi({ terminalShellAlone: asking(alone(true), alone(false)) })
+      renderHook(() => useAutoPrimer('term-slow', agent, '/home/me/proj', openGate()))
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(writes()).toHaveLength(2)
+      expect(writes()[1]).toBe('\r')
+    })
+
+    it('useAutoPrimer: a change of folder after the prime does not type a second pointer', async () => {
+      vi.useFakeTimers()
+      mockApi({ terminalShellAlone: asking(alone(false)) })
+      const { rerender } = renderHook(({ cwd }) => useAutoPrimer('term-cd', agent, cwd, openGate()), {
+        initialProps: { cwd: '/home/me/a' },
+      })
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(writes()).toHaveLength(2) // the pointer and its Enter
+      rerender({ cwd: '/home/me/b' })
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(writes()).toHaveLength(2) // still the one
+    })
+
+    it('useAutoPrimer: types the pointer once the OS says the agent runs', async () => {
+      vi.useFakeTimers()
+      mockApi({ terminalShellAlone: asking(alone(false)) })
+      renderHook(() => useAutoPrimer('term-live', agent, '/home/me/proj', openGate()))
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(writes()).toHaveLength(2)
+      expect(writes()[1]).toBe('\r')
+    })
+
+    it('useCompactionReprimer: an agent that exited gets no re-prime typed', async () => {
+      vi.useFakeTimers()
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone })
+      const { result } = renderHook(() => useCompactionReprimer('term-dead', agent, '/home/me/proj'))
+      result.current('✻ Compacting conversation… (2m 30s)')
+      await vi.advanceTimersByTimeAsync(12_000) // the quiet window, then the OS asked until it is sure
+      expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
+      expect(writes()).toEqual([])
+    })
+
+    it('useCompactionReprimer: re-primes as before while the agent runs', async () => {
+      vi.useFakeTimers()
+      mockApi({ terminalShellAlone: asking(alone(false)) })
+      const { result } = renderHook(() => useCompactionReprimer('term-live', agent, '/home/me/proj'))
+      result.current('✻ Compacting conversation… (2m 30s)')
+      await vi.advanceTimersByTimeAsync(6000)
+      expect(writes()).toHaveLength(2)
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// The OS question takes a second or two on Windows, and the person at the keyboard does not wait
+// for it. writeToTerminal appends at the cursor, so the draft is looked at LAST, after the OS and
+// the screen, right before the paste and again right before the Enter: a line that was empty when
+// the prime began is not necessarily empty when the OS has answered. A paste that lands after the
+// draft, or an Enter that submits it together with the pointer, corrupts the person's prompt.
+// ---------------------------------------------------------------------------------------------
+describe('the pointer is never typed over what the user is typing', () => {
+  const alone = (data: unknown) => ({ success: true, data })
+  const quick = async (): Promise<void> => {}
+
+  /**
+   * One terminal as the three places that can see its input know it: the agent's composer, main's
+   * input staging (an AI-flagged terminal stages the primer's OWN paste too, until the next submit)
+   * and the pane's draft (the user's keystrokes, never what the primer wrote). `onAsk` runs inside
+   * the nth OS question: the moment the person starts typing.
+   */
+  interface Term {
+    asks: number
+    draft: string
+    staging: string
+    composer: string
+    writes: string[]
+    submitted: string[]
+    type(text: string): void
+  }
+  function terminal(onAsk: (n: number, t: Term) => void = () => {}): Term {
+    const t: Term = {
+      asks: 0,
+      draft: '',
+      staging: '',
+      composer: '',
+      writes: [],
+      submitted: [],
+      type(text) { t.draft += text; t.staging += text; t.composer += text },
+    }
+    mockApi({
+      terminalShellAlone: vi.fn(async () => { onAsk(++t.asks, t); return alone(false) }),
+      writeToTerminal: vi.fn((_id: string, data: string) => {
+        t.writes.push(data === '\r' ? 'ENTER' : 'PASTE')
+        t.staging = /[\r\n]/.test(data) ? '' : t.staging + data
+        if (data === '\r') { t.submitted.push(t.composer); t.composer = ''; return }
+        t.composer += data.replace('\x1b[200~', '').replace('\x1b[201~', '')
+      }),
+    })
+    ;(window as any).aiSecurity = { inputPending: vi.fn(async () => ({ success: true, data: t.staging.length > 0 })) }
+    return t
+  }
+
+  beforeEach(() => {
+    useTerminalStore.setState({ memoryNotice: null, terminals: [] })
+  })
+  afterEach(() => {
+    delete (window as any).aiSecurity
+  })
+
+  describe('injectAutoPrimer', () => {
+    it('asks whether the line is still idle LAST, after the OS and the screen, before the paste and before the Enter', async () => {
+      const log: string[] = []
+      mockApi({
+        terminalShellAlone: vi.fn(async () => { log.push('os'); return alone(false) }),
+        readTerminalBuffer: vi.fn(async () => { log.push('screen'); return { success: true, data: { output: IDLE_SCREEN } } }),
+        writeToTerminal: vi.fn((_id: string, data: string) => { log.push(data === '\r' ? 'enter' : 'paste') }),
+      })
+      const idle = vi.fn(async () => { log.push('idle'); return true })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, idle)).toBe(true)
+      expect(log).toEqual(['os', 'screen', 'idle', 'paste', 'os', 'screen', 'idle', 'enter'])
+    })
+
+    it('types nothing when the line is no longer idle once the OS has answered', async () => {
+      mockApi()
+      const idle = vi.fn(async () => false)
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick, idle)).toBe(false)
+      expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+      expect(idle).toHaveBeenCalledTimes(1)
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('leaves the Enter out when the line stops being idle after the paste', async () => {
+      mockApi()
+      const idle = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false)
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, idle)).toBe(false)
+      const sent = (window as any).termpolis.writeToTerminal.mock.calls.map((c: unknown[]) => c[1] as string)
+      expect(sent).toHaveLength(1) // the paste went in; the Enter did not
+      expect(sent[0]).toContain('memory_primer')
+      expect(idle).toHaveBeenCalledTimes(2)
+    })
+
+    it('takes a plain boolean as well as a promise', async () => {
+      mockApi()
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, () => true)).toBe(true)
+      mockApi()
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, () => false)).toBe(false)
+      expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+    })
+
+    it('does not ask once the OS or the screen has already said no', async () => {
+      const idle = vi.fn(async () => true)
+      mockApi({ terminalShellAlone: vi.fn(async () => alone(true)) })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, idle)).toBe(false)
+      mockApi({ readTerminalBuffer: vi.fn(async () => ({ success: true, data: { output: TRUST_SCREEN } })) })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, idle)).toBe(false)
+      expect(idle).not.toHaveBeenCalled()
+    })
+
+    it('treats a look that throws as a line that is not idle, before the paste and before the Enter', async () => {
+      mockApi()
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, () => { throw new Error('gate gone') })).toBe(false)
+      expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+      mockApi()
+      const idle = vi.fn().mockResolvedValueOnce(true).mockRejectedValue(new Error('gate gone'))
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, idle)).toBe(false)
+      expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(1)
+    })
+
+    it('types as before when no look is passed', async () => {
+      mockApi()
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+      expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(2)
+    })
+
+    it('tells the look whether the pointer is already in the input line', async () => {
+      // The caller may weigh the two differently: a pointer that is pasted is better finished than left.
+      mockApi()
+      const idle = vi.fn((_pasted: boolean) => true)
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, idle)).toBe(true)
+      expect(idle.mock.calls).toEqual([[false], [true]])
+    })
+
+    // The pointer waits in the agent's input line from the paste to the Enter, and a person can
+    // start typing in front of it in that time. So the OS is asked about the Enter at the moment of
+    // the paste, while the pause runs, and the line waits for the longer of the two, not both.
+    it('asks the OS about the Enter while the pause runs, so the pointer waits for the longer of the two', async () => {
+      vi.useFakeTimers()
+      const at: Record<string, number> = {}
+      const osTakes = (ms: number) => vi.fn(async () => { await new Promise<void>((r) => setTimeout(r, ms)); return alone(false) })
+      const write = vi.fn((_id: string, data: string) => { at[data === '\r' ? 'enter' : 'paste'] = Date.now() })
+
+      mockApi({ terminalShellAlone: osTakes(1000), writeToTerminal: write })
+      const slow = injectAutoPrimer('t1', '/home/me/proj')
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(await slow).toBe(true)
+      expect(at.enter - at.paste).toBe(1000) // not 1000 + the pause
+
+      mockApi({ terminalShellAlone: osTakes(10), writeToTerminal: write })
+      const quickOs = injectAutoPrimer('t1', '/home/me/proj')
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(await quickOs).toBe(true)
+      expect(at.enter - at.paste).toBe(PRIMER_SUBMIT_SETTLE_MS) // and never less than the pause
+    })
+
+    it('holds the Enter back when the OS then says only the shell runs, however long the pause was', async () => {
+      vi.useFakeTimers()
+      const answers = [alone(false), alone(true)]
+      mockApi({ terminalShellAlone: vi.fn(async () => answers.shift()) })
+      const done = injectAutoPrimer('t1', '/home/me/proj')
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(await done).toBe(false)
+      expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(1) // the paste, not the Enter
+    })
+  })
+
+  describe('the launch prime', () => {
+    /** Starts the hook the way TerminalPane does, with a gate whose draft is the terminal's. */
+    const launch = async (
+      t: Term,
+      afterMount: (view: { unmount: () => void }) => void = () => {},
+      gate: PrimerGate = { launchedAgent: () => agent, draft: () => t.draft },
+    ) => {
+      vi.useFakeTimers()
+      const view = renderHook(() => useAutoPrimer('t-launch', agent, '/home/me/proj', gate))
+      afterMount(view)
+      await vi.advanceTimersByTimeAsync(8000)
+      return view
+    }
+
+    it('types nothing when the user starts typing while the OS answers the first question', async () => {
+      const t = terminal((n, x) => { if (n === 1) x.type('fix the') })
+      await launch(t)
+      expect(t.writes).toEqual([])
+      expect(t.composer).toBe('fix the')
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('presses no Enter when the user starts typing while the OS answers the second question', async () => {
+      const t = terminal((n, x) => { if (n === 2) x.type('fix the') })
+      await launch(t)
+      expect(t.writes).toEqual(['PASTE'])
+      expect(t.submitted).toEqual([]) // the draft was not submitted, with the pointer or on its own
+      expect(useTerminalStore.getState().memoryNotice).toBeNull() // and no recall is announced for it
+    })
+
+    it('types nothing when the pane goes away while the OS answers', async () => {
+      // Once the pane is gone, its gate reads a draft that nothing feeds any more (the pane that
+      // replaces it has a buffer of its own), so the draft can no longer be looked at: it waits.
+      let leave = (): void => {}
+      const t = terminal((n) => { if (n === 1) leave() })
+      await launch(t, (view) => { leave = view.unmount })
+      expect(t.writes).toEqual([])
+    })
+
+    it('presses the Enter all the same when the pane goes away once the pointer is pasted', async () => {
+      // By then the pointer is in the agent's input line. Left there it is sent with whatever the
+      // person types next: the "paragraph keeps getting repeated in the input area" bug. A pane
+      // that has gone can no longer see a draft, but a draft it saw before it went still counts.
+      let leave = (): void => {}
+      const t = terminal((n) => { if (n === 2) leave() })
+      await launch(t, (view) => { leave = view.unmount })
+      expect(t.writes).toEqual(['PASTE', 'ENTER'])
+      expect(t.submitted).toHaveLength(1)
+      expect(useTerminalStore.getState().memoryNotice).toMatch(/Loaded \d+ memor/)
+    })
+
+    it.each([
+      ['the folder changes', 1, []],
+      ['the folder changes', 2, ['PASTE', 'ENTER']],
+    ])('goes the same way when %s while the OS answers question %i', async (_what, nth, expected) => {
+      vi.useFakeTimers()
+      let change = (): void => {}
+      const t = terminal((n) => { if (n === nth) change() })
+      const gate: PrimerGate = { launchedAgent: () => agent, draft: () => t.draft }
+      const view = renderHook(({ cwd }) => useAutoPrimer('t-launch', agent, cwd, gate), { initialProps: { cwd: '/home/me/proj' } })
+      change = () => view.rerender({ cwd: '/home/me/other' })
+      await vi.advanceTimersByTimeAsync(8000)
+      expect(t.writes).toEqual(expected)
+    })
+
+    it.each([
+      [1, []],
+      [2, ['PASTE']],
+    ])('types nothing more once the launch is no longer the last command, as the OS answers question %i', async (nth, expected) => {
+      // A launch the person typed by hand is proven only by the last command they submitted. If they
+      // send something else meanwhile, to the agent or to the shell, it is no longer the launch to prime.
+      const launched = { now: agent as unknown }
+      const t = terminal((n) => { if (n === nth) launched.now = null })
+      await launch(t, undefined, { launchedAgent: () => launched.now as any, draft: () => t.draft })
+      expect(t.writes).toEqual(expected)
+      expect(t.submitted).toEqual([])
+    })
+
+    it('control: nobody typing, the pointer is pasted and submitted', async () => {
+      const t = terminal()
+      await launch(t)
+      expect(t.writes).toEqual(['PASTE', 'ENTER'])
+      expect(t.submitted).toHaveLength(1)
+      expect(t.submitted[0]).toContain('memory_primer')
+    })
+  })
+
+  describe('the compaction re-prime', () => {
+    const reprime = async (t: Term, draft: () => string = () => t.draft) => {
+      vi.useFakeTimers()
+      const view = renderHook(() => useCompactionReprimer('t-comp', agent, '/home/me/proj', draft))
+      view.result.current('✻ Compacting conversation… (2m 30s)')
+      await vi.advanceTimersByTimeAsync(9000)
+      return view
+    }
+
+    it('types nothing when the user starts typing while the OS answers the first question', async () => {
+      const t = terminal((n, x) => { if (n === 1) x.type('fix the') })
+      await reprime(t)
+      expect(t.writes).toEqual([])
+      expect(t.composer).toBe('fix the')
+    })
+
+    it('presses no Enter when the user starts typing while the OS answers the second question', async () => {
+      const t = terminal((n, x) => { if (n === 2) x.type('fix the') })
+      await reprime(t)
+      expect(t.writes).toEqual(['PASTE'])
+      expect(t.submitted).toEqual([])
+    })
+
+    it('control: on an AI-flagged terminal the primer\'s own staged paste does not hold its Enter back', async () => {
+      // main stages the primer's own paste until the next submit, so aiSecurity.inputPending is
+      // true after it. The look before the Enter is the pane's draft (the user's keystrokes), not that.
+      const t = terminal()
+      await reprime(t)
+      expect(t.writes).toEqual(['PASTE', 'ENTER'])
+      expect(t.submitted).toHaveLength(1)
+      expect(t.submitted[0]).toContain('memory_primer')
+    })
+
+    it('reads the draft of the LATEST render through a ref', async () => {
+      const t = terminal()
+      vi.useFakeTimers()
+      let draft: () => string = () => ''
+      const view = renderHook(() => useCompactionReprimer('t-comp', agent, '/home/me/proj', draft))
+      draft = () => 'typed since' // a later render hands in a new accessor
+      view.rerender()
+      view.result.current('✻ Compacting conversation… (2m 30s)')
+      await vi.advanceTimersByTimeAsync(9000)
+      expect(t.writes).toEqual([])
+    })
+
+    it('has no draft to look at for a caller that passes none, and types as it did', async () => {
+      // TerminalPane always passes one. Without it only the check made before the OS is asked is left.
+      const t = terminal()
+      vi.useFakeTimers()
+      const { result } = renderHook(() => useCompactionReprimer('t-comp', agent, '/home/me/proj'))
+      result.current('✻ Compacting conversation… (2m 30s)')
+      await vi.advanceTimersByTimeAsync(9000)
+      expect(t.writes).toEqual(['PASTE', 'ENTER'])
+    })
+  })
+
+  describe('reprimeAfterCompaction', () => {
+    const opts = (t: Term) => ({ isLaunchPrimed: () => false, pending: async () => false, awaiting: async () => false, sleep: quick, draft: () => t.draft })
+
+    it('looks at the draft after the OS has answered, before the paste', async () => {
+      const t = terminal((n, x) => { if (n === 1) x.type('fix the') })
+      expect(await reprimeAfterCompaction('t1', '/home/me/proj', opts(t))).toBe(false)
+      expect(t.writes).toEqual([])
+    })
+
+    it('looks at the draft again before the Enter', async () => {
+      const t = terminal((n, x) => { if (n === 2) x.type('fix the') })
+      expect(await reprimeAfterCompaction('t1', '/home/me/proj', opts(t))).toBe(false)
+      expect(t.writes).toEqual(['PASTE'])
+    })
+
+    it('types as before while the draft stays empty', async () => {
+      const t = terminal()
+      expect(await reprimeAfterCompaction('t1', '/home/me/proj', opts(t))).toBe(true)
+      expect(t.writes).toEqual(['PASTE', 'ENTER'])
+    })
+  })
+
+  describe('primeOnLaunch', () => {
+    const run = (t: Term, stopped: () => boolean) =>
+      primeOnLaunch('t1', '/home/me/proj', { launchedAgent: () => agent, draft: () => t.draft }, {
+        sleep: quick, awaiting: async () => false, delayMs: 0, stopped,
+      })
+
+    it('lets a pane that has gone paste nothing', async () => {
+      let gone = false
+      const t = terminal(() => { gone = true })
+      expect(await run(t, () => gone)).toBe(false)
+      expect(t.writes).toEqual([])
+    })
+
+    it('lets a pane that has gone finish the Enter for a pointer that is already pasted', async () => {
+      let gone = false
+      const t = terminal((n) => { if (n === 2) gone = true })
+      expect(await run(t, () => gone)).toBe(true)
+      expect(t.writes).toEqual(['PASTE', 'ENTER'])
+    })
+
+    it('holds that Enter back all the same for a draft the pane had seen', async () => {
+      let gone = false
+      const t = terminal((n, x) => { if (n === 2) { x.type('fix the'); gone = true } })
+      expect(await run(t, () => gone)).toBe(false)
+      expect(t.writes).toEqual(['PASTE'])
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// The pointer is one line of text, and it can still land at a SHELL's prompt: the OS answers null
+// for shells it can't read, and an agent can die between the last question and the Enter. A
+// folder's name is data somebody else chose (a cloned repository's directory). Between double
+// quotes a name can close the quotes itself and comment out the rest of the pointer (x"; cmd; #),
+// which ran in Git Bash and Windows PowerShell, and in cmd.exe with & and rem. A $(...) or a
+// backtick is expanded between double quotes as well; on a one-line paste it did not run because of
+// the pointer's own words after the folder (bash waits for more, PowerShell rejects the line), not
+// because of the quoting. zsh and fish were not available to run: what is said of them comes from
+// their documented quoting rules. So the folder is named only when every character of it is inert
+// in every shell, and then as a single-quoted literal (shellQuote.ts); otherwise the pointer writes
+// no folder and the agent passes its own working directory.
+// ---------------------------------------------------------------------------------------------
+describe('the pointer names the folder safely', () => {
+  /** Termpolis does not know the terminal's folder: the tool is called as it is. */
+  const NO_FOLDER = buildPrimerPointer('')
+  /** It knows one that cannot be written into a command line: the agent is told to use its own. */
+  const UNNAMED_TARGET = 'with cwd set to your current working directory'
+  const UNNAMED = buildPrimerPointer('/tmp/$(touch pwned)')
+
+  /** Names that are ordinary on somebody's machine, and so must still reach the agent. */
+  const ORDINARY: Array<[string, string]> = [
+    ['a POSIX path', '/home/me/myproject'],
+    ['a Windows path', 'C:\\code\\acme'],
+    ['spaces and parentheses', 'C:\\Program Files (x86)\\Acme Tools'],
+    ['tildes, as in iCloud Drive', '/Users/me/Library/Mobile Documents/com~apple~CloudDocs/proj'],
+    ['square brackets, as in a dynamic route', '/srv/app/[id]'],
+    ['a hash, as in C#', '/home/me/C#/app'],
+    ['an npm scope, a plus, an equals sign and a comma', '/home/me/@scope/pkg+x=1,2'],
+    ['curly braces', '/home/me/{template}'],
+    ['accented letters', '/home/zoë/projets/café'],
+    ['a letter and a combining mark, as macOS stores é', '/home/me/proje\u0301t'],
+    ['other scripts', '/home/用户/项目'],
+    ['a UNC share', '\\\\server\\share\\proj'],
+    ['dots, dashes and digits', 'D:/work/app-2.0_final'],
+    ['the root', '/'],
+    ['a relative folder', '.'],
+  ]
+
+  /** Names a shell would read as code, or that break out of the literal or the paste. */
+  const HOSTILE: Array<[string, string]> = [
+    ['a command substitution', '/tmp/$(touch pwned)'],
+    ['backticks', '/tmp/`touch pwned`'],
+    ['a parameter expansion', '/tmp/${IFS}touch pwned'],
+    ['a PowerShell variable', 'C:\\Users\\$env:USERNAME\\proj'],
+    ['a statement separator', '/tmp/a; touch pwned; #'],
+    ['an and-list', '/tmp/a && touch pwned'],
+    ['a pipe', '/tmp/a | tee pwned'],
+    ['an output redirect', '/tmp/a > pwned'],
+    ['an input redirect', '/tmp/a < pwned'],
+    ['a lone dollar sign', '/tmp/$HOME'],
+    ['a lone double quote', '/tmp/say"hi'],
+    ['a lone semicolon', '/tmp/a;b'],
+    ['an ampersand, which cmd.exe chains on', 'C:\\Users\\Tom & Jerry\\proj'],
+    ['a percent sign, which cmd.exe expands', 'C:\\x\\%USERPROFILE%\\y'],
+    ['a caret, cmd.exe\'s escape', 'C:\\x^&y'],
+    ['an exclamation mark, which a shell expands from its history', '/tmp/wow!'],
+    ['an apostrophe', '/home/o\'brien/proj'],
+    ['an apostrophe that closes the literal', '/tmp/a\'; touch pwned; \''],
+    ['a double quote', '/tmp/a"; touch pwned; "'],
+    ['a typographic single quote, which PowerShell reads as a quote', '/tmp/\u2018x\u2019; touch pwned'],
+    ['a typographic double quote, which PowerShell reads as a quote', '/tmp/\u201cx\u201d; touch pwned'],
+    ['a newline', '/tmp/a\ntouch pwned'],
+    ['a carriage return', '/tmp/a\rtouch pwned'],
+    ['a tab', '/tmp/a\tb'],
+    ['a NUL', '/tmp/a\0b'],
+    ['the escape that ends a bracketed paste early', '/tmp/\x1b[201~\rtouch pwned\r'],
+    ['a line separator', '/tmp/a\u2028touch pwned'],
+    ['a bidirectional override', '/tmp/\u202eevil'],
+    ['a non-breaking space', '/tmp/a\u00a0b'],
+    ['a glob', '/tmp/*'],
+    ['a question mark, as in an extended-length prefix', '\\\\?\\C:\\x'],
+    ['an emoji', '/home/me/📁 projects'],
+    ['a trailing backslash, which fish reads as an escaped closing quote', 'C:\\code\\acme\\'],
+  ]
+
+  describe('an ordinary name', () => {
+    it.each(ORDINARY)('is named in single quotes: %s', (_what, cwd) => {
+      const pointer = buildPrimerPointer(cwd)
+      expect(pointer).toContain(`with cwd set to '${cwd}' and read it as background only`)
+      // The raw folder is never between double quotes, where a shell expands what is inside.
+      expect(pointer).not.toContain(`"${cwd}"`)
+    })
+
+    it('is quoted the way shellQuote.ts quotes a PowerShell literal', () => {
+      for (const [, cwd] of ORDINARY) expect(buildPrimerPointer(cwd)).toContain(`with cwd set to ${psQuote(cwd)} and`)
+    })
+
+    it('puts nothing of the folder anywhere but inside its quotes', () => {
+      const slot = '@@FOLDER@@'
+      const template = buildPrimerPointer('/x').replace("'/x'", slot)
+      expect(template).toContain(slot)
+      for (const [, cwd] of ORDINARY) expect(buildPrimerPointer(cwd).replace(`'${cwd}'`, slot)).toBe(template)
+    })
+  })
+
+  describe('a name no shell could take for plain text', () => {
+    it.each(HOSTILE)('is left out: %s', (_what, cwd) => {
+      const pointer = buildPrimerPointer(cwd)
+      // Exactly the pointer for any other such name: nothing of the name is written anywhere.
+      expect(pointer).toBe(UNNAMED)
+      expect(pointer).not.toContain('touch pwned')
+    })
+
+    it('has the agent pass its own working directory, which keeps the recall scoped to the project', () => {
+      // memory_primer scopes by the cwd it is given (the full path, then its last segment). The agent
+      // knows its folder, and what it passes is a tool argument, which no shell reads.
+      expect(UNNAMED).toContain(`memory_primer ${UNNAMED_TARGET} and read it as background only`)
+      expect(UNNAMED).not.toContain('with no arguments')
+      expect(UNNAMED).not.toBe(NO_FOLDER)
+    })
+
+    it('keeps a project scoped when only a parent folder has a name no shell could take', () => {
+      for (const cwd of ["C:\\Users\\Sean O'Brien\\proj", 'C:\\Users\\me\\R&D\\proj', '\\\\wsl$\\Ubuntu\\home\\me\\proj', '/home/me/résumé–2020/proj']) {
+        expect(buildPrimerPointer(cwd)).toBe(UNNAMED)
+      }
+    })
+
+    it('still says "with no arguments" when there is no folder to name at all', () => {
+      expect(NO_FOLDER).toContain('memory_primer with no arguments and read it')
+      expect(NO_FOLDER).not.toContain('your current working directory')
+    })
+
+    it('keeps the pointer one line of paste-safe text whatever the folder is called', () => {
+      for (const [, cwd] of [...ORDINARY, ...HOSTILE]) {
+        const pointer = buildPrimerPointer(cwd, true)
+        expect(pointer).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/)
+        expect(pointer).not.toContain('`')
+        expect(pointer).toContain('memory_write') // the self-record clause is still appended
+      }
+    })
+  })
+
+  describe('the first word of the pointer', () => {
+    // At a cmd.exe prompt the first word of a line is looked up as a program in the CURRENT folder
+    // first, so a repository that carries a Termpolis.bat or Termpolis.cmd would run it when the
+    // pointer is typed there. A colon cannot be in the name of a file git checks out on Windows.
+    // primerPointerShell.test.ts types it into the real cmd.exe to prove it.
+    it.each([
+      ['no folder', ''],
+      ['an ordinary folder', '/home/me/proj'],
+      ['a folder that cannot be named', '/tmp/$(touch pwned)'],
+    ])('is not the name of a file a folder could hold: %s', (_what, cwd) => {
+      expect(buildPrimerPointer(cwd).split(' ')[0]).toBe('Termpolis:')
+      expect(buildPrimerPointer(cwd, true).split(' ')[0]).toBe('Termpolis:')
+    })
+
+    it('still opens by telling the agent which tool to call', () => {
+      expect(buildPrimerPointer('/home/me/proj').startsWith('Termpolis: memory — call the termpolis MCP tool memory_primer with cwd set to ')).toBe(true)
+    })
+  })
+
+  describe('which characters a folder name may carry', () => {
+    it('accepts exactly these ASCII characters, and not one control character', () => {
+      // "Named" is decided by what the pointer says, not by looking for the raw text: psQuote doubles
+      // an apostrophe, so a search for the unquoted name would never see one that had been let in.
+      const named = (cwd: string): boolean => !buildPrimerPointer(cwd).includes(UNNAMED_TARGET)
+      let accepted = ''
+      for (let code = 0; code < 0x80; code++) {
+        const ch = String.fromCharCode(code)
+        if (named(`/a${ch}b`)) accepted += ch
+      }
+      expect(accepted).toBe(' #()+,-./0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]_abcdefghijklmnopqrstuvwxyz{}~')
+      // What it names is the folder itself, in single quotes.
+      for (const ch of accepted) expect(buildPrimerPointer(`/a${ch}b`)).toContain(`with cwd set to ${psQuote(`/a${ch}b`)} and`)
+    })
+
+    it('accepts combining marks and letters of other scripts, and nothing from the private or format ranges', () => {
+      const cp = (code: number): string => String.fromCodePoint(code)
+      const withMark = `/home/proje${cp(0x301)}t`
+      expect(buildPrimerPointer(withMark)).toContain(`with cwd set to '${withMark}' and`)
+      expect(buildPrimerPointer('/home/用户')).toContain("with cwd set to '/home/用户' and")
+      // A zero-width joiner or non-joiner, a private-use character, a byte-order mark, a bidirectional isolate.
+      for (const code of [0x200d, 0x200c, 0xe000, 0xfeff, 0x2066]) expect(buildPrimerPointer(`/a${cp(code)}b`)).toBe(UNNAMED)
+    })
+
+    it('refuses the C1 controls and the no-break space too', () => {
+      for (let code = 0x80; code <= 0xa0; code++) {
+        const cwd = `/a${String.fromCharCode(code)}b`
+        expect(buildPrimerPointer(cwd)).toBe(UNNAMED)
+      }
+    })
+
+    it('does not name a folder that ends in a backslash, but names the same one without it', () => {
+      expect(buildPrimerPointer('C:\\code\\acme\\')).toBe(UNNAMED)
+      expect(buildPrimerPointer('C:\\code\\acme')).toContain("with cwd set to 'C:\\code\\acme' and")
+    })
+  })
+
+  describe('injectAutoPrimer', () => {
+    it('pastes a pointer without the name of a hostile folder, and still recalls for the real one', async () => {
+      const cwd = '/tmp/$(touch pwned)'
+      expect(await injectAutoPrimer('t1', cwd, false, false, async () => {})).toBe(true)
+      const api = (window as any).termpolis
+      // The recall check is not a shell: it keeps the real folder, so the digest is as relevant as ever.
+      expect(api.memoryBuildPrimer).toHaveBeenCalledWith(expect.stringContaining('$(touch pwned)'), undefined, cwd)
+      const [, paste] = api.writeToTerminal.mock.calls[0]
+      expect(paste).toBe('\x1b[200~' + UNNAMED + '\x1b[201~')
+      expect(paste).not.toContain('$(')
+    })
+
+    it('cannot be talked out of its bracketed paste by an escape in the folder name', async () => {
+      await injectAutoPrimer('t1', '/tmp/\x1b[201~\rtouch pwned\r', false, false, async () => {})
+      const [, paste] = (window as any).termpolis.writeToTerminal.mock.calls[0]
+      expect(paste.split('\x1b[201~')).toHaveLength(2) // the one end marker, and it is the last thing in it
+      expect(paste.endsWith('\x1b[201~')).toBe(true)
+      expect(paste).not.toContain('\r')
+    })
+
+    it('names an ordinary folder in single quotes in what it pastes', async () => {
+      await injectAutoPrimer('t1', '/home/me/myproject', false, false, async () => {})
+      const [, paste] = (window as any).termpolis.writeToTerminal.mock.calls[0]
+      expect(paste).toContain("with cwd set to '/home/me/myproject' and read it")
+    })
+
+    it('asks for the generic recall, and names the root, when the folder has no name of its own', async () => {
+      await injectAutoPrimer('t1', '/', false, false, async () => {})
+      const api = (window as any).termpolis
+      expect(api.memoryBuildPrimer).toHaveBeenCalledWith(expect.not.stringContaining('context for'), undefined, '/')
+      expect(api.writeToTerminal.mock.calls[0][1]).toContain("with cwd set to '/' and read it")
+    })
   })
 })
