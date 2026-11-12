@@ -13,6 +13,7 @@ import { integrationScriptState, INTEGRATION_SCRIPT_NAME, type SpawnPrep } from 
 import { hasJobControl, shellAlone, readConsoleProcessList } from './shellAlone'
 import { consoleListInProc } from './consoleListInProc'
 import { isHostPty, ptyHostReady, spawnInPtyHost, type HostPty } from './ptyHostClient'
+import { terminalTreeKiller, withoutEnded, type TerminalTreeKiller } from './terminalTreeKill'
 import {
   detectShellKind,
   integrationArgs,
@@ -296,15 +297,18 @@ export function spawnTerminal(
   const pid = proc.pid
   const shell: RunningShell = { pid }
   if (pid) running.add(shell)
+  const entry: PtyProcess = { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable }
   proc.onExit((e: { exitCode: number }) => {
     shellExited(shell)
     // Flush BEFORE the exit callback: a shell's last line (a prompt, an error, an exit
     // banner) is usually still inside the window when the process ends, and delivering
     // it after the terminal is torn down is the same as losing it.
     try { coalescer.dispose() } catch {}
-    try { onExit?.(e.exitCode) } finally { processes.delete(id) }
+    // Only this terminal's own entry: a close can end the shell a moment after it was asked (the tree goes first),
+    // and by then a new terminal may hold the id (a workflow step that starts again under it).
+    try { onExit?.(e.exitCode) } finally { if (processes.get(id) === entry) processes.delete(id) }
   })
-  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable })
+  processes.set(id, entry)
   return Promise.resolve()
 }
 
@@ -389,25 +393,66 @@ export function isShellInForeground(id: string): boolean | null {
   }
 }
 
+/** Closes a terminal: its shell, what runs on its console, and (once the app has turned it on, terminalTreeKill.ts)
+ *  the whole process tree under the shell, so nothing it started outlives its pane. */
 export function killTerminal(id: string): void {
+  endTerminal(id, terminalTreeKiller())
+}
+
+function endTerminal(id: string, endTree: TerminalTreeKiller | null): void {
   const proc = processes.get(id)
   if (proc) {
     try { proc.coalescer.dispose() } catch {}
-    if (isHostPty(proc.pty)) killHosted(proc.pty)
-    else {
-      try { proc.pty.kill() } catch {}
-      try { proc.pty.pid && process.kill(proc.pty.pid) } catch {}
-    }
+    if (isHostPty(proc.pty)) killHosted(proc.pty, endTree)
+    else killLocal(proc.pty, endTree)
     processes.delete(id)
   }
 }
 
+/** Ends a terminal whose pty lives in this process. Windows: the tree goes first, while the shell is still alive to lead
+ *  taskkill to it; what runs on the console is read before that, since a program whose parent has exited is on the
+ *  console but no longer in the tree. What taskkill ended leaves that list, so a pid Windows has since given to another
+ *  process is never ended in its place. POSIX: the shell's process group, then the shell. */
+function killLocal(p: pty.IPty, endTree: TerminalTreeKiller | null): void {
+  const end = (): void => {
+    try { p.kill() } catch {}
+    try { p.pid && process.kill(p.pid) } catch {}
+  }
+  const pid = p.pid
+  if (!endTree || !pid) { end(); return }
+  if (process.platform !== 'win32') {
+    void endTree(pid)
+    end()
+    return
+  }
+  void (async () => {
+    // With the EDR2-3 switch on, node-pty lists the console itself at kill time; there is nothing to pin.
+    const list = consoleListInProc() ? undefined : await readConsoleProcessList(pid).catch(() => null)
+    const ended = await endTree(pid).catch(() => new Set<number>())
+    if (list !== undefined) pinConsoleList(p, withoutEnded(list, ended))
+    end()
+  })()
+}
+
+/** node-pty's kill() asks `_getConsoleProcessList` what to end; this makes it the list read before the tree went. */
+function pinConsoleList(proc: pty.IPty, list: number[] | null): void {
+  const agent = (proc as unknown as { _agent?: { innerPid?: number; _getConsoleProcessList?: () => Promise<number[]> } })._agent
+  if (!agent || typeof agent._getConsoleProcessList !== 'function') return
+  const fallback = agent.innerPid ?? proc.pid
+  agent._getConsoleProcessList = () => Promise.resolve(list && list.length > 0 ? list : [fallback])
+}
+
 /** Ends a terminal in the pty host with what runs on its console, read through the proc host as for a terminal here
- *  (endConsoleOffThread); the shell alone when that can't be told, or when the host has not yet said the shell's pid. */
-function killHosted(p: HostPty): void {
+ *  (endConsoleOffThread); the shell alone when that can't be told, or when the host has not yet said the shell's pid.
+ *  With a tree killer, the tree under the shell goes between the two, while the shell still leads to it. */
+function killHosted(p: HostPty, endTree: TerminalTreeKiller | null): void {
   const pid = p.pid
   if (!pid) { p.kill(null); return }
-  void readConsoleProcessList(pid).then((list) => p.kill(list), () => p.kill(null))
+  const finish = (list: number[] | null): void => {
+    if (!endTree) { p.kill(list); return }
+    void endTree(pid).catch(() => new Set<number>()).then((ended) => p.kill(withoutEnded(list, ended)))
+  }
+  void readConsoleProcessList(pid).then(finish, () => finish(null))
 }
 
 export function writeToTerminal(id: string, data: string): void {
@@ -431,8 +476,10 @@ export function resizeTerminal(id: string, cols: number, rows: number): void {
   try { proc.pty.resize(cols, rows) } catch {}
 }
 
+/** Quit: every shell ends now, without the tree step. Its taskkill runs on the proc host, which the quit shuts down
+ *  right after this, and the app's exit closes every console (ending what is attached to it) on its way out. */
 export function killAll(): void {
-  for (const [id] of processes) killTerminal(id)
+  for (const [id] of processes) endTerminal(id, null)
 }
 
 /** Shells started and not yet reported exited. Unlike `processes`, a kill leaves an

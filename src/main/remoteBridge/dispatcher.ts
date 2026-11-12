@@ -1,7 +1,8 @@
 import { basename } from 'path'
 
 import { isNetworkOrDevicePath, listDirectory } from './directoryPicker'
-import { assertAllowed } from './remotePolicy'
+import { fenceFolder } from './folderFence'
+import { assertAllowed, CapabilityError } from './remotePolicy'
 import type {
   Capabilities,
   DirectoryListing,
@@ -77,8 +78,18 @@ const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(
  *  tab; past this it is only something to scroll. */
 export const MAX_REMOTE_TERMINAL_NAME = 120
 
+/** What the fence answers for a folder a phone named (folderFence.ts). */
+type Fence = (raw: string) => Promise<{ ok: true; path: string } | { ok: false; reason: string }>
+
 /** Translates remote requests into MCP tool calls, after checking capability. */
 export class RequestDispatcher {
+  /** The terminals each phone opened, by device id. A phone allowed to start
+   *  terminals may close the ones it started without the separate "Close
+   *  terminals" grant -- it could have left them unopened in the first place --
+   *  but never one the desktop user or another device opened. Held in memory:
+   *  after a bridge restart a phone closes only with the grant. */
+  private readonly started = new Map<string, Set<string>>()
+
   /** `settle` is injected only so tests do not spend real time asleep. Nothing
    *  in production passes it. */
   constructor(
@@ -87,6 +98,8 @@ export class RequestDispatcher {
     /** Injected only so a test can list a fixture tree instead of the real
      *  desktop. Nothing in production passes it. */
     private readonly listDir: (path?: string) => Promise<DirectoryListing> = listDirectory,
+    /** Injected only so a test can fence against a fixture tree. */
+    private readonly fence: Fence = fenceFolder,
   ) {}
 
   /** `deviceId` is carried through to MCP purely so the audit line names the
@@ -94,21 +107,28 @@ export class RequestDispatcher {
    *  from the registry before this was called. */
   async dispatch(request: RemoteRequest, caps: Capabilities, deviceId: string): Promise<unknown> {
     // Capability first, always — never let an unauthorized request reach MCP.
-    assertAllowed(request, caps)
+    if (request.kind === 'closeTerminal') this.assertMayClose(request.terminalId, caps, deviceId)
+    else assertAllowed(request, caps)
 
     switch (request.kind) {
       case 'listTerminals':
         return this.mcp.callTool('list_terminals', {}, deviceId)
-      case 'createTerminal':
-        return this.createTerminal(request.name, request.cwd, deviceId)
+      case 'createTerminal': {
+        const created = await this.createTerminal(request.name, request.cwd, deviceId)
+        this.remember(deviceId, terminalIdOf(created))
+        return created
+      }
       case 'runCommand':
         return this.mcp.callTool('run_command', {
           terminalId: request.terminalId, command: request.command,
         }, deviceId)
       case 'writeToTerminal':
         return this.writeThenSubmit(request.terminalId, request.text, deviceId)
-      case 'closeTerminal':
-        return this.mcp.callTool('close_terminal', { terminalId: request.terminalId }, deviceId)
+      case 'closeTerminal': {
+        const closed = await this.mcp.callTool('close_terminal', { terminalId: request.terminalId }, deviceId)
+        this.started.get(deviceId)?.delete(request.terminalId)
+        return closed
+      }
       case 'subscribe':
       case 'unsubscribe':
         // Subscription state lives in OutputFanout; nothing to ask MCP for.
@@ -119,9 +139,36 @@ export class RequestDispatcher {
         // that is not text, a network or device path, or a real folder -- before
         // touching it -- so it is safe to hand straight over.
         return this.listDir(request.path)
-      case 'launchAgent':
-        return this.launchAgent(request.agent, request.cwd, deviceId)
+      case 'launchAgent': {
+        const launched = await this.launchAgent(request.agent, request.cwd, deviceId)
+        this.remember(deviceId, launched.terminalId)
+        return launched
+      }
     }
+  }
+
+  /** Close needs the "Close terminals" grant, or "Start terminals" and a
+   *  terminal this phone started. Anything else is the same refusal an older
+   *  desktop gives, so a phone shows one message either way. */
+  private assertMayClose(terminalId: unknown, caps: Capabilities, deviceId: string): void {
+    if (caps.closeTerminal === true) return
+    if (caps.createTerminal === true && typeof terminalId === 'string' && this.started.get(deviceId)?.has(terminalId)) return
+    throw new CapabilityError('closeTerminal')
+  }
+
+  private remember(deviceId: string, terminalId: string | null): void {
+    if (terminalId === null) return
+    let mine = this.started.get(deviceId)
+    if (mine === undefined) this.started.set(deviceId, (mine = new Set()))
+    mine.add(terminalId)
+  }
+
+  /** The real folder to start in, or a refusal naming why. Home when the phone
+   *  named none. */
+  private async fenced(cwd: string): Promise<string> {
+    const verdict = await this.fence(cwd)
+    if (!verdict.ok) throw new Error(verdict.reason)
+    return verdict.path
   }
 
   /**
@@ -149,9 +196,11 @@ export class RequestDispatcher {
     if (cwd !== undefined && isNetworkOrDevicePath(cwd)) {
       throw new Error('remote device asked for a terminal on a network or device path')
     }
+    // An empty cwd is "no folder" -- main opens it at home, inside the fence.
+    const folder = cwd === undefined || cwd === '' ? cwd : await this.fenced(cwd)
     return this.mcp.callTool('create_terminal', {
       name: name.slice(0, MAX_REMOTE_TERMINAL_NAME),
-      ...(cwd === undefined ? {} : { cwd }),
+      ...(folder === undefined ? {} : { cwd: folder }),
     }, deviceId)
   }
 
@@ -189,10 +238,13 @@ export class RequestDispatcher {
       throw new Error('remote device asked to launch an agent on a network or device path')
     }
 
-    const name = `${AGENT_LABEL[agent]} · ${basename(cwd) || cwd}`
+    // The terminal starts in the REAL folder the fence approved, not the path
+    // the phone spelled, so a link swapped in afterwards cannot move it.
+    const folder = await this.fenced(cwd)
+    const name = `${AGENT_LABEL[agent]} · ${basename(folder) || folder}`
     const created = await this.mcp.callTool(
       'create_terminal',
-      { name, cwd, agentCommand: AGENT_BINARY[agent] },
+      { name, cwd: folder, agentCommand: AGENT_BINARY[agent] },
       deviceId,
     )
     const terminalId = terminalIdOf(created)

@@ -807,16 +807,35 @@ describe('stage 10: beyond home, walked on the shipped phone\'s own rules', () =
   }
 
   it('the phone reads the home listing row for row, drive rows first and in order', async () => {
-    const { sent, read } = await ask(connect(), 1, undefined, { driveRoots: async () => ['C:\\', 'D:\\'] })
+    const drives = async () => ['C:\\', 'D:\\', 'E:\\']
+    const { sent, read } = await ask(connect(), 1, undefined, { driveRoots: drives, systemDrive: 'C:' })
     expect(read).toEqual(sent)
     expect(read!.parent).toBeNull()
-    expect(read!.entries.map((e) => e.name)).toEqual(['C:\\', 'D:\\', 'repo'])
+    // Never the system drive (1.60), and on macOS and Linux no drive at all: `/` is the system.
+    const rows = process.platform === 'win32' ? ['D:\\', 'E:\\', 'repo'] : ['repo']
+    expect(read!.entries.map((e) => e.name)).toEqual(rows)
+  })
+
+  it('walks home, a folder in it, and back up to home on paths the desktop sent', async () => {
+    const session = connect()
+    const deps = { driveRoots: async () => [] }
+    const home = (await ask(session, 1, undefined, deps)).read!
+    const row = home.entries.find((e) => e.name === 'repo')!
+    const repo = (await ask(session, 2, row.path, deps)).read!
+    expect(repo.path).toBe(join(HOME, 'repo'))
+    expect(repo.parent).toBe(HOME)
+    const back = (await ask(session, 3, repo.parent!, deps)).read!
+    expect(back.path).toBe(HOME)
+    expect(back.parent).toBeNull()
   })
 
   it('walks home, a drive, a folder on it, and back up to home on paths the desktop sent', async () => {
+    // A drive a phone may use is never `/` and never the system drive, so the
+    // walk across one is Windows-only, with the fixture's drive named non-system.
+    if (process.platform !== 'win32') return
     const session = connect()
     const top = parse(HOME).root
-    const deps = { driveRoots: async () => [top] }
+    const deps = { driveRoots: async () => [top], systemDrive: top.slice(0, 1).toLowerCase() === 'z' ? 'Y:' : 'Z:' }
     let id = 10
     let screen = (await ask(session, id++, undefined, deps)).read!
 

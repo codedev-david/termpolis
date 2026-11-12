@@ -26,6 +26,7 @@ beforeEach(() => {
   ;(window as any).open = vi.fn()
   ;(window as any).termpolis = {
     getAppVersion: vi.fn().mockResolvedValue({ success: true, data: { version: '9.9.9' } }),
+    getMcpPort: vi.fn().mockResolvedValue({ success: true, data: { port: 9315 } }),
   }
 })
 
@@ -41,9 +42,60 @@ describe('StatusBar', () => {
     expect(screen.getByText(/Apache 2\.0 License/)).toBeInTheDocument()
   })
 
-  it('renders MCP server status indicator', () => {
+  it('renders MCP server status indicator', async () => {
     render(<StatusBar />)
-    expect(screen.getByText('MCP: localhost:9315')).toBeInTheDocument()
+    expect(await screen.findByText('MCP: localhost:9315')).toBeInTheDocument()
+  })
+
+  it('shows the port the MCP server actually bound, not a hardcoded 9315', async () => {
+    ;(window as any).termpolis.getMcpPort = vi.fn().mockResolvedValue({ success: true, data: { port: 9318 } })
+    render(<StatusBar />)
+    expect(await screen.findByText('MCP: localhost:9318')).toBeInTheDocument()
+    expect(screen.queryByText(/9315/)).not.toBeInTheDocument()
+  })
+
+  it('says "starting" while main has not answered yet', () => {
+    ;(window as any).termpolis.getMcpPort = vi.fn(() => new Promise(() => {}))
+    render(<StatusBar />)
+    expect(screen.getByTestId('mcp-status').textContent).toBe('MCP: starting…')
+  })
+
+  it('says "not running" when the server never bound (port null)', async () => {
+    ;(window as any).termpolis.getMcpPort = vi.fn().mockResolvedValue({ success: true, data: { port: null } })
+    render(<StatusBar />)
+    expect(await screen.findByText('MCP: not running')).toBeInTheDocument()
+    expect(screen.getByTestId('mcp-status')).toHaveAttribute('title', 'MCP server is not running')
+  })
+
+  it('says "not running" when main reports an error or no payload', async () => {
+    ;(window as any).termpolis.getMcpPort = vi.fn().mockResolvedValue({ success: false, error: 'bind failed' })
+    const { unmount } = render(<StatusBar />)
+    expect(await screen.findByText('MCP: not running')).toBeInTheDocument()
+    unmount()
+    ;(window as any).termpolis.getMcpPort = vi.fn().mockResolvedValue(undefined)
+    render(<StatusBar />)
+    expect(await screen.findByText('MCP: not running')).toBeInTheDocument()
+  })
+
+  it('says "not running" when the port query rejects', async () => {
+    ;(window as any).termpolis.getMcpPort = vi.fn().mockRejectedValue(new Error('ipc closed'))
+    render(<StatusBar />)
+    expect(await screen.findByText('MCP: not running')).toBeInTheDocument()
+  })
+
+  it('ignores a port answer that lands after unmount', async () => {
+    let resolveIt: (v: unknown) => void = () => {}
+    let rejectIt: (e: unknown) => void = () => {}
+    ;(window as any).termpolis.getMcpPort = vi.fn(() => new Promise((res) => { resolveIt = res }))
+    const a = render(<StatusBar />)
+    a.unmount()
+    resolveIt({ success: true, data: { port: 9320 } })
+    ;(window as any).termpolis.getMcpPort = vi.fn(() => new Promise((_res, rej) => { rejectIt = rej }))
+    const b = render(<StatusBar />)
+    b.unmount()
+    rejectIt(new Error('late'))
+    await Promise.resolve()
+    expect(screen.queryByTestId('mcp-status')).not.toBeInTheDocument()
   })
 
   it('shows no context-pressure indicator when no terminal is active', () => {
@@ -71,9 +123,9 @@ describe('StatusBar', () => {
     expect(el).toHaveTextContent('ctx 65%')
   })
 
-  it('renders MCP status with title tooltip', () => {
+  it('renders MCP status with title tooltip', async () => {
     render(<StatusBar />)
-    const mcpEl = screen.getByText('MCP: localhost:9315').closest('span')
+    const mcpEl = (await screen.findByText('MCP: localhost:9315')).closest('span')
     expect(mcpEl).toHaveAttribute('title', 'MCP server for AI agent integration')
   })
 
@@ -287,7 +339,7 @@ describe('StatusBar', () => {
     // The load-bearing actions a user needs to know about.
     expect(screen.getByText('Inject primer')).toBeInTheDocument()
     expect(screen.getByText(/Index this repo's code/i)).toBeInTheDocument()
-    expect(screen.getByText(/Cross-machine sync/i)).toBeInTheDocument()
+    expect(screen.getByText(/Moving memory to another computer/i)).toBeInTheDocument()
     // Opens with the keyboard shortcut (appears in the shortcuts list too).
     expect(screen.getAllByText(/Ctrl\+Shift\+M/).length).toBeGreaterThan(0)
   })
@@ -546,7 +598,7 @@ describe('StatusBar — app version lookup failures', () => {
   it('stays silent when getAppVersion rejects', async () => {
     await renderWithVersionResult(vi.fn().mockRejectedValue(new Error('ipc channel closed')))
     // The whole status bar must survive the rejection, not just the version chip.
-    expect(screen.getByText('MCP: localhost:9315')).toBeInTheDocument()
+    expect(screen.getByTestId('mcp-status')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Help / Support'))
     expect(screen.queryByTestId('help-app-version')).not.toBeInTheDocument()
   })
@@ -573,6 +625,36 @@ describe('StatusBar — app version lookup failures', () => {
     fireEvent.click(screen.getByText('Help / Support'))
     expect(screen.queryByTestId('help-app-version')).not.toBeInTheDocument()
     expect(screen.getByText(/^What.s New$/)).toBeInTheDocument()
+  })
+
+  it('What\'s New covers v1.56–1.59 and no longer headlines the Qwen removal', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    const list = screen.getByTestId('whats-new-current').closest('ul')!
+    const t = list.textContent || ''
+    expect(t).toMatch(/Model and effort per message/)
+    expect(t).toMatch(/Codex effort per message/)
+    expect(t).toMatch(/through the local proxy/)
+    expect(t).toMatch(/Fresh session before compaction/)
+    expect(t).toMatch(/before Claude compacts/)
+    expect(screen.getByTestId('whats-new-current').textContent).toMatch(/v1\.60.*confirm its words.*read-only tools/)
+    expect(t).not.toMatch(/Qwen/)
+    expect(t).not.toMatch(/Reserved copy hotkeys/)
+  })
+
+  it('help copy matches the app: no dead Ctrl+Space, no fixed port, no live egress audit, no sync, no "~17"', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    const body = document.body.textContent || ''
+    expect(body).not.toMatch(/Ctrl\+Space/)
+    expect(body).not.toMatch(/Autocomplete/)
+    expect(screen.getByText('Auto-Fix')).toBeInTheDocument()
+    expect(body).toMatch(/tries port 9315 first and moves up if that port is taken/)
+    expect(body).not.toMatch(/~17/)
+    expect(body).toMatch(/a notice appears at the bottom of the window/)
+    expect(body).toMatch(/Per-agent egress audit — off in this version/)
+    expect(body).toMatch(/Termpolis does not sync it.*Settings → General → Import \/ Export Memory/)
+    expect(body).not.toMatch(/point it at a folder you already sync/)
   })
 
   it('stamps the version into the What\'s New heading once it is known', async () => {

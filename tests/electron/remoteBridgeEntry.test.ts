@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { createHash } from 'crypto'
-import { createBridgeCore, type FlattenerLike } from '../../src/main/remoteBridge/entry'
+import { createBridgeCore, MAX_REMEMBERED_STATUS, type FlattenerLike } from '../../src/main/remoteBridge/entry'
 import { ScreenFlattener } from '../../src/main/remoteBridge/screenFlattener'
 import {
   generateIdentity,
@@ -2027,9 +2027,10 @@ describe('agent status, pushed from main to the phones watching', () => {
     expect(rooms[1].sent).toContainEqual(frame)
   })
 
-  it('does not send it to a device watching a different terminal', () => {
-    // Subscription IS the authorisation here. A device that never asked for this
-    // terminal has not been granted a view of what its agent is doing.
+  it('sends it to every phone that may read, watching that terminal or not (1.60)', () => {
+    // The list screen draws a badge per terminal. Fed only to the phone watching
+    // a terminal, a badge went stale the moment the user went back to the list.
+    // `read` is what lets a phone see the list, so it is what gates this.
     const { c, rooms } = core([device('d1')])
     attach(rooms[0])
 
@@ -2040,7 +2041,23 @@ describe('agent status, pushed from main to the phones watching', () => {
       summary: 'Thinking',
     })
 
-    expect(rooms[0].sent).toEqual([])
+    expect(rooms[0].sent).toEqual([{ kind: 'status', terminalId: 't1', status: 'thinking', summary: 'Thinking' }])
+  })
+
+  it('sends nothing to a phone without read, a phone not confirmed yet, or a linked computer', () => {
+    const { c, rooms } = core([
+      { ...device('d1'), capabilities: { ...NO_CAPABILITIES } },
+      { ...device('d2'), confirmed: false },
+      { ...device('d3'), kind: 'desktop' },
+    ])
+    rooms.forEach(attach)
+    for (const room of rooms) room.sent.length = 0
+
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
+
+    for (const room of rooms) {
+      expect(room.sent.filter((m) => (m as { kind: string }).kind === 'status')).toEqual([])
+    }
   })
 
   it('replays the last status when a phone subscribes', async () => {
@@ -2075,26 +2092,26 @@ describe('agent status, pushed from main to the phones watching', () => {
     expect(rooms[0].sent.filter((m) => (m as { kind: string }).kind === 'status')).toEqual([])
   })
 
-  it('holds nothing for a terminal no device watches any more', async () => {
-    // The bridge is never told a terminal closed, so without this prune the map
-    // grows one entry per terminal for the life of the process -- and a reused id
-    // would replay a dead terminal's last state to the phone that opened the new
-    // one.
+  it('remembers a bounded number of terminals, the one quiet longest dropped first', () => {
+    // The bridge is never told a terminal closed, so without a bound the map
+    // would grow one entry per terminal for the life of the process.
     const { c, rooms } = core([device('d1')])
+    for (let i = 0; i <= MAX_REMEMBERED_STATUS; i++) {
+      c.handleHostMessage({ kind: 'terminalStatus', terminalId: `t${i}`, status: 'idle', summary: 'Idle' })
+    }
+    // t0 went over the bound and was dropped. t1 reports again, so it is kept, and
+    // t0 coming back drops t2, now the terminal quiet longest.
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'thinking', summary: 'Thinking' })
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't0', status: 'idle', summary: 'Idle' })
+
     attach(rooms[0])
-    await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
-    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
-    await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'unsubscribe', terminalId: 't1' } })
 
-    // Any later status message is what runs the prune; a second terminal stands
-    // in for "the bridge is still alive and still being told things".
-    await c.handleRemoteRequest('d1', { id: 3, request: { kind: 'subscribe', terminalId: 't2' } })
-    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't2', status: 'idle', summary: 'Idle' })
-    rooms[0].sent.length = 0
-
-    await c.handleRemoteRequest('d1', { id: 4, request: { kind: 'subscribe', terminalId: 't1' } })
-
-    expect(rooms[0].sent.filter((m) => (m as { kind: string }).kind === 'status')).toEqual([])
+    const ids = rooms[0].sent
+      .filter((m) => (m as { kind: string }).kind === 'status')
+      .map((m) => (m as unknown as { terminalId: string }).terminalId)
+    expect(ids).toHaveLength(MAX_REMEMBERED_STATUS)
+    expect(ids).not.toContain('t2')
+    expect(ids.slice(-2)).toEqual(['t1', 't0'])
   })
 
   it('drops a status for a device that is subscribed but not attached', () => {
@@ -2143,7 +2160,7 @@ describe('status survives the phone going through a tunnel', () => {
     ])
   })
 
-  it('replays nothing for a device that was watching nothing', () => {
+  it('replays every remembered terminal to a phone that may read, watching or not', () => {
     const { c, rooms } = core([device('d1')])
     attach(rooms[0])
     c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
@@ -2151,19 +2168,105 @@ describe('status survives the phone going through a tunnel', () => {
 
     attach(rooms[0])
 
-    expect(rooms[0].sent).toEqual([])
+    expect(rooms[0].sent.filter((m) => (m as { kind: string }).kind === 'status')).toEqual([
+      { kind: 'status', terminalId: 't1', status: 'idle', summary: 'Idle' },
+    ])
+  })
+
+  it('replays nothing to a phone that may not read', () => {
+    const { c, rooms } = core([{ ...device('d1'), capabilities: { ...NO_CAPABILITIES } }])
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
+
+    attach(rooms[0])
+
+    expect(rooms[0].sent.filter((m) => (m as { kind: string }).kind === 'status')).toEqual([])
   })
 })
 
-/** A phone leaving, and saying so on the way out.
- *
- *  Since v1.40 the phone mints a fresh keypair per desktop, so a handset that
- *  unpairs and pairs again is a genuinely new device here -- by design, since
- *  that is what stops two desktops recognising one phone. The consequence is
- *  that an unpair the desktop never hears about leaves a row nothing can ever
- *  clear: its key is gone from the phone, so it can neither connect nor be
- *  recognised on the next pairing. This request is how the row goes too.
- */
+/** The desktop half of pairing (1.60). A phone is paired unconfirmed and may do
+ *  nothing until the desktop user says the words on both screens match. Nothing
+ *  new is asked of the phone, so 1.1 and 1.2 work as they are. */
+describe('confirming a phone on the desktop', () => {
+  const waiting = (): PairedDevice => ({ ...device('d1'), confirmed: false })
+
+  it('registers a newly paired phone unconfirmed, and a linked computer confirmed', () => {
+    const { c, sent } = core()
+    c.handleHostMessage({ kind: 'beginPairing', label: 'Pixel' })
+    const code = sent.find((m) => m.kind === 'pairingCode')
+    const payload = JSON.parse((code as Extract<BridgeToHost, { kind: 'pairingCode' }>).qrPayload)
+    const { device: phone } = c.acceptPairing({
+      oneTimeSecret: payload.oneTimeSecret,
+      devicePublicKey: generateIdentity().publicKey,
+      label: 'Pixel',
+      capabilities: { ...NO_CAPABILITIES, read: true },
+    })
+    expect(phone.confirmed).toBe(false)
+    expect(phone.capabilities.read).toBe(true)
+  })
+
+  it('grants nothing, status included, until the words are confirmed', async () => {
+    const { c, rooms, callTool } = core([waiting()])
+    attach(rooms[0])
+    const caps = await c.handleRemoteRequest('d1', { id: 1, request: { kind: 'getCapabilities' } })
+    expect(caps).toEqual({ kind: 'ok', id: 1, data: NO_CAPABILITIES })
+    expect((await c.handleRemoteRequest('d1', { id: 2, request: { kind: 'listTerminals' } })).kind).toBe('error')
+    expect(callTool).not.toHaveBeenCalled()
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
+    expect(rooms[0].sent.filter((m) => (m as { kind: string }).kind === 'status')).toEqual([])
+  })
+
+  it('turns the grant on when confirmed, and tells the phone and main', async () => {
+    const { c, rooms, sent, callTool } = core([waiting()])
+    attach(rooms[0])
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
+    rooms[0].sent.length = 0
+    sent.length = 0
+
+    c.handleHostMessage({ kind: 'confirmDevice', deviceId: 'd1' })
+
+    // The capability push every phone since 1.1 acts on, then the badges it missed.
+    expect(rooms[0].sent).toEqual([
+      { kind: 'capabilities', capabilities: { ...NO_CAPABILITIES, read: true } },
+      { kind: 'status', terminalId: 't1', status: 'idle', summary: 'Idle' },
+    ])
+    const announced = sent.filter((m) => m.kind === 'devicesChanged')
+    expect(announced).toHaveLength(1)
+    const [stored] = (announced[0] as Extract<BridgeToHost, { kind: 'devicesChanged' }>).devices
+    expect(stored.confirmed).toBeUndefined()
+    expect((await c.handleRemoteRequest('d1', { id: 3, request: { kind: 'listTerminals' } })).kind).toBe('ok')
+    expect(callTool).toHaveBeenCalledWith('list_terminals', {}, 'd1')
+  })
+
+  it('sends no status on confirm when the grant has no read', () => {
+    const { c, rooms } = core([{ ...waiting(), capabilities: { ...NO_CAPABILITIES, createTerminal: true } }])
+    attach(rooms[0])
+    c.handleHostMessage({ kind: 'terminalStatus', terminalId: 't1', status: 'idle', summary: 'Idle' })
+    rooms[0].sent.length = 0
+    c.handleHostMessage({ kind: 'confirmDevice', deviceId: 'd1' })
+    expect(rooms[0].sent).toEqual([{ kind: 'capabilities', capabilities: { ...NO_CAPABILITIES, createTerminal: true } }])
+  })
+
+  it('ignores an unknown id, a linked computer, and a phone already confirmed', () => {
+    const { c, rooms, sent } = core([device('d1'), { ...device('d2'), kind: 'desktop', confirmed: false }])
+    rooms.forEach(attach)
+    for (const room of rooms) room.sent.length = 0
+    sent.length = 0
+    c.handleHostMessage({ kind: 'confirmDevice', deviceId: 'ghost' })
+    c.handleHostMessage({ kind: 'confirmDevice', deviceId: 'd1' })
+    c.handleHostMessage({ kind: 'confirmDevice', deviceId: 'd2' })
+    expect(sent).toEqual([])
+    for (const room of rooms) expect(room.sent).toEqual([])
+  })
+
+  it('keeps the confirmed grant through a capability change, and an unconfirmed phone at nothing', () => {
+    const { c, rooms } = core([waiting()])
+    attach(rooms[0])
+    rooms[0].sent.length = 0
+    c.handleHostMessage({ kind: 'setCapabilities', deviceId: 'd1', capabilities: { ...NO_CAPABILITIES, read: true, writeToTerminal: true } })
+    expect(rooms[0].sent).toEqual([{ kind: 'capabilities', capabilities: NO_CAPABILITIES }])
+  })
+})
+
 describe('a device unpairing itself', () => {
   it('drops the row, and the next request on that id is refused', async () => {
     const { c, sent, callTool } = core([device('d1')])

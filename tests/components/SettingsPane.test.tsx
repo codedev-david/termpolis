@@ -643,6 +643,18 @@ describe('SettingsPane', () => {
     localStorage.removeItem('termpolis.memory.autoReprimeOnCompaction')
   })
 
+  it('the compaction note matches the re-primer: sent, skipped for a launched Claude, never over a draft', () => {
+    render(<SettingsPane />)
+    const note = screen.getByTestId('settings-auto-reprime-toggle').parentElement!.textContent!
+    // reprimeAfterCompaction sends the pointer with an Enter, so the note must not say it isn't sent.
+    expect(note).not.toMatch(/not sent automatically/i)
+    expect(note).toMatch(/types the one-line memory_primer pointer and sends it/)
+    // Rule 1: a launch-primed Claude terminal is left alone.
+    expect(note).toMatch(/Claude terminal that Termpolis launched reloads it by itself/)
+    // Rule 2: never over a draft or an open prompt.
+    expect(note).toMatch(/never types over a draft/)
+  })
+
   it('auto-reprime toggle reflects a stored opt-out on mount', () => {
     localStorage.setItem('termpolis.memory.autoReprimeOnCompaction', '0')
     render(<SettingsPane />)
@@ -677,6 +689,13 @@ describe('SettingsPane', () => {
     const link = screen.getByTestId('settings-open-memory-panel')
     expect(link).toBeInTheDocument()
     expect(link.parentElement?.textContent).toMatch(/Ctrl\+Shift\+M/)
+  })
+
+  it('does not offer memory sync, and says memory stays on each computer', () => {
+    render(<SettingsPane />)
+    const link = screen.getByTestId('settings-open-memory-panel')
+    expect(link.textContent).not.toMatch(/set up encrypted cross-machine sync/i)
+    expect(screen.getByTestId('settings-memory-sync-off').textContent).toMatch(/does not sync it between computers/i)
   })
 
   it('dispatches termpolis:openMemory when the Memory panel link is clicked', () => {

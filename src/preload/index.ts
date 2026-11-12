@@ -334,6 +334,7 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('telemetry:record-event', { name, props }),
 
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+  getMcpPort: () => ipcRenderer.invoke('mcp:get-port'),
 
   // Static platform facts, read SYNCHRONOUSLY at preload load so the renderer has
   // windowsPty before it constructs the first xterm Terminal (the option must be
@@ -606,6 +607,8 @@ contextBridge.exposeInMainWorld('remote', {
     ipcRenderer.invoke('remote:set-capabilities', { deviceId, capabilities }),
   verificationPhrase: (deviceId: string) =>
     ipcRenderer.invoke('remote:verification-phrase', { deviceId }),
+  confirmDevice: (deviceId: string) => ipcRenderer.invoke('remote:confirm-device', { deviceId }),
+  setUnattendedAgents: (enabled: boolean) => ipcRenderer.invoke('remote:set-unattended-agents', { enabled }),
   encryptKeys: () => ipcRenderer.invoke('remote:encrypt-keys'),
   startOver: () => ipcRenderer.invoke('remote:start-over'),
   onStatus: (cb: (status: RemoteStatusView) => void) => {

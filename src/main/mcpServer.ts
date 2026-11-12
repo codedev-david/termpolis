@@ -12,6 +12,7 @@ import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnSc
 import { screenOf, type ScreenSize } from '../shared/terminalScreen'
 import { traceMcpTool } from './typingTrace'
 import { RELAUNCH_HELD } from '../shared/accountSwitch'
+import { LINKED_WINDOW_REFUSAL, LINKED_WINDOW_TOOLS, callerOf, issueMcpSession, limitedNow } from './mcpLinkedWindow'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -169,6 +170,18 @@ function logMcpRequest(
 export function getMcpAuthToken(): string {
   return MCP_AUTH_TOKEN
 }
+
+// ── Linked machines: what a job another computer started here can reach ──────────────────────
+// The linked-job window: while a job another computer started runs here, the file's key reaches
+// only the read-only tools. See mcpLinkedWindow.ts.
+export {
+  LINKED_WINDOW_TOOLS,
+  getMcpBridgeKey,
+  holdForLinkedJob,
+  linkedJobWindowOpen,
+  issueMcpSession,
+  _resetLinkedWindowForTest,
+} from './mcpLinkedWindow'
 
 interface McpTool {
   name: string
@@ -1842,7 +1855,8 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
     // All other endpoints require auth token
     const authHeader = req.headers['authorization'] || ''
     const token = authHeader.replace(/^Bearer\s+/i, '')
-    if (token !== MCP_AUTH_TOKEN) {
+    const caller = callerOf(token, MCP_AUTH_TOKEN)
+    if (!caller) {
       // Deliberately untagged. The bearer token did not match, so nothing about
       // this caller has been established -- including the device it claims to be.
       // Writing an unauthenticated header into the trail would let anyone who can
@@ -1856,6 +1870,27 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
     // Past the token check: whoever set this header also holds the bearer token,
     // which is the same trust the rest of this endpoint runs on.
     const device = deviceTag(req.headers)
+
+    // A session key for one adapter (see holdForLinkedJob). Only the file's key may ask: a session
+    // can't mint another, and the bridge needs none. Counted against the global limit, so a flood
+    // can't run through the cap any faster than the calls themselves could.
+    if (req.method === 'POST' && req.url === '/mcp/session') {
+      if (caller !== 'file') {
+        logMcpRequest('POST', null, 'denied', 'session needs the file key', device)
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Forbidden' }))
+        return
+      }
+      if (!checkRateLimit('_global')) {
+        logMcpRequest('POST', null, 'rate_limited', 'global limit exceeded', device)
+        res.writeHead(429, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Rate limit exceeded' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ session: issueMcpSession() }))
+      return
+    }
 
     if (req.method === 'GET' && req.url === '/mcp/sse') {
       // SSE endpoint for notifications
@@ -1906,6 +1941,19 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
 
           // Per-tool rate limit for tools/call
           const toolName = request.method === 'tools/call' ? request.params?.name : null
+          // Checked when the call arrives, not when the key was issued: the window can open and
+          // close under a connected adapter. tools/list is left whole, so an agent gets its tools
+          // back once the job ends.
+          if (request.method === 'tools/call' && limitedNow(caller) && !LINKED_WINDOW_TOOLS.has(toolName)) {
+            logMcpRequest('tools/call', typeof toolName === 'string' ? toolName : null, 'denied', 'linked job running', device)
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              result: { content: [{ type: 'text', text: `Error: ${String(toolName)} ${LINKED_WINDOW_REFUSAL}` }], isError: true },
+              id: request.id ?? null,
+            }))
+            return
+          }
           if (toolName && RATE_LIMITS[toolName] && !checkRateLimit(toolName)) {
             logMcpRequest('tools/call', toolName, 'rate_limited', `${toolName} limit exceeded`, device)
             res.writeHead(429, { 'Content-Type': 'application/json' })

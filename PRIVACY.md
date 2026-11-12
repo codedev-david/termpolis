@@ -62,7 +62,10 @@ upload it.
 - Saved workspaces, keybindings, prompt templates, AI profiles, agent ratings,
   pinned context snippets, and swarm memory.
 - The MCP auth token and port (written to `userData/mcp-token` and
-  `userData/mcp-port` with `0600` permissions).
+  `userData/mcp-port` with `0600` permissions). While a job another of your
+  computers started runs here, that token reaches only the read-only memory
+  and code tools. Remote's bridge and connected agents use keys that are kept
+  in memory only.
 - Your privacy choices (`userData/telemetry.json`), and your answer about
   connecting your coding agents with a record of the folders Termpolis marked
   trusted for them (`userData/agent-integration.json`).
@@ -366,7 +369,11 @@ agent it was already running, under the account it was already signed in to.
 The desktop decides what a paired phone may do: reading, creating a terminal,
 typing into an existing terminal and closing a terminal are four separate
 grants, all off until you turn them on, revocable at any moment, and re-checked
-on the desktop for every request.
+on the desktop for every request. None of them applies until you confirm, on
+the desktop, that the safety words on both screens match. Swarm workers are
+never shown to a phone. An agent a phone starts asks before it edits files or
+runs commands, unless you turn on the separate *Let agents started from a phone
+run unattended* setting, which is off by default.
 
 ### The relay
 
@@ -386,10 +393,13 @@ that trusting it is not required:
   frame to the other end of the room and forgets it; a room with nobody in it
   is discarded.
 - Transport is TLS and the payload inside it is sealed separately. Both layers
-  would have to fail to expose anything.
+  would have to fail to expose anything. Termpolis uses only `wss://` relays,
+  or plain `ws://` to a relay on the same computer. A plain `ws://` address
+  saved by an older version is replaced with the default relay, and the
+  Remote pane says so.
 - When you pair, both screens show the **same eight words**, derived from the
-  two device keys. They match only if nothing is sitting in the middle.
-  Comparing them takes a couple of seconds and is the whole verification.
+  two device keys. They match only if nothing is sitting in the middle. The
+  phone gets no access until you confirm on the desktop that they match.
 
 ### What the phone stores
 
@@ -410,6 +420,12 @@ advertising identifier and no server of ours that it talks to. Unpairing —
 from either end — erases the key material for that desktop, and that channel
 cannot be re-opened without pairing again; any other desktops the phone is
 paired with are unaffected.
+
+iOS keeps Keychain items after an app is deleted. From the phone app's next
+release, the first launch after a reinstall erases the pairings, keys and
+cached subscription status the old install left, before anything reads them.
+It tells a reinstall apart by a marker kept outside the Keychain, which iOS
+deletes with the app. A subscription is found again through the App Store.
 
 The combined policy covering the desktop app, the phone app and the relay
 together is published at <https://termpolis.com/privacy.html>.

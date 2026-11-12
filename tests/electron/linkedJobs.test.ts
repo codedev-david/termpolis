@@ -1267,3 +1267,64 @@ describe('a screen that fails', () => {
     expect(await poll(h, w.jobId)).toMatchObject({ status: 'failed', output: WITHHELD, truncated: true, error: WITHHELD })
   })
 })
+
+describe('the MCP hold (mcpServer.holdForLinkedJob)', () => {
+  function holding() {
+    const events: string[] = []
+    let held = 0
+    const holdMcp = vi.fn(() => {
+      held++
+      events.push('hold')
+      return () => { held--; events.push('release') }
+    })
+    const h = setup({
+      holdMcp,
+      runHeadless: (req) => {
+        events.push(`run (held ${held})`)
+        return new Promise<ExecResult>((resolve, reject) => h.runs.push({ req, resolve, reject }))
+      },
+    })
+    return { h, holdMcp, events, held: () => held }
+  }
+
+  it('holds before the agent starts and releases once the run settles', async () => {
+    const { h, events, held } = holding()
+    await start(h)
+    expect(events).toEqual(['hold', 'run (held 1)'])
+    h.runs[0].resolve(result())
+    await flush()
+    expect(events).toEqual(['hold', 'run (held 1)', 'release'])
+    expect(held()).toBe(0)
+  })
+
+  it('releases after a run that throws', async () => {
+    const { h, held } = holding()
+    const { jobId } = await start(h)
+    h.runs[0].reject(new Error('spawn failed'))
+    await flush()
+    expect(held()).toBe(0)
+    expect((await poll(h, jobId)).status).toBe('failed')
+  })
+
+  it('keeps holding after a cancel until the stopped run has settled', async () => {
+    const { h, held } = holding()
+    const { jobId } = await start(h)
+    await h.jobs.handle(FROM, META, { kind: 'peerCancel', jobId })
+    // Marked cancelled at once, but the agent's tree is still being stopped.
+    expect(held()).toBe(1)
+    h.runs[0].resolve(result({ ok: false, error: 'cancelled', code: 1 }))
+    await flush()
+    expect(held()).toBe(0)
+  })
+
+  it('holds once per job, and not for a run that is refused before it starts', async () => {
+    const { h, holdMcp, held } = holding()
+    await start(h)
+    await start(h)
+    expect(holdMcp).toHaveBeenCalledTimes(2)
+    expect(held()).toBe(2)
+    // A third is over the per-machine cap: refused, never run, never held.
+    await expect(start(h)).rejects.toThrow(/busy/)
+    expect(holdMcp).toHaveBeenCalledTimes(2)
+  })
+})

@@ -167,6 +167,22 @@ describe('CommandPalette', () => {
     expect(onAction).toHaveBeenCalledWith('split_right', undefined)
   })
 
+  it('offers one recording entry that starts or stops, found by typing "record"', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'record' } })
+    fireEvent.click(screen.getByText('Start/Stop Recording'))
+    expect(onAction).toHaveBeenCalledWith('toggle_recording', undefined)
+  })
+
+  it('offers Export Terminal Output for the active terminal', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'export output' } })
+    fireEvent.click(screen.getByText('Export Terminal Output'))
+    expect(onAction).toHaveBeenCalledWith('export_output', undefined)
+  })
+
   it('shows prompt templates from store', () => {
     render(<CommandPalette onAction={vi.fn()} onClose={vi.fn()} />)
     // Custom prompt template should appear

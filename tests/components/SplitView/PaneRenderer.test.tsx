@@ -5,9 +5,14 @@ import type { PaneNode } from '../../../src/renderer/src/types'
 
 // Mock TerminalPane since it requires xterm
 let capturedTerminalReady: ((term: any) => void) | null = null
+// The pane's right-click menu Split Right / Split Down.
+let capturedSplitRight: (() => void) | null = null
+let capturedSplitDown: (() => void) | null = null
 vi.mock('../../../src/renderer/src/components/TerminalPane/TerminalPane', () => ({
   TerminalPane: (props: any) => {
     capturedTerminalReady = props.onTerminalReady || null
+    capturedSplitRight = props.onSplitRight || null
+    capturedSplitDown = props.onSplitDown || null
     return <div data-testid={`terminal-pane-${props.terminalId}`} />
   },
 }))
@@ -41,6 +46,7 @@ vi.mock('../../../src/renderer/src/store/terminalStore', () => ({
       getState: vi.fn(() => ({
         terminals: mockTerminals,
         activeTerminalId: mockActiveTerminalId,
+        splitTerminal: mockSplitTerminal,
       })),
       setState: vi.fn(),
     },
@@ -308,6 +314,18 @@ describe('PaneRenderer', () => {
     await vi.waitFor(() => {
       expect((window as any).termpolis.createTerminal).toHaveBeenCalled()
     })
+    // Split Right = a vertical divider, with the new pane beside t1.
+    await vi.waitFor(() => {
+      expect(mockSplitTerminal).toHaveBeenCalledWith('t1', 'vertical', expect.any(String))
+    })
+  })
+
+  it('splits from the pane right-click menu the same way as the header buttons', async () => {
+    render(<PaneRenderer node={{ type: 'terminal', terminalId: 't1' }} />)
+    capturedSplitRight!()
+    await vi.waitFor(() => expect(mockSplitTerminal).toHaveBeenCalledWith('t1', 'vertical', expect.any(String)))
+    capturedSplitDown!()
+    await vi.waitFor(() => expect(mockSplitTerminal).toHaveBeenCalledWith('t1', 'horizontal', expect.any(String)))
   })
 
   it('calls createTerminal when split down is clicked', async () => {

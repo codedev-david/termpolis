@@ -72,7 +72,7 @@
 
 ## MCP Server
 
-- [ ] MCP status indicator shows in status bar (localhost:9315)
+- [ ] MCP status indicator shows in status bar with the port in use (localhost:9315, or up to 9319 if taken)
 - [ ] Claude Code can discover and use Termpolis MCP tools (run a tool call end-to-end)
 
 ## Linked machines

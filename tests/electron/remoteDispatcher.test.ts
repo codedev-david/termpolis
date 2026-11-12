@@ -9,6 +9,14 @@ import {
   type RemoteRequest,
 } from '../../src/main/remoteBridge/protocol'
 
+// The folder fence is tested on its own (folderFence.test.ts); here every
+// folder passes through as itself so the fixtures need no real tree. Tests that
+// exercise a refusal inject their own fence.
+vi.mock('../../src/main/remoteBridge/folderFence', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/remoteBridge/folderFence')>()
+  return { ...real, fenceFolder: vi.fn(async (raw: string) => ({ ok: true as const, path: raw })) }
+})
+
 const all: Capabilities = { read: true, createTerminal: true, writeToTerminal: true, closeTerminal: true }
 const fakeMcp = () => ({ callTool: vi.fn().mockResolvedValue({ ok: true }) })
 
@@ -702,5 +710,100 @@ describe('RequestDispatcher — launching an agent', () => {
       new RequestDispatcher(mcp).dispatch({ kind: 'launchAgent', agent: 'claude', cwd: '/repo' }, readOnly, DEVICE),
     ).rejects.toThrow(CapabilityError)
     expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+
+  describe('the folder fence', () => {
+    const refuse = vi.fn(async () => ({ ok: false as const, reason: 'That folder is outside what a phone may open.' }))
+    const real = vi.fn(async () => ({ ok: true as const, path: 'C:\Users\dev\real' }))
+    const noList = async (): Promise<DirectoryListing> => ({ path: '', parent: null, entries: [] }) as unknown as DirectoryListing
+
+    it('refuses a terminal outside the fence, with the fence reason, before MCP', async () => {
+      const mcp = fakeMcp()
+      const d = new RequestDispatcher(mcp, async () => {}, noList, refuse)
+      await expect(d.dispatch({ kind: 'createTerminal', name: 's', cwd: 'C:\Windows' }, all, DEVICE))
+        .rejects.toThrow(/outside what a phone may open/)
+      expect(mcp.callTool).not.toHaveBeenCalled()
+    })
+
+    it('refuses an agent launch outside the fence, before MCP', async () => {
+      const mcp = fakeMcp()
+      const d = new RequestDispatcher(mcp, async () => {}, noList, refuse)
+      await expect(d.dispatch({ kind: 'launchAgent', agent: 'claude', cwd: '/etc' }, all, DEVICE))
+        .rejects.toThrow(/outside what a phone may open/)
+      expect(mcp.callTool).not.toHaveBeenCalled()
+    })
+
+    it('starts the terminal in the real folder the fence approved, not the spelling', async () => {
+      const mcp = fakeMcp()
+      mcp.callTool.mockResolvedValueOnce({ terminalId: 't9', name: 'x' })
+      const d = new RequestDispatcher(mcp, async () => {}, noList, real)
+      await d.dispatch({ kind: 'launchAgent', agent: 'claude', cwd: 'C:\Users\dev\link' }, all, DEVICE)
+      expect(mcp.callTool.mock.calls[0][1]).toMatchObject({ cwd: 'C:\Users\dev\real' })
+      await d.dispatch({ kind: 'createTerminal', name: 's', cwd: 'C:\Users\dev\link' }, all, DEVICE)
+      expect(mcp.callTool.mock.calls.at(-1)![1]).toEqual({ name: 's', cwd: 'C:\Users\dev\real' })
+    })
+  })
+
+  describe('closing a terminal', () => {
+    const starter: Capabilities = { ...NO_CAPABILITIES, read: true, createTerminal: true }
+
+    it('lets a phone with Start terminals close a terminal it started', async () => {
+      const mcp = fakeMcp()
+      mcp.callTool.mockResolvedValueOnce({ terminalId: 'mine', name: 's' })
+      const d = new RequestDispatcher(mcp)
+      await d.dispatch({ kind: 'createTerminal', name: 's' }, starter, DEVICE)
+      await d.dispatch({ kind: 'closeTerminal', terminalId: 'mine' }, starter, DEVICE)
+      expect(mcp.callTool).toHaveBeenLastCalledWith('close_terminal', { terminalId: 'mine' }, DEVICE)
+      // Closed once, it is no longer this phone's to close again without the grant.
+      await expect(d.dispatch({ kind: 'closeTerminal', terminalId: 'mine' }, starter, DEVICE)).rejects.toThrow(CapabilityError)
+    })
+
+    it('counts an agent the phone launched as its own', async () => {
+      const mcp = fakeMcp()
+      mcp.callTool.mockResolvedValueOnce({ terminalId: 'agent', name: 'a' })
+      const d = new RequestDispatcher(mcp, async () => {})
+      await d.dispatch({ kind: 'launchAgent', agent: 'codex', cwd: '/repo' }, starter, DEVICE)
+      await d.dispatch({ kind: 'closeTerminal', terminalId: 'agent' }, starter, DEVICE)
+      expect(mcp.callTool).toHaveBeenLastCalledWith('close_terminal', { terminalId: 'agent' }, DEVICE)
+    })
+
+    it('refuses a terminal the phone did not start, or another phone started, without the grant', async () => {
+      const mcp = fakeMcp()
+      mcp.callTool.mockResolvedValueOnce({ terminalId: 'theirs', name: 's' })
+      const d = new RequestDispatcher(mcp)
+      await d.dispatch({ kind: 'createTerminal', name: 's' }, starter, 'ffffffffffffffff')
+      await expect(d.dispatch({ kind: 'closeTerminal', terminalId: 'theirs' }, starter, DEVICE)).rejects.toThrow(CapabilityError)
+      await expect(d.dispatch({ kind: 'closeTerminal', terminalId: 'desktop-own' }, starter, DEVICE)).rejects.toThrow(CapabilityError)
+      expect(mcp.callTool).toHaveBeenCalledTimes(1)
+    })
+
+    it('refuses a close with no terminal id or no Start terminals, even for a started one', async () => {
+      const mcp = fakeMcp()
+      mcp.callTool.mockResolvedValueOnce({ terminalId: 'mine', name: 's' })
+      const d = new RequestDispatcher(mcp)
+      await d.dispatch({ kind: 'createTerminal', name: 's' }, starter, DEVICE)
+      const bad = { kind: 'closeTerminal', terminalId: 42 } as unknown as RemoteRequest
+      await expect(d.dispatch(bad, starter, DEVICE)).rejects.toThrow(CapabilityError)
+      const readOnly: Capabilities = { ...NO_CAPABILITIES, read: true }
+      await expect(d.dispatch({ kind: 'closeTerminal', terminalId: 'mine' }, readOnly, DEVICE)).rejects.toThrow(CapabilityError)
+    })
+
+    it('remembers every terminal one phone started', async () => {
+      const mcp = fakeMcp()
+      mcp.callTool.mockResolvedValueOnce({ terminalId: 'one', name: 's' }).mockResolvedValueOnce({ terminalId: 'two', name: 's' })
+      const d = new RequestDispatcher(mcp)
+      await d.dispatch({ kind: 'createTerminal', name: 's' }, starter, DEVICE)
+      await d.dispatch({ kind: 'createTerminal', name: 's' }, starter, DEVICE)
+      await d.dispatch({ kind: 'closeTerminal', terminalId: 'one' }, starter, DEVICE)
+      await d.dispatch({ kind: 'closeTerminal', terminalId: 'two' }, starter, DEVICE)
+      expect(mcp.callTool).toHaveBeenCalledTimes(4)
+    })
+
+    it('does not remember a terminal whose id never came back', async () => {
+      const mcp = fakeMcp()
+      const d = new RequestDispatcher(mcp)
+      await d.dispatch({ kind: 'createTerminal', name: 's' }, starter, DEVICE)
+      await expect(d.dispatch({ kind: 'closeTerminal', terminalId: 'ok' }, starter, DEVICE)).rejects.toThrow(CapabilityError)
+    })
   })
 })

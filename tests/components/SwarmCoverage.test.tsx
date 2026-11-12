@@ -895,6 +895,28 @@ describe('SwarmDashboard — review tab', () => {
     expect(screen.queryByText('Review')).not.toBeInTheDocument()
   })
 
+  // Review Changes in the swarm-complete dialog (1.60.0): the dashboard opens on the Review tab.
+  it('opens on the Review tab when Review Changes asked for it', () => {
+    H.swarmSummary = summary
+    render(<SwarmDashboard onClose={vi.fn()} reviewRequest={1} />)
+    expect(screen.getByTestId('review-panel')).toBeInTheDocument()
+  })
+
+  it('switches an open dashboard to the Review tab on a new request', () => {
+    H.swarmSummary = summary
+    const { rerender } = render(<SwarmDashboard onClose={vi.fn()} reviewRequest={0} />)
+    expect(screen.queryByTestId('review-panel')).not.toBeInTheDocument()
+    rerender(<SwarmDashboard onClose={vi.fn()} reviewRequest={1} />)
+    expect(screen.getByTestId('review-panel')).toBeInTheDocument()
+  })
+
+  it('stays on Tasks for a review request when there is nothing to review', () => {
+    H.swarmSummary = { ...summary, preSwarmSha: null }
+    render(<SwarmDashboard onClose={vi.fn()} reviewRequest={1} />)
+    expect(screen.queryByTestId('review-panel')).not.toBeInTheDocument()
+    expect(screen.queryByText('Review')).not.toBeInTheDocument()
+  })
+
   it('renders the review panel with the pre-swarm sha, cwd and task description', () => {
     H.swarmSummary = summary
     render(<SwarmDashboard onClose={vi.fn()} />)

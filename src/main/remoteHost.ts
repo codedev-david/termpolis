@@ -67,6 +67,8 @@ export interface RemoteHostBinding {
   linkedInit?: () => LinkedInit
   /** Linked machines' half of "Start over": forget the links it holds in memory. */
   linkedStartOver?: () => void
+  /** The terminals a phone's list shows, so their status badges stay current. */
+  listTerminalIds?: () => string[]
 }
 
 /** Answered by every remote channel while the feature has not started -- which is
@@ -93,12 +95,6 @@ export const REMOTE_LINKED_DEVICE =
 /** Answered by `remote:set-relay-url` for an address a save will not take. */
 export const REMOTE_RELAY_URL_RULE =
   'Relay URL must be a wss:// address (ws:// only to this computer: localhost or 127.0.0.1).'
-
-/** Answered by `remote:begin-pairing` while the saved relay is plain ws:// to
- *  another computer. The bridge would refuse the offer too, but by then the
- *  pairing dialog is open and waiting for a code that is not coming. */
-export const REMOTE_RELAY_INSECURE =
-  'The saved relay is not encrypted (ws://), so no phone can pair through it. Save a wss:// address first.'
 
 /** "Encrypt keys now" on a computer with no keychain: there is nothing to seal them with. */
 export const REMOTE_KEYS_NO_KEYCHAIN =
@@ -220,6 +216,7 @@ export function startRemoteBridgeHost(binding: RemoteHostBinding): void {
     clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     linkedInit: binding.linkedInit,
     linkedStartOver: binding.linkedStartOver,
+    listTerminalIds: binding.listTerminalIds,
   })
   // Before `start()`, so nothing the new bridge says is missed. Each listener is
   // guarded on its own: one that throws must not deafen the others.
@@ -399,7 +396,6 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     const status = host.status()
     const refusal = bridgeRefusal(status)
     if (refusal) return err(refusal)
-    if (status.relayInsecure) return err(REMOTE_RELAY_INSECURE)
     // Only when the renderer actually sent a grant. Absent means "grant nothing",
     // the way pairing behaved before the choice existed; a malformed one is
     // refused outright rather than silently downgraded, for the same reason
@@ -444,6 +440,29 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     const refusal = bridgeRefusal(host.status())
     if (refusal) return err(refusal)
     host.setDeviceCapabilities(deviceId, read.caps)
+    return ok(host.status())
+  })
+
+  // The desktop half of pairing: the user read the words on both screens and
+  // they match. Until then the bridge grants the phone nothing (1.60), which
+  // works with every phone app, since the phone is not asked anything.
+  ipc.handle('remote:confirm-device', (_e, input) => {
+    if (!host) return err(REMOTE_UNAVAILABLE)
+    const deviceId = deviceIdOf(input)
+    if (!deviceId) return err('A device id is required')
+    if (isLinkedComputer(host, deviceId)) return err(REMOTE_LINKED_DEVICE)
+    const status = host.status()
+    const refusal = bridgeRefusal(status)
+    if (refusal) return err(refusal)
+    if (!status.devices.some((d) => d.id === deviceId)) return err('That device is not paired with this desktop')
+    host.confirmDevice(deviceId)
+    return ok(host.status())
+  })
+
+  // `=== true`, so a malformed payload leaves phone agents asking first.
+  ipc.handle('remote:set-unattended-agents', (_e, input) => {
+    if (!host) return err(REMOTE_UNAVAILABLE)
+    host.setUnattendedAgents((input as { enabled?: unknown } | undefined)?.enabled === true)
     return ok(host.status())
   })
 

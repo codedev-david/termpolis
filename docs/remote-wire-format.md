@@ -578,10 +578,16 @@ standing between a malicious relay and a MITM of the pairing handshake.
 | `createTerminal` | `name`, `cwd?` | `createTerminal` |
 | `runCommand` | `terminalId`, `command` | `writeToTerminal` |
 | `writeToTerminal` | `terminalId`, `text` | `writeToTerminal` |
-| `closeTerminal` | `terminalId` | `closeTerminal` |
+| `closeTerminal` | `terminalId` | `closeTerminal`, or `createTerminal` for a terminal this device started (desktop 1.60+) |
 
 Every capability is opt-in and defaults to **false**; the user grants them per
-device in Settings. `runCommand` requires `writeToTerminal`, not
+device in Settings. From desktop 1.60 a newly paired device has **no**
+capabilities until its user confirms the safety words on the desktop:
+`getCapabilities` answers all-false and every gated request is refused. The
+grant chosen at pairing is stored, and when the user confirms, the desktop
+pushes the `capabilities` record below. Phones that predate this need no
+change: they already act on that push. Devices paired before 1.60 count as
+confirmed. `runCommand` requires `writeToTerminal`, not
 `createTerminal`: it reaches the terminal as a write plus a carriage return, so
 it is arbitrary shell execution under another name. An unrecognised `kind` is
 refused outright.
@@ -649,6 +655,11 @@ Desktop → phone is one of:
 {"kind":"status","terminalId":"t1","status":"working","summary":"…"}
 {"kind":"capabilities","capabilities":{"read":true,"createTerminal":false,"writeToTerminal":false,"closeTerminal":false}}
 ```
+
+A `status` frame goes to every attached device that may read, for every
+terminal it can see, not only the ones it has subscribed to (desktop 1.60).
+The desktop replays the last status of each terminal when a device attaches.
+Swarm workers are never sent.
 
 Output is **batched** — many chunks per frame, never a frame per chunk. The
 relay bills per frame and allows a burst of 40, so a frame per echoed keystroke

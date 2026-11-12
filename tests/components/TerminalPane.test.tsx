@@ -1183,7 +1183,7 @@ describe('TerminalPane', () => {
       expect(press({ key: 'z' })).toBe(false)
     })
 
-    it('plain Ctrl+Space does NOT enter copy mode (that is autocomplete)', () => {
+    it('plain Ctrl+Space does NOT enter copy mode', () => {
       render(<TerminalPane {...defaultProps} />)
       press({ ctrlKey: true, key: ' ' })
       expect(screen.queryByTestId('selection-mode-badge')).not.toBeInTheDocument()
@@ -3411,6 +3411,19 @@ describe('TerminalPane', () => {
       expect(screen.getByText('Split Down')).toBeInTheDocument()
     })
 
+    it('split items show no shortcut hint, because splitting has no keybinding', () => {
+      const { container } = render(
+        <TerminalPane {...defaultProps} onSplitRight={vi.fn()} onSplitDown={vi.fn()} />
+      )
+      const terminalContainer = container.querySelector('.flex-1.relative')!
+      fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
+      // Ctrl+Shift+D opens the Redundancy panel and Ctrl+Shift+R is unbound: the old hints lied.
+      expect(screen.getByText('Split Right').textContent).toBe('Split Right')
+      expect(screen.getByText('Split Down').textContent).toBe('Split Down')
+      expect(screen.queryByText('Ctrl+Shift+R')).not.toBeInTheDocument()
+      expect(screen.queryByText('Ctrl+Shift+D')).not.toBeInTheDocument()
+    })
+
     it('clicking Split Right invokes the callback', () => {
       const onSplitRight = vi.fn()
       const { container } = render(
@@ -4437,7 +4450,7 @@ describe('TerminalPane', () => {
   // =====================================================
   // 14. Autocomplete dropdown removed (v1.16.3)
   // The input-history autocomplete dropdown was removed: typing no longer pops a
-  // "similar past commands" box, the Ctrl+Space manual trigger is dormant, and
+  // "similar past commands" box, the Ctrl+Space manual trigger and its keybinding are gone, and
   // keys the dropdown used to intercept (Tab, arrows) now pass straight to the PTY.
   // =====================================================
   describe('autocomplete dropdown removed', () => {
@@ -4454,7 +4467,7 @@ describe('TerminalPane', () => {
       expect(getCompletions).not.toHaveBeenCalled()
     })
 
-    it('Ctrl+Space no longer triggers completions (binding is dormant)', async () => {
+    it('Ctrl+Space no longer triggers completions (binding removed)', async () => {
       const { getCompletions } = await import('../../src/renderer/src/completions/completionEngine')
       ;(getCompletions as any).mockClear()
 
@@ -4690,6 +4703,50 @@ describe('TerminalPane', () => {
         appendRecordingEntry: mocks.mockAppendRecordingEntry,
         isRecordingRef: { current: false },
       })
+    })
+
+    it('the palette\'s export event exports the full scrollback of the named pane only', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mockExportTerminal.mockClear()
+      act(() => { window.dispatchEvent(new CustomEvent('termpolis:export-terminal', { detail: 'other-pane' })) })
+      expect(mockExportTerminal).not.toHaveBeenCalled()
+      act(() => { window.dispatchEvent(new CustomEvent('termpolis:export-terminal', { detail: 'term-1' })) })
+      expect(mockExportTerminal).toHaveBeenCalledWith(
+        expect.objectContaining({ defaultFilename: 'terminal-export.txt' })
+      )
+    })
+
+    it('the palette\'s recording event starts a recording when none is running (named pane only)', () => {
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockStartRecording.mockClear()
+      mocks.mockStopRecording.mockClear()
+      act(() => { window.dispatchEvent(new CustomEvent('termpolis:toggle-recording', { detail: 'other-pane' })) })
+      expect(mocks.mockStartRecording).not.toHaveBeenCalled()
+      act(() => { window.dispatchEvent(new CustomEvent('termpolis:toggle-recording', { detail: 'term-1' })) })
+      expect(mocks.mockStartRecording).toHaveBeenCalledTimes(1)
+      expect(mocks.mockStopRecording).not.toHaveBeenCalled()
+    })
+
+    it('the palette\'s recording event stops and saves a running recording', async () => {
+      const { useSessionRecording } = await import('../../src/renderer/src/hooks/useSessionRecording')
+      const recordingOn = {
+        isRecording: true,
+        startRecording: mocks.mockStartRecording,
+        stopRecording: mocks.mockStopRecording,
+        appendRecordingEntry: mocks.mockAppendRecordingEntry,
+        isRecordingRef: { current: true },
+      }
+      ;(useSessionRecording as any).mockReturnValue(recordingOn)
+      try {
+        render(<TerminalPane {...defaultProps} />)
+        mocks.mockStartRecording.mockClear()
+        mocks.mockStopRecording.mockClear()
+        act(() => { window.dispatchEvent(new CustomEvent('termpolis:toggle-recording', { detail: 'term-1' })) })
+        expect(mocks.mockStopRecording).toHaveBeenCalledTimes(1)
+        expect(mocks.mockStartRecording).not.toHaveBeenCalled()
+      } finally {
+        ;(useSessionRecording as any).mockReturnValue({ ...recordingOn, isRecording: false, isRecordingRef: { current: false } })
+      }
     })
 
     it('clicking Start Recording calls startRecording and closes context menu', () => {

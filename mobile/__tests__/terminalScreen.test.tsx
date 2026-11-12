@@ -1,7 +1,7 @@
 import type { Capabilities } from '../src/wire/protocol'
 
-import { act, fireEvent, render, screen } from '@testing-library/react-native'
-import { Platform, ScrollView } from 'react-native'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native'
+import { Alert, Platform, ScrollView } from 'react-native'
 
 const GRANTS: Capabilities = {
   read: true,
@@ -18,6 +18,7 @@ const NOTHING: Capabilities = {
 }
 
 const mockRoute = { params: { terminalId: 't1', name: 'claude' } }
+const mockGoBack = jest.fn()
 
 /** The escape byte itself, built rather than typed so the source stays ASCII. */
 const ESC = String.fromCharCode(27)
@@ -26,7 +27,7 @@ const CR = String.fromCharCode(13)
 jest.mock('@react-navigation/native', () => ({
   __esModule: true,
   useRoute: () => mockRoute,
-  useNavigation: () => ({ goBack: jest.fn(), setOptions: jest.fn() }),
+  useNavigation: () => ({ goBack: mockGoBack, setOptions: jest.fn() }),
 }))
 
 jest.mock('../src/state/remoteStore', () => {
@@ -46,6 +47,7 @@ jest.mock('../src/state/remoteStore', () => {
       subscribe: jest.fn(async () => undefined),
       unsubscribe: jest.fn(async () => undefined),
       send: jest.fn(async () => undefined),
+      closeTerminal: jest.fn(async () => undefined),
     })),
   }
 })
@@ -53,12 +55,13 @@ jest.mock('../src/state/remoteStore', () => {
 import TerminalScreen, { KEYBOARD_BEHAVIOR } from '../src/screens/TerminalScreen'
 import { useRemoteStore } from '../src/state/remoteStore'
 
-function fn(name: 'subscribe' | 'unsubscribe' | 'send'): jest.Mock {
+function fn(name: 'subscribe' | 'unsubscribe' | 'send' | 'closeTerminal'): jest.Mock {
   return useRemoteStore.getState()[name] as unknown as jest.Mock
 }
 
 beforeEach(() => {
-  for (const name of ['subscribe', 'unsubscribe', 'send'] as const) {
+  mockGoBack.mockReset()
+  for (const name of ['subscribe', 'unsubscribe', 'send', 'closeTerminal'] as const) {
     const f = fn(name)
     f.mockReset()
     f.mockResolvedValue(undefined)
@@ -379,5 +382,74 @@ describe('TerminalScreen -- keyboard avoidance', () => {
     // the platform is read once at module load.
     expect(KEYBOARD_BEHAVIOR).toBe('padding')
     expect(Platform.OS).toBe('ios')
+  })
+})
+
+describe('TerminalScreen -- closing the terminal (1.60)', () => {
+  type Button = { text: string; style?: string; onPress?: () => void }
+  let alertSpy: jest.SpyInstance
+
+  beforeEach(() => {
+    alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
+  })
+  afterEach(() => alertSpy.mockRestore())
+
+  /** The buttons of the one confirmation the screen raised. */
+  function buttons(): Button[] {
+    expect(alertSpy).toHaveBeenCalledTimes(1)
+    return alertSpy.mock.calls[0][2] as Button[]
+  }
+
+  it('asks first, and closes nothing on Cancel', async () => {
+    await render(<TerminalScreen />)
+    fireEvent.press(await screen.findByTestId('terminal-close'))
+    expect(alertSpy.mock.calls[0][1]).toContain('claude')
+    const cancel = buttons().find((b) => b.style === 'cancel')
+    expect(cancel).toBeDefined()
+    cancel?.onPress?.()
+    expect(fn('closeTerminal')).not.toHaveBeenCalled()
+  })
+
+  it('closes the terminal and goes back when confirmed', async () => {
+    await render(<TerminalScreen />)
+    fireEvent.press(await screen.findByTestId('terminal-close'))
+    buttons().find((b) => b.style === 'destructive')?.onPress?.()
+    expect(fn('closeTerminal')).toHaveBeenCalledWith('t1')
+    await waitFor(() => expect(mockGoBack).toHaveBeenCalledTimes(1))
+  })
+
+  it('stays put when the desktop refuses, so its reason stays on screen', async () => {
+    // An older desktop asks for "Close terminals" itself; a phone with only
+    // "Start terminals" gets its refusal, which the store puts in `error`.
+    fn('closeTerminal').mockRejectedValue(new Error('This device may not close terminals'))
+    await render(<TerminalScreen />)
+    fireEvent.press(await screen.findByTestId('terminal-close'))
+    buttons().find((b) => b.style === 'destructive')?.onPress?.()
+    expect(fn('closeTerminal')).toHaveBeenCalledWith('t1')
+    // Let the refusal settle before checking nothing navigated.
+    await new Promise<void>((resolve) => setImmediate(() => resolve()))
+    expect(mockGoBack).not.toHaveBeenCalled()
+  })
+
+  it('shows with only Start terminals, since 1.60 desktops allow closing your own', async () => {
+    useRemoteStore.setState({ capabilities: { ...NOTHING, createTerminal: true } })
+    await render(<TerminalScreen />)
+    expect(await screen.findByTestId('terminal-close')).toBeTruthy()
+  })
+
+  it('shows with only Close terminals', async () => {
+    useRemoteStore.setState({ capabilities: { ...NOTHING, closeTerminal: true } })
+    await render(<TerminalScreen />)
+    expect(await screen.findByTestId('terminal-close')).toBeTruthy()
+  })
+
+  it('is absent without either grant, and while offline', async () => {
+    useRemoteStore.setState({ capabilities: { ...NOTHING, read: true, writeToTerminal: true } })
+    await render(<TerminalScreen />)
+    expect(screen.queryByTestId('terminal-close')).toBeNull()
+    screen.unmount()
+    useRemoteStore.setState({ capabilities: { ...GRANTS }, stale: true })
+    await render(<TerminalScreen />)
+    expect(screen.queryByTestId('terminal-close')).toBeNull()
   })
 })

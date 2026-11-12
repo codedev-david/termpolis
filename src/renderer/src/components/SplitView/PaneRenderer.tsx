@@ -4,6 +4,7 @@ import { TerminalPane } from '../TerminalPane/TerminalPane'
 import { SplitDivider } from './SplitDivider'
 import { paneMinPx } from '../../lib/splitRatio'
 import { extractBuffer, generateFilename } from '../../lib/exportTerminal'
+import { splitPane, type SplitDirection } from '../../lib/paneCommands'
 import type { PaneNode } from '../../types'
 
 interface Props {
@@ -17,7 +18,6 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
   const activeTerminalId = useTerminalStore(s => s.activeTerminalId)
   const setActiveTerminal = useTerminalStore(s => s.setActiveTerminal)
   const removeTerminal = useTerminalStore(s => s.removeTerminal)
-  const splitTerminal = useTerminalStore(s => s.splitTerminal)
   const termInstanceRef = useRef<any>(null)
 
   const handleTerminalReady = useCallback((term: any) => {
@@ -37,29 +37,10 @@ function TerminalPaneWrapper({ terminalId }: { terminalId: string }) {
     removeTerminal(terminalId)
   }, [terminalId, removeTerminal])
 
+  // Shared with the command palette (lib/paneCommands), so both split the same way.
   const handleSplit = useCallback(
-    async (direction: 'horizontal' | 'vertical') => {
-      if (!terminal) return
-      const { v4: uuidv4 } = await import('uuid')
-      const newId = uuidv4()
-      const res = await window.termpolis.createTerminal(newId, terminal.shellType, terminal.cwd)
-      if (!res.success) return
-      const newTerminal = {
-        id: newId,
-        name: `${terminal.name} (split)`,
-        color: terminal.color,
-        shellType: terminal.shellType,
-        cwd: terminal.cwd,
-        fontSize: terminal.fontSize,
-        theme: terminal.theme,
-        fontFamily: terminal.fontFamily,
-      }
-      useTerminalStore.setState(s => ({
-        terminals: [...s.terminals, newTerminal],
-      }))
-      splitTerminal(terminalId, direction, newId)
-    },
-    [terminal, terminalId, splitTerminal]
+    (direction: SplitDirection) => { void splitPane(terminalId, direction) },
+    [terminalId]
   )
 
   // Stable split callbacks. Passing `() => handleSplit(...)` inline recreated these every render, so

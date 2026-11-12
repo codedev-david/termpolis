@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 const { rewriteMessagesBody, setWireWindow } = await import('../../src/main/headroomProxy/wireCompress')
+import type { WireWindow } from '../../src/main/headroomProxy/wireCompress'
+/** A window with no floor: setWireWindow keeps the floor already in force, which is what these tests rely on. */
+const keepFloor = (w: Omit<WireWindow, 'floorChars'>): WireWindow => w as WireWindow
 
 const file = (n: number, edit?: [number, string]): string => {
   const out = Array.from({ length: n }, (_, i) => `  const value${i} = compute(${i}) // a reasonably long source line`)
@@ -28,8 +31,8 @@ const resultText = (body: string, idx: number): string =>
  */
 describe('rewriteMessagesBody — near-duplicate patching', () => {
   // A window wide enough that ordinary compaction does nothing, so this isolates the diff path.
-  beforeEach(() => setWireWindow({ headLines: 5000, tailLines: 5000, maxChars: 1_000_000 }))
-  afterEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }))
+  beforeEach(() => setWireWindow(keepFloor({ headLines: 5000, tailLines: 5000, maxChars: 1_000_000 })))
+  afterEach(() => setWireWindow(keepFloor({ headLines: 12, tailLines: 6, maxChars: 1000 })))
 
   it('sends a re-read file as a patch against the earlier read in the same body', () => {
     const first = file(60)
@@ -82,7 +85,7 @@ describe('rewriteMessagesBody — near-duplicate patching', () => {
   })
 
   it('prefers whichever is smaller — normal compaction wins when the window is tight', () => {
-    setWireWindow({ headLines: 2, tailLines: 1, maxChars: 1000 })
+    setWireWindow(keepFloor({ headLines: 2, tailLines: 1, maxChars: 1000 }))
     const first = file(60)
     const second = file(60, [30, '  const value30 = EDITED'])
     const patched = resultText(rewriteMessagesBody(bodyWith(first, second)).body, 1)

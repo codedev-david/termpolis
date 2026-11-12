@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 const { setProxySpawner, onProxyResult, onProxyStash, startProxy, isProxyHealthy, getProxyEnv, stopProxy, pickFreePort, setProxyMode, _resetProxyForTest, setProxyEnabled, isProxyEnabled, isProxyStarted, userRoutingVar, setAgentEnvReader, USER_ROUTING_ENV, PROVIDER_SWITCH_ENV, getProxyMode } =
   await import('../../src/main/headroomProxy/proxySupervisor')
+import type { ProxyTransport } from '../../src/main/headroomProxy/proxySupervisor'
 
 interface Fake { transport: unknown; fire: (m: unknown) => void; fireExit: () => void; fireResult: (r: Record<string, unknown>) => void; fireStash: (stashes: Array<{ token: string; original: string }>) => void; killed: boolean; posted: Array<Record<string, unknown>> }
 let fakes: Fake[] = []
 
-function fakeSpawner(): unknown {
+function fakeSpawner(): ProxyTransport {
   let msgCb: (m: unknown) => void = () => {}
   let exitCb: (c: number) => void = () => {}
   const f: Fake = {
@@ -24,7 +25,7 @@ function fakeSpawner(): unknown {
     posted: [],
   }
   fakes.push(f)
-  return f.transport
+  return f.transport as ProxyTransport
 }
 
 beforeEach(() => { _resetProxyForTest(); fakes = []; setProxySpawner(fakeSpawner) })

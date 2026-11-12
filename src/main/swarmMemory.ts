@@ -957,6 +957,7 @@ export function _resetForTests(): void {
   archiveCache = null
   archiveCacheKey = ''
   archiveReadCount = 0
+  archiveMigrations = 0
   hnswThreshold = 50_000
   hnswBuilding = false
   buildGen = 0
@@ -2890,6 +2891,38 @@ export function memoryArchive(id: string): void {
   persistDeletesFloor()
 }
 
+/**
+ * Before v1.53 an archived memory was appended in plaintext even while the store was encrypted, and
+ * nothing re-encodes the archive unless a NEW key is adopted, so an archive from those versions kept
+ * its plaintext lines indefinitely. Deep recall reads every line anyway; when it meets readable
+ * plaintext under a key in force, this re-encodes the archive under that key, once.
+ *
+ * Never loses or locks anything: it is rewriteEncryptionSet's own transcode → read-back → swap, for the
+ * one file. Lines this session can't open are copied through byte for byte, each line's text is
+ * encrypted as it stands (never parsed and re-serialised, so big integers survive), and a temp file
+ * that does not read back as written is dropped with the original untouched. A store that is locked
+ * (its key unopenable, or read-only) is left exactly as it is, plaintext and all.
+ */
+function migratePlaintextArchive(ap: string): void {
+  if (!encKey || ownLock) return
+  const target = encKey
+  const tmp = ap + REKEY_SUFFIX
+  try {
+    verifyTranscoded(tmp, target, transcodeFile(ap, tmp, target))
+    replaceFile(tmp, ap)
+    // The same memories, now under the key: the parsed cache stays valid for the new file.
+    const st = fs.statSync(ap)
+    archiveCacheKey = `${st.size}:${st.mtimeMs}`
+    archiveMigrations++
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }) } catch { /* ignore */ }
+    recordSwarmError('swarmMemory.archive.migrateFailed', err, {})
+  }
+}
+let archiveMigrations = 0
+/** @internal test-only — how many times the archive was re-encoded off plaintext. */
+export function _archiveMigrationsForTests(): number { return archiveMigrations }
+
 /** v1.23 C6 — DEEP recall over the archive: keyword-scan cold/archived memories that have left the
  *  hot window, so nothing is permanently unrecallable. A recovery tier, not the hot search path. */
 export function searchArchive(query: string, limit = 20): MemoryEntry[] {
@@ -2905,19 +2938,22 @@ export function searchArchive(query: string, limit = 20): MemoryEntry[] {
   if (!archiveCache || archiveCacheKey !== key) {
     archiveReadCount++
     const parsed: MemoryEntry[] = []
+    let plaintextLines = 0
     try {
       // Stream the archive JSONL from bytes — it can grow as large as the live shard, and reading a
       // >512 MiB file as one 'utf8' string fatals V8 uncatchably (see forEachShardLine).
       forEachShardLine(ap, (line) => {
         const s = line.trim()
         if (!s) return
-        const plain = isEncryptedLine(s) ? decryptWithRing(s) : s
+        const enc = isEncryptedLine(s)
+        const plain = enc ? decryptWithRing(s) : s
         if (plain === null) return // under a key this session doesn't hold: skipped, like a locked shard line
-        try { parsed.push(JSON.parse(plain) as MemoryEntry) } catch { /* skip corrupt line */ }
+        try { parsed.push(JSON.parse(plain) as MemoryEntry); if (!enc) plaintextLines++ } catch { /* skip corrupt line */ }
       })
     } catch { return [] }
     archiveCache = parsed
     archiveCacheKey = key
+    if (plaintextLines > 0) migratePlaintextArchive(ap)
   }
   const scored: Array<{ e: MemoryEntry; score: number }> = []
   for (const e of archiveCache) {

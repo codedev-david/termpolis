@@ -34,9 +34,10 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <i className="fa-solid fa-star text-xs"></i> What&apos;s New{appVersion ? ` in v${appVersion}` : ''}
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li><strong>Reserved copy hotkeys</strong> — <code className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+C</code> copies, <code className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+K</code> copies <strong>for Teams/Slack</strong>, and <code className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Q</code> copies <strong>as a code block</strong>. These three are <em>always</em> pinned to their defaults — a custom keybinding can never steal them, so copy Just Works everywhere</li>
-              <li><strong>Teams/Slack paste that looks right</strong> — <code className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+K</code> formats your selection with emoji intact and <strong>no hard line breaks</strong>, so it lands as one clean message instead of a wall of broken lines</li>
-              <li><strong>Qwen Code removed</strong> — the agent lineup is now <strong>Claude Code, OpenAI Codex, and Gemini CLI</strong> across the sidebar, swarm, Second Opinion, and shared memory</li>
+              <li><strong>Model and effort per message</strong> (v1.56–1.57). With Auto routing on, each Claude message gets the model and the effort it needs, picked locally in milliseconds. Haiku is used only for quick questions the local model is sure about, and effort goes up while tool calls keep failing</li>
+              <li><strong>Codex effort per message</strong> (v1.58). Codex messages get a reasoning effort through the local proxy, and a routed Codex terminal can still switch account and model</li>
+              <li><strong>Fresh session before compaction</strong> (v1.59). When Claude&apos;s context is nearly full, Termpolis offers a fresh session before Claude compacts, not only after</li>
+              <li data-testid="whats-new-current"><strong>Safer phone and linked links</strong> (v1.60). A phone gets no access until you confirm its words on this computer, agents it starts ask before acting, and while another computer&apos;s job runs here the MCP server only answers read-only tools. Closing a terminal now ends everything it started, and Split, Export and Recording work from the command palette</li>
             </ul>
           </section>
 
@@ -221,7 +222,7 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <i className="fa-solid fa-plug text-xs"></i> MCP Server & Claude Code Integration
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li>Termpolis runs an MCP server on <strong>localhost:9315</strong> (shown in the bottom bar)</li>
+              <li>Termpolis runs an MCP server on <strong>localhost</strong>. It tries port 9315 first and moves up if that port is taken. The bottom bar shows the port in use</li>
               <li>AI agents can create terminals, run commands, read output, and manage your workspace</li>
               <li><strong>Auto-registers with Claude Code</strong> — on launch, Termpolis adds itself to your Claude Code settings automatically. No manual config needed.</li>
               <li>33 tools: terminal management, file tree, git status, swarm coordination, shared memory (search, related-entry traversal, knowledge-graph link + walk, write, list, audit, and the background primer), and the code graph (search, locate, callers, callees, explore, impact)</li>
@@ -241,9 +242,9 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <li><strong>Commit Shield</strong> <em>(on by default)</em> — the same engine at the <strong>git boundary</strong>: a <code className="bg-[#3c3c3c] px-1 rounded">git commit</code> is blocked when the <strong>staged diff</strong> carries a secret, and a <code className="bg-[#3c3c3c] px-1 rounded">git push</code> is blocked when any <strong>unpushed commit</strong> does — so a key an agent wrote to disk never lands in your history.</li>
               <li><strong>Commit Shield git hooks</strong> — the toggle alone only covers git run <em>through Termpolis</em> (the Git panel, Swarm Review). <strong>Settings → AI Security → Protect a repository</strong> installs <code className="bg-[#3c3c3c] px-1 rounded">pre-commit</code> / <code className="bg-[#3c3c3c] px-1 rounded">pre-push</code> hooks so a secret is caught <strong>however you commit</strong> — terminal, IDE, or script. They run a standalone scanner that keeps working <strong>even with Termpolis closed</strong>, <strong>chain</strong> an existing hook (husky, lint-staged) instead of overwriting it, and <strong>fail open</strong> so git is never wedged. <code className="bg-[#3c3c3c] px-1 rounded">--no-verify</code> bypasses any git hook. <em>(v1.25.6 — the protected-repo list compared paths with a bare <code className="bg-[#3c3c3c] px-1 rounded">!==</code>, so a repo added with the folder picker and removed by its working directory never matched, and it kept reporting as <strong>PROTECTED</strong> after its hooks were already gone. A control that claims to be armed when it is not is worse than one that admits it is off. It is keyed on a canonical path now — so re-check any repo you protected before 1.25.6.)</em></li>
               <li><strong>Memory scrub</strong> <em>(on by default)</em> — secrets are redacted out of a memory <em>before</em> it is hashed, embedded, or written to disk, so nothing sensitive reaches the brain in the first place.</li>
-              <li><strong>Sensitive-file watcher</strong> — alerts when an agent reads <code>.env</code>, PEM, cloud-credential, or SSH-directory files. ~17 conservative rules tuned to avoid false positives on normal source code. <em>(v1.25.6 — the GnuPG rule could never fire: <code className="bg-[#3c3c3c] px-1 rounded">secring.gpg</code>, your <strong>private</strong> keyring, had been grouped into the rule's own exclusion list beside the public ones, so a read of it was never flagged. Only the <code className="bg-[#3c3c3c] px-1 rounded">pubring.*</code> entries are excluded now.)</em></li>
+              <li><strong>Sensitive-file watcher</strong> — alerts when an agent reads <code>.env</code>, PEM, cloud-credential, or SSH-directory files. The rules are tuned to avoid false positives on normal source code. Each match is logged and a notice appears at the bottom of the window. <em>(v1.25.6 — the GnuPG rule could never fire: <code className="bg-[#3c3c3c] px-1 rounded">secring.gpg</code>, your <strong>private</strong> keyring, had been grouped into the rule's own exclusion list beside the public ones, so a read of it was never flagged. Only the <code className="bg-[#3c3c3c] px-1 rounded">pubring.*</code> entries are excluded now.)</em></li>
               <li><strong>Egress Guard</strong> <em>(on by default)</em> — flags agent network traffic to any host <strong>outside the known AI-provider allowlist</strong>, so a call to an unexpected endpoint surfaces instead of passing quietly.</li>
-              <li><strong>Per-agent egress audit</strong> — every outbound network connection an agent makes is logged with host + count, viewable in <strong>Settings → AI Security → Egress Audit</strong>. JSONL log on disk for forensics.</li>
+              <li><strong>Per-agent egress audit</strong> — off in this version.</li>
               <li><strong>Audit log</strong> <em>(on by default)</em> — security events are appended to <code className="bg-[#3c3c3c] px-1 rounded">ai-security-audit.jsonl</code> in the Termpolis user-data folder. Append-only, rotated, and wipeable from Settings.</li>
               <li><strong>ToS drift watcher</strong> — flags Anthropic / OpenAI / Google ToS changes that affect how your prompts are stored or used for training.</li>
               <li><strong>Strict Mode (Gemini)</strong> — auto-detects when Gemini drops to the free OAuth tier (which trains on your prompts) and blocks calls until you switch to a paid API key. <em>(v1.25.6 — the refusal <strong>message</strong> never rendered on Windows: it was written to the terminal as a typed <code className="bg-[#3c3c3c] px-1 rounded">printf</code> command, which cmd.exe and PowerShell do not have, so you saw <code className="bg-[#3c3c3c] px-1 rounded">&apos;printf&apos; is not recognized</code> instead of the explanation. The <strong>block</strong> always worked; it now says why.)</em></li>
@@ -293,7 +294,7 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <li><strong>Search your memory</strong> — type what you're working on and hit <strong>Search</strong> to semantically pull up matching past conversations and code, newest/closest first.</li>
               <li><strong>Inject primer</strong> — the token-saver: type a topic and click it to paste the most relevant memories straight into the <em>active agent's</em> terminal, so it starts already knowing the context and you don't re-explain it.</li>
               <li><strong>Index this repo's code</strong> — pull the current project's git-tracked files into memory on demand (<code className="bg-[#3c3c3c] px-1 rounded">.env</code>/keys are always skipped). Conversations index themselves automatically; code is opt-in per repo.</li>
-              <li><strong>Cross-machine sync</strong> — point it at a folder you already sync (<strong>OneDrive, Google Drive, Dropbox, iCloud, Syncthing…</strong>) and the same brain follows you to every machine, with <strong>no Termpolis server</strong>. Turn on a passphrase to encrypt it at rest so the cloud provider only ever sees ciphertext — use the <em>same passphrase on every device</em>.</li>
+              <li><strong>Moving memory to another computer</strong> — each computer keeps its own memory, and Termpolis does not sync it. To move it, use <strong>Settings → General → Import / Export Memory</strong>.</li>
             </ul>
           </section>
 
@@ -357,14 +358,12 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
             </ul>
           </section>
 
-          {/* Autocomplete & Auto-Fix */}
+          {/* Auto-Fix */}
           <section>
             <h3 className="font-semibold text-[#22D3EE] mb-1.5 flex items-center gap-2">
-              <i className="fa-solid fa-bolt text-xs"></i> Autocomplete & Auto-Fix
+              <i className="fa-solid fa-bolt text-xs"></i> Auto-Fix
             </h3>
             <ul className="flex flex-col gap-1 text-[#bbb] leading-relaxed">
-              <li>Start typing — suggestions appear after 2 characters. <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Tab</kbd> to accept, <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Esc</kbd> to dismiss</li>
-              <li><kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Ctrl+Space</kbd> to trigger manually</li>
               <li>Mistype a command? Green banner suggests the fix — <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Enter</kbd> to run, <kbd className="bg-[#3c3c3c] px-1 rounded text-xs">Esc</kbd> to ignore</li>
             </ul>
           </section>
@@ -410,7 +409,7 @@ function HelpModal({ onClose, onReportProblem, appVersion }: { onClose: () => vo
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+P</kbd> Prompts &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+E</kbd> Context panel &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+I</kbd> Conversation search</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+A</kbd> Activity feed &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+B</kbd> Context pins &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+D</kbd> Redundancy &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Y</kbd> Efficiency</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+S</kbd> Swarm dashboard &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+/</kbd> Shortcuts panel</li>
-              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+H</kbd> History search &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Space</kbd> Autocomplete</li>
+              <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+H</kbd> History search</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+C</kbd> Copy &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+K</kbd> Copy for Teams/Slack &nbsp;·&nbsp; <kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Q</kbd> Copy as code block <span className="text-[#8a8a8a]">— reserved defaults, never rebindable</span></li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Ctrl+Shift+Space</kbd> Keyboard select / copy mode (arrows move · Shift extends · Ctrl=word · a=all · Enter copies · Esc exits)</li>
               <li><kbd className="bg-[#3c3c3c] px-1 rounded">Alt+Shift+Click</kbd> Anchor select — click a start, scroll as far as you like, click the end: everything between is selected and copied (any plain click cancels)</li>
@@ -519,6 +518,8 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
   const [showHelp, setShowHelp] = useState(false)
   const [showReport, setShowReport] = useState(false)
   const [appVersion, setAppVersion] = useState<string>('')
+  // The port the MCP server really bound. undefined = still asking main; null = not running.
+  const [mcpPort, setMcpPort] = useState<number | null | undefined>(undefined)
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmAgents = useTerminalStore((s) => s.swarmAgents)
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId)
@@ -528,6 +529,17 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
     window.termpolis.getAppVersion?.().then(res => {
       if (res?.success && res.data) setAppVersion(res.data.version)
     }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    let alive = true
+    const ask = window.termpolis.getMcpPort
+    if (typeof ask !== 'function') return
+    ask().then(res => {
+      if (!alive) return
+      setMcpPort(res?.success && typeof res.data?.port === 'number' ? res.data.port : null)
+    }).catch(() => { if (alive) setMcpPort(null) })
+    return () => { alive = false }
   }, [])
 
   const runningCount = swarmAgents.filter(a => a.status === 'thinking' || a.status === 'working').length
@@ -563,9 +575,13 @@ export function StatusBar({ onSwarmClick }: StatusBarProps) {
             </button>
           )}
           <ContextPressureIndicator pressure={contextPressure} />
-          <span className="flex items-center gap-1.5 text-[#22D3EE]" title="MCP server for AI agent integration">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#22D3EE]"></span>
-            MCP: localhost:9315
+          <span
+            data-testid="mcp-status"
+            className={`flex items-center gap-1.5 ${mcpPort === null ? 'text-[#9ca3af]' : 'text-[#22D3EE]'}`}
+            title={mcpPort === null ? 'MCP server is not running' : 'MCP server for AI agent integration'}
+          >
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${mcpPort === null ? 'bg-[#6b7280]' : 'bg-[#22D3EE]'}`}></span>
+            {typeof mcpPort === 'number' ? `MCP: localhost:${mcpPort}` : mcpPort === null ? 'MCP: not running' : 'MCP: starting…'}
           </span>
           <a
             href="https://github.com/sponsors/codedev-david"

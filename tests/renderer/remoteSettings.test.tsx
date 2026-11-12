@@ -17,6 +17,7 @@ const device = (over: Record<string, unknown> = {}) => ({
   pairedAt: Date.now() - 86_400_000,
   lastSeenAt: Date.now() - 5_000,
   attached: false,
+  confirmed: true,
   ...over,
 })
 
@@ -28,6 +29,8 @@ const statusView = (over: Record<string, unknown> = {}): RemoteStatusView =>
     disabled: false,
     relayUrl: DEFAULT_RELAY_URL,
     relayInsecure: false,
+    relayReplaced: null,
+    unattendedAgents: false,
     publicKey: 'a'.repeat(64),
     pairing: null,
     devices: [],
@@ -56,6 +59,8 @@ beforeEach(() => {
     revokeDevice: vi.fn().mockResolvedValue(ok(statusView())),
     setCapabilities: vi.fn().mockResolvedValue(ok(statusView({ devices: [device()] }))),
     verificationPhrase: vi.fn().mockResolvedValue(ok({ deviceId: 'dev-1', phrase: 'anchor basil cobra delta' })),
+    confirmDevice: vi.fn().mockResolvedValue(ok(statusView({ devices: [device()] }))),
+    setUnattendedAgents: vi.fn().mockResolvedValue(ok(statusView({ unattendedAgents: true }))),
     onStatus: vi.fn((cb: (s: RemoteStatusView) => void) => {
       pushStatus = cb
       return offStatus
@@ -225,6 +230,67 @@ describe('RemoteSettings', () => {
   it('shows no warning for a secure relay', async () => {
     await mount()
     expect(screen.queryByTestId('remote-relay-insecure')).toBeNull()
+    expect(screen.queryByTestId('remote-relay-replaced')).toBeNull()
+  })
+
+  it('says a saved ws:// relay was replaced by the default (1.60)', async () => {
+    api.status.mockResolvedValue(
+      ok(statusView({ enabled: true, running: true, relay: 'online', relayReplaced: 'ws://relay.example/ws' })),
+    )
+    await mount()
+    const note = screen.getByTestId('remote-relay-replaced')
+    expect(note.textContent).toContain('ws://relay.example/ws')
+    expect(note.textContent).toContain(DEFAULT_RELAY_URL)
+    // The default relay is in use, so the phone is not cut off.
+    expect(screen.getByTestId('remote-running').textContent).toBe('(connected to the relay)')
+    api.setRelayUrl.mockResolvedValue(ok(statusView()))
+    fireEvent.click(screen.getByTestId('remote-relay-keep-default'))
+    await waitFor(() => expect(api.setRelayUrl).toHaveBeenCalledWith(DEFAULT_RELAY_URL))
+    await waitFor(() => expect(screen.queryByTestId('remote-relay-replaced')).toBeNull())
+  })
+})
+
+describe('RemoteSettings unattended phone agents (1.60)', () => {
+  it('is off by default and marked dangerous', async () => {
+    await mount()
+    const toggle = screen.getByTestId('remote-unattended-toggle') as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+    const block = screen.getByTestId('remote-unattended')
+    expect(block.textContent).toContain('Dangerous')
+    const label = [...block.querySelectorAll('span')].find(
+      (el) => el.textContent === 'Let agents started from a phone run unattended',
+    )
+    expect(label?.className).toContain('e5c07b')
+  })
+
+  it('asks once before turning on, and can be cancelled', async () => {
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-unattended-toggle'))
+    expect(screen.getByTestId('remote-unattended-confirm')).toBeTruthy()
+    expect(api.setUnattendedAgents).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('remote-unattended-no'))
+    expect(screen.queryByTestId('remote-unattended-confirm')).toBeNull()
+    expect(api.setUnattendedAgents).not.toHaveBeenCalled()
+  })
+
+  it('turns on after the second click', async () => {
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-unattended-toggle'))
+    fireEvent.click(screen.getByTestId('remote-unattended-yes'))
+    await waitFor(() => expect(api.setUnattendedAgents).toHaveBeenCalledWith(true))
+    await waitFor(() =>
+      expect((screen.getByTestId('remote-unattended-toggle') as HTMLInputElement).checked).toBe(true),
+    )
+    expect(screen.queryByTestId('remote-unattended-confirm')).toBeNull()
+  })
+
+  it('turns off in one click', async () => {
+    api.status.mockResolvedValue(ok(statusView({ unattendedAgents: true })))
+    api.setUnattendedAgents.mockResolvedValue(ok(statusView({ unattendedAgents: false })))
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-unattended-toggle'))
+    await waitFor(() => expect(api.setUnattendedAgents).toHaveBeenCalledWith(false))
+    expect(screen.queryByTestId('remote-unattended-confirm')).toBeNull()
   })
 })
 
@@ -235,7 +301,7 @@ describe('RemoteSettings pairing', () => {
     fireEvent.click(screen.getByTestId('remote-pair-button'))
     await waitFor(() =>
       expect(api.beginPairing).toHaveBeenCalledWith('Work phone', {
-        read: true,
+        read: false,
         createTerminal: false,
         writeToTerminal: false,
         closeTerminal: false,
@@ -244,18 +310,19 @@ describe('RemoteSettings pairing', () => {
     expect(await screen.findByTestId('pairing-qr')).toBeTruthy()
   })
 
-  it('offers read, and only read, before a code is asked for', async () => {
-    // The grant is chosen up front so the phone is never created in the state
-    // the user reported: paired, yet refusing every request it makes.
+  it('offers nothing ticked before a code is asked for (1.60)', async () => {
+    // Read used to be pre-ticked and live from the scan. Nothing is granted
+    // without a deliberate tick now, and nothing ticked applies before the
+    // words are confirmed.
     await mount()
-    expect((screen.getByTestId('remote-pair-cap-read') as HTMLInputElement).checked).toBe(true)
-    for (const key of ['createTerminal', 'writeToTerminal', 'closeTerminal']) {
+    for (const key of ['read', 'createTerminal', 'writeToTerminal', 'closeTerminal']) {
       expect((screen.getByTestId(`remote-pair-cap-${key}`) as HTMLInputElement).checked).toBe(false)
     }
   })
 
   it('pairs with exactly the boxes that are ticked', async () => {
     await mount()
+    fireEvent.click(screen.getByTestId('remote-pair-cap-read'))
     fireEvent.click(screen.getByTestId('remote-pair-cap-createTerminal'))
     fireEvent.click(screen.getByTestId('remote-pair-cap-writeToTerminal'))
     fireEvent.click(screen.getByTestId('remote-pair-button'))
@@ -272,6 +339,8 @@ describe('RemoteSettings pairing', () => {
   it('lets a box be ticked and unticked again before pairing', async () => {
     await mount()
     const read = screen.getByTestId('remote-pair-cap-read') as HTMLInputElement
+    fireEvent.click(read)
+    expect(read.checked).toBe(true)
     fireEvent.click(read)
     expect(read.checked).toBe(false)
     fireEvent.click(screen.getByTestId('remote-pair-cap-closeTerminal'))
@@ -295,6 +364,61 @@ describe('RemoteSettings pairing', () => {
       (el) => el.textContent === 'Type into terminals',
     )
     expect(danger?.className).toContain('e5c07b')
+  })
+
+  it('marks Start terminals as sensitive too (1.60)', async () => {
+    await mount()
+    const group = screen.getByTestId('remote-pair-capabilities')
+    const start = [...group.querySelectorAll('span')].find((el) => el.textContent === 'Start terminals')
+    expect(start?.className).toContain('e5c07b')
+    expect(group.textContent).toContain('asks before it acts')
+    expect(group.textContent).toContain('None of these apply until you confirm')
+  })
+
+  it('confirms the phone from the modal when the words match (1.60)', async () => {
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-pair-button'))
+    await waitFor(() => expect(api.beginPairing).toHaveBeenCalled())
+    act(() => pushEvent({ kind: 'paired', deviceId: 'dev-1', label: 'Pixel' }))
+    fireEvent.click(await screen.findByTestId('pairing-words-match'))
+    await waitFor(() => expect(api.confirmDevice).toHaveBeenCalledWith('dev-1'))
+    expect(await screen.findByTestId('pairing-confirmed')).toBeTruthy()
+    expect(screen.queryByTestId('pairing-confirm')).toBeNull()
+    expect(api.revokeDevice).not.toHaveBeenCalled()
+  })
+
+  it('stays on the question when the confirm is refused', async () => {
+    api.confirmDevice.mockResolvedValue(fail('That device is not paired with this desktop'))
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-pair-button'))
+    await waitFor(() => expect(api.beginPairing).toHaveBeenCalled())
+    act(() => pushEvent({ kind: 'paired', deviceId: 'dev-1', label: 'Pixel' }))
+    fireEvent.click(await screen.findByTestId('pairing-words-match'))
+    expect((await screen.findByTestId('remote-error')).textContent).toContain('not paired')
+    expect(screen.queryByTestId('pairing-confirmed')).toBeNull()
+    expect(screen.getByTestId('pairing-confirm')).toBeTruthy()
+  })
+
+  it('removes the phone from the modal when the words differ', async () => {
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-pair-button'))
+    await waitFor(() => expect(api.beginPairing).toHaveBeenCalled())
+    act(() => pushEvent({ kind: 'paired', deviceId: 'dev-1', label: 'Pixel' }))
+    fireEvent.click(await screen.findByTestId('pairing-words-differ'))
+    await waitFor(() => expect(api.revokeDevice).toHaveBeenCalledWith('dev-1'))
+    expect(await screen.findByTestId('pairing-rejected')).toBeTruthy()
+    expect(api.confirmDevice).not.toHaveBeenCalled()
+  })
+
+  it('keeps the question open when the removal is refused', async () => {
+    api.revokeDevice.mockResolvedValue(fail('Remote access is not running in this session'))
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-pair-button'))
+    await waitFor(() => expect(api.beginPairing).toHaveBeenCalled())
+    act(() => pushEvent({ kind: 'paired', deviceId: 'dev-1', label: 'Pixel' }))
+    fireEvent.click(await screen.findByTestId('pairing-words-differ'))
+    await screen.findByTestId('remote-error')
+    expect(screen.queryByTestId('pairing-rejected')).toBeNull()
   })
 
   it('shows the safety words once a phone completes the handshake', async () => {
@@ -405,6 +529,28 @@ describe('RemoteSettings devices', () => {
     // button, where the grant is chosen before a code is minted.
     const row = screen.getByTestId('remote-device-dev-1')
     expect(row.textContent).toContain('bypasses the command checks')
+  })
+
+  it('shows the confirm step on a phone not confirmed yet (1.60)', async () => {
+    api.status.mockResolvedValue(ok(statusView({ devices: [device({ confirmed: false })] })))
+    await mount()
+    expect(screen.getByTestId('remote-unconfirmed-dev-1').textContent).toContain('can do nothing')
+    fireEvent.click(screen.getByTestId('remote-confirm-dev-1'))
+    await waitFor(() => expect(api.confirmDevice).toHaveBeenCalledWith('dev-1'))
+    await waitFor(() => expect(screen.queryByTestId('remote-unconfirmed-dev-1')).toBeNull())
+  })
+
+  it('removes an unconfirmed phone whose words differ', async () => {
+    api.status.mockResolvedValue(ok(statusView({ devices: [device({ confirmed: false })] })))
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-reject-dev-1'))
+    await waitFor(() => expect(api.revokeDevice).toHaveBeenCalledWith('dev-1'))
+  })
+
+  it('shows no confirm step on a confirmed phone', async () => {
+    api.status.mockResolvedValue(ok(statusView({ devices: [device()] })))
+    await mount()
+    expect(screen.queryByTestId('remote-unconfirmed-dev-1')).toBeNull()
   })
 
   it('takes two clicks to revoke', async () => {

@@ -304,10 +304,10 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
           className="mt-0.5"
         />
         <span>
-          <span>Notify me when a linked computer starts a job here</span>
+          <span>Notify me when a linked computer starts a job here, and when it ends</span>
           <span className="block text-[#6b7280]">
-            Nothing asks you before a job runs; this is how you see one start. Click the notification
-            to see the job here, where you can stop it.
+            Nothing asks you before a job runs; this is how you see one start and end. Click the
+            notification to see the job here, where you can stop it.
           </span>
         </span>
       </label>

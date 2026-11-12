@@ -16,6 +16,7 @@ import {
 } from '../../src/main/remoteBridge/sealedChannel'
 import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
 import {
+  DEFAULT_RELAY_URL,
   NO_CAPABILITIES,
   type BridgeToHost,
   type HostToBridge,
@@ -27,7 +28,9 @@ import { remoteIdentityPath } from '../../src/main/remoteIdentityStore'
 import { identityOf } from './fixtures/remoteIdentity'
 import { loadRemoteSettings, saveRemoteSettings } from '../../src/main/remoteSettings'
 import {
+  MAX_LISTED_STATUS,
   REMOTE_KEYS_LOCKED,
+  STATUS_WATCH_REFRESH_MS,
   createRemoteHost,
   type RemoteEvent,
   type RemoteHost,
@@ -800,6 +803,169 @@ describe('remote bridge host', () => {
     expect(deriveSessionRoomId(identityOf(dir).secretKey, PHONE.publicKey)).toMatch(
       /^[0-9a-f]{32}$/,
     )
+  })
+})
+
+describe('confirming a phone, unattended agents and a replaced relay (1.60)', () => {
+  it('shows each phone as confirmed or not, and an old record as confirmed', () => {
+    saveRemoteSettings(dir, { enabled: true })
+    harness.host.start()
+    harness.fromBridge({
+      kind: 'devicesChanged',
+      devices: [pairedDevice(), pairedDevice({ id: 'dev2', confirmed: false }), pairedDevice({ id: 'dev3', confirmed: true })],
+    })
+    expect(harness.host.status().devices.map((d) => [d.id, d.confirmed])).toEqual([
+      ['dev1', true],
+      ['dev2', false],
+      ['dev3', true],
+    ])
+  })
+
+  it('asks the bridge to confirm a phone, never a linked computer or a stranger', () => {
+    saveRemoteSettings(dir, { enabled: true })
+    harness.host.start()
+    harness.fromBridge({
+      kind: 'devicesChanged',
+      devices: [pairedDevice({ confirmed: false }), pairedDevice({ id: 'pc1', kind: 'desktop', confirmed: false })],
+    })
+    harness.posted.length = 0
+    harness.host.confirmDevice('dev1')
+    harness.host.confirmDevice('pc1')
+    harness.host.confirmDevice('nobody')
+    expect(harness.posted).toEqual([{ kind: 'confirmDevice', deviceId: 'dev1' }])
+  })
+
+  it('keeps unattended phone agents off until switched on, and saves the switch', () => {
+    harness.host.start()
+    expect(harness.host.status().unattendedAgents).toBe(false)
+    harness.host.setUnattendedAgents(true)
+    expect(harness.host.status().unattendedAgents).toBe(true)
+    expect(loadRemoteSettings(dir).unattendedAgents).toBe(true)
+    expect(harness.statuses[harness.statuses.length - 1]?.unattendedAgents).toBe(true)
+    // No bridge restart: the setting is read where a launch runs.
+    expect(harness.started).toEqual([])
+    harness.host.setUnattendedAgents(false)
+    expect(loadRemoteSettings(dir).unattendedAgents).toBe(false)
+  })
+
+  it('dials the default relay in place of a saved plain ws:// one, and names the old one', () => {
+    fs.writeFileSync(path.join(dir, 'remote-settings.json'), JSON.stringify({ enabled: true, relayUrl: 'ws://relay.example/ws' }))
+    harness.host.start()
+    expect(harness.started[0].relayUrl).toBe(DEFAULT_RELAY_URL)
+    expect(harness.host.status()).toMatchObject({
+      relayUrl: DEFAULT_RELAY_URL,
+      relayInsecure: false,
+      relayReplaced: 'ws://relay.example/ws',
+    })
+    // Saving the default answers the notice, with no restart for the same URL.
+    harness.host.setRelayUrl(DEFAULT_RELAY_URL)
+    expect(harness.host.status().relayReplaced).toBeNull()
+    expect(harness.started).toHaveLength(1)
+  })
+})
+
+describe('status for every terminal a phone lists (1.60)', () => {
+  let listed: string[]
+  let listCalls: number
+  let throws: boolean
+  beforeEach(() => {
+    listed = ['t1', 't2']
+    listCalls = 0
+    throws = false
+    harness = makeHarness({
+      listTerminalIds: () => {
+        listCalls++
+        if (throws) throw new Error('session gone')
+        return listed
+      },
+    })
+    saveRemoteSettings(dir, { enabled: true })
+  })
+
+  const statuses = (): string[] =>
+    harness.posted
+      .filter((m): m is Extract<HostToBridge, { kind: 'terminalStatus' }> => m.kind === 'terminalStatus')
+      .map((m) => m.terminalId)
+
+  it('watches nothing listed until a phone is attached', () => {
+    harness.host.start()
+    harness.write('t1', 'Claude Code')
+    harness.write('t2', 'Claude Code')
+    harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice()] })
+    expect(statuses()).toEqual([])
+    expect(listCalls).toBe(0)
+  })
+
+  it('sends a status for every listed terminal once a phone attaches, and when one changes', () => {
+    harness.host.start()
+    harness.write('t1', 'Claude Code')
+    harness.write('t2', 'Claude Code')
+    harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice()] })
+    harness.fromBridge({ kind: 'deviceConnected', deviceId: 'dev1' })
+    expect([...statuses()].sort()).toEqual(['t1', 't2'])
+    // t2 is not open on the phone, and still its badge moves.
+    const before = statuses().length
+    harness.write('t2', '\nTask completed successfully')
+    harness.host.noteTerminalOutput('t2')
+    harness.tick()
+    expect(statuses().slice(before)).toContain('t2')
+  })
+
+  it('picks up a terminal opened since, on the next look', () => {
+    harness.host.start()
+    harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice()] })
+    harness.fromBridge({ kind: 'deviceConnected', deviceId: 'dev1' })
+    harness.write('t3', 'Claude Code')
+    listed = ['t1', 't2', 't3']
+    harness.tick()
+    expect(statuses()).toContain('t3')
+    expect(STATUS_WATCH_REFRESH_MS).toBe(5000)
+  })
+
+  it('keeps the open terminals watched with the listed ones, and stops looking when the phone goes', () => {
+    harness.host.start()
+    harness.write('t9', 'Claude Code')
+    harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice()] })
+    harness.fromBridge({ kind: 'deviceConnected', deviceId: 'dev1' })
+    harness.fromBridge({ kind: 'subscriptionsChanged', terminalIds: ['t9'] })
+    expect(statuses()).toContain('t9')
+    const cleared = harness.cleared
+    harness.fromBridge({ kind: 'deviceDisconnected', deviceId: 'dev1' })
+    expect(harness.cleared).toBe(cleared + 1)
+    const calls = listCalls
+    harness.tick()
+    expect(listCalls).toBe(calls)
+  })
+
+  it('does not count a linked computer as a phone', () => {
+    harness.host.start()
+    harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice({ id: 'pc1', kind: 'desktop' })] })
+    harness.fromBridge({ kind: 'deviceConnected', deviceId: 'pc1' })
+    expect(listCalls).toBe(0)
+  })
+
+  it('caps the listed terminals, and survives a list that throws', () => {
+    listed = Array.from({ length: MAX_LISTED_STATUS + 10 }, (_, i) => `t${i}`)
+    for (const id of listed) harness.write(id, 'x')
+    harness.host.start()
+    harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice()] })
+    harness.fromBridge({ kind: 'deviceConnected', deviceId: 'dev1' })
+    expect(new Set(statuses()).size).toBe(MAX_LISTED_STATUS)
+    throws = true
+    expect(() => harness.tick()).not.toThrow()
+  })
+
+  it('looks at nothing while Remote is off, and stops the look on shutdown', () => {
+    harness.host.start()
+    harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice()] })
+    harness.fromBridge({ kind: 'deviceConnected', deviceId: 'dev1' })
+    const cleared = harness.cleared
+    harness.host.setEnabled(false)
+    expect(harness.cleared).toBeGreaterThan(cleared)
+    const calls = listCalls
+    harness.fromBridge({ kind: 'deviceConnected', deviceId: 'dev1' })
+    harness.tick()
+    expect(listCalls).toBe(calls)
   })
 })
 

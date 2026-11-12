@@ -1227,9 +1227,14 @@ describe('Settings ▸ Accounts wiring', () => {
   // command run_command typed, as main typed it; a phone's terminal is the user's own, no worker.
   it('notes a swarm worker and the command run_command typed into it, sanitized, before it is typed; and forgets it once closed', async () => {
     mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    // Ids of their own: an earlier test's phone terminal holds the mocked one, and a phone's
+    // terminal is not sanitized like a worker's (1.60).
+    const { v4 } = await import('uuid') as any
+    v4.mockReturnValueOnce('worker-uuid')
     const worker = await H.mcpHandlers!.createTerminal('Claude (Build UI)', 'powershell', '/repo')
     expect(H.noteSwarmWorker).toHaveBeenCalledWith(worker)
     H.noteSwarmWorker.mockClear()
+    v4.mockReturnValueOnce('phone-uuid')
     await H.mcpHandlers!.createTerminal('Phone', 'powershell', '/repo', { device: 'phone-1', agentCommand: 'claude' })
     expect(H.noteSwarmWorker).not.toHaveBeenCalled()
     const order: string[] = []

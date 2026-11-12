@@ -27,19 +27,19 @@ describe('remoteSettings', () => {
     // Remote opens a network-facing channel into every terminal on this machine.
     // An upgrade that silently turned it on would be indistinguishable from a
     // compromise, so it stays off until the user asks for it.
-    expect(loadRemoteSettings(dir)).toEqual({ enabled: false, relayUrl: DEFAULT_RELAY_URL })
+    expect(loadRemoteSettings(dir)).toEqual({ enabled: false, relayUrl: DEFAULT_RELAY_URL, unattendedAgents: false })
   })
 
   it('falls back to defaults for a missing, corrupt or wrong-shaped file', () => {
     for (const raw of ['{ not json', '"a string"', '[]', 'null']) {
       fs.writeFileSync(remoteSettingsPath(dir), raw)
-      expect(loadRemoteSettings(dir)).toEqual({ enabled: false, relayUrl: DEFAULT_RELAY_URL })
+      expect(loadRemoteSettings(dir)).toEqual({ enabled: false, relayUrl: DEFAULT_RELAY_URL, unattendedAgents: false })
     }
   })
 
   it('round-trips a saved value', () => {
     const saved = saveRemoteSettings(dir, { enabled: true, relayUrl: 'wss://relay.example/ws' })
-    expect(saved).toEqual({ enabled: true, relayUrl: 'wss://relay.example/ws' })
+    expect(saved).toEqual({ enabled: true, relayUrl: 'wss://relay.example/ws', unattendedAgents: false })
     expect(loadRemoteSettings(dir)).toEqual(saved)
   })
 
@@ -48,6 +48,7 @@ describe('remoteSettings', () => {
     expect(saveRemoteSettings(dir, { enabled: false })).toEqual({
       enabled: false,
       relayUrl: 'wss://relay.example/ws',
+      unattendedAgents: false,
     })
   })
 
@@ -82,20 +83,48 @@ describe('remoteSettings', () => {
     expect(saveRemoteSettings(dir, { relayUrl: 42 }).relayUrl).toBe('wss://relay.example/ws')
   })
 
-  it('keeps a plain ws:// relay an older version saved, rather than moving it to the default', () => {
-    // Swapping in the public relay would quietly move someone who runs their
-    // own onto ours. The address stays -- in memory and on disk, through an
-    // unrelated save -- and is refused where it would be dialled instead.
+  it('dials the default relay instead of a plain ws:// one an older version saved, and says so', () => {
+    // A plain ws:// relay to another computer puts every room id on the network
+    // in the clear. It is not dialled; the default is, and the old address is
+    // kept -- in memory and on disk, through an unrelated save -- so the Remote
+    // pane can name it until the user saves a relay.
     fs.writeFileSync(
       remoteSettingsPath(dir),
       JSON.stringify({ enabled: true, relayUrl: 'ws://relay.example/ws' }),
     )
-    expect(loadRemoteSettings(dir)).toEqual({ enabled: true, relayUrl: 'ws://relay.example/ws' })
-    saveRemoteSettings(dir, { enabled: false })
+    expect(loadRemoteSettings(dir)).toEqual({
+      enabled: true,
+      relayUrl: DEFAULT_RELAY_URL,
+      unattendedAgents: false,
+      relayReplaced: 'ws://relay.example/ws',
+    })
+    expect(saveRemoteSettings(dir, { enabled: false }).relayReplaced).toBe('ws://relay.example/ws')
     expect(JSON.parse(fs.readFileSync(remoteSettingsPath(dir), 'utf8'))).toEqual({
       enabled: false,
       relayUrl: 'ws://relay.example/ws',
+      unattendedAgents: false,
     })
+    // A rejected save is not an answer to the notice.
+    expect(saveRemoteSettings(dir, { relayUrl: 'ws://other.example' }).relayReplaced).toBe('ws://relay.example/ws')
+  })
+
+  it('clears the replaced-relay notice once a relay is saved, the default included', () => {
+    fs.writeFileSync(remoteSettingsPath(dir), JSON.stringify({ enabled: true, relayUrl: 'ws://relay.example/ws' }))
+    const saved = saveRemoteSettings(dir, { relayUrl: DEFAULT_RELAY_URL })
+    expect(saved).toEqual({ enabled: true, relayUrl: DEFAULT_RELAY_URL, unattendedAgents: false })
+    expect(loadRemoteSettings(dir)).toEqual(saved)
+  })
+
+  it('keeps unattended phone agents off unless turned on with a real true', () => {
+    expect(loadRemoteSettings(dir).unattendedAgents).toBe(false)
+    expect(saveRemoteSettings(dir, { unattendedAgents: true }).unattendedAgents).toBe(true)
+    expect(loadRemoteSettings(dir).unattendedAgents).toBe(true)
+    // An unrelated save leaves it as it is.
+    expect(saveRemoteSettings(dir, { enabled: true }).unattendedAgents).toBe(true)
+    // @ts-expect-error -- deliberately wrong: the IPC edge is not type-checked.
+    expect(saveRemoteSettings(dir, { unattendedAgents: 'yes' }).unattendedAgents).toBe(false)
+    fs.writeFileSync(remoteSettingsPath(dir), JSON.stringify({ unattendedAgents: 1 }))
+    expect(loadRemoteSettings(dir).unattendedAgents).toBe(false)
   })
 
   it('rejects a non-boolean enabled flag', () => {
@@ -125,6 +154,7 @@ describe('remoteSettings', () => {
     expect(saveRemoteSettings(unwritable, { enabled: true })).toEqual({
       enabled: true,
       relayUrl: DEFAULT_RELAY_URL,
+      unattendedAgents: false,
     })
   })
 

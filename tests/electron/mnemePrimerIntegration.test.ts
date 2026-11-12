@@ -28,7 +28,7 @@ describe('Mneme primer integration — real accrued state', () => {
   afterEach(() => {
     _resetCompetenceForTests()
     _resetIdentityForTests()
-    fs.rmSync(tmp, { recursive: true, force: true })
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   })
 
   it('surfaces a genuinely weak domain + an open question + a goal in the primer', () => {

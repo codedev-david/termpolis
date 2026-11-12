@@ -3,9 +3,16 @@ import { buildQrPath } from '../../lib/qrPath'
 import type { RemotePairingView } from '../../types'
 
 export interface PairedResult {
+  /** Absent only in tests that predate the confirm step. Without it the modal
+   *  cannot confirm, so it shows the words and leaves that to the device row. */
+  deviceId?: string
   label: string
   phrase: string
 }
+
+/** Where the desktop half of pairing stands (1.60). A phone is paired with no
+ *  permissions at all until someone at this desktop says the words match. */
+export type ConfirmState = 'waiting' | 'confirmed' | 'rejected'
 
 export interface PairingModalProps {
   /** The live offer, or null once it has been spent or cancelled. */
@@ -17,6 +24,11 @@ export interface PairingModalProps {
    *  the difference between "not yet" and "too late", and only the caller knows
    *  which -- a null offer looks the same either way from in here. */
   awaiting: boolean
+  /** The words match: the phone's permissions take effect. */
+  onConfirm?(deviceId: string): void
+  /** The words differ: the phone is removed. */
+  onReject?(deviceId: string): void
+  confirmState?: ConfirmState
   onClose(): void
 }
 
@@ -47,9 +59,13 @@ export function PairingModal({
   pairing,
   paired,
   awaiting,
+  onConfirm,
+  onReject,
+  confirmState = 'waiting',
   onClose,
 }: PairingModalProps): JSX.Element {
   const [now, setNow] = useState(() => Date.now())
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     // Only while a live offer is on screen: nothing else here is time-dependent,
@@ -66,6 +82,19 @@ export function PairingModal({
   // Narrowed rather than a boolean flag, so the branches below can read the
   // payload without a non-null assertion or a fallback that cannot happen.
   const live = pairing && remaining > 0 ? pairing : null
+
+  // The text a phone can paste when its camera is off. Always offered, not only
+  // when the code is too long to draw: the phone's own "camera denied" screen
+  // tells the user to look for it here.
+  const copyPairingText = async (text: string): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+    } catch {
+      // Clipboard refused. The text is still on screen to select by hand.
+      setCopied(false)
+    }
+  }
 
   return (
     <div
@@ -101,6 +130,39 @@ export function PairingModal({
               >
                 {paired.phrase}
               </div>
+              {paired.deviceId && confirmState === 'waiting' && (
+                <div className="flex flex-col gap-2" data-testid="pairing-confirm">
+                  <p className="text-xs text-[#e5c07b]">
+                    The phone can do nothing until you confirm the words match.
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      data-testid="pairing-words-match"
+                      onClick={() => onConfirm?.(paired.deviceId as string)}
+                      className="px-3 py-1.5 text-xs rounded bg-[#2d7d46] hover:bg-[#35914f] text-white"
+                    >
+                      The words match
+                    </button>
+                    <button
+                      data-testid="pairing-words-differ"
+                      onClick={() => onReject?.(paired.deviceId as string)}
+                      className="px-3 py-1.5 text-xs rounded bg-[#a33] hover:bg-[#c44] text-white"
+                    >
+                      They don&apos;t match
+                    </button>
+                  </div>
+                </div>
+              )}
+              {confirmState === 'confirmed' && (
+                <p data-testid="pairing-confirmed" className="text-xs text-[#7ee2a3]">
+                  Confirmed. The phone can now do what you allowed.
+                </p>
+              )}
+              {confirmState === 'rejected' && (
+                <p data-testid="pairing-rejected" className="text-xs text-[#f28b82]">
+                  The phone was removed. Pair again and compare the new words.
+                </p>
+              )}
             </div>
           ) : live && qr ? (
             <div className="flex flex-col items-center gap-3">
@@ -130,17 +192,44 @@ export function PairingModal({
               <div data-testid="pairing-countdown" className="text-xs text-[#9ca3af]">
                 Expires in {formatCountdown(remaining)}
               </div>
+              <div className="self-stretch flex flex-col gap-1" data-testid="pairing-text">
+                <div className="text-[11px] text-[#6b7280]">
+                  Camera off? Copy this pairing text and paste it into the phone.
+                </div>
+                <div className="flex gap-2 items-start">
+                  <div
+                    data-testid="pairing-text-value"
+                    className="flex-1 font-mono text-[9px] leading-tight break-all text-[#9ca3af] bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 select-all max-h-16 overflow-y-auto"
+                  >
+                    {live.qrPayload}
+                  </div>
+                  <button
+                    data-testid="pairing-copy"
+                    onClick={() => void copyPairingText(live.qrPayload)}
+                    className="px-2 py-1 text-xs rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#e0e0e0] whitespace-nowrap"
+                  >
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              </div>
             </div>
           ) : live ? (
             <div className="flex flex-col gap-2" data-testid="pairing-qr-fallback">
               <p className="text-xs text-[#e5c07b]">
-                This code is too long to draw. Type it into the phone by hand instead.
+                This code is too long to draw. Copy it and paste it into the phone instead.
               </p>
               <textarea
                 readOnly
                 value={live.qrPayload}
                 className="font-mono text-[10px] h-24 bg-[#1e1e1e] text-[#d4d4d4] border border-[#3c3c3c] rounded p-2"
               />
+              <button
+                data-testid="pairing-copy"
+                onClick={() => void copyPairingText(live.qrPayload)}
+                className="self-start px-2 py-1 text-xs rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#e0e0e0]"
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
             </div>
           ) : awaiting ? (
             <div className="flex flex-col gap-2" data-testid="pairing-waiting">

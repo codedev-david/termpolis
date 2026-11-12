@@ -95,6 +95,18 @@ describe('sanitizeAgentCommand', () => {
     expect(sanitizeAgentCommand('C:\\Users\\bin\\gemini --sandbox -p "test"')).toBe('gemini')
   })
 
+  it('a Windows launcher extension does not hide the agent: agy.exe / claude.cmd get the same rebuild', () => {
+    // Passed through as-is, these started the agent headless with the task on its command line.
+    expect(sanitizeAgentCommand('agy.exe -p "Write docs"')).toBe('agy --dangerously-skip-permissions')
+    expect(sanitizeAgentCommand('C:\\tools\\AGY.EXE --sandbox')).toBe('agy --dangerously-skip-permissions')
+    expect(sanitizeAgentCommand('claude.cmd -p "task"')).toBe('claude --dangerously-skip-permissions')
+    expect(sanitizeAgentCommand('codex.ps1 exec "task"')).toBe('codex -a never -s workspace-write -c check_for_update_on_startup=false')
+    expect(sanitizeAgentCommand('gemini.bat -p x')).toBe('gemini')
+    // Only a launcher extension is dropped: a word that merely starts with the name is no agent.
+    expect(sanitizeAgentCommand('agy.json --x')).toBe('agy.json --x')
+    expect(sanitizeAgentCommand('agyctl -p x')).toBe('agyctl -p x')
+  })
+
   // ---- Edge cases ----
 
   it('handles whitespace-padded commands', () => {

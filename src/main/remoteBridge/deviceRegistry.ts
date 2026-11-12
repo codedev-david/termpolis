@@ -31,6 +31,14 @@ export class DeviceRegistry {
     return true
   }
 
+  /** The desktop user confirmed the safety words. False for an unknown device. */
+  confirm(id: string): boolean {
+    const d = this.devices.get(id)
+    if (!d) return false
+    delete d.confirmed
+    return true
+  }
+
   /** The caller sanitises; this only stores. */
   setLabel(id: string, label: string): boolean {
     const d = this.devices.get(id)

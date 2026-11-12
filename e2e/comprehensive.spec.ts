@@ -561,7 +561,7 @@ test.describe.serial('11. Status Bar', () => {
   })
 
   test('11.2 shows MCP indicator', async () => {
-    await expect(page.locator('text=MCP: localhost:9315')).toBeVisible()
+    await expect(page.locator('text=/MCP: localhost:\\d+/')).toBeVisible()
   })
 
   test('11.3 shows Sponsor link', async () => {

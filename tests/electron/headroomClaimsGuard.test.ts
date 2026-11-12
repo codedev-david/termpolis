@@ -119,7 +119,7 @@ describe('the README on Token Headroom', () => {
     // once, as the research's figure for every size, and the range of 5.6 to 17.9% is attributed to it and not to the 10%),
     // where it holds, and what less looks like.
     expect(late).toMatch(/about \*\*10%\*\* of the bill saved where the model asks for results back that often, from one person's history/)
-    expect(late.split('11.7%')).toHaveLength(2)
+    expect(late!.split('11.7%')).toHaveLength(2)
     expect(late).not.toContain('**11.7%**')
     expect(late).toContain("the research's 11.7% counts every size")
     expect(late).toContain('belongs to that figure and varies only the cost of one retrieval turn, not how often the model asks')

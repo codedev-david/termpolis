@@ -192,12 +192,19 @@ describe('remote bridge end-to-end', () => {
     expect(denied.kind).toBe('error')
     expect(callTool).not.toHaveBeenCalled()
 
-    // 6. User grants read in Settings.
+    // 6. User grants read in Settings. Still nothing is served: the words on the
+    //    two screens have not been compared yet (1.60).
     core.handleHostMessage({
       kind: 'setCapabilities',
       deviceId: device.id,
       capabilities: { ...NO_CAPABILITIES, read: true },
     })
+    const unconfirmed = await core.handleRemoteRequest(device.id, { id: 1, request: { kind: 'listTerminals' } })
+    expect(unconfirmed.kind).toBe('error')
+    expect(callTool).not.toHaveBeenCalled()
+
+    // 6b. The user says the words match, on the desktop. The grant takes effect.
+    core.handleHostMessage({ kind: 'confirmDevice', deviceId: device.id })
 
     // 7. Now it is served — and the response survives a sealed round-trip.
     const ok = await core.handleRemoteRequest(device.id, { id: 2, request: { kind: 'listTerminals' } })

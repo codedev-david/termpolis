@@ -926,6 +926,25 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     return () => window.removeEventListener('termpolis:clear-terminal', onClear)
   }, [terminalId, handleClearTerminal])
 
+  // The command palette's "Export Terminal Output" and "Start/Stop Recording" use the same path:
+  // App names the active terminal and only that pane acts, through the context menu's own handlers.
+  useEffect(() => {
+    const onExport = (e: Event) => {
+      if ((e as CustomEvent).detail === terminalId) handleExport('full')
+    }
+    const onToggleRecording = (e: Event) => {
+      if ((e as CustomEvent).detail !== terminalId) return
+      if (recording.isRecording) handleStopRecording()
+      else handleStartRecording()
+    }
+    window.addEventListener('termpolis:export-terminal', onExport)
+    window.addEventListener('termpolis:toggle-recording', onToggleRecording)
+    return () => {
+      window.removeEventListener('termpolis:export-terminal', onExport)
+      window.removeEventListener('termpolis:toggle-recording', onToggleRecording)
+    }
+  }, [terminalId, handleExport, recording.isRecording, handleStartRecording, handleStopRecording])
+
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
     // Decide which selection the menu's Copy actions will use. Prefer the live
@@ -2730,6 +2749,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
             )}
             {(onSplitRight || onSplitDown) && (
               <>
+                {/* No shortcut hint: splitting has no keybinding (Ctrl+Shift+D is the Redundancy
+                    panel, Ctrl+Shift+R is unbound), so a hint here would name the wrong key. */}
                 <div className="border-t border-[#454545] my-1"></div>
                 {onSplitRight && (
                   <button
@@ -2739,7 +2760,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                       setContextMenu({ visible: false, x: 0, y: 0 })
                     }}
                   >
-                    Split Right<span className="float-right text-[#999]">Ctrl+Shift+R</span>
+                    Split Right
                   </button>
                 )}
                 {onSplitDown && (
@@ -2750,7 +2771,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                       setContextMenu({ visible: false, x: 0, y: 0 })
                     }}
                   >
-                    Split Down<span className="float-right text-[#999]">Ctrl+Shift+D</span>
+                    Split Down
                   </button>
                 )}
               </>

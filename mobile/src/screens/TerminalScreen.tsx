@@ -1,8 +1,9 @@
 import { HeaderHeightContext } from '@react-navigation/elements'
-import { useRoute } from '@react-navigation/native'
+import { useNavigation, useRoute } from '@react-navigation/native'
 import type { RouteProp } from '@react-navigation/native'
 import React from 'react'
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -47,6 +48,11 @@ const STATUS_LABEL: Record<string, string> = {
  * The composer is present only with `writeToTerminal`. It is a separate grant
  * from `createTerminal` on the desktop precisely because it bypasses the
  * command sanitiser, so the phone must not infer one from the other.
+ *
+ * "Close terminal" shows with `closeTerminal`, or with `createTerminal`: from
+ * desktop 1.60 a phone that may start terminals may also close the ones it
+ * started. An older desktop asks for `closeTerminal` itself and refuses the
+ * rest, and that refusal is shown here like any other error.
  */
 /** iOS leaves the composer under the keyboard unless the view is padded up.
  *  Android resizes the window for the keyboard already, and padding on top of
@@ -60,7 +66,8 @@ export const KEYBOARD_BEHAVIOR = Platform.OS === 'ios' ? 'padding' : undefined
 
 export default function TerminalScreen(): React.JSX.Element {
   const route = useRoute<RouteProp<RootStackParamList, 'Terminal'>>()
-  const { terminalId } = route.params
+  const navigation = useNavigation()
+  const { terminalId, name } = route.params
   // `padding` is measured from the top of this view, but the view starts under
   // the navigation header -- so without the header's own height the padding
   // stops that many points short and the keyboard still covers the composer.
@@ -73,6 +80,8 @@ export default function TerminalScreen(): React.JSX.Element {
   const text = useRemoteStore((s) => s.output[terminalId] ?? '')
   const status = useRemoteStore((s) => s.agentStatus[terminalId])
   const canWrite = useRemoteStore((s) => s.capabilities.writeToTerminal)
+  const canClose = useRemoteStore((s) => s.capabilities.closeTerminal || s.capabilities.createTerminal)
+  const closeTerminal = useRemoteStore((s) => s.closeTerminal)
   const stale = useRemoteStore((s) => s.stale)
   const error = useRemoteStore((s) => s.error)
   const subscribe = useRemoteStore((s) => s.subscribe)
@@ -103,6 +112,27 @@ export default function TerminalScreen(): React.JSX.Element {
       .catch(() => undefined)
   }
 
+  function onClose(): void {
+    // Ending a terminal ends whatever runs in it, so it is asked once.
+    Alert.alert(
+      'Close this terminal?',
+      `${name} closes on the desktop, and anything still running in it stops.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Close',
+          style: 'destructive',
+          onPress: () => {
+            closeTerminal(terminalId)
+              .then(() => navigation.goBack())
+              // The store has already put the desktop's refusal on screen.
+              .catch(() => undefined)
+          },
+        },
+      ],
+    )
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.page}
@@ -125,6 +155,18 @@ export default function TerminalScreen(): React.JSX.Element {
           )}
         </View>
       )}
+
+      {canClose && !stale ? (
+        <Pressable
+          testID="terminal-close"
+          accessibilityRole="button"
+          accessibilityLabel="Close terminal"
+          style={styles.closeButton}
+          onPress={onClose}
+        >
+          <Text style={styles.closeText}>Close terminal</Text>
+        </Pressable>
+      ) : null}
 
       {error === null ? null : (
         <Text testID="terminal-error" style={styles.error}>
@@ -190,6 +232,8 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   statusLabel: { color: '#0e9cd6', fontSize: 12, fontWeight: '600' },
+  closeButton: { alignSelf: 'flex-end', paddingHorizontal: 12, paddingTop: 8 },
+  closeText: { color: '#f14c4c', fontSize: 13, fontWeight: '600' },
   statusSummary: { color: '#9ca3af', fontSize: 12 },
   scroll: { flex: 1 },
   scrollContent: { padding: 12 },

@@ -297,7 +297,8 @@ test.skip('Swarm Dashboard modal opens', async () => {
 // â”€â”€ Status Bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('status bar shows MCP indicator', async () => {
-  const mcp = page.locator('text=MCP: localhost:9315')
+  // The status bar shows the port the server actually bound (9315 unless it was taken).
+  const mcp = page.locator('text=/MCP: localhost:\\d+/')
   await expect(mcp).toBeVisible()
 })
 
@@ -338,7 +339,7 @@ test('Help modal opens and shows all sections', async () => {
     'Sidebar Icon Bar',
     'Command Palette',
     'Git Panel',
-    'Autocomplete & Auto-Fix',
+    'Auto-Fix',
     'MCP Server',
     'Multi-Agent Swarm',
   ]

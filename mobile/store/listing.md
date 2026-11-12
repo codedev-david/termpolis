@@ -172,9 +172,10 @@ TO EXERCISE THE APP you will need the desktop app. It is free and needs no accou
 
 1. Download Termpolis for macOS, Windows or Linux from https://termpolis.com (Downloads section).
 2. Launch it and start a terminal from the sidebar.
-3. Open Settings > Remote > Pair a device. A QR code appears, with the same code in text underneath it.
+3. Open Settings > Remote. Tick "Allow phones to connect", then tick "Read terminal output" and "Type into terminals" (nothing is ticked by default). Press Pair a device. A QR code appears, with the same code in text underneath it and a Copy button.
 4. In Termpolis Remote, tap Pair and scan the code. If you would rather not grant camera access, decline the camera prompt -- a "Paste the pairing code" field appears in its place, and the text code from step 3 pairs the same way.
-5. The phone now lists the terminals running on that desktop. Tap one to read its output and type into it.
+5. Both screens show the same eight words. On the desktop, click "The words match". The desktop gives the phone no access until then.
+6. The phone now lists the terminals running on that desktop. Tap one to read its output and type into it.
 
 NO CREDENTIALS TO PROVIDE. There is no account, no sign-in and no server-side identity anywhere in either app.
 
@@ -190,6 +191,12 @@ WHAT THE APP SHOWS. Terminal output from the user's own computer, forwarded over
 First release. Pair with your Termpolis desktops by scanning the code each one shows, then read and type in your running terminals from your phone, end to end encrypted. Switch between up to 16 paired computers from the terminal list.
 ```
 234 characters.
+
+### What's New — next release (draft, needs desktop 1.60)
+
+```
+Close a terminal from your phone, after a confirmation. Each terminal in the list now shows its agent's status. If you reinstall the app, it now forgets the desktops the old install was paired with; your subscription is restored from the App Store. Camera off? Copy the pairing text on the desktop and paste it here.
+```
 
 ---
 

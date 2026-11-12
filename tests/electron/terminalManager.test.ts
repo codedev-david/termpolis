@@ -38,6 +38,9 @@ vi.mock('../../src/main/shellAlone', async (importOriginal) => ({ ...(await impo
 
 const { existsSync, writeFileSync } = await import('fs')
 const { execSync } = await import('child_process')
+// The mocked os, as terminalManager sees it. A bare require('os') in a test is Node's own module, not the
+// mock, under the node environment.
+const { homedir } = await import('os')
 const pty = await import('node-pty')
 
 const {
@@ -112,7 +115,6 @@ describe('terminalManager', () => {
     const onData = vi.fn()
     spawnTerminal('t2', '/bin/bash', '/nonexistent/path', onData)
 
-    const { homedir } = require('os')
     expect(pty.spawn).toHaveBeenCalledWith(
       '/bin/bash',
       ['--login'],
@@ -450,7 +452,6 @@ describe('terminalManager', () => {
   // 17. spawnTerminal falls back to homedir when existsSync throws
   it('spawnTerminal falls back to homedir when existsSync throws', () => {
     vi.mocked(existsSync).mockImplementation(() => { throw new Error('EPERM') })
-    const { homedir } = require('os')
     spawnTerminal('t17', '/bin/bash', '/bad/path', vi.fn())
     const call = vi.mocked(pty.spawn).mock.calls[0]
     expect(call[2]?.cwd).toBe(homedir())

@@ -51,8 +51,22 @@ export default defineConfig({
     // suite. The real-bge benchmarks set their own, longer budget locally.
     testTimeout: 30_000,
     hookTimeout: 30_000,
-    environmentMatchGlobs: [
-      ['tests/electron/**', 'node'],
+    // Two projects, one run: the main-process tests under tests/electron/ run in node, everything
+    // else in jsdom. This used to be `environmentMatchGlobs: [['tests/electron/**', 'node']]`, which
+    // vitest 4 dropped without a word, so tests/electron quietly ran under jsdom with jsdom's
+    // globals (window, document, a browser-ish URL/Blob) that the Electron main process never has.
+    // A file can still pick its own environment with a `// @vitest-environment` pragma.
+    // Both projects extend this config, so setupFiles, timeouts, plugins and the coverage block
+    // below apply to the whole run exactly as before.
+    projects: [
+      {
+        extends: true,
+        test: { name: 'renderer', environment: 'jsdom', exclude: ['tests/electron/**'] },
+      },
+      {
+        extends: true,
+        test: { name: 'main', environment: 'node', include: ['tests/electron/**/*.test.{ts,tsx}'] },
+      },
     ],
     coverage: {
       provider: 'v8',

@@ -59,6 +59,10 @@ function device(v: unknown): PairedDevice | null {
     // reads as a phone -- the record every file written before linked machines
     // holds -- so the field is left off rather than carried in some other shape.
     ...(raw.kind === 'desktop' ? { kind: 'desktop' as const } : {}),
+    // A phone still waiting for its safety words to be confirmed. Only the exact
+    // `false` is kept: absent is what every device paired before 1.60 holds, and
+    // it means confirmed (protocol.ts `confirmed`).
+    ...(raw.confirmed === false ? { confirmed: false } : {}),
   }
 }
 

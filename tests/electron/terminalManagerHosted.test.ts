@@ -153,6 +153,38 @@ describe('terminalManager: a terminal in the pty host', () => {
     expect(h.spawn).not.toHaveBeenCalled()
   })
 
+  it('with the tree killer on, the tree goes after the list is read and before the host ends the shell', async () => {
+    const tk = await import('../../src/main/terminalTreeKill')
+    const host = hostUp()
+    h.consoleList.mockResolvedValueOnce([10, 11])
+    let release!: (ended: ReadonlySet<number>) => void
+    const killer = vi.fn(() => new Promise<ReadonlySet<number>>((r) => { release = r }))
+    tk.setTerminalTreeKiller(killer)
+    try {
+      void tm.spawnTerminal('kt', 'cmd.exe', 'C:/', vi.fn(), undefined, undefined, undefined, PREP)
+      const key = (host.sent[0] as { key: number }).key
+      host.reply({ kind: 'spawned', key, pid: 10 })
+      await flush()
+      tm.killTerminal('kt')
+      await vi.waitFor(() => expect(killer).toHaveBeenCalledWith(10))
+      expect(host.sent.some((m) => m.kind === 'kill')).toBe(false) // the shell still leads taskkill to its tree
+      // taskkill ended the shell itself; 11 is on the console but not in the tree, so it still goes.
+      release(new Set([10]))
+      await vi.waitFor(() => expect(host.sent.at(-1)).toEqual({ kind: 'kill', key, consolePids: [11] }))
+      // A killer that rejects anyway still lets the shell go.
+      killer.mockImplementationOnce(() => Promise.reject(new Error('broken')))
+      h.consoleList.mockRejectedValueOnce(new Error('no list'))
+      void tm.spawnTerminal('kt2', 'cmd.exe', 'C:/', vi.fn(), undefined, undefined, undefined, PREP)
+      const key2 = (host.sent.at(-1) as { key: number }).key
+      host.reply({ kind: 'spawned', key: key2, pid: 12 })
+      await flush()
+      tm.killTerminal('kt2')
+      await vi.waitFor(() => expect(host.sent.at(-1)).toEqual({ kind: 'kill', key: key2, consolePids: null }))
+    } finally {
+      tk.setTerminalTreeKiller(null)
+    }
+  })
+
   it('closing when the list cannot be read ends the shell alone', async () => {
     const host = hostUp()
     h.consoleList.mockRejectedValueOnce(new Error('proc host down'))

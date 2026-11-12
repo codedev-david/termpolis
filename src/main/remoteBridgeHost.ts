@@ -86,7 +86,17 @@ export interface RemoteHostDeps {
    *  memory, before the bridge comes back and asks `linkedInit` again. Its file
    *  has been set aside by then. Absent, there is nothing to forget. */
   linkedStartOver?: () => void
+  /** Every terminal a phone's list shows, so their status labels stay current
+   *  and not only the one terminal a phone has open. Optional: absent, status
+   *  is detected for the open terminals alone, as before 1.60. */
+  listTerminalIds?: () => string[]
 }
+
+/** How often the terminals a phone lists are looked at again while one is
+ *  attached, to catch terminals opened since. */
+export const STATUS_WATCH_REFRESH_MS = 5000
+/** The most listed terminals watched for status at once, past the open ones. */
+export const MAX_LISTED_STATUS = 64
 
 /** One paired device as the renderer sees it.
  *
@@ -104,6 +114,10 @@ export interface RemoteDeviceView {
   lastSeenAt: number
   /** Reachable right now. Distinct from paired, which survives a tunnel. */
   attached: boolean
+  /** The user said the words on both screens match. Until then the bridge
+   *  grants the phone nothing, whatever `capabilities` says. Devices paired
+   *  before 1.60 count as confirmed. */
+  confirmed: boolean
 }
 
 /** What the renderer is told when the bridge says something.
@@ -138,11 +152,16 @@ export interface RemoteStatusView extends KeyStorageView {
   /** The supervisor gave up after a crash loop. The switch says on; nothing is. */
   disabled: boolean
   relayUrl: string
-  /** `relayUrl` is plain `ws://` to another computer -- saved by a version
-   *  before 1.53, since a save refuses one now. Kept, never dialled: the bridge
-   *  opens none of this desktop's rooms on it, and both panes say so until the
-   *  address changes. */
+  /** `relayUrl` is plain `ws://` to another computer. Since 1.60 a load swaps
+   *  such an address for the default relay (`relayReplaced`), so this stays
+   *  false; it is kept for the panes and as a last guard at dial time. */
   relayInsecure: boolean
+  /** A plain `ws://` relay an older version saved, which this desktop no
+   *  longer dials: it uses the default relay instead, and the Remote pane says
+   *  so until the user saves a relay. Null when nothing was replaced. */
+  relayReplaced: string | null
+  /** Phone-started agents skip their approval prompts. Off by default. */
+  unattendedAgents: boolean
   /** This desktop's X25519 public key, hex. Safe to show: it is half of what a
    *  device needs to pair, and the half that is meant to be published. Null
    *  while the keys are locked, when there is no identity to show. */
@@ -203,6 +222,11 @@ export interface RemoteHost {
   cancelPairing(): void
   revokeDevice(deviceId: string): void
   setDeviceCapabilities(deviceId: string, capabilities: Capabilities): void
+  /** The user compared the words: the phone's grants take effect now. Phones
+   *  only -- a linked computer is confirmed in its own pane. */
+  confirmDevice(deviceId: string): void
+  /** Let phone-started agents skip their approval prompts, or not. */
+  setUnattendedAgents(on: boolean): void
   verificationPhraseFor(deviceId: string): string | null
   noteTerminalOutput(terminalId: string): void
   /** Send the phone everything the output pump is holding, NOW, instead of at its next tick.
@@ -431,6 +455,50 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     push(() => deps.sendStatus(status()))
   }
 
+  /** The terminals the bridge watches because a phone has them open. */
+  let bridgeSubs: string[] = []
+  let watchTimer: unknown = null
+
+  function phoneAttached(): boolean {
+    return devices.some((d) => d.kind !== 'desktop' && attached.has(d.id))
+  }
+
+  function listedTerminals(): string[] {
+    try {
+      return (deps.listTerminalIds?.() ?? []).slice(0, MAX_LISTED_STATUS)
+    } catch {
+      return []
+    }
+  }
+
+  function stopWatchTimer(): void {
+    if (watchTimer === null) return
+    deps.clearTimer(watchTimer)
+    watchTimer = null
+  }
+
+  /** Watch for status every terminal a phone has open, and -- while a phone is
+   *  attached -- every terminal its list shows. The bridge sends each status to
+   *  every phone that may read, so a list badge moves when its agent does, not
+   *  only when that terminal is opened. */
+  function refreshStatusWatch(): void {
+    if (!statusPump) {
+      stopWatchTimer()
+      return
+    }
+    const listing = deps.listTerminalIds !== undefined && phoneAttached()
+    const listed = listing ? listedTerminals() : []
+    statusPump.setSubscriptions([...new Set([...bridgeSubs, ...listed])])
+    if (!listing) {
+      stopWatchTimer()
+    } else if (watchTimer === null) {
+      watchTimer = deps.setTimer(() => {
+        watchTimer = null
+        refreshStatusWatch()
+      }, STATUS_WATCH_REFRESH_MS)
+    }
+  }
+
   function newStatusPump(): StatusPump {
     return createStatusPump({
       read: (terminalId) => deps.readRecent(terminalId),
@@ -509,18 +577,22 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
         noteDesktops(devices)
         saveRemoteDevices(deps.userDataDir, devices)
         for (const id of [...attached]) if (!devices.some((d) => d.id === id)) attached.delete(id)
+        refreshStatusWatch()
         break
       case 'deviceConnected':
         if (isDesktop(m.deviceId)) tell = 'none'
         attached.add(m.deviceId)
+        refreshStatusWatch()
         break
       case 'deviceDisconnected':
         if (isDesktop(m.deviceId)) tell = 'none'
         attached.delete(m.deviceId)
+        refreshStatusWatch()
         break
       case 'subscriptionsChanged':
         pump?.setSubscriptions(m.terminalIds)
-        statusPump?.setSubscriptions(m.terminalIds)
+        bridgeSubs = m.terminalIds
+        refreshStatusWatch()
         break
       case 'ready':
         // A bridge that has just started is watching nothing, so neither pump
@@ -532,6 +604,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
         // and no status -- a blank screen until the terminal prints, and then
         // only the part it printed. Emptying the set here makes that a join.
         pump?.setSubscriptions([])
+        bridgeSubs = []
         statusPump?.setSubscriptions([])
         break
       case 'relayState':
@@ -635,6 +708,8 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     // anyway would charge every PTY write for a feature that is switched off.
     pump = settings.enabled ? newPump() : null
     statusPump = settings.enabled ? newStatusPump() : null
+    bridgeSubs = []
+    stopWatchTimer()
     // Whatever an earlier child held or was asked, this one starts with none.
     offerAsks = []
     offerLive = null
@@ -648,6 +723,8 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     pump = null
     statusPump?.stop()
     statusPump = null
+    bridgeSubs = []
+    stopWatchTimer()
     attached.clear()
     pairing = null
     offerAsks = []
@@ -695,6 +772,8 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       disabled: deps.isDisabled(),
       relayUrl: settings.relayUrl,
       relayInsecure: !isSecureRelayUrl(settings.relayUrl),
+      relayReplaced: settings.relayReplaced ?? null,
+      unattendedAgents: settings.unattendedAgents,
       publicKey: resolved.kind === 'ok' ? resolved.identity.publicKey : null,
       // Computed at read time rather than cleared by a timer: a timer would have
       // to be cancelled on every path out of pairing, and forgetting one leaves a
@@ -713,6 +792,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
           pairedAt: d.pairedAt,
           lastSeenAt: d.lastSeenAt,
           attached: attached.has(d.id),
+          confirmed: d.confirmed !== false,
         })),
     }
   }
@@ -824,6 +904,18 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
 
     setDeviceCapabilities(deviceId: string, capabilities: Capabilities): void {
       deps.sendToBridge({ kind: 'setCapabilities', deviceId, capabilities })
+    },
+
+    confirmDevice(deviceId: string): void {
+      // The bridge owns the registry and answers with `devicesChanged`.
+      if (!devices.some((d) => d.id === deviceId && d.kind !== 'desktop')) return
+      deps.sendToBridge({ kind: 'confirmDevice', deviceId })
+    },
+
+    setUnattendedAgents(on: boolean): void {
+      // Read where a phone's launch is run (index.ts), so no bridge restart.
+      settings = saveRemoteSettings(deps.userDataDir, { unattendedAgents: on === true })
+      emitStatus()
     },
 
     verificationPhraseFor,

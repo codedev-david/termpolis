@@ -53,6 +53,19 @@ export interface PairedDevice {
    *  desktop peer is served the `peer*` request kinds and nothing else, so the
    *  phone capabilities above never apply to it (spec §4.4). */
   kind?: 'desktop'
+  /** `false` from the moment a phone pairs until the desktop user says its safety
+   *  words match. While false the phone is granted nothing, whatever
+   *  `capabilities` holds: those are what it WILL get once confirmed.
+   *
+   *  Absent means confirmed. Every device paired before 1.60 was trusted the
+   *  moment it scanned, and still is: a rule that took those back would unpair
+   *  every phone in the field on update. */
+  confirmed?: boolean
+}
+
+/** What a device may actually do now. An unconfirmed phone may do nothing. */
+export function effectiveCapabilities(device: Pick<PairedDevice, 'capabilities' | 'confirmed'>): Capabilities {
+  return device.confirmed === false ? { ...NO_CAPABILITIES } : device.capabilities
 }
 
 /** The three agents a phone may launch. A closed set on purpose: `launchAgent`
@@ -349,6 +362,9 @@ export type HostToBridge =
   | { kind: 'cancelPairing' }
   | { kind: 'revokeDevice'; deviceId: string }
   | { kind: 'setCapabilities'; deviceId: string; capabilities: Capabilities }
+  /** The desktop user compared the safety words and they match: the phone gets
+   *  the capabilities on its record from now on. */
+  | { kind: 'confirmDevice'; deviceId: string }
   // PTY output, pushed down from main. Main already owns the rolling window and the
   // per-terminal offsets (terminalOutputBuffer.ts), so the bridge is handed slices
   // rather than reaching back for them -- it never touches the PTY.

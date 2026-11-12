@@ -1076,11 +1076,24 @@ describe('git:status-parsed', () => {
     expect(r.success).toBe(true)
     expect(r.data.branch).toBe('main')
     expect(r.data.staged).toEqual([{ file: 'staged.ts', status: 'M' }])
-    // `??` is untracked — it surfaces as unstaged, mapped to 'U'.
+    // `??` is untracked — it surfaces as unstaged and keeps git's '?' (U is reserved for conflicts).
     expect(r.data.unstaged).toEqual([
       { file: 'unstaged.ts', status: 'M' },
-      { file: 'new.ts', status: 'U' },
+      { file: 'new.ts', status: '?' },
     ])
+  })
+
+  // Before 1.60.0 a conflict (UU) was listed twice, staged and unstaged, and the panel called
+  // both "Untracked". Every unmerged shape is one unresolved file: listed once, unstaged, as U.
+  it.each(['UU', 'AA', 'DD', 'DU', 'UD', 'AU', 'UA'])('lists a %s conflict once, unstaged, as U', async (xy) => {
+    gitAsync((argv) => {
+      if (argv[0] === 'rev-parse') return 'main\n'
+      if (argv[0] === 'status') return `${xy} clash.ts\nM  staged.ts\n`
+      return ''
+    })
+    const r = await invoke('git:status-parsed', { cwd: '/repo' })
+    expect(r.data.staged).toEqual([{ file: 'staged.ts', status: 'M' }])
+    expect(r.data.unstaged).toEqual([{ file: 'clash.ts', status: 'U' }])
   })
 
   // The regression that matters. Going back to safeGit here would restore a 7-10% duty cycle of

@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 const { rewriteMessagesBody, setWireWindow } = await import('../../src/main/headroomProxy/wireCompress')
+import type { WireWindow } from '../../src/main/headroomProxy/wireCompress'
+/** A window with no floor: setWireWindow keeps the floor already in force, which is what these tests rely on. */
+const keepFloor = (w: Omit<WireWindow, 'floorChars'>): WireWindow => w as WireWindow
 
 const lines = (n: number, tag = 'v'): string =>
   Array.from({ length: n }, (_, i) => `  const ${tag}${i} = compute(${i}) // a reasonably long source line`).join('\n')
@@ -120,8 +123,8 @@ describe('rewriteMessagesBody — tool_use inputs', () => {
 })
 
 describe('rewriteMessagesBody — tool_use accounting', () => {
-  beforeEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }))
-  afterEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }))
+  beforeEach(() => setWireWindow(keepFloor({ headLines: 12, tailLines: 6, maxChars: 1000 })))
+  afterEach(() => setWireWindow(keepFloor({ headLines: 12, tailLines: 6, maxChars: 1000 })))
 
   it('books nothing for a tool_use — its counters stay 0 and nothing leaks into the tool_result ones', () => {
     // The tu* counters survive only for schema compatibility; a large field must not move them.
@@ -169,7 +172,7 @@ describe('rewriteMessagesBody — tool_use accounting', () => {
  * The rule now covers every tool_use field, not just these — see headroomToolUseNeverRewritten.
  */
 describe('rewriteMessagesBody — tool_use inputs the agent copies forward stay VERBATIM', () => {
-  beforeEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }))
+  beforeEach(() => setWireWindow(keepFloor({ headLines: 12, tailLines: 6, maxChars: 1000 })))
 
   it('never elides a file body — the agent re-writes files it wrote', () => {
     const content = lines(400)

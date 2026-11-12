@@ -136,9 +136,9 @@ To exercise the app end to end:
    Remote is off by default; this is the switch.
 
 4. Under the "Pair a device" button, tick what this phone will be allowed to do.
-   "Read terminal output" is already on; also turn on "Type into terminals".
-   Leave "Start terminals" and "Close terminals" off -- they are not needed to
-   review the app.
+   Nothing is ticked to begin with: turn on "Read terminal output" and "Type
+   into terminals". Leave "Start terminals" and "Close terminals" off -- they
+   are not needed to review the app.
 
 5. Press "Pair a device". A QR code appears, with the same payload in text
    underneath it.
@@ -150,7 +150,8 @@ To exercise the app end to end:
 
 7. Both screens now show the same eight words. They are derived from the two
    devices' keys; matching words mean nothing intercepted the exchange. This is
-   a verification step, not a login.
+   a verification step, not a login. On the desktop, click "The words match":
+   the desktop gives the phone no access until then.
 
 8. The phone now lists that desktop's terminals. Open one to read its live
    output. Type "echo hello" and send it: it runs on the computer and the output

@@ -461,6 +461,28 @@ describe('SecuritySettings', () => {
     expect(card.textContent).toMatch(/Per-agent egress audit/i)
   })
 
+  it('shows the sensitive-file rule count main derives, and promises the notice that now exists', async () => {
+    ;(window as any).aiSecurity.getStatus = vi.fn().mockResolvedValue({
+      ...baseStatus,
+      data: { ...baseStatus.data, sensitiveRuleCount: 20 },
+    })
+    render(<SecuritySettings />)
+    const card = await screen.findByTestId('security-watchers')
+    await waitFor(() => expect(card.textContent).toMatch(/\(20 rules\)/))
+    expect(card.textContent).not.toMatch(/~17/)
+    expect(card.textContent).not.toMatch(/banner pops up/)
+    expect(card.textContent).toMatch(/a notice appears at the bottom of the window/)
+    // Only one watcher runs now; the egress audit is off.
+    expect(card.textContent).not.toMatch(/Two passive watchers/)
+  })
+
+  it('leaves the count out rather than guessing when main does not send one', async () => {
+    render(<SecuritySettings />)
+    const card = await screen.findByTestId('security-watchers')
+    expect(card.textContent).toMatch(/other high-risk files\. Each match/)
+    expect(card.textContent).not.toMatch(/\d+ rules\)/)
+  })
+
   it('shows zero recent matches when no sensitive-file events are present', async () => {
     render(<SecuritySettings />)
     const badge = await screen.findByTestId('security-sensitive-file-count')

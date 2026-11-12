@@ -29,6 +29,7 @@ import {
   MAX_LINKED_MACHINES,
   NO_CAPABILITIES,
   SEEN_ANNOUNCE_INTERVAL_MS,
+  effectiveCapabilities,
   isPeerKind,
 } from './protocol'
 import { sanitizeDeviceLabel } from './deviceLabel'
@@ -108,6 +109,10 @@ export const MAX_LINK_CALL_TIMEOUT_MS = 10 * 60_000
 /** What every refusal of a kind outside the allowed set reads -- the same words
  *  the policy uses for a phone, so a desktop peer and a phone are refused alike. */
 const UNRECOGNISED_KIND = new CapabilityError(null).message
+
+/** How many terminals' last status the bridge remembers for replay. Far past any
+ *  real window, and a few bytes each. */
+export const MAX_REMEMBERED_STATUS = 256
 
 const LINK_CODE_FOR_COMPUTER = 'That code is for linking another computer, not a phone.'
 const PHONE_CODE_NOT_LINK =
@@ -321,9 +326,11 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
    *  one on subscribe is what stops a reconnecting phone from showing a blank
    *  label under a terminal that has been sitting in the same state for an hour.
    *
-   *  Bounded by pruning against the fan-out's watched set on every status
-   *  message: the bridge is never told a terminal closed, so nothing else would
-   *  ever remove an entry. */
+   *  Since 1.60 main reports every terminal in a phone's list, not only the one
+   *  on screen, so this is no longer pruned to the subscribed set: it is bounded
+   *  by `MAX_REMEMBERED_STATUS` instead, oldest first. The bridge is never told
+   *  a terminal closed, and an entry for a dead terminal costs a few bytes and
+   *  a label under an id no list shows. */
   const lastStatus = new Map<string, { status: AgentStatus; summary: string }>()
 
   /** One relay room per paired device, keyed by device id.
@@ -879,8 +886,17 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       // never re-subscribes on the way back; without this replay its status label
       // stays blank until the agent happens to move, which for an idle terminal
       // is never.
-      for (const terminalId of fanout.terminalsOf(deviceId)) sendStatus(deviceId, terminalId)
+      //
+      // Every remembered terminal, not only the watched ones: the list screen
+      // shows a badge per terminal, and since 1.60 main reports them all.
+      if (mayRead(deviceId)) for (const terminalId of lastStatus.keys()) sendStatus(deviceId, terminalId)
     }
+  }
+
+  /** A phone that may see the terminal list now: confirmed, and granted `read`. */
+  function mayRead(deviceId: string): boolean {
+    const device = registry.get(deviceId)
+    return device !== undefined && device.kind !== 'desktop' && effectiveCapabilities(device).read
   }
 
   /** A device that has come back is sent ONE screen per terminal it watches, and none of the edits it missed.
@@ -1172,14 +1188,19 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         announceDevices()
         announceSubscriptions()
         return
-      case 'setCapabilities':
+      case 'setCapabilities': {
         registry.setCapabilities(msg.deviceId, msg.capabilities)
+        // What the phone is told, and what decides its subscriptions, is what it
+        // may do NOW: a phone whose words are not confirmed yet may do nothing,
+        // whatever the toggles say it will get.
+        const device = registry.get(msg.deviceId)
+        const granted = device ? effectiveCapabilities(device) : { ...NO_CAPABILITIES }
         // Subscriptions outlive the grant that created them. Withdrawing `read`
         // stops future requests at the policy check, but an ALREADY-SUBSCRIBED
         // device would keep receiving live terminal output -- the user would see
         // the capability turned off in Settings while the phone kept streaming.
         // Dropping the fan-out state is what makes the toggle mean what it says.
-        if (!msg.capabilities.read) fanout.dropDevice(msg.deviceId)
+        if (!granted.read) fanout.dropDevice(msg.deviceId)
         // And tell the phone, for the same reason. Its Settings screen shows the
         // grants as facts and hides the controls it has none for; a phone that
         // hears about a change only on its next attempt shows a button that
@@ -1187,11 +1208,29 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // every attach.
         rooms.get(msg.deviceId)?.client.send({
           kind: 'capabilities',
-          capabilities: msg.capabilities,
+          capabilities: granted,
         })
         announceDevices()
         announceSubscriptions()
         return
+      }
+      case 'confirmDevice': {
+        const device = registry.get(msg.deviceId)
+        // Only a phone that is waiting. A linked computer is never confirmed this
+        // way, and a device confirmed already has nothing to gain.
+        if (!device || device.kind === 'desktop' || device.confirmed !== false) return
+        registry.confirm(msg.deviceId)
+        // The same push a capability change sends. Every phone since 1.1 acts on
+        // it: it refreshes its grants and, given `read`, its terminal list -- so
+        // a phone that paired and sat on an empty list fills in the moment the
+        // desktop user confirms, with no new message for it to understand.
+        rooms.get(msg.deviceId)?.client.send({ kind: 'capabilities', capabilities: device.capabilities })
+        if (device.capabilities.read) {
+          for (const terminalId of lastStatus.keys()) sendStatus(msg.deviceId, terminalId)
+        }
+        announceDevices()
+        return
+      }
       case 'terminalOutput': {
         // Flatten before fanning out. What arrives here is raw terminal bytes,
         // including the cursor motion a TUI agent redraws itself with; what the
@@ -1247,13 +1286,21 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         return
       }
       case 'terminalStatus': {
+        // Re-inserted, so the map's order is oldest report first and the bound
+        // below drops the terminal that has been quiet longest.
+        lastStatus.delete(msg.terminalId)
         lastStatus.set(msg.terminalId, { status: msg.status, summary: msg.summary })
-        const watched = new Set(fanout.subscribedTerminals())
-        for (const id of [...lastStatus.keys()]) {
-          if (!watched.has(id)) lastStatus.delete(id)
+        while (lastStatus.size > MAX_REMEMBERED_STATUS) {
+          const oldest = lastStatus.keys().next().value as string
+          lastStatus.delete(oldest)
         }
-        for (const deviceId of fanout.subscribersOf(msg.terminalId)) {
-          sendStatus(deviceId, msg.terminalId)
+        // Every phone that may see the list, not only the ones watching this
+        // terminal: the list screen draws a badge per terminal, and a badge fed
+        // only while its terminal was open went stale the moment the user left
+        // it. An older phone keeps these in the same map it always has, and its
+        // list already reads badges from there.
+        for (const deviceId of rooms.keys()) {
+          if (mayRead(deviceId)) sendStatus(deviceId, msg.terminalId)
         }
         return
       }
@@ -1332,7 +1379,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     // this branch fails closed rather than open.
     if (env.request.kind === 'getCapabilities') {
       noteSeen(device)
-      return { kind: 'ok', id: env.id, data: device.capabilities }
+      return { kind: 'ok', id: env.id, data: effectiveCapabilities(device) }
     }
 
     // A phone leaving, saying so. Answered here for the same reason as the
@@ -1365,7 +1412,9 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     }
 
     try {
-      const data = await dispatcher.dispatch(env.request, device.capabilities, deviceId)
+      // What the device may do NOW: nothing at all until the desktop user has
+      // confirmed its safety words, whatever its record says it will be granted.
+      const data = await dispatcher.dispatch(env.request, effectiveCapabilities(device), deviceId)
       // Fan-out state changes only AFTER dispatch has returned without throwing.
       // These two lines used to run first, which made the `read` grant advisory:
       // a device refused `read` still got enrolled by its refused `subscribe`,
@@ -1423,7 +1472,13 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     const result = pairing.accept(link ? { ...input, capabilities: { ...NO_CAPABILITIES } } : input)
     // Single-use: the offer is spent whether or not the caller retries.
     pairing = null
-    const device: PairedDevice = link ? { ...result.device, kind: 'desktop' } : result.device
+    // A phone is registered UNCONFIRMED: it holds the grant the user chose, and
+    // may use none of it until the user has compared the safety words on both
+    // screens and said they match (`confirmDevice`). Before 1.60 the grant was
+    // live from the scan, so a relay that swapped in its own key was trusted by
+    // the time anyone read the words. Old phones need nothing new for this:
+    // they are told "nothing granted", and the push that follows the confirm.
+    const device: PairedDevice = link ? { ...result.device, kind: 'desktop' } : { ...result.device, confirmed: false }
     registry.add(device)
     openRoom(device)
     deps.send({ kind: 'paired', device })

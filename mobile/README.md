@@ -29,7 +29,12 @@ Then open the URL on a phone:
 Pairing needs the desktop in front of you: Termpolis shows a QR code, the phone
 scans it, and both ends then display the same eight-word safety phrase. Compare
 the words. If they differ, something is between you and the desktop, and the
-right move is to unpair and try again — not to tap through.
+right move is to unpair and try again — not to tap through. From desktop 1.60
+the phone gets no access until you click **The words match** on the desktop.
+
+On iOS the first launch after a reinstall erases the pairings and cached
+subscription status the old install left in the Keychain
+(`src/storage/installMarker.ts`). An update keeps them.
 
 ## Several desktops on one phone
 

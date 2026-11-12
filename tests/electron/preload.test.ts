@@ -793,6 +793,11 @@ describe('preload: termpolis API — workspace trust + memory + swarm-review git
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('app:get-version')
   })
 
+  it('getMcpPort', async () => {
+    await exposed.termpolis.getMcpPort()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('mcp:get-port')
+  })
+
   it('listAISessions', async () => {
     await exposed.termpolis.listAISessions()
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('aiSessions:list')
@@ -1379,6 +1384,15 @@ describe('preload: the keys under Remote and Linked machines', () => {
     await exposed.remote[method]()
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith(channel)
     expect(mockIpcRenderer.invoke.mock.calls.at(-1)).toEqual([channel])
+  })
+
+  // 1.60: the desktop half of pairing, and the dangerous switch for phone agents.
+  it.each([
+    ['confirmDevice', ['dev-1'], 'remote:confirm-device', { deviceId: 'dev-1' }],
+    ['setUnattendedAgents', [true], 'remote:set-unattended-agents', { enabled: true }],
+  ])('remote.%s invokes its channel with its payload', async (method, args, channel, payload) => {
+    await exposed.remote[method as string](...(args as unknown[]))
+    expect(mockIpcRenderer.invoke.mock.calls.at(-1)).toEqual([channel, payload])
   })
 })
 

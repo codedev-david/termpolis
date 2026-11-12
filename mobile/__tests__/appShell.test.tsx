@@ -135,6 +135,11 @@ jest.mock('../src/state/remoteStore', () => {
   }
 })
 
+/** The reinstall check has its own tests; here it settles at once. */
+jest.mock('../src/storage/installMarker', () => ({
+  settleInstall: jest.fn(async () => 'kept'),
+}))
+
 import App from '../src/App'
 import { useRemoteStore } from '../src/state/remoteStore'
 import { useSubscription } from '../src/state/subscription'
@@ -177,6 +182,20 @@ describe('App -- booting', () => {
     await render(<App />)
     await settle()
     expect(bootFn()).toHaveBeenCalledTimes(1)
+  })
+
+  it('checks for a reinstall before either store reads the keychain', async () => {
+    const { settleInstall } = jest.requireMock('../src/storage/installMarker') as { settleInstall: jest.Mock }
+    let finish: (v: string) => void = () => undefined
+    settleInstall.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)))
+    await render(<App />)
+    await settle()
+    expect(bootFn()).not.toHaveBeenCalled()
+    expect(bootSubscriptionFn()).not.toHaveBeenCalled()
+    await act(async () => finish('wiped'))
+    await settle()
+    expect(bootFn()).toHaveBeenCalledTimes(1)
+    expect(bootSubscriptionFn()).toHaveBeenCalledTimes(1)
   })
 
   it('boots it once even when the effect is invoked twice', async () => {

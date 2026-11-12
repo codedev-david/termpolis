@@ -67,12 +67,14 @@ import {
   REFUSAL_WINDOW_MS,
   UNKNOWN_COMPUTER,
   _resetLinkedHostForTests,
+  jobEndedNotice,
   jobNotice,
   linkedAuditEntries,
   linkedInitForRemote,
   linkedStartOverForRemote,
   linkedToolCall,
   plainText,
+  tookText,
   registerLinkedIpc,
   startLinkedHost,
   stopLinkedHost,
@@ -260,6 +262,7 @@ interface BootOptions {
   /** The audit sink; a spy by default, and none at all for null. */
   audit?: ((entry: LinkedAuditEntry) => Promise<void> | void) | null
   notifyJob?: (notice: LinkedJobNotice) => void
+  holdMcp?: () => () => void
   /** aiSecurity.maskForDisplay by default. */
   maskSecrets?: (text: string) => string
 }
@@ -301,6 +304,7 @@ function boot(opts: BootOptions = {}) {
     // Only when a test asks: every other test runs without one, as a binding may.
     ...(opts.keepAwake ? { keepAwake: opts.keepAwake } : {}),
     ...(opts.notifyJob ? { notifyJob: opts.notifyJob } : {}),
+    ...(opts.holdMcp ? { holdMcp: opts.holdMcp } : {}),
   })
   const invoke = async (channel: string, input?: unknown): Promise<Envelope> =>
     (await handlers.get(channel)!(null, input)) as Envelope
@@ -2282,7 +2286,10 @@ describe('the job history, notifications and Stop', () => {
     asked(h, 'run-1', { via: 'device', id: P.id }, { kind: 'peerRun', agent: 'codex', prompt: 'Review the parser', cwd: dir })
     await vi.waitFor(() => expect(h.replyTo('run-1')).toBeDefined())
     expect(h.replyTo('run-1')!.ok).toBe(true)
-    expect(notifyJob.mock.lastCall![0].body).toBe(`Codex · read-only · ${path.basename(dir)}\nTask: “”`)
+    expect(notifyJob.mock.calls[0][0].body).toBe(`Codex · read-only · ${path.basename(dir)}\nTask: “”`)
+    // And the notice when it ends withholds it too.
+    await vi.waitFor(() => expect(notifyJob).toHaveBeenCalledTimes(2))
+    expect(notifyJob.mock.calls[1][0].body).toMatch(/\nTask: “”$/)
     await vi.waitFor(async () => expect((await history(h)).some((r) => r.event === 'started')).toBe(true))
     expect((await history(h)).find((r) => r.event === 'started')).toMatchObject({ summary: '' })
     expect((await h.status()).activity.map((a) => a.summary)).toEqual([''])
@@ -2290,8 +2297,15 @@ describe('the job history, notifications and Stop', () => {
 
   it('notifies each job another computer starts, from what this computer knows, and nothing else', async () => {
     let clock = 1_000_000
+    // Start notices only: each of these jobs ends at once, and the end notices have their own test.
     const notifyJob = vi.fn()
-    const { run } = serving({ now: () => clock, notifyJob, instant: true })
+    const { run } = serving({
+      now: () => clock,
+      notifyJob: (n) => {
+        if (!n.tag.endsWith(':ended')) notifyJob(n)
+      },
+      instant: true,
+    })
     await run()
     expect(notifyJob).toHaveBeenCalledTimes(1)
     expect(notifyJob).toHaveBeenLastCalledWith({
@@ -2335,6 +2349,63 @@ describe('the job history, notifications and Stop', () => {
     // Anything but an explicit false turns them back on, and on is written as nothing.
     expect(await h.invoke('linked:set-notify', { enabled: 'no' })).toMatchObject({ data: { notifyJobs: true } })
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'linked-settings.json'), 'utf8'))).toEqual({ enabled: true })
+  })
+
+  it('notifies again when a job ends, under its own tag, so the start notice stays', async () => {
+    const notifyJob = vi.fn()
+    const { h, P, run, finishers } = serving({ notifyJob, grants: { run: true, write: true } })
+    const reply = await run({ write: true })
+    expect(reply.ok).toBe(true)
+    expect(notifyJob).toHaveBeenCalledTimes(1)
+    finishers[0]()
+    await vi.waitFor(() => expect(notifyJob).toHaveBeenCalledTimes(2))
+    expect(notifyJob.mock.calls[1][0]).toEqual({
+      tag: `${devRef(P)}:ended`,
+      title: 'Job from build-box finished',
+      body: expect.stringMatching(
+        new RegExp(`^Codex · could edit files and run commands · ${path.basename(dir)} · ran \\d+s\nTask: “Review the parser”$`),
+      ),
+    })
+    expect(notifyJob.mock.calls[0][0].tag).toBe(devRef(P))
+    // Stopped from here: said so.
+    await run()
+    const job = (await h.status()).activity.find((a) => a.status === 'running')!
+    expect((await h.invoke('linked:stop-job', { id: job.id })).success).toBe(true)
+    await vi.waitFor(() => expect(notifyJob).toHaveBeenCalledTimes(4))
+    expect(notifyJob.mock.calls[3][0].title).toBe('Job from build-box was cancelled')
+  })
+
+  it('notifies no end once the user has switched notifications off', async () => {
+    const notifyJob = vi.fn()
+    const { h, run, finishers } = serving({ notifyJob })
+    await run()
+    await h.invoke('linked:set-notify', { enabled: false })
+    finishers[0]()
+    await vi.waitFor(async () => expect((await history(h)).map((r) => r.event)).toContain('finished'))
+    expect(notifyJob).toHaveBeenCalledTimes(1)
+  })
+
+  it("holds this computer's MCP server to the read-only tools while a job another computer started runs", async () => {
+    const release = vi.fn()
+    const holdMcp = vi.fn(() => release)
+    const P = peer()
+    let end = () => {}
+    const h = boot({
+      enabled: true,
+      state: { links: [], meta: [meta(devRef(P), { name: 'build-box' })] },
+      holdMcp,
+      runHeadless: (req) =>
+        new Promise((resolve) => {
+          end = () => resolve({ ok: true, agent: req.agent ?? 'claude', output: 'done', code: 0, durationMs: 5, primerChars: 0 })
+        }),
+    })
+    h.bridge.peers = [P]
+    asked(h, 'run-1', { via: 'device', id: P.id }, { kind: 'peerRun', agent: 'codex', prompt: 'Review the parser', cwd: dir })
+    await vi.waitFor(() => expect(h.replyTo('run-1')).toBeDefined())
+    expect(holdMcp).toHaveBeenCalledTimes(1)
+    expect(release).not.toHaveBeenCalled()
+    end()
+    await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(1))
   })
 
   it('keeps the job when the notification fails to show', async () => {
@@ -2455,6 +2526,49 @@ describe('the job history, notifications and Stop', () => {
     await linkedToolCall({ action: 'run', machine: 'linux', agent: 'codex', prompt: 'x', waitSec: 0 })
     const out = (await h.status()).activity.find((a) => a.direction === 'out')!
     expect(await h.invoke('linked:stop-job', { id: out.id })).toEqual({ success: false, error: LINKED_UNKNOWN_JOB })
+  })
+})
+
+describe('jobEndedNotice and tookText', () => {
+  const activity = (over: Partial<LinkedActivity> = {}): LinkedActivity => ({
+    id: '0123456789ab',
+    direction: 'in',
+    ref: 'device:a1b2c3d4e5f60718',
+    machine: 'build-box',
+    agent: 'claude',
+    summary: 'Fix the parser',
+    status: 'done',
+    startedAt: 1,
+    ...over,
+  })
+
+  it('says how the job ended, how long it ran, and quotes the task', () => {
+    expect(jobEndedNotice(activity({ cwd: '/home/me/repos/app', durationMs: 125_000 }))).toEqual({
+      tag: 'device:a1b2c3d4e5f60718:ended',
+      title: 'Job from build-box finished',
+      body: 'Claude · read-only · app · ran 2m 5s\nTask: “Fix the parser”',
+    })
+    expect(jobEndedNotice(activity({ status: 'failed', write: true })).body).toBe(
+      'Claude · could edit files and run commands\nTask: “Fix the parser”',
+    )
+    expect(jobEndedNotice(activity({ status: 'failed' })).title).toBe('Job from build-box failed')
+    expect(jobEndedNotice(activity({ status: 'cancelled' })).title).toBe('Job from build-box was cancelled')
+    expect(jobEndedNotice(activity({ status: 'running' })).title).toBe('Job from build-box ended')
+    expect(jobEndedNotice(activity({ agent: 'mystery', cwd: '/' })).body.split('\n')[0]).toBe('An agent · read-only · /')
+  })
+
+  it('strips what could make text another computer chose read as something else', () => {
+    const sly = '\u202eexe.\u2066gnirts\u2069\u0007\u200f'
+    const n = jobEndedNotice(activity({ machine: `box${sly}`, summary: `Update ${sly}`, cwd: `/srv/app${sly}` }))
+    for (const text of [n.title, ...n.body.split('\n')]) {
+      expect(text).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/)
+    }
+    expect(jobEndedNotice(activity({ machine: '\u202e' })).title).toBe(`Job from ${UNKNOWN_COMPUTER} finished`)
+  })
+
+  it('writes a duration the way a person would', () => {
+    expect([tookText(-5), tookText(400), tookText(45_000), tookText(59_499)]).toEqual(['0s', '0s', '45s', '59s'])
+    expect([tookText(60_000), tookText(3_599_000), tookText(3_600_000), tookText(3_780_000)]).toEqual(['1m 0s', '59m 59s', '1h 0m', '1h 3m'])
   })
 })
 

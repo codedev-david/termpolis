@@ -553,11 +553,12 @@ export function SettingsPane() {
             <div className="flex flex-col gap-0.5">
               <span className="text-sm font-medium">Re-recall context after compaction</span>
               <span className="text-xs text-[#9ca3af] leading-relaxed">
-                When Claude compacts its conversation to fit the context window, it summarizes detail
-                away — but that detail still lives in the memory brain. Once the compaction settles,
-                Termpolis re-adds the one-line memory_primer note (not sent automatically) so the
-                agent can reload what it lost behind the scenes. Your durable memory is the large
-                working set; the model&rsquo;s window only holds the active task.
+                When an agent compacts its conversation to fit the context window, it summarizes
+                detail away, but that detail is still in the memory brain. A Claude terminal that
+                Termpolis launched reloads it by itself, so nothing is typed there. In other agent
+                terminals, once the compaction settles and the input line is empty, Termpolis types
+                the one-line memory_primer pointer and sends it, so the agent reloads what it lost.
+                It never types over a draft or a prompt that is waiting for an answer.
               </span>
             </div>
           </div>
@@ -601,8 +602,11 @@ export function SettingsPane() {
               </span>
               <span className="text-xs text-[#9ca3af] leading-relaxed">
                 See what Termpolis remembers (how many chunks are stored), search your memory, index
-                this repo&apos;s code, inject the most relevant context into the active agent, and set up
-                encrypted cross-machine sync (OneDrive, Google Drive, Dropbox…).
+                this repo&apos;s code, and inject the most relevant context into the active agent.
+              </span>
+              <span className="text-xs text-[#777] leading-relaxed" data-testid="settings-memory-sync-off">
+                Each computer keeps its own memory; Termpolis does not sync it between computers. To move
+                it, use Import / Export below.
               </span>
             </span>
           </button>

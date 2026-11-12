@@ -1651,10 +1651,13 @@ describe('remote bridge host wiring', () => {
     return calls[calls.length - 1][0]
   }
 
-  it('starts on the port the MCP server actually bound, with the live token', () => {
+  it('starts on the port the MCP server actually bound, with a key of its own', async () => {
     // A bridge pointed at a port nothing is listening on is a bridge to nothing.
     expect(opts().mcpPort).toBe(9315)
-    expect(opts().mcpToken).toBe('fake-token')
+    // Not the key in mcp-token: that one is limited while a job another computer started runs.
+    const { getMcpBridgeKey } = await import('../../src/main/mcpLinkedWindow')
+    expect(opts().mcpToken).toBe(getMcpBridgeKey())
+    expect(opts().mcpToken).not.toBe('fake-token')
   })
 
   it('pushes status and events to the renderer on their own channels', () => {
@@ -1868,6 +1871,11 @@ describe('linked machines wiring', () => {
     expect(M.powerSaveStart).toHaveBeenCalledTimes(2)
     linked().keepAwake(false)
     expect(M.powerSaveStop).toHaveBeenCalledTimes(2)
+  })
+
+  it("hands linked jobs the MCP server's hold, so the key in mcp-token is limited while one runs", async () => {
+    const win = await import('../../src/main/mcpLinkedWindow')
+    expect(linked().holdMcp).toBe(win.holdForLinkedJob)
   })
 })
 

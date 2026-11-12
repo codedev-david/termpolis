@@ -75,6 +75,87 @@ describe('PairingModal', () => {
     expect(screen.getByTestId('pairing-qr-fallback')).toBeTruthy()
     expect(screen.queryByTestId('pairing-qr')).toBeNull()
     expect(screen.getByRole('textbox')).toHaveProperty('value', 'x'.repeat(4000))
+    expect(screen.getByTestId('pairing-copy')).toBeTruthy()
+  })
+
+  describe('the pairing text under the code (1.60)', () => {
+    const writeText = vi.fn()
+    beforeEach(() => {
+      writeText.mockReset()
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    })
+
+    it('always shows the text a phone can paste, small, under the code', () => {
+      const o = offer()
+      render(<PairingModal pairing={o} awaiting={false} paired={null} onClose={() => {}} />)
+      expect(screen.getByTestId('pairing-qr')).toBeTruthy()
+      expect(screen.getByTestId('pairing-text-value').textContent).toBe(o.qrPayload)
+      expect(screen.getByTestId('pairing-text').textContent).toContain('Camera off?')
+    })
+
+    it('copies it with one click', async () => {
+      writeText.mockResolvedValue(undefined)
+      const o = offer()
+      render(<PairingModal pairing={o} awaiting={false} paired={null} onClose={() => {}} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('pairing-copy')) })
+      expect(writeText).toHaveBeenCalledWith(o.qrPayload)
+      expect(screen.getByTestId('pairing-copy').textContent).toBe('Copied')
+    })
+
+    it('leaves the text on screen when the clipboard refuses', async () => {
+      writeText.mockRejectedValue(new Error('denied'))
+      render(<PairingModal pairing={offer()} awaiting={false} paired={null} onClose={() => {}} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('pairing-copy')) })
+      expect(screen.getByTestId('pairing-copy').textContent).toBe('Copy')
+      expect(screen.getByTestId('pairing-text-value')).toBeTruthy()
+    })
+
+    it('copies the fallback text too', async () => {
+      writeText.mockResolvedValue(undefined)
+      render(<PairingModal pairing={offer({ qrPayload: 'x'.repeat(4000) })} awaiting={false} paired={null} onClose={() => {}} />)
+      await act(async () => { fireEvent.click(screen.getByTestId('pairing-copy')) })
+      expect(writeText).toHaveBeenCalledWith('x'.repeat(4000))
+    })
+  })
+
+  describe('confirming the words (1.60)', () => {
+    const paired = { deviceId: 'dev-1', label: 'Pixel', phrase: 'a b c d' }
+
+    it('asks whether the words match, and says what happens until then', () => {
+      const onConfirm = vi.fn()
+      const onReject = vi.fn()
+      render(
+        <PairingModal pairing={null} awaiting={false} paired={paired} onConfirm={onConfirm} onReject={onReject} onClose={() => {}} />,
+      )
+      expect(screen.getByTestId('pairing-confirm').textContent).toContain('can do nothing')
+      fireEvent.click(screen.getByTestId('pairing-words-match'))
+      expect(onConfirm).toHaveBeenCalledWith('dev-1')
+      fireEvent.click(screen.getByTestId('pairing-words-differ'))
+      expect(onReject).toHaveBeenCalledWith('dev-1')
+    })
+
+    it('does nothing on click when no handler is given', () => {
+      render(<PairingModal pairing={null} awaiting={false} paired={paired} onClose={() => {}} />)
+      fireEvent.click(screen.getByTestId('pairing-words-match'))
+      fireEvent.click(screen.getByTestId('pairing-words-differ'))
+      expect(screen.getByTestId('pairing-confirm')).toBeTruthy()
+    })
+
+    it('shows the outcome in place of the question', () => {
+      const { rerender } = render(
+        <PairingModal pairing={null} awaiting={false} paired={paired} confirmState="confirmed" onClose={() => {}} />,
+      )
+      expect(screen.getByTestId('pairing-confirmed')).toBeTruthy()
+      expect(screen.queryByTestId('pairing-confirm')).toBeNull()
+      rerender(<PairingModal pairing={null} awaiting={false} paired={paired} confirmState="rejected" onClose={() => {}} />)
+      expect(screen.getByTestId('pairing-rejected')).toBeTruthy()
+      expect(screen.queryByTestId('pairing-confirm')).toBeNull()
+    })
+
+    it('asks nothing when it does not know which device paired', () => {
+      render(<PairingModal pairing={null} awaiting={false} paired={{ label: 'Pixel', phrase: 'a b c d' }} onClose={() => {}} />)
+      expect(screen.queryByTestId('pairing-confirm')).toBeNull()
+    })
   })
 
   it('shows the safety words to compare once a phone has paired', () => {

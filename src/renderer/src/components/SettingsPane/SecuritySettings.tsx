@@ -42,7 +42,7 @@ interface ShieldRepo {
 // What replaced it is WATCH, which is not a setting: it is always on and forwards every byte
 // untouched. Nothing in this bridge can turn it off, which is exactly the point.
 interface AiSecurityAPI {
-  getStatus: () => Promise<{ success: boolean; data?: { settings: { auditEnabled: boolean; strictGeminiPaidOnly?: boolean; commitShield?: boolean; egressGuard?: boolean; memoryScrub?: boolean }; facts: AgentDataFact[]; auditPath: string; geminiAccount?: GeminiAccountStatus; ruleCount?: number } }>
+  getStatus: () => Promise<{ success: boolean; data?: { settings: { auditEnabled: boolean; strictGeminiPaidOnly?: boolean; commitShield?: boolean; egressGuard?: boolean; memoryScrub?: boolean }; facts: AgentDataFact[]; auditPath: string; geminiAccount?: GeminiAccountStatus; ruleCount?: number; sensitiveRuleCount?: number } }>
   setAudit: (value: boolean) => Promise<{ success: boolean; data?: { auditEnabled: boolean } }>
   setStrictGemini?: (value: boolean) => Promise<{ success: boolean; data?: { strictGeminiPaidOnly: boolean } }>
   setCommitShield?: (value: boolean) => Promise<{ success: boolean }>
@@ -104,6 +104,7 @@ export function SecuritySettings() {
   const [geminiAccount, setGeminiAccount] = useState<GeminiAccountStatus | null>(null)
   // Live from the rule table in main — never a literal. See aiSecurity:get-status.
   const [ruleCount, setRuleCount] = useState<number | null>(null)
+  const [sensitiveRuleCount, setSensitiveRuleCount] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -119,6 +120,7 @@ export function SecuritySettings() {
         setAuditPath(res.data.auditPath)
         if (res.data.geminiAccount) setGeminiAccount(res.data.geminiAccount)
         if (typeof res.data.ruleCount === 'number') setRuleCount(res.data.ruleCount)
+        if (typeof res.data.sensitiveRuleCount === 'number') setSensitiveRuleCount(res.data.sensitiveRuleCount)
       }
       setLoading(false)
     }).catch(() => setLoading(false))
@@ -551,7 +553,7 @@ export function SecuritySettings() {
           Background watchers (always on)
         </h3>
         <p className="text-xs text-[#9ca3af] leading-relaxed">
-          Two passive watchers run alongside every AI-agent terminal. They never block the agent — they record what was read or transmitted so you have a forensic trail and can tighten ignore-files for next session.
+          The sensitive-file watcher runs alongside every AI-agent terminal. It never blocks the agent. It records what was read, so you have a trail and can tighten ignore-files before the next session.
         </p>
 
         <button
@@ -598,7 +600,7 @@ export function SecuritySettings() {
             </span>
           </div>
           <p className="text-[11px] text-[#9ca3af] leading-relaxed">
-            Watches the agent's tool-call stream for reads of <code>.env*</code>, PEM keys, <code>~/.aws/credentials</code>, <code>~/.ssh/*</code>, and other high-risk files (~17 conservative rules). Each match is recorded in the audit log and a banner pops up in the terminal. Add the path to <code>.claudeignore</code> (or the equivalent) before the next session.
+            Watches the agent's tool-call stream for reads of <code>.env*</code>, PEM keys, <code>~/.aws/credentials</code>, <code>~/.ssh/*</code>, and other high-risk files{sensitiveRuleCount !== null ? ` (${sensitiveRuleCount} rules)` : ''}. Each match is recorded in the audit log and a notice appears at the bottom of the window. Add the path to <code>.claudeignore</code> (or the equivalent) before the next session.
           </p>
           {auditEntries.filter(e => e.event === 'sensitive_file_read').slice(0, 5).map((e, i) => (
             <div

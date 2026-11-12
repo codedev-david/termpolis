@@ -219,10 +219,9 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
             <div className="flex flex-col gap-3">
               <h3 className="text-base font-medium text-[#22D3EE]">Security</h3>
               <p>
-                Open <strong>Settings → Security</strong> for the AI Security Center:
-                pre-paste secret scanner, sensitive-file watcher, per-agent egress audit,
-                and Strict Mode for Gemini's free OAuth tier. Everything in there runs
-                locally.
+                Open <strong>Settings → AI Security</strong> for the AI Security Center:
+                prompt secret watch, sensitive-file watcher, Commit Shield, and Strict
+                Mode for Gemini's free OAuth tier. Everything in there runs locally.
               </p>
             </div>
           )}

@@ -138,6 +138,9 @@ describe('PairScreen — permission denied for good', () => {
   it('explains the fix and offers manual entry instead', async () => {
     await render(<PairScreen />)
     expect(screen.getByTestId('pair-denied')).toBeTruthy()
+    // It points at the Copy button the desktop shows under every code (1.60),
+    // not at text that older desktops only showed for codes too long to draw.
+    expect(screen.getByTestId('pair-denied').props.children).toContain('press Copy under the pairing code')
     expect(screen.getByTestId('pair-manual-input')).toBeTruthy()
     expect(screen.queryByTestId('camera-view')).toBeNull()
     expect(screen.queryByTestId('pair-request-permission')).toBeNull()

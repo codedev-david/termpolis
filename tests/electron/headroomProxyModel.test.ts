@@ -6,11 +6,13 @@ import { join } from 'path'
 import { requestModelAndEffort } from '../../src/main/headroomProxy/usageParse'
 import { modelFamily, modelUnits, MODEL_WEIGHTS, MODEL_WEIGHT_NOTE } from '../../src/main/headroom/effectiveUnits'
 import { resultFrame, type ProxyResult } from '../../src/main/headroomProxy/proxyMain'
+import type { WireStats } from '../../src/main/headroomProxy/wireCompress'
 import {
   recordProxyResult, currentModelTotals, resetProxyLedger, resetProxyCounters, loadProxyBaseFromDisk, saveProxyTotalsToDisk,
 } from '../../src/main/headroomProxy/proxyLedger'
 
-const stats = { trBlocks: 0, trOrigChars: 0, trCompChars: 0, images: 0, imgOrigBytes: 0, imgCompBytes: 0 }
+// A partial tally, as a child older than the app sends: the ledger reads every absent counter as 0.
+const stats = { trBlocks: 0, trOrigChars: 0, trCompChars: 0, images: 0, imgOrigBytes: 0, imgCompBytes: 0 } as unknown as WireStats
 function result(model: string | undefined, usage: Record<string, number>) {
   return {
     kind: 'result' as const, changed: false, stats, stashes: [], status: 200,

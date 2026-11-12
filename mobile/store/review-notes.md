@@ -103,9 +103,9 @@ else is reachable until it is bought, so please start there:
    Remote is off by default; this is the switch.
 
 4. Under the "Pair a device" button, tick what this phone will be allowed to
-   do. "Read terminal output" is already on; also turn on "Type into
-   terminals". Leave "Start terminals" and "Close terminals" off -- they are
-   not needed to review the app.
+   do. Nothing is ticked to begin with: turn on "Read terminal output" and
+   "Type into terminals". Leave "Start terminals" and "Close terminals" off --
+   they are not needed to review the app.
 
 5. Press "Pair a device". A QR code appears and is valid for 90 seconds. If it
    expires, press the button again for a new one. The permissions ticked in
@@ -113,18 +113,21 @@ else is reachable until it is bought, so please start there:
 
 6. On the phone, open Termpolis Remote and point it at the QR code. If you
    would rather not use the camera, use the "Paste the pairing code" field on
-   the same screen, and paste the text the desktop shows in the box below the
-   QR code -- it is the same payload, as JSON.
+   the same screen, and paste the text the desktop shows below the QR code
+   (press "Copy" there) -- it is the same payload, as JSON.
 
 7. Both screens now show the same eight words. They are derived from the two
    devices' keys; matching words mean nothing intercepted the exchange. This
-   is a verification step, not a login.
+   is a verification step, not a login. On the desktop, click "The words
+   match". Until then the desktop gives the phone no access, so the terminal
+   list stays empty.
 
 8. The phone now lists the desktop's terminals. Open one: you are reading that
    terminal's live output. Type "echo hello" and send it -- it runs on the
    computer, and the output comes back to the phone.
 
-   The phone holds exactly the permissions ticked in step 4 and nothing else.
+   The phone holds exactly the permissions ticked in step 4, from the moment
+   the words were confirmed in step 7, and nothing else.
    They appear as switches beside the phone under "Paired devices" and can be
    changed at any time; every request is re-checked against them on the
    desktop, so the phone cannot grant itself anything.

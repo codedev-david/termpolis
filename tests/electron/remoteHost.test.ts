@@ -10,6 +10,7 @@ import { remoteIdentityPath } from '../../src/main/remoteIdentityStore'
 import { saveRemoteDevices } from '../../src/main/remoteDeviceStore'
 import { saveRemoteSettings, loadRemoteSettings } from '../../src/main/remoteSettings'
 import {
+  DEFAULT_RELAY_URL,
   NO_CAPABILITIES,
   type BridgeToHost,
   type HostToBridge,
@@ -22,7 +23,6 @@ import {
   REMOTE_KEYS_NOT_LOCKED,
   REMOTE_KEYS_NO_KEYCHAIN,
   REMOTE_NOT_RUNNING,
-  REMOTE_RELAY_INSECURE,
   REMOTE_RELAY_URL_RULE,
   REMOTE_START_OVER_FAILED,
   REMOTE_UNAVAILABLE,
@@ -354,39 +354,33 @@ describe('remote IPC surface', () => {
     expect(harness.forks).toHaveLength(1)
   })
 
-  it('says a stored plain ws:// relay is insecure, until a wss:// one replaces it', () => {
+  it('dials the default relay in place of a stored plain ws:// one, and says so until a relay is saved', () => {
     fs.writeFileSync(
       path.join(dir, 'remote-settings.json'),
       JSON.stringify({ enabled: true, relayUrl: 'ws://relay.example/ws' }),
     )
     harness.start()
     const before = harness.call('remote:status').data as RemoteStatusView
-    expect(before).toMatchObject({ relayUrl: 'ws://relay.example/ws', relayInsecure: true })
-    // Handed to the bridge as it is: the bridge opens none of this desktop's rooms
-    // on it, and still dials the links this machine joined, on their own relays.
-    expect(harness.child().relayUrl).toBe('ws://relay.example/ws')
+    expect(before).toMatchObject({ relayUrl: DEFAULT_RELAY_URL, relayInsecure: false, relayReplaced: 'ws://relay.example/ws' })
+    // The plain address is never handed to the bridge.
+    expect(harness.child().relayUrl).toBe(DEFAULT_RELAY_URL)
 
     const res = harness.call('remote:set-relay-url', { relayUrl: 'wss://relay.example/ws' })
     expect(res.success).toBe(true)
-    expect(res.data as RemoteStatusView).toMatchObject({ relayUrl: 'wss://relay.example/ws', relayInsecure: false })
-    // Moved to the new address, which is the only way the refused rooms come back.
+    expect(res.data as RemoteStatusView).toMatchObject({ relayUrl: 'wss://relay.example/ws', relayReplaced: null })
     expect(harness.forks).toHaveLength(2)
     expect(harness.child().relayUrl).toBe('wss://relay.example/ws')
   })
 
-  it('refuses to start pairing while the saved relay is insecure', () => {
-    // The bridge would refuse too, but only after the pairing dialog had opened
-    // to wait for a code that is not coming.
+  it('pairs over the default relay when the saved one was plain ws://', () => {
+    // Before 1.60 this was refused until the user changed the address.
     fs.writeFileSync(
       path.join(dir, 'remote-settings.json'),
       JSON.stringify({ enabled: true, relayUrl: 'ws://10.0.0.5:8787' }),
     )
     harness.start()
-    expect(harness.call('remote:begin-pairing', { label: 'Pixel' })).toEqual({
-      success: false,
-      error: REMOTE_RELAY_INSECURE,
-    })
-    expect(harness.child().posted.filter((m) => m.kind === 'beginPairing')).toEqual([])
+    expect(harness.call('remote:begin-pairing', { label: 'Pixel' }).success).toBe(true)
+    expect(harness.child().posted.filter((m) => m.kind === 'beginPairing')).toHaveLength(1)
   })
 
   it('rejects a relay URL that is not a string at all', () => {
@@ -574,6 +568,44 @@ describe('verification phrase over IPC', () => {
   it('refuses a phrase lookup with no device id', () => {
     harness.start()
     expect(harness.call('remote:verification-phrase', {}).error).toMatch(/device id/)
+  })
+})
+
+describe('confirming a phone over IPC (1.60)', () => {
+  it('asks the bridge to confirm a paired phone', () => {
+    saveRemoteSettings(dir, { enabled: true })
+    saveRemoteDevices(dir, [pairedDevice({ confirmed: false })])
+    harness.start()
+    expect(harness.call('remote:status').data).toMatchObject({ devices: [{ id: 'dev1', confirmed: false }] })
+    expect(harness.call('remote:confirm-device', { deviceId: 'dev1' }).success).toBe(true)
+    expect(harness.child().posted.at(-1)).toEqual({ kind: 'confirmDevice', deviceId: 'dev1' })
+  })
+
+  it('refuses no device id, a stranger, a linked computer, and a bridge that is down', () => {
+    saveRemoteSettings(dir, { enabled: true })
+    saveRemoteDevices(dir, [pairedDevice(), pairedDevice({ id: 'pc1', kind: 'desktop' })])
+    harness.start()
+    expect(harness.call('remote:confirm-device', {}).error).toMatch(/device id/)
+    expect(harness.call('remote:confirm-device', { deviceId: 'ghost' }).error).toBe('That device is not paired with this desktop')
+    expect(harness.call('remote:confirm-device', { deviceId: 'pc1' }).success).toBe(false)
+    expect(harness.child().posted.some((m) => m.kind === 'confirmDevice')).toBe(false)
+  })
+
+  it('refuses while the bridge is not running', () => {
+    saveRemoteDevices(dir, [pairedDevice({ confirmed: false })])
+    harness.start()
+    expect(harness.call('remote:confirm-device', { deviceId: 'dev1' })).toEqual({ success: false, error: REMOTE_NOT_RUNNING })
+  })
+})
+
+describe('unattended phone agents over IPC (1.60)', () => {
+  it('turns on only for a real true, and says so in the status', () => {
+    harness.start()
+    expect((harness.call('remote:status').data as RemoteStatusView).unattendedAgents).toBe(false)
+    expect((harness.call('remote:set-unattended-agents', { enabled: 'yes' }).data as RemoteStatusView).unattendedAgents).toBe(false)
+    expect((harness.call('remote:set-unattended-agents', { enabled: true }).data as RemoteStatusView).unattendedAgents).toBe(true)
+    expect(loadRemoteSettings(dir).unattendedAgents).toBe(true)
+    expect((harness.call('remote:set-unattended-agents', {}).data as RemoteStatusView).unattendedAgents).toBe(false)
   })
 })
 

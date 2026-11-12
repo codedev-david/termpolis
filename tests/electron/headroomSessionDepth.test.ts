@@ -202,7 +202,7 @@ describe('headroom session depth', () => {
   })
 
   it('treats missing usage numbers as zero rather than as NaN', () => {
-    recordDepthSample(5, undefined, undefined)
+    recordDepthSample(5, undefined as unknown as number, undefined as unknown as number) // what a usage block with no numbers hands it
     const b = currentDepthCurve().bands[0]
     expect(b.requests).toBe(1)
     expect(b.readTokens).toBe(0)

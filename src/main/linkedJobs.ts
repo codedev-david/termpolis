@@ -119,6 +119,9 @@ export interface LinkedJobsDeps {
   mask(text: string): string
   /** Told what a screen found, for the audit log. */
   onSecrets?(finding: LinkedSecretFinding): void
+  /** mcpServer.holdForLinkedJob: while the job's agent runs, this computer's MCP server holds its
+   *  shared key (which the job can read off disk) to the read-only tools. Returns the release. */
+  holdMcp?(): () => void
 }
 
 /** The longest prompt another machine may send. Below the 24,000 the spec
@@ -627,12 +630,19 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     // Detached: the asking machine collects the outcome with `peerResult`.
     // Everything is inside the try, including reading the result, so nothing can
     // escape as an unhandled rejection.
+    //
+    // The MCP hold opens before the agent starts and closes once runHeadless has settled -- the
+    // agent's process tree has exited or been stopped -- not when the job is marked finished: a
+    // cancel marks it at once, while the stop is still under way.
+    const releaseMcp = deps.holdMcp?.()
     void (async () => {
       let outcome: Outcome
       try {
         outcome = outcomeOf(await deps.runHeadless(request))
       } catch (err) {
         outcome = { status: 'failed', error: messageOf(err) }
+      } finally {
+        releaseMcp?.()
       }
       finish(job, outcome)
     })()

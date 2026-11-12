@@ -196,6 +196,38 @@ describe('tool_use indexing — what the walk still reads', () => {
     expect(parsed.messages[1].content[0].content).toContain('Identical to an earlier tool result')
   })
 
+  it('dedups a tool_result that echoes an Agent prompt, and the prompt stays whole', async () => {
+    const { wire } = await modulesFor('aggressive')
+    const prompt = prose('brief', 4_000)
+    const raw = body([
+      use({ id: 'a1', name: 'Agent', input: { description: 'review it', prompt } }),
+      result('a1', 'done'),
+      use({ id: 'r1', name: 'Read', input: { file_path: '/repo/brief.md' } }),
+      result('r1', prompt),
+    ])
+    const r = wire.rewriteMessagesBody(raw)
+    const parsed = JSON.parse(r.body)
+    expect(parsed.messages[0].content[0].input.prompt).toBe(prompt)
+    expect(parsed.messages[3].content[0].content).toContain('Identical to an earlier tool result')
+    // Reversible: the echo is stashed whole, and nothing of the prompt itself is.
+    expect(r.stashes.filter((s) => s.original === prompt)).toHaveLength(1)
+    expect(inputsOf(r.body)).toEqual(inputsOf(raw))
+    expect([r.stats.tuBlocks, r.stats.tuOrigChars, r.stats.tuCompChars]).toEqual([0, 0, 0])
+  })
+
+  it('an exempt tool\'s prompt stays out of the index like its other fields', async () => {
+    const { wire } = await modulesFor('aggressive')
+    const prompt = prose('swarm', 4_000)
+    const raw = body([
+      use({ id: 'm1', name: 'mcp__termpolis__swarm_send_message', input: { prompt } }),
+      result('m1', 'sent'),
+      use({ id: 'r1', name: 'Read', input: { file_path: '/repo/swarm.md' } }),
+      result('r1', prompt),
+    ])
+    const parsed = JSON.parse(wire.rewriteMessagesBody(raw).body)
+    expect(parsed.messages[3].content[0].content).not.toContain('Identical to an earlier tool result')
+  })
+
   it('keeps an exempt tool out of the index, so its twin tool_result is not deduped against it', async () => {
     const { wire } = await modulesFor('aggressive')
     const content = prose('mem', 4_000)

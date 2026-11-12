@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 const { recordProxyResult, summarizeProxySavings, loadProxyBase, resetProxyLedger, resetProxyCounters } =
   await import('../../src/main/headroomProxy/proxyLedger')
+import type { ProxyResultMsg } from '../../src/main/headroomProxy/proxySupervisor'
 const { ccrRetrieve, resetCcr } = await import('../../src/main/headroom/ccrStore')
 const { currentDepthCurve, resetDepthCurveAll } = await import('../../src/main/headroom/sessionDepth')
 
-function result(over: Record<string, unknown> = {}) {
+// A partial message, as a child older than the app sends: the ledger reads every absent field as 0.
+function result(over: Record<string, unknown> = {}): ProxyResultMsg {
   return {
     kind: 'result' as const,
     changed: true,
@@ -13,7 +15,7 @@ function result(over: Record<string, unknown> = {}) {
     stashes: [{ token: 'hr_abc', original: 'the full original tool result' }],
     status: 200,
     ...over,
-  }
+  } as unknown as ProxyResultMsg
 }
 
 const head = { sysChars: 4000, toolsChars: 18000, tpToolsChars: 9000, toolCount: 34 }

@@ -65,8 +65,10 @@ export function isClaudeAgentName(name: string): boolean {
 export function sanitizeAgentCommand(command: string): string {
   const trimmed = command.trim()
 
-  // Identify which agent binary is being invoked
-  const firstToken = trimmed.split(/\s+/)[0].toLowerCase()
+  // Identify which agent binary is being invoked. A Windows launcher's extension is not part of
+  // the name: `agy.exe -p "task"` or `claude.cmd -p` is the same agent, and passed through as-is it
+  // started headless with the prompt on its command line, which is what this file exists to stop.
+  const firstToken = trimmed.split(/\s+/)[0].toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '')
   const agentKey = Object.keys(AGENT_COMMAND_ALLOWLIST).find(
     k => firstToken === k || firstToken.endsWith('/' + k) || firstToken.endsWith('\\' + k)
   )

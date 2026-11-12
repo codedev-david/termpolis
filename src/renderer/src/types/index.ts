@@ -808,6 +808,8 @@ export interface TermpolisAPI {
    *  overlap the prompt (null off Windows). */
   platformInfo: PlatformInfo
   getAppVersion: () => Promise<IpcResponse<{ version: string }>>
+  /** The port the MCP server actually bound; null when it has not bound in time. */
+  getMcpPort?: () => Promise<IpcResponse<{ port: number | null }>>
 
   listAISessions: () => Promise<IpcResponse<AISessionSummary[]>>
   digestAISession: (filePath: string) => Promise<IpcResponse<{ digest: AISessionDigest; prompt: string }>>
@@ -1304,6 +1306,9 @@ export interface RemoteDeviceView {
   lastSeenAt: number
   /** Reachable right now. Distinct from paired, which survives a tunnel. */
   attached: boolean
+  /** False until the desktop user says the words on both screens match (1.60).
+   *  Until then the phone is granted nothing, whatever `capabilities` says. */
+  confirmed: boolean
 }
 
 export interface RemoteCapabilities {
@@ -1351,6 +1356,11 @@ export interface RemoteStatusView extends KeyStorageView {
   /** `relayUrl` is plain ws:// to another computer, saved by an older version.
    *  Kept but never dialled, and the pane says so until it changes. */
   relayInsecure: boolean
+  /** A plain ws:// relay saved by an older version, which is not dialled: the
+   *  default relay is used instead until the user saves another (1.60). */
+  relayReplaced: string | null
+  /** Agents a phone starts skip their own approval prompts. Off by default. */
+  unattendedAgents: boolean
   /** Null while the keys are locked: there is no identity to show. */
   publicKey: string | null
   pairing: RemotePairingView | null
@@ -1382,6 +1392,10 @@ export interface RemoteAPI {
   revokeDevice: (deviceId: string) => Promise<IpcResponse<RemoteStatusView>>
   setCapabilities: (deviceId: string, capabilities: RemoteCapabilities) => Promise<IpcResponse<RemoteStatusView>>
   verificationPhrase: (deviceId: string) => Promise<IpcResponse<{ deviceId: string; phrase: string }>>
+  /** The words on both screens match: the phone's permissions take effect. */
+  confirmDevice: (deviceId: string) => Promise<IpcResponse<RemoteStatusView>>
+  /** Let agents a phone starts run without asking. Dangerous, off by default. */
+  setUnattendedAgents: (enabled: boolean) => Promise<IpcResponse<RemoteStatusView>>
   /** Seal the key files saved in the clear, now that a keychain can (`keysUnencrypted`). */
   encryptKeys: () => Promise<IpcResponse<RemoteStatusView>>
   /** Only while `keyStorage` is 'locked': a new identity, and no phone or linked computer. */

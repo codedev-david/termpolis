@@ -512,8 +512,19 @@ export const TOOL_USE_VERBATIM = new Set([
 ])
 
 /**
- * Add a historical tool_use block's TOOL_USE_VERBATIM fields to `seen`, so a tool_result that later
- * repeats or re-reads them still collapses. Read-only: it never assigns to the input, and nothing
+ * tool_use fields that are neither written to disk nor run, but whose text a later tool_result often
+ * repeats: an Agent/Task call's `prompt` comes back whole when a subagent, a teammate or a file
+ * read hands it on. Indexed exactly like TOOL_USE_VERBATIM, never rewritten. Until v1.49 this
+ * field was compacted, and compacting is what indexed it; when tool_use inputs stopped being
+ * rewritten the index lost it, and a tool_result that echoed an Agent prompt stopped collapsing.
+ */
+export const TOOL_USE_INDEXED = new Set([
+  'prompt',       // Agent / Task — the subagent's instructions
+])
+
+/**
+ * Add a historical tool_use block's TOOL_USE_VERBATIM and TOOL_USE_INDEXED fields to `seen`, so a
+ * tool_result that later repeats or re-reads them still collapses. Read-only: it never assigns to the input, and nothing
  * it does is counted as compressed material.
  */
 function indexToolUseInput(block: { input?: unknown; name?: unknown }, seen: SeenIndex): void {
@@ -528,7 +539,7 @@ function indexToolUseInput(block: { input?: unknown; name?: unknown }, seen: See
   // turn, so the index — and every later block's output — is deterministic.
   for (const k of Object.keys(rec)) {
     const v = rec[k]
-    if (TOOL_USE_VERBATIM.has(k) && typeof v === 'string') noteSeen(v, seen)
+    if ((TOOL_USE_VERBATIM.has(k) || TOOL_USE_INDEXED.has(k)) && typeof v === 'string') noteSeen(v, seen)
   }
 }
 

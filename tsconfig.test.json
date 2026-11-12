@@ -12,6 +12,10 @@
   // not as a side effect of a protocol change. Widen the include as files are
   // cleaned, one at a time (receiptArtifact.test.ts stands in for the receipt's
   // UnifiedTotals, so a field added to the type breaks it here, not silently).
+  //
+  // The Headroom tests (every tests/electron file named for it, both casings) are in since 1.60.0:
+  // they stand in for the proxy's wire types (WireStats, WireWindow, ProxyResultMsg), so a field
+  // added there is caught here.
   "compilerOptions": {
     "skipLibCheck": true,
     "module": "ESNext",
@@ -24,5 +28,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["tests/electron/remote*.ts", "tests/electron/linked*.ts", "tests/electron/receiptArtifact.test.ts", "tests/electron/mainIndexBranchesA.test.ts", "src/main/remoteBridge/**/*", "mobile/src/wire/**/*"]
+  "include": ["tests/electron/remote*.ts", "tests/electron/linked*.ts", "tests/electron/receiptArtifact.test.ts", "tests/electron/mainIndexBranchesA.test.ts", "tests/electron/*headroom*.ts", "tests/electron/*Headroom*.ts", "src/main/remoteBridge/**/*", "mobile/src/wire/**/*"]
 }

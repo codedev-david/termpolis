@@ -37,7 +37,7 @@ function findToken() {
   }
 }
 
-const TOKEN = findToken()
+let TOKEN = findToken()
 
 // Port file may not exist (first run) or Termpolis may not be running.
 // Fall back to the default — the health check decides whether we're online.
@@ -50,7 +50,68 @@ function findPort() {
   return 9315
 }
 
-const MCP_PORT = findPort()
+let MCP_PORT = findPort()
+
+// The key this adapter sends. The file's key is shared by everything that can read the file,
+// including a job another linked computer started here, so the app limits it while such a job runs
+// (mcpServer's holdForLinkedJob). Swapped right after start-up for a session key of this adapter's
+// own: one issued while no job runs keeps every tool through later jobs, so an agent connected
+// before a job carries on during it. An app older than 1.60 has no sessions (404), and anything
+// else that goes wrong falls back to the file's key, which works exactly as it did before.
+let SESSION = null
+let sessionAsk = null
+
+function askSession() {
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: MCP_PORT,
+      path: '/mcp/session',
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${TOKEN || ''}`, 'Content-Length': 0 },
+    }, (res) => {
+      let body = ''
+      res.on('data', chunk => body += chunk)
+      res.on('end', () => {
+        try {
+          const key = res.statusCode === 200 ? JSON.parse(body).session : null
+          resolve({ key: typeof key === 'string' && /^[0-9a-f]{64}$/.test(key) ? key : null, status: res.statusCode })
+        } catch {
+          resolve({ key: null, status: res.statusCode })
+        }
+      })
+      res.on('error', () => resolve({ key: null, status: 0 }))
+    })
+    req.on('error', () => resolve({ key: null, status: 0 }))
+    req.end()
+  })
+}
+
+/** The key to send: the session key once there is one, else the file's. An answer is kept when it
+ *  is a key, or a 404 (an app with no sessions); any other failure (the app not up yet, a busy
+ *  limiter) asks again on the next call, so the adapter does not stay on the file's key for good. */
+async function currentKey() {
+  if (!TOKEN) return ''
+  if (!sessionAsk) {
+    const ask = askSession().then(({ key, status }) => {
+      SESSION = key
+      if (!key && status !== 404 && sessionAsk === ask) sessionAsk = null
+      return key
+    })
+    sessionAsk = ask
+  }
+  await sessionAsk
+  return SESSION || TOKEN
+}
+
+/** After a 401: the app restarted (a new key in the file, perhaps a new port), or dropped this
+ *  session. Read both files again and ask for a new session on the next call. */
+function rereadKeys() {
+  TOKEN = findToken()
+  MCP_PORT = findPort()
+  SESSION = null
+  sessionAsk = null
+}
 
 // Online state — toggled by the startup health check and by request
 // failures. Starts pessimistic so the very first request can't slip
@@ -107,7 +168,7 @@ function cancelCall(id) {
   req.destroy()
 }
 
-function sendToServer(body) {
+function sendToServer(body, key) {
   const id = body.id
   let req
   const answer = new Promise((resolve, reject) => {
@@ -119,7 +180,7 @@ function sendToServer(body) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${TOKEN || ''}`,
+        'Authorization': `Bearer ${key || ''}`,
         'Content-Length': Buffer.byteLength(data),
       },
     }, (res) => {
@@ -127,7 +188,7 @@ function sendToServer(body) {
       res.on('data', chunk => body += chunk)
       res.on('end', () => {
         try {
-          resolve(JSON.parse(body))
+          resolve({ status: res.statusCode, json: JSON.parse(body) })
         } catch {
           reject(new Error(`Invalid JSON response: ${body}`))
         }
@@ -145,6 +206,16 @@ function sendToServer(body) {
   const settled = () => { if (inFlight.get(id) === req) inFlight.delete(id) }
   answer.then(settled, settled)
   return answer
+}
+
+/** One call to the app, with one retry on fresh keys after a 401. */
+async function callServer(body) {
+  let answer = await sendToServer(body, await currentKey())
+  if (answer.status === 401) {
+    rereadKeys()
+    answer = await sendToServer(body, await currentKey())
+  }
+  return answer.json
 }
 
 // F31: default a curated write's project scope to THIS adapter's cwd (= the terminal's
@@ -263,7 +334,7 @@ async function handleLine(line) {
     return
   }
   try {
-    const response = filterDelegatedToolList(request, await sendToServer(request), process.env)
+    const response = filterDelegatedToolList(request, await callServer(request), process.env)
     process.stdout.write(JSON.stringify(response) + '\n')
   } catch (err) {
     // Closed because its client gave up on it: it wants no answer, and the app is fine.
@@ -297,6 +368,8 @@ function probeHealth() {
       HEALTH_CHECKED = true
       if (SERVER_ONLINE) {
         process.stderr.write(`Termpolis MCP adapter connected: ${body}\n`)
+        // Now, not at the first call: the key's standing is set by when it was issued.
+        void currentKey()
       } else {
         process.stderr.write(`Termpolis MCP adapter: health endpoint returned ${res.statusCode} — degraded mode.\n`)
       }
@@ -321,4 +394,5 @@ if (require.main === module) startAdapter()
 
 module.exports = {
   applyDefaultProjectScope, nestedDelegationRefusal, delegatedJobRefusal, filterDelegatedToolList, DELEGATED_JOB_TOOLS,
+  callServer,
 }

@@ -149,6 +149,32 @@ export function jobNotice(a: LinkedActivity, more: number): LinkedJobNotice {
   return { tag: a.ref, title: `${machine} started a job here`, body: lines.join('\n') }
 }
 
+/** How long a job ran, for its notification: "45s", "2m 5s", "1h 3m". */
+export function tookText(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+}
+
+const ENDED: Record<string, string> = { done: 'finished', failed: 'failed', cancelled: 'was cancelled' }
+
+/** The notification when a job another computer started here ends, built the same way as
+ *  jobNotice: what this computer knows first, the task quoted after it. Its own tag per computer:
+ *  it replaces that computer's last end notice rather than stacking, and leaves the start notice
+ *  (which may count other jobs still running) alone. */
+export function jobEndedNotice(a: LinkedActivity): LinkedJobNotice {
+  const machine = plainText(a.machine) || UNKNOWN_COMPUTER
+  const mode = a.write ? 'could edit files and run commands' : 'read-only'
+  const folder = a.cwd ? plainText(path.basename(a.cwd) || a.cwd) : ''
+  const took = a.durationMs === undefined ? '' : `ran ${tookText(a.durationMs)}`
+  const lines = [
+    [AGENT_NAMES[a.agent] ?? 'An agent', mode, folder, took].filter(Boolean).join(' \u00b7 '),
+    `Task: \u201c${plainText(a.summary)}\u201d`,
+  ]
+  return { tag: `${a.ref}:ended`, title: `Job from ${machine} ${ENDED[a.status] ?? 'ended'}`, body: lines.join('\n') }
+}
+
 /** The bridge as this module reaches it. The app's is remoteHost's; a test
  *  stands in a fake. */
 export interface LinkedBridgeAccess {
@@ -190,9 +216,12 @@ export interface LinkedHostBinding {
   maskSecrets(text: string): string
   /** aiSecurity.appendAudit, for what screening found: rule ids and counts. */
   audit?(entry: LinkedAuditEntry): Promise<void> | void
-  /** Show an OS notification: a job another computer started here, unless the user switched them
-   *  off. Not a gate -- the job is running by then. Absent, nothing is shown. */
+  /** Show an OS notification: a job another computer started here, and again when it ends, unless
+   *  the user switched them off. Not a gate -- the job is running by then. Absent, nothing is shown. */
   notifyJob?(notice: LinkedJobNotice): void
+  /** mcpServer.holdForLinkedJob, for linkedJobs: while a job another computer started runs here,
+   *  the MCP server holds its shared key to the read-only tools. Absent, nothing is held. */
+  holdMcp?(): () => void
   /** `true` when a job another computer started begins running here and none
    *  was; `false` when the last one ends -- done, failed, cancelled, or the
    *  service stopped. In between the app keeps this computer from idle-sleeping:
@@ -650,6 +679,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
       durationMs: a.durationMs,
       secretRules: a.secretRules,
     })
+    if (!b.notifyJob || !notifiesJobs(settings)) return
+    const notice = jobEndedNotice(a)
+    guarded(() => b.notifyJob?.(notice))
   }
 
   /** A minute's refusals of one computer, as one line: the last of them, and how many there were.
@@ -792,6 +824,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     screen: (text, keep, lookback) => b.screenSecrets(text, keep, lookback),
     mask: (text) => b.maskSecrets(text),
     onSecrets: auditSecrets,
+    ...(b.holdMcp ? { holdMcp: () => b.holdMcp!() } : {}),
   })
 
   async function serve(from: LinkTarget, request: PeerRequest): Promise<unknown> {

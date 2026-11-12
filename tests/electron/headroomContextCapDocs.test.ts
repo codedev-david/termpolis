@@ -748,9 +748,9 @@ describe('only the places that start an agent tell the main process a terminal i
       `${R}lib/aiProfiles.ts`, `${R}lib/aiProfiles.ts`, `${R}lib/aiProfiles.ts`,
       `${R}lib/conductorManager.ts`,
     ])
-    // A plain new terminal (the app's new-terminal action, the sidebar's, a split pane) passes the shell and the folder only.
+    // A plain new terminal (the app's new-terminal action, the sidebar's, a split pane via paneCommands since 1.60) passes the shell and the folder only.
     const plain = all.filter((c) => c.args < 5)
-    expect(plain.map((c) => c.file).sort()).toEqual([`${R}App.tsx`, `${R}components/Sidebar/Sidebar.tsx`, `${R}components/SplitView/PaneRenderer.tsx`])
+    expect(plain.map((c) => c.file).sort()).toEqual([`${R}App.tsx`, `${R}components/Sidebar/Sidebar.tsx`, `${R}lib/paneCommands.ts`])
     expect(plain.every((c) => c.args === 3)).toBe(true)
   })
 

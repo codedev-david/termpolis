@@ -233,7 +233,11 @@ vi.mock('../../src/main/contextPinStore', () => ({
   updatePin: M.updatePin, clearPins: M.clearPins,
 }))
 vi.mock('../../src/main/autoUpdater', () => ({ initAutoUpdater: M.initAutoUpdater }))
-vi.mock('../../src/main/agentCommandSanitizer', () => ({ sanitizeAgentCommand: vi.fn((c: string) => c), isClaudeAgentName: (name: string) => /(^|[^a-z])claude/i.test(name || '') }))
+vi.mock('../../src/main/agentCommandSanitizer', () => ({
+  sanitizeAgentCommand: vi.fn((c: string) => c),
+  isClaudeAgentName: (name: string) => /(^|[^a-z])claude/i.test(name || ''),
+  isAgentBinary: (c: unknown) => c === 'claude' || c === 'codex' || c === 'agy',
+}))
 vi.mock('../../src/main/agentPaths', () => ({
   getAgentExtraPaths: M.getAgentExtraPaths,
   // Opening a terminal lists the version managers' folders on the thread pool: the same list, asynchronously.
@@ -1252,6 +1256,72 @@ describe('MCP tool handlers', () => {
       // Swarm workers are hidden and never saved; nothing here may start listing them.
       opened.push(await mcp().createTerminal('Claude (Build UI)', 'powershell', '/repo'))
       expect(mcp().listTerminals()).toEqual([])
+    })
+
+    describe('the agent a phone starts (1.60)', () => {
+      async function sanitizer(): Promise<any> {
+        return await import('../../src/main/agentCommandSanitizer')
+      }
+      async function unattended(on: boolean): Promise<void> {
+        const fs = await import('fs') as any
+        vi.mocked(fs.readFileSync).mockImplementation((p: unknown) =>
+          String(p).endsWith('remote-settings.json') ? JSON.stringify({ unattendedAgents: on }) : '{}')
+      }
+      beforeEach(async () => {
+        vi.mocked((await sanitizer()).sanitizeAgentCommand).mockClear()
+        M.writeToTerminal.mockClear()
+      })
+      afterEach(async () => {
+        const fs = await import('fs') as any
+        vi.mocked(fs.readFileSync).mockImplementation(() => '{}')
+      })
+
+      it('is typed as the phone sent it, so the agent asks before it acts', async () => {
+        await unattended(false)
+        const id = await phoneTerminal('Claude · repo', '/repo', { ...PHONE, agentCommand: 'claude' })
+        mcp().runCommand(id, 'claude')
+        expect((await sanitizer()).sanitizeAgentCommand).not.toHaveBeenCalled()
+        expect(M.writeToTerminal).toHaveBeenLastCalledWith(id, 'claude\r')
+      })
+
+      it('gets the unattended flags only when the desktop user allowed them, and only for its launch', async () => {
+        await unattended(true)
+        const { sanitizeAgentCommand } = await sanitizer()
+        vi.mocked(sanitizeAgentCommand).mockReturnValueOnce('claude --dangerously-skip-permissions')
+        const id = await phoneTerminal('Claude · repo', '/repo', { ...PHONE, agentCommand: 'claude' })
+        mcp().runCommand(id, 'claude')
+        expect(sanitizeAgentCommand).toHaveBeenCalledWith('claude')
+        expect(M.writeToTerminal).toHaveBeenLastCalledWith(id, 'claude --dangerously-skip-permissions\r')
+        // The launch is spent: a second `claude` typed later is the user's own.
+        mcp().runCommand(id, 'claude')
+        expect(sanitizeAgentCommand).toHaveBeenCalledTimes(1)
+        expect(M.writeToTerminal).toHaveBeenLastCalledWith(id, 'claude\r')
+      })
+
+      it('types anything but the launched agent verbatim, setting or not', async () => {
+        await unattended(true)
+        const shell = await phoneTerminal('shell', '/repo')
+        mcp().runCommand(shell, 'claude')
+        const other = await phoneTerminal('Codex · api', '/api', { ...PHONE, agentCommand: 'codex' })
+        mcp().runCommand(other, 'npm test')
+        expect((await sanitizer()).sanitizeAgentCommand).not.toHaveBeenCalled()
+        expect(M.writeToTerminal).toHaveBeenLastCalledWith(other, 'npm test\r')
+      })
+
+      it('still sanitizes a swarm worker’s command', async () => {
+        const worker = await mcp().createTerminal('Claude (Build UI)', 'powershell', '/repo')
+        opened.push(worker)
+        mcp().runCommand(worker, 'claude')
+        expect((await sanitizer()).sanitizeAgentCommand).toHaveBeenCalledWith('claude')
+      })
+
+      it('forgets a launch whose terminal closed before the agent was typed', async () => {
+        await unattended(true)
+        const id = await phoneTerminal('Claude · repo', '/repo', { ...PHONE, agentCommand: 'claude' })
+        await invoke('terminal:kill', { id })
+        mcp().runCommand(id, 'claude')
+        expect((await sanitizer()).sanitizeAgentCommand).not.toHaveBeenCalled()
+      })
     })
 
     it('frees its MCP slot when closed on the desktop', async () => {

@@ -30,6 +30,7 @@ import { TitleBar } from './components/TitleBar/TitleBar'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
 import { SecretSentBanner } from './components/SecretSentBanner/SecretSentBanner'
+import { SensitiveFileReadBanner } from './components/SensitiveFileReadBanner/SensitiveFileReadBanner'
 import { ShieldScanFailedBanner } from './components/ShieldScanFailedBanner/ShieldScanFailedBanner'
 import { OnboardingModal, hasSeenOnboarding } from './components/Onboarding/OnboardingModal'
 import { ConsentReviewModal, consentNeedsReview } from './components/ConsentReview/ConsentReviewModal'
@@ -75,6 +76,8 @@ import { AgySwitchSheet } from './components/Accounts/AgySwitchSheet'
 import { installSwitchQueue } from './lib/accountSwitchRun'
 import { LimitBanners } from './components/Accounts/LimitBanners'
 import { SwarmRestartOffers } from './components/Accounts/SwarmRestartOffers'
+import { splitActivePane, exportActivePane, toggleRecordingActivePane } from './lib/paneCommands'
+import { useSwarmCompleteDialog } from './lib/swarmCompleteDialog'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
@@ -135,7 +138,9 @@ export default function App() {
   const memoryNotice = useTerminalStore(s => s.memoryNotice)
   const setMemoryNotice = useTerminalStore(s => s.setMemoryNotice)
   const swarmCompletionSummary = useTerminalStore(s => s.swarmCompletionSummary)
-  const setSwarmCompletionSummary = useTerminalStore(s => s.setSwarmCompletionSummary)
+  // Closing the swarm-complete dialog keeps the summary, so the dashboard's Review tab stays.
+  const swarmCompleteDialog = useSwarmCompleteDialog(swarmCompletionSummary)
+  const [swarmReviewRequest, setSwarmReviewRequest] = useState(0)
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
   // Whether the tour shows at this launch, read once on the first render. The launch reviews
   // below key off this same read and never a later one: e2e writes the seen flag right after the
@@ -919,9 +924,10 @@ export default function App() {
         setShowAddModal(true)
         break
       case 'split_right':
+        void splitActivePane('vertical')
+        break
       case 'split_down':
-        // These are handled at the SplitView level; toggle to split mode if in tabs
-        if (state.viewMode === 'tabs') toggleViewMode()
+        void splitActivePane('horizontal')
         break
       case 'close_terminal':
         if (state.activeTerminalId) {
@@ -948,10 +954,10 @@ export default function App() {
         break
       }
       case 'export_output':
-        // Trigger export via context menu logic -- no direct hook, so just alert
+        exportActivePane()
         break
-      case 'start_recording':
-        // Recording is per-terminal, handled in TerminalPane context menu
+      case 'toggle_recording':
+        toggleRecordingActivePane()
         break
       case 'show_context':
         setShowContextPanel(v => !v)
@@ -1169,6 +1175,7 @@ export default function App() {
       </div>
       <UpdateBanner />
       <SecretSentBanner />
+      <SensitiveFileReadBanner />
       <ShieldScanFailedBanner />
       <StatusBar onSwarmClick={() => setShowSwarmDashboard(true)} />
       <Suspense fallback={null}>
@@ -1204,19 +1211,20 @@ export default function App() {
         )}
         {showSwarmDashboard && (
           <SwarmDashboard
-            onClose={() => { setShowSwarmDashboard(false); setSwarmStartCwd(null) }}
+            onClose={() => { setShowSwarmDashboard(false); setSwarmStartCwd(null); setSwarmReviewRequest(0) }}
             initialCwd={swarmStartCwd}
+            reviewRequest={swarmReviewRequest}
           />
         )}
-        {swarmCompletionSummary && (
+        {swarmCompletionSummary && swarmCompleteDialog.open && (
           <SwarmCompleteDialog
             message={swarmCompletionSummary.message}
             tasks={swarmCompletionSummary.tasks}
             projectCwd={swarmCompletionSummary.projectCwd ?? swarmStartCwd}
             preSwarmSha={swarmCompletionSummary.preSwarmSha}
-            onViewDashboard={() => { setSwarmCompletionSummary(null); setShowSwarmDashboard(true) }}
-            onReviewChanges={() => { setShowSwarmDashboard(true) }}
-            onDismiss={() => setSwarmCompletionSummary(null)}
+            onViewDashboard={() => { swarmCompleteDialog.hide(); setShowSwarmDashboard(true) }}
+            onReviewChanges={() => { swarmCompleteDialog.hide(); setSwarmReviewRequest(n => n + 1); setShowSwarmDashboard(true) }}
+            onDismiss={swarmCompleteDialog.hide}
           />
         )}
       </Suspense>

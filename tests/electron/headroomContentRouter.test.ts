@@ -162,7 +162,7 @@ describe('content router — JSON', () => {
 describe('windowStructured', () => {
   it('bounds by lines and reports the count', () => {
     const s = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n')
-    const r = windowStructured(s, { headLines: 3, tailLines: 2, maxChars: 100_000 })
+    const r = windowStructured(s, { headLines: 3, tailLines: 2, maxChars: 100_000, floorChars: 0 })
     expect(r.elided).toBe(true)
     expect(r.text.split('\n')).toHaveLength(6)
     expect(r.text).toContain('… [95 lines elided] …')
@@ -170,7 +170,7 @@ describe('windowStructured', () => {
 
   it('bounds by chars, which is the case a line window cannot handle', () => {
     const s = 'x'.repeat(5000) // ONE line
-    const r = windowStructured(s, { headLines: 12, tailLines: 6, maxChars: 1000 })
+    const r = windowStructured(s, { headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 0 })
     expect(r.elided).toBe(true)
     expect(r.text.startsWith('x'.repeat(1000))).toBe(true)
     expect(r.text).toContain('… [4000 chars elided] …')
@@ -178,12 +178,12 @@ describe('windowStructured', () => {
 
   it('passes a block that fits through untouched', () => {
     const s = 'a\nb\nc'
-    expect(windowStructured(s, { headLines: 12, tailLines: 6, maxChars: 1000 })).toEqual({ text: s, elided: false })
+    expect(windowStructured(s, { headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 0 })).toEqual({ text: s, elided: false })
   })
 
   it('never duplicates content the way a line window does on one long line', () => {
     const s = 'q'.repeat(3000)
-    const r = windowStructured(s, { headLines: 12, tailLines: 6, maxChars: 1000 })
+    const r = windowStructured(s, { headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 0 })
     expect(r.text.length).toBeLessThan(s.length)
   })
 })
@@ -217,7 +217,7 @@ describe('hint plumbing', () => {
       { role: 'user', content: 'not an array' },
       { role: 'assistant', content: [null, { type: 'tool_use' }, { type: 'text', text: 'hi' }] },
       { role: 'assistant', content: [{ type: 'tool_use', id: 'b', name: 'Write', input: { file_path: 'y.py' } }] },
-    ] as Array<{ content?: unknown }>
+    ]
     const map = collectToolUseHints(messages)
     expect(map.size).toBe(2)
     expect(map.get('a')).toEqual({ toolName: 'Read', path: 'x.ts' })

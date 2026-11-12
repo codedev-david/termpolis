@@ -490,6 +490,8 @@ Type to filter:
 
 Fuzzy matching is weighted, and exact matches always float to the top. Press `Enter` to execute, `Esc` to close, `↑`/`↓` to navigate.
 
+**Split Right**, **Split Down**, **Export Terminal Output** and **Start/Stop Recording** act on the active terminal, the same as its right-click menu. A split from tab view switches to split view first.
+
 ---
 
 ## 12. Prompt Templates
@@ -607,7 +609,7 @@ Each hit deep-links into the original session so you can reopen it, re-prompt, o
 Open it with the **Git Panel** button in the sidebar toolbar. It opens on the repository that holds the active terminal's folder; otherwise click **Open Folder** to pick one, and click the folder path in the header to switch to another. The Git panel is a lightweight GUI for what you usually do at the CLI:
 
 - **Current branch** in the header, with **Pull**, **Push** and **Refresh** buttons.
-- **Staged Changes** and **Changes** — each file shows its status. Click a file to see its diff.
+- **Staged Changes** and **Changes** — each file shows its status letter: M modified, A added, D deleted, R renamed, ? untracked, and U for a merge conflict, which is listed once under Changes until you stage it. Hover the letter for its name. Click a file to see its diff.
 - **Stage and unstage** — the **+** / **−** next to a file, or **Stage All** / **Unstage All**.
 - **Commit** — type a message in **Commit message...** and press Enter or click **Commit**.
 
@@ -760,7 +762,7 @@ A timeline of what the conductor is doing: the tool calls it makes, the tasks it
 
 ### Review tab
 
-The changes the swarm has made since it started, file by file. Accept or reject each hunk and run a test command, then commit the changes you accepted, or revert everything the swarm changed. See [Swarm Review Panel](#24-swarm-review-panel).
+The changes the swarm has made since it started, file by file. The tab stays after you close the Swarm Complete dialog, until the next swarm starts. Accept or reject each hunk and run a test command, then commit the changes you accepted, or revert everything the swarm changed. See [Swarm Review Panel](#24-swarm-review-panel).
 
 ### Debug
 
@@ -1182,51 +1184,67 @@ Store, first week free for new subscribers). The desktop app stays free.
    must pair again. The field takes a `wss://` address only, or plain `ws://`
    for a relay on this computer (`localhost` or `127.0.0.1`): over plain `ws://`
    to another computer, anyone on the network in between could see when your
-   devices connect and take their place in the relay first. A plain `ws://`
-   address saved by a version before 1.53 is kept but no longer used. Nothing
-   connects through it, and the Remote and Linked machines panes both say so
-   until you save a `wss://` address or click **Use the default relay**.
+   devices connect and take their place in the relay first. Since 1.60, a plain
+   `ws://` address saved by an older version is replaced with the default relay
+   when Termpolis starts, so phones and linked computers stay connected. The
+   Remote pane names the old address until you save another one or click
+   **Keep the default relay**. The address stays in the settings file, so an
+   older version still reads what it wrote.
 3. Under **Pair a device**, type a label for the phone (it defaults to
-   "Phone") and tick what it will be allowed to do. Only **Read terminal
-   output** is ticked to begin with. Press **Pair a device**.
+   "Phone") and tick what it will be allowed to do. Nothing is ticked to begin
+   with. Press **Pair a device**.
 4. A QR code appears with a countdown. It works **once** and is valid for
    **90 seconds**; closing the dialog withdraws it. Scan it with Termpolis
-   Remote. The desktop shows the code only as a picture, so the app needs
-   camera access to pair.
+   Remote. Under the code is the same pairing text with a **Copy** button: if
+   the phone has no camera access, get that text onto the phone (Universal
+   Clipboard, or a note to yourself) and paste it into the app's Pair screen.
 5. Both screens show the **same eight words**, derived from the two devices'
-   long-term keys. If they match, nothing is sitting in the middle. If they
-   differ, tap **They do not match — unpair** on the phone and **Revoke** the
-   device on the desktop.
+   long-term keys. If they match, nothing is sitting in the middle. Click
+   **The words match** on the desktop. If they differ, click **They don't
+   match**, which removes the device, and tap **They do not match — unpair** on
+   the phone.
 
-**Treat the QR code as a password for its 90 seconds.** Whoever scans it first
-is paired — including through a screen share or a recording — and gets the
-ticked permissions straight away: nothing waits for the words to be compared.
-Pair where nobody else can see the screen, and revoke any device you don't
-recognise.
+**Nothing you ticked applies until you confirm the words on the desktop**
+(1.60). Until then the phone is paired but may not list, read, start, type
+into or close anything. A phone you did not confirm in the dialog shows a
+**Not confirmed** notice in its row under **Paired devices**, with the same two
+buttons. Phones paired before 1.60 count as confirmed. Treat the QR code as a
+password for its 90 seconds anyway: whoever scans it first is paired, including
+through a screen share or a recording. Pair where nobody else can see the
+screen, and revoke any device you don't recognise.
 
 ### What the phone is allowed to do
 
 Each phone has four permissions, chosen when it is paired and changed at any
 time with the checkboxes in its row under **Paired devices**. They are checked
-on the desktop for every request, and a change takes effect at once. The phone
-only reports them (its Settings screen lists *What the desktop allows*) and
-hides the controls it isn't allowed to use.
+on the desktop for every request, and a change takes effect at once. None of
+them applies before the safety words are confirmed. The phone only reports them
+(its Settings screen lists *What the desktop allows*) and hides the controls it
+isn't allowed to use.
 
 | Permission | Default | What it allows |
 |---|---|---|
-| **Read terminal output** | on | List the terminals saved in the desktop's session, i.e. the sidebar (name and working folder; swarm workers are excluded), and stream the output of the one the phone has open. |
-| **Start terminals** | off | Start a terminal. The app offers Claude, Codex or Gemini (`agy`) in a folder picked by browsing the desktop's folders, and a plain shell. The picker opens at the desktop's home folder, which also lists every drive the desktop can see (`C:\`, `D:\` and so on, mapped drives included; `/` on macOS and Linux). Network paths (`\\server\share`) are refused, both for browsing and as a terminal's folder. The terminal is created over MCP like a swarm worker's, so `sanitizeAgentCommand` launches it the same way: Claude and Gemini with `--dangerously-skip-permissions`, Codex with `-a never -s workspace-write` and its update check off. |
+| **Read terminal output** | off | List the terminals saved in the desktop's session, i.e. the sidebar (name and working folder), and stream the output of the one the phone has open. Swarm workers are never listed and cannot be opened from a phone. |
+| **Start terminals** | off | Marked as sensitive. Start a terminal. The app offers Claude, Codex or Gemini (`agy`) in a folder picked by browsing the desktop's folders, and a plain shell. Since 1.60 the folder must be in your home folder, or on Windows on another local drive (`D:\`, `E:\` and so on). The system drive outside your home folder, `/` outside your home folder, and network paths (`\\server\share`) are refused, both for browsing and as a terminal's folder. Links are followed before the check. An agent started this way asks before it edits files or runs commands, as it would if you started it yourself, unless *Let agents started from a phone run unattended* is on (below). A phone that may start terminals may also close the ones it started. |
 | **Type into terminals** | off | Send text to any open terminal, then Enter. This bypasses the command checks — it is a keyboard, and anything typed runs as you. Deliberately **not** implied by *Start terminals*. |
-| **Close terminals** | off | Close a terminal. The current phone app has no control for this. |
+| **Close terminals** | off | Close any terminal. The phone asks for confirmation first. |
+
+**Let agents started from a phone run unattended** (*Settings → Remote*, off by
+default, marked dangerous, 1.60). When it is on, an agent a phone starts is
+launched like a swarm worker: Claude and Gemini with
+`--dangerously-skip-permissions`, Codex with `-a never -s workspace-write`. It
+then acts without asking. Turning it on takes a second click. Before 1.60,
+every agent a phone started was launched this way.
 
 ### Using it
 
 - **Terminal list** — the terminals in the desktop's sidebar (from
   `list_terminals`, i.e. the saved session, so swarm workers are not in it),
   titled with the desktop's name; pull to refresh.
-  While a terminal is open the phone shows its agent's status (*Thinking*,
-  *Working*, *Waiting for you*, …) and a one-line summary; the list keeps the
-  last status seen.
+  The phone shows each agent's status (*Thinking*, *Working*, *Waiting for
+  you*, …) and a one-line summary on every terminal in the list, not only the
+  one that is open (1.60). A phone sees the last status of each terminal as soon
+  as it connects.
 - **Output** — streamed as it is printed, for the terminals the phone has
   open. The desktop flattens it through a headless terminal first, so cursor
   moves and redraws arrive as edits and colour survives. Opening a terminal
@@ -1246,6 +1264,10 @@ hides the controls it isn't allowed to use.
 - **Backgrounding** disconnects the phone; it reconnects on return. The
   desktop keeps the newest 262,144 characters of output per phone meanwhile,
   dropping older output and marking the gap as skipped.
+- **Close terminal** — on a terminal's screen, with *Close terminals*, or with
+  *Start terminals* for a terminal the phone started. The phone asks first.
+  Desktops before 1.60 accept it only with *Close terminals* and say so on the
+  phone.
 - **On the desktop**, the title bar shows a phone icon while a phone is
   connected, and each device row shows connected / last seen, its four
   permissions, **Show safety words** and **Revoke**.
@@ -1261,8 +1283,11 @@ hides the controls it isn't allowed to use.
   otherwise revoke it there too.
 - Unticking *Allow phones to connect* ends every session but keeps the
   pairings. A phone not seen for **30 days** is forgotten.
-- Deleting the app is not a reliable unpair: iOS can keep Keychain items after
-  an app is deleted.
+- Deleting the app: iOS keeps Keychain items after an app is deleted. From
+  the phone app's next release, the first launch after a reinstall erases what
+  the old install left (pairings, keys and the cached subscription status)
+  before reading anything. A paid subscription is then found again through the
+  App Store. The desktop still lists the device until you revoke it.
 
 ### How it is secured
 
@@ -1286,8 +1311,9 @@ hides the controls it isn't allowed to use.
   localhost — limited to `list_terminals`, `create_terminal`, `run_command`,
   `write_to_terminal` and `close_terminal`, with the same rate limits and audit
   log (tool name and device id, not the text) as any MCP client. Folder
-  browsing (any local drive, folder names only, never a network path) and the
-  output stream are handled in the bridge and are not audited. The phone's own requests reach no memory,
+  browsing (your home folder and, on Windows, other local drives; folder names
+  only, never a network path) and the output stream are handled in the bridge
+  and are not audited. The phone's own requests reach no memory,
   swarm or other tools; an agent it types into still has its own.
 - **Keys.** The desktop's identity key never reaches the renderer, and is
   encrypted with the OS keychain (DPAPI / Keychain / libsecret) where one is
@@ -1383,12 +1409,16 @@ folder, the first line of the prompt and any credential rules screening matched;
 a refusal's row shows the machine, the reason and how many more came that
 minute.
 
-**Notify me when a linked computer starts a job here** is on by default. Each
+**Notify me when a linked computer starts a job here, and when it ends** is on
+by default. Each
 job another computer starts here then shows a system notification naming the
 computer, the agent, read-only or edit, and the folder, with the task's first
 line quoted under them; several from one computer within a minute share one
-notification. Click it to open this pane. A refused request never notifies, and
-neither does anything while the switch is off. The notification is not a
+notification. When the job ends, a second notification says whether it
+finished, failed or was cancelled, and how long it ran; each computer's newest
+end notification replaces its last one. Click either to open this pane. A
+refused request never notifies, and neither does anything while the switch is
+off. The notification is not a
 question: the job is already running, and **Stop** is how to end it.
 
 ### What a linked computer may do here
@@ -1540,9 +1570,9 @@ audit log.
   computer's long-term key leaks.
 - **An encrypted relay.** Making or entering a code requires a `wss://` relay
   (`ws://` only to localhost), and *Settings → Remote* accepts nothing else.
-  Links this computer created reconnect through that setting; if it still holds
-  a plain `ws://` address saved by an older version, Termpolis connects none of
-  them through it and both panes say so until it is changed. Links made by
+  Links this computer created reconnect through that setting. Since 1.60, a
+  plain `ws://` address saved by an older version is replaced with the default
+  relay, and the Remote pane says so until another address is saved. Links made by
   entering another computer's code use that computer's relay. The relay's
   source is in [`relay/`](../relay/), so you can run your own.
 - **What the relay does see:** both computers' IP addresses, a room id for the
@@ -1601,13 +1631,37 @@ audit log.
     `agy` passes its environment, marker included, to the server itself.
   - These limits bind read-only jobs. A Claude or Gemini job with *edit*
     permission has a shell and runs as you, so it can get around them, for
-    example by calling Termpolis's local MCP server with its token: treat
-    *edit* as full access. A Codex edit job's commands run in Codex's sandbox
+    example by leaving a process running that calls Termpolis's local MCP
+    server once the job has ended: treat *edit* as full access. A Codex edit job's commands run in Codex's sandbox
     with its network switched off, and that sandbox is what keeps them from
     that server. On Windows that hasn't been confirmed (Codex's sandbox there
     is separate user accounts and firewall rules, which may not cover the
     computer's own local services), so treat a Codex edit job on Windows as
     full access too.
+- **The MCP server limits its key while a job runs (1.60).**
+  - Termpolis's local MCP server accepts the key it writes to `mcp-token` in
+    the data directory. Any process running as you can read that file,
+    including a job another computer started.
+  - While such a job runs here, a call with that key reaches only the tools
+    listed above plus `memory_primer` and `code_outline`. Any other tool gets
+    *… is not available while a job another computer started is running on
+    this computer* as a tool result, and a `denied` line in the MCP audit log.
+    The limit ends when the job's agent has exited or been stopped.
+  - Agents that were already connected keep every tool. From 1.60 the agent
+    connection (the stdio adapter) swaps the file's key for a key of its own
+    when it starts, and a key issued while no job was running is not limited.
+    An agent that connects while a job runs is limited until the job ends.
+    Keys issued during a job stop working when it ends, so none of them
+    carries into a later job; the agent connection gets a new one on its next
+    call without the agent noticing. Against an older Termpolis it keeps using the file's key.
+  - The remote bridge, which carries your phones' requests, has its own key.
+    It is never written to disk and never limited.
+  - The `termpolis` command and the memory primer hook use the file's key, so
+    while a job runs only their memory and code reads work.
+  - What this doesn't stop: a process the job leaves running can read the file
+    after the job ends and get full access, and code running as you can read
+    the keys from Termpolis's memory. It closes the direct route, a job calling
+    the server with the key from the file while it runs.
 - **Answers are labelled and scanned.** What comes back from another machine
   passes the gateway's prompt-injection scan before your agent sees it. That
   covers the answer, its error and any refusal worded over there. Every answer,
@@ -1686,7 +1740,8 @@ audit log.
   the data directory: a line when a job starts (the machine, agent, read-only or
   edit, folder, the first line of the screened prompt and the credential rules
   matched), a line when it ends (how, and how long it took), and a line for each
-  refusal with its reason. The prompt's first line is kept, and shown in the
+  refusal with its reason. Calls the MCP server refused while a job ran are in
+  the MCP audit log. The prompt's first line is kept, and shown in the
   job's notification, with anything that might be a credential taken out, even
   what the agent was given because it only looked like one. A computer's
   refusals within one minute after the

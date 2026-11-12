@@ -11,7 +11,6 @@ export interface KeybindingMap {
   closeTerminal: string
   nextTerminal: string
   prevTerminal: string
-  toggleAutocomplete: string
   toggleSidebar: string
   toggleGrid: string
   /** Opens the app's own log -- what Termpolis printed behind the scenes. */
@@ -41,7 +40,6 @@ export const DEFAULT_KEYBINDINGS: KeybindingMap = {
   closeTerminal: 'Ctrl+Shift+W',
   nextTerminal: 'Ctrl+Tab',
   prevTerminal: 'Ctrl+Shift+Tab',
-  toggleAutocomplete: 'Ctrl+Space',
   toggleSidebar: 'Ctrl+B',
   toggleGrid: 'Ctrl+Shift+G',
   // Ctrl+Shift+L is NOT free: it is the default voice push-to-talk activation.
@@ -70,7 +68,6 @@ export const KEYBINDING_LABELS: Record<keyof KeybindingMap, string> = {
   closeTerminal: 'Close Terminal',
   nextTerminal: 'Next Terminal',
   prevTerminal: 'Previous Terminal',
-  toggleAutocomplete: 'Trigger Autocomplete',
   toggleSidebar: 'Toggle Sidebar',
   toggleGrid: 'Toggle Split View',
   viewLogs: 'View App Log',
@@ -98,6 +95,12 @@ export function isReservedAction(action: string): action is ReservedCopyAction {
 }
 
 /**
+ * Actions removed from the map. `toggleAutocomplete` (Ctrl+Space, "Trigger Autocomplete") had no
+ * handler since the autocomplete dropdown left the terminal in v1.16.3, so the binding did nothing.
+ */
+export const RETIRED_ACTIONS: readonly string[] = ['toggleAutocomplete']
+
+/**
  * Merge a (possibly partial / persisted) keybinding map over the defaults, then
  * FORCE every reserved copy action back to its fixed default. Persisted state
  * from an older build — e.g. `copyAsCodeBlock: 'Ctrl+Shift+M'` — must never
@@ -106,6 +109,9 @@ export function isReservedAction(action: string): action is ReservedCopyAction {
  */
 export function withReservedDefaults(partial?: Partial<KeybindingMap> | null): KeybindingMap {
   const merged: KeybindingMap = { ...DEFAULT_KEYBINDINGS, ...(partial ?? {}) }
+  // Actions that no longer exist must not ride along from an older build's saved map, or the
+  // settings list and conflict checks would keep a binding that does nothing.
+  for (const key of RETIRED_ACTIONS) delete (merged as unknown as Record<string, unknown>)[key]
   for (const action of RESERVED_COPY_ACTIONS) {
     merged[action] = DEFAULT_KEYBINDINGS[action]
   }

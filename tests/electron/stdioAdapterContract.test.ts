@@ -127,7 +127,7 @@ describe('stdio-adapter.cjs — degraded-mode behavior', () => {
     // catch block of findToken. That made `gemini` show a hard
     // MCP-server-failed error and blocked all CLI use when Termpolis
     // wasn't running.
-    const findTokenSection = src.slice(src.indexOf('function findToken'), src.indexOf('const TOKEN'))
+    const findTokenSection = src.slice(src.indexOf('function findToken'), src.indexOf('let TOKEN'))
     expect(findTokenSection).not.toMatch(/process\.exit/)
   })
 
@@ -225,12 +225,24 @@ function dataDirUnder(root: string): string {
 }
 
 /** A stand-in for the app: healthy, and it records the tool name of every call forwarded to it. */
-async function standInApp(): Promise<{ port: number; forwarded: string[]; close: () => Promise<void> }> {
+async function standInApp(
+  sessionAnswer: (ask: number) => { status: number; session?: string } = () => ({ status: 404 }),
+): Promise<{ port: number; forwarded: string[]; keys: string[]; sessionAsks: () => number; close: () => Promise<void> }> {
   const forwarded: string[] = []
+  const keys: string[] = []
+  let sessionAsks = 0
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (chunk) => { body += chunk })
     req.on('end', () => {
+      // By default like an app older than 1.60: no session keys, so the adapter keeps the file's.
+      if (req.method === 'POST' && req.url !== '/mcp') {
+        const answer = sessionAnswer(++sessionAsks)
+        res.writeHead(answer.status, { 'Content-Type': 'application/json' })
+        res.end(answer.session ? JSON.stringify({ session: answer.session }) : '')
+        return
+      }
+      if (req.method === 'POST') keys.push(String(req.headers.authorization))
       res.writeHead(200, { 'Content-Type': 'application/json' })
       if (req.method === 'GET') {
         res.end('{"status":"ok"}')
@@ -250,6 +262,8 @@ async function standInApp(): Promise<{ port: number; forwarded: string[]; close:
   return {
     port: (server.address() as AddressInfo).port,
     forwarded,
+    keys,
+    sessionAsks: () => sessionAsks,
     close: () => new Promise<void>((r) => server.close(() => r())),
   }
 }
@@ -493,6 +507,11 @@ describe('stdio-adapter.cjs — a call its client gives up on', () => {
           res.end('{"status":"ok"}')
           return
         }
+        if (req.url !== '/mcp') {
+          res.statusCode = 404
+          res.end()
+          return
+        }
         const rpc = JSON.parse(body)
         if (rpc.params?.name === 'write_to_terminal') {
           res.on('close', () => { state.closedEarly = !res.writableFinished })
@@ -654,4 +673,172 @@ describe('stdio-adapter.cjs — a submit its client cancels, through the real MC
       rmSync(root, { recursive: true, force: true })
     }
   }, 40_000)
+})
+
+// A job another linked computer started here runs as this user and can read mcp-token. While it
+// runs, the app holds the file's key, and any session key issued meanwhile, to the read-only tools
+// (mcpServer's holdForLinkedJob). The adapter swaps the file's key for a session key of its own as
+// soon as it connects, so an agent connected before the job keeps its tools through it.
+describe('stdio-adapter.cjs — session keys and the linked-job window, through the real MCP server', () => {
+  async function realApp(tokenInFile?: string) {
+    const mcp = await import('../../src/main/mcpServer')
+    mcp._resetLinkedWindowForTest()
+    mcp.resetRateLimits()
+    const handlers = {
+      listTerminals: () => [{ id: 't1', name: 'shell', shellType: 'bash', cwd: '/home' }],
+    } as unknown as Parameters<typeof mcp.startMcpServer>[0]
+    mcp._resetPortStateForTest()
+    const server = mcp.startMcpServer(handlers)
+    const port = await mcp.awaitMcpPortBound()
+    const root = mkdtempSync(join(tmpdir(), 'termpolis-adapter-window-'))
+    const dir = dataDirUnder(root)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'mcp-token'), tokenInFile ?? mcp.getMcpAuthToken())
+    writeFileSync(join(dir, 'mcp-port'), String(port))
+    const children: Array<{ end: () => Promise<void> }> = []
+    const start = () => {
+      const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, APPDATA: root, XDG_CONFIG_HOME: root }
+      delete env.TERMPOLIS_LINKED_JOB
+      delete env.TERMPOLIS_READ_ONLY_RUN
+      const child = spawn(process.execPath, [ADAPTER], { env, stdio: ['pipe', 'pipe', 'pipe'] })
+      const exited = new Promise<void>((r) => child.on('exit', () => r()))
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+      const replies = (): Rpc[] => stdout.split('\n').slice(0, -1).filter((l) => l.trim()).map((l) => JSON.parse(l) as Rpc)
+      const until = async (done: () => boolean, what: string) => {
+        for (const started = Date.now(); !done(); await new Promise((r) => setTimeout(r, 20))) {
+          if (Date.now() - started > 10_000) throw new Error(`${what} never happened. stdout: ${stdout} stderr: ${stderr}`)
+        }
+      }
+      const call = async (id: number, name: string): Promise<Rpc> => {
+        child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: {} } }) + '\n')
+        await until(() => replies().some((r) => r.id === id), `the answer to call ${id}`)
+        return replies().find((r) => r.id === id)!
+      }
+      const handle = {
+        connected: () => until(() => /adapter connected/.test(stderr), 'the adapter connecting'),
+        call,
+        end: async () => {
+          child.stdin.end()
+          const killer = setTimeout(() => child.kill(), 5_000)
+          await exited
+          clearTimeout(killer)
+        },
+      }
+      children.push(handle)
+      return handle
+    }
+    return {
+      mcp,
+      port,
+      dir,
+      start,
+      close: async () => {
+        for (const c of children) await c.end()
+        mcp._resetLinkedWindowForTest()
+        server.closeAllConnections()
+        await new Promise<void>((r) => server.close(() => r()))
+        rmSync(root, { recursive: true, force: true })
+      },
+    }
+  }
+
+  const REFUSED = /^Error: list_terminals is not available while a job another computer started is running on this computer\./
+
+  it('keeps every tool for an adapter that connected before the job, and limits one that connected during it until it ends', async () => {
+    const app = await realApp()
+    try {
+      const before = app.start()
+      await before.connected()
+      // Its first answer means its session key is in hand.
+      expect((await before.call(1, 'list_terminals')).result?.isError).toBeUndefined()
+
+      const release = app.mcp.holdForLinkedJob()
+      expect((await before.call(2, 'list_terminals')).result?.content[0].text).toContain('"t1"')
+
+      const during = app.start()
+      await during.connected()
+      expect((await during.call(3, 'list_terminals')).result).toEqual({
+        content: [{ type: 'text', text: expect.stringMatching(REFUSED) }],
+        isError: true,
+      })
+      // The read-only set still works for it.
+      expect((await during.call(4, 'code_outline')).result?.content[0].text).not.toMatch(REFUSED)
+
+      release()
+      expect((await during.call(5, 'list_terminals')).result?.content[0].text).toContain('"t1"')
+    } finally {
+      await app.close()
+    }
+  }, 40_000)
+
+  it('reads the key file again after a 401 and carries on with the new key', async () => {
+    // A key from the app's last launch, as after a restart.
+    const app = await realApp('f'.repeat(64))
+    try {
+      const adapter = app.start()
+      await adapter.connected()
+      writeFileSync(join(app.dir, 'mcp-token'), app.mcp.getMcpAuthToken())
+      expect((await adapter.call(1, 'list_terminals')).result?.content[0].text).toContain('"t1"')
+    } finally {
+      await app.close()
+    }
+  }, 40_000)
+
+  it('keeps the file key with an app that has no session keys (older than 1.60)', async () => {
+    const app = await standInApp()
+    try {
+      const replies = await runAdapter(app.port, {}, [
+        { id: 1, method: 'tools/call', params: { name: 'memory_search', arguments: {} } },
+      ])
+      expect(replies[0].result?.content[0].text).toBe('answered by the app')
+      expect(app.keys).toEqual(['Bearer stand-in-token'])
+      // A 404 is an answer: asked at start-up, and not again on the call.
+      expect(app.sessionAsks()).toBe(1)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('asks for a session again after a failed ask that was not a 404, instead of keeping the file key for good', async () => {
+    const session = 'a'.repeat(64)
+    // Busy at start-up, a key on the next ask.
+    const app = await standInApp((ask) => (ask === 1 ? { status: 503 } : { status: 200, session }))
+    const root = mkdtempSync(join(tmpdir(), 'termpolis-adapter-reask-'))
+    const dir = dataDirUnder(root)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'mcp-token'), 'stand-in-token')
+    writeFileSync(join(dir, 'mcp-port'), String(app.port))
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, APPDATA: root, XDG_CONFIG_HOME: root }
+    delete env.TERMPOLIS_LINKED_JOB
+    delete env.TERMPOLIS_READ_ONLY_RUN
+    const child = spawn(process.execPath, [ADAPTER], { env, stdio: ['pipe', 'pipe', 'pipe'] })
+    const exited = new Promise<void>((r) => child.on('exit', () => r()))
+    let stdout = ''
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+    child.stderr.on('data', () => {})
+    const until = async (done: () => boolean, what: string) => {
+      for (const started = Date.now(); !done(); await new Promise((r) => setTimeout(r, 20))) {
+        if (Date.now() - started > 10_000) throw new Error(`${what} never happened. stdout: ${stdout}`)
+      }
+    }
+    try {
+      // The start-up ask, answered 503; the call after it asks again.
+      await until(() => app.sessionAsks() === 1, 'the start-up ask')
+      await new Promise((r) => setTimeout(r, 100))
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'memory_search', arguments: {} } }) + '\n')
+      await until(() => stdout.includes('answered by the app'), 'the answer')
+      expect(app.sessionAsks()).toBe(2)
+      expect(app.keys).toEqual([`Bearer ${session}`])
+    } finally {
+      child.stdin.end()
+      const killer = setTimeout(() => child.kill(), 5_000)
+      await exited
+      clearTimeout(killer)
+      rmSync(root, { recursive: true, force: true })
+      await app.close()
+    }
+  })
 })

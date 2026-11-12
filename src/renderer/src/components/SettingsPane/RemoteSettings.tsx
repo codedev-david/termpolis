@@ -5,15 +5,15 @@ import type {
   RemoteEvent,
   RemoteStatusView,
 } from '../../types'
-import { PairingModal, type PairedResult } from './PairingModal'
+import { PairingModal, type ConfirmState, type PairedResult } from './PairingModal'
 import { KeyStorageBanner } from './KeyStorageBanner'
 
 interface CapabilityRow {
   key: keyof RemoteCapabilities
   label: string
   hint: string
-  /** Rendered in amber with a warning. Reserved for the one capability that
-   *  hands a phone a raw keyboard. */
+  /** Rendered in amber with a warning: the capabilities that let a phone run
+   *  something on this desktop. */
   danger?: boolean
 }
 
@@ -21,7 +21,12 @@ interface CapabilityRow {
  *  is the harmless one and the dangerous one is the last thing they read. */
 const CAPABILITIES: CapabilityRow[] = [
   { key: 'read', label: 'Read terminal output', hint: 'See what is on screen and the scrollback behind it.' },
-  { key: 'createTerminal', label: 'Start terminals', hint: 'Open a new shell or AI terminal on this desktop.' },
+  {
+    key: 'createTerminal',
+    label: 'Start terminals',
+    hint: 'Open a new shell or AI terminal on this desktop, in your home folder or another drive. An AI terminal asks before it acts unless you allow unattended agents below.',
+    danger: true,
+  },
   {
     key: 'writeToTerminal',
     label: 'Type into terminals',
@@ -51,6 +56,8 @@ const DEFAULT_RELAY = 'wss://relay.termpolis.com'
  *  that is never dialled is not even connecting. */
 function runningText(status: RemoteStatusView): string {
   if (!status.enabled) return ''
+  // relayInsecure cannot be true since 1.60 (a saved ws:// relay is replaced
+  // with the default on load), but a main that still reports it is believed.
   if (!status.running || status.relayInsecure) return '(not connected)'
   if (status.relay === 'online') return '(connected to the relay)'
   if (status.relay === 'connecting') return '(connecting to the relay…)'
@@ -75,18 +82,20 @@ export function RemoteSettings(): JSX.Element {
   const [relayDraft, setRelayDraft] = useState<string | null>(null)
   const [label, setLabel] = useState('')
   // Chosen BEFORE the code is generated, so the phone is created with the grant
-  // its owner meant to give. Pairing first and granting afterwards produced a
-  // device that was paired but refused every request it made -- the phone said
-  // "this desktop has not granted read access" and listed no terminals, which
-  // reads as a broken app rather than a permission that was never ticked.
+  // its owner meant to give. All off by default (1.60): nothing is granted
+  // without a deliberate tick, and nothing ticked takes effect until the words
+  // on both screens are confirmed to match.
   const [pendingCapabilities, setPendingCapabilities] = useState<RemoteCapabilities>({
-    read: true,
+    read: false,
     createTerminal: false,
     writeToTerminal: false,
     closeTerminal: false,
   })
   const [modalOpen, setModalOpen] = useState(false)
   const [paired, setPaired] = useState<PairedResult | null>(null)
+  const [confirmState, setConfirmState] = useState<ConfirmState>('waiting')
+  // The unattended-agents switch asks once before it turns on.
+  const [confirmUnattended, setConfirmUnattended] = useState(false)
   // True only between asking for a code and the bridge producing one. Without
   // it the modal cannot tell "no code yet" from "the code expired", and the
   // happy path flashes an expiry notice for the length of one round trip.
@@ -121,7 +130,10 @@ export function RemoteSettings(): JSX.Element {
           // Cannot fail for a device that just paired -- the phrase is a pure
           // function of two public keys -- but a race with a revoke could, and a
           // modal claiming success with no words to compare is worse than none.
-          if (res.success) setPaired({ label: name, phrase: res.data.phrase })
+          if (res.success) {
+            setConfirmState('waiting')
+            setPaired({ deviceId, label: name, phrase: res.data.phrase })
+          }
         })
       }
     })
@@ -166,6 +178,7 @@ export function RemoteSettings(): JSX.Element {
 
   const startPairing = async (): Promise<void> => {
     setPaired(null)
+    setConfirmState('waiting')
     const res = await window.remote.beginPairing(label, pendingCapabilities)
     apply(res)
     // Opened only on success. A refused call means no code is coming, so a modal
@@ -196,6 +209,28 @@ export function RemoteSettings(): JSX.Element {
   const revoke = async (deviceId: string): Promise<void> => {
     setConfirmRevoke(null)
     apply(await window.remote.revokeDevice(deviceId))
+  }
+
+  /** The words on both screens match. Only now does the phone's grant apply. */
+  const confirmDevice = async (deviceId: string): Promise<boolean> => {
+    const res = await window.remote.confirmDevice(deviceId)
+    apply(res)
+    return res.success
+  }
+
+  const confirmFromModal = async (deviceId: string): Promise<void> => {
+    if (await confirmDevice(deviceId)) setConfirmState('confirmed')
+  }
+
+  const rejectFromModal = async (deviceId: string): Promise<void> => {
+    const res = await window.remote.revokeDevice(deviceId)
+    apply(res)
+    if (res.success) setConfirmState('rejected')
+  }
+
+  const setUnattended = async (enabled: boolean): Promise<void> => {
+    setConfirmUnattended(false)
+    apply(await window.remote.setUnattendedAgents(enabled))
   }
 
   const encryptKeys = async (): Promise<void> => {
@@ -258,8 +293,30 @@ export function RemoteSettings(): JSX.Element {
         </div>
       )}
 
-      {/* From the status, not an event: it holds for as long as the address
-          does, across restarts, and goes the moment a wss:// one is saved. */}
+      {/* A ws:// relay saved by an older version is not used: the default relay
+          is dialled instead, and this says so until another address is saved. */}
+      {status.relayReplaced && (
+        <div
+          data-testid="remote-relay-replaced"
+          className="text-xs text-[#e5c07b] border border-[#5a4a2d] bg-[#2a2419] rounded px-3 py-2 mb-3 flex flex-col gap-2"
+        >
+          <span>
+            The relay you saved, <span className="font-mono break-all">{status.relayReplaced}</span>, is not
+            encrypted (ws://), so Termpolis no longer uses it. Your phones and linked computers now connect
+            through the default relay, <span className="font-mono">{DEFAULT_RELAY}</span>. To use your own
+            relay, save its wss:// address.
+          </span>
+          <button
+            data-testid="remote-relay-keep-default"
+            onClick={() => void saveRelay(DEFAULT_RELAY)}
+            className="self-start px-3 py-1 text-xs rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#e0e0e0]"
+          >
+            Keep the default relay
+          </button>
+        </div>
+      )}
+
+      {/* From an older main only: since 1.60 a ws:// relay never reaches the status. */}
       {status.relayInsecure && (
         <div
           data-testid="remote-relay-insecure"
@@ -325,6 +382,56 @@ export function RemoteSettings(): JSX.Element {
         </div>
       </div>
 
+      <div className="mb-4" data-testid="remote-unattended">
+        <label className="flex items-start gap-2 text-sm text-[#d4d4d4]">
+          <input
+            type="checkbox"
+            data-testid="remote-unattended-toggle"
+            checked={status.unattendedAgents === true}
+            onChange={(e) => {
+              if (e.target.checked) setConfirmUnattended(true)
+              else void setUnattended(false)
+            }}
+            className="mt-1"
+          />
+          <span>
+            <span className="text-[#e5c07b]">Let agents started from a phone run unattended</span>
+            <span className="block text-xs text-[#6b7280]">
+              Dangerous. Off by default. When off, an AI agent a phone starts asks before it edits files or
+              runs commands, and you answer from the phone or here. When on, it starts with its approval
+              prompts turned off and acts without asking.
+            </span>
+          </span>
+        </label>
+        {confirmUnattended && (
+          <div
+            data-testid="remote-unattended-confirm"
+            className="mt-2 text-xs text-[#f28b82] border border-[#5a2d2d] bg-[#2a1919] rounded px-3 py-2 flex flex-col gap-2"
+          >
+            <span>
+              Anyone holding a paired phone that may start terminals could then have an agent change files
+              and run commands on this computer without asking. Turn it on?
+            </span>
+            <div className="flex gap-2">
+              <button
+                data-testid="remote-unattended-yes"
+                onClick={() => void setUnattended(true)}
+                className="px-3 py-1 text-xs rounded bg-[#a33] hover:bg-[#c44] text-white"
+              >
+                Turn on
+              </button>
+              <button
+                data-testid="remote-unattended-no"
+                onClick={() => setConfirmUnattended(false)}
+                className="px-3 py-1 text-xs rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#e0e0e0]"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="mb-4">
         <div className="text-xs text-[#9ca3af] mb-1">Pair a device</div>
         <div className="flex gap-2">
@@ -364,7 +471,8 @@ export function RemoteSettings(): JSX.Element {
             </label>
           ))}
           <div className="text-[#6b7280] text-xs">
-            You can change any of these later, from the device&apos;s own row below.
+            None of these apply until you confirm the safety words match. You can change any of them
+            later, from the device&apos;s own row below.
           </div>
         </div>
       </div>
@@ -411,6 +519,34 @@ export function RemoteSettings(): JSX.Element {
                   </button>
                 )}
               </div>
+
+              {device.confirmed === false && (
+                <div
+                  data-testid={`remote-unconfirmed-${device.id}`}
+                  className="text-xs text-[#e5c07b] border border-[#5a4a2d] bg-[#2a2419] rounded px-2 py-2 flex flex-col gap-2"
+                >
+                  <span>
+                    Not confirmed. This phone can do nothing until you check that the safety words below match
+                    the ones on the phone.
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      data-testid={`remote-confirm-${device.id}`}
+                      onClick={() => void confirmDevice(device.id)}
+                      className="px-2 py-1 text-xs rounded bg-[#2d7d46] hover:bg-[#35914f] text-white"
+                    >
+                      The words match
+                    </button>
+                    <button
+                      data-testid={`remote-reject-${device.id}`}
+                      onClick={() => void revoke(device.id)}
+                      className="px-2 py-1 text-xs rounded bg-[#a33] hover:bg-[#c44] text-white"
+                    >
+                      They don&apos;t match
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="flex flex-col gap-1">
                 {CAPABILITIES.map((cap) => (
@@ -469,6 +605,9 @@ export function RemoteSettings(): JSX.Element {
           pairing={status.pairing}
           paired={paired}
           awaiting={awaitingCode}
+          confirmState={confirmState}
+          onConfirm={(id) => void confirmFromModal(id)}
+          onReject={(id) => void rejectFromModal(id)}
           onClose={() => void closeModal()}
         />
       )}

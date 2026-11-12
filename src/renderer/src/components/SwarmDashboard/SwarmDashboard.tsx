@@ -16,17 +16,25 @@ import { clearSwarmRestarts, liveRestartDeps } from '../../lib/swarmRestart'
 interface SwarmDashboardProps {
   onClose: () => void
   initialCwd?: string | null
+  /** Goes up each time the swarm-complete dialog's Review Changes is pressed: opens the Review tab. */
+  reviewRequest?: number
 }
 
 // 'debug' has no tab of its own: the Debug button opens it.
 type TabId = 'tasks' | 'messages' | 'trace' | 'review' | 'debug'
 
-export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
+export function SwarmDashboard({ onClose, initialCwd, reviewRequest = 0 }: SwarmDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('tasks')
   const [messages, setMessages] = useState<SwarmMessage[]>([])
   const [tasks, setTasks] = useState<SwarmTask[]>([])
   const swarmActive = useTerminalStore((s) => s.swarmActive)
   const swarmSummary = useTerminalStore((s) => s.swarmCompletionSummary)
+  const reviewAvailable = Boolean(swarmSummary?.preSwarmSha && swarmSummary?.projectCwd)
+  // Review Changes in the swarm-complete dialog lands here, on the Review tab, also when the
+  // dashboard was already open behind the dialog.
+  useEffect(() => {
+    if (reviewRequest > 0 && reviewAvailable) setActiveTab('review')
+  }, [reviewRequest, reviewAvailable])
   // Auto-open wizard if we have an initialCwd (came from Welcome/sidebar with directory already picked)
   const [showStartSwarm, setShowStartSwarm] = useState(!!initialCwd && !swarmActive)
   const [swarmCwd, setSwarmCwd] = useState<string | null>(initialCwd ?? null)
@@ -245,7 +253,6 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
     </div>
   )
 
-  const reviewAvailable = Boolean(swarmSummary?.preSwarmSha && swarmSummary?.projectCwd)
   const tabs: { id: TabId; label: string; icon: string }[] = [
     { id: 'tasks', label: 'Tasks', icon: 'fa-solid fa-list-check' },
     { id: 'messages', label: 'Messages', icon: 'fa-solid fa-comments' },

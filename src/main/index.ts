@@ -143,6 +143,7 @@ import {
   getReadCount as getSensitiveReadCount,
   getRecentReads as getRecentSensitiveReads,
   clearReadCount as clearSensitiveReadCount,
+  RULES as SENSITIVE_FILE_RULES,
   type SensitiveReadEvent,
 } from './sensitiveFileWatcher'
 import {
@@ -179,7 +180,7 @@ import { readZip } from './zipArchive'
 import { statSync as ipStat, readdirSync as ipReaddir, readFileSync as ipRead, chmodSync as ghChmod, existsSync as ghExists } from 'node:fs'
 import { join as ipJoin, dirname as ghDirname, resolve as ghResolve } from 'node:path'
 import {
-  buildChanges, countChanges, parseUnpushedZ, resolveInsideRepo, synthesizeUntrackedDiff,
+  buildChanges, countChanges, isUnmerged, parseUnpushedZ, resolveInsideRepo, synthesizeUntrackedDiff,
   UNPUSHED_FORMAT, UNPUSHED_MAX, type ChangeMode,
 } from './gitChanges'
 import { readFileCoverage, summarizeCoverage } from './coverageReader'
@@ -193,6 +194,7 @@ import { nodeAsyncFs } from './gitRefs'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, type McpToolHandlers } from './mcpServer'
+import { getMcpBridgeKey, holdForLinkedJob } from './mcpLinkedWindow'
 import { randomUUID } from 'node:crypto'
 import { detectAgentStatus } from '../shared/agentStatusDetector'
 import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from './workflow/adapters'
@@ -615,6 +617,7 @@ import {
   stopRemoteBridgeHost,
 } from './remoteHost'
 import { createRemoteTerminals } from './remoteTerminals'
+import { loadRemoteSettings } from './remoteSettings'
 import {
   linkedInitForRemote,
   linkedStartOverForRemote,
@@ -650,6 +653,13 @@ const mcpCreatedTerminals = new Set<string>()
 // The terminals of those a paired phone opened, until the saved session lists them.
 const remoteTerminals = createRemoteTerminals()
 
+// Every terminal a phone opened, and the agent each one was opened to start, until
+// that agent is typed. A phone's agent asks before it acts unless the desktop user
+// turned on unattended phone agents (1.60): it is typed as the phone sent it, never
+// with the swarm's --dangerously-skip-permissions or `-a never`.
+const phoneTerminals = new Set<string>()
+const phoneLaunches = new Map<string, string>()
+
 /** What the user called a terminal, or '' when nothing is on record.
  *
  *  Names matter to the agent-status detector -- "please restart claude" is a
@@ -663,10 +673,11 @@ const terminalDisplayName = createTerminalNameLookup({
 })
 const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
-import { sanitizeAgentCommand } from './agentCommandSanitizer'
+import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
 import { getAgentExtraPaths, getAgentExtraPathsAsync, getExtendedPath, primeInteractiveShellPath } from './agentPaths'
 import { safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommandAsync } from './gitCommand'
 import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcHost } from './procClient'
+import { createTerminalTreeKiller, setTerminalTreeKiller } from './terminalTreeKill'
 import { createProcHostTransport } from './procHostTransport'
 import { setPtyHostSpawner, startPtyHost, shutdownPtyHost } from './ptyHostClient'
 import { createPtyHostTransport } from './ptyHostTransport'
@@ -1083,6 +1094,8 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
     // agent or phone terminal closed by hand counted against MAX_MCP_TERMINALS until a restart.
     mcpCreatedTerminals.delete(id)
     remoteTerminals.remove(id)
+    phoneTerminals.delete(id)
+    phoneLaunches.delete(id)
     forgetTerminalAccount(id)
     forgetTerminal(id)
     try { detachWatchers(id) } catch {}
@@ -1205,7 +1218,7 @@ ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data, key }: { id: str
             '\r\n\x1b[31m⛔ Termpolis Strict Mode: Gemini CLI launch BLOCKED.\x1b[0m\r\n' +
             '\x1b[33mDetected account mode: ' + acct.mode + ' (unsafe — prompts may be used for training).\x1b[0m\r\n' +
             'To proceed, set one of: GEMINI_API_KEY, GOOGLE_GENAI_USE_GCA=true, or GOOGLE_APPLICATION_CREDENTIALS + GOOGLE_CLOUD_PROJECT.\r\n' +
-            'Or disable Strict Mode in Settings → Security.\r\n\r\n'
+            'Or disable Strict Mode in Settings → AI Security.\r\n\r\n'
           // Render the banner by sending it STRAIGHT TO THE RENDERER, on the same channel the PTY's own
           // output uses. It used to be wrapped in `printf '<banner>'` and written to the PTY as a TYPED
           // SHELL COMMAND — which only works on a shell that HAS printf. On Windows (cmd.exe /
@@ -1435,6 +1448,27 @@ ipcMain.handle('telemetry:set-consent', async (_, choice?: { crash?: unknown; us
 
 ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
 
+/** How long the status bar waits for the MCP server to bind before it stops saying "starting". */
+const MCP_PORT_IPC_WAIT_MS = 10_000
+
+// The port the MCP server actually bound. 9315 is only the first one tried: when it is taken the
+// server moves up, and the status bar used to print 9315 regardless. `port: null` means it has not
+// bound within the wait (or failed to), so the UI can say so instead of naming a port nothing serves.
+ipcMain.handle('mcp:get-port', async () => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const port = await Promise.race([
+      awaitMcpPortBound(),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), MCP_PORT_IPC_WAIT_MS) }),
+    ])
+    return ok({ port })
+  } catch (e: any) {
+    return err(e?.message ?? String(e))
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+})
+
 // Synchronous so the renderer can read windowsPty BEFORE it constructs the first
 // xterm Terminal (the option must be set at construction time). Tiny static
 // payload: tells xterm the Windows ConPTY backend + OS build so its reflow and
@@ -1559,6 +1593,8 @@ ipcMain.handle('aiSecurity:get-status', () => {
       // typed into copy is a fact with no owner: it goes stale the moment a rule is added and
       // nothing fails. Ship the real length and the number cannot drift again.
       ruleCount: SECRET_RULES.length,
+      // Same reason for the sensitive-file watcher: the copy said "~17" while the table held 20.
+      sensitiveRuleCount: SENSITIVE_FILE_RULES.length,
     })
   } catch (e: any) { return err(e.message) }
 })
@@ -3034,10 +3070,6 @@ async function memoryIsLocked(): Promise<boolean> {
   try { return (await getSyncStatus()).ownLocked === true } catch { return false }
 }
 
-// Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.
-// Locked down to an allowlist of known test runners (npm/yarn/pytest/cargo/…)
-// with zero shell metacharacters, so a compromised renderer or MCP client
-// can't turn this into arbitrary RCE. 10 minute cap.
 ipcMain.handle('workspace:is-trusted', async (_, req: { cwd?: unknown }) => {
   try {
     // Checked in here, as in claude:trust-workspace: destructured in the parameter list, a null
@@ -3267,6 +3299,10 @@ ipcMain.handle('workspace:list-trusted', async () => {
   try { return ok(listTrustedWorkspaces()) } catch (e: any) { return err(e.message) }
 })
 
+// Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.
+// Locked down to an allowlist of known test runners (npm/yarn/pytest/cargo/…)
+// with zero shell metacharacters, so a compromised renderer or MCP client
+// can't turn this into arbitrary RCE. 10 minute cap.
 ipcMain.handle('swarm:run-command', async (_, { cwd, command }: { cwd: string; command: string }) => {
   const parsed = parseSafeCommand(command)
   if ('error' in parsed) return err(parsed.error)
@@ -3307,8 +3343,12 @@ ipcMain.handle('git:status-parsed', async (_, { cwd }: { cwd: string }) => {
       const indexStatus = line[0]
       const workTreeStatus = line[1]
       const file = line.slice(3).trim()
+      // A merge conflict (UU, AA, DU, …) is one unresolved file, not a staged change plus an
+      // unstaged one: it is listed once, under unstaged, as U. Staging it marks it resolved.
+      // Untracked files keep git's own '?', so U only ever means "conflicted".
+      if (isUnmerged(indexStatus, workTreeStatus)) { unstaged.push({ file, status: 'U' }); continue }
       if (indexStatus !== ' ' && indexStatus !== '?') staged.push({ file, status: indexStatus })
-      if (workTreeStatus !== ' ' && workTreeStatus !== undefined) unstaged.push({ file, status: workTreeStatus === '?' ? 'U' : workTreeStatus })
+      if (workTreeStatus !== ' ' && workTreeStatus !== undefined) unstaged.push({ file, status: workTreeStatus })
     }
     return ok({ branch, staged, unstaged })
   } catch (e: any) { return err(e.message) }
@@ -3776,6 +3816,9 @@ if (!gotTheLock) {
     // the thread that calls it, and this thread is the one pumping every PTY; that is where the ten
     // seconds of typing lag came from. See procHost.ts for the measurements.
     setProcSpawner(() => createProcHostTransport())
+    // Closing a terminal ends the process tree under its shell too (terminalTreeKill.ts): on Windows a taskkill /T
+    // the proc host runs, on macOS and Linux the shell's process group. Quit keeps its own path (killAll).
+    setTerminalTreeKiller(createTerminalTreeKiller())
     // Windows: the terminal process host (ptyHost.ts), started now so it is ready (about 1.3 s) before most first
     // terminals. Until it is, and if it ever dies, terminals open in this process as before. TERMPOLIS_NO_PTY_HOST=1: never.
     if (process.platform === 'win32') {
@@ -3963,7 +4006,11 @@ async function semanticPoolOptions(
         // An agent's terminal is a swarm worker, which a usage limit can restart on another account (§9).
         if (!remote) noteSwarmWorker(id)
         const shellType = shellInfo?.type || shell
-        if (remote) remoteTerminals.add({ id, name, shellType, cwd: resolvedCwd })
+        if (remote) {
+          remoteTerminals.add({ id, name, shellType, cwd: resolvedCwd })
+          phoneTerminals.add(id)
+          if (remote.agentCommand) phoneLaunches.set(id, remote.agentCommand)
+        }
         // Notify renderer to add the terminal to the store. A phone's terminal goes in the
         // sidebar as the user's own; an agent's becomes a hidden swarm worker.
         mainWindow?.webContents.send('mcp:terminal-created', {
@@ -3973,10 +4020,19 @@ async function semanticPoolOptions(
         return id
       },
       runCommand: (terminalId, command) => {
-        // Enforce correct agent commands on swarm terminals
-        const safeCommand = mcpCreatedTerminals.has(terminalId)
-          ? sanitizeAgentCommand(command)
-          : command
+        // Enforce correct agent commands on swarm terminals. A phone's terminal is not a
+        // swarm worker: its agent gets the swarm's flags only when the desktop user allowed
+        // unattended phone agents, and only for the launch the phone asked for.
+        let safeCommand = command
+        if (phoneTerminals.has(terminalId)) {
+          const launch = phoneLaunches.get(terminalId)
+          phoneLaunches.delete(terminalId)
+          if (launch === command && isAgentBinary(command) && loadRemoteSettings(app.getPath('userData')).unattendedAgents) {
+            safeCommand = sanitizeAgentCommand(command)
+          }
+        } else if (mcpCreatedTerminals.has(terminalId)) {
+          safeCommand = sanitizeAgentCommand(command)
+        }
         // A worker's agent as typed here: what its restart on another account starts again (§9).
         noteWorkerCommand(terminalId, safeCommand)
         writeToTerminal(terminalId, safeCommand + '\r')
@@ -4033,6 +4089,8 @@ async function semanticPoolOptions(
         remoteNoteTerminalClosed(terminalId)
         mcpCreatedTerminals.delete(terminalId)
         remoteTerminals.remove(terminalId)
+        phoneTerminals.delete(terminalId)
+        phoneLaunches.delete(terminalId)
         mainWindow?.webContents.send('mcp:terminal-closed', terminalId)
       },
       writeToTerminal: (terminalId, text) => {
@@ -5192,6 +5250,9 @@ async function semanticPoolOptions(
           // keeps it or a notification shows it.
           maskSecrets: aiSecurityMask,
           audit: (entry) => aiSecurityAppend(entry),
+          // While a job another computer started runs here, the MCP key in mcp-token (which that
+          // job can read) reaches only the read-only tools.
+          holdMcp: holdForLinkedJob,
           keepAwake: (on) => {
             if (on && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start('prevent-app-suspension')
             else if (!on && sleepBlocker !== null) {
@@ -5231,7 +5292,8 @@ async function semanticPoolOptions(
         startRemoteBridgeHost({
           userDataDir: app.getPath('userData'),
           mcpPort: boundPort,
-          mcpToken: getMcpAuthToken(),
+          // Its own key, never on disk: the one in mcp-token is limited while a linked job runs.
+          mcpToken: getMcpBridgeKey(),
           sendStatus: (status) => { try { mainWindow?.webContents.send('remote:status-changed', status) } catch { /* window gone */ } },
           sendEvent: (event) => { try { mainWindow?.webContents.send('remote:event', event) } catch { /* window gone */ } },
           readOutput: (terminalId, fromOffset) => readOutputFrom(terminalOutputBuffers, terminalId, fromOffset),
@@ -5245,6 +5307,9 @@ async function semanticPoolOptions(
           linkedInit: () => linkedInitForRemote(),
           // "Start over" covers the links too: forgotten before the bridge comes back and asks.
           linkedStartOver: () => linkedStartOverForRemote(),
+          // What a phone's list shows, so every badge on it stays current, not just the open one.
+          listTerminalIds: () =>
+            remoteTerminals.merge(loadSession().terminals.map(t => ({ id: t.id, name: t.name, shellType: t.shellType, cwd: t.cwd }))).map(t => t.id),
         })
       } catch (e) {
         // A wiring fault here must not fatal `whenReady` -- the app-boot rule. Remote
@@ -5401,9 +5466,10 @@ async function semanticPoolOptions(
     // A Second Opinion or `termpolis exec` run still going would outlive the app and keep
     // spending tokens: on Windows the agent runs under a PowerShell wrapper, outside the job
     // that takes our direct children down with us. End each run's whole tree now. stopAll is
-    // synchronous and bounded, because the app exits right after this handler returns. It goes
-    // before the watchdog: a timer can't interrupt it anyway, and it shouldn't use up the
-    // watchdog's 5s.
+    // synchronous, because the app exits right after this handler returns. It is bounded per
+    // run, not in total: each run's taskkill has its own timeout (SYNC_TASKKILL_TIMEOUT_MS), so
+    // several runs still going can hold quit for that long each. It goes before the watchdog: a
+    // timer can't interrupt it anyway, and it shouldn't use up the watchdog's 5s.
     try { secondOpinionRuns.stopAll() } catch { /* shutting down anyway */ }
     // A sign-in the sheet left running (the hidden session's CLI and its tree) ends with the app.
     try { endAccountSignIns() } catch { /* shutting down anyway */ }

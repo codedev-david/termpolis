@@ -59,6 +59,17 @@ import { MAX_PAYLOAD_BYTES } from '../../src/main/remoteBridge/outputChunker'
 /** No drives, for the tests that are about folders. The drive rows have their own. */
 const NO_DRIVES = { driveRoots: async (): Promise<string[]> => [] }
 
+/** The fence (folderFence.ts) lets a phone use home and, on Windows, any drive
+ *  but the system one. The drive-row tests are about that Windows rule, so they
+ *  run under it on every platform: C: is the system drive, D: another. */
+const WIN = { platform: 'win32' as const, systemDrive: 'C:' }
+
+/** On Windows, a fence whose system drive is a letter nothing is on, so the
+ *  suite's temp drive counts as "another drive" -- the way D: does for a user.
+ *  POSIX has no such drive: there, outside home is outside the fence. */
+const TEMP_DRIVE_ALLOWED = { systemDrive: 'Q:' }
+const onWindows = process.platform === 'win32'
+
 /** Independent of the SUT's own predicate on purpose: a test that asked the code
  *  under test what counts as a network path could never catch it being wrong. */
 const NETWORK_OR_DEVICE = /^[\\/]{2}/
@@ -175,7 +186,7 @@ beforeEach(() => {
 
 describe('listDirectory — home, where the picker opens', () => {
   it('opens at home with no parent: the drive roots first, then home\'s subfolders sorted', async () => {
-    const listing = await listDirectory(undefined, { driveRoots: async () => ['C:\\', 'D:\\'] })
+    const listing = await listDirectory(undefined, { driveRoots: async () => ['D:\\', 'E:\\'], ...TEMP_DRIVE_ALLOWED })
     expect(listing.path).toBe(ROOT)
     // null parent is how the phone knows to hide its ".." row: home is the top,
     // and the way out of it is a drive row, not "..".
@@ -183,16 +194,25 @@ describe('listDirectory — home, where the picker opens', () => {
     // Drive rows are named by their own path -- `D:\` is what a Windows user
     // looks for -- and come first, ahead of the alphabetical folders.
     expect(listing.entries).toEqual([
-      { name: 'C:\\', path: 'C:\\' },
-      { name: 'D:\\', path: 'D:\\' },
-      ...homeFolders(),
+      ...(onWindows ? [{ name: 'D:\\', path: 'D:\\' }, { name: 'E:\\', path: 'E:\\' }] : []),
+      ...(onWindows ? homeFolders() : homeFolders().filter((f) => f.name !== 'escape')),
     ])
+  })
+
+  it('never offers the system drive, or `/`, as a drive row', async () => {
+    // A phone may start a terminal on another drive but not loose on the system
+    // drive or the POSIX root: the picker offers only what a launch would accept.
+    const windows = await listDirectory(undefined, { driveRoots: async () => ['C:\\', 'D:\\'], ...WIN })
+    expect(windows.entries.filter((e) => /^[A-Z]:\\$/.test(e.path))).toEqual([{ name: 'D:\\', path: 'D:\\' }])
+    const posix = await listDirectory(undefined, { driveRoots: async () => ['/', '/Volumes/Data'], platform: 'linux' })
+    expect(posix.entries.map((e) => e.path)).not.toContain('/')
+    expect(posix.entries.map((e) => e.path)).not.toContain('/Volumes/Data')
   })
 
   it('leaves out a drive root that is home itself', async () => {
     // A home at the root of a drive (a kiosk or service account's D:\) would
     // otherwise be offered as a row inside itself.
-    const listing = await listDirectory(undefined, { driveRoots: async () => [ROOT, 'D:\\'] })
+    const listing = await listDirectory(undefined, { driveRoots: async () => [ROOT, 'D:\\'], ...WIN })
     expect(listing.entries[0]).toEqual({ name: 'D:\\', path: 'D:\\' })
     expect(listing.entries.map((e) => e.path)).not.toContain(ROOT)
   })
@@ -204,7 +224,7 @@ describe('listDirectory — home, where the picker opens', () => {
   it('is idempotent when handed home\'s own path -- still home, no parent, drives offered', async () => {
     // The phone echoes back the very path the picker offered; asking for home by
     // its own absolute path must land ON home, drive rows and all.
-    const listing = await listDirectory(ROOT, { driveRoots: async () => ['D:\\'] })
+    const listing = await listDirectory(ROOT, { driveRoots: async () => ['D:\\'], ...WIN })
     expect(listing.path).toBe(ROOT)
     expect(listing.parent).toBeNull()
     expect(listing.entries[0]).toEqual({ name: 'D:\\', path: 'D:\\' })
@@ -213,8 +233,8 @@ describe('listDirectory — home, where the picker opens', () => {
   it('lets a drive row claim its path before a home junction to the same place', async () => {
     // A junction in home that points at a drive root would be a second row with
     // the drive's own path. The drive row comes first and keeps it.
-    if (!escapeLinked) return
-    const listing = await listDirectory(undefined, { driveRoots: async () => [OUTSIDE] })
+    if (!escapeLinked || !onWindows) return
+    const listing = await listDirectory(undefined, { driveRoots: async () => [OUTSIDE], ...TEMP_DRIVE_ALLOWED })
     expect(listing.entries[0]).toEqual({ name: OUTSIDE, path: OUTSIDE })
     expect(listing.entries.map((e) => e.name)).not.toContain('escape')
   })
@@ -234,20 +254,21 @@ describe('listDirectory — home, where the picker opens', () => {
     // and the drive rows are still there, so the user is never stuck.
     const bogus = join(ROOT, 'nope-not-real')
     pointHomeAt(bogus)
-    const listing = await listDirectory(undefined, { driveRoots: async () => ['D:\\'] })
+    const listing = await listDirectory(undefined, { driveRoots: async () => ['D:\\'], ...WIN })
     expect(listing.path).toBe(bogus)
     expect(listing.parent).toBeNull()
     expect(listing.entries).toEqual([{ name: 'D:\\', path: 'D:\\' }])
   })
 
-  it('opens on this machine\'s real drives when none are injected', async () => {
+  it('opens on this machine\'s real drives when none are injected, less the system one', async () => {
     const listing = await listDirectory()
-    if (process.platform === 'win32') {
-      const system = `${(process.env.SystemDrive ?? 'C:').toUpperCase()}\\`
-      expect(listing.entries).toContainEqual({ name: system, path: system })
+    const paths = listing.entries.map((e) => e.path)
+    if (onWindows) {
+      expect(paths).not.toContain(`${(process.env.SystemDrive ?? 'C:').toUpperCase()}\\`)
     } else {
-      expect(listing.entries[0]).toEqual({ name: '/', path: '/' })
+      expect(paths).not.toContain('/')
     }
+    expect(listing.path).toBe(ROOT)
   })
 })
 
@@ -260,34 +281,57 @@ describe('listDirectory — anywhere on the desktop', () => {
     expect(listing.entries).toEqual([{ name: 'sub', path: join(ROOT, 'alpha', 'sub') }])
   })
 
-  it('lists a folder outside home instead of bouncing back to home', async () => {
-    // The fence this replaces sent every path outside home back to home, which
-    // is what kept a phone off D:\. A real folder anywhere is listed as itself.
-    const listing = await listDirectory(OUTSIDE, NO_DRIVES)
+  it('lists a folder on another Windows drive as itself', async () => {
+    // Projects live on D: (issue #35), so another local drive is inside the fence.
+    if (!onWindows) return
+    const listing = await listDirectory(OUTSIDE, { ...NO_DRIVES, ...TEMP_DRIVE_ALLOWED })
     expect(listing.path).toBe(OUTSIDE)
     expect(listing.parent).toBe(dirname(OUTSIDE))
     expect(listing.entries).toEqual([{ name: 'projects', path: join(OUTSIDE, 'projects') }])
   })
 
-  it('gives a filesystem root home as its parent, never itself', async () => {
-    // dirname('D:\\') is 'D:\\' and dirname('/') is '/': a root left to dirname
-    // would offer a ".." that reloads the same level forever. Up from a drive
-    // goes back to home, where the drives are listed.
+  it('sends a folder outside home on the system drive, or outside home on POSIX, back to home', async () => {
+    // C:\\Windows or /etc: a launch there is refused, so the picker never lists it.
+    const listing = await listDirectory(OUTSIDE, { ...NO_DRIVES, systemDrive: OUTSIDE.slice(0, 2) })
+    expect(listing.path).toBe(ROOT)
+    expect(listing.parent).toBeNull()
+  })
+
+  it('sends the system drive root, or `/`, back to home', async () => {
     const top = parse(ROOT).root
-    const listing = await listDirectory(top, NO_DRIVES)
+    const listing = await listDirectory(top, { ...NO_DRIVES, systemDrive: top.slice(0, 2) })
+    expect(listing.path).toBe(ROOT)
+  })
+
+  it('gives another drive\'s root home as its parent, never itself', async () => {
+    // dirname('D:\\') is 'D:\\': a root left to dirname would offer a ".." that
+    // reloads the same level forever. Up from a drive goes back to home, where
+    // the drives are listed.
+    if (!onWindows) return
+    const top = parse(ROOT).root
+    const listing = await listDirectory(top, { ...NO_DRIVES, ...TEMP_DRIVE_ALLOWED })
     expect(listing.path).toBe(top)
     expect(listing.parent).toBe(ROOT)
     expect(listing.entries.length).toBeGreaterThan(0)
   })
 
-  it('follows a junction out of home to the folder it names', async () => {
-    // The fence used to drop this row -- the one workaround a user had, linking
-    // D:\projects into their profile, went nowhere. It is offered at its target.
-    if (!escapeLinked) return
-    expect((await listDirectory(undefined, NO_DRIVES)).entries).toContainEqual({ name: 'escape', path: OUTSIDE })
-    const listing = await listDirectory(join(ROOT, 'escape'), NO_DRIVES)
+  it('follows a junction out of home to a folder on another drive', async () => {
+    // The one workaround a user had, linking D:\\projects into their profile. It
+    // is offered at its target.
+    if (!escapeLinked || !onWindows) return
+    const deps = { ...NO_DRIVES, ...TEMP_DRIVE_ALLOWED }
+    expect((await listDirectory(undefined, deps)).entries).toContainEqual({ name: 'escape', path: OUTSIDE })
+    const listing = await listDirectory(join(ROOT, 'escape'), deps)
     expect(listing.path).toBe(OUTSIDE)
     expect(listing.entries.map((e) => e.name)).toEqual(['projects'])
+  })
+
+  it('drops a junction out of home onto the system drive, and will not follow it', async () => {
+    // A link under home is no way out of the fence: it is judged by where it leads.
+    if (!escapeLinked) return
+    const deps = { ...NO_DRIVES, systemDrive: OUTSIDE.slice(0, 2) }
+    expect((await listDirectory(undefined, deps)).entries.map((e) => e.name)).not.toContain('escape')
+    expect((await listDirectory(join(ROOT, 'escape'), deps)).path).toBe(ROOT)
   })
 
   it('never repeats a path: a junction onto a sibling is dropped and the real folder kept', async () => {
@@ -415,7 +459,8 @@ describe('listDirectory — one listing, one relay frame', () => {
   const FOLDERS = MAX_PICKER_ENTRIES + 100
 
   beforeAll(() => {
-    BIG = realpathSync(mkdtempSync(join(tmpdir(), 'tp-picker-big-')))
+    // Under home: a folder must be inside the fence to be listed at all.
+    BIG = realpathSync(mkdtempSync(join(ROOT, 'tp-picker-big-')))
     for (let i = 0; i < FOLDERS; i++) mkdirSync(join(BIG, `folder-${String(i).padStart(4, '0')}`))
   })
 
@@ -473,7 +518,7 @@ describe('listDirectory — one listing, one relay frame', () => {
 describe('listDirectory — what must not break a listing', () => {
   it('still lists home when the drive probe fails outright', async () => {
     // The drives are an addition to home, never a condition of it.
-    const listing = await listDirectory(undefined, { driveRoots: async () => { throw new Error('probe exploded') } })
+    const listing = await listDirectory(undefined, { driveRoots: async () => { throw new Error('probe exploded') }, ...WIN })
     expect(listing.path).toBe(ROOT)
     expect(listing.entries.map((e) => e.name)).toContain('alpha')
   })
@@ -499,19 +544,21 @@ describe('listDirectory — what must not break a listing', () => {
   it('treats paths that differ only in case as one folder on Windows, and as two elsewhere', async () => {
     // Two links whose targets differ only in case: one folder on NTFS, so one
     // row; two folders on a case-sensitive Linux disk, so two.
-    const fs: PickerFs = {
+    // The link targets are spelled with the separator of the platform being
+    // played, so they sit inside home by its rules wherever the suite runs.
+    const fsWith = (sep: string): PickerFs => ({
       realpath: async (path) => {
-        if (path === join(ROOT, 'upper')) return join(ROOT, 'Shared')
-        if (path === join(ROOT, 'lower')) return join(ROOT, 'shared')
+        if (path === join(ROOT, 'upper')) return `${ROOT}${sep}Shared`
+        if (path === join(ROOT, 'lower')) return `${ROOT}${sep}shared`
         return path
       },
       stat: async () => ({ isDirectory: () => true }),
       readdir: async (path) => (path === ROOT ? [dirent('lower', 'link'), dirent('upper', 'link')] : []),
-    }
-    const onWindows = await listDirectory(undefined, { ...NO_DRIVES, fs, platform: 'win32' })
-    const onLinux = await listDirectory(undefined, { ...NO_DRIVES, fs, platform: 'linux' })
-    expect(onWindows.entries.map((e) => e.name)).toEqual(['lower'])
-    expect(onLinux.entries.map((e) => e.name)).toEqual(['lower', 'upper'])
+    })
+    const asWindows = await listDirectory(undefined, { ...NO_DRIVES, fs: fsWith('\\'), platform: 'win32' })
+    const asLinux = await listDirectory(undefined, { ...NO_DRIVES, fs: fsWith('/'), platform: 'linux' })
+    expect(asWindows.entries.map((e) => e.name)).toEqual(['lower'])
+    expect(asLinux.entries.map((e) => e.name)).toEqual(['lower', 'upper'])
   })
 
   it('keeps two plain folders whose names differ only in case, even on Windows', async () => {

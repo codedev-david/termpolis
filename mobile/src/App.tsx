@@ -21,6 +21,7 @@ import TerminalScreen from './screens/TerminalScreen'
 import { pairingStamp } from './state/pairingStamp'
 import { useRemoteStore } from './state/remoteStore'
 import { useSubscription } from './state/subscription'
+import { settleInstall } from './storage/installMarker'
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
 
@@ -83,19 +84,23 @@ export default function App(): React.JSX.Element {
   React.useEffect(() => {
     if (started.current) return
     started.current = true
-    // Started, not awaited. `ready` is about the keychain; the entitlement has
-    // its own gate below and its own deadline inside the store, so holding the
-    // splash screen for the App Store as well would only make a slow network
-    // cost twice.
-    void bootSubscription().catch(() => undefined)
-    void boot()
-      // A keychain that refused to answer is a phone with no pairing, not a
-      // dead app. The store recorded the failure; the pairing screen is next.
-      .catch(() => undefined)
-      .finally(() => {
-        seen.current = pairingStamp(useRemoteStore.getState().pairings)
-        setReady(true)
-      })
+    // A reinstall is recognised and its leftover Keychain items wiped before
+    // either store reads them. `settleInstall` never rejects.
+    void settleInstall().then(() => {
+      // Started, not awaited. `ready` is about the keychain; the entitlement has
+      // its own gate below and its own deadline inside the store, so holding the
+      // splash screen for the App Store as well would only make a slow network
+      // cost twice.
+      void bootSubscription().catch(() => undefined)
+      void boot()
+        // A keychain that refused to answer is a phone with no pairing, not a
+        // dead app. The store recorded the failure; the pairing screen is next.
+        .catch(() => undefined)
+        .finally(() => {
+          seen.current = pairingStamp(useRemoteStore.getState().pairings)
+          setReady(true)
+        })
+    })
   }, [boot, bootSubscription])
 
   React.useEffect(() => {

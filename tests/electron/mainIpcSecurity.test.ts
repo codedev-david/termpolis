@@ -30,6 +30,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node
 import { join } from 'node:path'
 import { createZip } from '../../src/main/zipArchive'
 import { RULES } from '../../src/main/aiSecurity'
+import { RULES as SENSITIVE_FILE_RULES } from '../../src/main/sensitiveFileWatcher'
 
 // ---------------------------------------------------------------------------
 // Sandbox + mocks (hoisted: vi.mock factories run before module scope).
@@ -390,6 +391,9 @@ describe('aiSecurity:get-status', () => {
     // is added and this number is typed anywhere, it goes stale silently.
     expect(r.data.ruleCount).toBe(RULES.length)
     expect(r.data.ruleCount).toBeGreaterThan(50)
+    // The sensitive-file watcher's count is derived from its own table too.
+    expect(r.data.sensitiveRuleCount).toBe(SENSITIVE_FILE_RULES.length)
+    expect(r.data.sensitiveRuleCount).toBeGreaterThan(0)
     expect(r.data.auditPath).toContain('userData')
     expect(Array.isArray(r.data.facts)).toBe(true)
     expect(r.data.facts.length).toBeGreaterThan(0)

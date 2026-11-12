@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, findKeybindingConflict, describeBinding, matchLaunchAgentSlot, matchTerminalSwitch, matchCustomKeybinding, customComboHasModifier, isEditableTarget, RESERVED_COPY_ACTIONS, isReservedAction, isReservedCombo, withReservedDefaults } from '../../src/renderer/src/lib/keybindings'
+import { matchesKeybinding, eventToKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, findKeybindingConflict, describeBinding, matchLaunchAgentSlot, matchTerminalSwitch, matchCustomKeybinding, customComboHasModifier, isEditableTarget, RESERVED_COPY_ACTIONS, isReservedAction, isReservedCombo, withReservedDefaults, RETIRED_ACTIONS } from '../../src/renderer/src/lib/keybindings'
 import type { CustomKeybinding } from '../../src/renderer/src/types'
 import { DEFAULT_VOICE_SETTINGS } from '../../src/renderer/src/lib/voice/voiceTypes'
 
@@ -250,6 +250,19 @@ describe('withReservedDefaults', () => {
     expect(kb.copy).toBe('Ctrl+Shift+C')
     expect(kb.copyForMessage).toBe('Ctrl+Shift+K')
     expect(kb.copyAsCodeBlock).toBe('Ctrl+Shift+Q')
+  })
+
+  it('drops the retired Ctrl+Space "Trigger Autocomplete" binding, even from a saved map', () => {
+    // Nothing handled Ctrl+Space since autocomplete left the terminal, so it is gone from the map.
+    expect('toggleAutocomplete' in DEFAULT_KEYBINDINGS).toBe(false)
+    expect('toggleAutocomplete' in KEYBINDING_LABELS).toBe(false)
+    expect(Object.values(DEFAULT_KEYBINDINGS)).not.toContain('Ctrl+Space')
+    expect(Object.values(KEYBINDING_LABELS)).not.toContain('Trigger Autocomplete')
+    expect(RETIRED_ACTIONS).toContain('toggleAutocomplete')
+    // An older build saved it; hydrating that map must not bring it back.
+    const kb = withReservedDefaults({ toggleAutocomplete: 'Ctrl+Space', toggleSidebar: 'Ctrl+Alt+B' } as any)
+    expect('toggleAutocomplete' in kb).toBe(false)
+    expect(kb.toggleSidebar).toBe('Ctrl+Alt+B')
   })
 
   it('preserves non-reserved persisted overrides', () => {

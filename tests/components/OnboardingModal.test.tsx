@@ -199,6 +199,15 @@ describe('OnboardingModal', () => {
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
   })
 
+  it('step 5 names the real Settings tab and no longer lists the egress audit', () => {
+    render(<OnboardingModal onDone={() => {}} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Go to step 5' }))
+    const para = screen.getByText(/AI Security Center/)
+    expect(para.textContent).toContain('Settings → AI Security')
+    // The egress audit is off in this version, so onboarding must not offer it.
+    expect(para.textContent).not.toMatch(/egress/i)
+  })
+
   it('renders the Get started button only on the final step', () => {
     render(<OnboardingModal onDone={() => {}} />)
     expect(screen.queryByRole('button', { name: 'Get started' })).not.toBeInTheDocument()

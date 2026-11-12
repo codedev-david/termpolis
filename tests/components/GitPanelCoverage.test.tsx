@@ -562,7 +562,7 @@ describe('GitPanel — file rows', () => {
           { file: 'copied.ts', status: 'C' },
           { file: 'weird.ts', status: 'X' },
         ],
-        unstaged: [{ file: 'untracked.ts', status: '?' }],
+        unstaged: [{ file: 'untracked.ts', status: '?' }, { file: 'clash.ts', status: 'U' }],
       },
     })
     render(<GitPanel onClose={vi.fn()} />)
@@ -573,6 +573,10 @@ describe('GitPanel — file rows', () => {
     expect(screen.getByTitle('Renamed')).toHaveClass('text-blue-400')
     expect(screen.getByTitle('Copied')).toHaveClass('text-blue-400')
     expect(screen.getByTitle('Untracked')).toHaveClass('text-gray-400')
+    // U is a merge conflict (UU, AA, DU, …), never "Untracked": that is '?'.
+    expect(screen.getByTitle('Conflicted')).toHaveClass('text-orange-400')
+    expect(screen.getByTitle('Conflicted')).toHaveTextContent('U')
+    expect(screen.getAllByTitle('Untracked')).toHaveLength(1)
     // Unknown status: the raw letter becomes its own tooltip and the colour falls back.
     const unknown = screen.getByTitle('X')
     expect(unknown).toHaveTextContent('X')

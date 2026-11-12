@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 const { recordProxyResult, summarizeProxySavings, loadProxyBase, resetProxyLedger, FLOOR_PCT } =
   await import('../../src/main/headroomProxy/proxyLedger')
+import type { ProxyResultMsg } from '../../src/main/headroomProxy/proxySupervisor'
 
 /**
  * A lifetime AVERAGE cannot settle whether a per-request FLOOR holds — roughly half the mass of
@@ -10,14 +11,15 @@ const { recordProxyResult, summarizeProxySavings, loadProxyBase, resetProxyLedge
  */
 
 /** One request: `orig` chars of compressible text, `comp` chars after. */
-function request(orig: number, comp: number, tuOrig = 0, tuComp = 0) {
+// Only the fields the floor reads: the ledger takes every absent counter (and an absent turn) as 0.
+function request(orig: number, comp: number, tuOrig = 0, tuComp = 0): ProxyResultMsg {
   return {
     kind: 'result' as const,
     changed: true,
     stats: { trBlocks: 1, trOrigChars: orig, trCompChars: comp, tuBlocks: tuOrig > 0 ? 1 : 0, tuOrigChars: tuOrig, tuCompChars: tuComp, images: 0, imgOrigBytes: 0, imgCompBytes: 0 },
     usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 },
     stashes: [],
-  }
+  } as unknown as ProxyResultMsg
 }
 
 describe('per-request floor evidence', () => {

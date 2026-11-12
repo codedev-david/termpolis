@@ -1054,6 +1054,8 @@ describe('terminal:write — strict-mode Gemini is the ONE interception', () => 
     const banner = dataEvents.map((c: any[]) => c[2] as string).find((t) => typeof t === 'string' && t.includes('BLOCKED'))
     expect(banner).toBeDefined()
     expect(banner).toContain('Strict Mode')
+    // The banner names the real Settings tab ("AI Security"), not a "Security" tab that doesn't exist.
+    expect(banner).toContain('Settings → AI Security')
     expect(dataEvents.some((c: any[]) => c[1] === id)).toBe(true)
 
     // …and NOTHING shell-shaped is typed into the PTY. `printf` must never appear again: on the
@@ -1470,6 +1472,39 @@ describe('fs + app info IPC', () => {
 
   it('app:get-version reports the running version', async () => {
     expect(await invoke('app:get-version')).toEqual({ success: true, data: { version: '9.9.9' } })
+  })
+
+  describe('mcp:get-port', () => {
+    it('reports the port the MCP server actually bound, not the 9315 it tries first', async () => {
+      const mcp = await import('../../src/main/mcpServer')
+      vi.mocked(mcp.awaitMcpPortBound).mockReturnValueOnce(Promise.resolve(9317))
+      expect(await invoke('mcp:get-port')).toEqual({ success: true, data: { port: 9317 } })
+    })
+
+    it('answers port:null when the server has not bound within the wait', async () => {
+      const mcp = await import('../../src/main/mcpServer')
+      vi.mocked(mcp.awaitMcpPortBound).mockReturnValueOnce(new Promise<number>(() => {}))
+      vi.useFakeTimers()
+      try {
+        const pending = invoke('mcp:get-port')
+        await vi.advanceTimersByTimeAsync(10_000)
+        expect(await pending).toEqual({ success: true, data: { port: null } })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('returns an error when binding failed', async () => {
+      const mcp = await import('../../src/main/mcpServer')
+      vi.mocked(mcp.awaitMcpPortBound).mockReturnValueOnce(Promise.reject(new Error('EADDRINUSE on every port')))
+      expect(await invoke('mcp:get-port')).toEqual({ success: false, error: 'EADDRINUSE on every port' })
+    })
+
+    it('stringifies a rejection that is not an Error', async () => {
+      const mcp = await import('../../src/main/mcpServer')
+      vi.mocked(mcp.awaitMcpPortBound).mockReturnValueOnce(Promise.reject('boom'))
+      expect(await invoke('mcp:get-port')).toEqual({ success: false, error: 'boom' })
+    })
   })
 
   it('app:platform-info-sync answers SYNCHRONOUSLY — xterm needs windowsPty at construction time', async () => {

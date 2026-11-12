@@ -23,7 +23,8 @@ const STATUS_LABELS: Record<string, string> = {
   D: 'Deleted',
   R: 'Renamed',
   C: 'Copied',
-  U: 'Untracked',
+  // U is a merge conflict (UU, AA, DU, …); untracked files arrive as '?'.
+  U: 'Conflicted',
   '?': 'Untracked',
 }
 
@@ -33,7 +34,7 @@ const STATUS_COLORS: Record<string, string> = {
   D: 'text-red-400',
   R: 'text-blue-400',
   C: 'text-blue-400',
-  U: 'text-gray-400',
+  U: 'text-orange-400',
   '?': 'text-gray-400',
 }
 

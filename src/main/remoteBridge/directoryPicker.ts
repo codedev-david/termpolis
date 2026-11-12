@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'path'
 import { promisify } from 'util'
 
 import { DRIVE_PROBE_TIMEOUT_MS, listDriveRoots, settleWithin } from './driveRoots'
+import { isInsideFence, isNetworkOrDevicePath, isOnAllowedDrive } from './folderFence'
 import { MAX_PAYLOAD_BYTES } from './outputChunker'
 import type { DirectoryEntry, DirectoryListing } from './protocol'
 
@@ -78,6 +79,8 @@ export interface PickerDeps {
   driveRoots?: () => Promise<string[]>
   /** Decides whether paths that differ only in case are one folder. */
   platform?: NodeJS.Platform
+  /** The drive Windows runs from, which the fence keeps a phone out of. */
+  systemDrive?: string
 }
 
 /** The JS realpath, deliberately not `fs.promises.realpath`. The native one asks
@@ -96,32 +99,27 @@ const NODE_FS: PickerFs = {
 const collator = new Intl.Collator()
 const byName = (a: DirectoryEntry, b: DirectoryEntry): number => collator.compare(a.name, b.name)
 
-/**
- * True for a path that leaves this machine or names a device: `\\server\share`,
- * `//server/share`, and the Win32 `\\?\` and `\\.\` namespaces, which can spell a
- * share too (`\\?\UNC\server\share`). Two leading separators of either kind is
- * the whole test, the same one linkedJobs applies to a linked job's folder. The
- * picker never offers a path spelled that way, on any platform, so refusing one
- * costs nothing.
- */
-export function isNetworkOrDevicePath(path: string): boolean {
-  return /^[\\/]{2}/.test(path)
-}
+/** Re-exported for the dispatcher; the test lives in folderFence.ts. */
+export { isNetworkOrDevicePath }
 
 /** Lists `rawPath`, or home -- with the drives -- when it is absent or refused. */
 export async function listDirectory(rawPath?: string, deps: PickerDeps = {}): Promise<DirectoryListing> {
   const fs = deps.fs ?? NODE_FS
   const platform = deps.platform ?? process.platform
   const home = await canonicalHome(fs)
-  const target = await resolveTarget(fs, home, rawPath)
+  // The same fence the dispatcher applies to a folder a terminal starts in
+  // (folderFence.ts): the picker never offers what a launch would refuse.
+  const fence = { platform, ...(deps.systemDrive ? { systemDrive: deps.systemDrive } : {}) }
+  const inFence = (real: string): boolean => isInsideFence(real, home, fence)
+  const target = await resolveTarget(fs, home, rawPath, inFence)
 
   if (folderKey(target, platform) === folderKey(home, platform)) {
     // The drives are asked alongside the read of home, not before it, so a slow
     // drive costs the listing its own timeout and nothing on top.
-    const [roots, found] = await Promise.all([driveRootsFor(deps), readFolders(fs, home)])
+    const [roots, found] = await Promise.all([driveRootsFor(deps, fence), readFolders(fs, home, inFence)])
     return assemble(home, null, roots, found, platform)
   }
-  return assemble(target, parentOf(target, home), [], await readFolders(fs, target), platform)
+  return assemble(target, parentOf(target, home), [], await readFolders(fs, target, inFence), platform)
 }
 
 /** The canonical desktop home. realpath so a symlinked home (e.g. macOS `/var` ->
@@ -138,7 +136,12 @@ async function canonicalHome(fs: PickerFs): Promise<string> {
 
 /** The real folder a request names, or home when it is absent, not text, a
  *  network or device path, missing, unreadable, or not a folder. */
-async function resolveTarget(fs: PickerFs, home: string, rawPath: unknown): Promise<string> {
+async function resolveTarget(
+  fs: PickerFs,
+  home: string,
+  rawPath: unknown,
+  inFence: (real: string) => boolean,
+): Promise<string> {
   // `path` crosses the wire unvalidated: the relay checks only the request kind.
   if (typeof rawPath !== 'string' || rawPath.length === 0) return home
   // On the phone's own string, before resolve() and before any filesystem call.
@@ -148,7 +151,8 @@ async function resolveTarget(fs: PickerFs, home: string, rawPath: unknown): Prom
     const real = await fs.realpath(resolve(home, rawPath))
     // A local link can still lead to a share. It is not listed: the picker never
     // offers a network path, and the dispatcher would refuse one to launch in.
-    if (!isNetworkOrDevicePath(real) && (await fs.stat(real)).isDirectory()) return real
+    // Outside the fence is home too: the system drive, `/`, or a link out of home.
+    if (!isNetworkOrDevicePath(real) && inFence(real) && (await fs.stat(real)).isDirectory()) return real
   } catch {
     // ENOENT, permission, an ejected drive, a broken link -- home instead.
   }
@@ -156,7 +160,9 @@ async function resolveTarget(fs: PickerFs, home: string, rawPath: unknown): Prom
 }
 
 /** Up one level -- except from a filesystem root, where dirname is the root
- *  itself; up from a drive is home, where the drives are listed. */
+ *  itself; up from a drive is home, where the drives are listed. Up never
+ *  leaves the fence: a target is inside home, where up is home or below it, or
+ *  on another drive, where up is the same drive. */
 function parentOf(target: string, home: string): string {
   const up = dirname(target)
   return up === target ? home : up
@@ -164,9 +170,13 @@ function parentOf(target: string, home: string): string {
 
 /** The drive rows for home. A prober that fails outright costs the drives, never
  *  the listing: home is still listed, and still selectable. */
-async function driveRootsFor(deps: PickerDeps): Promise<string[]> {
+async function driveRootsFor(
+  deps: PickerDeps,
+  fence: { platform: NodeJS.Platform; systemDrive?: string },
+): Promise<string[]> {
   try {
-    return await (deps.driveRoots ?? listDriveRoots)()
+    // Only the drives a phone may use: never the system drive, never `/`.
+    return (await (deps.driveRoots ?? listDriveRoots)()).filter((root) => isOnAllowedDrive(root, fence))
   } catch {
     return []
   }
@@ -184,7 +194,7 @@ interface Found {
  *  followed to its real path, and offered only if that is a local folder. A
  *  folder that cannot be read yields none rather than throwing -- the level
  *  above it stays browsable. */
-async function readFolders(fs: PickerFs, target: string): Promise<Found> {
+async function readFolders(fs: PickerFs, target: string, inFence: (real: string) => boolean): Promise<Found> {
   let dirents: PickerDirent[]
   try {
     dirents = await fs.readdir(target)
@@ -198,7 +208,7 @@ async function readFolders(fs: PickerFs, target: string): Promise<Found> {
     dirents
       .filter((d) => !d.isDirectory() && d.isSymbolicLink())
       .map(async (d) => {
-        const real = await settleWithin(followLink(fs, join(target, d.name)), LINK_TIMEOUT_MS, null)
+        const real = await settleWithin(followLink(fs, join(target, d.name), inFence), LINK_TIMEOUT_MS, null)
         return real === null ? null : { name: d.name, path: real }
       }),
   )
@@ -206,10 +216,10 @@ async function readFolders(fs: PickerFs, target: string): Promise<Found> {
 }
 
 /** Where a link leads, if that is a local folder; null for anything else. */
-async function followLink(fs: PickerFs, at: string): Promise<string | null> {
+async function followLink(fs: PickerFs, at: string, inFence: (real: string) => boolean): Promise<string | null> {
   try {
     const real = await fs.realpath(at)
-    if (isNetworkOrDevicePath(real)) return null
+    if (isNetworkOrDevicePath(real) || !inFence(real)) return null
     return (await fs.stat(real)).isDirectory() ? real : null
   } catch {
     // Dangling, unreadable, or a loop -- not offered.

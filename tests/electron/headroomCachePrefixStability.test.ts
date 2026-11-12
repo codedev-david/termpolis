@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 const { rewriteMessagesBody, setWireWindow } = await import('../../src/main/headroomProxy/wireCompress')
+import type { WireWindow } from '../../src/main/headroomProxy/wireCompress'
+/** A window with no floor: setWireWindow keeps the floor already in force, which is what these tests rely on. */
+const keepFloor = (w: Omit<WireWindow, 'floorChars'>): WireWindow => w as WireWindow
 
 /**
  * THE cache-safety invariant, tested directly.
@@ -44,7 +47,7 @@ function prefixAfterGrowth(
 }
 
 describe('wire compression — cached prefix stability across turns', () => {
-  beforeEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }))
+  beforeEach(() => setWireWindow(keepFloor({ headLines: 12, tailLines: 6, maxChars: 1000 })))
 
   it('leaves the whole compressed prefix byte-identical when a turn is appended', () => {
     const turns = [
@@ -123,7 +126,7 @@ describe('wire compression — cached prefix stability across turns', () => {
   })
 
   it('holds the invariant at the max tier too', () => {
-    setWireWindow({ headLines: 6, tailLines: 3, maxChars: 500 })
+    setWireWindow(keepFloor({ headLines: 6, tailLines: 3, maxChars: 500 }))
     const turns = [
       msg('user', [toolResult('m1', lines(200, 'm'))]),
       msg('assistant', [toolUse('m2', { file_path: '/m.ts', content: lines(200, 'n') })]),

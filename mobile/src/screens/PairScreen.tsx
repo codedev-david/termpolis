@@ -112,8 +112,10 @@ export default function PairScreen(): React.JSX.Element {
       ) : blocked ? (
         <View style={styles.block}>
           <Text testID="pair-denied" style={styles.body}>
-            Camera access is off for Termpolis Remote. Turn it on in your device settings, or type
-            the code in by hand — the desktop shows it as text underneath the picture.
+            Camera access is off for Termpolis Remote. Turn it on in your device settings, or pair
+            without it: on the desktop, press Copy under the pairing code (Termpolis 1.60 or later),
+            get the text onto this phone, for example with Universal Clipboard or a note to
+            yourself, and paste it here.
           </Text>
           <TextInput
             testID="pair-manual-input"

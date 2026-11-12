@@ -291,6 +291,17 @@ const mockCloseSync = vi.fn()
 const mockFsyncSync = vi.fn()
 const mockStatSync = vi.fn(() => ({ size: 0 }))
 const mockRmSync = vi.fn()
+const mockFsPromises = {
+  stat: vi.fn(async () => ({ isDirectory: () => true, size: 0 })),
+  readFile: vi.fn(async () => ''),
+  writeFile: vi.fn(async () => undefined),
+  appendFile: vi.fn(async () => undefined),
+  mkdir: vi.fn(async () => undefined),
+  readdir: vi.fn(async () => []),
+  rename: vi.fn(async () => undefined),
+  rm: vi.fn(async () => undefined),
+  unlink: vi.fn(async () => undefined),
+}
 vi.mock('fs', () => ({
   writeFileSync: mockWriteFileSync,
   existsSync: mockExistsSync,
@@ -305,6 +316,9 @@ vi.mock('fs', () => ({
   fsyncSync: mockFsyncSync,
   statSync: mockStatSync,
   rmSync: mockRmSync,
+  // linkedHost/linkedJobLog import `promises` by name. Under the node environment a missing export
+  // on this mock throws at first access, and Linked machines would fail to start.
+  promises: mockFsPromises,
   default: {
     writeFileSync: mockWriteFileSync,
     existsSync: mockExistsSync,
@@ -319,6 +333,7 @@ vi.mock('fs', () => ({
     fsyncSync: mockFsyncSync,
     statSync: mockStatSync,
     rmSync: mockRmSync,
+    promises: mockFsPromises,
   },
 }))
 
@@ -1756,7 +1771,7 @@ describe('terminal:export - cancelled dialog no filePath', () => {
 // git:status-parsed with untracked files
 // =========================================================================
 describe('git:status-parsed additional parsing', () => {
-  it('handles untracked files (? status) as unstaged with U status', async () => {
+  it('handles untracked files (? status) as unstaged, keeping ? (U means conflicted)', async () => {
     mockExecSync
       .mockReturnValueOnce(Buffer.from('main\n'))
       .mockReturnValueOnce(Buffer.from('?? untracked.ts\n'))
@@ -1764,7 +1779,7 @@ describe('git:status-parsed additional parsing', () => {
     const result = await invokeHandler('git:status-parsed', { cwd: '/repo' })
     expect(result.success).toBe(true)
     expect(result.data.staged).toEqual([])
-    expect(result.data.unstaged).toEqual([{ file: 'untracked.ts', status: 'U' }])
+    expect(result.data.unstaged).toEqual([{ file: 'untracked.ts', status: '?' }])
   })
 
   it('handles both staged and worktree changes on same file', async () => {
