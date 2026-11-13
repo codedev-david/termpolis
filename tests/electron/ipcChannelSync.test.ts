@@ -44,7 +44,8 @@ function channels(files: string[], re: RegExp): Map<string, string> {
 // Any `<something>.webContents.send('channel'` in main, from any file — the emitter is not
 // always index.ts (autoUpdater.ts sends updater:state), so scanning one file would miss senders
 // and this guard would then cry wolf about perfectly good listeners.
-const sent = channels(walk(join(SRC, 'main')), /webContents\.send\(\s*'([^']+)'/g)
+// postMessage too: the direct typing line's port goes that way (directTyping.ts).
+const sent = channels(walk(join(SRC, 'main')), /webContents\.(?:send|postMessage)\(\s*'([^']+)'/g)
 const listened = channels(walk(join(SRC, 'preload')), /ipcRenderer\.on\(\s*'([^']+)'/g)
 
 // The accounts code sends its events under the channel names main and the renderer share

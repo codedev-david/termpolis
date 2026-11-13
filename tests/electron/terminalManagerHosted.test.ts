@@ -243,3 +243,19 @@ describe('terminalManager: a terminal in the pty host', () => {
     }
   })
 })
+
+describe('terminalManager: the direct typing line (1.61.0)', () => {
+  it('passes the direct spec to the host under the terminal id, and gates the host pty', async () => {
+    const host = hostUp()
+    void tm.spawnTerminal('d1', 'cmd.exe', 'C:/', vi.fn(), undefined, undefined, undefined, PREP, { base: 12 })
+    const spawn = host.sent[0] as Extract<PtyHostRequest, { kind: 'spawn' }>
+    expect(spawn.direct).toEqual({ id: 'd1', base: 12 })
+    tm.gateTerminal('d1', 900)
+    tm.gateTerminal('missing', 900)
+    expect(host.sent.filter((m) => m.kind === 'gate')).toEqual([{ kind: 'gate', key: spawn.key, until: 900 }])
+    void tm.spawnTerminal('d2', 'cmd.exe', 'C:/', vi.fn(), undefined, undefined, undefined, PREP)
+    expect((host.sent.at(-1) as Extract<PtyHostRequest, { kind: 'spawn' }>).direct).toBeUndefined()
+    void tm.spawnTerminal('d3', 'cmd.exe', 'C:/', vi.fn(), undefined, undefined, undefined, PREP, { base: 0, until: 5000 })
+    expect((host.sent.at(-1) as Extract<PtyHostRequest, { kind: 'spawn' }>).direct).toEqual({ id: 'd3', base: 0, until: 5000 })
+  })
+})

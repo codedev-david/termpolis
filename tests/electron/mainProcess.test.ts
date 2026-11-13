@@ -397,6 +397,9 @@ beforeEach(() => {
 // =========================================================================
 // Windows taskbar identity (generic-icon regression guard)
 // =========================================================================
+// What spawnTerminal's 9th argument is for a fresh terminal: the direct typing line is Windows-only (1.61.0).
+const DIRECT_SPAWN = process.platform === 'win32' ? { base: 0 } : undefined
+
 describe('app identity', () => {
   it('declares the AppUserModelID matching build.appId so Windows shows our taskbar icon', () => {
     // Without this, the running process gets a default per-process id, Windows
@@ -430,6 +433,7 @@ describe('terminal:create', () => {
       undefined, // claudeHeadroom env (only injected for Claude launches)
       undefined, // onExit
       expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
+      DIRECT_SPAWN, // the direct typing line's offset base (Windows only)
     )
   })
 
@@ -452,6 +456,7 @@ describe('terminal:create', () => {
       undefined, // claudeHeadroom env (only injected for Claude launches)
       undefined, // onExit
       expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
+      DIRECT_SPAWN, // the direct typing line's offset base (Windows only)
     )
   })
 
@@ -2314,6 +2319,7 @@ describe('MCP handler callbacks', () => {
       undefined, // claudeHeadroom env (non-Claude agent name → none)
       undefined, // onExit
       expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
+      DIRECT_SPAWN, // the direct typing line's offset base (Windows only)
     )
     try { capturedMcpHandlers.closeTerminal(id) } catch {}
   })
@@ -2335,6 +2341,7 @@ describe('MCP handler callbacks', () => {
       undefined, // claudeHeadroom env (non-Claude agent name → none)
       undefined, // onExit
       expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
+      DIRECT_SPAWN, // the direct typing line's offset base (Windows only)
     )
     try { capturedMcpHandlers.closeTerminal(id) } catch {}
   })

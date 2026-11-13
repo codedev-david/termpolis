@@ -18,7 +18,7 @@ import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative, sep } from 'path'
 import ts from 'typescript'
 import * as nodeOs from 'os'
-import { lowerHostPriority, __setHostPriorityDepsForTests, type HostPriorityDeps } from '../../src/main/hostPriority'
+import { lowerHostPriority, raiseHostPriority, __setHostPriorityDepsForTests, type HostPriorityDeps } from '../../src/main/hostPriority'
 
 const SRC_MAIN = join(__dirname, '..', '..', 'src', 'main')
 const BELOW_NORMAL = 10 // os.constants.priority.PRIORITY_BELOW_NORMAL on every platform Node supports
@@ -126,6 +126,27 @@ describe('lowerHostPriority', () => {
     lowerHostPriority({ os, env: {} })
     lowerHostPriority({ os, env: {} })
     expect(calls).toHaveLength(2)
+  })
+})
+
+describe('raiseHostPriority (the pty host, 1.61.0: the process that echoes keystrokes)', () => {
+  const ABOVE = { priority: { PRIORITY_BELOW_NORMAL: BELOW_NORMAL, PRIORITY_ABOVE_NORMAL: 6 } }
+  it('makes one call, for this process (pid 0), at above-normal', () => {
+    const { os, calls } = fakeOs({ constants: ABOVE })
+    expect(raiseHostPriority({ os, env: {}, host: 'pty' })).toBe('raised')
+    expect(calls).toEqual([[0, 6]])
+  })
+  it('the same kill switch: all hosts, or the pty host by name', () => {
+    const { os, calls } = fakeOs({ constants: ABOVE })
+    expect(raiseHostPriority({ os, env: { TERMPOLIS_NO_HOST_PRIORITY: '1' }, host: 'pty' })).toBe('disabled')
+    expect(raiseHostPriority({ os, env: { TERMPOLIS_NO_HOST_PRIORITY: 'memory, pty' }, host: 'pty' })).toBe('disabled')
+    expect(raiseHostPriority({ os, env: { TERMPOLIS_NO_HOST_PRIORITY: 'memory' }, host: 'pty' })).toBe('raised')
+    expect(calls).toHaveLength(1)
+  })
+  it('no constant: unsupported; a refusal: failed; never throws', () => {
+    expect(raiseHostPriority({ os: fakeOs().os, env: {} })).toBe('unsupported')
+    const { os } = fakeOs({ constants: ABOVE, setPriority: () => { throw new Error('EACCES') } })
+    expect(raiseHostPriority({ os, env: {} })).toBe('failed')
   })
 })
 

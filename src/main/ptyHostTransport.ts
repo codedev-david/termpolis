@@ -5,7 +5,7 @@
 // an injected transport.
 /* c8 ignore start */
 
-import { utilityProcess } from 'electron'
+import { utilityProcess, type MessagePortMain } from 'electron'
 import { fileURLToPath } from 'url'
 import type { PtyHostTransport } from './ptyHostClient'
 import type { PtyHostReply } from './ptyHost'
@@ -23,6 +23,8 @@ export function createPtyHostTransport(hostPath: string = resolvePtyHostPath()):
     onMessage: (cb) => { child.on('message', (m: PtyHostReply) => cb(m)) },
     onExit: (cb) => { child.on('exit', (code: number) => cb(code)) },
     kill: () => killUtility(child),
+    // The host's end of a renderer's direct line, transferred (ptyHost.ts takes it from the message's ports).
+    postPort: (port) => child.postMessage({ kind: 'renderer-port' }, [port as MessagePortMain]),
   }
 }
 /* c8 ignore stop */

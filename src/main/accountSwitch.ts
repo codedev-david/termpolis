@@ -163,8 +163,37 @@ export interface SwitchContext {
 
 // ── The lock ───────────────────────────────────────────────────────────────────────────
 
+/** A Map that says when a hold is set or lifted: a terminal in the pty host takes typing straight from the renderer,
+ *  so the host must be told of a hold to send what is typed under it through main (1.61.0, directTyping.ts). */
+export class LockMap extends Map<string, Hold> {
+  private listeners: Array<(id: string, hold: Hold | undefined) => void> = []
+  onChange(cb: (id: string, hold: Hold | undefined) => void): void {
+    this.listeners.push(cb)
+  }
+  private tell(id: string, hold: Hold | undefined): void {
+    for (const l of [...this.listeners]) {
+      try { l(id, hold) } catch (e) { console.error('[relaunch lock] listener threw:', e) }
+    }
+  }
+  override set(id: string, hold: Hold): this {
+    super.set(id, hold)
+    this.tell(id, hold)
+    return this
+  }
+  override delete(id: string): boolean {
+    const had = super.delete(id)
+    if (had) this.tell(id, undefined)
+    return had
+  }
+  override clear(): void {
+    const ids = [...this.keys()]
+    super.clear()
+    for (const id of ids) this.tell(id, undefined)
+  }
+}
+
 /** The terminals held, by a switch (LOCK_MS at most) or the model picker (MODEL_HOLD_MS). */
-export const locks = new Map<string, Hold>()
+export const locks = new LockMap()
 
 /** What holds a terminal, until when: an account switch (a swarm worker's restart among them), which
  *  main types itself, or the model picker, whose own writes carry the key it was given (§7.5). */

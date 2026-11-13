@@ -12,7 +12,8 @@ import { sudoAskpassEnv } from './sudoAskpass'
 import { integrationScriptState, INTEGRATION_SCRIPT_NAME, type SpawnPrep } from './terminalSpawnPrep'
 import { hasJobControl, shellAlone, readConsoleProcessList } from './shellAlone'
 import { consoleListInProc } from './consoleListInProc'
-import { isHostPty, ptyHostReady, spawnInPtyHost, type HostPty } from './ptyHostClient'
+import { gateHostPty, isHostPty, ptyHostReady, spawnInPtyHost, type HostPty } from './ptyHostClient'
+import type { DirectSpawn } from './ptyHost'
 import { terminalTreeKiller, withoutEnded, type TerminalTreeKiller } from './terminalTreeKill'
 import {
   detectShellKind,
@@ -159,6 +160,9 @@ export function spawnTerminal(
   onExit?: (exitCode: number) => void,
   /** What a caller on a hot path looked up on the thread pool (terminalSpawnPrep.ts); without it, the lookups are synchronous. */
   prep?: SpawnPrep,
+  /** The direct typing line (1.61.0): set by a caller whose onData buffers the output under `id` and sends it with its
+   *  end offset, `base` being what that buffer holds now. Only a terminal in the pty host uses it. */
+  direct?: { base: number; until?: number },
 ): Promise<void> {
   const resolvedCwd = prep ? prep.cwd : (() => {
     try { return existsSync(cwd) ? cwd : homedir() }
@@ -279,7 +283,7 @@ export function spawnTerminal(
   const spawnOpts = { name: 'xterm-256color', cols: SPAWN_COLS, rows: SPAWN_ROWS, cwd: resolvedCwd, env }
   // Windows, once the pty host is up (perf155 P14): the shell starts there, and ConPTY's CreateProcess blocks that
   // process instead of this thread. Until then, or with TERMPOLIS_NO_PTY_HOST=1, or after the host died, here as always.
-  if (process.platform === 'win32' && ptyHostReady()) return spawnHosted(id, executable, resolvedCwd, args, spawnOpts, onData, onExit)
+  if (process.platform === 'win32' && ptyHostReady()) return spawnHosted(id, executable, resolvedCwd, args, spawnOpts, onData, onExit, direct)
 
   let proc: pty.IPty
   try {
@@ -326,8 +330,12 @@ function spawnHosted(
   opts: { name: string; cols: number; rows: number; cwd: string; env: Record<string, string> },
   onData: (data: string) => void,
   onExit?: (exitCode: number) => void,
+  direct?: { base: number; until?: number },
 ): Promise<void> {
-  const proc = spawnInPtyHost(executable, args, opts)
+  const spec: DirectSpawn | undefined = direct
+    ? (direct.until !== undefined ? { id, base: direct.base, until: direct.until } : { id, base: direct.base })
+    : undefined
+  const proc = spawnInPtyHost(executable, args, opts, spec ? { direct: spec } : {})
   const coalescer = createOutputCoalescer(onData)
   proc.onData((chunk) => coalescer.push(chunk))
   // Counted from now, not from the pid: a quit while the host is still starting the shell waits for it too.
@@ -457,6 +465,12 @@ function killHosted(p: HostPty, endTree: TerminalTreeKiller | null): void {
 
 export function writeToTerminal(id: string, data: string): void {
   try { processes.get(id)?.pty.write(data) } catch {}
+}
+
+/** A relaunch holds terminal `id` until `until` (0: no longer): what the renderer types straight to the pty host must go
+ *  through main meanwhile (1.61.0). Nothing to do for a terminal in this process: its writes all come through main. */
+export function gateTerminal(id: string, until: number): void {
+  gateHostPty(processes.get(id)?.pty, until)
 }
 
 export function resizeTerminal(id: string, cols: number, rows: number): void {

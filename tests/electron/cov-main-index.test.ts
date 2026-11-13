@@ -49,6 +49,10 @@ const M = vi.hoisted(() => ({
   // terminal
   spawnTerminal: vi.fn(),
   writeToTerminal: vi.fn(),
+  // The direct typing line (1.61.0): what the pty host hands main, and what main tells it back.
+  hostInput: null as null | ((i: { kind: 'typed' | 'via-main'; key: number | null; id: string; data: string }) => void),
+  ptyHostRouted: vi.fn(),
+  ptyHostSync: vi.fn(),
   killTerminal: vi.fn(),
   killAll: vi.fn(),
   getTerminalSize: vi.fn(() => ({ cols: 80, rows: 24 })),
@@ -311,6 +315,15 @@ vi.mock('electron', () => ({
 // Service modules
 // ---------------------------------------------------------------------------
 vi.mock('../../src/main/sentry', () => ({ initMainSentry: vi.fn() }))
+vi.mock('../../src/main/ptyHostClient', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/ptyHostClient')>()
+  return {
+    ...real,
+    onPtyHostInput: (cb: NonNullable<typeof M.hostInput>) => { M.hostInput = cb; real.onPtyHostInput(cb) },
+    ptyHostRouted: M.ptyHostRouted,
+    ptyHostSync: M.ptyHostSync,
+  }
+})
 vi.mock('../../src/main/terminalManager', () => ({
   // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
   primeBundledToolsCheck: vi.fn(async () => false),
@@ -2512,6 +2525,31 @@ describe('aiSecurity:input-pending', () => {
     write({}, { id: 'ip-1', data: '\r' })
     // Enter clears the staging buffer: the line is gone, so the coast is clear.
     expect(await invoke('aiSecurity:input-pending', { id: 'ip-1' })).toEqual({ success: true, data: false })
+  })
+})
+
+// ===========================================================================
+// The direct typing line, main's side (1.61.0): a write the pty host already made runs terminal:write's watchers and
+// is not written again; one it handed back gets the whole handler, then the host is freed; the renderer's marks pass on.
+// ===========================================================================
+describe('the direct typing line, main side', () => {
+  it('watches what the host wrote, writes what it handed back, and passes marks on', async () => {
+    expect(M.hostInput).toBeTypeOf('function')
+    M.writeToTerminal.mockClear()
+    M.hostInput!({ kind: 'typed', key: 1, id: 'dt-1', data: 'claude ' })
+    M.hostInput!({ kind: 'typed', key: 1, id: 'dt-1', data: 'review this' })
+    expect(M.writeToTerminal).not.toHaveBeenCalled()
+    // The watchers ran: the agent session was noticed and the draft is staged.
+    expect(await invoke('aiSecurity:input-pending', { id: 'dt-1' })).toEqual({ success: true, data: true })
+    M.hostInput!({ kind: 'via-main', key: 4, id: 'dt-1', data: '\r' })
+    expect(M.writeToTerminal).toHaveBeenCalledWith('dt-1', '\r')
+    expect(M.ptyHostRouted).toHaveBeenCalledWith(4)
+    expect(await invoke('aiSecurity:input-pending', { id: 'dt-1' })).toEqual({ success: true, data: false })
+    const mark = await ipcOn('terminal:direct-sync')
+    mark({}, { id: 'dt-1', n: 3 })
+    mark({}, { id: 'dt-1', n: 'x' })
+    expect(M.ptyHostSync).toHaveBeenCalledTimes(1)
+    expect(M.ptyHostSync).toHaveBeenCalledWith('dt-1', 3)
   })
 })
 

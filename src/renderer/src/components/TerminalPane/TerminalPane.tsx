@@ -1980,7 +1980,14 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         // of this older replay. RIS, parsed in order, wipes what they drew; the replay redraws
         // the window; and whatever it does not cover goes back on top, once, in order.
         pendingWriteRef.current.clear()
-        replay = '\x1bc' + replay + uncovered.map((c) => c.data).join('')
+        // A chunk that straddles nextOffset (the direct typing line cuts the stream elsewhere than main does) adds only
+        // its part past it.
+        const tail = (c: { data: string; end?: number }): string => {
+          if (c.end === undefined || covered === undefined) return c.data
+          const start = c.end - c.data.length
+          return start < covered ? c.data.slice(covered - start) : c.data
+        }
+        replay = '\x1bc' + replay + uncovered.map(tail).join('')
       }
       // A resize that throws must not cost the replay: drawn at the wrong width beats a blank
       // pane, so carry on at the current size, without a hold.

@@ -15,8 +15,11 @@ import type {
   McpGatewayPolicyView,
 } from '../renderer/src/types'
 import { createTerminalDataRouter } from './terminalDataRouter'
+import { createDirectLine } from './directLine'
 
 const terminalData = createTerminalDataRouter(ipcRenderer)
+// The direct typing line (1.61.0): keystrokes and echo skip main's thread whenever the pty host has the terminal.
+const directLine = createDirectLine(ipcRenderer, terminalData)
 
 const api: TermpolisAPI = {
   createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch, autoModel, codexRoute) =>
@@ -40,13 +43,17 @@ const api: TermpolisAPI = {
   // `t` is the sampled key's wall-clock stamp (the echo trace, 1 printable key in 10). Only a stamped
   // write carries it; every other write sends exactly the payload it always did. `key` is the model
   // picker's hold on the terminal (§7.5); only the relaunch's own writes carry it.
-  writeToTerminal: (id, data, t, key) =>
+  // A write the direct line takes carries no `t`: it never passes main, where the echo trace is kept.
+  writeToTerminal: (id, data, t, key) => {
+    if (directLine.write(id, data, key)) return
     ipcRenderer.send('terminal:write', {
       id,
       data,
       ...(t === undefined ? {} : { t }),
       ...(key ? { key } : {}),
-    }),
+    })
+    directLine.wentViaMain(id)
+  },
 
   resizeTerminal: (id, cols, rows) =>
     ipcRenderer.send('terminal:resize', { id, cols, rows }),
@@ -159,8 +166,13 @@ const api: TermpolisAPI = {
   getGitDiff: (cwd) =>
     ipcRenderer.invoke('terminal:git-diff', { cwd }),
 
+  // The reply's nextOffset tells the router how far main's copy of the stream has reached (terminalDataRouter.ts).
   readTerminalBuffer: (terminalId, fromOffset) =>
-    ipcRenderer.invoke('terminal:read-buffer', { terminalId, fromOffset }),
+    ipcRenderer.invoke('terminal:read-buffer', { terminalId, fromOffset }).then((res) => {
+      const next = res?.success ? res.data?.nextOffset : undefined
+      if (typeof next === 'number') terminalData.noteReplay(terminalId, next)
+      return res
+    }),
 
   clearTerminalBuffer: (terminalId) =>
     ipcRenderer.invoke('terminal:clear', { terminalId }),

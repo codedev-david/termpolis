@@ -1,7 +1,7 @@
 // FIRST, and it must stay first: it sets UV_THREADPOOL_SIZE before anything can start libuv's thread pool (see
 // threadpoolEnv.ts; tests/electron/threadpoolEnv.test.ts pins this line). Kill switch TERMPOLIS_NO_GOVERNOR=1.
 import './threadpoolEnv'
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, MessageChannelMain, nativeImage, Notification, powerSaveBlocker, safeStorage, shell } from 'electron'
 import { initMainSentry } from './sentry'
 import { gpuPolicy } from './gpuPolicy'
 import {
@@ -134,7 +134,7 @@ import {
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { registerTerminalDataRouting, sendTerminalData } from './terminalDataRouting'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground, gateTerminal } from './terminalManager'
 import { primeShellAlone, consoleListCounters } from './shellAlone'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
@@ -679,7 +679,8 @@ import { safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommandAsync } fr
 import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcHost } from './procClient'
 import { createTerminalTreeKiller, setTerminalTreeKiller } from './terminalTreeKill'
 import { createProcHostTransport } from './procHostTransport'
-import { setPtyHostSpawner, startPtyHost, shutdownPtyHost } from './ptyHostClient'
+import { setPtyHostSpawner, startPtyHost, shutdownPtyHost, connectRendererPort, onPtyHostReady, onPtyHostDown, onPtyHostInput, ptyHostRouted, ptyHostSync } from './ptyHostClient'
+import { installDirectTyping } from './directTyping'
 import { createPtyHostTransport } from './ptyHostTransport'
 import { cachedGit, invalidateGitCache } from './gitCache'
 import { createGitWatcherRegistry } from './gitWatcher'
@@ -718,7 +719,7 @@ import {
   accountSettingsEnv, codexHomeFor, connectedProfileTargets, endAccountSignIns, forgetTerminalAccount, isTerminalAccountConnected,
   firstPromptTerminal, noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveAccountTarget, resolveLaunchTarget, withLimitChooser, workerStopCarried,
 } from './accountsIpc'
-import { relaunchLockReason } from './accountSwitch'
+import { relaunchLockReason, locks as relaunchLocks } from './accountSwitch'
 import { onFirstPrompt } from './primerSessionGuard'
 import { isTerminalAnswer } from '../shared/terminalAnswers'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
@@ -884,6 +885,8 @@ function createWindow() {
   if (onSessionEnd) mainWindow.on('session-end', onSessionEnd)
 
   mainWindow.on('closed', () => { mainWindow = null })
+  // Each load of the page gets its own direct typing line to the pty host (directTyping.ts).
+  directTyping.attachWindow(mainWindow)
 }
 
 // IPC Handlers
@@ -1017,9 +1020,9 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           remoteNoteTerminalOutput(id)
           // A launch on an account steps aside for that profile's own routing, not the default one's (claudeLaunchEnv).
           // A terminal launched to run an agent Termpolis watches carries the chooser's marker (R6).
-        }, allExtraPaths, withLimitChooser(withAutoSubagent(launchEnv, claudeHeadroom === true && autoModel === true), limitWatch), undefined, prep))
+        }, allExtraPaths, withLimitChooser(withAutoSubagent(launchEnv, claudeHeadroom === true && autoModel === true), limitWatch), undefined, prep, directTyping.spawnOption(id)))
           // Settles when the shell started: at once here, or when the pty host says so (a spawn there rejects).
-          .then(resolve, reject)
+          .then(() => { directTyping.afterSpawn(id); resolve() }, reject)
       } catch (e) {
         reject(e)
       }
@@ -1194,13 +1197,23 @@ ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { termin
 // paste actually reached a terminal. Only populated under NODE_ENV=test.
 const __testTerminalWrites: Array<{ id: string; data: string }> = []
 ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data, key }: { id: string; data: string; key?: string; t?: number }) => {
+  handleTerminalWrite(id, data, typeof key === 'string' ? key : undefined)
+}))
+
+/**
+ * Everything a write to a terminal goes through. `written`: the pty host already wrote it, straight from the renderer
+ * (the direct typing line, directTyping.ts), so the gates and the write itself are skipped and only what watches writes
+ * runs. The host never writes one the gates could stop: a held terminal's writes and a possible strict-mode refusal
+ * come here unwritten (ptyHost.ts).
+ */
+function handleTerminalWrite(id: string, data: string, key: string | undefined, written = false): void {
   noteTyping() // background work (conversation ingest, the indexer) stands aside for 500 ms after this
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
   // A switch is typing into it itself (accountSwitch.ts, R7): nothing else may meanwhile. The model
   // picker's own writes carry the key of its hold (§7.5). xterm's answers to a query (the cursor
   // position, device attributes, a colour) are no keys: the agent starting under the lock asked for
   // them and may wait on them (SW5-2).
-  if (!isTerminalAnswer(data) && relaunchLockReason(id, Date.now(), typeof key === 'string' ? key : undefined)) return
+  if (!written && !isTerminalAnswer(data) && relaunchLockReason(id, Date.now(), key)) return
   // The launch patterns below read what was typed or pasted, so a paste's bracketed-paste
   // markers come off first (see stripPasteMarkers). `data` itself still goes to the PTY as is.
   const typed = typeof data === 'string' ? stripPasteMarkers(data) : data
@@ -1210,7 +1223,7 @@ ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data, key }: { id: str
   // and a Ctrl+C, so the user's shell drops back to a fresh prompt without
   // the unsafe `gemini` token having reached the agent.
   try {
-    if (typeof data === 'string' && data.length > 0) {
+    if (!written && typeof data === 'string' && data.length > 0) {
       const s = getAiSecuritySettings()
       if (s.strictGeminiPaidOnly && strictBlockPattern.test(typed)) {
         const acct = detectGeminiAccount()
@@ -1331,11 +1344,11 @@ ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data, key }: { id: str
   } catch { /* watching must never break the terminal */ }
 
   // ALWAYS. Unmodified. Never withheld. This is the "don't touch" half of the contract.
-  writeToTerminal(id, data)
+  if (!written) writeToTerminal(id, data)
   // Which account the terminal's agents run on, as typed: Termpolis's own launch line, or a line
   // typed by hand that changes it (accountsIpc.ts).
   // The raw data, not `typed`: a paste's markers say its line breaks are text, not Enters (accountsIpc.ts gatherLines).
-  try { if (typeof data === 'string') noteTypedInput(id, data, Date.now(), typeof key === 'string' ? key : undefined) } catch {}
+  try { if (typeof data === 'string') noteTypedInput(id, data, Date.now(), key) } catch {}
   try {
     if (typeof data === 'string' && auditLaunchPattern.test(typed)) {
       const last = recentlyAuditedTerminals.get(id) || 0
@@ -1347,7 +1360,30 @@ ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data, key }: { id: str
       }
     }
   } catch {}
-}))
+}
+
+// The direct typing line (1.61.0): keystrokes and their echo go between the renderer and the pty host without waiting
+// on this thread; this process keeps judging and watching every write, from the copies the host hands it.
+// TERMPOLIS_NO_DIRECT_TYPING=1 keeps every write on the path above.
+const directTyping = installDirectTyping({
+  platform: process.platform,
+  env: process.env,
+  window: () => mainWindow,
+  makeChannel: () => new MessageChannelMain(),
+  connectPort: (port) => connectRendererPort(port),
+  onHostReady: onPtyHostReady,
+  onHostDown: onPtyHostDown,
+  onHostInput: onPtyHostInput,
+  routed: ptyHostRouted,
+  sync: ptyHostSync,
+  handleWrite: handleTerminalWrite,
+  onMark: (cb) => { ipcMain.on('terminal:direct-sync', (_e, msg) => cb(msg)) },
+  onLockChange: (cb) => relaunchLocks.onChange(cb),
+  lockUntil: (id) => relaunchLocks.get(id)?.until ?? 0,
+  gate: (id, until) => gateTerminal(id, until),
+  bufferTotal: (id) => terminalOutputBuffers.get(id)?.total ?? 0,
+})
+
 ipcMain.on('terminal:resize', timedIpc('terminal:resize', (_, { id, cols, rows }) => {
   resizeTerminal(id, cols, rows)
   // A screen kept for an agent's terminal is drawn again at the new size; the CLI's repaint fills it in.
@@ -4001,7 +4037,8 @@ async function semanticPoolOptions(
           // no-ops the rest; the proxy route is absent when the proxy is unhealthy → direct launch. The opt-in
           // context window rides in the same env, proxy or not, and is just as inert for a Codex or Gemini worker.
           // A swarm worker is watched, by the swarm's loop (R6); a phone's terminal isn't.
-          }, mcpAgentPaths, withLimitChooser(launchEnv, !remote), undefined, mcpPrep)
+          }, mcpAgentPaths, withLimitChooser(launchEnv, !remote), undefined, mcpPrep, directTyping.spawnOption(id))
+          directTyping.afterSpawn(id)
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)

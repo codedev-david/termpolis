@@ -454,7 +454,7 @@ vi.mock('../../src/main/accountsIpc', () => ({
   endAccountSignIns: vi.fn(),
 }))
 // The switch's lock, so a test can hold a terminal as a switch would.
-vi.mock('../../src/main/accountSwitch', () => ({ relaunchLockReason: H.relaunchLockReason }))
+vi.mock('../../src/main/accountSwitch', () => ({ relaunchLockReason: H.relaunchLockReason, locks: Object.assign(new Map(), { onChange: () => {} }) }))
 // The git-root probe, so a test can say what `git rev-parse --show-toplevel` answered.
 vi.mock('../../src/main/gitCommand', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/main/gitCommand')>()),

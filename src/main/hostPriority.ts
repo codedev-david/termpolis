@@ -22,7 +22,7 @@ import * as nodeOs from 'os'
 
 export interface HostPriorityOs {
   setPriority(pid: number, priority: number): void
-  constants: { priority?: { PRIORITY_BELOW_NORMAL?: number } }
+  constants: { priority?: { PRIORITY_BELOW_NORMAL?: number; PRIORITY_ABOVE_NORMAL?: number } }
 }
 
 export interface HostPriorityDeps {
@@ -41,20 +41,41 @@ export function __setHostPriorityDepsForTests(deps: HostPriorityDeps | null): vo
   testDeps = deps
 }
 
-/** Lower this process to below-normal priority, once per call. Never throws. What the caller passes is laid over
- *  the test seam's deps, so a host that names itself still gets the seam's fake os in a test. */
-export function lowerHostPriority(deps?: HostPriorityDeps): HostPriorityResult {
+/** The one setPriority call in src/main: this process (pid 0), at the named level. */
+function setOwnPriority(
+  deps: HostPriorityDeps | undefined,
+  level: 'PRIORITY_BELOW_NORMAL' | 'PRIORITY_ABOVE_NORMAL',
+): 'set' | 'disabled' | 'failed' | 'unsupported' {
   const d: HostPriorityDeps = { ...testDeps, ...deps }
   const off = (d.env ?? process.env).TERMPOLIS_NO_HOST_PRIORITY
   if (off === '1' || off === 'true') return 'disabled'
   if (off && d.host && off.split(',').map((s) => s.trim()).includes(d.host)) return 'disabled'
   try {
     const os = d.os ?? nodeOs
-    const level = os.constants?.priority?.PRIORITY_BELOW_NORMAL
-    if (typeof level !== 'number') return 'unsupported'
-    os.setPriority(0, level)
-    return 'lowered'
+    const value = os.constants?.priority?.[level]
+    if (typeof value !== 'number') return 'unsupported'
+    os.setPriority(0, value)
+    return 'set'
   } catch {
     return 'failed'
   }
 }
+
+/** Lower this process to below-normal priority, once per call. Never throws. What the caller passes is laid over
+ *  the test seam's deps, so a host that names itself still gets the seam's fake os in a test. */
+export function lowerHostPriority(deps?: HostPriorityDeps): HostPriorityResult {
+  const r = setOwnPriority(deps, 'PRIORITY_BELOW_NORMAL')
+  return r === 'set' ? 'lowered' : r
+}
+
+/** The pty host's opposite (1.61.0): it IS the typing path, so it raises ITSELF to above-normal, the one level
+ *  above normal that Windows does not hand down to the processes it starts (a child of an above-normal process
+ *  starts at normal; only idle and below-normal are inherited), so the shells and agents it spawns are not raised
+ *  with it. Same rules as lowering: the calling process alone (pid 0), best effort, and the same kill switch
+ *  (TERMPOLIS_NO_HOST_PRIORITY=1, or a list naming `pty`). Never called from main. */
+export function raiseHostPriority(deps?: HostPriorityDeps): HostPriorityRaise {
+  const r = setOwnPriority(deps, 'PRIORITY_ABOVE_NORMAL')
+  return r === 'set' ? 'raised' : r
+}
+
+export type HostPriorityRaise = 'raised' | 'disabled' | 'failed' | 'unsupported'

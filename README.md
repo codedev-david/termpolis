@@ -379,6 +379,7 @@ If you ever need to launch from a shell with the same flag: `/opt/Termpolis/term
 - **Session persistence** — workspaces and settings survive a relaunch; loose terminals deliberately do not, so every launch starts clean (restoring a saved group of terminals is a workspace's job)
 - **Single-instance lock** — only one Termpolis window runs at a time to prevent session conflicts
 - **Drag and drop** — drag files onto a terminal to paste their quoted file paths
+- **Typing that skips the busy part (Windows, v1.61)** — keys go straight from the window to the shell's own process and the echo comes straight back, so a busy app never delays what you type. The app still gets a copy of every key and every byte of output (prompt watch, scrollback, phone). It falls back to the old path by itself; `TERMPOLIS_NO_DIRECT_TYPING=1` turns it off
 
 ### Shell Support
 - **PowerShell**, **Bash**, **Zsh**, **Cmd**, **Git Bash** — auto-detected per OS

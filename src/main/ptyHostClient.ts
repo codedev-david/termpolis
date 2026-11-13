@@ -9,7 +9,7 @@
 //
 // The transport is injected (ptyHostTransport.ts forks the real one), so everything here runs in the unit suite.
 
-import type { PtyHostReply, PtyHostRequest, PtyHostSpawnOptions } from './ptyHost'
+import type { DirectSpawn, PtyHostReply, PtyHostRequest, PtyHostSpawnOptions } from './ptyHost'
 
 export const NO_PTY_HOST_ENV = 'TERMPOLIS_NO_PTY_HOST'
 
@@ -22,6 +22,17 @@ export interface PtyHostTransport {
   onMessage(cb: (msg: PtyHostReply) => void): void
   onExit(cb: (code: number) => void): void
   kill(): void
+  /** Hand the host its end of the renderer's direct line (1.61.0). Absent: there is no direct line. */
+  postPort?(port: unknown): void
+}
+
+/** A write the host handed main: `typed` it already wrote (main only watches); `via-main` main must write itself. */
+export interface PtyHostInput {
+  kind: 'typed' | 'via-main'
+  /** The spawn's key, or null when the host holds no terminal under `id`. */
+  key: number | null
+  id: string
+  data: string
 }
 
 /** Shown in a terminal whose shell lived in the host when the host went away. */
@@ -93,6 +104,11 @@ class HostPtyImpl implements HostPty {
     if (!this.exited) this.send({ kind: 'kill', key: this.key, consolePids: consolePids ?? null })
   }
 
+  /** Until when a write typed straight to the host must go through main instead (a relaunch's hold); 0 lifts it. */
+  gate(until: number): void {
+    if (!this.exited) this.send({ kind: 'gate', key: this.key, until })
+  }
+
   /** @internal */ _spawned(pid: number): void {
     this.pid = pid
     this.resolveSpawned(pid)
@@ -130,6 +146,64 @@ let dead = false
 let readyTimer: ReturnType<typeof setTimeout> | null = null
 let nextKey = 1
 const live = new Map<number, Live>()
+const inputListeners: Array<Listener<PtyHostInput>> = []
+const readyListeners: Array<() => void> = []
+const downListeners: Array<() => void> = []
+
+/** Writes the host hands main (see PtyHostInput). */
+export function onPtyHostInput(cb: Listener<PtyHostInput>): void {
+  inputListeners.push(cb)
+}
+
+/** The host became ready: a direct line can be made now. */
+export function onPtyHostReady(cb: () => void): void {
+  readyListeners.push(cb)
+}
+
+/** The host went away for the session: any direct line to it is gone. */
+export function onPtyHostDown(cb: () => void): void {
+  downListeners.push(cb)
+}
+
+function fire<T>(list: Array<Listener<T>>, v: T, what: string): void {
+  for (const l of [...list]) {
+    try { l(v) } catch (e) { console.error(`[pty host] ${what} listener threw:`, e) }
+  }
+}
+
+function post(msg: PtyHostRequest): void {
+  const t = transport
+  if (!t) return
+  try { t.postMessage(msg) } catch (e) { console.error('[pty host] post failed:', e) }
+}
+
+/** Main finished a write the host handed it with this key: the host may write the next one. */
+export function ptyHostRouted(key: number): void {
+  post({ kind: 'routed', key })
+}
+
+/** Main has written the renderer's writes to `id` up to its mark `n`. */
+export function ptyHostSync(id: string, n: number): void {
+  post({ kind: 'sync', id, n })
+}
+
+/** Hand the host its end of a renderer's direct line. False when it cannot take one (not ready, gone, no support). */
+export function connectRendererPort(port: unknown): boolean {
+  const t = transport
+  if (!t || !ready || dead || typeof t.postPort !== 'function') return false
+  try {
+    t.postPort(port)
+    return true
+  } catch (e) {
+    console.error('[pty host] could not hand over the direct line:', e)
+    return false
+  }
+}
+
+/** The relaunch hold on a pty, when it lives in the host; a pty in main has no direct line to hold. */
+export function gateHostPty(p: unknown, until: number): void {
+  if (isHostPty(p)) (p as HostPtyImpl).gate(until)
+}
 
 /** Wired by the app at start-up (Windows); tests inject their own. */
 export function setPtyHostSpawner(fn: (() => PtyHostTransport) | null): void {
@@ -171,7 +245,7 @@ export function ptyHostTerminalCount(): number {
 
 /** Start a pty in the host. Only call when ptyHostReady(). exitOnSpawnError: a spawn the host could not make also
  *  reaches onData (its message) and onExit (-1), besides rejecting `spawned`. */
-export function spawnInPtyHost(file: string, args: string[] | string, opts: PtyHostSpawnOptions, { exitOnSpawnError = false }: { exitOnSpawnError?: boolean } = {}): HostPty {
+export function spawnInPtyHost(file: string, args: string[] | string, opts: PtyHostSpawnOptions, { exitOnSpawnError = false, direct }: { exitOnSpawnError?: boolean; direct?: DirectSpawn } = {}): HostPty {
   const t = transport
   if (!t || !ready || dead) throw new Error('pty host not ready')
   const key = nextKey++
@@ -181,7 +255,7 @@ export function spawnInPtyHost(file: string, args: string[] | string, opts: PtyH
   }
   const p = new HostPtyImpl(key, send, exitOnSpawnError)
   live.set(key, { pty: p })
-  send({ kind: 'spawn', key, file, args, opts })
+  send(direct ? { kind: 'spawn', key, file, args, opts, direct } : { kind: 'spawn', key, file, args, opts })
   return p
 }
 
@@ -194,6 +268,12 @@ function onReply(t: PtyHostTransport, m: PtyHostReply): void {
   if (m.kind === 'ready') {
     ready = true
     if (readyTimer) { clearTimeout(readyTimer); readyTimer = null }
+    for (const l of [...readyListeners]) { try { l() } catch (e) { console.error('[pty host] ready listener threw:', e) } }
+    return
+  }
+  if (m.kind === 'typed' || m.kind === 'via-main') {
+    if (typeof m.id !== 'string' || typeof m.data !== 'string') return
+    fire(inputListeners, { kind: m.kind, key: typeof m.key === 'number' ? m.key : null, id: m.id, data: m.data }, 'input')
     return
   }
   const entry = live.get(m.key)
@@ -219,6 +299,7 @@ function goDown(t: PtyHostTransport, { kill = true, note = true }: { kill?: bool
   transport = null
   if (readyTimer) { clearTimeout(readyTimer); readyTimer = null }
   if (kill) { try { t.kill() } catch { /* already gone */ } }
+  for (const l of [...downListeners]) { try { l() } catch (e) { console.error('[pty host] down listener threw:', e) } }
   const ended = [...live.values()]
   live.clear()
   for (const { pty } of ended) {
@@ -246,4 +327,7 @@ export function _resetPtyHostClientForTests(): void {
   dead = false
   nextKey = 1
   live.clear()
+  inputListeners.length = 0
+  readyListeners.length = 0
+  downListeners.length = 0
 }

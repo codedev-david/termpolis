@@ -13,6 +13,13 @@ import {
   HOST_LOST_NOTE,
   READY_TIMEOUT_MS,
   _resetPtyHostClientForTests,
+  connectRendererPort,
+  gateHostPty,
+  onPtyHostDown,
+  onPtyHostInput,
+  onPtyHostReady,
+  ptyHostRouted,
+  ptyHostSync,
   isHostPty,
   ptyHostDisabledByEnv,
   ptyHostReady,
@@ -21,6 +28,7 @@ import {
   shutdownPtyHost,
   spawnInPtyHost,
   startPtyHost,
+  type PtyHostInput,
   type PtyHostTransport,
 } from '../../src/main/ptyHostClient'
 
@@ -327,5 +335,86 @@ describe('ptyHostClient: the host going away', () => {
     setPtyHostSpawner(() => t)
     startPtyHost({})
     expect(() => _resetPtyHostClientForTests()).not.toThrow()
+  })
+})
+
+describe('ptyHostClient: the direct typing line (1.61.0)', () => {
+  it('passes a direct spec with the spawn, and leaves it out when there is none', () => {
+    const t = readyHost()
+    spawnInPtyHost('pwsh', [], OPTS, { direct: { id: 'term', base: 7 } })
+    spawnInPtyHost('pwsh', [], OPTS)
+    expect(t.sent).toEqual([
+      { kind: 'spawn', key: 1, file: 'pwsh', args: [], opts: OPTS, direct: { id: 'term', base: 7 } },
+      { kind: 'spawn', key: 2, file: 'pwsh', args: [], opts: OPTS },
+    ])
+  })
+
+  it('hands writes from the host to the listeners, checked; a throwing listener does not stop the rest', () => {
+    const t = readyHost()
+    const got: PtyHostInput[] = []
+    onPtyHostInput(() => { throw new Error('boom') })
+    onPtyHostInput((i) => got.push(i))
+    t.reply({ kind: 'typed', key: 3, id: 'a', data: 'x' })
+    t.reply({ kind: 'via-main', key: null, id: 'b', data: 'y' })
+    t.reply({ kind: 'via-main', key: 'k' as unknown as number, id: 'c', data: 'z' })
+    t.reply({ kind: 'typed', key: 1, id: 5 as unknown as string, data: 'x' })
+    t.reply({ kind: 'typed', key: 1, id: 'a', data: null as unknown as string })
+    expect(got).toEqual([
+      { kind: 'typed', key: 3, id: 'a', data: 'x' },
+      { kind: 'via-main', key: null, id: 'b', data: 'y' },
+      { kind: 'via-main', key: null, id: 'c', data: 'z' },
+    ])
+  })
+
+  it('tells listeners when the host is ready and when it goes', () => {
+    const ready = vi.fn()
+    const down = vi.fn()
+    onPtyHostReady(() => { throw new Error('r') })
+    onPtyHostReady(ready)
+    onPtyHostDown(() => { throw new Error('d') })
+    onPtyHostDown(down)
+    const t = readyHost()
+    expect(ready).toHaveBeenCalledTimes(1)
+    t.die(1)
+    expect(down).toHaveBeenCalledTimes(1)
+  })
+
+  it('routed and sync go to the host; nothing is sent with no host, and a failing post is swallowed', () => {
+    ptyHostRouted(1) // no host: nothing
+    const t = readyHost()
+    ptyHostRouted(4)
+    ptyHostSync('a', 9)
+    expect(t.sent).toEqual([{ kind: 'routed', key: 4 }, { kind: 'sync', id: 'a', n: 9 }])
+    ;(t.postMessage as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new Error('gone') })
+    expect(() => ptyHostRouted(5)).not.toThrow()
+  })
+
+  it('connectRendererPort: only a ready host whose transport takes ports gets one', () => {
+    expect(connectRendererPort({})).toBe(false) // no host
+    const t = fakeTransport()
+    setPtyHostSpawner(() => t)
+    startPtyHost({})
+    const port = { p: 1 }
+    expect(connectRendererPort(port)).toBe(false) // not ready
+    t.reply({ kind: 'ready' })
+    expect(connectRendererPort(port)).toBe(false) // no postPort
+    const postPort = vi.fn()
+    t.postPort = postPort
+    expect(connectRendererPort(port)).toBe(true)
+    expect(postPort).toHaveBeenCalledWith(port)
+    postPort.mockImplementation(() => { throw new Error('closed') })
+    expect(connectRendererPort(port)).toBe(false)
+  })
+
+  it('gateHostPty: a hold reaches a host pty until it exits; a pty in main is left alone', () => {
+    const t = readyHost()
+    const p = spawnInPtyHost('pwsh', [], OPTS)
+    gateHostPty(p, 500)
+    gateHostPty({ write: () => {} }, 500)
+    gateHostPty(undefined, 500)
+    expect(t.sent.filter((m) => m.kind === 'gate')).toEqual([{ kind: 'gate', key: 1, until: 500 }])
+    t.reply({ kind: 'exit', key: 1, code: 0 })
+    gateHostPty(p, 0)
+    expect(t.sent.filter((m) => m.kind === 'gate')).toHaveLength(1)
   })
 })
