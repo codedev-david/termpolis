@@ -8,9 +8,10 @@
  * real app leaves typing exactly as it was. This spec does, counter by counter, on a real terminal:
  *
  *   1. diagnostics:collect carries the `typing` block, started, with a loop-delay window and memory.
- *   2. A typed line arrives intact (including its 10th, 20th and 30th keys, the stamped ones), the main
- *      handler counted every write, 1 printable key in 10 produced a T1, and the shell's echo produced
- *      a T2.
+ *   2. A typed line arrives intact. On Windows (1.61.0) it goes over the direct line, so main's
+ *      terminal:write handler sees almost none of it; elsewhere main counts every key.
+ *   2b. With the direct line off, main counted every write, 1 printable key in 10 produced a T1, and
+ *      the shell's echo produced a T2.
  *   3. A real 1.5 s block of the main thread (run inside main through the Playwright handle) shows up as
  *      a window whose max loop delay crosses one second, and only then (the count before it is the
  *      negative control).
@@ -130,23 +131,22 @@ test.describe.serial('Typing trace in the real app', () => {
     expect(typeof extra?.memoryHost?.onMain).toBe('boolean')
   })
 
-  test('2. a typed line arrives intact, stamped keys are timed (1 in 10), and the echo is timed', async () => {
+  test('2. a typed line arrives intact; on Windows it skips main (1.61.0 direct line), elsewhere main counts every key', async () => {
     await createTerminal(page, 'TraceA')
     const before = await typing(page)
-    const marker = 'TRACE-' + 'x'.repeat(30) // 36 printable characters after "echo ": the 10th, 20th, 30th... are stamped
+    const marker = 'TRACE-' + 'x'.repeat(30)
     await page.keyboard.type('echo ' + marker, { delay: 25 })
     await page.keyboard.press('Enter')
-    // Nothing was lost on the way to the shell, the stamped keys included.
+    // Nothing was lost on the way to the shell.
     await expect.poll(() => terminalText(page), { timeout: 20_000 }).toContain(marker)
-
     const after = await typing(page)
-    const writes = after.ipc['terminal:write'].count - (before.ipc['terminal:write']?.count ?? 0)
-    expect(writes).toBeGreaterThanOrEqual(41) // one write per key: 41 printable keys and the Enter
-    const t1 = after.t1.n - before.t1.n
-    expect(t1).toBeGreaterThanOrEqual(3) // 1 printable key in 10 carries a stamp: 41 keys, so 4
-    expect(t1).toBeLessThanOrEqual(Math.ceil(writes / 10) + 1) // and not every key (the negative control)
-    expect(after.t1.max).toBeLessThan(5_000) // a stamp is a few ms old, not a minute
-    expect(after.t2.n).toBeGreaterThan(before.t2.n) // the shell echoed a stamped key
+    const writes = (after.ipc['terminal:write']?.count ?? 0) - (before.ipc['terminal:write']?.count ?? 0)
+    if (process.platform === 'win32') {
+      // The keys went straight to the pty host: main's handler saw (almost) none of them.
+      expect(writes).toBeLessThan(5)
+    } else {
+      expect(writes).toBeGreaterThanOrEqual(41)
+    }
   })
 
   test('3. a real 1.5 s block of the main thread crosses one second in the next loop-delay window', async () => {
@@ -161,6 +161,42 @@ test.describe.serial('Typing trace in the real app', () => {
     await expect.poll(async () => (await typing(page)).loopDelay.minute?.over1000 ?? 0, { timeout: 20_000 }).toBeGreaterThan(over1000Before)
     const after = await typing(page)
     expect(after.loopDelay.minute!.max).toBeGreaterThanOrEqual(1_000)
+  })
+})
+
+// The keystroke-to-echo trace times keys that pass through main's terminal:write handler, so it is measured on the
+// path through main: on Windows that is the direct line switched off (TERMPOLIS_NO_DIRECT_TYPING=1).
+test.describe.serial('Typing trace on the path through main', () => {
+  test.setTimeout(120_000)
+  let app: ElectronApplication
+  let page: Page
+  let dir: string
+
+  test.beforeAll(async () => {
+    ensureE2eBuild()
+    ;({ app, page, dir } = await launch({ TERMPOLIS_NO_DIRECT_TYPING: '1' }))
+  })
+
+  test.afterAll(async () => {
+    await quitApp(app)
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
+  })
+
+  test('2b. stamped keys are timed (1 in 10), the echo is timed, and every key reached main', async () => {
+    await createTerminal(page, 'TraceMain')
+    const before = await typing(page)
+    const marker = 'TRACE-' + 'x'.repeat(30) // 36 printable characters after "echo ": the 10th, 20th, 30th... are stamped
+    await page.keyboard.type('echo ' + marker, { delay: 25 })
+    await page.keyboard.press('Enter')
+    await expect.poll(() => terminalText(page), { timeout: 20_000 }).toContain(marker)
+    const after = await typing(page)
+    const writes = after.ipc['terminal:write'].count - (before.ipc['terminal:write']?.count ?? 0)
+    expect(writes).toBeGreaterThanOrEqual(41) // one write per key: 41 printable keys and the Enter
+    const t1 = after.t1.n - before.t1.n
+    expect(t1).toBeGreaterThanOrEqual(3) // 1 printable key in 10 carries a stamp: 41 keys, so 4
+    expect(t1).toBeLessThanOrEqual(Math.ceil(writes / 10) + 1) // and not every key (the negative control)
+    expect(after.t1.max).toBeLessThan(5_000) // a stamp is a few ms old, not a minute
+    expect(after.t2.n).toBeGreaterThan(before.t2.n) // the shell echoed a stamped key
   })
 })
 
