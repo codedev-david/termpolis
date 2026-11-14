@@ -38,8 +38,12 @@ const QUERY_CHAR_CAP = 400
 /** How many first-stage hits the cross-encoder re-reads per search (memorySearch widens to `limit`
  *  when a caller asks for more). Chosen on the recall benchmark: see RERANK_ALPHA. */
 export const RERANK_POOL = 30
-/** The cross-encoder's weight in the blend (0 = first stage only, 1 = cross-encoder only). */
-export const RERANK_ALPHA = 0.5
+/** The cross-encoder's weight in the blend (0 = first stage only, 1 = cross-encoder only).
+ *  Recall benchmark on a real brain (2026-11-14, 495 probes, pool 30): MRR@10 0.818 → 0.859 and R@1
+ *  0.766 → 0.810 at 0.7, the best of 0 / 0.3 / 0.5 / 0.7 / 0.85 / 1; on 40 hand-written queries MRR@10
+ *  0.459 → 0.528. The cost kept it off by default: p50 4.1 s / p95 8.7 s per search on one WASM
+ *  thread (measured partly under a full test run), too slow to put in front of every recall. */
+export const RERANK_ALPHA = 0.7
 /** Pairs per forward pass. Bounds both the padded tensor and one run's time on the host thread. */
 const BATCH = 16
 
