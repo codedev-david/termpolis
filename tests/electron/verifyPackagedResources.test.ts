@@ -331,6 +331,15 @@ describe('verifyEmbeddingModelBundled', () => {
   const MODEL_REL = join('models', 'bge-small-en-v1.5', 'onnx', 'model_quantized.onnx')
   const TOK_REL = join('models', 'bge-small-en-v1.5', 'tokenizer.json')
   const WASM_REL = join('app.asar.unpacked', 'node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm')
+  const CE_DIR = join('models', 'ms-marco-MiniLM-L-6-v2')
+  const CE_MODEL_REL = join(CE_DIR, 'onnx', 'model_quantized.onnx')
+
+  function addReranker(res: string): void {
+    mkdirSync(join(res, CE_DIR, 'onnx'), { recursive: true })
+    writeFileSync(join(res, CE_MODEL_REL), Buffer.alloc(2_000_000, 1))
+    writeFileSync(join(res, CE_DIR, 'tokenizer.json'), '{}')
+    writeFileSync(join(res, CE_DIR, 'tokenizer_config.json'), '{}')
+  }
 
   function buildValid(outDir: string): void {
     const res = join(outDir, 'resources')
@@ -339,6 +348,7 @@ describe('verifyEmbeddingModelBundled', () => {
     writeFileSync(join(res, TOK_REL), '{}')
     mkdirSync(join(res, 'app.asar.unpacked', 'node_modules', 'onnxruntime-web', 'dist'), { recursive: true })
     writeFileSync(join(res, WASM_REL), Buffer.alloc(16, 1))
+    addReranker(res)
   }
 
   it('passes when model + tokenizer + WASM are all present', () => {
@@ -364,7 +374,20 @@ describe('verifyEmbeddingModelBundled', () => {
     mkdirSync(join(res, 'models', 'bge-small-en-v1.5', 'onnx'), { recursive: true })
     writeFileSync(join(res, MODEL_REL), Buffer.alloc(2_000_000, 1))
     writeFileSync(join(res, TOK_REL), '{}')
+    addReranker(res)
     expect(() => verifier.verifyEmbeddingModelBundled(sandbox)).toThrow(/WASM not asar-unpacked/)
+  })
+
+  it.each(['tokenizer.json', 'tokenizer_config.json', join('onnx', 'model_quantized.onnx')])('throws when the cross-encoder %s is missing', (f) => {
+    buildValid(sandbox)
+    rmSync(join(sandbox, 'resources', CE_DIR, f))
+    expect(() => verifier.verifyEmbeddingModelBundled(sandbox)).toThrow(/cross-encoder file missing\/empty/)
+  })
+
+  it('throws when the cross-encoder is suspiciously small (failed download)', () => {
+    buildValid(sandbox)
+    writeFileSync(join(sandbox, 'resources', CE_MODEL_REL), Buffer.alloc(500, 1))
+    expect(() => verifier.verifyEmbeddingModelBundled(sandbox)).toThrow(/cross-encoder model is only \d+ bytes/)
   })
 
   it('throws when there is no resources dir', () => {

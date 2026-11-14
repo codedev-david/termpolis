@@ -6,7 +6,8 @@ import {
   normalizeRelation, upsertEdge, bfsTraverse,
   initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, graphStats, _resetGraphForTests,
   effectiveWeight, EDGE_HALF_LIFE, invertRelation, neighboursOf, expandWithGraph,
-  graphCreatorStats, edgeKeysIncident, removeNodeEdges,
+  graphCreatorStats, edgeKeysIncident, removeNodeEdges, isSuperseded, dropSuperseded,
+  releaseSupersedes, isSupersedeReleased, clearMemoryGraph,
   type MemoryEdge,
 } from '../../src/main/memoryGraph'
 
@@ -332,6 +333,84 @@ describe('memoryGraph — stateful store + persistence', () => {
       expect(edgeKeysIncident(['a', 'b'])).toEqual(['a\0b\0solves']) // one edge, seen from both ends
       expect(edgeKeysIncident(['nobody'])).toEqual([])
       expect(edgeKeysIncident([])).toEqual([])
+    })
+  })
+  describe('isSuperseded / dropSuperseded — answered from the adjacency maps', () => {
+    it('an incoming supersedes or an outgoing superseded-by marks a memory replaced; nothing else does', () => {
+      addMemoryEdge({ from: 'new', to: 'old', relation: 'supersedes' })
+      addMemoryEdge({ from: 'stale', to: 'fresh', relation: 'superseded-by' })
+      addMemoryEdge({ from: 'a', to: 'b', relation: 'solves' })
+      expect(isSuperseded('old')).toBe(true)
+      expect(isSuperseded('stale')).toBe(true)
+      expect(isSuperseded('new')).toBe(false)
+      expect(isSuperseded('fresh')).toBe(false)
+      expect(isSuperseded('b')).toBe(false)
+      expect(isSuperseded('nobody')).toBe(false)
+      const hits = ['new', 'old', 'a', 'stale', 'b'].map(id => ({ id, n: id.length }))
+      expect(dropSuperseded(hits).map(h => h.id)).toEqual(['new', 'a', 'b'])
+    })
+
+    it('a removed node no longer supersedes anything', () => {
+      addMemoryEdge({ from: 'new', to: 'old', relation: 'supersedes' })
+      removeNodeEdges('new')
+      expect(isSuperseded('old')).toBe(false)
+    })
+  })
+
+  describe('releaseSupersedes — undoing a supersession for good', () => {
+    it("side 'replacer' frees everything the memory replaced, in both edge forms, and leaves other edges", () => {
+      addMemoryEdge({ from: 'new', to: 'old1', relation: 'supersedes' })
+      addMemoryEdge({ from: 'old2', to: 'new', relation: 'superseded-by' })
+      addMemoryEdge({ from: 'new', to: 'x', relation: 'solves' })
+      addMemoryEdge({ from: 'other', to: 'old3', relation: 'supersedes' })
+      expect(releaseSupersedes('new', 'replacer')).toBe(2)
+      expect(isSuperseded('old1')).toBe(false)
+      expect(isSuperseded('old2')).toBe(false)
+      expect(isSuperseded('old3')).toBe(true)
+      expect(isSupersedeReleased('new', 'old1')).toBe(true)
+      expect(isSupersedeReleased('new', 'old2')).toBe(true)
+      expect(isSupersedeReleased('other', 'old3')).toBe(false)
+      expect(edgesFrom('new').map((e) => e.relation)).toEqual(['solves'])
+      expect(graphStats().edges).toBe(2)
+      expect(releaseSupersedes('new', 'replacer')).toBe(0) // nothing left to release
+    })
+
+    it("side 'replaced' brings the memory itself back from every replacer", () => {
+      addMemoryEdge({ from: 'n1', to: 'old', relation: 'supersedes' })
+      addMemoryEdge({ from: 'old', to: 'n2', relation: 'superseded-by' })
+      addMemoryEdge({ from: 'n1', to: 'keep', relation: 'supersedes' })
+      expect(releaseSupersedes('old', 'replaced')).toBe(2)
+      expect(isSuperseded('old')).toBe(false)
+      expect(isSuperseded('keep')).toBe(true)
+      expect(isSupersedeReleased('n1', 'old')).toBe(true)
+      expect(isSupersedeReleased('n2', 'old')).toBe(true)
+    })
+
+    it('an empty id or a memory with no edges releases nothing', () => {
+      expect(releaseSupersedes('', 'replacer')).toBe(0)
+      expect(releaseSupersedes('nobody', 'replaced')).toBe(0)
+    })
+
+    it('the release survives a reload, and an edge drawn again after it stays', () => {
+      addMemoryEdge({ from: 'new', to: 'old', relation: 'supersedes' })
+      releaseSupersedes('new', 'replacer')
+      _resetGraphForTests()
+      expect(isSupersedeReleased('new', 'old')).toBe(false)
+      initMemoryGraph(tmp)
+      expect(isSuperseded('old')).toBe(false)
+      expect(isSupersedeReleased('new', 'old')).toBe(true)
+      // An agent linking them by hand afterwards is a newer statement: replayed in log order, it holds.
+      addMemoryEdge({ from: 'new', to: 'old', relation: 'supersedes' })
+      _resetGraphForTests()
+      initMemoryGraph(tmp)
+      expect(isSuperseded('old')).toBe(true)
+    })
+
+    it('clearMemoryGraph forgets released pairs', () => {
+      addMemoryEdge({ from: 'new', to: 'old', relation: 'supersedes' })
+      releaseSupersedes('new', 'replacer')
+      clearMemoryGraph()
+      expect(isSupersedeReleased('new', 'old')).toBe(false)
     })
   })
 })

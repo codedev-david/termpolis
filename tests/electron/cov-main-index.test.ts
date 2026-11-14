@@ -96,6 +96,8 @@ const M = vi.hoisted(() => ({
   setIndexClaudeNotes: vi.fn((v: boolean) => v),
   getShareNotesAcrossProjects: vi.fn(() => false),
   setShareNotesAcrossProjects: vi.fn((v: boolean) => v),
+  getDistillWithHaiku: vi.fn(() => false),
+  setDistillWithHaiku: vi.fn((v: boolean) => ({ distillWithHaiku: v })),
   isAgentIntegrationGranted: vi.fn<(...a: unknown[]) => boolean>(() => true),
   // context pins
   listPins: vi.fn(() => [] as unknown[]),
@@ -401,6 +403,7 @@ vi.mock('../../src/main/memorySettings', () => ({
   getLearnFromConversations: M.getLearnFromConversations, setLearnFromConversations: M.setLearnFromConversations,
   getIndexClaudeNotes: M.getIndexClaudeNotes, setIndexClaudeNotes: M.setIndexClaudeNotes,
   getShareNotesAcrossProjects: M.getShareNotesAcrossProjects, setShareNotesAcrossProjects: M.setShareNotesAcrossProjects,
+  getDistillWithHaiku: M.getDistillWithHaiku, setDistillWithHaiku: M.setDistillWithHaiku,
 }))
 vi.mock('../../src/main/contextPinStore', () => ({
   initContextPinStore: vi.fn(),
@@ -494,7 +497,7 @@ vi.mock('../../src/main/headlessExec', async (importOriginal) => {
 })
 vi.mock('../../src/main/contextPrimer', () => ({ buildContextPrimer: M.buildContextPrimer }))
 vi.mock('../../src/main/memoryCorrectionStore', () => ({
-  initMemoryCorrections: vi.fn(), correctMemory: M.correctMemory, applyCorrections: vi.fn((x: unknown) => x),
+  initMemoryCorrections: vi.fn(), correctMemory: M.correctMemory, applyCorrections: vi.fn((x: unknown) => x), correctedMemoryIds: vi.fn(() => []),
 }))
 vi.mock('../../src/main/recallBench', () => ({
   buildProbes: M.buildProbes, runBench: M.runBench, checkRegression: M.checkRegression,
@@ -674,6 +677,8 @@ const MEMC = vi.hoisted(() => ({
   memoryHostPid: vi.fn<() => any>(() => 4242),
   memoryKnownHashes: vi.fn(async () => [] as string[]),
   weaveNeighboursBatch: vi.fn(async () => ({})),
+  memorySupersedePass: vi.fn(async () => ({ considered: 0, minted: 0 })),
+  memoryReleaseSupersedes: vi.fn(async () => 0),
   exportMemorySnapshot: vi.fn(async () => ''),
   importMemorySnapshot: vi.fn(async () => ({ imported: 0 })),
 }))
@@ -1492,6 +1497,18 @@ describe('MCP tool table — operator verbs', () => {
     expect(M.correctMemory).toHaveBeenCalledWith({ id: 'm1', kind: 'retract', reason: 'wrong repo', replacement: undefined })
   })
 
+  it('memoryCorrect releases what the memory replaced only when the correction took, and a host failure is swallowed', async () => {
+    MEMC.memoryReleaseSupersedes.mockClear()
+    M.correctMemory.mockReturnValueOnce({ ok: false, error: 'unknown kind' } as never)
+    await mcp().memoryCorrect({ id: 'm1', kind: 'nope', reason: 'r' })
+    expect(MEMC.memoryReleaseSupersedes).not.toHaveBeenCalled()
+    M.correctMemory.mockReturnValueOnce({ ok: true } as never)
+    MEMC.memoryReleaseSupersedes.mockRejectedValueOnce(new Error('host gone') as never)
+    expect(await mcp().memoryCorrect({ id: 'm2', kind: 'retract', reason: 'r' })).toEqual({ ok: true })
+    expect(MEMC.memoryReleaseSupersedes).toHaveBeenCalledWith('m2')
+    await new Promise((r) => setImmediate(r)) // the rejection is handled, not left unhandled
+  })
+
   it('gatewayListTools / gatewayCall / retrieveFull forward to the gateway runtime', async () => {
     expect(await mcp().gatewayListTools()).toEqual([{ name: 'upstream.tool' }])
     await mcp().gatewayCall({ server: 's', tool: 't', args: { a: 1 } })
@@ -1605,6 +1622,7 @@ describe('MCP tool table — operator verbs', () => {
     it('clamps the sample size into [20, 1000]', async () => {
       await mcp().recallBench({ limit: 5 })
       expect(MEMC.memoryList.mock.calls.at(-1)![0].limit).toBe(20)
+      expect(MEMC.memoryList.mock.calls.at(-1)![0].active).toBe(true) // a replaced memory is no probe target
       await mcp().recallBench({ limit: 99999 })
       expect(MEMC.memoryList.mock.calls.at(-1)![0].limit).toBe(1000)
       await mcp().recallBench({})
@@ -1620,11 +1638,14 @@ describe('MCP tool table — operator verbs', () => {
       MEMC.memoryList.mockResolvedValue([
         { id: 'a', content: 'A', ts: 1, project: 'p' },
         { id: 'b', content: 'B', ts: 2 },
+        { id: 'x', content: 'X', ts: 3 },
+        { id: 'y', content: 'Y', ts: 4 },
       ] as never)
-      MEMC.memoryGraphSample.mockResolvedValue({ nodes: [], edges: [{ from: 'a', to: 'x' }, { from: 'a', to: 'y' }] } as never)
+      MEMC.memoryGraphSample.mockResolvedValue({ nodes: [], edges: [{ from: 'a', to: 'x' }, { from: 'a', to: 'y' }, { from: 'a', to: 'gone' }] } as never)
       await mcp().recallBench({})
       const [memories] = M.buildProbes.mock.calls.at(-1)!
-      // Both edges land on 'a' (the second takes the push arm, not a fresh list)...
+      // Both edges land on 'a' (the second takes the push arm, not a fresh list); the edge to a memory
+      // outside the active list ('gone': replaced, or out of scope) is no target a search could return...
       expect(memories[0]).toEqual({ id: 'a', content: 'A', ts: 1, project: 'p', links: ['x', 'y'] })
       // ...and a memory with no edges and no project carries neither key, rather than undefined
       // values a probe builder would have to defend against.

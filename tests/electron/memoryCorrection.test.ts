@@ -21,6 +21,7 @@ import {
   applyCorrections,
   applyEntryCorrections,
   correctionForMemory,
+  correctedMemoryIds,
   memoryCorrectionStats,
   resetMemoryCorrections,
 } from '../../src/main/memoryCorrectionStore'
@@ -337,6 +338,13 @@ describe('memoryCorrectionStore', () => {
   it('exposes the live correction for a memory', () => {
     correctMemory({ id: 'a', kind: 'demote', reason: 'flaky', ts: 1 })
     expect(correctionForMemory('a')).toMatchObject({ kind: 'demote', reason: 'flaky' })
+  })
+
+  it('lists every memory with a live correction (the idle supersede pass leaves them out)', () => {
+    expect(correctedMemoryIds()).toEqual([])
+    correctMemory({ id: 'a', kind: 'demote', reason: 'flaky', ts: 1 })
+    correctMemory({ id: 'b', kind: 'retract', reason: 'wrong', ts: 2 })
+    expect(correctedMemoryIds().sort()).toEqual(['a', 'b'])
   })
 
   it('still applies corrections in memory when the log cannot be written', async () => {

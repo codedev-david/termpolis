@@ -196,6 +196,65 @@ export class BertTokenizer {
     return sub
   }
 
+  /** WordPiece ids for `text`, no special tokens and no truncation. */
+  private pieceIds(text: string): number[] {
+    const { vocab, unkToken } = this.cfg
+    const ids: number[] = []
+    for (const bt of this.basicTokenize(this.normalize(text))) {
+      for (const p of this.wordpiece(bt)) ids.push(vocab[p] ?? vocab[unkToken])
+    }
+    return ids
+  }
+
+  /**
+   * A cross-encoder input: [CLS] a [SEP] b [SEP], token types 0 for the first segment and 1 for the
+   * second. Truncated to `maxLength` (capped at modelMaxLength) the way HuggingFace's default
+   * `longest_first` strategy does it: drop one token at a time from whichever segment is longer,
+   * the second on a tie, so a short query is never cut to make room for a long document.
+   */
+  encodePair(a: string, b: string, maxLength = this.cfg.modelMaxLength): { inputIds: number[]; tokenTypeIds: number[] } {
+    const { vocab, clsToken, sepToken } = this.cfg
+    const budget = Math.max(0, Math.min(maxLength, this.cfg.modelMaxLength) - 3)
+    let first = this.pieceIds(a)
+    let second = this.pieceIds(b)
+    const over = first.length + second.length - budget
+    if (over > 0) {
+      // Closed form of the one-at-a-time loop: trim the longer side down toward the shorter, then
+      // split what is left evenly, with the odd token coming off the second segment.
+      let cutA = 0
+      let cutB = 0
+      const gap = Math.abs(first.length - second.length)
+      const fromLonger = Math.min(over, gap)
+      if (first.length > second.length) cutA += fromLonger
+      else cutB += fromLonger
+      const rest = over - fromLonger
+      cutB += Math.ceil(rest / 2)
+      cutA += Math.floor(rest / 2)
+      first = first.slice(0, Math.max(0, first.length - cutA))
+      second = second.slice(0, Math.max(0, second.length - cutB))
+    }
+    const inputIds = [vocab[clsToken], ...first, vocab[sepToken], ...second, vocab[sepToken]]
+    const tokenTypeIds = [...new Array(first.length + 2).fill(0), ...new Array(second.length + 1).fill(1)]
+    return { inputIds, tokenTypeIds }
+  }
+
+  /** Encode (a, b[i]) pairs for a cross-encoder, right-padded to the longest row. */
+  encodePairBatch(a: string, bs: string[], maxLength?: number): BertEncoding {
+    const rows = bs.map((b) => this.encodePair(a, b, maxLength))
+    const maxLen = rows.reduce((m, r) => Math.max(m, r.inputIds.length), 0)
+    const pad = this.cfg.vocab[this.cfg.padToken] ?? 0
+    const inputIds: number[][] = []
+    const attentionMask: number[][] = []
+    const tokenTypeIds: number[][] = []
+    for (const r of rows) {
+      const padCount = maxLen - r.inputIds.length
+      inputIds.push([...r.inputIds, ...new Array(padCount).fill(pad)])
+      attentionMask.push([...new Array(r.inputIds.length).fill(1), ...new Array(padCount).fill(0)])
+      tokenTypeIds.push([...r.tokenTypeIds, ...new Array(padCount).fill(0)])
+    }
+    return { inputIds, attentionMask, tokenTypeIds }
+  }
+
   /** Token id sequence including [CLS] … [SEP], truncated to modelMaxLength. */
   encode(text: string): number[] {
     const normalized = this.normalize(text)

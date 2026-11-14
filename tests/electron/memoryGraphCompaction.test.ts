@@ -9,6 +9,10 @@ import {
   GRAPH_COMPACT_MIN_BYTES,
   GRAPH_COMPACT_MIN_RATIO,
   _resetGraphForTests,
+  addMemoryEdge,
+  releaseSupersedes,
+  isSupersedeReleased,
+  isSuperseded,
 } from '../../src/main/memoryGraph'
 
 // memory-graph.jsonl is a pure append-only log with NO compaction, rotation, size cap or
@@ -73,6 +77,21 @@ describe('memory-graph compaction — the log stops being unbounded', () => {
     initMemoryGraph(dir)
 
     expect(graphStats()).toEqual(before)
+  })
+
+  it('keeps released supersede pairs, so the idle pass still leaves them alone after a rewrite', () => {
+    writeRedundantLog(graph, 4)
+    initMemoryGraph(dir)
+    addMemoryEdge({ from: 'new', to: 'old', relation: 'supersedes' })
+    releaseSupersedes('new', 'replacer')
+    _resetGraphForTests()
+    initMemoryGraph(dir)
+    expect(compactGraphLog()).toBe(true)
+    expect(readFileSync(graph, 'utf8')).toContain('releaseSupersede')
+    _resetGraphForTests()
+    initMemoryGraph(dir)
+    expect(isSupersedeReleased('new', 'old')).toBe(true)
+    expect(isSuperseded('old')).toBe(false)
   })
 
   it('leaves a small log alone — rewriting it buys nothing and risks something', () => {

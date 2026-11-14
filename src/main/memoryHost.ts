@@ -40,7 +40,7 @@ import {
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   enableLocalEncryption, disableEncryption,
   persistMemoryIndex, vectorRamStats, setVectorQuantization,
-  exportMemorySnapshot, importMemorySnapshot,
+  exportMemorySnapshot, importMemorySnapshot, memorySupersedePass, memoryReleaseSupersedes,
 } from './swarmMemory'
 // The graph is part of the brain, not a main-thread sidecar: initMemoryGraph() is called by
 // initSwarmMemory(), which runs HERE. v1.26.0 ported the store and left these four behind in main,
@@ -259,7 +259,7 @@ export const HOST_HANDLERS: Record<string, HostHandler> = {
   importGraphEdges,
   // maintenance / lifecycle
   warmProbeEmbeddings, compactSelfShard, persistMemoryIndex, reloadMemoryFromSync,
-  memoryBackfillVectors, setVectorQuantization,
+  memoryBackfillVectors, setVectorQuantization, memorySupersedePass, memoryReleaseSupersedes,
   // encryption + sync. NOTE: setSyncPassphrase / enableLocalEncryption need safeStorage to PERSIST
   // the key, which this process does not have — memoryClient wraps both and does the keychain half
   // in main. adoptEncryptionKeyB64 is the injection point it calls.

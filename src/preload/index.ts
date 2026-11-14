@@ -313,6 +313,8 @@ const api: TermpolisAPI = {
   memorySetPrimerLimit: (value: number) => ipcRenderer.invoke('memory:set-primer-limit', { value }),
   memoryGetLearnConversations: () => ipcRenderer.invoke('memory:get-learn-conversations'),
   memorySetLearnConversations: (value: boolean) => ipcRenderer.invoke('memory:set-learn-conversations', { value }),
+  memoryGetDistillHaiku: () => ipcRenderer.invoke('memory:get-distill-haiku'),
+  memorySetDistillHaiku: (value: boolean) => ipcRenderer.invoke('memory:set-distill-haiku', { value }),
   // Claude Code's saved notes (claudeNotesIpc.ts): the two switches, what was imported, and the undo.
   memoryGetNotesSettings: () => ipcRenderer.invoke('memory:get-notes-settings'),
   memorySetNotesSettings: (p: { indexClaudeNotes?: boolean; shareNotesAcrossProjects?: boolean }) => ipcRenderer.invoke('memory:set-notes-settings', p),

@@ -47,6 +47,13 @@ export interface MemorySettings {
    * state never travel, on or off.
    */
   shareNotesAcrossProjects: boolean
+  /**
+   * "Smarter lessons" (Settings, Memory): after a substantial session, ask Claude Haiku (`claude -p --model haiku`, on the
+   * user's own Claude login) to write the lesson, alongside the deterministic extractor that always runs. OFF by default:
+   * it spends the user's quota and sends the session's summary to a model, so only a literal `true` turns it on.
+   * TERMPOLIS_MNEME_DISTILLER=1 still forces it on for a run (the switch it replaces).
+   */
+  distillWithHaiku: boolean
 }
 
 // UI/UX bounds. The pure builder still hard-caps at 100; this keeps the panel
@@ -60,7 +67,7 @@ function clampPrimerLimit(value: unknown): number {
   return Math.min(PRIMER_LIMIT_MAX, Math.max(PRIMER_LIMIT_MIN, n))
 }
 
-let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false }
+let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false }
 let initialized = false
 
 function settingsPath(): string {
@@ -89,6 +96,8 @@ function init(): void {
           indexClaudeNotes: 'indexClaudeNotes' in parsed ? parsed.indexClaudeNotes === true : true,
           // Absent key => OFF: nothing crosses between projects until the user says so.
           shareNotesAcrossProjects: parsed.shareNotesAcrossProjects === true,
+          // Absent key => OFF: it spends the user's quota, so it waits for a yes.
+          distillWithHaiku: parsed.distillWithHaiku === true,
         }
       } else {
         throw new Error('not a settings object')
@@ -120,7 +129,7 @@ function persist(): boolean {
 
 /** A switch that is a privacy choice: kept, or not changed and said so. The panel shows what main holds, so a choice that could
  *  not be written must not be held either, or it would show OFF while the file says ON and the next start would import again. */
-function saveSwitch(key: 'indexClaudeNotes' | 'shareNotesAcrossProjects', value: boolean): MemorySettings {
+function saveSwitch(key: 'indexClaudeNotes' | 'shareNotesAcrossProjects' | 'distillWithHaiku', value: boolean): MemorySettings {
   if (!initialized) init()
   const before = settings[key]
   settings[key] = value
@@ -199,4 +208,14 @@ export function getShareNotesAcrossProjects(): boolean {
  *  choice could not be written. */
 export function setShareNotesAcrossProjects(value: unknown): MemorySettings {
   return saveSwitch('shareNotesAcrossProjects', value === true)
+}
+
+export function getDistillWithHaiku(): boolean {
+  if (!initialized) init()
+  return settings.distillWithHaiku
+}
+
+/** Persist the switch. Only a literal true turns it on. Throws, and changes nothing, when the choice could not be written. */
+export function setDistillWithHaiku(value: unknown): MemorySettings {
+  return saveSwitch('distillWithHaiku', value === true)
 }

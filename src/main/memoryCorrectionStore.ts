@@ -108,6 +108,11 @@ export function correctionForMemory(id: string): Correction | null {
   return correctionFor(overlay, id)
 }
 
+/** Every memory with a live correction on file (retract, amend or demote). */
+export function correctedMemoryIds(): string[] {
+  return [...overlay.byId.keys()]
+}
+
 export function memoryCorrectionStats(): ReturnType<typeof correctionStats> {
   return correctionStats(overlay)
 }

@@ -1,94 +1,235 @@
-// crossEncoderRerank.ts — an OPT-IN, model-backed relevance reranker for the top-k recall candidates.
+// crossEncoderRerank.ts — a local cross-encoder that re-reads the top recall candidates.
 //
-// The retrieval first stage is a bge bi-encoder (one dot product per doc) that already scores
-// recall@10 0.971 / nDCG@10 0.795 on the committed benchmark. A cross-encoder re-reads (query, doc)
-// jointly per candidate — more accurate on hard cases, but ~orders of magnitude slower per pair,
-// which cuts against the "fast lookups" guarantee. So this is:
-//   - OFF by default (per-search opt-in via memorySearch({ rerank: true }), or setRerankEnabled).
-//   - injectable (setRerankScorer) — tests and custom backends plug in a scorer with no model.
-//   - best-effort + STRICTLY LOCAL — getRerankScorer() loads a relevance cross-encoder only if one
-//     is present locally (remote models disabled). Nothing is bundled by default, so it returns null
-//     and the caller falls back to the bi-encoder ranking unchanged.
+// The first stage is a bge bi-encoder: one dot product per memory, fast, and good at finding the
+// right neighbourhood, but its scores bunch together (0.944–0.950 for the runners-up against 0.953
+// for the right answer on the real brain), so everything after the top hit is close to a coin toss.
+// A cross-encoder reads (query, memory) TOGETHER and scores how well that memory answers the query,
+// which separates those runners-up. It costs one small forward pass per candidate, so it only ever
+// sees the first stage's top few dozen.
 //
-// NOTE: this is deliberately NOT the nli-deberta model in nliContradict.ts — that scores
-// entailment/CONTRADICTION between two statements, which is the wrong signal for query→doc relevance.
+// Runtime: the same onnxruntime-web WASM build and the same pure-TS BertTokenizer the embedder uses
+// (localEmbedder.ts), so nothing native ships. The model is Xenova/ms-marco-MiniLM-L-6-v2 (q8,
+// ~23 MB), bundled under resources/models by scripts/download-embedding-model.sh. With the model
+// absent (a dev checkout that never fetched it) getRerankBatchScorer() answers null and recall keeps
+// the first-stage order, byte for byte.
+//
+// Seams: setRerankScorer / setRerankBatchScorer inject a scorer with no model (tests, custom
+// backends); _setRerankOrtForTests drives the real load path against a fake runtime.
 
-/** Relevance of a document to a query, higher = more relevant. */
+import * as fs from 'fs'
+import * as path from 'path'
+import { BertTokenizer } from './bertTokenizer'
+
+/** Relevance of one document to a query, higher = more relevant. */
 export type RerankScorer = (query: string, doc: string) => Promise<number>
+/** Relevance of each document to a query (same order, same length), higher = more relevant. */
+export type RerankBatchScorer = (query: string, docs: string[]) => Promise<number[]>
 
-let injected: RerankScorer | null = null
-let cached: RerankScorer | null = null
-let loadAttempted = false
-let enabled = false
-let modelPresentForTests = true // test hook: when false, getRerankScorer() short-circuits to null
+const MODEL_DIR_NAME = 'ms-marco-MiniLM-L-6-v2'
+const ONNX_MODEL_FILE = 'model_quantized.onnx'
+const ORT_WEB_MODULE: string = 'onnxruntime-web'
+/** Token budget per (query, memory) pair. ms-marco was trained on short passages; 256 keeps a batch
+ *  of 30 well under a second on one WASM thread while still reading the opening of a long memory. */
+export const RERANK_MAX_TOKENS = 256
+// Characters are cut BEFORE tokenizing: a 40 KB transcript chunk would otherwise be fully
+// WordPiece-split only to be truncated to 256 tokens. ~6 chars/token leaves ample headroom.
+const DOC_CHAR_CAP = RERANK_MAX_TOKENS * 6
+const QUERY_CHAR_CAP = 400
+/** How many first-stage hits the cross-encoder re-reads per search (memorySearch widens to `limit`
+ *  when a caller asks for more). Chosen on the recall benchmark: see RERANK_ALPHA. */
+export const RERANK_POOL = 30
+/** The cross-encoder's weight in the blend (0 = first stage only, 1 = cross-encoder only). */
+export const RERANK_ALPHA = 0.5
+/** Pairs per forward pass. Bounds both the padded tensor and one run's time on the host thread. */
+const BATCH = 16
 
-// A relevance cross-encoder (MS-MARCO MiniLM). Loaded ONLY if present locally; not bundled by default.
-const RERANK_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2'
+interface OrtTensorData { data: Float32Array; dims: number[] }
+interface OrtSession {
+  inputNames: string[]
+  outputNames: string[]
+  run(feeds: Record<string, unknown>): Promise<Record<string, OrtTensorData>>
+}
+interface OrtModule {
+  env?: { wasm?: { numThreads?: number } }
+  Tensor: new (type: string, data: BigInt64Array, dims: number[]) => unknown
+  InferenceSession: { create(model: string): Promise<OrtSession> }
+}
 
-/** Enable/disable the reranker globally (default OFF). Per-search `rerank: true` also opts in. */
+let injected: RerankBatchScorer | null = null
+let cached: RerankBatchScorer | null = null
+let loadPromise: Promise<RerankBatchScorer | null> | null = null
+let loadFailed = false
+let enabled = false // off until the recall benchmark shows it helps (no unbenchmarked mechanism ships on)
+let injectedOrt: OrtModule | null = null
+let assetDirResolver: (() => string | undefined) | null = null
+
+/** Turn the reranker on or off for every search. Default OFF, and nothing in the app turns it on: it
+ *  ships enabled only once the recall benchmark shows it helps. A search can still pass `rerank: true` /
+ *  `rerank: false` to override. */
 export function setRerankEnabled(v: boolean): void { enabled = v }
 export function rerankEnabled(): boolean { return enabled }
 
-/** Inject a scorer (tests / custom backends). null clears it and resets the lazy loader. */
-export function setRerankScorer(s: RerankScorer | null): void {
-  injected = s
-  if (!s) { cached = null; loadAttempted = false }
+/** Wrap a per-pair scorer as a batch scorer. A pair that rejects scores 0 rather than sinking the batch. */
+function batchOf(s: RerankScorer): RerankBatchScorer {
+  return (q, docs) => Promise.all(docs.map((d) => s(q, d).catch(() => 0)))
 }
 
-/** The injected scorer, else a real relevance cross-encoder via the bundled transformers.js runtime
- *  (remote models disabled → strictly local). Best-effort: null when no model is present locally, so
- *  callers fall back to the bi-encoder ranking. */
-export async function getRerankScorer(): Promise<RerankScorer | null> {
-  if (injected) return injected
-  if (!modelPresentForTests) return null
-  if (cached) return cached
-  if (loadAttempted) return null
-  loadAttempted = true
+/** Inject a per-pair scorer (tests / custom backends). null clears it and resets the lazy loader. */
+export function setRerankScorer(s: RerankScorer | null): void {
+  setRerankBatchScorer(s ? batchOf(s) : null)
+}
+
+/** Inject a batch scorer. null clears it and resets the lazy loader. */
+export function setRerankBatchScorer(s: RerankBatchScorer | null): void {
+  injected = s
+  if (!s) { cached = null; loadPromise = null; loadFailed = false }
+}
+
+// The bundled model (packaged), else the repo copy the download script writes in dev and CI.
+function resolveAssetDir(): string | undefined {
+  const candidates: string[] = []
+  if (process.resourcesPath) candidates.push(path.join(process.resourcesPath, 'models', MODEL_DIR_NAME))
+  candidates.push(path.join(process.cwd(), 'resources', 'models', MODEL_DIR_NAME))
+  for (const c of candidates) {
+    try { if (fs.existsSync(path.join(c, 'tokenizer.json'))) return c } catch { /* ignore */ }
+  }
+  return undefined
+}
+
+function resolveOnnxModel(dir: string): string | undefined {
+  for (const c of [path.join(dir, ONNX_MODEL_FILE), path.join(dir, 'onnx', ONNX_MODEL_FILE)]) {
+    try { if (fs.existsSync(c)) return c } catch { /* ignore */ }
+  }
+  return undefined
+}
+
+async function loadModel(): Promise<RerankBatchScorer | null> {
   try {
-    const mod = (await import('@huggingface/transformers')) as {
-      pipeline: (task: string, model: string) => Promise<unknown>
-      env?: { allowRemoteModels?: boolean; allowLocalModels?: boolean }
+    const dir = (assetDirResolver ?? resolveAssetDir)()
+    const modelPath = dir ? resolveOnnxModel(dir) : undefined
+    if (!dir || !modelPath) { loadFailed = true; return null }
+    const tokJson = JSON.parse(fs.readFileSync(path.join(dir, 'tokenizer.json'), 'utf8'))
+    const tokCfg = JSON.parse(fs.readFileSync(path.join(dir, 'tokenizer_config.json'), 'utf8'))
+    const tokenizer = BertTokenizer.fromJSON(tokJson, tokCfg)
+    const ort: OrtModule = injectedOrt ?? (await import(/* @vite-ignore */ ORT_WEB_MODULE))
+    if (ort.env?.wasm) ort.env.wasm.numThreads = 1 // never spawn ORT worker threads from the host
+    const session = await ort.InferenceSession.create(modelPath)
+    const wantTypeIds = session.inputNames.includes('token_type_ids')
+    const toTensor = (rows: number[][], B: number, S: number): unknown =>
+      new ort.Tensor('int64', BigInt64Array.from(rows.flat(), (x) => BigInt(x)), [B, S])
+
+    const scoreChunk = async (query: string, docs: string[]): Promise<number[]> => {
+      const enc = tokenizer.encodePairBatch(query, docs, RERANK_MAX_TOKENS)
+      const B = enc.inputIds.length
+      const S = enc.inputIds[0].length
+      const feeds: Record<string, unknown> = {
+        input_ids: toTensor(enc.inputIds, B, S),
+        attention_mask: toTensor(enc.attentionMask, B, S),
+      }
+      if (wantTypeIds) feeds.token_type_ids = toTensor(enc.tokenTypeIds, B, S)
+      const out = await session.run(feeds)
+      const logits = out.logits ?? out[session.outputNames[0]]
+      // [B, 1] relevance logits (ms-marco has a single output label). Read row-major so a model that
+      // emits [B, k] still yields one number per row: its first column.
+      const width = logits.dims[logits.dims.length - 1] || 1
+      const scores: number[] = []
+      for (let i = 0; i < B; i++) scores.push(logits.data[i * width])
+      return scores
     }
-    if (mod.env) {
-      mod.env.allowRemoteModels = false // never hit the network — local model only
-      mod.env.allowLocalModels = true
+    const fn: RerankBatchScorer = async (query, docs) => {
+      const q = query.slice(0, QUERY_CHAR_CAP)
+      const out: number[] = []
+      for (let i = 0; i < docs.length; i += BATCH) {
+        out.push(...(await scoreChunk(q, docs.slice(i, i + BATCH).map((d) => d.slice(0, DOC_CHAR_CAP)))))
+      }
+      return out
     }
-    const clf = (await mod.pipeline('text-classification', RERANK_MODEL)) as (
-      input: { text: string; text_pair: string },
-    ) => Promise<Array<{ label: string; score: number }> | { label: string; score: number }>
-    cached = async (query, doc) => {
-      const out = await clf({ text: query, text_pair: doc })
-      const o = Array.isArray(out) ? out[0] : out
-      return o ? o.score : 0
-    }
-    return cached
+    // Contract check: one real pair must give one finite number. A wrong file under the model's name
+    // (an embedder, say, whose output is a hidden-state tensor) fails here instead of reordering recall
+    // by garbage.
+    const probe = await fn('contract check', ['contract check passage'])
+    if (probe.length !== 1 || !Number.isFinite(probe[0])) { loadFailed = true; return null }
+    cached = fn
+    return fn
   } catch {
-    return null // no local reranker model → bi-encoder ranking stands
+    loadFailed = true // no runtime / unreadable model → recall keeps the first-stage order
+    return null
+  } finally {
+    loadPromise = null
   }
 }
 
-/** Reorder candidates by cross-encoder relevance to the query, descending. Pure given the scorer;
- *  a per-item scorer failure degrades that item to 0 rather than sinking the whole rerank. */
-export async function rerankByScorer<T extends { content: string }>(
+/** The injected scorer, else the bundled cross-encoder (loaded once, lazily). null when neither is
+ *  available, so callers keep the first-stage ranking. */
+export async function getRerankBatchScorer(): Promise<RerankBatchScorer | null> {
+  if (injected) return injected
+  if (cached) return cached
+  if (loadFailed) return null
+  if (!loadPromise) loadPromise = loadModel()
+  return loadPromise
+}
+
+/** Logistic squash of a relevance logit to 0..1. */
+export function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x))
+}
+
+/**
+ * Blend cross-encoder relevance with the first-stage score and return candidates best-first with
+ * that blended `score`. Both signals are min-max normalised over THIS candidate pool before mixing,
+ * because their scales are unrelated (a logit vs a fused cosine). `alpha` is the cross-encoder's
+ * weight: 1 trusts it alone, 0 keeps the first-stage order. A scorer that throws, or answers with
+ * the wrong length or a non-finite score, leaves the first-stage order untouched.
+ */
+export async function blendRerank<T extends { content: string; score: number }>(
   query: string,
   candidates: T[],
-  scorer: RerankScorer,
-): Promise<T[]> {
-  if (candidates.length <= 1) return candidates.slice()
-  const scores = await Promise.all(candidates.map((c) => scorer(query, c.content).catch(() => 0)))
+  scorer: RerankBatchScorer,
+  alpha: number,
+): Promise<Array<T & { rerankScore: number; blended: number }>> {
+  const keep = (): Array<T & { rerankScore: number; blended: number }> =>
+    candidates.map((c) => ({ ...c, rerankScore: 0, blended: c.score }))
+  if (candidates.length <= 1) return keep()
+  let ce: number[]
+  try { ce = await scorer(query, candidates.map((c) => c.content)) } catch { return keep() }
+  if (ce.length !== candidates.length || ce.some((x) => !Number.isFinite(x))) return keep()
+  const norm = (xs: number[]): number[] => {
+    let lo = Infinity, hi = -Infinity
+    for (const x of xs) { if (x < lo) lo = x; if (x > hi) hi = x }
+    const span = hi - lo
+    return xs.map((x) => (span > 0 ? (x - lo) / span : 0.5))
+  }
+  const nCe = norm(ce)
+  const nFs = norm(candidates.map((c) => c.score))
   return candidates
-    .map((c, i) => ({ c, s: scores[i] }))
-    .sort((a, b) => b.s - a.s) // V8 Array.sort is stable → equal scores keep first-stage order
-    .map((x) => x.c)
+    .map((c, i) => ({ ...c, rerankScore: ce[i], blended: alpha * nCe[i] + (1 - alpha) * nFs[i] }))
+    .sort((a, b) => b.blended - a.blended) // stable: ties keep the first-stage order
+}
+
+/** @internal test-only — drive the real load path with a fake onnxruntime-web and asset dir. */
+export function _setRerankOrtForTests(ort: unknown, assetDirFn?: (() => string | undefined) | null): void {
+  injectedOrt = (ort as OrtModule | null) ?? null
+  assetDirResolver = assetDirFn ?? null
+  cached = null
+  loadPromise = null
+  loadFailed = false
 }
 
 /** @internal test-only */
 export function _resetRerankForTests(): void {
   injected = null
   cached = null
-  loadAttempted = false
+  loadPromise = null
+  loadFailed = false
   enabled = false
-  modelPresentForTests = true
+  injectedOrt = null
+  assetDirResolver = null
 }
-/** @internal test-only — simulate a machine with (true) / without (false) a local reranker model. */
-export function _setRerankModelPresentForTests(v: boolean): void { modelPresentForTests = v }
+/** @internal test-only — simulate a machine without (false) the bundled model; true restores the
+ *  normal lookup. */
+export function _setRerankModelPresentForTests(v: boolean): void {
+  assetDirResolver = v ? null : () => undefined
+  cached = null
+  loadPromise = null
+  loadFailed = false
+}

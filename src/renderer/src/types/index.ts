@@ -735,6 +735,9 @@ export interface TermpolisAPI {
   /** "Learn from conversations": whether conversation ingest and the indexer passes run (default true). */
   memoryGetLearnConversations: () => Promise<IpcResponse<boolean>>
   memorySetLearnConversations: (value: boolean) => Promise<IpcResponse<{ learnFromConversations: boolean }>>
+  /** "Smarter lessons": whether Claude Haiku writes the lesson after a substantial session (default false). */
+  memoryGetDistillHaiku: () => Promise<IpcResponse<boolean>>
+  memorySetDistillHaiku: (value: boolean) => Promise<IpcResponse<{ distillWithHaiku: boolean }>>
   /** Claude Code's saved notes in memory: the two switches, what was imported, whether the agents are connected. */
   memoryGetNotesSettings: () => Promise<IpcResponse<ClaudeNotesSettings>>
   /** Change either switch (only a real boolean counts). Answers with the new state. */

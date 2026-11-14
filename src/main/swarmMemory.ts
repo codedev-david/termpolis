@@ -11,13 +11,14 @@ import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from '.
 import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
-import { rerankEnabled, getRerankScorer, rerankByScorer } from './crossEncoderRerank'
+import { rerankEnabled, getRerankBatchScorer, blendRerank, RERANK_POOL, RERANK_ALPHA } from './crossEncoderRerank'
 import { initMemoryAudit, auditMemory, redactPreview } from './memoryAudit'
 import { CANDIDATE_HASH_PREFIX, CANDIDATE_TAG, isCandidate } from './lessonSubstance'
 import { isClaudeNote } from './claudeNotesParse'
 import { mmrRerank } from './mmrRerank'
-import { compactGraphLog, initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
-import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
+import { compactGraphLog, initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, isSuperseded, dropSuperseded, releaseSupersedes, isSupersedeReleased, type MemoryEdge } from './memoryGraph'
+import { relationPrior } from './mnemeGraphLogic'
+import { isSupersedable, planSupersessions, type SupersedeEntry } from './mnemeSupersede'
 import { learnedUtility } from './mnemeRetrieval'
 import { interestCentroid, cosineSim, tasteBoost } from './mnemeAdapt'
 import { inferMemoryType, isLessonType } from './mnemeTypeInfer'
@@ -930,6 +931,7 @@ export function _resetForTests(): void {
   seenHashes.clear()
   forgotSet.clear()
   usageMap.clear()
+  supersedeChecked.clear()
   pendingReinforce = []
   tombstones.clear()
   tombstonedHashes.clear()
@@ -1513,6 +1515,9 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
         if (merged.length !== (existing.tags?.length ?? 0)) { existing.tags = merged; changed = true }
       }
       if (!existing.taskId && input.taskId) { existing.taskId = input.taskId; changed = true }
+      // Writing a replaced memory again says it holds after all: it comes back, and the pair is released
+      // for good (the idle supersede pass will not draw it again).
+      if (releaseSupersedes(existing.id, 'replaced') > 0) changed = true
       if (changed) bumpSearchGen() // scoping changed → invalidate cached searches
       await backfillVectorIfMissing(existing) // F18: upgrade a vector-less entry now that the embedder is back
       return existing
@@ -2043,6 +2048,7 @@ function matchesProject(e: MemoryEntry, opts: SearchOptions): boolean {
 }
 
 function passesFilter(e: MemoryEntry, opts: SearchOptions): boolean {
+  if (!opts.includeEntities && e.memoryType === 'entity') return false
   if (opts.agentId && e.agentId !== opts.agentId) return false
   if (opts.kind && e.kind !== opts.kind) return false
   if (opts.taskId && e.taskId !== opts.taskId) return false
@@ -2063,6 +2069,8 @@ export interface SearchOptions {
   diversify?: boolean             // BB2: over-fetch + MMR re-rank so near-dups don't crowd the top
   rerank?: boolean                // Tier-1: opt-in cross-encoder relevance rerank of the candidate pool
   fuseGraph?: boolean             // BB7: expand top hits one hop along graph edges (agent-facing recall)
+  includeEntities?: boolean       // entity stubs (a bare file / function / error name reflection links lessons to) are graph
+                                  // nodes, not answers: left out of search unless asked for (memory_graph seeds ask)
   crossProject?: boolean          // v1.23 C6: unified-brain recall — include OTHER repos' memories,
                                   // ranked BELOW same-project (relevance-scoped) instead of excluded
 }
@@ -2247,7 +2255,7 @@ export function rocchioExpand(q: number[], topVecs: number[][], beta = PRF_BETA)
   return out
 }
 function searchCacheKey(o: SearchOptions, limit: number): string {
-  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.projectKey ?? ''}|${o.diversify ? 'd' : ''}|${o.rerank ? 'r' : ''}|${o.fuseGraph ? 'g' : ''}|${o.crossProject ? 'x' : ''}`
+  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.projectKey ?? ''}|${o.diversify ? 'd' : ''}|${(o.rerank ?? rerankEnabled()) ? 'r' : ''}|${o.fuseGraph ? 'g' : ''}|${o.crossProject ? 'x' : ''}|${o.includeEntities ? 'e' : ''}`
 }
 
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
@@ -2267,7 +2275,9 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   if (cached) return cached
 
   // Filter pool first — cheap wins
-  let pool = entries
+  // An entity stub is a bare name ("agentConfigIO.ts") whose whole text matches a file or symbol query, so it used to take
+  // most of a `kind: fact` page on the real brain. It is a node for the graph to hang lessons on; memory_graph reaches it.
+  let pool = opts.includeEntities ? entries : entries.filter(e => e.memoryType !== 'entity')
   if (opts.agentId) pool = pool.filter(e => e.agentId === opts.agentId)
   if (opts.kind) pool = pool.filter(e => e.kind === opts.kind)
   if (opts.taskId) pool = pool.filter(e => e.taskId === opts.taskId)
@@ -2397,19 +2407,25 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   const ranked = scored.map(r => ({ r, k: learnedUtility({ id: r.id, relevance: rankScore({ relevance: r.score, ts: r.ts, kind: r.kind, now }), importance: r.importance, useCount: usageMap.get(r.id) ?? 0 }, now) }))
   if (adaptEnabled) applyTasteBoost(ranked) // frontier: default-off interest-centroid nudge
   ranked.sort((a, b) => b.k - a.k || b.r.ts - a.r.ts)
-  const survivors = ranked.map(x => x.r).filter(r => r.score > 0 && (usageMap.get(r.id) ?? 0) > SUPPRESS_THRESHOLD) // WP-C: drop strongly-downvoted memories
+  // P3: drop superseded memories BEFORE the pool is cut, so a replaced decision can't take a slot and
+  // leave the answer one short (the final filter below still catches graph-fusion re-entries).
+  let survivors = ranked.map(x => x.r).filter(r => r.score > 0 && (usageMap.get(r.id) ?? 0) > SUPPRESS_THRESHOLD && !isSuperseded(r.id)) // WP-C: drop strongly-downvoted memories
   let result: MemorySearchResult[]
-  // Tier-1: opt-in cross-encoder rerank. Best-effort — only engages when a relevance scorer is
-  // actually available (a local model or an injected one); otherwise falls through to MMR/gate
-  // BYTE-IDENTICALLY, so the default (no bundled reranker) path is unchanged.
-  const rerankScorer = (opts.rerank || rerankEnabled()) ? await getRerankScorer() : null
+  // Cross-encoder rerank (crossEncoderRerank.ts): re-read the first stage's top RERANK_POOL hits
+  // jointly with the query and reorder them by a blend of the two signals. The blend only decides the
+  // ORDER: the pool's own scores are handed back out in the new order, so the calibrated 0..1 scale the
+  // 0.25 gates and MMR read is unchanged, and the gate/MMR below run exactly as they always have. No
+  // scorer (model absent, load failed, rerank off) skips this byte-identically.
+  const rerankScorer = (opts.rerank ?? rerankEnabled()) && survivors.length > 1 ? await getRerankBatchScorer() : null
   if (rerankScorer) {
-    // Widen the candidate pool past `limit` (the whole point of reranking is to reconsider more than
-    // the top-`limit` first-stage hits), rescore each (query, doc) jointly, then take the top-`limit`.
-    const poolCap = Math.max(limit * 5, 20)
-    const pool = gateByScore(survivors, { minScore: 0, floor: Math.min(poolCap, survivors.length), cap: poolCap })
-    result = (await rerankByScorer(opts.query, pool, rerankScorer)).slice(0, limit)
-  } else if (opts.diversify) {
+    const poolN = Math.max(limit, RERANK_POOL)
+    // Pool by score, the same key the gate below ranks on (survivors are in learned-utility order).
+    const pool = [...survivors].sort((a, b) => b.score - a.score).slice(0, poolN)
+    const blended = await blendRerank(opts.query, pool, rerankScorer, RERANK_ALPHA)
+    const scores = pool.map((r) => r.score).sort((a, b) => b - a)
+    survivors = blended.map(({ rerankScore: _ce, blended: _b, ...r }, i) => ({ ...r, score: scores[i] }) as MemorySearchResult)
+  }
+  if (opts.diversify) {
     // BB2: gate to the relevant pool (with a floor), then MMR-rerank to `limit` using
     // cosine over the packed vectors (token-Jaccard fallback when vectors are absent),
     // so a cluster of near-identical hits doesn't crowd out diverse context.
@@ -2452,7 +2468,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // actively solicits supersedes/superseded-by edges to keep replaced decisions from
   // resurfacing, but only the graph-query path honored them — search (and the primer that
   // rides on it) returned the deprecated answer as top recall. Filter it here too.
-  const active = filterSuperseded(result, getAllEdges())
+  const active = dropSuperseded(result)
   searchCache.set(cacheKey, active)
   return active
 }
@@ -2542,7 +2558,7 @@ export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<M
   if (!opts || (!opts.id && !opts.query)) return []
   let startId = opts.id
   if (!startId && opts.query) {
-    const seed = await memorySearch({ query: opts.query, limit: 1 })
+    const seed = await memorySearch({ query: opts.query, limit: 1, includeEntities: true })
     startId = seed[0]?.id
   }
   if (!startId) return []
@@ -2567,7 +2583,7 @@ export async function memoryGraphQuery(opts: GraphQueryOptions): Promise<Array<M
   }
   // P3: never hand back a memory that a later one supersedes — the "no confusion as
   // the store grows" guarantee (superseded ids derive from supersedes/superseded-by edges).
-  const active = filterSuperseded(out, getAllEdges())
+  const active = dropSuperseded(out)
   active.sort((a, b) => b.score - a.score)
   return active
 }
@@ -2660,8 +2676,9 @@ export interface ListOptions {
   projectKey?: string
   /** Only entries strictly OLDER than this ts: a cursor for paging back past the 500 cap. */
   before?: number
-  /** Leave out what a search would not return: a memory a later one supersedes, and one whose net feedback has fallen
-   *  to the suppression bar. Off by default (the Memory panel lists everything); the primer's freshness lane asks. */
+  /** Leave out what a search would not return: a memory a later one supersedes, one whose net feedback has fallen
+   *  to the suppression bar, and entity stubs (graph nodes, not answers). Off by default (the Memory panel lists
+   *  everything); the primer's freshness lane and the agents' memory_list ask. */
   active?: boolean
 }
 
@@ -2685,13 +2702,76 @@ export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
     const key = opts.projectKey ?? projectKeyOf(opts.project)
     pool = pool.filter(e => matchesProject(e, { query: '', project: slug, projectKey: key }))
   }
-  // The same two exclusions memorySearch applies to its results, applied to the (by now narrow) pool before it is cut.
-  if (opts.active && pool.length > 0) pool = filterSuperseded(pool, getAllEdges()).filter(e => (usageMap.get(e.id) ?? 0) > SUPPRESS_THRESHOLD)
+  // The same exclusions memorySearch applies to its results, applied to the (by now narrow) pool before it is cut.
+  if (opts.active && pool.length > 0) pool = dropSuperseded(pool).filter(e => e.memoryType !== 'entity' && (usageMap.get(e.id) ?? 0) > SUPPRESS_THRESHOLD)
   return pool.slice(0, limit)
 }
 
 export function memoryCount(): number {
   return entries.length
+}
+
+// Memories memorySupersedePass has already compared against everything older. Session-only: after a
+// restart the pass starts again from the newest, and a re-drawn edge is a no-op (addMemoryEdge
+// writes nothing for an edge it already holds).
+const supersedeChecked = new Set<string>()
+
+/**
+ * Idle pass: draw `supersedes` edges from newer agent-written decisions / facts / lessons to the older
+ * ones they replace (mnemeSupersede.ts has the rules). Compares up to `batch` not-yet-checked memories,
+ * newest first, against every older eligible memory in the same project, by the packed vectors. A
+ * memory without a vector is skipped and stays unchecked, so it is picked up once it is embedded.
+ * Yields between candidates so a search arriving mid-pass waits for one candidate at most.
+ */
+export async function memorySupersedePass(opts: { batch?: number; max?: number; exclude?: string[] } = {}): Promise<{ considered: number; minted: number }> {
+  const batch = Math.max(1, Math.min(opts.batch ?? 100, 1000))
+  // Memories with a correction on file (main's overlay): they neither replace nor get replaced, and
+  // whatever one of them replaced before it was corrected comes back.
+  const exclude = new Set(opts.exclude ?? [])
+  for (const id of exclude) releaseSupersedes(id, 'replacer')
+  const vecOf = new Map<string, Float32Array>()
+  const pool: SupersedeEntry[] = []
+  for (const e of entries) {
+    const se: SupersedeEntry = { id: e.id, ts: e.ts, kind: e.kind, content: e.content, memoryType: e.memoryType, source: e.source, projectKey: e.projectKey, tags: e.tags }
+    if (!isSupersedable(se) || !se.projectKey || exclude.has(se.id)) continue
+    const row = entryRow.get(e)
+    const v = row !== undefined ? vectorStore.get(row) : null
+    if (!v) continue
+    vecOf.set(e.id, v)
+    pool.push(se)
+  }
+  const fresh = pool.filter((e) => !supersedeChecked.has(e.id)).sort((a, b) => b.ts - a.ts).slice(0, batch)
+  const cosine = (a: string, b: string): number | null => {
+    const va = vecOf.get(a), vb = vecOf.get(b)
+    if (!va || !vb) return null
+    let s = 0
+    for (let i = 0; i < va.length; i++) s += va[i] * vb[i]
+    return s
+  }
+  let minted = 0
+  let budget = Math.max(0, opts.max ?? 200)
+  let slice = Date.now()
+  for (const n of fresh) {
+    if (budget <= 0) break
+    if (Date.now() - slice >= 20) { await new Promise<void>((r) => setImmediate(r)); slice = Date.now() }
+    const edges = planSupersessions([n], pool, cosine, { max: budget, alreadySuperseded: isSuperseded, released: isSupersedeReleased })
+    for (const ed of edges) {
+      if (addMemoryEdge({ from: ed.from, to: ed.to, relation: 'supersedes', createdBy: `supersede:${ed.reason}` })) minted++
+    }
+    budget -= edges.length
+    // Only a memory compared against the whole pool counts as checked. One the edge budget cut short
+    // stays fresh, so the next pass finishes it.
+    if (budget > 0) supersedeChecked.add(n.id)
+  }
+  if (minted > 0) bumpSearchGen() // a cached answer may still hold a memory that is now replaced
+  return { considered: fresh.length, minted }
+}
+
+/** memory_correct on `id`: whatever it replaced comes back, for good (memoryGraph.releaseSupersedes). */
+export function memoryReleaseSupersedes(id: string): number {
+  const n = releaseSupersedes(id, 'replacer')
+  if (n > 0) bumpSearchGen()
+  return n
 }
 
 /** F13: the lessons (semantic/procedural) in the hot window, newest-first, up to `limit` —
@@ -2722,6 +2802,7 @@ export function memoryClear(): void {
   // undo the clear (clear doesn't touch ~/.claude etc; forgotSet is the anti-re-ingest guard).
   for (const h of liveHashes) rememberForgot(h)
   persistForgotSet()
+  supersedeChecked.clear()
   usageMap.clear()
   vectorStore = newVectorStore()
   rowToEntry.clear()

@@ -35,6 +35,8 @@ beforeAll(() => {
     memorySetPrimerLimit: vi.fn().mockResolvedValue({ success: true, data: { primerLimit: 30 } }),
     memoryGetLearnConversations: vi.fn().mockResolvedValue({ success: true, data: true }),
     memorySetLearnConversations: vi.fn().mockImplementation((value: boolean) => Promise.resolve({ success: true, data: { learnFromConversations: value } })),
+    memoryGetDistillHaiku: vi.fn().mockResolvedValue({ success: true, data: false }),
+    memorySetDistillHaiku: vi.fn().mockImplementation((value: boolean) => Promise.resolve({ success: true, data: { distillWithHaiku: value } })),
   }
   ;(window as any).updater = {
     getStatus: vi.fn().mockResolvedValue({ status: 'idle' }),
@@ -151,6 +153,58 @@ describe('SettingsPane', () => {
     expect((window as any).termpolis.memorySetPrimerLimit).toHaveBeenCalledWith(50)
     fireEvent.change(input, { target: { value: '0' } })
     expect((window as any).termpolis.memorySetPrimerLimit).toHaveBeenCalledWith(1)
+  })
+
+  // "Smarter lessons": Claude Haiku writes the lesson. It spends the user's quota, so it is OFF until they turn it on.
+  describe('Smarter lessons switch', () => {
+    const tp = () => (window as any).termpolis
+    const row = async () => await screen.findByTestId('settings-distill-haiku-toggle')
+
+    it('is a labelled switch, OFF by default, that says what it costs', async () => {
+      render(<SettingsPane />)
+      const sw = await row()
+      expect(sw).toHaveAttribute('role', 'switch')
+      expect(sw).toHaveAttribute('aria-checked', 'false')
+      expect(screen.getByText('Smarter lessons (uses Claude Haiku)')).toBeInTheDocument()
+      expect(screen.getByText(/small amount of your Claude usage/)).toBeInTheDocument()
+      await waitFor(() => expect(tp().memoryGetDistillHaiku).toHaveBeenCalled())
+    })
+
+    it('shows a saved ON, and each click tells main and follows its answer', async () => {
+      tp().memoryGetDistillHaiku.mockResolvedValueOnce({ success: true, data: true })
+      render(<SettingsPane />)
+      const sw = await row()
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+      fireEvent.click(sw)
+      expect(tp().memorySetDistillHaiku).toHaveBeenLastCalledWith(false)
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+      fireEvent.click(sw)
+      expect(tp().memorySetDistillHaiku).toHaveBeenLastCalledWith(true)
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+    })
+
+    it('a refused or lost save puts the switch back', async () => {
+      tp().memorySetDistillHaiku.mockResolvedValueOnce({ success: false, error: 'disk full' }).mockRejectedValueOnce(new Error('ipc gone'))
+      render(<SettingsPane />)
+      const sw = await row()
+      fireEvent.click(sw)
+      await waitFor(() => expect(tp().memorySetDistillHaiku).toHaveBeenCalledWith(true))
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+      fireEvent.click(sw)
+      await waitFor(() => expect(tp().memorySetDistillHaiku).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+    })
+
+    it('an answer main gives in another shape leaves the optimistic state, and a failed read keeps OFF', async () => {
+      tp().memoryGetDistillHaiku.mockRejectedValueOnce(new Error('gone'))
+      tp().memorySetDistillHaiku.mockResolvedValueOnce({ success: true, data: {} })
+      render(<SettingsPane />)
+      const sw = await row()
+      expect(sw).toHaveAttribute('aria-checked', 'false')
+      fireEvent.click(sw)
+      await waitFor(() => expect(tp().memorySetDistillHaiku).toHaveBeenCalledWith(true))
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+    })
   })
 
   // "Learn from conversations": the pause switch for conversation ingest and the indexer passes (main owns it).

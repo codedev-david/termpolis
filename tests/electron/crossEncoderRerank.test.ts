@@ -1,20 +1,20 @@
-// Tier-1 — an OPT-IN relevance reranker. The first-stage bi-encoder (bge) already hits recall@10
-// 0.971 on the benchmark and a cross-encoder adds per-pair latency, so this is OFF by default and
-// no relevance model is bundled (best-effort STRICTLY-LOCAL load → null → no-op). This proves the
-// mechanism: a supplied scorer reorders recall, and the absence of a scorer is a safe no-op.
+// The cross-encoder reranker as recall uses it: blendRerank's contract, the global gate, the injection
+// seams, and memorySearch handing the pool's own scores back out in the reranked order. The model load
+// path (fake ORT + the real model where fetched) is crossEncoderRerankModel.test.ts.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import {
-  rerankByScorer,
+  blendRerank,
   setRerankScorer,
-  getRerankScorer,
+  setRerankBatchScorer,
+  getRerankBatchScorer,
   setRerankEnabled,
   rerankEnabled,
   _resetRerankForTests,
   _setRerankModelPresentForTests,
-  type RerankScorer,
+  type RerankBatchScorer,
 } from '../../src/main/crossEncoderRerank'
 import {
   initSwarmMemory,
@@ -27,8 +27,8 @@ import {
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
-// All docs cluster near the all-ones direction → every mutual cosine is high+positive, so every doc
-// clears into the rerank candidate pool and the reranker (not the bi-encoder) decides the order.
+// All docs cluster near the all-ones direction → every mutual cosine is high and positive, so every doc
+// lands in the rerank pool with a distinct first-stage score.
 const embed = async (text: string): Promise<number[]> => {
   let s = 2166136261 >>> 0
   for (let i = 0; i < text.length; i++) s = (Math.imul(s ^ text.charCodeAt(i), 16777619)) >>> 0
@@ -38,7 +38,93 @@ const embed = async (text: string): Promise<number[]> => {
   return v.map((x) => x / norm)
 }
 
-describe('cross-encoder reranker (Tier-1)', () => {
+const cand = (id: string, score: number) => ({ id, content: id, score })
+const byContent = (m: Record<string, number>): RerankBatchScorer => async (_q, docs) => docs.map((d) => m[d] ?? 0)
+
+describe('blendRerank', () => {
+  it('alpha 1 orders by the cross-encoder alone, alpha 0 keeps the first stage', async () => {
+    const cands = [cand('a', 0.9), cand('b', 0.8), cand('c', 0.7)]
+    const ce = byContent({ a: -3, b: 5, c: 1 })
+    expect((await blendRerank('q', cands, ce, 1)).map((c) => c.id)).toEqual(['b', 'c', 'a'])
+    expect((await blendRerank('q', cands, ce, 0)).map((c) => c.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('min-max normalises both signals before mixing, and reports the raw logit and the blend', async () => {
+    const out = await blendRerank('q', [cand('a', 0.9), cand('b', 0.5)], byContent({ a: 0, b: 10 }), 0.5)
+    // a: 0.5·0 + 0.5·1 = 0.5;  b: 0.5·1 + 0.5·0 = 0.5 → a tie, and ties keep the first-stage order.
+    expect(out.map((c) => [c.id, c.rerankScore, c.blended])).toEqual([['a', 0, 0.5], ['b', 10, 0.5]])
+    const tilt = await blendRerank('q', [cand('a', 0.9), cand('b', 0.5)], byContent({ a: 0, b: 10 }), 0.6)
+    expect(tilt.map((c) => c.id)).toEqual(['b', 'a'])
+    expect(tilt[0].score).toBe(0.5) // the candidate's own score is untouched
+  })
+
+  it('a signal with no spread contributes 0.5 to everyone, so the other one decides', async () => {
+    const flatCe = await blendRerank('q', [cand('a', 0.9), cand('b', 0.5)], byContent({ a: 2, b: 2 }), 0.9)
+    expect(flatCe.map((c) => c.id)).toEqual(['a', 'b'])
+    const flatFs = await blendRerank('q', [cand('a', 0.7), cand('b', 0.7)], byContent({ a: 0, b: 1 }), 0.1)
+    expect(flatFs.map((c) => c.id)).toEqual(['b', 'a'])
+  })
+
+  it('0 or 1 candidates never call the scorer', async () => {
+    const scorer = vi.fn(async (_q: string, d: string[]) => d.map(() => 1))
+    expect(await blendRerank('q', [], scorer, 0.5)).toEqual([])
+    expect(await blendRerank('q', [cand('a', 0.4)], scorer, 0.5)).toEqual([{ ...cand('a', 0.4), rerankScore: 0, blended: 0.4 }])
+    expect(scorer).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['throws', async () => { throw new Error('boom') }],
+    ['answers the wrong length', async () => [1]],
+    ['answers a NaN', async () => [1, Number.NaN, 0]],
+    ['answers an Infinity', async () => [1, Number.POSITIVE_INFINITY, 0]],
+  ] as Array<[string, RerankBatchScorer]>)('a scorer that %s leaves the first-stage order untouched', async (_n, scorer) => {
+    const cands = [cand('a', 0.9), cand('b', 0.8), cand('c', 0.7)]
+    const out = await blendRerank('q', cands, scorer, 1)
+    expect(out.map((c) => [c.id, c.rerankScore, c.blended])).toEqual([['a', 0, 0.9], ['b', 0, 0.8], ['c', 0, 0.7]])
+  })
+
+  it('equal blends keep the first-stage order (the sort is stable)', async () => {
+    const cands = ['a', 'b', 'c', 'd'].map((id) => cand(id, 0.5))
+    expect((await blendRerank('q', cands, byContent({}), 0.5)).map((c) => c.id)).toEqual(['a', 'b', 'c', 'd'])
+  })
+})
+
+describe('reranker seams and gate', () => {
+  beforeEach(() => _resetRerankForTests())
+  afterEach(() => _resetRerankForTests())
+
+  it('setRerankEnabled flips the gate, and the reset seam puts it back OFF', () => {
+    // OFF by default: a cross-encoder adds a forward pass per candidate, so a gate that defaulted ON
+    // would silently add model latency to every recall in every suite.
+    expect(rerankEnabled()).toBe(false)
+    setRerankEnabled(true)
+    expect(rerankEnabled()).toBe(true)
+    setRerankEnabled(false)
+    expect(rerankEnabled()).toBe(false)
+    setRerankEnabled(true)
+    _resetRerankForTests()
+    expect(rerankEnabled()).toBe(false)
+  })
+
+  it('a per-pair scorer is batched, and a pair that rejects scores 0 instead of sinking the batch', async () => {
+    setRerankScorer(async (_q, doc) => {
+      if (doc === 'poison') throw new Error('tokenizer blew up on this pair')
+      return doc === 'high' ? 0.9 : 0.4
+    })
+    const s = await getRerankBatchScorer()
+    expect(await s!('q', ['poison', 'low', 'high'])).toEqual([0, 0.4, 0.9])
+  })
+
+  it('clearing an injected scorer falls back to the model, which is absent here', async () => {
+    setRerankBatchScorer(async (_q, d) => d.map(() => 1))
+    expect(await getRerankBatchScorer()).not.toBeNull()
+    setRerankScorer(null)
+    _setRerankModelPresentForTests(false)
+    expect(await getRerankBatchScorer()).toBeNull()
+  })
+})
+
+describe('memorySearch with the reranker', () => {
   let tmp: string
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rerank-'))
@@ -55,114 +141,44 @@ describe('cross-encoder reranker (Tier-1)', () => {
     try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
-  it('setRerankScorer(null) clears an injected scorer and resets the lazy loader', async () => {
-    setRerankScorer(async () => 1)
-    expect(await getRerankScorer()).not.toBeNull() // injected scorer returned
-    setRerankScorer(null) // clears cached + loadAttempted
-    _setRerankModelPresentForTests(false)
-    expect(await getRerankScorer()).toBeNull() // no injected, no model → null
-  })
-
-  it('rerankByScorer orders candidates by the scorer, descending', async () => {
-    const cands = [{ id: 'a', content: 'alpha' }, { id: 'b', content: 'bravo' }, { id: 'c', content: 'charlie' }]
-    const scorer: RerankScorer = async (_q, doc) => (({ alpha: 0.2, bravo: 0.9, charlie: 0.5 }) as Record<string, number>)[doc] ?? 0
-    const out = await rerankByScorer('q', cands, scorer)
-    expect(out.map((c) => c.id)).toEqual(['b', 'c', 'a'])
-  })
-
-  it('reorders recall to put the scorer’s top pick first (opt-in, injected scorer)', async () => {
-    const ids: string[] = []
-    for (const c of ['note about caching layers', 'note about the parser', 'note about TARGET the deploy pipeline', 'note about telemetry', 'note about the scheduler']) {
-      ids.push((await memoryWrite({ agentId: 'a', kind: 'fact', content: c })).id)
+  const seed = async (): Promise<void> => {
+    for (const c of ['note about caching layers', 'note about the parser', 'note about the deploy pipeline', 'note about telemetry', 'note about the scheduler']) {
+      await memoryWrite({ agentId: 'a', kind: 'fact', content: c })
     }
-    const targetId = ids[2]
-    setRerankScorer(async (_q, doc) => (doc.includes('TARGET') ? 1.0 : 0.1))
-    const hits = await memorySearch({ query: 'anything relevant here', limit: 5, rerank: true })
-    expect(hits[0]?.id).toBe(targetId) // the reranker, not the bi-encoder, decides #1
+  }
+
+  it('moves the cross-encoder pick to the top and hands the pool its own scores back in the new order', async () => {
+    await seed()
+    const off = await memorySearch({ query: 'anything relevant here', limit: 5, rerank: false })
+    expect(off).toHaveLength(5)
+    // Not the last one: with min-max normalisation a candidate at the very bottom of the first stage
+    // only ties the leader at alpha 0.5, so take the fourth.
+    const target = off[3]
+    setRerankBatchScorer(async (_q, docs) => docs.map((d) => (d === target.content ? 1 : 0)))
+    const on = await memorySearch({ query: 'anything relevant here', limit: 5, rerank: true })
+    expect(on[0].id).toBe(target.id)
+    expect(on.map((r) => r.score)).toEqual(off.map((r) => r.score))
+    expect(on.map((r) => r.id).sort()).toEqual(off.map((r) => r.id).sort())
   })
 
-  it('is a no-op when no reranker model/scorer is available (production-safe fallback)', async () => {
-    const ids: string[] = []
-    for (const c of ['aaa first note', 'bbb second note', 'ccc third note', 'ddd fourth note']) {
-      ids.push((await memoryWrite({ agentId: 'a', kind: 'fact', content: c })).id)
-    }
-    _setRerankModelPresentForTests(false) // no bundled relevance model → getRerankScorer() returns null
-    expect(await getRerankScorer()).toBeNull()
-    const off = await memorySearch({ query: 'aaa first note', limit: 4 })
-    const on = await memorySearch({ query: 'aaa first note', limit: 4, rerank: true })
-    expect(on.map((r) => r.id)).toEqual(off.map((r) => r.id))
-    void ids
-  })
-})
-
-// ── The arms a happy three-document reorder never reaches ────────────────────────────────────────
-// The suite above proves the mechanism end-to-end. What it never touches is the global gate, the
-// ≤1-candidate short-circuit, and a scorer that rejects for exactly ONE pair — and each of those is
-// a place where a regression is silent rather than loud.
-
-describe('cross-encoder reranker — the global opt-in gate', () => {
-  beforeEach(() => _resetRerankForTests())
-  afterEach(() => _resetRerankForTests())
-
-  it('setRerankEnabled flips the gate, and the reset seam puts it back OFF', () => {
-    // OFF by default is the whole safety story: a cross-encoder re-reads every (query, doc) pair,
-    // so a gate that defaulted ON would silently add per-pair model latency to every recall.
-    expect(rerankEnabled()).toBe(false)
-    setRerankEnabled(true)
-    expect(rerankEnabled()).toBe(true)
-    setRerankEnabled(false)
-    expect(rerankEnabled()).toBe(false)
-
-    setRerankEnabled(true)
-    _resetRerankForTests()
-    // The reset seam clears `enabled` too — otherwise a suite that opted in would leak the flag
-    // into every later suite in the same worker and rerank searches nobody asked to rerank.
-    expect(rerankEnabled()).toBe(false)
-  })
-})
-
-describe('rerankByScorer — short-circuit and per-item failure', () => {
-  it('scores nothing for 0 or 1 candidates, and hands back a COPY rather than the input array', async () => {
-    const scorer = vi.fn(async () => 1)
-    const empty: Array<{ id: string; content: string }> = []
-    const one = [{ id: 'a', content: 'alpha' }]
-
-    const outEmpty = await rerankByScorer('q', empty, scorer)
-    const outOne = await rerankByScorer('q', one, scorer)
-
-    expect(outEmpty).toEqual([])
-    expect(outOne).toEqual([{ id: 'a', content: 'alpha' }])
-    // `candidates.slice()`, not `candidates`: the result is sorted/spliced downstream, and returning
-    // the caller's own array would make the single-hit case alias the caller's recall list.
-    expect(outEmpty).not.toBe(empty)
-    expect(outOne).not.toBe(one)
-    // A list of one cannot be reordered, so a model round trip for it is pure latency.
+  it('follows the global gate when a search does not say, and a search can opt out', async () => {
+    await seed()
+    const scorer = vi.fn(async (_q: string, docs: string[]) => docs.map(() => 0))
+    setRerankBatchScorer(scorer)
+    await memorySearch({ query: 'gate check one', limit: 5 })
     expect(scorer).not.toHaveBeenCalled()
+    setRerankEnabled(true)
+    await memorySearch({ query: 'gate check two', limit: 5 })
+    expect(scorer).toHaveBeenCalledTimes(1)
+    await memorySearch({ query: 'gate check three', limit: 5, rerank: false })
+    expect(scorer).toHaveBeenCalledTimes(1)
   })
 
-  it('a scorer that REJECTS on one document degrades that document to 0, not the whole rerank', async () => {
-    const cands = [
-      { id: 'poison', content: 'poison' },
-      { id: 'low', content: 'low' },
-      { id: 'high', content: 'high' },
-    ]
-    const scorer: RerankScorer = async (_q, doc) => {
-      if (doc === 'poison') throw new Error('tokenizer blew up on this pair')
-      return doc === 'high' ? 0.9 : 0.4
-    }
-
-    const out = await rerankByScorer('q', cands, scorer)
-
-    // Without the per-item `.catch(() => 0)` a single bad pair rejects the Promise.all and sinks the
-    // entire rerank — the caller loses the ordering for every OTHER candidate because of one doc.
-    expect(out.map((c) => c.id)).toEqual(['high', 'low', 'poison'])
-  })
-
-  it('equal scores keep the first-stage bi-encoder order (the sort must be stable)', async () => {
-    // A model that cannot separate the candidates must not shuffle them: the bi-encoder ranking is
-    // the fallback signal, and an unstable sort would throw it away for no gain.
-    const cands = ['a', 'b', 'c', 'd'].map((id) => ({ id, content: id }))
-    const out = await rerankByScorer('q', cands, async () => 0.5)
-    expect(out.map((c) => c.id)).toEqual(['a', 'b', 'c', 'd'])
+  it('is byte-identical to the first stage when no model or scorer is available', async () => {
+    await seed()
+    _setRerankModelPresentForTests(false)
+    const off = await memorySearch({ query: 'note about the parser', limit: 4 })
+    const on = await memorySearch({ query: 'note about the parser', limit: 4, rerank: true })
+    expect(on).toEqual(off)
   })
 })

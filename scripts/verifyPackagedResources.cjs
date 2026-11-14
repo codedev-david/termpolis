@@ -41,6 +41,11 @@ const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs', 'mcp-adapter/t
 // job downloads the model first, then asserts it shipped.
 const EMBEDDING_MODEL_REL = path.join('models', 'bge-small-en-v1.5', 'onnx', 'model_quantized.onnx')
 const EMBEDDING_TOKENIZER_REL = path.join('models', 'bge-small-en-v1.5', 'tokenizer.json')
+// The cross-encoder recall re-reads its top candidates with (crossEncoderRerank.ts). Without it
+// recall silently keeps the first-stage order, so a failed download must fail the build, not ship.
+const RERANK_MODEL_REL = path.join('models', 'ms-marco-MiniLM-L-6-v2', 'onnx', 'model_quantized.onnx')
+const RERANK_TOKENIZER_REL = path.join('models', 'ms-marco-MiniLM-L-6-v2', 'tokenizer.json')
+const RERANK_TOKENIZER_CONFIG_REL = path.join('models', 'ms-marco-MiniLM-L-6-v2', 'tokenizer_config.json')
 
 /**
  * Resolve the platform-specific "Resources" directory that electron-builder
@@ -281,6 +286,17 @@ function verifyEmbeddingModelBundled(appOutDir) {
     throw new Error(`[verifyPackagedResources] embedding model is only ${modelSize} bytes (download failed?)`)
   }
 
+  for (const rel of [RERANK_MODEL_REL, RERANK_TOKENIZER_REL, RERANK_TOKENIZER_CONFIG_REL]) {
+    const full = path.join(resourcesDir, rel)
+    if (!fs.existsSync(full) || fs.statSync(full).size === 0) {
+      throw new Error(`[verifyPackagedResources] FATAL: bundled cross-encoder file missing/empty: ${full}`)
+    }
+  }
+  const rerankSize = fs.statSync(path.join(resourcesDir, RERANK_MODEL_REL)).size
+  if (rerankSize < 1_000_000) {
+    throw new Error(`[verifyPackagedResources] cross-encoder model is only ${rerankSize} bytes (download failed?)`)
+  }
+
   const ortDist = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules', 'onnxruntime-web', 'dist')
   if (!safeListDir(ortDist).some((f) => f.endsWith('.wasm'))) {
     throw new Error(`[verifyPackagedResources] onnxruntime-web WASM not asar-unpacked under ${ortDist}`)
@@ -288,7 +304,7 @@ function verifyEmbeddingModelBundled(appOutDir) {
 
   // eslint-disable-next-line no-console
   console.log(
-    `[verifyPackagedResources] OK — embedding model (${(modelSize / 1e6).toFixed(1)} MB) + onnxruntime-web WASM bundled`,
+    `[verifyPackagedResources] OK — embedding model (${(modelSize / 1e6).toFixed(1)} MB) + cross-encoder (${(rerankSize / 1e6).toFixed(1)} MB) + onnxruntime-web WASM bundled`,
   )
 }
 

@@ -175,6 +175,8 @@ const mem = vi.hoisted(() => ({
   memoryKnownHashes: vi.fn(async () => [] as string[]),
   edgeKeysIncident: vi.fn(async () => [] as string[]),
   weaveNeighboursBatch: vi.fn(async () => ({ w1: [{ id: 'w2', score: 0.9 }] }) as Record<string, any[]>),
+  memorySupersedePass: vi.fn(async () => ({ considered: 0, minted: 0 })),
+  memoryReleaseSupersedes: vi.fn(async () => 0),
 
   initSwarmMemory: vi.fn(),
   memoryWrite: vi.fn(async (i: any) => ({ id: 'm1', memoryType: 'semantic', ...i })),
@@ -1465,22 +1467,22 @@ describe('memory:get-primer-limit / memory:set-primer-limit', () => {
   })
 
   it('clamps a too-small value up to the minimum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
-    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
   })
 
   it('clamps a too-large value down to the maximum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
   })
 
   it('rounds a fractional value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
   })
 
   it('falls back to the default for junk and for a missing value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
-    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
-    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
   })
 
   it('a new limit is what the NEXT primer is built with', async () => {
@@ -1699,6 +1701,33 @@ describe('memory:reflect-session', () => {
     mneme.onSessionEpisode.mockResolvedValueOnce({ fired: false, lessons: 3, written: [] })
     expect(await deps.reflect({ id: 'ep3' })).toEqual({ fired: false, lessons: 3 })
     expect(metricsOfType('reflect')).toEqual([]) // didn't fire → nothing learned
+  })
+
+  // "Smarter lessons" (Settings): the Haiku distiller is attached only with the switch on AND a high-value episode, and the
+  // switch is read per episode, so turning it on takes effect on the next reflection without a restart.
+  it('attaches the Haiku distiller only with "Smarter lessons" on and a high-value episode', async () => {
+    expect(await invoke('memory:get-distill-haiku')).toEqual({ success: true, data: false })
+    const distillArg = async (): Promise<unknown> => {
+      await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+      await mneme.reflectSoloSession.mock.calls.at(-1)![1].reflect({ id: 'ep' })
+      mneme.distillEpisode.mockClear()
+      await mneme.onSessionEpisode.mock.calls.at(-1)![1].distill({ id: 'ep' })
+      return mneme.distillEpisode.mock.calls[0][1]
+    }
+    try {
+      mneme.isHighValueEpisode.mockClear()
+      mneme.isHighValueEpisode.mockReturnValue(true)
+      expect(await distillArg()).toEqual({}) // switch off: deterministic only
+      expect(mneme.isHighValueEpisode).not.toHaveBeenCalled() // and the episode is not even weighed
+      expect((await invoke('memory:set-distill-haiku', { value: true })).data).toEqual(expect.objectContaining({ distillWithHaiku: true }))
+      expect(await distillArg()).toEqual({ llm: expect.any(Function) })
+      mneme.isHighValueEpisode.mockReturnValue(false)
+      expect(await distillArg()).toEqual({}) // on, but an ordinary episode: deterministic only
+      expect((await invoke('memory:set-distill-haiku', { value: 'yes' })).data.distillWithHaiku).toBe(false) // only a literal true
+    } finally {
+      await invoke('memory:set-distill-haiku', { value: false })
+      mneme.isHighValueEpisode.mockReturnValue(false)
+    }
   })
 
   // 1.55: the substance gate refuses some lessons outright; the ledger has to say so, or "N distilled"
@@ -1986,7 +2015,7 @@ describe('MCP memory tools', () => {
 
   it('memory_list forwards its filters, project scope included', async () => {
     expect(await mcp.memoryList({ limit: 2, agentId: 'a', kind: 'note', since: 5, project: 'C:/repos/termpolis' })).toEqual([{ id: 'l1' }])
-    expect(mem.memoryList).toHaveBeenCalledWith({ limit: 2, agentId: 'a', kind: 'note', since: 5, project: 'C:/repos/termpolis' })
+    expect(mem.memoryList).toHaveBeenCalledWith({ limit: 2, agentId: 'a', kind: 'note', since: 5, project: 'C:/repos/termpolis', active: true })
   })
 
   it('memory_related and memory_graph forward their queries', async () => {
@@ -2535,6 +2564,29 @@ describe('memory indexer passes', () => {
     // The deferred effects really are applied.
     expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'a', to: 'b', relation: 'analogous', weight: 0.4, createdBy: 'weave' })
     expect(mem.backfillCodeRefs).toHaveBeenCalledWith('m1', [{ symbol: 'foo' }])
+  })
+
+  it('the idle pass draws supersedes edges in the memory process, logs only when it minted, and survives a failure', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      await indexerOpts().run()
+      expect(mem.memorySupersedePass).toHaveBeenCalledWith({ batch: 100, max: 200, exclude: [] })
+      // A memory with a correction on file takes no part (and gets back what it replaced).
+      const store = await import('../../src/main/memoryCorrectionStore')
+      store.correctMemory({ id: 'fixed-1', kind: 'retract', reason: 'wrong', by: 'david' })
+      await indexerOpts().run()
+      expect(mem.memorySupersedePass).toHaveBeenLastCalledWith({ batch: 100, max: 200, exclude: ['fixed-1'] })
+      store.resetMemoryCorrections()
+      expect(log.mock.calls.some((c) => String(c[0]).includes('[mneme] supersede'))).toBe(false)
+      mem.memorySupersedePass.mockResolvedValueOnce({ considered: 7, minted: 2 })
+      await indexerOpts().run()
+      expect(log).toHaveBeenCalledWith('[mneme] supersede: considered 7, minted 2')
+      mem.memorySupersedePass.mockRejectedValueOnce(new Error('host gone'))
+      mneme.runConversationIngest.mockResolvedValueOnce({ chunksWritten: 3, truncated: false })
+      await expect(indexerOpts().run()).resolves.toEqual({ written: 3, more: false })
+    } finally {
+      log.mockRestore()
+    }
   })
 
   it('a consolidation or weave failure never loses the ingest that already succeeded', async () => {
@@ -3347,7 +3399,7 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
     notesMock.finishQueuedRemovals.mockReset()
     notesMock.finishQueuedRemovals.mockImplementation(async () => ({ removed: 0, failed: 0 }))
     // Back to the defaults, whatever a test chose: notes on, sharing off.
-    await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
   })
 
   it('the full pass runs the notes pass, adds what it stored to the pass total, and carries its backlog forward', async () => {
@@ -3573,7 +3625,7 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
 
     it('does not when only the import switch is on', async () => {
       backend()
-      await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false })
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
       expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
     })
 

@@ -91,6 +91,38 @@ describe('BertTokenizer (deterministic)', () => {
   })
 })
 
+describe('BertTokenizer pairs (cross-encoder input)', () => {
+  it('builds [CLS] a [SEP] b [SEP] with token types 0 then 1', () => {
+    expect(makeTok().encodePair('hello', 'world test')).toEqual({ inputIds: [2, 4, 3, 5, 9, 3], tokenTypeIds: [0, 0, 0, 1, 1, 1] })
+  })
+
+  it('longest_first: trims the longer segment first, so a short query is never cut for a long passage', () => {
+    expect(makeTok().encodePair('hello world', 'test test test test test', 7).inputIds).toEqual([2, 4, 5, 3, 9, 9, 3])
+    expect(makeTok().encodePair('hello hello hello hello', 'world', 6).inputIds).toEqual([2, 4, 4, 3, 5, 3])
+  })
+
+  it('longest_first: once level, cuts both evenly with the odd token off the second segment', () => {
+    const r = makeTok().encodePair('hello world test', 'test test test', 6)
+    expect(r.inputIds).toEqual([2, 4, 5, 3, 9, 3])
+    expect(r.tokenTypeIds).toEqual([0, 0, 0, 0, 1, 1])
+  })
+
+  it('caps maxLength at modelMaxLength, defaults to it, and keeps only the specials under 3', () => {
+    expect(makeTok({ modelMaxLength: 5 }).encodePair('hello', 'world test', 99).inputIds).toEqual([2, 4, 3, 5, 3])
+    expect(makeTok({ modelMaxLength: 5 }).encodePair('hello', 'world test').inputIds).toEqual([2, 4, 3, 5, 3])
+    expect(makeTok().encodePair('hello', 'world', 2)).toEqual({ inputIds: [2, 3, 3], tokenTypeIds: [0, 0, 1] })
+  })
+
+  it('encodePairBatch right-pads every row to the longest with pad id, mask 0 and type 0', () => {
+    const enc = makeTok().encodePairBatch('hello', ['world', 'world test'])
+    expect(enc.inputIds).toEqual([[2, 4, 3, 5, 3, 0], [2, 4, 3, 5, 9, 3]])
+    expect(enc.attentionMask).toEqual([[1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 1, 1]])
+    expect(enc.tokenTypeIds).toEqual([[0, 0, 0, 1, 1, 0], [0, 0, 0, 1, 1, 1]])
+    expect(makeTok({ padToken: '[NOPAD]' }).encodePairBatch('hello', ['world', 'world test']).inputIds[0]).toEqual([2, 4, 3, 5, 3, 0])
+    expect(makeTok().encodePairBatch('hello', [])).toEqual({ inputIds: [], attentionMask: [], tokenTypeIds: [] })
+  })
+})
+
 describe('BertTokenizer.fromJSON (CI-runnable, no model needed)', () => {
   const rawJson = {
     model: { vocab: fixtureVocab, max_input_chars_per_word: 100, continuing_subword_prefix: '##' },

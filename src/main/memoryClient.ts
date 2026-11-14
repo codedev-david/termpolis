@@ -907,6 +907,10 @@ export const compactSelfShard = (opts?: { force?: boolean }): Promise<{ compacte
 export const persistMemoryIndex = (): Promise<void> => call('persistMemoryIndex', [])
 export const consolidationCandidates = (limit = 500): Promise<ConsolEntry[]> => call('consolidationCandidates', [limit])
 export const weaveCandidates = (limit = 300): Promise<WeaveEntry[]> => call('weaveCandidates', [limit])
+/** Idle pass: draw `supersedes` edges from newer agent-written knowledge to what it replaces (mnemeSupersede.ts). */
+export const memorySupersedePass = (opts: { batch?: number; max?: number; exclude?: string[] } = {}): Promise<{ considered: number; minted: number }> => call('memorySupersedePass', [opts])
+/** memory_correct on `id`: release every memory it replaced (memoryGraph.releaseSupersedes). */
+export const memoryReleaseSupersedes = (id: string): Promise<number> => call('memoryReleaseSupersedes', [id])
 export const weaveNeighbours = (id: string, k = 6): Promise<WeaveNeighbour[]> => call('weaveNeighbours', [id, k])
 /** Every candidate's neighbourhood in ONE round trip. runWeave calls neighbours() from inside a sync
  *  loop over ~300 candidates; proxying it per-id would be ~300 RPCs per idle pass. Pre-fetch this,

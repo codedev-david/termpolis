@@ -32,14 +32,14 @@ describe('memorySettings — primer limit', () => {
   it('defaults to 10 when nothing is persisted', async () => {
     const m = await freshModule()
     expect(m.getPrimerLimit()).toBe(10)
-    expect(m.getMemorySettings()).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect(m.getMemorySettings()).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
     expect(m.PRIMER_LIMIT_MIN).toBe(1)
     expect(m.PRIMER_LIMIT_MAX).toBe(50)
   })
 
   it('persists a set value to disk and returns it', async () => {
     const m = await freshModule()
-    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
     expect(m.getPrimerLimit()).toBe(20)
     expect(JSON.parse(readFileSync(settingsFile(), 'utf8')).primerLimit).toBe(20)
   })
@@ -159,7 +159,7 @@ describe('a settings file that is valid JSON but not an object', () => {
     for (const text of ['null', '7', '"x"']) {
       writeFileSync(settingsFile(), text)
       const m = await freshModule()
-      expect(m.getMemorySettings(), text).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: false, shareNotesAcrossProjects: false })
+      expect(m.getMemorySettings(), text).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: false, shareNotesAcrossProjects: false, distillWithHaiku: false })
     }
   })
 })
@@ -212,12 +212,12 @@ describe('learnFromConversations', () => {
     m.setPrimerLimit(19)
     m.setVectorQuantize(true)
     const s = m.setLearnFromConversations(false)
-    expect(s).toEqual({ primerLimit: 19, vectorQuantize: true, learnFromConversations: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect(s).toEqual({ primerLimit: 19, vectorQuantize: true, learnFromConversations: false, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
     m.setPrimerLimit(7)
     m.setVectorQuantize(false)
     expect(m.getLearnFromConversations()).toBe(false)
     const reloaded = await freshModule()
-    expect(reloaded.getMemorySettings()).toEqual({ primerLimit: 7, vectorQuantize: false, learnFromConversations: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect(reloaded.getMemorySettings()).toEqual({ primerLimit: 7, vectorQuantize: false, learnFromConversations: false, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
   })
 
   // NEGATIVE CONTROL: the switch is read live, so flipping it takes effect on the very next question.
@@ -418,7 +418,7 @@ describe('indexClaudeNotes and shareNotesAcrossProjects', () => {
     expect([m.getIndexClaudeNotes(), m.getIndexClaudeNotes()]).toEqual([false, false])
     expect([m.getShareNotesAcrossProjects(), m.getShareNotesAcrossProjects()]).toEqual([true, true])
     // The file is read once: changing it behind the module's back changes nothing until the next start.
-    writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: true, shareNotesAcrossProjects: false }))
+    writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false }))
     expect(m.getIndexClaudeNotes()).toBe(false)
     expect(m.getShareNotesAcrossProjects()).toBe(true)
   })
@@ -432,5 +432,36 @@ describe('indexClaudeNotes and shareNotesAcrossProjects', () => {
     expect((await freshModule()).setShareNotesAcrossProjects(false)).toMatchObject({ shareNotesAcrossProjects: false, indexClaudeNotes: false, primerLimit: 17 })
     expect((await freshModule()).setIndexClaudeNotes(true)).toMatchObject({ indexClaudeNotes: true, shareNotesAcrossProjects: false, primerLimit: 17 })
     expect(JSON.parse(readFileSync(settingsFile(), 'utf8'))).toMatchObject({ indexClaudeNotes: true, shareNotesAcrossProjects: false, primerLimit: 17 })
+  })
+})
+
+// "Smarter lessons" (Claude Haiku distils a lesson). It spends the user's quota, so it is OFF until a literal yes.
+describe('distillWithHaiku', () => {
+  it('is off by default, and off in a settings file from before it existed', async () => {
+    expect((await freshModule()).getDistillWithHaiku()).toBe(false)
+    writeFileSync(settingsFile(), JSON.stringify({ primerLimit: 12, learnFromConversations: true }))
+    const m = await freshModule()
+    expect(m.getDistillWithHaiku()).toBe(false)
+    expect(m.getPrimerLimit()).toBe(12)
+  })
+
+  it('persists across a restart without disturbing the other settings', async () => {
+    const m = await freshModule()
+    m.setPrimerLimit(9)
+    expect(m.setDistillWithHaiku(true)).toMatchObject({ distillWithHaiku: true, primerLimit: 9 })
+    const again = await freshModule()
+    expect(again.getDistillWithHaiku()).toBe(true)
+    expect(again.getPrimerLimit()).toBe(9)
+    expect(again.setDistillWithHaiku(false).distillWithHaiku).toBe(false)
+    expect((await freshModule()).getDistillWithHaiku()).toBe(false)
+  })
+
+  it('only a literal true turns it on, set or read from the file', async () => {
+    const m = await freshModule()
+    for (const junk of ['true', 1, 'yes', null, undefined, {}]) expect(m.setDistillWithHaiku(junk).distillWithHaiku).toBe(false)
+    for (const [junk, want] of [['yes', false], [1, false], [null, false], [true, true]] as const) {
+      writeFileSync(settingsFile(), JSON.stringify({ distillWithHaiku: junk }))
+      expect((await freshModule()).getDistillWithHaiku(), JSON.stringify(junk)).toBe(want)
+    }
   })
 })

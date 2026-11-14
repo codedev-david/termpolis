@@ -23,3 +23,9 @@ export const modelDir: string | undefined = candidates.find((c) =>
 )
 
 export const hasBundledModel = modelDir !== undefined
+
+/** The ms-marco cross-encoder (crossEncoderRerank.ts), fetched beside bge by scripts/download-embedding-model.sh. */
+const rerankDir = path.join(process.cwd(), 'resources', 'models', 'ms-marco-MiniLM-L-6-v2')
+export const hasRerankModel =
+  fs.existsSync(path.join(rerankDir, 'tokenizer.json')) &&
+  (fs.existsSync(path.join(rerankDir, 'model_quantized.onnx')) || fs.existsSync(path.join(rerankDir, 'onnx', 'model_quantized.onnx')))

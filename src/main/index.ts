@@ -272,7 +272,7 @@ import {
 import { registerMcpIpc } from './mcpIpc'
 import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
-import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
+import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory, correctedMemoryIds } from './memoryCorrectionStore'
 import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2_MARKER } from './mnemeLessonRecheck'
 import { withoutCandidates } from './lessonSubstance'
 import { runClaudeNotesIngest, removeImportedNotes, finishQueuedRemovals, clearNotesRecord, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
@@ -305,7 +305,7 @@ import {
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
   entrySimMatrix,
   setMemoryScrubber,
-  weaveCandidates, weaveNeighboursBatch, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
+  weaveCandidates, weaveNeighboursBatch, memorySupersedePass, memoryReleaseSupersedes, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption, enableLocalEncryption, disableEncryption,
   startNewMemoryKey,
   persistMemoryIndex,
@@ -545,12 +545,14 @@ async function locateIssueSites(issue: string, projectKey?: string, limit?: numb
   }
 }
 
-// v1.23 C7 — OPTIONAL headless LLM enrichment of reflection, OFF by default (a frontier feature,
-// like adaptEnabled / prfEnabled / graphFusionEnabled). When TERMPOLIS_MNEME_DISTILLER=1, a
-// high-value episode ALSO gets a cheap `claude -p --model haiku` lesson (net-positive on tokens:
-// the stored lesson prevents later re-derivation). The zero-token deterministic extractor always
-// runs regardless, and the distiller never throws — so reflection can't be broken by enabling it.
-const MNEME_DISTILLER_ENABLED = process.env.TERMPOLIS_MNEME_DISTILLER === '1'
+// v1.23 C7 — OPTIONAL headless LLM enrichment of reflection, OFF by default. With Settings ▸ Memory
+// "Smarter lessons" on (or TERMPOLIS_MNEME_DISTILLER=1 for a run), a high-value episode ALSO gets a
+// cheap `claude -p --model haiku` lesson (net-positive on tokens: the stored lesson prevents later
+// re-derivation). The zero-token deterministic extractor always runs regardless, and the distiller
+// never throws — so reflection can't be broken by enabling it. Read per episode, so the switch takes
+// effect on the next reflection without a restart.
+const MNEME_DISTILLER_FORCED = process.env.TERMPOLIS_MNEME_DISTILLER === '1'
+const distillerEnabled = (): boolean => MNEME_DISTILLER_FORCED || getDistillWithHaiku()
 const headlessDistiller = makeHeadlessDistiller()
 
 /**
@@ -581,7 +583,7 @@ async function reflectOnTask(
         source: 'swarm',
       },
       {
-        distill: (ep) => distillEpisode(ep, MNEME_DISTILLER_ENABLED && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
+        distill: (ep) => distillEpisode(ep, distillerEnabled() && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
         write: (input) => memoryWrite(input),
         recordOutcome,
         now: Date.now(),
@@ -608,7 +610,7 @@ async function reflectOnTask(
 // just re-reads, and the content-addressed store dedups any overlap.
 import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
 import { createPrimerRecent } from './primerLane'
-import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects } from './memorySettings'
+import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects, getDistillWithHaiku, setDistillWithHaiku } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import { scheduleNoNewPrivsNotice } from './noNewPrivs'
 import { installSudoAskpass, sudoAskpassPath } from './sudoAskpass'
@@ -2814,6 +2816,14 @@ ipcMain.handle('memory:set-learn-conversations', async (_, opts: { value: boolea
   } catch (e: any) { return err(e.message) }
 })
 
+// "Smarter lessons": Claude Haiku writes the lesson after a substantial session (default OFF; spends the user's quota).
+ipcMain.handle('memory:get-distill-haiku', async () => {
+  try { return ok(getDistillWithHaiku()) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('memory:set-distill-haiku', async (_, opts: { value: boolean }) => {
+  try { return ok(setDistillWithHaiku(opts?.value)) } catch (e: any) { return err(e.message) }
+})
+
 // Claude Code's saved notes in memory (claudeNotesIngest.ts): the two switches, what was imported, and the undo.
 registerClaudeNotesIpc(ipcMain, {
   index: { get: getIndexClaudeNotes, set: setIndexClaudeNotes },
@@ -3019,7 +3029,7 @@ ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', asyn
           // returns, so the edges are on the graph before this resolves.
           const edges = collectEdges()
           return onSessionEpisode(episode, {
-            distill: (ep) => distillEpisode(ep, MNEME_DISTILLER_ENABLED && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
+            distill: (ep) => distillEpisode(ep, distillerEnabled() && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
             write: async (input) => {
               try { return await memoryWrite(input) } catch (e: any) {
                 if (isWriteRefusedMessage(e?.message)) refused = true
@@ -4263,6 +4273,8 @@ async function semanticPoolOptions(
         kind: opts.kind as MemoryEntry['kind'] | undefined,
         since: opts.since,
         project: opts.project,
+        // What an agent should act on: no superseded memory, no suppressed one, no entity stub (each lesson mints a few).
+        active: true,
       }), (rows) => visibleNotes(rows, opts.project), LIST_READ)),
       // Behind-the-scenes memory load: agents call this (prompted by the one-line
       // launch pointer) instead of having the digest pasted into the terminal.
@@ -4386,7 +4398,12 @@ async function semanticPoolOptions(
       // In-flow memory correction: the agent (or the user through it) can strike out a
       // wrong recall at the moment it surfaces, instead of filing it for a review pass
       // that never happens. Nothing is deleted — see memoryCorrection.ts.
-      memoryCorrect: (opts) => correctMemory({ id: opts.id, kind: opts.kind as 'retract' | 'amend' | 'demote', reason: opts.reason, replacement: opts.replacement }),
+      memoryCorrect: (opts) => {
+        const r = correctMemory({ id: opts.id, kind: opts.kind as 'retract' | 'amend' | 'demote', reason: opts.reason, replacement: opts.replacement })
+        // A corrected memory no longer gets to hide what it replaced (mnemeSupersede.ts).
+        if (r.ok) void memoryReleaseSupersedes(opts.id).catch(() => { /* best effort; the idle pass releases it too */ })
+        return r
+      },
       // Governed access to EXTERNAL MCP servers. Termpolis has always published tools to
       // the agents; this is the other direction, and it is the only path by which an
       // upstream server's traffic passes the app's policy, secret scan and audit log.
@@ -4454,10 +4471,14 @@ async function semanticPoolOptions(
       }),
       recallBench: async (opts) => {
         const limit = Math.min(Math.max(opts.limit ?? 200, 20), 1000)
-        const entries = await memoryList({ limit, project: opts.project })
+        // Probe only what search can return: no entity stubs, no superseded memories, and no link whose
+        // target is one of them, or the bench reports a regression that is the filter working.
+        const entries = await memoryList({ limit, project: opts.project, active: true })
+        const listed = new Set(entries.map((e) => e.id))
         const sample = await memoryGraphSample({ limit: Math.min(limit, 300) })
         const links = new Map<string, string[]>()
         for (const edge of sample.edges) {
+          if (!listed.has(edge.to)) continue
           const list = links.get(edge.from)
           if (list) list.push(edge.to)
           else links.set(edge.from, [edge.to])
@@ -5000,6 +5021,13 @@ async function semanticPoolOptions(
             try { await backfillCodeRefs(b.id, b.refs) } catch { /* best effort */ }
           }
           await weaveEdges.flush()
+        } catch { /* best effort */ }
+        // Supersession: a newer agent-written decision / fact / lesson that restates, contradicts or
+        // explicitly replaces an older one gets a `supersedes` edge, so recall stops returning the
+        // replaced one (mnemeSupersede.ts). Runs entirely in the memory process; one round trip.
+        try {
+          const sup = await memorySupersedePass({ batch: 100, max: 200, exclude: correctedMemoryIds() })
+          if (sup.minted > 0) console.log(`[mneme] supersede: considered ${sup.considered}, minted ${sup.minted}`)
         } catch { /* best effort */ }
         const result = passResult(stats)
         return { ...result, written: result.written + notesWritten, more: result.more || notesMore }

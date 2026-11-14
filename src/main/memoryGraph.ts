@@ -208,6 +208,7 @@ let graphPath: string | null = null
 export function initMemoryGraph(dir: string): void {
   adjacency.clear()
   reverseAdjacency.clear()
+  releasedPairs.clear()
   edgeCount = 0
   graphBytesAtLoad = 0
   graphPath = path.join(dir, 'memory-graph.jsonl')
@@ -228,6 +229,8 @@ export function initMemoryGraph(dir: string): void {
           // Wave2 (graph-edges-dangle): a {removeNode:id} marker prunes edges incident to a
           // deleted memory — applied in append order so edges re-added after it survive.
           if (e && typeof e.removeNode === 'string') { removeIncidentInMemory(e.removeNode); return }
+          const rel = (e as { releaseSupersede?: { newer?: unknown; older?: unknown } }).releaseSupersede
+          if (rel && typeof rel.newer === 'string' && typeof rel.older === 'string') { applyRelease(rel.newer, rel.older); return }
           if (e && e.from && e.to && e.relation) indexEdge(e, false) // defer the sort
         } catch { /* skip a corrupt line */ }
       })
@@ -369,6 +372,7 @@ export function removeNodeEdges(id: string): number {
 export function clearMemoryGraph(): void {
   adjacency.clear()
   reverseAdjacency.clear()
+  releasedPairs.clear()
   edgeCount = 0
   if (graphPath) { try { fs.writeFileSync(graphPath, '') } catch { /* best effort */ } }
 }
@@ -445,6 +449,11 @@ export function compactGraphLog(): boolean {
     for (const list of adjacency.values()) {
       for (const e of list) { out += JSON.stringify(e) + '\n'; lines++ }
     }
+    // A released pair is a standing "don't draw this again" for the idle supersede pass, not an edge.
+    for (const k of releasedPairs) {
+      const [newer, older] = k.split('\0')
+      out += JSON.stringify({ releaseSupersede: { newer, older } }) + '\n'; lines++
+    }
     // Redundancy, not size, is the trigger: a genuinely large graph has nothing to collapse, and
     // rewriting it would be pure risk. Compare bytes, since a line's length varies with its ids.
     if (out.length * GRAPH_COMPACT_MIN_RATIO > size) return false
@@ -512,6 +521,78 @@ export function edgeKeysIncident(ids: string[]): string[] {
     for (const e of reverseAdjacency.get(id) ?? []) keys.add(`${e.from}\0${e.to}\0${e.relation}`)
   }
   return [...keys]
+}
+
+/**
+ * Whether a newer memory has replaced `id`: an outgoing `superseded-by` or an incoming `supersedes`.
+ * The same rule as mnemeGraphLogic.supersededIds, answered from the two adjacency maps in O(degree)
+ * instead of flattening every edge in the graph (611k of them on a real brain) once per search.
+ */
+export function isSuperseded(id: string): boolean {
+  for (const e of adjacency.get(id) ?? []) if (e.relation === 'superseded-by') return true
+  for (const e of reverseAdjacency.get(id) ?? []) if (e.relation === 'supersedes') return true
+  return false
+}
+
+// Pairs (newer\0older) whose supersession was released: by memory_correct on the newer memory, or by an
+// agent writing the older memory again. Persisted as {releaseSupersede} markers in the graph log, so the
+// idle pass (swarmMemory.memorySupersedePass) never draws the same edge again after a restart.
+const releasedPairs = new Set<string>()
+
+/** Remove every supersedes / superseded-by edge between newer and older (in memory only) and remember the pair. */
+function applyRelease(newer: string, older: string): void {
+  releasedPairs.add(`${newer}\0${older}`)
+  dropEdge(newer, older, 'supersedes')
+  dropEdge(older, newer, 'superseded-by')
+}
+
+function dropEdge(from: string, to: string, relation: string): void {
+  const list = adjacency.get(from)
+  if (!list) return
+  const kept = list.filter((x) => !(x.to === to && x.relation === relation))
+  if (kept.length === list.length) return
+  edgeCount -= list.length - kept.length
+  if (kept.length) adjacency.set(from, kept)
+  else adjacency.delete(from)
+  const rlist = reverseAdjacency.get(to) ?? []
+  const rkept = rlist.filter((x) => !(x.from === from && x.relation === relation))
+  if (rkept.length) reverseAdjacency.set(to, rkept)
+  else reverseAdjacency.delete(to)
+}
+
+/**
+ * Undo supersession around `id`. side 'replacer': every memory `id` replaced comes back (the newer one
+ * was retracted, amended or demoted). side 'replaced': `id` itself comes back (an agent wrote it again).
+ * Each released pair is logged, so it survives a restart and the idle pass leaves it alone. Returns how
+ * many pairs were released.
+ */
+export function releaseSupersedes(id: string, side: 'replacer' | 'replaced'): number {
+  if (!id) return 0
+  const pairs: Array<[string, string]> = []
+  if (side === 'replacer') {
+    for (const e of adjacency.get(id) ?? []) if (e.relation === 'supersedes') pairs.push([id, e.to])
+    for (const e of reverseAdjacency.get(id) ?? []) if (e.relation === 'superseded-by') pairs.push([id, e.from])
+  } else {
+    for (const e of reverseAdjacency.get(id) ?? []) if (e.relation === 'supersedes') pairs.push([e.from, id])
+    for (const e of adjacency.get(id) ?? []) if (e.relation === 'superseded-by') pairs.push([e.to, id])
+  }
+  for (const [newer, older] of pairs) {
+    applyRelease(newer, older)
+    if (graphPath) {
+      try { fs.appendFileSync(graphPath, JSON.stringify({ releaseSupersede: { newer, older } }) + '\n') } catch { /* best effort */ }
+    }
+  }
+  return pairs.length
+}
+
+/** Whether supersession of `older` by `newer` was released (see releaseSupersedes). */
+export function isSupersedeReleased(newer: string, older: string): boolean {
+  return releasedPairs.has(`${newer}\0${older}`)
+}
+
+/** Drop hits a newer memory has replaced (see isSuperseded). Order-preserving. */
+export function dropSuperseded<T extends { id: string }>(hits: T[]): T[] {
+  return hits.filter((h) => !isSuperseded(h.id))
 }
 
 /** All forward edges as a flat list — for consumers that need the whole edge set
@@ -602,6 +683,7 @@ export function expandWithGraph<T extends { id: string; score: number }>(
 export function _resetGraphForTests(): void {
   adjacency.clear()
   reverseAdjacency.clear()
+  releasedPairs.clear()
   edgeCount = 0
   graphBytesAtLoad = 0
   graphPath = null

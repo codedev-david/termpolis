@@ -105,6 +105,8 @@ export function SettingsPane() {
   const [soloLearning, setSoloLearning] = useState(() => isSoloLearningEnabled())
   // "Learn from conversations" lives in main (the indexer reads it there), so the row shows what main says.
   const [learnConversations, setLearnConversations] = useState<boolean>(true)
+  // "Smarter lessons" (Claude Haiku distils a lesson after a substantial session) also lives in main. Default OFF.
+  const [distillHaiku, setDistillHaiku] = useState<boolean>(false)
   const [autoReprime, setAutoReprime] = useState(() => isAutoReprimeOnCompactionEnabled())
   const [autoIndex, setAutoIndex] = useState(() => isAutoIndexEnabled())
   const [termDefaults, setTermDefaults] = useState(() => getTerminalDefaults())
@@ -120,6 +122,21 @@ export function SettingsPane() {
       if (res?.success && typeof res.data === 'number') setPrimerLimit(res.data)
     })?.catch(() => {})
   }, [])
+
+  useEffect(() => {
+    void window.termpolis.memoryGetDistillHaiku?.()?.then((res) => {
+      if (res?.success && typeof res.data === 'boolean') setDistillHaiku(res.data)
+    })?.catch(() => {})
+  }, [])
+
+  const toggleDistillHaiku = () => {
+    const next = !distillHaiku
+    setDistillHaiku(next)
+    void window.termpolis.memorySetDistillHaiku?.(next)?.then((res) => {
+      if (res?.success && typeof res.data?.distillWithHaiku === 'boolean') setDistillHaiku(res.data.distillWithHaiku)
+      else if (res && !res.success) setDistillHaiku(!next)
+    })?.catch(() => setDistillHaiku(!next))
+  }
 
   useEffect(() => {
     void window.termpolis.memoryGetLearnConversations?.()?.then((res) => {
@@ -545,6 +562,32 @@ export function SettingsPane() {
                 completely, for example to rule it out while you are chasing a slowdown. Nothing is
                 deleted and memory search keeps working; it just stops adding. Turning it back on picks
                 up where it left off.
+              </span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+            <button
+              onClick={toggleDistillHaiku}
+              role="switch"
+              aria-checked={distillHaiku}
+              aria-label="Toggle smarter lessons with Claude Haiku"
+              data-testid="settings-distill-haiku-toggle"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+                distillHaiku ? 'bg-[#0078d4]' : 'bg-[#555]'
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                distillHaiku ? 'translate-x-5' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Smarter lessons (uses Claude Haiku)</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                Off by default. After a substantial agent session, Termpolis asks Claude Haiku, on your own
+                Claude login, to write down what was decided or fixed as a short lesson, alongside the
+                built-in extractor that always runs locally. Lessons come out clearer and easier to find,
+                at the cost of a small amount of your Claude usage per session. Needs Claude Code
+                installed and signed in; if it is not, nothing happens.
               </span>
             </div>
           </div>
