@@ -743,10 +743,13 @@ const closeAll = (servers: http.Server[]): Promise<void> =>
 
 // 10 s, not 2: the rotation tests reread files of 2 MB and more every 20 ms under eight concurrent requests, and a
 // macOS runner missed 2 s on v1.55.4. A passing wait returns as soon as it holds, so the margin costs nothing.
+// A predicate that THROWS is "not yet", not a failure: a reopened log is created by the stream's asynchronous open,
+// so a read right after the request can meet ENOENT (a macOS runner did, on v1.62.0). Only the final check may throw.
 async function waitFor(predicate: () => boolean, ms = 10_000): Promise<void> {
   const deadline = Date.now() + ms
+  const holds = (): boolean => { try { return predicate() } catch { return false } }
   while (Date.now() < deadline) {
-    if (predicate()) return
+    if (holds()) return
     await new Promise((r) => setTimeout(r, 20))
   }
   expect(predicate()).toBe(true) // fail with the real assertion, not a silent timeout
