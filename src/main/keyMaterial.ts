@@ -1332,11 +1332,19 @@ function tailAbove(text: string, at: number, floor: number, last?: { short: numb
   return runs.reverse()
 }
 
-/** Two or more lines, 80 characters or more in all, that look random: a key's lines, not words. */
-function isKeyRun(text: string, runs: Run[]): boolean {
+/** Two or more lines, 80 characters or more in all, that look random: a key's lines, not words. `lengths`: an OpenSSH key's, whose
+ *  u32 length fields (`00 00 00 0b` before `ssh-ed25519`) after a random byte that is zero, as the last byte of its check value is
+ *  one key in 256, read as a run of six to eight `A`s: the run test of looksRandom took that for a placeholder's, and the tail of
+ *  such a key with its BEGIN line out of view was neither removed nor reported. Each such run is counted once and the rest judged
+ *  as before; a longer run, or a body mostly of them, is still no key's. */
+function isKeyRun(text: string, runs: Run[], lengths = false): boolean {
   if (runs.length < 2) return false
   const all = runs.map(([a, b]) => text.slice(a, b)).join('')
-  return all.length >= 80 && looksRandom(all)
+  if (all.length < 80) return false
+  if (looksRandom(all)) return true
+  if (!lengths) return false
+  const collapsed = all.replace(/(?<!A)A{6,8}(?!A)/g, 'A')
+  return collapsed !== all && collapsed.length >= 80 && looksRandom(collapsed)
 }
 
 /** Where a headless key tail's removal starts, or null when its head is in view (so it is not a
@@ -1659,7 +1667,7 @@ function headlessOnce(text: string, blocks: readonly KeyBlock[], opts: { start?:
         // wherever its BEGIN line went (a cut through it or the headers under it, a key rotated
         // in a diff).
         out.push({ rule, cls: 'remove', why: 'tail-decoded', from: runs[0][0], to: at + m[0].length })
-      } else if (isKeyRun(text, runs)) {
+      } else if (isKeyRun(text, runs, m[0].includes(' OPENSSH '))) {
         // An END line named in prose or code ends no key: what looks like one above it is reported
         // as anywhere else. So is a run whose head the doing side's own window start fell under
         // while it is still in the answer: only a key longer than the BEGIN line's reach (from the

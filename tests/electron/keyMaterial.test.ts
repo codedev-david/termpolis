@@ -40,7 +40,7 @@ import {
   type KeySpan,
 } from '../../src/main/keyMaterial'
 import { COST_SHAPES, within } from './fixtures/costShapes'
-import { JOIN, T1_JOININGS, armor, der, leakedWindows, makeKeys, pgpPhotoExport, pgpRsaBody, secretLinesOf, shownWhole, ssh2Key, wrap, type Format, type KeySet } from './fixtures/freshKeys'
+import { JOIN, T1_JOININGS, armor, der, leakedWindows, makeKeys, opensshEd25519, pgpPhotoExport, pgpRsaBody, secretLinesOf, shownWhole, ssh2Key, wrap, type Format, type KeySet } from './fixtures/freshKeys'
 
 // Several tests here screen a key in every joining at every cut offset, or 200 trials of 22 kinds of text: 10 to 15 s each on a quiet
 // laptop, 3 to 5 times that under coverage, and 30 to 60 s beside the rest of the suite (two of them failed on the default 30 s). A
@@ -5345,5 +5345,36 @@ describe('T1 K7: a JWK with no braces around it (YAML, TOML, properties) is read
     const r = screenKeys(text)
     expect(leakedWindows(r.text, [rsa.d as string, rsa.p as string, rsa.q as string])).toBe(0)
     expect(r.text.includes(chain)).toBe(true)
+  })
+})
+
+describe('T1 K1: the tail of an OpenSSH key whose check value ends in a zero byte (one key in 256)', () => {
+  // Its zero byte and the length field after it (`00 00 00 0b`, before `ssh-ed25519`) read as six `A`s in a row, which the run test
+  // of looksRandom takes for a placeholder's: with its BEGIN line out of view, such a key's tail was neither removed nor reported
+  // (a release run drew one of the random keys this file makes).
+  const F = opensshEd25519(generateKeyPairSync('ed25519').privateKey, Buffer.from([0x5a, 0xc3, 0x17, 0x00]))
+  const tail = F.slice(3)
+  const SIX = /(?<!A)A{6}(?!A)/
+
+  it('is removed, plainly, at the start of a cut text, and in a listing', () => {
+    expect(tail.join(''), 'the six A').toMatch(SIX)
+    for (const cutStart of [false, true]) {
+      const r = screenKeys(tail.join('\n'), { cutStart })
+      expect(Object.keys(r.removed), `cutStart ${cutStart}`).toEqual(['private_key'])
+      expect(leakedWindows(r.text, secretLinesOf(F)), `cutStart ${cutStart}`).toBe(0)
+    }
+    const listed = tail.map((l, i) => `C:\\keys\\id_ed25519:${i + 4}:${l}`).join('\n')
+    expect(Object.keys(screenKeys(listed).removed), 'rg under a Windows path').toEqual(['private_key'])
+  })
+
+  it('a longer run of zeros, lines that are no key once the run is counted once, or another END line, are not taken for it', () => {
+    // (the run made nine long in place, so the lines keep their width)
+    const nine = tail.map((l) => l.replace(/(?<!A)A{6}(?!A)[^A]{3}/, 'A'.repeat(9)))
+    expect(nine.map((l) => l.length)).toEqual(tail.map((l) => l.length))
+    expect(Object.keys(screenKeys(nine.join('\n')).removed), 'nine A').toEqual([])
+    const plain = ['AAAAAA' + 'abcdefghij'.repeat(6) + 'klmn', 'opqrstuvwx'.repeat(7), 'yzabcdefgh'.repeat(3) + '==', '-----END OPENSSH PRIVATE KEY-----']
+    expect(Object.keys(screenKeys(plain.join('\n')).removed), 'not random').toEqual([])
+    const pkcs8 = [...tail.slice(0, -1), '-----END PRIVATE KEY-----']
+    expect(Object.keys(screenKeys(pkcs8.join('\n')).removed), 'a PKCS#8 END line').toEqual([])
   })
 })

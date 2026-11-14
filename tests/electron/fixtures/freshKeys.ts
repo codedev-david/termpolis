@@ -7,7 +7,7 @@
 //
 // Also the ways an answer writes a key file's lines (JOIN), and the strict leak measure: whether
 // any 12 characters of a key line are still in a text.
-import { generateKeyPairSync, randomBytes } from 'crypto'
+import { generateKeyPairSync, randomBytes, type KeyObject } from 'crypto'
 
 /** `s` cut into lines of `w` characters, as PEM and base64 wrap it. */
 export const wrap = (s: string, w = 64): string[] => s.match(new RegExp(`.{1,${w}}`, 'g')) ?? []
@@ -169,22 +169,26 @@ interface JsonWebKey {
 }
 
 /** A fresh set of keys in every format. */
+/** An unencrypted Ed25519 key's OpenSSH file, built from the real key's bytes. `check`: its check value (random, as ssh-keygen
+ *  writes one; a test fixes it to one ending in a zero byte, which one key in 256 has). */
+export function opensshEd25519(key: KeyObject, check: Buffer = randomBytes(4)): string[] {
+  const okp = key.export({ format: 'jwk' }) as JsonWebKey
+  const seed = b64u(okp.d as string)
+  const pub = b64u(okp.x as string)
+  const type = Buffer.from('ssh-ed25519')
+  const pubBlob = Buffer.concat([sshStr(type), sshStr(pub)])
+  let priv = Buffer.concat([check, check, sshStr(type), sshStr(pub), sshStr(Buffer.concat([seed, pub])), sshStr(Buffer.from('probe@fresh'))])
+  for (let i = 1; priv.length % 8; i++) priv = Buffer.concat([priv, Buffer.from([i])])
+  const blob = Buffer.concat([Buffer.from('openssh-key-v1', 'latin1'), Buffer.from([0]), sshStr(Buffer.from('none')), sshStr(Buffer.from('none')), sshStr(Buffer.alloc(0)), u32(1), sshStr(pubBlob), sshStr(priv)])
+  return ['-----BEGIN OPENSSH PRIVATE KEY-----', ...wrap(blob.toString('base64'), 70), '-----END OPENSSH PRIVATE KEY-----']
+}
+
 export function makeKeys(): KeySet {
   const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 })
   const ec = generateKeyPairSync('ec', { namedCurve: 'P-256' })
   const ed = generateKeyPairSync('ed25519')
   const pass = randomBytes(9).toString('hex')
-
-  // OpenSSH (an unencrypted Ed25519 key), built from the real key's bytes.
   const okp = ed.privateKey.export({ format: 'jwk' }) as JsonWebKey
-  const seed = b64u(okp.d as string)
-  const pub = b64u(okp.x as string)
-  const type = Buffer.from('ssh-ed25519')
-  const pubBlob = Buffer.concat([sshStr(type), sshStr(pub)])
-  const check = randomBytes(4)
-  let priv = Buffer.concat([check, check, sshStr(type), sshStr(pub), sshStr(Buffer.concat([seed, pub])), sshStr(Buffer.from('probe@fresh'))])
-  for (let i = 1; priv.length % 8; i++) priv = Buffer.concat([priv, Buffer.from([i])])
-  const blob = Buffer.concat([Buffer.from('openssh-key-v1', 'latin1'), Buffer.from([0]), sshStr(Buffer.from('none')), sshStr(Buffer.from('none')), sshStr(Buffer.alloc(0)), u32(1), sshStr(pubBlob), sshStr(priv)])
 
   // OpenSSL's traditional DSA file: SEQUENCE { 0, p, q, g, y, x } of random integers.
   const big = (n: number): Buffer => {
@@ -206,7 +210,7 @@ export function makeKeys(): KeySet {
     pkcs1_rsa: pemLines(rsa.privateKey.export({ type: 'pkcs1', format: 'pem' }) as string),
     rsa_legacy_enc: pemLines(rsa.privateKey.export({ type: 'pkcs1', format: 'pem', cipher: 'aes-128-cbc', passphrase: pass }) as string),
     sec1_ec: pemLines(ec.privateKey.export({ type: 'sec1', format: 'pem' }) as string),
-    openssh: ['-----BEGIN OPENSSH PRIVATE KEY-----', ...wrap(blob.toString('base64'), 70), '-----END OPENSSH PRIVATE KEY-----'],
+    openssh: opensshEd25519(ed.privateKey),
     dsa: ['-----BEGIN DSA PRIVATE KEY-----', ...wrap(dsa.toString('base64')), '-----END DSA PRIVATE KEY-----'],
     pgp_rsa_hdr: armor(pgpRsa, ['Version: GnuPG v2', 'Comment: probe key']),
     pgp_rsa_nohdr: armor(pgpRsa, []),
