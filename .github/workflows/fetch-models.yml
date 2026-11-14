@@ -1,0 +1,34 @@
+# Fetches the bundled memory models (embedder + re-ranker) exactly as the release
+# build does, and uploads them as a workflow artifact.
+#
+# Why: some networks (a corporate TLS filter, for one) refuse huggingface.co, so
+# scripts/download-embedding-model.sh cannot run on that machine. Run this from
+# the Actions tab (or `gh workflow run fetch-models.yml`), then
+# `gh run download <run id> -n memory-models -D resources/models` to put the
+# files where a dev build and the model-backed tests look for them.
+
+name: Fetch models
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download models
+        run: bash scripts/download-embedding-model.sh
+      - name: Checksums
+        run: cd resources/models && find . -type f -name '*.onnx' -o -type f -name '*.json' | sort | xargs sha256sum
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memory-models
+          path: |
+            resources/models/bge-small-en-v1.5
+            resources/models/ms-marco-MiniLM-L-6-v2
+          retention-days: 3
