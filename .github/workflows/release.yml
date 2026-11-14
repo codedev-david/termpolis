@@ -94,7 +94,8 @@ jobs:
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+        # squashfs-tools: unsquashfs, for the snap check below.
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools squashfs-tools
 
       - name: Download bundled CLI tools
         run: bash scripts/download-tools.sh
@@ -288,6 +289,21 @@ jobs:
       - name: Verify embedding model bundled (Linux)
         if: matrix.platform == 'linux'
         run: node scripts/verifyPackagedResources.cjs --model dist-electron-builder/linux-unpacked
+      # The snap goes to the Snap Store (Ubuntu App Center) from publish-snap. Classic
+      # confinement, or every shell in the app would run inside the snap's sandbox.
+      - name: Verify the snap (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          set -euo pipefail
+          snap=$(ls dist-electron-builder/*.snap)
+          unsquashfs -cat "$snap" meta/snap.yaml | tee snap.yaml
+          grep -Eq '^name: termpolis$' snap.yaml
+          grep -Eq '^confinement: classic$' snap.yaml
+          grep -Fq "${GITHUB_REF_NAME#v}" snap.yaml
+          # Listed to a file first: grep -q stopping early would SIGPIPE unsquashfs under pipefail.
+          unsquashfs -l "$snap" > snap-files.txt
+          grep -Eq '/resources/app\.asar$' snap-files.txt
+          rm snap.yaml snap-files.txt
       - name: Verify MCP adapter in packaged output (macOS x64)
         if: matrix.platform == 'mac'
         shell: bash
@@ -446,6 +462,7 @@ jobs:
             dist-electron-builder/*.zip
             dist-electron-builder/*.AppImage
             dist-electron-builder/*.deb
+            dist-electron-builder/*.snap
             dist-electron-builder/*.blockmap
             dist-electron-builder/latest*.yml
 
@@ -696,6 +713,33 @@ jobs:
           }
           exit 0
 
+
+  # The Snap Store, which is what Ubuntu's App Center installs from. Gated on publish-release like
+  # Chocolatey, and uploads the release's own .snap. Needs SNAPCRAFT_STORE_CREDENTIALS (the output
+  # of `snapcraft export-login`), the name `termpolis` registered to the account, and Snapcraft's
+  # approval of classic confinement. Until then the step warns rather than reddening a release;
+  # channel-watch.yml emails when the store's stable version lags behind a release.
+  publish-snap:
+    needs: publish-release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch the published snap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release download "${GITHUB_REF_NAME}" --pattern "*.snap" --dir snap --clobber
+      - name: Upload to the Snap Store
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          if [ -z "$SNAPCRAFT_STORE_CREDENTIALS" ]; then
+            echo "::warning::SNAPCRAFT_STORE_CREDENTIALS is not set, so ${GITHUB_REF_NAME} did not go to the Snap Store."
+            exit 0
+          fi
+          sudo snap install snapcraft --classic
+          if ! snapcraft upload --release=stable snap/*.snap; then
+            echo "::warning::snapcraft upload failed. A classic snap waits for Snapcraft's manual review; see https://dashboard.snapcraft.io/snaps/termpolis/"
+          fi
 
   # Homebrew needs no job here: codedev-david/homebrew-termpolis polls
   # releases/latest every 30 minutes and pushes the new cask itself, after

@@ -1,5 +1,5 @@
-# Checks that the latest release actually reached Homebrew and Chocolatey, and
-# emails David when either one is stuck.
+# Checks that the latest release actually reached Homebrew, Chocolatey and the
+# Snap Store, and emails David when one is stuck.
 #
 # Why: neither channel can redden a release. The Chocolatey step is
 # continue-on-error (a moderation hiccup must not fail a release), and the
@@ -14,6 +14,9 @@
 #     version is "Rejected" / "Waiting for Maintainer" (moderation needs us), or
 #     it is still unapproved after MODERATION_DAYS (the moderation queue is
 #     normally hours, rarely a few days).
+#   - Snap Store: its latest/stable amd64 version is not the latest release. A snap
+#     the store doesn't know at all (not registered, or classic confinement still
+#     awaiting Snapcraft's review) is a warning, not a problem.
 #
 # On a problem it emails (an issue opened with GITHUB_TOKEN does not trigger
 # issue-email.yml, so it mails directly), opens or comments on one tracking
@@ -39,7 +42,7 @@ jobs:
   watch:
     runs-on: ubuntu-latest
     steps:
-      - name: Compare the latest release with Homebrew and Chocolatey
+      - name: Compare the latest release with Homebrew, Chocolatey and the Snap Store
         id: check
         uses: actions/github-script@v7
         with:
@@ -82,6 +85,25 @@ jobs:
             } else if (res) {
               core.warning(`Chocolatey answered ${res.status} for ${url}; not judging it this run.`)
               lines.push(`Chocolatey: page answered ${res.status} (not judged)`)
+            }
+
+            // Snap Store (Ubuntu's App Center): the latest/stable version for amd64.
+            let sres = null
+            try { sres = await fetch('https://api.snapcraft.io/v2/snaps/info/termpolis', { headers: { 'Snap-Device-Series': '16', 'user-agent': 'termpolis-release-channel-watch' } }) } catch (e) { core.warning(`Snap Store fetch failed: ${e.message}`) }
+            if (sres && sres.status === 404) {
+              core.warning('The Snap Store has no termpolis snap yet (name not registered, or the first upload is waiting for review).')
+              lines.push('Snap Store: not in the store yet (not judged)')
+            } else if (sres && sres.ok) {
+              const info = await sres.json()
+              const stable = (info['channel-map'] || []).find((c) => c.channel && c.channel.track === 'latest' && c.channel.risk === 'stable' && c.channel.architecture === 'amd64')
+              const snapV = stable ? stable.version : 'none'
+              lines.push(`Snap Store stable: ${snapV}`)
+              if (snapV !== v && ageH >= grace) {
+                problems.push(`Snap Store stable is at ${snapV}, but ${v} was released ${ageH.toFixed(1)} h ago. Check the release's "publish-snap" job (https://github.com/${owner}/termpolis/actions/workflows/release.yml) and https://dashboard.snapcraft.io/snaps/termpolis/`)
+              }
+            } else if (sres) {
+              core.warning(`The Snap Store answered ${sres.status}; not judging it this run.`)
+              lines.push(`Snap Store: answered ${sres.status} (not judged)`)
             }
 
             core.info(lines.join('\n'))

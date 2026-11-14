@@ -345,6 +345,9 @@ Full docs with screenshots: **[termpolis.com/docs](https://termpolis.com/docs.ht
 | macOS (Intel) | [Termpolis-x64.dmg](https://github.com/codedev-david/termpolis/releases/latest) | DMG | Signed & notarized (Apple) |
 | Linux (Debian / Ubuntu) | [termpolis_*.deb](https://github.com/codedev-david/termpolis/releases/latest) | .deb | — |
 | Linux (other distros) | [Termpolis.AppImage](https://github.com/codedev-david/termpolis/releases/latest) | AppImage | — |
+| Linux (snap, since v1.61.3) | [termpolis_*.snap](https://github.com/codedev-david/termpolis/releases/latest) | snap (classic) | — |
+
+**Snap.** Each release is also built as a classic-confinement snap, so Termpolis's shells see your real files and tools. Once the Snap Store has approved the listing, install it with `sudo snap install termpolis --classic` (or from Ubuntu's App Center); until then, `sudo snap install --classic --dangerous ./termpolis_*.snap` installs the file from the release. The Snap Store updates a store-installed snap itself, so Termpolis's own updater stays off in any snap; one installed from a file updates when you install the next release's file. Settings and memory live in `~/.config/termpolis`, the same folder the .deb and AppImage use, so removing the snap keeps them, and the shells it opens get your normal environment, not the snap's.
 
 > The Windows installer is code signed via SSL.com and the macOS DMG is signed and notarized with Apple Developer ID — both platforms will recognize Termpolis as a verified application. Download links point to the latest GitHub Release. See [Building from Source](#building-from-source) to compile locally.
 

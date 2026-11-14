@@ -1,6 +1,9 @@
 // FIRST, and it must stay first: it sets UV_THREADPOOL_SIZE before anything can start libuv's thread pool (see
 // threadpoolEnv.ts; tests/electron/threadpoolEnv.test.ts pins this line). Kill switch TERMPOLIS_NO_GOVERNOR=1.
 import './threadpoolEnv'
+// SECOND: in a snap, undoes what electron-builder's snap launcher exported (XDG homes moved into ~/snap, GTK
+// and library paths) before any shell or agent can inherit it (see snapEnv.ts). Nothing outside a snap.
+import { snapEnvCleanup } from './snapEnv'
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, MessageChannelMain, nativeImage, Notification, powerSaveBlocker, safeStorage, shell } from 'electron'
 import { initMainSentry } from './sentry'
 import { gpuPolicy } from './gpuPolicy'
@@ -33,6 +36,11 @@ if (process.env.NODE_ENV === 'test') startShutdownTrace()
 // hit 401. Pinning the name keeps userData consistent across all launch
 // modes (unpacked, packaged, CI).
 app.setName('termpolis')
+
+// The snap launcher had moved XDG_CONFIG_HOME into ~/snap/termpolis/<revision>. snapEnv.ts put it back; this
+// pins userData to the folder a .deb or AppImage uses, so settings and memory live in ~/.config/termpolis
+// whatever Electron read first, and survive `snap remove` (which deletes ~/snap/termpolis).
+if (snapEnvCleanup?.configHomeMoved) app.setPath('userData', join(homedir(), '.config', 'termpolis'))
 
 // Windows taskbar identity. The NSIS installer stamps the Start-menu/desktop
 // shortcut with an explicit AppUserModelID equal to build.appId. Windows groups

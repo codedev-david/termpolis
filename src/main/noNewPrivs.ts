@@ -102,6 +102,16 @@ export function runsFromAppImage(env: NodeJS.ProcessEnv, packageType: string | n
   return !!env.APPIMAGE && !SYSTEM_PACKAGE_TYPES.includes(packageType ?? '')
 }
 
+/**
+ * Whether this Termpolis runs from a snap, which snapd updates and electron-updater must leave
+ * alone. SNAP is inherited like APPIMAGE (a .deb Termpolis started from a snapped editor's terminal
+ * has that editor's), so the executable must also live inside it.
+ */
+export function runsFromSnap(env: NodeJS.ProcessEnv, execPath: string): boolean {
+  const dir = env.SNAP?.replace(/\/+$/, '')
+  return !!dir && execPath.startsWith(`${dir}/`)
+}
+
 export interface RelaunchTarget {
   pid: number
   execPath: string

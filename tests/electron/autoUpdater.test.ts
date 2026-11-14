@@ -5,7 +5,7 @@ import { join } from 'path'
 import type { UpdaterHost } from '../../src/main/autoUpdater'
 import { MOVE_FAILED_DIALOG, MOVE_OFFER_DIALOG, updateBlockerHint } from '../../src/main/updaterLocation'
 import { DISK_FULL_MESSAGE, NO_UPDATE_FEED_MESSAGE, UPDATE_SERVER_UNREACHABLE_MESSAGE } from '../../src/main/updaterErrors'
-import { NO_NEW_PRIVS_UPDATE_MESSAGE } from '../../src/main/autoUpdater'
+import { NO_NEW_PRIVS_UPDATE_MESSAGE, SNAP_UPDATE_MESSAGE } from '../../src/main/autoUpdater'
 import { hasNoNewPrivs } from '../../src/main/noNewPrivs'
 import {
   DEB_BUSY_MESSAGE,
@@ -99,6 +99,7 @@ const LINUX_HOST: Partial<UpdaterHost> = {
   platform: 'linux',
   exePath: '/opt/Termpolis/termpolis',
   appImage: true,
+  snap: false,
   ...DEB_PINS,
 }
 /** The .deb, Termpolis's Linux system package (debUpdate.ts). */
@@ -1114,6 +1115,16 @@ describe('initAutoUpdater dev/test short-circuit', () => {
     mod.initAutoUpdater(() => null)
     expect(mockAutoUpdater.on).not.toHaveBeenCalled()
     expect(await ipcHandlers.get('updater:check')!()).toEqual({ success: false, error: 'electron-updater unavailable' })
+  })
+
+  it('leaves a snap to snapd: no listeners, no checks, and a manual check says how to update', async () => {
+    const mod = await freshAutoUpdater({ ...LINUX_HOST, appImage: false, snap: true })
+    mod.initAutoUpdater(() => null)
+    expect(mockAutoUpdater.on).not.toHaveBeenCalled()
+    expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
+    expect(await ipcHandlers.get('updater:check')!()).toEqual({ success: false, error: SNAP_UPDATE_MESSAGE })
+    expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
+    expect(await ipcHandlers.get('updater:status')!()).toEqual(expect.objectContaining({ status: 'idle' }))
   })
 
   it("loads electron-updater's own autoUpdater by default, and gives up quietly when it won't load", async () => {

@@ -133,7 +133,8 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "snap"
       ],
       "icon": "build/icons",
       "category": "Development",
@@ -147,6 +148,11 @@
           "to": "disconnect-agents.cjs"
         }
       ]
+    },
+    "snap": {
+      "confinement": "classic",
+      "grade": "stable",
+      "summary": "Local-first terminal for running Claude, Codex and Gemini side by side"
     },
     "deb": {
       "depends": [

@@ -19,6 +19,7 @@ const {
   SYSTEM_PACKAGE_TYPES,
   readPackageType,
   runsFromAppImage,
+  runsFromSnap,
   relaunchArgv,
   relaunchCommand,
   systemdRelaunchArgs,
@@ -173,6 +174,17 @@ describe('an AppImage or a system package', () => {
     expect(runsFromAppImage(env, 'snap')).toBe(true)
     expect(runsFromAppImage({}, null)).toBe(false)
     expect(runsFromAppImage({ APPIMAGE: '' }, null)).toBe(false)
+  })
+
+  it('runs from a snap only when the executable is inside the SNAP it names', () => {
+    const exe = '/snap/termpolis/42/termpolis'
+    expect(runsFromSnap({ SNAP: '/snap/termpolis/42' }, exe)).toBe(true)
+    expect(runsFromSnap({ SNAP: '/snap/termpolis/42/' }, exe)).toBe(true)
+    // Inherited from a snapped editor's terminal by a .deb Termpolis.
+    expect(runsFromSnap({ SNAP: '/snap/code/180' }, '/opt/Termpolis/termpolis')).toBe(false)
+    expect(runsFromSnap({ SNAP: '/snap/termpolis/4' }, exe)).toBe(false)
+    expect(runsFromSnap({ SNAP: '' }, exe)).toBe(false)
+    expect(runsFromSnap({}, exe)).toBe(false)
   })
 
   it("gives this process's target its AppImage, decided that way", () => {

@@ -27,7 +27,7 @@ import {
   startDebInstall,
   type DebInstallStart,
 } from './debUpdate'
-import { hasNoNewPrivs, readPackageType, runsFromAppImage } from './noNewPrivs'
+import { hasNoNewPrivs, readPackageType, runsFromAppImage, runsFromSnap } from './noNewPrivs'
 import { sudoAskpassPath } from './sudoAskpass'
 import { recordUpdaterEvent } from './telemetry'
 import { createShedGate, type ShedGate } from './loopGovernor'
@@ -67,6 +67,10 @@ export interface UpdateState {
 }
 
 let currentState: UpdateState = { status: 'idle' }
+
+/** Check for updates, in a snap: snapd installs them, in the background. */
+export const SNAP_UPDATE_MESSAGE =
+  'This Termpolis came from the Snap Store, which updates it for you. To update now, run: sudo snap refresh termpolis'
 
 /** Shown instead of installing when no_new_privs would make the install's pkexec or sudo fail. */
 export const NO_NEW_PRIVS_UPDATE_MESSAGE =
@@ -165,6 +169,8 @@ export interface UpdaterHost {
   /** Running from an AppImage, decided as electron-updater decides which updater to use: by the
    *  package-type of a .deb where there is one, since APPIMAGE can be inherited (noNewPrivs.ts). */
   appImage: boolean
+  /** Running from a snap (noNewPrivs.ts): snapd updates it, so electron-updater never runs. */
+  snap: boolean
   /** Whether this process has Linux's no_new_privs set (noNewPrivs.ts). */
   noNewPrivs: () => boolean | null
   /** A .deb: start installing the downloaded package from outside Termpolis (debUpdate.ts). */
@@ -192,6 +198,7 @@ function defaultHost(): UpdaterHost {
     showMessageBox: (parent, options) =>
       parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options),
     appImage: runsFromAppImage(process.env, readPackageType()),
+    snap: runsFromSnap(process.env, process.execPath),
     noNewPrivs: () => hasNoNewPrivs(),
     installDeb: (deb, version) =>
       startDebInstall({ deb, from: app.getVersion(), target: version }, defaultDebInstallDeps(app.getPath('userData'), sudoAskpassPath())),
@@ -295,6 +302,7 @@ export function initAutoUpdater(
   })
   ipcMain.handle('updater:check', async () => {
     if (skipUpdater) return { success: false, error: 'auto-update disabled in dev/test' }
+    if (host.snap) return { success: false, error: SNAP_UPDATE_MESSAGE }
     // A check would only download an update to be refused again: say why instead.
     if (blockedHint) return { success: false, error: blockedHint }
     try {
@@ -307,7 +315,9 @@ export function initAutoUpdater(
     }
   })
 
-  if (skipUpdater) return
+  // A snap's files are read-only and snapd replaces them itself: electron-updater would take it for
+  // a .deb (no APPIMAGE, no package-type) and download one it could never install.
+  if (skipUpdater || host.snap) return
 
   const autoUpdater = updaterProvider()
   if (!autoUpdater) {
