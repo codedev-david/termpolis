@@ -287,7 +287,7 @@ export function ProcessesSettings(): JSX.Element {
         <h2 className="text-sm font-semibold text-[#e0e0e0] mb-2">Processes</h2>
         {busy ? (
           <p className="text-xs text-[#9ca3af]" data-testid="processes-loading">
-            Scanning…
+            Scanning… On some Windows computers this takes up to a minute.
           </p>
         ) : (
           <>

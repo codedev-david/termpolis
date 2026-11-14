@@ -1,0 +1,126 @@
+# Checks that the latest release actually reached Homebrew and Chocolatey, and
+# emails David when either one is stuck.
+#
+# Why: neither channel can redden a release. The Chocolatey step is
+# continue-on-error (a moderation hiccup must not fail a release), and the
+# Homebrew cask is updated by its own tap repo (codedev-david/homebrew-termpolis
+# polls releases/latest). So when a channel breaks, nothing turns red here. It
+# happened: Homebrew's new "untrusted tap" check failed every tap run from
+# 2026-11-07, and the cask sat at 1.54.4 for a week while 1.55-1.61 shipped.
+#
+# What counts as stuck (the latest release must be at least GRACE_HOURS old):
+#   - Homebrew: the cask's version is not the latest release.
+#   - Chocolatey: no package page for the latest version (the push failed), or the
+#     version is "Rejected" / "Waiting for Maintainer" (moderation needs us), or
+#     it is still unapproved after MODERATION_DAYS (the moderation queue is
+#     normally hours, rarely a few days).
+#
+# On a problem it emails (an issue opened with GITHUB_TOKEN does not trigger
+# issue-email.yml, so it mails directly), opens or comments on one tracking
+# issue, and fails the run. A Chocolatey page that cannot be fetched at all is a
+# warning, not a problem: their site being down says nothing about our package.
+
+name: Release channel watch
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  GRACE_HOURS: '3'
+  MODERATION_DAYS: '4'
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare the latest release with Homebrew and Chocolatey
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = 'codedev-david'
+            const grace = Number(process.env.GRACE_HOURS)
+            const moderationDays = Number(process.env.MODERATION_DAYS)
+            const { data: rel } = await github.rest.repos.getLatestRelease({ owner, repo: 'termpolis' })
+            const v = rel.tag_name.replace(/^v/, '')
+            const ageH = (Date.now() - Date.parse(rel.published_at)) / 3.6e6
+            const problems = []
+            const lines = [`Latest release: ${v}, published ${ageH.toFixed(1)} h ago.`]
+
+            // Homebrew: the version line of the cask in the tap.
+            const { data: cask } = await github.rest.repos.getContent({ owner, repo: 'homebrew-termpolis', path: 'Casks/termpolis.rb' })
+            const caskV = (Buffer.from(cask.content, 'base64').toString('utf8').match(/^\s*version "([^"]+)"/m) || [])[1] || 'unknown'
+            lines.push(`Homebrew cask: ${caskV}`)
+            if (caskV !== v && ageH >= grace) {
+              problems.push(`Homebrew cask is at ${caskV}, but ${v} was released ${ageH.toFixed(1)} h ago. Check the tap's "Update Cask" runs: https://github.com/${owner}/homebrew-termpolis/actions`)
+            }
+
+            // Chocolatey: the version's own page, and the status in its version history.
+            const url = `https://community.chocolatey.org/packages/termpolis/${v}`
+            let res = null
+            try { res = await fetch(url, { headers: { 'user-agent': 'termpolis-release-channel-watch' } }) } catch (e) { core.warning(`Chocolatey fetch failed: ${e.message}`) }
+            if (res && res.status === 404) {
+              lines.push('Chocolatey: no package for this version')
+              if (ageH >= grace) problems.push(`Chocolatey has no ${v} package (${url} is 404), so the push in the release's "Publish to Chocolatey" step failed. Release run: https://github.com/${owner}/termpolis/actions/workflows/release.yml`)
+            } else if (res && res.ok) {
+              const text = (await res.text()).replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')
+              const esc = v.replace(/\./g, '\\.')
+              const row = text.match(new RegExp(`Termpolis ${esc} [\\d,]+ \\w+, \\w+ \\d+, \\d{4} ([A-Za-z][A-Za-z ]{2,40}?)(?= Termpolis | \\d|$)`))
+              const status = row ? row[1].trim() : 'unknown'
+              lines.push(`Chocolatey ${v}: ${status}`)
+              if (/rejected|waiting for maintainer/i.test(status)) {
+                problems.push(`Chocolatey ${v} is "${status}": moderation needs an answer from us. ${url}`)
+              } else if (!/approved|exempted/i.test(status) && ageH >= moderationDays * 24) {
+                problems.push(`Chocolatey ${v} is still "${status}" ${(ageH / 24).toFixed(1)} days after release. ${url}`)
+              }
+            } else if (res) {
+              core.warning(`Chocolatey answered ${res.status} for ${url}; not judging it this run.`)
+              lines.push(`Chocolatey: page answered ${res.status} (not judged)`)
+            }
+
+            core.info(lines.join('\n'))
+            core.setOutput('version', v)
+            core.setOutput('problems', problems.join('\n'))
+            core.setOutput('summary', lines.join('\n'))
+            if (!problems.length) return
+
+            const title = '[release] A release channel is not up to date'
+            const body = ['A release did not reach every channel.', '', ...problems.map((p) => `- ${p}`), '', '```', ...lines, '```', '', `Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`].join('\n')
+            const { data: open } = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'release-channel', per_page: 10 })
+            const existing = open.find((i) => i.title === title)
+            if (existing) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body })
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['release-channel'] })
+            }
+
+      - name: Email David
+        if: steps.check.outputs.problems != ''
+        uses: dawidd6/action-send-mail@v5
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "Termpolis ${{ steps.check.outputs.version }}: a release channel is stuck"
+          to: engelhart.david.john@gmail.com
+          from: Termpolis Release Watch <${{ secrets.MAIL_USERNAME }}>
+          body: |
+            ${{ steps.check.outputs.problems }}
+
+            ${{ steps.check.outputs.summary }}
+
+            Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Fail the run
+        if: steps.check.outputs.problems != ''
+        run: |
+          echo "::error::A release channel is not up to date (see the step above)."
+          exit 1

@@ -177,7 +177,7 @@ describe('ProcessesSettings', () => {
       mockApi({ processesScanStuck: vi.fn().mockReturnValue(first.promise) })
       openTab()
 
-      expect(text('processes-loading')).toBe('Scanning…')
+      expect(text('processes-loading')).toBe('Scanning… On some Windows computers this takes up to a minute.')
       expect(screen.queryByTestId('processes-scan')).toBeNull()
       // Nothing to refresh or kill until there is a list.
       expect(screen.queryByTestId('processes-refresh')).toBeNull()

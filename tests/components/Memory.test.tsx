@@ -149,13 +149,14 @@ describe('Memory panel', () => {
     expect(await screen.findByText(/\+20 chunks from 10 files/)).toBeInTheDocument()
   })
 
-  // Decision 5: v1 sync can lock or overwrite a brain, so it can no longer be turned ON from here (main
-  // refuses it too). The section says so, and offers nothing that would call a sync channel.
-  it('shows cross-machine sync as unavailable, with no way to turn it on', async () => {
+  // Sync between computers was dropped: with no old folder sync on, the panel has no sync section at all
+  // and offers nothing that would call a sync channel (main refuses one too).
+  it('shows no sync section, and no way to turn sync on, when no old folder sync is on', async () => {
     renderPanel()
     await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
-    expect(screen.getByText(/Sync across machines/i)).toBeInTheDocument()
-    expect(screen.getByTestId('memory-sync-unavailable')).toHaveTextContent(/Unavailable in this version/)
+    expect(screen.queryByTestId('memory-sync')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Sync across machines/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/being rebuilt/i)).not.toBeInTheDocument()
     expect(screen.queryByTestId('memory-sync-choose')).not.toBeInTheDocument()
     expect(screen.queryByTestId('memory-sync-passphrase')).not.toBeInTheDocument()
     expect(screen.queryByTestId('memory-sync-disable-enc')).not.toBeInTheDocument()

@@ -637,7 +637,7 @@ function recorder(calls: Call[], respond: (bin: string, args: string[]) => ProcO
 
 const LIST = JSON.stringify([{ i: 4, p: 0, n: 'System', t: 0, x: 0 }])
 const SYSTEM: ProcRecord = { pid: 4, ppid: 0, name: 'system', cmd: '', created: 0, cpuSec: 0, memBytes: 0, suspended: false, scope: 0 }
-const SCAN_OPTS = { timeout: 30_000, maxBuffer: 64 * 1024 * 1024 }
+const SCAN_OPTS = { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 }
 const isList = (bin: string): boolean => bin.toLowerCase().endsWith('powershell.exe')
 
 describe('takeProcessSnapshot — Windows', () => {
@@ -657,6 +657,11 @@ describe('takeProcessSnapshot — Windows', () => {
     expect(script).not.toContain('"')
     expect(script).not.toMatch(/encodedcommand/i)
     expect(script).toContain('Get-CimInstance Win32_Process')
+    // Before anything else it puts itself back to normal priority: the proc host is below normal and Windows hands
+    // that down, which made the scan time out on a busy box (1.61.1). Itself only, and never above normal.
+    expect(script.indexOf("[Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Normal'")).toBeGreaterThan(0)
+    expect(script.indexOf('PriorityClass')).toBeLessThan(script.indexOf('Get-Process'))
+    expect(script).not.toMatch(/AboveNormal|High|RealTime/)
     // A command line is cut to 4,000 characters before it leaves PowerShell.
     expect(script).toContain('$c.Substring(0, 4000)')
     expect(calls[1].args).toEqual(['-ano'])
@@ -706,7 +711,14 @@ describe('takeProcessSnapshot — Windows', () => {
       failWith(() => {
         throw new Error('proc host timed out')
       }),
-    ).rejects.toThrow('Could not list processes: proc host timed out')
+    ).rejects.toThrow('Could not list processes: Windows took longer than 120 seconds to answer. Press Scan to try again.')
+    // The host's own timeout kills PowerShell: same plain words, not node's "Command failed".
+    await expect(failWith(() => ({ stdout: '', stderr: '', error: { message: 'Command failed', killed: true, signal: 'SIGTERM' } }))).rejects.toThrow(
+      'Windows took longer than 120 seconds',
+    )
+    await expect(failWith(() => ({ stdout: '', stderr: '', error: { message: 'Command failed', signal: 'SIGTERM' } }))).rejects.toThrow(
+      'Windows took longer than 120 seconds',
+    )
     await expect(
       failWith(() => {
         throw 'boom'
@@ -2259,7 +2271,7 @@ describe('on this machine (read-only)', () => {
     expect(scan.platform).toBe(process.platform)
     expect(scan.processes.some((p) => p.pid === process.pid)).toBe(false)
     expect(scan.warnings).not.toContain(SELF_MISSING)
-  }, 90_000)
+  }, 180_000)
 
   it('refuses to end a pid that is not a listed row, without signalling anything', async () => {
     // Stubbed anyway, so a bug here can never end a real process.

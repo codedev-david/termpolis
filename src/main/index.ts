@@ -3057,7 +3057,7 @@ ipcMain.handle('memory:sync-status', async () => {
 // way out). Turning it ON is refused here, in main, whatever the renderer sends — the panel no longer
 // offers it, and this holds even against a devtools call. Turning it OFF stays allowed: it only ever
 // reopens the local brain as it was left. The v2 flow replaces this.
-const SYNC_TEMPORARILY_DISABLED = "SYNC_TEMPORARILY_DISABLED: cross-machine sync is unavailable in this version — each computer keeps its own memory."
+const SYNC_TEMPORARILY_DISABLED = "SYNC_TEMPORARILY_DISABLED: memory sync between computers is not available — each computer keeps its own memory (use Import / Export to move it)."
 
 ipcMain.handle('memory:set-sync-dir', async (_, opts: { dir: string | null }) => {
   try {

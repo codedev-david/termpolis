@@ -175,7 +175,12 @@ const MAX_KILL_TARGETS = 1_000
 const MAX_COMMAND_CHARS = 1_000
 /** Longest command line read from the OS, so masking and matching stay cheap however long one gets. */
 const MAX_CMDLINE_CHARS = 4_000
-const SCAN_OPTS: ProcOptions = { timeout: 30_000, maxBuffer: 64 * 1024 * 1024 }
+/** Someone pressed Scan and is waiting, but on some Windows machines the FIRST WMI call a new process makes stalls
+ *  for ~33 s before any data comes back (measured 2026-11-13 on a managed laptop: Get-CimInstance on
+ *  Win32_OperatingSystem alone, 33-42 s, then 0.1 s for the next query; Get-WmiObject stalls the same), and
+ *  PowerShell itself takes 3-10 s to start there. 30 s timed out in real use (1.61.1); so did 60 s under load. */
+const SCAN_TIMEOUT_MS = 120_000
+const SCAN_OPTS: ProcOptions = { timeout: SCAN_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }
 
 const GIT_NAMES = new Set([
   'git', 'git-remote-https', 'git-remote-http', 'git-lfs', 'git-credential-manager',
@@ -772,9 +777,15 @@ export function parsePosixProcesses(statOut: string, argsOut: string, takenAt: n
  * One pass over every process. `Get-Process` supplies the suspended flag (thread states are in
  * its snapshot and need no handle), CIM supplies everything else. Single line, no double quotes:
  * it is handed to powershell.exe as one argv element, and never as -EncodedCommand.
+ *
+ * Its first act is to put ITSELF back to normal priority. The proc host runs below normal (hostPriority.ts) and a
+ * Windows child inherits that class, so on a busy machine the scan crawled past its timeout ("proc host call timed
+ * out after 35000ms", 1.61.1) while someone sat waiting on Scan. Same reasoning and same rule as the console-list
+ * helper: the process raises only itself, back to normal, never above it, and never anyone else.
  */
 const WINDOWS_SCAN_SCRIPT =
-  "$ErrorActionPreference='SilentlyContinue'; try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}; " +
+  "$ErrorActionPreference='SilentlyContinue'; try { [Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Normal' } catch {}; " +
+  'try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}; ' +
   '$s = @{}; foreach ($p in Get-Process) { $n = 0; $all = $true; foreach ($t in $p.Threads) { $n++; ' +
   "if ([string]$t.ThreadState -ne 'Wait' -or [string]$t.WaitReason -ne 'Suspended') { $all = $false; break } }; " +
   'if ($n -gt 0 -and $all) { $s[[string]$p.Id] = 1 } }; ' +
@@ -1003,7 +1014,13 @@ export async function takeProcessSnapshot(deps: StuckScanDeps = {}): Promise<Pro
       run(runner, ps, ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_SCAN_SCRIPT]).then((r) => ({ r, at: now() })),
       run(runner, path.win32.join(root, 'System32', 'NETSTAT.EXE'), ['-ano']),
     ])
-    if (list.r.error && !list.r.stdout.includes('[')) throw new Error(`Could not list processes: ${failure(list.r)}`)
+    if (list.r.error && !list.r.stdout.includes('[')) {
+      const e = list.r.error as { message: string; killed?: boolean; signal?: string }
+      if (e.killed || e.signal || /timed out/i.test(e.message)) {
+        throw new Error(`Could not list processes: Windows took longer than ${SCAN_TIMEOUT_MS / 1000} seconds to answer. Press Scan to try again.`)
+      }
+      throw new Error(`Could not list processes: ${failure(list.r)}`)
+    }
     let listening: Map<number, number[]> | null = null
     // A netstat that timed out or was killed printed only part of the table.
     if (net.error && (!net.stdout.trim() || net.error.killed || net.error.signal)) warnings.push(PORTS_UNKNOWN)

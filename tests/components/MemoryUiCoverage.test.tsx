@@ -401,7 +401,7 @@ describe('Memory panel — degraded responses and edge inputs', () => {
     delete api.memorySyncStatus
     renderMemory()
     await settled()
-    expect(screen.getByTestId('memory-sync-unavailable')).toBeInTheDocument()
+    expect(screen.queryByTestId('memory-sync')).not.toBeInTheDocument()
     expect(screen.queryByTestId('memory-sync-off')).not.toBeInTheDocument()
     expect(screen.queryByTestId('memory-locked')).not.toBeInTheDocument()
   })
@@ -410,7 +410,7 @@ describe('Memory panel — degraded responses and edge inputs', () => {
     api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: null })
     renderMemory()
     await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
-    expect(screen.getByTestId('memory-sync-unavailable')).toBeInTheDocument()
+    expect(screen.queryByTestId('memory-sync')).not.toBeInTheDocument()
   })
 
   it('stays on "Loading…" when stats succeed but return no payload', async () => {

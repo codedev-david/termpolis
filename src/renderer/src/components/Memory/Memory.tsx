@@ -288,30 +288,25 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
 
         <CodeGraphPanel cwd={activeCwd} />
 
-        <div className="border-t border-[#3c3c3c] pt-2 flex flex-col gap-1" data-testid="memory-sync">
-          <div className="text-[#666] text-[10px] uppercase tracking-wider flex items-center gap-1">
-            <i className="fa-solid fa-arrows-rotate"></i> Sync across machines
-          </div>
-          {sync?.syncing ? (
-            <>
-              <div className="text-[11px] text-[#bbb]">
-                <span className="text-[#7ee2a3]">On</span> · {sync.devices} device{sync.devices === 1 ? '' : 's'} sharing this brain
-                <div className="text-[10px] text-[#777] break-all">{sync.dir}</div>
-              </div>
-              <button
-                className="bg-[#2d2d30] hover:bg-[#37373a] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] cursor-pointer disabled:opacity-50 text-left"
-                onClick={() => void disableSync()}
-                disabled={busy}
-                data-testid="memory-sync-off"
-              >Turn off sync on this computer</button>
-            </>
-          ) : (
-            <div className="text-[11px] text-[#777] leading-relaxed" data-testid="memory-sync-unavailable">
-              Unavailable in this version — cross-machine sync is being rebuilt so that it can never lock or overwrite a
-              computer&apos;s memory. Each computer keeps its own memory, untouched.
+        {/* Sync between computers is gone. A folder sync an older version switched on still shows here,
+            only so it can be turned off; nothing offers to turn it on. */}
+        {sync?.syncing && (
+          <div className="border-t border-[#3c3c3c] pt-2 flex flex-col gap-1" data-testid="memory-sync">
+            <div className="text-[#666] text-[10px] uppercase tracking-wider flex items-center gap-1">
+              <i className="fa-solid fa-arrows-rotate"></i> Folder sync (from an older version)
             </div>
-          )}
-        </div>
+            <div className="text-[11px] text-[#bbb]">
+              <span className="text-[#7ee2a3]">On</span> · {sync.devices} device{sync.devices === 1 ? '' : 's'} sharing this brain
+              <div className="text-[10px] text-[#777] break-all">{sync.dir}</div>
+            </div>
+            <button
+              className="bg-[#2d2d30] hover:bg-[#37373a] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] cursor-pointer disabled:opacity-50 text-left"
+              onClick={() => void disableSync()}
+              disabled={busy}
+              data-testid="memory-sync-off"
+            >Turn off sync on this computer</button>
+          </div>
+        )}
 
         {status && <div className="text-[#22D3EE] text-[11px]">{status}</div>}
       </div>
