@@ -107,6 +107,8 @@ export function SettingsPane() {
   const [learnConversations, setLearnConversations] = useState<boolean>(true)
   // "Smarter lessons" (Claude Haiku distils a lesson after a substantial session) also lives in main. Default OFF.
   const [distillHaiku, setDistillHaiku] = useState<boolean>(false)
+  // "Re-read search results" (a local cross-encoder reorders each search's top hits) lives in main too. Default ON.
+  const [rerankSearch, setRerankSearch] = useState<boolean>(true)
   const [autoReprime, setAutoReprime] = useState(() => isAutoReprimeOnCompactionEnabled())
   const [autoIndex, setAutoIndex] = useState(() => isAutoIndexEnabled())
   const [termDefaults, setTermDefaults] = useState(() => getTerminalDefaults())
@@ -136,6 +138,21 @@ export function SettingsPane() {
       if (res?.success && typeof res.data?.distillWithHaiku === 'boolean') setDistillHaiku(res.data.distillWithHaiku)
       else if (res && !res.success) setDistillHaiku(!next)
     })?.catch(() => setDistillHaiku(!next))
+  }
+
+  useEffect(() => {
+    void window.termpolis.memoryGetRerankSearch?.()?.then((res) => {
+      if (res?.success && typeof res.data === 'boolean') setRerankSearch(res.data)
+    })?.catch(() => {})
+  }, [])
+
+  const toggleRerankSearch = () => {
+    const next = !rerankSearch
+    setRerankSearch(next)
+    void window.termpolis.memorySetRerankSearch?.(next)?.then((res) => {
+      if (res?.success && typeof res.data?.rerankSearch === 'boolean') setRerankSearch(res.data.rerankSearch)
+      else if (res && !res.success) setRerankSearch(!next)
+    })?.catch(() => setRerankSearch(!next))
   }
 
   useEffect(() => {
@@ -588,6 +605,32 @@ export function SettingsPane() {
                 built-in extractor that always runs locally. Lessons come out clearer and easier to find,
                 at the cost of a small amount of your Claude usage per session. Needs Claude Code
                 installed and signed in; if it is not, nothing happens.
+              </span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+            <button
+              onClick={toggleRerankSearch}
+              role="switch"
+              aria-checked={rerankSearch}
+              aria-label="Toggle re-reading search results"
+              data-testid="settings-rerank-search-toggle"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+                rerankSearch ? 'bg-[#0078d4]' : 'bg-[#555]'
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                rerankSearch ? 'translate-x-5' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Re-read search results</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                On by default. After each memory search, a small model on this computer reads your query
+                together with the top eight results and moves the best match up. Nothing leaves your
+                computer. It runs on a background thread and adds about a third of a second to a search on
+                a computer with many cores, up to about a second on one with few. Turn it off to keep the
+                plain ranking.
               </span>
             </div>
           </div>

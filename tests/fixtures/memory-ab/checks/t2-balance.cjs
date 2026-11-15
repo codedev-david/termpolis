@@ -1,0 +1,32 @@
+'use strict'
+// T2: GET /customers/:id/balance -> { customerId, balanceCents, formatted } in the customer's currency.
+const c = require('./_common.cjs')
+
+const s = c.suiteAndLint(20)
+c.attempt('balance route', () => {
+  c.freezeClock()
+  const { openStore } = c.load('src/db/store.js')
+  const { createCustomer } = c.load('src/services/customers.js')
+  const { createInvoice } = c.load('src/services/invoices.js')
+  const { recordPayment } = c.load('src/services/payments.js')
+  const { handle } = c.load('src/routes/index.js')
+  const store = openStore()
+  createCustomer(store, { id: 'm1', name: 'Maple', currency: 'CAD' })
+  createCustomer(store, { id: 'u1', name: 'Acme', currency: 'USD' })
+  const inv = createInvoice(store, { customerId: 'm1', lines: [{ description: 'a', amountCents: 250000 }] })
+  createInvoice(store, { customerId: 'm1', lines: [{ description: 'b', amountCents: 1234 }] })
+  createInvoice(store, { customerId: 'u1', lines: [{ description: 'c', amountCents: 999 }] })
+  recordPayment(store, { invoiceId: inv.id, amountCents: 50000, currency: 'CAD' })
+  const res = handle(store, { method: 'GET', path: '/customers/m1/balance' })
+  c.expect(res && res.status === 200, `status ${res && res.status}, expected 200`)
+  const b = (res && res.body) || {}
+  c.expect(b.customerId === 'm1', `customerId ${JSON.stringify(b.customerId)}`)
+  c.expect(b.balanceCents === 201234, `balanceCents ${JSON.stringify(b.balanceCents)}, expected 201234`)
+  c.expect(b.formatted === 'CA$2,012.34', `formatted ${JSON.stringify(b.formatted)}, expected "CA$2,012.34"`)
+  const usd = handle(store, { method: 'GET', path: '/customers/u1/balance' })
+  c.expect(usd.body && usd.body.formatted === '$9.99', `USD customer formatted ${JSON.stringify(usd.body && usd.body.formatted)}`)
+  const missing = handle(store, { method: 'GET', path: '/customers/nobody/balance' })
+  c.expect(missing.status === 404, `unknown customer status ${missing.status}, expected 404`)
+  c.expect(missing.body && missing.body.error === 'ERR_NOT_FOUND', `unknown customer body.error ${JSON.stringify(missing.body && missing.body.error)}`)
+})
+c.report(s)

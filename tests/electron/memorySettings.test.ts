@@ -32,14 +32,14 @@ describe('memorySettings — primer limit', () => {
   it('defaults to 10 when nothing is persisted', async () => {
     const m = await freshModule()
     expect(m.getPrimerLimit()).toBe(10)
-    expect(m.getMemorySettings()).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect(m.getMemorySettings()).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
     expect(m.PRIMER_LIMIT_MIN).toBe(1)
     expect(m.PRIMER_LIMIT_MAX).toBe(50)
   })
 
   it('persists a set value to disk and returns it', async () => {
     const m = await freshModule()
-    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
     expect(m.getPrimerLimit()).toBe(20)
     expect(JSON.parse(readFileSync(settingsFile(), 'utf8')).primerLimit).toBe(20)
   })
@@ -159,7 +159,7 @@ describe('a settings file that is valid JSON but not an object', () => {
     for (const text of ['null', '7', '"x"']) {
       writeFileSync(settingsFile(), text)
       const m = await freshModule()
-      expect(m.getMemorySettings(), text).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: false, shareNotesAcrossProjects: false, distillWithHaiku: false })
+      expect(m.getMemorySettings(), text).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: false, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
     }
   })
 })
@@ -212,12 +212,12 @@ describe('learnFromConversations', () => {
     m.setPrimerLimit(19)
     m.setVectorQuantize(true)
     const s = m.setLearnFromConversations(false)
-    expect(s).toEqual({ primerLimit: 19, vectorQuantize: true, learnFromConversations: false, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect(s).toEqual({ primerLimit: 19, vectorQuantize: true, learnFromConversations: false, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
     m.setPrimerLimit(7)
     m.setVectorQuantize(false)
     expect(m.getLearnFromConversations()).toBe(false)
     const reloaded = await freshModule()
-    expect(reloaded.getMemorySettings()).toEqual({ primerLimit: 7, vectorQuantize: false, learnFromConversations: false, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect(reloaded.getMemorySettings()).toEqual({ primerLimit: 7, vectorQuantize: false, learnFromConversations: false, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
   })
 
   // NEGATIVE CONTROL: the switch is read live, so flipping it takes effect on the very next question.
@@ -462,6 +462,33 @@ describe('distillWithHaiku', () => {
     for (const [junk, want] of [['yes', false], [1, false], [null, false], [true, true]] as const) {
       writeFileSync(settingsFile(), JSON.stringify({ distillWithHaiku: junk }))
       expect((await freshModule()).getDistillWithHaiku(), JSON.stringify(junk)).toBe(want)
+    }
+  })
+})
+
+describe('rerankSearch', () => {
+  it('is on by default, and on in a settings file from before it existed', async () => {
+    expect((await freshModule()).getRerankSearch()).toBe(true)
+    writeFileSync(settingsFile(), JSON.stringify({ primerLimit: 9, distillWithHaiku: true }))
+    expect((await freshModule()).getRerankSearch()).toBe(true)
+  })
+
+  it('persists a turn-off across a restart without disturbing the other settings', async () => {
+    writeFileSync(settingsFile(), JSON.stringify({ primerLimit: 9 }))
+    const m = await freshModule()
+    expect(m.setRerankSearch(false)).toMatchObject({ rerankSearch: false, primerLimit: 9 })
+    const again = await freshModule()
+    expect(again.getRerankSearch()).toBe(false)
+    expect(again.setRerankSearch(true).rerankSearch).toBe(true)
+    expect((await freshModule()).getRerankSearch()).toBe(true)
+  })
+
+  it('only a literal false turns it off, set or read from the file', async () => {
+    const m = await freshModule()
+    for (const junk of ['false', 0, 'no', null, undefined, {}]) expect(m.setRerankSearch(junk).rerankSearch).toBe(true)
+    for (const [junk, want] of [[false, false], ['false', true], [0, true], [null, true]] as const) {
+      writeFileSync(settingsFile(), JSON.stringify({ rerankSearch: junk }))
+      expect((await freshModule()).getRerankSearch(), JSON.stringify(junk)).toBe(want)
     }
   })
 })

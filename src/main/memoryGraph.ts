@@ -590,6 +590,28 @@ export function isSupersedeReleased(newer: string, older: string): boolean {
   return releasedPairs.has(`${newer}\0${older}`)
 }
 
+/**
+ * Supersessions drawn at or after `sinceMs`, newest first, at most `max`: one row per (newer, older)
+ * pair, whichever of `supersedes` / `superseded-by` carries it. Walks the forward map in place (no
+ * flattened copy of every edge). An edge with no numeric ts (an old log line) is never "since" anything.
+ * Released pairs are already gone from the maps.
+ */
+export function supersedeEdgesSince(sinceMs: number, max = 50): Array<{ newer: string; older: string; ts: number; createdBy?: string }> {
+  const rows = new Map<string, { newer: string; older: string; ts: number; createdBy?: string }>()
+  for (const list of adjacency.values()) {
+    for (const e of list) {
+      if (e.relation !== 'supersedes' && e.relation !== 'superseded-by') continue
+      if (typeof e.ts !== 'number' || !(e.ts >= sinceMs)) continue
+      const newer = e.relation === 'supersedes' ? e.from : e.to
+      const older = e.relation === 'supersedes' ? e.to : e.from
+      const key = `${newer}\0${older}`
+      const prev = rows.get(key)
+      if (!prev || e.ts > prev.ts) rows.set(key, { newer, older, ts: e.ts, ...(e.createdBy ? { createdBy: e.createdBy } : {}) })
+    }
+  }
+  return [...rows.values()].sort((a, b) => b.ts - a.ts).slice(0, Math.max(0, max))
+}
+
 /** Drop hits a newer memory has replaced (see isSuperseded). Order-preserving. */
 export function dropSuperseded<T extends { id: string }>(hits: T[]): T[] {
   return hits.filter((h) => !isSuperseded(h.id))

@@ -11,6 +11,7 @@ import {
   setRerankBatchScorer,
   sigmoid,
   RERANK_MAX_TOKENS,
+  setRerankThreads,
   _setRerankOrtForTests,
   _setRerankModelPresentForTests,
   _resetRerankForTests,
@@ -131,6 +132,17 @@ describe('crossEncoderRerank: load path with a fake runtime', () => {
     const dir = writeFixture()
     _setRerankOrtForTests(makeFakeOrt({ width: 3, outputKey: 'scores' }).ort, () => dir)
     expect(await (await getRerankBatchScorer())!('query', ['hit', 'word'])).toEqual([1, 0])
+  })
+
+  it('setRerankThreads sets the WASM threads for the load (the worker raises it); anything that is not a count is 1', async () => {
+    const dir = writeFixture('onnx')
+    for (const [n, want] of [[3, 3], [2.7, 2], [0, 1], [-4, 1], [Number.NaN, 1], [Number.POSITIVE_INFINITY, 1]] as const) {
+      const f = makeFakeOrt()
+      setRerankThreads(n)
+      _setRerankOrtForTests(f.ort, () => dir)
+      expect(await getRerankBatchScorer()).not.toBeNull()
+      expect(f.env.wasm.numThreads, String(n)).toBe(want)
+    }
   })
 
   it('splits a long list into forward passes of 16 and cuts each passage to the token budget', async () => {

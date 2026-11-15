@@ -1,7 +1,7 @@
 {
   "name": "termpolis",
   "private": true,
-  "version": "1.62.0",
+  "version": "1.63.0",
   "description": "Secure AI-assisted development. Local-first multi-agent terminal for Claude, Codex, and Gemini with a built-in AI Security Center, MCP server, split panes, and live observability.",
   "author": "Termpolis",
   "license": "Apache-2.0",
@@ -35,6 +35,7 @@
     "test:e2e:manual": "playwright test -c playwright.manual.config.ts",
     "bench:recall": "vitest run tests/electron/recallBenchmark.test.ts --reporter=verbose",
     "bench:proof": "vitest run tests/electron/proofBenchmark.test.ts --reporter=verbose",
+    "bench:ab": "vitest run tests/electron/memoryAbBenchmark.test.ts --reporter=verbose",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web && npm run typecheck:test",

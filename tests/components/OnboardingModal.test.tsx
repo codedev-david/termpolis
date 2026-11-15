@@ -217,6 +217,24 @@ describe('OnboardingModal', () => {
     expect(screen.queryByRole('button', { name: /Next/ })).not.toBeInTheDocument()
   })
 
+  it('reports completed only for Get started, not for Skip tour or Escape', () => {
+    const onDone = vi.fn()
+    const { unmount } = render(<OnboardingModal onDone={onDone} />)
+    gotoFinalStep()
+    fireEvent.click(screen.getByRole('button', { name: 'Get started' }))
+    expect(onDone).toHaveBeenLastCalledWith({ completed: true })
+    unmount()
+    const onSkip = vi.fn()
+    const second = render(<OnboardingModal onDone={onSkip} />)
+    skip()
+    expect(onSkip).toHaveBeenLastCalledWith({ completed: false })
+    second.unmount()
+    const onEsc = vi.fn()
+    render(<OnboardingModal onDone={onEsc} />)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onEsc).toHaveBeenLastCalledWith({ completed: false })
+  })
+
   it('progress dots are clickable to jump to a step', () => {
     render(<OnboardingModal onDone={() => {}} />)
     fireEvent.click(screen.getByRole('tab', { name: 'Go to step 6' }))

@@ -1064,6 +1064,20 @@ describe('deletion, forgetting and archiving', () => {
     expect(memoryHasHash(a.hash as string)).toBe(true)       // and the content-hash tombstone blocks re-ingest
   })
 
+  it('keepContentHash deletes the one entry and lets the same words be written again (memory tour)', async () => {
+    initSwarmMemory(userDir)
+    _setEmbedFnForTests(async () => unit(5))
+    const a = await memoryWrite({ agentId: 'termpolis-tour', kind: 'fact', content: 'I like short commit messages.' })
+    memoryDelete(a.id, { keepContentHash: true })
+    expect(memoryCount()).toBe(0)
+    expect(memoryHasHash(a.hash as string)).toBe(false)      // no content tombstone, no dedup guard left
+    const b = await memoryWrite({ agentId: 'u', kind: 'fact', content: 'I like short commit messages.' })
+    expect(b.id).not.toBe(a.id)
+    expect(memoryCount()).toBe(1)
+    initSwarmMemory(userDir)                                  // and it survives a reload
+    expect(memoryList().map((e) => e.id)).toEqual([b.id])
+  })
+
   it('memoryClear on an uninitialised store is a safe no-op', () => {
     _resetForTests()
     expect(() => memoryClear()).not.toThrow()

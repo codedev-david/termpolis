@@ -176,7 +176,9 @@ const mem = vi.hoisted(() => ({
   edgeKeysIncident: vi.fn(async () => [] as string[]),
   weaveNeighboursBatch: vi.fn(async () => ({ w1: [{ id: 'w2', score: 0.9 }] }) as Record<string, any[]>),
   memorySupersedePass: vi.fn(async () => ({ considered: 0, minted: 0 })),
+  applyRerankSearch: vi.fn(async (on: boolean) => on),
   memoryReleaseSupersedes: vi.fn(async () => 0),
+  memoryActivity: vi.fn(async () => ({ sinceMs: 0, counts: { lessons: 0, decisions: 0, facts: 0, notes: 0, replaced: 0 }, learned: [], replaced: [], more: false })),
 
   initSwarmMemory: vi.fn(),
   memoryWrite: vi.fn(async (i: any) => ({ id: 'm1', memoryType: 'semantic', ...i })),
@@ -686,6 +688,46 @@ describe('memory:list', () => {
   it('degrades to {success:false,error} when the store throws', async () => {
     mem.memoryList.mockImplementationOnce(() => { throw new Error('bad since') })
     expect(await invoke('memory:list', { since: NaN })).toEqual({ success: false, error: 'bad since' })
+  })
+})
+
+// Memory ▸ This week and the memory tour
+describe('memory:activity / memory:release-supersedes / memory:delete', () => {
+  it('memory:activity forwards sinceMs, and drops anything that is not a number', async () => {
+    const r = await invoke('memory:activity', { sinceMs: 123 })
+    expect(r.success).toBe(true)
+    expect(r.data.counts.replaced).toBe(0)
+    expect(mem.memoryActivity).toHaveBeenLastCalledWith({ sinceMs: 123 })
+    await invoke('memory:activity')
+    expect(mem.memoryActivity).toHaveBeenLastCalledWith({})
+    await invoke('memory:activity', null)
+    expect(mem.memoryActivity).toHaveBeenLastCalledWith({})
+    await invoke('memory:activity', { sinceMs: 'soon' })
+    expect(mem.memoryActivity).toHaveBeenLastCalledWith({})
+  })
+
+  it('memory:activity degrades to {success:false,error} when the host fails', async () => {
+    mem.memoryActivity.mockRejectedValueOnce(new Error('host gone'))
+    expect(await invoke('memory:activity', {})).toEqual({ success: false, error: 'host gone' })
+  })
+
+  it('memory:release-supersedes releases by the newer id and returns how many came back', async () => {
+    mem.memoryReleaseSupersedes.mockResolvedValueOnce(2)
+    expect(await invoke('memory:release-supersedes', 'n1')).toEqual({ success: true, data: 2 })
+    expect(mem.memoryReleaseSupersedes).toHaveBeenLastCalledWith('n1')
+    expect((await invoke('memory:release-supersedes', '')).success).toBe(false)
+    expect((await invoke('memory:release-supersedes', 42)).success).toBe(false)
+    mem.memoryReleaseSupersedes.mockRejectedValueOnce(new Error('locked'))
+    expect(await invoke('memory:release-supersedes', 'n1')).toEqual({ success: false, error: 'locked' })
+  })
+
+  it('memory:delete deletes by id and refuses a missing id', async () => {
+    expect((await invoke('memory:delete', 'm1')).success).toBe(true)
+    expect(mem.memoryDelete).toHaveBeenLastCalledWith('m1', { keepContentHash: true })
+    expect(await invoke('memory:delete', '')).toEqual({ success: false, error: 'id required' })
+    expect((await invoke('memory:delete', undefined)).success).toBe(false)
+    mem.memoryDelete.mockRejectedValueOnce(new Error('read-only'))
+    expect(await invoke('memory:delete', 'm1')).toEqual({ success: false, error: 'read-only' })
   })
 })
 
@@ -1467,22 +1509,22 @@ describe('memory:get-primer-limit / memory:set-primer-limit', () => {
   })
 
   it('clamps a too-small value up to the minimum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
-    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
+    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
   })
 
   it('clamps a too-large value down to the maximum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
   })
 
   it('rounds a fractional value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
   })
 
   it('falls back to the default for junk and for a missing value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
-    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
-    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
+    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
+    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
   })
 
   it('a new limit is what the NEXT primer is built with', async () => {
@@ -1727,6 +1769,22 @@ describe('memory:reflect-session', () => {
     } finally {
       await invoke('memory:set-distill-haiku', { value: false })
       mneme.isHighValueEpisode.mockReturnValue(false)
+    }
+  })
+
+  // "Re-read search results" (Settings): on by default, saved by the real memorySettings, then handed to the memory host.
+  it('"Re-read search results" is on by default, and a change is saved before the host applies it', async () => {
+    mem.applyRerankSearch.mockClear()
+    expect(await invoke('memory:get-rerank-search')).toEqual({ success: true, data: true })
+    try {
+      expect((await invoke('memory:set-rerank-search', { value: false })).data).toEqual(expect.objectContaining({ rerankSearch: false }))
+      expect(mem.applyRerankSearch).toHaveBeenLastCalledWith(false)
+      expect(await invoke('memory:get-rerank-search')).toEqual({ success: true, data: false })
+      mem.applyRerankSearch.mockRejectedValueOnce(new Error('memory host gone'))
+      expect(await invoke('memory:set-rerank-search', { value: true })).toEqual({ success: true, data: expect.objectContaining({ rerankSearch: true }) })
+      expect(await invoke('memory:get-rerank-search')).toEqual({ success: true, data: true }) // saved even so: the next start applies it
+    } finally {
+      await invoke('memory:set-rerank-search', { value: true })
     }
   })
 
@@ -3399,7 +3457,7 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
     notesMock.finishQueuedRemovals.mockReset()
     notesMock.finishQueuedRemovals.mockImplementation(async () => ({ removed: 0, failed: 0 }))
     // Back to the defaults, whatever a test chose: notes on, sharing off.
-    await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+    await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
   })
 
   it('the full pass runs the notes pass, adds what it stored to the pass total, and carries its backlog forward', async () => {
@@ -3625,7 +3683,7 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
 
     it('does not when only the import switch is on', async () => {
       backend()
-      await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false })
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true })
       expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
     })
 

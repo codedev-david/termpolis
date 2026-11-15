@@ -305,7 +305,7 @@ import {
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
   entrySimMatrix,
   setMemoryScrubber,
-  weaveCandidates, weaveNeighboursBatch, memorySupersedePass, memoryReleaseSupersedes, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
+  weaveCandidates, weaveNeighboursBatch, memorySupersedePass, memoryReleaseSupersedes, memoryActivity, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption, enableLocalEncryption, disableEncryption,
   startNewMemoryKey,
   persistMemoryIndex,
@@ -313,6 +313,7 @@ import {
   type MemoryEntry,
   vectorRamStats,
   setVectorQuantization,
+  applyRerankSearch,
   setMemoryRetryGovernor,
   routerClassify, routerLearn, routerWarm,
 } from './memoryClient'
@@ -354,6 +355,8 @@ import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
 import { setWorkerSpawner } from './localEmbedder'
 import { createWorkerTransport } from './embedWorker'
+import { setRerankWorkerSpawner } from './crossEncoderRerank'
+import { createRerankWorkerTransport } from './rerankWorker'
 
 // Mirror main's console into the app log from the moment this module loads, well before
 // Electron is ready. Everything printed during startup -- which shell was resolved, why a
@@ -610,7 +613,7 @@ async function reflectOnTask(
 // just re-reads, and the content-addressed store dedups any overlap.
 import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
 import { createPrimerRecent } from './primerLane'
-import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects, getDistillWithHaiku, setDistillWithHaiku } from './memorySettings'
+import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects, getDistillWithHaiku, setDistillWithHaiku, getRerankSearch, setRerankSearch } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import { scheduleNoNewPrivsNotice } from './noNewPrivs'
 import { installSudoAskpass, sudoAskpassPath } from './sudoAskpass'
@@ -2434,6 +2437,28 @@ ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string
     return ok(list)
   } catch (e: any) { return err(e.message) }
 })
+// Memory ▸ This week: what was learned and replaced in the window (default 7 days).
+ipcMain.handle('memory:activity', async (_, opts: { sinceMs?: number } = {}) => {
+  try {
+    return ok(await memoryActivity(typeof opts?.sinceMs === 'number' ? { sinceMs: opts.sinceMs } : {}))
+  } catch (e: any) { return err(e.message) }
+})
+// Undo on a replacement row: everything the newer memory replaced comes back, for good.
+ipcMain.handle('memory:release-supersedes', async (_, id: string) => {
+  try {
+    if (typeof id !== 'string' || !id) return err('id required')
+    return ok(await memoryReleaseSupersedes(id))
+  } catch (e: any) { return err(e.message) }
+})
+// The memory tour removes the demo fact it saved. The text is the user's own, so only this entry goes:
+// its content hash is not tombstoned, and the same words written again later are kept.
+ipcMain.handle('memory:delete', async (_, id: string) => {
+  try {
+    if (typeof id !== 'string' || !id) return err('id required')
+    await memoryDelete(id, { keepContentHash: true })
+    return ok()
+  } catch (e: any) { return err(e.message) }
+})
 
 // These MUST await. ok(promise) would ship a Promise across the IPC boundary, where it is not
 // structured-clonable — the renderer gets a clone error or an empty object, i.e. "your memory is
@@ -2822,6 +2847,21 @@ ipcMain.handle('memory:get-distill-haiku', async () => {
 })
 ipcMain.handle('memory:set-distill-haiku', async (_, opts: { value: boolean }) => {
   try { return ok(setDistillWithHaiku(opts?.value)) } catch (e: any) { return err(e.message) }
+})
+
+// "Re-read search results": a local cross-encoder reorders each search's top hits (default ON; nothing leaves the machine).
+// Saved first, then applied where the store runs, so a host that is down still comes back with the choice.
+ipcMain.handle('memory:get-rerank-search', async () => {
+  try { return ok(getRerankSearch()) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('memory:set-rerank-search', async (_, opts: { value: boolean }) => {
+  try {
+    const settings = setRerankSearch(opts?.value)
+    // Saved first. A memory host that is down cannot apply it now, but its next start reads the saved
+    // value, so report what was saved: an error here made the Settings switch flip back to a stale state.
+    try { await applyRerankSearch(settings.rerankSearch) } catch { /* applied at the host's next start */ }
+    return ok(settings)
+  } catch (e: any) { return err(e.message) }
 })
 
 // Claude Code's saved notes in memory (claudeNotesIngest.ts): the two switches, what was imported, and the undo.
@@ -3963,6 +4003,10 @@ if (!gotTheLock) {
     // and falls back to the in-process embedder (today's behavior), so recall cannot
     // regress. The worker is spawned lazily on the first embed, off the main thread.
     try { setWorkerSpawner(() => createWorkerTransport()) } catch { /* keep in-process embedding */ }
+    // The same for the search re-ranker, which only runs here when the memory store has fallen back into this process:
+    // its model then loads and runs on a worker_thread, never on the thread that pumps the terminals. This only stores the
+    // spawner (it cannot throw); the worker starts on the first search that needs it.
+    setRerankWorkerSpawner(() => createRerankWorkerTransport())
 
     // Usage-statistics heartbeat — counts unique daily launches, and only with
     // that tier on. Internally de-duped to once per UTC day, so re-opening the
@@ -4732,10 +4776,14 @@ async function semanticPoolOptions(
     // back to exact float32, never take the brain down with it.
     let quantize = false
     try { quantize = getVectorQuantize() } catch { /* fall back to exact floats */ }
+    // "Re-read search results" rides along the same way, so the host applies it once its store is up.
+    let rerank = true
+    try { rerank = getRerankSearch() } catch { /* the default: on */ }
     setMemoryHostSpawner(() => createMemoryHostTransport())
     void startMemoryHost({
       userDataPath: app.getPath('userData'),
       quantize,
+      rerank,
     }).then((m) => {
       // Say which side is serving. An in-process fallback is a real regression in launch latency and
       // typing lag, so it must never be silent — this is the line that tells us the child died.

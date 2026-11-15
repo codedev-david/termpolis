@@ -98,6 +98,8 @@ const M = vi.hoisted(() => ({
   setShareNotesAcrossProjects: vi.fn((v: boolean) => v),
   getDistillWithHaiku: vi.fn(() => false),
   setDistillWithHaiku: vi.fn((v: boolean) => ({ distillWithHaiku: v })),
+  getRerankSearch: vi.fn<() => boolean>(() => true),
+  setRerankSearch: vi.fn((v: unknown) => ({ rerankSearch: v !== false })),
   isAgentIntegrationGranted: vi.fn<(...a: unknown[]) => boolean>(() => true),
   // context pins
   listPins: vi.fn(() => [] as unknown[]),
@@ -404,6 +406,7 @@ vi.mock('../../src/main/memorySettings', () => ({
   getIndexClaudeNotes: M.getIndexClaudeNotes, setIndexClaudeNotes: M.setIndexClaudeNotes,
   getShareNotesAcrossProjects: M.getShareNotesAcrossProjects, setShareNotesAcrossProjects: M.setShareNotesAcrossProjects,
   getDistillWithHaiku: M.getDistillWithHaiku, setDistillWithHaiku: M.setDistillWithHaiku,
+  getRerankSearch: M.getRerankSearch, setRerankSearch: M.setRerankSearch,
 }))
 vi.mock('../../src/main/contextPinStore', () => ({
   initContextPinStore: vi.fn(),
@@ -679,6 +682,8 @@ const MEMC = vi.hoisted(() => ({
   weaveNeighboursBatch: vi.fn(async () => ({})),
   memorySupersedePass: vi.fn(async () => ({ considered: 0, minted: 0 })),
   memoryReleaseSupersedes: vi.fn(async () => 0),
+  applyRerankSearch: vi.fn(async (on: boolean) => on),
+  memoryActivity: vi.fn(async () => ({ sinceMs: 0, counts: { lessons: 0, decisions: 0, facts: 0, notes: 0, replaced: 0 }, learned: [], replaced: [], more: false })),
   exportMemorySnapshot: vi.fn(async () => ''),
   importMemorySnapshot: vi.fn(async () => ({ imported: 0 })),
 }))
@@ -763,6 +768,8 @@ beforeAll(async () => {
   // floorControl:true at BOOT is what makes the whenReady proxy block consult resolveWireMode —
   // that arm is only decidable before import, because it runs exactly once.
   M.getHeadroomSettings.mockReturnValue({ ...BASE_HR })
+  // A settings file that cannot be read at boot: the host still starts, with search reranking on (the default).
+  M.getRerankSearch.mockImplementationOnce(() => { throw new Error('settings unreadable') })
   vi.resetModules()
   await import('../../src/main/index')
   await new Promise((resolve) => setTimeout(resolve, 80))
@@ -785,6 +792,37 @@ beforeEach(() => {
   M.steeringDirective.mockClear()
   M.writeFileSync.mockClear()
   M.appendAudit.mockClear()
+})
+
+// ===========================================================================
+// "Re-read search results": the boot read rides in the host's init message, and the switch is saved, then applied.
+// ===========================================================================
+describe('memory:get-rerank-search / memory:set-rerank-search', () => {
+  it('starts the memory host with reranking on when the settings file cannot be read at boot', () => {
+    expect(MEMC.startMemoryHost).toHaveBeenCalledWith(expect.objectContaining({ rerank: true }))
+  })
+
+  it('reads the saved switch, and reports a settings error instead of throwing', async () => {
+    M.getRerankSearch.mockReturnValueOnce(false)
+    expect(await invoke('memory:get-rerank-search')).toEqual({ success: true, data: false })
+    M.getRerankSearch.mockImplementationOnce(() => { throw new Error('settings unreadable') })
+    expect(await invoke('memory:get-rerank-search')).toEqual({ success: false, error: 'settings unreadable' })
+  })
+
+  it('saves the switch, then applies the saved value where the store runs', async () => {
+    MEMC.applyRerankSearch.mockClear()
+    expect(await invoke('memory:set-rerank-search', { value: false })).toEqual({ success: true, data: { rerankSearch: false } })
+    expect(M.setRerankSearch).toHaveBeenLastCalledWith(false)
+    expect(MEMC.applyRerankSearch).toHaveBeenLastCalledWith(false)
+    expect(await invoke('memory:set-rerank-search', { value: 'off' as never })).toEqual({ success: true, data: { rerankSearch: true } })
+    expect(MEMC.applyRerankSearch).toHaveBeenLastCalledWith(true) // only a literal false turns it off
+    expect((await invoke('memory:set-rerank-search')).data).toEqual({ rerankSearch: true }) // no payload at all
+  })
+
+  it('reports what was saved even when the host could not apply it now', async () => {
+    MEMC.applyRerankSearch.mockRejectedValueOnce(new Error('memory host gone'))
+    expect(await invoke('memory:set-rerank-search', { value: true })).toEqual({ success: true, data: { rerankSearch: true } })
+  })
 })
 
 // ===========================================================================

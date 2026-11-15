@@ -322,6 +322,7 @@ const MEMC = vi.hoisted(() => ({
   weaveNeighboursBatch: vi.fn(async () => ({}) as Record<string, unknown[]>),
   memorySupersedePass: vi.fn(async () => ({ considered: 0, minted: 0 })),
   memoryReleaseSupersedes: vi.fn(async () => 0),
+  memoryActivity: vi.fn(async () => ({ sinceMs: 0, counts: { lessons: 0, decisions: 0, facts: 0, notes: 0, replaced: 0 }, learned: [], replaced: [], more: false })),
   exportMemorySnapshot: vi.fn(async () => ''),
   importMemorySnapshot: vi.fn(async () => ({ imported: 0 })),
 }))

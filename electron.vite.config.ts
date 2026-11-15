@@ -65,6 +65,9 @@ export default defineConfig({
           // BB11: embedding worker_thread — a second main-process entry, emitted next to
           // index.js so it can be spawned off the UI thread for ONNX inference.
           embedWorker: resolve(__dirname, 'src/main/embedWorker.ts'),
+          // v1.63: the search re-ranker's worker_thread, spawned by the memory host so a cross-encoder
+          // pass (several WASM threads) never blocks the thread that serves writes and the primer.
+          rerankWorker: resolve(__dirname, 'src/main/rerankWorker.ts'),
           // v1.26: the memory brain's utilityProcess entry — a third main-process entry, emitted
           // next to index.js so memoryClient can utilityProcess.fork() it. initSwarmMemory() costs
           // ~4,276ms on a real store; in this child that cost is ZERO on the main (PTY/paint) thread.

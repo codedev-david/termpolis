@@ -11,14 +11,14 @@ import { deriveKey, newSalt, encryptLine, decryptLine, isEncryptedLine } from '.
 import { VectorStore } from './vectorStore'
 import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
-import { rerankEnabled, getRerankBatchScorer, blendRerank, RERANK_POOL, RERANK_ALPHA } from './crossEncoderRerank'
+import { rerankEnabled, getRerankBatchScorerWithin, blendRerank, RERANK_POOL, RERANK_ALPHA } from './crossEncoderRerank'
 import { initMemoryAudit, auditMemory, redactPreview } from './memoryAudit'
 import { CANDIDATE_HASH_PREFIX, CANDIDATE_TAG, isCandidate } from './lessonSubstance'
 import { isClaudeNote } from './claudeNotesParse'
 import { mmrRerank } from './mmrRerank'
-import { compactGraphLog, initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, isSuperseded, dropSuperseded, releaseSupersedes, isSupersedeReleased, type MemoryEdge } from './memoryGraph'
+import { compactGraphLog, initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, isSuperseded, dropSuperseded, releaseSupersedes, isSupersedeReleased, supersedeEdgesSince, type MemoryEdge } from './memoryGraph'
 import { relationPrior } from './mnemeGraphLogic'
-import { isSupersedable, planSupersessions, type SupersedeEntry } from './mnemeSupersede'
+import { isSupersedable, planSupersessions, type SupersedeEntry, type SupersedeReason } from './mnemeSupersede'
 import { learnedUtility } from './mnemeRetrieval'
 import { interestCentroid, cosineSim, tasteBoost } from './mnemeAdapt'
 import { inferMemoryType, isLessonType } from './mnemeTypeInfer'
@@ -2414,16 +2414,26 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // Cross-encoder rerank (crossEncoderRerank.ts): re-read the first stage's top RERANK_POOL hits
   // jointly with the query and reorder them by a blend of the two signals. The blend only decides the
   // ORDER: the pool's own scores are handed back out in the new order, so the calibrated 0..1 scale the
-  // 0.25 gates and MMR read is unchanged, and the gate/MMR below run exactly as they always have. No
-  // scorer (model absent, load failed, rerank off) skips this byte-identically.
-  const rerankScorer = (opts.rerank ?? rerankEnabled()) && survivors.length > 1 ? await getRerankBatchScorer() : null
-  if (rerankScorer) {
-    const poolN = Math.max(limit, RERANK_POOL)
+  // 0.25 gates and MMR read is unchanged, and the gate/MMR below run exactly as they always have.
+  // The pool holds only hits that already pass the 0.25 relevance gate. A sub-gate hit promoted into
+  // first place would otherwise inherit a passer's score and walk through the gate as if relevant.
+  // Hits past the pool keep the first-stage order behind it (every one scores at or below the pool's
+  // lowest, which the reranked pool still holds). No scorer (model absent, load failed, rerank off)
+  // and a pool under two skip this byte-identically.
+  if ((opts.rerank ?? rerankEnabled()) && survivors.length > 1) {
     // Pool by score, the same key the gate below ranks on (survivors are in learned-utility order).
-    const pool = [...survivors].sort((a, b) => b.score - a.score).slice(0, poolN)
-    const blended = await blendRerank(opts.query, pool, rerankScorer, RERANK_ALPHA)
-    const scores = pool.map((r) => r.score).sort((a, b) => b - a)
-    survivors = blended.map(({ rerankScore: _ce, blended: _b, ...r }, i) => ({ ...r, score: scores[i] }) as MemorySearchResult)
+    const byScore = [...survivors].sort((a, b) => b.score - a.score)
+    const pool = byScore.filter((r) => r.score >= 0.25).slice(0, RERANK_POOL)
+    const rerankScorer = pool.length > 1 ? await getRerankBatchScorerWithin() : null
+    if (rerankScorer) {
+      const blended = await blendRerank(opts.query, pool, rerankScorer, RERANK_ALPHA)
+      const scores = pool.map((r) => r.score) // already best-first
+      const inPool = new Set<MemorySearchResult>(pool)
+      survivors = [
+        ...blended.map(({ rerankScore: _ce, blended: _b, ...r }, i) => ({ ...r, score: scores[i] }) as MemorySearchResult),
+        ...byScore.filter((r) => !inPool.has(r)),
+      ]
+    }
   }
   if (opts.diversify) {
     // BB2: gate to the relevant pool (with a floor), then MMR-rerank to `limit` using
@@ -2774,6 +2784,79 @@ export function memoryReleaseSupersedes(id: string): number {
   return n
 }
 
+// ---- Activity ("This week" in the Memory panel) ----
+
+export const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+export const ACTIVITY_LEARNED_MAX = 50
+export const ACTIVITY_REPLACED_MAX = 30
+const ACTIVITY_REPLACED_SCAN = 500
+const ACTIVITY_SNIPPET = 240
+
+export interface ActivityMemory { id: string; ts: number; kind: MemoryEntry['kind']; lesson: boolean; agent: string; project?: string; content: string }
+/** Why the newer memory replaced the older one: the idle pass's reason, or 'linked' for an agent's memory_link. */
+export type ActivityReplaceReason = SupersedeReason | 'linked'
+export interface ActivityReplacement { ts: number; reason: ActivityReplaceReason; newer: ActivityMemory; older: ActivityMemory }
+export interface MemoryActivity {
+  sinceMs: number
+  counts: { lessons: number; decisions: number; facts: number; notes: number; replaced: number }
+  learned: ActivityMemory[]
+  replaced: ActivityReplacement[]
+  /** More was learned or replaced than the lists carry. */
+  more: boolean
+}
+
+function activityRow(e: MemoryEntry): ActivityMemory {
+  const lesson = e.memoryType === 'semantic' || e.memoryType === 'procedural'
+  const text = e.content.length > ACTIVITY_SNIPPET ? e.content.slice(0, ACTIVITY_SNIPPET - 1) + '…' : e.content
+  return { id: e.id, ts: e.ts, kind: e.kind, lesson, agent: e.source || e.agentId, ...(e.project ? { project: e.project } : {}), content: text }
+}
+
+function replaceReason(createdBy: string | undefined): ActivityReplaceReason {
+  const r = createdBy?.startsWith('supersede:') ? createdBy.slice('supersede:'.length) : ''
+  return r === 'restated' || r === 'contradicts' || r === 'explicit' ? r : 'linked'
+}
+
+/**
+ * What the brain learned and replaced since `sinceMs` (default: the last 7 days). Learned = the memories
+ * that state knowledge (isSupersedable: a distilled lesson, or an agent's own decision / fact / note),
+ * newest first. Replaced = supersessions drawn in the window, newest first; an edge from an old log line
+ * with no timestamp counts as earlier. One pass over the store; both lists are capped.
+ */
+export function memoryActivity(opts: { sinceMs?: number } = {}): MemoryActivity {
+  const sinceMs = typeof opts.sinceMs === 'number' && Number.isFinite(opts.sinceMs) ? opts.sinceMs : Date.now() - ACTIVITY_WINDOW_MS
+  const counts = { lessons: 0, decisions: 0, facts: 0, notes: 0, replaced: 0 }
+  const edges = supersedeEdgesSince(sinceMs, ACTIVITY_REPLACED_SCAN)
+  const wanted = new Set<string>()
+  for (const r of edges) { wanted.add(r.newer); wanted.add(r.older) }
+  const byId = new Map<string, MemoryEntry>()
+  const learned: MemoryEntry[] = []
+  for (const e of entries) {
+    if (wanted.has(e.id)) byId.set(e.id, e)
+    if (e.ts < sinceMs || !isSupersedable(e)) continue
+    if (e.memoryType === 'semantic' || e.memoryType === 'procedural') counts.lessons++
+    else if (e.kind === 'decision') counts.decisions++
+    else if (e.kind === 'fact') counts.facts++
+    else counts.notes++
+    learned.push(e)
+  }
+  const replaced: ActivityReplacement[] = []
+  for (const r of edges) {
+    const newer = byId.get(r.newer)
+    const older = byId.get(r.older)
+    if (!newer || !older) continue
+    counts.replaced++
+    if (replaced.length < ACTIVITY_REPLACED_MAX) replaced.push({ ts: r.ts, reason: replaceReason(r.createdBy), newer: activityRow(newer), older: activityRow(older) })
+  }
+  learned.sort((a, b) => b.ts - a.ts)
+  return {
+    sinceMs,
+    counts,
+    learned: learned.slice(0, ACTIVITY_LEARNED_MAX).map(activityRow),
+    replaced,
+    more: learned.length > ACTIVITY_LEARNED_MAX || counts.replaced > replaced.length || edges.length >= ACTIVITY_REPLACED_SCAN,
+  }
+}
+
 /** F13: the lessons (semantic/procedural) in the hot window, newest-first, up to `limit` —
  *  scanning the FULL window so distilled, cross-validated knowledge isn't missed just because
  *  newer bulk transcript chunks fill the most-recent rows. Powers memory_pool. */
@@ -2889,7 +2972,9 @@ export function consolidationSimOf(): (a: ConsolEntry, b: ConsolEntry) => number
   }
 }
 
-export function memoryDelete(id: string): void {
+/** `keepContentHash` deletes this one memory without tombstoning its text, so the same words written
+ *  again later are kept (the memory tour removes its demo fact this way: the fact is the user's own). */
+export function memoryDelete(id: string, opts: { keepContentHash?: boolean } = {}): void {
   if (!id) return
   assertWritable()
   let removedHash: string | undefined
@@ -2910,7 +2995,9 @@ export function memoryDelete(id: string): void {
   // F22: dedup is content-addressed but deletion was id-addressed, so deleting one copy of
   // de-duplicated content left the twin (same hash, different id) alive to resurface on the
   // next reload. Tombstone the CONTENT hash too, and drop any in-window twins right now.
-  if (removedHash) {
+  if (removedHash && opts.keepContentHash) {
+    seenHashes.delete(removedHash)
+  } else if (removedHash) {
     tombstonedHashes.add(removedHash)
     appendShardLine(JSON.stringify({ deletedHash: removedHash }), 'deleteHash', { fsync: true })
     for (let i = entries.length - 1; i >= 0; i--) {

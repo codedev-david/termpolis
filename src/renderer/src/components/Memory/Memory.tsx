@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import type { MemoryLockReason, MemorySearchResult, MemorySyncStatus } from '../../types'
 import { CodeGraphPanel } from './CodeGraphPanel'
+import { WeekActivity } from './WeekActivity'
 
 // Why memory is LOCKED, in words. Every one of these is recoverable without losing anything, which is
 // why the panel says what would bring the memories back before it offers the way past.
@@ -19,6 +20,8 @@ interface Props {
   onClose: () => void
   activeTerminalId: string | null
   activeCwd: string
+  /** Bumped to open the This week tab (the memory tour's last step asks for it). */
+  weekRequest?: number
 }
 
 // Bracketed-paste markers so a multi-line primer is treated as one paste by the
@@ -29,7 +32,9 @@ function wrapAsBracketedPaste(text: string): string {
   return BP_START + text.replace(/\r\n|\r|\n/g, '\r') + BP_END
 }
 
-export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Element {
+export function Memory({ onClose, activeTerminalId, activeCwd, weekRequest = 0 }: Props): JSX.Element {
+  const [view, setView] = useState<'overview' | 'week'>(weekRequest > 0 ? 'week' : 'overview')
+  useEffect(() => { if (weekRequest > 0) setView('week') }, [weekRequest])
   const [stats, setStats] = useState<{ count: number; capacity: number } | null>(null)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<MemorySearchResult[]>([])
@@ -176,7 +181,22 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
         </button>
       </div>
 
+      <div className="flex border-b border-[#3c3c3c] text-[11px]" role="tablist" aria-label="Memory views">
+        {(['overview', 'week'] as const).map((v) => (
+          <button
+            key={v}
+            role="tab"
+            aria-selected={view === v}
+            className={`flex-1 px-2 py-1.5 cursor-pointer ${view === v ? 'text-[#22D3EE] border-b-2 border-[#22D3EE]' : 'text-[#888] hover:text-[#d4d4d4]'}`}
+            onClick={() => setView(v)}
+          >
+            {v === 'overview' ? 'Overview' : 'This week'}
+          </button>
+        ))}
+      </div>
+
       <div className="flex-1 overflow-y-auto text-[12px] px-3 py-2 flex flex-col gap-3">
+        {view === 'week' ? <WeekActivity /> : (<>
         {sync?.ownLocked && (
           <div className="border border-[#FFB74D] rounded px-2 py-2 flex flex-col gap-1" role="alert" data-testid="memory-locked">
             <div className="text-[11px] text-[#FFB74D] font-semibold">
@@ -309,6 +329,7 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
         )}
 
         {status && <div className="text-[#22D3EE] text-[11px]">{status}</div>}
+        </>)}
       </div>
     </div>
   )

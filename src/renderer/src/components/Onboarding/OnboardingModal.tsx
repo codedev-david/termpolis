@@ -65,7 +65,8 @@ async function applyAgentChoice(
   noteAgentAnswerSaved(saved)
 }
 
-export function OnboardingModal({ onDone }: { onDone: () => void }) {
+/** `completed` is true only when the user went through to "Get started" (not Skip tour or Escape). */
+export function OnboardingModal({ onDone }: { onDone: (result: { completed: boolean }) => void }) {
   // A first run shows both tiers off; "Show tour again" shows the choices already made.
   const [crash, setCrash] = useState(() => readConsentMirror().crash)
   const [usage, setUsage] = useState(() => readConsentMirror().usage)
@@ -89,11 +90,11 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
     setAgents(next)
   }
 
-  const finish = () => {
+  const finish = (completed = false) => {
     void saveConsent({ crash, usage })
     void applyAgentChoice(agents, edited.current, recorded.current)
     try { localStorage.setItem(SEEN_KEY, '1') } catch {}
-    onDone()
+    onDone({ completed })
   }
 
   // Re-bound every render so Escape (like Skip tour) saves the current choices.
@@ -275,7 +276,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
         {/* Footer nav */}
         <div className="flex items-center justify-between border-t border-[#3c3c3c] pt-4">
           <button
-            onClick={finish}
+            onClick={() => finish()}
             className="text-xs text-[#9ca3af] hover:text-[#d4d4d4] underline"
             aria-label="Skip the tour"
           >
@@ -300,7 +301,7 @@ export function OnboardingModal({ onDone }: { onDone: () => void }) {
             )}
             {step === TOTAL_STEPS && (
               <button
-                onClick={finish}
+                onClick={() => finish(true)}
                 className="px-5 py-1.5 text-sm rounded-lg bg-[#22D3EE]/20 text-[#22D3EE] hover:bg-[#22D3EE]/30 font-medium"
               >
                 Get started

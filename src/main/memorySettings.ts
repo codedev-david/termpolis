@@ -54,6 +54,12 @@ export interface MemorySettings {
    * TERMPOLIS_MNEME_DISTILLER=1 still forces it on for a run (the switch it replaces).
    */
   distillWithHaiku: boolean
+  /**
+   * "Re-read search results" (Settings, Memory): a small local model (crossEncoderRerank.ts) re-reads the top hits of each
+   * memory search together with the query and reorders them. ON by default: it runs on this computer, sends nothing anywhere,
+   * and costs a fraction of a second per search on a thread of its own. Absent key => ON; only a literal `false` turns it off.
+   */
+  rerankSearch: boolean
 }
 
 // UI/UX bounds. The pure builder still hard-caps at 100; this keeps the panel
@@ -67,7 +73,7 @@ function clampPrimerLimit(value: unknown): number {
   return Math.min(PRIMER_LIMIT_MAX, Math.max(PRIMER_LIMIT_MIN, n))
 }
 
-let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false }
+let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT, vectorQuantize: false, learnFromConversations: true, indexClaudeNotes: true, shareNotesAcrossProjects: false, distillWithHaiku: false, rerankSearch: true }
 let initialized = false
 
 function settingsPath(): string {
@@ -98,6 +104,8 @@ function init(): void {
           shareNotesAcrossProjects: parsed.shareNotesAcrossProjects === true,
           // Absent key => OFF: it spends the user's quota, so it waits for a yes.
           distillWithHaiku: parsed.distillWithHaiku === true,
+          // Absent key => ON: it is local and costs no quota, so it is the default; you opt out by saying `false`.
+          rerankSearch: parsed.rerankSearch !== false,
         }
       } else {
         throw new Error('not a settings object')
@@ -218,4 +226,18 @@ export function getDistillWithHaiku(): boolean {
 /** Persist the switch. Only a literal true turns it on. Throws, and changes nothing, when the choice could not be written. */
 export function setDistillWithHaiku(value: unknown): MemorySettings {
   return saveSwitch('distillWithHaiku', value === true)
+}
+
+export function getRerankSearch(): boolean {
+  if (!initialized) init()
+  return settings.rerankSearch
+}
+
+/** Persist the switch. Only a literal false turns it off. Applying it (the memory host's reranker) is memoryClient's job; this
+ *  module only remembers what the user picked. */
+export function setRerankSearch(value: unknown): MemorySettings {
+  if (!initialized) init()
+  settings.rerankSearch = value !== false
+  persist()
+  return getMemorySettings()
 }

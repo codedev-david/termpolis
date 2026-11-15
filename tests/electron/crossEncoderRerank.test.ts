@@ -1,5 +1,6 @@
 // The cross-encoder reranker as recall uses it: blendRerank's contract, the global gate, the injection
-// seams, and memorySearch handing the pool's own scores back out in the reranked order. The model load
+// seams, and memorySearch re-reading only the hits that pass the relevance gate (each result keeps a
+// first-stage score from that pool, so a weak hit never inherits a strong hit's score). The model load
 // path (fake ORT + the real model where fetched) is crossEncoderRerankModel.test.ts.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
@@ -14,6 +15,7 @@ import {
   rerankEnabled,
   _resetRerankForTests,
   _setRerankModelPresentForTests,
+  RERANK_POOL,
   type RerankBatchScorer,
 } from '../../src/main/crossEncoderRerank'
 import {
@@ -180,5 +182,80 @@ describe('memorySearch with the reranker', () => {
     const off = await memorySearch({ query: 'note about the parser', limit: 4 })
     const on = await memorySearch({ query: 'note about the parser', limit: 4, rerank: true })
     expect(on).toEqual(off)
+  })
+})
+
+describe('memorySearch rerank pool', () => {
+  // The query lies along one axis and each memory's cosine to it is set by hand, so the first-stage scores are known.
+  const cosines = new Map<string, number>()
+  const unit = (cos: number): number[] => {
+    const v = new Array(384).fill(0)
+    v[0] = cos
+    v[1] = Math.sqrt(1 - cos * cos)
+    return v
+  }
+  let tmp: string
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rerank-pool-'))
+    cosines.clear()
+    cosines.set('zz query', 1)
+    _resetForTests()
+    _resetRerankForTests()
+    _setEmbeddingsAvailable(true)
+    _setEmbedFnForTests(async (t) => unit(cosines.get(t) ?? 0))
+    initSwarmMemory(tmp)
+  })
+  afterEach(() => {
+    _resetRerankForTests()
+    _setEmbedFnForTests(null)
+    _resetForTests()
+    try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
+  })
+  const seed = async (docs: Record<string, number>): Promise<void> => {
+    for (const [content, cos] of Object.entries(docs)) {
+      cosines.set(content, cos)
+      await memoryWrite({ agentId: 'a', kind: 'fact', content })
+    }
+  }
+
+  it('re-reads only hits that pass the 0.25 gate, so a weak hit can never borrow the score of a strong one', async () => {
+    await seed({ 'alpha strong': 0.9, 'bravo strong': 0.8, 'charlie weak': 0.2, 'delta weak': 0.15 })
+    const off = await memorySearch({ query: 'zz query', limit: 5, rerank: false })
+    const weak = off.find((r) => r.content === 'charlie weak')!
+    expect(weak.score).toBeLessThan(0.25) // the floor of three lets it in, below the gate
+    // A cross-encoder that loves the weak hit: before 1.63 it went first and inherited 0.9.
+    const scorer = vi.fn(async (_q: string, docs: string[]) => docs.map((d) => (d.includes('weak') ? 10 : d === 'bravo strong' ? 5 : 0)))
+    setRerankBatchScorer(scorer)
+    const on = await memorySearch({ query: 'zz query', limit: 5, rerank: true })
+    expect(scorer).toHaveBeenCalledTimes(1)
+    expect(scorer.mock.calls[0][1].sort()).toEqual(['alpha strong', 'bravo strong'])
+    expect(on.map((r) => r.content)).toEqual(['bravo strong', 'alpha strong', 'charlie weak'])
+    expect(on.map((r) => r.score)).toEqual(off.map((r) => r.score))
+    expect(on.find((r) => r.content === 'charlie weak')!.score).toBe(weak.score)
+  })
+
+  it('skips the cross-encoder when fewer than two hits pass the gate', async () => {
+    await seed({ 'alpha strong': 0.9, 'charlie weak': 0.2, 'delta weak': 0.15 })
+    const scorer = vi.fn(async (_q: string, docs: string[]) => docs.map(() => 1))
+    setRerankBatchScorer(scorer)
+    const off = await memorySearch({ query: 'zz query', limit: 5, rerank: false })
+    const on = await memorySearch({ query: 'zz query', limit: 5, rerank: true })
+    expect(scorer).not.toHaveBeenCalled()
+    expect(on).toEqual(off)
+  })
+
+  it('re-reads at most RERANK_POOL hits however many a search asks for; the rest keep the first-stage order behind them', async () => {
+    const docs: Record<string, number> = {}
+    for (let i = 0; i < RERANK_POOL + 3; i++) docs[`memory number ${String.fromCharCode(97 + i)}`] = 0.9 - i * 0.02
+    await seed(docs)
+    const off = await memorySearch({ query: 'zz query', limit: RERANK_POOL + 3, rerank: false })
+    expect(off).toHaveLength(RERANK_POOL + 3)
+    const reversed = vi.fn(async (_q: string, ds: string[]) => ds.map((_d, i) => i)) // the weakest of the pool first
+    setRerankBatchScorer(reversed)
+    const on = await memorySearch({ query: 'zz query', limit: RERANK_POOL + 3, rerank: true })
+    expect(reversed.mock.calls[0][1]).toHaveLength(RERANK_POOL)
+    expect(on[0].id).toBe(off[RERANK_POOL - 1].id)
+    expect(on.slice(RERANK_POOL).map((r) => r.id)).toEqual(off.slice(RERANK_POOL).map((r) => r.id))
+    expect(on.map((r) => r.score)).toEqual(off.map((r) => r.score))
   })
 })

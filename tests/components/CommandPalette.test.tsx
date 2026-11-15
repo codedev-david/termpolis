@@ -68,6 +68,14 @@ describe('CommandPalette', () => {
     expect(screen.queryByText('Split Right')).not.toBeInTheDocument()
   })
 
+  it('typing "tour" offers the Memory tour', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'tour' } })
+    fireEvent.click(screen.getByText('Memory tour'))
+    expect(onAction).toHaveBeenCalledWith('memory_tour', undefined)
+  })
+
   it('offers Switch account… for the active agent terminal, once an account is registered', () => {
     const onAction = vi.fn()
     accountsView = { accounts: [{ id: 'acc_a' }] }

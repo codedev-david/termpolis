@@ -44,6 +44,7 @@ import { isOsEncryptionAvailable, keyStorageMode, createSecretExclusive, retireS
 import {
   HOST_HANDLERS,
   readKeysOf,
+  setRerankSearch as inprocSetRerankSearch,
   type HostRequest,
   type HostResponse,
   type HostInitMsg,
@@ -61,7 +62,7 @@ import {
   normalizeProjectSlug, projectKeyOf, entityDedupHash, contentHash, canonicalEntityName,
   type MemoryEntry, type MemorySearchResult, type WriteInput, type SearchOptions,
   type RelatedOptions, type GraphQueryOptions, type ListOptions, type SyncStatus,
-  type MemoryScrubber, type VectorRamStats, type MemoryDashboardStats, type ActivityRow,
+  type MemoryScrubber, type VectorRamStats, type MemoryDashboardStats, type ActivityRow, type MemoryActivity,
   type EmbeddingsStatus,
 } from './swarmMemory'
 import type { MemoryEdge } from './memoryGraph'
@@ -96,6 +97,8 @@ export interface StartMemoryHostOptions {
   /** The persisted int8-quantization choice. Applied BEFORE the store is built, on whichever side
    *  ends up owning it — see HostInitMsg.quantize. */
   quantize?: boolean
+  /** The persisted "Re-read search results" choice (MemorySettings.rerankSearch). Absent => off: see HostInitMsg.rerank. */
+  rerank?: boolean
   /** Skip the child entirely and run in-process (the fallback path). Used by tests + as a kill switch. */
   inProcess?: boolean
 }
@@ -352,6 +355,8 @@ function fallBackToInProcess(why: string): void {
     // As in the host: a rewrite that fails (or a LOCKED store refusing it) must not cost the scrubber.
     if (encKey && initParams.encKeyMinted) { try { inprocAdoptKey(encKey) } catch { /* the key is in force regardless */ } }
     if (scrubber) inprocSetScrubber(scrubber)
+    // As in the host, and after the store: the model loads on main's own rerank worker (index.ts wires the spawner).
+    inprocSetRerankSearch(initParams.rerank === true)
     logLoud(`in-process store loaded — main rss ${rssBefore} MB -> ${mainRssMb()} MB`)
   } catch (err) {
     logLoud(`in-process memory init FAILED too: ${(err as Error)?.message}`)
@@ -692,6 +697,7 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
     userDataPath,
     syncDir,
     quantize: opts.quantize === true,
+    rerank: opts.rerank === true,
     encKeyB64: key ? key.toString('base64') : null,
     encKeyMinted: minted,
     readKeysB64: readKeys.map((k) => k.toString('base64')),
@@ -894,7 +900,8 @@ export const routerClassify = (dir: string, text: string): Promise<import('./rou
 export const routerLearn = (dir: string, text: string, label: string): Promise<boolean> => call('routerLearn', [dir, text, label])
 export const routerWarm = (dir: string): Promise<boolean> => call('routerWarm', [dir])
 export const memorySourceById = (id: string): Promise<string | undefined> => call('memorySourceById', [id])
-export const memoryDelete = (id: string): Promise<void> => call('memoryDelete', [id])
+export const memoryDelete = (id: string, opts?: { keepContentHash?: boolean }): Promise<void> =>
+  call('memoryDelete', opts ? [id, opts] : [id])
 export const memoryArchive = (id: string): Promise<void> => call('memoryArchive', [id])
 export const searchArchive = (query: string, limit = 20): Promise<MemoryEntry[]> => call('searchArchive', [query, limit])
 export const memoryPatchProjects = (patches: Array<{ hash: string; project: string }>): Promise<number> => call('memoryPatchProjects', [patches])
@@ -911,6 +918,8 @@ export const weaveCandidates = (limit = 300): Promise<WeaveEntry[]> => call('wea
 export const memorySupersedePass = (opts: { batch?: number; max?: number; exclude?: string[] } = {}): Promise<{ considered: number; minted: number }> => call('memorySupersedePass', [opts])
 /** memory_correct on `id`: release every memory it replaced (memoryGraph.releaseSupersedes). */
 export const memoryReleaseSupersedes = (id: string): Promise<number> => call('memoryReleaseSupersedes', [id])
+/** The Memory panel's "This week": what was learned and replaced since `sinceMs` (default 7 days). */
+export const memoryActivity = (opts: { sinceMs?: number } = {}): Promise<MemoryActivity> => call('memoryActivity', [opts])
 export const weaveNeighbours = (id: string, k = 6): Promise<WeaveNeighbour[]> => call('weaveNeighbours', [id, k])
 /** Every candidate's neighbourhood in ONE round trip. runWeave calls neighbours() from inside a sync
  *  loop over ~300 candidates; proxying it per-id would be ~300 RPCs per idle pass. Pre-fetch this,
@@ -924,6 +933,12 @@ export const backfillCodeRefs = (id: string, refs: CodeRef[]): Promise<void> => 
 export const symbolHistory = (query: string, projectKey?: string): Promise<MemoryEntry[]> => call('symbolHistory', [query, projectKey])
 export const vectorRamStats = (): Promise<VectorRamStats> => call('vectorRamStats', [])
 export const setVectorQuantization = (on: boolean): Promise<VectorRamStats> => call('setVectorQuantization', [on])
+/** The "Re-read search results" switch, applied where the store runs. Recorded in initParams first, so a respawned host
+ *  comes back with the user's choice rather than the one it started with. */
+export async function applyRerankSearch(on: boolean): Promise<boolean> {
+  if (initParams) initParams = { ...initParams, rerank: on === true }
+  return call('setRerankSearch', [on === true])
+}
 export const getSyncStatus = (): Promise<SyncStatus> => call('getSyncStatus', [])
 export const reloadMemoryFromSync = (): Promise<void> => call('reloadMemoryFromSync', [])
 export const disableSyncEncryption = (): Promise<SyncStatus> => call('disableSyncEncryption', [])

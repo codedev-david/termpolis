@@ -662,6 +662,9 @@ export interface TermpolisAPI {
   memoryWrite: (input: MemoryWriteInput) => Promise<IpcResponse<MemoryEntry>>
   memorySearch: (opts: MemorySearchOptions) => Promise<IpcResponse<MemorySearchResult[]>>
   memoryList: (opts?: MemoryListOptions) => Promise<IpcResponse<MemoryEntry[]>>
+  memoryActivity: (opts?: { sinceMs?: number }) => Promise<IpcResponse<MemoryActivity>>
+  memoryReleaseSupersedes: (id: string) => Promise<IpcResponse<number>>
+  memoryDelete: (id: string) => Promise<IpcResponse<void>>
   memoryCount: () => Promise<IpcResponse<number>>
   memoryClear: () => Promise<IpcResponse>
   memoryStats: () => Promise<IpcResponse<{ count: number; capacity: number }>>
@@ -738,6 +741,8 @@ export interface TermpolisAPI {
   /** "Smarter lessons": whether Claude Haiku writes the lesson after a substantial session (default false). */
   memoryGetDistillHaiku: () => Promise<IpcResponse<boolean>>
   memorySetDistillHaiku: (value: boolean) => Promise<IpcResponse<{ distillWithHaiku: boolean }>>
+  memoryGetRerankSearch: () => Promise<IpcResponse<boolean>>
+  memorySetRerankSearch: (value: boolean) => Promise<IpcResponse<{ rerankSearch: boolean }>>
   /** Claude Code's saved notes in memory: the two switches, what was imported, whether the agents are connected. */
   memoryGetNotesSettings: () => Promise<IpcResponse<ClaudeNotesSettings>>
   /** Change either switch (only a real boolean counts). Answers with the new state. */
@@ -961,6 +966,27 @@ export interface MemoryEntry {
 }
 
 export interface MemorySearchResult extends MemoryEntry { score: number }
+
+/** One memory as Memory ▸ This week shows it (content cut to a snippet). */
+export interface ActivityMemory {
+  id: string
+  ts: number
+  kind: MemoryEntry['kind']
+  lesson: boolean
+  agent: string
+  project?: string
+  content: string
+}
+export type ActivityReplaceReason = 'restated' | 'contradicts' | 'explicit' | 'linked'
+export interface ActivityReplacement { ts: number; reason: ActivityReplaceReason; newer: ActivityMemory; older: ActivityMemory }
+/** What memory learned and replaced since `sinceMs` (main: swarmMemory.memoryActivity). */
+export interface MemoryActivity {
+  sinceMs: number
+  counts: { lessons: number; decisions: number; facts: number; notes: number; replaced: number }
+  learned: ActivityMemory[]
+  replaced: ActivityReplacement[]
+  more: boolean
+}
 
 export interface MemorySyncStatus {
   syncing: boolean

@@ -33,6 +33,7 @@ import { SecretSentBanner } from './components/SecretSentBanner/SecretSentBanner
 import { SensitiveFileReadBanner } from './components/SensitiveFileReadBanner/SensitiveFileReadBanner'
 import { ShieldScanFailedBanner } from './components/ShieldScanFailedBanner/ShieldScanFailedBanner'
 import { OnboardingModal, hasSeenOnboarding } from './components/Onboarding/OnboardingModal'
+import { MemoryTour, hasSeenMemoryTour } from './components/Memory/MemoryTour'
 import { ConsentReviewModal, consentNeedsReview } from './components/ConsentReview/ConsentReviewModal'
 import { AgentReviewModal, agentReviewNeeded } from './components/AgentIntegration/AgentReviewModal'
 import type { AgentIntegrationStatus } from '../../shared/agentIntegration'
@@ -130,6 +131,9 @@ export default function App() {
   const [showConversationSearch, setShowConversationSearch] = useState(false)
   const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
+  // Bumped to open the Memory panel on its This week tab.
+  const [memoryWeekRequest, setMemoryWeekRequest] = useState(0)
+  const [showMemoryTour, setShowMemoryTour] = useState(false)
   const [showAppLog, setShowAppLog] = useState(false)
   const launchingAgent = useTerminalStore(s => s.launchingAgent)
   const setLaunchingAgent = useTerminalStore(s => s.setLaunchingAgent)
@@ -599,7 +603,11 @@ export default function App() {
 
     // Listen for the Settings "Open the Memory panel" link (SettingsPane is
     // rendered propless, so a window event is the bridge — like openContextPins)
-    const onOpenMemory = () => setShowMemory(true)
+    // detail.view 'week' opens it on the This week tab.
+    const onOpenMemory = (e: Event) => {
+      if ((e as CustomEvent<{ view?: string }>).detail?.view === 'week') setMemoryWeekRequest(n => n + 1)
+      setShowMemory(true)
+    }
     window.addEventListener('termpolis:openMemory', onOpenMemory)
 
     // Same bridge for the app log, so the Help modal / command palette can open it
@@ -971,6 +979,9 @@ export default function App() {
       case 'show_memory':
         setShowMemory(v => !v)
         break
+      case 'memory_tour':
+        setShowMemoryTour(true)
+        break
       case 'switch_account':
         if (canSwitchAccount(state.terminals.find((t) => t.id === state.activeTerminalId), state.accountsView)) useTerminalStore.getState().openAccountSwitch(state.activeTerminalId as string)
         else useTerminalStore.getState().setMemoryNotice('Open an agent terminal whose agent has an account to switch it.')
@@ -1168,7 +1179,9 @@ export default function App() {
             <Memory
               activeTerminalId={activeTerminalId}
               activeCwd={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
-              onClose={() => setShowMemory(false)}
+              // A request to open on This week is used once: the next opening starts on Overview.
+              onClose={() => { setShowMemory(false); setMemoryWeekRequest(0) }}
+              weekRequest={memoryWeekRequest}
             />
           )}
         </Suspense>
@@ -1230,11 +1243,24 @@ export default function App() {
       </Suspense>
       {showOnboarding && (
         <OnboardingModal
-          onDone={() => {
+          onDone={({ completed }) => {
             reviewsAnswered.current = true
             setShowOnboarding(false)
             setAgentReview(null)
             setConsentReview(false)
+            // The memory tour follows a first-run tour that was finished, never one that was skipped.
+            if (completed && !hasSeenMemoryTour()) setShowMemoryTour(true)
+          }}
+        />
+      )}
+      {showMemoryTour && !showOnboarding && (
+        <MemoryTour
+          onClose={(opts) => {
+            setShowMemoryTour(false)
+            if (opts?.openWeek) {
+              setMemoryWeekRequest(n => n + 1)
+              setShowMemory(true)
+            }
           }}
         />
       )}

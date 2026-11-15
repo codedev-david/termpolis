@@ -29,15 +29,19 @@ vi.mock('electron', () => ({
 import { setSafeStorage, type SafeStorageLike } from '../../src/main/secureKeyStore'
 import {
   handleMessage, _resetHostForTests, serializeError, consolidationSimMatrix, entrySimMatrix, MAX_SIM_IDS, HOST_HANDLERS,
+  setRerankSearch as hostSetRerankSearch,
   type HostRequest, type HostResponse,
 } from '../../src/main/memoryHost'
 import {
   startMemoryHost, setMemoryHostSpawner, _resetMemoryClientForTests, memoryHostMode,
   provisionMemoryKey, setMemoryScrubber, memoryScrubStats,
   memoryWrite, memoryCount, memoryList, memorySearch, memoryDelete, getSyncStatus,
-  enableLocalEncryption, setSyncPassphrase, consolidationSimOf, memoryStats,
+  enableLocalEncryption, setSyncPassphrase, consolidationSimOf, memoryStats, applyRerankSearch,
   type MemoryHostTransport,
 } from '../../src/main/memoryClient'
+import {
+  rerankEnabled, setRerankWorkerSpawner, _resetRerankForTests, type RerankWorkerTransport,
+} from '../../src/main/crossEncoderRerank'
 import {
   initSwarmMemory, memoryList as inprocList, memoryWrite as inprocWrite,
   getSyncStatus as inprocSyncStatus, _resetForTests, _setEmbeddingsAvailable, _setEmbedFnForTests,
@@ -961,6 +965,7 @@ describe('client ⇄ host name drift', () => {
       ['memoryDashboardStats', () => c.memoryDashboardStats()],
       ['memoryGraphSample', () => c.memoryGraphSample({ limit: 5 })],
       ['memoryRecentActivity', () => c.memoryRecentActivity(5)],
+      ['memoryActivity', () => c.memoryActivity({ sinceMs: 0 })],
       ['embeddingsReady', () => c.embeddingsReady()],
       ['memorySourceById', () => c.memorySourceById(seed.id)],
       ['memoryLessons', () => c.memoryLessons(10)],
@@ -1335,5 +1340,68 @@ describe('disableEncryption — a respawn after it must not quietly re-key the s
     expect(init.encKeyB64).toBeNull()
     expect(init.readKeysB64).toHaveLength(1) // the old key, still able to read anything left under it
     expect(fs.readFileSync(path.join(tmp, 'swarm-memory.jsonl'), 'utf8')).toContain('DISABLEMARKER')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// "Re-read search results" (v1.63). The choice rides in the init message, so the host applies it once its
+// store is up and every respawn comes back with it; a change from Settings goes to whichever side serves. The
+// fake host runs the real dispatcher in this process, so the reranker it switches is this module's.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+describe('search reranking switch', () => {
+  let spawns = 0
+  beforeEach(() => {
+    _resetRerankForTests()
+    spawns = 0
+    // Stands in for the host's rerank worker: counting spawns shows when the model load starts.
+    setRerankWorkerSpawner((): RerankWorkerTransport => { spawns++; return { score: async (_q, docs) => docs.map(() => 0), dispose: () => {} } })
+  })
+  afterEach(() => _resetRerankForTests())
+
+  it('a host started with the switch on turns reranking on and starts loading the model', async () => {
+    const { hosts } = await startWithFake()
+    expect((hosts[0].posted[0] as { rerank?: boolean }).rerank).toBe(false) // absent from the options: off
+    expect(rerankEnabled()).toBe(false)
+    expect(spawns).toBe(0)
+
+    _resetMemoryClientForTests()
+    setMemoryHostSpawner(() => makeFakeHost().transport)
+    await startMemoryHost({ userDataPath: tmp, rerank: true })
+    expect(rerankEnabled()).toBe(true)
+    await vi.waitFor(() => expect(spawns).toBe(1)) // prewarmed: the first search finds the model loaded
+  })
+
+  it('a change from Settings reaches the host, and a respawned host comes back with it', async () => {
+    const { hosts } = await startWithFake({ crashOnFn: 'memorySearch' })
+    expect(await applyRerankSearch(true)).toBe(true)
+    expect(rerankEnabled()).toBe(true)
+    await expect(memorySearch({ query: 'x' })).rejects.toThrow(/exited unexpectedly/)
+    expect(hosts.length).toBe(2)
+    await memoryCount() // the new child is up
+    expect((hosts[1].posted.find((m) => m.kind === 'init') as { rerank?: boolean }).rerank).toBe(true)
+    expect(await applyRerankSearch(false)).toBe(false)
+    expect(rerankEnabled()).toBe(false)
+  })
+
+  it('the in-process fallback applies the switch too, and a later change goes to it', async () => {
+    setMemoryHostSpawner(() => null)
+    expect(await startMemoryHost({ userDataPath: tmp, rerank: true })).toBe('inproc')
+    expect(rerankEnabled()).toBe(true)
+    expect(await applyRerankSearch(false)).toBe(false)
+    expect(rerankEnabled()).toBe(false)
+  })
+
+  it('a change before the store was started rejects instead of pretending it applied', async () => {
+    _resetMemoryClientForTests()
+    await expect(applyRerankSearch(true)).rejects.toThrow(/startMemoryHost\(\) has not been called/)
+  })
+
+  it('only a literal true turns it on in the host', () => {
+    expect(hostSetRerankSearch('yes')).toBe(false)
+    expect(hostSetRerankSearch(1)).toBe(false)
+    expect(rerankEnabled()).toBe(false)
+    expect(spawns).toBe(0)
+    expect(hostSetRerankSearch(true)).toBe(true)
+    expect(rerankEnabled()).toBe(true)
   })
 })

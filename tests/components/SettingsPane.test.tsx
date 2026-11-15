@@ -37,6 +37,8 @@ beforeAll(() => {
     memorySetLearnConversations: vi.fn().mockImplementation((value: boolean) => Promise.resolve({ success: true, data: { learnFromConversations: value } })),
     memoryGetDistillHaiku: vi.fn().mockResolvedValue({ success: true, data: false }),
     memorySetDistillHaiku: vi.fn().mockImplementation((value: boolean) => Promise.resolve({ success: true, data: { distillWithHaiku: value } })),
+    memoryGetRerankSearch: vi.fn().mockResolvedValue({ success: true, data: true }),
+    memorySetRerankSearch: vi.fn().mockImplementation((value: boolean) => Promise.resolve({ success: true, data: { rerankSearch: value } })),
   }
   ;(window as any).updater = {
     getStatus: vi.fn().mockResolvedValue({ status: 'idle' }),
@@ -204,6 +206,71 @@ describe('SettingsPane', () => {
       fireEvent.click(sw)
       await waitFor(() => expect(tp().memorySetDistillHaiku).toHaveBeenCalledWith(true))
       await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+    })
+  })
+
+  // "Re-read search results": a local cross-encoder reorders each memory search's top hits. Nothing leaves the machine, so it is ON.
+  describe('Re-read search results switch', () => {
+    const tp = () => (window as any).termpolis
+    const row = async () => await screen.findByTestId('settings-rerank-search-toggle')
+
+    it('is a labelled switch, ON by default, that says it stays on this computer', async () => {
+      render(<SettingsPane />)
+      const sw = await row()
+      expect(sw).toHaveAttribute('role', 'switch')
+      expect(sw).toHaveAttribute('aria-checked', 'true')
+      expect(screen.getByText('Re-read search results')).toBeInTheDocument()
+      expect(screen.getByText(/Nothing leaves your computer/)).toBeInTheDocument()
+      await waitFor(() => expect(tp().memoryGetRerankSearch).toHaveBeenCalled())
+    })
+
+    it('shows a saved OFF, and each click tells main and follows its answer', async () => {
+      tp().memoryGetRerankSearch.mockResolvedValueOnce({ success: true, data: false })
+      render(<SettingsPane />)
+      const sw = await row()
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+      fireEvent.click(sw)
+      expect(tp().memorySetRerankSearch).toHaveBeenLastCalledWith(true)
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+      fireEvent.click(sw)
+      expect(tp().memorySetRerankSearch).toHaveBeenLastCalledWith(false)
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+    })
+
+    it('a refused or lost save puts the switch back', async () => {
+      tp().memorySetRerankSearch.mockResolvedValueOnce({ success: false, error: 'disk full' }).mockRejectedValueOnce(new Error('ipc gone'))
+      render(<SettingsPane />)
+      const sw = await row()
+      await waitFor(() => expect(tp().memoryGetRerankSearch).toHaveBeenCalled())
+      fireEvent.click(sw)
+      await waitFor(() => expect(tp().memorySetRerankSearch).toHaveBeenCalledWith(false))
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+      fireEvent.click(sw)
+      await waitFor(() => expect(tp().memorySetRerankSearch).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
+    })
+
+    it('an answer main gives in another shape leaves the optimistic state, and a failed read keeps ON', async () => {
+      tp().memoryGetRerankSearch.mockRejectedValueOnce(new Error('gone'))
+      tp().memorySetRerankSearch.mockResolvedValueOnce({ success: true, data: {} })
+      render(<SettingsPane />)
+      const sw = await row()
+      expect(sw).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(sw)
+      await waitFor(() => expect(tp().memorySetRerankSearch).toHaveBeenCalledWith(false))
+      await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+    })
+
+    it('a read main refuses, or answers with no boolean, keeps ON', async () => {
+      tp().memoryGetRerankSearch.mockResolvedValueOnce({ success: false, error: 'host down' })
+      const { unmount } = render(<SettingsPane />)
+      await waitFor(() => expect(tp().memoryGetRerankSearch).toHaveBeenCalledTimes(1))
+      expect(await row()).toHaveAttribute('aria-checked', 'true')
+      unmount()
+      tp().memoryGetRerankSearch.mockResolvedValueOnce({ success: true, data: 'yes' })
+      render(<SettingsPane />)
+      await waitFor(() => expect(tp().memoryGetRerankSearch).toHaveBeenCalledTimes(2))
+      expect(await row()).toHaveAttribute('aria-checked', 'true')
     })
   })
 

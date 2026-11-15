@@ -40,7 +40,7 @@ import {
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption,
   enableLocalEncryption, disableEncryption,
   persistMemoryIndex, vectorRamStats, setVectorQuantization,
-  exportMemorySnapshot, importMemorySnapshot, memorySupersedePass, memoryReleaseSupersedes,
+  exportMemorySnapshot, importMemorySnapshot, memorySupersedePass, memoryReleaseSupersedes, memoryActivity,
 } from './swarmMemory'
 // The graph is part of the brain, not a main-thread sidecar: initMemoryGraph() is called by
 // initSwarmMemory(), which runs HERE. v1.26.0 ported the store and left these four behind in main,
@@ -51,6 +51,9 @@ import { lowerHostPriority } from './hostPriority'
 import type { WeaveNeighbour } from './mnemeWeave'
 // v1.56.0: the per-message model router's classifier runs beside the embedder it uses.
 import { routerClassify, routerLearn, routerWarm } from './routerModel'
+// v1.63: search reranking — the cross-encoder runs on a worker_thread this process spawns (rerankWorker.ts).
+import { setRerankEnabled, prewarmRerank, setRerankWorkerSpawner } from './crossEncoderRerank'
+import { createRerankWorkerTransport } from './rerankWorker'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
 // Discriminated on `kind` rather than "the first message is init, the rest are calls" — an ordering
@@ -71,6 +74,9 @@ export interface HostInitMsg {
    *  Setting it afterwards is not merely untidy — setVectorQuantization() rebuilds the packed store
    *  in the new mode, so the child would build the whole 90k-entry vector store TWICE on every launch. */
   quantize?: boolean
+  /** Re-read each search's top hits with the cross-encoder (MemorySettings.rerankSearch). Absent => off, so a
+   *  sender that never says (the unit suite, an older main) keeps the first-stage order and loads no model. */
+  rerank?: boolean
   /** The already-unwrapped 32-byte AES key, base64. Main owns safeStorage; the child never does. */
   encKeyB64: string | null
   /** True when main MINTED this key on this launch (the store had none). The store on disk is then
@@ -240,6 +246,15 @@ export function readKeysOf(readKeysB64: unknown): Buffer[] {
   return Array.isArray(readKeysB64) ? readKeysB64.map((k) => Buffer.from(String(k), 'base64')) : []
 }
 
+/** The "Re-read search results" switch. Only a literal true turns it on; on also starts the model loading (on its
+ *  worker, in the forked host) so the next search does not wait for it. */
+export function setRerankSearch(on: unknown): boolean {
+  const v = on === true
+  setRerankEnabled(v)
+  if (v) prewarmRerank()
+  return v
+}
+
 /** Same wire rule: the new key and the retired keys that still unwrap cross as base64. */
 export function startNewMemoryKeyB64(b64: string, readKeysB64: string[]): ReturnType<typeof startNewMemoryKey> {
   return startNewMemoryKey(Buffer.from(String(b64 ?? ''), 'base64'), readKeysOf(readKeysB64))
@@ -259,7 +274,8 @@ export const HOST_HANDLERS: Record<string, HostHandler> = {
   importGraphEdges,
   // maintenance / lifecycle
   warmProbeEmbeddings, compactSelfShard, persistMemoryIndex, reloadMemoryFromSync,
-  memoryBackfillVectors, setVectorQuantization, memorySupersedePass, memoryReleaseSupersedes,
+  memoryBackfillVectors, setVectorQuantization, memorySupersedePass, memoryReleaseSupersedes, memoryActivity,
+  setRerankSearch,
   // encryption + sync. NOTE: setSyncPassphrase / enableLocalEncryption need safeStorage to PERSIST
   // the key, which this process does not have — memoryClient wraps both and does the keychain half
   // in main. adoptEncryptionKeyB64 is the injection point it calls.
@@ -351,6 +367,8 @@ export function handleInit(msg: HostInitMsg): HostResponse {
       try { adoptEncryptionKey(encKey) } catch { /* a failed rewrite is recorded by the store; see above */ }
     }
     initialised = true
+    // After the store is up, so the model load (prewarm, when on) never sits in front of it.
+    setRerankSearch(msg.rerank === true)
     return { kind: 'ready', pid: process.pid, entries: memoryCount() }
   } catch (err) {
     initialised = false
@@ -396,6 +414,9 @@ if (parentPort) {
   // The first thing a forked host does: lower its OWN priority (never another process's, never main's).
   // Kill switch TERMPOLIS_NO_HOST_PRIORITY=1. Inside this block, so main and the unit suite never run it.
   lowerHostPriority({ host: 'memory' })
+  // Search reranking runs its model on a worker_thread of this process (several WASM threads of its own), so a
+  // rerank never blocks the thread that serves writes, the primer and every other memory call.
+  setRerankWorkerSpawner(() => createRerankWorkerTransport())
   // Electron 37 stopped ending a utility process on an unhandled rejection: it only warns now.
   // The parent restarts this child when it dies and falls back when it keeps dying, which assumes
   // a child in an unknown state goes away. So it still does. Inside this block, not at the top:

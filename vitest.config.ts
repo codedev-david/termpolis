@@ -106,6 +106,7 @@ export default defineConfig({
         'src/main/sentry.ts',
         'src/main/autoUpdater.ts',
         'src/main/embedWorker.ts', // BB11: worker_thread + real spawner — integration, exercised in-app not in vitest
+        'src/main/rerankWorker.ts', // v1.63: the re-ranker's worker_thread, same shape as embedWorker.ts
         'src/renderer/src/lib/terminalDefaults.ts',
         'src/renderer/src/lib/outputPatterns.ts',
         'src/renderer/src/lib/homedir.ts',

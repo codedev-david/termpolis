@@ -1,0 +1,41 @@
+{
+  "_note": "Memory A/B tasks for the ledgerly fixture. preFix: the run dir gets the T1 test fix first so the suite starts green. Each prompt is self-contained: everything it needs is in the repo; memory only shortens the search.",
+  "tasks": [
+    {
+      "id": "t1-clock",
+      "check": "t1-clock.cjs",
+      "preFix": false,
+      "prompt": "`npm test` fails in test/reminders.unit.js with ERR_LEDGER_CLOCK. Fix it the way this project intends, so the full suite passes. Keep `npm run lint` passing too."
+    },
+    {
+      "id": "t2-balance",
+      "check": "t2-balance.cjs",
+      "preFix": true,
+      "prompt": "Add an endpoint GET /customers/:id/balance that returns { customerId, balanceCents, formatted }, where balanceCents is what the customer still owes across their invoices and formatted is that amount formatted in the customer's own currency. An unknown customer must get the project's standard not-found response. Keep `npm test` and `npm run lint` passing."
+    },
+    {
+      "id": "t3-numbering",
+      "check": "t3-numbering.cjs",
+      "preFix": true,
+      "prompt": "src/services/numbering.js has a stub. Implement nextInvoiceNumber(store, tenant), where tenant looks like { code: 'ACME' }, so it hands out invoice numbers in the project's current invoice-number format. Add a unit test for it. Keep `npm test` and `npm run lint` passing."
+    },
+    {
+      "id": "t4-po-number",
+      "check": "t4-po-number.cjs",
+      "preFix": true,
+      "prompt": "Invoices need an optional purchase-order number. Add a poNumber field: existing invoices must end up with poNumber null after the store is migrated, and createInvoice must accept poNumber (defaulting to null). Follow the project's conventions for schema changes. Keep `npm test` and `npm run lint` passing."
+    },
+    {
+      "id": "t5-overpayment",
+      "check": "t5-overpayment.cjs",
+      "preFix": true,
+      "prompt": "recordPayment currently accepts a payment larger than what is still owed on the invoice. Reject overpayments with the appropriate error for this project, recording nothing; paying exactly the remaining balance must still work. Add a test. Keep `npm test` and `npm run lint` passing."
+    },
+    {
+      "id": "t6-discount",
+      "check": "t6-discount.cjs",
+      "preFix": true,
+      "prompt": "Add applyDiscount(invoice, percent) to src/services/invoices.js (and export it). It returns a NEW invoice with one extra line of type 'discount' holding the negative discount amount, and an updated totalCents; it must not mutate the input. Follow the project's money conventions. Keep `npm test` and `npm run lint` passing."
+    }
+  ]
+}
