@@ -4172,6 +4172,24 @@ describe('Lumopolis world wiring in index.ts', () => {
     await deps.run({ task: 'json please', agent: 'codex', write: false })
     expect(world.runHeadless).toHaveBeenCalledWith({ task: 'json please', agent: 'codex', write: false, cwd: '/repos/x' }, { deliver: expect.any(Function) })
   })
+
+  it('labelling turned off while the launch env is being built sends nothing (consent at the last moment)', async () => {
+    await world.opts.llm('/repos/x', 'name these')
+    const deps = (world.makeWorldLlm.mock.calls.at(-1) as [string, string, any])[2]
+    world.execCapture.mockClear()
+    world.proxyEnv = () => {
+      // the user turns labelling off while claudeLaunchEnv is still resolving
+      void invoke('world:settings-set', { worldLabelling: false })
+      return {}
+    }
+    try {
+      expect(await deps.claudeExec('claude', ['-p'], { timeoutMs: 5000, input: 'SOURCE EXCERPT' })).toEqual({ stdout: '', code: 1 })
+      expect(world.execCapture).not.toHaveBeenCalled()
+    } finally {
+      world.proxyEnv = null
+      await invoke('world:settings-set', { worldLabelling: true })
+    }
+  })
 })
 
 // LAST in the file, on purpose: before-quit tears the module down (the memory host stops, the terminals are killed).

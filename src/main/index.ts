@@ -2624,6 +2624,8 @@ const worldSettings = createWorldSettings(() => join(app.getPath('userData'), WO
 const worldClaudeExec = (root: string): ExecFn => async (cmd, args, opts) => {
   try {
     const env = { ...process.env, PATH: getExtendedPath(), ...((await claudeLaunchEnv(root)) ?? {}) }
+    // Consent again at the last moment: labelling may have been turned off while the env was built.
+    if (worldSettings.get().worldLabelling === false) return { stdout: '', code: 1 }
     const out = await execCaptureOffThread(cmd, args, { cwd: root, timeout: opts.timeoutMs, maxBuffer: 8 * 1024 * 1024, env, ...(opts.input !== undefined ? { input: opts.input } : {}) })
     const code = out.error ? (typeof out.error.code === 'number' ? out.error.code : 1) : 0
     return { stdout: String(out.stdout ?? ''), code }
