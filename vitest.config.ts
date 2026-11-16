@@ -117,6 +117,7 @@ export default defineConfig({
         // Same reason `**/types/**` and src/main/types.ts are already excluded above;
         // leaving it in only drags the gate down with a number no test can ever move.
         'src/main/workflow/contracts.ts',
+        'src/shared/world/types.ts', // Lumopolis WorldDoc contract: types only, no emitted JS (see contracts.ts above)
       ],
       thresholds: {
         // Gates apply to Windows CI only (see .github/workflows/test.yml).
@@ -154,6 +155,11 @@ export default defineConfig({
         functions: 96,
         branches: 95,
         statements: 96,
+        // Lumopolis (world view): every line of its code is gated at 100%.
+        'src/shared/world/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
+        'src/main/world/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
+        'src/renderer/src/world/engine/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
+        'src/renderer/src/components/World/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
       },
     },
   },
