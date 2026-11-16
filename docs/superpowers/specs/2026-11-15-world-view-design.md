@@ -1,0 +1,269 @@
+# World View: Design Spec
+
+**Date:** 2026-11-15
+**Status:** For David's approval (builder check done, 2026-11-15)
+**Target:** Termpolis **2.0**, a major release with World View as its headline (David, 2026-11-15: "the next evolution of understanding between human and AI")
+**Prototype:** `.superpowers/brainstorm/2400-1794800636/content/world-relationships.html`, a throwaway Three.js mockup that David approved as the direction ("click in certain areas and it gives detailed information for how it was built or what is being proposed")
+**Source idea:** David's *Living Software Universe Plan v2* (PDF) and sketches
+
+---
+
+## 1. Intent: why this exists
+
+AI now writes software faster than people can understand it. The bottleneck is no longer writing code; it is a person understanding what an agent **is about to build** or **has just built**. One day people may not read the code at all, and agents may write in languages people can't read. People will still need to understand the software, judge it and ask for changes.
+
+World View closes that gap. It is an interactive, animated 3D world of a piece of software, shown on an ordinary 2D screen and using every visual trick for depth, where:
+
+- the parts of the software are places you can fly around;
+- the relationships between them are visible, moving connections;
+- clicking anything explains, in plain English, **what it does, what technology it uses, how it connects, and why it was built that way**, without showing code;
+- you can **talk to an agent inside the world**, by text or voice, to ask questions and to request changes;
+- the **same world** shows something proposed (wireframe) and something built (solid), so one tool covers an idea, a plan, work in progress, and finished work.
+
+David's framing: "almost a world model for humans to understand", a bridge between what the LLM designed or did and human understanding.
+
+**What success looks like:** a person who has never read the code can open the world, follow a tour, click around and ask a few questions, and then correctly explain how the system works and what an agent changed. They can also point at a part and get a change built.
+
+## 2. Goals, non-goals, anti-goals
+
+### Goals
+1. A **World pane** in Termpolis, beside terminals, that renders the current project as a 3D world using the grammar in section 5.1.
+2. **Detail cards** for every building and connection: what it does, the parts inside, technology (with a plain-English glossary), why it's built this way, what flows in and out, and how often. This is the information density of the v2 prototype.
+3. **Built and proposed in one world.** Built parts come from evidence. Proposed parts come from a plan layer that agents write. The difference between them is computed and shown.
+4. **Conversation inside the world** by text and by Termpolis's existing voice input. The agent's answers move the camera, highlight parts and play flows, and every claim links to its evidence.
+5. **Change by pointing.** Describing a change in the world produces a wireframe proposal on the map. Approving it hands the work to agents, and the world shows the build progressing to verified.
+6. **"What the agent just did"**: a before/after view of an agent's work, built from its activity log and the code graph.
+7. **Export** any world, or any proposal, as one self-contained HTML file that anyone can open.
+8. **A public, interactive demo on termpolis.com** that shows the world of Termpolis itself, built from the approved v2 prototype, so anyone can try World View in a browser without installing anything. It is the launch centrepiece for 2.0 (section 5.10).
+
+### Non-goals (for this version)
+- Editing code by hand in the world. Code changes always go through agents.
+- Live runtime tracing (APM-style instrumentation of running programs). Flows are static and inferred, plus whatever the agent logs show. Runtime evidence can be added later.
+- VR/AR headsets.
+- Multi-user, real-time shared worlds.
+- Supporting every language on day one. Coverage follows what the code graph (tree-sitter) already parses.
+
+### Anti-goals: failures even if it technically works
+- **A confident, pretty lie.** If the world shows structure or reasons the code doesn't support, and doesn't mark them as guesses, it is worse than no world. Every claim has a state (section 5.2) and guesses look different on screen (fog, dashed lines).
+- **A city that rearranges itself.** People remember places. Positions must stay stable between visits and across small changes.
+- **A screensaver.** Spectacle that doesn't help understanding is a failure. Every visual has to carry meaning: shape, colour, motion, fog.
+- **Making Termpolis slower.** The world must never add typing lag or main-process stalls. This lesson already shipped regressions in 1.47, 1.54 and 1.61.
+- **Surprise token bills.** Labelling and conversation cost tokens. Both are cached, incremental and visible to the user.
+- **"Open a terminal and type a command."** All of this is real in-app UI; any hidden CLI sessions run behind it (David, 2026-10-23).
+
+## 3. Constraints
+
+- **Performance:** nothing heavy on the Electron main thread. Compiling and laying out the world runs off the main thread, in a utility process or a worker, as the memory host and pty host already do. No synchronous file I/O or spawning on main (Defender scan stalls of 0.1–1.5 s were measured on this laptop).
+- **EDR-clean:** the world compiler reads only project files, the code graph, agent transcripts and memory. It must never read credential stores, enumerate processes or network connections, or read other apps' credential files. `endpointActivityGuard` CI gates stay.
+- **Agent tool budget:** the agent-facing MCP tool descriptions are nearly full. World tools are exposed through the existing gateway route (`gateway_list_tools` / `gateway_call`, `src/main/mcpGateway`), not as new top-level MCP tools.
+- **Renderer target ES2020** (no `.at()`), Electron 43.
+- **New dependency:** Three.js (`three`) is not yet a dependency. David's rule is never to run `npm install` on this laptop. The plan must add it in a way consistent with that rule, for example in CI or another machine, with the lockfile committed.
+- **Providers:** US-based only (Claude Code, Codex, Gemini CLI). AI requests go through the existing token proxy (Headroom).
+- **Privacy:** rendering is fully local. The only data that leaves the machine is what an agent sends to its provider, the same as any agent session: selected evidence for a question, and module summaries for labelling. A setting turns AI labelling off; the world then shows unlabelled structure.
+- **Quality gates:** Windows CI coverage of lines 97 / functions 96 / branches 95 / statements 96. The `e2e/` suite is blocking and sharded.
+- **Releases:** commit directly to `main` and tag releases (David's workflow).
+
+## 4. Approaches considered
+
+| | Approach | Trade-off | Verdict |
+|---|---|---|---|
+| **A** | **Evidence-derived world plus an agent-written plan layer.** The built world is compiled from the code graph, agent transcripts, memory and tests. An AI pass adds names and explanations, each one tied to evidence and marked as inferred until checked. Agents write proposals as a separate plan layer in the same grammar, and plan versus built is computed. | Honest and stays in sync with the code. Reuses what Termpolis already has. More upfront work: grouping code into districts and buildings, and describing relationships well, is the hard part. | **Chosen** (David, 2026-11-15) |
+| B | The agent draws the world from scratch on request, like generating a diagram. | Fastest to ship and fine for ideas, but nothing checks it. It invents structure and drifts from the code, which is the first anti-goal. | Rejected |
+| C | A standalone web tool that reads a repository. | Easy to share, but it can't see agent activity, memory, live work or the swarm. It throws away what makes Termpolis the right home for this. | Rejected (export in goal 7 covers sharing) |
+
+## 5. Design
+
+### 5.1 World grammar (decided, from the PDF and validated in the prototype)
+
+| Software concept | In the world |
+|---|---|
+| Bounded context / subsystem | **District**: a hexagonal platform with a name and subtitle |
+| Service / component | **Building** |
+| Module / internal stage | **Floor**: floors stack in pipeline order, bottom to top |
+| Something outside the system (agent CLIs, AI providers, other machines, files) | **Floating orb** |
+| Dependency / communication | **Conduit**: a curved line |
+| What travels on a conduit | **Packets**: shape and colour by cargo type (keystrokes, requests, tool calls, memories, code changes, logs, jobs and so on), with a legend |
+| Built / observed | Solid |
+| Proposed | Pulsing wireframe; dashed conduits |
+| Verified (tests pass) | A green ring rotating above the building |
+| Built but no tests | Amber edges |
+| Uncertain or unknown | Fog; dashed lines |
+| The program it runs in (process isolation) | A translucent shell around the building, coloured by process (optional layer) |
+
+Visual depth tricks (decided, as in the prototype): bloom, exponential fog, a starfield and drifting dust for parallax, light pooling on the platforms, eased camera flights, buildings that explode floor by floor on double-click, and flow pulses. Three themes: Neon, Blueprint, Glass. The world respects reduced-motion settings.
+
+### 5.2 The world document (source of truth)
+
+A versioned JSON document per project, stored in Termpolis's per-user data (not the repository) and keyed by the project key the code graph already uses.
+
+```
+World {
+  version, projectKey, generatedAt, sourceRevision (git HEAD + dirty flag)
+  districts[]:  { id, name, subtitle, hue, members: [path globs or symbol ids] }
+  buildings[]:  { id, districtId, name, techLabel, process, floors[], stack[] (technology ids),
+                  how, why, status, claims[] }
+  floors[]:     { name, tech, members[] }
+  edges[]:      { id, from, to, cargo, label, how, tech[], why, rate, direction (one or two way), claims[] }
+  externals[]:  orbs (agent CLIs, providers, files, other machines)
+  glossary:     { technologyId: plain-English line }
+  layout:       { seed, positions by id }   // stable, persisted, never recomputed from scratch
+  layers:       { built, plan:[Proposal] }
+}
+Claim    { text, state: proposed | observed | inferred | verified, evidence: Evidence[] }
+Evidence { kind: file | symbol | test | transcriptStep | memory | commit, ref, excerpt? }
+```
+
+Every sentence on a card is a `Claim`. The UI marks `inferred` claims as such, and items whose claims are mostly inferred get fog. "Verified" means a linked test passed or a person confirmed it.
+
+### 5.3 World compiler: built layer
+
+The compiler runs off the main thread (my call: a new utility process, `termpolis-world`, the same pattern as `termpolis-memory`; the builder may host it in an existing utility process if that is simpler and keeps main free). It runs in stages; each stage is cached and incremental.
+
+1. **Structure.** Read the code graph (`src/main/codeGraph.ts`: symbols, files, callers and callees) and the directory tree.
+2. **Boundaries.** Static detectors for cross-component communication, the relationships people most need explained:
+   - Electron IPC channels (`ipcMain.handle` / `ipcRenderer.invoke` / `contextBridge`)
+   - `MessagePort`, `utilityProcess.fork` and `Worker` entries
+   - child process spawns
+   - local and outbound HTTP (`fetch`, servers listening on ports)
+   - environment-variable hand-offs
+   - file watchers
+   - MCP servers and clients
+
+   Detectors are a pluggable list, so more frameworks can be added later.
+3. **Grouping.** Cluster files and modules into buildings and buildings into districts, using directory structure, import density and boundaries. The AI may rename groups or suggest merges, but proposed groupings stay `inferred`.
+4. **Labelling.** The default agent's cheapest model (Haiku on Claude Code; see section 10), through the proxy, writes `how`, `why`, the cargo and edge descriptions, technology chips and glossary lines from bounded excerpts: signatures, comments, docs, commit messages and memory decisions. **Every output must cite evidence ids**; uncited sentences are dropped. Results are cached by a content hash of their inputs, so only changed parts are re-labelled.
+5. **Status.** Tie tests to buildings through the code graph and the existing coverage tooling, and set verified, observed or gap.
+6. **Layout.** Seeded, stable positions. New items take free slots next to their neighbours; existing items don't move unless a person asks for a re-layout.
+7. **Incremental updates.** The file watcher already feeds the code graph. The compiler subscribes and recompiles only the affected buildings, debounced.
+
+**Quality bar for stage 1 to 6:** run on the Termpolis repository, the compiled world should recover roughly the buildings and connections of the hand-made v2 prototype: the screen, gatekeeper, terminal host, memory host, proxy, gateway, code graph, swarm and remote bridge, and the main connections between them. That prototype is the test case.
+
+### 5.4 Plan layer: proposed work
+
+- A **proposal** is a named overlay of new or changed districts, buildings, floors and edges, plus removals. All of its claims start as `proposed`.
+- Agents write proposals through gateway tools (5.8). A person can also start one from the world: "Point out a change", or a spoken request.
+- **Plan versus built** is computed by matching proposal items to built items by id or by member paths. The world shows what is new (wireframe), what changes (wireframe outline around a solid building), what is removed (fading) and what is already done (solid).
+- A proposal moves through **Imagine → Approve → Build → Observe → Verify** (the PDF's modes). Approval turns it into swarm tasks, each in its own git worktree, using the existing conductor. As agents work, the compiler sees the changes and proposal items fill in. Tests passing add green rings. The proposal is archived when everything is built and verified (Evolve).
+
+### 5.5 The World pane (UI)
+
+The interactions match the v2 prototype (decided by David's approval of that version):
+
+- Hover a building to highlight its connections, dim everything else and show the connection labels.
+- Click a building for its card: status, the program it runs in, what it does, parts inside, technology chips, why, what comes in and what goes out.
+- Click a connection, or its label, for the connection card: what travels, how, technology, why, how often.
+- Click a technology chip for its plain-English explanation, with every place it's used lit up.
+- Double-click to explode a building into floors, with work flowing up through them.
+- Layers: job or technology labels; what runs where; label every line; planned parts on or off; proposal selector; before/after.
+- Tours: generated tours (how the technology fits together; follow a request), plus journeys made up on the spot by the conversation (5.6).
+- Navigation: orbit, zoom, WASD/QE flight, Esc to the overview, and bookmarks.
+- Semantic zoom: districts from far away, buildings in the middle distance, floors and labels up close. Instancing and level of detail keep large repositories smooth.
+- A 2D map fallback for machines without WebGL, and for accessibility.
+
+### 5.6 Conversation inside the world
+
+- **Input:** a chat bar inside the World pane. Text, or **Termpolis's existing voice input** (`useVoiceInput`, tap-or-hold, Groq Whisper transcription with phantom-word filtering), reused as-is; the transcript goes to the world conversation instead of a terminal. No new voice-input system.
+- **Context:** each question carries the current selection, the camera's region, the active proposal and the evidence for the selected items, capped by a token budget.
+- **The agent:** a hidden, read-only agent session started the way `termpolis exec` starts one (`src/main/headlessExec.ts`: primed with the project primer, read-only by default, killed at a deadline), using the user's default agent and model, through the proxy. There is no visible terminal. My call: a fresh one-shot run per question, carrying a compact conversation summary, which works the same on all three CLIs (section 10). A warm session is a later optimisation.
+- **Answer protocol:** the agent returns plain-English text plus **world actions** in a structured block:
+  - `focus(ids)`, `highlight(ids)`, `flow(edgeIds)`, `tour(steps)`
+  - `openCard(id)`
+  - `draftProposal(…)`
+
+  The pane carries them out as the text appears, so the camera moves and parts light up while the answer is read. Each claim in an answer links to evidence and to world items.
+- **Honesty rule:** when the evidence doesn't support an answer (for example, nothing recorded why something was designed a certain way), the agent says so explicitly, and the related items stay fogged.
+- **Changes from conversation:** "make this faster" or "add team sharing" produces `draftProposal`, which shows up as wireframes. Follow-up messages edit the proposal. Saying or clicking "approve" moves it to Build (5.4). The conversation never edits code itself.
+- **Spoken answers (optional, off by default):** Termpolis can listen but not speak today (verified: there is no speech output in `src/`). Answers can be read aloud through Chromium's `speechSynthesis`, which uses the operating system's voices locally at no cost. Text is always shown.
+
+### 5.7 "What the agent just did"
+
+When an agent session finishes, or on request, the world compares the snapshot from before the session with the one after. The transcript watchers (`src/main/transcriptWatchers`) supply which files changed and the agent's stated reasons. The world highlights changed buildings in order, plays a generated tour of the change with the agent's reasons as narration, and offers "Ask about this change". This is the review mode: walk through the change instead of reading the diff.
+
+### 5.8 Agent access through the gateway
+
+The gateway route exposes three tools; no new top-level MCP tools:
+- `world_read`: query the world (items, cards, evidence, plan versus built) for a region or ids;
+- `world_propose`: create or update a proposal overlay;
+- `world_annotate`: attach a claim with evidence to an item (for example, "I verified this by running X").
+
+Agents can then design in the world ("draw your plan before building") and explain their work in it.
+
+### 5.9 Export
+
+"Export world" writes one HTML file: the viewer, the world document (or one proposal) embedded, and Three.js inlined, with no network needed. It is read-only and includes the cards, tours and layers, but not the conversation. Same-machine paths in evidence are reduced to repository-relative paths.
+
+### 5.10 Website demo (termpolis.com)
+
+- **What:** a standalone page on the website (`termpolis-web` repository, which auto-deploys to termpolis.com on push to `main`) where visitors fly around the world of Termpolis itself. It has the cards, technology chips, tours, layers, themes and double-click to open buildings from the v2 prototype.
+- **Source:** the approved prototype (`world-relationships.html`) is the starting point. Its hand-written data is reviewed against the real code before launch, so every card is accurate for the release it ships with. Once phase 1 works, the demo world should be the compiler's own export of the Termpolis repository, touched up by hand where needed. Then the demo also proves the product.
+- **Conversation in the demo:** the website has no agent behind it, so the Ask bar is scripted: a short list of suggested questions ("What happens when I type a prompt?", "Where do my memories live?", "What would team sharing touch?") with pre-written answers that fly the camera, light up parts and play flows, exactly as the real answer protocol does. It should be clearly labelled as a demo, with a link to download Termpolis for the real thing. One suggested question shows a proposal appearing as wireframe, so visitors see the plan-to-built idea.
+- **Page and site rules:**
+  - Its own page, `world.html` (my call on the name). It is linked from the homepage hero and the nav. The homepage stays lean (site rule): it gets a short teaser with a still image or short loop, and the detail lives on the demo page.
+  - Three.js is vendored into the site repository at a pinned version, not loaded from a CDN at runtime, so the page doesn't depend on a third party.
+  - It works on phones: touch orbit and pinch zoom, a reduced effects tier on low-power devices, and a 2D fallback or still image without WebGL.
+  - Fast first view: a poster image shows while it loads, and the 3D starts after.
+  - No tracking beyond what the site already does.
+- **Timing:** the demo can launch **before** the 2.0 app ships, as a "coming in 2.0" preview, because it doesn't depend on the compiler. My call: launch it with 2.0 so the claims match a downloadable product. David may prefer an early teaser.
+
+## 6. Decided in brainstorming (David)
+
+- The idea and the framing: a 3D animated world for human understanding of AI-designed and AI-built software; it must convey deep understanding without showing code (2026-11-15).
+- Visual: full 3D animation on a 2D screen with depth tricks, exportable to HTML5.
+- Engine: David suggested Three.js or Babylon.js. Three.js was recommended and used in both prototypes, and David approved the result.
+- The level of detail in the v2 prototype: relationships, technology, why, and what's planned versus built ("i like the latest version where you can click in certain areas and it gives detailed information").
+- Scope: works for anything in the app, from something someone wants to build to something already done.
+- Conversation in the world by voice or text, about what was built or what is designed, reusing the voice capability the app already has.
+- Approach A.
+- Released as **Termpolis 2.0**, with World View as its headline.
+- A public interactive demo page on termpolis.com, built from the prototype that shows how Termpolis works.
+
+## 7. Calls I made (David can override)
+
+- **Order of delivery (section 8):** start with the existing project's world plus questions, because the plan layer needs the built map underneath it.
+- A dedicated `termpolis-world` utility process for the compiler.
+- Labelling with the default agent's cheapest model (Haiku on Claude Code), cached by content hash, with an off switch.
+- The world document lives in per-user data, not committed to the repository. Exports are files the user chooses to share.
+- A hidden, read-only one-shot agent run per question, with a carried conversation summary (section 10).
+- Spoken answers through OS voices, off by default.
+- World tools only through the gateway route, as a trusted built-in provider.
+- The demo page is `world.html`, with Three.js vendored and scripted questions, and it launches with 2.0.
+
+## 8. Delivery order
+
+1. **The world of what exists:** compiler stages 1 to 7, the World pane with cards, layers and tours, and the Termpolis repository as the acceptance test (5.3).
+2. **Conversation:** text and voice in the world, the answer protocol with world actions, evidence links.
+3. **What the agent just did:** snapshots, before/after, generated change tours.
+4. **Plan layer:** proposals from conversation and from agents, plan versus built, approval into swarm tasks, build progress, verification.
+5. **Export** and the 2D fallback.
+6. **Website demo** (5.10). Work on it can run in parallel with phase 1, since it starts from the prototype. It goes live with the 2.0 release.
+
+**2.0 release scope (David):** phases 1 and 2 plus the website demo. Phases 3 to 5 ship as 2.x updates.
+
+## 9. Left to the builder
+
+- Exact grouping and clustering algorithm, and its thresholds.
+- Detector implementations and how they are tested.
+- How the viewer is structured in React: plain Three.js in a component, or React Three Fiber. The prototype uses plain Three.js.
+- Layout algorithm details, provided positions stay stable.
+- Answer-protocol wire format and parsing.
+- Storage format details and migrations.
+- How Three.js is added without running `npm install` on David's laptop.
+
+## 10. Settled after the builder check (my calls)
+
+- **Gateway policy for world tools.** World tools are a **built-in, trusted provider** on the gateway, not an external server, so they skip the "ask" policy. This is safe because:
+  - `world_read` is read-only;
+  - `world_propose` and `world_annotate` write only to the world document's plan layer and claims, never to code or files in the repository;
+  - turning a proposal into work still needs a person's approval in the UI (5.4).
+
+  Agents learn about them from **one line in the project primer** ("this project has a World; use `gateway_call` world_* to read it or draw a plan"), not from new tool descriptions.
+- **Conversation sessions.** Phase 2 uses a **fresh, primed, read-only one-shot run per question** through `headlessExec`, with a compact summary of the conversation so far plus the selection's evidence. That works the same for Claude Code, Codex and Gemini CLI. Keeping a session warm (for example `--resume` on Claude) is a later speed and token optimisation, not a 2.0 requirement.
+- **Labelling providers.** Labelling uses the **user's default agent's cheapest model** through the same headless path: Haiku on Claude Code, the matching small model on Codex or Gemini. With no agent installed, or labelling turned off, the world is unlabelled: names from the code, structure and connections, with no prose.
+- **Where "verified" comes from.** The compiler **only reads test results that already exist**: Vitest/Jest JSON or JUnit XML in the repository, test runs found in agent transcripts, and CI results through `gh` when available. It **never runs tests itself**, which keeps it light and EDR-quiet. A project with no results shows amber ("no test results yet"), never green.
+- **A world for an idea with no code yet.** World documents can also be keyed by a named workspace, not only a repository. A plan-only world is a world with an empty built layer. Its scope is in the 2.0 question below.
+- **Testing the 3D code.** All logic (layout, data, actions, card content, protocol parsing) lives in plain, tested modules. Only the thin Three.js drawing wrapper is excluded from unit coverage, the same way `embedWorker.ts` / `rerankWorker.ts` are excluded today, and it is covered by e2e screenshots and interaction tests instead. The coverage gate itself is unchanged.
+
+## 11. Answered by David (2026-11-15)
+
+- **2.0 scope:** phases 1 and 2 (the world of existing software, plus voice and text conversation) and the website demo. Phases 3 to 5 ("what the agent just did", the plan layer and plan-only worlds, export) ship as 2.x updates. Until the plan layer ships, `draftProposal` in the answer protocol is not offered in the app; the website demo still shows a scripted wireframe proposal, labelled "coming soon".
+- **Demo timing:** the termpolis.com demo goes live with the 2.0 release, not before.
