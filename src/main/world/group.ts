@@ -9,13 +9,14 @@
 //    A fork/worker entry takes its exclusive import closure inside its district (and, when its key
 //    names a folder, the rest of that folder); a main/renderer/preload entry takes only itself,
 //    since everything in its seed folder is reachable from it. An index/main file counts as such an
-//    entry only when nothing but tests imports it.
+//    entry only when nothing but tests imports it. A channel service (a module an entry hands
+//    an IPC channel family to, like swarmManager.ts for `swarm:*`) also stands on its own.
 // 3. Remaining files start as name families (a small sub-folder is one family; in a big folder,
 //    files sharing a leading name word are one), then clusters in one district merge, densest
 //    first, while their cross-edge density is above MERGE_DENSITY.
 // 4. Buildings are capped by merging the smallest into its densest neighbour (link weight over
-//    the neighbour's size) in the same district, plain buildings before process buildings; with no
-//    link, its nearest plain building in path order. Process buildings themselves go last.
+//    the neighbour's size) in the same district, never into a process building or channel service;
+//    with no link, its nearest plain building in path order. Those fixed buildings go last.
 // 5. Names: a process building is named after its process; any other after its front door, the
 //    non-test member reaching most of the building, then most imported from outside it, skipping
 //    names that would pass for the district or a main/renderer/preload entry.
@@ -548,6 +549,47 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     })
   }
 
+  // Channel services. An entry serving an IPC channel family (`swarm:tasks`, `swarm:create-task`)
+  // that imports exactly one module named for it (swarmManager.ts), where only entries import that
+  // module and it imports nothing else of its district, hands those channels to that module: it is
+  // the service behind them. With no structural neighbour it would be placed by spelling alone (next
+  // to swarmMemory.ts), so it stands as a building of its own, merged only once plain ones are spent.
+  const families = new Map<number, Set<string>>()
+  for (const b of kept) {
+    const e = index.get(b.file) as number
+    const colon = b.key.indexOf(':')
+    const ns = b.key.slice(0, Math.max(0, colon)).replace(/[^A-Za-z]/g, '').toLowerCase()
+    if (b.kind !== 'ipc' || b.side !== 'provide' || !proc.has(e) || ns.length < 3) continue
+    const cur = families.get(e)
+    if (cur) cur.add(ns)
+    else families.set(e, new Set([ns]))
+  }
+  const services = new Set<number>()
+  for (const [e, spaces] of families) {
+    const named = new Map<string, number[]>()
+    for (const g of imports[e]) {
+      const alone =
+        owner[g] < 0 &&
+        !TEST_NAME.test(files[g]) &&
+        district[g] === district[e] &&
+        importers[g].every((j) => proc.has(j) || TEST_NAME.test(files[j])) &&
+        imports[g].every((h) => proc.has(h) || district[h] !== district[g])
+      // Whole leading words only: `window:` names no windowsShortcutRepair.ts.
+      const words = [...baseKey(files[g]).matchAll(/[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])/g)].map((w) => w[0].toLowerCase())
+      const heads = new Set(words.map((_, k) => words.slice(0, k + 1).join('')))
+      for (const ns of spaces) if (alone && heads.has(ns)) named.set(ns, [...(named.get(ns) ?? []), g])
+    }
+    for (const list of named.values()) if (list.length === 1) services.add(list[0])
+  }
+  const pinned = new Set<number>()
+  for (const g of [...services].sort((a, b) => a - b)) {
+    owner[g] = bFiles.length
+    pinned.add(bFiles.length)
+    bFiles.push([g])
+    bProc.push('')
+    bEntry.push(-1)
+  }
+
   // 3. Cluster the rest, starting from name families: free files in one folder whose names share a
   //    leading word (memoryClient.ts, memoryGraph.ts) are one module by naming convention.
   const family = Int32Array.from({ length: n }, (_, i) => i)
@@ -610,7 +652,9 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     tail.set(bDist[b], b)
     perDistrict.set(bDist[b], (perDistrict.get(bDist[b]) ?? 0) + 1)
   }
-  const key = (b: number): number => (bEntry[b] >= 0 ? K * K : 0) + bSize[b] * K + bMin[b]
+  // Process buildings and channel services are fixed: merged last, and never a link target.
+  const fixed = (b: number): boolean => bEntry[b] >= 0 || pinned.has(b)
+  const key = (b: number): number => (fixed(b) ? K * K : 0) + bSize[b] * K + bMin[b]
   const heap = new Heap<[number, number, number]>((x, y) => x[0] < y[0])
   for (let b = 0; b < nb; b++) heap.push([key(b), b, 0])
   const bUf = new UnionFind(nb)
@@ -618,24 +662,26 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     const [, b, s] = heap.pop()
     if (s !== bStamp[b] || (perDistrict.get(bDist[b]) as number) < 2) continue
     // The densest link (weight over the neighbour's size, so a hub that imports everything never
-    // wins by bulk), ties in path order. A process building never takes in a plain one by a link:
-    // its name says what runs there, and unrelated helpers would blur that.
+    // wins by bulk), ties in path order. A fixed building never takes in a plain one by a link:
+    // its name says what runs or answers there, and unrelated helpers would blur that.
     let t = -1
     for (const [o, w] of bAdj[b]) {
-      if (bEntry[o] >= 0) continue
+      if (fixed(o)) continue
       const d = t < 0 ? 1 : w * bSize[t] - (bAdj[b].get(t) as number) * bSize[o]
       if (d > 0 || (d === 0 && bMin[o] < bMin[t])) t = o
     }
     if (t < 0) {
-      // Nearest in path order, skipping process buildings while a plain one is left.
+      // Nearest in path order, skipping fixed buildings while a plain one is left.
       const at = files[bMin[b]]
       const step = (from: number, dir: Int32Array): number => {
         let x = from
-        while (x >= 0 && bEntry[x] >= 0) x = dir[x]
-        return x < 0 ? from : x
+        while (x >= 0 && fixed(x)) x = dir[x]
+        return x
       }
-      const p = step(prev[b], prev)
-      const q = step(next[b], next)
+      let p = step(prev[b], prev)
+      let q = step(next[b], next)
+      // A plain building on either side wins; only with none left does a fixed neighbour take it.
+      if (p < 0 && q < 0) [p, q] = [prev[b], next[b]]
       const lp = p < 0 ? -1 : prefixLen(at, files[bMin[p]])
       const lq = q < 0 ? -1 : prefixLen(at, files[bMin[q]])
       t = lp >= lq ? p : q

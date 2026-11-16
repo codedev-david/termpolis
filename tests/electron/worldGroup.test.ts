@@ -717,6 +717,93 @@ describe('groupProject', () => {
     expect(g.buildings[0].name).toBe('yak')
   })
 
+  describe('channel services', () => {
+    // index.ts serves channel families and imports one module named for each. Only a module that
+    // only entries import and that imports nothing else of its district counts, and only when it
+    // is the one module named for the family.
+    const fi: Record<string, string[]> = {
+      'src/main/index.ts': [
+        './swarmManager', './swarmMemory', './gitChanges', './gitHooks', './windowsRepair', './memoryStore',
+        './routeTable', './configFile', './appMenu', './ptyHost', '../lib/util', './tasks.test'
+      ],
+      'src/main/appMenu.ts': ['./worker'],
+      'src/main/configFile.ts': ['../shared/paths'],
+      'src/main/gitChanges.ts': [],
+      'src/main/gitHooks.ts': [],
+      'src/main/memoryStore.ts': [],
+      'src/main/other.ts': ['./memoryStore'],
+      'src/main/ptyHost.ts': [],
+      'src/main/routeTable.ts': ['./zebra'],
+      'src/main/swarmManager.test.ts': ['./swarmManager'],
+      'src/main/swarmManager.ts': [],
+      'src/main/swarmMemory.ts': ['./vectorStore'],
+      'src/main/tasks.test.ts': [],
+      'src/main/vectorStore.ts': [],
+      'src/main/windowsRepair.ts': [],
+      'src/main/worker.ts': [],
+      'src/main/zebra.ts': [],
+      'src/lib/util.ts': [],
+      'src/shared/paths.ts': []
+    }
+    const s = snap(fi)
+    const at = 'src/main/index.ts'
+    const bounds = [
+      B('fork', 'ptyHost', 'consume', at, 1),
+      B('worker', 'worker', 'consume', at, 2),
+      B('ipc', 'swarm:tasks', 'provide', at, 3),
+      B('ipc', 'swarm:clear', 'provide', at, 4),
+      B('ipc', 'git:status', 'provide', at, 5),
+      B('ipc', 'gitHooks:list', 'provide', at, 6),
+      B('ipc', 'window:close', 'provide', at, 7),
+      B('ipc', 'memory:search', 'provide', at, 8),
+      B('ipc', 'route:list', 'provide', at, 9),
+      B('ipc', 'config-file:get', 'provide', at, 10),
+      B('ipc', 'app:quit', 'provide', at, 11),
+      B('ipc', 'pty:spawn', 'provide', at, 12),
+      B('ipc', 'util:run', 'provide', at, 13),
+      B('ipc', 'tasks:list', 'provide', at, 14),
+      B('ipc', 'ab:x', 'provide', at, 15),
+      B('ipc', 'zebra', 'provide', at, 16),
+      B('ipc', 'zebra:x', 'consume', at, 17),
+      B('ipc', 'other:x', 'provide', 'src/main/other.ts', 1)
+    ]
+    const alone = (g: Grouping, f: string): boolean => home(g, f).members.length === 1
+    const SERVICES = ['src/main/appMenu.ts', 'src/main/configFile.ts', 'src/main/gitHooks.ts', 'src/main/swarmManager.ts']
+
+    it('stands each one on its own, named after it, outside its name family', () => {
+      const g = groupProject(s, bounds)
+      checkInvariants(g, s.files)
+      for (const f of SERVICES) expect(home(g, f)).toMatchObject({ members: [f], process: 'main' })
+      expect(home(g, 'src/main/swarmManager.ts')).toMatchObject({ id: 'b-src-main-swarmmanager', name: 'swarmManager' })
+      // Without the rule the swarm family would hold swarmManager.ts.
+      expect(home(g, 'src/main/swarmMemory.ts').members).not.toContain('src/main/swarmManager.ts')
+      expect(home(groupProject(s, bounds.slice(0, 2)), 'src/main/swarmMemory.ts').members).toContain('src/main/swarmManager.ts')
+    })
+
+    it('stays merged-last like a process while plain buildings without a link walk past it', () => {
+      const free = groupProject(s, bounds)
+      const fixedCount = SERVICES.length + 3 // plus the main, pty and worker processes
+      const g = groupProject(s, bounds, { maxBuildings: fixedCount + 3 })
+      checkInvariants(g, s.files)
+      expect(free.buildings.length).toBeGreaterThan(g.buildings.length)
+      for (const f of SERVICES) expect(alone(g, f), f).toBe(true)
+      // No module stands alone for git: two are named for it (and gitHooks.ts answers gitHooks:).
+      // memoryStore.ts has a plain importer, routeTable.ts a plain import, windowsRepair.ts only a
+      // word that starts like window; ptyHost.ts is a process, util.ts lives in another district.
+      for (const f of ['src/main/gitChanges.ts', 'src/main/memoryStore.ts', 'src/main/routeTable.ts', 'src/main/windowsRepair.ts']) {
+        expect(alone(g, f), f).toBe(false)
+      }
+      // gitChanges.ts has no link: with services on one side, its nearest plain building lies past them.
+      expect(home(g, 'src/main/gitChanges.ts').members.some((m) => SERVICES.includes(m))).toBe(false)
+    })
+
+    it('goes last of all when the cap needs it', () => {
+      const g = groupProject(s, bounds, { maxBuildings: 3 })
+      checkInvariants(g, s.files)
+      expect(g.buildings).toHaveLength(3)
+    })
+  })
+
   describe('building cap targets', () => {
     it('prefers the densest link over the heaviest one', () => {
       const s = snap({

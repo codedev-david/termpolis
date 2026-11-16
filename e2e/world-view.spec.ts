@@ -10,9 +10,12 @@
  *   3. "What runs where" (the Processes layer) draws the process shells, and takes them away again.
  *   4. A tour plays, and its caption changes from step to step.
  *   5. Typing in a terminal while a bigger project compiles: the p95 keystroke-to-echo time stays
- *      under 50 ms, over at least 60 keys pressed while the compile ran. Measured in the renderer,
- *      from the key's keydown to the moment the echoed character is on xterm's cursor line; the
- *      warm-up keys before the compile starts are not counted.
+ *      under 50 ms, over at least 60 keys pressed while a compile ran. Measured in the renderer,
+ *      from the key's keydown to the moment the echoed character is on xterm's cursor line. A
+ *      compile of the load project takes a few seconds on a fast runner, so compiles run back to
+ *      back (the first a compile, then forced recompiles, as Re-layout does) until 60 keys fell
+ *      inside one, at most MAX_COMPILES of them; only keys whose keydown falls inside a compile
+ *      count, so the warm-up keys before the first one never do.
  *   6. Last, over the whole session (compiles, clicks, tour, typing): the renderer logged no console
  *      error and threw no page error.
  *
@@ -43,8 +46,10 @@ const consoleErrors: string[] = []
 const P95_BUDGET_MS = 50
 /** Keys typed before the compile starts: they warm the shell and the renderer, and are not counted. */
 const WARMUP_KEYS = 10
-/** The fewest keys pressed during the compile for the p95 to count. */
+/** The fewest keys pressed during a compile for the p95 to count. */
 const MIN_SAMPLES = 60
+/** The most compiles run back to back to gather MIN_SAMPLES keys. */
+const MAX_COMPILES = 5
 /** A steady typist: one key every 50 ms. */
 const KEY_GAP_MS = 50
 /** Keys per shell line before it is cleared, so the line (and its redraw) stays short. */
@@ -107,10 +112,13 @@ const PROJECT_FILES: Record<string, string> = {
   'src/renderer/NoteRow.ts': 'export const row = (n: string): string => `<li>${n}</li>`\n',
 }
 
-/** A bigger project for the typing measurement: enough files that the compile outlasts the typing
- *  of MIN_SAMPLES keys several times over, on a fast machine too. */
+/** A bigger project for the typing measurement: 2,040 files, about 3 s for the first compile on a
+ *  CI runner (2,400 took 3.5 to 4 s there, and 21 to 28 s on a slow laptop). The keys come from
+ *  several compiles in a row, so the fixture need not outlast the typing on its own; but a forced
+ *  recompile reuses the code graph and takes only about a quarter of the first compile, so the first
+ *  one still has to carry most of the MIN_SAMPLES keys. */
 const LOAD_AREAS = ['api', 'core', 'jobs', 'ui', 'data', 'auth', 'mail', 'billing', 'search', 'audit', 'files', 'admin']
-const LOAD_FILES_PER_AREA = 200
+const LOAD_FILES_PER_AREA = 170
 function loadFiles(): Record<string, string> {
   const files: Record<string, string> = {}
   for (const area of LOAD_AREAS) {
@@ -194,13 +202,14 @@ const pane = () => page.locator('[data-testid="world-view"]')
 const canvas = () => page.locator('[data-testid="world-canvas-host"] canvas')
 const card = () => page.locator('[data-testid="world-card"]')
 
-/** The world's buildings (id and name), as main stored them for the project. */
-async function buildings(root: string): Promise<Array<{ id: string; name: string }>> {
+/** The world's buildings (id, name and floor names), as main stored them for the project. */
+async function buildings(root: string): Promise<Array<{ id: string; name: string; floors: string[] }>> {
   return page.evaluate(async (r) => {
-    const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: { buildings: { id: string; name: string }[] } | null }> } }).termpolis
+    interface Doc { buildings: { id: string; name: string; floors: { name: string }[] }[] }
+    const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
     const top = await api.gitFindRoot(r)
     const res = await api.worldGet(top.success && top.data ? top.data : r)
-    return res.success && res.data ? res.data.buildings.map((b) => ({ id: b.id, name: b.name })) : []
+    return res.success && res.data ? res.data.buildings.map((b) => ({ id: b.id, name: b.name, floors: b.floors.map((f) => f.name) })) : []
   }, root)
 }
 
@@ -210,7 +219,9 @@ const drawn = (): Promise<Drawn | null> =>
   page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn() ?? null)
 
 test.describe.serial('Lumopolis in the real app', () => {
-  test.setTimeout(180_000)
+  // About twice the slowest local run of each test (test 1 took 11 s, the others 1 to 2 s; test 5
+  // sets its own), so a whole-file retry stays well inside the CI step.
+  test.setTimeout(45_000)
 
   test('1. the command palette opens Lumopolis and the compiled world is drawn on a canvas', async () => {
     await createTerminal('Notes', project)
@@ -229,8 +240,8 @@ test.describe.serial('Lumopolis in the real app', () => {
     await expect(pane()).toBeVisible()
     // No WebGL would show the 2D list instead: the launch switches above are meant to rule that out.
     await expect(page.locator('[data-testid="world-fallback"]')).toHaveCount(0)
-    await expect(canvas()).toBeVisible({ timeout: 90_000 })
-    await expect(page.locator('[data-testid="world-canvas-host"]')).not.toHaveClass(/invisible/, { timeout: 90_000 })
+    await expect(canvas()).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-testid="world-canvas-host"]')).not.toHaveClass(/invisible/, { timeout: 30_000 })
     expect((await buildings(project)).length).toBeGreaterThan(1)
   })
 
@@ -239,11 +250,17 @@ test.describe.serial('Lumopolis in the real app', () => {
     // Let the camera's first framing settle before aiming at it.
     await page.waitForTimeout(1500)
     const box = (await canvas().boundingBox())!
-    // The probe says where each building is on screen; the first one clear of the card's strip on
-    // the right is clicked as a person would, and its card must open with its name.
-    let target: { id: string; name: string; x: number; y: number } | null = null
+    // The probe gives a point where the viewer's own pick lands on the building (nothing drawn in
+    // front of it); the first such point clear of the card's strip on the right, with the canvas
+    // itself under it (no label or panel on top), is clicked as a person would.
+    type Target = { id: string; name: string; floors: string[]; x: number; y: number }
+    let target: Target | null = null
     for (const b of all) {
-      const pt = await page.evaluate((id) => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.screenPoint(id) ?? null, b.id)
+      const pt = await page.evaluate((id) => {
+        const p = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.screenPoint(id) ?? null
+        const host = document.querySelector('[data-testid="world-canvas-host"] canvas')
+        return p && document.elementFromPoint(p.x, p.y) === host ? p : null
+      }, b.id)
       if (pt && pt.x > box.x + 8 && pt.x < box.x + box.width - 380 && pt.y > box.y + 8 && pt.y < box.y + box.height - 8) {
         target = { ...b, ...pt }
         break
@@ -252,7 +269,10 @@ test.describe.serial('Lumopolis in the real app', () => {
     expect(target, `no building of ${all.length} is on screen clear of the card strip`).not.toBeNull()
     await page.mouse.click(target!.x, target!.y)
     await expect(card()).toBeVisible()
+    // The card is that building's: its name, and its floors in "What's inside", in order.
     await expect(card().locator('h3').first()).toHaveText(target!.name)
+    const inside = card().locator(`h4:text-is("What's inside") + ul > li > b`)
+    await expect(inside).toHaveText(target!.floors)
     await expect(card()).toContainText('What it does')
     await expect(card()).toContainText('Process')
   })
@@ -291,37 +311,44 @@ test.describe.serial('Lumopolis in the real app', () => {
     await tours.selectOption(values[0])
     await expect(card().locator('.tour-caption')).toBeVisible({ timeout: 15_000 })
     await expect
-      .poll(() => page.evaluate(() => (window as unknown as { __tourCaptions: string[] }).__tourCaptions.length), { timeout: 30_000 })
+      .poll(() => page.evaluate(() => (window as unknown as { __tourCaptions: string[] }).__tourCaptions.length), { timeout: 20_000 })
       .toBeGreaterThanOrEqual(2)
     const captions = await page.evaluate(() => (window as unknown as { __tourCaptions: string[] }).__tourCaptions)
     expect(new Set(captions).size).toBeGreaterThanOrEqual(2)
   })
 
   test('5. typing stays quick while a project compiles (p95 keystroke echo < 50 ms)', async () => {
-    test.setTimeout(300_000)
+    // Measured at 19 to 25 s on a slow laptop (one compile of 15 to 20 s covers the keys there).
+    test.setTimeout(90_000)
     // Stop the tour (it may still be running) by closing its card, then close the pane.
     if (await card().isVisible().catch(() => false)) await page.locator('[data-testid="world-card-close"]').click()
     await page.locator('[data-testid="world-close"]').click()
     await expect(pane()).toHaveCount(0)
     await createTerminal('Typing', project)
 
-    // The renderer's side of the measurement. A capture-phase keydown stamps each printable key
-    // (the line marker's two capitals excepted), and a 1 ms poll of the terminal's cursor line (a
-    // row or two, never the whole buffer) stamps each key once its character is on the line after
-    // the marker. Each shell line holds the marker and up to LINE_KEYS keys; the spec clears it and
-    // starts a new one (`newLine()`), so the line's redraw stays the same size all the way through.
-    const marker = 'ZQ'
+    // The renderer's side of the measurement. A capture-phase keydown stamps each typed letter
+    // (never the line marker, which has none), and a 1 ms poll of the terminal's cursor line (a row
+    // or two, never the whole buffer) stamps each key once its character is on the line after the
+    // marker. The marker `~#~` cannot come from the prompt: the temp folder's name is letters and
+    // digits. A shell may break a long line with a real newline instead of letting xterm wrap it
+    // (bash's readline can), and then the cursor row no longer holds the marker: the poll then reads
+    // the terminal's text with its newlines removed, as typing-trace.spec.ts does. Each shell line
+    // holds the marker and up to LINE_KEYS keys; the spec clears it and starts a new one
+    // (`newLine()`), so the line's redraw stays the same size all the way through.
+    const marker = '~#~'
     await page.evaluate((marker) => {
       interface Echo {
         down: number[]; echo: number[]; lineBase: number; lineKeys: string; done: boolean
-        compiling: boolean; compileStart: number; compileEnd: number; compileError?: string
+        compiling: boolean; runs: { start: number; end: number }[]; compileError?: string
       }
-      const w = window as unknown as { __termpolis_cursor_line?: () => string; __echo: Echo; __echoLine: () => void }
-      const s: Echo = { down: [], echo: [], lineBase: 0, lineKeys: '', done: false, compiling: false, compileStart: 0, compileEnd: 0 }
+      const w = window as unknown as {
+        __termpolis_cursor_line?: () => string; __termpolis_terminal_text?: () => string; __echo: Echo; __echoLine: () => void
+      }
+      const s: Echo = { down: [], echo: [], lineBase: 0, lineKeys: '', done: false, compiling: false, runs: [] }
       w.__echo = s
       w.__echoLine = () => { s.lineBase = s.down.length; s.lineKeys = '' }
       window.addEventListener('keydown', (e) => {
-        if (e.key.length !== 1 || e.key === marker[0] || e.key === marker[1]) return
+        if (!/^[a-z]$/.test(e.key)) return
         s.down.push(performance.now())
         s.echo.push(0)
         s.lineKeys += e.key
@@ -329,8 +356,12 @@ test.describe.serial('Lumopolis in the real app', () => {
       const poll = (): void => {
         if (s.done) return
         if (s.lineKeys) {
-          const line = w.__termpolis_cursor_line?.() ?? ''
-          const at = line.lastIndexOf(marker)
+          let line = w.__termpolis_cursor_line?.() ?? ''
+          let at = line.lastIndexOf(marker)
+          if (at < 0) {
+            line = (w.__termpolis_terminal_text?.() ?? '').replace(/\r?\n/g, '')
+            at = line.lastIndexOf(marker)
+          }
           if (at >= 0) {
             let n = 0
             while (n < s.lineKeys.length && line[at + marker.length + n] === s.lineKeys[n]) n++
@@ -345,74 +376,128 @@ test.describe.serial('Lumopolis in the real app', () => {
 
     const letters = 'abcdefghijklmnoprstuvwxy'
     let typed = 0
+    type Hooks = { __termpolis_cursor_line?: () => string; __termpolis_terminal_text?: () => string }
     const allEchoed = (): Promise<boolean> =>
       page.evaluate(() => (window as unknown as { __echo: { echo: number[] } }).__echo.echo.every((t) => t > 0))
-    const markerShown = (): Promise<boolean> =>
-      page.evaluate((m) => ((window as unknown as { __termpolis_cursor_line?: () => string }).__termpolis_cursor_line?.() ?? '').includes(m), marker)
+    const cursorLine = (): Promise<string> => page.evaluate(() => (window as unknown as Hooks).__termpolis_cursor_line?.() ?? '')
+    const markerShown = async (): Promise<boolean> => (await cursorLine()).includes(marker)
+    const markerGone = async (): Promise<boolean> => !(await markerShown())
+    // What the terminal shows, for a failure message: the next run says what that platform saw.
+    const state = (): Promise<string> =>
+      page.evaluate(() => {
+        const w = window as unknown as Hooks & { __echo?: { echo: number[]; lineKeys: string } }
+        const a = document.activeElement
+        return JSON.stringify({
+          cursorLine: w.__termpolis_cursor_line?.() ?? null,
+          textTail: (w.__termpolis_terminal_text?.() ?? '').slice(-600),
+          focused: a ? `${a.tagName.toLowerCase()}.${a.className}` : null,
+          unechoed: w.__echo ? w.__echo.echo.filter((t) => !t).length : null,
+          lineKeys: w.__echo?.lineKeys ?? null,
+        })
+      })
+    const until = async (what: string, check: () => Promise<boolean>): Promise<void> => {
+      try {
+        await expect.poll(check, { timeout: 10_000 }).toBe(true)
+      } catch {
+        throw new Error(`timed out waiting for ${what}: ${await state()}`)
+      }
+    }
     // Clears the shell's line (nothing typed here is ever run).
     const clearLine = (): Promise<void> => page.keyboard.press(process.platform === 'win32' ? 'Escape' : 'Control+u')
     const newLine = async (): Promise<void> => {
-      await expect.poll(allEchoed, { timeout: 20_000 }).toBe(true)
+      await until('every key to echo', allEchoed)
       await clearLine()
-      await expect.poll(markerShown, { timeout: 20_000 }).toBe(false)
+      await until('the cleared line', markerGone)
       await page.evaluate(() => (window as unknown as { __echoLine: () => void }).__echoLine())
       await page.keyboard.type(marker, { delay: KEY_GAP_MS })
-      await expect.poll(markerShown, { timeout: 20_000 }).toBe(true)
+      await until('the marker', markerShown)
     }
     const key = async (): Promise<void> => {
       await page.keyboard.press(letters[typed++ % letters.length])
       await page.waitForTimeout(KEY_GAP_MS)
     }
 
+    // The new terminal has the keyboard (its xterm textarea is focused, as terminal-features.spec.ts
+    // does it) and its shell is ready: a prompt is on the cursor line and has stopped changing.
+    await page.evaluate(() => {
+      const visible = [...document.querySelectorAll<HTMLTextAreaElement>('.xterm-helper-textarea')].filter((t) => t.closest('.xterm')?.getClientRects().length)
+      visible[visible.length - 1]?.focus()
+    })
+    await until('the terminal to have focus', () => page.evaluate(() => !!document.activeElement?.classList.contains('xterm-helper-textarea')))
+    let prompt = ''
+    await until('a settled prompt', async () => {
+      const now = (await cursorLine()).trim()
+      const settled = now !== '' && now === prompt
+      prompt = now
+      if (!settled) await page.waitForTimeout(250)
+      return settled
+    })
+
     // Warm-up, before any load: typed and echoed, and not counted.
     await page.keyboard.type(marker, { delay: KEY_GAP_MS })
-    await expect.poll(markerShown, { timeout: 20_000 }).toBe(true)
+    await until('the marker', markerShown)
     for (let i = 0; i < WARMUP_KEYS; i++) await key()
 
     // The load: main builds the bigger project's code graph, then its utility process compiles it.
-    // The compile starts first; the typing then runs at a steady pace until it has ended.
-    await page.evaluate((root) => {
-      const w = window as unknown as { termpolis: { worldCompile: (r: string) => Promise<{ success: boolean; error?: string }> }; __echo: { compiling: boolean; compileStart: number; compileEnd: number; compileError?: string } }
-      w.__echo.compiling = true
-      w.__echo.compileStart = performance.now()
-      void w.termpolis.worldCompile(root).then(
-        (r) => { if (!r.success) w.__echo.compileError = r.error },
-        (e: unknown) => { w.__echo.compileError = String(e) },
-      ).finally(() => { w.__echo.compiling = false; w.__echo.compileEnd = performance.now() })
-    }, loadProject)
+    // As each compile ends the next starts at once (a forced recompile, world:relayout, the call
+    // Re-layout makes), until MIN_SAMPLES keys fell inside a compile or MAX_COMPILES ran. The typing
+    // runs at a steady pace until the last one has ended.
+    await page.evaluate(({ root, min, max }) => {
+      type Res = Promise<{ success: boolean; error?: string }>
+      interface Api { worldCompile: (r: string) => Res; worldRelayout: (r: string) => Res }
+      const w = window as unknown as { termpolis: Api; __echo: { down: number[]; compiling: boolean; runs: { start: number; end: number }[]; compileError?: string } }
+      const s = w.__echo
+      const inside = (): number => s.down.filter((d) => s.runs.some((r) => d >= r.start && d < r.end)).length
+      const run = (): void => {
+        const cur = { start: performance.now(), end: 0 }
+        s.runs.push(cur)
+        const call = s.runs.length === 1 ? w.termpolis.worldCompile(root) : w.termpolis.worldRelayout(root)
+        void call.then(
+          (r) => { if (!r.success) s.compileError = r.error },
+          (e: unknown) => { s.compileError = String(e) },
+        ).finally(() => {
+          cur.end = performance.now()
+          if (s.compileError === undefined && inside() < min && s.runs.length < max) run()
+          else s.compiling = false
+        })
+      }
+      s.compiling = true
+      run()
+    }, { root: loadProject, min: MIN_SAMPLES, max: MAX_COMPILES })
     await newLine()
     const compiling = (): Promise<boolean> => page.evaluate(() => (window as unknown as { __echo: { compiling: boolean } }).__echo.compiling)
-    const deadline = Date.now() + 240_000
+    const deadline = Date.now() + 60_000
     let onLine = 0
     while ((await compiling()) && Date.now() < deadline) {
       if (onLine === LINE_KEYS) { await newLine(); onLine = 0 }
       await key()
       onLine++
     }
-    // A few keys after the end, so the last keys pressed during the compile echo under the same
+    // A few keys after the end, so the last keys pressed during a compile echo under the same
     // pattern; then every echo is awaited and the line cleared.
     for (let i = 0; i < 5; i++) await key()
-    await expect.poll(allEchoed, { timeout: 20_000 }).toBe(true)
+    await until('every key to echo', allEchoed)
     await clearLine()
 
     const r = await page.evaluate(() => {
-      const s = (window as unknown as { __echo: { down: number[]; echo: number[]; compiling: boolean; compileStart: number; compileEnd: number; compileError?: string; done: boolean } }).__echo
+      const s = (window as unknown as { __echo: { down: number[]; echo: number[]; compiling: boolean; runs: { start: number; end: number }[]; compileError?: string; done: boolean } }).__echo
       s.done = true
-      return { down: s.down, echo: s.echo, compiling: s.compiling, compileStart: s.compileStart, compileEnd: s.compileEnd, compileError: s.compileError }
+      return { down: s.down, echo: s.echo, compiling: s.compiling, runs: s.runs, compileError: s.compileError }
     })
-    expect(r.compiling, 'the compile was still running after 240 s of typing').toBe(false)
+    expect(r.compiling, 'the compiles were still running after 60 s of typing').toBe(false)
     expect(r.compileError ?? null).toBeNull()
-    // Only keys pressed while the compile ran count: that leaves out the warm-up and the tail.
-    const during = r.down.map((d, i) => ({ d, ms: r.echo[i] - d })).filter((x) => x.d >= r.compileStart && x.d < r.compileEnd)
+    // Only keys pressed while a compile ran count: that leaves out the warm-up, the gaps between
+    // compiles and the tail.
+    const runOf = (d: number): number => r.runs.findIndex((w) => d >= w.start && d < w.end)
+    const during = r.down.map((d, i) => ({ d, ms: r.echo[i] - d, run: runOf(d) })).filter((x) => x.run >= 0)
     const lat = during.map((x) => x.ms).sort((a, b) => a - b)
     const n = lat.length
     const p95 = lat[Math.min(n - 1, Math.ceil(n * 0.95) - 1)]
     const p50 = lat[Math.floor(n / 2)]
-    const compileMs = r.compileEnd - r.compileStart
-    const span = n ? `${(during[0].d - r.compileStart).toFixed(0)}..${(during[n - 1].d - r.compileStart).toFixed(0)} ms` : 'none'
-    const summary = `samples=${n} (of ${r.down.length} keys, ${WARMUP_KEYS} warm-up) compile=${compileMs.toFixed(0)} ms, keys at ${span}, p50=${p50?.toFixed(1)} ms p95=${p95?.toFixed(1)} ms max=${lat[n - 1]?.toFixed(1)} ms`
+    const runs = r.runs.map((w, k) => `${(w.end - w.start).toFixed(0)} ms/${during.filter((x) => x.run === k).length} keys`).join(', ')
+    const summary = `samples=${n} (of ${r.down.length} keys, ${WARMUP_KEYS} warm-up) over ${r.runs.length} compiles [${runs}], p50=${p50?.toFixed(1)} ms p95=${p95?.toFixed(1)} ms max=${lat[n - 1]?.toFixed(1)} ms`
     console.log(`[typing while compiling] ${summary}`)
-    expect(n, `too few keys pressed during the compile: ${summary}`).toBeGreaterThanOrEqual(MIN_SAMPLES)
+    expect(n, `too few keys pressed during the compiles: ${summary}`).toBeGreaterThanOrEqual(MIN_SAMPLES)
     expect(p95, `p95 keystroke echo over budget: ${summary}`).toBeLessThan(P95_BUDGET_MS)
   })
 

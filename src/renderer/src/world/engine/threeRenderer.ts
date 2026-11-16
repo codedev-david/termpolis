@@ -57,7 +57,12 @@ export interface ThreeRenderer {
   setCursor(pointer: boolean): void
   /** Node and edge ids whose anchor is inside the camera frustum. */
   visibleIds(): string[]
-  /** Where a node's top floor (an orb's centre) is on screen, in client pixels; null when it is not drawn or not in view. */
+  /**
+   * A point on screen, in client pixels, where a click picks the node: its top floor's centre (an
+   * orb's centre) when nothing stands in front of it, else the first of its other floors' centres
+   * and roof corners that pick() gives to this node. Null when it is not drawn, or no such point is
+   * in view (hidden behind other buildings or a conduit's pick tube).
+   */
   screenPoint(id: string): { x: number; y: number } | null
   /** How many process shells and conduits the last draw put up. */
   drawnCounts(): { processShells: number; conduits: number }
@@ -721,11 +726,24 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (!n || r.width === 0 || r.height === 0) return null
     scene.updateMatrixWorld()
     camera.updateMatrixWorld()
+    // In world space: the top floor first, then the floors below, then the roof's corners pulled a
+    // little inward. An orb: its centre, then its upper half.
+    const points: THREE.Vector3[] = []
     const top = n.floors[n.floors.length - 1]
-    const p = top ? top.getWorldPosition(new THREE.Vector3()) : n.group.getWorldPosition(new THREE.Vector3()).setY(n.group.position.y + ORB_R)
-    p.project(camera)
-    if (Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || Math.abs(p.z) > 1) return null
-    return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height }
+    if (!top) for (const y of [ORB_R, ORB_R * 1.6]) points.push(n.group.localToWorld(new THREE.Vector3(0, y, 0)))
+    for (let k = n.floors.length - 1; k >= 0; k--) points.push(n.floors[k].localToWorld(new THREE.Vector3()))
+    if (top) {
+      const c = FLOOR_W * 0.35
+      for (const [dx, dz] of [[c, c], [-c, c], [c, -c], [-c, -c]]) points.push(top.localToWorld(new THREE.Vector3(dx, 0, dz)))
+    }
+    for (const p of points) {
+      p.project(camera)
+      if (Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || Math.abs(p.z) > 1) continue
+      const pt = { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height }
+      const hit = pick(pt.x, pt.y)
+      if (hit && hit.kind === 'node' && hit.id === id) return pt
+    }
+    return null
   }
 
   function visibleIds(): string[] {

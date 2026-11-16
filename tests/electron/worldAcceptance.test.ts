@@ -14,7 +14,6 @@ import { join, resolve } from 'path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { _resetCodeGraphForTests, buildCodeGraph, graphSnapshot } from '../../src/main/codeGraph'
 import { compileWorld } from '../../src/main/world/compile'
-import { nameStem } from '../../src/main/world/group'
 import type { Building, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 
 const REPO = resolve(__dirname, '../..').replace(/\\/g, '/')
@@ -69,7 +68,7 @@ beforeAll(async () => {
         districts: world.districts.map((d) => `${d.id} (${d.members.length})`),
         parts: PROTOTYPE_PARTS.map((p) => {
           const b = ownerOf(p)
-          const own = b?.members.filter((m) => (p.endsWith('/') ? m.startsWith(p) : m === p)).length
+          const own = b?.members.filter(OWN[p]).length
           return `${p} -> ${b?.id} "${b?.name}" ${own}/${b?.members.length}`
         }),
         boundaryEdges: world.edges.filter((e) => e.label !== 'imports').length,
@@ -115,24 +114,56 @@ const PROTOTYPE_PARTS = [
   SCREEN
 ]
 
-/** What a part is called: a folder's name, an entry file's folder, else the file's base name. */
-function partName(p: string): string {
-  const segs = p.replace(/\/$/, '').split('/')
-  const base = segs[segs.length - 1].replace(/\..*$/, '')
-  if (p.endsWith('/')) return base
-  return base === 'index' || base === 'main' ? segs[segs.length - 2] : base
+/**
+ * A part's own files, as this test defines them (no compiler code involved): the files under its
+ * folder, and the files directly in `dir` whose base name starts with the whole word(s) `stem`
+ * (`code` takes codeGraph.ts and codeIngest.ts, not codexLaunch.ts).
+ */
+function ownFiles(dir: string, stem: string, folder?: string): (m: string) => boolean {
+  return (m) => {
+    if (folder !== undefined && m.startsWith(folder)) return true
+    const rest = m.slice(dir.length)
+    return m.startsWith(dir) && !rest.includes('/') && rest.startsWith(stem) && !/^[a-z0-9]/.test(rest.slice(stem.length))
+  }
 }
 
 /**
- * The module a member belongs to, for comparing shares: a file in a sub-folder of `dir`
- * counts as that sub-folder, a file beside it as its leading name word (the name family), a file
- * elsewhere as its own folder.
+ * What each part owns. A part is the module it names in the prototype: the gateway is the MCP
+ * server and its gateway (mcp*), the code graph is the code tools (code*: graph, ingest, locate,
+ * watch), the remote bridge's main side is remote access (remote*). The swarm is swarmManager*
+ * only: swarmMemory.ts is the shared memory store (the prototype's "Memory"), not the task board.
  */
-function moduleOf(member: string, dir: string): string {
-  if (!member.startsWith(dir)) return member.slice(0, member.lastIndexOf('/') + 1)
-  const rest = member.slice(dir.length)
-  const slash = rest.indexOf('/')
-  return slash >= 0 ? `${dir}${rest.slice(0, slash)}/` : `${dir}~${nameStem(rest) || rest}`
+const OWN: Readonly<Record<string, (m: string) => boolean>> = {
+  'src/main/memoryHost.ts': ownFiles('src/main/', 'memoryHost'),
+  'src/main/headroomProxy/': ownFiles('src/main/', 'headroomProxy', 'src/main/headroomProxy/'),
+  'src/main/mcpGateway/': ownFiles('src/main/', 'mcp', 'src/main/mcpGateway/'),
+  'src/main/codeGraph.ts': ownFiles('src/main/', 'code'),
+  'src/main/remoteBridgeSupervisor.ts': ownFiles('src/main/', 'remote'),
+  [PRELOAD]: ownFiles('src/preload/', 'index', 'src/preload/'),
+  [PTY_HOST]: ownFiles('src/main/', 'ptyHost'),
+  [SWARM]: ownFiles('src/main/', 'swarmManager'),
+  [SCREEN]: ownFiles('src/renderer/src/', 'main')
+}
+
+/** The group a member that is not the part's own counts in: its folder plus its leading word. */
+function groupOf(m: string): string {
+  const slash = m.lastIndexOf('/')
+  const base = m.slice(slash + 1)
+  const word = /^[a-z0-9]+|^[A-Z][a-z0-9]*/.exec(base)
+  return `${m.slice(0, slash + 1)}${(word ? word[0] : base).toLowerCase()}`
+}
+
+/** Own files of `part` in its building, against the largest other group there. */
+function shares(part: string): { b: Building; own: number; rival: string; rivalCount: number } {
+  const b = ownerOf(part) as Building
+  const counts = new Map<string, number>()
+  let own = 0
+  for (const m of b.members) {
+    if (OWN[part](m)) own++
+    else counts.set(groupOf(m), (counts.get(groupOf(m)) ?? 0) + 1)
+  }
+  const [rival, rivalCount] = [...counts].sort((x, y) => y[1] - x[1])[0] ?? ['', 0]
+  return { b, own, rival, rivalCount }
 }
 
 describe('Lumopolis acceptance on the Termpolis repository', () => {
@@ -179,19 +210,16 @@ describe('Lumopolis acceptance on the Termpolis repository', () => {
     }
   })
 
-  // Each part is recognisable in its building: its own module is the largest one there, or the
-  // building is named for it (the same leading name word: "swarmMemory" for the swarm).
-  it('makes each part the core or the namesake of its building', () => {
+  // Each part is recognisable in its building: its own files (OWN, defined above without the
+  // compiler's naming code) dominate there: they outnumber every other group of its members
+  // (folder plus leading word, see groupOf) and make up at least a third of the building, so one
+  // swarm file among eleven memory-search files does not pass for the swarm.
+  it('makes each part dominate its building', () => {
     for (const p of PROTOTYPE_PARTS) {
-      const b = ownerOf(p) as Building
-      const dir = p.endsWith('/') ? p.slice(0, p.slice(0, -1).lastIndexOf('/') + 1) : p.slice(0, p.lastIndexOf('/') + 1)
-      const mine = moduleOf(p.endsWith('/') ? `${p}x` : p, dir)
-      // Shares are of modules, not of one file: memoryHost.ts alone in its building is its core.
-      const counts = new Map<string, number>()
-      for (const m of b.members) counts.set(moduleOf(m, dir), (counts.get(moduleOf(m, dir)) ?? 0) + 1)
-      const core = Math.max(...counts.values()) === counts.get(mine)
-      const namesake = nameStem(b.name) !== '' && nameStem(b.name) === nameStem(partName(p))
-      expect(core || namesake, `${p} in ${b.id} "${b.name}" (${counts.get(mine) ?? 0}/${b.members.length})`).toBe(true)
+      const { b, own, rival, rivalCount } = shares(p)
+      const why = `${p} in ${b.id} "${b.name}": ${own}/${b.members.length} own, largest other ${rival} (${rivalCount})`
+      expect(own * 3, why).toBeGreaterThanOrEqual(b.members.length)
+      expect(own, why).toBeGreaterThan(rivalCount)
     }
   })
 
