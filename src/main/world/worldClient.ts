@@ -380,6 +380,11 @@ export function createWorldClient(
         // the host is going away; the next one reads the setting in its init
       }
     },
+    /** Shallow-clones a git source into userData (progress arrives on onProgress as `clone:<hash>`, root ''). */
+    clone: (url: string, ref?: string): Promise<{ ok: true; root: string } | { ok: false; error: string }> =>
+      call('cloneSource', ref === undefined ? [url] : [url, ref]),
+    /** Cancels a running clone of the same url and ref; true when there was one. */
+    cancelClone: (url: string, ref?: string): Promise<boolean> => call('cancelClone', ref === undefined ? [url] : [url, ref]),
     /** Stops the host (app quit). Calls after this reject. */
     dispose(): void {
       disposed = true

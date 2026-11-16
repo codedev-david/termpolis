@@ -20,6 +20,7 @@ import { lowerHostPriority } from '../hostPriority'
 import type { Claim, Evidence, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { compileWorld, createRecompileScheduler, type CompileDeps } from './compile'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
+import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps } from './gitSource'
 import type { LabelDeps } from './label'
 import { createWorldStore, type WorldStore } from './worldStore'
 
@@ -248,6 +249,10 @@ export interface WorldHostDeps {
   /** The watcher recompile's debounce (default 1500 ms). */
   debounceMs?: number
   llmTimeoutMs?: number
+  /** Clones a git source (default: gitSource's cloneRepo with the real git, size check and remover). */
+  cloneRepo?: typeof cloneRepo
+  /** Overrides for the real clone deps (tests). */
+  cloneDeps?: Partial<CloneDeps>
 }
 
 export interface WorldHost {
@@ -260,6 +265,8 @@ interface Latest {
   head: WorldHead
 }
 
+const refOf = (ref: unknown): string | undefined => (isStr(ref) && ref !== '' ? ref : undefined)
+
 function needKey(projectKey: unknown): string {
   if (!isStr(projectKey) || projectKey === '') throw new Error('worldHost: projectKey required')
   return projectKey
@@ -267,6 +274,7 @@ function needKey(projectKey: unknown): string {
 
 interface HostState {
   store: WorldStore
+  userDataPath: string
   labelling: boolean
 }
 
@@ -278,6 +286,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const glob = deps.glob ?? ((root: string, patterns: string[]) => globFiles(root, patterns))
   const now = deps.now ?? Date.now
   const llmTimeoutMs = deps.llmTimeoutMs ?? LLM_TIMEOUT_MS
+  const clone = deps.cloneRepo ?? cloneRepo
 
   /** Set by init. `labelling` is read each time a compile starts, so a settings message applies to the next one. */
   let state: HostState | null = null
@@ -286,6 +295,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const schedulers = new Map<string, ReturnType<typeof createRecompileScheduler>>()
   const llmWaiting = new Map<number, (text: string | null) => void>()
   let llmSeq = 0
+  /** cloneKey → the running clone and its abort controller: a repeat call joins it, cancel aborts it. */
+  const clones = new Map<string, { ctl: AbortController; done: Promise<unknown> }>()
 
   /** Runs `fn` after every earlier job for the same project, so saves never interleave. */
   const serial = <T>(key: string, fn: () => Promise<T>): Promise<T> => {
@@ -407,7 +418,38 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       schedulerFor(st, key).notify(Array.isArray(files) ? files.filter(isStr) : [])
       return true
     },
-    read: async (projectKey: unknown, query: WorldQuery) => filterWorld(await st.store.load(needKey(projectKey)), query)
+    read: async (projectKey: unknown, query: WorldQuery) => filterWorld(await st.store.load(needKey(projectKey)), query),
+    cloneSource: (url: unknown, ref?: unknown) => {
+      const u = isStr(url) ? url : ''
+      const r = refOf(ref)
+      const hash = cloneKey(u, r)
+      const running = clones.get(hash)
+      if (running) return running.done
+      const ctl = new AbortController()
+      const projectKey = `clone:${hash}`
+      post({ kind: 'progress', projectKey, stage: 'cloning', pct: 0 })
+      const done = clone(u, r, {
+        execFile: nodeExecFile,
+        baseDir: st.userDataPath,
+        dirSize: dirSizeOf,
+        rm: removeDir,
+        isWindows: process.platform === 'win32',
+        ...deps.cloneDeps,
+        signal: ctl.signal
+      })
+        .then((res) => {
+          if (res.ok) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 100 })
+          return res
+        })
+        .finally(() => clones.delete(hash))
+      clones.set(hash, { ctl, done })
+      return done
+    },
+    cancelClone: async (url: unknown, ref?: unknown) => {
+      const running = clones.get(cloneKey(isStr(url) ? url : '', refOf(ref)))
+      running?.ctl.abort()
+      return running !== undefined
+    }
   })
 
   const fail = (id: number, message: string): void => post({ kind: 'result', id, ok: false, error: { name: 'Error', message } })
@@ -420,7 +462,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           if (!isStr(msg.userDataPath) || msg.userDataPath === '') throw new Error('worldHost: userDataPath required')
           for (const s of schedulers.values()) s.dispose()
           schedulers.clear()
-          state = { store: createStore(msg.userDataPath), labelling: msg.labelling !== false }
+          state = { store: createStore(msg.userDataPath), userDataPath: msg.userDataPath, labelling: msg.labelling !== false }
           post({ kind: 'ready', pid: process.pid })
         } catch (err) {
           post({ kind: 'init-error', error: serializeError(err) })

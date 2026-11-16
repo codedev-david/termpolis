@@ -391,6 +391,29 @@ describe('createWorldClient', () => {
     expect(spawn).toHaveBeenCalledTimes(1)
   })
 
+  describe('clone', () => {
+    it('clone and cancelClone call the host fns, with and without a ref; clone progress has root ""', async () => {
+      const { client, spawned } = setup({}, (t) => {
+        t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: m.fn === 'cancelClone' ? true : { ok: true, root: '/r' } })
+      })
+      const progress: unknown[] = []
+      client.onProgress((e) => progress.push(e))
+      expect(await client.clone('https://h/a.git')).toEqual({ ok: true, root: '/r' })
+      expect(await client.clone('https://h/a.git', 'dev')).toEqual({ ok: true, root: '/r' })
+      expect(await client.cancelClone('https://h/a.git')).toBe(true)
+      expect(await client.cancelClone('https://h/a.git', 'dev')).toBe(true)
+      const t = spawned[0]
+      expect(t.calls().map((c) => [c.fn, c.args])).toEqual([
+        ['cloneSource', ['https://h/a.git']],
+        ['cloneSource', ['https://h/a.git', 'dev']],
+        ['cancelClone', ['https://h/a.git']],
+        ['cancelClone', ['https://h/a.git', 'dev']]
+      ])
+      t.emit({ kind: 'progress', projectKey: 'clone:abc', stage: 'cloning', pct: 0 })
+      expect(progress).toEqual([{ root: '', projectKey: 'clone:abc', stage: 'cloning', pct: 0 }])
+    })
+  })
+
   describe('notifyChanged', () => {
     it('refreshes a world compiled this run, with normalised files', async () => {
       const head = vi.fn(async () => ({ head: 'h', dirty: false }))

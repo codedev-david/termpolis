@@ -26,6 +26,7 @@ import {
   type WorldHostRequest,
   type WorldHostResponse
 } from '../../src/main/world/worldHost'
+import { cloneKey } from '../../src/main/world/gitSource'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
@@ -778,6 +779,100 @@ describe('createWorldHost', () => {
     expect(world.projectKey).toBe('real')
     expect(out.some((m) => m.kind === 'progress')).toBe(true)
     expect(await createWorldStore(join(dir, 'ud')).load('real')).toEqual(world)
+  })
+})
+
+describe('createWorldHost cloneSource / cancelClone', () => {
+  const URL1 = 'https://github.com/a/b.git'
+  const call = (send: ReturnType<typeof harness>['send'], id: number, fn: string, args: unknown[]) =>
+    send({ kind: 'call', id, fn, args })
+  const progress = (out: WorldHostResponse[]) => out.filter((m) => m.kind === 'progress')
+
+  it('clones with the init userData as base, posts clone:<hash> progress 0 then 100, returns the result', async () => {
+    const seen: { url: string; ref: string | undefined; baseDir: string; signal?: AbortSignal; isWindows: boolean }[] = []
+    const h = harness({
+      cloneRepo: async (url, ref, d) => {
+        seen.push({ url, ref, baseDir: d.baseDir, signal: d.signal, isWindows: d.isWindows })
+        return { ok: true, root: '/r' }
+      }
+    })
+    await h.init()
+    await call(h.send, 1, 'cloneSource', [URL1, 'main'])
+    expect(h.last()).toMatchObject({ id: 1, ok: true, result: { ok: true, root: '/r' } })
+    expect(seen[0]).toMatchObject({ url: URL1, ref: 'main', baseDir: '/ud', isWindows: process.platform === 'win32' })
+    const key = `clone:${cloneKey(URL1, 'main')}`
+    expect(progress(h.out)).toEqual([
+      { kind: 'progress', projectKey: key, stage: 'cloning', pct: 0 },
+      { kind: 'progress', projectKey: key, stage: 'cloning', pct: 100 }
+    ])
+  })
+
+  it('a failed clone posts no 100, and a rejection becomes an error result', async () => {
+    let n = 0
+    const h = harness({
+      cloneRepo: async () => {
+        if (++n === 2) throw new Error('boom')
+        return { ok: false, error: 'nope' }
+      }
+    })
+    await h.init()
+    await call(h.send, 1, 'cloneSource', [URL1])
+    expect(h.last()).toMatchObject({ ok: true, result: { ok: false, error: 'nope' } })
+    await call(h.send, 2, 'cloneSource', [URL1, ''])
+    expect(h.last()).toMatchObject({ ok: false, error: { message: 'boom' } })
+    expect(progress(h.out).map((m) => (m as { pct: number }).pct)).toEqual([0, 0])
+  })
+
+  it('a second cloneSource for the same hash joins the running one; cancelClone aborts it', async () => {
+    let starts = 0
+    let signal: AbortSignal | undefined
+    let release: (r: { ok: false; error: string }) => void = () => undefined
+    const h = harness({
+      cloneRepo: (_u, _r, d) => {
+        starts++
+        signal = d.signal
+        return new Promise((resolve) => {
+          release = resolve
+        })
+      }
+    })
+    await h.init()
+    const a = call(h.send, 1, 'cloneSource', [URL1])
+    const b = call(h.send, 2, 'cloneSource', [URL1])
+    await tick()
+    expect(starts).toBe(1)
+    expect(progress(h.out)).toHaveLength(1)
+    await call(h.send, 3, 'cancelClone', [URL1])
+    expect(h.last()).toMatchObject({ id: 3, ok: true, result: true })
+    expect(signal?.aborted).toBe(true)
+    release({ ok: false, error: 'Cancelled' })
+    await Promise.all([a, b])
+    expect(h.results().filter((m) => (m as { id: number }).id < 3)).toHaveLength(2)
+    // finished: nothing to cancel, and the same url can be cloned again
+    await call(h.send, 4, 'cancelClone', [URL1])
+    expect(h.last()).toMatchObject({ id: 4, result: false })
+    await call(h.send, 5, 'cancelClone', [42, 7])
+    expect(h.last()).toMatchObject({ id: 5, result: false })
+    await call(h.send, 6, 'cancelClone', [URL1, 'main'])
+    expect(h.last()).toMatchObject({ id: 6, result: false })
+  })
+
+  it('without an injected cloneRepo, the real one refuses a hostile url before any git runs', async () => {
+    const h = harness()
+    await h.init()
+    await call(h.send, 1, 'cloneSource', ['--upload-pack=x'])
+    expect(h.last()).toMatchObject({ ok: true, result: { ok: false, error: expect.stringContaining('git URL') } })
+    await call(h.send, 2, 'cloneSource', [123])
+    expect(h.last()).toMatchObject({ result: { ok: false } })
+  })
+
+  it('cloneDeps override the real deps', async () => {
+    const execFile = vi.fn(async () => ({ code: 0, stderr: '' }))
+    const h = harness({ cloneDeps: { execFile, dirSize: async () => 1, rm: async () => undefined, exists: async () => false } })
+    await h.init()
+    await call(h.send, 1, 'cloneSource', [URL1])
+    expect(h.last()).toMatchObject({ result: { ok: true } })
+    expect(execFile).toHaveBeenCalled()
   })
 })
 
