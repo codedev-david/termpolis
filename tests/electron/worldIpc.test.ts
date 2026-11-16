@@ -196,6 +196,7 @@ describe('registerWorldIpc ask handlers', () => {
     ['missing args', undefined, 'ask request required'],
     ['empty askId', { ...GOOD, askId: ' ' }, 'askId required'],
     ['empty root', { ...GOOD, root: '' }, 'root required'],
+    ['relative root', { ...GOOD, root: 'src/app' }, 'root required'],
     ['no question', { ...GOOD, question: 5 }, 'question required (up to 4000 characters)'],
     ['blank question', { ...GOOD, question: '  ' }, 'question required (up to 4000 characters)'],
     ['too long question', { ...GOOD, question: 'x'.repeat(4001) }, 'question required (up to 4000 characters)'],
@@ -213,12 +214,21 @@ describe('registerWorldIpc ask handlers', () => {
     expect(await setup(undefined, undefined, asker).invoke('world:ask', { ...GOOD, question: 'x'.repeat(4000) })).toMatchObject({ success: true })
   })
 
-  it('world:ask turns a thrown asker into err', async () => {
+  it('world:ask turns a thrown asker into plain copy, never the raw error', async () => {
     const asker = fakeAsker()
-    asker.ask.mockRejectedValueOnce(new Error('boom')).mockRejectedValueOnce('odd')
+    asker.ask.mockRejectedValueOnce(new Error('Lumopolis host call "get" timed out')).mockRejectedValueOnce('odd')
     const s = setup(undefined, undefined, asker)
-    expect(await s.invoke('world:ask', GOOD)).toEqual({ success: false, error: 'boom' })
-    expect(await s.invoke('world:ask', GOOD)).toEqual({ success: false, error: 'odd' })
+    const copy = { success: false, error: "Lumopolis couldn't answer that question. Try again." }
+    expect(await s.invoke('world:ask', GOOD)).toEqual(copy)
+    expect(await s.invoke('world:ask', GOOD)).toEqual(copy)
+  })
+
+  it('world:ask takes an absolute root in either form', async () => {
+    const asker = fakeAsker()
+    const s = setup(undefined, undefined, asker)
+    for (const root of ['C:\\repo', '/home/me/repo']) {
+      expect(await s.invoke('world:ask', { ...GOOD, root })).toMatchObject({ success: true })
+    }
   })
 
   it('world:ask-cancel cancels by askId and validates it', async () => {

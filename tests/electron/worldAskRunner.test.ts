@@ -12,11 +12,14 @@ const DOC = {
 const REQ: AskRequest = { askId: 'a1', root: 'C:/repo', question: 'What is this?', selection: [], cameraRegion: [], summary: '' }
 const okRes = (output: string): ExecResult => ({ ok: true, output }) as ExecResult
 
-function setup(exec: (req: ExecRequest) => Promise<ExecResult>, doc: WorldDoc | null = DOC, timeoutMs?: number) {
+function setup(exec: (req: ExecRequest) => Promise<ExecResult>, doc: WorldDoc | null = DOC, timeoutMs?: number, getTimeoutMs?: number) {
   const execFn = vi.fn(exec)
-  const client = { get: vi.fn(async () => doc), read: vi.fn(async () => ({ items: [], evidence: [] })) }
+  const client = {
+    get: vi.fn((_root: string, _opts?: { refresh?: boolean }): Promise<WorldDoc | null> => Promise.resolve(doc)),
+    read: vi.fn(async () => ({ items: [], evidence: [] }))
+  }
   const execDeps = { deliver: vi.fn() }
-  const runner = createAskRunner({ exec: execFn as never, execDeps: execDeps as never, client: client as never, timeoutMs })
+  const runner = createAskRunner({ exec: execFn as never, execDeps: execDeps as never, client: client as never, timeoutMs, getTimeoutMs })
   return { runner, execFn, client, execDeps }
 }
 
@@ -130,6 +133,70 @@ describe('createAskRunner', () => {
     const both = await Promise.all([runner.ask(REQ), runner.ask({ ...REQ, askId: 'a2', root: 'C:/other' })])
     expect(both.every((r) => r.ok)).toBe(true)
     expect(execFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('loads the world without starting a background refresh', async () => {
+    const { runner, client } = setup(async () => okRes('hi'))
+    await runner.ask(REQ)
+    expect(client.get).toHaveBeenCalledWith('C:/repo', { refresh: false })
+  })
+
+  describe('loading the world fails', () => {
+    const MAP_FAILED = "Lumopolis couldn't load this project's map. Try again."
+
+    it('a host failure shows plain copy, never the raw error', async () => {
+      const { runner, client, execFn } = setup(async () => okRes('x'))
+      client.get.mockRejectedValueOnce(new Error('Lumopolis host exited (code 3)'))
+      expect(await runner.ask(REQ)).toEqual({ askId: 'a1', ok: false, error: MAP_FAILED })
+      expect(execFn).not.toHaveBeenCalled()
+    })
+
+    it('a host that does not answer in time shows plain copy (15 s by default)', async () => {
+      vi.useFakeTimers()
+      try {
+        const { runner, client } = setup(async () => okRes('x'))
+        client.get.mockImplementationOnce(() => new Promise(() => undefined))
+        const p = runner.ask(REQ)
+        await vi.advanceTimersByTimeAsync(14_999)
+        let settled = false
+        void p.then(() => { settled = true })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(settled).toBe(false)
+        await vi.advanceTimersByTimeAsync(1)
+        expect(await p).toEqual({ askId: 'a1', ok: false, error: MAP_FAILED })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('honours a custom load timeout', async () => {
+      const { runner, client } = setup(async () => okRes('x'), DOC, undefined, 5)
+      client.get.mockImplementationOnce(() => new Promise(() => undefined))
+      expect(await runner.ask(REQ)).toEqual({ askId: 'a1', ok: false, error: MAP_FAILED })
+    })
+
+    it('a cancel while the world loads reports cancelled at once, not "not mapped"', async () => {
+      const { runner, client, execFn } = setup(async () => okRes('x'), null)
+      let release!: (d: WorldDoc | null) => void
+      client.get.mockImplementationOnce(() => new Promise((r) => { release = r }))
+      const p = runner.ask(REQ)
+      runner.cancel('a1')
+      expect(await p).toEqual({ askId: 'a1', ok: false, error: 'cancelled', cancelled: true })
+      release(null) // the late answer changes nothing
+      expect(execFn).not.toHaveBeenCalled()
+    })
+
+    it('a cancel that lands just after the load is still reported as cancelled', async () => {
+      const { runner, client, execFn } = setup(async () => okRes('x'), null)
+      client.get.mockImplementationOnce(() => {
+        const p = Promise.resolve(null)
+        // Runs after the runner's own then on p: the load has finished, its result is not yet read.
+        queueMicrotask(() => { void p.then(() => runner.cancel('a1')) })
+        return p
+      })
+      expect(await runner.ask(REQ)).toMatchObject({ ok: false, cancelled: true })
+      expect(execFn).not.toHaveBeenCalled()
+    })
   })
 
   it('no world doc for root → {ok:false, error:"This project has not been mapped yet."}', async () => {

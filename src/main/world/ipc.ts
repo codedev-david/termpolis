@@ -11,6 +11,7 @@
 //   world:progress / world:updated           (webContents.send, while a world compiles / after a
 //                                             watcher-driven recompile saved)
 // `ipc` and `win` are parameters, so this module never imports Electron and tests pass fakes.
+import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
 import type { AskRequest, AskResult } from '../../shared/world/types'
 import type { WorldClient } from './worldClient'
@@ -47,6 +48,7 @@ export interface WorldAsker {
 }
 
 const MAX_QUESTION = 4000
+export const ASK_FAILED = "Lumopolis couldn't answer that question. Try again."
 const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
@@ -55,7 +57,8 @@ const askRequestOf = (args: unknown): AskRequest | string => {
   if (!args || typeof args !== 'object') return 'ask request required'
   const a = args as Record<string, unknown>
   if (!nonEmpty(a.askId)) return 'askId required'
-  if (!nonEmpty(a.root)) return 'root required'
+  // win32.isAbsolute accepts C:\x, C:/x and /x alike, so the check is the same on every OS.
+  if (!nonEmpty(a.root) || !win32.isAbsolute(a.root)) return 'root required'
   if (typeof a.question !== 'string' || a.question.trim() === '' || a.question.length > MAX_QUESTION) return 'question required (up to 4000 characters)'
   if (!strings(a.selection) || !strings(a.cameraRegion)) return 'selection and cameraRegion must be string arrays'
   if (a.summary !== undefined && typeof a.summary !== 'string') return 'summary must be a string'
@@ -113,8 +116,9 @@ export function registerWorldIpc(
       if (typeof req === 'string') return err(req)
       try {
         return ok(await asker.ask(req))
-      } catch (e) {
-        return err(e instanceof Error ? e.message : String(e))
+      } catch {
+        // The runner frames its own failures; anything that still escapes it is never shown raw.
+        return err(ASK_FAILED)
       }
     })
     ipc.handle('world:ask-cancel', (_event: unknown, args?: unknown) => {

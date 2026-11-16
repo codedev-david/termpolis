@@ -44,8 +44,16 @@ export interface WorldClientOptions {
   initTimeoutMs?: number
 }
 
+/** What `get` does besides reading the stored world. */
+export interface WorldGetOptions {
+  /** False: never start a background refresh (the ask path: a refresh landing mid-answer would wipe it). Default true. */
+  refresh?: boolean
+}
+
 export const DEFAULT_CALL_TIMEOUT_MS = 600_000
 export const DEFAULT_INIT_TIMEOUT_MS = 30_000
+/** After a background refresh fails, the same commit is not tried again for this long. */
+export const REFRESH_BACKOFF_MS = 5 * 60_000
 
 interface Waiter {
   resolve(v: unknown): void
@@ -101,6 +109,8 @@ export function createWorldClient(
   const known = new Set<string>()
   /** Projects whose stored world is being checked against HEAD, or refreshed: at most one at a time each. */
   const refreshing = new Set<string>()
+  /** projectKey → the HEAD whose background refresh last failed, and when (REFRESH_BACKOFF_MS). */
+  const refreshFailed = new Map<string, { head: string; at: number }>()
   const progressSubs = new Set<(e: WorldProgressEvent) => void>()
   const updatedSubs = new Set<(e: WorldUpdatedEvent) => void>()
 
@@ -263,16 +273,27 @@ export function createWorldClient(
    * (the same compile world:compile runs: it saves, and the host's `updated` push refreshes the pane).
    * Uncommitted edits alone never count (the watcher covers those), and no HEAD (not a repository, or
    * the lookup failed) means no refresh. Failures are logged, never thrown: the caller already has its doc.
+   * A refresh that failed is not tried again for the same HEAD until REFRESH_BACKOFF_MS has passed (a
+   * repository whose compile keeps failing would otherwise snapshot and compile on every get); a new
+   * commit tries at once.
    */
   const refreshIfStale = (root: string, key: string, doc: WorldDoc): void => {
     if (refreshing.has(key)) return
     refreshing.add(key)
+    let tried = ''
     void (async () => {
       const { head } = await headOf(root)
       if (!head || head === doc.sourceRevision.head) return
+      const failed = refreshFailed.get(key)
+      if (failed && failed.head === head && Date.now() - failed.at < REFRESH_BACKOFF_MS) return
+      tried = head
       await compileWith(root, false)
+      refreshFailed.delete(key)
     })()
-      .catch((e: unknown) => console.warn('[world] background refresh failed:', e))
+      .catch((e: unknown) => {
+        if (tried) refreshFailed.set(key, { head: tried, at: Date.now() })
+        console.warn('[world] background refresh failed:', e)
+      })
       .finally(() => refreshing.delete(key))
   }
 
@@ -282,13 +303,13 @@ export function createWorldClient(
     /** Compiles with a fresh layout: stored positions are ignored. */
     relayout: (root: string): Promise<WorldDoc> => compileWith(root, true),
     /** The stored world for `root`, or null when none was compiled yet. Returned at once; one from an
-     *  older commit is also refreshed in the background (refreshIfStale). */
-    async get(root: string): Promise<WorldDoc | null> {
+     *  older commit is also refreshed in the background (refreshIfStale) unless `opts.refresh` is false. */
+    async get(root: string, opts: WorldGetOptions = {}): Promise<WorldDoc | null> {
       const key = keyOf(root)
       const doc = await call<WorldDoc | null>('get', [key])
       if (doc) {
         known.add(key)
-        refreshIfStale(root, key, doc)
+        if (opts.refresh !== false) refreshIfStale(root, key, doc)
       }
       return doc
     },

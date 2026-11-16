@@ -626,6 +626,68 @@ describe('createWorldClient', () => {
       }
     })
 
+    it('get with refresh:false never starts a background refresh', async () => {
+      const head = vi.fn(async () => ({ head: 'new', dirty: false }))
+      const { client, spawned } = setup({ head }, (t) => {
+        t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: m.fn === 'get' ? at('old') : DOC })
+      })
+      expect(await client.get(ROOT, { refresh: false })).toEqual(at('old'))
+      await flush()
+      await flush()
+      expect(head).not.toHaveBeenCalled()
+      expect(spawned[0].calls().map((c) => c.fn)).toEqual(['get'])
+    })
+
+    it('a failed refresh backs off for 5 minutes at the same HEAD; a new commit or the end of the wait tries again', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      let now = 1_000_000
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+      try {
+        let current = 'new'
+        let failing = true
+        const head = vi.fn(async () => ({ head: current, dirty: false }))
+        const { client, spawned } = setup({ head }, (t) => {
+          t.reply = (m) =>
+            m.fn === 'get'
+              ? { kind: 'result', id: m.id, ok: true, result: at('old') }
+              : failing
+                ? { kind: 'result', id: m.id, ok: false, error: { name: 'Error', message: 'graph failed' } }
+                : { kind: 'result', id: m.id, ok: true, result: at(current) }
+        })
+        const settled = async (n: number): Promise<void> => {
+          await vi.waitFor(() => expect(head.mock.calls.length).toBeGreaterThanOrEqual(n))
+          for (let i = 0; i < 4; i++) await flush()
+        }
+        const compileCount = (): number => compiles(spawned[0]).length
+        await client.get(ROOT)
+        await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1))
+        await flush()
+        expect(compileCount()).toBe(1)
+        // Same HEAD, inside the wait: no new compile.
+        now += 60_000
+        await client.get(ROOT)
+        await settled(3)
+        expect(compileCount()).toBe(1)
+        // A new commit tries at once.
+        current = 'newer'
+        await client.get(ROOT)
+        await vi.waitFor(() => expect(compileCount()).toBe(2))
+        await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2))
+        await flush()
+        // The wait is over: the same HEAD is tried again.
+        now += 5 * 60_000
+        failing = false
+        await client.get(ROOT)
+        await vi.waitFor(() => expect(compileCount()).toBe(3))
+        await flush()
+        await flush()
+        expect(warn).toHaveBeenCalledTimes(2)
+      } finally {
+        clock.mockRestore()
+        warn.mockRestore()
+      }
+    })
+
     it('no head lookup result means no refresh', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
       try {
