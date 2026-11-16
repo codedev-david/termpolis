@@ -6,7 +6,7 @@
  * PATH, and MOCK_CLAUDE_WORLD_ANSWER=1 makes its `-p` mode print a canned Lumopolis answer that
  * names its question and focuses and opens the card of
  * the first building the prompt names (a real id: the mock reads it from the prompt's WORLD DATA).
- * MOCK_CLAUDE_REPLY_DELAY_MS holds each reply back, so a second question can arrive while the first
+ * MOCK_CLAUDE_SLOW_MATCH/MS hold back the reply to a question with a given word, so a second question can arrive while the first
  * is still running.
  *
  *   1. Lumopolis opens on a temp git project and draws its map.
@@ -35,6 +35,7 @@ let project: string
 let shimDir: string
 let shims: Record<string, string>
 const consoleErrors: string[] = []
+const SLOW_MS = 4000
 
 /** Writes `files` under a new temp folder and makes it a git repository with every file staged. */
 function makeRepo(label: string, files: Record<string, string>): string {
@@ -144,7 +145,10 @@ async function launchApp(): Promise<void> {
       TERMPOLIS_SMOKE_SKIP_PICKERS: '1',
       TERMPOLIS_TEST_WORLD_PROBE: '1',
       MOCK_CLAUDE_WORLD_ANSWER: '1',
-      MOCK_CLAUDE_REPLY_DELAY_MS: '1500',
+      MOCK_CLAUDE_REPLY_DELAY_MS: '300',
+      // A question with "first" in it gets its reply 4 s late: far later than the second one's.
+      MOCK_CLAUDE_SLOW_MATCH: 'first',
+      MOCK_CLAUDE_SLOW_MS: String(SLOW_MS),
     },
   })
   page = await app.firstWindow()
@@ -242,13 +246,18 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
 
   test("3. asking twice quickly yields one answer, the second's", async () => {
     await ask('What runs first?')
-    // The mock holds the first reply back 1.5 s, so the second question lands while it still runs.
+    // The mock holds the first reply back 4 s, so the second question lands while it still runs.
     await expect(page.locator('[role="status"]:has-text("Thinking")')).toBeVisible()
+    const asked = Date.now()
     await ask('Where is the data kept?')
     await expect(answer()).toContainText('Answer to: Where is the data kept?', { timeout: 30_000 })
     await expect(answer()).toHaveCount(1)
-    // The first question's reply never replaces it (that ask was cancelled before it could print).
+    // Wait past the moment the first reply would have printed (bounded wait, then a polled check):
+    // had that ask not been cancelled, its answer would have replaced the second's by now.
+    await page.waitForTimeout(Math.max(0, asked + SLOW_MS + 1500 - Date.now()))
+    await expect(answer()).toContainText('Answer to: Where is the data kept?')
     await expect(answer()).not.toContainText('What runs first?')
+    await expect(answer()).toHaveCount(1)
   })
 
   test('4. the renderer logged no console errors and threw no page errors', async () => {
@@ -272,6 +281,8 @@ test.describe.serial('Lumopolis Ask bar evidence chip (labelling on)', () => {
     fs.rmSync(path.join(userDataDir, 'world'), { recursive: true, force: true })
     fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: true }))
     await launchApp()
+    // Errors logged while the first app quit are not this test's.
+    consoleErrors.length = 0
   })
 
   test('an answer citing [E1] shows a chip, and clicking it shows the evidence', async () => {

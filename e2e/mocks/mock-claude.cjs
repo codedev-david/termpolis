@@ -129,7 +129,10 @@ function runWorldAnswer(args, at) {
       lines.push('', '```world-actions', JSON.stringify([{ type: 'focus', ids: [building] }, { type: 'openCard', id: building }]), '```');
     }
     const delay = Number(process.env.MOCK_CLAUDE_REPLY_DELAY_MS) || 0;
-    setTimeout(() => { console.log(lines.join('\n')); process.exit(0); }, delay);
+    // MOCK_CLAUDE_SLOW_MATCH: a question containing this word is answered MOCK_CLAUDE_SLOW_MS late instead.
+    const slow = process.env.MOCK_CLAUDE_SLOW_MATCH && question.includes(process.env.MOCK_CLAUDE_SLOW_MATCH)
+      ? Number(process.env.MOCK_CLAUDE_SLOW_MS) || 0 : 0;
+    setTimeout(() => { console.log(lines.join('\n')); process.exit(0); }, slow || delay);
   });
 }
 
