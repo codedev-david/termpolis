@@ -656,6 +656,67 @@ export function codeGraphStats(projectKey?: string): CodeGraphStats {
   return statsOf(stateFor(projectKey))
 }
 
+/** A postMessage-safe, fully copied view of one repo's graph for the world compiler (utility process). */
+export interface GraphSnapshot {
+  root: string
+  /** Repository-relative, `/` separated, sorted. */
+  files: string[]
+  symbols: SymbolHit[]
+  callEdges: CodeGraphEdge[]
+  fileImports: Record<string, string[]>
+}
+
+const slashed = (p: string): string => p.replace(/\\/g, '/')
+const isAbs = (p: string): boolean => /^([a-zA-Z]:)?\//.test(p)
+
+/** Longest shared directory prefix of absolute, `/`-separated file paths ('' if none). */
+function commonDir(files: string[]): string {
+  let parts: string[] | null = null
+  for (const f of files) {
+    if (!isAbs(f)) continue
+    const d = f.split('/').slice(0, -1)
+    if (parts === null) { parts = d; continue }
+    let i = 0
+    while (i < parts.length && i < d.length && parts[i].toLowerCase() === d[i].toLowerCase()) i++
+    parts = parts.slice(0, i)
+  }
+  return parts ? parts.join('/') : ''
+}
+
+/** Copy of a repo's graph with paths relative to the repo root. Pure read: an unknown key yields empty arrays
+ *  and does NOT register a state (unlike stateFor). The root is the longest common directory of the indexed
+ *  absolute paths (the graph does not store the root it was built from). */
+export function graphSnapshot(projectKey: string): GraphSnapshot {
+  const st = graphs.get(projectKey)
+  if (!st) return { root: '', files: [], symbols: [], callEdges: [], fileImports: {} }
+  const all = new Set<string>([...st.idsByFile.keys(), ...st.fileImports.keys()])
+  for (const s of st.symbolsById.values()) all.add(s.file)
+  const root = commonDir([...all].map(slashed))
+  const rel = (p: string): string => {
+    const n = slashed(p)
+    return root && n.toLowerCase().startsWith(root.toLowerCase() + '/') ? n.slice(root.length + 1) : n
+  }
+  const files = [...new Set([...st.idsByFile.keys()].map(rel))].sort()
+  const idMap = new Map<string, string>()
+  const symbols: SymbolHit[] = []
+  for (const s of st.symbolsById.values()) {
+    const h = toHit(s)
+    h.file = rel(s.file)
+    h.id = symbolId(h.file, s.name, s.startLine)
+    idMap.set(s.id, h.id)
+    symbols.push(h)
+  }
+  const callEdges: CodeGraphEdge[] = []
+  for (const e of st.callEdges) {
+    const from = idMap.get(e.from)
+    const to = idMap.get(e.to)
+    if (from !== undefined && to !== undefined) callEdges.push({ from, to })
+  }
+  const fileImports: Record<string, string[]> = {}
+  for (const [f, imps] of st.fileImports) fileImports[rel(f)] = [...imps]
+  return { root, files, symbols, callEdges, fileImports }
+}
+
 /** The projectKey of the graph most recently built/queried (the repo the user is in). */
 export function activeProjectKey(): string {
   return activeKey
