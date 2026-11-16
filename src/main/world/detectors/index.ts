@@ -16,7 +16,9 @@ export type { Boundary, BoundaryKind, Detector } from './common'
  */
 export const MAX_DETECT_FILE_CHARS = 512 * 1024
 
-export const DEFAULT_DETECTORS: Detector[] = [
+// Not detected: exec/execSync, child_process.fork, env destructuring
+// (`const { X } = process.env`), dynamic channel/host/command names.
+export const DEFAULT_DETECTORS: readonly Detector[] = [
   detectIpc,
   detectProcesses,
   detectHttp,
@@ -29,7 +31,7 @@ export const DEFAULT_DETECTORS: Detector[] = [
 export function detectBoundaries(
   file: string,
   text: string,
-  detectors: Detector[] = DEFAULT_DETECTORS,
+  detectors: readonly Detector[] = DEFAULT_DETECTORS,
   maxChars: number = MAX_DETECT_FILE_CHARS
 ): Boundary[] {
   if (text.length > maxChars) return []

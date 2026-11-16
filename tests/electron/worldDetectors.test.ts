@@ -51,6 +51,11 @@ describe('processes', () => {
     ])
     expect(run(`utilityProcess.fork('a/b/host')`)).toEqual([b('fork', 'host', 'consume')])
   })
+  it('keys a multi-segment path.join by its last literal', () => {
+    expect(run(`utilityProcess.fork(join(__dirname, 'workers', 'host.js'))`)).toEqual([b('fork', 'host', 'consume')])
+    expect(run(`new Worker(path.join(__dirname, '..', 'x.js'))`)).toEqual([b('worker', 'x', 'consume')])
+    expect(run(`utilityProcess.fork(join(__dirname, 'a', file))`)).toEqual([])
+  })
   it('detects new Worker', () => {
     expect(run(`const w = new Worker(new URL('./embedWorker.js', import.meta.url))`)).toEqual([
       b('worker', 'embedWorker', 'consume')
@@ -73,6 +78,11 @@ describe('http', () => {
     expect(run(`axios.post("http://localhost:8080/y", d)`)).toEqual([b('http-out', 'localhost', 'consume')])
     expect(run(`https.get('https://h.io?q=1')`)).toEqual([b('http-out', 'h.io', 'consume')])
   })
+  it('skips a non-literal host', () => {
+    expect(run('fetch(`https://${host}/x`)')).toEqual([])
+    expect(run('fetch(`https://api.${zone}.com/x`)')).toEqual([])
+    expect(run(`fetch('https://h.io')`)).toEqual([b('http-out', 'h.io', 'consume')])
+  })
   it('detects listen ports', () => {
     expect(run(`server.listen(9315, '127.0.0.1')`)).toEqual([b('http-listen', '9315', 'provide')])
   })
@@ -93,6 +103,34 @@ describe('env', () => {
     expect(run(`process.env['A_B'] = x`)).toEqual([b('env', 'A_B', 'provide')])
     expect(run(`const a = process.env.ANTHROPIC_BASE_URL`)).toEqual([b('env', 'ANTHROPIC_BASE_URL', 'consume')])
     expect(run(`if (process.env["A_B"] === 'x') {}`)).toEqual([b('env', 'A_B', 'consume')])
+  })
+  it('keeps top-level keys when a value is a template literal with braces', () => {
+    expect(run('x({ env: { URL: `http://${host}`, API_KEY: k } })')).toEqual([
+      b('env', 'URL', 'provide'),
+      b('env', 'API_KEY', 'provide')
+    ])
+  })
+  it('keeps top-level keys around a nested object and ignores nested keys', () => {
+    expect(run(`x({ env: { A_B: 1, NESTED: { INNER: 2, 'Q}': 3 }, C_D: "}", E_F: 'it\\'s {' } })`)).toEqual([
+      b('env', 'A_B', 'provide'),
+      b('env', 'NESTED', 'provide'),
+      b('env', 'C_D', 'provide'),
+      b('env', 'E_F', 'provide')
+    ])
+    expect(run(`x({ env: {
+  A_B: 1,
+  N: {
+    INNER: 2,
+  },
+  C_D: 3,
+} })`)).toEqual([
+      b('env', 'A_B', 'provide', 2),
+      b('env', 'N', 'provide', 3),
+      b('env', 'C_D', 'provide', 6)
+    ])
+  })
+  it('survives an unterminated env object or string', () => {
+    expect(run(`env: { A_B: 1, C_D: 'oops`)).toEqual([b('env', 'A_B', 'provide'), b('env', 'C_D', 'provide')])
   })
   it('reports env-object keys on their own line', () => {
     expect(run(`x({\n  env: {\n    A_B: 1,\n  },\n})`)).toEqual([b('env', 'A_B', 'provide', 3)])
@@ -143,6 +181,9 @@ describe('comments, strings and lines', () => {
   it('survives an unterminated string and an unterminated block comment', () => {
     expect(run(`const s = 'oops\nspawn('git')`)).toEqual([b('spawn', 'git', 'consume', 2)])
     expect(run(`spawn('a')\n/* never closed\nspawn('b')`)).toEqual([b('spawn', 'a', 'consume')])
+  })
+  it('mis-stripping a regex literal only misses things, never throws', () => {
+    expect(run(String.raw`const r = /\/\//;` + `\nspawn('git')`)).toEqual([b('spawn', 'git', 'consume', 2)])
   })
   it('keeps line numbers right across a multi-line block comment', () => {
     const text = `/*\n one\n two\n*/\nspawn('git')\n`

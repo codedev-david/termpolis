@@ -1,7 +1,7 @@
 import { collect, type Boundary } from './common'
 
-// http-out key = host only (no scheme, port or path); http-listen key = the port as a string.
-const OUT = /\b(?:fetch|axios(?:\.\w+)?|https?\.(?:get|request))\(\s*['"`]https?:\/\/([^/:?#'"`\s]+)/
+// http-out key = host only (no scheme, port or path); a non-literal host (`${host}`) is skipped; http-listen key = the port as a string.
+const OUT = /\b(?:fetch|axios(?:\.\w+)?|https?\.(?:get|request))\(\s*['"`]https?:\/\/([^/:?#'"`\s${}]+)(?=[/:?#'"`\s]|$)/
 const LISTEN = /\.listen\(\s*(\d+)/
 
 export function detectHttp(file: string, text: string): Boundary[] {

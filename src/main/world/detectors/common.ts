@@ -41,12 +41,12 @@ export function collect(
   file: string,
   text: string,
   re: RegExp,
-  build: (m: RegExpExecArray) => { kind: BoundaryKind; key: string; side: 'provide' | 'consume'; offset?: number }
+  build: (m: RegExpExecArray) => { kind: BoundaryKind; key: string; side: 'provide' | 'consume' }
 ): Boundary[] {
   const out: Boundary[] = []
   for (const m of text.matchAll(new RegExp(re.source, 'g'))) {
-    const { kind, key, side, offset } = build(m as RegExpExecArray)
-    out.push({ kind, key, side, file, line: lineAt(text, offset ?? m.index) })
+    const { kind, key, side } = build(m as RegExpExecArray)
+    out.push({ kind, key, side, file, line: lineAt(text, m.index) })
   }
   return out
 }
