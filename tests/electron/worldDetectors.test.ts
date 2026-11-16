@@ -1,0 +1,187 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { MAX_GRAPH_FILE_CHARS } from '../../src/main/codeGraph'
+import {
+  DEFAULT_DETECTORS,
+  MAX_DETECT_FILE_CHARS,
+  detectBoundaries,
+  stripComments,
+  type Boundary,
+  type Detector
+} from '../../src/main/world/detectors'
+
+const F = 'src/main/x.ts'
+
+function run(text: string): Boundary[] {
+  return detectBoundaries(F, text)
+}
+
+function b(kind: Boundary['kind'], key: string, side: Boundary['side'], line = 1): Boundary {
+  return { kind, key, side, file: F, line }
+}
+
+describe('constants', () => {
+  it('mirrors the code graph file-size cap', () => {
+    expect(MAX_DETECT_FILE_CHARS).toBe(MAX_GRAPH_FILE_CHARS)
+  })
+  it('exposes the default detector list', () => {
+    expect(DEFAULT_DETECTORS).toHaveLength(6)
+  })
+})
+
+describe('ipc', () => {
+  it('provides on ipcMain and consumes on ipcRenderer', () => {
+    expect(run(`ipcMain.handle('memory:count', () => 1)`)).toEqual([b('ipc', 'memory:count', 'provide')])
+    expect(run(`ipcMain.on("a:b", f)`)).toEqual([b('ipc', 'a:b', 'provide')])
+    expect(run(`ipcRenderer.invoke('memory:count')`)).toEqual([b('ipc', 'memory:count', 'consume')])
+    expect(run('ipcRenderer.send(`x:y`)')).toEqual([b('ipc', 'x:y', 'consume')])
+  })
+})
+
+describe('processes', () => {
+  it('detects utilityProcess.fork with new URL', () => {
+    expect(run(`utilityProcess.fork(new URL('./memoryHost.js', import.meta.url))`)).toEqual([
+      b('fork', 'memoryHost', 'consume')
+    ])
+  })
+  it('detects fork with path.join and a bare string', () => {
+    expect(run(`utilityProcess.fork(path.join(__dirname, 'memoryHost.js'))`)).toEqual([
+      b('fork', 'memoryHost', 'consume')
+    ])
+    expect(run(`utilityProcess.fork('a/b/host')`)).toEqual([b('fork', 'host', 'consume')])
+  })
+  it('detects new Worker', () => {
+    expect(run(`const w = new Worker(new URL('./embedWorker.js', import.meta.url))`)).toEqual([
+      b('worker', 'embedWorker', 'consume')
+    ])
+  })
+  it('detects spawn and execFile', () => {
+    expect(run(`spawn('claude', ['-p'])`)).toEqual([b('spawn', 'claude', 'consume')])
+    expect(run(`await execFile('git', ['status'])`)).toEqual([b('spawn', 'git', 'consume')])
+    expect(run(`execFileSync("node")`)).toEqual([b('spawn', 'node', 'consume')])
+  })
+  it('ignores non-literal arguments', () => {
+    expect(run(`spawn(cmd, [])`)).toEqual([])
+    expect(run(`new Worker(file)`)).toEqual([])
+  })
+})
+
+describe('http', () => {
+  it('detects outbound hosts only', () => {
+    expect(run(`fetch('https://api.example.com/x')`)).toEqual([b('http-out', 'api.example.com', 'consume')])
+    expect(run(`axios.post("http://localhost:8080/y", d)`)).toEqual([b('http-out', 'localhost', 'consume')])
+    expect(run(`https.get('https://h.io?q=1')`)).toEqual([b('http-out', 'h.io', 'consume')])
+  })
+  it('detects listen ports', () => {
+    expect(run(`server.listen(9315, '127.0.0.1')`)).toEqual([b('http-listen', '9315', 'provide')])
+  })
+  it('ignores a non-numeric listen', () => {
+    expect(run(`server.listen(port)`)).toEqual([])
+  })
+})
+
+describe('env', () => {
+  it('provides keys assigned in an env object', () => {
+    expect(run(`spawnIt({ env: { ...process.env, ANTHROPIC_BASE_URL: url, 'FOO_BAR': 1, lower: 2 } })`)).toEqual([
+      b('env', 'ANTHROPIC_BASE_URL', 'provide'),
+      b('env', 'FOO_BAR', 'provide')
+    ])
+  })
+  it('provides keys assigned on process.env, consumes reads', () => {
+    expect(run(`process.env.ANTHROPIC_BASE_URL = x`)).toEqual([b('env', 'ANTHROPIC_BASE_URL', 'provide')])
+    expect(run(`process.env['A_B'] = x`)).toEqual([b('env', 'A_B', 'provide')])
+    expect(run(`const a = process.env.ANTHROPIC_BASE_URL`)).toEqual([b('env', 'ANTHROPIC_BASE_URL', 'consume')])
+    expect(run(`if (process.env["A_B"] === 'x') {}`)).toEqual([b('env', 'A_B', 'consume')])
+  })
+  it('reports env-object keys on their own line', () => {
+    expect(run(`x({\n  env: {\n    A_B: 1,\n  },\n})`)).toEqual([b('env', 'A_B', 'provide', 3)])
+  })
+})
+
+describe('mcp', () => {
+  it('detects a server with a name', () => {
+    expect(run(`const s = new McpServer({ name: 'termpolis', version: '1' })`)).toEqual([
+      b('mcp', 'termpolis', 'provide')
+    ])
+  })
+  it('falls back to "server" without a name', () => {
+    expect(run(`new McpServer(opts)`)).toEqual([b('mcp', 'server', 'provide')])
+    expect(run(`new McpServer({ version: '1' })`)).toEqual([b('mcp', 'server', 'provide')])
+  })
+  it('detects mcpServers config', () => {
+    expect(run(`const c = { mcpServers: { termpolis: { command: 'x' } } }`)).toEqual([
+      b('mcp', 'termpolis', 'consume')
+    ])
+    expect(run(`mcpServers = { "my-srv": {} }`)).toEqual([b('mcp', 'my-srv', 'consume')])
+    expect(run(`mcpServers: {}`)).toEqual([b('mcp', 'server', 'consume')])
+  })
+})
+
+describe('watch', () => {
+  it('uses the literal path as key', () => {
+    expect(run(`fs.watch('/tmp/a.json', cb)`)).toEqual([b('watch', '/tmp/a.json', 'consume')])
+    expect(run(`chokidar.watch("src")`)).toEqual([b('watch', 'src', 'consume')])
+    expect(run(`fs.watchFile('x.log', cb)`)).toEqual([b('watch', 'x.log', 'consume')])
+  })
+  it('uses "*" for a non-literal path', () => {
+    expect(run(`fs.watch(dir, cb)`)).toEqual([b('watch', '*', 'consume')])
+  })
+})
+
+describe('comments, strings and lines', () => {
+  it('ignores matches in line and block comments, even with strings inside', () => {
+    expect(run(`// ipcMain.handle('a:b', f)\n/* spawn('git') */ /* "fetch('https://x.io')" */`)).toEqual([])
+  })
+  it('keeps // inside string literals', () => {
+    expect(run(`fetch('https://api.example.com/x') // trailing`)).toEqual([
+      b('http-out', 'api.example.com', 'consume')
+    ])
+    expect(run('fetch(`https://t.example.com/${a}`)')).toEqual([b('http-out', 't.example.com', 'consume')])
+    expect(run(`const s = "it\\"s // not a comment"; spawn('git')`)).toEqual([b('spawn', 'git', 'consume')])
+  })
+  it('survives an unterminated string and an unterminated block comment', () => {
+    expect(run(`const s = 'oops\nspawn('git')`)).toEqual([b('spawn', 'git', 'consume', 2)])
+    expect(run(`spawn('a')\n/* never closed\nspawn('b')`)).toEqual([b('spawn', 'a', 'consume')])
+  })
+  it('keeps line numbers right across a multi-line block comment', () => {
+    const text = `/*\n one\n two\n*/\nspawn('git')\n`
+    expect(run(text)).toEqual([b('spawn', 'git', 'consume', 5)])
+  })
+  it('stripComments preserves length and newlines', () => {
+    const text = `a // c\n/* x\ny */ b`
+    const out = stripComments(text)
+    expect(out).toHaveLength(text.length)
+    expect(out.split('\n')).toHaveLength(3)
+    expect(out).toBe('a     \n    \n     b')
+  })
+  it('passes the file argument through unchanged', () => {
+    expect(detectBoundaries('C:\\weird\\path.ts', `spawn('git')`)[0].file).toBe('C:\\weird\\path.ts')
+  })
+})
+
+describe('detectBoundaries', () => {
+  it('returns [] over the size cap and honours an override', () => {
+    const big = `spawn('git')\n` + ' '.repeat(600 * 1024)
+    expect(detectBoundaries(F, big)).toEqual([])
+    expect(detectBoundaries(F, `spawn('git')`, undefined, 5)).toEqual([])
+    expect(detectBoundaries(F, `spawn('git')`, undefined, 100)).toHaveLength(1)
+  })
+  it('runs custom detectors on comment-stripped text', () => {
+    const custom: Detector = (file, text) => [{ kind: 'port', key: text.trim(), side: 'provide', file, line: 1 }]
+    expect(detectBoundaries(F, 'a // gone', [custom])).toEqual([b('port', 'a', 'provide')])
+  })
+  it('scans a fixture file end to end', () => {
+    const text = readFileSync(join(__dirname, 'fixtures', 'world', 'main-sample.fixture.txt'), 'utf8')
+    expect(
+      detectBoundaries(F, text)
+        .map((x) => `${x.kind}:${x.key}:${x.side}:${x.line}`)
+        .sort()
+    ).toEqual([
+      'env:ANTHROPIC_BASE_URL:consume:9',
+      'env:ANTHROPIC_BASE_URL:provide:6',
+      'fork:memoryHost:consume:4',
+      'ipc:memory:count:provide:3'
+    ])
+  })
+})

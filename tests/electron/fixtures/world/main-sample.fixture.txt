@@ -1,0 +1,9 @@
+import { ipcMain } from 'electron'
+// ipcMain.handle('commented:out', () => 1)
+ipcMain.handle('memory:count', () => 1)
+const host = utilityProcess.fork(path.join(__dirname, 'memoryHost.js'), [], {
+  env: {
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:9315',
+  },
+})
+const base = process.env.ANTHROPIC_BASE_URL
