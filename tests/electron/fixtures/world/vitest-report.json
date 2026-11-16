@@ -1,10 +1,29 @@
 {
   "startTime": 1000,
   "testResults": [
-    { "name": "/repo/src/main/a.test.ts", "status": "passed", "startTime": 2000, "endTime": 3000 },
-    { "name": "/repo/src/main/b.test.ts", "status": "failed", "startTime": 2500 },
-    { "name": "./src/main/c.test.ts", "status": "passed" },
-    { "name": "/elsewhere/d.test.ts", "status": "passed" },
-    { "name": "src/main/e.test.ts", "status": "skipped", "endTime": 4000 }
+    {
+      "name": "C:/repo/src/main/a.test.ts",
+      "status": "passed",
+      "startTime": 2000,
+      "endTime": 3000
+    },
+    {
+      "name": "c:/REPO/src/main/b.test.ts",
+      "status": "failed",
+      "startTime": 2500
+    },
+    {
+      "name": "./src/main/c.test.ts",
+      "status": "passed"
+    },
+    {
+      "name": "D:/elsewhere/d.test.ts",
+      "status": "passed"
+    },
+    {
+      "name": "C:/repo/src/main/e.test.ts",
+      "status": "skipped",
+      "endTime": 4000
+    }
   ]
 }

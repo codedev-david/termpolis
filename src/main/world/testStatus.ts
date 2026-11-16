@@ -28,7 +28,7 @@ export const PATTERNS: string[] = [
 ]
 
 const MAX_CHARS = 16 * 1024 * 1024
-const TEST_FILE = /\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs)$/
+const TEST_FILE = /\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/
 
 // ---- tiny path helpers ----------------------------------------------------
 
@@ -90,7 +90,25 @@ interface Suite {
 
 type CaseState = 'pass' | 'fail' | 'skip'
 
-function parseJunit(text: string, root: string): TestRun[] {
+const TAG_NAME = /\/?(testsuite|testcase|failure|error|skipped)\b/y
+const MAX_TAG = 4096
+
+/** Removes `<![CDATA[...]]>` sections (an unterminated one drops the rest). Linear. */
+function stripCdata(text: string): string {
+  let out = ''
+  let pos = 0
+  for (;;) {
+    const start = text.indexOf('<![CDATA[', pos)
+    if (start < 0) return out + text.slice(pos)
+    out += text.slice(pos, start)
+    const end = text.indexOf(']]>', start + 9)
+    if (end < 0) return out
+    pos = end + 3
+  }
+}
+
+function parseJunit(raw: string, root: string): TestRun[] {
+  const text = stripCdata(raw)
   const stack: Suite[] = []
   const files = new Map<string, { failed: boolean; passed: boolean; at: number }>()
   let current: { file?: string; at: number; state: CaseState } | null = null
@@ -107,22 +125,33 @@ function parseJunit(text: string, root: string): TestRun[] {
     current = null
   }
 
-  const tags = /<(\/?)(testsuite|testcase|failure|error|skipped)\b([^>]*)>/g
-  for (const m of text.matchAll(tags)) {
-    const closing = m[1] === '/'
-    const name = m[2]
-    const a = m[3]
-    const selfClosing = a.endsWith('/')
+  // indexOf scan: each '<' costs O(distance to the next '>'), and a tag consumes that span.
+  let pos = 0
+  for (;;) {
+    const lt = text.indexOf('<', pos)
+    if (lt < 0) break
+    pos = lt + 1
+    TAG_NAME.lastIndex = pos
+    const m = TAG_NAME.exec(text)
+    if (!m) continue
+    const gt = text.indexOf('>', pos)
+    if (gt < 0) break
+    pos = gt + 1
+    const closing = m[0].startsWith('/')
+    const name = m[1]
+    const from = lt + 1 + m[0].length
+    const a = text.slice(from, Math.min(gt, from + MAX_TAG))
+    const selfClosing = text[gt - 1] === '/'
     if (name === 'testsuite') {
       if (closing) {
         stack.pop()
       } else if (!selfClosing) {
         const at = attrs(a)
-        const looksLikePath = at.name !== undefined && /[/.]/.test(at.name)
+        const parent = stack[stack.length - 1] as Suite | undefined
         const ts = Date.parse(at.timestamp ?? '')
         stack.push({
-          file: at.file ?? (looksLikePath ? at.name : undefined),
-          at: Number.isNaN(ts) ? 0 : ts
+          file: at.file ?? (at.name !== undefined && TEST_FILE.test(at.name) ? at.name : parent?.file),
+          at: Number.isNaN(ts) ? (parent?.at ?? 0) : ts
         })
       }
     } else if (name === 'testcase') {
@@ -150,16 +179,19 @@ function parseJunit(text: string, root: string): TestRun[] {
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g')
 
 const LINE_RULES: Array<[RegExp, boolean]> = [
-  [/^\s*[✓✔]\s+(\S+)\s+\(\d+ tests?/, true],
-  [/^\s*❯\s+(\S+)\s+\(.*\d+ failed/, false],
-  [/^\s*[×✗]\s+(\S+)/, false],
+  // vitest per-file lines, with the optional "|project|" prefix
+  [/^\s*[✓✔]\s+(?:\|[^|]{0,100}\|\s+)?(\S+)\s+\(\d+ tests?/, true],
+  [/^\s*❯\s+(?:\|[^|]{0,100}\|\s+)?(\S+)\s+\([^)]{0,200}\d+ failed/, false],
+  [/^\s*[×✗]\s+(?:\|[^|]{0,100}\|\s+)?(\S+)/, false],
   [/^\s*PASS\s+(\S+)/, true],
   [/^\s*FAIL\s+(\S+)/, false]
 ]
+const MAX_LINE = 2000
+const OUTPUT_KEYS = new Set(['output', 'stdout', 'aggregated_output'])
 
 function scanText(text: string, at: number, root: string, out: TestRun[]): void {
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(ANSI, '')
+  for (const raw of text.split('\n')) {
+    const line = raw.slice(0, MAX_LINE).replace(ANSI, '')
     for (const [re, passed] of LINE_RULES) {
       const m = re.exec(line)
       if (m) {
@@ -170,13 +202,19 @@ function scanText(text: string, at: number, root: string, out: TestRun[]): void 
   }
 }
 
-function walk(v: unknown, at: number, root: string, out: TestRun[]): void {
+/**
+ * Only tool output is scanned: strings inside `tool_result` blocks (Claude) and
+ * string values of `output`/`stdout`/`aggregated_output` keys (codex/gemini).
+ * Assistant text and tool_use input are never read.
+ */
+function walk(v: unknown, at: number, root: string, out: TestRun[], on: boolean): void {
   if (typeof v === 'string') {
-    scanText(v, at, root, out)
+    if (on) scanText(v, at, root, out)
   } else if (Array.isArray(v)) {
-    for (const x of v) walk(x, at, root, out)
+    for (const x of v) walk(x, at, root, out, on)
   } else if (v !== null && typeof v === 'object') {
-    for (const x of Object.values(v)) walk(x, at, root, out)
+    const here = on || (v as { type?: unknown }).type === 'tool_result'
+    for (const [k, x] of Object.entries(v)) walk(x, at, root, out, here || (typeof x === 'string' && OUTPUT_KEYS.has(k)))
   }
 }
 
@@ -191,7 +229,7 @@ export function parseTranscriptTestRuns(jsonl: string, root: string): TestRun[] 
     }
     const stamp = (obj as { timestamp?: unknown } | null)?.timestamp
     const parsed = typeof stamp === 'string' ? Date.parse(stamp) : NaN
-    walk(obj, Number.isNaN(parsed) ? 0 : parsed, root, out)
+    walk(obj, Number.isNaN(parsed) ? 0 : parsed, root, out, false)
   }
   return out
 }
@@ -199,7 +237,13 @@ export function parseTranscriptTestRuns(jsonl: string, root: string): TestRun[] 
 // ---- reading --------------------------------------------------------------
 
 export async function readTestResults(root: string, deps: TestResultDeps): Promise<TestRun[]> {
-  const paths = (await deps.glob(root, PATTERNS)).filter((p) => !slashes(p).split('/').includes('node_modules'))
+  let found: string[]
+  try {
+    found = await deps.glob(root, PATTERNS)
+  } catch {
+    found = []
+  }
+  const paths = found.filter((p) => !slashes(p).split('/').includes('node_modules'))
   const runs: TestRun[] = []
   for (const p of paths) {
     try {
@@ -213,8 +257,12 @@ export async function readTestResults(root: string, deps: TestResultDeps): Promi
       // unreadable or malformed: skipped silently
     }
   }
-  const extra = await (deps.transcriptRuns?.() ?? Promise.resolve([] as TestRun[])).catch(() => [] as TestRun[])
-  return [...runs, ...extra]
+  try {
+    runs.push(...((await deps.transcriptRuns?.()) ?? []))
+  } catch {
+    // transcripts unavailable: no runs
+  }
+  return runs
 }
 
 // ---- status ---------------------------------------------------------------
