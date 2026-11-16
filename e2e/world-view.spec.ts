@@ -365,7 +365,8 @@ test.describe.serial('Lumopolis in the real app', () => {
         return line.includes(marker) ? line : (w.__termpolis_terminal_text?.() ?? '').replace(/\r?\n/g, '')
       }
       window.addEventListener('keydown', (e) => {
-        if (!/^[a-z]$/.test(e.key)) return
+        // Only plain letters are samples: Ctrl+U (the Linux/mac line clear) is e.key 'u' too.
+        if (!/^[a-z]$/.test(e.key) || e.ctrlKey || e.metaKey || e.altKey) return
         s.down.push(performance.now())
         s.echo.push(0)
         s.lineKeys += e.key
