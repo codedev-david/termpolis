@@ -193,6 +193,31 @@ describe('useWorldAsk', () => {
     expect(result.current.error).toBeNull()
   })
 
+  it('a root change cancels the in-flight ask and resets summary, answer, history and state', async () => {
+    const v = makeViewer()
+    const { result, rerender } = renderHook(({ root }) => useWorldAsk(v as never, root), { initialProps: { root: 'A' } })
+    await act(async () => { result.current.ask('one') })
+    expect(result.current.history).toHaveLength(1)
+    const d = deferred<Res>()
+    ask.mockImplementationOnce(() => d.promise)
+    act(() => { result.current.ask('two') })
+    const id = ask.mock.calls[1][0].askId
+    rerender({ root: 'B' })
+    expect(cancel).toHaveBeenCalledWith(id)
+    expect(result.current.state).toBe('idle')
+    expect(result.current.answer).toBeNull()
+    expect(result.current.history).toEqual([])
+    await act(async () => { d.resolve(okRes(id, 'stale')) })
+    expect(result.current.answer).toBeNull()
+    await act(async () => { result.current.ask('three') })
+    expect((ask.mock.calls[2][0] as AskRequest).summary).toBe('')
+    await act(async () => { result.current.retry() })
+    expect(ask.mock.calls[3][0].question).toBe('three')
+    rerender({ root: 'C' })
+    await act(async () => { result.current.retry() })
+    expect(ask).toHaveBeenCalledTimes(4)
+  })
+
   it('dismiss clears the answer and error and goes idle', async () => {
     const v = makeViewer()
     const { result } = renderHook(() => useWorldAsk(v as never, 'r'))

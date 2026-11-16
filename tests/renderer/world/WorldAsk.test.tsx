@@ -150,6 +150,26 @@ describe('WorldAsk', () => {
     expect(screen.getByText('The answer.')).toBeInTheDocument()
   })
 
+  it('a viewer whose play or apply rejects causes no unhandled rejection', async () => {
+    const seen: unknown[] = []
+    const onRej = (e: unknown) => { seen.push(e) }
+    process.on('unhandledRejection', onRej)
+    const v = makeViewer()
+    v.play.mockRejectedValue(new Error('play boom'))
+    v.apply.mockRejectedValue(new Error('apply boom'))
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'See [E1].', { cited: { E1: { kind: 'symbol', ref: 'b1' } } }))
+    render(<WorldAsk viewer={v as never} doc={minimal()} root="r" />)
+    await settle()
+    fireEvent.change(input(), { target: { value: 'q' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    fireEvent.click(screen.getByText('Show me again'))
+    fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
+    await settle()
+    process.off('unhandledRejection', onRej)
+    expect(seen).toEqual([])
+  })
+
   it('the error panel can be closed', async () => {
     const v = makeViewer()
     ask.mockResolvedValueOnce({ success: false, error: 'bridge down' })

@@ -98,5 +98,20 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string): UseWorldA
 
   useEffect(() => cancelCurrent, [cancelCurrent])
 
+  // A different project: drop the old project's question, answer and conversation.
+  const lastRoot = useRef(root)
+  useEffect(() => {
+    if (lastRoot.current === root) return
+    lastRoot.current = root
+    cancelCurrent()
+    summary.current = ''
+    lastQ.current = null
+    setAnswer(null)
+    setCited({})
+    setError(null)
+    setHistory([])
+    setState('idle')
+  }, [root, cancelCurrent])
+
   return { ask, cancel, retry, dismiss, state, answer, cited, error, history }
 }

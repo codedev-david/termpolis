@@ -68,8 +68,8 @@ export function WorldAsk({ viewer, doc, root, voice }: WorldAskProps): JSX.Eleme
           cited={cited}
           isPart={(id) => !!doc && (doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id))}
           onClose={() => { stopSpeech(); dismiss() }}
-          onReplay={() => { viewer?.cancelActions(); void viewer?.play(answer.actions) }}
-          onOpenPart={(id) => { void viewer?.apply({ type: 'openCard', id }) }}
+          onReplay={() => { viewer?.cancelActions(); viewer?.play(answer.actions)?.catch(() => undefined) }}
+          onOpenPart={(id) => { viewer?.apply({ type: 'openCard', id })?.catch(() => undefined) }}
         />
       )}
       {state === 'error' && (

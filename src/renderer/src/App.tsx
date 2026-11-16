@@ -17,7 +17,6 @@ const ContextPanel = lazy(() => import('./components/ContextPanel/ContextPanel')
 const Memory = lazy(() => import('./components/Memory/Memory').then(m => ({ default: m.Memory })))
 // Lumopolis (world view): its own chunk, so the engine and Three.js load only when it opens.
 const WorldView = lazy(() => import('./components/World').then(m => ({ default: m.WorldView })))
-import { WorldAsk } from './components/World/WorldAsk'
 const ActivityFeed = lazy(() => import('./components/ActivityFeed/ActivityFeed').then(m => ({ default: m.ActivityFeed })))
 const ContextPinsPanel = lazy(() => import('./components/ContextPins/ContextPinsPanel').then(m => ({ default: m.ContextPinsPanel })))
 const RedundancyPanel = lazy(() => import('./components/RedundancyPanel/RedundancyPanel').then(m => ({ default: m.RedundancyPanel })))
@@ -82,6 +81,7 @@ import { LimitBanners } from './components/Accounts/LimitBanners'
 import { SwarmRestartOffers } from './components/Accounts/SwarmRestartOffers'
 import { splitActivePane, exportActivePane, toggleRecordingActivePane } from './lib/paneCommands'
 import { useSwarmCompleteDialog } from './lib/swarmCompleteDialog'
+import { WorldAsk } from './components/World/WorldAsk'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
