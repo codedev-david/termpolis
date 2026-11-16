@@ -8,12 +8,16 @@
 //   world:ask      AskRequest → ok(AskResult)   (one question about the world, answered by the user's agent;
 //                  registered only when an asker is passed)
 //   world:ask-cancel { askId } → ok(true)
+//   world:design-draft  { description }          → ok(DesignDraftResult)   (a new design world, keyed design:<id>,
+//                                                    sketched by the user's agent; registered only when a designer is passed)
+//   world:design-refine { key, message, summary } → ok(DesignRefineResult)  (one conversational change to a design)
 //   world:progress / world:updated           (webContents.send, while a world compiles / after a
 //                                             watcher-driven recompile saved)
 // `ipc` and `win` are parameters, so this module never imports Electron and tests pass fakes.
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
-import type { AskRequest, AskResult } from '../../shared/world/types'
+import type { AskRequest, AskResult, DesignDraftResult, DesignRefineResult } from '../../shared/world/types'
+import { DesignFailure } from './designer'
 import type { WorldClient } from './worldClient'
 import type { WorldSettings, WorldSettingsStore } from './worldSettings'
 
@@ -65,13 +69,36 @@ const askRequestOf = (args: unknown): AskRequest | string => {
   return { askId: a.askId, root: a.root, question: a.question, selection: a.selection, cameraRegion: a.cameraRegion, summary: (a.summary as string | undefined) ?? '' }
 }
 
+export interface WorldDesigner {
+  draft(description: string): Promise<DesignDraftResult>
+  refine(key: string, message: string, summary: string): Promise<DesignRefineResult>
+}
+
+const MAX_DESIGN_TEXT = 4000
+export const DESIGN_FAILED = "Lumopolis couldn't work on that design. Try again."
+const textOf = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '' && v.length <= MAX_DESIGN_TEXT
+
+/** A checked refine request from the renderer's args, or the reason it is not one. */
+const refineRequestOf = (args: unknown): { key: string; message: string; summary: string } | string => {
+  if (!args || typeof args !== 'object') return 'design request required'
+  const a = args as Record<string, unknown>
+  if (typeof a.key !== 'string' || !a.key.startsWith('design:')) return 'design key required'
+  if (!textOf(a.message)) return 'message required (up to 4000 characters)'
+  if (a.summary !== undefined && typeof a.summary !== 'string') return 'summary must be a string'
+  return { key: a.key, message: a.message, summary: (a.summary as string | undefined) ?? '' }
+}
+
+/** The designer's own friendly failure as it is; anything else that escapes it is never shown raw. */
+const designErr = (e: unknown) => err(e instanceof DesignFailure ? e.message : DESIGN_FAILED)
+
 /** Registers the handlers and the push forwarding; returns a function that stops the forwarding. */
 export function registerWorldIpc(
   ipc: WorldIpcMain,
   client: WorldIpcClient,
   win: () => WorldIpcWindow | null | undefined,
   settings: WorldSettingsStore,
-  asker?: WorldAsker
+  asker?: WorldAsker,
+  designer?: WorldDesigner
 ): () => void {
   const handler =
     (run: (root: string) => Promise<unknown>) =>
@@ -126,6 +153,27 @@ export function registerWorldIpc(
       if (!nonEmpty(askId)) return err('askId required')
       asker.cancel(askId)
       return ok(true)
+    })
+  }
+
+  if (designer) {
+    ipc.handle('world:design-draft', async (_event: unknown, args?: unknown) => {
+      const description = args && typeof args === 'object' ? (args as { description?: unknown }).description : undefined
+      if (!textOf(description)) return err('description required (up to 4000 characters)')
+      try {
+        return ok(await designer.draft(description))
+      } catch (e) {
+        return designErr(e)
+      }
+    })
+    ipc.handle('world:design-refine', async (_event: unknown, args?: unknown) => {
+      const req = refineRequestOf(args)
+      if (typeof req === 'string') return err(req)
+      try {
+        return ok(await designer.refine(req.key, req.message, req.summary))
+      } catch (e) {
+        return designErr(e)
+      }
     })
   }
 

@@ -1276,6 +1276,10 @@ describe('preload — workflow orchestrator bridge', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:ask', req)
     await api.worldAskCancel('a1')
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:ask-cancel', { askId: 'a1' })
+    await api.worldDesignDraft('A shop')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:design-draft', { description: 'A shop' })
+    await api.worldDesignRefine('design:d1', 'Add a cache', 'Q: a')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:design-refine', { key: 'design:d1', message: 'Add a cache', summary: 'Q: a' })
   })
 
   it.each([

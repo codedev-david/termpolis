@@ -13,7 +13,7 @@ import type { SignInInput, SignInStartRequest, SignInState } from '../../../shar
 import type { LimitLook } from '../../../shared/accountLimits'
 import type { RouteDecision } from '../../../shared/taskRouter'
 import type { ModelCatalog } from '../lib/modelCatalog'
-import type { AskRequest, AskResult, WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../../shared/world/types'
+import type { AskRequest, AskResult, DesignDraftResult, DesignRefineResult, WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../../shared/world/types'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
 
@@ -700,6 +700,10 @@ export interface TermpolisAPI {
   worldAsk: (req: AskRequest) => Promise<IpcResponse<AskResult>>
   /** Lumopolis: cancel a running ask by its id. */
   worldAskCancel: (askId: string) => Promise<IpcResponse<boolean>>
+  /** Lumopolis: draft a new design world (a planned system, keyed design:<id>) from a description. */
+  worldDesignDraft: (description: string) => Promise<IpcResponse<DesignDraftResult>>
+  /** Lumopolis: one conversational change to a design; `summary` is the running summary the last call returned. */
+  worldDesignRefine: (key: string, message: string, summary: string) => Promise<IpcResponse<DesignRefineResult>>
   /** Lumopolis settings: whether the world compiler may ask Claude's cheapest model (Haiku) to describe parts. */
   worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */

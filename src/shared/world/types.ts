@@ -53,3 +53,9 @@ export interface AskRequest { askId: string; root: string; question: string; sel
 export type AskResult =
   | { askId: string; ok: true; answer: import('./answerProtocol').WorldAnswer; summary: string; cited: Record<string, Evidence> }
   | { askId: string; ok: false; error: string; cancelled?: boolean }
+
+// ---- Lumopolis design (renderer <-> main): a planned system drafted and refined by conversation ----
+/** A new design world, keyed design:<id>, and the agent's plain-language note about it. */
+export interface DesignDraftResult { key: string; doc: WorldDoc; text: string }
+/** The design after one refine: changes applied and skipped (malformed ones count as skipped), plus the running summary. */
+export interface DesignRefineResult { doc: WorldDoc; text: string; applied: number; skipped: number; summary: string }

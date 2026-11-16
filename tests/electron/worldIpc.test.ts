@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { registerWorldIpc, type WorldAsker, type WorldIpcClient } from '../../src/main/world/ipc'
+import { DESIGN_FAILED, registerWorldIpc, type WorldAsker, type WorldDesigner, type WorldIpcClient } from '../../src/main/world/ipc'
+import { DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, DesignFailure } from '../../src/main/world/designer'
 import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../src/shared/world/types'
 import type { WorldSettings, WorldSettingsStore } from '../../src/main/world/worldSettings'
 
@@ -18,7 +19,7 @@ function fakeSettings(): WorldSettingsStore & { get: ReturnType<typeof vi.fn>; s
   }
 }
 
-function setup(win: () => Win | null | undefined = () => null, settings = fakeSettings(), asker?: WorldAsker) {
+function setup(win: () => Win | null | undefined = () => null, settings = fakeSettings(), asker?: WorldAsker, designer?: WorldDesigner) {
   const handlers = new Map<string, (e: unknown, args?: unknown) => unknown>()
   const ipc = {
     handle: vi.fn((ch: string, fn: (e: unknown, args?: unknown) => unknown) => {
@@ -49,7 +50,7 @@ function setup(win: () => Win | null | undefined = () => null, settings = fakeSe
       }
     }
   }
-  const off = registerWorldIpc(ipc, client, win, settings, asker)
+  const off = registerWorldIpc(ipc, client, win, settings, asker, designer)
   const invoke = (ch: string, args?: unknown) => (handlers.get(ch) as (e: unknown, a?: unknown) => Promise<unknown>)({}, args)
   return { handlers, client, off, invoke, progress, updated, settings }
 }
@@ -239,5 +240,74 @@ describe('registerWorldIpc ask handlers', () => {
     expect(await s.invoke('world:ask-cancel', { askId: '' })).toEqual({ success: false, error: 'askId required' })
     expect(await s.invoke('world:ask-cancel', 'a1')).toEqual({ success: false, error: 'askId required' })
     expect(await s.invoke('world:ask-cancel')).toEqual({ success: false, error: 'askId required' })
+  })
+})
+
+describe('registerWorldIpc design handlers', () => {
+  const draftResult = { key: 'design:d1', doc: DOC, text: 'A plan.' }
+  const refineResult = { doc: DOC, text: 'Done.', applied: 1, skipped: 0, summary: 'Q: x, A: Done.' }
+  const fakeDesigner = () =>
+    ({ draft: vi.fn(async () => draftResult), refine: vi.fn(async () => refineResult) }) as WorldDesigner & {
+      draft: ReturnType<typeof vi.fn>
+      refine: ReturnType<typeof vi.fn>
+    }
+  const withDesigner = (d: WorldDesigner) => setup(undefined, undefined, undefined, d)
+
+  it('registers the design handlers only when a designer is passed, after the rest', () => {
+    expect([...setup().handlers.keys()]).not.toContain('world:design-draft')
+    expect([...withDesigner(fakeDesigner()).handlers.keys()].slice(-2)).toEqual(['world:design-draft', 'world:design-refine'])
+  })
+
+  it('world:design-draft passes the description through', async () => {
+    const d = fakeDesigner()
+    expect(await withDesigner(d).invoke('world:design-draft', { description: 'A shop' })).toEqual({ success: true, data: draftResult })
+    expect(d.draft).toHaveBeenCalledWith('A shop')
+  })
+
+  it.each([undefined, 'A shop', {}, { description: '' }, { description: '   ' }, { description: 7 }, { description: 'x'.repeat(4001) }])(
+    'world:design-draft rejects %j',
+    async (args) => {
+      const d = fakeDesigner()
+      expect(await withDesigner(d).invoke('world:design-draft', args)).toEqual({ success: false, error: 'description required (up to 4000 characters)' })
+      expect(d.draft).not.toHaveBeenCalled()
+    }
+  )
+
+  it('world:design-refine passes key, message and summary through; summary defaults to empty', async () => {
+    const d = fakeDesigner()
+    const s = withDesigner(d)
+    expect(await s.invoke('world:design-refine', { key: 'design:d1', message: 'Add a cache', summary: 'Q: a' })).toEqual({ success: true, data: refineResult })
+    expect(d.refine).toHaveBeenCalledWith('design:d1', 'Add a cache', 'Q: a')
+    await s.invoke('world:design-refine', { key: 'design:d1', message: 'x'.repeat(4000) })
+    expect(d.refine).toHaveBeenLastCalledWith('design:d1', 'x'.repeat(4000), '')
+  })
+
+  it.each([
+    [undefined, 'design request required'],
+    ['design:d1', 'design request required'],
+    [{ message: 'm' }, 'design key required'],
+    [{ key: 'C:/repo', message: 'm' }, 'design key required'],
+    [{ key: 7, message: 'm' }, 'design key required'],
+    [{ key: 'design:d1' }, 'message required (up to 4000 characters)'],
+    [{ key: 'design:d1', message: ' ' }, 'message required (up to 4000 characters)'],
+    [{ key: 'design:d1', message: 'x'.repeat(4001) }, 'message required (up to 4000 characters)'],
+    [{ key: 'design:d1', message: 'm', summary: 3 }, 'summary must be a string']
+  ])('world:design-refine rejects %j', async (args, error) => {
+    const d = fakeDesigner()
+    expect(await withDesigner(d).invoke('world:design-refine', args)).toEqual({ success: false, error })
+    expect(d.refine).not.toHaveBeenCalled()
+  })
+
+  it('shows a designer failure as it is and hides anything else', async () => {
+    const d = fakeDesigner()
+    const s = withDesigner(d)
+    d.draft.mockRejectedValueOnce(new DesignFailure(DESIGN_NOT_FOUND))
+    expect(await s.invoke('world:design-draft', { description: 'A shop' })).toEqual({ success: false, error: DESIGN_NOT_FOUND })
+    d.draft.mockRejectedValueOnce(new Error('spawn ENOENT C:/Users/me/tool.exe'))
+    expect(await s.invoke('world:design-draft', { description: 'A shop' })).toEqual({ success: false, error: DESIGN_FAILED })
+    d.refine.mockRejectedValueOnce(new DesignFailure(DESIGN_SAVE_FAILED))
+    expect(await s.invoke('world:design-refine', { key: 'design:d1', message: 'm' })).toEqual({ success: false, error: DESIGN_SAVE_FAILED })
+    d.refine.mockRejectedValueOnce('odd')
+    expect(await s.invoke('world:design-refine', { key: 'design:d1', message: 'm' })).toEqual({ success: false, error: DESIGN_FAILED })
   })
 })

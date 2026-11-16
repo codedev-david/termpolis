@@ -331,6 +331,9 @@ import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
 import { registerWorldIpc } from './world/ipc'
 import { createAskRunner } from './world/askRunner'
+import { createDesigner } from './world/designer'
+import { createSourceRegistry } from './world/sources'
+import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
 import { cheapModelFor, makeWorldLlm } from './world/label'
@@ -2669,10 +2672,24 @@ const worldClient = createWorldClient(undefined, {
 })
 // Ask: no primer and noRemember, so a question about the world never reads or writes the brain. deliver is
 // resolved at call time because deliverSecondOpinion is declared further down this file.
+// Design worlds (keyed design:<id>): main's own store and the one source registry; the agent runs read-only
+// in an empty folder per design under <userData>/world/designs, with no primer and noRemember like ask.
+const worldUserData = app.getPath('userData')
+const worldSources = createSourceRegistry(worldUserData, {
+  exists: (p) => fsPromises.access(p).then(() => true, () => false),
+  now: () => Date.now(),
+})
 registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAskRunner({
   exec: runHeadless,
   execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
   client: worldClient,
+}), createDesigner({
+  exec: runHeadless,
+  execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
+  store: createWorldStore(worldUserData),
+  registry: worldSources,
+  designsDir: join(worldUserData, 'world', 'designs'),
+  newId: () => randomUUID(),
 }))
 /** An agent's working directory → the project root Lumopolis keys its world by: the git root of the
  *  folder, or the folder itself outside a repository. The same rule the Lumopolis pane applies

@@ -4096,6 +4096,25 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(await invoke('world:ask-cancel', { askId: 'a1' })).toEqual({ success: true, data: true })
   })
 
+  it('world:design-draft / world:design-refine run the agent read-only in a folder per design under userData', async () => {
+    const designs = require('path').join(USER_DATA, 'world', 'designs')
+    world.runHeadless.mockResolvedValueOnce({ ok: true, output: 'No sketch.' })
+    expect(await invoke('world:design-draft', { description: 'A shop' })).toEqual({ success: false, error: "Your agent didn't sketch a design. Try describing it another way." })
+    const [req, deps] = world.runHeadless.mock.calls.at(-1) as [any, any]
+    try {
+      expect(req).toMatchObject({ write: false, noRemember: true, noPrimer: true, timeoutMs: 90_000 })
+      expect(require('path').dirname(req.cwd)).toBe(designs)
+      expect(require('path').basename(req.cwd)).toMatch(/^[0-9a-f-]{36}$/)
+      expect(req.agent).toBeUndefined()
+      expect(deps.deliver).toEqual(expect.any(Function))
+    } finally {
+      await require('fs/promises').rm(req.cwd, { recursive: true, force: true })
+    }
+    const calls = world.runHeadless.mock.calls.length
+    expect(await invoke('world:design-refine', { key: 'design:none-here', message: 'Add a cache' })).toEqual({ success: false, error: "Lumopolis couldn't find that design." })
+    expect(world.runHeadless.mock.calls.length).toBe(calls)
+  })
+
   it('registers the Lumopolis settings pair over the world settings store', async () => {
     expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true, worldSpeakAnswers: false } })
     expect(await invoke('world:settings-set', 'nope')).toEqual({ success: false, error: 'settings patch required' })
