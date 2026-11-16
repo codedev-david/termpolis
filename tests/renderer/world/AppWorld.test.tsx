@@ -37,11 +37,21 @@ vi.mock('../../../src/renderer/src/components/ConsentReview/ConsentReviewModal',
 }))
 
 const askLink = vi.hoisted(() => ({ onEscape: () => undefined, setBusy: () => undefined }))
+const launched = vi.hoisted(() => ({ fn: null as any }))
+vi.mock('../../../src/renderer/src/lib/aiProfiles', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../../src/renderer/src/lib/aiProfiles')>()
+  launched.fn = vi.fn(async () => undefined)
+  return { ...real, launchAgentProfile: launched.fn }
+})
+type BuildItProp = { agents: { id: string; name: string }[]; defaultAgent?: string; launch: (res: unknown, agentId: string) => void }
+const BUILT = { root: '/build/pets', key: 'design:d1', title: 'Pets', prompt: 'Build the app.' }
 vi.mock('../../../src/renderer/src/components/World', () => ({
   // The real pane resolves `root` to its git root; this stand-in says the cwd's root is /repos/app.
-  WorldView: ({ root, onClose, askSlot }: { root: string; onClose: () => void; askSlot?: (...a: unknown[]) => React.ReactNode }) => (
-    <div role="dialog" aria-label="Lumopolis" data-root={root}>
+  WorldView: ({ root, onClose, askSlot, buildIt }: { root: string; onClose: () => void; askSlot?: (...a: unknown[]) => React.ReactNode; buildIt?: BuildItProp }) => (
+    <div role="dialog" aria-label="Lumopolis" data-root={root} data-agents={buildIt?.agents.map((a) => a.id).join(',')} data-default={buildIt?.defaultAgent}>
       <button onClick={onClose}>Close Lumopolis</button>
+      <button onClick={() => buildIt?.launch(BUILT, 'claude')}>Build with claude</button>
+      <button onClick={() => buildIt?.launch(BUILT, 'nobody')}>Build with nobody</button>
       {askSlot?.(null, null, root ? '/repos/app' : null, askLink)}
     </div>
   ),
@@ -156,5 +166,24 @@ describe('App Lumopolis wiring', () => {
     fireEvent.keyDown(window, { key: 'R', ctrlKey: true, shiftKey: true })
     await screen.findByRole('dialog', { name: 'Lumopolis' })
     expect(screen.getByTestId('world-ask-stub')).toHaveAttribute('data-root', '')
+  })
+
+  it('Build it offers the Claude Code profiles and launches the chosen one in the linked folder with the build prompt', async () => {
+    render(<App />)
+    await settle()
+    fireEvent.keyDown(window, { key: 'R', ctrlKey: true, shiftKey: true })
+    const pane = await screen.findByRole('dialog', { name: 'Lumopolis' })
+    expect(pane.getAttribute('data-agents')?.split(',')).toContain('claude')
+    expect(pane.getAttribute('data-agents')).not.toContain('codex')
+    expect(pane).toHaveAttribute('data-default', 'claude')
+    fireEvent.click(screen.getByRole('button', { name: 'Build with nobody' }))
+    expect(launched.fn).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Build with claude' }))
+    expect(launched.fn).toHaveBeenCalledTimes(1)
+    const [profile, deps] = launched.fn.mock.calls[0]
+    expect(profile).toMatchObject({ id: 'claude', command: 'claude' })
+    expect(deps).toMatchObject({ cwd: '/build/pets', prompt: 'Build the app.' })
+    expect(typeof deps.addTerminal).toBe('function')
+    expect(typeof deps.setLaunchingAgent).toBe('function')
   })
 })

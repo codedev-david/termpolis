@@ -14,8 +14,15 @@
 // re-index per debounce window, never two at once (the re-index is async and the gate waits for it),
 // and a flood (> 200 events/s for 3 s) stops re-indexing, keeps a dirty flag and backs off 4 s .. 60 s
 // before running once.
+//
+// NEW DIRECTORIES. The scoped watch subscribes a directory a moment after it appears, so a file written
+// in that instant (`mkdir -p src/payments` then `src/payments/index.ts`, what an agent does) raises no
+// event of its own: the directory's `rename` is all that is heard. Such a name is listed when the
+// re-index runs (`listSources`, async, bounded), and the source files already in it join the run.
 
-import { createIgnoreFilter, createRunGate } from './watchGuard'
+import { promises as fsp, type Dirent } from 'fs'
+import { join } from 'path'
+import { createIgnoreFilter, createRunGate, makeNameRule } from './watchGuard'
 import { scopedRecursiveWatch, CODE_SKIP_NAMES, type ScopedFsWatchFn } from './scopedWatch'
 
 export interface RepoWatcher {
@@ -43,6 +50,9 @@ export interface WatchDeps {
   log?: (msg: string) => void
   /** Async: is this directory a nested repository (own .git) or a link? Defaults to lstat + stat. */
   probeNested?: (absDir: string) => Promise<boolean>
+  /** Async: the source files (relative to `absDir`, slash-separated) already inside a name that just
+   *  appeared; rejects when it is not a directory. Without it, a new directory is not listed. */
+  listSources?: (absDir: string) => Promise<string[]>
 }
 
 // Names that are not source of THIS repo beyond the shared list (watchGuard.ts): vendored Pods and the
@@ -54,13 +64,83 @@ const SRC_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|cs|csx|rb|swift|tf|bicep
 /** More distinct changed files than this in one window means a mass change (a checkout, a codegen):
  *  stop remembering names and re-sweep instead. Bounds the memory a storm can cost. */
 const MAX_PENDING_FILES = 2048
+/** Names that appeared (maybe directories) remembered per window; more are not listed. */
+const MAX_APPEARED = 256
+/** Directories one listing reads at most. */
+const MAX_LIST_DIRS = 4096
+const skippedDir = makeNameRule(CODE_SKIP_NAMES)
+
+/** The source files below `dir` (relative, slash-separated), at most `limit`, never descending into an
+ *  ignored directory (node_modules, .git, dist ...). Rejects when `dir` itself cannot be read (not a
+ *  directory); a subdirectory that cannot be read is skipped. Async readdir only. */
+export async function listSourceFiles(
+  dir: string,
+  limit = MAX_PENDING_FILES + 1,
+  readDir: (p: string) => Promise<Dirent[]> = (p) => fsp.readdir(p, { withFileTypes: true }),
+): Promise<string[]> {
+  const out: string[] = []
+  const queue: string[] = ['']
+  let visited = 0
+  while (queue.length > 0 && out.length < limit && visited < MAX_LIST_DIRS) {
+    const rel = queue.shift() as string
+    visited++
+    let entries: Dirent[]
+    try {
+      entries = await readDir(rel ? join(dir, rel) : dir)
+    } catch (e) {
+      if (!rel) throw e
+      continue
+    }
+    for (const e of entries) {
+      const r = rel ? `${rel}/${e.name}` : e.name
+      if (e.isDirectory()) {
+        if (!skippedDir(e.name)) queue.push(r)
+      } else if (e.isFile() && SRC_EXT.test(e.name)) {
+        out.push(r)
+        if (out.length >= limit) break
+      }
+    }
+  }
+  return out
+}
 
 /** Watch `root` and re-index (debounced) whenever a source file changes. Returns a disposer. */
 export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
   const debounceMs = deps.debounceMs ?? 2000
   let handle: WatchHandle | null = null
   const changed = new Set<string>() // source files touched during the current debounce window
+  const appeared = new Set<string>() // non-source names renamed in (maybe new directories), to list
   let overflowed = false
+  let closed = false
+  const reindex = (files: string[]): unknown => {
+    try {
+      return deps.reindex(root, files) // incremental: re-index only the files that changed
+    } catch {
+      return undefined /* best effort — a failed re-index leaves the last good graph in place */
+    }
+  }
+  /** The run once the appeared names are listed: what they hold joins the named files. */
+  const listThenReindex = async (named: string[], names: string[], list: (absDir: string) => Promise<string[]>): Promise<unknown> => {
+    const found = new Set(named)
+    let mass = false
+    for (const name of names) {
+      let inside: string[]
+      try {
+        inside = await list(join(root, name))
+      } catch {
+        continue // not a directory (or gone): nothing to add
+      }
+      for (const f of inside) {
+        const rel = join(name, f)
+        if (!SRC_EXT.test(f) || filter.shouldIgnore(rel, 'rename')) continue
+        found.add(rel)
+        if (found.size > MAX_PENDING_FILES) { mass = true; break }
+      }
+      if (mass) break
+    }
+    if (closed || (!mass && found.size === 0)) return undefined
+    return reindex(mass ? [] : [...found])
+  }
   const filter = createIgnoreFilter({ root, names: EXTRA_IGNORED, probeNested: deps.probeNested })
   const gate = createRunGate({
     mode: 'trailing',
@@ -72,13 +152,12 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
     log: deps.log,
     run: () => {
       const files = overflowed ? [] : [...changed]
+      const names = overflowed ? [] : [...appeared]
       changed.clear()
+      appeared.clear()
       overflowed = false
-      try {
-        return deps.reindex(root, files) // incremental: re-index only the files that changed
-      } catch {
-        return undefined /* best effort — a failed re-index leaves the last good graph in place */
-      }
+      if (names.length > 0 && deps.listSources) return listThenReindex(files, names, deps.listSources)
+      return reindex(files)
     },
   })
   try {
@@ -93,7 +172,15 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
       if (!filename) return
       const name = String(filename)
       // The filter first, on EVERY event: a `.git` event below the root is how it learns a nested repo.
-      if (filter.shouldIgnore(name, event) || !SRC_EXT.test(name)) return // ignore noise + non-source churn
+      if (filter.shouldIgnore(name, event)) return // ignore noise
+      if (!SRC_EXT.test(name)) {
+        // Non-source churn, except a name renamed in: maybe a new directory with files already in it.
+        if (event === 'rename' && deps.listSources && appeared.size < MAX_APPEARED) {
+          appeared.add(name)
+          gate.note()
+        }
+        return
+      }
       if (changed.size < MAX_PENDING_FILES) changed.add(name)
       else overflowed = true
       gate.note()
@@ -103,9 +190,11 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
   }
   return {
     close: () => {
+      closed = true
       gate.dispose()
       filter.close()
       changed.clear()
+      appeared.clear()
       try {
         handle?.close()
       } catch {
@@ -175,5 +264,6 @@ export function fsBackedWatchDeps(
     // console.warn reaches the in-app log (appLog.captureConsole), which is where a flood belongs.
     log: (msg) => console.warn(msg),
     probeNested,
+    listSources: (absDir) => listSourceFiles(absDir),
   }
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
-import type { AskRequest, AskResult, WorldDoc, WorldUpdatedEvent } from '../../../src/shared/world/types'
+import type { AskRequest, AskResult, WorldDoc, WorldEntry, WorldUpdatedEvent } from '../../../src/shared/world/types'
 import type { WorldViewerOptions } from '../../../src/renderer/src/world/engine'
 import { minimal } from './helpers'
 
@@ -54,6 +54,7 @@ function bridge(over: Record<string, unknown> = {}) {
   const updated = new Set<(e: WorldUpdatedEvent) => void>()
   const api = {
     gitFindRoot: vi.fn(async (cwd: string) => ok<string | null>(cwd)),
+    worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([])),
     worldGet: vi.fn(async (_root: string): Promise<Res<WorldDoc | null>> => ok(minimal())),
     worldCompile: vi.fn(async (): Promise<Res<WorldDoc>> => ok(minimal())),
     worldRelayout: vi.fn(async (): Promise<Res<WorldDoc>> => ok(minimal())),

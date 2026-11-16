@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, lazy, Suspense } from 'react'
+import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { TabView } from './components/TabView/TabView'
 import { SplitView } from './components/SplitView/SplitView'
@@ -68,7 +68,7 @@ import * as efficiencyLib from './lib/efficiencyAnalyzer'
 import { requestSettingsTab } from './lib/settingsNav'
 import { watchAccounts } from './lib/accountsState'
 import { hasManyAccounts, terminalAgent } from './lib/accountSwitchFlow'
-import { agentOfName, canSwitchAccount } from './lib/accountsView'
+import { agentOfCommand, agentOfName, canSwitchAccount } from './lib/accountsView'
 import { launchTerminalArgs } from './lib/accountLaunch'
 import { SignInSheet } from './components/Accounts/SignInSheet'
 import { LaunchAskSheet } from './components/Accounts/LaunchAskSheet'
@@ -82,6 +82,7 @@ import { SwarmRestartOffers } from './components/Accounts/SwarmRestartOffers'
 import { splitActivePane, exportActivePane, toggleRecordingActivePane } from './lib/paneCommands'
 import { useSwarmCompleteDialog } from './lib/swarmCompleteDialog'
 import { WorldAsk } from './components/World/WorldAsk'
+import type { BuildItResult } from '../../shared/world/types'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
@@ -323,6 +324,29 @@ export default function App() {
       saveTimerRef.current = null
     }
   }, [terminals, workspaces, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, agentRatingOverrides, allowAppMouseControl])
+
+  // Lumopolis Build it: the agents that take a first prompt on launch (Claude Code's profiles), and
+  // the launch itself, through the same path as the sidebar's (so the launch flags and the account
+  // apply), in the folder the design was linked to, with the build prompt as the first message.
+  const worldBuildIt = useMemo(() => {
+    const profiles = [...DEFAULT_AI_PROFILES, ...aiProfiles].filter((p) => agentOfCommand(p.command) === 'claude')
+    return {
+      agents: profiles.map((p) => ({ id: p.id, name: p.name })),
+      defaultAgent: profiles[0]?.id,
+      launch: (res: BuildItResult, agentId: string) => {
+        const profile = profiles.find((p) => p.id === agentId)
+        if (!profile) return
+        const st = useTerminalStore.getState()
+        void launchAgentProfile(profile, {
+          availableShells: availableShellsRef.current,
+          addTerminal: st.addTerminal,
+          setLaunchingAgent: st.setLaunchingAgent,
+          cwd: res.root,
+          prompt: res.prompt,
+        })
+      },
+    }
+  }, [aiProfiles])
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -1208,6 +1232,7 @@ export default function App() {
               root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
               onClose={() => setShowWorld(false)}
               askSlot={(v, d, r, link) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} />}
+              buildIt={worldBuildIt}
             />
           )}
         </Suspense>

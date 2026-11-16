@@ -1,7 +1,7 @@
-// What the Lumopolis pane shows while there is no world to draw: no project, opening, mapping
-// (with the compile's progress), or a failure the user can retry.
+// What the Lumopolis pane shows while a world is not drawn yet: opening, mapping (with the
+// compile's progress), or a failure the user can retry. With no world open the pane shows the home.
 
-export type WorldEmptyMode = 'noRoot' | 'loading' | 'mapping' | 'error'
+export type WorldEmptyMode = 'loading' | 'mapping' | 'error'
 
 export interface WorldEmptyStateProps {
   mode: WorldEmptyMode
@@ -18,11 +18,6 @@ export function WorldEmptyState({ mode, progress, error, onRetry }: WorldEmptySt
     <div className="absolute inset-0 flex items-center justify-center p-6" data-testid="world-empty">
       <div className="max-w-md text-center flex flex-col items-center gap-3 text-[#cccccc]">
         <i className="fa-solid fa-earth-americas text-3xl text-[#4fc1ff]" aria-hidden="true" />
-        {mode === 'noRoot' && (
-          <p className="text-sm" data-testid="world-no-root">
-            Open a terminal in your project folder to see its Lumopolis map.
-          </p>
-        )}
         {mode === 'loading' && <p className="text-sm" data-testid="world-loading">Opening Lumopolis&hellip;</p>}
         {mode === 'mapping' && <MappingProgress progress={progress ?? null} />}
         {mode === 'error' && (

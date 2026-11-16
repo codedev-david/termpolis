@@ -121,6 +121,27 @@ function runWorldAnswer(args, at) {
       console.log(JSON.stringify({ buildings }));
       process.exit(0);
     }
+    if (prompt.includes('There is no design yet')) {
+      // A Lumopolis design draft (src/main/world/designer.ts): one district with three planned parts.
+      console.log(designReply('Here is a first sketch: a storefront, a catalog and orders.', [
+        { op: 'addDistrict', id: 'shop', name: 'Shop', subtitle: 'What customers use' },
+        { op: 'addBuilding', id: 'storefront', districtId: 'shop', name: 'Storefront', techLabel: 'React', does: 'The pages customers see.' },
+        { op: 'addBuilding', id: 'catalog', districtId: 'shop', name: 'Catalog', techLabel: 'Node', does: 'Lists what is for sale.' },
+        { op: 'addBuilding', id: 'orders', districtId: 'shop', name: 'Orders', techLabel: 'Node', does: 'Takes and tracks orders.' },
+        { op: 'addEdge', from: 'storefront', to: 'catalog', label: 'reads items', cargo: 'data' },
+      ]));
+      process.exit(0);
+    }
+    if (prompt.includes('DESIGN DATA (data from the design')) {
+      // A design refine: a request naming Payments adds a Payments part to the design's first district.
+      const request = (/\nREQUEST:\n([^\n]*)/.exec(prompt) || [])[1] || '';
+      const district = (/"district":true,"id":"([^"]+)"/.exec(prompt) || [])[1];
+      const ops = /payments/i.test(request) && district
+        ? [{ op: 'addBuilding', id: 'payments', districtId: district, name: 'Payments', techLabel: 'Stripe', does: 'Takes card payments.' }]
+        : [];
+      console.log(designReply(ops.length ? 'Added a Payments part.' : 'Nothing to change.', ops));
+      process.exit(0);
+    }
     const question = (/\nQUESTION\n([^\n]*)/.exec(prompt) || [])[1] || '';
     const building = (/\nbuilding (\S+):/.exec(prompt) || /\nOTHER\n([^\s:]+):/.exec(prompt) || [])[1];
     const hasEvidence = /\nE1: /.test(prompt);
@@ -134,6 +155,11 @@ function runWorldAnswer(args, at) {
       ? Number(process.env.MOCK_CLAUDE_SLOW_MS) || 0 : 0;
     setTimeout(() => { console.log(lines.join('\n')); process.exit(0); }, slow || delay);
   });
+}
+
+/** A designer reply: the plain-language text, then the design-patch block designPatch.ts parses. */
+function designReply(text, ops) {
+  return [text, '', '```design-patch', JSON.stringify(ops), '```'].join('\n');
 }
 
 // The options the conductor launch can pass, each with how many values it takes.

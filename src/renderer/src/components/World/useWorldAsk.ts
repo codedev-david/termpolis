@@ -1,9 +1,12 @@
 // Lumopolis ask state: one question at a time about the project, answered by the user's own agent.
 // A newer question cancels the older one, and a late result for a cancelled ask is ignored.
 // The rolling `summary` (from main) is what carries the conversation from one question to the next.
+// Design mode (the key is design:<id>): each message is a change to the design, sent through
+// world:design-refine; the changed design goes back to the pane through `onDesign`, and the answer
+// is the designer's reply (no tour). A design needs no viewer: it can be changed from the 2D view.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { WorldAnswer } from '../../../../shared/world/answerProtocol'
-import type { Evidence, WorldAction } from '../../../../shared/world/types'
+import type { Evidence, WorldAction, WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
 
 export type AskState = 'idle' | 'thinking' | 'answered' | 'error'
@@ -28,15 +31,25 @@ export interface UseWorldAsk {
 /** Shown when the question could not even reach main (the bridge failed): never the raw error. */
 export const ASK_UNREACHABLE = "Lumopolis couldn't answer that question. Try again."
 
+/** Shown when a design change could not even reach main. */
+export const REFINE_UNREACHABLE = "Lumopolis couldn't change the design. Try again."
+
 const noop = (): void => undefined
 
-export function useWorldAsk(viewer: WorldViewer | null, root: string): UseWorldAsk {
+/** True for a design world's key. */
+export const isDesignKey = (key: string): boolean => key.startsWith('design:')
+
+export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?: (doc: WorldDoc) => void): UseWorldAsk {
   const [state, setState] = useState<AskState>('idle')
   const [answer, setAnswer] = useState<WorldAnswer | null>(null)
   const [cited, setCited] = useState<Record<string, Evidence>>({})
   const [error, setError] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
   const current = useRef<string | null>(null)
+  /** Stops the running question or design change in main (set with it). */
+  const stopCurrent = useRef<() => unknown>(noop)
+  const onDesignRef = useRef(onDesign)
+  onDesignRef.current = onDesign
   const counter = useRef(0)
   const summary = useRef('')
   const lastQ = useRef<string | null>(null)
@@ -46,7 +59,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string): UseWorldA
   const cancelCurrent = useCallback((): void => {
     const id = current.current
     current.current = null
-    if (id !== null) void Promise.resolve(window.termpolis.worldAskCancel(id)).catch(noop)
+    if (id !== null) void Promise.resolve(stopCurrent.current()).catch(noop)
   }, [])
 
   const playOn = useCallback((v: WorldViewer, actions: WorldAction[]): void => {
@@ -57,11 +70,13 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string): UseWorldA
 
   const ask = useCallback((raw: string): void => {
     const q = raw.trim()
-    if (q === '' || !viewer || !root) return
+    const design = isDesignKey(root)
+    if (q === '' || (!viewer && !design) || !root) return
     cancelCurrent()
-    viewer.cancelActions()
+    viewer?.cancelActions()
     const askId = `ask-${Date.now()}-${++counter.current}`
     current.current = askId
+    stopCurrent.current = design ? () => window.termpolis.worldDesignCancel(root) : () => window.termpolis.worldAskCancel(askId)
     lastQ.current = q
     setState('thinking')
     setError(null)
@@ -71,9 +86,26 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string): UseWorldA
       setError(message)
       setState('error')
     }
+    if (design) {
+      window.termpolis.worldDesignRefine(root, q, summary.current).then(
+        (res) => {
+          if (current.current !== askId) return
+          if (!res.success) return fail(res.error)
+          current.current = null
+          summary.current = res.data.summary
+          onDesignRef.current?.(res.data.doc)
+          setAnswer({ text: res.data.text, actions: [], evidence: [], dropped: 0 })
+          setCited({})
+          setState('answered')
+        },
+        () => fail(REFINE_UNREACHABLE),
+      )
+      return
+    }
+    const v = viewer as WorldViewer
     void (async () => {
       try {
-        const res = await window.termpolis.worldAsk({ askId, root, question: q, selection: viewer.getSelection(), cameraRegion: viewer.cameraRegion(), summary: summary.current })
+        const res = await window.termpolis.worldAsk({ askId, root, question: q, selection: v.getSelection(), cameraRegion: v.cameraRegion(), summary: summary.current })
         if (current.current !== askId) return
         if (!res.success) return fail(res.error)
         const r = res.data
@@ -86,7 +118,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string): UseWorldA
         setAnswer(r.answer)
         setCited(r.cited)
         setState('answered')
-        playOn(viewer, r.answer.actions)
+        playOn(v, r.answer.actions)
       } catch {
         fail(ASK_UNREACHABLE)
       }

@@ -1,4 +1,6 @@
-// The Lumopolis toolbar: layer toggles, theme, tours, reset, re-layout and close.
+// The Lumopolis toolbar: the world switcher, layer toggles, theme, tours, reset, re-layout, Build it
+// (design worlds) and close.
+import type { ReactNode } from 'react'
 import type { Tour } from '../../../../shared/world/types'
 import { THEMES } from '../../world/engine'
 import type { LayerState, ThemeName } from '../../world/engine'
@@ -15,6 +17,10 @@ export interface WorldToolbarProps {
   onRelayout: () => void
   relayoutDisabled: boolean
   onClose: () => void
+  /** The world switcher (WorldSwitcher), first after the name. */
+  switcher?: ReactNode
+  /** Set on a design world: the Build it button. */
+  onBuildIt?: () => void
 }
 
 const THEME_NAMES = Object.keys(THEMES) as ThemeName[]
@@ -45,6 +51,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         Lumopolis
         {props.projectName && <span className="text-xs font-normal text-[#9ca3af] truncate max-w-[16rem]" data-testid="world-project">{props.projectName}</span>}
       </span>
+      {props.switcher}
       {toggles.map((t) => (
         <button
           key={t.key}
@@ -80,6 +87,15 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         {props.tours.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
       </select>
       <div className="flex-1" />
+      {props.onBuildIt && (
+        <button
+          type="button"
+          data-testid="world-build-it-open"
+          className="text-xs px-2 py-1 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white inline-flex items-center gap-1.5"
+          onClick={props.onBuildIt}
+          title="Build this design in a folder with your agent"
+        ><i className="fa-solid fa-hammer" aria-hidden="true" />Build it</button>
+      )}
       <button type="button" className={`${btn} text-[#cccccc]`} data-testid="world-reset" onClick={props.onResetView} title="Back to the whole map (Esc)">
         Reset view
       </button>

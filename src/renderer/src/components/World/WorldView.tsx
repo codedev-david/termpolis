@@ -1,7 +1,10 @@
-// Lumopolis: the full-screen world view of a project. It resolves the project root (the git root
-// of the folder it is given, or that folder), asks main for the stored world, compiles one when
-// there is none (showing the compile's progress), and draws it with the engine's viewer. Without
-// WebGL it shows the engine's 2D list instead.
+// Lumopolis: the full-screen world view. It opens on the active terminal's project (the git root of
+// the folder it is given, or that folder), asks main for the stored world, compiles one when there
+// is none (showing the compile's progress), and draws it with the engine's viewer. Without WebGL it
+// shows the engine's 2D list instead. With no folder it shows the home (WorldHome); the toolbar's
+// switcher opens any recent world or the home (useOpenWorld). A design world (design:<id>) loads
+// through world:design-get and is drawn with the planned layer on; Build it (design worlds only)
+// links the design to a folder, opens the agent there and switches to that folder's world.
 //
 // Esc: one window listener in the capture phase, so it runs before the viewer's own container
 // handler and before App's shortcuts. It only acts when the key comes from inside the pane (or
@@ -19,7 +22,7 @@
 // without guessing at the 3D scene. Off in every normal run.
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
-import type { Tour, WorldDoc } from '../../../../shared/world/types'
+import type { BuildItResult, Tour, WorldDoc } from '../../../../shared/world/types'
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, renderFallback } from '../../world/engine'
 import type { LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
@@ -27,6 +30,12 @@ import { WorldToolbar } from './WorldToolbar'
 import { WorldCard } from './WorldCard'
 import { WorldEmptyState } from './WorldEmptyState'
 import { useFocusTrap } from '../../hooks/useFocusTrap'
+import { useOpenWorld } from './useOpenWorld'
+import { WorldHome } from './WorldHome'
+import { WorldSwitcher } from './WorldSwitcher'
+import { BuildItDialog } from './BuildItDialog'
+import type { BuildAgent } from './BuildItDialog'
+import type { OpenTarget } from './worldTargets'
 
 export interface WorldViewProps {
   /** A folder inside the project (the active terminal's cwd). Empty when there is none. */
@@ -34,10 +43,13 @@ export interface WorldViewProps {
   onClose: () => void
   /**
    * Plan 2's ask box: rendered at the bottom centre with the viewer (null without WebGL), the world,
-   * the project root the world was drawn for (the git root of `root`, null until it is known) and
-   * the link through which the box takes Esc first and holds newer worlds while it answers.
+   * the world's key (the project root it was drawn for, or design:<id> for a design; null until it
+   * is known) and the link through which the box takes Esc first, holds newer worlds while it
+   * answers and hands back a changed design. Not shown on the home.
    */
-  askSlot?: (viewer: WorldViewer | null, doc: WorldDoc | null, root: string | null, link: WorldAskLink) => ReactNode
+  askSlot?: (viewer: WorldViewer | null, doc: WorldDoc | null, worldKey: string | null, link: WorldAskLink) => ReactNode
+  /** Build it on design worlds: the agents it can start, and how App opens the agent terminal. */
+  buildIt?: { agents: BuildAgent[]; defaultAgent?: string; launch: (res: BuildItResult, agentId: string) => void }
 }
 
 /** How the ask box and the pane share Esc and world swaps. */
@@ -46,6 +58,8 @@ export interface WorldAskLink {
   onEscape(fn: (() => boolean) | null): void
   /** True while an answer is under way: a world update waits, so the answer's tour is not wiped. */
   setBusy(busy: boolean): void
+  /** A design changed by the box (design mode): the pane draws it, growing from the one it showed. */
+  setDoc(doc: WorldDoc): void
 }
 
 /** The e2e probe on window.__termpolis_world. */
@@ -59,7 +73,8 @@ const baseName = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).
 /** A building's or a connection's card, straight from the doc (the 2D view); null when the id names neither. */
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
-export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Element {
+export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): JSX.Element {
+  const { world, open, goHome, entries, refresh } = useOpenWorld(root)
   const [webgl] = useState(() => hasWebGL())
   const [viewer, setViewer] = useState<WorldViewer | null>(null)
   const [resolvedRoot, setResolvedRoot] = useState<string | null>(null)
@@ -74,12 +89,19 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
   const [confirmRelayout, setConfirmRelayout] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [building, setBuilding] = useState(false)
+  // The open world: a folder (its key is the resolved root) or a design.
+  const target = world.kind === 'root' ? world.root : ''
+  const follow = world.kind === 'root' && world.follow
+  const designKey = world.kind === 'design' ? world.key : null
+  // A root resolved for an earlier folder is never used for a design or the home.
+  const worldRoot = world.kind === 'root' ? resolvedRoot : null
 
   const dialogRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   // Latest values for the long-lived listeners (push events, Esc).
   const rootRef = useRef<string | null>(null)
-  rootRef.current = resolvedRoot
+  rootRef.current = worldRoot
   const docRef = useRef<WorldDoc | null>(null)
   docRef.current = doc
   /** True after an Esc reset with nothing done since: the next Esc closes. */
@@ -112,6 +134,11 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
       setError(null)
       setDoc(held)
     },
+    setDoc: (d) => {
+      if (!mountedRef.current) return
+      setError(null)
+      setDoc(d)
+    },
   }))
 
   // Keep the keyboard in the pane, and give the focus back when it closes.
@@ -120,20 +147,23 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
   // A terminal still dictating behind the pane would also type what is said to the Ask mic: stop it.
   useEffect(() => { window.dispatchEvent(new Event('termpolis:stopDictation')) }, [])
 
-  // The project root: the git root of the folder, or the folder itself outside a repository. A cd
-  // inside the same repository resolves to the same root, so nothing below runs again.
+  // The project root: for the active terminal's folder, its git root (or the folder itself outside a
+  // repository; a cd inside the same repository resolves to the same root, so nothing below runs
+  // again). A folder the user chose is used as it is: that is the world they asked for.
   useEffect(() => {
-    if (!root) { setResolvedRoot(null); return }
+    if (!target) { setResolvedRoot(null); return }
+    if (!follow) { setResolvedRoot(target); return }
     let live = true
-    window.termpolis.gitFindRoot(root).then(
-      (r) => { if (live) setResolvedRoot(r.success && r.data ? r.data : root) },
-      () => { if (live) setResolvedRoot(root) },
+    window.termpolis.gitFindRoot(target).then(
+      (r) => { if (live) setResolvedRoot(r.success && r.data ? r.data : target) },
+      () => { if (live) setResolvedRoot(target) },
     )
     return () => { live = false }
-  }, [root])
+  }, [target, follow])
 
-  // The world: the stored one, or a fresh compile when none was saved yet.
-  // No root: nothing is shown (the viewer is hidden while there is no doc, so no stale map stays up).
+  // The world: a design from the design store; for a folder the stored one, or a fresh compile when
+  // none was saved yet. The home: nothing (the viewer is hidden while there is no doc, so no stale
+  // map stays up).
   useEffect(() => {
     heldDocRef.current = null
     setDoc(null)
@@ -141,16 +171,28 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
     setMapping(false)
     setProgress(null)
     setCard(null)
-    if (resolvedRoot === null) return
     let live = true
     const api = window.termpolis
-    api.worldGet(resolvedRoot)
+    if (designKey !== null) {
+      api.worldDesignGet(designKey).then(
+        (res) => {
+          if (!live) return
+          if (res.success) setDoc(res.data)
+          else setError(res.error)
+        },
+        (e: unknown) => { if (live) setError(messageOf(e)) },
+      )
+      return () => { live = false }
+    }
+    if (worldRoot === null) return
+    const at = worldRoot
+    api.worldGet(at)
       .then((res) => {
         if (!live) return
         if (!res.success) { setError(res.error); return }
         if (res.data) { setDoc(res.data); return }
         setMapping(true)
-        return api.worldCompile(resolvedRoot).then((c) => {
+        return api.worldCompile(at).then((c) => {
           if (!live) return
           setMapping(false)
           if (c.success) setDoc(c.data)
@@ -163,7 +205,7 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
         setError(messageOf(e))
       })
     return () => { live = false }
-  }, [resolvedRoot, attempt])
+  }, [worldRoot, designKey, attempt])
 
   // Pushes from main: compile progress, and a saved world (a compile, or a watched change).
   useEffect(() => {
@@ -271,9 +313,26 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
     if (kind === 'district') { armedRef.current = false; setCard(null); return }
     openPart(item.getAttribute('data-id') as string)
   }
+  /** Opens a world from the home, the switcher or Build it; `planned` turns the plan overlay on. */
+  const openWorld = (t: OpenTarget, planned = t.kind === 'design'): void => {
+    armedRef.current = false
+    setConfirmRelayout(false)
+    setBuilding(false)
+    setNotice(null)
+    // The root resolved for the world shown before must not load for this one meanwhile.
+    setResolvedRoot(null)
+    if (planned) onLayers({ planned: true })
+    open(t)
+  }
+  const onBuilt = (res: BuildItResult, agentId: string): void => {
+    // The folder's world, with the design's plan over it, while the agent builds there.
+    openWorld({ kind: 'root', root: res.root }, true)
+    refresh()
+    ;(buildIt as NonNullable<WorldViewProps['buildIt']>).launch(res, agentId)
+  }
   const relayout = (): void => {
     // The root at click time: an answer for a project the pane has since left is dropped.
-    const at = resolvedRoot as string
+    const at = worldRoot as string
     const current = (): boolean => mountedRef.current && rootRef.current === at
     setConfirmRelayout(false)
     setBusy(true)
@@ -290,6 +349,7 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
 
   escRef.current = () => {
     if (confirmRelayout) { setConfirmRelayout(false); return }
+    if (building) { setBuilding(false); return }
     // The ask box first: an Esc that stops its speech or its question leaves the camera alone.
     if (askEscRef.current?.()) { armedRef.current = false; return }
     if (armedRef.current && card === null) { onClose(); return }
@@ -310,10 +370,14 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
   }, [])
 
   // The folder's name, never doc.projectKey: that is a sha1 slice of the path, not a name. A doc only
-  // loads for a resolved root, and WorldDoc carries no root of its own to fall back on.
-  const projectName = resolvedRoot ? baseName(resolvedRoot) : ''
-  let empty: 'noRoot' | 'loading' | 'mapping' | 'error' | null = null
-  if (!root) empty = 'noRoot'
+  // loads for a resolved root, and WorldDoc carries no root of its own to fall back on. A design is
+  // named by its title in the recent worlds.
+  const home = world.kind === 'home'
+  const designTitle = designKey === null ? '' : entries.find((e) => e.key === designKey)?.title ?? 'Design'
+  const projectName = designKey !== null ? designTitle : worldRoot ? baseName(worldRoot) : ''
+  const worldKey = worldRoot ?? designKey
+  let empty: 'loading' | 'mapping' | 'error' | null = null
+  if (home) empty = null
   else if (error !== null) empty = 'error'
   else if (!doc) empty = mapping ? 'mapping' : 'loading'
 
@@ -345,6 +409,7 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
             dangerouslySetInnerHTML={{ __html: renderFallback(doc) }}
           />
         )}
+        {home && <WorldHome entries={entries} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} />}
         {empty && (
           <WorldEmptyState
             mode={empty}
@@ -364,9 +429,21 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
         onTour={onTour}
         onResetView={resetView}
         onRelayout={() => setConfirmRelayout(true)}
-        relayoutDisabled={!root || !doc || busy}
+        relayoutDisabled={worldRoot === null || !doc || busy}
         onClose={onClose}
+        switcher={<WorldSwitcher entries={entries} onOpen={(t) => openWorld(t)} onHome={goHome} />}
+        onBuildIt={designKey !== null && buildIt && doc ? () => setBuilding(true) : undefined}
       />
+      {building && designKey !== null && buildIt && (
+        <BuildItDialog
+          designKey={designKey}
+          title={designTitle}
+          agents={buildIt.agents}
+          defaultAgent={buildIt.defaultAgent}
+          onBuilt={onBuilt}
+          onClose={() => setBuilding(false)}
+        />
+      )}
       {confirmRelayout && (
         <div
           role="alertdialog"
@@ -397,9 +474,9 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
         </div>
       )}
       {card !== null && <WorldCard html={card} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
-      {askSlot && (
+      {askSlot && !home && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2" data-testid="world-ask-slot">
-          {askSlot(viewer, doc, resolvedRoot, askLink)}
+          {askSlot(viewer, doc, worldKey, askLink)}
         </div>
       )}
     </div>

@@ -497,3 +497,30 @@ describe('WorldAsk', () => {
     })
   })
 })
+
+describe('WorldAsk on a design', () => {
+  it('asks for a change to the design, with no suggestions and no viewer needed, and hands the doc to the pane', async () => {
+    const doc = { ...minimal(), projectKey: 'design:d1' }
+    const refine = vi.fn(async () => ({ success: true, data: { doc, text: 'Added Payments.', applied: 1, skipped: 0, summary: 's1' } }))
+    ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignCancel: vi.fn(), worldSettingsGet: settingsGet }
+    const setDoc = vi.fn()
+    const link = { onEscape: vi.fn(), setBusy: vi.fn(), setDoc }
+    render(<WorldAsk viewer={null} doc={doc} root="design:d1" link={link} />)
+    await settle()
+    const box = screen.getByPlaceholderText('Change the design…') as HTMLInputElement
+    expect(box).not.toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Where is memory stored?' })).toBeNull()
+    fireEvent.change(box, { target: { value: 'add Payments' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await settle()
+    expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '')
+    expect(setDoc).toHaveBeenCalledWith(doc)
+    expect(screen.getByText('Added Payments.')).toBeInTheDocument()
+  })
+
+  it('a project box with no viewer stays off', async () => {
+    render(<WorldAsk viewer={null} root="C:/repo" />)
+    await settle()
+    expect(input()).toBeDisabled()
+  })
+})

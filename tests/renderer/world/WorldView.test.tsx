@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-library/react'
-import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../../src/shared/world/types'
+import type { WorldDoc, WorldEntry, WorldProgressEvent, WorldUpdatedEvent } from '../../../src/shared/world/types'
 import type { WorldSelection, WorldViewerOptions } from '../../../src/renderer/src/world/engine'
 import { buildingCard, edgeCard } from '../../../src/renderer/src/world/engine'
 import { minimal } from './helpers'
@@ -54,6 +54,7 @@ function bridge(over: Record<string, unknown> = {}) {
   const updated = new Set<(e: WorldUpdatedEvent) => void>()
   const api = {
     gitFindRoot: vi.fn(async (cwd: string) => ok<string | null>(cwd)),
+    worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([])),
     worldGet: vi.fn(async (_root: string): Promise<Res<WorldDoc | null>> => ok(minimal())),
     worldCompile: vi.fn(async (_root: string): Promise<Res<WorldDoc>> => ok(minimal())),
     worldRelayout: vi.fn(async (_root: string): Promise<Res<WorldDoc>> => ok(minimal())),
@@ -437,7 +438,7 @@ describe('WorldView', () => {
     errors.mockRestore()
   })
 
-  it('losing the project folder clears the map and its card, and disables re-layout', async () => {
+  it('losing the project folder clears the map and its card and shows the home', async () => {
     bridge()
     const { rerender, onClose } = await mount()
     act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
@@ -446,7 +447,7 @@ describe('WorldView', () => {
     expect(screen.getByTestId('world-relayout')).not.toBeDisabled()
     rerender(<WorldView root="" onClose={onClose} />)
     await settle()
-    expect(screen.getByTestId('world-no-root')).toBeInTheDocument()
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
     expect(screen.queryByTestId('world-card')).toBeNull()
     expect(screen.getByTestId('world-canvas-host')).toHaveClass('invisible')
     expect(screen.getByTestId('world-relayout')).toBeDisabled()
@@ -682,10 +683,12 @@ describe('WorldView', () => {
     expect(screen.getByTestId('world-project')).not.toHaveTextContent('3f9a1c0e7b2d4a68')
   })
 
-  it('without a project folder it says so and asks main for nothing', async () => {
+  it('without a project folder it shows the home and asks main for no world', async () => {
     const b = bridge()
     await mount({ root: '' })
-    expect(screen.getByTestId('world-no-root')).toHaveTextContent('Open a terminal in your project folder')
+    expect(screen.getByRole('heading', { name: 'Lumopolis' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Map this project/ })).toBeDisabled()
+    expect(b.api.worldSourcesList).toHaveBeenCalled()
     expect(screen.queryByTestId('world-project')).toBeNull()
     expect(screen.getByTestId('world-relayout')).toBeDisabled()
     expect(b.api.gitFindRoot).not.toHaveBeenCalled()

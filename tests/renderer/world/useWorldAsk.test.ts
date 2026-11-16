@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
-import { useWorldAsk, ASK_UNREACHABLE } from '../../../src/renderer/src/components/World/useWorldAsk'
+import { useWorldAsk, ASK_UNREACHABLE, REFINE_UNREACHABLE } from '../../../src/renderer/src/components/World/useWorldAsk'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
 type Res = { success: true; data: AskResult } | { success: false; error: string }
@@ -271,5 +271,62 @@ describe('useWorldAsk', () => {
     const { result } = renderHook(() => useWorldAsk(makeViewer() as never, 'r'))
     await act(async () => { result.current.ask('q') })
     expect(result.current.cited).toEqual({ E1: { kind: 'file', ref: 'a.ts' } })
+  })
+})
+
+describe('useWorldAsk on a design', () => {
+  const refined = (text = 'Added Payments.', summary = 'sum:1') =>
+    ({ success: true, data: { doc: { projectKey: 'design:d1' }, text, applied: 1, skipped: 0, summary } })
+
+  it('a message changes the design: refine with the key, the running summary, the doc handed back', async () => {
+    const refine = vi.fn(async () => refined())
+    ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignCancel: vi.fn() }
+    const onDesign = vi.fn()
+    // No viewer needed: a design can be changed from the 2D view.
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1', onDesign))
+    await act(async () => { result.current.ask(' add Payments ') })
+    expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '')
+    expect(onDesign).toHaveBeenCalledWith({ projectKey: 'design:d1' })
+    expect(result.current.state).toBe('answered')
+    expect(result.current.answer).toEqual({ text: 'Added Payments.', actions: [], evidence: [], dropped: 0 })
+    expect(result.current.cited).toEqual({})
+    await act(async () => { result.current.ask('rename it') })
+    expect(refine).toHaveBeenLastCalledWith('design:d1', 'rename it', 'sum:1')
+  })
+
+  it('works without an onDesign handler, and stops a running tour first when there is a viewer', async () => {
+    ;(window as any).termpolis = { worldDesignRefine: vi.fn(async () => refined()), worldDesignCancel: vi.fn() }
+    const v = makeViewer()
+    const { result } = renderHook(() => useWorldAsk(v as never, 'design:d1'))
+    await act(async () => { result.current.ask('more') })
+    expect(v.cancelActions).toHaveBeenCalled()
+    expect(v.play).not.toHaveBeenCalled()
+    expect(result.current.state).toBe('answered')
+  })
+
+  it('Cancel stops the change by its design key and drops the late result', async () => {
+    const d = deferred<ReturnType<typeof refined>>()
+    const stop = vi.fn(async () => ({ success: true, data: true }))
+    ;(window as any).termpolis = { worldDesignRefine: vi.fn(() => d.promise), worldDesignCancel: stop }
+    const onDesign = vi.fn()
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1', onDesign))
+    act(() => { result.current.ask('add Payments') })
+    expect(result.current.state).toBe('thinking')
+    act(() => { result.current.cancel() })
+    expect(stop).toHaveBeenCalledWith('design:d1')
+    await act(async () => { d.resolve(refined()) })
+    expect(onDesign).not.toHaveBeenCalled()
+    expect(result.current.state).toBe('idle')
+  })
+
+  it('a refused change shows main\'s reason; a thrown one a fixed message', async () => {
+    const refine = vi.fn().mockResolvedValueOnce({ success: false, error: 'The designer is busy.' }).mockRejectedValueOnce(new Error('x'))
+    ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignCancel: vi.fn() }
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1'))
+    await act(async () => { result.current.ask('a') })
+    expect(result.current.error).toBe('The designer is busy.')
+    await act(async () => { result.current.ask('b') })
+    expect(result.current.state).toBe('error')
+    expect(result.current.error).toBe(REFINE_UNREACHABLE)
   })
 })
