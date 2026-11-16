@@ -352,7 +352,9 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   const districtOf = new Map(g.buildings.map((b) => [b.id, b.districtId]))
   for (const d of g.districts) {
     const buildings = g.buildings.filter((b) => b.districtId === d.id)
-    const edges = g.edges.filter((e) => districtOf.get(e.from) === d.id)
+    // An edge rides with its from building's district; when from is outside this grouping (an
+    // incremental re-label), with its to building's. Both ends outside: not batched, fallback kept.
+    const edges = g.edges.filter((e) => (districtOf.get(e.from) ?? districtOf.get(e.to)) === d.id)
     const { excerpts, evidence } = await collectExcerpts(buildings, deps)
     const mk = (): LabelBatch => ({
       district: { id: d.id, name: d.name },

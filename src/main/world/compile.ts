@@ -131,14 +131,23 @@ function edgeFromPrevious(e: WorldEdge): EdgeLabel {
 }
 
 /**
- * Full labelling, or (with a previous doc and `changed`) a re-label of only the touched buildings,
- * each in its own district so it costs one model batch, plus the edges touching them. Everything
- * else reuses the previous doc's labels by id, falling back to code-derived labels.
+ * Full labelling, or (with a previous doc and `changed`) a re-label of only the touched buildings
+ * (a member changed, the member set differs from the previous doc's, or the building is new), each
+ * in its own district so it costs one model batch, plus the edges touching them (an incoming edge
+ * rides with its to building). Everything else reuses the previous doc's labels by id, falling back
+ * to code-derived labels.
  */
 async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[] | undefined, deps: LabelDeps): Promise<Labels> {
   if (!previous || !changed) return labelWorld(g, deps)
   const touched = new Set(changed)
-  const subB = g.buildings.filter((b) => b.members.some((m) => touched.has(m)))
+  const prevB = new Map(previous.buildings.map((b) => [b.id, b]))
+  const memberKey = (members: string[]): string => JSON.stringify([...members].sort())
+  const sameMembers = (b: GroupBuilding): boolean => {
+    const p = prevB.get(b.id)
+    return p !== undefined && memberKey(p.members) === memberKey(b.members)
+  }
+  // Touched: a member changed, the member set changed (a file was deleted or moved), or the building is new.
+  const subB = g.buildings.filter((b) => b.members.some((m) => touched.has(m)) || !sameMembers(b))
   const ids = new Set(subB.map((b) => b.id))
   const dName = new Map(g.districts.map((d) => [d.id, d.name]))
   const own = (b: GroupBuilding): string => `${b.districtId}/${b.id}`
@@ -151,16 +160,14 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
   const fresh = await labelWorld(sub, deps)
   const labels = await labelWorld(g, { ...deps, llm: null })
   const prevD = new Map(previous.districts.map((d) => [d.id, d]))
-  const prevB = new Map(previous.buildings.map((b) => [b.id, b]))
   const prevE = new Map(previous.edges.map((e) => [e.id, e]))
   for (const d of g.districts) {
     const p = prevD.get(d.id)
     if (p) labels.districts[d.id] = { name: p.name, subtitle: p.subtitle }
   }
+  // Every untouched building has a previous twin with the same members (a new one is touched).
   for (const b of g.buildings) {
-    const p = prevB.get(b.id)
-    if (ids.has(b.id)) labels.buildings[b.id] = fresh.buildings[b.id]
-    else if (p) labels.buildings[b.id] = fromPrevious(p)
+    labels.buildings[b.id] = ids.has(b.id) ? fresh.buildings[b.id] : fromPrevious(prevB.get(b.id) as WorldDoc['buildings'][number])
   }
   for (const e of g.edges) {
     const id = edgeId(e)

@@ -247,13 +247,13 @@ describe('compileWorld', () => {
     ipcEdge.label = 'Kept IPC label'
     ipcEdge.tech = ['IPC', 'Gone']
     prev.glossary.Legacy = 'kept from before'
-    // The renderer entry is unknown to the previous doc: it gets the code-derived label.
-    prev.buildings = prev.buildings.filter((b) => b.id !== RENDERER)
 
     const llm = vi.fn(async (prompt: string) => {
       expect(prompt).toContain(VIEW)
       return JSON.stringify({
         buildings: { [VIEW]: { name: 'View Layer', stack: ['TypeScript', 'Mystery'], how: [{ text: 'Renders.', evidence: ['E1'] }] } },
+        // The incoming edge (its from building is untouched) is batched with the changed building.
+        edges: { [importEdge]: { label: 'Hands the view its data' } },
         glossary: { TypeScript: 'Typed JavaScript', IPC: 'model says otherwise' }
       })
     })
@@ -270,7 +270,7 @@ describe('compileWorld', () => {
     const edges = new Map(doc.edges.map((e) => [e.id, e]))
     expect(edges.get(ipcId)?.label).toBe('Kept IPC label')
     expect(edges.get(ipcId)?.tech).toEqual(['IPC'])
-    expect(edges.get(importEdge)?.label).toBe('imports')
+    expect(edges.get(importEdge)?.label).toBe('Hands the view its data')
     expect(doc.glossary.TypeScript).toBe('Typed JavaScript')
     expect(doc.glossary.IPC).toBe(BUILTIN_GLOSSARY.IPC)
     expect(doc.glossary.Legacy).toBe('kept from before')
@@ -324,6 +324,38 @@ describe('compileWorld', () => {
     expect(doc.externals.map((x) => x.id)).toEqual(['x-api-x-io', 'x-claude'])
     const toApi = doc.edges.filter((e) => e.to === 'x-api-x-io')
     expect(toApi.map((e) => e.from).sort()).toEqual([owner('src/a/a.ts'), owner('src/b/b.ts')].sort())
+  })
+
+  it('a deleted file relabels its building and leaves no floor listing it; a building new since previous is labelled', async () => {
+    const files: Record<string, string> = { 'src/lib/a.ts': 'export const a = 1\n', 'src/z/z.ts': 'export const z = 1\n' }
+    const compile = (previous: WorldDoc | null, changed: string[] | undefined, llm: LabelDeps['llm']): Promise<WorldDoc> =>
+      compileWorld({ snap: snapOf(files, {}), projectKey: 'k', head: HEAD, previous, changed }, mkDeps(files, { label: labelDeps({ llm }) }))
+    const fresh = await compile(null, undefined, null)
+    const lib = fresh.buildings.find((b) => b.members.includes('src/lib/a.ts')) as WorldDoc['buildings'][number]
+    const prev: WorldDoc = JSON.parse(JSON.stringify(fresh))
+    const old = prev.buildings.find((b) => b.id === lib.id) as WorldDoc['buildings'][number]
+    old.name = 'Old lib'
+    old.members = ['src/lib/a.ts', 'src/lib/b.ts']
+    old.floors = [{ name: 'Both', tech: [], members: ['src/lib/a.ts', 'src/lib/b.ts'] }]
+
+    const llm = vi.fn(async (prompt: string) => {
+      expect(prompt).toContain(lib.id)
+      return JSON.stringify({ buildings: { [lib.id]: { name: 'New lib' } } })
+    })
+    const doc = await compile(prev, ['src/lib/b.ts'], llm)
+    expectValid(doc)
+    expect(llm).toHaveBeenCalledTimes(1)
+    const now = doc.buildings.find((b) => b.id === lib.id) as WorldDoc['buildings'][number]
+    expect(now.name).toBe('New lib')
+    expect(now.floors.flatMap((f) => f.members)).not.toContain('src/lib/b.ts')
+
+    // A building the previous doc does not have is labelled even when nothing in it changed.
+    const without: WorldDoc = JSON.parse(JSON.stringify(fresh))
+    without.buildings = without.buildings.filter((b) => b.id !== lib.id)
+    const llm2 = vi.fn(async () => JSON.stringify({ buildings: { [lib.id]: { name: 'Brand new lib' } } }))
+    const doc2 = await compile(without, [], llm2)
+    expect(llm2).toHaveBeenCalledTimes(1)
+    expect(doc2.buildings.find((b) => b.id === lib.id)?.name).toBe('Brand new lib')
   })
 
   it('changed without a previous doc labels everything; no changed labels everything', async () => {

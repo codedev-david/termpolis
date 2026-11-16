@@ -706,3 +706,26 @@ describe('fix round 1', () => {
     expect(p).toContain('(none)')
   })
 })
+
+describe('task 8 fix round 1', () => {
+  it('an edge whose from is outside the grouping is batched by its to; both ends outside keeps the fallback', async () => {
+    const g: Grouping = {
+      districts: [{ id: 'd1', name: 'Alpha', members: ['a'] }],
+      buildings: [bld('a', 'd1', ['src/a.ts'])],
+      edges: [
+        { from: 'outside', to: 'a', via: [B('ipc', 'chan:in', 'src/o.ts')] },
+        { from: 'ghost1', to: 'ghost2', via: [] }
+      ]
+    }
+    const inId = edgeId({ from: 'outside', to: 'a' })
+    const ghostId = edgeId({ from: 'ghost1', to: 'ghost2' })
+    const llm = vi.fn(async () => JSON.stringify({ edges: { [inId]: { label: 'Feeds a' }, [ghostId]: { label: 'Ghost' } } }))
+    const l = await labelWorld(g, mkDeps({ llm }))
+    expect(llm).toHaveBeenCalledTimes(1)
+    const p = llm.mock.calls[0][0] as string
+    expect(p).toContain(JSON.stringify(inId))
+    expect(p).not.toContain(JSON.stringify(ghostId))
+    expect(l.edges[inId].label).toBe('Feeds a')
+    expect(l.edges[ghostId].label).toBe('imports')
+  })
+})
