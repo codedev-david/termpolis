@@ -370,6 +370,7 @@ describe('2D fallback: dispose', () => {
     expect(cards).toEqual([])
     viewer.load(rich())
     viewer.setLayers({ labels: 'tech' })
+    viewer.setPaused(true) // no renderer in 2D: nothing to pause, and no throw
     viewer.setTheme('glass')
     await viewer.apply({ type: 'openCard', id: 'b1' })
     expect(host.querySelector('section.world-fallback')).toBeNull()
@@ -397,10 +398,10 @@ function fakeRenderer(host: HTMLElement) {
     canvas,
     draw: vi.fn(), setTheme: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
     frame: vi.fn(async () => undefined), overview: vi.fn(async () => undefined), pulse: vi.fn(async () => undefined),
-    stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), visibleIds: vi.fn(() => ['b1']),
+    stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1 })),
-    keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(),
+    keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(),
     dispose: vi.fn(() => { canvas.remove() }),
   } satisfies ThreeRenderer
   return { r, aim: (h: RenderPick | null): void => { hit = h } }
@@ -493,9 +494,26 @@ describe('WebGL path (stand-in renderer)', () => {
     at('pointermove'); flush()
     expect(hovers).toEqual(['b1'])
     expect(r.setCursor).toHaveBeenLastCalledWith(true)
+    expect(r.setHovered).toHaveBeenLastCalledWith('b1') // its name shows at any distance
+    aim({ kind: 'edge', id: 'e1' })
+    at('pointermove'); flush()
+    expect(r.setHovered).toHaveBeenLastCalledWith(null) // a line has no name label to light
     at('pointerleave')
     at('pointerleave')
-    expect(hovers).toEqual(['b1', null])
+    expect(hovers).toEqual(['b1', 'e1', null])
+    expect(r.setHovered).toHaveBeenLastCalledWith(null)
+  })
+
+  it('setPaused stops and restarts the renderer, and does nothing after dispose', () => {
+    const { r, viewer } = setup3d()
+    viewer.setPaused(true)
+    expect(r.setPaused).toHaveBeenLastCalledWith(true)
+    viewer.setPaused(false)
+    expect(r.setPaused).toHaveBeenLastCalledWith(false)
+    viewer.dispose()
+    r.setPaused.mockClear()
+    viewer.setPaused(true)
+    expect(r.setPaused).not.toHaveBeenCalled()
   })
 
   it('apply drives the renderer: focus frames, highlight lights, flow pulses, draftProposal redraws', async () => {

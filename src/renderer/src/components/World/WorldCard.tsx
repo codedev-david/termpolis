@@ -1,4 +1,4 @@
-// The detail card beside the Lumopolis map. Its HTML comes only from the engine's card builders
+// The detail card over the Lumopolis map, top left. Its HTML comes only from the engine's card builders
 // (buildingCard, edgeCard, the tour caption), which escape every string from the world document,
 // so it is safe to set as innerHTML. Never pass raw document strings here.
 import type { MouseEvent } from 'react'
@@ -22,7 +22,9 @@ export function WorldCard({ html, onClose, onOpen }: WorldCardProps): JSX.Elemen
     <aside
       aria-label="Lumopolis details"
       data-testid="world-card"
-      className="absolute top-14 right-4 w-80 max-h-[calc(100%-8rem)] overflow-auto rounded border border-[#3c3c3c] bg-[#1e1e1e]/95 shadow-xl text-sm text-[#cccccc]"
+      className="rounded border border-[#3c3c3c] shadow-xl text-sm text-[#cccccc]"
+      // Top left over the map, where the prototype's inspector sits (the legend is top right).
+      style={{ position: 'absolute', top: 12, left: 12, width: 330, maxHeight: 'calc(100% - 110px)', overflow: 'auto', zIndex: 3, background: 'rgba(30,30,30,.95)' }}
     >
       <div className="flex justify-end px-2 pt-2">
         <button

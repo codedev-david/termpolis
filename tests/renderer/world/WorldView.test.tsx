@@ -25,7 +25,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         }),
         emitSelect: (s: WorldSelection | null) => { for (const cb of selectCbs) cb(s) },
         selectListeners: () => selectCbs.size,
-        getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), dispose: vi.fn(),
+        getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), dispose: vi.fn(),
         screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 1, y: 2 } : null)),
         drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4 })),
       }
@@ -443,13 +443,13 @@ describe('WorldView', () => {
     const { rerender, onClose } = await mount()
     act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
     expect(screen.getByTestId('world-card')).toBeInTheDocument()
-    expect(screen.getByTestId('world-canvas-host')).not.toHaveClass('invisible')
+    expect(screen.getByTestId('world-canvas-host')).toHaveStyle({ visibility: 'visible' })
     expect(screen.getByTestId('world-relayout')).not.toBeDisabled()
     rerender(<WorldView root="" onClose={onClose} />)
     await settle()
     expect(screen.getByTestId('world-home')).toBeInTheDocument()
     expect(screen.queryByTestId('world-card')).toBeNull()
-    expect(screen.getByTestId('world-canvas-host')).toHaveClass('invisible')
+    expect(screen.getByTestId('world-canvas-host')).toHaveStyle({ visibility: 'hidden' })
     expect(screen.getByTestId('world-relayout')).toBeDisabled()
   })
 
@@ -770,5 +770,62 @@ describe('WorldView', () => {
     r.unmount()
     await act(async () => { broken.reject(new Error('late')) })
     await waitFor(() => expect(screen.queryByTestId('world-error')).toBeNull())
+  })
+})
+
+describe('WorldView layout (visual fidelity)', () => {
+  it('sits below the title bar in the theme background from the first render, toolbar in flow above the map', async () => {
+    const get = deferred<Res<WorldDoc | null>>()
+    bridge({ worldGet: vi.fn(() => get.promise) })
+    render(<WorldView root="/repo" onClose={vi.fn()} />)
+    // Before the world loads: opaque Neon background, 40px down so the window controls stay free.
+    expect(dialog()).toHaveStyle({ position: 'fixed', top: '40px', left: '0px', right: '0px', bottom: '0px', background: '#03050a' })
+    expect(dialog()).not.toHaveClass('animate-fadeIn')
+    expect(screen.getByTestId('world-loading')).toBeInTheDocument()
+    const toolbar = screen.getByRole('toolbar', { name: 'Lumopolis controls' })
+    expect(toolbar).toHaveStyle({ position: 'relative', background: '#252526' })
+    expect(toolbar.nextElementSibling).toBe(screen.getByTestId('world-stage'))
+    await act(async () => { get.resolve(ok(minimal())) })
+    await settle()
+    fireEvent.change(screen.getByTestId('world-theme'), { target: { value: 'blueprint' } })
+    expect(dialog()).toHaveStyle({ background: '#061a33' })
+  })
+
+  it('pauses the viewer while the home or the loading screen covers the map', async () => {
+    const get = deferred<Res<WorldDoc | null>>()
+    bridge({ worldGet: vi.fn(() => get.promise) })
+    const { rerender } = render(<WorldView root="/repo" onClose={vi.fn()} />)
+    await settle()
+    expect(viewer().setPaused).toHaveBeenLastCalledWith(true) // loading
+    await act(async () => { get.resolve(ok(minimal())) })
+    await settle()
+    expect(viewer().setPaused).toHaveBeenLastCalledWith(false)
+    rerender(<WorldView root="" onClose={vi.fn()} />)
+    await settle()
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+    expect(viewer().setPaused).toHaveBeenLastCalledWith(true)
+  })
+
+  it('shows the legend over the map once a world is drawn, with the processes layer passed on', async () => {
+    bridge()
+    await mount()
+    expect(screen.getByTestId('world-legend')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-legend-process')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Processes' }))
+    expect(screen.getAllByTestId('world-legend-process').length).toBeGreaterThan(0)
+  })
+
+  it('has no legend in the 2D list or on the home', async () => {
+    h.webgl = false
+    bridge()
+    await mount()
+    expect(screen.getByTestId('world-fallback')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-legend')).toBeNull()
+    cleanup()
+    h.webgl = true
+    bridge()
+    await mount({ root: '' })
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-legend')).toBeNull()
   })
 })

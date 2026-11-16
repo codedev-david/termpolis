@@ -17,13 +17,18 @@
 // terminal under it) and, on close, gives the focus back to the control that opened it, or to the
 // active terminal.
 //
+// Layout: the pane sits below the app's title bar (worldPane), toolbar on top and the map under
+// it, in the theme's background from the first frame. The map's overlays (legend top right, card
+// top left, notices, the ask box) are placed with inline styles. While the home or a loading screen
+// covers the map, the viewer is paused so a hidden scene draws no frames.
+//
 // E2E only (TERMPOLIS_TEST_WORLD_PROBE): window.__termpolis_world, a read-only probe of the map
 // (a part's place on screen, what is drawn), so a spec can click a building and see a layer change
 // without guessing at the 3D scene. Off in every normal run.
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Tour, WorldDoc } from '../../../../shared/world/types'
-import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, renderFallback } from '../../world/engine'
+import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, renderFallback, THEMES } from '../../world/engine'
 import type { LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
 import { WorldToolbar } from './WorldToolbar'
@@ -34,6 +39,8 @@ import { useOpenWorld } from './useOpenWorld'
 import { WorldHome } from './WorldHome'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
+import { WorldLegend } from './WorldLegend'
+import { worldPaneStyle } from './worldPane'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
 
@@ -248,6 +255,10 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
     }
   }, [webgl])
 
+  // Nothing to draw while the home or a loading screen covers the map: stop the render loop.
+  const covered = world.kind === 'home' || !doc
+  useEffect(() => { viewer?.setPaused(covered) }, [viewer, covered])
+
   // The e2e probe, while this viewer is up (and only under the test flag).
   useEffect(() => {
     if (!viewer || !exposesWorldProbe()) return
@@ -389,36 +400,9 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
       aria-label="Lumopolis"
       tabIndex={-1}
       data-testid="world-view"
-      className="fixed inset-0 z-40 bg-[#0b1020] text-[#cccccc] outline-none animate-fadeIn"
+      className="outline-none"
+      style={worldPaneStyle(THEMES[theme].background)}
     >
-      <div className="absolute inset-0 top-11">
-        {webgl && (
-          <div
-            ref={hostRef}
-            data-testid="world-canvas-host"
-            className={`absolute inset-0${doc ? '' : ' invisible'}`}
-            onPointerDown={() => { armedRef.current = false }}
-          />
-        )}
-        {!webgl && doc && (
-          <div
-            data-testid="world-fallback"
-            className="absolute inset-0 overflow-auto p-6 text-sm [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:cursor-pointer [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
-            onClick={onFallbackClick}
-            // renderFallback escapes every string from the doc.
-            dangerouslySetInnerHTML={{ __html: renderFallback(doc) }}
-          />
-        )}
-        {home && <WorldHome entries={entries} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} />}
-        {empty && (
-          <WorldEmptyState
-            mode={empty}
-            progress={progress}
-            error={error}
-            onRetry={() => setAttempt((n) => n + 1)}
-          />
-        )}
-      </div>
       <WorldToolbar
         projectName={projectName}
         layers={layers}
@@ -434,6 +418,77 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
         switcher={<WorldSwitcher entries={entries} onOpen={(t) => openWorld(t)} onHome={goHome} />}
         onBuildIt={designKey !== null && buildIt && doc ? () => setBuilding(true) : undefined}
       />
+      <div data-testid="world-stage" style={{ position: 'relative', flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
+        {webgl && (
+          <div
+            ref={hostRef}
+            data-testid="world-canvas-host"
+            style={{ position: 'absolute', inset: 0, visibility: doc ? 'visible' : 'hidden' }}
+            onPointerDown={() => { armedRef.current = false }}
+          />
+        )}
+        {!webgl && doc && (
+          <div
+            data-testid="world-fallback"
+            className="overflow-auto p-6 text-sm [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:cursor-pointer [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
+            style={{ position: 'absolute', inset: 0 }}
+            onClick={onFallbackClick}
+            // renderFallback escapes every string from the doc.
+            dangerouslySetInnerHTML={{ __html: renderFallback(doc) }}
+          />
+        )}
+        {home && <WorldHome entries={entries} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} />}
+        {empty && (
+          <WorldEmptyState
+            mode={empty}
+            progress={progress}
+            error={error}
+            onRetry={() => setAttempt((n) => n + 1)}
+          />
+        )}
+        {webgl && doc && !home && <WorldLegend doc={doc} processes={layers.processes} />}
+        {confirmRelayout && (
+          <div
+            role="alertdialog"
+            aria-label="Confirm re-layout"
+            data-testid="world-relayout-confirm"
+            className="p-3 rounded border border-[#3c3c3c] shadow-xl flex flex-col gap-2 text-xs"
+            style={{ position: 'absolute', top: 12, right: 12, width: 320, zIndex: 5, background: '#252526' }}
+          >
+            <p>Re-layout places every part again from scratch and forgets the current arrangement. Continue?</p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                data-testid="world-relayout-cancel"
+                className="px-2 py-1 rounded border border-[#3c3c3c] hover:bg-[#37373d]"
+                onClick={() => setConfirmRelayout(false)}
+              >Cancel</button>
+              <button
+                type="button"
+                data-testid="world-relayout-go"
+                className="px-2 py-1 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"
+                onClick={relayout}
+              >Re-layout</button>
+            </div>
+          </div>
+        )}
+        {(busy || notice) && (
+          <div
+            role="status"
+            data-testid="world-notice"
+            className="text-xs px-2 py-1 rounded border border-[#3c3c3c]"
+            style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 4, background: '#252526' }}
+          >
+            {busy ? 'Re-laying out…' : notice}
+          </div>
+        )}
+        {card !== null && <WorldCard html={card} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
+        {askSlot && !home && (
+          <div style={{ position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 3 }} data-testid="world-ask-slot">
+            {askSlot(viewer, doc, worldKey, askLink)}
+          </div>
+        )}
+      </div>
       {building && designKey !== null && buildIt && (
         <BuildItDialog
           designKey={designKey}
@@ -443,41 +498,6 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
           onBuilt={onBuilt}
           onClose={() => setBuilding(false)}
         />
-      )}
-      {confirmRelayout && (
-        <div
-          role="alertdialog"
-          aria-label="Confirm re-layout"
-          data-testid="world-relayout-confirm"
-          className="absolute top-12 right-4 w-80 p-3 rounded border border-[#3c3c3c] bg-[#252526] shadow-xl flex flex-col gap-2 text-xs"
-        >
-          <p>Re-layout places every part again from scratch and forgets the current arrangement. Continue?</p>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              data-testid="world-relayout-cancel"
-              className="px-2 py-1 rounded border border-[#3c3c3c] hover:bg-[#37373d]"
-              onClick={() => setConfirmRelayout(false)}
-            >Cancel</button>
-            <button
-              type="button"
-              data-testid="world-relayout-go"
-              className="px-2 py-1 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white"
-              onClick={relayout}
-            >Re-layout</button>
-          </div>
-        </div>
-      )}
-      {(busy || notice) && (
-        <div role="status" data-testid="world-notice" className="absolute top-12 left-4 text-xs px-2 py-1 rounded bg-[#252526] border border-[#3c3c3c]">
-          {busy ? 'Re-laying out…' : notice}
-        </div>
-      )}
-      {card !== null && <WorldCard html={card} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
-      {askSlot && !home && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2" data-testid="world-ask-slot">
-          {askSlot(viewer, doc, worldKey, askLink)}
-        </div>
       )}
     </div>
   )

@@ -249,7 +249,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     // No WebGL would show the 2D list instead: the launch switches above are meant to rule that out.
     await expect(page.locator('[data-testid="world-fallback"]')).toHaveCount(0)
     await expect(canvas()).toBeVisible({ timeout: 30_000 })
-    await expect(page.locator('[data-testid="world-canvas-host"]')).not.toHaveClass(/invisible/, { timeout: 30_000 })
+    await expect(page.locator('[data-testid="world-canvas-host"]')).toHaveCSS('visibility', 'visible', { timeout: 30_000 })
     expect((await buildings(project)).length).toBeGreaterThan(1)
   })
 

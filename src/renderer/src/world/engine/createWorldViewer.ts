@@ -48,6 +48,12 @@ export interface WorldViewer {
    * itself, or forwards Esc to it.
    */
   resetView(): void
+  /**
+   * Stops (true) or restarts (false) drawing frames. The host pauses the viewer while something
+   * covers it entirely (the World home, a loading screen), so a hidden world costs no GPU time.
+   * Nothing moves while paused; a flight or pulse in progress goes on after the restart.
+   */
+  setPaused(paused: boolean): void
   /** Removes every listener and frees the renderer. Later calls to load() are ignored. */
   dispose(): void
 }
@@ -311,6 +317,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       r3.setCursor(id !== null)
       if (id !== hovered) {
         hovered = id
+        r3.setHovered(hit && hit.kind === 'node' ? hit.id : null)
         for (const cb of hoverCbs) cb(id)
       }
     })
@@ -319,6 +326,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     hoverAt = null
     if (hovered !== null) {
       hovered = null
+      r3?.setHovered(null)
       for (const cb of hoverCbs) cb(null)
     }
   }
@@ -494,6 +502,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         r3.setExploded(null)
         void r3.overview(reduced)
       }
+    },
+    setPaused(p) {
+      if (!disposed) r3?.setPaused(p)
     },
     dispose() {
       if (disposed) return

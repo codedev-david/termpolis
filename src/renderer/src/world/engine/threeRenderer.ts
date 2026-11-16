@@ -56,6 +56,8 @@ export interface ThreeRenderer {
   stopPulses(): void
   pick(clientX: number, clientY: number): RenderPick | null
   setCursor(pointer: boolean): void
+  /** The building or external under the pointer (null: none). Its name shows at any distance. */
+  setHovered(id: string | null): void
   /** Node and edge ids whose anchor is inside the camera frustum. */
   visibleIds(): string[]
   /**
@@ -73,6 +75,12 @@ export interface ThreeRenderer {
   animateChanges(c: { rise: string[]; pulse: string[] }): void
   /** Ends every rise, pulse and fade at once and frees the faded parts. */
   stopChanges(): void
+  /**
+   * Stops (true) or restarts (false) the render loop. Something covering the whole view (the World
+   * home, the loading screen) pauses it, so a hidden scene costs no frames. While paused nothing
+   * moves: a camera flight or a pulse waits and goes on after the restart.
+   */
+  setPaused(paused: boolean): void
   dispose(): void
 }
 
@@ -91,7 +99,7 @@ const STYLE_ID = 'lumopolis-world-style'
 const CSS = `
 .lw-labels{position:absolute;top:0;left:0;pointer-events:none}
 .lw-district{font:700 15px system-ui,sans-serif;letter-spacing:2px;text-transform:uppercase;text-shadow:0 0 12px currentColor;white-space:nowrap;text-align:center}
-.lw-district span{display:block;font-size:10px;letter-spacing:1px;font-weight:500;opacity:.75;text-shadow:none}
+.lw-district span{display:block;font-size:11px;letter-spacing:1px;font-weight:500;opacity:.75;text-shadow:none}
 .lw-bldg{font:12px system-ui,sans-serif;color:#e2e8f0;padding:2px 8px;border-radius:6px;background:rgba(3,7,18,.65);border:1px solid rgba(148,163,184,.25);white-space:nowrap}
 .lw-floor{font:11px system-ui,sans-serif;color:#e2e8f0;padding:1px 6px;border-radius:4px;background:rgba(3,7,18,.82);border-left:2px solid #38bdf8;white-space:nowrap;opacity:0}
 .lw-edge{font:11px system-ui,sans-serif;padding:2px 7px;border-radius:99px;background:rgba(3,7,18,.85);border:1px solid;white-space:nowrap;pointer-events:auto;cursor:pointer;display:none}
@@ -104,9 +112,23 @@ const ORB_R = 2.2
 /** How far behind an edge pick tube (radius 0.8) a node hit may lie and still win the pick. */
 const PICK_NODE_EPS = 1
 const OVERVIEW_DIR = new THREE.Vector3(0.24, 0.72, 1).normalize()
+/**
+ * How far the camera stands from the city at the overview of a prototype-sized world (about ten
+ * buildings). A bigger world puts the camera further out; the line widths, packet sizes and zoom
+ * limit scale from this so a big repository reads like the prototype.
+ */
+const PROTO_OVERVIEW = 120
+/**
+ * The fog at the overview target: density x distance stays at or below this, so certain structure
+ * at the overview is at most about a quarter fogged (1 - exp(-0.55^2) = 0.26). The theme's own
+ * density still applies to a small world, where it is the lower of the two. Fog is a depth cue and
+ * the look of uncertain parts (fog clouds, dashed lines), never a curtain over certain structure.
+ */
+const FOG_REACH = 0.55
 
 type LabelKind = 'district' | 'bldg' | 'floor' | 'proc'
-interface LabelRec { o: CSS2DObject; kind: LabelKind; dim: number }
+/** dim: the focus dimming (1 or 0.2); lit: its part is hovered or selected, so the label shows at any distance. */
+interface LabelRec { o: CSS2DObject; kind: LabelKind; dim: number; lit: boolean }
 interface NodeRec {
   id: string; group: THREE.Group; floors: THREE.Group[]; floorLabels: (LabelRec | null)[]
   mats: THREE.Material[]; labels: LabelRec[]; height: number; anchor: THREE.Vector3; orb: boolean
@@ -223,7 +245,25 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     starGeo.setAttribute('position', new THREE.BufferAttribute(p, 3))
   }
-  const starMat = new THREE.PointsMaterial({ color: 0xcbd5e1, size: 1.6, sizeAttenuation: true, fog: false })
+  // A soft round dot: without a map a point is drawn as a square. Stars keep the prototype size
+  // (1.6), so they read as pinpricks behind the city rather than bloomed blobs.
+  const dotTex = (() => {
+    const c = document.createElement('canvas')
+    c.width = c.height = 64
+    const x = c.getContext('2d')
+    if (x) {
+      const g = x.createRadialGradient(32, 32, 0, 32, 32, 32)
+      g.addColorStop(0, 'rgba(255,255,255,1)')
+      g.addColorStop(0.35, 'rgba(255,255,255,.75)')
+      g.addColorStop(1, 'rgba(255,255,255,0)')
+      x.fillStyle = g
+      x.fillRect(0, 0, 64, 64)
+    }
+    return new THREE.CanvasTexture(c)
+  })()
+  const starMat = new THREE.PointsMaterial({
+    color: 0xcbd5e1, size: 1.6, sizeAttenuation: true, fog: false, map: dotTex, transparent: true, alphaTest: 0.02, depthWrite: false,
+  })
   scene.add(new THREE.Points(starGeo, starMat))
 
   // Dust drifting upward through the city (high quality only).
@@ -239,7 +279,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     dustGeo = new THREE.BufferGeometry()
     dustGeo.setAttribute('position', new THREE.BufferAttribute(p, 3))
-    dustMat = new THREE.PointsMaterial({ color: 0x7dd3fc, size: 0.32, transparent: true, opacity: 0.5 })
+    dustMat = new THREE.PointsMaterial({ color: 0x7dd3fc, size: 0.6, map: dotTex, transparent: true, opacity: 0.5, alphaTest: 0.02, depthWrite: false })
     scene.add(new THREE.Points(dustGeo, dustMat))
   }
 
@@ -280,8 +320,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   scene.fog = fog
   let fogTarget = theme.fogDensity
   let grid: THREE.GridHelper | null = null
+  /** Camera distance at the overview of the drawn world, and the world's scale against the prototype. */
+  let overviewDist = PROTO_OVERVIEW
+  let scale = 1
 
   let nodes = new Map<string, NodeRec>()
+  /** The labels of the hovered building or external. */
+  let hoverLabels: LabelRec[] = []
   let edges = new Map<string, EdgeRec>()
   let pickables: THREE.Object3D[] = []
   let labels: LabelRec[] = []
@@ -297,6 +342,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let selectedId: string | null = null
   let explodedId: string | null = null
   let shellCount = 0
+  /** The fog density: the theme's, thinned for a big world (FOG_REACH), thicker while a building is open. */
+  const fogFor = (): number => Math.min(theme.fogDensity, FOG_REACH / overviewDist) * (explodedId === null ? 1 : 2.2)
 
   function addLabel(parent: THREE.Object3D, kind: LabelKind, pos: [number, number, number], build: (el: HTMLDivElement) => void): LabelRec {
     const el = document.createElement('div')
@@ -305,7 +352,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const o = new CSS2DObject(el)
     o.position.set(pos[0], pos[1], pos[2])
     parent.add(o)
-    const rec: LabelRec = { o, kind, dim: 1 }
+    const rec: LabelRec = { o, kind, dim: 1, lit: false }
     labels.push(rec)
     return rec
   }
@@ -318,6 +365,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (o instanceof CSS2DObject) o.element.remove()
     })
     world.clear()
+    hoverLabels = []
     nodes = new Map(); edges = new Map(); pickables = []; labels = []; ghostMats = []; seals = []; fogSprites = []; pulseBalls = []
     shellCount = 0
     selRing = null
@@ -350,7 +398,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const rim = new THREE.LineSegments(new THREE.EdgesGeometry(pg), new THREE.LineBasicMaterial({ color: col }))
     rim.position.y = -0.6
     g.add(rim)
-    const light = new THREE.PointLight(col, 40, 40)
+    // Light pooling: the district's lamp, as in the prototype, reaching the whole of a big platform.
+    const light = new THREE.PointLight(col, 40, Math.max(40, d.radius * 2.4))
     light.position.set(0, 8, 0)
     g.add(light)
     addLabel(g, 'district', [0, 0.4, d.radius + 2], (el) => {
@@ -500,7 +549,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (!c.dashed) {
       const m = trackBase(new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.38 }))
       rec.tubeMats.push(m)
-      world.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 64, c.width * 0.55, 6), m))
+      world.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 64, c.width * 0.55 * scale, 6), m))
     } else {
       const m = trackBase(new THREE.LineDashedMaterial({ color: extras.ghost, dashSize: 1, gapSize: 0.7, transparent: true, opacity: 0.85 }))
       rec.tubeMats.push(m)
@@ -510,7 +559,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       world.add(line)
     }
     // Fat invisible tube: a thin line is impossible to click.
-    const pick = new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.8, 5), new THREE.MeshBasicMaterial({ visible: false }))
+    const pick = new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.8 * scale, 5), new THREE.MeshBasicMaterial({ visible: false }))
     pick.userData.edgeId = c.id
     world.add(pick)
     pickables.push(pick)
@@ -521,7 +570,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const m = trackBase(new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: c.dashed ? 0.6 : 1 }))
       rec.packetMats.push(m)
       const s = new THREE.Mesh(GEO[shape], m)
-      s.scale.setScalar(0.7)
+      s.scale.setScalar(0.7 * scale)
       const t = reduced ? (i + 0.5) / count : Math.random()
       s.position.copy(curve.getPoint(t))
       world.add(s)
@@ -549,8 +598,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length
     const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length
     const r = Math.max(10, ...pts.map((p) => Math.hypot(p[0] - cx, p[2] - cz)))
+    overviewDist = Math.max(40, r * 2.6)
+    scale = Math.max(1, Math.sqrt(overviewDist / PROTO_OVERVIEW))
     overviewTarget.set(cx, 0, cz)
-    overviewPos.copy(overviewTarget).addScaledVector(OVERVIEW_DIR, Math.max(40, r * 2.6))
+    overviewPos.copy(overviewTarget).addScaledVector(OVERVIEW_DIR, overviewDist)
+    // Room to step back from the overview of even a very big world.
+    controls.maxDistance = Math.max(420, overviewDist * 1.6)
   }
 
   function draw(model: SceneModel, text: SceneText, allEdgeLabels: boolean): void {
@@ -559,11 +612,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     allLabels = allEdgeLabels
     changes.settle() // the objects rising or pulsing are about to be freed
     clearWorld()
+    computeOverview(model) // first: the world's scale sizes the lines, packets and fog below
     scene.background = new THREE.Color(theme.background)
     fog.color.set(theme.background)
+    fogTarget = fogFor()
+    fog.density = fogTarget
     if (bloom) bloom.strength = extras.bloom
     if (grid) { scene.remove(grid); grid.geometry.dispose(); ([] as THREE.Material[]).concat(grid.material).forEach((m) => m.dispose()) }
-    grid = new THREE.GridHelper(700, 140, extras.grid, extras.grid)
+    const gridSize = Math.max(700, Math.ceil((overviewDist * 4) / 100) * 100)
+    grid = new THREE.GridHelper(gridSize, gridSize / 5, extras.grid, extras.grid)
     grid.position.y = -1.3
     const gm = grid.material as THREE.Material
     gm.transparent = true
@@ -579,16 +636,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const c of model.conduits) buildConduit(c, heightAt, text)
 
     for (let k = 0; k < 10; k++) {
-      const s = new THREE.Mesh(new THREE.SphereGeometry(0.75 * (1 - k / 12), 16, 12), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 - k / 10 }))
+      const s = new THREE.Mesh(new THREE.SphereGeometry(0.75 * scale * (1 - k / 12), 16, 12), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 - k / 10 }))
       s.visible = false
       world.add(s)
       pulseBalls.push(s)
     }
-    selRing = new THREE.Mesh(new THREE.TorusGeometry(4.8, 0.08, 8, 64), new THREE.MeshBasicMaterial({ color: 0xffffff }))
+    // The selection: a bright ring in the theme's glow colour, which the bloom picks up.
+    selRing = new THREE.Mesh(new THREE.TorusGeometry(4.8, 0.2, 10, 64), new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.glow).multiplyScalar(1.6) }))
     selRing.rotation.x = Math.PI / 2
     selRing.visible = false
     world.add(selRing)
-    computeOverview(model)
     if (explodedId !== null && (nodes.get(explodedId)?.orb ?? true)) explodedId = null
     for (const n of nodes.values()) n.exploded = n.id === explodedId && !n.orb
     applyFocus()
@@ -604,7 +661,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         m.userData.f = k
         if (!ghostMats.includes(m)) m.opacity = m.userData.base * k
       }
-      for (const l of n.labels) l.dim = on ? 1 : 0.2
+      for (const l of n.labels) { l.dim = on ? 1 : 0.2; l.lit = !!f && on }
     }
     for (const e of edges.values()) {
       const on = !f || f.edgeIds.has(e.id)
@@ -808,8 +865,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const mv = new THREE.Vector3()
   let raf = 0
   let disposed = false
+  let paused = false
   function animate(): void {
-    if (disposed) return
+    if (disposed || paused) return
     raf = requestAnimationFrame(animate)
     const dt = Math.min(clock.getDelta(), 0.05)
     changes.tick(performance.now()) // wall-clock time: a slow frame rate never stretches a change
@@ -899,11 +957,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       for (let i = 1; i < dp.length; i += 3) { dp[i] += dt * 1.1; if (dp[i] > 58) dp[i] = -2 }
       dustGeo.attributes.position.needsUpdate = true
     }
+    // Semantic zoom: district names read from the overview of any size of world (their fade starts
+    // past it), building names come in at middle distance as in the prototype, and the names of
+    // the hovered or selected part and its neighbours show at any distance.
+    const districtFade = Math.max(170, overviewDist * 1.15)
     for (const l of labels) {
       if (l.kind === 'floor' || l.kind === 'proc') continue
-      l.o.getWorldPosition(wp)
-      const d = wp.distanceTo(camera.position)
-      const o = Math.max(0, Math.min(1, (l.kind === 'district' ? 1.9 : 1.7) - d / (l.kind === 'district' ? 170 : 105))) * l.dim
+      let o = 1
+      if (!l.lit && !hoverLabels.includes(l)) {
+        l.o.getWorldPosition(wp)
+        const d = wp.distanceTo(camera.position)
+        o = Math.max(0, Math.min(1, l.kind === 'district' ? 1.9 - d / districtFade : 1.7 - d / 105)) * l.dim
+      }
       l.o.element.style.opacity = String(o)
     }
     for (const e of edges.values()) {
@@ -928,7 +993,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       themeName = name
       theme = th
       extras = EXTRAS[themeName]
-      fogTarget = th.fogDensity * (explodedId === null ? 1 : 2.2)
+      fogTarget = fogFor()
       fog.density = fogTarget
       if (lastModel && lastText) draw(lastModel, lastText, allLabels)
       else { scene.background = new THREE.Color(th.background); fog.color.set(th.background) }
@@ -940,7 +1005,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const n = id === null ? undefined : nodes.get(id)
       explodedId = n && !n.orb ? n.id : null
       for (const n of nodes.values()) n.exploded = n.id === explodedId && !n.orb
-      fogTarget = theme.fogDensity * (explodedId === null ? 1 : 2.2)
+      fogTarget = fogFor()
     },
     frame,
     overview: (instant) => flyTo(overviewPos, overviewTarget, instant, 1.8),
@@ -948,6 +1013,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     stopPulses,
     pick,
     setCursor(pointer) { renderer.domElement.style.cursor = pointer ? 'pointer' : 'default' },
+    setHovered(id) { hoverLabels = id === null ? [] : nodes.get(id)?.labels ?? [] },
     visibleIds,
     screenPoint,
     drawnCounts: () => ({ processShells: shellCount, conduits: edges.size, changing: changes.active() }),
@@ -970,6 +1036,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       changes.start(groups, mats, performance.now())
     },
     stopChanges: () => changes.stop(),
+    setPaused(p) {
+      if (disposed || p === paused) return
+      paused = p
+      if (p) { cancelAnimationFrame(raf); return }
+      clock.getDelta() // the pause is not a frame: nothing jumps on the first frame back
+      raf = requestAnimationFrame(animate)
+    },
     dispose() {
       if (disposed) return
       disposed = true
@@ -988,6 +1061,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       starGeo.dispose(); starMat.dispose()
       dustGeo?.dispose(); dustMat?.dispose()
       fogTex.dispose()
+      dotTex.dispose()
       for (const g of shared) g.dispose()
       bloom?.dispose()
       outputPass?.dispose()

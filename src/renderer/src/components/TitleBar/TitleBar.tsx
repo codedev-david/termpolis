@@ -1,14 +1,16 @@
 import React from 'react'
 import logoSvg from '/logo-termpolis.svg?url'
 import { RemoteIndicator } from './RemoteIndicator'
+import { TITLE_BAR_HEIGHT } from './constants'
 
 const isMac = navigator.platform.startsWith('Mac') || navigator.platform === 'MacIntel'
 
 export function TitleBar() {
   return (
     <div
+      data-testid="title-bar"
       className="flex items-center justify-between bg-[#1a1a1a] border-b border-[#3c3c3c] select-none shrink-0"
-      style={{ WebkitAppRegion: 'drag', height: 40 } as React.CSSProperties}
+      style={{ WebkitAppRegion: 'drag', height: TITLE_BAR_HEIGHT } as React.CSSProperties}
     >
       {/* On macOS, leave space for native traffic lights (70px) */}
       <div className={`flex items-center gap-2 ${isMac ? 'pl-20' : 'pl-3'}`}>

@@ -180,7 +180,7 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await expect(home()).toHaveCount(0)
     await expect(projectName()).toHaveText(path.basename(project), { timeout: 30_000 })
     await expect(canvasHost().locator('canvas')).toBeVisible({ timeout: 120_000 })
-    await expect(canvasHost()).not.toHaveClass(/invisible/, { timeout: 30_000 })
+    await expect(canvasHost()).toHaveCSS('visibility', 'visible', { timeout: 30_000 })
     await expect(page.getByPlaceholder('Ask about this project…')).toBeEnabled({ timeout: 30_000 })
   })
 
@@ -190,9 +190,8 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     // The folder opened in step 1 is a recent world now.
     await expect(home().getByRole('list', { name: 'Recent worlds' })).toContainText(path.basename(project))
 
-    // The viewer keeps drawing the last map under the home, and with software GL a frame can take a
-    // few hundred ms: the click's "stable" check can need longer than the default action timeout.
-    await home().getByRole('button', { name: /^Design something new/ }).click({ timeout: 60_000 })
+    // The viewer pauses while the home covers it, so the click needs no longer than the default.
+    await home().getByRole('button', { name: /^Design something new/ }).click()
     const start = page.getByRole('dialog', { name: 'Design something new' })
     await start.getByPlaceholder('Describe the app you want…').fill(DESCRIPTION)
     await start.getByRole('button', { name: 'Design it' }).click()

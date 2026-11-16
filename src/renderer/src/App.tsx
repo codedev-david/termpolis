@@ -29,6 +29,7 @@ const SwarmCompleteDialog = lazy(() => import('./components/SwarmDashboard/Swarm
 const AddTerminalModal = lazy(() => import('./components/Sidebar/AddTerminalModal').then(m => ({ default: m.AddTerminalModal })))
 const AppLogModal = lazy(() => import('./components/AppLogModal/AppLogModal').then(m => ({ default: m.AppLogModal })))
 import { TitleBar } from './components/TitleBar/TitleBar'
+import { WorldPaneOpening } from './components/World/worldPane'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
 import { SecretSentBanner } from './components/SecretSentBanner/SecretSentBanner'
@@ -1228,12 +1229,16 @@ export default function App() {
             />
           )}
           {showWorld && (
-            <WorldView
-              root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
-              onClose={() => setShowWorld(false)}
-              askSlot={(v, d, r, link) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} />}
-              buildIt={worldBuildIt}
-            />
+            // Its own boundary: the opaque pane frame covers the terminals at once while the
+            // Lumopolis chunk (the engine and Three.js) loads.
+            <Suspense fallback={<WorldPaneOpening />}>
+              <WorldView
+                root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
+                onClose={() => setShowWorld(false)}
+                askSlot={(v, d, r, link) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} />}
+                buildIt={worldBuildIt}
+              />
+            </Suspense>
           )}
         </Suspense>
       </div>

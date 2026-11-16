@@ -44,7 +44,9 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
     <div
       role="toolbar"
       aria-label="Lumopolis controls"
-      className="absolute top-0 left-0 right-0 flex flex-wrap items-center gap-2 px-3 py-2 border-b border-[#3c3c3c] bg-[#252526]/95"
+      className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-[#3c3c3c]"
+      // In the pane's flow above the map, opaque, so nothing on the map shows through it.
+      style={{ position: 'relative', flex: 'none', zIndex: 6, background: '#252526' }}
     >
       <span className="text-sm font-semibold text-white inline-flex items-center gap-2 mr-2">
         <i className="fa-solid fa-earth-americas text-[#4fc1ff]" aria-hidden="true" />

@@ -248,7 +248,7 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
     await expect(pane()).toBeVisible()
     await expect(page.locator('[data-testid="world-fallback"]')).toHaveCount(0)
     await expect(canvas()).toBeVisible({ timeout: 120_000 })
-    await expect(page.locator('[data-testid="world-canvas-host"]')).not.toHaveClass(/invisible/, { timeout: 30_000 })
+    await expect(page.locator('[data-testid="world-canvas-host"]')).toHaveCSS('visibility', 'visible', { timeout: 30_000 })
     // The Ask bar is on once the viewer is up.
     await expect(askBox()).toBeEnabled({ timeout: 30_000 })
   })

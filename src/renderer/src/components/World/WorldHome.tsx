@@ -87,7 +87,7 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now }: World
   ]
 
   return (
-    <div data-testid="world-home" className="absolute inset-0 overflow-auto">
+    <div data-testid="world-home" className="overflow-auto" style={{ position: 'absolute', inset: 0 }}>
       <div className="mx-auto max-w-3xl px-6 py-10 flex flex-col gap-6">
         <div className="flex flex-col items-center gap-1 text-center">
           <h1 className="text-3xl font-semibold text-white inline-flex items-center gap-3">

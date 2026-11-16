@@ -15,7 +15,7 @@ export interface WorldEmptyStateProps {
 
 export function WorldEmptyState({ mode, progress, error, onRetry }: WorldEmptyStateProps): JSX.Element {
   return (
-    <div className="absolute inset-0 flex items-center justify-center p-6" data-testid="world-empty">
+    <div className="flex items-center justify-center p-6" style={{ position: 'absolute', inset: 0 }} data-testid="world-empty">
       <div className="max-w-md text-center flex flex-col items-center gap-3 text-[#cccccc]">
         <i className="fa-solid fa-earth-americas text-3xl text-[#4fc1ff]" aria-hidden="true" />
         {mode === 'loading' && <p className="text-sm" data-testid="world-loading">Opening Lumopolis&hellip;</p>}
