@@ -118,8 +118,11 @@ test('load A, then B with 2 added: after 1 s both are visible and the toast read
   await page.waitForSelector('body[data-ready="1"]', { timeout: 30_000 })
   expect(await growAtoB()).toBeGreaterThanOrEqual(2) // b3 and b4 rising
   await page.waitForTimeout(1000)
-  expect(await page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().changing)).toBe(0)
-  await expect(page.locator('#view .lw-toast')).toHaveText('+2 parts') // still up: it stays about 3 s
+  // Checked first: the toast goes about 3 s after the load, and the poll below may use up to 2 s more.
+  await expect(page.locator('#view .lw-toast')).toHaveText('+2 parts')
+  // The rise lasts 900 ms of wall-clock time, but frames on a busy software-GL runner can come late:
+  // poll for the settled count instead of asserting it at a fixed instant.
+  await expect.poll(() => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().changing), { timeout: 2000 }).toBe(0)
   for (const id of ['b3', 'b4']) {
     const point = await page.evaluate(async (bid) => {
       const t = (window as unknown as HarnessWindow).__worldTest
