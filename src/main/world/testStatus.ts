@@ -91,13 +91,12 @@ interface Suite {
 type CaseState = 'pass' | 'fail' | 'skip'
 
 const TAG_NAME = /\/?(testsuite|testcase|failure|error|skipped)\b/y
-const MAX_TAG = 4096
+const MAX_ATTR_TEXT = 65536 // how much of a tag's attribute text is decoded; scanning itself is unbounded
 
-/** Index of the '>' ending a tag, ignoring any inside quoted values; -1 if none within MAX_TAG chars. */
+/** Index of the '>' ending a tag, ignoring any inside quoted values; -1 at end of input (truncation). */
 function tagEnd(text: string, from: number): number {
-  const limit = Math.min(text.length, from + MAX_TAG)
   let quote = 0
-  for (let i = from; i < limit; i++) {
+  for (let i = from; i < text.length; i++) {
     const c = text.charCodeAt(i)
     if (quote === 0 && (c === 34 || c === 39)) quote = c
     else if (c === quote) quote = 0
@@ -126,11 +125,12 @@ function parseJunit(raw: string, root: string): TestRun[] {
   const files = new Map<string, { failed: boolean; passed: boolean; at: number }>()
   let current: { file?: string; at: number; state: CaseState } | null = null
 
-  const finish = (): void => {
-    if (current?.file !== undefined && current.state !== 'skip') {
+  const finish = (force?: CaseState): void => {
+    const state = force ?? current?.state
+    if (current?.file !== undefined && state !== 'skip') {
       const key = relativize(current.file, root)
       const f = files.get(key) ?? { failed: false, passed: false, at: 0 }
-      if (current.state === 'fail') f.failed = true
+      if (state === 'fail') f.failed = true
       else f.passed = true
       f.at = Math.max(f.at, current.at)
       files.set(key, f)
@@ -155,14 +155,14 @@ function parseJunit(raw: string, root: string): TestRun[] {
       // Truncated input: an unterminated testcase tag still names the file that must not read as passed.
       if (name === 'testcase' && !closing) {
         finish()
-        const cut = text.slice(from, from + MAX_TAG)
+        const cut = text.slice(from, from + MAX_ATTR_TEXT)
         const suite = stack[stack.length - 1] as Suite | undefined
         current = { file: attrs(cut).file ?? suite?.file, at: suite?.at ?? 0, state: 'pass' }
       }
       break
     }
     pos = gt + 1
-    const a = text.slice(from, gt)
+    const a = text.slice(from, Math.min(gt, from + MAX_ATTR_TEXT))
     const selfClosing = text[gt - 1] === '/'
     if (name === 'testsuite') {
       if (closing) {
@@ -180,6 +180,7 @@ function parseJunit(raw: string, root: string): TestRun[] {
       if (closing) {
         finish()
       } else {
+        finish() // a testcase opening inside an open one: record the open one as it stands
         const suite = stack[stack.length - 1] as Suite | undefined
         current = { file: attrs(a).file ?? suite?.file, at: suite?.at ?? 0, state: 'pass' }
         if (selfClosing) finish()
@@ -193,11 +194,8 @@ function parseJunit(raw: string, root: string): TestRun[] {
       }
     }
   }
-  if (current) {
-    // A testcase still open at the end of input: a crashed or cut-off report is not a pass.
-    ;(current as { state: CaseState }).state = 'fail'
-    finish()
-  }
+  // A testcase still open at the end of input: a crashed or cut-off report is not a pass.
+  finish('fail')
   return [...files].map(([file, f]) => ({ file, passed: !f.failed, at: f.at, source: 'junit' as const }))
 }
 

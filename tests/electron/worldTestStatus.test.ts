@@ -154,12 +154,38 @@ describe('readTestResults', () => {
     expect(await readTestResults(ROOT, d)).toEqual([{ file: 'a/x.test.ts', passed: false, at: 0, source: 'junit' }])
     const ok = '<testsuite name="a/y.test.ts"><testcase name="a > b"/></testsuite>'
     expect((await readTestResults(ROOT, deps({ '/repo/junit.xml': ok }).d))[0].passed).toBe(true)
-    // a tag longer than the bound counts as unterminated and fails the open file
-    const long = '<testsuite name="a/z.test.ts"><testcase name="' + 'x'.repeat(5000) + '"/></testsuite>'
-    expect((await readTestResults(ROOT, deps({ '/repo/junit.xml': long }).d))[0]).toMatchObject({
-      file: 'a/z.test.ts',
-      passed: false
-    })
+  })
+
+  it('long tags no longer cut a report short', async () => {
+    const run = async (xml: string): Promise<TestRun[]> => readTestResults(ROOT, deps({ '/repo/junit.xml': xml }).d)
+    const later = '<testsuite name="b/later.test.ts"><testcase name="ok"/></testsuite>'
+    const laterRun = { file: 'b/later.test.ts', passed: true, at: 0, source: 'junit' }
+    // (a) a 20,000-char testcase name
+    const longName =
+      '<testsuite name="a/x.test.ts"><testcase name="' + 'n'.repeat(20000) + '"/></testsuite>' + later
+    expect(await run(longName)).toEqual([{ file: 'a/x.test.ts', passed: true, at: 0, source: 'junit' }, laterRun])
+    // (b) a 50 KB failure message fails its own file only
+    const longFail =
+      '<testsuite name="a/y.test.ts"><testcase name="t"><failure message="' + 'm'.repeat(50000) + '"/></testcase></testsuite>' + later
+    expect(await run(longFail)).toEqual([{ file: 'a/y.test.ts', passed: false, at: 0, source: 'junit' }, laterRun])
+    // an unterminated quote runs to the end of input: truncation
+    expect(await run('<testsuite name="a/z.test.ts"><testcase name="q>' + later)).toEqual([
+      { file: 'a/z.test.ts', passed: false, at: 0, source: 'junit' }
+    ])
+  })
+
+  it('records both files when testcases are mis-nested', async () => {
+    const xml =
+      '<testsuite name="a/one.test.ts"><testcase name="1"><failure/><testsuite name="b/two.test.ts"><testcase name="2"/></testcase></testsuite></testsuite>'
+    const runs = await readTestResults(ROOT, deps({ '/repo/junit.xml': xml }).d)
+    expect(runs.map((r) => [r.file, r.passed])).toEqual([
+      ['a/one.test.ts', false],
+      ['b/two.test.ts', true]
+    ])
+    const open = '<testsuite name="a/p.test.ts"><testcase name="1"><testcase name="2"/></testsuite>'
+    expect((await readTestResults(ROOT, deps({ '/repo/junit.xml': open }).d)).map((r) => [r.file, r.passed])).toEqual([
+      ['a/p.test.ts', true]
+    ])
   })
 
   it('scans pathological junit and transcript input in linear time', async () => {
