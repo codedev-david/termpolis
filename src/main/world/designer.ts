@@ -37,10 +37,13 @@ export interface ProposeResult {
 }
 
 export interface Designer {
-  draft(description: string): Promise<DesignDraftResult>
+  /** `cancelKey` (draft:<token>, from the renderer) lets cancel() stop a draft whose design key is not known yet. */
+  draft(description: string, cancelKey?: string): Promise<DesignDraftResult>
   refine(key: string, message: string, summary: string): Promise<DesignRefineResult>
   /** Applies an agent's design ops directly (no agent run): to the named design, or to a new one linked to a folder. */
   propose(target: ProposeTarget, ops: unknown[]): Promise<ProposeResult>
+  /** Stops the running draft (by its cancel key) or refine (by its design key); false when none runs. */
+  cancel(key: string): boolean
 }
 
 /** A designer failure whose message is safe to show the user as it is. */
@@ -219,10 +222,10 @@ export function createDesigner(deps: DesignerDeps): Designer {
   }
 
   return {
-    async draft(description) {
+    async draft(description, cancelKey) {
       const id = deps.newId()
       const key = `design:${id}`
-      const reply = await run(key, join(deps.designsDir, id), buildDesignPrompt(null, description, ''))
+      const reply = await run(cancelKey ?? key, join(deps.designsDir, id), buildDesignPrompt(null, description, ''))
       const patch = applyDesignPatch(emptyDesignDoc(key, now()), reply.ops, layoutPlacer)
       if (patch.applied === 0) throw new DesignFailure(DESIGN_EMPTY)
       await save(patch.doc)
@@ -258,6 +261,13 @@ export function createDesigner(deps: DesignerDeps): Designer {
       const title = titleFor(`Plan for ${folderName(target.linkRoot)}`)
       await register({ kind: 'design', id, title, linkedRoot: target.linkRoot }, title)
       return { key, applied: patch.applied, skipped: patch.skipped.length }
+    },
+
+    cancel(key) {
+      const ctl = running.get(key)
+      if (!ctl) return false
+      ctl.abort()
+      return true
     }
   }
 }

@@ -343,7 +343,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     const { viewer } = setup({ doc: minimal() })
     viewer.setLayers({ processes: true })
     expect(viewer.screenPoint('b1')).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0 })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, wireframes: [] })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -524,7 +524,16 @@ describe('WebGL path (stand-in renderer)', () => {
     const { viewer } = setup3d()
     expect(viewer.screenPoint('b1')).toEqual({ x: 5, y: 6 })
     expect(viewer.screenPoint('nope')).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1 })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, wireframes: ['b4'] })
+  })
+
+  it('drawn lists the buildings drawn as wireframes (planned, not built), and hides them with the planned layer off', () => {
+    const { viewer } = setup3d()
+    const d = rich()
+    viewer.load({ ...d, buildings: d.buildings.map((b, i) => (i === 0 ? { ...b, status: 'proposed' as const } : b)) })
+    expect(viewer.drawn().wireframes).toEqual(['b1', 'b4'])
+    viewer.setLayers({ planned: false })
+    expect(viewer.drawn().wireframes).toEqual([])
   })
 
   it('setTheme hands the palette to the renderer; setLayers redraws', () => {

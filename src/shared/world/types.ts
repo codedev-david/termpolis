@@ -66,3 +66,25 @@ export type AskResult =
 export interface DesignDraftResult { key: string; doc: WorldDoc; text: string }
 /** The design after one refine: changes applied and skipped (malformed ones count as skipped), plus the running summary. */
 export interface DesignRefineResult { doc: WorldDoc; text: string; applied: number; skipped: number; summary: string }
+
+// ---- Lumopolis sources (renderer <-> main): the worlds the user has opened, newest first ----
+/** Where a world comes from: this project, a folder, a cloned repository, or a design (keyed design:<id>). */
+export type WorldSource =
+  | { kind: 'project'; root: string; linkedDesign?: string }
+  | { kind: 'folder'; root: string; linkedDesign?: string }
+  | { kind: 'git'; url: string; ref?: string; root: string; linkedDesign?: string }
+  | { kind: 'design'; id: string; title: string; linkedRoot?: string }
+
+/** One recent world. `missing`: its folder (or stored design) is gone, so it can only be removed. */
+export interface WorldEntry {
+  key: string
+  source: WorldSource
+  title: string
+  lastOpened: number
+  missing?: boolean
+}
+
+/** A folder picked for Build it: nothing is registered yet; `empty` drives the "not empty" warning. */
+export interface PickFolderResult { root: string; empty: boolean }
+/** Build it: the folder now linked to the design, and the first prompt for the agent opened there. */
+export interface BuildItResult { root: string; key: string; title: string; prompt: string }

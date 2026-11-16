@@ -6,20 +6,9 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { graphKeyForRoot } from '../codeGraph'
 import { worldFileName } from './worldStore'
+import type { WorldEntry, WorldSource } from '../../shared/world/types'
 
-export type WorldSource =
-  | { kind: 'project'; root: string; linkedDesign?: string }
-  | { kind: 'folder'; root: string; linkedDesign?: string }
-  | { kind: 'git'; url: string; ref?: string; root: string; linkedDesign?: string }
-  | { kind: 'design'; id: string; title: string; linkedRoot?: string }
-
-export interface WorldEntry {
-  key: string
-  source: WorldSource
-  title: string
-  lastOpened: number
-  missing?: boolean
-}
+export type { WorldEntry, WorldSource }
 
 export interface SourceRegistryDeps {
   exists(p: string): Promise<boolean>

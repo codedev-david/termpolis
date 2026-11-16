@@ -11,9 +11,9 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import * as fsp from 'node:fs/promises'
 import { join } from 'node:path'
+import { BAD_REF_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 
-export const BAD_URL_MESSAGE = "That doesn't look like a git URL (https://, ssh:// or git@ only)."
-export const BAD_REF_MESSAGE = "That branch name isn't valid."
+export { BAD_URL_MESSAGE, BAD_REF_MESSAGE, validateGitUrl } from '../../shared/world/gitUrl'
 export const TOO_BIG_MESSAGE = 'That repository is larger than 2 GB, so Lumopolis stopped cloning it.'
 export const CANCELLED_MESSAGE = 'Cancelled'
 export const CLEAR_MESSAGE = "Lumopolis couldn't clear an earlier partial copy of that repository. Try again in a moment."
@@ -27,19 +27,6 @@ export const MAX_CLONE_BYTES = 2 * 1024 * 1024 * 1024
 export const CLONE_TIMEOUT_MS = 5 * 60_000
 /** How often the clone's folder size is checked while git runs. */
 export const SIZE_POLL_MS = 2000
-
-const URL_RE = /^(https:\/\/|ssh:\/\/|git@)[^\s]+$/
-const REF_RE = /^[A-Za-z0-9._/-]+$/
-const CONTROL_RE = /[\u0000-\u001f\u007f]/
-
-export function validateGitUrl(url: string): { ok: true } | { ok: false; reason: string } {
-  if (typeof url !== 'string' || !URL_RE.test(url) || CONTROL_RE.test(url)) return { ok: false, reason: BAD_URL_MESSAGE }
-  return { ok: true }
-}
-
-function validRef(ref: unknown): ref is string {
-  return typeof ref === 'string' && REF_RE.test(ref) && !ref.startsWith('-') && !ref.includes('..')
-}
 
 /** The folder name for a clone: the first 16 hex digits of sha1(url + ref). */
 export function cloneKey(url: string, ref?: string): string {
@@ -230,7 +217,7 @@ export async function cloneRepo(
 ): Promise<{ ok: true; root: string } | { ok: false; error: string }> {
   const checked = validateGitUrl(url)
   if (!checked.ok) return { ok: false, error: checked.reason }
-  if (ref !== undefined && !validRef(ref)) return { ok: false, error: BAD_REF_MESSAGE }
+  if (ref !== undefined && !validGitRef(ref)) return { ok: false, error: BAD_REF_MESSAGE }
 
   const reposDir = join(deps.baseDir, 'world', 'repos')
   const hash = cloneKey(url, ref)

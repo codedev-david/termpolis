@@ -11,13 +11,27 @@
 //   world:design-draft  { description }          → ok(DesignDraftResult)   (a new design world, keyed design:<id>,
 //                                                    sketched by the user's agent; registered only when a designer is passed)
 //   world:design-refine { key, message, summary } → ok(DesignRefineResult)  (one conversational change to a design)
+//   world:design-cancel { key }                   → ok(boolean)  (stops a running draft (draft:<token>) or refine)
+// Sources (the Lumopolis home; registered only when sources are passed):
+//   world:sources-list               → ok(WorldEntry[])        (recent worlds, newest first, `missing` marked)
+//   world:map-project { root }       → ok(WorldEntry)          (the active terminal's project)
+//   world:open-folder                → ok(WorldEntry | null)   (native folder dialog; null on cancel)
+//   world:pick-folder                → ok(PickFolderResult | null)  (the dialog only: registers nothing)
+//   world:clone { url, ref? }        → ok(WorldEntry)          (shallow clone into userData, then registered)
+//   world:clone-cancel { url, ref? } → ok(boolean)
+//   world:remove-source { key }      → ok(true)
+//   world:design-get { key }         → ok(WorldDoc)
+//   world:build-it { key, root, agent, confirmNonEmpty? } → ok(BuildItResult)  (links the design to the folder; the
+//                                      renderer then opens the agent terminal there with the first prompt)
 //   world:progress / world:updated           (webContents.send, while a world compiles / after a
 //                                             watcher-driven recompile saved)
 // `ipc` and `win` are parameters, so this module never imports Electron and tests pass fakes.
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
-import type { AskRequest, AskResult, DesignDraftResult, DesignRefineResult } from '../../shared/world/types'
-import { DesignFailure } from './designer'
+import type { AskRequest, AskResult, BuildItResult, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
+import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
+import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
+import type { SourceRegistry } from './sources'
 import type { WorldClient } from './worldClient'
 import type { WorldSettings, WorldSettingsStore } from './worldSettings'
 
@@ -70,9 +84,12 @@ const askRequestOf = (args: unknown): AskRequest | string => {
 }
 
 export interface WorldDesigner {
-  draft(description: string): Promise<DesignDraftResult>
+  draft(description: string, cancelKey?: string): Promise<DesignDraftResult>
   refine(key: string, message: string, summary: string): Promise<DesignRefineResult>
+  cancel(key: string): boolean
 }
+
+const DRAFT_KEY_RE = /^draft:[A-Za-z0-9][A-Za-z0-9-]{0,63}$/
 
 const MAX_DESIGN_TEXT = 4000
 export const DESIGN_FAILED = "Lumopolis couldn't work on that design. Try again."
@@ -91,6 +108,44 @@ const refineRequestOf = (args: unknown): { key: string; message: string; summary
 /** The designer's own friendly failure as it is; anything else that escapes it is never shown raw. */
 const designErr = (e: unknown) => err(e instanceof DesignFailure ? e.message : DESIGN_FAILED)
 
+/** What the source handlers need; main passes the real registry, store, dialog and world host. */
+export interface WorldSourcesDeps {
+  registry: Pick<SourceRegistry, 'list' | 'upsert' | 'remove' | 'get'>
+  designs: { load(key: string): Promise<WorldDoc | null> }
+  /** The native folder dialog: the chosen folder, or null when the user cancels. */
+  pickFolder(): Promise<string | null>
+  isEmpty(root: string): Promise<boolean>
+  clone(url: string, ref?: string): Promise<{ ok: true; root: string } | { ok: false; error: string }>
+  cancelClone(url: string, ref?: string): Promise<boolean>
+  /** Watches a Build it folder, so its world follows the agent's writes (a folder outside git has no other watch). */
+  watch?(root: string): void
+}
+
+export const SOURCES_FAILED = "Lumopolis couldn't update its list of worlds. Try again."
+export const FOLDER_FAILED = "Lumopolis couldn't open that folder."
+export const CLONE_FAILED = "Lumopolis couldn't clone that repository. Try again."
+export const NOT_EMPTY = "That folder isn't empty."
+const AGENT_RE = /^[A-Za-z0-9._-]{1,64}$/
+const MAX_KEY = 200
+
+/** The first prompt of the Build it agent terminal. */
+export const BUILD_PROMPT = (title: string, key: string): string =>
+  `Build the app described by the Lumopolis design "${title}". Read it with gateway_call server "lumopolis", tool "world_read" (designKey "${key}"). Work in this folder.`
+
+const field = (args: unknown, name: string): unknown => (args && typeof args === 'object' ? (args as Record<string, unknown>)[name] : undefined)
+const absolute = (v: unknown): v is string => nonEmpty(v) && win32.isAbsolute(v)
+
+/** A checked clone target, or the friendly reason it is not one. */
+const cloneTargetOf = (args: unknown): { url: string; ref?: string } | string => {
+  const url = field(args, 'url')
+  if (typeof url !== 'string') return BAD_URL_MESSAGE
+  const checked = validateGitUrl(url)
+  if (!checked.ok) return checked.reason
+  const ref = field(args, 'ref')
+  if (ref !== undefined && !validGitRef(ref)) return BAD_REF_MESSAGE
+  return ref === undefined ? { url } : { url, ref }
+}
+
 /** Registers the handlers and the push forwarding; returns a function that stops the forwarding. */
 export function registerWorldIpc(
   ipc: WorldIpcMain,
@@ -98,7 +153,8 @@ export function registerWorldIpc(
   win: () => WorldIpcWindow | null | undefined,
   settings: WorldSettingsStore,
   asker?: WorldAsker,
-  designer?: WorldDesigner
+  designer?: WorldDesigner,
+  sources?: WorldSourcesDeps
 ): () => void {
   const handler =
     (run: (root: string) => Promise<unknown>) =>
@@ -158,10 +214,12 @@ export function registerWorldIpc(
 
   if (designer) {
     ipc.handle('world:design-draft', async (_event: unknown, args?: unknown) => {
-      const description = args && typeof args === 'object' ? (args as { description?: unknown }).description : undefined
+      const description = field(args, 'description')
       if (!textOf(description)) return err('description required (up to 4000 characters)')
+      const cancelKey = field(args, 'cancelKey')
+      if (cancelKey !== undefined && (typeof cancelKey !== 'string' || !DRAFT_KEY_RE.test(cancelKey))) return err('cancelKey must be draft:<id>')
       try {
-        return ok(await designer.draft(description))
+        return ok(await (cancelKey === undefined ? designer.draft(description) : designer.draft(description, cancelKey)))
       } catch (e) {
         return designErr(e)
       }
@@ -175,7 +233,14 @@ export function registerWorldIpc(
         return designErr(e)
       }
     })
+    ipc.handle('world:design-cancel', (_event: unknown, args?: unknown) => {
+      const key = field(args, 'key')
+      if (typeof key !== 'string' || !(DESIGN_KEY_RE.test(key) || DRAFT_KEY_RE.test(key))) return err('design key required')
+      return ok(designer.cancel(key))
+    })
   }
+
+  if (sources) registerSourceHandlers(ipc, sources)
 
   // A closed or reloading window must never break the host's event stream.
   const offProgress = client.onProgress((e) => {
@@ -196,4 +261,130 @@ export function registerWorldIpc(
     offProgress()
     offUpdated()
   }
+}
+
+/** The Lumopolis home's handlers. Every failure is a fixed friendly string; nothing raw reaches the renderer. */
+function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void {
+  const { registry } = deps
+
+  ipc.handle('world:sources-list', async () => {
+    try {
+      return ok(await registry.list())
+    } catch {
+      return err(SOURCES_FAILED)
+    }
+  })
+
+  ipc.handle('world:map-project', async (_event: unknown, args?: unknown) => {
+    const root = field(args, 'root')
+    if (!absolute(root)) return err('root required')
+    try {
+      return ok(await registry.upsert({ kind: 'project', root }))
+    } catch {
+      return err(SOURCES_FAILED)
+    }
+  })
+
+  ipc.handle('world:open-folder', async () => {
+    try {
+      const root = await deps.pickFolder()
+      return ok(root === null ? null : await registry.upsert({ kind: 'folder', root }))
+    } catch {
+      return err(FOLDER_FAILED)
+    }
+  })
+
+  ipc.handle('world:pick-folder', async () => {
+    try {
+      const root = await deps.pickFolder()
+      return ok(root === null ? null : { root, empty: await deps.isEmpty(root) })
+    } catch {
+      return err(FOLDER_FAILED)
+    }
+  })
+
+  ipc.handle('world:clone', async (_event: unknown, args?: unknown) => {
+    const target = cloneTargetOf(args)
+    if (typeof target === 'string') return err(target)
+    let res: Awaited<ReturnType<WorldSourcesDeps['clone']>>
+    try {
+      res = await deps.clone(target.url, target.ref)
+    } catch {
+      return err(CLONE_FAILED)
+    }
+    if (!res.ok) return err(res.error)
+    try {
+      return ok(await registry.upsert({ kind: 'git', url: target.url, ...(target.ref === undefined ? {} : { ref: target.ref }), root: res.root }))
+    } catch {
+      return err(SOURCES_FAILED)
+    }
+  })
+
+  ipc.handle('world:clone-cancel', async (_event: unknown, args?: unknown) => {
+    const target = cloneTargetOf(args)
+    if (typeof target === 'string') return err(target)
+    try {
+      return ok(await deps.cancelClone(target.url, target.ref))
+    } catch {
+      return ok(false)
+    }
+  })
+
+  ipc.handle('world:remove-source', async (_event: unknown, args?: unknown) => {
+    const key = field(args, 'key')
+    if (!nonEmpty(key) || key.length > MAX_KEY) return err('key required')
+    try {
+      await registry.remove(key)
+      return ok(true)
+    } catch {
+      return err(SOURCES_FAILED)
+    }
+  })
+
+  ipc.handle('world:design-get', async (_event: unknown, args?: unknown) => {
+    const key = field(args, 'key')
+    if (typeof key !== 'string' || !DESIGN_KEY_RE.test(key)) return err(DESIGN_NOT_FOUND)
+    try {
+      const doc = await deps.designs.load(key)
+      return doc ? ok(doc) : err(DESIGN_NOT_FOUND)
+    } catch {
+      return err(DESIGN_NOT_FOUND)
+    }
+  })
+
+  ipc.handle('world:build-it', async (_event: unknown, args?: unknown) => {
+    const key = field(args, 'key')
+    const root = field(args, 'root')
+    const agent = field(args, 'agent')
+    const confirm = field(args, 'confirmNonEmpty')
+    if (typeof key !== 'string' || !DESIGN_KEY_RE.test(key)) return err(DESIGN_NOT_FOUND)
+    if (!absolute(root)) return err('root required')
+    if (typeof agent !== 'string' || !AGENT_RE.test(agent)) return err('agent required')
+    if (confirm !== undefined && typeof confirm !== 'boolean') return err('confirmNonEmpty must be a boolean')
+    let title: string
+    try {
+      const entry = await registry.get(key)
+      if (!entry || entry.source.kind !== 'design') return err(DESIGN_NOT_FOUND)
+      title = entry.title
+    } catch {
+      return err(SOURCES_FAILED)
+    }
+    try {
+      if (!(await deps.isEmpty(root)) && confirm !== true) return err(NOT_EMPTY)
+    } catch {
+      return err(FOLDER_FAILED)
+    }
+    try {
+      await registry.upsert({ kind: 'folder', root, linkedDesign: key })
+    } catch {
+      return err(SOURCES_FAILED)
+    }
+    try {
+      deps.watch?.(root)
+    } catch {
+      // the world still opens; it refreshes on the next open instead of live
+    }
+    const res: BuildItResult = { root, key, title, prompt: BUILD_PROMPT(title, key) }
+    return ok(res)
+  })
 }

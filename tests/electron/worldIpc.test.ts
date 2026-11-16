@@ -255,7 +255,7 @@ describe('registerWorldIpc design handlers', () => {
 
   it('registers the design handlers only when a designer is passed, after the rest', () => {
     expect([...setup().handlers.keys()]).not.toContain('world:design-draft')
-    expect([...withDesigner(fakeDesigner()).handlers.keys()].slice(-2)).toEqual(['world:design-draft', 'world:design-refine'])
+    expect([...withDesigner(fakeDesigner()).handlers.keys()].slice(-3)).toEqual(['world:design-draft', 'world:design-refine', 'world:design-cancel'])
   })
 
   it('world:design-draft passes the description through', async () => {

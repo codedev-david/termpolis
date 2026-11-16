@@ -2585,19 +2585,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       // re-indexes never overlap however long one takes. reindexWatchedChange never rejects.
       // The last two arguments: no custom nested-repo probe, and `scoped` (scopedWatch.ts) so that nothing
       // under .worktrees, node_modules, dist ... is ever delivered to this thread by the OS.
-      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(
-        fsWatch,
-        (root, files) => {
-          const reindexed = reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
-          // Lumopolis: once the graph has the change, refresh that project's world, but only if one is
-          // already stored (a watcher never makes the first world). Fire and forget: the watch gate
-          // waits on the re-index alone, and notifyChanged never throws.
-          void Promise.resolve(reindexed).then(() => worldClient.notifyChanged(root, files))
-          return reindexed
-        },
-        undefined,
-        true,
-      ))
+      watchRepoForGraphAndWorld(opts.repoRoot)
     } catch { /* best effort */ }
     return ok({ ...stats, codeGraph })
   } catch (e: any) { return err(e.message) }
@@ -2688,17 +2676,55 @@ const worldClient = createWorldClient(undefined, {
     if (snap.files.length > 0) return snap
     await buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => whenNotShed() }, key)
     const built = graphSnapshot(key, root, { structureOnly: true })
-    if (built.files.length === 0) throw new Error('no source files found')
+    // A Build it folder starts empty: its world is the linked design's plan alone until files arrive.
+    if (built.files.length === 0) {
+      const source = (await worldSources.get(key))?.source
+      if (!source || source.kind === 'design' || !source.linkedDesign) throw new Error('no source files found')
+    }
     return built
   },
 })
+/** Keeps a folder's code graph fresh and, once the graph has a change, refreshes that project's world, but
+ *  only if one is already stored (a watcher never makes the first world). Fire and forget: the watch gate
+ *  waits on the re-index alone, and notifyChanged never throws. Used by code ingest and by Build it (a new
+ *  build folder is often outside git, so nothing else would watch it). */
+function watchRepoForGraphAndWorld(repoRoot: string): void {
+  ensureRepoWatch(repoRoot, fsBackedWatchDeps(
+    fsWatch,
+    (root, files) => {
+      const reindexed = reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
+      void Promise.resolve(reindexed).then(() => worldClient.notifyChanged(root, files))
+      return reindexed
+    },
+    undefined,
+    true,
+  ))
+}
 // Ask: no primer and noRemember, so a question about the world never reads or writes the brain. deliver is
 // resolved at call time because deliverSecondOpinion is declared further down this file.
 registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAskRunner({
   exec: runHeadless,
   execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
   client: worldClient,
-}), worldDesigner)
+}), worldDesigner, {
+  registry: worldSources,
+  designs: worldDesignStore,
+  // The Lumopolis home's folder dialog. TERMPOLIS_TEST_WORLD_PICK_FILE (e2e only) names a file whose text is
+  // the folder to answer, read at each pick so one test can pick several folders; empty text is a cancel.
+  pickFolder: async () => {
+    const testPick = process.env.TERMPOLIS_TEST_WORLD_PICK_FILE
+    if (testPick) return (await fsPromises.readFile(testPick, 'utf8')).trim() || null
+    const win = mainWindow
+    const result = win
+      ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: 'Choose a folder for Lumopolis' })
+      : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], title: 'Choose a folder for Lumopolis' })
+    return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
+  },
+  isEmpty: async (root) => (await fsPromises.readdir(root)).length === 0,
+  clone: (url, ref) => worldClient.clone(url, ref),
+  cancelClone: (url, ref) => worldClient.cancelClone(url, ref),
+  watch: (root) => watchRepoForGraphAndWorld(root),
+})
 /** An agent's working directory → the project root Lumopolis keys its world by: the git root of the
  *  folder, or the folder itself outside a repository. The same rule the Lumopolis pane applies
  *  (WorldView.tsx, through git:find-root), so an agent and the pane name the same world. */

@@ -360,3 +360,35 @@ describe('layoutPlacer', () => {
     expect(Object.keys(out).sort()).toEqual(['a', 'a1', 'a2', 'b', 'b1'])
   })
 })
+
+describe('createDesigner cancel', () => {
+  /** An exec that waits until its request is aborted, then fails the way runHeadless does. */
+  const hanging = (req: ExecRequest): Promise<ExecResult> =>
+    new Promise((_resolve, reject) => { req.signal?.addEventListener('abort', () => reject(new Error('aborted'))) })
+
+  it('cancel(draftToken) aborts a running draft started with that token; nothing is stored or registered', async () => {
+    const { designer, execFn, registry } = setup(hanging)
+    const p = designer.draft('a shop', 'draft:t1')
+    await vi.waitFor(() => expect(execFn).toHaveBeenCalled())
+    expect(designer.cancel('draft:t1')).toBe(true)
+    expect(await failure(p)).toBe(DESIGN_REPLACED)
+    expect(await registry.list()).toEqual([])
+  })
+
+  it('cancel(designKey) aborts a running refine for that design', async () => {
+    const { designer, execFn, store } = setup(hanging)
+    await stored(store)
+    const p = designer.refine('design:id1', 'add a cache', '')
+    await vi.waitFor(() => expect(execFn).toHaveBeenCalled())
+    expect(designer.cancel('design:id1')).toBe(true)
+    expect(await failure(p)).toBe(DESIGN_REPLACED)
+  })
+
+  it('cancel of a key with nothing running is false; a draft without a token runs under its design key', async () => {
+    const { designer, execFn } = setup(async () => okRes(reply('ok', DRAFT_OPS)))
+    expect(designer.cancel('draft:none')).toBe(false)
+    const r = await designer.draft('a shop')
+    expect(r.key).toBe('design:id1')
+    expect(execFn).toHaveBeenCalledTimes(1)
+  })
+})

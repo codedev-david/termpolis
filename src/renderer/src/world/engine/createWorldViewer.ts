@@ -62,6 +62,8 @@ export interface WorldDrawn {
   conduits: number
   /** Rises, pulses and fades still running (always 0 in 2D). */
   changing: number
+  /** Ids of the buildings drawn as wireframes: planned parts not built yet (always empty in 2D). */
+  wireframes: string[]
 }
 
 export interface WorldViewerOptions {
@@ -245,11 +247,13 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     return text
   }
 
+  let wireframes: string[] = []
   function redraw(): void {
     const d = doc
     if (!d) return
     if (!r3) { drawFallback(d); return }
     const model = buildSceneModel(d, layers, revealProposal === undefined ? undefined : { revealProposal })
+    wireframes = model.buildings.filter((b) => b.look === 'wire').map((b) => b.id)
     r3.draw(model, sceneText(d), layers.allLineLabels)
     r3.setExploded(exploded)
     if (selection && kindOf(selection.id)) {
@@ -481,7 +485,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     getSelection: () => (selection ? [selection.id] : []),
     cameraRegion: () => (r3 ? r3.visibleIds() : allIds()),
     screenPoint: (id) => (r3 ? r3.screenPoint(id) : null),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }) }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [] }),
     resetView() {
       cancelActions()
       deselect()
