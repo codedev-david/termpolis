@@ -1427,6 +1427,11 @@ describe('memory:build-primer', () => {
     world.client.hasWorld.mockResolvedValueOnce(false)
     expect(await probe('/scratch/lumo-b')).toBe(false)
     expect(world.client.hasWorld).toHaveBeenLastCalledWith('/scratch/lumo-b')
+    // ...and that failure is kept: asking again about the same folder spawns no second git.
+    const gitCalls = gitMock.safeGitAsync.mock.calls.length
+    expect(await probe('/scratch/lumo-b')).toBe(true)
+    expect(gitMock.safeGitAsync.mock.calls.length).toBe(gitCalls)
+    expect(world.client.hasWorld).toHaveBeenLastCalledWith('/scratch/lumo-b')
     gitMock.safeGitAsync.mockResolvedValueOnce('  ')
     expect(await probe('/scratch/lumo-c')).toBe(true)
     expect(world.client.hasWorld).toHaveBeenLastCalledWith('/scratch/lumo-c')

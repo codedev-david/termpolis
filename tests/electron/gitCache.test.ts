@@ -134,6 +134,39 @@ describe('failures', () => {
   })
 })
 
+describe('failures, when the caller asks to keep them', () => {
+  const ASK = ['rev-parse', '--show-toplevel']
+
+  it('serves the same failure for the whole window without spawning git again', async () => {
+    H.safeGitAsync.mockRejectedValue(new Error('not a git repository'))
+    await expect(cachedGit(ASK, { cwd: '/scratch' }, 60_000, { cacheFailures: true })).rejects.toThrow('not a git repository')
+    at(now + 59_999)
+    await expect(cachedGit(ASK, { cwd: '/scratch' }, 60_000, { cacheFailures: true })).rejects.toThrow('not a git repository')
+    expect(H.safeGitAsync).toHaveBeenCalledTimes(1)
+    expect(_gitCacheSizeForTests()).toBe(1)
+  })
+
+  it('asks again once the window has passed, or once the folder is invalidated', async () => {
+    H.safeGitAsync.mockRejectedValueOnce(new Error('not a git repository')).mockResolvedValue('/scratch')
+    await expect(cachedGit(ASK, { cwd: '/scratch' }, 60_000, { cacheFailures: true })).rejects.toThrow()
+    at(now + 60_000)
+    expect(await cachedGit(ASK, { cwd: '/scratch' }, 60_000, { cacheFailures: true })).toBe('/scratch')
+    expect(H.safeGitAsync).toHaveBeenCalledTimes(2)
+
+    H.safeGitAsync.mockRejectedValueOnce(new Error('not a git repository'))
+    await expect(cachedGit(ASK, { cwd: '/other' }, 60_000, { cacheFailures: true })).rejects.toThrow()
+    invalidateGitCache('/other') // e.g. `git init` seen by the watcher
+    expect(await cachedGit(ASK, { cwd: '/other' }, 60_000, { cacheFailures: true })).toBe('/scratch')
+  })
+
+  it('leaves the default alone: without the opt-in a failure is still dropped', async () => {
+    H.safeGitAsync.mockRejectedValueOnce(new Error('lock')).mockResolvedValue('ok')
+    await expect(cachedGit(ASK, { cwd: '/repo' }, 60_000, {})).rejects.toThrow('lock')
+    expect(await cachedGit(ASK, { cwd: '/repo' }, 60_000)).toBe('ok')
+    expect(H.safeGitAsync).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('invalidation', () => {
   const seed = async (cwd: string): Promise<void> => { await cachedGit(['status'], { cwd }) }
 

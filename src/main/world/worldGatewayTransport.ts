@@ -19,7 +19,7 @@ export const MAX_GATEWAY_LIMIT = 100
 /** The most ids one gateway read passes on; the rest are dropped. */
 export const MAX_GATEWAY_IDS = 200
 export const NO_WORLD_MESSAGE = 'No Lumopolis map for this project yet. Open Lumopolis in Termpolis to build one.'
-export const NO_ROOT_MESSAGE = 'Lumopolis needs a project: pass "cwd" (your working directory) in the world_read arguments.'
+export const NO_ROOT_MESSAGE = 'world_read needs {"cwd": "<project folder>"}: pass your working directory as "cwd" in the arguments.'
 
 /** What the transport needs from the world client: the full client satisfies it. */
 export type WorldGatewayClient = Pick<WorldClient, 'read' | 'hasWorld'>
@@ -29,15 +29,16 @@ export type WorldRootFor = (cwd?: string) => string | null | Promise<string | nu
 const WORLD_READ: UpstreamTool = {
   name: WORLD_READ_TOOL,
   description:
-    "Look up this project's Lumopolis map: its parts, the connections between them and the evidence behind each. Filter by ids and/or text.",
+    "Look up a project's Lumopolis map: its parts, the connections between them and the evidence behind each. Pass the project folder as \"cwd\", and filter by ids and/or text.",
   inputSchema: {
     type: 'object',
     properties: {
       ids: { type: 'array', items: { type: 'string' }, maxItems: MAX_GATEWAY_IDS, description: 'Part or connection ids to fetch' },
       text: { type: 'string', description: 'Words to match in names, labels and claims (case-insensitive)' },
       limit: { type: 'integer', minimum: 1, maximum: MAX_GATEWAY_LIMIT, description: 'Most items to return (default 20)' },
-      cwd: { type: 'string', description: 'Your working directory: picks the project' }
-    }
+      cwd: { type: 'string', description: 'The project folder (your working directory): picks the map' }
+    },
+    required: ['cwd']
   }
 }
 

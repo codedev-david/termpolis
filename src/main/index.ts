@@ -2670,7 +2670,8 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings)
 const worldRootFor = async (cwd?: string): Promise<string | null> => {
   if (typeof cwd !== 'string' || cwd.trim() === '') return null
   try {
-    const top = (await cachedGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 3000 }, 60_000)).trim()
+    // A failure is kept too: outside a repository every primer and every world_read would spawn git again.
+    const top = (await cachedGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 3000 }, 60_000, { cacheFailures: true })).trim()
     if (top) return top
   } catch { /* not a repository: the folder is the project */ }
   return cwd

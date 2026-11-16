@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { MIN_RECENT_CHARS, WORLD_PRIMER_LINE, buildContextPrimer, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
+import { MIN_RECENT_CHARS, buildContextPrimer, worldPrimerLine, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
 import { projectKeyOf } from '../../src/main/projectKey'
 import { KEEP_SCORE, lessonSubstance } from '../../src/main/lessonSubstance'
 
@@ -50,16 +50,27 @@ describe('buildContextPrimer', () => {
   })
 
   describe('the Lumopolis line', () => {
-    const line = WORLD_PRIMER_LINE
-    it('is exactly the sentence agents are told', () => {
-      expect(line).toBe('This project has a Lumopolis map. Use gateway_call with server "lumopolis", tool "world_read" to look up its parts, connections and evidence.')
+    const line = worldPrimerLine('/repos/app')
+    it('spells out the exact gateway call, with the project folder as its cwd', () => {
+      expect(line).toBe('This project has a Lumopolis map. Use gateway_call with tool "lumopolis/world_read" and arguments {"cwd":"/repos/app"} (optionally ids, text, limit) to look up its parts, connections and evidence.')
+    })
+
+    it('JSON-escapes the folder, so a Windows path still gives valid arguments', () => {
+      const bs = String.fromCharCode(92) // one backslash, spelled so no escaping can blur it
+      const folder = ['C:', 'Users', 'dev', 'my "app"'].join(bs)
+      const win = worldPrimerLine(folder)
+      // Each backslash doubles and the quote is escaped, as JSON requires.
+      const escaped = ['C:', 'Users', 'dev', `my ${bs}"app${bs}"`].join(bs + bs)
+      expect(win).toContain(`arguments {"cwd":"${escaped}"} (optionally`)
+      const args = win.slice(win.indexOf('{'), win.indexOf('}') + 1)
+      expect(JSON.parse(args)).toEqual({ cwd: folder })
     })
 
     it('primer includes the World line only when a doc exists', async () => {
       const search = vi.fn().mockResolvedValue(hits)
       const withDoc = vi.fn(async (p: string) => p === '/repos/app')
       const yes = await buildContextPrimer(search, { query: 'auth', projectPath: ' /repos/app ', hasWorld: withDoc })
-      expect(yes).toContain(line)
+      expect(yes).toContain(line) // the trimmed folder is the one named
       expect(withDoc).toHaveBeenCalledWith('/repos/app') // trimmed
       // It sits right after the code_* pointer, with no backticks.
       const lines = (yes as string).split('\n')
@@ -68,8 +79,21 @@ describe('buildContextPrimer', () => {
 
       const no = await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/other', hasWorld: withDoc })
       expect(no).not.toContain('Lumopolis')
-      // A synchronous probe works too.
-      expect(await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/app', hasWorld: () => true })).toContain(line)
+      // A synchronous probe works too, and a Windows folder is named escaped.
+      const bs = String.fromCharCode(92)
+      const win = await buildContextPrimer(search, { query: 'auth', projectPath: ['C:', 'code', 'app'].join(bs), hasWorld: () => true })
+      expect(win).toContain(`{"cwd":"${['C:', 'code', 'app'].join(bs + bs)}"}`)
+    })
+
+    it('asks about the map alongside the search, not after it', async () => {
+      let release: (h: PrimerHit[]) => void = () => {}
+      const search = vi.fn(() => new Promise<PrimerHit[]>((r) => { release = r }))
+      const probe = vi.fn(async () => true)
+      const pending = buildContextPrimer(search, { query: 'auth', projectPath: '/repos/app', hasWorld: probe })
+      expect(search).toHaveBeenCalled()
+      expect(probe).toHaveBeenCalledWith('/repos/app') // before the search has answered
+      release(hits)
+      expect(await pending).toContain(line)
     })
 
     it('is left out with no probe, no project path, a failing probe, or a non-true answer', async () => {
@@ -81,6 +105,8 @@ describe('buildContextPrimer', () => {
       expect(probe).not.toHaveBeenCalled()
       const throwing = async (): Promise<boolean> => { throw new Error('disk gone') }
       expect(await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/app', hasWorld: throwing })).not.toContain('Lumopolis')
+      const syncThrow = (): boolean => { throw new Error('disk gone') }
+      expect(await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/app', hasWorld: syncThrow })).not.toContain('Lumopolis')
       const junk = (() => 'yes') as unknown as (p: string) => boolean
       expect(await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/app', hasWorld: junk })).not.toContain('Lumopolis')
     })
@@ -88,7 +114,9 @@ describe('buildContextPrimer', () => {
     it('never makes a primer out of nothing: no memory, no digest, map or not', async () => {
       const probe = vi.fn(() => true)
       expect(await buildContextPrimer(async () => [], { query: 'x', projectPath: '/repos/app', hasWorld: probe })).toBeNull()
-      expect(probe).not.toHaveBeenCalled()
+      // A blank query asks nothing at all, the map included.
+      expect(await buildContextPrimer(async () => hits, { query: '  ', projectPath: '/repos/app', hasWorld: probe })).toBeNull()
+      expect(probe).toHaveBeenCalledTimes(1)
     })
   })
 

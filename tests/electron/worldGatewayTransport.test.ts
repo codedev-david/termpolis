@@ -49,6 +49,8 @@ describe('createWorldGatewayTransport', () => {
     expect(schema.type).toBe('object')
     expect(Object.keys(schema.properties)).toEqual(['ids', 'text', 'limit', 'cwd'])
     expect(schema.properties.ids.type).toBe('array')
+    expect((tools[0].inputSchema as { required: string[] }).required).toEqual(['cwd'])
+    expect(tools[0].description).toContain('"cwd"')
   })
 
   it('world_read returns items + evidence', async () => {
@@ -81,7 +83,7 @@ describe('createWorldGatewayTransport', () => {
       expect(hasWorld).not.toHaveBeenCalled()
     }
     const { transport, rootFor } = setup()
-    await expect(transport.callTool('world_read', undefined)).rejects.toThrow('pass "cwd"')
+    await expect(transport.callTool('world_read', undefined)).rejects.toThrow('world_read needs {"cwd": "<project folder>"}')
     expect(rootFor).toHaveBeenCalledWith(undefined)
   })
 
@@ -161,5 +163,6 @@ describe('world_read through the gateway', () => {
     })
     const none = createGateway({ getPolicy: () => defaultPolicy(), transports: () => [setup({ has: false }).transport], scanSecrets: noSecrets })
     expect(await none.callTool('lumopolis/world_read', { cwd: '/a' })).toMatchObject({ ok: false, error: NO_WORLD_MESSAGE })
+    expect(await gw.callTool('lumopolis/world_read', {})).toMatchObject({ ok: false, error: NO_ROOT_MESSAGE })
   })
 })

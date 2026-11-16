@@ -24,8 +24,11 @@
 //     reading the status can never return the pre-stage answer. Read-your-writes is not optional
 //     here: the rail repaints from that read immediately after the write.
 //
-// Failures are never cached. A transient failure that stuck around for the whole window would paint
-// "not a repo" onto a repo.
+// Failures are not cached by default. A transient failure that stuck around for the whole window would
+// paint "not a repo" onto a repo. A caller asking a slow-moving question with a long TTL ("which repo is
+// this folder in?", asked by every memory primer and every Lumopolis lookup) opts in with
+// `{ cacheFailures: true }`: outside a repository the answer is always a failure, and without the opt-in
+// each ask would spawn git again.
 
 import { safeGitAsync, type GitOptions } from './gitCommand'
 
@@ -61,8 +64,15 @@ function keyFor(cwd: string, args: string[]): string {
  *
  * Only ever pass READ commands. A write would be deduplicated — two `git commit` calls in the same
  * window would run once — which is exactly wrong.
+ *
+ * `cacheFailures` keeps a failed answer for the same window instead of dropping it (see the header).
  */
-export function cachedGit(args: string[], opts: GitOptions, ttlMs: number = GIT_CACHE_TTL_MS): Promise<string> {
+export function cachedGit(
+  args: string[],
+  opts: GitOptions,
+  ttlMs: number = GIT_CACHE_TTL_MS,
+  { cacheFailures = false }: { cacheFailures?: boolean } = {},
+): Promise<string> {
   const key = keyFor(opts.cwd, args)
   const now = clock()
   const hit = entries.get(key)
@@ -73,7 +83,7 @@ export function cachedGit(args: string[], opts: GitOptions, ttlMs: number = GIT_
   // Drop failures rather than serve them for the rest of the window. Note the catch is attached to a
   // COPY of the promise chain — `value` itself stays rejected for the callers who hold it.
   value.catch(() => {
-    if (entries.get(key)?.value === value) entries.delete(key)
+    if (!cacheFailures && entries.get(key)?.value === value) entries.delete(key)
   })
   return value
 }
