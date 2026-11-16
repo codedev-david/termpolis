@@ -13,7 +13,8 @@ const PATH_KINDS = new Set(['file', 'symbol', 'test'])
 const BUILD_STATUSES = new Set(['verified', 'built', 'gap', 'proposed'])
 const EXTERNAL_KINDS = new Set(['agent', 'provider', 'files', 'machine', 'service'])
 const CARGO_SHAPES = new Set(['cube', 'sphere', 'octa', 'tetra'])
-const ABSOLUTE_PATH = /^([a-zA-Z]:|[\\/])/
+const ABSOLUTE_PATH = /^([a-zA-Z]:[\\/]|[\\/])/
+const PARENT_SEGMENT = /(^|[\\/])\.\.([\\/]|$)/
 
 const isRecord = (v: unknown): v is Rec => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isStr = (v: unknown): v is string => typeof v === 'string'
@@ -32,8 +33,14 @@ interface Ctx {
   errors: string[]
   glossary: Rec
   positions: Rec | null
+  cargo: Rec
+  processes: Rec
+  /** Every id a tour step may point at: buildings, externals, districts, edges. */
+  nodeIds: Set<string>
   districtIds: Set<string>
-  seen: { building: Set<string>; district: Set<string>; edge: Set<string>; external: Set<string>; proposal: Set<string>; tour: Set<string> }
+  // Buildings, externals, districts and edges share ONE id namespace (`ids`): an edge or a tour
+  // step that names an id must never be ambiguous. Proposals and tours are separate lists.
+  seen: { ids: Set<string>; proposal: Set<string>; tour: Set<string> }
 }
 
 /** Label for an item: `<kind> <id>` when it has a usable id, else `<kind> #<index>`. */
@@ -44,7 +51,7 @@ const labelOf = (kind: string, item: Rec, index: number): { id: string | null; l
 
 /** Common prologue for a list item: object check, id check, duplicate check. Returns null to stop. */
 const openItem = (
-  ctx: Ctx, kind: keyof Ctx['seen'], prefix: string, item: unknown, index: number
+  ctx: Ctx, kind: string, prefix: string, item: unknown, index: number
 ): { id: string | null; label: string; rec: Rec } | null => {
   if (!isRecord(item)) {
     ctx.errors.push(`${prefix}${kind} #${index} is not an object`)
@@ -52,8 +59,11 @@ const openItem = (
   }
   const { id, label } = labelOf(kind, item, index)
   if (id === null) ctx.errors.push(`${prefix}${label}: id must be a non-empty string`)
-  else if (ctx.seen[kind].has(id)) ctx.errors.push(`${prefix}${label}: duplicate id`)
-  else ctx.seen[kind].add(id)
+  else {
+    const seen = kind === 'proposal' || kind === 'tour' ? ctx.seen[kind] : ctx.seen.ids
+    if (seen.has(id)) ctx.errors.push(`${prefix}${label}: duplicate id`)
+    else seen.add(id)
+  }
   return { id, label: prefix + label, rec: item }
 }
 
@@ -81,7 +91,7 @@ const checkEvidence = (ctx: Ctx, p: string, ev: unknown): void => {
   }
   if (!EVIDENCE_KINDS.has(ev.kind as string)) ctx.errors.push(`${p}: evidence kind "${String(ev.kind)}" is invalid`)
   if (!isStr(ev.ref)) ctx.errors.push(`${p}: evidence ref must be a string`)
-  else if (PATH_KINDS.has(ev.kind as string) && (ev.ref === '' || ABSOLUTE_PATH.test(ev.ref))) {
+  else if (PATH_KINDS.has(ev.kind as string) && (ev.ref === '' || ABSOLUTE_PATH.test(ev.ref) || PARENT_SEGMENT.test(ev.ref))) {
     ctx.errors.push(`${p}: evidence ref "${ev.ref}" must be repository-relative`)
   }
   if (ev.excerpt !== undefined && !isStr(ev.excerpt)) ctx.errors.push(`${p}: evidence excerpt must be a string`)
@@ -130,6 +140,7 @@ const checkBuilding = (ctx: Ctx, prefix: string, b: unknown, i: number, proposed
   for (const f of ['name', 'techLabel', 'process']) checkStr(ctx, p, rec, f)
   if (!BUILD_STATUSES.has(rec.status as string)) ctx.errors.push(`${p}: status "${String(rec.status)}" is invalid`)
   if (proposed && rec.status !== 'proposed') ctx.errors.push(`${p}: status must be "proposed"`)
+  if (isStr(rec.process) && rec.process !== '' && !has(ctx.processes, rec.process)) ctx.errors.push(`${p}: unknown process "${rec.process}"`)
   checkStrings(ctx, p, 'members', rec.members)
   checkTech(ctx, p, 'stack', rec.stack)
   checkFloors(ctx, p, rec.floors)
@@ -152,6 +163,7 @@ const checkEdge = (ctx: Ctx, prefix: string, e: unknown, i: number, nodes: Set<s
   if (!nodes.has(rec.to as string)) ctx.errors.push(`${p}: unknown to "${String(rec.to)}"`)
   for (const f of ['cargo', 'label', 'rate']) checkStr(ctx, p, rec, f)
   if (typeof rec.twoWay !== 'boolean') ctx.errors.push(`${p}: twoWay must be a boolean`)
+  if (isStr(rec.cargo) && rec.cargo !== '' && !has(ctx.cargo, rec.cargo)) ctx.errors.push(`${p}: unknown cargo "${rec.cargo}"`)
   checkTech(ctx, p, 'tech', rec.tech)
   checkClaims(ctx, p, 'how', rec.how)
   checkClaims(ctx, p, 'why', rec.why)
@@ -190,7 +202,9 @@ const checkTour = (ctx: Ctx, t: unknown, i: number): void => {
       ctx.errors.push(`${p}: step #${n} is not an object`)
       return
     }
-    checkStrings(ctx, `${p}: step #${n}`, 'ids', s.ids)
+    if (checkStrings(ctx, `${p}: step #${n}`, 'ids', s.ids)) {
+      for (const id of s.ids) if (!ctx.nodeIds.has(id)) ctx.errors.push(`${p}: step #${n}: unknown id "${id}"`)
+    }
     checkStr(ctx, `${p}: step #${n}`, s, 'caption')
   })
 }
@@ -218,13 +232,19 @@ const checkMaps = (ctx: Ctx, doc: Rec): void => {
   }
   map('glossary', doc.glossary, (k, v) => { if (!isStr(v)) ctx.errors.push(`glossary "${k}" must be a string`) })
   map('cargo', doc.cargo, (k, v) => {
-    if (!isRecord(v)) return void ctx.errors.push(`cargo "${k}" must be an object`)
+    if (!isRecord(v)) {
+      ctx.errors.push(`cargo "${k}" must be an object`)
+      return
+    }
     if (!CARGO_SHAPES.has(v.shape as string)) ctx.errors.push(`cargo "${k}": shape "${String(v.shape)}" is invalid`)
     checkStr(ctx, `cargo "${k}"`, v, 'color')
     checkStr(ctx, `cargo "${k}"`, v, 'label')
   })
   map('processes', doc.processes, (k, v) => {
-    if (!isRecord(v)) return void ctx.errors.push(`process "${k}" must be an object`)
+    if (!isRecord(v)) {
+      ctx.errors.push(`process "${k}" must be an object`)
+      return
+    }
     checkStr(ctx, `process "${k}"`, v, 'label')
     checkStr(ctx, `process "${k}"`, v, 'color')
   })
@@ -240,13 +260,16 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
   if (!isRecord(doc)) return { ok: false, errors: ['world doc must be an object'] }
 
   const layout = doc.layout
-  const layoutOk = isRecord(layout) && isNum(layout.seed) && isRecord(layout.positions)
+  const positions = isRecord(layout) && isRecord(layout.positions) ? layout.positions : null
   const ctx: Ctx = {
     errors: [],
     glossary: isRecord(doc.glossary) ? doc.glossary : {},
-    positions: layoutOk ? ((layout as Rec).positions as Rec) : null,
+    positions,
+    cargo: isRecord(doc.cargo) ? doc.cargo : {},
+    processes: isRecord(doc.processes) ? doc.processes : {},
+    nodeIds: new Set([...idsOf(doc.buildings), ...idsOf(doc.externals), ...idsOf(doc.districts), ...idsOf(doc.edges)]),
     districtIds: new Set(idsOf(doc.districts)),
-    seen: { building: new Set(), district: new Set(), edge: new Set(), external: new Set(), proposal: new Set(), tour: new Set() }
+    seen: { ids: new Set(), proposal: new Set(), tour: new Set() }
   }
   const e = ctx.errors
 

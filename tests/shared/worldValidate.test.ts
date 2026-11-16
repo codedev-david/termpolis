@@ -41,9 +41,12 @@ describe('validateWorld', () => {
     d.layout = { seed: 'a', positions: [] }
     d.runtimeNames = 5
     d.layers = 5
-    const e = errorsOf(d).join('\n')
-    for (const k of ['version', 'projectKey', 'generatedAt', 'sourceRevision', 'districts', 'buildings', 'edges',
-      'externals', 'glossary', 'cargo', 'processes', 'tours', 'layout.seed', 'layout.positions', 'runtimeNames', 'layers']) {
+    const e = errorsOf(d)
+    for (const k of ['version must be 1', 'projectKey must be a string', 'generatedAt must be a number',
+      'sourceRevision must be { head: string, dirty: boolean }', 'districts must be an array', 'buildings must be an array',
+      'edges must be an array', 'externals must be an array', 'glossary must be an object', 'cargo must be an object',
+      'processes must be an object', 'tours must be an array', 'layout.seed must be a number',
+      'layout.positions must be an object', 'runtimeNames must be an object', 'layers must be an object']) {
       expect(e).toContain(k)
     }
   })
@@ -53,10 +56,10 @@ describe('validateWorld', () => {
     delete d.sourceRevision
     delete d.layout
     delete d.layers
-    const e = errorsOf(d).join('\n')
-    expect(e).toContain('sourceRevision')
-    expect(e).toContain('layout')
-    expect(e).toContain('layers')
+    const e = errorsOf(d)
+    expect(e).toContain('sourceRevision must be { head: string, dirty: boolean }')
+    expect(e).toContain('layout must be an object')
+    expect(e).toContain('layers must be an object')
   })
 
   it('flags dangling edge endpoints', () => {
@@ -170,9 +173,8 @@ describe('validateWorld', () => {
     d.externals = [[]]
     d.tours = [1]
     d.layers = { plan: [3] }
-    const e = errorsOf(d).join('\n')
-    for (const k of ['district #0', 'building #0', 'edge #0', 'external #0', 'tour #0', 'proposal #0']) expect(e).toContain(k)
-    expect(e).toContain('is not an object')
+    const e = errorsOf(d)
+    for (const k of ['district', 'building', 'edge', 'external', 'tour', 'proposal']) expect(e).toContain(`${k} #0 is not an object`)
   })
 
   it('flags bad field types on districts, buildings, edges, externals and floors', () => {
@@ -197,14 +199,18 @@ describe('validateWorld', () => {
     d.externals[0].name = 1
     d.externals[0].kind = 'alien'
     d.externals[0].fog = 1
-    const e = errorsOf(d).join('\n')
-    for (const k of ['district d1: hue', 'district d1: name', 'district d1: subtitle', 'district d1: members',
-      'building b1: name', 'building b1: techLabel', 'building b1: process', 'building b1: status "done"',
-      'building b1: members', 'building b1: stack must be an array', 'building b1: floors must be an array',
-      'building b2: floor #0 is not an object', 'building b2: floor #1: name', 'building b2: floor #1: tech must be an array',
-      'building b2: floor #1: members',
-      'edge e1: cargo', 'edge e1: label', 'edge e1: rate', 'edge e1: twoWay', 'edge e1: tech must be an array',
-      'external x1: name', 'external x1: kind "alien"', 'external x1: fog']) {
+    const e = errorsOf(d)
+    for (const k of ['district d1: hue must be a number', 'district d1: name must be a string',
+      'district d1: subtitle must be a string', 'district d1: members must be an array of strings',
+      'building b1: name must be a string', 'building b1: techLabel must be a string',
+      'building b1: process must be a string', 'building b1: status "done" is invalid',
+      'building b1: members must be an array of strings', 'building b1: stack must be an array of strings',
+      'building b1: floors must be an array', 'building b2: floor #0 is not an object',
+      'building b2: floor #1: name must be a string', 'building b2: floor #1: tech must be an array of strings',
+      'building b2: floor #1: members must be an array of strings',
+      'edge e1: cargo must be a string', 'edge e1: label must be a string', 'edge e1: rate must be a string',
+      'edge e1: twoWay must be a boolean', 'edge e1: tech must be an array of strings',
+      'external x1: name must be a string', 'external x1: kind "alien" is invalid', 'external x1: fog must be a boolean']) {
       expect(e).toContain(k)
     }
   })
@@ -213,12 +219,12 @@ describe('validateWorld', () => {
     const d = fresh()
     d.tours = [{ id: 1, title: 1, steps: 1 }, { id: 't2', title: 't', steps: [3, { ids: 'x', caption: 4 }] }]
     const e = errorsOf(d).join('\n')
-    expect(e).toContain('tour #0: id')
-    expect(e).toContain('tour #0: title')
-    expect(e).toContain('tour #0: steps')
+    expect(e).toContain('tour #0: id must be a non-empty string')
+    expect(e).toContain('tour #0: title must be a string')
+    expect(e).toContain('tour #0: steps must be an array')
     expect(e).toContain('tour t2: step #0 is not an object')
-    expect(e).toContain('tour t2: step #1: ids')
-    expect(e).toContain('tour t2: step #1: caption')
+    expect(e).toContain('tour t2: step #1: ids must be an array of strings')
+    expect(e).toContain('tour t2: step #1: caption must be a string')
   })
 
   it('flags string-array fields with non-string entries', () => {
@@ -233,7 +239,6 @@ describe('validateWorld', () => {
     d.buildings[0].id = ''
     d.edges[0].id = 4
     d.externals[0].id = 5
-    d.tours = [{ id: 't', title: 't', steps: [] }]
     const e = errorsOf(d).join('\n')
     expect(e).toContain('district #0: id must be a non-empty string')
     expect(e).toContain('building #0: id must be a non-empty string')
@@ -248,16 +253,66 @@ describe('validateWorld', () => {
     d.processes = { p: { label: 1, color: 2 }, q: 5 }
     d.runtimeNames = { r: 'x', s: [1] }
     const e = errorsOf(d).join('\n')
-    expect(e).toContain('glossary "a"')
-    expect(e).toContain('cargo "c": shape')
-    expect(e).toContain('cargo "c": color')
-    expect(e).toContain('cargo "c": label')
-    expect(e).toContain('cargo "n"')
-    expect(e).toContain('process "p": label')
-    expect(e).toContain('process "p": color')
-    expect(e).toContain('process "q"')
-    expect(e).toContain('runtimeNames "r"')
-    expect(e).toContain('runtimeNames "s"')
+    expect(e).toContain('glossary "a" must be a string')
+    expect(e).toContain('cargo "c": shape "cone" is invalid')
+    expect(e).toContain('cargo "c": color must be a string')
+    expect(e).toContain('cargo "c": label must be a string')
+    expect(e).toContain('cargo "n" must be an object')
+    expect(e).toContain('process "p": label must be a string')
+    expect(e).toContain('process "p": color must be a string')
+    expect(e).toContain('process "q" must be an object')
+    expect(e).toContain('runtimeNames "r": value must be an array of strings')
+    expect(e).toContain('runtimeNames "s": value must be an array of strings')
+  })
+
+  it('treats buildings, externals, districts and edges as one id namespace', () => {
+    const d = fresh()
+    d.externals[0].id = 'b1'
+    d.districts[0].id = 'e1'
+    d.buildings[0].districtId = 'e1'
+    d.buildings[1].districtId = 'e1'
+    const e = errorsOf(d)
+    expect(e).toContain('external b1: duplicate id')
+    expect(e).toContain('edge e1: duplicate id')
+  })
+
+  it('requires non-empty cargo and process to exist in their maps', () => {
+    const d = fresh()
+    d.edges[0].cargo = 'nope'
+    d.buildings[0].process = 'ghost'
+    const e = errorsOf(d)
+    expect(e).toContain('edge e1: unknown cargo "nope"')
+    expect(e).toContain('building b1: unknown process "ghost"')
+    const ok = fresh()
+    ok.edges[0].cargo = ''
+    ok.buildings[0].process = ''
+    expect(validateWorld(ok).ok).toBe(true)
+  })
+
+  it('rejects evidence refs with a parent-directory segment but not look-alikes', () => {
+    for (const ref of ['../x.ts', 'a/../b.ts', 'a\\..\\b.ts', 'a/..']) {
+      const d = fresh()
+      d.buildings[0].how[0].evidence[0].ref = ref
+      expect(errorsOf(d)).toContain('building b1: evidence ref "' + ref + '" must be repository-relative')
+    }
+    const ok = fresh()
+    ok.buildings[0].how[0].evidence = [{ kind: 'file', ref: 'a/..b/c..d.ts' }, { kind: 'symbol', ref: 'x:foo' }]
+    expect(validateWorld(ok).ok).toBe(true)
+  })
+
+  it('checks layout positions even when the seed is bad', () => {
+    const d = fresh()
+    d.layout.seed = 'x'
+    delete d.layout.positions.b2
+    const e = errorsOf(d)
+    expect(e).toContain('layout.seed must be a number')
+    expect(e).toContain('building b2: no layout position')
+  })
+
+  it('flags tour steps that point at unknown ids', () => {
+    const d = fresh()
+    d.tours = [{ id: 't1', title: 't', steps: [{ ids: ['b1', 'x1', 'd1', 'e1', 'zz'], caption: 'c' }] }]
+    expect(errorsOf(d)).toEqual(['tour t1: step #0: unknown id "zz"'])
   })
 
   describe('plan proposals', () => {
