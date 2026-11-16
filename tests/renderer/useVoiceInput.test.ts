@@ -362,3 +362,49 @@ describe('useVoiceInput (orchestration)', () => {
     expect(h.writeToTerminal).not.toHaveBeenCalled()
   })
 })
+
+describe('useVoiceInput onTranscript sink', () => {
+  async function speak(result: { current: ReturnType<typeof useVoiceInput> }) {
+    await act(async () => { await result.current.start() })
+    feedAudio()
+    await act(async () => { await result.current.stop() })
+  }
+
+  it('with onTranscript, transcript goes to the sink and writeToTerminal is never called', async () => {
+    const sink = vi.fn()
+    const { result } = renderHook(() => useVoiceInput('term-1', true, { onTranscript: sink }))
+    await speak(result)
+    expect(sink).toHaveBeenCalledWith('hello world')
+    expect(h.writeToTerminal).not.toHaveBeenCalled()
+    expect(result.current.confirm).toBeNull()
+    expect(h.focusActiveTerminal).not.toHaveBeenCalled()
+    expect(result.current.status).toBe('idle')
+  })
+
+  it('terminalId null + onTranscript works, even for shell-mode text that would need confirming', async () => {
+    const sink = vi.fn()
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: sink }))
+    await speak(result)
+    expect(sink).toHaveBeenCalledWith('hello world')
+    expect(result.current.confirm).toBeNull()
+    expect(h.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('terminalId null without a sink drops the transcript', async () => {
+    const { result } = renderHook(() => useVoiceInput(null, true))
+    await speak(result)
+    expect(h.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('sink path keeps the no-speech handling and does not touch terminal focus', async () => {
+    h.transcribe.mockResolvedValue({ text: '.' })
+    const sink = vi.fn()
+    const { result } = renderHook(() => useVoiceInput(null, false, { onTranscript: sink }))
+    await speak(result)
+    expect(sink).not.toHaveBeenCalled()
+    expect(result.current.status).toBe('error')
+    expect(result.current.errorMsg).toMatch(/no speech/i)
+    expect(h.focusActiveTerminal).not.toHaveBeenCalled()
+  })
+
+})

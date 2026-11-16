@@ -36,7 +36,14 @@ function noSpeechMessage(a: CaptureAnalysis): string {
  * headless unit suite. The transcription→action decision (processVoiceResult)
  * and the engines are unit-tested separately.
  */
-export function useVoiceInput(terminalId: string, agentDetected: boolean) {
+export function useVoiceInput(
+  terminalId: string | null,
+  agentDetected: boolean,
+  opts?: { onTranscript?: (text: string) => void },
+) {
+  // Optional sink (Lumopolis Ask bar): the cleaned transcript goes here instead of a terminal.
+  const sinkRef = useRef(opts?.onTranscript)
+  sinkRef.current = opts?.onTranscript
   const voiceSettings = useTerminalStore((s) => s.voiceSettings)
   // After dictation stops, hand keyboard focus back to the active terminal's input
   // line so the user can immediately type or start another dictation — otherwise
@@ -75,7 +82,7 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
   const startingRef = useRef(false)
   const cancelStartRef = useRef(false)
   const inject = useCallback((text: string, autoSubmit: boolean) => {
-    if (!text) return
+    if (!text || !terminalId) return
     window.termpolis.writeToTerminal(terminalId, text + (autoSubmit ? '\r' : ''))
   }, [terminalId])
 
@@ -134,10 +141,17 @@ export function useVoiceInput(terminalId: string, agentDetected: boolean) {
       if (isNoSpeechTranscript(result.text) || isHallucinatedFiller(result.text)) {
         setErrorMsg('Groq heard no speech — only background sound reached it. Check your microphone: Settings → Voice → Test microphone, and watch the level move while you talk.')
         setStatus('error')
-        focusActiveTerminal()
+        if (!sinkRef.current) focusActiveTerminal()
         return
       }
       const { plan } = processVoiceResult(result, { agentDetected: agentRef.current, settings: settingsRef.current })
+      const sink = sinkRef.current
+      if (sink) {
+        // Sink mode: nothing is injected or confirmed, and focus stays put.
+        setStatus('idle')
+        if (plan.text) sink(plan.text)
+        return
+      }
       if (!plan.text) { setStatus('idle'); focusActiveTerminal(); return }
       if (plan.needsConfirm) {
         // Shell mode: keep focus on the confirm bar; we hand it back to the

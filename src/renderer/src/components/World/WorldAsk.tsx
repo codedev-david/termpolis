@@ -5,6 +5,7 @@ import type { WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
 import { WorldAnswerPanel } from './WorldAnswer'
 import { useWorldAsk } from './useWorldAsk'
+import { useVoiceInput } from '../../hooks/useVoiceInput'
 
 export interface WorldAskProps {
   viewer: WorldViewer | null
@@ -23,9 +24,17 @@ const SUGGESTIONS = [
 
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
-export function WorldAsk({ viewer, doc, root, voice }: WorldAskProps): JSX.Element {
+export function WorldAsk({ viewer, doc, root, voice: voiceOverride }: WorldAskProps): JSX.Element {
   const { ask, cancel, retry, dismiss, state, answer, cited, error } = useWorldAsk(viewer, root)
   const [text, setText] = useState('')
+  // A spoken question fills the box and is asked straight away; nothing reaches a terminal.
+  // The push-to-talk hotkey is deliberately not wired here: the terminal owns it at window level.
+  const mic = useVoiceInput(null, false, {
+    onTranscript: (t) => { stopSpeech(); setText(t); ask(t) },
+  })
+  const micSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
+  const voice = voiceOverride ?? { supported: micSupported, listening: mic.status === 'listening', toggle: mic.toggle }
+  const transcribing = !voiceOverride && mic.status === 'transcribing'
   const [speak, setSpeak] = useState(false)
 
   useEffect(() => {
@@ -112,7 +121,7 @@ export function WorldAsk({ viewer, doc, root, voice }: WorldAskProps): JSX.Eleme
             aria-label={voice.listening ? 'Stop listening' : 'Ask by voice'}
             onClick={voice.toggle}
             disabled={disabled}
-            className={`px-1.5 ${voice.listening ? 'text-[#f14c4c]' : 'text-[#9ca3af] hover:text-white'}`}
+            className={`px-1.5 ${voice.listening ? 'text-[#f14c4c]' : 'text-[#9ca3af] hover:text-white'}${transcribing ? ' animate-pulse' : ''}`}
           >
             <i className="fa-solid fa-microphone" aria-hidden="true"></i>
           </button>
@@ -127,6 +136,9 @@ export function WorldAsk({ viewer, doc, root, voice }: WorldAskProps): JSX.Eleme
           <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
         </button>
       </div>
+      {mic.errorMsg && (
+        <div role="alert" className="max-w-[34rem] text-xs text-[#f14c4c]">{mic.errorMsg}</div>
+      )}
     </div>
   )
 }

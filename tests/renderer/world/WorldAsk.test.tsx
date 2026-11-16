@@ -1,6 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import { minimal } from './helpers'
+
+const vm = vi.hoisted(() => ({
+  status: 'idle' as string,
+  errorMsg: null as string | null,
+  toggle: vi.fn(),
+  sink: null as ((t: string) => void) | null,
+  args: null as unknown[] | null,
+}))
+vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
+  useVoiceInput: (...args: unknown[]) => {
+    vm.args = args
+    vm.sink = (args[2] as { onTranscript: (t: string) => void }).onTranscript
+    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle }
+  }
+}))
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
@@ -252,6 +267,53 @@ describe('WorldAsk', () => {
   })
 
   describe('mic button', () => {
+    const withMic = (): void => {
+      Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: vi.fn() }, configurable: true })
+    }
+    afterEach(() => {
+      delete (navigator as any).mediaDevices
+      vm.status = 'idle'; vm.errorMsg = null; vm.toggle.mockClear()
+    })
+
+    it('uses the hook with no terminal and a sink, and shows a mic only when capture is supported', () => {
+      const a = render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      expect(vm.args?.[0]).toBeNull()
+      expect(vm.args?.[1]).toBe(false)
+      expect(screen.queryByLabelText('Ask by voice')).toBeNull()
+      a.unmount()
+      withMic()
+      render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      fireEvent.click(screen.getByLabelText('Ask by voice'))
+      expect(vm.toggle).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows listening and transcribing states from the hook status', () => {
+      withMic()
+      vm.status = 'listening'
+      const a = render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      expect(screen.getByLabelText('Stop listening')).toBeInTheDocument()
+      a.unmount()
+      vm.status = 'transcribing'
+      render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      expect(screen.getByLabelText('Ask by voice').className).toContain('animate-pulse')
+    })
+
+    it('shows the hook error as plain text under the input', () => {
+      vm.errorMsg = 'Groq heard no speech'
+      render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      expect(screen.getByRole('alert').textContent).toBe('Groq heard no speech')
+    })
+
+    it('voice transcript fills the input and asks', async () => {
+      render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+      await settle()
+      await act(async () => { vm.sink?.('where is memory stored') })
+      await settle()
+      expect(input().value).toBe('where is memory stored')
+      expect(ask).toHaveBeenCalledTimes(1)
+      expect((ask.mock.calls[0][0] as AskRequest).question).toBe('where is memory stored')
+    })
+
     it('is absent without a voice prop and drives it when given', async () => {
       const v = makeViewer()
       const a = render(<WorldAsk viewer={v as never} root="r" />)
