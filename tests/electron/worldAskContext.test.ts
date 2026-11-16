@@ -83,6 +83,31 @@ describe('buildAskPrompt', () => {
     expect(tight.labels).toEqual({})
   })
 
+  it('holds the hard cap for any input: 50,000-char question and 500 districts', () => {
+    const d = doc(3)
+    d.districts = Array.from({ length: 500 }, (_, i) => ({ id: `d${i}`, name: `District ${'n'.repeat(40)} ${i}`, subtitle: '', hue: 0, members: [] }))
+    const { prompt } = buildAskPrompt(base(d, { question: 'q'.repeat(50_000), selection: ['b1'] }))
+    expect(prompt.length).toBeLessThan(12000)
+    expect(prompt).toContain('q'.repeat(1999) + '…')
+    expect(prompt).not.toContain('q'.repeat(2000))
+    expect(prompt.endsWith(ANSWER_PROTOCOL)).toBe(true)
+  })
+
+  it('demotes districts to ids, then cuts them', () => {
+    const mk = (n: number, nameLen: number) => {
+      const d = doc(1)
+      d.districts = Array.from({ length: n }, (_, i) => ({ id: `d${i}`, name: 'n'.repeat(nameLen), subtitle: '', hue: 0, members: [] }))
+      return buildAskPrompt(base(d)).prompt
+    }
+    const ids = mk(900, 60)
+    expect(ids.length).toBeLessThan(12000)
+    expect(ids).toContain('DISTRICTS\nd0\nd1')
+    expect(ids).not.toContain('d0: ')
+    const none = mk(5000, 60)
+    expect(none.length).toBeLessThan(12000)
+    expect(none).not.toContain('DISTRICTS')
+  })
+
   it('summary is trimmed to 1200 keeping the newest, and a short one is kept', () => {
     const old = Array.from({ length: 60 }, (_, i) => `Q: q${i}\nA: a${i}`).join('\n')
     const { prompt } = buildAskPrompt(base(doc(1), { summary: old }))
@@ -113,6 +138,10 @@ describe('summarize', () => {
     expect(summarize('', 'Why?\nreally', 'It is a cache. It holds data.')).toBe('Q: Why? really\nA: It is a cache.')
     expect(summarize('Q: a\nA: b', 'c', 'Wow! Yes.')).toBe('Q: a\nA: b\nQ: c\nA: Wow!')
   })
+  it('caps the Q line at 300 so a pair always survives', () => {
+    const out = summarize('', 'q'.repeat(2000), 'a.')
+    expect(out).toBe('Q: ' + 'q'.repeat(299) + '…\nA: a.')
+  })
   it('uses the whole answer without a sentence end, capped at 300', () => {
     expect(summarize('', 'q', 'no end')).toBe('Q: q\nA: no end')
     expect(summarize('', 'q', 'v1.2 is fine').split('A: ')[1]).toBe('v1.2 is fine')
@@ -129,7 +158,8 @@ describe('summarize', () => {
     const entry = 'Q: q\nA: a.'
     const boundary = 'ab'.repeat(5) + '\n' + 'c'.repeat(1200 - entry.length - 1)
     expect(summarize(boundary, 'q', 'a.')).toBe('c'.repeat(1200 - entry.length - 1) + '\n' + entry)
-    expect(summarize('', 'q'.repeat(2000), 'a.')).toBe('A: a.')
+        const mid = 'm'.repeat(1195) + '\nQ: x'
+    expect(summarize(mid, 'q', 'a.')).toBe('Q: x\nQ: q\nA: a.'.slice(0))
     const flat = buildAskPrompt(base(doc(1), { summary: 's'.repeat(2000) })).prompt
     expect(flat).toContain('\n' + 's'.repeat(1200) + '\n')
   })

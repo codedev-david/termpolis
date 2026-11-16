@@ -8,6 +8,8 @@ import type { Building, Claim, Evidence, WorldDoc, WorldEdge, WorldReadResult } 
 export const MAX_PROMPT_CHARS = 12_000
 export const MAX_SUMMARY_CHARS = 1200
 const MAX_FIRST_SENTENCE = 300
+const MAX_QUESTION_CHARS = 2000
+const MAX_SUMMARY_Q_CHARS = 300
 const ROLE = 'You explain the software shown in Termpolis Lumopolis.'
 
 export interface AskInput {
@@ -18,6 +20,12 @@ export interface AskInput {
   matches: WorldReadResult
   summary: string
 }
+
+function clip(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`
+}
+
+type DistrictMode = 'full' | 'ids' | 'none'
 
 /** Keeps the newest MAX_SUMMARY_CHARS, cutting from the front at a line boundary where possible. */
 function trimFront(s: string): string {
@@ -33,7 +41,7 @@ export function summarize(prev: string, question: string, answerText: string): s
   const flat = answerText.replace(/\s+/g, ' ').trim()
   const m = /^[\s\S]*?[.!?](?=\s|$)/.exec(flat)
   const first = (m ? m[0] : flat).slice(0, MAX_FIRST_SENTENCE)
-  const entry = `Q: ${question.replace(/\s+/g, ' ').trim()}\nA: ${first}`
+  const entry = `Q: ${clip(question.replace(/\s+/g, ' ').trim(), MAX_SUMMARY_Q_CHARS)}\nA: ${first}`
   return trimFront(prev === '' ? entry : `${prev}\n${entry}`)
 }
 
@@ -84,9 +92,10 @@ function detailLines(d: Detailed, lab: Labeller): string[] {
   ]
 }
 
-function render(input: AskInput, detailed: Detailed[], nameOnly: string[]): { prompt: string; labels: Record<string, Evidence> } {
+function render(input: AskInput, detailed: Detailed[], nameOnly: string[], districts: DistrictMode = 'full'): { prompt: string; labels: Record<string, Evidence> } {
   const lab = new Labeller()
-  const lines: string[] = ['DISTRICTS', ...input.doc.districts.map((d) => `${d.id}: ${d.name}`)]
+  const lines: string[] = []
+  if (districts !== 'none') lines.push('DISTRICTS', ...input.doc.districts.map((d) => (districts === 'ids' ? d.id : `${d.id}: ${d.name}`)))
   if (detailed.length > 0) lines.push('', 'DETAIL', ...detailed.flatMap((d) => detailLines(d, lab)))
   if (nameOnly.length > 0) lines.push('', 'OTHER', ...nameOnly)
   const evidence = Object.entries(lab.labels)
@@ -105,7 +114,7 @@ function render(input: AskInput, detailed: Detailed[], nameOnly: string[]): { pr
     fence,
     '',
     'QUESTION',
-    input.question,
+    clip(input.question, MAX_QUESTION_CHARS),
     '',
     ANSWER_PROTOCOL
   ].join('\n')
@@ -133,5 +142,10 @@ export function buildAskPrompt(input: AskInput): { prompt: string; labels: Recor
     const out = render(input, detailed.slice(0, n), [...detailed.slice(n).map(nameOf), ...rest])
     if (out.prompt.length < MAX_PROMPT_CHARS) return out
   }
-  return render(input, [], [])
+  // Hard cap: names go first, then district names, then the districts themselves.
+  for (const mode of ['full', 'ids'] as const) {
+    const out = render(input, [], [], mode)
+    if (out.prompt.length < MAX_PROMPT_CHARS) return out
+  }
+  return render(input, [], [], 'none')
 }
