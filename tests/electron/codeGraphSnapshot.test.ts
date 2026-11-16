@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { indexFileContent, graphSnapshot, codeGraphStats, _resetCodeGraphForTests } from '../../src/main/codeGraph'
 
 const A = 'C:\\repo\\src\\a.ts'
+const BS = String.fromCharCode(92)
 const B = 'C:/repo/src/lib/b.ts'
 const aSrc = "import { beta } from './lib/b'\nexport function alpha() { return beta() }"
 const bSrc = 'export function beta() { return 1 }'
@@ -72,5 +73,22 @@ describe('graphSnapshot', () => {
     expect(graphSnapshot('k').callEdges.length).toBeGreaterThan(0)
     indexFileContent(B, '', 'k')
     expect(graphSnapshot('k').callEdges).toEqual([])
+  })
+
+  it('explicit root keeps top-level dirs and excludes files outside it', () => {
+    indexFileContent(['C:', 'repo', 'src', 'main', 'a.ts'].join(BS), aSrc, 'k')
+    indexFileContent('C:/repo/src/main/b.ts', bSrc, 'k')
+    indexFileContent('C:/other/c.ts', bSrc, 'k')
+    const s = graphSnapshot('k', ['C:', 'Repo', ''].join(BS))
+    expect(s.root).toBe('C:/Repo')
+    expect(s.files).toEqual(['src/main/a.ts', 'src/main/b.ts'])
+    expect(s.symbols.every((x) => x.file.startsWith('src/main/'))).toBe(true)
+    expect(s.symbols.length).toBe(2)
+    expect(Object.keys(s.fileImports)).toEqual(['src/main/a.ts'])
+    expect(graphSnapshot('k').root).toBe('C:')
+  })
+
+  it('unknown key with explicit root echoes the root', () => {
+    expect(graphSnapshot('nope', ['C:', 'r', ''].join(BS)).root).toBe('C:/r')
   })
 })

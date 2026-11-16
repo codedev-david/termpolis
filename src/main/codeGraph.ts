@@ -684,24 +684,29 @@ function commonDir(files: string[]): string {
 }
 
 /** Copy of a repo's graph with paths relative to the repo root. Pure read: an unknown key yields empty arrays
- *  and does NOT register a state (unlike stateFor). The root is the longest common directory of the indexed
- *  absolute paths (the graph does not store the root it was built from). */
-export function graphSnapshot(projectKey: string): GraphSnapshot {
+ *  and does NOT register a state (unlike stateFor). With an explicit `root`, paths are made relative to it and
+ *  files outside it are excluded; without one the root is the longest common directory of the indexed absolute
+ *  paths (the graph does not store the root it was built from). */
+export function graphSnapshot(projectKey: string, root?: string): GraphSnapshot {
   const st = graphs.get(projectKey)
-  if (!st) return { root: '', files: [], symbols: [], callEdges: [], fileImports: {} }
+  if (!st) return { root: root ? slashed(root).replace(/\/+$/, '') : '', files: [], symbols: [], callEdges: [], fileImports: {} }
   const all = new Set<string>([...st.idsByFile.keys(), ...st.fileImports.keys()])
   for (const s of st.symbolsById.values()) all.add(s.file)
-  const root = commonDir([...all].map(slashed))
-  const rel = (p: string): string => {
+  const base = root ? slashed(root).replace(/\/+$/, '') : commonDir([...all].map(slashed))
+  const lowBase = base.toLowerCase() + '/'
+  const rel = (p: string): string | null => {
     const n = slashed(p)
-    return root && n.toLowerCase().startsWith(root.toLowerCase() + '/') ? n.slice(root.length + 1) : n
+    if (!base) return n
+    return n.toLowerCase().startsWith(lowBase) ? n.slice(base.length + 1) : root ? null : n
   }
-  const files = [...new Set([...st.idsByFile.keys()].map(rel))].sort()
+  const files = [...new Set([...st.idsByFile.keys()].map(rel).filter((f): f is string => f !== null))].sort()
   const idMap = new Map<string, string>()
   const symbols: SymbolHit[] = []
   for (const s of st.symbolsById.values()) {
+    const f = rel(s.file)
+    if (f === null) continue
     const h = toHit(s)
-    h.file = rel(s.file)
+    h.file = f
     h.id = symbolId(h.file, s.name, s.startLine)
     idMap.set(s.id, h.id)
     symbols.push(h)
@@ -713,8 +718,11 @@ export function graphSnapshot(projectKey: string): GraphSnapshot {
     if (from !== undefined && to !== undefined) callEdges.push({ from, to })
   }
   const fileImports: Record<string, string[]> = {}
-  for (const [f, imps] of st.fileImports) fileImports[rel(f)] = [...imps]
-  return { root, files, symbols, callEdges, fileImports }
+  for (const [f, imps] of st.fileImports) {
+    const r = rel(f)
+    if (r !== null) fileImports[r] = [...imps]
+  }
+  return { root: base, files, symbols, callEdges, fileImports }
 }
 
 /** The projectKey of the graph most recently built/queried (the repo the user is in). */
