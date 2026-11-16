@@ -1,0 +1,5 @@
+{"timestamp":"2026-11-02T10:00:00.000Z","message":{"content":[{"type":"text","text":"\u001b[32m ✓ \u001b[39m src/main/a.test.ts (4 tests) 12ms\n ❯ src/main/b.test.ts (3 tests | 1 failed) 9ms\n × src/main/c.test.ts\nPASS src/main/d.test.ts (2 s)\nFAIL src/main/e.test.ts\n ✓ src/main/notatest.ts (1 test)\n × just a name"}]}}
+{"note":"no timestamp","out":" ✓ src/main/f.test.mjs (1 test)","n":5,"nested":[["PASS src/main/g.spec.tsx"]],"timestamp":"not a date"}
+this is not json
+
+"a bare string line"

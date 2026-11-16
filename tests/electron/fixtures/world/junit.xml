@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="src/main/a.test.ts" timestamp="2026-11-01T10:00:00.000Z" tests="2">
+    <testcase classname="a" name="one" time="0.1"/>
+    <testcase classname="a" name="two &amp; three" time="0.2"></testcase>
+  </testsuite>
+  <testsuite name="suite-b" file="src/main/b.test.ts" timestamp="2026-11-01T11:00:00.000Z">
+    <testcase name="ok"/>
+    <testcase name="bad"><failure message="x &lt; y">trace</failure></testcase>
+  </testsuite>
+  <testsuite name="Suite C" timestamp="2026-11-01T12:00:00.000Z">
+    <testcase name="boom" file="src/main/c.test.ts"><error message="e"/></testcase>
+    <testcase name="no file at all"/>
+  </testsuite>
+  <testsuite name="src/main/d.test.ts">
+    <testcase name="skipped only"><skipped/></testcase>
+  </testsuite>
+  <testsuite name='src/main/e.test.ts'>
+    <testcase name="s"><skipped/></testcase>
+    <testcase name="p"/>
+  </testsuite>
+  <testsuite name="empty/suite.test.ts"/>
+</testsuites>
