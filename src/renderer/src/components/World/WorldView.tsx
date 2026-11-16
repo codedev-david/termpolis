@@ -33,7 +33,7 @@ export interface WorldViewProps {
   root: string
   onClose: () => void
   /** Plan 2's ask box: rendered at the bottom centre with the viewer (null without WebGL). */
-  askSlot?: (viewer: WorldViewer | null) => ReactNode
+  askSlot?: (viewer: WorldViewer | null, doc: WorldDoc | null) => ReactNode
 }
 
 /** The e2e probe on window.__termpolis_world. */
@@ -336,7 +336,7 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
       {card !== null && <WorldCard html={card} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
       {askSlot && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2" data-testid="world-ask-slot">
-          {askSlot(viewer)}
+          {askSlot(viewer, doc)}
         </div>
       )}
     </div>

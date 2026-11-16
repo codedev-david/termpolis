@@ -313,7 +313,7 @@ describe('WorldView', () => {
     const list = screen.getByTestId('world-fallback')
     expect(list.querySelector('section.world-fallback')).not.toBeNull()
     expect(list.querySelector('[data-kind="building"][data-id="b1"]')).toHaveTextContent('Desktop app')
-    expect(askSlot).toHaveBeenLastCalledWith(null)
+    expect(askSlot).toHaveBeenLastCalledWith(null, expect.objectContaining({ buildings: expect.any(Array) }))
     const doc = minimal()
 
     // Clicking a building or a connection opens its card from the doc.
@@ -518,7 +518,7 @@ describe('WorldView', () => {
     await mount({ askSlot })
     const v = viewer()
     expect(screen.getByTestId('world-ask-slot')).toHaveTextContent('ask here')
-    expect(askSlot).toHaveBeenLastCalledWith(v)
+    expect(askSlot).toHaveBeenLastCalledWith(v, expect.objectContaining({ buildings: expect.any(Array) }))
     act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
     const card = screen.getByTestId('world-card')
     fireEvent.click(card.querySelector('[data-edge]') as Element)

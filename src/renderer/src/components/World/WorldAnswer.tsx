@@ -10,22 +10,21 @@ export interface WorldAnswerPanelProps {
   onClose: () => void
   onReplay: () => void
   onOpenPart: (id: string) => void
+  /** True when the id is a building or edge in the loaded world. */
+  isPart: (id: string) => boolean
 }
 
 const MARKER = /(\[E\d+\])/
 const LABEL = /^\[(E\d+)\]$/
-// Only a symbol reference names a building or an edge; files, tests and commits do not.
-const PART_ID = /^[A-Za-z][\w-]*$/
-const isPartRef = (e: Evidence): boolean => e.kind === 'symbol' && PART_ID.test(e.ref)
 
-export function WorldAnswerPanel({ answer, cited, onClose, onReplay, onOpenPart }: WorldAnswerPanelProps): JSX.Element {
+export function WorldAnswerPanel({ answer, cited, onClose, onReplay, onOpenPart, isPart }: WorldAnswerPanelProps): JSX.Element {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   const parts = answer.text.split(MARKER)
   const shown = Object.keys(open).filter((k) => open[k])
 
   const click = (label: string): void => {
     const ev = cited[label]
-    if (isPartRef(ev)) onOpenPart(ev.ref)
+    if (isPart(ev.ref)) onOpenPart(ev.ref)
     else setOpen((o) => ({ ...o, [label]: !o[label] }))
   }
 

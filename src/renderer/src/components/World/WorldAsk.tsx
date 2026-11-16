@@ -1,12 +1,15 @@
 // Lumopolis ask bar: a question box with suggestions, a thinking indicator and the answer panel.
 // The text is typed here or, when `voice` is supplied, spoken; answers can be read aloud (opt-in).
 import { useEffect, useRef, useState } from 'react'
+import type { WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
 import { WorldAnswerPanel } from './WorldAnswer'
 import { useWorldAsk } from './useWorldAsk'
 
 export interface WorldAskProps {
   viewer: WorldViewer | null
+  /** The loaded world: chips open cards only for building and edge ids found in it. */
+  doc?: WorldDoc | null
   root: string
   voice?: { supported: boolean; listening: boolean; toggle: () => void }
 }
@@ -20,7 +23,7 @@ const SUGGESTIONS = [
 
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
-export function WorldAsk({ viewer, root, voice }: WorldAskProps): JSX.Element {
+export function WorldAsk({ viewer, doc, root, voice }: WorldAskProps): JSX.Element {
   const { ask, cancel, retry, dismiss, state, answer, cited, error } = useWorldAsk(viewer, root)
   const [text, setText] = useState('')
   const [speak, setSpeak] = useState(false)
@@ -63,6 +66,7 @@ export function WorldAsk({ viewer, root, voice }: WorldAskProps): JSX.Element {
         <WorldAnswerPanel
           answer={answer}
           cited={cited}
+          isPart={(id) => !!doc && (doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id))}
           onClose={() => { stopSpeech(); dismiss() }}
           onReplay={() => { viewer?.cancelActions(); void viewer?.play(answer.actions) }}
           onOpenPart={(id) => { void viewer?.apply({ type: 'openCard', id }) }}

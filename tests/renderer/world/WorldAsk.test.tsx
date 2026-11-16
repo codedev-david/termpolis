@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
+import { minimal } from './helpers'
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
@@ -43,7 +44,7 @@ afterEach(() => {
 
 const input = () => screen.getByPlaceholderText('Ask about this project…') as HTMLInputElement
 async function submit(v: ReturnType<typeof makeViewer>, q: string, extra: Record<string, unknown> = {}) {
-  const view = render(<WorldAsk viewer={v as never} root="r" {...extra} />)
+  const view = render(<WorldAsk viewer={v as never} doc={minimal()} root="r" {...extra} />)
   await settle()
   fireEvent.change(input(), { target: { value: q } })
   fireEvent.keyDown(input(), { key: 'Enter' })
@@ -176,6 +177,37 @@ describe('WorldAsk', () => {
       await submit(v, 'q')
       fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
       expect(v.apply).toHaveBeenCalledWith({ type: 'openCard', id: 'b1' })
+    })
+
+    it('a chip opens a card for an edge id too, whatever its kind', async () => {
+      const v = makeViewer()
+      withCited('See [E1].', { E1: { kind: 'file', ref: 'e1' } })
+      await submit(v, 'q')
+      fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
+      expect(v.apply).toHaveBeenCalledWith({ type: 'openCard', id: 'e1' })
+    })
+
+    it('an id that is not in the loaded world (or no doc) shows the inline line instead', async () => {
+      const v = makeViewer()
+      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'nope' } })
+      await submit(v, 'q')
+      fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
+      expect(screen.getByText('symbol nope')).toBeInTheDocument()
+      expect(v.apply).not.toHaveBeenCalled()
+      cleanup()
+      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'b1' } })
+      await submit(v, 'q', { doc: null })
+      fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
+      expect(screen.getByText('symbol b1')).toBeInTheDocument()
+      cleanup()
+      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'b1' } })
+      render(<WorldAsk viewer={v as never} root="r" />)
+      await settle()
+      fireEvent.change(input(), { target: { value: 'q' } })
+      fireEvent.keyDown(input(), { key: 'Enter' })
+      await settle()
+      fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
+      expect(v.apply).not.toHaveBeenCalled()
     })
 
     it('a file chip toggles an inline line showing kind and ref', async () => {

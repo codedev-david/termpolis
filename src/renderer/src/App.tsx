@@ -1207,7 +1207,7 @@ export default function App() {
             <WorldView
               root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
               onClose={() => setShowWorld(false)}
-              askSlot={(v) => <WorldAsk viewer={v} root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''} />}
+              askSlot={(v, d) => <WorldAsk viewer={v} doc={d} root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''} />}
             />
           )}
         </Suspense>
