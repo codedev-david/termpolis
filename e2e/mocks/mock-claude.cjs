@@ -105,8 +105,22 @@ if (pIdx !== -1 && process.env.MOCK_CLAUDE_WORLD_ANSWER === '1') {
 // its question ("Answer to: <question>"), cites the first evidence label the prompt carries, and
 // asks for the first building the prompt names to be focused and its card opened, in the
 // world-actions block ANSWER_PROTOCOL describes. MOCK_CLAUDE_REPLY_DELAY_MS holds the reply back.
+// A district-labelling prompt gets a labels reply instead, at once.
 function runWorldAnswer(args, at) {
   readPrompt(args, at).then((prompt) => {
+    if (prompt.includes('You are labelling one district')) {
+      // The labelling run Lumopolis makes when it compiles a world (src/main/world/labelPrompt.ts):
+      // one how-claim per listed building, citing the first excerpt label the prompt carries, so
+      // the world holds evidence for an answer to cite. JSON only, the shape label.ts parses.
+      const label = (/^\[(E\d+)\] /m.exec(prompt) || [])[1];
+      const part = prompt.slice(prompt.indexOf('\nBUILDINGS\n'), prompt.indexOf('\nEDGES'));
+      const buildings = {};
+      for (const m of part.matchAll(/^- "([^"]+)":/gm)) {
+        if (label) buildings[m[1]] = { how: [{ text: 'It is one part of the whole.', evidence: [label] }] };
+      }
+      console.log(JSON.stringify({ buildings }));
+      process.exit(0);
+    }
     const question = (/\nQUESTION\n([^\n]*)/.exec(prompt) || [])[1] || '';
     const building = (/\nbuilding (\S+):/.exec(prompt) || /\nOTHER\n([^\s:]+):/.exec(prompt) || [])[1];
     const hasEvidence = /\nE1: /.test(prompt);

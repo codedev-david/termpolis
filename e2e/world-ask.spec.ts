@@ -14,9 +14,11 @@
  *   3. Two questions in a row: only the second is answered.
  *   4. The renderer logged no console error and threw no page error.
  *
- * Labelling is off, so the world has no claims and no answer can carry an [E1] chip (the
- * labelling run is spawned without a shell and cannot launch a Windows shim). The chip is covered
- * by the WorldAnswer unit tests. The launch adds the software GL switches, as world-view.spec.ts does.
+ * Labelling is off for those four, so the world has no claims (the labelling run is spawned
+ * without a shell and cannot launch a Windows shim). A fifth test, skipped on Windows, restarts the
+ * app with labelling on (the mock answers the labelling prompt with one claim per building citing
+ * an excerpt) and checks the [E1] chip and its evidence line.
+ * The launch adds the software GL switches, as world-view.spec.ts does.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
@@ -31,6 +33,7 @@ let page: Page
 let userDataDir: string
 let project: string
 let shimDir: string
+let shims: Record<string, string>
 const consoleErrors: string[] = []
 
 /** Writes `files` under a new temp folder and makes it a git repository with every file staged. */
@@ -107,7 +110,7 @@ test.beforeAll(async () => {
   // Termpolis refuses a .cmd or .bat agent on Windows (a hidden run never passes a prompt through
   // cmd.exe), so there the mock is a PowerShell script first on PATH: Get-Command takes it as an
   // external script. Elsewhere e2e/test-shims/claude, which e2eShimEnv puts on PATH, is enough.
-  const shims = e2eShimEnv('world-ask')
+  shims = e2eShimEnv('world-ask')
   shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-ask-shim-'))
   if (process.platform === 'win32') {
     const mock = path.resolve('e2e', 'mocks', 'mock-claude.cjs')
@@ -116,6 +119,11 @@ exit $LASTEXITCODE
 `)
   }
 
+  await launchApp()
+})
+
+/** Starts (or restarts) the app on `userDataDir` and gets past onboarding. */
+async function launchApp(): Promise<void> {
   app = await electron.launch({
     args: [
       path.resolve('out/main/index.js'),
@@ -157,7 +165,7 @@ exit $LASTEXITCODE
     await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
     await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
   }
-})
+}
 
 test.afterAll(async () => {
   await quitApp(app)
@@ -244,6 +252,56 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
   })
 
   test('4. the renderer logged no console errors and threw no page errors', async () => {
+    expect(consoleErrors).toEqual([])
+  })
+})
+
+// The [E1] chip needs a labelled world: labelling runs `claude -p` through execFile without a
+// shell, which launches the bash shim on Linux and macOS but not a Windows .cmd or .ps1 shim.
+test.describe.serial('Lumopolis Ask bar evidence chip (labelling on)', () => {
+  test.setTimeout(150_000)
+  test.skip(process.platform === 'win32', 'the labelling run uses execFile without a shell, so .cmd/.ps1 shims cannot run')
+
+  test.beforeAll(async () => {
+    // Same app again on a fresh user-data folder state, with the default labelling (on).
+    await quitApp(app)
+    fs.writeFileSync(
+      path.join(userDataDir, 'session.json'),
+      JSON.stringify({ terminals: [], workspaces: [], defaultShell: 'bash', viewMode: 'tabs' }),
+    )
+    fs.rmSync(path.join(userDataDir, 'world'), { recursive: true, force: true })
+    fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: true }))
+    await launchApp()
+  })
+
+  test('an answer citing [E1] shows a chip, and clicking it shows the evidence', async () => {
+    await createTerminal('Notes', project)
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    await page.keyboard.press('Control+k')
+    const input = page.getByPlaceholder('Type a command...')
+    await expect(input).toBeVisible()
+    await input.fill('Open Lumopolis')
+    const result = page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ })
+    await expect(result).toBeVisible()
+    await result.click()
+    // The map is drawn once the labelling runs (one hidden agent run per district) are done.
+    await expect(canvas()).toBeVisible({ timeout: 120_000 })
+    await expect(askBox()).toBeEnabled({ timeout: 30_000 })
+
+    await ask('How does it fit together?')
+    await expect(answer()).toContainText('Answer to: How does it fit together?', { timeout: 30_000 })
+    // The marker became a chip: no raw [E1] text is left in the answer.
+    await expect(chip()).toBeVisible()
+    await expect(answer().locator('p')).not.toContainText('[E1]')
+
+    // Evidence a model cites is a file, so the chip shows its inline `kind ref` line.
+    const evidence = answer().locator('div.font-mono')
+    await expect(evidence).toHaveCount(0)
+    await chip().click()
+    await expect(evidence).toHaveCount(1)
+    await expect(evidence).toHaveText(/^file \S+/)
+    await chip().click()
+    await expect(evidence).toHaveCount(0)
     expect(consoleErrors).toEqual([])
   })
 })
