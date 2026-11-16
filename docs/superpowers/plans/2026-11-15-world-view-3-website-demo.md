@@ -14,7 +14,7 @@
 
 ## Global Constraints
 
-- Naming (David, 2026-11-16): the page `<title>` is `Lumopolis: Where AI Worlds Become Human Understanding | Termpolis`, the page heading is `Lumopolis`, and the tagline under it is exactly `Where AI Worlds Become Human Understanding.` Lumopolis is always shown as part of Termpolis 2.0, never as a separate product.
+- Naming (David, 2026-11-16): the page `<title>` is `Lumopolis: Where AI Worlds Become Human Understanding | Termpolis`, the page heading is `Lumopolis`, the tagline under it is exactly `Where AI Worlds Become Human Understanding.`, and the first line of the intro is `The city of enlightenment for understanding between humans and AI.` Lumopolis is always shown as part of Termpolis 2.0, never as a separate product.
 - The page is `lumopolis.html`. Three.js comes only from the vendored engine bundle: **no CDN at runtime**.
 - The homepage stays lean (site rule, ~2.2k words): a teaser block only; detail lives on `lumopolis.html`.
 - It must work on phones: touch orbit and pinch zoom, a low-power quality tier, and a still image plus 2D fallback without WebGL. A 16px side gutter and no horizontal scroll.

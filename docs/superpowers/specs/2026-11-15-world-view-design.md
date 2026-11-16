@@ -1,7 +1,7 @@
 # Lumopolis: Design Spec
 
 > **Lumopolis: Where AI Worlds Become Human Understanding.**
-> Lumopolis is the world-view visualization tool inside Termpolis, not a separate app (David, 2026-11-16). It was called "Lumopolis" until then. Internal code keeps the neutral `world` name (`WorldDoc`, `src/main/world/`, `world:*` IPC); everything a person sees says Lumopolis.
+> Lumopolis is the world-view visualization tool inside Termpolis, not a separate app (David, 2026-11-16). The idea behind the name: **the city of enlightenment for understanding between humans and AI** (*lumo* = light, *polis* = city). That is why the world is drawn as a city of districts and buildings (section 5.1). It was called "Lumopolis" until then. Internal code keeps the neutral `world` name (`WorldDoc`, `src/main/world/`, `world:*` IPC); everything a person sees says Lumopolis.
 
 **Date:** 2026-11-15
 **Status:** Approved by David (2026-11-15)
