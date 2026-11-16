@@ -5,12 +5,12 @@
 // cancels the first. Failures are fixed, friendly sentences, never the raw error.
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { applyDesignPatch, DESIGN_PROTOCOL, emptyDesignDoc, parseDesignReply, type DesignPlacer, type DesignReply } from '../../shared/world/designPatch'
+import { applyDesignPatch, DESIGN_PROTOCOL, emptyDesignDoc, parseDesignReply, type DesignOp, type DesignPlacer, type DesignReply } from '../../shared/world/designPatch'
 import type { DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import type { ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
 import { districtRadius, layoutWorld, placeBuilding } from './layout'
-import type { SourceRegistry } from './sources'
+import type { SourceRegistry, WorldSource } from './sources'
 import type { WorldStore } from './worldStore'
 
 export interface DesignerDeps {
@@ -25,9 +25,20 @@ export interface DesignerDeps {
   timeoutMs?: number
 }
 
+/** What world_propose names: an existing design by key, or a new design linked to a project folder. */
+export type ProposeTarget = { key: string } | { linkRoot: string }
+
+export interface ProposeResult {
+  key: string
+  applied: number
+  skipped: number
+}
+
 export interface Designer {
   draft(description: string): Promise<DesignDraftResult>
   refine(key: string, message: string, summary: string): Promise<DesignRefineResult>
+  /** Applies an agent's design ops directly (no agent run): to the named design, or to a new one linked to a folder. */
+  propose(target: ProposeTarget, ops: unknown[]): Promise<ProposeResult>
 }
 
 /** A designer failure whose message is safe to show the user as it is. */
@@ -44,9 +55,10 @@ export const DESIGN_NOT_FOUND = "Lumopolis couldn't find that design."
 export const DESIGN_OPEN_FAILED = "Lumopolis couldn't open that design. Try again."
 export const DESIGN_SAVE_FAILED = "Lumopolis couldn't save the design. Try again."
 export const DESIGN_REPLACED = 'Lumopolis stopped that change for your newer one.'
+export const DESIGN_NOTHING_APPLIED = 'None of those changes could be applied, so Lumopolis made no design.'
 export const DEFAULT_DESIGN_TIMEOUT_MS = 90_000
 
-const KEY_RE = /^design:([A-Za-z0-9][A-Za-z0-9._-]*)$/ // a leading letter or digit: never '..'
+export const DESIGN_KEY_RE = /^design:([A-Za-z0-9][A-Za-z0-9._-]*)$/ // a leading letter or digit: never '..'
 const MAX_TITLE = 40
 const MAX_REQUEST = 4000
 const ROLE = 'You help someone plan a software system in Termpolis Lumopolis. The design is a plan, not existing code.'
@@ -115,6 +127,12 @@ export function buildDesignPrompt(doc: WorldDoc | null, request: string, summary
   return prompt
 }
 
+/** The last segment of a folder path, either separator. */
+function folderName(root: string): string {
+  const parts = root.split(/[\\/]/).filter((p) => p !== '')
+  return parts.length > 0 ? parts[parts.length - 1] : root
+}
+
 /** A short, one-line title from the description. */
 function titleFor(description: string): string {
   const flat = description.replace(/\s+/g, ' ').trim()
@@ -161,6 +179,28 @@ export function createDesigner(deps: DesignerDeps): Designer {
     }
   }
 
+  /** The stored design for a key, or a DesignFailure (bad key or none stored: not found; a read error: open failed). */
+  const open = async (key: string): Promise<{ id: string; doc: WorldDoc }> => {
+    const m = DESIGN_KEY_RE.exec(key)
+    if (!m) throw new DesignFailure(DESIGN_NOT_FOUND)
+    let doc: WorldDoc | null
+    try {
+      doc = await deps.store.load(key)
+    } catch {
+      throw new DesignFailure(DESIGN_OPEN_FAILED)
+    }
+    if (!doc) throw new DesignFailure(DESIGN_NOT_FOUND)
+    return { id: m[1], doc }
+  }
+
+  const register = async (source: WorldSource, title: string): Promise<void> => {
+    try {
+      await deps.registry.upsert(source, title)
+    } catch {
+      throw new DesignFailure(DESIGN_SAVE_FAILED)
+    }
+  }
+
   return {
     async draft(description) {
       const id = deps.newId()
@@ -170,25 +210,13 @@ export function createDesigner(deps: DesignerDeps): Designer {
       if (patch.applied === 0) throw new DesignFailure(DESIGN_EMPTY)
       await save(patch.doc)
       const title = titleFor(description)
-      try {
-        await deps.registry.upsert({ kind: 'design', id, title }, title)
-      } catch {
-        throw new DesignFailure(DESIGN_SAVE_FAILED)
-      }
+      await register({ kind: 'design', id, title }, title)
       return { key, doc: patch.doc, text: reply.text }
     },
 
     async refine(key, message, summary) {
-      const m = KEY_RE.exec(key)
-      if (!m) throw new DesignFailure(DESIGN_NOT_FOUND)
-      let doc: WorldDoc | null
-      try {
-        doc = await deps.store.load(key)
-      } catch {
-        throw new DesignFailure(DESIGN_OPEN_FAILED)
-      }
-      if (!doc) throw new DesignFailure(DESIGN_NOT_FOUND)
-      const reply = await run(key, join(deps.designsDir, m[1]), buildDesignPrompt(doc, message, summary))
+      const { id, doc } = await open(key)
+      const reply = await run(key, join(deps.designsDir, id), buildDesignPrompt(doc, message, summary))
       const patch = applyDesignPatch(doc, reply.ops, layoutPlacer)
       let out = patch.doc
       if (patch.applied > 0) {
@@ -199,6 +227,24 @@ export function createDesigner(deps: DesignerDeps): Designer {
         doc: out, text: reply.text, applied: patch.applied, skipped: patch.skipped.length + reply.dropped,
         summary: summarize(summary, message, reply.text)
       }
+    },
+
+    async propose(target, ops) {
+      const list = ops as DesignOp[]
+      if ('key' in target) {
+        const { doc } = await open(target.key)
+        const patch = applyDesignPatch(doc, list, layoutPlacer)
+        if (patch.applied > 0) await save({ ...patch.doc, generatedAt: now() })
+        return { key: target.key, applied: patch.applied, skipped: patch.skipped.length }
+      }
+      const id = deps.newId()
+      const key = `design:${id}`
+      const patch = applyDesignPatch(emptyDesignDoc(key, now()), list, layoutPlacer)
+      if (patch.applied === 0) throw new DesignFailure(DESIGN_NOTHING_APPLIED)
+      await save(patch.doc)
+      const title = titleFor(`Plan for ${folderName(target.linkRoot)}`)
+      await register({ kind: 'design', id, title, linkedRoot: target.linkRoot }, title)
+      return { key, applied: patch.applied, skipped: patch.skipped.length }
     }
   }
 }

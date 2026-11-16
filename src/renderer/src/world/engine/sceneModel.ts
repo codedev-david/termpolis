@@ -1,5 +1,6 @@
 // Pure description of what to draw. No Three.js: the renderer (Task 12) consumes a SceneModel.
-import type { Building, WorldDoc, WorldEdge } from '../../../../shared/world/types'
+import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
+import type { Building, Proposal, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 
 export type Vec3 = [number, number, number]
 export type Look = 'solid' | 'wire' | 'amber' | 'fog'
@@ -10,7 +11,7 @@ export interface LayerState {
   /** Show the coloured process shell around each building. */
   processes: boolean
   allLineLabels: boolean
-  /** Show planned (proposed) buildings and the connections that touch them. */
+  /** Show planned (proposed) buildings, the linked design and the connections that touch them. */
   planned: boolean
 }
 export const DEFAULT_LAYERS: LayerState = { labels: 'jobs', processes: false, allLineLabels: false, planned: true }
@@ -18,6 +19,8 @@ export const DEFAULT_LAYERS: LayerState = { labels: 'jobs', processes: false, al
 export interface SceneDistrict { id: string; pos: Vec3; radius: number; hue: number; label: string }
 export interface SceneBuilding {
   id: string; pos: Vec3; floors: number; height: number; look: Look; ring: boolean; processShell?: string
+  /** A short card tag, e.g. a built part the linked design does not have. */
+  tag?: string
 }
 export interface SceneConduit {
   id: string; from: Vec3; to: Vec3; ctrl: Vec3; dashed: boolean; width: number; color: string; cargo: string
@@ -73,17 +76,26 @@ export function conduitStyle(doc: WorldDoc, edge: WorldEdge, live?: ConduitLive)
   return { width: live?.width ?? width, color: live?.color ?? (cargo ? cargo.color : FALLBACK_COLOR) }
 }
 
+type Linked = Proposal & { reconcile: NonNullable<Proposal['reconcile']> }
+
 function fallbackPos(index: number): Vec3 {
   return [(index % 6) * 8, 0, 14 + Math.floor(index / 6) * 8]
 }
 
 export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { revealProposal?: string }): SceneModel {
   const proposal = opts?.revealProposal === undefined ? undefined : doc.layers.plan.find((p) => p.id === opts.revealProposal)
+  // The linked design (a proposal carrying reconcile) shows with the planned layer; its missing parts are
+  // wireframes at their design position, and the parts it matched are the built buildings themselves.
+  const linked = layers.planned ? doc.layers.plan.filter((p): p is Linked => p.reconcile !== undefined) : []
+  const shown: Proposal[] = proposal && !linked.some((p) => p === proposal) ? [...linked, proposal] : linked
+  const notInDesign = new Set(linked.flatMap((p) => p.reconcile.extra))
   const buildings: Building[] = doc.buildings.filter((b) => layers.planned || b.status !== 'proposed')
   const known = new Set(buildings.map((b) => b.id))
   // The existing doc item wins over a revealed proposal item with the same id.
-  for (const b of proposal ? proposal.buildings : []) {
-    if (!known.has(b.id)) buildings.push({ ...b, status: 'proposed' })
+  for (const b of shown.flatMap((p) => p.buildings)) {
+    if (known.has(b.id)) continue
+    known.add(b.id)
+    buildings.push({ ...b, status: 'proposed' })
   }
   const proposedIds = new Set(buildings.filter((b) => b.status === 'proposed').map((b) => b.id))
 
@@ -100,6 +112,7 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
     const floors = Math.max(1, b.floors.length)
     const sb: SceneBuilding = { id: b.id, pos: place(b.id), floors, height: floors * FLOOR_HEIGHT, look, ring }
     if (layers.processes) sb.processShell = b.process
+    if (notInDesign.has(b.id)) sb.tag = NOT_IN_DESIGN
     return sb
   })
   const orbs: SceneOrb[] = doc.externals.map((x) => ({ id: x.id, pos: place(x.id), fog: x.fog }))
@@ -115,8 +128,13 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
   }
 
   const conduits: SceneConduit[] = []
-  const docEdgeIds = new Set(doc.edges.map((e) => e.id))
-  const revealedEdges = (proposal ? proposal.edges : []).filter((e) => !docEdgeIds.has(e.id))
+  const seenEdges = new Set(doc.edges.map((e) => e.id))
+  const revealedEdges: WorldEdge[] = []
+  for (const e of shown.flatMap((p) => p.edges)) {
+    if (seenEdges.has(e.id)) continue
+    seenEdges.add(e.id)
+    revealedEdges.push(e)
+  }
   const revealedIds = new Set(revealedEdges.map((e) => e.id))
   for (const e of [...doc.edges, ...revealedEdges]) {
     const from = positions.get(e.from)

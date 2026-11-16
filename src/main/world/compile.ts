@@ -14,6 +14,7 @@ import { edgeId, groupProject, isIgnored, resolveImport, slug, type GroupBuildin
 import { relativeImports, withImports } from './imports'
 import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
+import { overlayPlan } from './planOverlay'
 import { readTestResults, statusFor, TEST_FILE, type TestRun } from './testStatus'
 
 export type CompileStage = 'structure' | 'boundaries' | 'grouping' | 'status' | 'labelling' | 'layout'
@@ -38,6 +39,8 @@ export interface CompileInput {
   previous: WorldDoc | null
   /** Repository-relative files that changed since `previous`; only their buildings are re-labelled. */
   changed?: string[]
+  /** The project's linked design, laid over the world as plan versus built (planOverlay.ts). */
+  plan?: WorldDoc
 }
 
 /** One plain-English line per code-derived tech word. Wins over a model's definition of the same term. */
@@ -441,7 +444,7 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
     layers: { plan: [] }
   }
   progress('layout', 100)
-  return doc
+  return input.plan ? overlayPlan(doc, input.plan, previous) : doc
 }
 
 // ---------- recompile scheduler ----------

@@ -1,5 +1,6 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Building, Claim, WorldDoc, WorldEdge } from '../../../../shared/world/types'
+import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
 import { escapeHtml as esc } from './html'
 
 export { escapeHtml } from './html'
@@ -44,8 +45,11 @@ export function buildingCard(doc: WorldDoc, id: string): string {
   const outs = edges.filter((e) => e.from === id)
   const proc = doc.processes[b.process]
   const parts = b.floors.map((f) => `<li><b>${esc(f.name)}</b> <span class="muted">· ${esc(f.tech.join(', '))}</span></li>`).join('')
+  // A built building the project's linked design does not have.
+  const unplanned = doc.layers.plan.some((p) => p.reconcile !== undefined && p.reconcile.extra.indexOf(id) >= 0)
+  const tag = unplanned ? ` <span class="tag">${esc(NOT_IN_DESIGN)}</span>` : ''
   return `<h3>${esc(b.name)}</h3><p class="muted">${esc(b.techLabel)}</p>`
-    + section('Status', `<p class="status status-${esc(b.status)}">${esc(STATUS[b.status])}</p>`)
+    + section('Status', `<p class="status status-${esc(b.status)}">${esc(STATUS[b.status])}${tag}</p>`)
     + section('Process', `<p>${esc(proc ? proc.label : b.process)}</p>`)
     + section('What it does', claims(b.how))
     + section('What\'s inside', `<ul>${parts}</ul>`)

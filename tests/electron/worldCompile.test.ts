@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import type { WorldDoc } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
+import { applyDesignPatch, emptyDesignDoc } from '../../src/shared/world/designPatch'
 import {
   BUILTIN_GLOSSARY,
   buildTours,
@@ -468,6 +469,23 @@ describe('compileWorld', () => {
     expect(new Set(deps.reads).size).toBe(70)
     expect(seen.length).toBeGreaterThan(2)
     expect(seen[seen.length - 1]).toBe(40)
+  })
+
+  it('lays a linked design over the world as plan versus built, and leaves the world alone without one', async () => {
+    const plain = await compileFixture()
+    const first = plain.buildings[0]
+    const plan = applyDesignPatch(emptyDesignDoc('design:p', 5), [
+      { op: 'addDistrict', id: 'd', name: 'Plan' },
+      { op: 'addBuilding', id: first.id, districtId: 'd', name: 'Same part' },
+      { op: 'addBuilding', id: 'planned-only', districtId: 'd', name: 'Planned only' }
+    ]).doc
+    const doc = await compileWorld({ snap: snapOf(FIXTURE), projectKey: 'demo', head: HEAD, previous: null, plan }, mkDeps(FIXTURE))
+    expectValid(doc)
+    expect(doc.buildings).toEqual(plain.buildings)
+    expect(doc.layers.plan).toHaveLength(1)
+    expect(doc.layers.plan[0].reconcile).toMatchObject({ matched: { [first.id]: first.id }, missing: ['planned-only'], planAt: 5 })
+    expect(doc.layers.plan[0].buildings.map((b) => b.id)).toEqual(['planned-only'])
+    expect(plain.layers.plan).toEqual([])
   })
 })
 

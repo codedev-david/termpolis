@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildSceneModel, conduitStyle, DEFAULT_LAYERS, isMostlyInferred, lookOf } from '../../../src/renderer/src/world/engine/sceneModel'
+import { NOT_IN_DESIGN } from '../../../src/shared/world/reconcile'
 import { building, claim, edge, minimal, rich } from './helpers'
 
 const lookFor = (b: ReturnType<typeof building>) => {
@@ -155,5 +156,52 @@ describe('conduitStyle', () => {
     const e = edge('a', 'b1', 'b2')
     expect(conduitStyle(doc, e, { width: 1, color: '#fff' })).toEqual({ width: 1, color: '#fff' })
     expect(conduitStyle(doc, e, {})).toEqual({ width: 0.1, color: '#6aa9ff' })
+  })
+})
+
+describe('linked design overlay', () => {
+  /** minimal() plus a linked design: plan "auth" matched b1, "mailer" is missing (drawn as pm), b2 is not in the design. */
+  const linked = () => {
+    const doc = minimal()
+    doc.layout.positions.pm = [30, 0, 30]
+    doc.layers.plan.push({
+      id: 'design:p', title: 'Linked design', summary: [],
+      buildings: [building('pm', { status: 'proposed', districtId: 'd1' })],
+      edges: [edge('pe', 'b1', 'pm')],
+      reconcile: { matched: { auth: 'b1' }, missing: ['mailer'], extra: ['b2'], planAt: 1 }
+    })
+    return doc
+  }
+
+  it('sceneModel draws matched as solid at built pos, missing as wire', () => {
+    const doc = linked()
+    const m = buildSceneModel(doc, DEFAULT_LAYERS)
+    const b1 = m.buildings.find((b) => b.id === 'b1')
+    const pm = m.buildings.find((b) => b.id === 'pm')
+    const b2 = m.buildings.find((b) => b.id === 'b2')
+    expect(b1).toMatchObject({ pos: [0, 0, 0], look: 'solid' })
+    expect(b1?.tag).toBeUndefined()
+    expect(pm).toMatchObject({ pos: [30, 0, 30], look: 'wire', ring: false })
+    expect(b2?.tag).toBe(NOT_IN_DESIGN)
+    expect(m.conduits.find((c) => c.id === 'pe')).toMatchObject({ dashed: true, from: [0, 0, 0], to: [30, 0, 30] })
+    // The district takes the planned building in.
+    expect(m.districts[0].radius).toBeGreaterThan(20)
+  })
+
+  it('hides the linked design, and its tags, when planned is off', () => {
+    const m = buildSceneModel(linked(), { ...DEFAULT_LAYERS, planned: false })
+    expect(m.buildings.map((b) => b.id)).toEqual(['b1', 'b2'])
+    expect(m.buildings.every((b) => b.tag === undefined)).toBe(true)
+    expect(m.conduits.map((c) => c.id)).toEqual(['e1'])
+  })
+
+  it('draws the linked design once when it is also the revealed proposal, beside another revealed one', () => {
+    const doc = linked()
+    const once = buildSceneModel(doc, DEFAULT_LAYERS, { revealProposal: 'design:p' })
+    expect(once.buildings.filter((b) => b.id === 'pm')).toHaveLength(1)
+    expect(once.conduits.filter((c) => c.id === 'pe')).toHaveLength(1)
+    doc.layers.plan.push({ id: 'p2', title: 'Other', summary: [], buildings: [building('q1', { status: 'proposed' })], edges: [] })
+    const both = buildSceneModel(doc, DEFAULT_LAYERS, { revealProposal: 'p2' })
+    expect(both.buildings.map((b) => b.id)).toEqual(['b1', 'b2', 'pm', 'q1'])
   })
 })

@@ -23,6 +23,7 @@ import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps } from './gitSource'
 import type { LabelDeps } from './label'
 import { createWorldStore, type WorldStore } from './worldStore'
+import { validateWorld } from '../../shared/world/validate'
 
 // ── Wire protocol ────────────────────────────────────────────────────────────────────────────────
 
@@ -263,7 +264,11 @@ export interface WorldHost {
 interface Latest {
   snap: GraphSnapshot
   head: WorldHead
+  plan?: WorldDoc
 }
+
+/** The linked design main sent along, kept only when it is a valid world (anything else is ignored). */
+const planArg = (plan: unknown): { plan?: WorldDoc } => (plan && validateWorld(plan).ok ? { plan: plan as WorldDoc } : {})
 
 const refOf = (ref: unknown): string | undefined => (isStr(ref) && ref !== '' ? ref : undefined)
 
@@ -361,7 +366,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
             const previous = await st.store.load(key)
             if (!previous) return
             const cur = latest.get(key) as Latest
-            const doc = await compile({ snap: cur.snap, projectKey: key, head: cur.head, previous, changed }, depsFor(st, key, cur.snap))
+            const input = { snap: cur.snap, projectKey: key, head: cur.head, previous, changed, ...planArg(cur.plan) }
+            const doc = await compile(input, depsFor(st, key, cur.snap))
             await st.store.save(doc)
             post({ kind: 'updated', projectKey: key })
           }),
@@ -374,8 +380,9 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
 
   type Handler = (...args: never[]) => Promise<unknown>
   const handlers = (st: HostState): Record<string, Handler> => ({
-    compile: (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, opts?: { relayout?: boolean }) => {
+    compile: (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, opts?: { relayout?: boolean; plan?: unknown }) => {
       const key = needKey(projectKey)
+      const plan = planArg(opts?.plan)
       // Labelling on: the model asks one question per district, in series, which on a big repository
       // can outlast the RPC's timeout while the user sees nothing. So the first pass labels from the
       // label cache only (a miss keeps the code-derived label and asks no model); it is saved,
@@ -394,7 +401,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         const stored = await st.store.load(key)
         const previous =
           stored && opts?.relayout === true ? { ...stored, layout: { seed: stored.layout.seed, positions: {} } } : stored
-        const doc = await compile({ snap, projectKey: key, head, previous }, depsFor(st, key, snap, labelled ? cacheOnly : null))
+        const doc = await compile({ snap, projectKey: key, head, previous, ...plan }, depsFor(st, key, snap, labelled ? cacheOnly : null))
         await st.store.save(doc)
         post({ kind: 'updated', projectKey: key })
         return doc
@@ -404,7 +411,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           // A failed first pass already answered the RPC; labelling turned off since asks no model.
           const previous = await first.catch(() => null)
           if (!previous || !missed || !st.labelling) return
-          const doc = await compile({ snap, projectKey: key, head, previous }, depsFor(st, key, snap))
+          const doc = await compile({ snap, projectKey: key, head, previous, ...plan }, depsFor(st, key, snap))
           await st.store.save(doc)
           post({ kind: 'updated', projectKey: key })
         }).catch((err: unknown) => console.error('[world host] labelled follow-up failed:', err))
@@ -412,9 +419,9 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       return first
     },
     get: async (projectKey: unknown) => st.store.load(needKey(projectKey)),
-    notifyChanged: async (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, files: unknown) => {
+    notifyChanged: async (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, files: unknown, plan?: unknown) => {
       const key = needKey(projectKey)
-      latest.set(key, { snap, head })
+      latest.set(key, { snap, head, ...planArg(plan) })
       schedulerFor(st, key).notify(Array.isArray(files) ? files.filter(isStr) : [])
       return true
     },

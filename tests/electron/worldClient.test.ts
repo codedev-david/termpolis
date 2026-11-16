@@ -734,4 +734,83 @@ describe('createWorldClient', () => {
       }
     })
   })
+
+  describe('linked design (plan versus built)', () => {
+    const PLAN = { projectKey: 'design:p', generatedAt: 9 } as unknown as WorldDoc
+    const withPlan = (head: string, planAt: number | null): WorldDoc =>
+      ({
+        ...DOC,
+        sourceRevision: { head, dirty: false },
+        layers: { plan: planAt === null ? [] : [{ id: 'design:p', reconcile: { matched: {}, missing: [], extra: [], planAt } }] }
+      }) as unknown as WorldDoc
+    const compiles = (t: { calls(): CallMsg[] }): CallMsg[] => t.calls().filter((c) => c.fn === 'compile')
+
+    it('compile and relayout send the linked design; none, or a failed lookup, sends nothing extra', async () => {
+      const planFor = vi.fn(async (key: string) => (key === KEY ? PLAN : null))
+      const head = async () => ({ head: 'h', dirty: false })
+      const { client, spawned } = setup({ head, planFor })
+      await client.compile(ROOT)
+      await client.relayout(ROOT)
+      expect(compiles(spawned[0]).map((c) => c.args[3])).toEqual([{ plan: PLAN }, { relayout: true, plan: PLAN }])
+      expect(planFor).toHaveBeenCalledWith(KEY)
+
+      const failing = setup({ head, planFor: async () => Promise.reject(new Error('registry gone')) })
+      await failing.client.compile(ROOT)
+      expect(compiles(failing.spawned[0])[0].args).toHaveLength(3)
+      const none = setup({ head, planFor: async () => undefined as unknown as null })
+      await none.client.compile(ROOT)
+      expect(compiles(none.spawned[0])[0].args).toHaveLength(3)
+    })
+
+    it('notifyChanged passes the linked design to the watcher recompile', async () => {
+      const head = vi.fn(async () => ({ head: 'h', dirty: false }))
+      const { client, spawned } = setup({ head, planFor: async () => PLAN, hasStoredWorld: () => false })
+      await client.compile(ROOT)
+      client.notifyChanged(ROOT, ['src/a.ts'])
+      await vi.waitFor(() => expect(spawned[0].calls().map((c) => c.fn)).toContain('notifyChanged'))
+      expect(spawned[0].calls()[1].args).toEqual([KEY, SNAP, { head: 'h', dirty: false }, ['src/a.ts'], PLAN])
+    })
+
+    it('a design saved since the world was compiled refreshes it at the same HEAD; a matching stamp does not', async () => {
+      let stored = withPlan('h', 3)
+      let fresh = withPlan('h', 9)
+      const planFor = vi.fn(async () => PLAN)
+      const head = async () => ({ head: 'h', dirty: false })
+      const { client, spawned } = setup({ head, planFor }, (t) => {
+        t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: m.fn === 'get' ? stored : fresh })
+      })
+      await client.get(ROOT)
+      await vi.waitFor(() => expect(compiles(spawned[0])).toHaveLength(1))
+      expect(compiles(spawned[0])[0].args[3]).toEqual({ plan: PLAN })
+      for (let i = 0; i < 4; i++) await flush()
+      stored = withPlan('h', 9)
+      await client.get(ROOT)
+      await vi.waitFor(() => expect(planFor).toHaveBeenCalledTimes(2))
+      for (let i = 0; i < 4; i++) await flush()
+      expect(compiles(spawned[0])).toHaveLength(1)
+
+      // A refresh whose world still lacks the plan (the overlay did not validate) backs off.
+      stored = withPlan('h', null)
+      fresh = withPlan('h', null)
+      await client.get(ROOT)
+      await vi.waitFor(() => expect(compiles(spawned[0])).toHaveLength(2))
+      for (let i = 0; i < 4; i++) await flush()
+      await client.get(ROOT)
+      await vi.waitFor(() => expect(planFor).toHaveBeenCalledTimes(4))
+      for (let i = 0; i < 4; i++) await flush()
+      expect(compiles(spawned[0])).toHaveLength(2)
+    })
+
+    it('readDesign reads a stored design world by key, and answers null without starting the host when none is stored', async () => {
+      const stored = new Set(['design:a'])
+      const { client, spawn, spawned } = setup({ hasStoredWorld: (k) => stored.has(k) }, (t) => {
+        t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: { items: [], evidence: [], args: m.args } })
+      })
+      expect(await client.readDesign('design:none', { text: 'x' })).toBeNull()
+      expect(spawn).not.toHaveBeenCalled()
+      expect(await client.readDesign('design:a', { text: 'auth' })).toMatchObject({ args: ['design:a', { text: 'auth' }] })
+      expect(await client.readDesign('design:a', undefined as unknown as { text: string })).toMatchObject({ args: ['design:a', {}] })
+      expect(spawned[0].calls().map((c) => c.fn)).toEqual(['read', 'read'])
+    })
+  })
 })

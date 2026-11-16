@@ -100,7 +100,7 @@ export interface PrimerOptions {
  *  own, so the project's folder rides in the arguments. JSON.stringify keeps those arguments valid JSON
  *  for any path (a Windows `C:\repo` comes out as `"C:\\repo"`). */
 export function worldPrimerLine(projectPath: string): string {
-  return `This project has a Lumopolis map. Use gateway_call with tool "lumopolis/world_read" and arguments ${JSON.stringify({ cwd: projectPath })} (optionally ids, text, limit) to look up its parts, connections and evidence.`
+  return `This project has a Lumopolis map. Use gateway_call with tool "lumopolis/world_read" and arguments ${JSON.stringify({ cwd: projectPath })} (optionally ids, text, limit) to look up its parts, connections and evidence. Agents can sketch planned parts with tool "world_propose".`
 }
 
 /** Whether the project at `projectPath` has a world. Never throws: a failing check is no map. */

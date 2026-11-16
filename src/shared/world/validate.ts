@@ -136,7 +136,9 @@ const checkBuilding = (ctx: Ctx, prefix: string, b: unknown, i: number, proposed
   const it = openItem(ctx, 'building', prefix, b, i)
   if (!it) return
   const { id, label: p, rec } = it
-  if (!ctx.districtIds.has(rec.districtId as string)) ctx.errors.push(`${p}: unknown districtId "${String(rec.districtId)}"`)
+  // A planned building may sit outside every district (a linked design's part the code has no area for).
+  const outside = proposed && rec.districtId === ''
+  if (!outside && !ctx.districtIds.has(rec.districtId as string)) ctx.errors.push(`${p}: unknown districtId "${String(rec.districtId)}"`)
   for (const f of ['name', 'techLabel', 'process']) checkStr(ctx, p, rec, f)
   if (!BUILD_STATUSES.has(rec.status as string)) ctx.errors.push(`${p}: status "${String(rec.status)}" is invalid`)
   if (proposed && rec.status !== 'proposed') ctx.errors.push(`${p}: status must be "proposed"`)
@@ -223,6 +225,14 @@ const checkProposal = (ctx: Ctx, pr: unknown, i: number, baseNodes: Set<string>)
   else rec.buildings.forEach((b, n) => checkBuilding(ctx, p, b, n, true))
   if (!Array.isArray(rec.edges)) ctx.errors.push(`${label}: edges must be an array`)
   else rec.edges.forEach((e, n) => checkEdge(ctx, p, e, n, nodes))
+  if (rec.reconcile !== undefined) checkReconcile(ctx, label, rec.reconcile)
+}
+
+/** A linked design's plan-versus-built lists (optional: docs from before it existed have none). */
+const checkReconcile = (ctx: Ctx, label: string, r: unknown): void => {
+  const ok = isRecord(r) && isRecord(r.matched) && Object.values(r.matched).every(isStr)
+    && Array.isArray(r.missing) && r.missing.every(isStr) && Array.isArray(r.extra) && r.extra.every(isStr) && isNum(r.planAt)
+  if (!ok) ctx.errors.push(`${label}: reconcile must be { matched, missing, extra, planAt }`)
 }
 
 const checkMaps = (ctx: Ctx, doc: Rec): void => {

@@ -30,6 +30,7 @@ import { cloneKey } from '../../src/main/world/gitSource'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
+import { emptyDesignDoc } from '../../src/shared/world/designPatch'
 
 const claim = (text: string, refs: string[] = []): Claim => ({
   text,
@@ -749,6 +750,32 @@ describe('createWorldHost', () => {
     await new Promise((r) => setTimeout(r, 30))
     expect(compile).not.toHaveBeenCalled()
     expect(h.out.some((m) => m.kind === 'updated')).toBe(false)
+  })
+
+  it('a valid linked design rides into compile, its labelled follow-up and the watcher recompile; an invalid one is dropped', async () => {
+    const plan = emptyDesignDoc('design:p', 4)
+    expect(validateWorld(plan)).toMatchObject({ ok: true })
+    const inputs: CompileInput[] = []
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      inputs.push(input)
+      if (deps.label.llm) await deps.label.llm('describe')
+      return doc(input.projectKey, { generatedAt: inputs.length })
+    })
+    const h = harness({ compile, debounceMs: 5, llmTimeoutMs: 1 }, memStore({ k1: doc() }))
+    await h.init(true)
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD, { plan }] })
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+    expect(inputs.map((i) => i.plan)).toEqual([plan, plan])
+    await h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(), HEAD, { relayout: true, plan: { not: 'a world' } }] })
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(4))
+    expect(inputs.slice(2).map((i) => 'plan' in i)).toEqual([false, false])
+    await h.send({ kind: 'call', id: 3, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts'], plan] })
+    await vi.waitFor(() => expect(inputs).toHaveLength(5))
+    expect(inputs[4].plan).toEqual(plan)
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(5))
+    await h.send({ kind: 'call', id: 4, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+    await vi.waitFor(() => expect(inputs).toHaveLength(6))
+    expect('plan' in inputs[5]).toBe(false)
   })
 
   it('a second init cancels pending watcher recompiles (default debounce)', async () => {

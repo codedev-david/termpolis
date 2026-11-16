@@ -14,6 +14,7 @@ import { killUtility } from '../utilityKill'
 import type { WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
 import type { SerializedError, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
 import { worldFileName } from './worldStore'
+import { linkedPlanStamp, planStamp } from '../../shared/world/reconcile'
 
 export interface WorldHostTransport {
   postMessage(msg: WorldHostRequest): void
@@ -36,6 +37,8 @@ export interface WorldClientOptions {
   /** The code-graph snapshot posted to the host. Default: the structure-only
    *  `graphSnapshot(graphKeyForRoot(root), root, { structureOnly: true })` (the world reads no symbols). */
   snapshot?: (root: string) => GraphSnapshot | Promise<GraphSnapshot>
+  /** The design linked to a project (plan versus built), or null. Absent, or throwing: no plan. */
+  planFor?: (projectKey: string) => Promise<WorldDoc | null>
   /** Whether a world is stored for a project. Default: the store file exists under userData. */
   hasStoredWorld?: (projectKey: string) => boolean | Promise<boolean>
   /** How long one call may wait for its answer. Default 10 minutes (a first compile of a big repo). */
@@ -109,7 +112,7 @@ export function createWorldClient(
   const known = new Set<string>()
   /** Projects whose stored world is being checked against HEAD, or refreshed: at most one at a time each. */
   const refreshing = new Set<string>()
-  /** projectKey → the HEAD whose background refresh last failed, and when (REFRESH_BACKOFF_MS). */
+  /** projectKey → the HEAD and linked plan stamp whose background refresh last failed, and when (REFRESH_BACKOFF_MS). */
   const refreshFailed = new Map<string, { head: string; at: number }>()
   const progressSubs = new Set<(e: WorldProgressEvent) => void>()
   const updatedSubs = new Set<(e: WorldUpdatedEvent) => void>()
@@ -259,11 +262,26 @@ export function createWorldClient(
     return key
   }
 
-  const compileWith = async (root: string, relayout: boolean): Promise<WorldDoc> => {
+  /** The project's linked design, or null (no planFor, none linked, or the lookup failed). */
+  const planOf = async (key: string): Promise<WorldDoc | null> => {
+    if (!opts.planFor) return null
+    try {
+      return (await opts.planFor(key)) ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /** The linked plan stamp a world carries; a doc with no layers (never one the host saves) carries none. */
+  const carried = (doc: WorldDoc): string => (doc.layers ? linkedPlanStamp(doc) : '')
+
+  const compileWith = async (root: string, relayout: boolean, linked?: WorldDoc | null): Promise<WorldDoc> => {
     const key = keyOf(root)
     const snap = await snapshotOf(root)
     const head = await headOf(root)
-    const doc = await call<WorldDoc>('compile', relayout ? [key, snap, head, { relayout: true }] : [key, snap, head])
+    const plan = linked === undefined ? await planOf(key) : linked
+    const extra = { ...(relayout ? { relayout: true } : {}), ...(plan ? { plan } : {}) }
+    const doc = await call<WorldDoc>('compile', Object.keys(extra).length > 0 ? [key, snap, head, extra] : [key, snap, head])
     known.add(key)
     return doc
   }
@@ -275,7 +293,9 @@ export function createWorldClient(
    * the lookup failed) means no refresh. Failures are logged, never thrown: the caller already has its doc.
    * A refresh that failed is not tried again for the same HEAD until REFRESH_BACKOFF_MS has passed (a
    * repository whose compile keeps failing would otherwise snapshot and compile on every get); a new
-   * commit tries at once.
+   * commit tries at once. A linked design saved since the world was compiled (or linked, or unlinked)
+   * counts as stale too, with the same backoff; so does a refresh whose world still lacks the plan
+   * (an overlay that did not validate), which would otherwise recompile on every get.
    */
   const refreshIfStale = (root: string, key: string, doc: WorldDoc): void => {
     if (refreshing.has(key)) return
@@ -283,12 +303,17 @@ export function createWorldClient(
     let tried = ''
     void (async () => {
       const { head } = await headOf(root)
-      if (!head || head === doc.sourceRevision.head) return
+      const plan = await planOf(key)
+      const stamp = planStamp(plan)
+      const headStale = head !== '' && head !== doc.sourceRevision.head
+      if (!headStale && stamp === carried(doc)) return
+      const token = `${head}\n${stamp}`
       const failed = refreshFailed.get(key)
-      if (failed && failed.head === head && Date.now() - failed.at < REFRESH_BACKOFF_MS) return
-      tried = head
-      await compileWith(root, false)
-      refreshFailed.delete(key)
+      if (failed && failed.head === token && Date.now() - failed.at < REFRESH_BACKOFF_MS) return
+      tried = token
+      const fresh = await compileWith(root, false, plan)
+      if (carried(fresh) === stamp) refreshFailed.delete(key)
+      else refreshFailed.set(key, { head: token, at: Date.now() })
     })()
       .catch((e: unknown) => {
         if (tried) refreshFailed.set(key, { head: tried, at: Date.now() })
@@ -316,6 +341,11 @@ export function createWorldClient(
     /** A filtered view of the stored world (ids and/or text, default limit 20) with the cited evidence. */
     async read(root: string, q: WorldQuery): Promise<WorldReadResult> {
       return call<WorldReadResult>('read', [keyOf(root), q ?? {}])
+    },
+    /** The same filtered view of a stored design world by its key, or null when none is stored. */
+    async readDesign(key: string, q: WorldQuery): Promise<WorldReadResult | null> {
+      if (!(await hasStoredWorld(key))) return null
+      return call<WorldReadResult>('read', [key, q ?? {}])
     },
     /**
      * Whether a world exists for `root`: compiled or loaded this run, or stored on disk. Never starts
@@ -352,7 +382,8 @@ export function createWorldClient(
         const snap = await snapshotOf(root)
         const head = await headOf(root)
         const rel = normaliseFiles(files)
-        await call('notifyChanged', [key, snap, head, rel.length > 0 ? rel : snap.files])
+        const plan = await planOf(key)
+        await call('notifyChanged', [key, snap, head, rel.length > 0 ? rel : snap.files, ...(plan ? [plan] : [])])
       })().catch(() => undefined)
     },
     onProgress(cb: (e: WorldProgressEvent) => void): () => void {

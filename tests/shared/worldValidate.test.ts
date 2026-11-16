@@ -369,4 +369,32 @@ describe('validateWorld', () => {
       expect(errorsOf(d2)).toContain('layers.plan must be an array')
     })
   })
+
+describe('linked design overlay', () => {
+  const linkedDoc = (over: Any = {}): Any => {
+    const d = fresh()
+    d.layout.positions.pm = [9, 0, 9]
+    const pm = { ...d.buildings[0], id: 'pm', status: 'proposed', districtId: '', members: [] }
+    d.layers.plan = [{ id: 'design:x', title: 'Linked design', summary: [], buildings: [pm], edges: [], ...over }]
+    return d
+  }
+
+  it('lets a planned building sit outside every district, but not a built one', () => {
+    expect(validateWorld(linkedDoc()).ok).toBe(true)
+    const d = fresh()
+    d.buildings[0].districtId = ''
+    expect(errorsOf(d)).toContain('building b1: unknown districtId ""')
+  })
+
+  it('accepts a well-formed reconcile and rejects a broken one', () => {
+    expect(validateWorld(linkedDoc({ reconcile: { matched: { a: 'b1' }, missing: ['m'], extra: ['b2'], planAt: 3 } })).ok).toBe(true)
+    const bad = [null, [], { matched: [], missing: [], extra: [], planAt: 1 }, { matched: { a: 1 }, missing: [], extra: [], planAt: 1 },
+      { matched: {}, missing: 'm', extra: [], planAt: 1 }, { matched: {}, missing: [2], extra: [], planAt: 1 },
+      { matched: {}, missing: [], extra: {}, planAt: 1 }, { matched: {}, missing: [], extra: [3], planAt: 1 },
+      { matched: {}, missing: [], extra: [], planAt: '1' }]
+    for (const reconcile of bad) {
+      expect(errorsOf(linkedDoc({ reconcile }))).toContain('proposal design:x: reconcile must be { matched, missing, extra, planAt }')
+    }
+  })
+})
 })

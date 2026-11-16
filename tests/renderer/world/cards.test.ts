@@ -105,3 +105,17 @@ describe('cards', () => {
     expect(buildingCard(doc, 'e')).toContain('What it does')
   })
 })
+
+describe('linked design tag', () => {
+  it('tags a built building the linked design does not have', () => {
+    const doc = minimal()
+    expect(buildingCard(doc, 'b2')).not.toContain('not in the design')
+    doc.layers.plan.push({ id: 'p0', title: 'Not linked', summary: [], buildings: [], edges: [] })
+    doc.layers.plan.push({
+      id: 'design:p', title: 'Linked design', summary: [], buildings: [], edges: [],
+      reconcile: { matched: { auth: 'b1' }, missing: [], extra: ['b2'], planAt: 1 }
+    })
+    expect(buildingCard(doc, 'b2')).toContain('<span class="tag">not in the design</span>')
+    expect(buildingCard(doc, 'b1')).not.toContain('not in the design')
+  })
+})

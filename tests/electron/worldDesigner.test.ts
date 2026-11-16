@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createDesigner, DESIGN_AGENT_FAILED, DESIGN_EMPTY, DESIGN_NOT_FOUND, DESIGN_OPEN_FAILED, DESIGN_REPLACED,
-  DESIGN_SAVE_FAILED, DesignFailure, layoutPlacer
+  DESIGN_KEY_RE, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED, DesignFailure, layoutPlacer
 } from '../../src/main/world/designer'
 import { applyDesignPatch, emptyDesignDoc, type DesignOp } from '../../src/shared/world/designPatch'
 import type { WorldDoc } from '../../src/shared/world/types'
@@ -241,6 +241,48 @@ describe('createDesigner refine', () => {
     expect(task).toContain('s'.repeat(1200))
     expect(task).not.toContain('s'.repeat(1201))
     expect(task).toContain('Allowed changes')
+  })
+})
+
+describe('createDesigner propose', () => {
+  const noAgent = async (): Promise<ExecResult> => { throw new Error('propose never runs the agent') }
+
+  it('by key: applies the ops without the agent, saves only when something applied, and counts the skips', async () => {
+    const { designer, execFn, store } = setup(noAgent, { now: () => 60 })
+    await stored(store)
+    const res = await designer.propose({ key: 'design:id1' }, [
+      { op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }, { op: 'addBuilding', id: 'x', districtId: 'nowhere', name: 'X' }
+    ])
+    expect(res).toEqual({ key: 'design:id1', applied: 1, skipped: 1 })
+    const saved = (await store.load('design:id1')) as WorldDoc
+    expect(saved.generatedAt).toBe(60)
+    expect(saved.buildings.map((b) => b.id)).toEqual(['api', 'db', 'mail'])
+    expect(validateWorld(saved).ok).toBe(true)
+    expect(await designer.propose({ key: 'design:id1' }, [{ op: 'nope' }])).toEqual({ key: 'design:id1', applied: 0, skipped: 1 })
+    expect(((await store.load('design:id1')) as WorldDoc).buildings).toHaveLength(3)
+    expect(execFn).not.toHaveBeenCalled()
+  })
+
+  it('by key: a bad key, a missing design and a read error are friendly failures', async () => {
+    const { designer } = setup(noAgent)
+    expect(DESIGN_KEY_RE.test('design:../x')).toBe(false)
+    expect(await failure(designer.propose({ key: 'design:../x' }, []))).toBe(DESIGN_NOT_FOUND)
+    expect(await failure(designer.propose({ key: 'design:none' }, []))).toBe(DESIGN_NOT_FOUND)
+    const broken: WorldStore = { ...createWorldStore(dir), load: async () => { throw new Error('EIO') } }
+    expect(await failure(setup(noAgent, { store: broken }).designer.propose({ key: 'design:id1' }, []))).toBe(DESIGN_OPEN_FAILED)
+  })
+
+  it('by folder: makes a new design linked to that folder and records it; nothing applicable makes nothing', async () => {
+    const { designer, store, registry } = setup(noAgent, { now: () => 70 })
+    const winRoot = 'C:\\repos\\shop\\'
+    const res = await designer.propose({ linkRoot: winRoot }, [...DRAFT_OPS, { op: 'bogus' }])
+    expect(res).toEqual({ key: 'design:id1', applied: 4, skipped: 1 })
+    expect(((await store.load('design:id1')) as WorldDoc).generatedAt).toBe(70)
+    expect((await registry.get('design:id1'))?.source).toEqual({ kind: 'design', id: 'id1', title: 'Plan for shop', linkedRoot: winRoot })
+    expect((await designer.propose({ linkRoot: '/' }, DRAFT_OPS)).key).toBe('design:id2')
+    expect((await registry.get('design:id2'))?.title).toBe('Plan for /')
+    expect(await failure(designer.propose({ linkRoot: '/srv/app' }, [{ op: 'bogus' }]))).toBe(DESIGN_NOTHING_APPLIED)
+    expect(await store.load('design:id3')).toBeNull()
   })
 })
 

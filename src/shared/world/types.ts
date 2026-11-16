@@ -19,7 +19,14 @@ export interface WorldEdge {
   how: Claim[]; tech: string[]; why: Claim[]; rate: string; twoWay: boolean
 }
 export interface External { id: string; name: string; kind: 'agent' | 'provider' | 'files' | 'machine' | 'service'; fog: boolean }
-export interface Proposal { id: string; title: string; summary: Claim[]; buildings: Building[]; edges: WorldEdge[] }  // 2.0: website demo only
+/** Plan versus built (shared/world/reconcile.ts): plan building id → built building id, plus what each side lacks. */
+export interface PlanReconcile { matched: Record<string, string>; missing: string[]; extra: string[] }
+/** A planned change drawn over the world. One carrying `reconcile` is the project's linked design, overlaid
+ *  by compile: its buildings are the missing ones only, and `planAt` is the design's generatedAt. */
+export interface Proposal {
+  id: string; title: string; summary: Claim[]; buildings: Building[]; edges: WorldEdge[]
+  reconcile?: PlanReconcile & { planAt: number }
+}
 export interface Tour { id: string; title: string; steps: { ids: string[]; caption: string }[] }
 export interface WorldDoc {
   version: 1; projectKey: string; generatedAt: number; sourceRevision: { head: string; dirty: boolean }

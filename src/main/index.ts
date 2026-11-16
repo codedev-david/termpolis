@@ -2637,8 +2637,30 @@ const worldClaudeExec = (root: string): ExecFn => async (cmd, args, opts) => {
     return { stdout: '', code: 1 }
   }
 }
+// Design worlds (keyed design:<id>): main's own store and the one source registry; the agent runs read-only
+// in an empty folder per design under <userData>/world/designs, with no primer and noRemember like ask.
+const worldUserData = app.getPath('userData')
+const worldSources = createSourceRegistry(worldUserData, {
+  exists: (p) => fsPromises.access(p).then(() => true, () => false),
+  now: () => Date.now(),
+})
+const worldDesignStore = createWorldStore(worldUserData)
+const worldDesigner = createDesigner({
+  exec: runHeadless,
+  execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
+  store: worldDesignStore,
+  registry: worldSources,
+  designsDir: join(worldUserData, 'world', 'designs'),
+  newId: () => randomUUID(),
+})
 const worldClient = createWorldClient(undefined, {
   userDataPath: () => app.getPath('userData'),
+  // A project's linked design (plan versus built): registry entry -> linkedDesign -> the stored design.
+  planFor: async (projectKey) => {
+    const entry = await worldSources.get(projectKey)
+    const design = entry && entry.source.kind !== 'design' ? entry.source.linkedDesign : undefined
+    return design ? worldDesignStore.load(design) : null
+  },
   labelling: () => worldSettings.get().worldLabelling,
   // Claude's cheapest model (Haiku), whatever agent the user prefers elsewhere: main has no notion of a
   // default agent (Default Models are per-agent model ids kept by the renderer), and the settings copy
@@ -2672,25 +2694,11 @@ const worldClient = createWorldClient(undefined, {
 })
 // Ask: no primer and noRemember, so a question about the world never reads or writes the brain. deliver is
 // resolved at call time because deliverSecondOpinion is declared further down this file.
-// Design worlds (keyed design:<id>): main's own store and the one source registry; the agent runs read-only
-// in an empty folder per design under <userData>/world/designs, with no primer and noRemember like ask.
-const worldUserData = app.getPath('userData')
-const worldSources = createSourceRegistry(worldUserData, {
-  exists: (p) => fsPromises.access(p).then(() => true, () => false),
-  now: () => Date.now(),
-})
 registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAskRunner({
   exec: runHeadless,
   execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
   client: worldClient,
-}), createDesigner({
-  exec: runHeadless,
-  execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
-  store: createWorldStore(worldUserData),
-  registry: worldSources,
-  designsDir: join(worldUserData, 'world', 'designs'),
-  newId: () => randomUUID(),
-}))
+}), worldDesigner)
 /** An agent's working directory → the project root Lumopolis keys its world by: the git root of the
  *  folder, or the folder itself outside a repository. The same rule the Lumopolis pane applies
  *  (WorldView.tsx, through git:find-root), so an agent and the pane name the same world. */
@@ -2710,9 +2718,14 @@ const worldPrimerProbe = async (projectPath: string): Promise<boolean> => {
   return root !== null && (await worldClient.hasWorld(root))
 }
 // Lumopolis behind the MCP gateway (gateway_call, server "lumopolis"): a trusted built-in provider,
-// so its one read tool skips the allow-list prompt. Registered here so the gateway runtime never
-// imports world code. A read with no host running starts it, as the pane's first request does.
-const worldGatewayTransport = createWorldGatewayTransport(worldClient, worldRootFor)
+// so its tools skip the allow-list prompt. Registered here so the gateway runtime never imports world
+// code. A read with no host running starts it, as the pane's first request does. world_propose writes
+// only Lumopolis data under userData (a design world and its registry entries).
+const worldGatewayTransport = createWorldGatewayTransport(worldClient, worldRootFor, undefined, {
+  designer: worldDesigner,
+  registry: worldSources,
+  readDesign: (key, q) => worldClient.readDesign(key, q),
+})
 setBuiltinTransports(() => [worldGatewayTransport])
 // v1.23 C5 — issue->location prediction (on-demand for the UI; agents get the code_locate MCP tool).
 ipcMain.handle('code-graph:locate', async (_, opts: { issue: string; projectKey?: string; limit?: number }) => { try { return ok(await locateIssueSites(opts?.issue || '', opts?.projectKey, opts?.limit)) } catch (e: any) { return err(e.message) } })
