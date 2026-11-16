@@ -2771,7 +2771,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
             {(onSplitRight || onSplitDown) && (
               <>
                 {/* No shortcut hint: splitting has no keybinding (Ctrl+Shift+D is the Redundancy
-                    panel, Ctrl+Shift+R is unbound), so a hint here would name the wrong key. */}
+                    panel, Ctrl+Shift+R opens Lumopolis), so a hint here would name the wrong key. */}
                 <div className="border-t border-[#454545] my-1"></div>
                 {onSplitRight && (
                   <button

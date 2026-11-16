@@ -34,6 +34,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
 })
 
 import { WorldView } from '../../../src/renderer/src/components/World'
+import { focusables } from '../../../src/renderer/src/hooks/useFocusTrap'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
@@ -350,12 +351,130 @@ describe('WorldView', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('palette action show_world opens the overlay', async () => {
-    // The App wiring is covered in AppWorld.test.tsx; here: the overlay it opens is the Lumopolis dialog.
+  it('is a modal Lumopolis dialog that takes the focus on open', async () => {
+    // The palette and hotkey wiring that opens it is covered in AppWorld.test.tsx.
     bridge()
     await mount()
     expect(dialog()).toHaveAttribute('aria-modal', 'true')
-    expect(document.activeElement).toBe(dialog())
+    expect(dialog().contains(document.activeElement)).toBe(true)
+  })
+
+  it('keeps Tab and Shift+Tab inside the pane, and gives the focus back on close', async () => {
+    bridge()
+    const opener = document.createElement('button')
+    opener.textContent = 'globe'
+    document.body.appendChild(opener)
+    opener.focus()
+    const { unmount } = await mount()
+    const list = focusables(dialog())
+    expect(list.length).toBeGreaterThan(2)
+    const first = list[0]
+    const last = list[list.length - 1]
+    last.focus()
+    fireEvent.keyDown(last, { key: 'Tab' })
+    expect(document.activeElement).toBe(first)
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last)
+    unmount()
+    expect(document.activeElement).toBe(opener)
+    opener.remove()
+  })
+
+  it('drops a re-layout answer for a project the pane has left, and one that lands after close', async () => {
+    const run = deferred<Res<WorldDoc>>()
+    const b = bridge({ worldRelayout: vi.fn(() => run.promise) })
+    const { rerender, onClose } = await mount()
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-go'))
+    expect(b.api.worldRelayout).toHaveBeenCalledWith('/repo')
+    rerender(<WorldView root="/next" onClose={onClose} />)
+    await settle()
+    expect(b.api.worldGet).toHaveBeenLastCalledWith('/next')
+    const loads = viewer().load.mock.calls.length
+    await act(async () => { run.resolve(ok({ ...minimal(), projectKey: 'stale', generatedAt: 77 })) })
+    await settle()
+    expect(viewer().load).toHaveBeenCalledTimes(loads)
+    expect(screen.queryByTestId('world-notice')).toBeNull()
+
+    // A failure for the old project is not shown on the new one either.
+    const broken = deferred<Res<WorldDoc>>()
+    b.api.worldRelayout.mockReturnValueOnce(broken.promise)
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-go'))
+    expect(b.api.worldRelayout).toHaveBeenLastCalledWith('/next')
+    rerender(<WorldView root="/third" onClose={onClose} />)
+    await settle()
+    await act(async () => { broken.reject(new Error('late')) })
+    await settle()
+    expect(screen.queryByTestId('world-notice')).toBeNull()
+
+    // An answer after the pane closed sets nothing.
+    const late = deferred<Res<WorldDoc>>()
+    b.api.worldRelayout.mockReturnValueOnce(late.promise)
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-go'))
+    const v = viewer()
+    const before = v.load.mock.calls.length
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    cleanup()
+    await act(async () => { late.resolve(ok({ ...minimal(), generatedAt: 123 })) })
+    expect(v.load).toHaveBeenCalledTimes(before)
+    expect(errors).not.toHaveBeenCalled()
+    errors.mockRestore()
+  })
+
+  it('losing the project folder clears the map and its card, and disables re-layout', async () => {
+    bridge()
+    const { rerender, onClose } = await mount()
+    act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
+    expect(screen.getByTestId('world-card')).toBeInTheDocument()
+    expect(screen.getByTestId('world-canvas-host')).not.toHaveClass('invisible')
+    expect(screen.getByTestId('world-relayout')).not.toBeDisabled()
+    rerender(<WorldView root="" onClose={onClose} />)
+    await settle()
+    expect(screen.getByTestId('world-no-root')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    expect(screen.getByTestId('world-canvas-host')).toHaveClass('invisible')
+    expect(screen.getByTestId('world-relayout')).toBeDisabled()
+  })
+
+  it('a cd inside the same repository refetches nothing and keeps the open card', async () => {
+    const b = bridge({ gitFindRoot: vi.fn(async () => ok('/repo')) })
+    const { rerender, onClose } = await mount({ root: '/repo/src' })
+    expect(b.api.worldGet).toHaveBeenCalledTimes(1)
+    act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
+    rerender(<WorldView root="/repo/src/deep" onClose={onClose} />)
+    expect(screen.queryByTestId('world-loading')).toBeNull()
+    await settle()
+    expect(b.api.gitFindRoot).toHaveBeenLastCalledWith('/repo/src/deep')
+    expect(b.api.worldGet).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('world-card')).toBeInTheDocument()
+    expect(viewer().load).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads the same world once: a push of an unchanged doc does not reload the viewer', async () => {
+    const b = bridge()
+    await mount()
+    const v = viewer()
+    expect(v.load).toHaveBeenCalledTimes(1)
+    // The compile's own world:updated push brings back the same doc (a new object, same stamp).
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(b.api.worldGet).toHaveBeenCalledTimes(2)
+    expect(v.load).toHaveBeenCalledTimes(1)
+    // A newer compile loads.
+    const newer = { ...minimal(), generatedAt: 5 }
+    b.api.worldGet.mockResolvedValueOnce(ok(newer))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(v.load).toHaveBeenLastCalledWith(newer)
+    // So does another project with the same stamp.
+    const other = { ...minimal(), projectKey: 'other', generatedAt: 5 }
+    b.api.worldGet.mockResolvedValueOnce(ok(other))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(v.load).toHaveBeenLastCalledWith(other)
+    expect(v.load).toHaveBeenCalledTimes(3)
   })
 
   it('Re-layout asks for confirmation then calls worldRelayout', async () => {

@@ -200,7 +200,7 @@ export function Sidebar() {
         </button>
         <button
           onClick={() => window.dispatchEvent(new CustomEvent('termpolis:openWorld'))}
-          title="Lumopolis: Where AI Worlds Become Human Understanding"
+          title="Lumopolis: Where AI Worlds Become Human Understanding (Ctrl+Shift+R)"
           aria-label="Open Lumopolis"
           data-testid="sidebar-open-world"
           className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"

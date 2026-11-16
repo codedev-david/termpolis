@@ -229,7 +229,7 @@ describe('Sidebar', () => {
     window.addEventListener('termpolis:openWorld', onOpen)
     try {
       render(<Sidebar />)
-      const globe = screen.getByTitle('Lumopolis: Where AI Worlds Become Human Understanding')
+      const globe = screen.getByTitle('Lumopolis: Where AI Worlds Become Human Understanding (Ctrl+Shift+R)')
       expect(globe).toHaveAttribute('aria-label', 'Open Lumopolis')
       fireEvent.click(globe)
       expect(onOpen).toHaveBeenCalledTimes(1)

@@ -37,7 +37,8 @@ const COMMAND_PATTERNS: CommandAction[] = [
   { pattern: /show\s*swarm/i, action: 'show_swarm', label: 'Swarm Dashboard', description: 'Open the multi-agent swarm dashboard', icon: 'fa-solid fa-network-wired' },
   { pattern: /\btour\b/i, action: 'memory_tour', label: 'Memory tour', description: 'See memory work in under a minute', icon: 'fa-solid fa-graduation-cap' },
   { pattern: /memory|remember|brain/i, action: 'show_memory', label: 'Memory', description: 'Open the persistent shared-memory panel', icon: 'fa-solid fa-brain' },
-  { pattern: /lumopolis|world|map|universe|architecture/i, action: 'show_world', label: 'Open Lumopolis', description: 'See your project as a 3D world: its parts, connections and tours', icon: 'fa-solid fa-earth-americas' },
+  // Anchored at the start, so `run npm run sitemap` or `run ./hello-world.sh` stays a Run Command.
+  { pattern: /^\s*(open\s+)?(lumopolis|world|map|universe|architecture)\b/i, action: 'show_world', label: 'Open Lumopolis', description: 'See your project as a 3D world: its parts, connections and tours', icon: 'fa-solid fa-earth-americas' },
   { pattern: /launch\s*claude/i, action: 'launch_claude', label: 'Launch Claude', description: 'Launch Claude Code AI agent', icon: 'fa-solid fa-robot' },
   { pattern: /launch\s*codex/i, action: 'launch_codex', label: 'Launch Codex', description: 'Launch OpenAI Codex agent', icon: 'fa-solid fa-microchip' },
   { pattern: /launch\s*gemini/i, action: 'launch_gemini', label: 'Launch Gemini', description: 'Launch Gemini CLI agent', icon: 'fa-brands fa-google' },

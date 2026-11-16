@@ -9,6 +9,10 @@
 // palette. The first Esc closes the re-layout question if it is open, else resets the view; a
 // second Esc in a row closes the pane. Anything the user does in between (selecting, a card, a
 // tour, dragging the map) makes the next Esc a reset again.
+//
+// Focus: the pane is modal. useFocusTrap keeps Tab and Shift+Tab inside it (so no key reaches the
+// terminal under it) and, on close, gives the focus back to the control that opened it, or to the
+// active terminal.
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import type { Tour, WorldDoc } from '../../../../shared/world/types'
@@ -17,6 +21,7 @@ import type { LayerState, ThemeName, WorldViewer } from '../../world/engine'
 import { WorldToolbar } from './WorldToolbar'
 import { WorldCard } from './WorldCard'
 import { WorldEmptyState } from './WorldEmptyState'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 
 export interface WorldViewProps {
   /** A folder inside the project (the active terminal's cwd). Empty when there is none. */
@@ -55,14 +60,21 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
   /** True after an Esc reset with nothing done since: the next Esc closes. */
   const armedRef = useRef(false)
   const escRef = useRef<() => void>(onClose) // replaced on every render, below
-
-  // Focus the pane so Esc and the keyboard land here, not in the terminal behind it.
-  useEffect(() => { dialogRef.current?.focus() }, [])
-
-  // The project root: the git root of the folder, or the folder itself outside a repository.
+  /** The doc the viewer holds, so the same world arriving twice (a compile, then its own push) loads once. */
+  const loadedRef = useRef<{ projectKey: string; generatedAt: number } | null>(null)
+  const mountedRef = useRef(true)
   useEffect(() => {
-    setResolvedRoot(null)
-    if (!root) return
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  // Keep the keyboard in the pane, and give the focus back when it closes.
+  useFocusTrap(dialogRef)
+
+  // The project root: the git root of the folder, or the folder itself outside a repository. A cd
+  // inside the same repository resolves to the same root, so nothing below runs again.
+  useEffect(() => {
+    if (!root) { setResolvedRoot(null); return }
     let live = true
     window.termpolis.gitFindRoot(root).then(
       (r) => { if (live) setResolvedRoot(r.success && r.data ? r.data : root) },
@@ -72,14 +84,15 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
   }, [root])
 
   // The world: the stored one, or a fresh compile when none was saved yet.
+  // No root: nothing is shown (the viewer is hidden while there is no doc, so no stale map stays up).
   useEffect(() => {
-    if (resolvedRoot === null) return
-    let live = true
     setDoc(null)
     setError(null)
     setMapping(false)
     setProgress(null)
     setCard(null)
+    if (resolvedRoot === null) return
+    let live = true
     const api = window.termpolis
     api.worldGet(resolvedRoot)
       .then((res) => {
@@ -138,7 +151,11 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
   }, [webgl])
 
   useEffect(() => {
-    if (viewer && doc) viewer.load(doc)
+    if (!viewer || !doc) return
+    const held = loadedRef.current
+    if (held && held.projectKey === doc.projectKey && held.generatedAt === doc.generatedAt) return
+    loadedRef.current = { projectKey: doc.projectKey, generatedAt: doc.generatedAt }
+    viewer.load(doc)
   }, [viewer, doc])
 
   const onLayers = (patch: Partial<LayerState>): void => {
@@ -174,17 +191,20 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
     openPart(item.getAttribute('data-id') as string)
   }
   const relayout = (): void => {
+    // The root at click time: an answer for a project the pane has since left is dropped.
     const at = resolvedRoot as string
+    const current = (): boolean => mountedRef.current && rootRef.current === at
     setConfirmRelayout(false)
     setBusy(true)
     setNotice(null)
     window.termpolis.worldRelayout(at)
       .then((res) => {
+        if (!current()) return
         if (res.success) setDoc(res.data)
         else setNotice(`Re-layout failed: ${res.error}`)
       })
-      .catch((e: unknown) => setNotice(`Re-layout failed: ${messageOf(e)}`))
-      .finally(() => setBusy(false))
+      .catch((e: unknown) => { if (current()) setNotice(`Re-layout failed: ${messageOf(e)}`) })
+      .finally(() => { if (mountedRef.current) setBusy(false) })
   }
 
   escRef.current = () => {
@@ -227,7 +247,7 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
           <div
             ref={hostRef}
             data-testid="world-canvas-host"
-            className="absolute inset-0"
+            className={`absolute inset-0${doc ? '' : ' invisible'}`}
             onPointerDown={() => { armedRef.current = false }}
           />
         )}
@@ -259,7 +279,7 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
         onTour={onTour}
         onResetView={resetView}
         onRelayout={() => setConfirmRelayout(true)}
-        relayoutDisabled={!doc || busy}
+        relayoutDisabled={!root || !doc || busy}
         onClose={onClose}
       />
       {confirmRelayout && (

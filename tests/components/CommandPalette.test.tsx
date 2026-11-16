@@ -84,6 +84,30 @@ describe('CommandPalette', () => {
     expect(onAction).toHaveBeenCalledWith('show_world', undefined)
   })
 
+  it('"open lumopolis" offers it too', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const box = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(box, { target: { value: '  Open Lumopolis' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onAction).toHaveBeenCalledWith('show_world', undefined)
+  })
+
+  it.each([
+    ['run npm run sitemap', 'npm run sitemap'],
+    ['run ./hello-world.sh', './hello-world.sh'],
+    ['run nmap -sn host', 'nmap -sn host'],
+  ])('a command that merely contains a Lumopolis word stays a command: "%s"', (q, cmd) => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const box = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(box, { target: { value: q } })
+    expect(screen.queryByText('Open Lumopolis')).toBeNull()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onAction).toHaveBeenCalledWith('run_command', cmd)
+    expect(onAction).not.toHaveBeenCalledWith('show_world', undefined)
+  })
+
   it('offers Switch account… for the active agent terminal, once an account is registered', () => {
     const onAction = vi.fn()
     accountsView = { accounts: [{ id: 'acc_a' }] }
