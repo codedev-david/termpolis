@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { registerWorldIpc, type WorldIpcClient } from '../../src/main/world/ipc'
+import { registerWorldIpc, type WorldAsker, type WorldIpcClient } from '../../src/main/world/ipc'
 import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../src/shared/world/types'
 import type { WorldSettings, WorldSettingsStore } from '../../src/main/world/worldSettings'
 
@@ -18,7 +18,7 @@ function fakeSettings(): WorldSettingsStore & { get: ReturnType<typeof vi.fn>; s
   }
 }
 
-function setup(win: () => Win | null | undefined = () => null, settings = fakeSettings()) {
+function setup(win: () => Win | null | undefined = () => null, settings = fakeSettings(), asker?: WorldAsker) {
   const handlers = new Map<string, (e: unknown, args?: unknown) => unknown>()
   const ipc = {
     handle: vi.fn((ch: string, fn: (e: unknown, args?: unknown) => unknown) => {
@@ -49,7 +49,7 @@ function setup(win: () => Win | null | undefined = () => null, settings = fakeSe
       }
     }
   }
-  const off = registerWorldIpc(ipc, client, win, settings)
+  const off = registerWorldIpc(ipc, client, win, settings, asker)
   const invoke = (ch: string, args?: unknown) => (handlers.get(ch) as (e: unknown, a?: unknown) => Promise<unknown>)({}, args)
   return { handlers, client, off, invoke, progress, updated, settings }
 }
@@ -158,5 +158,66 @@ describe('registerWorldIpc', () => {
     s.off()
     expect(s.progress.size).toBe(0)
     expect(s.updated.size).toBe(0)
+  })
+})
+
+describe('registerWorldIpc ask handlers', () => {
+  const GOOD = { askId: 'a1', root: 'C:/repo', question: 'What?', selection: ['b1'], cameraRegion: [], summary: 'S' }
+  const result = { askId: 'a1', ok: true, answer: { text: 'x', actions: [], evidence: [], dropped: 0 }, summary: 'S2' }
+  const fakeAsker = () => ({ ask: vi.fn(async () => result as never), cancel: vi.fn() }) as WorldAsker & { ask: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn> }
+
+  it('registers the ask pair only when an asker is given', () => {
+    expect([...setup().handlers.keys()]).not.toContain('world:ask')
+    expect([...setup(undefined, undefined, fakeAsker()).handlers.keys()].slice(-2)).toEqual(['world:ask', 'world:ask-cancel'])
+  })
+
+  it('world:ask returns ok(AskResult) and defaults summary to an empty string', async () => {
+    const asker = fakeAsker()
+    const s = setup(undefined, undefined, asker)
+    expect(await s.invoke('world:ask', GOOD)).toEqual({ success: true, data: result })
+    expect(asker.ask).toHaveBeenCalledWith(GOOD)
+    const { summary: _s, ...noSummary } = GOOD
+    await s.invoke('world:ask', noSummary)
+    expect(asker.ask).toHaveBeenLastCalledWith({ ...GOOD, summary: '' })
+  })
+
+  it.each([
+    ['not an object', 'nope', 'ask request required'],
+    ['missing args', undefined, 'ask request required'],
+    ['empty askId', { ...GOOD, askId: ' ' }, 'askId required'],
+    ['empty root', { ...GOOD, root: '' }, 'root required'],
+    ['no question', { ...GOOD, question: 5 }, 'question required (up to 4000 characters)'],
+    ['blank question', { ...GOOD, question: '  ' }, 'question required (up to 4000 characters)'],
+    ['too long question', { ...GOOD, question: 'x'.repeat(4001) }, 'question required (up to 4000 characters)'],
+    ['selection not strings', { ...GOOD, selection: [1] }, 'selection and cameraRegion must be string arrays'],
+    ['camera not an array', { ...GOOD, cameraRegion: 'b' }, 'selection and cameraRegion must be string arrays'],
+    ['summary not a string', { ...GOOD, summary: 3 }, 'summary must be a string']
+  ])('world:ask rejects a bad shape: %s', async (_n, args, error) => {
+    const asker = fakeAsker()
+    expect(await setup(undefined, undefined, asker).invoke('world:ask', args)).toEqual({ success: false, error })
+    expect(asker.ask).not.toHaveBeenCalled()
+  })
+
+  it('accepts a question of exactly 4000 characters', async () => {
+    const asker = fakeAsker()
+    expect(await setup(undefined, undefined, asker).invoke('world:ask', { ...GOOD, question: 'x'.repeat(4000) })).toMatchObject({ success: true })
+  })
+
+  it('world:ask turns a thrown asker into err', async () => {
+    const asker = fakeAsker()
+    asker.ask.mockRejectedValueOnce(new Error('boom')).mockRejectedValueOnce('odd')
+    const s = setup(undefined, undefined, asker)
+    expect(await s.invoke('world:ask', GOOD)).toEqual({ success: false, error: 'boom' })
+    expect(await s.invoke('world:ask', GOOD)).toEqual({ success: false, error: 'odd' })
+  })
+
+  it('world:ask-cancel cancels by askId and validates it', async () => {
+    const asker = fakeAsker()
+    const s = setup(undefined, undefined, asker)
+    expect(await s.invoke('world:ask-cancel', { askId: 'a1' })).toEqual({ success: true, data: true })
+    expect(asker.cancel).toHaveBeenCalledWith('a1')
+    expect(await s.invoke('world:ask-cancel', { askId: '' })).toEqual({ success: false, error: 'askId required' })
+    expect(await s.invoke('world:ask-cancel', 'a1')).toEqual({ success: false, error: 'askId required' })
+    expect(await s.invoke('world:ask-cancel')).toEqual({ success: false, error: 'askId required' })
   })
 })

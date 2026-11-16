@@ -4083,6 +4083,19 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(world.client.relayout).toHaveBeenCalledWith('/repos/x')
   })
 
+  it('world:ask runs the agent read-only with no memory write, through runHeadless', async () => {
+    world.client.get.mockResolvedValueOnce({ version: 1, projectKey: 'k', districts: [], buildings: [], edges: [], externals: [], glossary: {}, cargo: {}, processes: {}, tours: [], layout: { seed: 1, positions: {} }, runtimeNames: {}, layers: { plan: [] } })
+    world.runHeadless.mockResolvedValueOnce({ ok: true, output: 'It is a tool.' })
+    const r = await invoke('world:ask', { askId: 'a1', root: '/repos/x', question: 'What is this?', selection: [], cameraRegion: [] })
+    expect(r).toMatchObject({ success: true, data: { askId: 'a1', ok: true, answer: { text: 'It is a tool.' } } })
+    const [req, deps] = world.runHeadless.mock.calls.at(-1) as [any, any]
+    expect(req).toMatchObject({ cwd: '/repos/x', write: false, noRemember: true })
+    expect(req.agent).toBeUndefined()
+    expect(deps.primer).toBeUndefined()
+    expect(deps.deliver).toEqual(expect.any(Function))
+    expect(await invoke('world:ask-cancel', { askId: 'a1' })).toEqual({ success: true, data: true })
+  })
+
   it('registers the Lumopolis settings pair over the world settings store', async () => {
     expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true } })
     expect(await invoke('world:settings-set', 'nope')).toEqual({ success: false, error: 'settings patch required' })

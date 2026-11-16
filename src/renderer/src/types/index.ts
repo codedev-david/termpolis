@@ -13,7 +13,7 @@ import type { SignInInput, SignInStartRequest, SignInState } from '../../../shar
 import type { LimitLook } from '../../../shared/accountLimits'
 import type { RouteDecision } from '../../../shared/taskRouter'
 import type { ModelCatalog } from '../lib/modelCatalog'
-import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../../shared/world/types'
+import type { AskRequest, AskResult, WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../../shared/world/types'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
 
@@ -688,6 +688,10 @@ export interface TermpolisAPI {
   worldCompile: (root: string) => Promise<IpcResponse<WorldDoc>>
   /** Lumopolis: compile again, throwing away the previous layout. */
   worldRelayout: (root: string) => Promise<IpcResponse<WorldDoc>>
+  /** Lumopolis: ask one question about the world; the user's own agent answers, hidden and read-only. */
+  worldAsk: (req: AskRequest) => Promise<IpcResponse<AskResult>>
+  /** Lumopolis: cancel a running ask by its id. */
+  worldAskCancel: (askId: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis settings: whether the world compiler may ask Claude's cheapest model (Haiku) to describe parts. */
   worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */

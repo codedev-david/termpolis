@@ -1271,6 +1271,11 @@ describe('preload — workflow orchestrator bridge', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:settings-get')
     await api.worldSettingsSet({ worldLabelling: false })
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:settings-set', { worldLabelling: false })
+    const req = { askId: 'a1', root: 'C:/repo', question: 'Q', selection: [], cameraRegion: [], summary: '' }
+    await api.worldAsk(req)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:ask', req)
+    await api.worldAskCancel('a1')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:ask-cancel', { askId: 'a1' })
   })
 
   it.each([
