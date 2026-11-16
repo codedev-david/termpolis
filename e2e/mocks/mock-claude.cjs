@@ -37,7 +37,9 @@ if (argv.includes('--version')) {
 
 // --- Mode 2: -p [prompt] (smart conductor) ---
 const pIdx = argv.indexOf('-p');
-if (pIdx !== -1) {
+if (pIdx !== -1 && process.env.MOCK_CLAUDE_WORLD_ANSWER === '1') {
+  runWorldAnswer(argv, pIdx);
+} else if (pIdx !== -1) {
   // Like the real CLI, an option it doesn't know ends the run before anything
   // happens. That is what a prompt cut up on the command line did to the
   // conductor on Windows (GitHub #36): a piece such as `--watch …` arrived as
@@ -95,6 +97,26 @@ if (pIdx !== -1) {
     });
 } else {
   runInteractive();
+}
+
+// Opt-in (MOCK_CLAUDE_WORLD_ANSWER=1): a Lumopolis answer. Termpolis runs the user's agent hidden
+// and read-only for an Ask-bar question (src/main/world/askRunner.ts), with options the conductor
+// never passes (--permission-mode, --tools, ...), so this mode takes its own argv. The reply names
+// its question ("Answer to: <question>"), cites the first evidence label the prompt carries, and
+// asks for the first building the prompt names to be focused and its card opened, in the
+// world-actions block ANSWER_PROTOCOL describes. MOCK_CLAUDE_REPLY_DELAY_MS holds the reply back.
+function runWorldAnswer(args, at) {
+  readPrompt(args, at).then((prompt) => {
+    const question = (/\nQUESTION\n([^\n]*)/.exec(prompt) || [])[1] || '';
+    const building = (/\nbuilding (\S+):/.exec(prompt) || /\nOTHER\n([^\s:]+):/.exec(prompt) || [])[1];
+    const hasEvidence = /\nE1: /.test(prompt);
+    const lines = [`Answer to: ${question}`, `The first part is shown in the map${hasEvidence ? ' [E1]' : ''}.`];
+    if (building) {
+      lines.push('', '```world-actions', JSON.stringify([{ type: 'focus', ids: [building] }, { type: 'openCard', id: building }]), '```');
+    }
+    const delay = Number(process.env.MOCK_CLAUDE_REPLY_DELAY_MS) || 0;
+    setTimeout(() => { console.log(lines.join('\n')); process.exit(0); }, delay);
+  });
 }
 
 // The options the conductor launch can pass, each with how many values it takes.
