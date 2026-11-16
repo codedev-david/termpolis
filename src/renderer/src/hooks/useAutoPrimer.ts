@@ -218,9 +218,12 @@ async function lineReady(
   return stillIdle ? await stillIdle(pasted) : true
 }
 
-/** Whether the terminal was seeded with memory at launch (launchPrimed), read from the store now. */
-function launchPrimedNow(terminalId: string): boolean {
-  return useTerminalStore.getState().terminals.find((t) => t.id === terminalId)?.launchPrimed === true
+/** Whether the terminal, read from the store now, must not get the pointer: it was seeded with
+ *  memory at launch (launchPrimed), or Termpolis's launch there failed before its command was
+ *  typed and left a plain shell (agentLaunchFailed). */
+function pointerUnwanted(terminalId: string): boolean {
+  const t = useTerminalStore.getState().terminals.find((x) => x.id === terminalId)
+  return t?.launchPrimed === true || t?.agentLaunchFailed === true
 }
 
 // Check that relevant memory exists for this project and, if so, paste a short
@@ -264,8 +267,9 @@ export async function injectAutoPrimer(
     // Claude's launch marks the terminal launch-primed once its recall is in, which can be after
     // this attempt began: output detection can fire on the shell's first prompt, and the recall
     // and the OS question both take their time. Looked at last, right before the paste, so a
-    // seeded agent never gets the pointer typed on top of its system prompt.
-    if (launchPrimedNow(terminalId)) return false
+    // seeded agent never gets the pointer typed on top of its system prompt. A launch that failed
+    // before its command was typed is looked at here too: that terminal is a plain shell.
+    if (pointerUnwanted(terminalId)) return false
     const wrapped = BP_START + buildPrimerPointer(cwd, selfRecord) + BP_END
     api.writeToTerminal(terminalId, wrapped)
     // Then submit it. Pasting alone left the pointer sitting in the agent's
@@ -512,6 +516,7 @@ export async function primeOnLaunch(
 // the command, and the gate takes that command as proof of a launch. Until it is typed
 // (agentLaunchPending) the gate is held shut: output detection is a keyword on screen, and the
 // shell's own first prompt (a folder under ~/.claude, say) set off a pointer aimed at the shell.
+// A launch that ends before the command is typed (agentLaunchFailed) keeps it shut for good.
 export function useAutoPrimer(
   terminalId: string,
   detectedAgent: AgentInfo | null,
@@ -551,10 +556,14 @@ export function useAutoPrimer(
       launchCommand,
     }
 
-    // Shut while Termpolis has yet to type the launch command, whichever gate is in use.
+    // Shut while Termpolis has yet to type the launch command, whichever gate is in use, and for
+    // good once that launch failed before typing it: the terminal is a plain shell then, and the
+    // recorded agentCommand the gate would otherwise open on proves nothing (markAgentLaunch).
     const chosen = gateRef.current ?? fallback
-    const launching = (): boolean =>
-      useTerminalStore.getState().terminals.find(t => t.id === terminalId)?.agentLaunchPending === true
+    const launching = (): boolean => {
+      const t = useTerminalStore.getState().terminals.find(x => x.id === terminalId)
+      return t?.agentLaunchPending === true || t?.agentLaunchFailed === true
+    }
     const gate: PrimerGate = {
       launchedAgent: () => (launching() ? null : chosen.launchedAgent()),
       draft: () => chosen.draft(),

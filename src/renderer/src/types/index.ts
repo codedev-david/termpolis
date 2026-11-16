@@ -66,6 +66,10 @@ export interface TerminalSession {
    *  shell is still alone, so useAutoPrimer keeps its launch gate shut until this clears, whatever
    *  the shell's first output looked like. */
   agentLaunchPending?: boolean
+  /** The launch Termpolis started here ended before its command was typed (refused, or it threw):
+   *  the terminal is a plain shell, and agentCommand proves nothing. useAutoPrimer keeps its gate
+   *  shut for good, as it did while the launch was pending (markAgentLaunch, agentLaunch.ts). */
+  agentLaunchFailed?: boolean
 }
 
 export interface Workspace {

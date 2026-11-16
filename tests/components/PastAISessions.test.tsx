@@ -23,7 +23,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
       }
       return selector(state)
     },
-    { getState: vi.fn(() => ({ defaultShell: 'bash' })), setState: vi.fn() },
+    { getState: vi.fn(() => ({ defaultShell: 'bash', updateTerminal: vi.fn() })), setState: vi.fn() },
   ),
 }))
 
@@ -464,7 +464,7 @@ describe('PastAISessions', () => {
   it('Continue in Codex: a saved default Codex no longer lists is dropped, with a notice', async () => {
     const setMemoryNotice = vi.fn()
     const store = (await import('../../src/renderer/src/store/terminalStore')).useTerminalStore as any
-    store.getState.mockReturnValue({ defaultShell: 'bash', setMemoryNotice })
+    store.getState.mockReturnValue({ defaultShell: 'bash', setMemoryNotice, updateTerminal: vi.fn() })
     localStorage.setItem('termpolis.agent.modelDefaults', JSON.stringify({ codex: 'gpt-5.3-codex' }))
     ;(window as any).termpolis.getModelCatalog = vi.fn().mockResolvedValue({
       success: true,
