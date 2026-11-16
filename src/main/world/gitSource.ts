@@ -94,6 +94,8 @@ export interface CloneDeps {
   mark?: (p: string) => Promise<void>
   /** Moves the finished clone into place (default: fs rename). */
   rename?: (from: string, to: string) => Promise<void>
+  /** Waits between rename attempts (default: a timer). */
+  sleep?: (ms: number) => Promise<void>
   /** A random suffix for the temporary folder (default: 4 random bytes as hex). */
   random?: () => string
   /** Cancels the clone: git is stopped and the folder removed. */
@@ -137,7 +139,7 @@ export const nodeExecFile: ExecFn = (cmd, args, opts) =>
       if (stopped) return
       stopped = true
       child.kill()
-      graceTimer = setTimeout(() => finish(1, stderr || 'it was stopped'), opts.killGraceMs ?? KILL_GRACE_MS)
+      graceTimer = setTimeout(() => finish(1, timedOut ? 'it took too long' : stderr || 'it was stopped'), opts.killGraceMs ?? KILL_GRACE_MS)
     }
     const runTimer = setTimeout(() => {
       timedOut = true
@@ -183,6 +185,29 @@ export const removeDir = (p: string): Promise<void> => fsp.rm(p, { recursive: tr
 export const listNames = (p: string): Promise<string[]> => fsp.readdir(p).catch(() => [])
 export const writeMarker = (p: string): Promise<void> => fsp.writeFile(p, 'ok')
 export const randomSuffix = (): string => randomBytes(4).toString('hex')
+
+const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/** Error codes a virus scanner or indexer holding a fresh file makes a rename fail with, briefly. */
+const RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+export const RENAME_ATTEMPTS = 5
+
+/** Renames, retrying a transient lock up to RENAME_ATTEMPTS times with 100 ms x attempt of backoff. Other errors throw at once. */
+export async function renameWithRetry(
+  rename: (from: string, to: string) => Promise<void>,
+  sleep: (ms: number) => Promise<void>,
+  from: string,
+  to: string
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await rename(from, to)
+    } catch (e) {
+      if (attempt >= RENAME_ATTEMPTS || !RETRY_CODES.has((e as NodeJS.ErrnoException).code ?? '')) throw e
+      await sleep(100 * attempt)
+    }
+  }
+}
 
 export const pathExists = (p: string): Promise<boolean> =>
   fsp.access(p).then(
@@ -307,7 +332,7 @@ export async function cloneRepo(
   if (!updating) {
     try {
       await (deps.mark ?? writeMarker)(join(work, '.git', CLONE_MARKER))
-      await (deps.rename ?? fsp.rename)(work, root)
+      await renameWithRetry(deps.rename ?? fsp.rename, deps.sleep ?? sleepMs, work, root)
     } catch {
       await rmq(work)
       return { ok: false, error: FINISH_MESSAGE }

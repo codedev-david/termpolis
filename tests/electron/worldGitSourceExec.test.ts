@@ -16,7 +16,7 @@ afterEach(() => {
 })
 
 describe('nodeExecFile when the child does not close after a kill', () => {
-  it('gives up after the grace period with what stderr said; a timeout then an abort kills once', async () => {
+  it('gives up after the grace period (a timeout wins over stderr); a timeout then an abort kills once', async () => {
     child = new FakeChild()
     const { nodeExecFile } = await import('../../src/main/world/gitSource')
     const ctl = new AbortController()
@@ -24,7 +24,7 @@ describe('nodeExecFile when the child does not close after a kill', () => {
     child.stderr.emit('data', Buffer.from('fatal: partial'))
     await new Promise((r) => setTimeout(r, 30))
     ctl.abort()
-    expect(await p).toEqual({ code: 1, stderr: 'fatal: partial' })
+    expect(await p).toEqual({ code: 1, stderr: 'it took too long' })
     expect(child.kill).toHaveBeenCalledTimes(1)
   })
 
@@ -41,5 +41,12 @@ describe('nodeExecFile when the child does not close after a kill', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('a timeout whose kill also runs out the grace period still reads "took too long"', async () => {
+    child = new FakeChild()
+    const { nodeExecFile } = await import('../../src/main/world/gitSource')
+    const r = await nodeExecFile('git', [], { env: {}, timeout: 10, killGraceMs: 20 })
+    expect(r).toEqual({ code: 1, stderr: 'it took too long' })
   })
 })

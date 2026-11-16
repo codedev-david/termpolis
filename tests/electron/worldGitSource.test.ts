@@ -17,6 +17,7 @@ import {
   listNames,
   nodeExecFile,
   pathExists,
+  renameWithRetry,
   removeDir,
   validateGitUrl,
   type CloneDeps,
@@ -368,10 +369,19 @@ describe('cloneRepo', () => {
 
   it('an rm failure while cancelling or capping never rejects', async () => {
     const ctl = new AbortController()
-    ctl.abort()
-    const stuck = vi.fn(async (_p: string) => Promise.reject(new Error('EBUSY: resource busy')))
-    const a = mkDeps({ signal: ctl.signal, rm: stuck })
+    const stuck = vi.fn(async (p: string) => {
+      if (p === WORK) throw new Error('EBUSY: resource busy')
+    })
+    const a = mkDeps({
+      signal: ctl.signal,
+      rm: stuck,
+      execFile: async () => {
+        ctl.abort()
+        return { code: 143, stderr: '' }
+      }
+    })
     expect(await cloneRepo(URL1, undefined, a.deps)).toEqual({ ok: false, error: CANCELLED_MESSAGE })
+    expect(stuck).toHaveBeenCalledWith(WORK)
     const ctl2 = new AbortController()
     let first = true
     const b = mkDeps({
@@ -424,6 +434,50 @@ describe('cloneRepo', () => {
     expect(r.rm).toHaveBeenLastCalledWith(WORK)
     // the only folder ever removed or renamed onto is under repos/, and root was only cleared up front
     expect(r.rm.mock.calls.map((c) => c[0])).toEqual([ROOT, WORK])
+  })
+})
+
+describe('rename retry', () => {
+  const err = (code: string) => Object.assign(new Error(code), { code })
+
+  it('a transient EPERM is retried with a growing backoff and the clone is kept', async () => {
+    const sleeps: number[] = []
+    const rename = vi.fn(async (_a: string, _b: string) => undefined)
+    rename.mockRejectedValueOnce(err('EPERM')).mockRejectedValueOnce(err('EBUSY'))
+    const { deps, rm } = mkDeps({ rename, sleep: async (ms) => void sleeps.push(ms) })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root: ROOT })
+    expect(rename).toHaveBeenCalledTimes(3)
+    expect(sleeps).toEqual([100, 200])
+    expect(rm).not.toHaveBeenCalledWith(WORK)
+  })
+
+  it('a rename that keeps failing gives the friendly error and removes the temp folder', async () => {
+    const sleeps: number[] = []
+    const rename = vi.fn(async (_a: string, _b: string) => Promise.reject(err('EACCES')))
+    const { deps, rm } = mkDeps({ rename, sleep: async (ms) => void sleeps.push(ms) })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: FINISH_MESSAGE })
+    expect(rename).toHaveBeenCalledTimes(5)
+    expect(sleeps).toEqual([100, 200, 300, 400])
+    expect(rm).toHaveBeenLastCalledWith(WORK)
+  })
+
+  it('another error code, or none, is not retried', async () => {
+    for (const e of [err('ENOENT'), new Error('plain')]) {
+      const rename = vi.fn(async (_a: string, _b: string) => Promise.reject(e))
+      const sleep = vi.fn(async (_ms: number) => undefined)
+      await expect(renameWithRetry(rename, sleep, 'a', 'b')).rejects.toBe(e)
+      expect(rename).toHaveBeenCalledTimes(1)
+      expect(sleep).not.toHaveBeenCalled()
+    }
+  })
+
+  it('the default sleep really waits (a short backoff)', async () => {
+    const rename = vi.fn(async (_a: string, _b: string) => undefined)
+    rename.mockRejectedValueOnce(err('EPERM'))
+    const { deps } = mkDeps({ rename, sleep: undefined })
+    const t0 = Date.now()
+    expect(await cloneRepo(URL1, undefined, deps)).toMatchObject({ ok: true })
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(90)
   })
 })
 
