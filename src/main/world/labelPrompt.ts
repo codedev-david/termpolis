@@ -5,6 +5,16 @@
 /** Bump to invalidate every cached label reply (the prompt text itself is hashed too). */
 export const LABEL_PROMPT_VERSION = 'world-label-v1'
 
+/** The whole prompt travels on a command line; Windows caps that near 32k chars. */
+export const MAX_PROMPT_CHARS = 28_000
+const MAX_LISTED_MEMBERS = 12
+const MAX_META_CHARS = 200
+
+/** A repo-derived metadata string as one JSON-quoted line: control chars stripped, whitespace collapsed, capped. */
+export function meta(s: string): string {
+  return JSON.stringify(s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_META_CHARS))
+}
+
 export interface BatchExcerpt {
   /** `E1`, `E2`, ... in the order the excerpts were added to the batch. */
   label: string
@@ -52,17 +62,21 @@ export function buildLabelPrompt(batch: LabelBatch): string {
   ]
   for (const e of batch.excerpts) {
     const fence = fenceFor(e.text)
-    lines.push(`[${e.label}] ${e.ref}`, fence, e.text, fence)
+    lines.push(`[${e.label}] ${meta(e.ref)}`, fence, e.text, fence)
   }
   if (batch.excerpts.length === 0) lines.push('(none)')
-  lines.push('', `DISTRICT ${batch.district.id}: ${batch.district.name}`, '', 'BUILDINGS')
+  lines.push('', `DISTRICT ${meta(batch.district.id)}: ${meta(batch.district.name)}`, '', 'BUILDINGS')
   for (const b of batch.buildings) {
-    lines.push(`- ${b.id}: ${b.name}`, `  files: ${b.members.join(', ')}`)
-    if (b.boundaries.length > 0) lines.push(`  boundaries: ${b.boundaries.join('; ')}`)
+    const more = b.members.length - MAX_LISTED_MEMBERS
+    lines.push(
+      `- ${meta(b.id)}: ${meta(b.name)}`,
+      `  files: ${b.members.slice(0, MAX_LISTED_MEMBERS).map(meta).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`
+    )
+    if (b.boundaries.length > 0) lines.push(`  boundaries: ${b.boundaries.map(meta).join(', ')}`)
   }
   lines.push('', 'EDGES (from -> to)')
   for (const e of batch.edges) {
-    lines.push(`- ${e.id}: ${e.from} -> ${e.to}${e.via.length > 0 ? ` via ${e.via.join('; ')}` : ''}`)
+    lines.push(`- ${meta(e.id)}: ${meta(e.from)} -> ${meta(e.to)}${e.via.length > 0 ? ` via ${e.via.map(meta).join(', ')}` : ''}`)
   }
   lines.push(
     '',

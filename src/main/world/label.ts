@@ -9,7 +9,7 @@ import type { ModelCatalog } from '../modelCatalog'
 import type { Claim, Evidence, Floor } from '../../shared/world/types'
 import type { BoundaryKind } from './detectors/common'
 import { edgeId, type GroupBuilding, type GroupEdge, type Grouping } from './group'
-import { buildLabelPrompt, LABEL_PROMPT_VERSION, type BatchExcerpt, type LabelBatch } from './labelPrompt'
+import { buildLabelPrompt, LABEL_PROMPT_VERSION, MAX_PROMPT_CHARS, type BatchExcerpt, type LabelBatch } from './labelPrompt'
 
 export interface BuildingLabel {
   name: string
@@ -54,6 +54,10 @@ const MAX_LABEL = 120
 const MAX_CLAIM_TEXT = 400
 const MAX_GLOSSARY = 20
 const MAX_GLOSSARY_DEF = 240
+const MAX_LIST = 8
+const MAX_ITEM = 40
+const MAX_EVIDENCE = 5
+const MAX_CARGO = 40
 
 const KIND_WORD: Record<BoundaryKind, string> = {
   ipc: 'IPC',
@@ -152,7 +156,7 @@ function fallbackEdge(e: GroupEdge): EdgeLabel {
   const label = e.via.length === 0 ? 'imports' : [...new Set(e.via.map((v) => `${v.kind} ${v.key}`))].join(', ').slice(0, MAX_LABEL)
   return {
     label,
-    cargo: e.via.length === 0 ? 'code' : e.via[0].key,
+    cargo: e.via.length === 0 ? 'code' : e.via[0].key.slice(0, MAX_CARGO),
     how: [],
     why: [],
     tech: kindWords(e.via.map((v) => v.kind)),
@@ -173,9 +177,15 @@ const cap = (s: string, n: number): string => s.trim().slice(0, n)
 class Reject extends Error {}
 
 function parseReply(raw: string): Json | null {
-  const fenced = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i.exec(raw)
+  // Linear fence handling (a regex here backtracked badly on long whitespace runs).
+  let t = raw.trim()
+  if (t.startsWith('```')) {
+    t = t.slice(3).replace(/^[a-z]*/i, '')
+    const close = t.lastIndexOf('```')
+    if (close >= 0) t = t.slice(0, close)
+  }
   try {
-    const v: unknown = JSON.parse(fenced ? fenced[1] : raw)
+    const v: unknown = JSON.parse(t.trim())
     return isObj(v) ? v : null
   } catch {
     return null
@@ -196,11 +206,11 @@ function claimsFrom(o: Json, key: string, evidenceOf: ReadonlyMap<string, Eviden
   const out: Claim[] = []
   for (const item of arr) {
     if (!isObj(item) || !isStr(item.text) || !isStrArr(item.evidence)) throw new Reject()
-    const labels = item.evidence
+    const labels = [...new Set(item.evidence)]
     const text = cap(item.text, MAX_CLAIM_TEXT)
     // A claim citing nothing, or anything outside this batch, is dropped.
     if (labels.length === 0 || text === '' || labels.some((l) => !evidenceOf.has(l))) continue
-    out.push({ text, state: 'inferred', evidence: labels.map((l) => ({ ...(evidenceOf.get(l) as Evidence) })) })
+    out.push({ text, state: 'inferred', evidence: labels.slice(0, MAX_EVIDENCE).map((l) => ({ ...(evidenceOf.get(l) as Evidence) })) })
     if (out.length === MAX_CLAIMS) break
   }
   return out
@@ -211,9 +221,16 @@ function textField(o: Json, key: string, max: number, into: Record<string, unkno
   if (v !== undefined && v.trim() !== '') into[key] = cap(v, max)
 }
 
+function shortList(v: string[]): string[] {
+  return v
+    .map((x) => x.trim())
+    .filter((x) => x !== '' && x.length <= MAX_ITEM)
+    .slice(0, MAX_LIST)
+}
+
 function strList(o: Json, key: string, into: Record<string, unknown>): void {
   const v = field(o, key, isStrArr)
-  if (v) into[key] = v.map((s) => cap(s, MAX_NAME)).filter((s) => s !== '')
+  if (v) into[key] = shortList(v)
 }
 
 function validBuilding(raw: unknown, b: GroupBuilding, ev: ReadonlyMap<string, Evidence>): Partial<BuildingLabel> | null {
@@ -234,7 +251,7 @@ function validBuilding(raw: unknown, b: GroupBuilding, ev: ReadonlyMap<string, E
         if (!isObj(f) || !isStr(f.name) || !isStrArr(f.tech) || !isStrArr(f.members) || f.members.some((m) => !own.has(m))) {
           throw new Reject()
         }
-        return { name: cap(f.name, MAX_NAME), tech: f.tech.map((t) => cap(t, MAX_NAME)), members: f.members }
+        return { name: cap(f.name, MAX_NAME), tech: shortList(f.tech), members: f.members }
       })
     }
     return out as Partial<BuildingLabel>
@@ -248,7 +265,7 @@ function validEdge(raw: unknown, ev: ReadonlyMap<string, Evidence>): Partial<Edg
     if (!isObj(raw)) throw new Reject()
     const out: Record<string, unknown> = {}
     textField(raw, 'label', MAX_LABEL, out)
-    textField(raw, 'cargo', MAX_LABEL, out)
+    textField(raw, 'cargo', MAX_CARGO, out)
     textField(raw, 'rate', MAX_LABEL, out)
     strList(raw, 'tech', out)
     const how = claimsFrom(raw, 'how', ev)
@@ -291,9 +308,11 @@ async function collectExcerpts(
   const evidence = new Map<string, Evidence>()
   let used = 0
   for (const b of buildings) {
+    const sorted = [...b.members].sort()
     const candidates: { file: string; line?: number }[] = [
-      ...[...b.members].sort().slice(0, MAX_FILE_EXCERPTS).map((file) => ({ file })),
-      ...b.boundaries.map((x) => ({ file: x.file, line: x.line }))
+      ...sorted.slice(0, MAX_FILE_EXCERPTS).map((file) => ({ file })),
+      ...b.boundaries.map((x) => ({ file: x.file, line: x.line })),
+      ...sorted.slice(MAX_FILE_EXCERPTS).map((file) => ({ file }))
     ]
     let taken = 0
     for (const c of candidates) {
@@ -335,7 +354,7 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
     const buildings = g.buildings.filter((b) => b.districtId === d.id)
     const edges = g.edges.filter((e) => districtOf.get(e.from) === d.id)
     const { excerpts, evidence } = await collectExcerpts(buildings, deps)
-    const batch: LabelBatch = {
+    const mk = (): LabelBatch => ({
       district: { id: d.id, name: d.name },
       buildings: buildings.map((b) => ({
         id: b.id,
@@ -345,34 +364,43 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
       })),
       edges: edges.map((e) => ({ id: edgeId(e), from: e.from, to: e.to, via: e.via.map((v) => `${v.kind} ${v.key}`) })),
       excerpts
+    })
+    let batch = mk()
+    let prompt = buildLabelPrompt(batch)
+    // The prompt travels on a command line (Windows limits it): drop excerpts from the end until it fits.
+    while (prompt.length > MAX_PROMPT_CHARS && excerpts.length > 0) {
+      evidence.delete((excerpts.pop() as BatchExcerpt).label)
+      batch = mk()
+      prompt = buildLabelPrompt(batch)
     }
-    const prompt = buildLabelPrompt(batch)
     const key = sha(`${LABEL_PROMPT_VERSION}\n${prompt}`)
 
-    let reply: Json | null = null
+    let accepted = 0
     try {
       const hit = await deps.cache.get(key)
-      if (hit !== null) reply = parseReply(hit)
+      const cached = hit === null ? null : parseReply(hit)
+      if (cached) accepted = applyReply(labels, cached, batch, buildings, evidence)
     } catch {
-      reply = null
+      accepted = 0
     }
-    if (!reply) {
-      let raw: string | null = null
-      try {
-        raw = await llm(prompt)
-      } catch {
-        raw = null
-      }
-      if (raw === null) continue
-      reply = parseReply(raw)
-      if (!reply) continue
-      try {
-        await deps.cache.set(key, raw)
-      } catch {
-        // an unwritable cache only costs a repeat call next time
-      }
+    if (accepted > 0) continue
+    let raw: string | null = null
+    try {
+      raw = await llm(prompt)
+    } catch {
+      raw = null
     }
-    applyReply(labels, reply, batch, buildings, evidence)
+    if (raw === null) continue
+    const reply = parseReply(raw)
+    if (!reply) continue
+    accepted = applyReply(labels, reply, batch, buildings, evidence)
+    // Only a reply that yielded at least one accepted field is worth caching.
+    if (accepted === 0) continue
+    try {
+      await deps.cache.set(key, raw)
+    } catch {
+      // an unwritable cache only costs a repeat call next time
+    }
   }
   return labels
 }
@@ -381,26 +409,41 @@ function own(o: unknown, key: string): unknown {
   return isObj(o) && Object.hasOwn(o, key) ? o[key] : undefined
 }
 
+/** Number of non-empty model fields kept (an all-dropped claim list is not a field). */
+function countFields(v: object): number {
+  return Object.values(v).filter((x) => !(Array.isArray(x) && x.length === 0)).length
+}
+
 function applyReply(
   labels: Labels,
   reply: Json,
   batch: LabelBatch,
   buildings: GroupBuilding[],
   evidence: ReadonlyMap<string, Evidence>
-): void {
+): number {
+  let accepted = 0
   const dist = validDistrict(reply.district)
-  if (dist) labels.districts[batch.district.id] = { ...labels.districts[batch.district.id], ...dist }
+  if (dist) {
+    labels.districts[batch.district.id] = { ...labels.districts[batch.district.id], ...dist }
+    accepted += countFields(dist)
+  }
   for (const b of buildings) {
     const raw = own(reply.buildings, b.id)
     if (raw === undefined) continue
     const v = validBuilding(raw, b, evidence)
-    if (v) labels.buildings[b.id] = { ...labels.buildings[b.id], ...v }
+    if (v) {
+      labels.buildings[b.id] = { ...labels.buildings[b.id], ...v }
+      accepted += countFields(v)
+    }
   }
   for (const e of batch.edges) {
     const raw = own(reply.edges, e.id)
     if (raw === undefined) continue
     const v = validEdge(raw, evidence)
-    if (v) labels.edges[e.id] = { ...labels.edges[e.id], ...v }
+    if (v) {
+      labels.edges[e.id] = { ...labels.edges[e.id], ...v }
+      accepted += countFields(v)
+    }
   }
   if (isObj(reply.glossary)) {
     let n = 0
@@ -409,7 +452,11 @@ function applyReply(
       if (!isStr(def) || term.trim() === '' || def.trim() === '') continue
       n++
       const k = cap(term, MAX_NAME)
-      if (!Object.hasOwn(labels.glossary, k)) labels.glossary[k] = cap(def, MAX_GLOSSARY_DEF)
+      if (!Object.hasOwn(labels.glossary, k)) {
+        labels.glossary[k] = cap(def, MAX_GLOSSARY_DEF)
+        accepted++
+      }
     }
   }
+  return accepted
 }
