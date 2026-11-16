@@ -1,8 +1,10 @@
-# World View — Plan 1: Foundation (world compiler + World pane)
+# Lumopolis — Plan 1: Foundation (world compiler + Lumopolis pane)
+
+> Lumopolis: Where AI Worlds Become Human Understanding. The world-view visualization tool inside Termpolis. Code identifiers stay `world` (WorldDoc, `src/main/world/`); all user-visible copy says Lumopolis.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Opening the World pane shows the current project as an explorable 3D world compiled from evidence, with cards, technology chips, layers, tours and themes, and it updates as files change.
+**Goal:** Opening Lumopolis shows the current project as an explorable 3D world compiled from evidence, with cards, technology chips, layers, tours and themes, and it updates as files change.
 
 **Architecture:** A pure compiler pipeline runs in a new utility process (`worldHost`) with these stages:
 1. code graph snapshot
@@ -399,20 +401,20 @@ export function hasWebGL(): boolean
   Run → PASS.
 - [ ] **Step 6:** Commit with the message `world: Three.js 0.160.0 renderer, viewer API, standalone bundle`.
 
-### Task 12: World pane UI
+### Task 12: Lumopolis pane UI
 
 **Files:**
 - Create in `src/renderer/src/components/World/`: `WorldView.tsx`, `WorldToolbar.tsx`, `WorldCard.tsx`, `WorldEmptyState.tsx`, `index.ts`
 - Modify:
   - `src/renderer/src/App.tsx`: `showWorld` state beside `showMemory` (:133), lazy render near :1225, `case 'show_world'` in `handleCommandPaletteAction` (:928), hotkey `Ctrl+Shift+W` in the keydown handler (:514-533; check it's free), and a `termpolis:openWorld` window event listener as at :607-611
-  - `src/renderer/src/components/CommandPalette/CommandPalette.tsx:23-45` (`{pattern:/world|map|universe|architecture/, action:'show_world', label:'Open World View'}`)
-  - `src/renderer/src/components/Sidebar/Sidebar.tsx:161-195` (a globe icon button)
+  - `src/renderer/src/components/CommandPalette/CommandPalette.tsx:23-45` (`{pattern:/lumopolis|world|map|universe|architecture/, action:'show_world', label:'Open Lumopolis'}`)
+  - `src/renderer/src/components/Sidebar/Sidebar.tsx:161-195` (a globe icon button, tooltip `Lumopolis: Where AI Worlds Become Human Understanding`)
   - `src/renderer/src/components/SettingsPane/` (a toggle "Describe parts with AI (uses your default agent's cheapest model)", bound to `worldLabelling`)
 - Test: `src/renderer/src/components/World/*.test.tsx`
 
 **Interfaces:**
 - Consumes: the preload API (Task 9) and `createWorldViewer` (Task 11).
-- Produces: `<WorldView root={string} onClose={() => void} />`. The full-screen overlay is `role="dialog"`, `aria-label="World View"`, matching the Memory overlay pattern. A slot is exported for Plan 2: `WorldView` renders `{props.askSlot?.(viewer)}` at the bottom centre.
+- Produces: `<WorldView root={string} onClose={() => void} />`. The full-screen overlay is `role="dialog"`, `aria-label="Lumopolis"`, matching the Memory overlay pattern. A slot is exported for Plan 2: `WorldView` renders `{props.askSlot?.(viewer)}` at the bottom centre.
 
 - [ ] **Step 1:** Write the tests, with `createWorldViewer` mocked:
   - `shows "Mapping your project…" with progress while worldGet returns null and progress events arrive`
@@ -425,7 +427,7 @@ export function hasWebGL(): boolean
   - `palette action show_world opens the overlay`
   - `Re-layout asks for confirmation then calls worldRelayout`
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
-- [ ] **Step 5:** Commit with the message `world: World View pane (overlay, toolbar, tours, settings toggle)`.
+- [ ] **Step 5:** Commit with the message `world: Lumopolis pane (overlay, toolbar, tours, settings toggle)`.
 
 ### Task 13: Trusted built-in gateway provider and primer line
 
@@ -439,8 +441,8 @@ export function hasWebGL(): boolean
 
 **Interfaces:**
 - Produces:
-  - `createWorldGatewayTransport(client: ReturnType<typeof createWorldClient>, rootFor: (cwd?: string) => string | null): GatewayTransport & { trusted: true }` with id `termpolis-world`, exposing **one tool in 2.0**: `world_read({ ids?, text?, limit? })` → `WorldReadResult`. (`world_propose`/`world_annotate` arrive with the 2.x plan layer.)
-  - Primer line, exactly: `This project has a World map. Use gateway_call with server "termpolis-world", tool "world_read" to look up its parts, connections and evidence.` It is emitted only when a world document exists for the project.
+  - `createWorldGatewayTransport(client: ReturnType<typeof createWorldClient>, rootFor: (cwd?: string) => string | null): GatewayTransport & { trusted: true }` with id `lumopolis`, exposing **one tool in 2.0**: `world_read({ ids?, text?, limit? })` → `WorldReadResult`. (`world_propose`/`world_annotate` arrive with the 2.x plan layer.)
+  - Primer line, exactly: `This project has a Lumopolis map. Use gateway_call with server "lumopolis", tool "world_read" to look up its parts, connections and evidence.` It is emitted only when a world document exists for the project.
   - `trusted` can be set only by built-in code: transports built from user `config.servers` are forced to `trusted: false`.
 
 - [ ] **Step 1:** Write the tests:
@@ -466,7 +468,7 @@ export function hasWebGL(): boolean
 
   These are the spec's §5.3 quality bar, against the v2 prototype.
 - [ ] **Step 2:** Run → fix grouping or detectors until it passes. Do not weaken the assertions.
-- [ ] **Step 3:** Write `e2e/world-view.spec.ts` from the `e2e/memory-panel.spec.ts` template. It launches with a temp user-data dir and a fixture project, opens World View via the command palette, then:
+- [ ] **Step 3:** Write `e2e/world-view.spec.ts` from the `e2e/memory-panel.spec.ts` template. It launches with a temp user-data dir and a fixture project, opens Lumopolis via the command palette, then:
   - waits for the canvas;
   - clicks a building and asserts the card text;
   - toggles "What runs where";

@@ -1,8 +1,8 @@
-# World View — Plan 3: termpolis.com Interactive Demo
+# Lumopolis — Plan 3: termpolis.com Interactive Demo
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A public page on termpolis.com where visitors fly around the world of Termpolis itself, using the real World View engine, with cards, tech chips, tours, layers, themes and a scripted Ask bar. It goes live on the day 2.0 ships.
+**Goal:** A public page on termpolis.com where visitors fly around the world of Termpolis itself, using the real Lumopolis engine, with cards, tech chips, tours, layers, themes and a scripted Ask bar. It goes live on the day 2.0 ships.
 
 **Architecture:** The page hosts the **same framework-free engine bundle** the app uses (Plan 1, Task 11 produces `world-viewer.js`), so there is one renderer and three hosts: the app pane, this page, and the 2.x export. The page supplies a hand-curated `WorldDoc` for Termpolis, checked against the code, plus a scripted answer file that drives the engine through the same `WorldAction` vocabulary the real Ask uses (Plan 2). It is developed in `_staging/` (excluded from deploy) and moved live in the final task.
 
@@ -14,8 +14,9 @@
 
 ## Global Constraints
 
-- The page is `world.html`. Three.js comes only from the vendored engine bundle: **no CDN at runtime**.
-- The homepage stays lean (site rule, ~2.2k words): a teaser block only; detail lives on `world.html`.
+- Naming (David, 2026-11-16): the page `<title>` is `Lumopolis: Where AI Worlds Become Human Understanding | Termpolis`, the page heading is `Lumopolis`, and the tagline under it is exactly `Where AI Worlds Become Human Understanding.` Lumopolis is always shown as part of Termpolis 2.0, never as a separate product.
+- The page is `lumopolis.html`. Three.js comes only from the vendored engine bundle: **no CDN at runtime**.
+- The homepage stays lean (site rule, ~2.2k words): a teaser block only; detail lives on `lumopolis.html`.
 - It must work on phones: touch orbit and pinch zoom, a low-power quality tier, and a still image plus 2D fallback without WebGL. A 16px side gutter and no horizontal scroll.
 - Fast first view: a poster image paints before the engine loads.
 - No new tracking or third-party requests.
@@ -38,7 +39,7 @@
 
 **Files:**
 - Modify: `.github/workflows/deploy.yml:95` (add `_staging/` to the exclude regex)
-- Create: `_staging/world.html`, `_staging/world/world.css`, `_staging/world/README.md`
+- Create: `_staging/lumopolis.html`, `_staging/lumopolis/world.css`, `_staging/lumopolis/README.md`
 - Create: `scripts/check-world.py`
 
 **Interfaces:**
@@ -49,15 +50,15 @@
   - asserts zero console errors;
   - asserts `#world-poster` is visible within 1 s;
   - prints `OK` or the failures, and exits non-zero on failure.
-- [ ] **Step 3:** Run `python scripts/check-world.py --file _staging/world.html` → expect FAIL (the file doesn't exist).
-- [ ] **Step 4:** Create `_staging/world.html`. Use the site header and footer markup copied from `index.html` (the `site-nav` block at lines 76–91, with links rewritten to `../index.html#…` while in staging). Add the `#world-*` elements above. The poster is `<img id="world-poster" src="world/poster.webp" alt="The world of Termpolis: districts for Screen, Engine, Memory, Token proxy, Agent gateway and Linked machines">`. Add `world.css` with the layout: canvas full-bleed under the header; the card docked left on desktop and as a bottom sheet under 720 px; the Ask bar bottom-centre. Colour tokens go on `:root`, with dark as the site default.
+- [ ] **Step 3:** Run `python scripts/check-world.py --file _staging/lumopolis.html` → expect FAIL (the file doesn't exist).
+- [ ] **Step 4:** Create `_staging/lumopolis.html`. Use the site header and footer markup copied from `index.html` (the `site-nav` block at lines 76–91, with links rewritten to `../index.html#…` while in staging). Add the `#world-*` elements above. The poster is `<img id="world-poster" src="lumopolis/poster.webp" alt="The world of Termpolis: districts for Screen, Engine, Memory, Token proxy, Agent gateway and Linked machines">`. Add `world.css` with the layout: canvas full-bleed under the header; the card docked left on desktop and as a bottom sheet under 720 px; the Ask bar bottom-centre. Colour tokens go on `:root`, with dark as the site default.
 - [ ] **Step 5:** Run the smoke check → `OK` (the poster is a placeholder file for now).
 - [ ] **Step 6:** Commit with the message `world demo: staging scaffold (not deployed)`. Push, and confirm in the Actions log that `_staging/` files are not uploaded.
 
 ### Task 2: The Termpolis world document
 
 **Files:**
-- Create: `_staging/world/data/termpolis.world.json`
+- Create: `_staging/lumopolis/data/termpolis.world.json`
 - Create: `scripts/validate-world.mjs`
 
 **Interfaces:**
@@ -73,15 +74,15 @@
   It exits non-zero listing violations.
 - [ ] **Step 2:** Run it on an empty `{}` → FAIL with a list of errors.
 - [ ] **Step 3:** Port the data from the prototype (`termpolis/.superpowers/brainstorm/2400-1794800636/content/world-relationships.html`: `DISTRICTS`, `EDGES`, `TECH`, `CARGO`, `PROC`, `TOURS`) into `WorldDoc` form. Each prose line becomes a `Claim` with evidence pointing at the real file, for example the gateway edge `src/main/mcpGateway/index.ts`. Use `state: "verified"` only where a named test covers it, and `observed` otherwise.
-- [ ] **Step 4:** **Accuracy pass:** for every claim, open the cited file at the 2.0 release candidate and correct or delete anything untrue. Record each correction in `_staging/world/README.md` under "Accuracy log".
-- [ ] **Step 5:** Run `node scripts/validate-world.mjs _staging/world/data/termpolis.world.json` → `valid`.
+- [ ] **Step 4:** **Accuracy pass:** for every claim, open the cited file at the 2.0 release candidate and correct or delete anything untrue. Record each correction in `_staging/lumopolis/README.md` under "Accuracy log".
+- [ ] **Step 5:** Run `node scripts/validate-world.mjs _staging/lumopolis/data/termpolis.world.json` → `valid`.
 - [ ] **Step 6:** Commit with the message `world demo: Termpolis world document, every claim cited`.
 
 ### Task 3: Scripted Ask
 
 **Files:**
-- Create: `_staging/world/data/demo-answers.json`
-- Create: `_staging/world/ask-demo.js`
+- Create: `_staging/lumopolis/data/demo-answers.json`
+- Create: `_staging/lumopolis/ask-demo.js`
 - Test: `scripts/check-world.py` (add the `--ask` scenario)
 
 **Interfaces:**
@@ -106,15 +107,15 @@
   - typed text is matched to the closest question by token overlap; with no match, show the six suggestions with "This demo answers a fixed set of questions";
   - a new question calls `viewer.cancelActions()` before playing;
   - the answer text reveals in time with the actions.
-- [ ] **Step 5:** Run `python scripts/check-world.py --file _staging/world.html --ask` → `OK`.
+- [ ] **Step 5:** Run `python scripts/check-world.py --file _staging/lumopolis.html --ask` → `OK`.
 - [ ] **Step 6:** Commit with the message `world demo: scripted Ask with cancellable tours`.
 
 ### Task 4: Phone, fallback, motion and load behaviour
 
 **Files:**
-- Modify: `_staging/world.html`, `_staging/world/world.css`
-- Create: `_staging/world/boot.js` (detection and loading)
-- Create: `_staging/world/poster.webp`, `_staging/world/teaser.webp` (rendered from the engine at 1600×900 and 800×450)
+- Modify: `_staging/lumopolis.html`, `_staging/lumopolis/world.css`
+- Create: `_staging/lumopolis/boot.js` (detection and loading)
+- Create: `_staging/lumopolis/poster.webp`, `_staging/lumopolis/teaser.webp` (rendered from the engine at 1600×900 and 800×450)
 
 **Interfaces:**
 - Consumes: `createWorldViewer(container, { quality, reducedMotion })` from Plan 1 Task 11.
@@ -133,26 +134,26 @@
 ### Task 5: Engine bundle drop-in
 
 **Files:**
-- Create: `_staging/world/vendor/world-viewer.js`, `_staging/world/vendor/VERSION` (the app commit SHA and the Three.js version)
+- Create: `_staging/lumopolis/vendor/world-viewer.js`, `_staging/lumopolis/vendor/VERSION` (the app commit SHA and the Three.js version)
 - Create: `scripts/sync-world-viewer.mjs`
 
 **Interfaces:**
 - Consumes: `dist-world/world-viewer.js` built by `npm run build:world-viewer` in the app repo (Plan 1 Task 11).
 
-- [ ] **Step 1:** Write `sync-world-viewer.mjs`. It copies `../termpolis/dist-world/world-viewer.js` into `_staging/world/vendor/` and writes `VERSION` from `git -C ../termpolis rev-parse HEAD` plus `three@0.160.0`.
+- [ ] **Step 1:** Write `sync-world-viewer.mjs`. It copies `../termpolis/dist-world/world-viewer.js` into `_staging/lumopolis/vendor/` and writes `VERSION` from `git -C ../termpolis rev-parse HEAD` plus `three@0.160.0`.
 - [ ] **Step 2:** Run it, then run every scenario in the smoke check → `OK`.
 - [ ] **Step 3:** Commit with the message `world demo: vendor engine bundle <sha>`.
 
 ### Task 6: Launch (2.0 release day only)
 
 **Files:**
-- Move: `_staging/world.html` → `world.html`, and `_staging/world/` → `world/` (fix the `../` links)
-- Modify: `index.html` (one nav link "World" after "Features", and a teaser block in the hero area with `teaser.webp`, one sentence, and a "Fly through Termpolis" button to `world.html`)
-- Modify: `sitemap.xml` (add `https://termpolis.com/world.html`)
+- Move: `_staging/lumopolis.html` → `lumopolis.html`, and `_staging/lumopolis/` → `world/` (fix the `../` links)
+- Modify: `index.html` (one nav link "Lumopolis" after "Features", and a teaser block in the hero area with `teaser.webp`, the sentence `Lumopolis: Where AI Worlds Become Human Understanding. New in Termpolis 2.0.`, and a "Fly through Termpolis" button to `lumopolis.html`)
+- Modify: `sitemap.xml` (add `https://termpolis.com/lumopolis.html`)
 - Modify: `.github/workflows/deploy.yml` (keep the `_staging/` exclusion)
 
 - [ ] **Step 1:** Do this only after the app's v2.0.0 Release pipeline is green (`release-notify` skill). Re-run Task 5 against the `v2.0.0` tag.
-- [ ] **Step 2:** Move the files, then run every scenario against `world.html` → `OK`.
+- [ ] **Step 2:** Move the files, then run every scenario against `lumopolis.html` → `OK`.
 - [ ] **Step 3:** Check the homepage word count stays at or under its current size plus 60 words.
-- [ ] **Step 4:** Commit with the message `site: World View demo live for Termpolis 2.0` and push.
-- [ ] **Step 5:** Verify live via `https://api.microlink.io/?url=https://termpolis.com/world.html&screenshot=true`: HTTP 200 and the screenshot shows the poster or canvas.
+- [ ] **Step 4:** Commit with the message `site: Lumopolis demo live for Termpolis 2.0` and push.
+- [ ] **Step 5:** Verify live via `https://api.microlink.io/?url=https://termpolis.com/lumopolis.html&screenshot=true`: HTTP 200 and the screenshot shows the poster or canvas.

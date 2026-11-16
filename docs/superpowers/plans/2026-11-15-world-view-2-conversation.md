@@ -1,8 +1,8 @@
-# World View — Plan 2: Conversation (ask by text or voice)
+# Lumopolis — Plan 2: Conversation (ask by text or voice)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Inside World View you can type or speak a question ("how does a message get from my phone to an agent?"). The world answers in text with evidence links and moves itself to show the answer: it flies, highlights, runs flows, opens cards and plays tours.
+**Goal:** Inside Lumopolis you can type or speak a question ("how does a message get from my phone to an agent?"). The world answers in text with evidence links and moves itself to show the answer: it flies, highlights, runs flows, opens cards and plays tours.
 
 **Architecture:** Each question is a **fresh, read-only, one-shot** `runHeadless` call (spec §10). It is primed with:
 - a compact world context (the selection, the camera region, and matches from `worldClient.read`);
@@ -29,9 +29,9 @@ The agent replies with prose plus one fenced `world-actions` JSON block. A share
 
 1. **The agent answers with no or a malformed `world-actions` block, or invents ids**: the text still shows, unknown ids are dropped silently, and no exception reaches the UI. Test in Task 1.
 2. **The user asks again before the first answer arrives**: the first run is aborted (`AbortSignal`), its late result is ignored, and a running tour is cancelled. Test in Tasks 3 and 4.
-3. **No agent installed, signed out, or timed out**: a plain message ("World View couldn't reach your agent: <reason>") with a retry. The world stays usable. Test in Task 3.
-4. **Voice while a terminal also has voice**: the transcript goes only to the Ask bar while World View is open, never into a terminal. Test in Task 5.
-5. **A long answer read aloud and then World View closed**: speech stops on close, on a new question, and on Esc. Test in Task 4.
+3. **No agent installed, signed out, or timed out**: a plain message ("Lumopolis couldn't reach your agent: <reason>") with a retry. The world stays usable. Test in Task 3.
+4. **Voice while a terminal also has voice**: the transcript goes only to the Ask bar while Lumopolis is open, never into a terminal. Test in Task 5.
+5. **A long answer read aloud and then Lumopolis closed**: speech stops on close, on a new question, and on Esc. Test in Task 4.
 
 ---
 
@@ -83,7 +83,7 @@ Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the label
   - `buildAskPrompt(input: { question: string; doc: WorldDoc; selection: string[]; cameraRegion: string[]; matches: WorldReadResult; summary: string }): { prompt: string; labels: Record<string, Evidence> }`
   - `summarize(prev: string, question: string, answerText: string): string`. Pure: it appends `Q: …\nA: <first sentence>` and trims from the front to 1,200 characters.
 - Prompt order:
-  1. a one-line role (`You explain the software shown in Termpolis World View.`)
+  1. a one-line role (`You explain the software shown in Termpolis Lumopolis.`)
   2. `CONVERSATION SO FAR` (the summary)
   3. `WORLD DATA` in a fenced block. It lists districts (id, name), then the selected/in-view/matched buildings and edges with their claims, with evidence labelled `E1…`. Other buildings appear as `id: name` only.
   4. `QUESTION`
@@ -117,7 +117,7 @@ Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the label
 - [ ] **Step 1:** Write the tests:
   - `passes write:false, noRemember:true, cwd=root`
   - `parses output into answer and returns new summary`
-  - `exec ok:false → {ok:false, error}` with the human message `World View couldn't reach your agent: <error>`
+  - `exec ok:false → {ok:false, error}` with the human message `Lumopolis couldn't reach your agent: <error>`
   - `cancel aborts the signal and resolves {ok:false, cancelled:true}`
   - `a second ask for the same root cancels the first`
   - `no world doc for root → {ok:false, error:'This project has not been mapped yet.'}`
@@ -130,7 +130,7 @@ Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the label
 - Create in `src/renderer/src/components/World/`: `WorldAsk.tsx`, `WorldAnswer.tsx`, `useWorldAsk.ts`
 - Modify:
   - `src/renderer/src/components/World/WorldView.tsx`: pass `askSlot={(viewer) => <WorldAsk viewer={viewer} root={root} />}`
-  - Settings: a toggle "Read World View answers aloud", bound to `worldSpeakAnswers`, default off
+  - Settings: a toggle "Read Lumopolis answers aloud", bound to `worldSpeakAnswers`, default off
 - Test: `src/renderer/src/components/World/WorldAsk.test.tsx`, `useWorldAsk.test.ts`
 
 **Interfaces:**
@@ -172,7 +172,7 @@ Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the label
   - `terminalId null + onTranscript works`
   - `WorldAsk: voice transcript fills the input and asks`
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
-- [ ] **Step 5:** Commit with the message `voice: optional onTranscript sink; World View asks by voice`.
+- [ ] **Step 5:** Commit with the message `voice: optional onTranscript sink; Lumopolis asks by voice`.
 
 ### Task 6: End-to-end
 
@@ -180,7 +180,7 @@ Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the label
 - Create: `e2e/world-ask.spec.ts`
 - Modify: `e2e/helpers/launch.ts` only if the headless agent shim needs a canned reply hook (prefer the existing `e2eShimEnv` mock agent)
 
-- [ ] **Step 1:** Write the spec. The mock agent replies with fixed text plus a `world-actions` block focusing building `b1` and opening its card. The spec launches, opens World View, waits for the map, types `How does it fit together?`, presses Enter, and asserts:
+- [ ] **Step 1:** Write the spec. The mock agent replies with fixed text plus a `world-actions` block focusing building `b1` and opening its card. The spec launches, opens Lumopolis, waits for the map, types `How does it fit together?`, presses Enter, and asserts:
   - the answer text appears;
   - the card for `b1` opens;
   - clicking an `[E1]` chip shows its evidence;

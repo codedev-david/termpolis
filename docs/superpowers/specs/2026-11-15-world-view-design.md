@@ -1,8 +1,11 @@
-# World View: Design Spec
+# Lumopolis: Design Spec
+
+> **Lumopolis: Where AI Worlds Become Human Understanding.**
+> Lumopolis is the world-view visualization tool inside Termpolis, not a separate app (David, 2026-11-16). It was called "Lumopolis" until then. Internal code keeps the neutral `world` name (`WorldDoc`, `src/main/world/`, `world:*` IPC); everything a person sees says Lumopolis.
 
 **Date:** 2026-11-15
 **Status:** Approved by David (2026-11-15)
-**Target:** Termpolis **2.0**, a major release with World View as its headline (David, 2026-11-15: "the next evolution of understanding between human and AI")
+**Target:** Termpolis **2.0**, a major release with Lumopolis as its headline (David, 2026-11-15: "the next evolution of understanding between human and AI")
 **Prototype:** `.superpowers/brainstorm/2400-1794800636/content/world-relationships.html`, a throwaway Three.js mockup that David approved as the direction ("click in certain areas and it gives detailed information for how it was built or what is being proposed")
 **Source idea:** David's *Living Software Universe Plan v2* (PDF) and sketches
 
@@ -12,7 +15,7 @@
 
 AI now writes software faster than people can understand it. The bottleneck is no longer writing code; it is a person understanding what an agent **is about to build** or **has just built**. One day people may not read the code at all, and agents may write in languages people can't read. People will still need to understand the software, judge it and ask for changes.
 
-World View closes that gap. It is an interactive, animated 3D world of a piece of software, shown on an ordinary 2D screen and using every visual trick for depth, where:
+Lumopolis closes that gap. It is an interactive, animated 3D world of a piece of software, shown on an ordinary 2D screen and using every visual trick for depth, where:
 
 - the parts of the software are places you can fly around;
 - the relationships between them are visible, moving connections;
@@ -27,14 +30,14 @@ David's framing: "almost a world model for humans to understand", a bridge betwe
 ## 2. Goals, non-goals, anti-goals
 
 ### Goals
-1. A **World pane** in Termpolis, beside terminals, that renders the current project as a 3D world using the grammar in section 5.1.
+1. A **Lumopolis pane** in Termpolis, beside terminals, that renders the current project as a 3D world using the grammar in section 5.1.
 2. **Detail cards** for every building and connection: what it does, the parts inside, technology (with a plain-English glossary), why it's built this way, what flows in and out, and how often. This is the information density of the v2 prototype.
 3. **Built and proposed in one world.** Built parts come from evidence. Proposed parts come from a plan layer that agents write. The difference between them is computed and shown.
 4. **Conversation inside the world** by text and by Termpolis's existing voice input. The agent's answers move the camera, highlight parts and play flows, and every claim links to its evidence.
 5. **Change by pointing.** Describing a change in the world produces a wireframe proposal on the map. Approving it hands the work to agents, and the world shows the build progressing to verified.
 6. **"What the agent just did"**: a before/after view of an agent's work, built from its activity log and the code graph.
 7. **Export** any world, or any proposal, as one self-contained HTML file that anyone can open.
-8. **A public, interactive demo on termpolis.com** that shows the world of Termpolis itself, built from the approved v2 prototype, so anyone can try World View in a browser without installing anything. It is the launch centrepiece for 2.0 (section 5.10).
+8. **A public, interactive demo on termpolis.com** that shows the world of Termpolis itself, built from the approved v2 prototype, so anyone can try Lumopolis in a browser without installing anything. It is the launch centrepiece for 2.0 (section 5.10).
 
 ### Non-goals (for this version)
 - Editing code by hand in the world. Code changes always go through agents.
@@ -118,7 +121,7 @@ Every sentence on a card is a `Claim`. The UI marks `inferred` claims as such, a
 
 ### 5.3 World compiler: built layer
 
-The compiler runs off the main thread (my call: a new utility process, `termpolis-world`, the same pattern as `termpolis-memory`; the builder may host it in an existing utility process if that is simpler and keeps main free). It runs in stages; each stage is cached and incremental.
+The compiler runs off the main thread (my call: a new utility process, `termpolis-lumopolis`, the same pattern as `termpolis-memory`; the builder may host it in an existing utility process if that is simpler and keeps main free). It runs in stages; each stage is cached and incremental.
 
 1. **Structure.** Read the code graph (`src/main/codeGraph.ts`: symbols, files, callers and callees) and the directory tree.
 2. **Boundaries.** Static detectors for cross-component communication, the relationships people most need explained:
@@ -146,7 +149,7 @@ The compiler runs off the main thread (my call: a new utility process, `termpoli
 - **Plan versus built** is computed by matching proposal items to built items by id or by member paths. The world shows what is new (wireframe), what changes (wireframe outline around a solid building), what is removed (fading) and what is already done (solid).
 - A proposal moves through **Imagine → Approve → Build → Observe → Verify** (the PDF's modes). Approval turns it into swarm tasks, each in its own git worktree, using the existing conductor. As agents work, the compiler sees the changes and proposal items fill in. Tests passing add green rings. The proposal is archived when everything is built and verified (Evolve).
 
-### 5.5 The World pane (UI)
+### 5.5 The Lumopolis pane (UI)
 
 The interactions match the v2 prototype (decided by David's approval of that version):
 
@@ -163,7 +166,7 @@ The interactions match the v2 prototype (decided by David's approval of that ver
 
 ### 5.6 Conversation inside the world
 
-- **Input:** a chat bar inside the World pane. Text, or **Termpolis's existing voice input** (`useVoiceInput`, tap-or-hold, Groq Whisper transcription with phantom-word filtering), reused as-is; the transcript goes to the world conversation instead of a terminal. No new voice-input system.
+- **Input:** a chat bar inside Lumopolis. Text, or **Termpolis's existing voice input** (`useVoiceInput`, tap-or-hold, Groq Whisper transcription with phantom-word filtering), reused as-is; the transcript goes to the world conversation instead of a terminal. No new voice-input system.
 - **Context:** each question carries the current selection, the camera's region, the active proposal and the evidence for the selected items, capped by a token budget.
 - **The agent:** a hidden, read-only agent session started the way `termpolis exec` starts one (`src/main/headlessExec.ts`: primed with the project primer, read-only by default, killed at a deadline), using the user's default agent and model, through the proxy. There is no visible terminal. My call: a fresh one-shot run per question, carrying a compact conversation summary, which works the same on all three CLIs (section 10). A warm session is a later optimisation.
 - **Answer protocol:** the agent returns plain-English text plus **world actions** in a structured block:
@@ -199,7 +202,7 @@ Agents can then design in the world ("draw your plan before building") and expla
 - **Source:** the approved prototype (`world-relationships.html`) is the starting point. Its hand-written data is reviewed against the real code before launch, so every card is accurate for the release it ships with. Once phase 1 works, the demo world should be the compiler's own export of the Termpolis repository, touched up by hand where needed. Then the demo also proves the product.
 - **Conversation in the demo:** the website has no agent behind it, so the Ask bar is scripted: a short list of suggested questions ("What happens when I type a prompt?", "Where do my memories live?", "What would team sharing touch?") with pre-written answers that fly the camera, light up parts and play flows, exactly as the real answer protocol does. It should be clearly labelled as a demo, with a link to download Termpolis for the real thing. One suggested question shows a proposal appearing as wireframe, so visitors see the plan-to-built idea.
 - **Page and site rules:**
-  - Its own page, `world.html` (my call on the name). It is linked from the homepage hero and the nav. The homepage stays lean (site rule): it gets a short teaser with a still image or short loop, and the detail lives on the demo page.
+  - Its own page, `lumopolis.html` (my call on the name, renamed with the feature). It is linked from the homepage hero and the nav. The homepage stays lean (site rule): it gets a short teaser with a still image or short loop, and the detail lives on the demo page.
   - Three.js is vendored into the site repository at a pinned version, not loaded from a CDN at runtime, so the page doesn't depend on a third party.
   - It works on phones: touch orbit and pinch zoom, a reduced effects tier on low-power devices, and a 2D fallback or still image without WebGL.
   - Fast first view: a poster image shows while it loads, and the 3D starts after.
@@ -243,24 +246,24 @@ David (2026-11-15): the tool should also look into a **live running application,
 - Scope: works for anything in the app, from something someone wants to build to something already done.
 - Conversation in the world by voice or text, about what was built or what is designed, reusing the voice capability the app already has.
 - Approach A.
-- Released as **Termpolis 2.0**, with World View as its headline.
+- Released as **Termpolis 2.0**, with Lumopolis as its headline.
 - A public interactive demo page on termpolis.com, built from the prototype that shows how Termpolis works.
 - Next after 2.0: a live production view of running applications for bottlenecks and diagnosis (5.11), with its own design. It connects to apps on **Azure** (Application Insights, Log Analytics workspaces) and **AWS** (CloudWatch, X-Ray).
 
 ## 7. Calls I made (David can override)
 
 - **Order of delivery (section 8):** start with the existing project's world plus questions, because the plan layer needs the built map underneath it.
-- A dedicated `termpolis-world` utility process for the compiler.
+- A dedicated `termpolis-lumopolis` utility process for the compiler.
 - Labelling with the default agent's cheapest model (Haiku on Claude Code), cached by content hash, with an off switch.
 - The world document lives in per-user data, not committed to the repository. Exports are files the user chooses to share.
 - A hidden, read-only one-shot agent run per question, with a carried conversation summary (section 10).
 - Spoken answers through OS voices, off by default.
 - World tools only through the gateway route, as a trusted built-in provider.
-- The demo page is `world.html`, with Three.js vendored and scripted questions, and it launches with 2.0.
+- The demo page is `lumopolis.html`, with Three.js vendored and scripted questions, and it launches with 2.0.
 
 ## 8. Delivery order
 
-1. **The world of what exists:** compiler stages 1 to 7, the World pane with cards, layers and tours, and the Termpolis repository as the acceptance test (5.3).
+1. **The world of what exists:** compiler stages 1 to 7, Lumopolis with cards, layers and tours, and the Termpolis repository as the acceptance test (5.3).
 2. **Conversation:** text and voice in the world, the answer protocol with world actions, evidence links.
 3. **What the agent just did:** snapshots, before/after, generated change tours.
 4. **Plan layer:** proposals from conversation and from agents, plan versus built, approval into swarm tasks, build progress, verification.
