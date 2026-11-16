@@ -72,6 +72,13 @@ jobs:
         run: sudo apt-get install -y --no-install-recommends gdb || true
       - name: Build
         run: npm run build
+      # node-pty forks through its prebuilt spawn-helper on macOS, which npm can extract without
+      # +x; every terminal then fails to start ("posix_spawnp failed") and specs that open one in
+      # a project folder never get past the New Terminal dialog. Same step as test.yml/release.yml.
+      - name: Fix spawn-helper permissions (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
       - name: Allow the Chromium sandbox
         if: runner.os == 'Linux'
         run: |
