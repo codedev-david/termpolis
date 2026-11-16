@@ -49,7 +49,7 @@ describe('buildSceneModel', () => {
     const withIt = buildSceneModel(doc, { ...DEFAULT_LAYERS, planned: false }, { revealProposal: 'p1' })
     expect(withIt.buildings.find((b) => b.id === 'pb1')).toMatchObject({ look: 'wire', ring: false })
     expect(withIt.conduits.find((c) => c.id === 'pe1')!.dashed).toBe(true)
-    expect(withIt.conduits.find((c) => c.id === 'pe2')!.dashed).toBe(false)
+    expect(withIt.conduits.find((c) => c.id === 'pe2')!.dashed).toBe(true)
   })
 
   it('ignores an unknown proposal id', () => {
@@ -69,7 +69,7 @@ describe('buildSceneModel', () => {
     const d1 = m.districts.find((d) => d.id === 'd1')!
     expect(d1).toMatchObject({ hue: 210, label: 'Core' })
     expect(d1.radius).toBeGreaterThanOrEqual(6)
-    expect(m.districts.find((d) => d.id === 'd2')).toMatchObject({ pos: [0, 0, 0], radius: 6 })
+    expect(m.districts.find((d) => d.id === 'd2')).toBeUndefined()
   })
 
   it('omits processShell by default and gives a building without floors one storey', () => {
@@ -92,6 +92,54 @@ describe('buildSceneModel', () => {
     const doc = minimal()
     doc.edges.push(edge('ex', 'b1', 'ghost'))
     expect(buildSceneModel(doc, DEFAULT_LAYERS).conduits.map((c) => c.id)).toEqual(['e1'])
+  })
+})
+
+describe('proposal reveal and edge cases', () => {
+  it('draws a revealed proposal edge between two solid buildings dashed', () => {
+    const m = buildSceneModel(rich(), DEFAULT_LAYERS, { revealProposal: 'p1' })
+    expect(m.conduits.find((c) => c.id === 'pe2')!.dashed).toBe(true)
+    expect(m.conduits.find((c) => c.id === 'e1')!.dashed).toBe(false)
+  })
+
+  it('skips proposal items whose id already exists; the doc item wins', () => {
+    const doc = rich()
+    doc.layers.plan[0].buildings.push(building('b2', { status: 'built', name: 'Impostor' }))
+    doc.layers.plan[0].edges.push(edge('e1', 'b1', 'b2', { cargo: 'other' }))
+    const m = buildSceneModel(doc, DEFAULT_LAYERS, { revealProposal: 'p1' })
+    expect(m.buildings.filter((b) => b.id === 'b2')).toHaveLength(1)
+    expect(m.buildings.find((b) => b.id === 'b2')).toMatchObject({ look: 'solid', ring: true })
+    expect(m.conduits.filter((c) => c.id === 'e1')).toHaveLength(1)
+    expect(m.conduits.find((c) => c.id === 'e1')).toMatchObject({ cargo: 'memory', dashed: false })
+  })
+
+  it('omits a district with no visible buildings', () => {
+    const doc = minimal()
+    doc.buildings[0].districtId = 'd9'
+    doc.buildings[0].status = 'proposed'
+    doc.districts.push({ id: 'd9', name: 'Hidden', subtitle: '', hue: 1, members: [] })
+    const ids = (planned: boolean) => buildSceneModel(doc, { ...DEFAULT_LAYERS, planned }).districts.map((d) => d.id)
+    expect(ids(true)).toContain('d9')
+    expect(ids(false)).not.toContain('d9')
+  })
+
+  it('arcs a self-loop sideways', () => {
+    const doc = minimal()
+    doc.edges.push(edge('loop', 'b1', 'b1'))
+    const c = buildSceneModel(doc, DEFAULT_LAYERS).conduits.find((x) => x.id === 'loop')!
+    expect(c.ctrl).toEqual([3, 4, 0])
+    expect(c.ctrl).not.toEqual(c.from)
+  })
+
+  it('classifies rates on word boundaries', () => {
+    const w = (rate: string) => conduitStyle(minimal(), edge('a', 'b1', 'b2', { rate })).width
+    expect(w('rarely')).toBe(0.1)
+    expect(w('upstream traffic')).toBe(0.18)
+    expect(w('at once')).toBe(0.18)
+    expect(w('once')).toBe(0.1)
+    expect(w('Streaming')).toBe(0.3)
+    expect(w('every second')).toBe(0.3)
+    expect(w('')).toBe(0.18)
   })
 })
 

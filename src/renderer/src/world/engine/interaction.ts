@@ -11,15 +11,14 @@ const DIM_FACTOR = 0.06
  * the ids at the other end of each incident edge, and those edges. For an edge: the edge and its
  * two endpoints. An unknown id yields just itself.
  */
-export function neighbours(doc: WorldDoc, id: string): { ids: Set<string>; edgeIds: Set<string> } {
+export function neighbours(
+  doc: WorldDoc, id: string, opts?: { revealProposal?: string },
+): { ids: Set<string>; edgeIds: Set<string> } {
   const ids = new Set<string>([id])
   const edgeIds = new Set<string>()
-  for (const e of doc.edges) {
-    if (e.id === id) {
-      edgeIds.add(e.id)
-      ids.add(e.from)
-      ids.add(e.to)
-    } else if (e.from === id || e.to === id) {
+  const proposal = opts?.revealProposal === undefined ? undefined : doc.layers.plan.find((p) => p.id === opts.revealProposal)
+  for (const e of [...doc.edges, ...(proposal ? proposal.edges : [])]) {
+    if (e.id === id || e.from === id || e.to === id) {
       edgeIds.add(e.id)
       ids.add(e.from)
       ids.add(e.to)

@@ -31,6 +31,8 @@ export function createActionQueue(
     running = false
   }
 
+  // Cancelling cannot abort an exec already in flight: a stale exec may still be running and can
+  // overlap the first action of the new run. Only the actions after it are dropped.
   const play = async (actions: WorldAction[]): Promise<void> => {
     cancel()
     const mine = generation

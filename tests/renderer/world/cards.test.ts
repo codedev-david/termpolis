@@ -8,6 +8,14 @@ describe('escapeHtml', () => {
   })
 })
 
+describe('escapeHtml coercion', () => {
+  it('coerces runtime non-strings without throwing', () => {
+    expect(escapeHtml(5)).toBe('5')
+    expect(escapeHtml(undefined)).toBe('')
+    expect(escapeHtml(null)).toBe('')
+  })
+})
+
 describe('cards', () => {
   it('buildingCard has every section and tags inferred claims', () => {
     const html = buildingCard(minimal(), 'b1')

@@ -21,6 +21,17 @@ describe('neighbours', () => {
   })
 })
 
+describe('neighbours with a revealed proposal', () => {
+  it('includes the proposal edges only when revealed', () => {
+    const doc = rich()
+    const n = neighbours(doc, 'pb1', { revealProposal: 'p1' })
+    expect([...n.ids].sort()).toEqual(['b1', 'pb1'])
+    expect([...n.edgeIds]).toEqual(['pe1'])
+    expect(neighbours(doc, 'pb1').edgeIds.size).toBe(0)
+    expect(neighbours(doc, 'pb1', { revealProposal: 'zzz' }).edgeIds.size).toBe(0)
+  })
+})
+
 describe('focusOpacity', () => {
   it('caps focused tubes at 0.62', () => {
     expect(focusOpacity(1, true)).toBe(0.62)

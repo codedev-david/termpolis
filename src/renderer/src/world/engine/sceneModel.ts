@@ -33,12 +33,13 @@ export interface ConduitLive { width?: number; color?: string }
 const FLOOR_HEIGHT = 3
 const MIN_DISTRICT_RADIUS = 6
 const DISTRICT_MARGIN = 4
+const SELF_LOOP_OFFSET = 3
 const FALLBACK_COLOR = '#94a3b8'
 const WIDTH_BUSY = 0.3
 const WIDTH_STEADY = 0.18
 const WIDTH_RARE = 0.1
-const BUSY = /constant|continuous|stream|real.?time|every (?:second|frame|keystroke)|per second/i
-const RARE = /on demand|rare|once|occasional|startup|manual/i
+const BUSY = /\b(?:constant(?:ly)?|continuous(?:ly)?|stream(?:s|ing)?|real.?time)\b|\bevery (?:second|frame|keystroke)\b|\bper second\b/i
+const RARE = /\b(?:on demand|rare(?:ly)?|occasional(?:ly)?|startup|manual(?:ly)?)\b|(?<!\bat )\bonce\b/i
 
 /**
  * "Mostly inferred": more than half of the building's claims (`how` plus `why`) are `inferred`,
@@ -79,7 +80,11 @@ function fallbackPos(index: number): Vec3 {
 export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { revealProposal?: string }): SceneModel {
   const proposal = opts?.revealProposal === undefined ? undefined : doc.layers.plan.find((p) => p.id === opts.revealProposal)
   const buildings: Building[] = doc.buildings.filter((b) => layers.planned || b.status !== 'proposed')
-  for (const b of proposal ? proposal.buildings : []) buildings.push({ ...b, status: 'proposed' })
+  const known = new Set(buildings.map((b) => b.id))
+  // The existing doc item wins over a revealed proposal item with the same id.
+  for (const b of proposal ? proposal.buildings : []) {
+    if (!known.has(b.id)) buildings.push({ ...b, status: 'proposed' })
+  }
   const proposedIds = new Set(buildings.filter((b) => b.status === 'proposed').map((b) => b.id))
 
   let slot = 0
@@ -99,25 +104,31 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
   })
   const orbs: SceneOrb[] = doc.externals.map((x) => ({ id: x.id, pos: place(x.id), fog: x.fog }))
 
-  const districts: SceneDistrict[] = doc.districts.map((d) => {
+  const districts: SceneDistrict[] = []
+  for (const d of doc.districts) {
     const pts = buildings.filter((b) => b.districtId === d.id).map((b) => positions.get(b.id) as Vec3)
-    if (pts.length === 0) return { id: d.id, pos: [0, 0, 0], radius: MIN_DISTRICT_RADIUS, hue: d.hue, label: d.name }
+    if (pts.length === 0) continue // nothing visible in it (empty, or all planned and hidden)
     const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length
     const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length
     const far = Math.max(...pts.map((p) => Math.hypot(p[0] - cx, p[2] - cz)))
-    return { id: d.id, pos: [cx, 0, cz], radius: Math.max(MIN_DISTRICT_RADIUS, far + DISTRICT_MARGIN), hue: d.hue, label: d.name }
-  })
+    districts.push({ id: d.id, pos: [cx, 0, cz], radius: Math.max(MIN_DISTRICT_RADIUS, far + DISTRICT_MARGIN), hue: d.hue, label: d.name })
+  }
 
   const conduits: SceneConduit[] = []
-  for (const e of [...doc.edges, ...(proposal ? proposal.edges : [])]) {
+  const docEdgeIds = new Set(doc.edges.map((e) => e.id))
+  const revealedEdges = (proposal ? proposal.edges : []).filter((e) => !docEdgeIds.has(e.id))
+  const revealedIds = new Set(revealedEdges.map((e) => e.id))
+  for (const e of [...doc.edges, ...revealedEdges]) {
     const from = positions.get(e.from)
     const to = positions.get(e.to)
     if (!from || !to) continue // an endpoint was hidden (planned layer off)
     const lift = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]) * 0.22 + 4
-    const ctrl: Vec3 = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2 + lift, (from[2] + to[2]) / 2]
+    // A self-loop has no span, so push its control point sideways to keep the curve a visible arc.
+    const side = e.from === e.to ? SELF_LOOP_OFFSET : 0
+    const ctrl: Vec3 = [(from[0] + to[0]) / 2 + side, (from[1] + to[1]) / 2 + lift, (from[2] + to[2]) / 2]
     const style = conduitStyle(doc, e)
     conduits.push({
-      id: e.id, from, to, ctrl, dashed: proposedIds.has(e.from) || proposedIds.has(e.to),
+      id: e.id, from, to, ctrl, dashed: revealedIds.has(e.id) || proposedIds.has(e.from) || proposedIds.has(e.to),
       width: style.width, color: style.color, cargo: e.cargo,
     })
   }
