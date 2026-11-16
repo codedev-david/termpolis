@@ -492,7 +492,13 @@ describe('createWorldHost', () => {
   it('labelling asks main through llm / llm-result; excerpts come from the snapshot root', async () => {
     const answers: (string | null)[] = []
     const excerpts: string[] = []
+    let pass = 0
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      // The first pass labels from the cache only: a miss answers null and asks main nothing.
+      if (pass++ === 0) {
+        expect(await (deps.label.llm as (p: string) => Promise<string | null>)('first')).toBeNull()
+        return doc(input.projectKey)
+      }
       answers.push(await (deps.label.llm as (p: string) => Promise<string | null>)('describe it'))
       answers.push(await (deps.label.llm as (p: string) => Promise<string | null>)('again'))
       expect(deps.label.cache).toBe(store.labelCache)
@@ -504,31 +510,37 @@ describe('createWorldHost', () => {
     const readFile = vi.fn(async (p: string) => (p === '/repo/src/a.ts' ? 'one\ntwo\nthree' : null))
     const h = harness({ compile, readFile }, store)
     await h.init()
-    const done = h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap('/repo/'), HEAD] })
-    await tick()
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap('/repo/'), HEAD] })
+    expect(h.last()).toMatchObject({ id: 1, ok: true })
+    // The model round trip runs in the follow-up the RPC did not wait for.
+    await vi.waitFor(() => expect(h.out.some((m) => m.kind === 'llm')).toBe(true))
     const ask1 = h.out.find((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>
     expect(ask1).toMatchObject({ kind: 'llm', projectKey: 'k1', prompt: 'describe it' })
     await h.send({ kind: 'llm-result', id: 999, text: 'stray' }) // unknown id: ignored
     await h.send({ kind: 'llm-result', id: ask1.id, text: '{"name":"x"}' })
-    await tick()
+    await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2))
     const ask2 = h.out.filter((m) => m.kind === 'llm')[1] as Extract<WorldHostResponse, { kind: 'llm' }>
     await h.send({ kind: 'llm-result', id: ask2.id, text: 5 as unknown as string })
-    await done
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
     expect(answers).toEqual(['{"name":"x"}', null])
     expect(excerpts).toEqual(['one\ntwo\nthree', ''])
     expect(readFile).toHaveBeenCalledWith('/repo/src/a.ts')
-    expect(h.last()).toMatchObject({ id: 1, ok: true })
   })
 
   it('an unanswered labelling request times out as null', async () => {
+    const answers: (string | null)[] = []
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
-      expect(await (deps.label.llm as (p: string) => Promise<string | null>)('p')).toBeNull()
+      answers.push(await (deps.label.llm as (p: string) => Promise<string | null>)('p'))
       return doc(input.projectKey)
     })
     const h = harness({ compile, llmTimeoutMs: 5 })
     await h.init()
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
     expect(h.last()).toMatchObject({ id: 1, ok: true })
+    // The follow-up asked main once, heard nothing, and kept the code-derived labels.
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+    expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1)
+    expect(answers).toEqual([null, null])
   })
 
   it('labelling off gives the compiler no model', async () => {
@@ -556,19 +568,156 @@ describe('createWorldHost', () => {
     await h.send({ kind: 'settings', labelling: false }) // before init: ignored, nothing to switch
     await h.init(true)
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    // The cache-only first pass, then the labelled follow-up that asks main once.
+    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(2))
     expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1)
     // Off mid-session: the next compile and a watcher recompile make zero model requests.
     await h.send({ kind: 'settings', labelling: false })
     await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
-    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(3))
     await h.send({ kind: 'call', id: 3, fn: 'compile', args: ['k1', snap(), HEAD] })
-    expect(compile).toHaveBeenCalledTimes(3)
+    await tick()
+    expect(compile).toHaveBeenCalledTimes(4)
     expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1)
-    expect(asked).toEqual(['k1'])
+    expect(asked).toEqual(['k1', 'k1'])
     // And back on; a non-boolean counts as on (only a literal false turns it off).
     await h.send({ kind: 'settings', labelling: 'yes' as unknown as boolean })
     await h.send({ kind: 'call', id: 4, fn: 'compile', args: ['k1', snap(), HEAD] })
-    expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2)
+    await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2))
+  })
+
+  describe('save before labelling', () => {
+    type Llm = (p: string) => Promise<string | null>
+
+    it('with labelling on, compile returns the code-labelled world before any model call finishes', async () => {
+      let pass = 0
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        const n = ++pass
+        // The first pass asks the label cache only; the follow-up waits on the model.
+        const text = await (deps.label.llm as Llm)(`describe ${n}`)
+        return doc(input.projectKey, { generatedAt: n, glossary: text ? { Label: text } : {} })
+      })
+      const h = harness({ compile, llmTimeoutMs: 60_000 })
+      await h.init(true)
+      await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+      expect(h.results()).toEqual([{ kind: 'result', id: 1, ok: true, result: doc('k1', { generatedAt: 1, glossary: {} }) }])
+      expect(h.store.saves).toEqual([doc('k1', { generatedAt: 1, glossary: {} })])
+      // The model question is still open: the RPC did not wait for it.
+      await vi.waitFor(() => expect(h.out.some((m) => m.kind === 'llm')).toBe(true))
+      const ask = h.out.find((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>
+      expect(ask.prompt).toBe('describe 2')
+      expect(h.store.saves).toHaveLength(1)
+      await h.send({ kind: 'llm-result', id: ask.id, text: 'labelled' })
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+      expect(h.store.saves[1].glossary).toEqual({ Label: 'labelled' })
+    })
+
+    it('the labelled follow-up saves and posts updated after the first save', async () => {
+      const inputs: CompileInput[] = []
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        inputs.push(input)
+        await (deps.label.llm as Llm)('describe')
+        return doc(input.projectKey, { generatedAt: inputs.length })
+      })
+      const h = harness({ compile, llmTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
+      await h.init(true)
+      await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+      await vi.waitFor(() => expect(h.out.some((m) => m.kind === 'llm')).toBe(true))
+      const ask = h.out.find((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>
+      await h.send({ kind: 'llm-result', id: ask.id, text: '{}' })
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+      expect(h.store.saves.map((d) => d.generatedAt)).toEqual([1, 2])
+      expect(h.store.docs.get('k1')?.generatedAt).toBe(2)
+      // The follow-up builds on the world it just saved, with the same snapshot and head.
+      expect(inputs[1]).toEqual({ snap: snap(), projectKey: 'k1', head: HEAD, previous: doc('k1', { generatedAt: 1 }) })
+      expect(h.out.map((m) => m.kind).filter((k) => k !== 'ready')).toEqual(['updated', 'result', 'llm', 'updated'])
+    })
+
+    it('with labelling off, compile runs once and asks no model', async () => {
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        expect(deps.label.llm).toBeNull()
+        return doc(input.projectKey)
+      })
+      const h = harness({ compile })
+      await h.init(false)
+      await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+      await new Promise((r) => setTimeout(r, 20))
+      expect(compile).toHaveBeenCalledTimes(1)
+      expect(h.store.saves).toHaveLength(1)
+      expect(h.out.filter((m) => m.kind === 'updated')).toHaveLength(1)
+      expect(h.out.some((m) => m.kind === 'llm')).toBe(false)
+    })
+
+    it('a failing labelled follow-up is logged and leaves the first world saved', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      let pass = 0
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        await (deps.label.llm as Llm)('describe')
+        if (++pass === 2) throw new Error('model reply broke the compile')
+        return doc(input.projectKey)
+      })
+      const h = harness({ compile, llmTimeoutMs: 5 })
+      await h.init(true)
+      await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+      expect(h.last()).toEqual({ kind: 'result', id: 1, ok: true, result: doc('k1') })
+      await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(1))
+      expect(error.mock.calls[0][0]).toContain('[world host] labelled follow-up failed')
+      expect(String(error.mock.calls[0][1])).toContain('model reply broke the compile')
+      expect(h.store.saves).toEqual([doc('k1')])
+      expect(h.store.docs.get('k1')).toEqual(doc('k1'))
+      expect(h.out.filter((m) => m.kind === 'updated')).toHaveLength(1)
+      // The queue goes on: the next compile runs.
+      await h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(), HEAD] })
+      expect(h.last()).toMatchObject({ id: 2, ok: true })
+    })
+
+    it("the follow-up keeps the first world's positions", async () => {
+      const seen: CompileInput[] = []
+      const store = memStore()
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        seen.push(input)
+        const world = await compileWorld(input, deps)
+        if (seen.length > 1) return world
+        // Pin the first world's places somewhere no fresh layout would put them.
+        const pinned = Object.fromEntries(Object.keys(world.layout.positions).map((id) => [id, [999, 0, 999] as [number, number, number]]))
+        return { ...world, layout: { ...world.layout, positions: pinned } }
+      })
+      const h = harness({ compile, llmTimeoutMs: 5 }, store)
+      await h.init(true)
+      await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+      await vi.waitFor(() => expect(store.saves).toHaveLength(2))
+      const [first, labelled] = store.saves
+      expect(Object.keys(first.layout.positions).length).toBeGreaterThan(0)
+      expect(seen[1].previous).toEqual(first)
+      expect(labelled.layout.positions).toEqual(first.layout.positions)
+    })
+
+    it('a world served whole from the label cache needs no follow-up, and one queued before labelling went off asks no model', async () => {
+      let release: () => void = () => undefined
+      const gate = new Promise<void>((r) => (release = r))
+      let miss = false
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        if (miss) await (deps.label.llm as Llm)('describe')
+        if (input.head.head === 'slow') await gate
+        return doc(input.projectKey)
+      })
+      const h = harness({ compile, llmTimeoutMs: 5 })
+      await h.init(true)
+      // Every part came from the cache (the first pass asked nothing): one compile is enough.
+      await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+      await new Promise((r) => setTimeout(r, 20))
+      expect(compile).toHaveBeenCalledTimes(1)
+      // A miss queues a follow-up, but labelling is turned off before it runs.
+      miss = true
+      const done = h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(), { head: 'slow', dirty: false }] })
+      await tick()
+      await h.send({ kind: 'settings', labelling: false })
+      release()
+      await done
+      await new Promise((r) => setTimeout(r, 20))
+      expect(compile).toHaveBeenCalledTimes(2)
+      expect(h.out.some((m) => m.kind === 'llm')).toBe(false)
+    })
   })
 
   it('notifyChanged recompiles a stored world after the debounce with the latest snapshot, then pushes updated', async () => {

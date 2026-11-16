@@ -556,4 +556,97 @@ describe('createWorldClient', () => {
     await thrower.client.get(ROOT)
     expect(() => thrower.client.dispose()).not.toThrow()
   })
+
+  describe('world:get stale refresh', () => {
+    /** The stored world, stamped with the commit it was compiled at. */
+    const at = (head: string, dirty = false): WorldDoc => ({ ...DOC, sourceRevision: { head, dirty } }) as unknown as WorldDoc
+    const compiles = (t: FakeTransport): CallMsg[] => t.calls().filter((c) => c.fn === 'compile')
+
+    it('world:get serves a stored world from an older commit at once and refreshes it in the background', async () => {
+      const head = vi.fn(async () => ({ head: 'new', dirty: false }))
+      const { client, spawned } = setup({ head }, (t) => {
+        // The refresh compile never answers here: get must not wait for it.
+        t.reply = (m) => (m.fn === 'get' ? { kind: 'result', id: m.id, ok: true, result: at('old') } : undefined)
+      })
+      expect(await client.get(ROOT)).toEqual(at('old'))
+      await vi.waitFor(() => expect(compiles(spawned[0])).toHaveLength(1))
+      // The same compile world:compile runs (no relayout), so the host saves and pushes updated.
+      expect(compiles(spawned[0])[0].args).toEqual([KEY, SNAP, { head: 'new', dirty: false }])
+      expect(head).toHaveBeenCalledWith(ROOT)
+    })
+
+    it('world:get does not refresh when the stored head matches HEAD, or only dirty differs', async () => {
+      const head = vi.fn(async () => ({ head: 'abc', dirty: true }))
+      let stored = at('abc', true)
+      const { client, spawned } = setup({ head }, (t) => {
+        t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: m.fn === 'get' ? stored : DOC })
+      })
+      expect(await client.get(ROOT)).toEqual(at('abc', true))
+      await vi.waitFor(() => expect(head).toHaveBeenCalledTimes(1))
+      await flush()
+      stored = at('abc', false) // uncommitted edits alone: the watcher covers those
+      await client.get(ROOT)
+      await vi.waitFor(() => expect(head).toHaveBeenCalledTimes(2))
+      await flush()
+      expect(spawned[0].calls().map((c) => c.fn)).toEqual(['get', 'get'])
+    })
+
+    it('two world:get calls for one stale root start one refresh', async () => {
+      const head = vi.fn(async () => ({ head: 'new', dirty: false }))
+      const { client, spawned } = setup({ head }, (t) => {
+        t.reply = (m) => (m.fn === 'get' ? { kind: 'result', id: m.id, ok: true, result: at('old') } : undefined)
+      })
+      await Promise.all([client.get(ROOT), client.get(ROOT)])
+      await vi.waitFor(() => expect(compiles(spawned[0])).toHaveLength(1))
+      await client.get(ROOT) // still in flight: no second refresh
+      await flush()
+      expect(compiles(spawned[0])).toHaveLength(1)
+      // Once it is done, a world that is still stale may refresh again.
+      spawned[0].emit({ kind: 'result', id: compiles(spawned[0])[0].id, ok: true, result: at('new') })
+      await flush()
+      await client.get(ROOT)
+      await vi.waitFor(() => expect(compiles(spawned[0])).toHaveLength(2))
+    })
+
+    it('a failed background refresh is logged and never rejects world:get', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        const { client } = setup({ head: async () => ({ head: 'new', dirty: false }) }, (t) => {
+          t.reply = (m) =>
+            m.fn === 'get'
+              ? { kind: 'result', id: m.id, ok: true, result: at('old') }
+              : { kind: 'result', id: m.id, ok: false, error: { name: 'Error', message: 'disk full' } }
+        })
+        expect(await client.get(ROOT)).toEqual(at('old'))
+        await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1))
+        expect(warn.mock.calls[0][0]).toContain('[world] background refresh failed')
+        expect(String(warn.mock.calls[0][1])).toContain('disk full')
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    it('no head lookup result means no refresh', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        let n = 0
+        const head = vi.fn(async () => {
+          if (n++ === 0) return { head: '', dirty: false } // not a git repository
+          throw new Error('git missing')
+        })
+        const { client, spawned } = setup({ head }, (t) => {
+          t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: m.fn === 'get' ? at('old') : DOC })
+        })
+        expect(await client.get(ROOT)).toEqual(at('old'))
+        await vi.waitFor(() => expect(head).toHaveBeenCalledTimes(1))
+        await flush()
+        expect(await client.get(ROOT)).toEqual(at('old'))
+        await vi.waitFor(() => expect(head).toHaveBeenCalledTimes(2))
+        await flush()
+        expect(spawned[0].calls().map((c) => c.fn)).toEqual(['get', 'get'])
+      } finally {
+        warn.mockRestore()
+      }
+    })
+  })
 })

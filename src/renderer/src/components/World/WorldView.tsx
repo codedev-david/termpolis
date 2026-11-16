@@ -44,6 +44,8 @@ export interface WorldProbe {
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 const baseName = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() as string
+/** A building's or a connection's card, straight from the doc (the 2D view); null when the id names neither. */
+const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
 export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Element {
   const [webgl] = useState(() => hasWebGL())
@@ -73,6 +75,8 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
   const escRef = useRef<() => void>(onClose) // replaced on every render, below
   /** The doc the viewer holds, so the same world arriving twice (a compile, then its own push) loads once. */
   const loadedRef = useRef<{ projectKey: string; generatedAt: number } | null>(null)
+  /** The part whose card is open in the 2D view (its card is rebuilt when a newer world arrives). */
+  const fallbackIdRef = useRef<string | null>(null)
   const mountedRef = useRef(true)
   useEffect(() => {
     mountedRef.current = true
@@ -175,7 +179,19 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
     const held = loadedRef.current
     if (held && held.projectKey === doc.projectKey && held.generatedAt === doc.generatedAt) return
     loadedRef.current = { projectKey: doc.projectKey, generatedAt: doc.generatedAt }
+    // A newer world of the same project (a labelled follow-up, a watched change) keeps the open
+    // part: load() clears the selection, so it is opened again when the part still exists.
+    const keep = held && held.projectKey === doc.projectKey ? viewer.getSelection()[0] : undefined
     viewer.load(doc)
+    if (keep !== undefined) void viewer.apply({ type: 'openCard', id: keep })
+  }, [viewer, doc])
+
+  // In 2D the card is built from the doc: a newer world rebuilds the open one (or closes it when
+  // its part is gone).
+  useEffect(() => {
+    const id = fallbackIdRef.current
+    if (viewer || !doc || id === null) return
+    setCard((c) => (c === null ? null : partCard(doc, id)))
   }, [viewer, doc])
 
   const onLayers = (patch: Partial<LayerState>): void => {
@@ -201,7 +217,8 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
     armedRef.current = false
     if (viewer) { void viewer.apply({ type: 'openCard', id }); return }
     const d = docRef.current as WorldDoc
-    setCard(buildingCard(d, id) || edgeCard(d, id) || null)
+    fallbackIdRef.current = id
+    setCard(partCard(d, id))
   }
   const onFallbackClick = (e: MouseEvent<HTMLDivElement>): void => {
     const item = (e.target as Element).closest('[data-kind][data-id]')

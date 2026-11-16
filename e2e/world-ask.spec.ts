@@ -17,7 +17,8 @@
  * Labelling is off for those four, so the world has no claims (the labelling run is spawned
  * without a shell and cannot launch a Windows shim). A fifth test, skipped on Windows, restarts the
  * app with labelling on (the mock answers the labelling prompt with one claim per building citing
- * an excerpt) and checks the [E1] chip and its evidence line.
+ * an excerpt), waits until the labelled world (saved after the code-labelled one) holds a claim,
+ * and checks the [E1] chip and its evidence line.
  * The launch adds the software GL switches, as world-view.spec.ts does.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
@@ -201,6 +202,27 @@ const answer = () => page.locator('[data-testid="world-answer"]')
 const chip = () => answer().getByRole('button', { name: 'Evidence E1' })
 
 /** Types `q` in the Ask bar and sends it with Enter. */
+/** Claims with evidence in the worlds saved under `userDataDir` (0 while only code labels exist). */
+function storedClaims(): number {
+  const folder = path.join(userDataDir, 'world')
+  let n = 0
+  for (const name of fs.existsSync(folder) ? fs.readdirSync(folder) : []) {
+    if (!name.endsWith('.json')) continue
+    try {
+      const doc = JSON.parse(fs.readFileSync(path.join(folder, name), 'utf8')) as {
+        buildings?: { how?: { evidence?: unknown[] }[]; why?: { evidence?: unknown[] }[] }[]
+        edges?: { how?: { evidence?: unknown[] }[]; why?: { evidence?: unknown[] }[] }[]
+      }
+      for (const part of [...(doc.buildings ?? []), ...(doc.edges ?? [])]) {
+        for (const c of [...(part.how ?? []), ...(part.why ?? [])]) if ((c.evidence ?? []).length > 0) n++
+      }
+    } catch {
+      // A file mid-write is read again on the next poll.
+    }
+  }
+  return n
+}
+
 async function ask(q: string): Promise<void> {
   await askBox().fill(q)
   await askBox().press('Enter')
@@ -295,9 +317,12 @@ test.describe.serial('Lumopolis Ask bar evidence chip (labelling on)', () => {
     const result = page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ })
     await expect(result).toBeVisible()
     await result.click()
-    // The map is drawn once the labelling runs (one hidden agent run per district) are done.
+    // The first world is code-labelled and drawn at once; the labelled one (one hidden agent run
+    // per district) is saved behind it and swapped in by an `updated` push.
     await expect(canvas()).toBeVisible({ timeout: 120_000 })
     await expect(askBox()).toBeEnabled({ timeout: 30_000 })
+    // Asking before the labelled world is saved would cite no evidence, so wait for a claim in it.
+    await expect.poll(storedClaims, { timeout: 120_000, intervals: [500] }).toBeGreaterThan(0)
 
     await ask('How does it fit together?')
     await expect(answer()).toContainText('Answer to: How does it fit together?', { timeout: 30_000 })

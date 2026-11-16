@@ -314,10 +314,16 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         post({ kind: 'llm', id, projectKey, prompt })
       })
 
-  const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot): CompileDeps => {
+  /** `llm` defaults to the setting: main's model when labelling is on, none when it is off. */
+  const depsFor = (
+    st: HostState,
+    projectKey: string,
+    snap: GraphSnapshot,
+    llm: LabelDeps['llm'] = st.labelling ? askMain(projectKey) : null
+  ): CompileDeps => {
     const root = String(snap.root).replace(/\/+$/, '')
     const label: LabelDeps = {
-      llm: st.labelling ? askMain(projectKey) : null,
+      llm,
       cache: st.store.labelCache,
       excerpt: async (file, line) => {
         const text = await readSource(`${root}/${file}`)
@@ -359,17 +365,40 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const handlers = (st: HostState): Record<string, Handler> => ({
     compile: (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, opts?: { relayout?: boolean }) => {
       const key = needKey(projectKey)
-      return serial(key, async () => {
+      // Labelling on: the model asks one question per district, in series, which on a big repository
+      // can outlast the RPC's timeout while the user sees nothing. So the first pass labels from the
+      // label cache only (a miss keeps the code-derived label and asks no model); it is saved,
+      // pushed and returned at once. When anything missed, a follow-up job right behind it in the same
+      // queue (which the RPC does not wait for) compiles again with the model, building on the world
+      // just saved so its positions carry, then saves and pushes `updated` again.
+      const labelled = st.labelling
+      let missed = false
+      const cacheOnly = async (): Promise<null> => {
+        missed = true
+        return null
+      }
+      const first = serial(key, async () => {
         // A re-layout is a compile whose previous world has no positions (so it lays out afresh with
         // the same seed); everything else compile carries from previous still carries.
         const stored = await st.store.load(key)
         const previous =
           stored && opts?.relayout === true ? { ...stored, layout: { seed: stored.layout.seed, positions: {} } } : stored
-        const doc = await compile({ snap, projectKey: key, head, previous }, depsFor(st, key, snap))
+        const doc = await compile({ snap, projectKey: key, head, previous }, depsFor(st, key, snap, labelled ? cacheOnly : null))
         await st.store.save(doc)
         post({ kind: 'updated', projectKey: key })
         return doc
       })
+      if (labelled) {
+        serial(key, async () => {
+          // A failed first pass already answered the RPC; labelling turned off since asks no model.
+          const previous = await first.catch(() => null)
+          if (!previous || !missed || !st.labelling) return
+          const doc = await compile({ snap, projectKey: key, head, previous }, depsFor(st, key, snap))
+          await st.store.save(doc)
+          post({ kind: 'updated', projectKey: key })
+        }).catch((err: unknown) => console.error('[world host] labelled follow-up failed:', err))
+      }
+      return first
     },
     get: async (projectKey: unknown) => st.store.load(needKey(projectKey)),
     notifyChanged: async (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, files: unknown) => {

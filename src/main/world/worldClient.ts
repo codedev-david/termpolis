@@ -99,6 +99,8 @@ export function createWorldClient(
   const roots = new Map<string, string>()
   /** Projects with a world (compiled or loaded this run): the only ones a watcher may refresh. */
   const known = new Set<string>()
+  /** Projects whose stored world is being checked against HEAD, or refreshed: at most one at a time each. */
+  const refreshing = new Set<string>()
   const progressSubs = new Set<(e: WorldProgressEvent) => void>()
   const updatedSubs = new Set<(e: WorldUpdatedEvent) => void>()
 
@@ -256,16 +258,38 @@ export function createWorldClient(
     return doc
   }
 
+  /**
+   * A stored world compiled at an older commit than the project's HEAD is recompiled in the background
+   * (the same compile world:compile runs: it saves, and the host's `updated` push refreshes the pane).
+   * Uncommitted edits alone never count (the watcher covers those), and no HEAD (not a repository, or
+   * the lookup failed) means no refresh. Failures are logged, never thrown: the caller already has its doc.
+   */
+  const refreshIfStale = (root: string, key: string, doc: WorldDoc): void => {
+    if (refreshing.has(key)) return
+    refreshing.add(key)
+    void (async () => {
+      const { head } = await headOf(root)
+      if (!head || head === doc.sourceRevision.head) return
+      await compileWith(root, false)
+    })()
+      .catch((e: unknown) => console.warn('[world] background refresh failed:', e))
+      .finally(() => refreshing.delete(key))
+  }
+
   return {
     /** Compiles (or recompiles) the world for `root`, keeping stored positions, and returns it. */
     compile: (root: string): Promise<WorldDoc> => compileWith(root, false),
     /** Compiles with a fresh layout: stored positions are ignored. */
     relayout: (root: string): Promise<WorldDoc> => compileWith(root, true),
-    /** The stored world for `root`, or null when none was compiled yet. */
+    /** The stored world for `root`, or null when none was compiled yet. Returned at once; one from an
+     *  older commit is also refreshed in the background (refreshIfStale). */
     async get(root: string): Promise<WorldDoc | null> {
       const key = keyOf(root)
       const doc = await call<WorldDoc | null>('get', [key])
-      if (doc) known.add(key)
+      if (doc) {
+        known.add(key)
+        refreshIfStale(root, key, doc)
+      }
       return doc
     },
     /** A filtered view of the stored world (ids and/or text, default limit 20) with the cited evidence. */

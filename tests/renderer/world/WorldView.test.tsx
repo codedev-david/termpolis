@@ -479,6 +479,72 @@ describe('WorldView', () => {
     expect(v.load).toHaveBeenCalledTimes(3)
   })
 
+  it('a newer world of the same project keeps the open part; another project does not', async () => {
+    const b = bridge()
+    await mount()
+    const v = viewer()
+    // Nothing selected: the newer world just loads.
+    b.api.worldGet.mockResolvedValueOnce(ok({ ...minimal(), generatedAt: 2 }))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(v.load).toHaveBeenCalledTimes(2)
+    expect(v.apply).not.toHaveBeenCalled()
+    // A part is open: the labelled follow-up's world opens it again after the load.
+    v.getSelection.mockReturnValue(['b1'])
+    b.api.worldGet.mockResolvedValueOnce(ok({ ...minimal(), generatedAt: 3 }))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(v.load).toHaveBeenCalledTimes(3)
+    expect(v.apply).toHaveBeenCalledTimes(1)
+    expect(v.apply).toHaveBeenLastCalledWith({ type: 'openCard', id: 'b1' })
+    expect(v.load.mock.invocationCallOrder[2]).toBeLessThan(v.apply.mock.invocationCallOrder[0])
+    // Another project's world starts with nothing open.
+    b.api.worldGet.mockResolvedValueOnce(ok({ ...minimal(), projectKey: 'other', generatedAt: 4 }))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(v.load).toHaveBeenCalledTimes(4)
+    expect(v.apply).toHaveBeenCalledTimes(1)
+  })
+
+  it('in 2D a newer world rebuilds the open card, closes it when its part is gone, and leaves a closed card closed', async () => {
+    h.webgl = false
+    const b = bridge()
+    await mount()
+    const list = screen.getByTestId('world-fallback')
+    const renamed = (name: string): WorldDoc => {
+      const d = minimal()
+      return { ...d, generatedAt: d.generatedAt + 1, buildings: d.buildings.map((x) => (x.id === 'b1' ? { ...x, name } : x)) }
+    }
+    // A closed card stays closed.
+    b.api.worldGet.mockResolvedValueOnce(ok(renamed('Before')))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    // The open card follows the newer world.
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]') as Element)
+    expect(screen.getByTestId('world-card')).toHaveTextContent('Before')
+    b.api.worldGet.mockResolvedValueOnce(ok({ ...renamed('Labelled desk'), generatedAt: 50 }))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(screen.getByTestId('world-card')).toHaveTextContent('Labelled desk')
+    // Closed by the user, it stays closed when a newer world arrives.
+    fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    b.api.worldGet.mockResolvedValueOnce(ok({ ...renamed('Again'), generatedAt: 55 }))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]') as Element)
+    expect(screen.getByTestId('world-card')).toHaveTextContent('Again')
+    // Its part gone: the card closes.
+    const gone = minimal()
+    b.api.worldGet.mockResolvedValueOnce(ok({ ...gone, generatedAt: 60, buildings: gone.buildings.filter((x) => x.id !== 'b1') }))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    expect(list).toBeTruthy()
+  })
+
   it('Re-layout asks for confirmation then calls worldRelayout', async () => {
     const relaid = { ...minimal(), generatedAt: 99 }
     const run = deferred<Res<WorldDoc>>()
