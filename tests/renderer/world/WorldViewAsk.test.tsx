@@ -185,7 +185,7 @@ describe('Ask bar inside the Lumopolis pane', () => {
     act(() => { u.onend() })
     await settle()
     expect(v.load).toHaveBeenCalledTimes(2)
-    expect(v.load).toHaveBeenLastCalledWith(second)
+    expect(v.load).toHaveBeenLastCalledWith(second, { animateFrom: v.load.mock.calls[0][0] })
   })
 
   it('with no answer under way a world update loads at once', async () => {
@@ -195,7 +195,7 @@ describe('Ask bar inside the Lumopolis pane', () => {
     await mount()
     await b.updated({ root: '/repo', projectKey: first.projectKey })
     await settle()
-    expect(viewer().load).toHaveBeenLastCalledWith(second)
+    expect(viewer().load).toHaveBeenLastCalledWith(second, { animateFrom: viewer().load.mock.calls[0][0] })
   })
 
   it('a world held for one project is dropped when the project changes', async () => {

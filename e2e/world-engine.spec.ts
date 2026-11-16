@@ -85,6 +85,51 @@ test('clicking a building opens its card, Esc closes it', async () => {
   await expect(card).toBeHidden()
 })
 
+// Watch it grow: fixture B is fixture A plus two buildings (b3, b4).
+const WORLD_A = JSON.parse(fs.readFileSync(path.resolve('tests/shared/fixtures/world.min.json'), 'utf8')) as unknown
+const WORLD_B = JSON.parse(fs.readFileSync(path.resolve('tests/shared/fixtures/world.grown.json'), 'utf8')) as unknown
+
+interface Harness {
+  load(doc: unknown, opts?: { animateFrom?: unknown }): void
+  drawn(): { changing: number }
+  project(id: string): Promise<{ x: number; y: number }>
+  screenPoint(id: string): { x: number; y: number } | null
+}
+type HarnessWindow = { __worldTest: Harness }
+
+/** Loads A, then B growing from A; returns how many changes were animating right after. */
+async function growAtoB(): Promise<number> {
+  return page.evaluate(([a, b]) => {
+    const t = (window as unknown as HarnessWindow).__worldTest
+    t.load(a)
+    t.load(b, { animateFrom: a })
+    return t.drawn().changing
+  }, [WORLD_A, WORLD_B] as const)
+}
+
+test('with reduced motion a grown world appears at once and the toast says what changed', async () => {
+  expect(await growAtoB()).toBe(0)
+  await expect(page.locator('#view .lw-toast')).toHaveText('+2 parts')
+  await expect(page.locator('#view .lw-toast')).toHaveAttribute('aria-live', 'polite')
+})
+
+test('load A, then B with 2 added: after 1 s both are visible and the toast reads +2 parts', async () => {
+  await page.goto(page.url().split('?')[0] + '?motion=1')
+  await page.waitForSelector('body[data-ready="1"]', { timeout: 30_000 })
+  expect(await growAtoB()).toBeGreaterThanOrEqual(2) // b3 and b4 rising
+  await page.waitForTimeout(1000)
+  expect(await page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().changing)).toBe(0)
+  await expect(page.locator('#view .lw-toast')).toHaveText('+2 parts') // still up: it stays about 3 s
+  for (const id of ['b3', 'b4']) {
+    const point = await page.evaluate(async (bid) => {
+      const t = (window as unknown as HarnessWindow).__worldTest
+      await t.project(bid)
+      return t.screenPoint(bid)
+    }, id)
+    expect(point, `${id} is drawn and in view`).not.toBeNull()
+  }
+})
+
 test('logs no console errors', async () => {
   expect(consoleErrors).toEqual([])
   // The harness's own early collector also sees errors raised before the spec's listeners attached.

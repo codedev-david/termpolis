@@ -85,8 +85,11 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
   /** True after an Esc reset with nothing done since: the next Esc closes. */
   const armedRef = useRef(false)
   const escRef = useRef<() => void>(onClose) // replaced on every render, below
-  /** The doc the viewer holds, so the same world arriving twice (a compile, then its own push) loads once. */
-  const loadedRef = useRef<{ projectKey: string; generatedAt: number } | null>(null)
+  /**
+   * The doc the viewer holds, so the same world arriving twice (a compile, then its own push) loads
+   * once, and a newer world of the same project animates from it.
+   */
+  const loadedRef = useRef<WorldDoc | null>(null)
   /** The part whose card is open in the 2D view (its card is rebuilt when a newer world arrives). */
   const fallbackIdRef = useRef<string | null>(null)
   const mountedRef = useRef(true)
@@ -216,11 +219,14 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
     if (!viewer || !doc) return
     const held = loadedRef.current
     if (held && held.projectKey === doc.projectKey && held.generatedAt === doc.generatedAt) return
-    loadedRef.current = { projectKey: doc.projectKey, generatedAt: doc.generatedAt }
+    loadedRef.current = doc
     // A newer world of the same project (a labelled follow-up, a watched change) keeps the open
     // part: load() clears the selection, so it is opened again when the part still exists.
-    const keep = held && held.projectKey === doc.projectKey ? viewer.getSelection()[0] : undefined
-    viewer.load(doc)
+    const same = held !== null && held.projectKey === doc.projectKey
+    const keep = same ? viewer.getSelection()[0] : undefined
+    // The same project grows from the world it showed: new parts rise, changed ones pulse.
+    if (same) viewer.load(doc, { animateFrom: held })
+    else viewer.load(doc)
     if (keep !== undefined) void viewer.apply({ type: 'openCard', id: keep })
   }, [viewer, doc])
 

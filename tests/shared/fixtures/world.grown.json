@@ -1,0 +1,342 @@
+{
+  "version": 1,
+  "projectKey": "3f9a1c0e7b2d4a68",
+  "generatedAt": 1763251260000,
+  "sourceRevision": {
+    "head": "9281177c",
+    "dirty": false
+  },
+  "districts": [
+    {
+      "id": "d1",
+      "name": "Core",
+      "subtitle": "The app and its memory",
+      "hue": 210,
+      "members": [
+        "b1",
+        "b2",
+        "b3",
+        "b4"
+      ]
+    }
+  ],
+  "buildings": [
+    {
+      "id": "b1",
+      "districtId": "d1",
+      "name": "Desktop app",
+      "techLabel": "Electron + React",
+      "process": "main",
+      "floors": [
+        {
+          "name": "Window shell",
+          "tech": [
+            "electron",
+            "react"
+          ],
+          "members": [
+            "src/main/index.ts"
+          ]
+        }
+      ],
+      "stack": [
+        "electron",
+        "react"
+      ],
+      "how": [
+        {
+          "text": "The Electron main process opens the window and hosts terminals.",
+          "state": "observed",
+          "evidence": [
+            {
+              "kind": "file",
+              "ref": "src/main/index.ts"
+            }
+          ]
+        }
+      ],
+      "why": [
+        {
+          "text": "One shell hosts every agent terminal in a single place.",
+          "state": "inferred",
+          "evidence": [
+            {
+              "kind": "file",
+              "ref": "docs/architecture.md",
+              "excerpt": "Termpolis hosts terminals"
+            }
+          ]
+        }
+      ],
+      "status": "built",
+      "members": [
+        "src/main/index.ts"
+      ]
+    },
+    {
+      "id": "b2",
+      "districtId": "d1",
+      "name": "Memory host",
+      "techLabel": "Node + SQLite",
+      "process": "memory",
+      "floors": [
+        {
+          "name": "Store",
+          "tech": [
+            "sqlite"
+          ],
+          "members": [
+            "src/main/memory/store.ts"
+          ]
+        }
+      ],
+      "stack": [
+        "sqlite"
+      ],
+      "how": [
+        {
+          "text": "Memories are stored in a local SQLite database.",
+          "state": "verified",
+          "evidence": [
+            {
+              "kind": "file",
+              "ref": "src/main/memory/store.ts"
+            },
+            {
+              "kind": "test",
+              "ref": "tests/memory/store.test.ts"
+            }
+          ]
+        }
+      ],
+      "why": [
+        {
+          "text": "Agents share what they learn without any cloud service.",
+          "state": "inferred",
+          "evidence": [
+            {
+              "kind": "memory",
+              "ref": "project_memory_brain"
+            }
+          ]
+        }
+      ],
+      "status": "verified",
+      "members": [
+        "src/main/memory/store.ts"
+      ]
+    },
+    {
+      "id": "b3",
+      "districtId": "d1",
+      "name": "Agent bridge",
+      "techLabel": "Node",
+      "process": "main",
+      "floors": [
+        {
+          "name": "Agent bridge",
+          "tech": [
+            "ipc"
+          ],
+          "members": [
+            "src/main/agentBridge.ts"
+          ]
+        }
+      ],
+      "stack": [
+        "ipc"
+      ],
+      "how": [
+        {
+          "text": "Agent bridge runs in the main process.",
+          "state": "observed",
+          "evidence": [
+            {
+              "kind": "file",
+              "ref": "src/main/agentBridge.ts"
+            }
+          ]
+        }
+      ],
+      "why": [
+        {
+          "text": "Added as the project grew.",
+          "state": "observed",
+          "evidence": [
+            {
+              "kind": "file",
+              "ref": "src/main/agentBridge.ts"
+            }
+          ]
+        }
+      ],
+      "status": "built",
+      "members": [
+        "src/main/agentBridge.ts"
+      ]
+    },
+    {
+      "id": "b4",
+      "districtId": "d1",
+      "name": "Settings store",
+      "techLabel": "Node",
+      "process": "main",
+      "floors": [
+        {
+          "name": "Settings store",
+          "tech": [
+            "ipc"
+          ],
+          "members": [
+            "src/main/settingsStore.ts"
+          ]
+        }
+      ],
+      "stack": [
+        "ipc"
+      ],
+      "how": [
+        {
+          "text": "Settings store runs in the main process.",
+          "state": "observed",
+          "evidence": [
+            {
+              "kind": "file",
+              "ref": "src/main/settingsStore.ts"
+            }
+          ]
+        }
+      ],
+      "why": [
+        {
+          "text": "Added as the project grew.",
+          "state": "observed",
+          "evidence": [
+            {
+              "kind": "file",
+              "ref": "src/main/settingsStore.ts"
+            }
+          ]
+        }
+      ],
+      "status": "built",
+      "members": [
+        "src/main/settingsStore.ts"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "b1",
+      "to": "b2",
+      "cargo": "memory",
+      "label": "Memory calls",
+      "how": [
+        {
+          "text": "The app calls the memory host over a local socket.",
+          "state": "observed",
+          "evidence": [
+            {
+              "kind": "file",
+              "ref": "src/main/memory/client.ts"
+            }
+          ]
+        }
+      ],
+      "tech": [
+        "ipc"
+      ],
+      "why": [
+        {
+          "text": "Keeps the database out of the UI process.",
+          "state": "inferred",
+          "evidence": [
+            {
+              "kind": "commit",
+              "ref": "9281177c"
+            }
+          ]
+        }
+      ],
+      "rate": "on demand",
+      "twoWay": true
+    }
+  ],
+  "externals": [
+    {
+      "id": "x1",
+      "name": "Claude Code",
+      "kind": "agent",
+      "fog": false
+    }
+  ],
+  "glossary": {
+    "electron": "A framework for building desktop apps with web technology.",
+    "react": "A library for building user interfaces.",
+    "sqlite": "A small database stored in a single file.",
+    "ipc": "Inter-process communication: how two programs on one computer talk."
+  },
+  "cargo": {
+    "memory": {
+      "shape": "sphere",
+      "color": "#6aa9ff",
+      "label": "Memory"
+    }
+  },
+  "processes": {
+    "main": {
+      "label": "Main process",
+      "color": "#8888ff"
+    },
+    "memory": {
+      "label": "Memory host",
+      "color": "#44cc99"
+    }
+  },
+  "tours": [
+    {
+      "id": "t1",
+      "title": "First look",
+      "steps": [
+        {
+          "ids": [
+            "b1",
+            "e1",
+            "b2"
+          ],
+          "caption": "The app talks to its memory."
+        }
+      ]
+    }
+  ],
+  "layout": {
+    "seed": 7,
+    "positions": {
+      "b1": [
+        0,
+        0,
+        0
+      ],
+      "b2": [
+        6,
+        0,
+        0
+      ],
+      "b3": [
+        -14,
+        0,
+        10
+      ],
+      "b4": [
+        20,
+        0,
+        -8
+      ]
+    }
+  },
+  "runtimeNames": {},
+  "layers": {
+    "plan": []
+  }
+}

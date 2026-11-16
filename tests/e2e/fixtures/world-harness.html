@@ -27,8 +27,11 @@
 
     const card = document.getElementById('card')
     const view = document.getElementById('view')
+    // Reduced motion (instant camera jumps, no change animations) unless the page is opened with
+    // ?motion=1, which the "watch it grow" spec uses to see the rise play.
+    const motion = new URLSearchParams(location.search).get('motion') === '1'
     const viewer = createWorldViewer(view, {
-      reducedMotion: true,
+      reducedMotion: !motion,
       renderCard: (html) => {
         card.innerHTML = html === null ? '' : html
         card.hidden = html === null
@@ -50,6 +53,14 @@
         return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
       },
       selection: () => viewer.getSelection(),
+      /** Validates a world and loads it, as WorldView does (opts.animateFrom: the world it grows from). */
+      load(doc, opts) {
+        const next = validateWorld(doc)
+        if (!next.ok) throw new Error('world is invalid: ' + next.errors.join('; '))
+        viewer.load(next.doc, opts)
+      },
+      drawn: () => viewer.drawn(),
+      screenPoint: (id) => viewer.screenPoint(id),
     }
     document.body.dataset.ready = '1'
   </script>

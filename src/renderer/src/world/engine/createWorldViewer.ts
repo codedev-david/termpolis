@@ -3,8 +3,10 @@
 // (fallback2d.ts) instead, and clicks on that list still raise select events.
 // Excluded from the coverage gate (its WebGL path needs a GPU): tests/renderer/world/createWorldViewer.test.ts
 // pins the 2D path in jsdom, and e2e/world-engine.spec.ts covers the WebGL path.
+import { diffSummary, diffWorlds, riseIds } from '../../../../shared/world/diff'
 import type { WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { ACTION_GAP_MS, createActionQueue } from './actionQueue'
+import { createChangeToast } from './changeToast'
 import { buildingCard, edgeCard, escapeHtml, techCard, usesTech } from './cards'
 import { renderFallback } from './fallback2d'
 import { neighbours } from './interaction'
@@ -16,7 +18,11 @@ export type SelectionKind = 'building' | 'edge' | 'district' | 'tech'
 export interface WorldSelection { kind: SelectionKind; id: string }
 
 export interface WorldViewer {
-  load(doc: WorldDoc): void
+  /**
+   * Draws a world. With animateFrom (the previous world of the same project) the parts that changed
+   * rise, pulse or fade (not with reduced motion) and a toast such as "+3 parts, 2 changed" shows.
+   */
+  load(doc: WorldDoc, opts?: WorldLoadOptions): void
   setLayers(l: Partial<LayerState>): void
   setTheme(t: ThemeName): void
   /** Runs one action now: camera flight, highlight, flow pulse, card open, tour, proposal reveal or reset. */
@@ -46,10 +52,16 @@ export interface WorldViewer {
   dispose(): void
 }
 
+export interface WorldLoadOptions {
+  animateFrom?: WorldDoc
+}
+
 export interface WorldDrawn {
   layers: LayerState
   processShells: number
   conduits: number
+  /** Rises, pulses and fades still running (always 0 in 2D). */
+  changing: number
 }
 
 export interface WorldViewerOptions {
@@ -98,6 +110,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let hovered: string | null = null
   let tourToken = 0
   let disposed = false
+  const toast = createChangeToast(container)
 
   const pos = getComputedStyle(container).position
   if (pos === '' || pos === 'static') container.style.position = 'relative' // '' = not laid out yet
@@ -428,9 +441,14 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
 
   return {
-    load(d) {
+    load(d, loadOpts = {}) {
       if (disposed) return
       cancelActions()
+      r3?.stopChanges()
+      const diff = loadOpts.animateFrom ? diffWorlds(loadOpts.animateFrom, d) : null
+      const motion = r3 !== null && !reduced ? diff : null
+      // Removed parts leave the old scene before the redraw clears it, so they can fade out.
+      if (motion) r3?.keepGhosts(motion.removed)
       doc = d
       revealProposal = undefined
       exploded = null
@@ -442,7 +460,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         r3.setSelected(null)
         r3.setFocus(null)
         void r3.overview(true)
+        if (motion) r3.animateChanges({ rise: riseIds(motion), pulse: motion.changed })
       }
+      toast.show(diff ? diffSummary(diff) : '', THEMES[themeName])
     },
     setLayers(l) {
       if (disposed) return
@@ -461,7 +481,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     getSelection: () => (selection ? [selection.id] : []),
     cameraRegion: () => (r3 ? r3.visibleIds() : allIds()),
     screenPoint: (id) => (r3 ? r3.screenPoint(id) : null),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0 }) }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }) }),
     resetView() {
       cancelActions()
       deselect()
@@ -487,6 +507,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       container.removeEventListener('keydown', onKeyDown)
       selectCbs.clear()
       hoverCbs.clear()
+      toast.dispose()
       r3?.dispose()
       r3 = null
       if (container.querySelector('section.world-fallback')) container.innerHTML = ''

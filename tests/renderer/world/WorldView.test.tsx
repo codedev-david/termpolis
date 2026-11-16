@@ -139,7 +139,7 @@ describe('WorldView', () => {
     await b.updated({ root: '/repo', projectKey: 'x' })
     await settle()
     expect(b.api.worldGet).toHaveBeenLastCalledWith('/repo')
-    expect(viewer().load).toHaveBeenLastCalledWith(second)
+    expect(viewer().load).toHaveBeenLastCalledWith(second, { animateFrom: first }) // the same project: it grows from the last one
     // Ours, by project key (a watcher names the repo by another spelling).
     await b.updated({ root: 'C:/elsewhere', projectKey: first.projectKey })
     await settle()
@@ -481,8 +481,9 @@ describe('WorldView', () => {
     b.api.worldGet.mockResolvedValueOnce(ok(newer))
     await b.updated({ root: '/repo', projectKey: 'k' })
     await settle()
-    expect(v.load).toHaveBeenLastCalledWith(newer)
-    // So does another project with the same stamp.
+    // It grows from the world the viewer held (R25: animateFrom only within one project).
+    expect(v.load).toHaveBeenLastCalledWith(newer, { animateFrom: v.load.mock.calls[0][0] })
+    // So does another project with the same stamp, drawn fresh: nothing to grow from.
     const other = { ...minimal(), projectKey: 'other', generatedAt: 5 }
     b.api.worldGet.mockResolvedValueOnce(ok(other))
     await b.updated({ root: '/repo', projectKey: 'k' })
@@ -575,7 +576,7 @@ describe('WorldView', () => {
     expect(screen.getByTestId('world-relayout')).toBeDisabled()
     await act(async () => { run.resolve(ok(relaid)) })
     await settle()
-    expect(viewer().load).toHaveBeenLastCalledWith(relaid)
+    expect(viewer().load).toHaveBeenLastCalledWith(relaid, { animateFrom: viewer().load.mock.calls[0][0] })
     expect(screen.queryByTestId('world-notice')).toBeNull()
 
     b.api.worldRelayout.mockResolvedValueOnce(fail('host crashed'))

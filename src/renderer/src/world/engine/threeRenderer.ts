@@ -10,6 +10,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
+import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
@@ -64,8 +65,14 @@ export interface ThreeRenderer {
    * in view (hidden behind other buildings or a conduit's pick tube).
    */
   screenPoint(id: string): { x: number; y: number } | null
-  /** How many process shells and conduits the last draw put up. */
-  drawnCounts(): { processShells: number; conduits: number }
+  /** How many process shells and conduits the last draw put up, and how many changes are still animating. */
+  drawnCounts(): { processShells: number; conduits: number; changing: number }
+  /** Takes these buildings out of the current scene to fade out (call before draw() clears it). */
+  keepGhosts(ids: string[]): void
+  /** After a draw: these buildings rise from the ground, these flash their glow. */
+  animateChanges(c: { rise: string[]; pulse: string[] }): void
+  /** Ends every rise, pulse and fade at once and frees the faded parts. */
+  stopChanges(): void
   dispose(): void
 }
 
@@ -261,6 +268,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // ---------------- state ----------------
   const world = new THREE.Group()
   scene.add(world)
+  // Removed buildings fade out here, outside `world`, so clearWorld() never frees them mid-fade.
+  const changeLayer = new THREE.Group()
+  scene.add(changeLayer)
+  const changes = createChangeAnimator(changeLayer, shared)
   let themeName: ThemeName = 'neon'
   let theme: Theme = { background: '#03050a', district: '#0a0f1c', conduit: '#60a5fa', glow: '#22d3ee', text: '#e2e8f0', fogDensity: 0.006 }
   let extras = EXTRAS.neon
@@ -546,6 +557,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     lastModel = model
     lastText = text
     allLabels = allEdgeLabels
+    changes.settle() // the objects rising or pulsing are about to be freed
     clearWorld()
     scene.background = new THREE.Color(theme.background)
     fog.color.set(theme.background)
@@ -800,6 +812,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (disposed) return
     raf = requestAnimationFrame(animate)
     const dt = Math.min(clock.getDelta(), 0.05)
+    changes.tick(performance.now()) // wall-clock time: a slow frame rate never stretches a change
     const t = clock.elapsedTime
     const sp = (keys.shift ? 60 : 28) * dt
     camera.getWorldDirection(fwd)
@@ -937,10 +950,30 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     setCursor(pointer) { renderer.domElement.style.cursor = pointer ? 'pointer' : 'default' },
     visibleIds,
     screenPoint,
-    drawnCounts: () => ({ processShells: shellCount, conduits: edges.size }),
+    drawnCounts: () => ({ processShells: shellCount, conduits: edges.size, changing: changes.active() }),
+    keepGhosts(ids) {
+      const groups: THREE.Object3D[] = []
+      for (const id of ids) {
+        const n = nodes.get(id)
+        if (n) groups.push(n.group)
+      }
+      changes.keep(groups, performance.now())
+    },
+    animateChanges({ rise, pulse }) {
+      const groups: THREE.Object3D[] = []
+      const mats: THREE.Material[] = []
+      for (const id of rise) {
+        const n = nodes.get(id)
+        if (n) groups.push(n.group)
+      }
+      for (const id of pulse) mats.push(...(nodes.get(id)?.mats ?? []))
+      changes.start(groups, mats, performance.now())
+    },
+    stopChanges: () => changes.stop(),
     dispose() {
       if (disposed) return
       disposed = true
+      changes.stop()
       cancelAnimationFrame(raf)
       ro?.disconnect()
       host.removeEventListener('keydown', onKeyDown)

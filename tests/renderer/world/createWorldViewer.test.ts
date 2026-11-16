@@ -8,7 +8,7 @@ import type { WorldDoc } from '../../../src/shared/world/types'
 import { createWorldViewer, hasWebGL, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
 import { ACTION_GAP_MS } from '../../../src/renderer/src/world/engine/actionQueue'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine/sceneModel'
-import { minimal, rich } from './helpers'
+import { building, minimal, rich } from './helpers'
 
 const { createThreeRenderer } = vi.hoisted(() => ({ createThreeRenderer: vi.fn() }))
 vi.mock('../../../src/renderer/src/world/engine/threeRenderer', () => ({ createThreeRenderer }))
@@ -343,7 +343,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     const { viewer } = setup({ doc: minimal() })
     viewer.setLayers({ processes: true })
     expect(viewer.screenPoint('b1')).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0 })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0 })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -399,7 +399,8 @@ function fakeRenderer(host: HTMLElement) {
     frame: vi.fn(async () => undefined), overview: vi.fn(async () => undefined), pulse: vi.fn(async () => undefined),
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), visibleIds: vi.fn(() => ['b1']),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
-    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3 })),
+    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1 })),
+    keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(),
     dispose: vi.fn(() => { canvas.remove() }),
   } satisfies ThreeRenderer
   return { r, aim: (h: RenderPick | null): void => { hit = h } }
@@ -523,7 +524,7 @@ describe('WebGL path (stand-in renderer)', () => {
     const { viewer } = setup3d()
     expect(viewer.screenPoint('b1')).toEqual({ x: 5, y: 6 })
     expect(viewer.screenPoint('nope')).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3 })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1 })
   })
 
   it('setTheme hands the palette to the renderer; setLayers redraws', () => {
@@ -573,4 +574,114 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(host.querySelector('canvas')).toBeNull()
     expect(host.querySelector('section.world-fallback')).not.toBeNull()
   })
+})
+
+// ---------------------------------------------------------------------------------------------
+// Watch it grow: load(doc, { animateFrom }) plays rise / pulse / fade and shows a toast.
+
+describe('load with animateFrom', () => {
+  /** rich() grown by two buildings, one changed (b2's status) and one removed (b4). */
+  function grown(): { before: WorldDoc; after: WorldDoc } {
+    const before = rich()
+    const after = rich()
+    after.generatedAt = before.generatedAt + 1
+    after.buildings = after.buildings.filter((b) => b.id !== 'b4')
+    after.buildings.find((b) => b.id === 'b2')!.status = 'gap'
+    after.buildings.push(building('n1'), building('n2'))
+    return { before, after }
+  }
+  const toast = (host: HTMLElement): HTMLElement | null => host.querySelector('.lw-toast')
+  /** The toast the viewer shows: visible ones only. */
+  const toastText = (host: HTMLElement): string | null => {
+    const el = toast(host)
+    return el && !el.hidden ? el.textContent : null
+  }
+
+  it('keeps removed parts before the redraw, then rises the new ones and pulses the changed ones', () => {
+    const { before, after } = grown()
+    const { r, viewer, host } = setup3dFrom(false, before)
+    r.draw.mockClear()
+    viewer.load(after, { animateFrom: before })
+    expect(r.stopChanges).toHaveBeenCalled()
+    expect(r.keepGhosts).toHaveBeenCalledWith(['b4'])
+    expect(r.animateChanges).toHaveBeenCalledWith({ rise: ['n1', 'n2'], pulse: ['b2'] })
+    const order = (f: { mock: { invocationCallOrder: number[] } }): number => f.mock.invocationCallOrder[0]
+    expect(order(r.stopChanges)).toBeLessThan(order(r.keepGhosts))
+    expect(order(r.keepGhosts)).toBeLessThan(order(r.draw))
+    expect(order(r.draw)).toBeLessThan(order(r.animateChanges))
+    expect(toastText(host)).toBe('+2 parts, 1 changed, 1 removed')
+    expect(toast(host)?.getAttribute('aria-live')).toBe('polite')
+  })
+
+  it('rises at most 20 parts; the rest simply appear', () => {
+    const before = minimal()
+    const after = minimal()
+    for (let i = 0; i < 25; i++) after.buildings.push(building(`n${i}`))
+    const { r, viewer, host } = setup3dFrom(false, before)
+    viewer.load(after, { animateFrom: before })
+    const rise = (r.animateChanges.mock.calls[0][0] as { rise: string[] }).rise
+    expect(rise).toHaveLength(20)
+    expect(toastText(host)).toBe('+25 parts')
+  })
+
+  it('with reduced motion nothing animates, but the toast still shows', () => {
+    const { before, after } = grown()
+    const { r, viewer, host } = setup3dFrom(true, before)
+    viewer.load(after, { animateFrom: before })
+    expect(r.keepGhosts).not.toHaveBeenCalled()
+    expect(r.animateChanges).not.toHaveBeenCalled()
+    expect(r.stopChanges).toHaveBeenCalled() // anything still running from before ends
+    expect(toastText(host)).toBe('+2 parts, 1 changed, 1 removed')
+  })
+
+  it('a load with no animateFrom (or an unchanged world) plays nothing and clears the toast', () => {
+    const { before, after } = grown()
+    const { r, viewer, host } = setup3dFrom(false, before)
+    viewer.load(after, { animateFrom: before })
+    expect(toastText(host)).not.toBeNull()
+    r.animateChanges.mockClear()
+    viewer.load(after)
+    expect(r.animateChanges).not.toHaveBeenCalled()
+    expect(toastText(host)).toBeNull()
+    viewer.load(after, { animateFrom: after })
+    expect(r.keepGhosts).toHaveBeenLastCalledWith([])
+    expect(toastText(host)).toBeNull()
+  })
+
+  it('the toast takes the current theme and goes after about 3 s', () => {
+    vi.useFakeTimers()
+    const { before, after } = grown()
+    const { viewer, host } = setup3dFrom(true, before)
+    viewer.setTheme('blueprint')
+    viewer.load(after, { animateFrom: before })
+    expect(toast(host)?.style.color).toBe('rgb(240, 249, 255)') // blueprint text #f0f9ff
+    vi.advanceTimersByTime(3000)
+    expect(toastText(host)).toBeNull()
+  })
+
+  it('in 2D the toast shows over the list', () => {
+    const { before, after } = grown()
+    const { viewer, host } = setup({ reducedMotion: false, doc: before })
+    viewer.load(after, { animateFrom: before })
+    expect(host.querySelector('section.world-fallback')).not.toBeNull()
+    expect(toastText(host)).toBe('+2 parts, 1 changed, 1 removed')
+  })
+
+  it('dispose takes the toast away and leaves no timer', () => {
+    vi.useFakeTimers()
+    const { before, after } = grown()
+    const { viewer, host } = setup3dFrom(true, before)
+    viewer.load(after, { animateFrom: before })
+    viewer.dispose()
+    expect(toast(host)).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  function setup3dFrom(reducedMotion: boolean, doc: WorldDoc) {
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((host: HTMLElement) => { fake = fakeRenderer(host); return fake.r })
+    const s = setup({ reducedMotion, doc })
+    return { ...s, ...(fake as unknown as ReturnType<typeof fakeRenderer>) }
+  }
 })
