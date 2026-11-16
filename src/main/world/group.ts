@@ -66,6 +66,11 @@ const JS_TO_TS: readonly (readonly [string, string])[] = [
 ]
 const RELATIVE = /^\.\.?(\/|$)/
 
+/** Stable id of a grouping edge (edges carry none). Labels and the compiled world key on it. */
+export function edgeId(e: { from: string; to: string }): string {
+  return `e-${e.from}--${e.to}`
+}
+
 export function slug(s: string): string {
   return s
     .toLowerCase()
