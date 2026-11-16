@@ -134,7 +134,7 @@ describe('WorldHome', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open Shop' }))
     expect(props.onOpen).toHaveBeenLastCalledWith({ kind: 'design', key: 'design:shop' })
     fireEvent.click(screen.getByRole('button', { name: 'Open a' }))
-    expect(props.onOpen).toHaveBeenLastCalledWith({ kind: 'root', root: 'C:/data/a' })
+    expect(props.onOpen).toHaveBeenLastCalledWith({ kind: 'root', root: 'C:/data/a', key: 'k-git' })
   })
 
   it('without a pinned clock it counts from now', () => {
@@ -191,7 +191,7 @@ describe('WorldHome', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Open a folder/ }))
     await settle()
     expect(api.worldOpenFolder).toHaveBeenCalled()
-    expect(props.onOpen).toHaveBeenCalledWith({ kind: 'root', root: 'C:/picked' })
+    expect(props.onOpen).toHaveBeenCalledWith({ kind: 'root', root: 'C:/picked', key: 'k-f' })
     expect(props.onChanged).toHaveBeenCalledTimes(1)
     api.worldOpenFolder.mockResolvedValueOnce(ok(null))
     fireEvent.click(screen.getByRole('button', { name: /^Open a folder/ }))
@@ -216,7 +216,7 @@ describe('WorldHome', () => {
     await settle()
     expect(api.worldClone).toHaveBeenCalledWith('https://x.dev/b.git', undefined)
     expect(props.onChanged).toHaveBeenCalled()
-    expect(props.onOpen).toHaveBeenCalledWith({ kind: 'root', root: 'C:/data/clone' })
+    expect(props.onOpen).toHaveBeenCalledWith({ kind: 'root', root: 'C:/data/clone', key: 'k-c' })
     expect(screen.queryByRole('dialog', { name: 'Open a git repository' })).toBeNull()
   })
 
@@ -255,7 +255,7 @@ describe('agoText and targetOf', () => {
 
   it('a design entry opens by key; a root entry by folder', () => {
     expect(targetOf(entries()[3])).toEqual({ kind: 'design', key: 'design:shop' })
-    expect(targetOf(entries()[1])).toEqual({ kind: 'root', root: 'C:/notes' })
+    expect(targetOf(entries()[1])).toEqual({ kind: 'root', root: 'C:/notes', key: 'k-dir' })
   })
 })
 
@@ -550,7 +550,7 @@ describe('WorldSwitcher', () => {
     // Missing worlds are not offered.
     expect(sel.querySelectorAll('option')).toHaveLength(6)
     fireEvent.change(sel, { target: { value: 'k-dir' } })
-    expect(onOpen).toHaveBeenLastCalledWith({ kind: 'root', root: 'C:/notes' })
+    expect(onOpen).toHaveBeenLastCalledWith({ kind: 'root', root: 'C:/notes', key: 'k-dir' })
     fireEvent.change(sel, { target: { value: 'design:shop' } })
     expect(onOpen).toHaveBeenLastCalledWith({ kind: 'design', key: 'design:shop' })
     fireEvent.change(sel, { target: { value: '__home' } })

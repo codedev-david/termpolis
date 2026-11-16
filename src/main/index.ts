@@ -333,6 +333,7 @@ import { registerWorldIpc } from './world/ipc'
 import { createAskRunner } from './world/askRunner'
 import { createDesigner } from './world/designer'
 import { createSourceRegistry } from './world/sources'
+import { testPickedFolder } from './world/testHooks'
 import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
@@ -2709,11 +2710,11 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAs
 }), worldDesigner, {
   registry: worldSources,
   designs: worldDesignStore,
-  // The Lumopolis home's folder dialog. TERMPOLIS_TEST_WORLD_PICK_FILE (e2e only) names a file whose text is
-  // the folder to answer, read at each pick so one test can pick several folders; empty text is a cancel.
+  // The Lumopolis home's folder dialog. In a test run (NODE_ENV=test) TERMPOLIS_TEST_WORLD_PICK_FILE can
+  // answer it instead (testHooks.ts); anywhere else that env var does nothing.
   pickFolder: async () => {
-    const testPick = process.env.TERMPOLIS_TEST_WORLD_PICK_FILE
-    if (testPick) return (await fsPromises.readFile(testPick, 'utf8')).trim() || null
+    const testPick = await testPickedFolder(process.env, (f) => fsPromises.readFile(f, 'utf8'))
+    if (testPick !== undefined) return testPick
     const win = mainWindow
     const result = win
       ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: 'Choose a folder for Lumopolis' })

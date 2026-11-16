@@ -40,21 +40,24 @@ export function useOpenWorld(root: string): UseOpenWorld {
     if (following.current) setWorld(fromRoot(root))
   }, [root])
 
-  const open = useCallback((t: OpenTarget): void => {
-    following.current = t.kind === 'root' && t.follow === true
-    setWorld(t.kind === 'root' ? { kind: 'root', root: t.root, follow: following.current } : { kind: 'design', key: t.key })
-  }, [])
-
-  const goHome = useCallback((): void => {
-    following.current = false
-    setWorld({ kind: 'home' })
-  }, [])
-
   const refresh = useCallback((): void => {
     window.termpolis.worldSourcesList().then(
       (res) => { if (live.current && res.success) setEntries(res.data) },
       () => undefined,
     )
+  }, [])
+
+  // A registered world being opened (from the home, the switcher or a dialog) is marked opened now, and
+  // the list reloads once main has saved that, so "last opened" and the newest-first order stay true.
+  const open = useCallback((t: OpenTarget): void => {
+    following.current = t.kind === 'root' && t.follow === true
+    setWorld(t.kind === 'root' ? { kind: 'root', root: t.root, follow: following.current } : { kind: 'design', key: t.key })
+    if (t.key) window.termpolis.worldTouchSource(t.key).then(refresh, () => undefined)
+  }, [refresh])
+
+  const goHome = useCallback((): void => {
+    following.current = false
+    setWorld({ kind: 'home' })
   }, [])
 
   const id = worldId(world)

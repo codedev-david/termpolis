@@ -19,6 +19,8 @@ export interface SourceRegistry {
   list(): Promise<WorldEntry[]>
   upsert(s: WorldSource, title?: string): Promise<WorldEntry>
   remove(key: string): Promise<void>
+  /** Marks a registered world opened now (its lastOpened); null when the key is not registered. */
+  touch(key: string): Promise<WorldEntry | null>
   get(key: string): Promise<WorldEntry | null>
 }
 
@@ -139,6 +141,17 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
       return serial(async () => {
         const entries = await load()
         if (entries.some((e) => e.key === key)) await save(entries.filter((e) => e.key !== key))
+      })
+    },
+
+    touch(key) {
+      return serial(async () => {
+        const entries = await load()
+        const old = entries.find((e) => e.key === key)
+        if (!old) return null
+        const entry: WorldEntry = { ...old, lastOpened: deps.now() }
+        await save([...entries.filter((e) => e.key !== key), entry])
+        return decorate(entry)
       })
     },
 

@@ -83,6 +83,20 @@ describe('source registry', () => {
     expect(await readFile(marker, 'utf8')).toBe('{}')
   })
 
+  it('touch bumps lastOpened and moves the world to the front; an unknown key is null', async () => {
+    const r = reg()
+    const a = await r.upsert({ kind: 'project', root: '/a' }, 'Alpha')
+    await r.upsert({ kind: 'folder', root: '/b' })
+    expect((await r.list()).map((e) => e.title)).toEqual(['b', 'Alpha'])
+    const touched = await r.touch(a.key)
+    expect(touched?.lastOpened).toBeGreaterThan(a.lastOpened)
+    expect(touched?.title).toBe('Alpha')
+    expect(touched?.source).toEqual(a.source)
+    expect((await r.list()).map((e) => e.title)).toEqual(['Alpha', 'b'])
+    expect((await r.get(a.key))?.lastOpened).toBe(touched?.lastOpened)
+    expect(await r.touch('nope')).toBeNull()
+  })
+
   it('corrupt sources.json → empty list + .bad backup', async () => {
     await mkdir(join(dir, 'world'), { recursive: true })
     await writeFile(sourcesFile(), '{not json')

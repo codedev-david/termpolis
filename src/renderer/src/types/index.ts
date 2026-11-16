@@ -723,6 +723,8 @@ export interface TermpolisAPI {
   worldCloneCancel: (url: string, ref?: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis home: forget a world (its files are left alone). */
   worldRemoveSource: (key: string) => Promise<IpcResponse<boolean>>
+  /** Lumopolis home/switcher: a recent world was opened, so it is marked opened now (null if unknown). */
+  worldTouchSource: (key: string) => Promise<IpcResponse<WorldEntry | null>>
   /** Lumopolis Build it: link the design to the folder; answers the first prompt for the agent terminal. */
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => Promise<IpcResponse<BuildItResult>>
   /** Lumopolis settings: whether the world compiler may ask Claude's cheapest model (Haiku) to describe parts. */

@@ -23,6 +23,7 @@ function setup(over: Partial<WorldSourcesDeps> = {}, designer?: WorldDesigner) {
     list: vi.fn(async () => [entryOf({ kind: 'folder', root: 'C:/a' })]),
     upsert: vi.fn(async (s: WorldSource, title?: string) => entryOf(s, title)),
     remove: vi.fn(async () => undefined),
+    touch: vi.fn(async (key: string) => (key === 'kf' ? { ...entryOf({ kind: 'folder', root: 'C:/f' }), lastOpened: 9 } : null)),
     get: vi.fn(async (key: string) => (key === 'design:d1' ? entryOf({ kind: 'design', id: 'd1', title: 'Shop' }, 'Shop') : null))
   }
   const deps: WorldSourcesDeps = {
@@ -42,7 +43,7 @@ function setup(over: Partial<WorldSourcesDeps> = {}, designer?: WorldDesigner) {
 describe('registerWorldIpc sources handlers', () => {
   it('registers the source handlers only when sources are passed', () => {
     const keys = [...setup().handlers.keys()]
-    for (const ch of ['world:sources-list', 'world:map-project', 'world:open-folder', 'world:pick-folder', 'world:clone', 'world:clone-cancel', 'world:remove-source', 'world:design-get', 'world:build-it']) {
+    for (const ch of ['world:sources-list', 'world:map-project', 'world:open-folder', 'world:pick-folder', 'world:clone', 'world:clone-cancel', 'world:remove-source', 'world:touch-source', 'world:design-get', 'world:build-it']) {
       expect(keys).toContain(ch)
     }
   })
@@ -135,6 +136,18 @@ describe('registerWorldIpc sources handlers', () => {
     }
     s.registry.remove.mockRejectedValueOnce(new Error('disk'))
     expect(await s.invoke('world:remove-source', { key: 'k' })).toEqual({ success: false, error: SOURCES_FAILED })
+  })
+
+  it('world:touch-source marks a world opened now and answers it (null for an unknown key)', async () => {
+    const s = setup()
+    expect(await s.invoke('world:touch-source', { key: 'kf' })).toEqual({ success: true, data: { ...entryOf({ kind: 'folder', root: 'C:/f' }), lastOpened: 9 } })
+    expect(s.registry.touch).toHaveBeenCalledWith('kf')
+    expect(await s.invoke('world:touch-source', { key: 'gone' })).toEqual({ success: true, data: null })
+    for (const bad of [undefined, {}, { key: '' }, { key: 7 }, { key: 'x'.repeat(201) }]) {
+      expect(await s.invoke('world:touch-source', bad)).toEqual({ success: false, error: 'key required' })
+    }
+    s.registry.touch.mockRejectedValueOnce(new Error('disk'))
+    expect(await s.invoke('world:touch-source', { key: 'kf' })).toEqual({ success: false, error: SOURCES_FAILED })
   })
 
   it('world:design-get answers the stored design; an unknown, bad or unreadable key is not found', async () => {

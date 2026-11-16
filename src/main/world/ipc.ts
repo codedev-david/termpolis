@@ -20,6 +20,7 @@
 //   world:clone { url, ref? }        → ok(WorldEntry)          (shallow clone into userData, then registered)
 //   world:clone-cancel { url, ref? } → ok(boolean)
 //   world:remove-source { key }      → ok(true)
+//   world:touch-source { key }       → ok(WorldEntry | null)   (a recent world was opened: its lastOpened is now)
 //   world:design-get { key }         → ok(WorldDoc)
 //   world:build-it { key, root, agent, confirmNonEmpty? } → ok(BuildItResult)  (links the design to the folder; the
 //                                      renderer then opens the agent terminal there with the first prompt)
@@ -110,7 +111,7 @@ const designErr = (e: unknown) => err(e instanceof DesignFailure ? e.message : D
 
 /** What the source handlers need; main passes the real registry, store, dialog and world host. */
 export interface WorldSourcesDeps {
-  registry: Pick<SourceRegistry, 'list' | 'upsert' | 'remove' | 'get'>
+  registry: Pick<SourceRegistry, 'list' | 'upsert' | 'remove' | 'touch' | 'get'>
   designs: { load(key: string): Promise<WorldDoc | null> }
   /** The native folder dialog: the chosen folder, or null when the user cancels. */
   pickFolder(): Promise<string | null>
@@ -336,6 +337,16 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     try {
       await registry.remove(key)
       return ok(true)
+    } catch {
+      return err(SOURCES_FAILED)
+    }
+  })
+
+  ipc.handle('world:touch-source', async (_event: unknown, args?: unknown) => {
+    const key = field(args, 'key')
+    if (!nonEmpty(key) || key.length > MAX_KEY) return err('key required')
+    try {
+      return ok(await registry.touch(key))
     } catch {
       return err(SOURCES_FAILED)
     }

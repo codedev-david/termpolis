@@ -1296,6 +1296,7 @@ describe('preload — workflow orchestrator bridge', () => {
       [() => api.worldCloneCancel('https://x/r', 'dev'), 'world:clone-cancel', { url: 'https://x/r', ref: 'dev' }],
       [() => api.worldCloneCancel('https://x/r'), 'world:clone-cancel', { url: 'https://x/r' }],
       [() => api.worldRemoveSource('design:d1'), 'world:remove-source', { key: 'design:d1' }],
+      [() => api.worldTouchSource('kf'), 'world:touch-source', { key: 'kf' }],
       [() => api.worldDesignGet('design:d1'), 'world:design-get', { key: 'design:d1' }],
       [() => api.worldBuildIt({ key: 'design:d1', root: 'C:/b', agent: 'claude', confirmNonEmpty: true }), 'world:build-it', { key: 'design:d1', root: 'C:/b', agent: 'claude', confirmNonEmpty: true }],
     ]

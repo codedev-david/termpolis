@@ -49,6 +49,7 @@ function bridge(over: Record<string, unknown> = {}) {
     worldDesignGet: vi.fn(async (_key: string): Promise<Res<WorldDoc>> => ok(designDoc())),
     worldPickFolder: vi.fn(async () => ok({ root: 'C:/build/pets', empty: true })),
     worldBuildIt: vi.fn(async () => ok(BUILT)),
+    worldTouchSource: vi.fn(async (_key: string) => ok<WorldEntry | null>(null)),
     onWorldProgress: vi.fn(() => () => undefined),
     onWorldUpdated: vi.fn(() => () => undefined),
     ...over,
@@ -240,6 +241,54 @@ describe('WorldView sources', () => {
     await settle()
     expect(screen.getByTestId('world-project')).toHaveTextContent('Pet shop')
     expect(screen.queryByTestId('world-build-it-open')).toBeNull()
+  })
+
+  it('opening a recent world from the home or the switcher marks it opened now: newest first, "just now"', async () => {
+    // A registry that behaves like main's: touch sets lastOpened to now, the list is newest first.
+    const DAY = 86_400_000
+    const now = Date.now()
+    let reg: WorldEntry[] = [{ ...DESIGN, lastOpened: now - 2 * DAY }, { ...FOLDER, lastOpened: now - 3 * DAY }]
+    const touch = vi.fn(async (key: string) => {
+      reg = reg.map((e) => (e.key === key ? { ...e, lastOpened: Date.now() } : e))
+      return ok(reg.find((e) => e.key === key) ?? null)
+    })
+    const api = bridge({
+      worldSourcesList: vi.fn(async () => ok([...reg].sort((a, b) => b.lastOpened - a.lastOpened))),
+      worldTouchSource: touch,
+    })
+    await mount('')
+    const order = () => screen.getAllByTestId(/^world-recent-/).map((li) => li.getAttribute('data-testid'))
+    expect(order()).toEqual(['world-recent-design:d1', 'world-recent-kf'])
+    expect(within(screen.getByTestId('world-recent-kf')).getByText('3 days ago')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open shop' }))
+    await settle()
+    expect(touch).toHaveBeenCalledWith('kf')
+    expect(api.worldGet).toHaveBeenCalledWith('C:/work/shop')
+    switchTo('__home')
+    await settle()
+    expect(order()).toEqual(['world-recent-kf', 'world-recent-design:d1'])
+    expect(within(screen.getByTestId('world-recent-kf')).getByText('just now')).toBeInTheDocument()
+    // The switcher opens the design: it is touched too and moves back to the front.
+    switchTo('design:d1')
+    await settle()
+    expect(touch).toHaveBeenLastCalledWith('design:d1')
+    switchTo('__home')
+    await settle()
+    expect(order()).toEqual(['world-recent-design:d1', 'world-recent-kf'])
+  })
+
+  it('a touch that fails or throws still opens the world', async () => {
+    const api = bridge({ worldTouchSource: vi.fn(async () => fail('disk')) })
+    await mount('')
+    fireEvent.click(screen.getByRole('button', { name: 'Open shop' }))
+    await settle()
+    expect(api.worldGet).toHaveBeenCalledWith('C:/work/shop')
+    cleanup()
+    const api2 = bridge({ worldTouchSource: vi.fn(async () => { throw new Error('down') }) })
+    await mount('')
+    fireEvent.click(screen.getByRole('button', { name: 'Open Pet shop' }))
+    await settle()
+    expect(api2.worldDesignGet).toHaveBeenCalledWith('design:d1')
   })
 
   it('a failed or thrown recent-worlds list leaves the list empty', async () => {
