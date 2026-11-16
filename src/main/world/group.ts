@@ -5,15 +5,23 @@
 // 1. Districts are seeded from the top-level folders under src/ (a monorepo's packages/apps
 //    folder, or the repository root), then capped by merging the smallest into its most-connected
 //    neighbour.
-// 2. Process entries (fork/worker targets, main/renderer/preload entries) each become a building
-//    together with their exclusive import closure inside their district.
-// 3. Remaining files are clustered with union-find: clusters in one district merge, densest first,
-//    while their cross-edge density is above MERGE_DENSITY.
-// 4. Buildings are capped by merging the smallest into its most-connected neighbour in the same
-//    district (else its nearest in path order). Process buildings go last.
-// 5. Ids are slugs of member paths. A base no other building shares is used as is; colliding
+// 2. Process entries (fork/worker targets, main/renderer/preload entries) each become a building.
+//    A fork/worker entry takes its exclusive import closure inside its district (and, when its key
+//    names a folder, the rest of that folder); a main/renderer/preload entry takes only itself,
+//    since everything in its seed folder is reachable from it. An index/main file counts as such an
+//    entry only when nothing but tests imports it.
+// 3. Remaining files start as name families (a small sub-folder is one family; in a big folder,
+//    files sharing a leading name word are one), then clusters in one district merge, densest
+//    first, while their cross-edge density is above MERGE_DENSITY.
+// 4. Buildings are capped by merging the smallest into its densest neighbour (link weight over
+//    the neighbour's size) in the same district, plain buildings before process buildings; with no
+//    link, its nearest plain building in path order. Process buildings themselves go last.
+// 5. Names: a process building is named after its process; any other after its front door, the
+//    non-test member reaching most of the building, then most imported from outside it, skipping
+//    names that would pass for the district or a main/renderer/preload entry.
+// 6. Ids are slugs of member paths. A base no other building shares is used as is; colliding
 //    bases get '--' plus the first member's basename, and -2, -3 (path order) only if that collides.
-// 6. Edges come from resolved imports, fork/worker targets and provide/consume boundary pairs.
+// 7. Edges come from resolved imports, fork/worker targets and provide/consume boundary pairs.
 import type { GraphSnapshot } from '../codeGraph'
 import type { District } from '../../shared/world/types'
 import { baseKey, type Boundary } from './detectors/common'
@@ -25,7 +33,9 @@ export interface GroupBuilding {
   name: string
   /** Repository-relative paths, sorted. */
   members: string[]
-  /** Process buildings: the fork/worker key or main/renderer/preload. Others: the district's process or ''. */
+  /** The OS process the code runs in: a process building's own (its fork/worker key, or main or
+   *  renderer; a preload runs in 'renderer'); any other building inherits its district's process
+   *  when the district is a main/renderer/preload folder, else ''. */
   process: string
   boundaries: Boundary[]
 }
@@ -70,6 +80,8 @@ const JS_TO_TS: readonly (readonly [string, string])[] = [
   ['.mjs', '.mts'],
   ['.cjs', '.cts']
 ]
+/** A sub-folder with at most this many files is one module; a bigger one groups by name stem. */
+export const FAMILY_FOLDER_MAX = 16
 const RELATIVE = /^\.\.?(\/|$)/
 /** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
 const TEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
@@ -125,6 +137,24 @@ export function resolveImport(importer: string, spec: string, files: ReadonlySet
     ...EXTS.map((e) => `${dir}index${e}`)
   ]
   return candidates.find((c) => files.has(c)) ?? null
+}
+
+/**
+ * The leading word of a file name, lower-cased: `memoryHost.ts` -> 'memory', `remote-bridge.ts` ->
+ * 'remote', `AccountChip.tsx` -> 'account', `MCPServer.ts` -> 'mcp'. '' for words under three
+ * letters and for entry names (index, main), which say nothing about what a file does.
+ */
+export function nameStem(name: string): string {
+  const base = name.replace(/\..*$/, '')
+  const m = /^[A-Z]{2,}(?=[A-Z][a-z]|[^A-Za-z]|$)|^[A-Za-z][a-z0-9]*/.exec(base)
+  const w = (m ? m[0] : '').toLowerCase()
+  return w.length < 3 || ENTRY_NAMES.has(w) ? '' : w
+}
+
+/** What a member is called: its base name, or its folder's name for an entry file (index.ts). */
+function memberKey(file: string): string {
+  const k = baseKey(file)
+  return ENTRY_NAMES.has(k) ? lastSeg(dirOf(file)) || k : k
 }
 
 /** Longest common directory of sorted paths ('' when they share none). */
@@ -311,19 +341,29 @@ function capDistricts(seedOf: Int32Array, count: number, imports: number[][], ma
 }
 
 /** Cluster files not owned by a building yet; returns the union-find over file indices. */
-function clusterFree(imports: number[][], district: Int32Array, owner: Int32Array): UnionFind {
+function clusterFree(imports: number[][], district: Int32Array, owner: Int32Array, family: Int32Array): UnionFind {
   const n = imports.length
   const uf = new UnionFind(n)
-  const size = new Int32Array(n).fill(1)
+  const size = new Int32Array(n)
   const minIdx = Int32Array.from({ length: n }, (_, i) => i)
   const stamp = new Int32Array(n)
   const adj = Array.from({ length: n }, () => new Map<number, number>())
+  // Families start as one cluster each, rooted at their first file.
+  for (let i = 0; i < n; i++) {
+    if (owner[i] >= 0) continue
+    const r = family[i]
+    if (r !== i) uf.attach(i, r)
+    size[r]++
+    minIdx[r] = Math.min(minIdx[r], i)
+  }
   for (let i = 0; i < n; i++) {
     if (owner[i] >= 0) continue
     for (const g of imports[i]) {
-      if (owner[g] < 0 && district[g] === district[i]) {
-        bump(adj[i], g, 1)
-        bump(adj[g], i, 1)
+      const a = family[i]
+      const b = family[g]
+      if (owner[g] < 0 && district[g] === district[i] && a !== b) {
+        bump(adj[a], b, 1)
+        bump(adj[b], a, 1)
       }
     }
   }
@@ -431,7 +471,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     const k = baseKey(f)
     const cur = byKey.get(k)
     if (cur === undefined || f.length < files[cur].length) byKey.set(k, i)
-    if (!ENTRY_NAMES.has(k) || !ENTRY_PROCESSES.has(lastSeg(dirs[seedOf[i]]))) return
+    if (!ENTRY_NAMES.has(k) || !ENTRY_PROCESSES.has(lastSeg(dirs[seedOf[i]])) || importers[i].some((j) => !TEST_NAME.test(files[j]))) return
     const e = entryOf.get(seedOf[i])
     if (e === undefined || f.length < files[e].length) entryOf.set(seedOf[i], i)
   })
@@ -449,7 +489,14 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     return best
   }
   const targetOf = new Map<string, number | undefined>()
-  for (const b of forks) if (!targetOf.has(b.key)) targetOf.set(b.key, byKey.get(b.key) ?? folderRoot(b.key))
+  const folderProc = new Set<number>()
+  for (const b of forks) {
+    if (targetOf.has(b.key)) continue
+    const named = byKey.get(b.key)
+    const t = named ?? folderRoot(b.key)
+    if (named === undefined && t !== undefined) folderProc.add(t)
+    targetOf.set(b.key, t)
+  }
   for (const b of forks) {
     const t = targetOf.get(b.key)
     if (t !== undefined) proc.set(t, b.key)
@@ -470,6 +517,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   // Known limitation: a private helper cycle (entry -> h1 <-> h2) never joins, because h1 waits
   // for h2 and h2 for h1; the cycle is clustered on its own instead (pinned by a test).
   for (const e of entries) {
+    if (ENTRY_PROCESSES.has(proc.get(e) as string)) continue
     const b = owner[e]
     const seen = new Map<number, number>()
     const stack = [e]
@@ -488,8 +536,35 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     }
   }
 
-  // 3. Cluster the rest.
-  const fileUf = clusterFree(imports, district, owner)
+  // A process built from a folder (its key names the folder) owns the rest of that folder too.
+  for (const e of entries) {
+    if (!folderProc.has(e)) continue
+    const dir = dirOf(files[e])
+    files.forEach((f, i) => {
+      if (owner[i] < 0 && dirOf(f) === dir) {
+        owner[i] = owner[e]
+        bFiles[owner[e]].push(i)
+      }
+    })
+  }
+
+  // 3. Cluster the rest, starting from name families: free files in one folder whose names share a
+  //    leading word (memoryClient.ts, memoryGraph.ts) are one module by naming convention.
+  const family = Int32Array.from({ length: n }, (_, i) => i)
+  const firstOf = new Map<string, number>()
+  const inDir = new Map<string, number>()
+  for (const f of files) inDir.set(dirOf(f), (inDir.get(dirOf(f)) ?? 0) + 1)
+  files.forEach((f, i) => {
+    if (owner[i] >= 0) return
+    const small = (inDir.get(dirOf(f)) as number) <= FAMILY_FOLDER_MAX && dirOf(f) !== dirs[seedOf[i]]
+    const stem = small ? '/' : nameStem(lastSeg(f))
+    if (stem === '') return
+    const k = `${district[i]}\0${dirOf(f)}\0${stem}`
+    const r = firstOf.get(k)
+    if (r === undefined) firstOf.set(k, i)
+    else family[i] = r
+  })
+  const fileUf = clusterFree(imports, district, owner, family)
   const rootB = new Map<number, number>()
   for (let i = 0; i < n; i++) {
     if (owner[i] >= 0) continue
@@ -542,20 +617,28 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   for (let live = nb; live > maxBuildings; ) {
     const [, b, s] = heap.pop()
     if (s !== bStamp[b] || (perDistrict.get(bDist[b]) as number) < 2) continue
+    // The densest link (weight over the neighbour's size, so a hub that imports everything never
+    // wins by bulk), ties in path order. A process building never takes in a plain one by a link:
+    // its name says what runs there, and unrelated helpers would blur that.
     let t = -1
-    let best = -1
     for (const [o, w] of bAdj[b]) {
-      const score = w * K + (K - 1 - bMin[o])
-      if (score > best) {
-        t = o
-        best = score
-      }
+      if (bEntry[o] >= 0) continue
+      const d = t < 0 ? 1 : w * bSize[t] - (bAdj[b].get(t) as number) * bSize[o]
+      if (d > 0 || (d === 0 && bMin[o] < bMin[t])) t = o
     }
     if (t < 0) {
+      // Nearest in path order, skipping process buildings while a plain one is left.
       const at = files[bMin[b]]
-      const lp = prev[b] < 0 ? -1 : prefixLen(at, files[bMin[prev[b]]])
-      const lq = next[b] < 0 ? -1 : prefixLen(at, files[bMin[next[b]]])
-      t = lp >= lq ? prev[b] : next[b]
+      const step = (from: number, dir: Int32Array): number => {
+        let x = from
+        while (x >= 0 && bEntry[x] >= 0) x = dir[x]
+        return x < 0 ? from : x
+      }
+      const p = step(prev[b], prev)
+      const q = step(next[b], next)
+      const lp = p < 0 ? -1 : prefixLen(at, files[bMin[p]])
+      const lq = q < 0 ? -1 : prefixLen(at, files[bMin[q]])
+      t = lp >= lq ? p : q
     }
     if (prev[b] >= 0) next[prev[b]] = next[b]
     if (next[b] >= 0) prev[next[b]] = prev[b]
@@ -603,6 +686,38 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const bIdOf = new Map(liveB.map((b, i) => [b, bIds[i]]))
   const boundariesOf = new Map<number, Boundary[]>(liveB.map((b) => [b, []]))
   for (const bd of kept) (boundariesOf.get(finalOf(index.get(bd.file) as number)) as Boundary[]).push(bd)
+  // A plain building is named after its front door: the non-test member whose imports reach most
+  // of the building, then the one most imported from outside it, then most imported overall, then
+  // path order; names that would pass for the district or a main/renderer/preload entry are skipped.
+  const frontDoor = (b: number, dName: string): string => {
+    const own = new Set((members.get(b) as string[]).map((f) => index.get(f) as number))
+    const key = new Map<number, number[]>()
+    for (const i of own) {
+      const seen = new Set([i])
+      const stack = [i]
+      while (stack.length) {
+        for (const g of imports[stack.pop() as number]) {
+          if (own.has(g) && !seen.has(g)) {
+            seen.add(g)
+            stack.push(g)
+          }
+        }
+      }
+      const outside = importers[i].filter((j) => !own.has(j)).length
+      key.set(i, [TEST_NAME.test(files[i]) ? 0 : 1, seen.size, outside, importers[i].length])
+    }
+    const rank = (x: number, y: number): number => {
+      const kx = key.get(x) as number[]
+      const ky = key.get(y) as number[]
+      for (let k = 0; k < kx.length; k++) if (kx[k] !== ky[k]) return ky[k] - kx[k]
+      return x - y
+    }
+    const pick = [...own].sort(rank).find((i) => {
+      const k = memberKey(files[i])
+      return k !== dName && !ENTRY_PROCESSES.has(k)
+    })
+    return pick === undefined ? '' : memberKey(files[pick])
+  }
   const buildings: GroupBuilding[] = liveB.map((b, i) => {
     const m = members.get(b) as string[]
     // The first member's own seed folder, so a renderer file stays 'renderer' after a district merge.
@@ -610,7 +725,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     return {
       id: bIds[i],
       districtId: dIdOf.get(bDist[b]) as string,
-      name: bEntry[b] >= 0 ? bProc[b] : m.length === 1 ? baseKey(m[0]) : lastSeg(anchors[i]) || 'root',
+      name: bEntry[b] >= 0 ? bProc[b] : frontDoor(b, lastSeg(dirs[bDist[b]]) || 'root') || lastSeg(anchors[i]) || 'root',
       members: m,
       process: bEntry[b] >= 0 ? runsIn(bProc[b]) : ENTRY_PROCESSES.has(dName) ? runsIn(dName) : '',
       boundaries: boundariesOf.get(b) as Boundary[]

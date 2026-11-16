@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { resolveAgentCommand, testDelay, tracesPromptParses } from '../../src/renderer/src/lib/testAgents'
+import { exposesWorldProbe, resolveAgentCommand, testDelay, tracesPromptParses } from '../../src/renderer/src/lib/testAgents'
 
 describe('resolveAgentCommand', () => {
   const origEnv = process.env.TERMPOLIS_TEST_AGENTS
@@ -81,6 +81,29 @@ describe('preload bridge (renderer has no process.env of its own)', () => {
     expect(tracesPromptParses()).toBe(true)
     ;(globalThis as any).termpolisTestFlags = { agents: true, timing: true }
     expect(tracesPromptParses()).toBe(false)
+  })
+
+  it('reads the world-probe switch off the bridge, and only that one', () => {
+    ;(globalThis as any).termpolisTestFlags = { agents: false, timing: false, promptTrace: false, worldProbe: true }
+    expect(exposesWorldProbe()).toBe(true)
+    expect(tracesPromptParses()).toBe(false)
+    ;(globalThis as any).termpolisTestFlags = { agents: true, timing: true, promptTrace: true }
+    expect(exposesWorldProbe()).toBe(false)
+  })
+})
+
+describe('exposesWorldProbe', () => {
+  const origEnv = process.env.TERMPOLIS_TEST_WORLD_PROBE
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.TERMPOLIS_TEST_WORLD_PROBE
+    else process.env.TERMPOLIS_TEST_WORLD_PROBE = origEnv
+  })
+
+  it('is off unless TERMPOLIS_TEST_WORLD_PROBE=1', () => {
+    delete process.env.TERMPOLIS_TEST_WORLD_PROBE
+    expect(exposesWorldProbe()).toBe(false)
+    process.env.TERMPOLIS_TEST_WORLD_PROBE = '1'
+    expect(exposesWorldProbe()).toBe(true)
   })
 })
 

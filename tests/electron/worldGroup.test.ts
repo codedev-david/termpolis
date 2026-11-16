@@ -4,9 +4,11 @@ import type { Boundary } from '../../src/main/world/detectors'
 import {
   DEFAULT_MAX_BUILDINGS,
   DEFAULT_MAX_DISTRICTS,
+  FAMILY_FOLDER_MAX,
   MERGE_DENSITY,
   groupProject,
   isIgnored,
+  nameStem,
   resolveImport,
   slug,
   type Grouping
@@ -63,6 +65,7 @@ describe('constants', () => {
     expect(DEFAULT_MAX_DISTRICTS).toBe(12)
     expect(DEFAULT_MAX_BUILDINGS).toBe(60)
     expect(MERGE_DENSITY).toBe(0.35)
+    expect(FAMILY_FOLDER_MAX).toBe(16)
   })
 })
 
@@ -83,6 +86,25 @@ describe('isIgnored', () => {
     for (const p of ['src/main/build.ts', 'src/main/dist.ts', 'src/main/a.js', 'src/outline/x.ts']) {
       expect(isIgnored(p)).toBe(false)
     }
+  })
+})
+
+describe('nameStem', () => {
+  it('takes the leading camelCase, kebab or acronym word, lower-cased', () => {
+    expect(nameStem('memoryHost.ts')).toBe('memory')
+    expect(nameStem('remote-bridge.ts')).toBe('remote')
+    expect(nameStem('AccountChip.tsx')).toBe('account')
+    expect(nameStem('MCPServer.ts')).toBe('mcp')
+    expect(nameStem('HTTP.ts')).toBe('http')
+    expect(nameStem('IPC_bus.ts')).toBe('ipc')
+    expect(nameStem('swarm.test.ts')).toBe('swarm')
+    expect(nameStem('http2Server.ts')).toBe('http2')
+  })
+  it('says nothing for short words, entry names and names with no leading letter', () => {
+    expect(nameStem('ui.ts')).toBe('')
+    expect(nameStem('index.ts')).toBe('')
+    expect(nameStem('main.tsx')).toBe('')
+    expect(nameStem('_private.ts')).toBe('')
   })
 })
 
@@ -156,10 +178,12 @@ describe('groupProject', () => {
     // Its exclusive import closure comes along; shared files do not.
     expect(host.members).toEqual(['src/main/memory/db.ts', 'src/main/memory/schema.ts', 'src/main/memoryHost.ts'])
     expect(home(g, 'src/main/indexer.ts')).toMatchObject({ id: 'b-src-main-indexer', process: 'indexer', members: ['src/main/indexer.ts'] })
-    // The main entry is a process building too, with its private helper.
+    // The main entry is a process building too, on its own: everything in its folder is reachable
+    // from it, so a closure would swallow the folder.
     const main = home(g, 'src/main/index.ts')
-    expect(main).toMatchObject({ id: 'b-src-main-index', name: 'main', process: 'main', members: ['src/main/index.ts', 'src/main/util.ts'] })
-    expect(main.boundaries).toEqual([fork, ghost])
+    expect(main).toMatchObject({ id: 'b-src-main-index', name: 'main', process: 'main', members: ['src/main/index.ts'] })
+    expect(main.boundaries).toEqual([fork])
+    expect(home(g, 'src/main/util.ts')).toMatchObject({ id: 'b-src-main-util', name: 'util', process: 'main', boundaries: [ghost] })
     // A non-process building in the main district runs in the main process.
     expect(home(g, 'src/main/store.ts')).toMatchObject({ id: 'b-src-main-store', name: 'store', process: 'main', boundaries: [worker] })
     // The shortest path wins the target match; the longer one stays an ordinary building.
@@ -168,6 +192,7 @@ describe('groupProject', () => {
     expect(g.edges).toEqual([
       { from: 'b-src-main-index', to: 'b-src-main-memoryhost', via: [fork] },
       { from: 'b-src-main-index', to: 'b-src-main-store', via: [] },
+      { from: 'b-src-main-index', to: 'b-src-main-util', via: [] },
       { from: 'b-src-main-memoryhost', to: 'b-src-main-store', via: [] },
       { from: 'b-src-main-store', to: 'b-src-main-indexer', via: [worker] }
     ])
@@ -206,8 +231,11 @@ describe('groupProject', () => {
     const g = groupProject(s, [f2, f1])
     checkInvariants(g, s.files)
     // Not imported (a test does not count), imports the most, then the shortest path.
-    expect(home(g, 'src/main/proxy/go.ts')).toMatchObject({ name: 'proxy', process: 'proxy' })
-    for (const f of ['aaaa', 'b', 'run', 'util']) expect(home(g, `src/main/proxy/${f}.ts`).process).toBe('main')
+    const proxy = home(g, 'src/main/proxy/go.ts')
+    expect(proxy).toMatchObject({ name: 'proxy', process: 'proxy' })
+    // The process is built from the folder, so the rest of the folder is part of it.
+    expect(proxy.members).toEqual(['aaaa.ts', 'b.ts', 'go.test.ts', 'go.ts', 'run.ts', 'util.ts'].map((f) => `src/main/proxy/${f}`))
+    expect(home(g, 'src/main/other.ts').process).toBe('main')
     expect(g.edges).toContainEqual({ from: 'b-src-main-index', to: home(g, 'src/main/proxy/go.ts').id, via: [f1, f2] })
   })
 
@@ -239,7 +267,8 @@ describe('groupProject', () => {
     const g = groupProject(s, [])
     checkInvariants(g, s.files)
     expect(home(g, 'src/lib/a.ts').members).toEqual(['src/lib/a.ts', 'src/lib/b.ts', 'src/lib/c.ts'])
-    expect(home(g, 'src/lib/a.ts')).toMatchObject({ id: 'b-src-lib--a', name: 'lib', process: '' })
+    // Named after its front door: a, b and c reach each other, and only a is imported from outside.
+    expect(home(g, 'src/lib/a.ts')).toMatchObject({ id: 'b-src-lib--a', name: 'a', process: '' })
     expect(home(g, 'src/lib/d.ts').members).toEqual(['src/lib/d.ts'])
     // A one-way chain only pairs up: density 1/(2*2*1) = 0.25 for the third link.
     expect(home(g, 'src/lib/x.ts')).toMatchObject({ id: 'b-src-lib--x', members: ['src/lib/x.ts', 'src/lib/y.ts'] })
@@ -333,7 +362,7 @@ describe('groupProject', () => {
     expect(home(g, 'src/a_b/x.ts').districtId).toBe('d-src-a-b-3')
     // src/main.ts and the src/main/{x,y} building share b-src-main, so both are tagged.
     expect(home(g, 'src/main.ts').id).toBe('b-src-main--main')
-    expect(home(g, 'src/main/x/a.ts')).toMatchObject({ id: 'b-src-main--a', name: 'main', members: ['src/main/x/a.ts', 'src/main/y/b.ts'] })
+    expect(home(g, 'src/main/x/a.ts')).toMatchObject({ id: 'b-src-main--a', name: 'a', members: ['src/main/x/a.ts', 'src/main/y/b.ts'] })
     // A natural id is never suffixed.
     expect(home(g, 'src/main-2.ts').id).toBe('b-src-main-2')
     // Same base and same first basename: -2 in path order.
@@ -440,13 +469,18 @@ describe('groupProject', () => {
     expect(ids({ 'apps/a/x.ts': [], 'apps/b/y.ts': [], 'lib/p.ts': [] })).toEqual(['d-apps-a', 'd-apps-b', 'd-lib'])
   })
 
-  it('names a multi-file building at the repository root "root"', () => {
-    const s = snap({ 'a.ts': ['./b'], 'b.ts': ['./a'], '_.ts': [] })
+  it('names a building after its folder, else "root", when every member name is taken', () => {
+    const s = snap({ 'a.ts': ['./b'], 'b.ts': ['./a'], '_.ts': [], 'main.ts': ['./renderer'], 'renderer.ts': ['./main'] })
     const g = groupProject(s, [])
     checkInvariants(g, s.files)
-    // '_' slugs to nothing, so it falls back to 'root' too; with no tag it keeps the bare base.
+    // '_' slugs to nothing, so its id falls back to 'root'; with no tag it keeps the bare base.
     expect(home(g, '_.ts')).toMatchObject({ id: 'b-root', name: '_' })
-    expect(home(g, 'a.ts')).toMatchObject({ id: 'b-root--a', name: 'root', districtId: 'd-root' })
+    expect(home(g, 'a.ts')).toMatchObject({ id: 'b-root--a', name: 'a', districtId: 'd-root' })
+    // 'main' and 'renderer' would pass for process entries, and the root folder has no name.
+    expect(home(g, 'main.ts')).toMatchObject({ name: 'root', members: ['main.ts', 'renderer.ts'] })
+    // In a named folder whose files are all called after it, the folder name is all that is left.
+    const t = snap({ 'src/tools/index.ts': ['./main'], 'src/tools/main.ts': ['./index'] })
+    expect(home(groupProject(t, []), 'src/tools/main.ts')).toMatchObject({ name: 'tools', members: ['src/tools/index.ts', 'src/tools/main.ts'] })
   })
 
   it('ipc provide/consume pairs become edges with via=[ipc boundary]', () => {
@@ -614,6 +648,112 @@ describe('groupProject', () => {
       checkInvariants(g2, s.files)
       expect(g2.buildings).toHaveLength(2)
       expect(home(g2, 'src/m/a1.ts')).toMatchObject({ process: 'pa', id: 'b-src-m-pa' })
+    })
+  })
+
+  it('an index file something other than a test imports is no process entry', () => {
+    const s = snap({ 'src/main/index.ts': [], 'src/main/app.ts': ['./index'], 'src/main/index.test.ts': ['./index'] })
+    const g = groupProject(s, [])
+    checkInvariants(g, s.files)
+    expect(home(g, 'src/main/index.ts')).toMatchObject({ process: 'main', members: ['src/main/app.ts', 'src/main/index.ts'] })
+    expect(home(g, 'src/main/index.ts').name).toBe('app')
+    // Imported by its test only, it is still the entry.
+    const t = snap({ 'src/main/index.ts': [], 'src/main/index.test.ts': ['./index'] })
+    expect(home(groupProject(t, []), 'src/main/index.ts')).toMatchObject({ name: 'main', members: ['src/main/index.ts'] })
+  })
+
+  it('groups free files by name family: a small sub-folder as one, a big folder by leading word', () => {
+    const fi: Record<string, string[]> = {
+      'src/app/memoryClient.ts': [],
+      'src/app/memoryGraph.ts': [],
+      'src/app/memoryStore.ts': ['./memoryGraph'],
+      'src/app/remoteHost.ts': [],
+      'src/app/remotePump.ts': [],
+      'src/app/ui.ts': [],
+      'src/app/xy.ts': [],
+      'src/app/widgets/a.ts': [],
+      'src/app/widgets/b.ts': [],
+      'src/app/widgets/c.ts': []
+    }
+    // Pad the folder past FAMILY_FOLDER_MAX with unrelated, uniquely named files.
+    const pad = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliet', 'kilo', 'lima']
+    for (const w of pad) fi[`src/app/${w}.ts`] = []
+    const s = snap(fi)
+    expect(s.files.filter((f) => /^src\/app\/[^/]+$/.test(f)).length).toBeGreaterThan(FAMILY_FOLDER_MAX)
+    const g = groupProject(s, [])
+    checkInvariants(g, s.files)
+    expect(home(g, 'src/app/memoryClient.ts').members).toEqual(['src/app/memoryClient.ts', 'src/app/memoryGraph.ts', 'src/app/memoryStore.ts'])
+    // The front door reaches most of the family.
+    expect(home(g, 'src/app/memoryClient.ts').name).toBe('memoryStore')
+    expect(home(g, 'src/app/remoteHost.ts').members).toEqual(['src/app/remoteHost.ts', 'src/app/remotePump.ts'])
+    expect(home(g, 'src/app/widgets/a.ts').members).toEqual(['src/app/widgets/a.ts', 'src/app/widgets/b.ts', 'src/app/widgets/c.ts'])
+    // Names with no leading word of three letters stand alone.
+    expect(home(g, 'src/app/ui.ts').members).toEqual(['src/app/ui.ts'])
+    expect(home(g, 'src/app/xy.ts').members).toEqual(['src/app/xy.ts'])
+  })
+
+  it('a big sub-folder groups by leading word too, and a small seed folder is not one family', () => {
+    const fi: Record<string, string[]> = { 'src/s/aaa1.ts': [], 'src/s/bbb.ts': [] }
+    for (let i = 0; i <= FAMILY_FOLDER_MAX; i++) fi[`src/s/big/w${String(i).padStart(2, '0')}.ts`] = []
+    fi['src/s/big/zetaOne.ts'] = []
+    fi['src/s/big/zetaTwo.ts'] = []
+    const g = groupProject(snap(fi), [])
+    checkInvariants(g, Object.keys(fi))
+    expect(home(g, 'src/s/big/zetaOne.ts').members).toEqual(['src/s/big/zetaOne.ts', 'src/s/big/zetaTwo.ts'])
+    expect(home(g, 'src/s/big/w00.ts').members).toEqual(['src/s/big/w00.ts'])
+    expect(home(g, 'src/s/aaa1.ts').members).toEqual(['src/s/aaa1.ts'])
+  })
+
+  it('names a building after a non-test member before any test', () => {
+    const s = snap({
+      'src/k/zed.test.ts': ['./zed', './yak'],
+      'src/k/zed.ts': ['./yak'],
+      'src/k/yak.ts': ['./zed']
+    })
+    const g = groupProject(s, [])
+    checkInvariants(g, s.files)
+    expect(g.buildings).toHaveLength(1)
+    // The test reaches the most, but a test is never the front door.
+    expect(g.buildings[0].name).toBe('yak')
+  })
+
+  describe('building cap targets', () => {
+    it('prefers the densest link over the heaviest one', () => {
+      const s = snap({
+        'src/m/a.ts': ['./big1', './big2', './small'],
+        'src/m/big1.ts': ['./big2', './big3', './big4'],
+        'src/m/big2.ts': ['./big1', './big3', './big4'],
+        'src/m/big3.ts': ['./big1', './big2', './big4'],
+        'src/m/big4.ts': ['./big1', './big2', './big3'],
+        'src/m/small.ts': ['./smallb'],
+        'src/m/smallb.ts': ['./small']
+      })
+      const free = groupProject(s, [])
+      expect(free.buildings).toHaveLength(3)
+      // a links twice to the four-file cluster (2/4) and once to the pair (1/2): a tie on density,
+      // broken by path order, so a joins big1's building.
+      const g = groupProject(s, [], { maxBuildings: 2 })
+      checkInvariants(g, s.files)
+      expect(home(g, 'src/m/a.ts').id).toBe(home(g, 'src/m/big1.ts').id)
+      const t = snap({ ...s.fileImports, 'src/m/a.ts': ['./big1', './small', './smallb'] })
+      const g2 = groupProject(t, [], { maxBuildings: 2 })
+      // Now 1/4 against 2/2: the pair is denser although the cluster is bigger.
+      expect(home(g2, 'src/m/a.ts').id).toBe(home(g2, 'src/m/small.ts').id)
+    })
+
+    it('never merges a plain building into a process building by link, but walks past it in path order', () => {
+      const s = snap({
+        'src/m/aa.ts': ['./bb'],
+        'src/m/bb.ts': [],
+        'src/m/cc.ts': [],
+        'src/solo/x.ts': []
+      })
+      const bounds = [B('worker', 'bb', 'consume', 'src/solo/x.ts')]
+      const g = groupProject(s, bounds, { maxBuildings: 3 })
+      checkInvariants(g, s.files)
+      // aa's only link is the bb worker; its path neighbour bb is a process too, so it skips to cc.
+      expect(home(g, 'src/m/bb.ts').members).toEqual(['src/m/bb.ts'])
+      expect(home(g, 'src/m/aa.ts').members).toEqual(['src/m/aa.ts', 'src/m/cc.ts'])
     })
   })
 

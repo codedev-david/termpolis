@@ -26,6 +26,8 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         emitSelect: (s: WorldSelection | null) => { for (const cb of selectCbs) cb(s) },
         selectListeners: () => selectCbs.size,
         getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), dispose: vi.fn(),
+        screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 1, y: 2 } : null)),
+        drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4 })),
       }
       h.viewers.push(v)
       return v
@@ -542,6 +544,50 @@ describe('WorldView', () => {
     expect(v.dispose).toHaveBeenCalled()
     expect(v.selectListeners()).toBe(0)
     expect(b.listeners()).toBe(0)
+  })
+
+  describe('the e2e probe (window.__termpolis_world)', () => {
+    const probe = () => (window as any).__termpolis_world
+    afterEach(() => {
+      delete (window as any).termpolisTestFlags
+      delete (window as any).__termpolis_world
+    })
+
+    it('is not there without the test flag', async () => {
+      bridge()
+      await mount()
+      expect(viewer()).toBeTruthy()
+      expect(probe()).toBeUndefined()
+    })
+
+    it('under the flag, answers from the viewer while it is up and goes with it', async () => {
+      ;(window as any).termpolisTestFlags = { worldProbe: true }
+      bridge()
+      const { unmount } = await mount()
+      expect(probe().screenPoint('b1')).toEqual({ x: 1, y: 2 })
+      expect(probe().screenPoint('zz')).toBeNull()
+      expect(probe().drawn()).toEqual({ layers: expect.objectContaining({ processes: false }), processShells: 0, conduits: 4 })
+      unmount()
+      expect(probe()).toBeUndefined()
+    })
+
+    it('leaves a probe that a later pane put up', async () => {
+      ;(window as any).termpolisTestFlags = { worldProbe: true }
+      bridge()
+      const { unmount } = await mount()
+      const other = { screenPoint: () => null, drawn: () => null }
+      ;(window as any).__termpolis_world = other
+      unmount()
+      expect(probe()).toBe(other)
+    })
+
+    it('is not there without WebGL (no viewer)', async () => {
+      ;(window as any).termpolisTestFlags = { worldProbe: true }
+      h.webgl = false
+      bridge()
+      await mount()
+      expect(probe()).toBeUndefined()
+    })
   })
 
   it('names the project after the doc, or after the folder while there is none', async () => {

@@ -28,6 +28,10 @@ export interface WorldViewer {
   getSelection(): string[]
   /** Ids of the buildings, externals and edges currently in view. */
   cameraRegion(): string[]
+  /** Where a building or external is on screen, in client pixels: null when it is not drawn in 3D or not in view. */
+  screenPoint(id: string): { x: number; y: number } | null
+  /** What is drawn now: the layer switches, and the process shells and conduits on the 3D map (0 in 2D). */
+  drawn(): WorldDrawn
   /**
    * Cancels running actions, clears the selection (renderCard(null) and a select(null) event) and
    * flies back to the overview.
@@ -40,6 +44,12 @@ export interface WorldViewer {
   resetView(): void
   /** Removes every listener and frees the renderer. Later calls to load() are ignored. */
   dispose(): void
+}
+
+export interface WorldDrawn {
+  layers: LayerState
+  processShells: number
+  conduits: number
 }
 
 export interface WorldViewerOptions {
@@ -450,6 +460,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     on,
     getSelection: () => (selection ? [selection.id] : []),
     cameraRegion: () => (r3 ? r3.visibleIds() : allIds()),
+    screenPoint: (id) => (r3 ? r3.screenPoint(id) : null),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0 }) }),
     resetView() {
       cancelActions()
       deselect()

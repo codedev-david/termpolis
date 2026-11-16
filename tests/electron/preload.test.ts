@@ -314,7 +314,7 @@ describe('preload: termpolisTestFlags', () => {
   it('ferries the E2E switches across, since the renderer has no process of its own', () => {
     expect(exposed.termpolisTestFlags).toBeDefined()
     // Plain booleans, both off in a normal (non-E2E) run.
-    expect(exposed.termpolisTestFlags).toEqual({ agents: false, timing: false, promptTrace: false })
+    expect(exposed.termpolisTestFlags).toEqual({ agents: false, timing: false, promptTrace: false, worldProbe: false })
   })
 })
 

@@ -265,7 +265,8 @@ function indexExtract(st: GraphState, ex: FileExtract, content: string): number 
     const refs = sym.refs ?? extractReferences(lines.slice(sym.startLine - 1, sym.endLine).join('\n'))
     addSymbolRec(st, { ...sym, id: symbolId(sym.file, sym.name, sym.startLine), refs })
   }
-  if (ex.imports.length) st.fileImports.set(ex.file, ex.imports)
+  // Every indexed file is recorded, even with no imports, so a snapshot lists symbol-less files too.
+  st.fileImports.set(ex.file, ex.imports)
   return ex.symbols.length
 }
 

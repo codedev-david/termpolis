@@ -13,11 +13,16 @@
 // Focus: the pane is modal. useFocusTrap keeps Tab and Shift+Tab inside it (so no key reaches the
 // terminal under it) and, on close, gives the focus back to the control that opened it, or to the
 // active terminal.
+//
+// E2E only (TERMPOLIS_TEST_WORLD_PROBE): window.__termpolis_world, a read-only probe of the map
+// (a part's place on screen, what is drawn), so a spec can click a building and see a layer change
+// without guessing at the 3D scene. Off in every normal run.
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import type { Tour, WorldDoc } from '../../../../shared/world/types'
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, renderFallback } from '../../world/engine'
-import type { LayerState, ThemeName, WorldViewer } from '../../world/engine'
+import type { LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
+import { exposesWorldProbe } from '../../lib/testAgents'
 import { WorldToolbar } from './WorldToolbar'
 import { WorldCard } from './WorldCard'
 import { WorldEmptyState } from './WorldEmptyState'
@@ -29,6 +34,12 @@ export interface WorldViewProps {
   onClose: () => void
   /** Plan 2's ask box: rendered at the bottom centre with the viewer (null without WebGL). */
   askSlot?: (viewer: WorldViewer | null) => ReactNode
+}
+
+/** The e2e probe on window.__termpolis_world. */
+export interface WorldProbe {
+  screenPoint(id: string): { x: number; y: number } | null
+  drawn(): WorldDrawn
 }
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
@@ -149,6 +160,15 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
       v.dispose()
     }
   }, [webgl])
+
+  // The e2e probe, while this viewer is up (and only under the test flag).
+  useEffect(() => {
+    if (!viewer || !exposesWorldProbe()) return
+    const w = window as unknown as { __termpolis_world?: WorldProbe }
+    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), drawn: () => viewer.drawn() }
+    w.__termpolis_world = probe
+    return () => { if (w.__termpolis_world === probe) delete w.__termpolis_world }
+  }, [viewer])
 
   useEffect(() => {
     if (!viewer || !doc) return

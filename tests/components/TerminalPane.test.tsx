@@ -547,6 +547,47 @@ describe('TerminalPane', () => {
       mountPane()
       expect(readHook('term-1')).toBe('first')
     })
+
+    describe('__termpolis_cursor_line', () => {
+      const cursorLine = (id?: string): string =>
+        (window as unknown as { __termpolis_cursor_line?: (id?: string) => string }).__termpolis_cursor_line?.(id) ?? 'HOOK-MISSING'
+      const active = mocks.mockTerminal.buffer.active as unknown as { baseY: number; cursorY: number }
+      afterEach(() => { active.baseY = 0; active.cursorY = 0 })
+      /** Rows as [text, isWrapped]; the cursor row is trimmed, the rows it continues are not. */
+      const rows = (r: Array<[string, boolean] | null>): void => {
+        mocks.mockTerminal.buffer.active.length = r.length
+        mocks.mockTerminal.buffer.active.getLine.mockImplementation((i: number) => {
+          const row = r[i]
+          return row ? { translateToString: (trim?: boolean) => (trim ? row[0].trimEnd() : row[0]), isWrapped: row[1] } : null
+        })
+      }
+
+      it('reads only the row the cursor is on, counted from the scrolled base', () => {
+        rows([['old', false], ['PS> ab  ', false], ['below', false]])
+        active.baseY = 1
+        active.cursorY = 0
+        mountPane()
+        expect(cursorLine('term-1')).toBe('PS> ab')
+        expect(cursorLine()).toBe('PS> ab')
+      })
+
+      it('joins the rows a long line wrapped onto, and stops at the first row', () => {
+        rows([['PS> abc', true], ['def ', true], ['gh', true]])
+        active.cursorY = 2
+        mountPane()
+        expect(cursorLine('term-1')).toBe('PS> abcdef gh')
+      })
+
+      it('reads a missing row as empty, and empty with no terminal', () => {
+        rows([null, ['x', true]])
+        active.cursorY = 1
+        mountPane()
+        expect(cursorLine('term-1')).toBe('x')
+        active.cursorY = 0
+        expect(cursorLine('term-1')).toBe('')
+        expect(cursorLine('no-such-terminal')).toBe('')
+      })
+    })
   })
 
   // Regression for Sentry issue #16: xterm's WebGL addon throws

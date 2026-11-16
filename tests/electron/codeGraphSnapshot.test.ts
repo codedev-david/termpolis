@@ -85,12 +85,21 @@ describe('graphSnapshot', () => {
     expect(s.files).toEqual(['src/main/a.ts', 'src/main/b.ts'])
     expect(s.symbols.every((x) => x.file.startsWith('src/main/'))).toBe(true)
     expect(s.symbols.length).toBe(2)
-    expect(Object.keys(s.fileImports)).toEqual(['src/main/a.ts'])
+    expect(Object.keys(s.fileImports)).toEqual(['src/main/a.ts', 'src/main/b.ts'])
+    expect(s.fileImports['src/main/b.ts']).toEqual([])
     expect(graphSnapshot('k').root).toBe('C:')
   })
 
   it('unknown key with explicit root echoes the root', () => {
     expect(graphSnapshot('nope', ['C:', 'r', ''].join(BS)).root).toBe('C:/r')
+  })
+
+  it('lists a file that has neither imports nor symbols', () => {
+    indexFileContent('C:/repo/src/main.tsx', '// mounts the page\n', 'k')
+    indexFileContent(B, bSrc, 'k')
+    const s = graphSnapshot('k')
+    expect(s.files).toEqual(['lib/b.ts', 'main.tsx'])
+    expect(s.fileImports['main.tsx']).toEqual([])
   })
 
   it('lists a file that has imports but no symbols', () => {

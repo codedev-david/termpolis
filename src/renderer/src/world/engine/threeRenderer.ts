@@ -57,6 +57,10 @@ export interface ThreeRenderer {
   setCursor(pointer: boolean): void
   /** Node and edge ids whose anchor is inside the camera frustum. */
   visibleIds(): string[]
+  /** Where a node's top floor (an orb's centre) is on screen, in client pixels; null when it is not drawn or not in view. */
+  screenPoint(id: string): { x: number; y: number } | null
+  /** How many process shells and conduits the last draw put up. */
+  drawnCounts(): { processShells: number; conduits: number }
   dispose(): void
 }
 
@@ -276,6 +280,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let focus: RenderFocus | null = null
   let selectedId: string | null = null
   let explodedId: string | null = null
+  let shellCount = 0
 
   function addLabel(parent: THREE.Object3D, kind: LabelKind, pos: [number, number, number], build: (el: HTMLDivElement) => void): LabelRec {
     const el = document.createElement('div')
@@ -298,6 +303,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     })
     world.clear()
     nodes = new Map(); edges = new Map(); pickables = []; labels = []; ghostMats = []; seals = []; fogSprites = []; pulseBalls = []
+    shellCount = 0
     selRing = null
   }
 
@@ -360,6 +366,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const shell = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.22 }))
     if (orb) shell.position.y = ORB_R
     n.group.add(shell)
+    shellCount++
     addLabel(n.group, 'proc', [0, (orb ? ORB_R + shellR : shellR) + 0.6, 0], (el) => {
       el.textContent = '⬡ ' + (pc ? pc.label : procId)
       el.style.color = color
@@ -708,6 +715,19 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return edge ? { kind: 'edge', id: edge.object.userData.edgeId as string } : null
   }
 
+  function screenPoint(id: string): { x: number; y: number } | null {
+    const n = nodes.get(id)
+    const r = renderer.domElement.getBoundingClientRect()
+    if (!n || r.width === 0 || r.height === 0) return null
+    scene.updateMatrixWorld()
+    camera.updateMatrixWorld()
+    const top = n.floors[n.floors.length - 1]
+    const p = top ? top.getWorldPosition(new THREE.Vector3()) : n.group.getWorldPosition(new THREE.Vector3()).setY(n.group.position.y + ORB_R)
+    p.project(camera)
+    if (Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || Math.abs(p.z) > 1) return null
+    return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height }
+  }
+
   function visibleIds(): string[] {
     camera.updateMatrixWorld()
     const m = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
@@ -898,6 +918,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     pick,
     setCursor(pointer) { renderer.domElement.style.cursor = pointer ? 'pointer' : 'default' },
     visibleIds,
+    screenPoint,
+    drawnCounts: () => ({ processShells: shellCount, conduits: edges.size }),
     dispose() {
       if (disposed) return
       disposed = true

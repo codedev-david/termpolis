@@ -4,13 +4,14 @@
 // codeGraph is a type import only, so tree-sitter never loads in the utility process.
 //
 // Reads: only `snap.files` (joined onto `snap.root`), skipping ignored folders; the test-result
-// reader reads the report files its own glob finds. Each file text feeds the detectors and the
-// OpenTelemetry service-name scan.
+// reader reads the report files its own glob finds. Each file text feeds the detectors, the
+// OpenTelemetry service-name scan and the relative-import scan (merged into `snap.fileImports`).
 import type { GraphSnapshot } from '../codeGraph'
 import type { Building, District, External, Tour, WorldDoc, WorldEdge } from '../../shared/world/types'
 import { detectBoundaries, MAX_DETECT_FILE_CHARS, stripComments, type Boundary } from './detectors'
 import { baseKey } from './detectors/common'
 import { edgeId, groupProject, isIgnored, resolveImport, slug, type GroupBuilding, type Grouping } from './group'
+import { relativeImports, withImports } from './imports'
 import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
 import { readTestResults, statusFor, TEST_FILE, type TestRun } from './testStatus'
@@ -313,7 +314,8 @@ export function buildTours(g: Grouping, labels: Labels): Tour[] {
 }
 
 export async function compileWorld(input: CompileInput, deps: CompileDeps): Promise<WorldDoc> {
-  const { snap, previous } = input
+  const { previous } = input
+  let { snap } = input
   const progress = (stage: CompileStage, pct: number): void => deps.onProgress?.(stage, pct)
   progress('structure', 0)
 
@@ -322,6 +324,7 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
   const files = [...new Set(snap.files)].filter((f) => !isIgnored(f)).sort()
   const bounds: Boundary[] = []
   const names = new Map<string, string[]>()
+  const scanned = new Map<string, string[]>()
   progress('boundaries', 5)
   for (let i = 0; i < files.length; i += READ_CHUNK) {
     const chunk = files.slice(i, i + READ_CHUNK)
@@ -330,12 +333,16 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
       const text = texts[k]
       if (text === null || text.length > MAX_DETECT_FILE_CHARS) return
       for (const b of detectBoundaries(f, text)) bounds.push(b)
+      const specs = relativeImports(f, text)
+      if (specs.length > 0) scanned.set(f, specs)
       const found = serviceNames(f, text)
       if (found.length > 0) names.set(f, found)
     })
     progress('boundaries', 5 + Math.round((35 * Math.min(files.length, i + READ_CHUNK)) / files.length))
   }
 
+  // The graph's tree-sitter path keeps no import specifiers; the text's own fill the gap.
+  snap = withImports(snap, scanned)
   progress('grouping', 45)
   const g = groupProject(snap, bounds)
 

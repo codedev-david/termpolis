@@ -112,7 +112,8 @@ describe('compileWorld', () => {
     // Districts: sorted by id, golden-angle hues.
     expect(doc.districts.map((d) => d.id)).toEqual(['d-root', 'd-src-main', 'd-src-renderer'])
     expect(doc.districts.map((d) => d.hue)).toEqual([0, 138, 275])
-    expect(doc.buildings.map((b) => b.id)).toEqual([ENV, MAIN, VIEW, RENDERER])
+    // The main entry stands alone; its imports are buildings of their own.
+    expect(doc.buildings.map((b) => b.id)).toEqual([ENV, MAIN, 'b-src-main-ipc', 'b-src-main-telemetry', VIEW, RENDERER])
 
     // Status: the view is covered by a passing linked test; main has none.
     const byId = new Map(doc.buildings.map((b) => [b.id, b]))
@@ -173,6 +174,17 @@ describe('compileWorld', () => {
     const allowed = new Set([...Object.keys(FIXTURE).map((f) => `${ROOT}/${f}`), REPORT])
     expect(deps.reads.every((p) => allowed.has(p))).toBe(true)
     expect(deps.reads).toContain(`${ROOT}/src/main/index.ts`)
+  })
+
+  it('reads relative imports from the file text when the graph has none', async () => {
+    const doc = await compileWorld({ snap: snapOf(FIXTURE, {}), projectKey: 'demo', head: HEAD, previous: null }, mkDeps())
+    expectValid(doc)
+    // The same buildings and import edges as with the graph's specifiers, and the test still links.
+    const withGraph = await compileWorld({ snap: snapOf(FIXTURE), projectKey: 'demo', head: HEAD, previous: null }, mkDeps())
+    expect(doc.buildings.map((b) => b.id)).toEqual(withGraph.buildings.map((b) => b.id))
+    expect(doc.edges.map((e) => e.id)).toEqual(withGraph.edges.map((e) => e.id))
+    expect(doc.edges.some((e) => e.from === RENDERER && e.to === VIEW)).toBe(true)
+    expect(doc.buildings.find((b) => b.id === VIEW)?.status).toBe('verified')
   })
 
   it('runtimeNames filled from detected OpenTelemetry service.name literals', async () => {

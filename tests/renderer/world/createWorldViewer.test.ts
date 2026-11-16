@@ -7,6 +7,7 @@ import type { RenderPick, ThreeRenderer } from '../../../src/renderer/src/world/
 import type { WorldDoc } from '../../../src/shared/world/types'
 import { createWorldViewer, hasWebGL, type WorldSelection } from '../../../src/renderer/src/world/engine/createWorldViewer'
 import { ACTION_GAP_MS } from '../../../src/renderer/src/world/engine/actionQueue'
+import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine/sceneModel'
 import { minimal, rich } from './helpers'
 
 const { createThreeRenderer } = vi.hoisted(() => ({ createThreeRenderer: vi.fn() }))
@@ -330,6 +331,13 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.cameraRegion()).toEqual(['b1', 'b2', 'x1', 'e1'])
   })
 
+  it('has no screen points and draws no shells or conduits in 2D, but reports the layers', () => {
+    const { viewer } = setup({ doc: minimal() })
+    viewer.setLayers({ processes: true })
+    expect(viewer.screenPoint('b1')).toBeNull()
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0 })
+  })
+
   it('keeps an existing tabindex and positioning', () => {
     const host = document.createElement('div')
     host.tabIndex = 3
@@ -382,6 +390,8 @@ function fakeRenderer(host: HTMLElement) {
     draw: vi.fn(), setTheme: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
     frame: vi.fn(async () => undefined), overview: vi.fn(async () => undefined), pulse: vi.fn(async () => undefined),
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), visibleIds: vi.fn(() => ['b1']),
+    screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
+    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3 })),
     dispose: vi.fn(() => { canvas.remove() }),
   } satisfies ThreeRenderer
   return { r, aim: (h: RenderPick | null): void => { hit = h } }
@@ -499,6 +509,13 @@ describe('WebGL path (stand-in renderer)', () => {
     await viewer.apply({ type: 'reset' })
     expect(r.overview).toHaveBeenLastCalledWith(true)
     expect(viewer.cameraRegion()).toEqual(['b1'])
+  })
+
+  it('screenPoint and drawn come from the renderer', () => {
+    const { viewer } = setup3d()
+    expect(viewer.screenPoint('b1')).toEqual({ x: 5, y: 6 })
+    expect(viewer.screenPoint('nope')).toBeNull()
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3 })
   })
 
   it('setTheme hands the palette to the renderer; setLayers redraws', () => {

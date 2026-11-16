@@ -298,8 +298,24 @@ function readTerminalSize(terminalId?: string): { cols: number; rows: number } |
   return term ? { cols: term.cols, rows: term.rows } : null
 }
 
+/** The logical line the cursor is on (its wrapped rows joined), from xterm's buffer: what an e2e
+ *  spec polls for a keystroke's echo, a few rows instead of the whole buffer. */
+function readCursorLine(terminalId?: string): string {
+  const term = (terminalId ? liveTerminals.get(terminalId) : activeTerminal())?.term
+  if (!term) return ''
+  const buf = term.buffer.active
+  let y = buf.baseY + buf.cursorY
+  let text = buf.getLine(y)?.translateToString(true) ?? ''
+  while (y > 0 && buf.getLine(y)?.isWrapped) {
+    y--
+    text = (buf.getLine(y)?.translateToString(false) ?? '') + text
+  }
+  return text
+}
+
 if (typeof window !== 'undefined') {
   ;(window as unknown as { __termpolis_terminal_size?: typeof readTerminalSize }).__termpolis_terminal_size = readTerminalSize
+  ;(window as unknown as { __termpolis_cursor_line?: typeof readCursorLine }).__termpolis_cursor_line = readCursorLine
   // Read-only test inspection hook — used by e2e terminal tests.
   ;(window as unknown as { __termpolis_terminal_text?: typeof readTerminalText }).__termpolis_terminal_text =
     readTerminalText

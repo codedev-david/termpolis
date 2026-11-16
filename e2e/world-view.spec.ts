@@ -7,12 +7,18 @@
  *      main compiles (code graph first, then the world in its utility process) and the pane draws on
  *      a WebGL canvas.
  *   2. Clicking a building on the canvas opens that building's card.
- *   3. "What runs where" (the Processes layer) toggles.
+ *   3. "What runs where" (the Processes layer) draws the process shells, and takes them away again.
  *   4. A tour plays, and its caption changes from step to step.
- *   5. The renderer logged no console error and threw no page error through all of it.
- *   6. Typing in a terminal while a bigger project compiles: the p95 keystroke-to-echo time stays
- *      under 50 ms. Measured in the renderer, from the key's keydown to the moment xterm's buffer
- *      holds the echoed character, with the first keys dropped as warm-up.
+ *   5. Typing in a terminal while a bigger project compiles: the p95 keystroke-to-echo time stays
+ *      under 50 ms, over at least 60 keys pressed while the compile ran. Measured in the renderer,
+ *      from the key's keydown to the moment the echoed character is on xterm's cursor line; the
+ *      warm-up keys before the compile starts are not counted.
+ *   6. Last, over the whole session (compiles, clicks, tour, typing): the renderer logged no console
+ *      error and threw no page error.
+ *
+ * Steps 2 and 3 read the map through window.__termpolis_world, a read-only probe the pane puts up
+ * only under TERMPOLIS_TEST_WORLD_PROBE=1 (a building's place on screen, what is drawn), so the
+ * spec clicks a known building instead of scanning the canvas.
  *
  * The fixture projects are temp git repositories (the code graph lists a project's files with
  * `git ls-files`). Labelling is switched off in the temp profile (world-settings.json), so the world
@@ -35,8 +41,14 @@ let loadProject: string
 const consoleErrors: string[] = []
 
 const P95_BUDGET_MS = 50
-const WARMUP_KEYS = 8
-const MEASURED_KEYS = 60
+/** Keys typed before the compile starts: they warm the shell and the renderer, and are not counted. */
+const WARMUP_KEYS = 10
+/** The fewest keys pressed during the compile for the p95 to count. */
+const MIN_SAMPLES = 60
+/** A steady typist: one key every 50 ms. */
+const KEY_GAP_MS = 50
+/** Keys per shell line before it is cleared, so the line (and its redraw) stays short. */
+const LINE_KEYS = 40
 
 /** Writes `files` under a new temp folder and makes it a git repository with every file staged. */
 function makeRepo(label: string, files: Record<string, string>): string {
@@ -95,11 +107,14 @@ const PROJECT_FILES: Record<string, string> = {
   'src/renderer/NoteRow.ts': 'export const row = (n: string): string => `<li>${n}</li>`\n',
 }
 
-/** A bigger project for the typing measurement: enough files that the compile is still running. */
+/** A bigger project for the typing measurement: enough files that the compile outlasts the typing
+ *  of MIN_SAMPLES keys several times over, on a fast machine too. */
+const LOAD_AREAS = ['api', 'core', 'jobs', 'ui', 'data', 'auth', 'mail', 'billing', 'search', 'audit', 'files', 'admin']
+const LOAD_FILES_PER_AREA = 200
 function loadFiles(): Record<string, string> {
   const files: Record<string, string> = {}
-  for (const area of ['api', 'core', 'jobs', 'ui', 'data', 'auth', 'mail', 'billing']) {
-    for (let i = 0; i < 80; i++) {
+  for (const area of LOAD_AREAS) {
+    for (let i = 0; i < LOAD_FILES_PER_AREA; i++) {
       const imports = [1, 2, 3].map((k) => (i - k >= 0 ? `import { f${i - k} } from './m${i - k}'\n` : '')).join('')
       const body = Array.from({ length: 12 }, (_, k) => `  const v${k} = f${Math.max(0, i - 1)}(${k}) + ${k}\n  if (v${k} > ${k * 3}) return v${k}\n`).join('')
       files[`src/${area}/m${i}.ts`] = `${imports}export function f${i}(x: number): number {\n${body}  return x\n}\n`
@@ -131,7 +146,7 @@ test.beforeAll(async () => {
       '--ignore-gpu-blocklist',
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
     ],
-    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_SMOKE_SKIP_PICKERS: '1' },
+    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_SMOKE_SKIP_PICKERS: '1', TERMPOLIS_TEST_WORLD_PROBE: '1' },
   })
   page = await app.firstWindow()
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
@@ -179,15 +194,20 @@ const pane = () => page.locator('[data-testid="world-view"]')
 const canvas = () => page.locator('[data-testid="world-canvas-host"] canvas')
 const card = () => page.locator('[data-testid="world-card"]')
 
-/** The names of the world's buildings, as main stored them for the project. */
-async function buildingNames(root: string): Promise<string[]> {
+/** The world's buildings (id and name), as main stored them for the project. */
+async function buildings(root: string): Promise<Array<{ id: string; name: string }>> {
   return page.evaluate(async (r) => {
-    const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: { buildings: { name: string }[] } | null }> } }).termpolis
+    const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: { buildings: { id: string; name: string }[] } | null }> } }).termpolis
     const top = await api.gitFindRoot(r)
     const res = await api.worldGet(top.success && top.data ? top.data : r)
-    return res.success && res.data ? res.data.buildings.map((b) => b.name) : []
+    return res.success && res.data ? res.data.buildings.map((b) => ({ id: b.id, name: b.name })) : []
   }, root)
 }
+
+interface Drawn { layers: { processes: boolean }; processShells: number; conduits: number }
+interface Probe { screenPoint(id: string): { x: number; y: number } | null; drawn(): Drawn }
+const drawn = (): Promise<Drawn | null> =>
+  page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn() ?? null)
 
 test.describe.serial('Lumopolis in the real app', () => {
   test.setTimeout(180_000)
@@ -198,10 +218,11 @@ test.describe.serial('Lumopolis in the real app', () => {
     // only when the focus is outside it, as after clicking away.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
     await page.keyboard.press('Control+k')
-    const input = page.locator('input[placeholder="Type a command..."]')
+    const input = page.getByPlaceholder('Type a command...')
     await expect(input).toBeVisible()
     await input.fill('Open Lumopolis')
-    const result = page.locator('.fixed.z-50 .overflow-y-auto button').filter({ hasText: 'Open Lumopolis' }).first()
+    // The palette's result, by its label and description (the sidebar has an 'Open Lumopolis' button too).
+    const result = page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ })
     await expect(result).toBeVisible()
     await result.click()
 
@@ -210,46 +231,46 @@ test.describe.serial('Lumopolis in the real app', () => {
     await expect(page.locator('[data-testid="world-fallback"]')).toHaveCount(0)
     await expect(canvas()).toBeVisible({ timeout: 90_000 })
     await expect(page.locator('[data-testid="world-canvas-host"]')).not.toHaveClass(/invisible/, { timeout: 90_000 })
-    expect((await buildingNames(project)).length).toBeGreaterThan(1)
+    expect((await buildings(project)).length).toBeGreaterThan(1)
   })
 
   test('2. clicking a building opens its card', async () => {
-    const names = await buildingNames(project)
+    const all = await buildings(project)
     // Let the camera's first framing settle before aiming at it.
     await page.waitForTimeout(1500)
     const box = (await canvas().boundingBox())!
-    // There is no hook into the 3D scene from the app, so the spec looks for a building the way a
-    // person would: clicking across the map until a building's card opens. The right-hand strip is
-    // left out, because the card sits there.
-    let opened = ''
-    outer: for (let row = 1; row < 12; row++) {
-      for (let col = 1; col < 16; col++) {
-        const x = box.x + ((box.width - 360) * col) / 16
-        const y = box.y + (box.height * row) / 12
-        await page.mouse.click(x, y)
-        await page.waitForTimeout(120)
-        if (!(await card().isVisible().catch(() => false))) continue
-        const title = ((await card().locator('h3').first().textContent().catch(() => '')) ?? '').trim()
-        if (names.includes(title)) {
-          opened = title
-          break outer
-        }
+    // The probe says where each building is on screen; the first one clear of the card's strip on
+    // the right is clicked as a person would, and its card must open with its name.
+    let target: { id: string; name: string; x: number; y: number } | null = null
+    for (const b of all) {
+      const pt = await page.evaluate((id) => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.screenPoint(id) ?? null, b.id)
+      if (pt && pt.x > box.x + 8 && pt.x < box.x + box.width - 380 && pt.y > box.y + 8 && pt.y < box.y + box.height - 8) {
+        target = { ...b, ...pt }
+        break
       }
     }
-    expect(opened, 'no click on the map opened a building card').not.toBe('')
-    await expect(card().locator('h3').first()).toHaveText(opened)
+    expect(target, `no building of ${all.length} is on screen clear of the card strip`).not.toBeNull()
+    await page.mouse.click(target!.x, target!.y)
+    await expect(card()).toBeVisible()
+    await expect(card().locator('h3').first()).toHaveText(target!.name)
     await expect(card()).toContainText('What it does')
     await expect(card()).toContainText('Process')
   })
 
-  test('3. "What runs where" toggles the processes layer', async () => {
+  test('3. "What runs where" draws the process shells, and takes them away again', async () => {
     const toggle = page.locator('[data-testid="world-layer-processes"]')
     await expect(toggle).toBeVisible()
-    const before = await toggle.getAttribute('aria-pressed')
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    expect(await drawn()).toMatchObject({ layers: { processes: false }, processShells: 0 })
     await toggle.click()
-    await expect(toggle).toHaveAttribute('aria-pressed', before === 'true' ? 'false' : 'true')
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    // The notes project has a main process, a forked host, a preload and a renderer: shells are drawn.
+    await expect.poll(async () => (await drawn())?.processShells ?? 0).toBeGreaterThan(0)
+    expect((await drawn())!.layers.processes).toBe(true)
     await toggle.click()
-    await expect(toggle).toHaveAttribute('aria-pressed', before ?? 'false')
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    await expect.poll(async () => (await drawn())?.processShells ?? -1).toBe(0)
+    expect((await drawn())!.layers.processes).toBe(false)
   })
 
   test('4. a tour plays and its caption changes from step to step', async () => {
@@ -276,87 +297,126 @@ test.describe.serial('Lumopolis in the real app', () => {
     expect(new Set(captions).size).toBeGreaterThanOrEqual(2)
   })
 
-  test('5. the renderer logged no console errors', async () => {
-    expect(consoleErrors).toEqual([])
-  })
-
-  test('6. typing stays quick while a project compiles (p95 keystroke echo < 50 ms)', async () => {
-    test.setTimeout(240_000)
+  test('5. typing stays quick while a project compiles (p95 keystroke echo < 50 ms)', async () => {
+    test.setTimeout(300_000)
     // Stop the tour (it may still be running) by closing its card, then close the pane.
     if (await card().isVisible().catch(() => false)) await page.locator('[data-testid="world-card-close"]').click()
     await page.locator('[data-testid="world-close"]').click()
     await expect(pane()).toHaveCount(0)
     await createTerminal('Typing', project)
 
-    // The renderer's side of the measurement: a capture-phase keydown stamp per printable key, and a
-    // fast poll of xterm's buffer that stamps each key when its character shows up after the marker.
+    // The renderer's side of the measurement. A capture-phase keydown stamps each printable key
+    // (the line marker's two capitals excepted), and a 1 ms poll of the terminal's cursor line (a
+    // row or two, never the whole buffer) stamps each key once its character is on the line after
+    // the marker. Each shell line holds the marker and up to LINE_KEYS keys; the spec clears it and
+    // starts a new one (`newLine()`), so the line's redraw stays the same size all the way through.
     const marker = 'ZQ'
-    const keys = Array.from({ length: WARMUP_KEYS + MEASURED_KEYS }, (_, i) => 'abcdefghijklmnopqrstuvwxyz'[i % 26]).join('')
-    await page.evaluate(({ marker, keys }) => {
-      const w = window as unknown as {
-        __termpolis_terminal_text?: () => string
-        __echo: { down: number[]; echo: number[]; done: boolean; compiling: boolean; compileEnd: number }
+    await page.evaluate((marker) => {
+      interface Echo {
+        down: number[]; echo: number[]; lineBase: number; lineKeys: string; done: boolean
+        compiling: boolean; compileStart: number; compileEnd: number; compileError?: string
       }
-      const s = { down: [] as number[], echo: [] as number[], done: false, compiling: false, compileEnd: 0 }
+      const w = window as unknown as { __termpolis_cursor_line?: () => string; __echo: Echo; __echoLine: () => void }
+      const s: Echo = { down: [], echo: [], lineBase: 0, lineKeys: '', done: false, compiling: false, compileStart: 0, compileEnd: 0 }
       w.__echo = s
+      w.__echoLine = () => { s.lineBase = s.down.length; s.lineKeys = '' }
       window.addEventListener('keydown', (e) => {
-        if (e.key.length === 1 && e.key !== marker[0] && e.key !== marker[1]) s.down.push(performance.now())
+        if (e.key.length !== 1 || e.key === marker[0] || e.key === marker[1]) return
+        s.down.push(performance.now())
+        s.echo.push(0)
+        s.lineKeys += e.key
       }, true)
       const poll = (): void => {
         if (s.done) return
-        const text = (w.__termpolis_terminal_text?.() ?? '').replace(/\r?\n/g, '')
-        const at = text.lastIndexOf(marker)
-        if (at >= 0) {
-          let n = 0
-          while (n < keys.length && text[at + marker.length + n] === keys[n]) n++
-          const now = performance.now()
-          while (s.echo.length < Math.min(n, s.down.length)) s.echo.push(now)
+        if (s.lineKeys) {
+          const line = w.__termpolis_cursor_line?.() ?? ''
+          const at = line.lastIndexOf(marker)
+          if (at >= 0) {
+            let n = 0
+            while (n < s.lineKeys.length && line[at + marker.length + n] === s.lineKeys[n]) n++
+            const now = performance.now()
+            for (let k = 0; k < n; k++) if (!s.echo[s.lineBase + k]) s.echo[s.lineBase + k] = now
+          }
         }
         setTimeout(poll, 1)
       }
       poll()
-    }, { marker, keys })
-    await page.keyboard.type(marker, { delay: 50 })
-    await expect.poll(() => page.evaluate(() => {
-      const t = (window as unknown as { __termpolis_terminal_text?: () => string }).__termpolis_terminal_text?.() ?? ''
-      return t.includes('ZQ')
-    }), { timeout: 20_000 }).toBe(true)
+    }, marker)
+
+    const letters = 'abcdefghijklmnoprstuvwxy'
+    let typed = 0
+    const allEchoed = (): Promise<boolean> =>
+      page.evaluate(() => (window as unknown as { __echo: { echo: number[] } }).__echo.echo.every((t) => t > 0))
+    const markerShown = (): Promise<boolean> =>
+      page.evaluate((m) => ((window as unknown as { __termpolis_cursor_line?: () => string }).__termpolis_cursor_line?.() ?? '').includes(m), marker)
+    // Clears the shell's line (nothing typed here is ever run).
+    const clearLine = (): Promise<void> => page.keyboard.press(process.platform === 'win32' ? 'Escape' : 'Control+u')
+    const newLine = async (): Promise<void> => {
+      await expect.poll(allEchoed, { timeout: 20_000 }).toBe(true)
+      await clearLine()
+      await expect.poll(markerShown, { timeout: 20_000 }).toBe(false)
+      await page.evaluate(() => (window as unknown as { __echoLine: () => void }).__echoLine())
+      await page.keyboard.type(marker, { delay: KEY_GAP_MS })
+      await expect.poll(markerShown, { timeout: 20_000 }).toBe(true)
+    }
+    const key = async (): Promise<void> => {
+      await page.keyboard.press(letters[typed++ % letters.length])
+      await page.waitForTimeout(KEY_GAP_MS)
+    }
+
+    // Warm-up, before any load: typed and echoed, and not counted.
+    await page.keyboard.type(marker, { delay: KEY_GAP_MS })
+    await expect.poll(markerShown, { timeout: 20_000 }).toBe(true)
+    for (let i = 0; i < WARMUP_KEYS; i++) await key()
 
     // The load: main builds the bigger project's code graph, then its utility process compiles it.
+    // The compile starts first; the typing then runs at a steady pace until it has ended.
     await page.evaluate((root) => {
-      const w = window as unknown as { termpolis: { worldCompile: (r: string) => Promise<{ success: boolean; error?: string }> }; __echo: { compiling: boolean; compileEnd: number; compileError?: string } }
+      const w = window as unknown as { termpolis: { worldCompile: (r: string) => Promise<{ success: boolean; error?: string }> }; __echo: { compiling: boolean; compileStart: number; compileEnd: number; compileError?: string } }
       w.__echo.compiling = true
+      w.__echo.compileStart = performance.now()
       void w.termpolis.worldCompile(root).then(
         (r) => { if (!r.success) w.__echo.compileError = r.error },
         (e: unknown) => { w.__echo.compileError = String(e) },
       ).finally(() => { w.__echo.compiling = false; w.__echo.compileEnd = performance.now() })
     }, loadProject)
-
-    // A person typing at a steady pace, one key every 60 ms.
-    for (const k of keys) await page.keyboard.press(k, { delay: 0 }).then(() => page.waitForTimeout(60))
-    await expect.poll(() => page.evaluate(() => (window as unknown as { __echo: { echo: number[] } }).__echo.echo.length), { timeout: 20_000 }).toBe(keys.length)
-    await expect.poll(() => page.evaluate(() => (window as unknown as { __echo: { compiling: boolean } }).__echo.compiling), { timeout: 120_000 }).toBe(false)
+    await newLine()
+    const compiling = (): Promise<boolean> => page.evaluate(() => (window as unknown as { __echo: { compiling: boolean } }).__echo.compiling)
+    const deadline = Date.now() + 240_000
+    let onLine = 0
+    while ((await compiling()) && Date.now() < deadline) {
+      if (onLine === LINE_KEYS) { await newLine(); onLine = 0 }
+      await key()
+      onLine++
+    }
+    // A few keys after the end, so the last keys pressed during the compile echo under the same
+    // pattern; then every echo is awaited and the line cleared.
+    for (let i = 0; i < 5; i++) await key()
+    await expect.poll(allEchoed, { timeout: 20_000 }).toBe(true)
+    await clearLine()
 
     const r = await page.evaluate(() => {
-      const s = (window as unknown as { __echo: { down: number[]; echo: number[]; compileEnd: number; compileError?: string; done: boolean } }).__echo
+      const s = (window as unknown as { __echo: { down: number[]; echo: number[]; compiling: boolean; compileStart: number; compileEnd: number; compileError?: string; done: boolean } }).__echo
       s.done = true
-      return { down: s.down, echo: s.echo, compileEnd: s.compileEnd, compileError: s.compileError }
+      return { down: s.down, echo: s.echo, compiling: s.compiling, compileStart: s.compileStart, compileEnd: s.compileEnd, compileError: s.compileError }
     })
+    expect(r.compiling, 'the compile was still running after 240 s of typing').toBe(false)
     expect(r.compileError ?? null).toBeNull()
-    // Warm-up keys dropped; only keys pressed while the compile was still running count.
-    const lat = r.down
-      .map((d, i) => ({ d, ms: r.echo[i] - d }))
-      .slice(WARMUP_KEYS)
-      .filter((x) => x.d < r.compileEnd)
-      .map((x) => x.ms)
-      .sort((a, b) => a - b)
-    const p95 = lat[Math.min(lat.length - 1, Math.ceil(lat.length * 0.95) - 1)]
-    const p50 = lat[Math.floor(lat.length / 2)]
-    console.log(`[typing while compiling] keys=${lat.length} p50=${p50?.toFixed(1)}ms p95=${p95?.toFixed(1)}ms max=${lat[lat.length - 1]?.toFixed(1)}ms`)
-    expect(lat.length, 'the compile ended before enough keys were measured').toBeGreaterThanOrEqual(20)
-    expect(p95).toBeLessThan(P95_BUDGET_MS)
+    // Only keys pressed while the compile ran count: that leaves out the warm-up and the tail.
+    const during = r.down.map((d, i) => ({ d, ms: r.echo[i] - d })).filter((x) => x.d >= r.compileStart && x.d < r.compileEnd)
+    const lat = during.map((x) => x.ms).sort((a, b) => a - b)
+    const n = lat.length
+    const p95 = lat[Math.min(n - 1, Math.ceil(n * 0.95) - 1)]
+    const p50 = lat[Math.floor(n / 2)]
+    const compileMs = r.compileEnd - r.compileStart
+    const span = n ? `${(during[0].d - r.compileStart).toFixed(0)}..${(during[n - 1].d - r.compileStart).toFixed(0)} ms` : 'none'
+    const summary = `samples=${n} (of ${r.down.length} keys, ${WARMUP_KEYS} warm-up) compile=${compileMs.toFixed(0)} ms, keys at ${span}, p50=${p50?.toFixed(1)} ms p95=${p95?.toFixed(1)} ms max=${lat[n - 1]?.toFixed(1)} ms`
+    console.log(`[typing while compiling] ${summary}`)
+    expect(n, `too few keys pressed during the compile: ${summary}`).toBeGreaterThanOrEqual(MIN_SAMPLES)
+    expect(p95, `p95 keystroke echo over budget: ${summary}`).toBeLessThan(P95_BUDGET_MS)
+  })
 
-    // Leave the shell's line empty: nothing typed here is ever run.
-    await page.keyboard.press('Escape')
+  test('6. over the whole session, the renderer logged no console errors and threw no page errors', async () => {
+    expect(consoleErrors).toEqual([])
   })
 })

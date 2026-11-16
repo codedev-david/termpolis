@@ -10,6 +10,7 @@ const TEST_FLAG_ENV = {
   agents: 'TERMPOLIS_TEST_AGENTS',
   timing: 'TERMPOLIS_TEST_TIMING',
   promptTrace: 'TERMPOLIS_TEST_PROMPT_TRACE',
+  worldProbe: 'TERMPOLIS_TEST_WORLD_PROBE',
 } as const
 
 /**
@@ -32,6 +33,11 @@ function testFlag(name: keyof typeof TEST_FLAG_ENV): boolean {
 /** E2E only: keep a trace of the terminal's prompt parses (see TerminalPane's tracePromptParse). */
 export function tracesPromptParses(): boolean {
   return testFlag('promptTrace')
+}
+
+/** E2E only: expose the Lumopolis map's read-only probe (window.__termpolis_world, set by WorldView). */
+export function exposesWorldProbe(): boolean {
+  return testFlag('worldProbe')
 }
 
 export function resolveAgentCommand(command: string): string {
