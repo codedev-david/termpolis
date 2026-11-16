@@ -2,15 +2,17 @@
 // edges (dependencies). Pure and deterministic: no fs, no Electron, and only a type import from
 // codeGraph, so tree-sitter never loads in the utility process that runs this.
 //
-// 1. Districts are seeded from the top-level folders under src/ (or the repository root), then
-//    capped by merging the smallest into its most-connected neighbour.
+// 1. Districts are seeded from the top-level folders under src/ (a monorepo's packages/apps
+//    folder, or the repository root), then capped by merging the smallest into its most-connected
+//    neighbour.
 // 2. Process entries (fork/worker targets, main/renderer/preload entries) each become a building
 //    together with their exclusive import closure inside their district.
 // 3. Remaining files are clustered with union-find: clusters in one district merge, densest first,
 //    while their cross-edge density is above MERGE_DENSITY.
 // 4. Buildings are capped by merging the smallest into its most-connected neighbour in the same
 //    district (else its nearest in path order). Process buildings go last.
-// 5. Ids are slugs of member paths, suffixed -2, -3 on collision in path order.
+// 5. Ids are slugs of member paths. A base no other building shares is used as is; colliding
+//    bases get '--' plus the first member's basename, and -2, -3 (path order) only if that collides.
 // 6. Edges come from resolved imports, fork/worker targets and provide/consume boundary pairs.
 import type { GraphSnapshot } from '../codeGraph'
 import type { District } from '../../shared/world/types'
@@ -201,10 +203,32 @@ function topDir(file: string, root: string): string | null {
   return i < 0 ? root : prefix + rest.slice(0, i)
 }
 
-/** Seed districts: src/<x> when there is a src folder, else the repository root's folders. */
+/**
+ * The folder whose children seed districts: 'src' when there is a src folder; else a monorepo
+ * folder (packages/, apps/, ...) that holds most files spread over two or more child folders;
+ * else '' (the repository root).
+ */
+function seedRoot(files: readonly string[]): string {
+  if (files.some((f) => f.startsWith('src/'))) return 'src'
+  const count = new Map<string, number>()
+  const kids = new Map<string, Set<string>>()
+  for (const f of files) {
+    const parts = f.split('/')
+    if (parts.length < 3) continue
+    count.set(parts[0], (count.get(parts[0]) ?? 0) + 1)
+    const k = kids.get(parts[0])
+    if (k) k.add(parts[1])
+    else kids.set(parts[0], new Set([parts[1]]))
+  }
+  // At most one folder can hold more than half the files, so iteration order does not matter.
+  for (const [top, c] of count) if (c * 2 > files.length && (kids.get(top) as Set<string>).size >= 2) return top
+  return ''
+}
+
+/** Seed districts: the children of seedRoot(); files outside it use the repository root's folders. */
 function seedDistricts(files: readonly string[]): { dirs: string[]; seedOf: Int32Array } {
-  const srcRoot = files.some((f) => f.startsWith('src/')) ? 'src' : ''
-  const dirOfFile = files.map((f) => topDir(f, srcRoot) ?? (topDir(f, '') as string))
+  const root = seedRoot(files)
+  const dirOfFile = files.map((f) => topDir(f, root) ?? (topDir(f, '') as string))
   const dirs = [...new Set(dirOfFile)].sort()
   const at = new Map(dirs.map((d, i) => [d, i]))
   return { dirs, seedOf: Int32Array.from(dirOfFile, (d) => at.get(d) as number) }
@@ -322,13 +346,31 @@ function clusterFree(imports: number[][], district: Int32Array, owner: Int32Arra
   return uf
 }
 
-function uniqueIds(items: readonly { base: string; order: string }[]): string[] {
-  const keyed = items.map((it, i) => ({ k: `${it.base}\0${it.order}`, i })).sort((x, y) => cmp(x.k, y.k))
-  const used = new Set<string>()
+/**
+ * Ids that stay put when unrelated items come and go. A base no other item shares is used as is,
+ * so natural ids are never suffixed. Items sharing a base become `base--tag` (no tag: `base`),
+ * and only if that still collides `-2`, `-3`, ... in path order. Slugs never contain '--', so a
+ * tagged id cannot take a natural one.
+ */
+function uniqueIds(items: readonly { base: string; tag: string; order: string }[]): string[] {
+  const uses = new Map<string, number>()
+  for (const it of items) uses.set(it.base, (uses.get(it.base) ?? 0) + 1)
   const out = new Array<string>(items.length)
-  for (const { i } of keyed) {
-    let id = items[i].base
-    for (let k = 2; used.has(id); k++) id = `${items[i].base}-${k}`
+  const used = new Set<string>()
+  const colliding: { k: string; want: string; i: number }[] = []
+  items.forEach((it, i) => {
+    if (uses.get(it.base) === 1) {
+      out[i] = it.base
+      used.add(it.base)
+      return
+    }
+    const want = it.tag ? `${it.base}--${it.tag}` : it.base
+    colliding.push({ k: `${want}\0${it.order}`, want, i })
+  })
+  colliding.sort((x, y) => cmp(x.k, y.k))
+  for (const { want, i } of colliding) {
+    let id = want
+    for (let k = 2; used.has(id); k++) id = `${want}-${k}`
     used.add(id)
     out[i] = id
   }
@@ -394,6 +436,8 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     bEntry.push(e)
   }
   // Exclusive closure: a file joins once every one of its importers is in the closure.
+  // Known limitation: a private helper cycle (entry -> h1 <-> h2) never joins, because h1 waits
+  // for h2 and h2 for h1; the cycle is clustered on its own instead (pinned by a test).
   for (const e of entries) {
     const b = owner[e]
     const seen = new Map<number, number>()
@@ -435,7 +479,8 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const nb = bFiles.length
   const K = n + 1
   const bSize = bFiles.map((m) => m.length)
-  const bMin = bFiles.map((m) => Math.min(...m))
+  // reduce, not Math.min(...m): spreading a 100k-member building overflows the call stack.
+  const bMin = bFiles.map((m) => m.reduce((a, x) => Math.min(a, x)))
   const bDist = bFiles.map((m) => district[m[0]])
   const bStamp = new Int32Array(nb)
   const bAdj = Array.from({ length: nb }, () => new Map<number, number>())
@@ -512,19 +557,25 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   }
   const liveB = [...members.keys()].sort((x, y) => x - y)
   const districtRoots = [...new Set(district)].sort((x, y) => x - y)
-  const dIds = uniqueIds(districtRoots.map((d) => ({ base: `d-${slug(dirs[d]) || 'root'}`, order: dirs[d] })))
+  const dIds = uniqueIds(districtRoots.map((d) => ({ base: `d-${slug(dirs[d]) || 'root'}`, tag: '', order: dirs[d] })))
   const dIdOf = new Map(districtRoots.map((d, i) => [d, dIds[i]]))
   const anchors = liveB.map((b) => {
     const m = members.get(b) as string[]
     return bEntry[b] >= 0 ? stripExt(files[bEntry[b]]) : m.length === 1 ? stripExt(m[0]) : commonDir(m)
   })
-  const bIds = uniqueIds(liveB.map((b, i) => ({ base: `b-${slug(anchors[i]) || 'root'}`, order: (members.get(b) as string[])[0] })))
+  const bIds = uniqueIds(
+    liveB.map((b, i) => {
+      const first = (members.get(b) as string[])[0]
+      return { base: `b-${slug(anchors[i]) || 'root'}`, tag: slug(baseKey(first)), order: first }
+    })
+  )
   const bIdOf = new Map(liveB.map((b, i) => [b, bIds[i]]))
   const boundariesOf = new Map<number, Boundary[]>(liveB.map((b) => [b, []]))
   for (const bd of kept) (boundariesOf.get(finalOf(index.get(bd.file) as number)) as Boundary[]).push(bd)
   const buildings: GroupBuilding[] = liveB.map((b, i) => {
     const m = members.get(b) as string[]
-    const dName = lastSeg(dirs[bDist[b]])
+    // The first member's own seed folder, so a renderer file stays 'renderer' after a district merge.
+    const dName = lastSeg(dirs[seedOf[index.get(m[0]) as number]])
     return {
       id: bIds[i],
       districtId: dIdOf.get(bDist[b]) as string,
@@ -544,19 +595,20 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
 
   // 6. Edges.
   const edgeMap = new Map<string, GroupEdge>()
-  const link = (fromFile: number, toFile: number, via: Boundary[]): void => {
-    const from = bIdOf.get(finalOf(fromFile)) as string
-    const to = bIdOf.get(finalOf(toFile)) as string
+  const link = (fromB: number, toB: number, via: Boundary[]): void => {
+    const from = bIdOf.get(fromB) as string
+    const to = bIdOf.get(toB) as string
     if (from === to) return
     const k = `${from}\0${to}`
     const e = edgeMap.get(k)
     if (e) e.via.push(...via)
     else edgeMap.set(k, { from, to, via: [...via] })
   }
-  imports.forEach((targets, i) => targets.forEach((g) => link(i, g, [])))
+  const at = (b: Boundary): number => finalOf(index.get(b.file) as number)
+  imports.forEach((targets, i) => targets.forEach((g) => link(finalOf(i), finalOf(g), [])))
   for (const b of forks) {
     const t = byKey.get(b.key)
-    if (t !== undefined) link(index.get(b.file) as number, t, [b])
+    if (t !== undefined) link(at(b), finalOf(t), [b])
   }
   const pairs = new Map<string, { provide: Boundary[]; consume: Boundary[] }>()
   for (const b of kept) {
@@ -565,8 +617,19 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     if (!p) pairs.set(k, (p = { provide: [], consume: [] }))
     p[b.side].push(b)
   }
+  // Group each side by building first: N consumers x M providers cost one link per building pair.
+  const byBuilding = (list: Boundary[]): Map<number, Boundary[]> => {
+    const m = new Map<number, Boundary[]>()
+    for (const b of list) {
+      const cur = m.get(at(b))
+      if (cur) cur.push(b)
+      else m.set(at(b), [b])
+    }
+    return m
+  }
   for (const { provide, consume } of pairs.values()) {
-    for (const c of consume) for (const p of provide) link(index.get(c.file) as number, index.get(p.file) as number, [c, p])
+    const providers = byBuilding(provide)
+    for (const [cb, cs] of byBuilding(consume)) for (const [pb, ps] of providers) link(cb, pb, [...cs, ...ps])
   }
   const edges = [...edgeMap.keys()].sort(cmp).map((k) => {
     const e = edgeMap.get(k) as GroupEdge

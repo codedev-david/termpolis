@@ -204,15 +204,15 @@ describe('groupProject', () => {
     const g = groupProject(s, [])
     checkInvariants(g, s.files)
     expect(home(g, 'src/lib/a.ts').members).toEqual(['src/lib/a.ts', 'src/lib/b.ts', 'src/lib/c.ts'])
-    expect(home(g, 'src/lib/a.ts')).toMatchObject({ id: 'b-src-lib', name: 'lib', process: '' })
+    expect(home(g, 'src/lib/a.ts')).toMatchObject({ id: 'b-src-lib--a', name: 'lib', process: '' })
     expect(home(g, 'src/lib/d.ts').members).toEqual(['src/lib/d.ts'])
     // A one-way chain only pairs up: density 1/(2*2*1) = 0.25 for the third link.
-    expect(home(g, 'src/lib/x.ts')).toMatchObject({ id: 'b-src-lib-2', members: ['src/lib/x.ts', 'src/lib/y.ts'] })
+    expect(home(g, 'src/lib/x.ts')).toMatchObject({ id: 'b-src-lib--x', members: ['src/lib/x.ts', 'src/lib/y.ts'] })
     expect(home(g, 'src/lib/z.ts').members).toEqual(['src/lib/z.ts'])
     // Imports across districts never merge buildings, but they are edges.
     expect(home(g, 'src/other/o.ts').members).toEqual(['src/other/o.ts'])
     expect(g.edges).toContainEqual({ from: 'b-src-other-o', to: 'b-src-lib-z', via: [] })
-    expect(g.edges).toContainEqual({ from: 'b-src-lib-d', to: 'b-src-lib', via: [] })
+    expect(g.edges).toContainEqual({ from: 'b-src-lib-d', to: 'b-src-lib--a', via: [] })
   })
 
   it('a smaller cluster joins a larger one when their cross density is high enough', () => {
@@ -275,31 +275,142 @@ describe('groupProject', () => {
     ])
   })
 
-  it('suffixes colliding district and building ids in path order', () => {
+  it('collisions: natural ids first, then --basename, then -2 in path order', () => {
     const s = snap({
       'src/a-b/y.ts': [],
+      'src/a-b-2/z.ts': [],
       'src/a_b/x.ts': [],
       'src/main.ts': [],
       'src/main-2.ts': [],
       'src/main/x/a.ts': ['../y/b'],
-      'src/main/y/b.ts': ['../x/a']
+      'src/main/y/b.ts': ['../x/a'],
+      'src/q/a/x.ts': ['../c/k'],
+      'src/q/c/k.ts': ['../a/x'],
+      'src/q/b/x.ts': ['../d/k'],
+      'src/q/d/k.ts': ['../b/x']
     })
     const g = groupProject(s, [])
     checkInvariants(g, s.files)
+    // Districts carry no tag: the natural d-src-a-b-2 keeps its id, so a_b skips to -3.
     expect(home(g, 'src/a-b/y.ts').districtId).toBe('d-src-a-b')
-    expect(home(g, 'src/a_b/x.ts').districtId).toBe('d-src-a-b-2')
-    expect(home(g, 'src/main.ts').id).toBe('b-src-main')
-    expect(home(g, 'src/main/x/a.ts')).toMatchObject({ id: 'b-src-main-2', name: 'main', members: ['src/main/x/a.ts', 'src/main/y/b.ts'] })
-    expect(home(g, 'src/main-2.ts').id).toBe('b-src-main-2-2')
+    expect(home(g, 'src/a-b-2/z.ts').districtId).toBe('d-src-a-b-2')
+    expect(home(g, 'src/a_b/x.ts').districtId).toBe('d-src-a-b-3')
+    // src/main.ts and the src/main/{x,y} building share b-src-main, so both are tagged.
+    expect(home(g, 'src/main.ts').id).toBe('b-src-main--main')
+    expect(home(g, 'src/main/x/a.ts')).toMatchObject({ id: 'b-src-main--a', name: 'main', members: ['src/main/x/a.ts', 'src/main/y/b.ts'] })
+    // A natural id is never suffixed.
+    expect(home(g, 'src/main-2.ts').id).toBe('b-src-main-2')
+    // Same base and same first basename: -2 in path order.
+    expect(home(g, 'src/q/a/x.ts').id).toBe('b-src-q--x')
+    expect(home(g, 'src/q/b/x.ts').id).toBe('b-src-q--x-2')
+  })
+
+  it('ids stay put when an unrelated cluster joins the same folder', () => {
+    const base: Record<string, string[]> = {
+      'src/main/q1.ts': ['./q2'],
+      'src/main/q2.ts': ['./q1'],
+      'src/main/x1.ts': ['./x2'],
+      'src/main/x2.ts': ['./x1'],
+      'src/main/a1.ts': ['./a2'],
+      'src/main/a2.ts': ['./a1'],
+      'src/main/solo.ts': []
+    }
+    const idOf = (g: Grouping): Record<string, string> =>
+      Object.fromEntries(g.buildings.flatMap((b) => b.members.map((m) => [m, b.id])))
+    const before = idOf(groupProject(snap(base), []))
+    expect(before).toMatchObject({ 'src/main/a1.ts': 'b-src-main--a1', 'src/main/q1.ts': 'b-src-main--q1', 'src/main/x1.ts': 'b-src-main--x1', 'src/main/solo.ts': 'b-src-main-solo' })
+    const withPair = idOf(groupProject(snap({ ...base, 'src/main/c1.ts': ['./c2'], 'src/main/c2.ts': ['./c1'] }), []))
+    expect(withPair['src/main/c1.ts']).toBe('b-src-main--c1')
+    for (const [f, id] of Object.entries(before)) expect(withPair[f]).toBe(id)
+  })
+
+  it('ids stay put when a lone src/main.ts is added', () => {
+    const base: Record<string, string[]> = {
+      'src/main/q1.ts': ['./q2'],
+      'src/main/q2.ts': ['./q1'],
+      'src/main/a1.ts': ['./a2'],
+      'src/main/a2.ts': ['./a1'],
+      'src/main/solo.ts': []
+    }
+    const idOf = (g: Grouping): Record<string, string> =>
+      Object.fromEntries(g.buildings.flatMap((b) => b.members.map((m) => [m, b.id])))
+    const before = idOf(groupProject(snap(base), []))
+    const after = idOf(groupProject(snap({ ...base, 'src/main.ts': [] }), []))
+    expect(after['src/main.ts']).toBe('b-src-main--main')
+    for (const [f, id] of Object.entries(before)) expect(after[f]).toBe(id)
+  })
+
+  it('pins the cyclic private helper limitation: the cycle stays out of the entry building', () => {
+    const s = snap({ 'src/main/index.ts': ['./h1'], 'src/main/h1.ts': ['./h2'], 'src/main/h2.ts': ['./h1'] })
+    const g = groupProject(s, [])
+    checkInvariants(g, s.files)
+    expect(g.buildings.map((b) => [b.id, b.members, b.process])).toEqual([
+      ['b-src-main', ['src/main/h1.ts', 'src/main/h2.ts'], 'main'],
+      ['b-src-main-index', ['src/main/index.ts'], 'main']
+    ])
+  })
+
+  it('takes process from the seed folder, not the merged district', () => {
+    const s = snap({
+      'src/main/index.ts': [],
+      'src/main/m.ts': [],
+      'src/renderer/r.ts': [],
+      'src/zz/q.ts': []
+    })
+    const g = groupProject(s, [], { maxDistricts: 1 })
+    checkInvariants(g, s.files)
+    expect(g.districts.map((d) => d.id)).toEqual(['d-src-zz'])
+    expect(home(g, 'src/main/index.ts').process).toBe('main')
+    expect(home(g, 'src/main/m.ts').process).toBe('main')
+    expect(home(g, 'src/renderer/r.ts').process).toBe('renderer')
+    expect(home(g, 'src/zz/q.ts').process).toBe('')
+  })
+
+  it('monorepo: seeds districts from the packages folder children', () => {
+    const s = snap({
+      'packages/api/src/a.ts': ['./b'],
+      'packages/api/src/b.ts': [],
+      'packages/web/src/c.ts': ['../../shared/d'],
+      'packages/shared/d.ts': [],
+      'packages/x.ts': []
+    })
+    const g = groupProject(s, [])
+    checkInvariants(g, s.files)
+    expect(g.districts.map((d) => [d.id, d.name])).toEqual([
+      ['d-packages', 'packages'],
+      ['d-packages-api', 'api'],
+      ['d-packages-shared', 'shared'],
+      ['d-packages-web', 'web']
+    ])
+    const three = snap({
+      'packages/api/src/a.ts': [],
+      'packages/web/src/c.ts': [],
+      'packages/shared/d.ts': []
+    })
+    expect(groupProject(three, []).districts.map((d) => [d.id, d.name])).toEqual([
+      ['d-packages-api', 'api'],
+      ['d-packages-shared', 'shared'],
+      ['d-packages-web', 'web']
+    ])
+  })
+
+  it('monorepo seeding needs a majority folder with two or more children', () => {
+    const ids = (fi: Record<string, string[]>): string[] => groupProject(snap(fi), []).districts.map((d) => d.id)
+    // One child only: plain root folders.
+    expect(ids({ 'packages/api/a.ts': [], 'packages/api/b.ts': [], 'tools/t.ts': [] })).toEqual(['d-packages', 'd-tools'])
+    // No majority: plain root folders.
+    expect(ids({ 'apps/a/x.ts': [], 'apps/b/y.ts': [], 'lib/p.ts': [], 'lib/q.ts': [], 'z.ts': [] })).toEqual(['d-apps', 'd-lib', 'd-root'])
+    // Majority with files outside it: those keep their root folders.
+    expect(ids({ 'apps/a/x.ts': [], 'apps/b/y.ts': [], 'lib/p.ts': [] })).toEqual(['d-apps-a', 'd-apps-b', 'd-lib'])
   })
 
   it('names a multi-file building at the repository root "root"', () => {
     const s = snap({ 'a.ts': ['./b'], 'b.ts': ['./a'], '_.ts': [] })
     const g = groupProject(s, [])
     checkInvariants(g, s.files)
-    // '_' slugs to nothing, so it falls back to 'root' too and wins the bare id in path order.
+    // '_' slugs to nothing, so it falls back to 'root' too; with no tag it keeps the bare base.
     expect(home(g, '_.ts')).toMatchObject({ id: 'b-root', name: '_' })
-    expect(home(g, 'a.ts')).toMatchObject({ id: 'b-root-2', name: 'root', districtId: 'd-root' })
+    expect(home(g, 'a.ts')).toMatchObject({ id: 'b-root--a', name: 'root', districtId: 'd-root' })
   })
 
   it('ipc provide/consume pairs become edges with via=[ipc boundary]', () => {
