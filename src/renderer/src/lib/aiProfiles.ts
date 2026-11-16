@@ -131,7 +131,8 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // The pane appears the moment its shell exists. It used to wait for the memory recall below,
   // which has no floor on how long it takes: a busy brain held a new pane off screen for up to
   // two minutes (116 s in this machine's own log). launchPrimed is set later, before the command
-  // is typed, which is the only point anything reads it.
+  // is typed, which is the only point anything reads it. Until the command is typed the terminal
+  // holds only its shell: agentLaunchPending keeps useAutoPrimer's gate shut till then.
   addTerminal({
     id,
     name: agentTerminalName(profile.name, cwd),
@@ -142,6 +143,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     agentCommand: profile.command,
     ...(accountId ? { agentAccountId: accountId } : {}),
     launchPrimed: false,
+    agentLaunchPending: true,
   })
   // Claude: seed project memory invisibly at launch via a system-prompt file
   // (--append-system-prompt-file) instead of typing a visible primer into the
@@ -317,6 +319,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     : await accountLaunchLine(id, shellType, launchCommand, profile.command, accountId)
   if ('refused' in built) {
     useTerminalStore.getState().setMemoryNotice(`⚠️ ${built.refused}`)
+    useTerminalStore.getState().updateTerminal(id, { agentLaunchPending: false })
     setLaunchingAgent(null)
     return
   }
@@ -331,6 +334,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     ceilingMs: testDelay(PROMPT_ECHO_CEILING_MS),
   })
   writeIfAlive(built.line + '\r')
+  useTerminalStore.getState().updateTerminal(id, { agentLaunchPending: false })
   // An account without the routed model: Claude Code says so on screen. Remember it for this
   // account, so the next Auto launch there leaves it off, and tell the user how to go on now.
   const routedModel = routed?.decision && routed.modelArg ? routed.decision.model : null

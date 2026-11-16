@@ -82,6 +82,11 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
     return
   }
 
+  // Until its command is typed, each terminal holds only its shell, whatever agentCommand says:
+  // useAutoPrimer keeps its launch gate shut while this is set (types/index.ts).
+  const pending = (id: string, value: boolean): void => useTerminalStore.getState().updateTerminal(id, { agentLaunchPending: value })
+  for (const t of agents) pending(t.id, true)
+
   // Pre-approve every Claude folder in Claude Code's own config so its workspace-trust
   // dialog never renders — only once the user connected the agents, and never for the home
   // folder or a drive root (main decides, and otherwise writes nothing). Fire-and-forget is
@@ -124,16 +129,19 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
     const account = accountOf.get(t.id)
     if (!account) {
       write(t.id, command + '\r')
+      pending(t.id, false)
       return
     }
     void account
       .then((accountId) => accountLaunchLine(t.id, t.shellType ?? '', command, t.agentCommand!, accountId, accounts))
       .then((built: LaunchLine) => {
         if ('refused' in built) {
+          pending(t.id, false)
           onRefused(t.id, built.refused)
           return
         }
         write(t.id, built.line + '\r')
+        pending(t.id, false)
         if (built.accountId) onLaunched(t.id, { agentAccountId: built.accountId, ...(built.sessionId ? { agentSessionId: built.sessionId } : {}) })
       })
   }

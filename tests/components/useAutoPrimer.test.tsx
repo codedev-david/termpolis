@@ -641,6 +641,8 @@ describe('reprimeAfterCompaction', () => {
 })
 
 describe('the compaction re-primer is wired to reprimeAfterCompaction, not a raw paste', () => {
+  afterEach(() => useTerminalStore.setState({ terminals: [] }))
+
   it('a compaction in a launch-primed terminal types NOTHING into the terminal', async () => {
     vi.useFakeTimers()
     mockApi()
@@ -1965,5 +1967,139 @@ describe('the pointer names the folder safely', () => {
       expect(api.memoryBuildPrimer).toHaveBeenCalledWith(expect.not.stringContaining('context for'), undefined, '/')
       expect(api.writeToTerminal.mock.calls[0][1]).toContain("with cwd set to '/' and read it")
     })
+  })
+})
+
+// "Sometimes it still injects that memory message when you first open a terminal, on the input
+// line" (2026-11-16). Two holes, both at a terminal's first open, both on the Termpolis-launched
+// path:
+//  - the recorded agentCommand opened the launch gate the moment the pane went up, seconds BEFORE
+//    the command was typed, so any keyword in the shell's own first output (a prompt in a folder
+//    named after an agent, a profile that prints one) set off a pointer aimed at the plain shell;
+//  - launchPrimed was read once, when detection fired, and Claude's launch sets it only once its
+//    recall comes back, so a detection that came first typed the pointer into a seeded Claude.
+describe('the launch pointer when a terminal first opens', () => {
+  const codexAgent = { name: 'OpenAI Codex' } as any
+  /** The pane's gate: the recorded agentCommand is its proof of a launch. */
+  const paneGate = (): PrimerGate => ({ launchedAgent: () => codexAgent, draft: () => '' })
+  afterEach(() => useTerminalStore.setState({ terminals: [] }))
+
+  it('types nothing into a terminal that becomes launch-primed after detection fired', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 't-race', agentCommand: 'claude', launchPrimed: false } as any] })
+    renderHook(() => useAutoPrimer('t-race', agent, '/repo', openGate()))
+    // The recall behind --append-system-prompt-file lands after the shell's first output.
+    await vi.advanceTimersByTimeAsync(1000)
+    useTerminalStore.getState().updateTerminal('t-race', { launchPrimed: true })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('primeOnLaunch neither injects nor claims the attempt when the pane goes during its screen read', async () => {
+    let stopped = false
+    const inject = vi.fn(async () => true)
+    const onAttempt = vi.fn()
+    // The screen read is the last wait before the inject: the pane goes while it is out.
+    const awaiting = vi.fn(async () => { stopped = true; return false })
+    expect(await primeOnLaunch('t', '/p', openGate(), { inject, awaiting, onAttempt, stopped: () => stopped, sleep: async () => {} })).toBe(false)
+    expect(inject).not.toHaveBeenCalled()
+    expect(onAttempt).not.toHaveBeenCalled()
+  })
+
+  it('injectAutoPrimer pastes nothing into a launch-primed terminal, however it was reached', async () => {
+    useTerminalStore.setState({ terminals: [{ id: 't-seeded', launchPrimed: true } as any] })
+    expect(await injectAutoPrimer('t-seeded', '/repo', false, true, async () => {})).toBe(false)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('pastes nothing when the terminal is marked launch-primed while the recall is running', async () => {
+    useTerminalStore.setState({ terminals: [{ id: 't-mid', launchPrimed: false } as any] })
+    ;(window as any).termpolis.memoryBuildPrimer = vi.fn(async () => {
+      useTerminalStore.getState().updateTerminal('t-mid', { launchPrimed: true })
+      return { success: true, data: 'DIGEST' }
+    })
+    expect(await injectAutoPrimer('t-mid', '/repo', false, false, async () => {})).toBe(false)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('keeps the gate shut until Termpolis has typed the launch command', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 't-pend', agentCommand: 'codex', agentLaunchPending: true } as any] })
+    renderHook(() => useAutoPrimer('t-pend', codexAgent, '/repo', paneGate()))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+
+    useTerminalStore.getState().updateTerminal('t-pend', { agentLaunchPending: false })
+    // The gate's next look, the boot delay, then the paste and its Enter.
+    await vi.advanceTimersByTimeAsync(PRIMER_GATE_POLL_MS + 1500 + 1000)
+    expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(2) // the pointer, then its Enter
+  })
+
+  it('keeps the fallback gate shut too while the launch command is still to be typed', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 't-pend2', agentCommand: 'codex', agentLaunchPending: true } as any] })
+    renderHook(() => useAutoPrimer('t-pend2', codexAgent, '/repo'))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+  })
+
+  it('types nothing into a Claude launch whose recall landed while the gate waited for the command', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({
+      terminals: [{ id: 't-claude', agentCommand: 'claude', launchPrimed: false, agentLaunchPending: true } as any],
+    })
+    // Detection fired off the shell's first prompt (a folder under ~/.claude, say).
+    renderHook(() => useAutoPrimer('t-claude', agent, 'C:\Users\me\.claude', openGate()))
+    await vi.advanceTimersByTimeAsync(2500)
+    // aiProfiles: the recall is in (launchPrimed), then the command is typed (no longer pending).
+    useTerminalStore.getState().updateTerminal('t-claude', { launchPrimed: true })
+    useTerminalStore.getState().updateTerminal('t-claude', { agentLaunchPending: false })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('primes once after a remount that came while the gate still waited for the command', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 't-once', agentCommand: 'codex', agentLaunchPending: true } as any] })
+    const first = renderHook(() => useAutoPrimer('t-once', codexAgent, '/repo', paneGate()))
+    await vi.advanceTimersByTimeAsync(3000)
+    first.unmount() // a layout or desktop switch while the gate waits: nothing was typed yet
+    expect(useTerminalStore.getState().terminals[0].primerPointed).toBe(false)
+    useTerminalStore.getState().updateTerminal('t-once', { agentLaunchPending: false })
+    renderHook(() => useAutoPrimer('t-once', codexAgent, '/repo', paneGate()))
+    await vi.advanceTimersByTimeAsync(30_000)
+    // The pointer and its Enter, once: the new pane's attempt is the only one.
+    expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the claim on the terminal when the pane goes after its attempt got past the gate', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 't-kept', agentCommand: 'codex' } as any] })
+    // The recall never answers: the attempt is inside the inject when the pane goes.
+    ;(window as any).termpolis.memoryBuildPrimer = vi.fn(() => new Promise(() => {}))
+    const first = renderHook(() => useAutoPrimer('t-kept', codexAgent, '/repo', paneGate()))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+    first.unmount()
+    expect(useTerminalStore.getState().terminals[0].primerPointed).toBe(true)
+    renderHook(() => useAutoPrimer('t-kept', codexAgent, '/repo', paneGate()))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts a fresh attempt when the folder changes while the gate waits', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 't-cwd', agentCommand: 'codex', agentLaunchPending: true } as any] })
+    const { rerender } = renderHook(({ cwd }) => useAutoPrimer('t-cwd', codexAgent, cwd, paneGate()), {
+      initialProps: { cwd: '/one' },
+    })
+    await vi.advanceTimersByTimeAsync(3000)
+    rerender({ cwd: '/two' })
+    useTerminalStore.getState().updateTerminal('t-cwd', { agentLaunchPending: false })
+    await vi.advanceTimersByTimeAsync(30_000)
+    const api = (window as any).termpolis
+    expect(api.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+    expect(api.memoryBuildPrimer).toHaveBeenCalledWith(expect.any(String), undefined, '/two')
   })
 })

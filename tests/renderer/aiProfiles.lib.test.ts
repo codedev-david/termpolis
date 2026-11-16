@@ -221,6 +221,37 @@ describe('launchAgentProfile', () => {
     expect(useTerminalStore.getState().memoryNotice).toContain('Memory recall unavailable')
   })
 
+  // useAutoPrimer's launch gate takes agentCommand as proof of a launch. The terminal is added
+  // with it seconds before the command is typed: until then it holds only its shell.
+  it('marks the terminal launch-pending until the command is typed', async () => {
+    addTerminal = vi.fn((t) => useTerminalStore.getState().addTerminal(t))
+    let pendingWhenTyped: boolean | undefined
+    ;(window as any).termpolis.writeToTerminal = vi.fn((id: string, data: string) => {
+      if (data.startsWith('codex')) pendingWhenTyped = useTerminalStore.getState().terminals.find((t) => t.id === id)?.agentLaunchPending
+    })
+    await launchAgentProfile(codex, deps())
+    expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ agentCommand: 'codex', agentLaunchPending: true }))
+    expect(pendingWhenTyped).toBe(true) // still set as the line goes in, cleared right after
+    const id = String(addTerminal.mock.calls[0][0].id)
+    expect(useTerminalStore.getState().terminals.find((t) => t.id === id)?.agentLaunchPending).toBe(false)
+  })
+
+  it('clears launch-pending when the account line is refused and nothing is typed', async () => {
+    addTerminal = vi.fn((t) => useTerminalStore.getState().addTerminal(t))
+    ;(window as any).accounts = {
+      launchAccount: vi.fn().mockResolvedValue({ success: true, data: { accountId: 'acc' } }),
+      launchLine: vi.fn().mockResolvedValue({ success: false, error: 'no' }),
+    }
+    try {
+      await launchAgentProfile(codex, deps())
+    } finally {
+      delete (window as any).accounts
+    }
+    expect(useTerminalStore.getState().memoryNotice).toContain("didn't start Codex")
+    const id = String(addTerminal.mock.calls[0][0].id)
+    expect(useTerminalStore.getState().terminals.find((t) => t.id === id)?.agentLaunchPending).toBe(false)
+  })
+
   it('surfaces the warning when the recall call throws (#1)', async () => {
     ;(window as any).termpolis.memoryPreparePrimerFile = vi.fn().mockRejectedValue(new Error('ipc boom'))
     await launchAgentProfile(claude, deps())
