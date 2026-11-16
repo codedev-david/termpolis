@@ -7,6 +7,7 @@ node_modules/
 # Build output
 dist/
 dist-electron/
+dist-world/
 dist-electron-builder/
 
 # Electron

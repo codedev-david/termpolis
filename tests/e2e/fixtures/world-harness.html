@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>World harness</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #03050a; overflow: hidden; }
+    #view { position: absolute; inset: 0; }
+    #card { position: absolute; top: 12px; right: 12px; width: 300px; max-height: 60%; overflow: auto;
+      background: #0f172a; color: #e2e8f0; font: 13px system-ui, sans-serif; padding: 10px; border-radius: 8px; }
+    #card[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <div id="view"></div>
+  <aside id="card" hidden></aside>
+  <script type="module">
+    // Test harness only. It imports the built bundle, as the website will, and loads the Task 1
+    // fixture world. window.__worldTest is the spec's handle; it is not part of the viewer API.
+    import { createWorldViewer, validateWorld } from '../../../dist-world/world-viewer.js'
+
+    const card = document.getElementById('card')
+    const view = document.getElementById('view')
+    const viewer = createWorldViewer(view, {
+      reducedMotion: true,
+      renderCard: (html) => {
+        card.innerHTML = html === null ? '' : html
+        card.hidden = html === null
+      },
+    })
+    const raw = await (await fetch(new URL('../../shared/fixtures/world.min.json', import.meta.url))).json()
+    const checked = validateWorld(raw)
+    if (!checked.ok) throw new Error('fixture world is invalid: ' + checked.errors.join('; '))
+    viewer.load(checked.doc)
+
+    window.__worldTest = {
+      /**
+       * Screen point of a building: frames it with a focus action (reducedMotion makes the flight
+       * an instant jump, so the building sits at the centre of the view) and returns that centre.
+       */
+      async project(id) {
+        await viewer.apply({ type: 'focus', ids: [id] })
+        const r = view.querySelector('canvas').getBoundingClientRect()
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+      },
+      selection: () => viewer.getSelection(),
+    }
+    document.body.dataset.ready = '1'
+  </script>
+</body>
+</html>

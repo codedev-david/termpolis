@@ -96,6 +96,9 @@ export default defineConfig({
         // explicitly: it is under none of the trees above, so without this line moving a
         // file into src/shared/ silently drops it from the gate.
         'src/shared/**/*.ts',
+        // Lumopolis engine (pure modules). Listed explicitly for the same reason as src/shared:
+        // without it the 100% engine threshold below matched no files and passed vacuously.
+        'src/renderer/src/world/**/*.ts',
       ],
       exclude: [
         '**/*.d.ts',
@@ -118,6 +121,9 @@ export default defineConfig({
         // leaving it in only drags the gate down with a number no test can ever move.
         'src/main/workflow/contracts.ts',
         'src/shared/world/types.ts', // Lumopolis WorldDoc contract: types only, no emitted JS (see contracts.ts above)
+        // Lumopolis WebGL layer: needs a real GPU context, which jsdom cannot give. e2e/world-engine.spec.ts covers it.
+        'src/renderer/src/world/engine/threeRenderer.ts',
+        'src/renderer/src/world/engine/createWorldViewer.ts',
       ],
       thresholds: {
         // Gates apply to Windows CI only (see .github/workflows/test.yml).
