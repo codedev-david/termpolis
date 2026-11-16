@@ -138,9 +138,9 @@ describe('layoutWorld', () => {
   })
 
   it('a kept building in a brand-new district keeps its position', () => {
-    const prev = { seed: 1, positions: { 'b-x': [500, 0, 500] as [number, number, number] } }
+    const prev = { seed: 1, positions: { 'b-x': [3, 0, 3] as [number, number, number] } }
     const l = layoutWorld(grouping({ 'd-n': ['b-x', 'b-y'] }), prev)
-    expect(l.positions['b-x']).toEqual([500, 0, 500])
+    expect(l.positions['b-x']).toEqual([3, 0, 3])
     expect(dist(l.positions['b-y'], l.positions['d-n'])).toBeGreaterThan(0)
   })
 
@@ -154,5 +154,50 @@ describe('layoutWorld', () => {
     expect(placeBuilding('b-f', 1, 0, 0, radius, taken)).toEqual(p)
     // With nothing in the way the first spiral spot is used.
     expect(placeBuilding('b-f', 1, 0, 0, radius, [])).toEqual(spiralSpot('b-f', 1, 0, 0, 0))
+  })
+
+  it.each([[30, 30], [40, 20], [55, 5]])('splits of 60 buildings (%i/%i) keep districts apart', (n1, n2) => {
+    const mk = (p: string, n: number) => Array.from({ length: n }, (_, i) => `b-${p}${String(i).padStart(2, '0')}`)
+    const spec = { 'd-a': mk('a', n1), 'd-b': mk('b', n2) }
+    const l = layoutWorld(grouping(spec), null)
+    expect(dist(l.positions['d-a'], l.positions['d-b'])).toBeGreaterThanOrEqual(districtRadius(n1) + districtRadius(n2))
+    for (const [d, bs] of Object.entries(spec)) {
+      for (const b of bs) expect(dist(l.positions[b], l.positions[d])).toBeLessThanOrEqual(districtRadius(bs.length))
+      for (const a of bs) for (const c of bs) {
+        if (a < c) expect(dist(l.positions[a], l.positions[c])).toBeGreaterThanOrEqual(MIN_SIBLING_GAP)
+      }
+    }
+  })
+
+  it('a building that moves district is placed fresh inside the new one; one that stays keeps its position', () => {
+    const first = layoutWorld(grouping(SPEC), null)
+    const moved = layoutWorld(grouping({ ...SPEC, 'd-a': ['b-a2', 'b-a3', 'b-a4'], 'd-c': ['b-c1', 'b-a1'] }), first)
+    expect(moved.positions['b-a1']).not.toEqual(first.positions['b-a1'])
+    expect(dist(moved.positions['b-a1'], moved.positions['d-c'])).toBeLessThanOrEqual(districtRadius(2))
+    expect(dist(moved.positions['b-a1'], moved.positions['b-c1'])).toBeGreaterThanOrEqual(MIN_SIBLING_GAP)
+    for (const id of ['b-a2', 'b-a3', 'b-a4', 'b-c1']) expect(moved.positions[id]).toEqual(first.positions[id])
+    const same = layoutWorld(grouping(SPEC), first)
+    expect(same).toEqual(first)
+  })
+
+  it('a building with an unknown districtId is skipped', () => {
+    const g = grouping({ 'd-a': ['b-1'] })
+    g.buildings.push({ id: 'b-orphan', districtId: 'd-none', name: 'o', members: [], process: '', boundaries: [] })
+    const l = layoutWorld(g, null)
+    expect(l.positions['b-orphan']).toBeUndefined()
+    expect(l.positions['b-1']).toBeDefined()
+  })
+
+  it('insertion order does not matter', () => {
+    const g = grouping(SPEC)
+    const shuffled: Grouping = { ...g, districts: [...g.districts].reverse(), buildings: [...g.buildings].reverse() }
+    expect(layoutWorld(shuffled, null)).toEqual(layoutWorld(g, null))
+  })
+
+  it('relayout with an explicit old seed reproduces; a different seed differs', () => {
+    const g = grouping(SPEC)
+    const first = layoutWorld(g, null, 7)
+    expect(layoutWorld(g, null, 7)).toEqual(first)
+    expect(layoutWorld(g, null, 8).positions).not.toEqual(first.positions)
   })
 })

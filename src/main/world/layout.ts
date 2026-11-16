@@ -7,7 +7,13 @@
 //   SLOT_CLEARANCE.
 // - Buildings sit on a phyllotaxis (sunflower) spiral around their district centre. District radius
 //   is BUILDING_STEP * sqrt(n) + RADIUS_MARGIN for n buildings, which holds every spiral spot up to
-//   index n + 2*sqrt(n) (the spiral spot i is at BUILDING_STEP * sqrt(i + 0.5)).
+//   index n + 2*sqrt(n) (the spiral spot i is at BUILDING_STEP * sqrt(i + 0.5)). With the 60-building
+//   cap, the worst two-district split (30/30) sums to about 67, under DISTRICT_SPACING (70), so
+//   neighbouring districts never overlap.
+// - A kept building position farther than districtRadius(current) + MOVED_TOLERANCE from its current
+//   district's centre is treated as new and placed fresh ("inside its district" outranks "never
+//   move"). This covers a building that moved to another district, or whose district was removed.
+// - A building whose districtId matches no district is skipped (no position).
 // - A new building tries spiral indices 0..k (all inside the radius), taking the first spot that is
 //   at least MIN_SIBLING_GAP from every sibling. If none is clear, it falls back to expanding rings
 //   around the centre, which always ends with a clear spot (it may lie just outside the radius).
@@ -23,8 +29,9 @@ export const DEFAULT_SEED = 1337
 export const DISTRICT_SPACING = 70
 export const SLOT_CLEARANCE = 35
 export const MIN_SIBLING_GAP = 6
-export const BUILDING_STEP = 8
-export const RADIUS_MARGIN = 8
+export const BUILDING_STEP = 5
+export const RADIUS_MARGIN = 6
+export const MOVED_TOLERANCE = 6
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 
 const cmp = (a: string, b: string): number => Number(a > b) - Number(a < b)
@@ -79,7 +86,7 @@ function hexSlot(k: number): [number, number] {
   return [round2(DISTRICT_SPACING * (q + r / 2)), round2(DISTRICT_SPACING * (Math.sqrt(3) / 2) * r)]
 }
 
-/** Spiral spot i around (cx, cz) for a building id, rotated by a draw seeded from seed and id. */
+/** Spiral spot i around (cx, cz), rotated by one draw from a PRNG seeded per call by seed and id (a per-call hash, so adding a building shifts no other draw). */
 export function spiralSpot(id: string, seed: number, cx: number, cz: number, i: number): [number, number] {
   const rotation = mulberry32((seed ^ hashId(id)) >>> 0)() * Math.PI * 2
   const rad = BUILDING_STEP * Math.sqrt(i + 0.5)
@@ -132,20 +139,22 @@ export function layoutWorld(g: Grouping, previous: Layout | null, seed?: number)
   }
 
   const byDistrict = new Map<string, string[]>()
+  const known = new Set(districts.map((d) => d.id))
   for (const b of [...g.buildings].sort((a, c) => cmp(a.id, c.id))) {
+    if (!known.has(b.districtId)) continue // unknown district: nowhere to put it
     byDistrict.set(b.districtId, [...(byDistrict.get(b.districtId) ?? []), b.id])
   }
   for (const d of districts) {
     const ids = byDistrict.get(d.id) ?? []
     const taken: [number, number][] = []
+    const [cx, , cz] = positions[d.id]
+    const radius = districtRadius(ids.length)
     for (const id of ids) {
-      if (prev[id]) {
+      if (prev[id] && Math.hypot(prev[id][0] - cx, prev[id][2] - cz) <= radius + MOVED_TOLERANCE) {
         positions[id] = prev[id]
         taken.push([prev[id][0], prev[id][2]])
       }
     }
-    const [cx, , cz] = positions[d.id]
-    const radius = districtRadius(ids.length)
     for (const id of ids) {
       if (positions[id]) continue
       const p = placeBuilding(id, used, cx, cz, radius, taken)
