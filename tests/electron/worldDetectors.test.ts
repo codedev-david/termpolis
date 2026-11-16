@@ -37,6 +37,18 @@ describe('ipc', () => {
     expect(run(`ipcRenderer.invoke('memory:count')`)).toEqual([b('ipc', 'memory:count', 'consume')])
     expect(run('ipcRenderer.send(`x:y`)')).toEqual([b('ipc', 'x:y', 'consume')])
   })
+  it('provides a preload bridge and consumes its window reads once per name', () => {
+    expect(run(`contextBridge.exposeInMainWorld('api', api)`)).toEqual([b('ipc', 'window.api', 'provide')])
+    expect(run(`contextBridge.exposeInMainWorld(name, api)`)).toEqual([])
+    expect(run(`window.api.a()
+const x = window.api.b
+window.other.c()`)).toEqual([
+      b('ipc', 'window.api', 'consume'),
+      b('ipc', 'window.other', 'consume', 3)
+    ])
+    // Only the bare window global: a property or a longer identifier is not it.
+    expect(run(`self.window.api.a(); mywindow.api.b(); $window.c`)).toEqual([])
+  })
 })
 
 describe('processes', () => {
@@ -69,6 +81,24 @@ describe('processes', () => {
   it('ignores non-literal arguments', () => {
     expect(run(`spawn(cmd, [])`)).toEqual([])
     expect(run(`new Worker(file)`)).toEqual([])
+  })
+  it('takes a sibling script URL as the target of a fork through a variable', () => {
+    const url = (name: string): string => `new URL('./${name}', import.meta.url)`
+    expect(run(`const p = ${url('host.js')}
+utilityProcess.fork(p)`)).toEqual([b('fork', 'host', 'consume')])
+    // Even when another file does the forking (createTransport(p)), and for .cjs/.mjs scripts.
+    expect(run(`start(${url('a.cjs')}, ${url('b.mjs')})`)).toEqual([b('fork', 'a', 'consume'), b('fork', 'b', 'consume')])
+    // A file that creates a Worker starts its sibling scripts as workers.
+    expect(run(`const p = ${url('w.js')}
+new Worker(p)`)).toEqual([b('worker', 'w', 'consume')])
+    // One boundary per target: the literal call is not repeated, nor a second URL of it.
+    expect(run(`new Worker(
+  ${url('w.js')})
+const again = ${url('w.js')}`)).toEqual([b('worker', 'w', 'consume')])
+    expect(run(`spawn('host')
+${url('host.js')}`)).toEqual([b('spawn', 'host', 'consume'), b('fork', 'host', 'consume', 2)])
+    // Not a script, not a sibling, or not module-relative.
+    expect(run(`${url('icon.png')}; new URL('../x.js', import.meta.url); new URL('./x.js', base)`)).toEqual([])
   })
 })
 

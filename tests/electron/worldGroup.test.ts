@@ -190,6 +190,41 @@ describe('groupProject', () => {
     expect(g.edges).toEqual([{ from: 'b-src-c-run', to: 'b-src-a-x', via: [w] }])
   })
 
+  it('a fork key naming a folder targets the root file of that folder', () => {
+    const s = snap({
+      'src/main/index.ts': [],
+      'src/main/other.ts': ['./util'],
+      'src/main/proxy/aaaa.ts': ['./util'],
+      'src/main/proxy/b.ts': [],
+      'src/main/proxy/go.ts': ['./util'],
+      'src/main/proxy/go.test.ts': ['./go'],
+      'src/main/proxy/run.ts': ['./util'],
+      'src/main/proxy/util.ts': []
+    })
+    const f1 = B('fork', 'proxy', 'consume', 'src/main/index.ts', 3)
+    const f2 = B('fork', 'proxy', 'consume', 'src/main/index.ts', 9)
+    const g = groupProject(s, [f2, f1])
+    checkInvariants(g, s.files)
+    // Not imported (a test does not count), imports the most, then the shortest path.
+    expect(home(g, 'src/main/proxy/go.ts')).toMatchObject({ name: 'proxy', process: 'proxy' })
+    for (const f of ['aaaa', 'b', 'run', 'util']) expect(home(g, `src/main/proxy/${f}.ts`).process).toBe('main')
+    expect(g.edges).toContainEqual({ from: 'b-src-main-index', to: home(g, 'src/main/proxy/go.ts').id, via: [f1, f2] })
+  })
+
+  it('keeps preload bridge reads only for names something exposes', () => {
+    const s = snap({ 'src/preload/index.ts': [], 'src/renderer/src/app.ts': [], 'src/renderer/src/main.tsx': [] })
+    const expose = B('ipc', 'window.api', 'provide', 'src/preload/index.ts', 2)
+    const read = B('ipc', 'window.api', 'consume', 'src/renderer/src/app.ts', 4)
+    const page = B('ipc', 'window.location', 'consume', 'src/renderer/src/app.ts', 5)
+    const plain = B('ipc', 'nope', 'consume', 'src/renderer/src/app.ts', 6)
+    const g = groupProject(s, [page, read, expose, plain])
+    checkInvariants(g, s.files)
+    expect(home(g, 'src/renderer/src/app.ts').boundaries).toEqual([read, plain])
+    expect(g.edges).toEqual([{ from: home(g, 'src/renderer/src/app.ts').id, to: 'b-src-preload-index', via: [expose, read] }])
+    // The preload runs in the renderer process.
+    expect(home(g, 'src/preload/index.ts')).toMatchObject({ name: 'preload', process: 'renderer' })
+  })
+
   it('files that import each other densely share a building', () => {
     const s = snap({
       'src/lib/a.ts': ['./b', './c'],
@@ -246,9 +281,10 @@ describe('groupProject', () => {
     ])
     expect(home(g, 'src/main/index.ts')).toMatchObject({ name: 'main', process: 'main' })
     expect(home(g, 'src/main/a.ts')).toMatchObject({ name: 'a', process: 'main' })
-    // Equally short entry candidates: path order picks index over main.
-    expect(home(g, 'src/preload/index.ts')).toMatchObject({ name: 'preload', process: 'preload' })
-    expect(home(g, 'src/preload/main.tsx')).toMatchObject({ name: 'main', process: 'preload' })
+    // Equally short entry candidates: path order picks index over main. A preload script runs in
+    // the renderer process, so its buildings keep the name but run in 'renderer'.
+    expect(home(g, 'src/preload/index.ts')).toMatchObject({ name: 'preload', process: 'renderer' })
+    expect(home(g, 'src/preload/main.tsx')).toMatchObject({ name: 'main', process: 'renderer' })
     expect(home(g, 'src/renderer/src/main.tsx')).toMatchObject({ name: 'renderer', process: 'renderer' })
   })
 

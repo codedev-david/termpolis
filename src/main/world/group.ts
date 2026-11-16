@@ -17,6 +17,7 @@
 import type { GraphSnapshot } from '../codeGraph'
 import type { District } from '../../shared/world/types'
 import { baseKey, type Boundary } from './detectors/common'
+import { BRIDGE_PREFIX } from './detectors/ipc'
 
 export interface GroupBuilding {
   id: string
@@ -56,6 +57,11 @@ export const MERGE_DENSITY = 0.35
 const IGNORED_DIRS = new Set(['node_modules', 'dist', 'out', 'build', 'vendor'])
 const ENTRY_PROCESSES = new Set(['main', 'renderer', 'preload'])
 const ENTRY_NAMES = new Set(['index', 'main'])
+/** The OS process a seed folder's code runs in when that differs from its name: Electron loads a
+ *  preload script into the renderer process (the page's isolated world), so a preload building is
+ *  named 'preload' but runs in 'renderer', and its ipcRenderer calls cross renderer -> main. */
+const RUNS_IN: Readonly<Record<string, string>> = { preload: 'renderer' }
+const runsIn = (role: string): string => RUNS_IN[role] ?? role
 const EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']
 const JS_TO_TS: readonly (readonly [string, string])[] = [
   ['.js', '.ts'],
@@ -65,6 +71,8 @@ const JS_TO_TS: readonly (readonly [string, string])[] = [
   ['.cjs', '.cts']
 ]
 const RELATIVE = /^\.\.?(\/|$)/
+/** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
+const TEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
 
 /** Stable id of a grouping edge (edges carry none). Labels and the compiled world key on it. */
 export function edgeId(e: { from: string; to: string }): string {
@@ -403,7 +411,12 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     imports.push([...targets].sort((a, b) => a - b))
   })
   imports.forEach((targets, i) => targets.forEach((g) => importers[g].push(i)))
-  const kept = bounds.filter((b) => fileSet.has(b.file)).sort(cmpBoundary)
+  // A page read of a bridge name nothing exposes (window.location, window.localStorage) is no boundary.
+  const exposed = new Set(bounds.filter((b) => b.kind === 'ipc' && b.side === 'provide').map((b) => b.key))
+  const kept = bounds
+    .filter((b) => fileSet.has(b.file))
+    .filter((b) => !(b.kind === 'ipc' && b.side === 'consume' && b.key.startsWith(BRIDGE_PREFIX) && !exposed.has(b.key)))
+    .sort(cmpBoundary)
 
   // 1. Districts.
   const { dirs, seedOf } = seedDistricts(files)
@@ -424,8 +437,21 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   })
   for (const [s, i] of entryOf) proc.set(i, lastSeg(dirs[s]))
   const forks = kept.filter((b) => b.kind === 'fork' || b.kind === 'worker')
+  // A key no file is named after can name a folder, as a bundler entry named after its folder does
+  // (`headroomProxy.js` built from headroomProxy/proxyMain.ts). The target is that folder's root:
+  // a non-test file nothing but tests imports, the one importing most, then the shortest path.
+  const folderRoot = (key: string): number | undefined => {
+    let best: number | undefined
+    files.forEach((f, i) => {
+      if (lastSeg(dirOf(f)) !== key || TEST_NAME.test(f) || importers[i].some((j) => !TEST_NAME.test(files[j]))) return
+      if (best === undefined || imports[i].length > imports[best].length || (imports[i].length === imports[best].length && f.length < files[best].length)) best = i
+    })
+    return best
+  }
+  const targetOf = new Map<string, number | undefined>()
+  for (const b of forks) if (!targetOf.has(b.key)) targetOf.set(b.key, byKey.get(b.key) ?? folderRoot(b.key))
   for (const b of forks) {
-    const t = byKey.get(b.key)
+    const t = targetOf.get(b.key)
     if (t !== undefined) proc.set(t, b.key)
   }
 
@@ -586,7 +612,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       districtId: dIdOf.get(bDist[b]) as string,
       name: bEntry[b] >= 0 ? bProc[b] : m.length === 1 ? baseKey(m[0]) : lastSeg(anchors[i]) || 'root',
       members: m,
-      process: bEntry[b] >= 0 ? bProc[b] : ENTRY_PROCESSES.has(dName) ? dName : '',
+      process: bEntry[b] >= 0 ? runsIn(bProc[b]) : ENTRY_PROCESSES.has(dName) ? runsIn(dName) : '',
       boundaries: boundariesOf.get(b) as Boundary[]
     }
   })
@@ -612,7 +638,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const at = (b: Boundary): number => finalOf(index.get(b.file) as number)
   imports.forEach((targets, i) => targets.forEach((g) => link(finalOf(i), finalOf(g), [])))
   for (const b of forks) {
-    const t = byKey.get(b.key)
+    const t = targetOf.get(b.key)
     if (t !== undefined) link(at(b), finalOf(t), [b])
   }
   const pairs = new Map<string, { provide: Boundary[]; consume: Boundary[] }>()
