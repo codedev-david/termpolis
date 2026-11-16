@@ -30,7 +30,6 @@ export const SIZE_POLL_MS = 2000
 
 const URL_RE = /^(https:\/\/|ssh:\/\/|git@)[^\s]+$/
 const REF_RE = /^[A-Za-z0-9._/-]+$/
-// eslint-disable-next-line no-control-regex
 const CONTROL_RE = /[\u0000-\u001f\u007f]/
 
 export function validateGitUrl(url: string): { ok: true } | { ok: false; reason: string } {
