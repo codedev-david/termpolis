@@ -58,6 +58,19 @@ export interface AgentLaunchOptions {
   notify?: (message: string) => void
 }
 
+/**
+ * Where Termpolis's launch of an agent in terminal `id` stands, for useAutoPrimer's launch gate:
+ * - 'pending': agentCommand is recorded but not typed yet, and the terminal holds only its shell;
+ * - 'typed': the command is in;
+ * - 'failed': the launch ended before the command was typed (refused, or it threw). The terminal
+ *   stays a plain shell, so the gate stays shut: clearing only the pending flag would let the
+ *   recorded agentCommand open it again, and a pointer would be typed into that shell.
+ * Every launch site calls 'failed' from a finally block, so a throw anywhere ends the same way.
+ */
+export function markAgentLaunch(id: string, state: 'pending' | 'typed' | 'failed'): void {
+  useTerminalStore.getState().updateTerminal(id, { agentLaunchPending: state === 'pending', agentLaunchFailed: state === 'failed' })
+}
+
 /** The subset of `targets` that actually carries an agent command. */
 export function agentTargets<T extends AgentLaunchTarget>(targets: T[]): T[] {
   return targets.filter(t => !!t.agentCommand)
@@ -83,9 +96,8 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
   }
 
   // Until its command is typed, each terminal holds only its shell, whatever agentCommand says:
-  // useAutoPrimer keeps its launch gate shut while this is set (types/index.ts).
-  const pending = (id: string, value: boolean): void => useTerminalStore.getState().updateTerminal(id, { agentLaunchPending: value })
-  for (const t of agents) pending(t.id, true)
+  // useAutoPrimer keeps its launch gate shut till then (markAgentLaunch).
+  for (const t of agents) markAgentLaunch(t.id, 'pending')
 
   // Pre-approve every Claude folder in Claude Code's own config so its workspace-trust
   // dialog never renders — only once the user connected the agents, and never for the home
@@ -117,33 +129,42 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
   void catalogForLaunch().then((c) => { catalog = c })
   const notify = options.notify ?? ((message: string) => useTerminalStore.getState().setMemoryNotice(message))
 
-  /** Types a target's agent: its command as is, or main's line on its account. */
+  /** Types a target's agent: its command as is, or main's line on its account. However it ends,
+   *  its terminal's launch is marked typed or failed (markAgentLaunch), a throw included. */
   const type = (t: AgentLaunchTarget): void => {
-    // Settings › General › Default Models: a new terminal starts on the model chosen for its
-    // agent, unless its command already picks one or resumes a session. It is part of the command
-    // the account line wraps, so the agent comes up on that account and that model.
-    const base = resolveAgentCommand(t.agentCommand!)
-    const model = defaultModelFor(base, catalog)
-    if (model.dropped) notify(droppedDefaultNotice(base, model.dropped))
-    const command = base + model.arg
-    const account = accountOf.get(t.id)
-    if (!account) {
-      write(t.id, command + '\r')
-      pending(t.id, false)
-      return
+    let typed = false
+    let handedOff = false
+    const settle = (): void => markAgentLaunch(t.id, typed ? 'typed' : 'failed')
+    try {
+      // Settings › General › Default Models: a new terminal starts on the model chosen for its
+      // agent, unless its command already picks one or resumes a session. It is part of the command
+      // the account line wraps, so the agent comes up on that account and that model.
+      const base = resolveAgentCommand(t.agentCommand!)
+      const model = defaultModelFor(base, catalog)
+      if (model.dropped) notify(droppedDefaultNotice(base, model.dropped))
+      const command = base + model.arg
+      const account = accountOf.get(t.id)
+      if (!account) {
+        write(t.id, command + '\r')
+        typed = true
+        return
+      }
+      handedOff = true
+      void account
+        .then((accountId) => accountLaunchLine(t.id, t.shellType ?? '', command, t.agentCommand!, accountId, accounts))
+        .then((built: LaunchLine) => {
+          if ('refused' in built) {
+            onRefused(t.id, built.refused)
+            return
+          }
+          write(t.id, built.line + '\r')
+          typed = true
+          if (built.accountId) onLaunched(t.id, { agentAccountId: built.accountId, ...(built.sessionId ? { agentSessionId: built.sessionId } : {}) })
+        })
+        .finally(settle)
+    } finally {
+      if (!handedOff) settle()
     }
-    void account
-      .then((accountId) => accountLaunchLine(t.id, t.shellType ?? '', command, t.agentCommand!, accountId, accounts))
-      .then((built: LaunchLine) => {
-        if ('refused' in built) {
-          pending(t.id, false)
-          onRefused(t.id, built.refused)
-          return
-        }
-        write(t.id, built.line + '\r')
-        pending(t.id, false)
-        if (built.accountId) onLaunched(t.id, { agentAccountId: built.accountId, ...(built.sessionId ? { agentSessionId: built.sessionId } : {}) })
-      })
   }
 
   // Send a no-op newline to flush shell init, then the real command.

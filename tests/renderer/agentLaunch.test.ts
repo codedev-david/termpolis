@@ -402,6 +402,7 @@ describe('agentLaunch', () => {
     const seed = (id: string, agentCommand: string): void =>
       useTerminalStore.setState({ terminals: [{ id, name: 'a', color: '', shellType: 'bash', cwd: '/', fontSize: 1, theme: '', fontFamily: '', agentCommand }] })
     const pendingOf = (id: string): boolean | undefined => useTerminalStore.getState().terminals.find((t) => t.id === id)?.agentLaunchPending
+    const failedOf = (id: string): boolean | undefined => useTerminalStore.getState().terminals.find((t) => t.id === id)?.agentLaunchFailed
     afterEach(() => useTerminalStore.setState({ terminals: [] }))
 
     it('is set until the bare command is typed, and cleared once it is', () => {
@@ -430,11 +431,48 @@ describe('agentLaunch', () => {
       expect(write).toHaveBeenLastCalledWith('p2', 'X=1 codex\r')
       expect(pendingOf('p2')).toBe(false)
 
+      expect(failedOf('p2')).toBe(false)
+
       accounts.launchLine.mockResolvedValueOnce({ success: false, error: 'no' } as never)
       launchAgents([{ id: 'p2', agentCommand: 'codex' }], { write, accounts: accounts as never, onRefused: vi.fn() })
       expect(pendingOf('p2')).toBe(true)
       await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
       expect(pendingOf('p2')).toBe(false)
+      expect(failedOf('p2')).toBe(true) // a plain shell: kept unprimed
+    })
+
+    it('marks the launch failed when typing the bare command throws, and pending again on a relaunch', () => {
+      seed('p3', 'codex')
+      const write = vi.fn((_id: string, data: string) => { if (data.startsWith('codex')) throw new Error('gone') })
+      launchAgents([{ id: 'p3', agentCommand: 'codex' }], { write, accounts: null })
+      vi.advanceTimersByTime(SHELL_SETTLE_MS)
+      expect(() => vi.advanceTimersByTime(COMMAND_DELAY_MS)).toThrow('gone')
+      expect(pendingOf('p3')).toBe(false)
+      expect(failedOf('p3')).toBe(true)
+      launchAgents([{ id: 'p3', agentCommand: 'codex' }], { write: vi.fn(), accounts: null })
+      expect(pendingOf('p3')).toBe(true)
+      expect(failedOf('p3')).toBe(false)
+    })
+
+    it('marks the launch failed when building the account line rejects', async () => {
+      seed('p4', 'codex')
+      const write = vi.fn()
+      const accounts = {
+        launchAccount: vi.fn(async () => ({ success: true, data: { accountId: 'acc' } })),
+        launchLine: vi.fn(async () => { throw new Error('ipc gone') }),
+      }
+      const swallow = (e: unknown): void => { if (!(e instanceof Error) || e.message !== 'ipc gone') throw e }
+      process.on('unhandledRejection', swallow)
+      try {
+        launchAgents([{ id: 'p4', agentCommand: 'codex' }], { write, accounts: accounts as never })
+        await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+        await Promise.resolve()
+      } finally {
+        process.off('unhandledRejection', swallow)
+      }
+      expect(write).not.toHaveBeenCalledWith('p4', expect.stringContaining('codex'))
+      expect(pendingOf('p4')).toBe(false)
+      expect(failedOf('p4')).toBe(true)
     })
   })
 })

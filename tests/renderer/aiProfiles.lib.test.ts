@@ -233,10 +233,10 @@ describe('launchAgentProfile', () => {
     expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ agentCommand: 'codex', agentLaunchPending: true }))
     expect(pendingWhenTyped).toBe(true) // still set as the line goes in, cleared right after
     const id = String(addTerminal.mock.calls[0][0].id)
-    expect(useTerminalStore.getState().terminals.find((t) => t.id === id)?.agentLaunchPending).toBe(false)
+    expect(useTerminalStore.getState().terminals.find((t) => t.id === id)).toEqual(expect.objectContaining({ agentLaunchPending: false, agentLaunchFailed: false }))
   })
 
-  it('clears launch-pending when the account line is refused and nothing is typed', async () => {
+  it('marks the launch failed when the account line is refused and nothing is typed', async () => {
     addTerminal = vi.fn((t) => useTerminalStore.getState().addTerminal(t))
     ;(window as any).accounts = {
       launchAccount: vi.fn().mockResolvedValue({ success: true, data: { accountId: 'acc' } }),
@@ -249,7 +249,28 @@ describe('launchAgentProfile', () => {
     }
     expect(useTerminalStore.getState().memoryNotice).toContain("didn't start Codex")
     const id = String(addTerminal.mock.calls[0][0].id)
-    expect(useTerminalStore.getState().terminals.find((t) => t.id === id)?.agentLaunchPending).toBe(false)
+    // A plain shell: pending is over, and failed keeps the recorded agentCommand from priming it.
+    expect(useTerminalStore.getState().terminals.find((t) => t.id === id)).toEqual(expect.objectContaining({ agentLaunchPending: false, agentLaunchFailed: true }))
+  })
+
+  it('marks the launch failed, in its finally, when it throws after the terminal is added', async () => {
+    addTerminal = vi.fn((t) => useTerminalStore.getState().addTerminal(t))
+    ;(window as any).accounts = {
+      launchAccount: vi.fn().mockResolvedValue({ success: true, data: { accountId: 'acc' } }),
+      launchLine: vi.fn().mockResolvedValue({ success: true, data: { line: 'codex', accountId: 'acc', explicit: true, sessionId: 's1' } }),
+    }
+    // Recording the session id is the last step before the shell wait and the typed line.
+    const real = useTerminalStore.getState().updateTerminal
+    useTerminalStore.setState({ updateTerminal: (tid, patch) => { if (patch.agentSessionId) throw new Error('gone'); real(tid, patch) } })
+    try {
+      await expect(launchAgentProfile(codex, deps())).rejects.toThrow('gone')
+    } finally {
+      delete (window as any).accounts
+      useTerminalStore.setState({ updateTerminal: real })
+    }
+    const id = String(addTerminal.mock.calls[0][0].id)
+    expect(useTerminalStore.getState().terminals.find((t) => t.id === id)).toEqual(expect.objectContaining({ agentLaunchPending: false, agentLaunchFailed: true }))
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalledWith(id, expect.stringContaining('codex'))
   })
 
   it('surfaces the warning when the recall call throws (#1)', async () => {

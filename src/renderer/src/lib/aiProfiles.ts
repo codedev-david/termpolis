@@ -11,6 +11,7 @@ import { launchAccountAsked } from './launchAsk'
 import { AUTO_MODEL, catalogForLaunch, defaultModelFor, droppedDefaultNotice, getAgentModelDefaults } from './agentModelDefaults'
 import { autoLaunchArgs, carriesModelOrEffort, rememberUnavailable, skippedNotice, unavailableModels, unavailableNotice, watchModelUnavailable } from './autoModel'
 import { providerForCommand } from './modelCatalog'
+import { markAgentLaunch } from './agentLaunch'
 import { isShellSafeInstruction, type CodexLaunchContext } from '../../../shared/agentIntegration'
 import {
   waitForShellReady, afterCommandDelay, SHELL_READY_CEILING_MS, SHELL_QUIET_MS,
@@ -82,6 +83,22 @@ const CODEX_BASE_URL_RE = /^http:\/\/127\.0\.0\.1:\d{1,5}\/termpolis-codex\/[\w-
  * `-c developer_instructions`), then types the launch command.
  */
 export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDeps): Promise<void> {
+  // The terminal is added launch-pending (agentLaunchPending). A launch that ends before its
+  // command is typed, refused or thrown, leaves it a plain shell: marked failed here, in a finally,
+  // so useAutoPrimer's gate stays shut instead of opening on the agentCommand that was recorded.
+  const launch: { id: string | null; typed: boolean } = { id: null, typed: false }
+  try {
+    await launchAgentProfileSteps(profile, deps, launch)
+  } finally {
+    if (launch.id && !launch.typed) markAgentLaunch(launch.id, 'failed')
+  }
+}
+
+async function launchAgentProfileSteps(
+  profile: AIProfile,
+  deps: LaunchAgentDeps,
+  launch: { id: string | null; typed: boolean },
+): Promise<void> {
   const { availableShells, addTerminal, setLaunchingAgent } = deps
   // Prompt user to pick a project directory
   const dirRes = await window.termpolis.pickDirectory()
@@ -145,6 +162,7 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     launchPrimed: false,
     agentLaunchPending: true,
   })
+  launch.id = id
   // Claude: seed project memory invisibly at launch via a system-prompt file
   // (--append-system-prompt-file) instead of typing a visible primer into the
   // terminal. The prepare call is the relevance gate — it returns null when
@@ -319,7 +337,6 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     : await accountLaunchLine(id, shellType, launchCommand, profile.command, accountId)
   if ('refused' in built) {
     useTerminalStore.getState().setMemoryNotice(`⚠️ ${built.refused}`)
-    useTerminalStore.getState().updateTerminal(id, { agentLaunchPending: false })
     setLaunchingAgent(null)
     return
   }
@@ -334,7 +351,8 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
     ceilingMs: testDelay(PROMPT_ECHO_CEILING_MS),
   })
   writeIfAlive(built.line + '\r')
-  useTerminalStore.getState().updateTerminal(id, { agentLaunchPending: false })
+  launch.typed = true
+  markAgentLaunch(id, 'typed')
   // An account without the routed model: Claude Code says so on screen. Remember it for this
   // account, so the next Auto launch there leaves it off, and tell the user how to go on now.
   const routedModel = routed?.decision && routed.modelArg ? routed.decision.model : null

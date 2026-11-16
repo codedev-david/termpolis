@@ -227,4 +227,67 @@ describe('Past AI Sessions on an account', () => {
     expect(api().claudeTrustWorkspace.mock.calls).toEqual([[session.cwd]])
     expect(useTerminalStore.getState().terminals.find((t) => t.id === 'new-term')).not.toHaveProperty('agentAccountId')
   })
+
+  describe('the launch-pending flag on the terminal it opens', () => {
+    const term = (): TerminalSession | undefined => useTerminalStore.getState().terminals.find((t) => t.id === 'new-term')
+    const flags = (): { pending: boolean | undefined; failed: boolean | undefined } => ({ pending: term()?.agentLaunchPending, failed: term()?.agentLaunchFailed })
+
+    it('holds a resume launch-pending until its line is typed, then clears it', async () => {
+      let atWrite: ReturnType<typeof flags> | null = null
+      api().writeToTerminal.mockImplementation(() => { atWrite = flags() })
+      await open()
+      await act(async () => { fireEvent.click(screen.getByTestId('past-ai-session-row')) })
+      await waitFor(() => expect(api().writeToTerminal).toHaveBeenCalled(), { timeout: 1500 })
+      expect(atWrite).toEqual({ pending: true })
+      expect(flags()).toEqual({ pending: false, failed: false })
+    })
+
+    it('marks a resume whose line is refused failed: a plain shell stays unprimed', async () => {
+      accounts.launchLine.mockResolvedValueOnce({ success: false, error: 'no shell' })
+      await open()
+      await act(async () => { fireEvent.click(screen.getByTestId('past-ai-session-row')) })
+      await waitFor(() => expect(flags()).toEqual({ pending: false, failed: true }))
+    })
+
+    it('marks a resume whose terminal fails to open failed', async () => {
+      api().createTerminal.mockRejectedValueOnce(new Error('spawn failed'))
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+      await open()
+      await act(async () => { fireEvent.click(screen.getByTestId('past-ai-session-row')) })
+      await waitFor(() => expect(flags()).toEqual({ pending: false, failed: true }))
+      err.mockRestore()
+    })
+
+    it('marks a launch failed when typing its line throws, and pastes nothing after it', async () => {
+      api().writeToTerminal.mockImplementation(() => { throw new Error('gone') })
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+      await open()
+      fireEvent.click(screen.getByTestId('past-ai-session-handoff-btn'))
+      await act(async () => { fireEvent.click(await screen.findByText('Continue in Codex')) })
+      await waitFor(() => expect(flags()).toEqual({ pending: false, failed: true }), { timeout: 1500 })
+      await new Promise((r) => setTimeout(r, 2700))
+      expect(api().writeToTerminal).toHaveBeenCalledTimes(1)
+      err.mockRestore()
+    }, 10_000)
+
+    it('holds a handoff launch-pending until its line is typed', async () => {
+      let atWrite: ReturnType<typeof flags> | null = null
+      api().writeToTerminal.mockImplementationOnce(() => { atWrite = flags() })
+      await open()
+      fireEvent.click(screen.getByTestId('past-ai-session-handoff-btn'))
+      await act(async () => { fireEvent.click(await screen.findByText('Continue in Codex')) })
+      await waitFor(() => expect(api().writeToTerminal).toHaveBeenCalled(), { timeout: 1500 })
+      expect(atWrite).toEqual({ pending: true })
+      expect(flags()).toEqual({ pending: false, failed: false })
+      await pasted()
+    })
+
+    it('marks a handoff whose line is refused failed', async () => {
+      accounts.launchLine.mockResolvedValueOnce({ success: false, error: 'no' })
+      await open()
+      fireEvent.click(screen.getByTestId('past-ai-session-handoff-btn'))
+      await act(async () => { fireEvent.click(await screen.findByText('Continue in Codex')) })
+      await waitFor(() => expect(flags()).toEqual({ pending: false, failed: true }))
+    })
+  })
 })

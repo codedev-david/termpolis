@@ -5,6 +5,7 @@ import { getTerminalDefaults } from '../../lib/terminalDefaults'
 import { isClaudeCommand } from '../../lib/testAgents'
 import { accountLaunchLine, launchAccountFor, launchTerminalArgs } from '../../lib/accountLaunch'
 import { catalogForLaunch, defaultModelFor, droppedDefaultNotice } from '../../lib/agentModelDefaults'
+import { markAgentLaunch } from '../../lib/agentLaunch'
 import type { AISessionSummary, ShellType } from '../../types'
 
 interface Props {
@@ -83,6 +84,21 @@ async function lineFor(id: string, shellType: string, command: string, accountId
   return built.line
 }
 
+/** Types a launch line into the terminal it was recorded on and marks the launch typed, or
+ *  failed if the write throws (markAgentLaunch). Whether it was typed. */
+function typeLaunch(id: string, line: string): boolean {
+  let typed = false
+  try {
+    window.termpolis.writeToTerminal(id, line + '\r')
+    typed = true
+  } catch (e) {
+    console.error('[PastAISessions] launch line not typed', e)
+  } finally {
+    markAgentLaunch(id, typed ? 'typed' : 'failed')
+  }
+  return typed
+}
+
 export function PastAISessions({ open, onClose }: Props) {
   const [sessions, setSessions] = useState<AISessionSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -154,9 +170,14 @@ export function PastAISessions({ open, onClose }: Props) {
       cwd: session.cwd,
       ...getTerminalDefaults(),
       agentCommand: 'claude --resume ' + session.id,
+      // Typed below, after the shell's first prompt: until then the terminal holds only its shell.
+      agentLaunchPending: true,
     })
     setActiveTerminal(newId)
     onClose()
+    // Handed to the timer that types the line, which marks the launch then (markAgentLaunch).
+    // Anything that ends it sooner, a refused line or a throw, leaves a plain shell: failed.
+    let handedOff = false
     try {
       // On the preferred account: a shared projects/ folder makes every account's sessions resumable.
       const accountId = await launchAccountFor('claude')
@@ -167,11 +188,12 @@ export function PastAISessions({ open, onClose }: Props) {
       // Give the shell ~800ms to print its first prompt before injecting the
       // resume command — too soon and the keystrokes land before the prompt
       // is ready, too late and the user sees a blank pane.
-      setTimeout(() => {
-        window.termpolis.writeToTerminal(newId, line + '\r')
-      }, 800)
+      handedOff = true
+      setTimeout(() => typeLaunch(newId, line), 800)
     } catch (e) {
       console.error('[PastAISessions] resume failed', e)
+    } finally {
+      if (!handedOff) markAgentLaunch(newId, 'failed')
     }
   }
 
@@ -245,9 +267,11 @@ export function PastAISessions({ open, onClose }: Props) {
         cwd: session.cwd,
         ...getTerminalDefaults(),
         agentCommand: cmd,
+        agentLaunchPending: true,
       })
       setActiveTerminal(newId)
       onClose()
+      let handedOff = false
       try {
         const accountId = await launchAccountFor(cmd)
         await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, isClaudeCommand(cmd), ...launchTerminalArgs(accountId, cmd))
@@ -260,8 +284,9 @@ export function PastAISessions({ open, onClose }: Props) {
         if (line === null) return
         // 1. Boot the agent. 2. Wait for it to be ready. 3. Paste the prompt.
         // Two-step delay because agents take time to print their banner.
+        handedOff = true
         setTimeout(() => {
-          window.termpolis.writeToTerminal(newId, line + '\r')
+          if (!typeLaunch(newId, line)) return
           setTimeout(() => {
             // Write the prompt without auto-submit. User reads + presses Enter
             // when they're satisfied — gives them an "abort" lever if the
@@ -273,6 +298,8 @@ export function PastAISessions({ open, onClose }: Props) {
         }, 800)
       } catch (e) {
         console.error('[PastAISessions] handoff failed', e)
+      } finally {
+        if (!handedOff) markAgentLaunch(newId, 'failed')
       }
     } finally {
       setBusy(false)

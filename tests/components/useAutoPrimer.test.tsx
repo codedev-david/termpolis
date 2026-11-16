@@ -22,6 +22,7 @@ import {
 import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
 import { psQuote } from '../../src/shared/shellQuote'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
+import { markAgentLaunch } from '../../src/renderer/src/lib/agentLaunch'
 
 const KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const agent = { name: 'Claude Code' } as any
@@ -2034,6 +2035,47 @@ describe('the launch pointer when a terminal first opens', () => {
     // The gate's next look, the boot delay, then the paste and its Enter.
     await vi.advanceTimersByTimeAsync(PRIMER_GATE_POLL_MS + 1500 + 1000)
     expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(2) // the pointer, then its Enter
+  })
+
+  // A launch that fails before its command is typed (refused, or it threw) ends pending in a
+  // finally. The recorded agentCommand is still there, and without agentLaunchFailed the gate
+  // would open on it at its next look and type the pointer into a plain shell.
+  it('primes nothing when the launch fails before its command is typed, on either gate', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({
+      terminals: [
+        { id: 't-fail', agentCommand: 'codex', agentLaunchPending: true } as any,
+        { id: 't-fail2', agentCommand: 'codex', agentLaunchPending: true } as any,
+      ],
+    })
+    renderHook(() => useAutoPrimer('t-fail', codexAgent, '/repo', paneGate()))
+    renderHook(() => useAutoPrimer('t-fail2', codexAgent, '/repo'))
+    await vi.advanceTimersByTimeAsync(5_000)
+    markAgentLaunch('t-fail', 'failed')
+    markAgentLaunch('t-fail2', 'failed')
+    expect(useTerminalStore.getState().terminals[0]).toEqual(expect.objectContaining({ agentLaunchPending: false, agentLaunchFailed: true }))
+    // Past the gate's whole watch (180 s).
+    await vi.advanceTimersByTimeAsync(200_000)
+    expect((window as any).termpolis.memoryBuildPrimer).not.toHaveBeenCalled()
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('injectAutoPrimer pastes nothing into a terminal whose launch failed, however it was reached', async () => {
+    useTerminalStore.setState({ terminals: [{ id: 't-failed', agentCommand: 'codex', agentLaunchFailed: true } as any] })
+    expect(await injectAutoPrimer('t-failed', '/repo', false, true, async () => {})).toBe(false)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+  })
+
+  it('primes once a relaunch there types its command: pending again, failed cleared', async () => {
+    vi.useFakeTimers()
+    useTerminalStore.setState({ terminals: [{ id: 't-again', agentCommand: 'codex', agentLaunchFailed: true } as any] })
+    renderHook(() => useAutoPrimer('t-again', codexAgent, '/repo', paneGate()))
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+    markAgentLaunch('t-again', 'pending')
+    markAgentLaunch('t-again', 'typed')
+    await vi.advanceTimersByTimeAsync(PRIMER_GATE_POLL_MS + 1500 + 1000)
+    expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the fallback gate shut too while the launch command is still to be typed', async () => {
