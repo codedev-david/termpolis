@@ -83,6 +83,14 @@ const JS_TO_TS: readonly (readonly [string, string])[] = [
 ]
 /** A sub-folder with at most this many files is one module; a bigger one groups by name stem. */
 export const FAMILY_FOLDER_MAX = 16
+/** Over the building cap, a building whose files mostly share one name in one folder (at least this
+ *  many of them, and at least COHESIVE_SHARE of the building) is a module by naming convention:
+ *  codeGraph.ts, codeIngest.ts, codeLocate.ts. It counts COHESIVE_WEIGHT times its size when the cap
+ *  picks what to merge next, so a mixed building of the same size gives way first and a named
+ *  module keeps its identity as the project grows. */
+export const COHESIVE_MIN = 3
+export const COHESIVE_SHARE = 0.75
+export const COHESIVE_WEIGHT = 2
 const RELATIVE = /^\.\.?(\/|$)/
 /** Test files (`x.test.ts`, `x.spec.tsx`): never a process entry. */
 const TEST_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/
@@ -631,6 +639,20 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   const bMin = bFiles.map((m) => m.reduce((a, x) => Math.min(a, x)))
   const bDist = bFiles.map((m) => district[m[0]])
   const bStamp = new Int32Array(nb)
+  // Per building: how many members share each folder + name stem, and the largest such count.
+  const bStems = bFiles.map((m) => {
+    const c = new Map<string, number>()
+    for (const i of m) {
+      const stem = nameStem(lastSeg(files[i]))
+      if (stem !== '') {
+        const k = `${dirOf(files[i])} ${stem}`
+        c.set(k, (c.get(k) ?? 0) + 1)
+      }
+    }
+    return c
+  })
+  const topOf = (c: Map<string, number>): number => [...c.values()].reduce((a, x) => Math.max(a, x), 0)
+  const bTop = bStems.map(topOf)
   const bAdj = Array.from({ length: nb }, () => new Map<number, number>())
   imports.forEach((targets, i) => {
     for (const g of targets) {
@@ -654,7 +676,10 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   }
   // Process buildings and channel services are fixed: merged last, and never a link target.
   const fixed = (b: number): boolean => bEntry[b] >= 0 || pinned.has(b)
-  const key = (b: number): number => (fixed(b) ? K * K : 0) + bSize[b] * K + bMin[b]
+  const cohesive = (b: number): boolean => bTop[b] >= COHESIVE_MIN && bTop[b] >= bSize[b] * COHESIVE_SHARE
+  // Weighted sizes reach COHESIVE_WEIGHT * n, so fixed buildings sit above every plain key.
+  const key = (b: number): number =>
+    (fixed(b) ? (COHESIVE_WEIGHT + 1) * K * K : 0) + bSize[b] * (cohesive(b) ? COHESIVE_WEIGHT : 1) * K + bMin[b]
   const heap = new Heap<[number, number, number]>((x, y) => x[0] < y[0])
   for (let b = 0; b < nb; b++) heap.push([key(b), b, 0])
   const bUf = new UnionFind(nb)
@@ -695,6 +720,8 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     live--
     bSize[t] += bSize[b]
     bMin[t] = Math.min(bMin[t], bMin[b])
+    for (const [k, c] of bStems[b]) bStems[t].set(k, (bStems[t].get(k) ?? 0) + c)
+    bTop[t] = topOf(bStems[t])
     for (const [k, w] of bAdj[b]) {
       bAdj[k].delete(b)
       if (k !== t) {

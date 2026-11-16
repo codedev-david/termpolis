@@ -828,6 +828,30 @@ describe('groupProject', () => {
       expect(home(g2, 'src/m/a.ts').id).toBe(home(g2, 'src/m/small.ts').id)
     })
 
+    it('over the cap, a mixed building gives way before a named module of the same size', () => {
+      // Every file imports every other: one cluster per group.
+      const clique = (names: string[]): Record<string, string[]> =>
+        Object.fromEntries(names.map((n) => [`src/m/${n}.ts`, names.filter((o) => o !== n).map((o) => `./${o}`)]))
+      const s = snap({
+        // One module by name: four api* files in one folder.
+        ...clique(['apiAuth', 'apiCache', 'apiClient', 'apiRoutes']),
+        // As tightly knit and as big, but four unrelated names.
+        ...clique(['zalpha', 'zbeta', 'zdelta', 'zgamma']),
+        ...clique(['zz1', 'zz2', 'zz3', 'zz4', 'zz5'])
+      })
+      const free = groupProject(s, [])
+      expect(free.buildings).toHaveLength(3)
+      // The two four-file buildings tie on size, and path order alone would merge api* first.
+      const g = groupProject(s, [], { maxBuildings: 2 })
+      checkInvariants(g, s.files)
+      expect(home(g, 'src/m/apiAuth.ts').members).toEqual(['src/m/apiAuth.ts', 'src/m/apiCache.ts', 'src/m/apiClient.ts', 'src/m/apiRoutes.ts'])
+      // It has no links, so it joins its nearest neighbour in path order, the zz files.
+      expect(home(g, 'src/m/zbeta.ts').members).toHaveLength(9)
+      // Past the mixed building, the named module still merges when the cap demands it.
+      const one = groupProject(s, [], { maxBuildings: 1 })
+      expect(one.buildings).toHaveLength(1)
+    })
+
     it('never merges a plain building into a process building by link, but walks past it in path order', () => {
       const s = snap({
         'src/m/aa.ts': ['./bb'],
