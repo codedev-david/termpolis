@@ -280,6 +280,8 @@ const world = vi.hoisted(() => ({
     compile: vi.fn(async (_root: string) => ({ projectKey: 'k' }) as unknown),
     relayout: vi.fn(async (_root: string) => ({ projectKey: 'k' }) as unknown),
     notifyChanged: vi.fn(),
+    hasWorld: vi.fn(async (_root: string) => true),
+    read: vi.fn(async (_root: string, _q: unknown) => ({ items: [], evidence: [] }) as unknown),
     onProgress: vi.fn(() => () => {}),
     onUpdated: vi.fn(() => () => {}),
     dispose: vi.fn(),
@@ -1407,13 +1409,36 @@ describe('memory:build-primer', () => {
       // digest can answer "where did we leave off" and not only "what is most similar".
       query: 'what were we doing', limit: 10, project: 'termpolis',
       projectPath: 'C:/repos/Termpolis', recent: expect.any(Function),
+      hasWorld: expect.any(Function), // adds the Lumopolis line when the project has a map
     })
+  })
+
+  it('asks the Lumopolis map check about the project root, never for a blank path', async () => {
+    await invoke('memory:build-primer', { query: 'q', cwd: '/repos/lumo-a/src' })
+    const probe = primer.buildContextPrimer.mock.calls.at(-1)![1].hasWorld as (p: string) => Promise<boolean>
+    world.client.hasWorld.mockClear()
+    // Inside a repository the map belongs to its top level, the way the Lumopolis pane resolves it.
+    gitMock.safeGitAsync.mockResolvedValueOnce('/repos/lumo-a\n')
+    expect(await probe('/repos/lumo-a/src')).toBe(true)
+    expect(gitMock.safeGitAsync).toHaveBeenLastCalledWith(['rev-parse', '--show-toplevel'], expect.objectContaining({ cwd: '/repos/lumo-a/src' }))
+    expect(world.client.hasWorld).toHaveBeenLastCalledWith('/repos/lumo-a')
+    // Outside one the folder itself is the project: git failing, or answering nothing.
+    gitMock.safeGitAsync.mockRejectedValueOnce(new Error('not a git repository'))
+    world.client.hasWorld.mockResolvedValueOnce(false)
+    expect(await probe('/scratch/lumo-b')).toBe(false)
+    expect(world.client.hasWorld).toHaveBeenLastCalledWith('/scratch/lumo-b')
+    gitMock.safeGitAsync.mockResolvedValueOnce('  ')
+    expect(await probe('/scratch/lumo-c')).toBe(true)
+    expect(world.client.hasWorld).toHaveBeenLastCalledWith('/scratch/lumo-c')
+    world.client.hasWorld.mockClear()
+    expect(await probe('   ')).toBe(false)
+    expect(world.client.hasWorld).not.toHaveBeenCalled()
   })
 
   it('passes project: undefined (not "") when there is no cwd', async () => {
     await invoke('memory:build-primer', { query: 'q' })
     expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
-      query: 'q', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function),
+      query: 'q', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function), hasWorld: expect.any(Function),
     })
   })
 
@@ -1611,7 +1636,7 @@ describe('memory:prepare-primer-file', () => {
   it('coerces a missing query to "" rather than passing undefined to the builder', async () => {
     const r = await invoke('memory:prepare-primer-file', {})
     expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
-      query: '', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function),
+      query: '', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function), hasWorld: expect.any(Function),
     })
     expect(r.data).toEqual({ file: null, count: 0 })
   })
@@ -2153,6 +2178,7 @@ describe('MCP memory_primer', () => {
     expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
       query: 'what now', limit: 6, maxSnippetChars: 600, project: 'termpolis', projectPath: 'C:/repos/Termpolis',
       recent: expect.any(Function), // the newest-first freshness lane
+      hasWorld: expect.any(Function), // the Lumopolis line, only when the project has a map
     })
   })
 

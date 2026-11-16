@@ -17,7 +17,7 @@
 // Everything here is therefore injectable and the whole orchestration is unit-tested
 // with fake transports — no child processes, no sockets.
 
-import { decide, defaultPolicy, type GatewayPolicy, type GateDecision } from './policy'
+import { decide, defaultPolicy, type GatewayPolicy, type GateDecision, type PolicyVerdict } from './policy'
 import { scanArgs, redactArgs, inspectResult, riskBanner, sanitizeToolMetadata, type SecretScan, type ArgFinding } from './guard'
 import { recordGatewayCall } from './audit'
 
@@ -32,6 +32,12 @@ export interface Transport {
   id: string
   listTools: () => Promise<UpstreamTool[]>
   callTool: (tool: string, args: unknown) => Promise<string>
+  /** A provider Termpolis ships itself (Lumopolis): its tools skip the allow-list and the 'ask'
+   *  prompt, because there is no third party to govern. Only built-in code sets it: the runtime
+   *  (mcpGatewayRuntime.ts) rebuilds every transport made from the user's `servers` config with
+   *  `trusted: false`, so a config entry claiming it is still asked. The kill switch (`enabled:
+   *  false`), the secret scan, the result banner and the audit log still apply. */
+  trusted?: boolean
 }
 
 export interface GatewayDeps {
@@ -83,6 +89,9 @@ async function resolveAsk(deps: GatewayDeps, server: string, tool: string, findi
   }
 }
 
+/** The verdict a trusted built-in transport gets in place of `decide()`. */
+const trustedVerdict: PolicyVerdict = { decision: 'allow', rule: null, reason: 'trusted built-in provider' }
+
 export function createGateway(deps: GatewayDeps) {
   const now = deps.now ?? Date.now
 
@@ -107,8 +116,10 @@ export function createGateway(deps: GatewayDeps) {
       } catch {
         continue // one unreachable server must not hide the others
       }
+      const trusted = transport.trusted === true
       for (const tool of tools) {
-        const verdict = decide(policy, transport.id, tool.name)
+        // A trusted built-in is not filtered by the allow-list: nothing in it is a third party's.
+        const verdict = trusted ? trustedVerdict : decide(policy, transport.id, tool.name)
         if (verdict.decision === 'deny') continue
 
         const meta = sanitizeToolMetadata(transport.id, tool.name, tool.description, tool.inputSchema)
@@ -150,7 +161,9 @@ export function createGateway(deps: GatewayDeps) {
     const transport = deps.transports().find(t => t.id === server)
 
     const policy = deps.getPolicy()
-    const verdict = decide(policy, server, tool)
+    // A trusted built-in skips the allow-list and the 'ask' prompt, but never the kill switch:
+    // a disabled gateway refuses every call, Termpolis's own included.
+    const verdict = transport?.trusted === true && policy.enabled ? trustedVerdict : decide(policy, server, tool)
 
     // The argument scan runs BEFORE the decision is finalised so an 'ask' prompt can
     // show the human what is about to leave. It is the whole reason the prompt is

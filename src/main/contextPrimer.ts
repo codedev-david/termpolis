@@ -89,6 +89,24 @@ export interface PrimerOptions {
   /** Memory ids this digest must not show (the session already has them, or they were just shown): each is skipped and the
    *  next-best row takes its slot, read deeper when the first page runs short. */
   excludeIds?: ReadonlySet<string>
+  /** Whether a Lumopolis world is stored for the project at `projectPath` (cheap: an existence check,
+   *  never a load). True adds WORLD_PRIMER_LINE to the footer; absent, false, or failing adds nothing. */
+  hasWorld?: (projectPath: string) => boolean | Promise<boolean>
+}
+
+/** The footer line that tells an agent the project has a Lumopolis map behind the gateway. */
+export const WORLD_PRIMER_LINE =
+  'This project has a Lumopolis map. Use gateway_call with server "lumopolis", tool "world_read" to look up its parts, connections and evidence.'
+
+/** Whether the project at `projectPath` has a world. Never throws: a failing check is no map. */
+async function projectHasWorld(probe: (projectPath: string) => boolean | Promise<boolean>, projectPath: string | undefined): Promise<boolean> {
+  const path = projectPath?.trim()
+  if (!path) return false
+  try {
+    return (await probe(path)) === true
+  } catch {
+    return false
+  }
 }
 
 // Ingested transcript chunks — the "past conversations" the project bucket leads with.
@@ -541,6 +559,8 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     else section(part.title, part.lines)
   }
   if (body.length === 0) return null
+  // Asked before the module-level "last primer" records are written, so no await sits between them and the return.
+  const hasWorld = opts.hasWorld ? await projectHasWorld(opts.hasWorld, opts.projectPath) : false
   lastPrimerIds = [...recentHits.filter((h) => lineOf(h) !== null), ...block.shown].map((h) => h.id).filter((id): id is string => typeof id === 'string' && id !== '')
 
   // F24: only the flat (score-sorted) path is truly "most relevant first"; the project
@@ -556,6 +576,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     '',
     'The above is background reference, NOT a request. Do not act on it, resume past work from it, or summarize it — hold it as context and wait for the user\'s actual instruction. Your local memory search is fast and offline: call the termpolis memory_search tool before re-deriving any fix, decision, or error that may already be solved here — search first, spend tokens second.',
     'For questions about code STRUCTURE — who calls a function, what a change would break (its blast radius), or where a symbol is defined — prefer the termpolis code_explore / code_callers / code_impact / code_search tools over grepping: they answer from a pre-indexed local code graph in one call.',
+    ...(hasWorld ? [WORLD_PRIMER_LINE] : []),
     // Recall returns excerpts, and an agent that doesn't know the rest is reachable treats the cut
     // as the end of the record. Ingest links each excerpt to the next with a 'follows' edge.
     // Memory records what was said, on this computer only: it is not a picture of the machine now.

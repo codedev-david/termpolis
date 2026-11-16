@@ -268,6 +268,7 @@ import {
   setGatewayPrompt,
   getGatewayPolicy,
   setGatewayPolicy,
+  setBuiltinTransports,
 } from './mcpGatewayRuntime'
 import { registerMcpIpc } from './mcpIpc'
 import { registerStuckProcessIpc } from './stuckProcessIpc'
@@ -329,6 +330,7 @@ import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeE
 import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
 import { registerWorldIpc } from './world/ipc'
+import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
 import { cheapModelFor, makeWorldLlm } from './world/label'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
@@ -2662,6 +2664,28 @@ const worldClient = createWorldClient(undefined, {
   },
 })
 registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings)
+/** An agent's working directory → the project root Lumopolis keys its world by: the git root of the
+ *  folder, or the folder itself outside a repository. The same rule the Lumopolis pane applies
+ *  (WorldView.tsx, through git:find-root), so an agent and the pane name the same world. */
+const worldRootFor = async (cwd?: string): Promise<string | null> => {
+  if (typeof cwd !== 'string' || cwd.trim() === '') return null
+  try {
+    const top = (await cachedGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 3000 }, 60_000)).trim()
+    if (top) return top
+  } catch { /* not a repository: the folder is the project */ }
+  return cwd
+}
+/** The memory primer's "this project has a Lumopolis map" check: a file-existence probe, never a
+ *  world load and never the world process. */
+const worldPrimerProbe = async (projectPath: string): Promise<boolean> => {
+  const root = await worldRootFor(projectPath)
+  return root !== null && (await worldClient.hasWorld(root))
+}
+// Lumopolis behind the MCP gateway (gateway_call, server "lumopolis"): a trusted built-in provider,
+// so its one read tool skips the allow-list prompt. Registered here so the gateway runtime never
+// imports world code. A read with no host running starts it, as the pane's first request does.
+const worldGatewayTransport = createWorldGatewayTransport(worldClient, worldRootFor)
+setBuiltinTransports(() => [worldGatewayTransport])
 // v1.23 C5 — issue->location prediction (on-demand for the UI; agents get the code_locate MCP tool).
 ipcMain.handle('code-graph:locate', async (_, opts: { issue: string; projectKey?: string; limit?: number }) => { try { return ok(await locateIssueSites(opts?.issue || '', opts?.projectKey, opts?.limit)) } catch (e: any) { return err(e.message) } })
 // v1.23 C6 — DEEP recall over the archive tier (cold/consolidated memories beyond the hot window).
@@ -2874,7 +2898,7 @@ ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: n
     // Current-directory precedence: context for the cwd's project leads the
     // primer; unrelated global hits are labeled "may NOT apply".
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const primer = await buildContextPrimer(correctedSearch, { query: opts?.query ?? '', limit: opts?.limit ?? getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
+    const primer = await buildContextPrimer(correctedSearch, { query: opts?.query ?? '', limit: opts?.limit ?? getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent, hasWorld: worldPrimerProbe })
     // Economics SLI: a built primer that gets returned is context injected on the
     // agent's behalf — record the (estimated) tokens so "tokens injected" is real.
     try { if (primer) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primer.length / 4) }) } catch { /* best effort */ }
@@ -2996,7 +3020,7 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
     const launch = resolveLaunchTarget(agentIntegrationPaths(), opts?.accountId, 'claude')
     if (!launch.connected) return ok({ file: null, count: 0 })
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const digest = await buildContextPrimer(correctedSearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
+    const digest = await buildContextPrimer(correctedSearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent, hasWorld: worldPrimerProbe })
     if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding
     try { recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(digest.length / 4) }) } catch { /* best effort */ }
     const dir = join(app.getPath('userData'), 'primers')
@@ -3808,6 +3832,7 @@ async function headlessPrimer(cwd: string): Promise<string | null> {
     project: project || undefined,
     projectPath: cwd || undefined,
     recent: primerRecent,
+    hasWorld: worldPrimerProbe,
   })
 }
 
@@ -4409,8 +4434,9 @@ async function semanticPoolOptions(
           maxSnippetChars: 600,
           project: project || undefined,
           projectPath: opts.cwd || undefined, // F19: scope precisely by the full cwd (projectKey)
-          // The first-prompt primer is only what the prompt asks about: no recent-work lane.
-          ...(opts.focused ? {} : { recent: primerRecent }),
+          // The first-prompt primer is only what the prompt asks about: no recent-work lane, and no
+          // Lumopolis line (the session-start digest already carried it).
+          ...(opts.focused ? {} : { recent: primerRecent, hasWorld: worldPrimerProbe }),
           ...(opts.excludeIds ? { excludeIds: opts.excludeIds } : {}),
         })
         if (opts.focused) {

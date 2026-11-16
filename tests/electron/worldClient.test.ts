@@ -443,6 +443,51 @@ describe('createWorldClient', () => {
     })
   })
 
+  describe('hasWorld', () => {
+    it('answers from the store check without starting the world process', async () => {
+      const hasStoredWorld = vi.fn((key: string) => key === KEY)
+      const { client, spawn } = setup({ hasStoredWorld })
+      expect(await client.hasWorld(ROOT)).toBe(true)
+      expect(await client.hasWorld('C:/repos/other')).toBe(false)
+      expect(hasStoredWorld).toHaveBeenCalledWith(KEY)
+      expect(spawn).not.toHaveBeenCalled()
+    })
+
+    it('a world compiled this run counts without asking the store', async () => {
+      const hasStoredWorld = vi.fn(() => false)
+      const { client } = setup({ hasStoredWorld })
+      await client.compile(ROOT)
+      expect(await client.hasWorld(ROOT)).toBe(true)
+      expect(hasStoredWorld).not.toHaveBeenCalled()
+    })
+
+    it('a folder with no key, a non-string, a throwing or non-boolean check is no world', async () => {
+      const throwing = setup({
+        hasStoredWorld: () => {
+          throw new Error('disk gone')
+        }
+      })
+      expect(await throwing.client.hasWorld(ROOT)).toBe(false)
+      expect(await throwing.client.hasWorld('demo')).toBe(false)
+      expect(await throwing.client.hasWorld(42 as unknown as string)).toBe(false)
+      const junk = setup({ hasStoredWorld: () => 'yes' as unknown as boolean })
+      expect(await junk.client.hasWorld(ROOT)).toBe(false)
+    })
+
+    it('by default checks the store file under userData', async () => {
+      const ud = await mkdtemp(join(tmpdir(), 'world-has-'))
+      try {
+        const { client } = setup({ userDataPath: ud })
+        expect(await client.hasWorld(ROOT)).toBe(false)
+        await mkdir(join(ud, 'world'), { recursive: true })
+        await writeFile(join(ud, 'world', worldFileName(KEY)), '{}')
+        expect(await client.hasWorld(ROOT)).toBe(true)
+      } finally {
+        await rm(ud, { recursive: true, force: true })
+      }
+    })
+  })
+
   it('dispose kills the host, rejects what is pending, and refuses later calls', async () => {
     const { client, spawned } = setup({}, (t) => {
       t.reply = null

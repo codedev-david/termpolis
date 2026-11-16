@@ -107,19 +107,62 @@ export function removeGatewayServer(id: string): void {
   persist()
 }
 
+type BuiltinTransports = () => Transport[]
+
+let builtinSource: BuiltinTransports | null = null
+
+/**
+ * Register the providers Termpolis ships itself (Lumopolis). `index.ts` calls this once the
+ * pieces they need exist, so this module never imports their code. They are the ONLY transports
+ * whose `trusted` flag survives: see `untrusted` below.
+ */
+export function setBuiltinTransports(fn: BuiltinTransports | null): void {
+  builtinSource = fn
+}
+
+/** The registered built-ins. A source that throws or answers nonsense yields none: a broken
+ *  built-in must not take the user's own servers down with it. */
+function builtinTransports(): Transport[] {
+  if (!builtinSource) return []
+  try {
+    const list = builtinSource()
+    return Array.isArray(list) ? list : []
+  } catch {
+    return []
+  }
+}
+
+/** A transport made from user config, rebuilt here with `trusted: false` whatever the spec or
+ *  the transport claimed. The flag must not be settable from `gateway.json`: a config entry that
+ *  could mark itself trusted would skip the allow-list and the prompt, which is the gateway's job. */
+function untrusted(inner: Transport): Transport {
+  return {
+    id: inner.id,
+    listTools: () => inner.listTools(),
+    callTool: (tool, args) => inner.callTool(tool, args),
+    dispose: () => (inner as Transport & { dispose?: () => void }).dispose?.(),
+    trusted: false,
+  } as Transport & { dispose: () => void }
+}
+
 /** Transports are memoised: stdio servers hold a live child process that must be reused
  *  across calls (MCP servers expect `initialize` once), and re-spawning per call would
- *  be both slow and protocol-wrong. */
+ *  be both slow and protocol-wrong. The built-ins come last, and a config server with a
+ *  built-in's id is skipped: it would otherwise shadow it (calls go to the first id match). */
 function liveTransports(): Transport[] {
+  const builtins = builtinTransports()
+  const reserved = new Set(builtins.map(t => t.id))
   const out: Transport[] = []
   for (const spec of config.servers) {
+    if (reserved.has(spec.id)) continue
     let transport = transports.get(spec.id)
     if (!transport) {
-      transport = transportFor(spec)
+      transport = untrusted(transportFor(spec))
       transports.set(spec.id, transport)
     }
     out.push(transport)
   }
+  out.push(...builtins)
   return out
 }
 

@@ -530,6 +530,7 @@ vi.mock('../../src/main/mcpGatewayRuntime', () => ({
   setGatewayPrompt: M.setGatewayPrompt,
   getGatewayPolicy: M.getGatewayPolicy,
   setGatewayPolicy: M.setGatewayPolicy,
+  setBuiltinTransports: vi.fn(),
 }))
 vi.mock('../../src/main/mcpGateway/policy', () => ({ remember: M.remember }))
 vi.mock('../../src/main/mcpIpc', () => ({ registerMcpIpc: vi.fn() }))

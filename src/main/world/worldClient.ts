@@ -269,6 +269,21 @@ export function createWorldClient(
       return call<WorldReadResult>('read', [keyOf(root), q ?? {}])
     },
     /**
+     * Whether a world exists for `root`: compiled or loaded this run, or stored on disk. Never starts
+     * the world process and never loads the doc (a file-existence check), so the memory primer and the
+     * gateway can ask it cheaply. A folder with no key, or a check that fails, is false.
+     */
+    async hasWorld(root: string): Promise<boolean> {
+      const key = typeof root === 'string' ? graphKeyForRoot(root) : ''
+      if (!key) return false
+      if (known.has(key)) return true
+      try {
+        return (await hasStoredWorld(key)) === true
+      } catch {
+        return false
+      }
+    },
+    /**
      * Files under `root` changed (paths relative to it). Fire and forget. Only a project that already
      * has a world is refreshed: a watcher never makes the first one. An empty list (the watcher lost
      * track) counts every indexed file as changed; the label cache keeps unchanged parts free.

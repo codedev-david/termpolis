@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { MIN_RECENT_CHARS, buildContextPrimer, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
+import { MIN_RECENT_CHARS, WORLD_PRIMER_LINE, buildContextPrimer, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
 import { projectKeyOf } from '../../src/main/projectKey'
 import { KEEP_SCORE, lessonSubstance } from '../../src/main/lessonSubstance'
 
@@ -47,6 +47,49 @@ describe('buildContextPrimer', () => {
     expect(out).toContain('code_explore')
     expect(out).toContain('blast radius')
     expect(out).toContain('over grepping')
+  })
+
+  describe('the Lumopolis line', () => {
+    const line = WORLD_PRIMER_LINE
+    it('is exactly the sentence agents are told', () => {
+      expect(line).toBe('This project has a Lumopolis map. Use gateway_call with server "lumopolis", tool "world_read" to look up its parts, connections and evidence.')
+    })
+
+    it('primer includes the World line only when a doc exists', async () => {
+      const search = vi.fn().mockResolvedValue(hits)
+      const withDoc = vi.fn(async (p: string) => p === '/repos/app')
+      const yes = await buildContextPrimer(search, { query: 'auth', projectPath: ' /repos/app ', hasWorld: withDoc })
+      expect(yes).toContain(line)
+      expect(withDoc).toHaveBeenCalledWith('/repos/app') // trimmed
+      // It sits right after the code_* pointer, with no backticks.
+      const lines = (yes as string).split('\n')
+      expect(lines[lines.indexOf(line) - 1]).toContain('code_explore')
+      expect(yes).not.toContain('`')
+
+      const no = await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/other', hasWorld: withDoc })
+      expect(no).not.toContain('Lumopolis')
+      // A synchronous probe works too.
+      expect(await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/app', hasWorld: () => true })).toContain(line)
+    })
+
+    it('is left out with no probe, no project path, a failing probe, or a non-true answer', async () => {
+      const search = vi.fn().mockResolvedValue(hits)
+      expect(await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/app' })).not.toContain('Lumopolis')
+      const probe = vi.fn(() => true)
+      expect(await buildContextPrimer(search, { query: 'auth', hasWorld: probe })).not.toContain('Lumopolis')
+      expect(await buildContextPrimer(search, { query: 'auth', projectPath: '   ', hasWorld: probe })).not.toContain('Lumopolis')
+      expect(probe).not.toHaveBeenCalled()
+      const throwing = async (): Promise<boolean> => { throw new Error('disk gone') }
+      expect(await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/app', hasWorld: throwing })).not.toContain('Lumopolis')
+      const junk = (() => 'yes') as unknown as (p: string) => boolean
+      expect(await buildContextPrimer(search, { query: 'auth', projectPath: '/repos/app', hasWorld: junk })).not.toContain('Lumopolis')
+    })
+
+    it('never makes a primer out of nothing: no memory, no digest, map or not', async () => {
+      const probe = vi.fn(() => true)
+      expect(await buildContextPrimer(async () => [], { query: 'x', projectPath: '/repos/app', hasWorld: probe })).toBeNull()
+      expect(probe).not.toHaveBeenCalled()
+    })
   })
 
   it('returns null for an empty query', async () => {

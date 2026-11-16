@@ -11,10 +11,13 @@ vi.mock('../../src/main/mcpGateway/client', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/main/mcpGateway/client')>()
   return {
     ...actual,
-    transportFor: vi.fn((spec: { id: string }) => {
+    transportFor: vi.fn((spec: { id: string; trusted?: unknown }) => {
       const dispose = vi.fn()
       created.push({ spec, dispose })
       return {
+        // A client that copied a `trusted` field from the config straight onto its transport: the
+        // runtime must not let it through (see "user config server claiming trusted:true").
+        ...(spec.trusted !== undefined ? { trusted: spec.trusted } : {}),
         id: spec.id,
         listTools: vi.fn(async () => [{ name: 'echo', description: 'echo back' }]),
         callTool: vi.fn(async (_tool: string, args: unknown) => `called with ${JSON.stringify(args)}`),
@@ -34,8 +37,11 @@ import {
   gatewayListTools,
   gatewayCall,
   setGatewayPrompt,
+  setBuiltinTransports,
   disposeGateway,
 } from '../../src/main/mcpGatewayRuntime'
+import { transportFor } from '../../src/main/mcpGateway/client'
+import type { Transport } from '../../src/main/mcpGateway'
 import { defaultPolicy } from '../../src/main/mcpGateway'
 import { clearGatewayAudit, recentGatewayCalls, setGatewayAuditSink } from '../../src/main/mcpGateway/audit'
 import { offMainFiles } from '../../src/main/offMainFiles'
@@ -52,6 +58,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  setBuiltinTransports(null)
   disposeGateway()
   setGatewayAuditSink(null)
   try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* windows lock */ }
@@ -262,6 +269,79 @@ describe('mcpGatewayRuntime/calls', () => {
     addGatewayServer({ id: 'files', command: 'srv' })
     setGatewayPolicy(allowAll)
     expect(await gatewayCall({ tool: 'files/echo' })).toMatchObject({ ok: true })
+  })
+})
+
+describe('mcpGatewayRuntime/built-in providers', () => {
+  const builtin = (over: Partial<Transport> = {}): Transport => ({
+    id: 'lumopolis',
+    trusted: true,
+    listTools: async () => [{ name: 'world_read', description: 'Look up the map.' }],
+    callTool: async (_tool, args) => `world ${JSON.stringify(args)}`,
+    ...over,
+  })
+
+  it('serves a registered built-in after the config servers, without asking', async () => {
+    addGatewayServer({ id: 'files', command: 'srv' })
+    setBuiltinTransports(() => [builtin()])
+    setGatewayPolicy({ ...defaultPolicy(), rules: [{ server: 'files', tool: '*', decision: 'allow' }] })
+    expect((await gatewayListTools() as { name: string }[]).map(t => t.name)).toEqual(['files/echo', 'lumopolis/world_read'])
+    // defaultDecision is 'ask' and no prompter is registered: a built-in is still answered.
+    expect(await gatewayCall({ tool: 'lumopolis/world_read', arguments: { text: 'auth' } })).toEqual({ ok: true, text: 'world {"text":"auth"}' })
+  })
+
+  it('user config server claiming trusted:true is still asked', async () => {
+    // Written straight into gateway.json, the way a hand-edited or planted config would carry it.
+    fs.writeFileSync(configFile(), JSON.stringify({ servers: [{ id: 'evil', command: 'srv', trusted: true }] }), 'utf8')
+    initMcpGateway(tmp)
+    const res = await gatewayCall({ tool: 'evil/echo' }) as { ok: boolean; error: string }
+    expect(res.ok).toBe(false)
+    expect(res.error).toContain('denied by gateway policy')
+    // The transport the client built claimed trusted; it never reached the gateway that way.
+    expect((created[0].spec as { trusted?: unknown }).trusted).toBe(true)
+    expect(recentGatewayCalls().at(-1)).toMatchObject({ server: 'evil', decision: 'deny' })
+
+    // Asked means asked: the human's answer decides it.
+    const prompt = vi.fn(async () => 'allow' as const)
+    setGatewayPrompt(prompt)
+    try {
+      expect(await gatewayCall({ tool: 'evil/echo' })).toMatchObject({ ok: true })
+      expect(prompt).toHaveBeenCalledWith('evil', 'echo', [])
+    } finally {
+      setGatewayPrompt(null)
+    }
+  })
+
+  it('a config server cannot take the id of a built-in', async () => {
+    addGatewayServer({ id: 'lumopolis', command: 'impostor' })
+    setBuiltinTransports(() => [builtin()])
+    const listed = await gatewayListTools() as { name: string; description?: string }[]
+    expect(listed).toEqual([expect.objectContaining({ name: 'lumopolis/world_read', description: 'Look up the map.' })])
+    expect(await gatewayCall({ tool: 'lumopolis/world_read' })).toEqual({ ok: true, text: 'world {}' })
+    expect(created).toHaveLength(0) // the impostor was never even started
+  })
+
+  it('a source that throws or answers a non-array yields no built-ins, and the config servers still work', async () => {
+    addGatewayServer({ id: 'files', command: 'srv' })
+    setGatewayPolicy({ ...defaultPolicy(), rules: [{ server: '*', tool: '*', decision: 'allow' }] })
+    setBuiltinTransports(() => { throw new Error('world client gone') })
+    expect((await gatewayListTools() as { name: string }[]).map(t => t.name)).toEqual(['files/echo'])
+    setBuiltinTransports(() => 'nope' as unknown as Transport[])
+    expect((await gatewayListTools() as { name: string }[]).map(t => t.name)).toEqual(['files/echo'])
+    setBuiltinTransports(null)
+    expect(await gatewayCall({ tool: 'lumopolis/world_read' })).toMatchObject({ ok: false })
+  })
+
+  it('removes a config transport that has no dispose of its own', async () => {
+    vi.mocked(transportFor).mockImplementationOnce((spec) => ({
+      id: spec.id,
+      listTools: async () => [],
+      callTool: async () => '',
+    }))
+    addGatewayServer({ id: 'bare', command: 'srv' })
+    await gatewayListTools()
+    expect(() => removeGatewayServer('bare')).not.toThrow()
+    expect(() => disposeGateway()).not.toThrow()
   })
 })
 
