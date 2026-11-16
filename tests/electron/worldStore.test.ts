@@ -109,4 +109,28 @@ describe('worldStore', () => {
     await mkdir(join(dir, 'world', 'demo.json'), { recursive: true })
     await expect(store.load('demo')).rejects.toThrow()
   })
+
+  it('label cache: miss, round-trip, sha-named files under world/label-cache, overwrite', async () => {
+    const store = createWorldStore(dir)
+    expect(await store.labelCache.get('k1')).toBeNull()
+    await store.labelCache.set('k1', '{"name":"Api"}')
+    await store.labelCache.set('../../escape', 'v2')
+    expect(await store.labelCache.get('k1')).toBe('{"name":"Api"}')
+    expect(await store.labelCache.get('../../escape')).toBe('v2')
+    const files = (await readdir(join(dir, 'world', 'label-cache'))).sort()
+    expect(files).toHaveLength(2)
+    for (const f of files) expect(f).toMatch(/^[0-9a-f]{64}\.txt$/)
+    await store.labelCache.set('k1', 'newer')
+    expect(await store.labelCache.get('k1')).toBe('newer')
+    expect(await readdir(join(dir, 'world', 'label-cache'))).toHaveLength(2)
+  })
+
+  it('label cache: an unwritable cache is a quiet miss', async () => {
+    // A file where the cache folder should be: mkdir fails, set swallows it, get misses.
+    await mkdir(join(dir, 'world'), { recursive: true })
+    await writeFile(join(dir, 'world', 'label-cache'), 'not a folder')
+    const store = createWorldStore(dir)
+    await expect(store.labelCache.set('k1', 'v')).resolves.toBeUndefined()
+    expect(await store.labelCache.get('k1')).toBeNull()
+  })
 })

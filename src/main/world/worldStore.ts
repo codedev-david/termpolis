@@ -1,6 +1,9 @@
 // Lumopolis world store: one JSON file per project under `<dir>/world/`. Writes are atomic (a
 // unique temp file, then rename) so a crash never leaves a half-written world; loads validate,
 // and a file that fails to parse or validate is moved aside to `.bad` and treated as absent.
+// The labelling cache lives here too (`<dir>/world/label-cache/`), so the store stays the one
+// place Lumopolis persists anything.
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { WorldDoc } from '../../shared/world/types'
@@ -13,13 +16,38 @@ export function worldFileName(projectKey: string): string {
   return `${name}.json`
 }
 
+/** Model replies keyed by their prompt hash. Best effort: a read problem is a miss, a write problem is dropped. */
+export interface LabelCache {
+  get(hash: string): Promise<string | null>
+  set(hash: string, value: string): Promise<void>
+}
+
 export interface WorldStore {
   load(projectKey: string): Promise<WorldDoc | null>
   save(doc: WorldDoc): Promise<void>
+  labelCache: LabelCache
+}
+
+/** Unique temp name next to `target`, renamed over it once written. */
+const tmpFor = (target: string): string => `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+
+/** Writes `text` to `target` through a temp file, removing the temp file when the write fails. */
+async function writeAtomic(target: string, text: string): Promise<void> {
+  const tmp = tmpFor(target)
+  try {
+    await writeFile(tmp, text, 'utf8')
+    await rename(tmp, target)
+  } catch (err) {
+    await rm(tmp, { force: true })
+    throw err
+  }
 }
 
 export function createWorldStore(dir: string): WorldStore {
   const folder = join(dir, 'world')
+  const cacheDir = join(folder, 'label-cache')
+  // Whatever the key looks like, the file name is its sha256: fixed length, nothing to escape.
+  const cacheFile = (hash: string): string => join(cacheDir, `${createHash('sha256').update(hash).digest('hex')}.txt`)
 
   return {
     async load(projectKey) {
@@ -47,14 +75,24 @@ export function createWorldStore(dir: string): WorldStore {
     async save(doc) {
       const name = worldFileName(doc.projectKey)
       await mkdir(folder, { recursive: true })
-      const target = join(folder, name)
-      const tmp = join(folder, `${name}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`)
-      try {
-        await writeFile(tmp, JSON.stringify(doc), 'utf8')
-        await rename(tmp, target)
-      } catch (err) {
-        await rm(tmp, { force: true })
-        throw err
+      await writeAtomic(join(folder, name), JSON.stringify(doc))
+    },
+
+    labelCache: {
+      async get(hash) {
+        try {
+          return await readFile(cacheFile(hash), 'utf8')
+        } catch {
+          return null
+        }
+      },
+      async set(hash, value) {
+        try {
+          await mkdir(cacheDir, { recursive: true })
+          await writeAtomic(cacheFile(hash), value)
+        } catch {
+          // an unwritable cache only costs a repeat model call
+        }
       }
     }
   }

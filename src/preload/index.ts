@@ -283,6 +283,12 @@ const api: TermpolisAPI = {
   codeGraphImpact: (name: string) => ipcRenderer.invoke('code-graph:impact', { name }),
   codeGraphCallers: (name: string) => ipcRenderer.invoke('code-graph:callers', { name }),
   codeGraphBuild: (repoRoot: string) => ipcRenderer.invoke('code-graph:build', { repoRoot }),
+  // Lumopolis (the world view): compiled in a utility process; main pushes progress and updates.
+  worldGet: (root: string) => ipcRenderer.invoke('world:get', { root }),
+  worldCompile: (root: string) => ipcRenderer.invoke('world:compile', { root }),
+  worldRelayout: (root: string) => ipcRenderer.invoke('world:relayout', { root }),
+  onWorldProgress: (cb) => { const h = (_: unknown, e: import('../shared/world/types').WorldProgressEvent) => cb(e); ipcRenderer.on('world:progress', h); return () => ipcRenderer.removeListener('world:progress', h) },
+  onWorldUpdated: (cb) => { const h = (_: unknown, e: import('../shared/world/types').WorldUpdatedEvent) => cb(e); ipcRenderer.on('world:updated', h); return () => ipcRenderer.removeListener('world:updated', h) },
   // Brain export / import (portable .zip)
   brainExport: () => ipcRenderer.invoke('brain:export'),
   brainImport: () => ipcRenderer.invoke('brain:import'),

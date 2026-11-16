@@ -37,3 +37,13 @@ export type WorldAction =
   | { type: 'tour'; steps: { ids: string[]; caption: string }[] }
   | { type: 'draftProposal'; proposalId: string }    // website demo only in 2.0
   | { type: 'reset' }
+
+// ---- world host wire shapes (main <-> renderer, main <-> the Lumopolis utility process) ----
+/** A filter over a stored world: by ids, by case-insensitive text, or both; `limit` defaults to 20. */
+export interface WorldQuery { ids?: string[]; text?: string; limit?: number }
+/** The matching districts, buildings and edges, plus the evidence their claims cite (deduplicated). */
+export interface WorldReadResult { items: (Building | WorldEdge | District)[]; evidence: Evidence[] }
+/** A compile stage's progress, pushed while a world compiles. `root` is the folder the renderer asked about. */
+export interface WorldProgressEvent { root: string; projectKey: string; stage: string; pct: number }
+/** A stored world changed after files changed (the watcher's recompile finished). */
+export interface WorldUpdatedEvent { root: string; projectKey: string }

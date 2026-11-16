@@ -13,6 +13,7 @@ import type { SignInInput, SignInStartRequest, SignInState } from '../../../shar
 import type { LimitLook } from '../../../shared/accountLimits'
 import type { RouteDecision } from '../../../shared/taskRouter'
 import type { ModelCatalog } from '../lib/modelCatalog'
+import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../../shared/world/types'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
 
@@ -681,6 +682,14 @@ export interface TermpolisAPI {
   codeGraphImpact: (name: string) => Promise<IpcResponse<CodeSymbolHit[]>>
   codeGraphCallers: (name: string) => Promise<IpcResponse<CodeSymbolHit[]>>
   codeGraphBuild: (repoRoot: string) => Promise<IpcResponse<CodeGraphStats>>
+  /** Lumopolis: the stored world for a project root, or null when none was compiled yet. */
+  worldGet: (root: string) => Promise<IpcResponse<WorldDoc | null>>
+  /** Lumopolis: compile (or incrementally refresh) the world for a project root. */
+  worldCompile: (root: string) => Promise<IpcResponse<WorldDoc>>
+  /** Lumopolis: compile again, throwing away the previous layout. */
+  worldRelayout: (root: string) => Promise<IpcResponse<WorldDoc>>
+  onWorldProgress: (cb: (e: WorldProgressEvent) => void) => () => void
+  onWorldUpdated: (cb: (e: WorldUpdatedEvent) => void) => () => void
   /** Export the full brain (memories + graph + learning stores + code graph) to a chosen .zip. */
   brainExport: () => Promise<IpcResponse<{ canceled: boolean; path?: string; bytes?: number }>>
   /** Integrity-verify + MERGE a brain .zip into this machine (additive; never destructive). */

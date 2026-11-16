@@ -264,11 +264,54 @@ const cg = vi.hoisted(() => ({
   codeSymbols: vi.fn(() => [{ name: 'sym' }]),
   codeGraphStats: vi.fn(() => ({ symbols: 3, edges: 1 })),
   graphKeyForRoot: vi.fn((r: string) => `key:${r}`),
+  graphSnapshot: vi.fn((_key: string, _root: string) => ({ files: ['a.ts'] as string[], symbols: [], edges: [] }) as any),
   resolveCodeRefs: vi.fn(() => [{ symbol: 'foo', file: 'a.ts' }]),
   resolveToken: vi.fn(() => ({ symbols: [{ id: 's1', name: 'foo', file: 'a.ts', extra: 'dropped' }], files: ['a.ts'] })),
   ALL_REPOS: '__ALL_REPOS__',
 }))
 vi.mock('../../src/main/codeGraph', () => cg)
+
+// Lumopolis: the world client is a stub that keeps the options index.ts built it with, so the
+// wiring (head, snapshot, labelling call, token-proxy env) can be driven here without a utility process.
+const world = vi.hoisted(() => ({
+  opts: null as any,
+  client: {
+    get: vi.fn(async (_root: string) => null as unknown),
+    compile: vi.fn(async (_root: string) => ({ projectKey: 'k' }) as unknown),
+    relayout: vi.fn(async (_root: string) => ({ projectKey: 'k' }) as unknown),
+    notifyChanged: vi.fn(),
+    onProgress: vi.fn(() => () => {}),
+    onUpdated: vi.fn(() => () => {}),
+    dispose: vi.fn(),
+  },
+  llm: vi.fn(async (_prompt: string) => 'labels' as string | null),
+  makeWorldLlm: vi.fn(),
+  cheapModelFor: vi.fn(() => 'haiku'),
+  execCapture: vi.fn(async (_bin: string, _args: string[], _opts?: any) => ({ stdout: 'out', stderr: '' }) as any),
+  runHeadless: vi.fn(async (_req: any, _deps?: any) => ({ ok: true }) as any),
+}))
+vi.mock('../../src/main/world/worldClient', () => ({
+  createWorldClient: (_spawn: unknown, opts: unknown) => {
+    world.opts = opts
+    return world.client
+  },
+}))
+vi.mock('../../src/main/world/label', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/main/world/label')>()),
+  makeWorldLlm: (...a: unknown[]) => {
+    world.makeWorldLlm(...a)
+    return world.llm
+  },
+  cheapModelFor: world.cheapModelFor,
+}))
+vi.mock('../../src/main/procClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/main/procClient')>()),
+  execCaptureOffThread: (bin: string, args: string[], opts?: unknown) => world.execCapture(bin, args, opts),
+}))
+vi.mock('../../src/main/headlessExec', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/main/headlessExec')>()),
+  runHeadless: (req: unknown, deps?: unknown) => world.runHeadless(req, deps),
+}))
 
 const ledger = vi.hoisted(() => ({
   initMetrics: vi.fn(),
@@ -3991,6 +4034,78 @@ describe('router IPC', () => {
   })
 })
 
+describe('Lumopolis world wiring in index.ts', () => {
+  it('registers world:get / world:compile / world:relayout over the world client', async () => {
+    expect(await invoke('world:get', { root: '/repos/x' })).toEqual({ success: true, data: null })
+    expect(world.client.get).toHaveBeenCalledWith('/repos/x')
+    expect(await invoke('world:compile', { root: '/repos/x' })).toEqual({ success: true, data: { projectKey: 'k' } })
+    expect(await invoke('world:relayout', { root: '/repos/x' })).toEqual({ success: true, data: { projectKey: 'k' } })
+    expect(world.client.relayout).toHaveBeenCalledWith('/repos/x')
+  })
+
+  it('a watched change refreshes the world after the re-index, and the gate still waits on the re-index alone', async () => {
+    await invoke('memory:ingest-code', { repoRoot: '/repos/x' })
+    const onChange = mneme.fsBackedWatchDeps.mock.calls[0][1]
+    let release!: () => void
+    const pending = new Promise<void>((r) => { release = r })
+    cg.reindexWatchedChange.mockReturnValueOnce(pending)
+    expect(onChange('/repos/x', ['a.ts'])).toBe(pending)
+    await Promise.resolve()
+    expect(world.client.notifyChanged).not.toHaveBeenCalled() // not before the graph has the change
+    release()
+    await vi.waitFor(() => expect(world.client.notifyChanged).toHaveBeenCalledWith('/repos/x', ['a.ts']))
+  })
+
+  it('names userData, reads the labelling setting, and stamps the git head with a dirty flag', async () => {
+    expect(world.opts.userDataPath()).toBe(USER_DATA)
+    expect(world.opts.labelling()).toBe(true) // no settings file: labelling stays on
+    gitMock.safeGitAsync.mockResolvedValueOnce('abc123\n').mockResolvedValueOnce(' M src/a.ts\n')
+    expect(await world.opts.head('/repos/x')).toEqual({ head: 'abc123', dirty: true })
+    expect(gitMock.safeGitAsync).toHaveBeenNthCalledWith(1, ['rev-parse', 'HEAD'], expect.objectContaining({ cwd: '/repos/x' }))
+    expect(gitMock.safeGitAsync.mock.calls[1][0]).toEqual(expect.arrayContaining(['core.fsmonitor=false', 'status', '--porcelain']))
+    gitMock.safeGitAsync.mockResolvedValueOnce('abc123').mockResolvedValueOnce('')
+    expect(await world.opts.head('/repos/x')).toEqual({ head: 'abc123', dirty: false })
+    gitMock.safeGitAsync.mockRejectedValueOnce(new Error('not a repo'))
+    expect(await world.opts.head('/repos/x')).toEqual({ head: '', dirty: false })
+  })
+
+  it('snapshots the code graph, indexing a project first when nothing is indexed (through the governor)', async () => {
+    expect(await world.opts.snapshot('/repos/x')).toEqual({ files: ['a.ts'], symbols: [], edges: [] })
+    expect(cg.graphSnapshot).toHaveBeenCalledWith('key:/repos/x', '/repos/x')
+    expect(cg.buildCodeGraph).not.toHaveBeenCalled()
+    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] }).mockReturnValueOnce({ files: ['b.ts'], symbols: [], edges: [] })
+    expect((await world.opts.snapshot('/repos/y')).files).toEqual(['b.ts'])
+    const [deps, key] = cg.buildCodeGraph.mock.calls[0] as unknown as [any, string]
+    expect(key).toBe('key:/repos/y')
+    expect(typeof deps.pause).toBe('function')
+    await deps.pause()
+    await deps.listFiles()
+    await expect(deps.readFile('a.ts')).resolves.toBe('{}')
+  })
+
+  it('labels with the cheapest Claude model, through claude -p on the proc host with the launch env, or runHeadless in the root', async () => {
+    expect(await world.opts.llm('/repos/x', 'name these')).toBe('labels')
+    expect(world.llm).toHaveBeenCalledWith('name these')
+    const [agent, model, deps] = world.makeWorldLlm.mock.calls[0] as [string, string, any]
+    expect([agent, model]).toEqual(['claude', 'haiku'])
+
+    expect(await deps.claudeExec('claude', ['-p'], { timeoutMs: 5000 })).toEqual({ stdout: 'out', code: 0 })
+    const [bin, args, opts] = world.execCapture.mock.calls[0]
+    expect([bin, args]).toEqual(['claude', ['-p']])
+    expect(opts).toMatchObject({ cwd: '/repos/x', timeout: 5000 })
+    expect(typeof opts.env.PATH).toBe('string')
+    world.execCapture.mockResolvedValueOnce({ stdout: 'partial', stderr: '', error: { message: 'exit 3', code: 3 } })
+    expect(await deps.claudeExec('claude', [], { timeoutMs: 1 })).toEqual({ stdout: 'partial', code: 3 })
+    world.execCapture.mockResolvedValueOnce({ stdout: undefined, stderr: '', error: { message: 'missing', code: 'ENOENT' } })
+    expect(await deps.claudeExec('claude', [], { timeoutMs: 1 })).toEqual({ stdout: '', code: 1 })
+    world.execCapture.mockRejectedValueOnce(new Error('proc host down'))
+    expect(await deps.claudeExec('claude', [], { timeoutMs: 1 })).toEqual({ stdout: '', code: 1 })
+
+    await deps.run({ task: 'json please', agent: 'codex', write: false })
+    expect(world.runHeadless).toHaveBeenCalledWith({ task: 'json please', agent: 'codex', write: false, cwd: '/repos/x' }, { deliver: expect.any(Function) })
+  })
+})
+
 // LAST in the file, on purpose: before-quit tears the module down (the memory host stops, the terminals are killed).
 describe('the saved-notes pass and the app quitting', () => {
   it('ends its pass when the app quits: the pass is handed a quit signal that turns true at before-quit', async () => {
@@ -4001,5 +4116,6 @@ describe('the saved-notes pass and the app quitting', () => {
     expect(d.stopped()).toBe(false)
     onBeforeQuit!()
     expect(d.stopped()).toBe(true)
+    expect(world.client.dispose).toHaveBeenCalled() // the Lumopolis world process stops with the app
   })
 })

@@ -1258,6 +1258,29 @@ describe('preload — workflow orchestrator bridge', () => {
     cleanup()
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('workflow:run-event', handler)
   })
+
+  it('world bridge methods invoke the world channels with { root }', async () => {
+    const api = exposed.termpolis
+    await api.worldGet('C:/repo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:get', { root: 'C:/repo' })
+    await api.worldCompile('C:/repo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:compile', { root: 'C:/repo' })
+    await api.worldRelayout('C:/repo')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:relayout', { root: 'C:/repo' })
+  })
+
+  it.each([
+    ['onWorldProgress', 'world:progress', { root: 'C:/repo', projectKey: 'k', stage: 'layout', pct: 50 }],
+    ['onWorldUpdated', 'world:updated', { root: 'C:/repo', projectKey: 'k' }],
+  ] as const)('%s forwards %s events and returns a working cleanup', (method, channel, evt) => {
+    const cb = vi.fn()
+    const cleanup = (exposed.termpolis[method] as (cb: (e: unknown) => void) => () => void)(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find(c => c[0] === channel)![1] as Function
+    handler({}, evt)
+    expect(cb).toHaveBeenCalledWith(evt)
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith(channel, handler)
+  })
 })
 
 describe('preload: event bridges that only ever fire from main', () => {

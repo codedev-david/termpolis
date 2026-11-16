@@ -88,6 +88,9 @@ export default defineConfig({
           // an untrusted network, so a crash there must not take the app down, and
           // main stays free to pump PTY.
           remoteBridge: resolve(__dirname, 'src/main/remoteBridge/entry.ts'),
+          // Lumopolis world compiler, forked lazily by world/worldClient.ts so a
+          // big compile never blocks main. It must not import electron.
+          worldHost: resolve(__dirname, 'src/main/world/worldHost.ts'),
         },
       },
     },

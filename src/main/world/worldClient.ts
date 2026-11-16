@@ -1,0 +1,331 @@
+// Lumopolis world client: the MAIN half of the world compiler. worldHost.ts runs in a utilityProcess
+// (serviceName `termpolis-lumopolis`); this file spawns it on the first call (never at app start),
+// correlates request ids, answers the host's labelling requests (`llm`) with the model runner main
+// owns, and fans the host's `progress` / `updated` pushes out to subscribers.
+//
+// A host that exits rejects every call still waiting, and the next call starts a fresh one.
+// The transport factory at the bottom is the only Electron-aware code and is excluded from coverage.
+import { access } from 'fs/promises'
+import { join } from 'path'
+import { fileURLToPath } from 'url'
+import { app, utilityProcess } from 'electron'
+import { graphKeyForRoot, graphSnapshot, type GraphSnapshot } from '../codeGraph'
+import { killUtility } from '../utilityKill'
+import type { WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
+import type { SerializedError, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
+import { worldFileName } from './worldStore'
+
+export interface WorldHostTransport {
+  postMessage(msg: WorldHostRequest): void
+  onMessage(cb: (msg: WorldHostResponse) => void): void
+  onExit(cb: (code: number) => void): void
+  kill(): void
+  pid?: number
+}
+
+export interface WorldClientOptions {
+  /** Electron's userData folder (the store lives under `<it>/world/`). Default: `app.getPath('userData')`. */
+  userDataPath?: string | (() => string)
+  /** The `worldLabelling` setting, read each time a host starts. Default: on. */
+  labelling?: () => boolean
+  /** Runs one labelling prompt for the project at `root`. Absent, or throwing, the host labels from code. */
+  llm?: (root: string, prompt: string) => Promise<string | null>
+  /** The repository revision stamped on a world. Default: `{ head: '', dirty: false }`. */
+  head?: (root: string) => Promise<WorldHead>
+  /** The code-graph snapshot posted to the host. Default: `graphSnapshot(graphKeyForRoot(root), root)`. */
+  snapshot?: (root: string) => GraphSnapshot | Promise<GraphSnapshot>
+  /** Whether a world is stored for a project. Default: the store file exists under userData. */
+  hasStoredWorld?: (projectKey: string) => boolean | Promise<boolean>
+  /** How long one call may wait for its answer. Default 10 minutes (a first compile of a big repo). */
+  callTimeoutMs?: number
+}
+
+export const DEFAULT_CALL_TIMEOUT_MS = 600_000
+
+interface Waiter {
+  resolve(v: unknown): void
+  reject(e: Error): void
+  timer: ReturnType<typeof setTimeout>
+}
+
+const toError = (e: SerializedError | undefined): Error => {
+  const err = new Error(e?.message || 'Lumopolis host call failed')
+  err.name = e?.name || 'Error'
+  return err
+}
+
+/** A watcher's paths, relative to the root, with forward slashes. */
+const normaliseFiles = (files: string[]): string[] =>
+  (Array.isArray(files) ? files : [])
+    .filter((f): f is string => typeof f === 'string' && f !== '')
+    .map((f) => f.replace(/\\/g, '/').replace(/^\.\//, ''))
+
+export function createWorldClient(
+  spawn: () => WorldHostTransport = () => createWorldHostTransport(),
+  opts: WorldClientOptions = {}
+) {
+  const dataPath = (): string => {
+    const p = opts.userDataPath ?? (() => app.getPath('userData'))
+    return typeof p === 'function' ? p() : p
+  }
+  const labelling = opts.labelling ?? (() => true)
+  const headOf = opts.head ?? (async () => ({ head: '', dirty: false }))
+  const snapshotOf = opts.snapshot ?? ((root: string) => graphSnapshot(graphKeyForRoot(root), root))
+  const hasStoredWorld =
+    opts.hasStoredWorld ??
+    (async (key: string) => {
+      try {
+        await access(join(dataPath(), 'world', worldFileName(key)))
+        return true
+      } catch {
+        return false
+      }
+    })
+  const callTimeoutMs = opts.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
+
+  let current: WorldHostTransport | null = null
+  let live: Promise<WorldHostTransport> | null = null
+  let initWaiter: { resolve(): void; reject(e: Error): void } | null = null
+  let disposed = false
+  let seq = 0
+  const pending = new Map<number, Waiter>()
+  /** projectKey → the root the renderer named, so pushes and labelling requests map back to a folder. */
+  const roots = new Map<string, string>()
+  /** Projects with a world (compiled or loaded this run): the only ones a watcher may refresh. */
+  const known = new Set<string>()
+  const progressSubs = new Set<(e: WorldProgressEvent) => void>()
+  const updatedSubs = new Set<(e: WorldUpdatedEvent) => void>()
+
+  const emit = <T>(subs: Set<(e: T) => void>, e: T): void => {
+    for (const cb of subs) {
+      try {
+        cb(e)
+      } catch {
+        // one bad subscriber never stops the others
+      }
+    }
+  }
+
+  const reset = (tr: WorldHostTransport, why: Error): void => {
+    if (current !== tr) return
+    current = null
+    live = null
+    initWaiter?.reject(why)
+    initWaiter = null
+    for (const [id, w] of pending) {
+      clearTimeout(w.timer)
+      pending.delete(id)
+      w.reject(why)
+    }
+  }
+
+  const answerLlm = async (tr: WorldHostTransport, id: number, projectKey: string, prompt: string): Promise<void> => {
+    let text: string | null = null
+    const root = roots.get(projectKey)
+    if (opts.llm && root !== undefined) {
+      try {
+        const r = await opts.llm(root, prompt)
+        text = typeof r === 'string' ? r : null
+      } catch {
+        text = null
+      }
+    }
+    try {
+      tr.postMessage({ kind: 'llm-result', id, text })
+    } catch {
+      // the host went away while the model ran; its exit already failed the compile
+    }
+  }
+
+  const onMessage = (tr: WorldHostTransport, m: WorldHostResponse): void => {
+    if (current !== tr || !m || typeof m !== 'object') return
+    switch (m.kind) {
+      case 'ready':
+        initWaiter?.resolve()
+        initWaiter = null
+        return
+      case 'init-error': {
+        const why = toError(m.error)
+        reset(tr, why)
+        try {
+          tr.kill()
+        } catch {
+          // already gone
+        }
+        return
+      }
+      case 'result': {
+        const w = pending.get(m.id)
+        if (!w) return
+        pending.delete(m.id)
+        clearTimeout(w.timer)
+        if (m.ok) w.resolve(m.result)
+        else w.reject(toError(m.error))
+        return
+      }
+      case 'progress':
+        emit(progressSubs, { root: roots.get(m.projectKey) ?? '', projectKey: m.projectKey, stage: m.stage, pct: m.pct })
+        return
+      case 'updated':
+        emit(updatedSubs, { root: roots.get(m.projectKey) ?? '', projectKey: m.projectKey })
+        return
+      case 'llm':
+        void answerLlm(tr, m.id, m.projectKey, m.prompt)
+        return
+    }
+  }
+
+  const start = (): Promise<WorldHostTransport> => {
+    if (live) return live
+    const p = new Promise<WorldHostTransport>((resolve, reject) => {
+      const tr = spawn()
+      current = tr
+      initWaiter = { resolve: () => resolve(tr), reject }
+      tr.onMessage((m) => onMessage(tr, m))
+      tr.onExit((code) => reset(tr, new Error(`Lumopolis host exited (code ${code})`)))
+      tr.postMessage({ kind: 'init', userDataPath: dataPath(), labelling: labelling() !== false })
+    })
+    live = p
+    // A spawn that throws leaves nothing running: let the next call try again.
+    p.catch(() => {
+      if (live === p) live = null
+    })
+    return p
+  }
+
+  const call = async <T>(fn: string, args: unknown[]): Promise<T> => {
+    if (disposed) throw new Error('Lumopolis host is shut down')
+    const tr = await start()
+    return new Promise<T>((resolve, reject) => {
+      const id = ++seq
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        reject(new Error(`Lumopolis host call "${fn}" timed out`))
+      }, callTimeoutMs)
+      pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer })
+      try {
+        tr.postMessage({ kind: 'call', id, fn, args })
+      } catch (err) {
+        clearTimeout(timer)
+        pending.delete(id)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    })
+  }
+
+  const keyOf = (root: string): string => {
+    const key = typeof root === 'string' ? graphKeyForRoot(root) : ''
+    if (!key) throw new Error('Lumopolis needs a project folder')
+    roots.set(key, root)
+    return key
+  }
+
+  const compileWith = async (root: string, relayout: boolean): Promise<WorldDoc> => {
+    const key = keyOf(root)
+    const snap = await snapshotOf(root)
+    const head = await headOf(root)
+    const doc = await call<WorldDoc>('compile', relayout ? [key, snap, head, { relayout: true }] : [key, snap, head])
+    known.add(key)
+    return doc
+  }
+
+  return {
+    /** Compiles (or recompiles) the world for `root`, keeping stored positions, and returns it. */
+    compile: (root: string): Promise<WorldDoc> => compileWith(root, false),
+    /** Compiles with a fresh layout: stored positions are ignored. */
+    relayout: (root: string): Promise<WorldDoc> => compileWith(root, true),
+    /** The stored world for `root`, or null when none was compiled yet. */
+    async get(root: string): Promise<WorldDoc | null> {
+      const key = keyOf(root)
+      const doc = await call<WorldDoc | null>('get', [key])
+      if (doc) known.add(key)
+      return doc
+    },
+    /** A filtered view of the stored world (ids and/or text, default limit 20) with the cited evidence. */
+    async read(root: string, q: WorldQuery): Promise<WorldReadResult> {
+      return call<WorldReadResult>('read', [keyOf(root), q ?? {}])
+    },
+    /**
+     * Files under `root` changed (paths relative to it). Fire and forget. Only a project that already
+     * has a world is refreshed: a watcher never makes the first one. An empty list (the watcher lost
+     * track) counts every indexed file as changed; the label cache keeps unchanged parts free.
+     * A watcher event never starts the world process either: with no host running (nobody asked for
+     * a world since launch, or the host exited) it does nothing, and the next compile catches up.
+     */
+    notifyChanged(root: string, files: string[]): void {
+      void (async () => {
+        if (disposed || !current) return
+        const key = typeof root === 'string' ? graphKeyForRoot(root) : ''
+        if (!key) return
+        if (!known.has(key)) {
+          if (!(await hasStoredWorld(key))) return
+          known.add(key)
+        }
+        roots.set(key, root)
+        const snap = await snapshotOf(root)
+        const head = await headOf(root)
+        const rel = normaliseFiles(files)
+        await call('notifyChanged', [key, snap, head, rel.length > 0 ? rel : snap.files])
+      })().catch(() => undefined)
+    },
+    onProgress(cb: (e: WorldProgressEvent) => void): () => void {
+      progressSubs.add(cb)
+      return () => {
+        progressSubs.delete(cb)
+      }
+    },
+    onUpdated(cb: (e: WorldUpdatedEvent) => void): () => void {
+      updatedSubs.add(cb)
+      return () => {
+        updatedSubs.delete(cb)
+      }
+    },
+    /** Stops the host (app quit). Calls after this reject. */
+    dispose(): void {
+      disposed = true
+      const tr = current
+      if (!tr) return
+      reset(tr, new Error('Lumopolis host is shut down'))
+      try {
+        tr.kill()
+      } catch {
+        // already gone
+      }
+    },
+    /** The running host's pid, if one is up (diagnostics). */
+    get pid(): number | undefined {
+      return current?.pid
+    }
+  }
+}
+
+export type WorldClient = ReturnType<typeof createWorldClient>
+
+/* c8 ignore start */
+/** The bundled host entry, emitted next to the main `index.js` (an electron-vite input). ESM, so `import.meta.url`. */
+export function resolveWorldHostPath(): string {
+  return fileURLToPath(new URL('./worldHost.js', import.meta.url))
+}
+
+/**
+ * Forks the real utilityProcess; never used in tests.
+ * GOTCHA (asymmetric): the CHILD reads `e.data`; here, in the PARENT, `child.on('message', m => …)`
+ * receives the payload DIRECTLY.
+ */
+export function createWorldHostTransport(hostPath: string = resolveWorldHostPath()): WorldHostTransport {
+  const child = utilityProcess.fork(hostPath, [], { serviceName: 'termpolis-lumopolis' })
+  return {
+    postMessage: (msg) => child.postMessage(msg),
+    onMessage: (cb) => {
+      child.on('message', (m: WorldHostResponse) => cb(m))
+    },
+    onExit: (cb) => {
+      child.on('exit', (code: number) => cb(code))
+    },
+    kill: () => killUtility(child),
+    get pid() {
+      return child.pid
+    }
+  }
+}
+/* c8 ignore stop */

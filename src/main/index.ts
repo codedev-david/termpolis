@@ -325,7 +325,12 @@ import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
 import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYTES } from './outlineHint'
-import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
+import type { ExecFn } from './mnemeDistiller'
+import { createWorldClient } from './world/worldClient'
+import { registerWorldIpc } from './world/ipc'
+import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
+import { cheapModelFor, makeWorldLlm } from './world/label'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -2576,7 +2581,14 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       // under .worktrees, node_modules, dist ... is ever delivered to this thread by the OS.
       ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(
         fsWatch,
-        (root, files) => reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8')),
+        (root, files) => {
+          const reindexed = reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
+          // Lumopolis: once the graph has the change, refresh that project's world, but only if one is
+          // already stored (a watcher never makes the first world). Fire and forget: the watch gate
+          // waits on the re-index alone, and notifyChanged never throws.
+          void Promise.resolve(reindexed).then(() => worldClient.notifyChanged(root, files))
+          return reindexed
+        },
         undefined,
         true,
       ))
@@ -2598,6 +2610,54 @@ ipcMain.handle('code-graph:explore', async (_, opts: { query: string }) => { try
 ipcMain.handle('code-graph:search', async (_, opts: { query?: string; limit?: number }) => { try { return ok(codeSymbols(opts?.query, opts?.limit ?? 50)) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:callers', async (_, opts: { name: string }) => { try { return ok(codeCallers(opts?.name || '')) } catch (e: any) { return err(e.message) } })
 ipcMain.handle('code-graph:impact', async (_, opts: { name: string }) => { try { return ok(codeImpact(opts?.name || '')) } catch (e: any) { return err(e.message) } })
+
+// Lumopolis (the world view): the world compiler runs in its own utility process (world/worldHost.ts),
+// spawned on the first world request, never at app start. Main keeps three jobs: the code-graph
+// snapshot and git revision it posts, and the labelling model call, which needs the token-proxy
+// environment only main owns. world:get / world:compile / world:relayout, plus world:progress and
+// world:updated pushes, are registered by world/ipc.ts.
+const worldSettings = createWorldSettings(() => join(app.getPath('userData'), WORLD_SETTINGS_FILE))
+/** `claude -p` for labelling, with the same launch environment (token proxy included) an agent gets in
+ *  `root`. Spawned by the proc host, never on the main thread: a watcher-driven recompile can label. */
+const worldClaudeExec = (root: string): ExecFn => async (cmd, args, opts) => {
+  try {
+    const env = { ...process.env, PATH: getExtendedPath(), ...((await claudeLaunchEnv(root)) ?? {}) }
+    const out = await execCaptureOffThread(cmd, args, { cwd: root, timeout: opts.timeoutMs, maxBuffer: 8 * 1024 * 1024, env })
+    const code = out.error ? (typeof out.error.code === 'number' ? out.error.code : 1) : 0
+    return { stdout: String(out.stdout ?? ''), code }
+  } catch {
+    return { stdout: '', code: 1 }
+  }
+}
+const worldClient = createWorldClient(undefined, {
+  userDataPath: () => app.getPath('userData'),
+  labelling: () => worldSettings.get().worldLabelling,
+  // The cheapest model of the default agent. For codex/gemini this goes through runHeadless read-only,
+  // which still allows read tools: acceptable, because the labelling prompt only asks for JSON back.
+  llm: (root, prompt) =>
+    makeWorldLlm('claude', cheapModelFor('claude', modelCatalog), {
+      claudeExec: worldClaudeExec(root),
+      run: (req) => runHeadless({ ...req, cwd: root }, { deliver: deliverSecondOpinion }),
+    })(prompt),
+  head: async (root) => {
+    try {
+      const head = (await safeGitAsync(['rev-parse', 'HEAD'], { cwd: root, timeout: 3000 })).trim()
+      const status = await safeGitAsync(['-c', 'core.fsmonitor=false', 'status', '--porcelain', '--untracked-files=no'], { cwd: root, timeout: 5000 })
+      return { head, dirty: status.trim() !== '' }
+    } catch {
+      return { head: '', dirty: false }
+    }
+  },
+  // A project nobody indexed yet is indexed first, so a first world never compiles from nothing.
+  snapshot: async (root) => {
+    const key = graphKeyForRoot(root)
+    const snap = graphSnapshot(key, root)
+    if (snap.files.length > 0) return snap
+    await buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => whenNotShed() }, key)
+    return graphSnapshot(key, root)
+  },
+})
+registerWorldIpc(ipcMain, worldClient, () => mainWindow)
 // v1.23 C5 — issue->location prediction (on-demand for the UI; agents get the code_locate MCP tool).
 ipcMain.handle('code-graph:locate', async (_, opts: { issue: string; projectKey?: string; limit?: number }) => { try { return ok(await locateIssueSites(opts?.issue || '', opts?.projectKey, opts?.limit)) } catch (e: any) { return err(e.message) } })
 // v1.23 C6 — DEEP recall over the archive tier (cold/consolidated memories beyond the hot window).
@@ -5534,6 +5594,8 @@ async function semanticPoolOptions(
     // Reap the memory process. The store is already durable on disk (every write is appended before
     // its RPC resolves), so this loses nothing — it just stops the child outliving the app.
     try { stopMemoryHost() } catch {}
+    // Stop the Lumopolis world process, if a world was ever asked for. Worlds are saved atomically, so nothing is lost.
+    try { worldClient.dispose() } catch {}
     // Jobs a linked computer started here stop with the app, as do calls waiting on one.
     // Before the bridge: a job's cancellation is the last thing it reports.
     try { stopLinkedHost() } catch {}
