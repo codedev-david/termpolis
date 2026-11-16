@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import { validateWorld } from '../../src/shared/world/validate'
 import minDoc from './fixtures/world.min.json'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any
 const fresh = (): Any => JSON.parse(JSON.stringify(minDoc))
 const errorsOf = (doc: unknown): string[] => {

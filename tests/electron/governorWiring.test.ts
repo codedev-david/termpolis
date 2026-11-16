@@ -55,14 +55,17 @@ describe('src/main/index.ts footprint', () => {
     expect(named).toEqual(['installLoopGovernor', 'whenNotShed'])
     // 1.54.5: whenNotShed is awaited only by background passes, never on the typing path: memory:reflect-session (wire
     // step), and the code index of memory:ingest-code (before the sweep, and as its pause) and code-graph:build (HP-3).
+    // 2.0: Lumopolis indexes a never-indexed project before its first world compile (the world client's snapshot
+    // callback, reached from world:compile through the utility process, so it sits outside any ipcMain.handle).
     const channelOf = (n: ts.Node): string | null => {
       for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
         if (ts.isCallExpression(p) && p.expression.getText() === 'ipcMain.handle' && ts.isStringLiteral(p.arguments[0])) return p.arguments[0].text
+        if (ts.isPropertyAssignment(p) && p.name.getText() === 'snapshot') return 'world:snapshot'
       }
       return null
     }
     expect(callsTo(text, 'whenNotShed').map(channelOf).sort()).toEqual([
-      'code-graph:build', 'memory:ingest-code', 'memory:ingest-code', 'memory:reflect-session',
+      'code-graph:build', 'memory:ingest-code', 'memory:ingest-code', 'memory:reflect-session', 'world:snapshot',
     ])
   })
 
