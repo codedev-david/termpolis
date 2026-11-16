@@ -14,10 +14,33 @@ let app: ElectronApplication
 let page: Page
 const consoleErrors: string[] = []
 
+const BUNDLE = path.resolve('dist-world/world-viewer.js')
+const SOURCES = ['src/renderer/src/world', 'src/shared/world'].map((d) => path.resolve(d))
+
+/** Newest mtime of any file under the given folders. */
+function newestSource(dirs: string[]): number {
+  let newest = 0
+  const walk = (dir: string): void => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) walk(p)
+      else newest = Math.max(newest, fs.statSync(p).mtimeMs)
+    }
+  }
+  for (const d of dirs) walk(d)
+  return newest
+}
+
 test.beforeAll(async () => {
-  if (!fs.existsSync(path.resolve('dist-world/world-viewer.js'))) {
+  // Rebuild when the bundle is missing or older than any engine/validator source, so the spec
+  // never passes against a stale bundle.
+  if (!fs.existsSync(BUNDLE) || fs.statSync(BUNDLE).mtimeMs < newestSource(SOURCES)) {
     execSync('npm run build:world-viewer', { cwd: path.resolve('.'), stdio: 'pipe', timeout: 180_000 })
   }
+  // The website loads this one file on its own: it must not import anything (Three is inlined).
+  const bundle = fs.readFileSync(BUNDLE, 'utf8')
+  expect(bundle.match(/^\s*import\s*[\w*{"']/m), 'world-viewer.js must be standalone (no import statements)').toBeNull()
+  expect(bundle.match(/(?:^|[^\w$.])import\s*\(/m), 'world-viewer.js must not import() other chunks').toBeNull()
   app = await electron.launch({
     args: [
       path.resolve('tests/e2e/fixtures/world-harness-main.cjs'),
@@ -35,10 +58,20 @@ test.afterAll(async () => {
   await quitApp(app)
 })
 
-test('draws the world on a sized canvas', async () => {
-  const size = await page.locator('#view canvas').evaluate((c: HTMLCanvasElement) => ({ w: c.width, h: c.height }))
-  expect(size.w).toBeGreaterThan(0)
-  expect(size.h).toBeGreaterThan(0)
+test('draws the world on a canvas that fills its container', async () => {
+  const size = await page.locator('#view canvas').evaluate((c: HTMLCanvasElement) => {
+    const r = c.getBoundingClientRect()
+    const v = (c.parentElement as HTMLElement).getBoundingClientRect()
+    return { w: r.width, h: r.height, vw: v.width, vh: v.height, ww: window.innerWidth, wh: window.innerHeight, bw: c.width, bh: c.height }
+  })
+  // #view is inset: 0, so it is the window; the canvas must fill (at least 90% of) both.
+  expect(size.vw).toBeGreaterThanOrEqual(size.ww * 0.9)
+  expect(size.vh).toBeGreaterThanOrEqual(size.wh * 0.9)
+  expect(size.w).toBeGreaterThanOrEqual(size.vw * 0.9)
+  expect(size.h).toBeGreaterThanOrEqual(size.vh * 0.9)
+  // and its drawing buffer is real (low quality would halve it; the harness uses high)
+  expect(size.bw).toBeGreaterThanOrEqual(size.w * 0.9)
+  expect(size.bh).toBeGreaterThanOrEqual(size.h * 0.9)
 })
 
 test('clicking a building opens its card, Esc closes it', async () => {
@@ -54,4 +87,7 @@ test('clicking a building opens its card, Esc closes it', async () => {
 
 test('logs no console errors', async () => {
   expect(consoleErrors).toEqual([])
+  // The harness's own early collector also sees errors raised before the spec's listeners attached.
+  const early = await page.evaluate(() => (window as unknown as { __errors: string[] }).__errors)
+  expect(early).toEqual([])
 })

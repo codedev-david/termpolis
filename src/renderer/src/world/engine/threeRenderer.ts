@@ -85,6 +85,8 @@ const CSS = `
 
 const FLOOR_W = 5
 const ORB_R = 2.2
+/** How far behind an edge pick tube (radius 0.8) a node hit may lie and still win the pick. */
+const PICK_NODE_EPS = 1
 const OVERVIEW_DIR = new THREE.Vector3(0.24, 0.72, 1).normalize()
 
 type LabelKind = 'district' | 'bldg' | 'floor' | 'proc'
@@ -119,7 +121,24 @@ function trackBase<M extends THREE.Material>(m: M): M {
   return m
 }
 
+/**
+ * Builds the renderer into `host`. If any step throws after the canvas is in the page, everything
+ * made so far (WebGL context, canvas, label layer, host listeners, resize observer) is freed and
+ * removed before the error is rethrown, so the caller can fall back to the 2D list on a clean host.
+ */
 export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): ThreeRenderer {
+  const undo: Array<() => void> = []
+  try {
+    return buildThreeRenderer(host, opts, undo)
+  } catch (err) {
+    for (const f of undo.reverse()) {
+      try { f() } catch { /* keep freeing the rest */ }
+    }
+    throw err
+  }
+}
+
+function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Array<() => void>): ThreeRenderer {
   ensureStyle()
   const high = opts.quality === 'high'
   const reduced = opts.reducedMotion
@@ -131,10 +150,12 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
   renderer.setSize(width, height)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.domElement.style.display = 'block'
+  undo.push(() => { renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove() })
   host.appendChild(renderer.domElement)
   const labelRenderer = new CSS2DRenderer()
   labelRenderer.setSize(width, height)
   labelRenderer.domElement.className = 'lw-labels'
+  undo.push(() => { labelRenderer.domElement.remove() })
   host.appendChild(labelRenderer.domElement)
 
   const scene = new THREE.Scene()
@@ -154,13 +175,17 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
   controls.addEventListener('start', onControlStart)
 
   let composer: EffectComposer | null = null
+  let renderPass: RenderPass | null = null
   let bloom: UnrealBloomPass | null = null
+  let outputPass: OutputPass | null = null
   if (high) {
     composer = new EffectComposer(renderer)
-    composer.addPass(new RenderPass(scene, camera))
+    renderPass = new RenderPass(scene, camera)
+    composer.addPass(renderPass)
     bloom = new UnrealBloomPass(new THREE.Vector2(width, height), 1.0, 0.55, 0.12)
     composer.addPass(bloom)
-    composer.addPass(new OutputPass())
+    outputPass = new OutputPass()
+    composer.addPass(outputPass)
   }
   scene.add(new THREE.AmbientLight(0xffffff, 0.35))
   const sun = new THREE.DirectionalLight(0xffffff, 0.8)
@@ -540,7 +565,7 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
     selRing.visible = false
     world.add(selRing)
     computeOverview(model)
-    if (explodedId !== null && !nodes.has(explodedId)) explodedId = null
+    if (explodedId !== null && (nodes.get(explodedId)?.orb ?? true)) explodedId = null
     for (const n of nodes.values()) n.exploded = n.id === explodedId && !n.orb
     applyFocus()
     placeRing()
@@ -673,10 +698,13 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
     scene.updateMatrixWorld()
     camera.updateMatrixWorld()
     ray.setFromCamera(mouse, camera)
+    // Hits come nearest first. The nearest one wins, except that a node just behind an edge's
+    // fat pick tube (within PICK_NODE_EPS) still wins: a conduit runs into the building it ends
+    // at, and its tube must not swallow clicks on that building's face.
     const hits = ray.intersectObjects(pickables, false)
     const node = hits.find((h) => typeof h.object.userData.nodeId === 'string')
-    if (node) return { kind: 'node', id: node.object.userData.nodeId as string }
     const edge = hits.find((h) => typeof h.object.userData.edgeId === 'string')
+    if (node && (!edge || node.distance <= edge.distance + PICK_NODE_EPS)) return { kind: 'node', id: node.object.userData.nodeId as string }
     return edge ? { kind: 'edge', id: edge.object.userData.edgeId as string } : null
   }
 
@@ -702,6 +730,11 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
   host.addEventListener('keydown', onKeyDown)
   host.addEventListener('keyup', onKeyUp)
   host.addEventListener('blur', onBlur, true)
+  undo.push(() => {
+    host.removeEventListener('keydown', onKeyDown)
+    host.removeEventListener('keyup', onKeyUp)
+    host.removeEventListener('blur', onBlur, true)
+  })
 
   // ---------------- resize ----------------
   const resize = (): void => {
@@ -714,6 +747,7 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
   }
   const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize)
   ro?.observe(host)
+  undo.push(() => { ro?.disconnect() })
 
   // ---------------- loop ----------------
   const clock = new THREE.Clock()
@@ -851,7 +885,9 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
     setFocus(f) { focus = f; applyFocus() },
     setSelected(id) { selectedId = id; placeRing() },
     setExploded(id) {
-      explodedId = id !== null && nodes.has(id) ? id : null
+      // Only a building opens: an orb (external) has no floors, so it never thickens the fog.
+      const n = id === null ? undefined : nodes.get(id)
+      explodedId = n && !n.orb ? n.id : null
       for (const n of nodes.values()) n.exploded = n.id === explodedId && !n.orb
       fogTarget = theme.fogDensity * (explodedId === null ? 1 : 2.2)
     },
@@ -881,6 +917,8 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
       fogTex.dispose()
       for (const g of shared) g.dispose()
       bloom?.dispose()
+      outputPass?.dispose()
+      renderPass?.dispose()
       composer?.dispose()
       renderer.dispose()
       renderer.forceContextLoss()

@@ -1,7 +1,8 @@
 // The Lumopolis viewer: wires a WorldDoc to the scene model, the Three.js drawing layer, the
 // focus rules, the action queue and the inspector cards. Without WebGL it shows the 2D list
 // (fallback2d.ts) instead, and clicks on that list still raise select events.
-// Excluded from the coverage gate (it needs WebGL); e2e/world-engine.spec.ts covers it.
+// Excluded from the coverage gate (its WebGL path needs a GPU): tests/renderer/world/createWorldViewer.test.ts
+// pins the 2D path in jsdom, and e2e/world-engine.spec.ts covers the WebGL path.
 import type { WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { ACTION_GAP_MS, createActionQueue } from './actionQueue'
 import { buildingCard, edgeCard, escapeHtml, techCard, usesTech } from './cards'
@@ -27,7 +28,17 @@ export interface WorldViewer {
   getSelection(): string[]
   /** Ids of the buildings, externals and edges currently in view. */
   cameraRegion(): string[]
+  /**
+   * Cancels running actions, clears the selection (renderCard(null) and a select(null) event) and
+   * flies back to the overview.
+   *
+   * Esc does the same, but only while the viewer container has keyboard focus: it takes focus on
+   * pointerdown, and the viewer never listens on window, so it does not steal Esc from the page.
+   * A host that shows the card outside the container (or moves focus there) calls resetView()
+   * itself, or forwards Esc to it.
+   */
   resetView(): void
+  /** Removes every listener and frees the renderer. Later calls to load() are ignored. */
   dispose(): void
 }
 
@@ -78,21 +89,27 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let tourToken = 0
   let disposed = false
 
-  if (getComputedStyle(container).position === 'static') container.style.position = 'relative'
+  const pos = getComputedStyle(container).position
+  if (pos === '' || pos === 'static') container.style.position = 'relative' // '' = not laid out yet
   if (!container.hasAttribute('tabindex')) container.tabIndex = 0
   container.style.outline = 'none'
 
   let r3: ThreeRenderer | null = null
   if (hasWebGL()) {
+    const before = new Set(Array.from(container.children))
     try {
       r3 = createThreeRenderer(container, {
         quality: opts.quality ?? 'high',
         reducedMotion: reduced,
-        onEdgeLabel: (id) => { select(id, true) },
+        onEdgeLabel: (id) => { void select(id, true) },
       })
       r3.setTheme(themeName, THEMES[themeName])
     } catch {
+      // createThreeRenderer frees what it made before rethrowing; this also covers a throw from
+      // setTheme after it returned. Whatever it appended (canvas, label layer) goes before the 2D list.
+      try { r3?.dispose() } catch { /* already half torn down */ }
       r3 = null
+      for (const el of Array.from(container.children)) if (!before.has(el)) el.remove()
     }
   }
 
@@ -107,6 +124,14 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     if (d.districts.some((x) => x.id === id)) return 'district'
     if (Object.prototype.hasOwnProperty.call(d.glossary, id)) return 'tech'
     return null
+  }
+  function kindMatches(id: string, kind: SelectionKind): boolean {
+    const d = doc
+    if (!d) return false
+    if (kind === 'building') return d.buildings.some((b) => b.id === id) || d.externals.some((x) => x.id === id) || planBuildings(d).some((b) => b.id === id)
+    if (kind === 'edge') return d.edges.some((e) => e.id === id) || planEdges(d).some((e) => e.id === id)
+    if (kind === 'district') return d.districts.some((x) => x.id === id)
+    return Object.prototype.hasOwnProperty.call(d.glossary, id)
   }
   function edgeIdSet(d: WorldDoc): Set<string> {
     return new Set([...d.edges, ...planEdges(d)].map((e) => e.id))
@@ -160,8 +185,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
 
   // ---------------- selection ----------------
-  function select(id: string, fly: boolean, instant = reduced): Promise<void> {
-    const kind = kindOf(id)
+  /** `hint` is the kind the 2D list tagged the item with; it wins when the id names more than one thing. */
+  function select(id: string, fly: boolean, instant = reduced, hint?: SelectionKind): Promise<void> {
+    const kind = hint !== undefined && kindMatches(id, hint) ? hint : kindOf(id)
     if (!kind) return Promise.resolve()
     selection = { kind, id }
     const { focus, frameIds } = focusFor(selection)
@@ -211,28 +237,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
 
   // ---------------- 2D fallback ----------------
+  // renderFallback tags each item with data-kind and data-id; clicks are wired from those.
   function drawFallback(d: WorldDoc): void {
     container.innerHTML = renderFallback(d)
-    const section = container.querySelector('section.world-fallback')
-    if (!section) return
-    const lists = Array.from(section.children).filter((c) => c.tagName === 'UL')
-    const tag = (li: Element | undefined, id: string): void => {
-      if (!li) return
-      li.setAttribute('data-world-id', id)
-      ;(li as HTMLElement).style.cursor = 'pointer'
-    }
-    const districtLis = lists[0] ? Array.from(lists[0].children) : []
-    d.districts.forEach((dist, i) => {
-      const li = districtLis[i]
-      tag(li, dist.id)
-      const inner = li?.querySelector('ul')
-      const lis = inner ? Array.from(inner.children) : []
-      d.buildings.filter((b) => b.districtId === dist.id).forEach((b, j) => tag(lis[j], b.id))
-    })
-    const extLis = lists[1] ? Array.from(lists[1].children) : []
-    d.externals.forEach((x, i) => tag(extLis[i], x.id))
-    const edgeLis = lists[2] ? Array.from(lists[2].children) : []
-    d.edges.forEach((e, i) => tag(edgeLis[i], e.id))
+    for (const el of Array.from(container.querySelectorAll<HTMLElement>('[data-id]'))) el.style.cursor = 'pointer'
   }
 
   // ---------------- input ----------------
@@ -258,8 +266,11 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     if (!r3) return
     const hit = r3.pick(e.clientX, e.clientY)
     if (!hit || hit.kind !== 'node') return
-    exploded = exploded === hit.id ? null : hit.id
-    r3.setExploded(exploded)
+    // Only buildings open floor by floor; an external is an orb with nothing inside.
+    if (!doc?.externals.some((x) => x.id === hit.id)) {
+      exploded = exploded === hit.id ? null : hit.id
+      r3.setExploded(exploded)
+    }
     void select(hit.id, true)
   }
   const onPointerMove = (e: PointerEvent): void => {
@@ -286,9 +297,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
   const onFallbackClick = (e: MouseEvent): void => {
     if (r3) return
-    const li = (e.target as Element | null)?.closest?.('[data-world-id]')
-    const id = li?.getAttribute('data-world-id')
-    if (id) void select(id, false)
+    const el = (e.target as Element | null)?.closest?.('[data-id]')
+    if (!el || !container.contains(el)) return
+    const id = el.getAttribute('data-id')
+    const kind = el.getAttribute('data-kind')
+    const hint = kind === 'building' || kind === 'edge' || kind === 'district' || kind === 'tech' ? kind : undefined
+    if (id) void select(id, false, reduced, hint)
   }
   const onKeyDown = (e: KeyboardEvent): void => {
     if (e.key !== 'Escape') return
@@ -405,6 +419,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
 
   return {
     load(d) {
+      if (disposed) return
       cancelActions()
       doc = d
       revealProposal = undefined
@@ -420,11 +435,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       }
     },
     setLayers(l) {
+      if (disposed) return
       layers = { ...layers, ...l }
       redraw()
     },
     setTheme(t) {
-      if (!THEMES[t]) return
+      if (disposed || !THEMES[t]) return
       themeName = t
       r3?.setTheme(t, THEMES[t]) // redraws the current scene with the new palette
     },

@@ -12,6 +12,12 @@
   </style>
 </head>
 <body>
+  <script>
+    // Runs before the module: anything thrown or rejected while the bundle loads lands here too.
+    window.__errors = []
+    window.addEventListener('error', (e) => { window.__errors.push('error: ' + (e.message || String(e.error))) })
+    window.addEventListener('unhandledrejection', (e) => { window.__errors.push('unhandledrejection: ' + String(e.reason)) })
+  </script>
   <div id="view"></div>
   <aside id="card" hidden></aside>
   <script type="module">

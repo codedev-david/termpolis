@@ -26,4 +26,22 @@ describe('renderFallback', () => {
     expect(html).toContain('to ghost: odd')
     expect(html).not.toContain('<b>Core')
   })
+
+  it('tags every item with its selection kind and escaped id', () => {
+    const doc = rich()
+    doc.buildings[0].id = 'b"<1>'
+    const html = renderFallback(doc)
+    expect(html).toContain('data-kind="district" data-id="d1"')
+    expect(html).toContain('data-kind="building" data-id="b&quot;&lt;1&gt;"')
+    expect(html).toContain(`data-kind="building" data-id="${doc.externals[0].id}"`)
+    expect(html).toContain('data-kind="edge" data-id="e1"')
+    const host = document.createElement('div')
+    host.innerHTML = html
+    const tagged = Array.from(host.querySelectorAll('[data-id]')).map((el) => `${el.getAttribute('data-kind')}:${el.getAttribute('data-id')}`)
+    expect(tagged).toEqual([
+      ...doc.districts.flatMap((d) => [`district:${d.id}`, ...doc.buildings.filter((b) => b.districtId === d.id).map((b) => `building:${b.id}`)]),
+      ...doc.externals.map((x) => `building:${x.id}`),
+      ...doc.edges.map((e) => `edge:${e.id}`),
+    ])
+  })
 })
