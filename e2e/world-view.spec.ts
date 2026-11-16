@@ -14,7 +14,7 @@
  *      from the key's keydown to the moment the echoed character is on xterm's cursor line. A
  *      compile of the load project takes a few seconds on a fast runner, so compiles run back to
  *      back (the first a compile, then forced recompiles, as Re-layout does) until 60 keys fell
- *      inside one, at most MAX_COMPILES of them; only keys whose keydown falls inside a compile
+ *      inside one, at most MAX_COMPILES of them and within a 60 s typing deadline; only keys whose keydown falls inside a compile
  *      count, so the warm-up keys before the first one never do.
  *   6. Last, over the whole session (compiles, clicks, tour, typing): the renderer logged no console
  *      error and threw no page error.
@@ -48,12 +48,18 @@ const P95_BUDGET_MS = 50
 const WARMUP_KEYS = 10
 /** The fewest keys pressed during a compile for the p95 to count. */
 const MIN_SAMPLES = 60
-/** The most compiles run back to back to gather MIN_SAMPLES keys. */
-const MAX_COMPILES = 5
+/** The most compiles run back to back to gather MIN_SAMPLES keys. A forced recompile reuses the
+ *  code graph and takes about 350 ms on a CI runner (3 to 6 keys), so a fast runner needs many;
+ *  the 60 s typing deadline is the hard stop. */
+const MAX_COMPILES = 25
 /** A steady typist: one key every 50 ms. */
 const KEY_GAP_MS = 50
-/** Keys per shell line before it is cleared, so the line (and its redraw) stays short. */
-const LINE_KEYS = 40
+/** The most keys per shell line before it is cleared, so the line (and its redraw) stays short. */
+const LINE_KEYS = 20
+/** Columns the typed line keeps clear of the terminal's right edge: a line that reaches the margin
+ *  is wrapped by the shell or by xterm, and the key at the edge may never show on the cursor line
+ *  (a CI prompt is 56 to 58 columns, user@host:/tmp/termpolis-world-notes-XXXXXX$). */
+const MARGIN_COLS = 10
 
 /** Writes `files` under a new temp folder and makes it a git repository with every file staged. */
 function makeRepo(label: string, files: Record<string, string>): string {
@@ -224,6 +230,8 @@ test.describe.serial('Lumopolis in the real app', () => {
   test.setTimeout(45_000)
 
   test('1. the command palette opens Lumopolis and the compiled world is drawn on a canvas', async () => {
+    // Its own budget: the two 30 s waits below must fail with their own message, not the test's.
+    test.setTimeout(75_000)
     await createTerminal('Notes', project)
     // A focused terminal takes Ctrl+K as a key for the shell: the palette shortcut is the app's
     // only when the focus is outside it, as after clicking away.
@@ -318,7 +326,9 @@ test.describe.serial('Lumopolis in the real app', () => {
   })
 
   test('5. typing stays quick while a project compiles (p95 keystroke echo < 50 ms)', async () => {
-    // Measured at 19 to 25 s on a slow laptop (one compile of 15 to 20 s covers the keys there).
+    // Measured at 19 to 31 s on a slow laptop (one long compile covers the keys there). On a fast
+    // runner: setup, then at most the 60 s typing deadline (a first compile of 2 to 5 s and up to 24
+    // recompiles of about 350 ms fit well inside it), then the tail.
     test.setTimeout(90_000)
     // Stop the tour (it may still be running) by closing its card, then close the pane.
     if (await card().isVisible().catch(() => false)) await page.locator('[data-testid="world-card-close"]').click()
@@ -333,8 +343,9 @@ test.describe.serial('Lumopolis in the real app', () => {
     // digits. A shell may break a long line with a real newline instead of letting xterm wrap it
     // (bash's readline can), and then the cursor row no longer holds the marker: the poll then reads
     // the terminal's text with its newlines removed, as typing-trace.spec.ts does. Each shell line
-    // holds the marker and up to LINE_KEYS keys; the spec clears it and starts a new one
-    // (`newLine()`), so the line's redraw stays the same size all the way through.
+    // holds the marker and up to LINE_KEYS keys, fewer when the prompt is long: the line never comes
+    // within MARGIN_COLS of the terminal's width, so it never wraps. The spec then clears it and
+    // starts a new one (`newLine()`), so the line's redraw stays the same size all the way through.
     const marker = '~#~'
     await page.evaluate((marker) => {
       interface Echo {
@@ -342,11 +353,17 @@ test.describe.serial('Lumopolis in the real app', () => {
         compiling: boolean; runs: { start: number; end: number }[]; compileError?: string
       }
       const w = window as unknown as {
-        __termpolis_cursor_line?: () => string; __termpolis_terminal_text?: () => string; __echo: Echo; __echoLine: () => void
+        __termpolis_cursor_line?: () => string; __termpolis_terminal_text?: () => string
+        __echo: Echo; __echoLine: () => void; __echoText: () => string
       }
       const s: Echo = { down: [], echo: [], lineBase: 0, lineKeys: '', done: false, compiling: false, runs: [] }
       w.__echo = s
       w.__echoLine = () => { s.lineBase = s.down.length; s.lineKeys = '' }
+      // The text an echo is looked for in: the cursor line, else the terminal's text with its newlines removed.
+      w.__echoText = () => {
+        const line = w.__termpolis_cursor_line?.() ?? ''
+        return line.includes(marker) ? line : (w.__termpolis_terminal_text?.() ?? '').replace(/\r?\n/g, '')
+      }
       window.addEventListener('keydown', (e) => {
         if (!/^[a-z]$/.test(e.key)) return
         s.down.push(performance.now())
@@ -356,12 +373,8 @@ test.describe.serial('Lumopolis in the real app', () => {
       const poll = (): void => {
         if (s.done) return
         if (s.lineKeys) {
-          let line = w.__termpolis_cursor_line?.() ?? ''
-          let at = line.lastIndexOf(marker)
-          if (at < 0) {
-            line = (w.__termpolis_terminal_text?.() ?? '').replace(/\r?\n/g, '')
-            at = line.lastIndexOf(marker)
-          }
+          const line = w.__echoText()
+          const at = line.lastIndexOf(marker)
           if (at >= 0) {
             let n = 0
             while (n < s.lineKeys.length && line[at + marker.length + n] === s.lineKeys[n]) n++
@@ -380,7 +393,9 @@ test.describe.serial('Lumopolis in the real app', () => {
     const allEchoed = (): Promise<boolean> =>
       page.evaluate(() => (window as unknown as { __echo: { echo: number[] } }).__echo.echo.every((t) => t > 0))
     const cursorLine = (): Promise<string> => page.evaluate(() => (window as unknown as Hooks).__termpolis_cursor_line?.() ?? '')
-    const markerShown = async (): Promise<boolean> => (await cursorLine()).includes(marker)
+    // The marker is looked for where the echoes are (`__echoText`), so a cleared line is cleared there too.
+    const markerShown = (): Promise<boolean> =>
+      page.evaluate((m) => (window as unknown as { __echoText: () => string }).__echoText().includes(m), marker)
     const markerGone = async (): Promise<boolean> => !(await markerShown())
     // What the terminal shows, for a failure message: the next run says what that platform saw.
     const state = (): Promise<string> =>
@@ -433,6 +448,15 @@ test.describe.serial('Lumopolis in the real app', () => {
       return settled
     })
 
+    // How many keys a line takes: up to LINE_KEYS, and never so many that the prompt, the marker and
+    // the keys come within MARGIN_COLS of the terminal's width (a long prompt wraps by itself, so
+    // only its last row counts).
+    const cols = await page.evaluate(
+      () => (window as unknown as { __termpolis_terminal_size?: () => { cols: number } | null }).__termpolis_terminal_size?.()?.cols ?? 0,
+    )
+    const lineKeys = Math.min(LINE_KEYS, cols - ((prompt.length + 1) % cols) - marker.length - MARGIN_COLS)
+    expect(lineKeys, `too little room on the shell line: ${JSON.stringify({ cols, prompt })}`).toBeGreaterThanOrEqual(WARMUP_KEYS)
+
     // Warm-up, before any load: typed and echoed, and not counted.
     await page.keyboard.type(marker, { delay: KEY_GAP_MS })
     await until('the marker', markerShown)
@@ -468,14 +492,15 @@ test.describe.serial('Lumopolis in the real app', () => {
     const compiling = (): Promise<boolean> => page.evaluate(() => (window as unknown as { __echo: { compiling: boolean } }).__echo.compiling)
     const deadline = Date.now() + 60_000
     let onLine = 0
-    while ((await compiling()) && Date.now() < deadline) {
-      if (onLine === LINE_KEYS) { await newLine(); onLine = 0 }
+    const lineKey = async (): Promise<void> => {
+      if (onLine === lineKeys) { await newLine(); onLine = 0 }
       await key()
       onLine++
     }
+    while ((await compiling()) && Date.now() < deadline) await lineKey()
     // A few keys after the end, so the last keys pressed during a compile echo under the same
     // pattern; then every echo is awaited and the line cleared.
-    for (let i = 0; i < 5; i++) await key()
+    for (let i = 0; i < 5; i++) await lineKey()
     await until('every key to echo', allEchoed)
     await clearLine()
 
