@@ -645,7 +645,7 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     for (const i of m) {
       const stem = nameStem(lastSeg(files[i]))
       if (stem !== '') {
-        const k = `${dirOf(files[i])} ${stem}`
+        const k = `${dirOf(files[i])}\u0000${stem}`
         c.set(k, (c.get(k) ?? 0) + 1)
       }
     }
