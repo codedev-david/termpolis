@@ -1,7 +1,7 @@
 # World View: Design Spec
 
 **Date:** 2026-11-15
-**Status:** For David's approval (builder check done, 2026-11-15)
+**Status:** Approved by David (2026-11-15)
 **Target:** Termpolis **2.0**, a major release with World View as its headline (David, 2026-11-15: "the next evolution of understanding between human and AI")
 **Prototype:** `.superpowers/brainstorm/2400-1794800636/content/world-relationships.html`, a throwaway Three.js mockup that David approved as the direction ("click in certain areas and it gives detailed information for how it was built or what is being proposed")
 **Source idea:** David's *Living Software Universe Plan v2* (PDF) and sketches
@@ -217,10 +217,15 @@ David (2026-11-15): the tool should also look into a **live running application,
   - Clicking a hot building shows latency, errors, the slowest requests and what changed recently (deploys, agent commits).
   - Questions by voice or text ("why is checkout slow since 2pm?") are answered from traces, logs and metrics, with evidence.
   - A diagnosis can become a proposal for agents to build.
-- **Data:** OpenTelemetry first, because it works on any cloud or server (my call). Then connectors for existing monitoring tools, such as Azure Application Insights, Datadog and CloudWatch.
+- **Platforms (David, 2026-11-15): apps deployed on both Azure and AWS**, as first-class connectors:
+  - **Azure:** Application Insights (requests, dependencies, exceptions, traces, application map) and **Log Analytics workspaces** (KQL queries over logs and metrics), plus Azure Monitor metrics.
+  - **AWS:** CloudWatch Metrics and CloudWatch Logs (Logs Insights queries), and X-Ray / CloudWatch Application Signals for traces and service maps.
+  - **OpenTelemetry:** for anything else, on any cloud or server.
+
+  The service maps both platforms already produce (the App Insights application map and the X-Ray service map) are matched to the world's buildings through `runtimeNames`.
 - **Safety:**
   - Access is read-only.
-  - Connections are added by the user in Termpolis settings and stored in Termpolis's own vault, never pulled from credentials other tools keep on the machine (EDR rule).
+  - Connections are added by the user in Termpolis settings: an Azure sign-in in the app (Entra ID) or an app registration, and an AWS sign-in (IAM Identity Center) or a role the user enters. They're stored in Termpolis's own vault, with the least read-only roles listed in the UI (Monitoring Reader / Log Analytics Reader; CloudWatch and X-Ray read-only). Termpolis never pulls credentials from other tools' caches on the machine (`az` CLI, `~/.aws`; EDR rule).
   - Production data stays local, except the slice sent to the AI for a question, with personal data in logs masked first.
 
 **What 2.0 must do so this slots in:**
@@ -240,7 +245,7 @@ David (2026-11-15): the tool should also look into a **live running application,
 - Approach A.
 - Released as **Termpolis 2.0**, with World View as its headline.
 - A public interactive demo page on termpolis.com, built from the prototype that shows how Termpolis works.
-- Next after 2.0: a live production view of running applications for bottlenecks and diagnosis (5.11), with its own design.
+- Next after 2.0: a live production view of running applications for bottlenecks and diagnosis (5.11), with its own design. It connects to apps on **Azure** (Application Insights, Log Analytics workspaces) and **AWS** (CloudWatch, X-Ray).
 
 ## 7. Calls I made (David can override)
 
