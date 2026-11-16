@@ -868,7 +868,15 @@ describe('createWorldHost cloneSource / cancelClone', () => {
 
   it('cloneDeps override the real deps', async () => {
     const execFile = vi.fn(async () => ({ code: 0, stderr: '' }))
-    const h = harness({ cloneDeps: { execFile, dirSize: async () => 1, rm: async () => undefined, exists: async () => false } })
+    const h = harness({ cloneDeps: {
+        execFile,
+        dirSize: async () => 1,
+        rm: async () => undefined,
+        exists: async () => false,
+        listDir: async () => [],
+        mark: async () => undefined,
+        rename: async () => undefined
+      } })
     await h.init()
     await call(h.send, 1, 'cloneSource', [URL1])
     expect(h.last()).toMatchObject({ result: { ok: true } })
