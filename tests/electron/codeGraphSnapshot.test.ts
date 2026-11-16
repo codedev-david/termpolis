@@ -109,4 +109,23 @@ describe('graphSnapshot', () => {
     expect(s.files).toEqual(['index.ts', 'lib/b.ts'])
     expect(s.fileImports['index.ts']).toEqual(['./lib/b'])
   })
+
+  it('structureOnly skips symbols and call edges, keeping root, files and imports identical', async () => {
+    const cg = await import('../../src/main/codeGraph')
+    await cg.buildCodeGraph({ listFiles: async () => [A, B], readFile: async (f) => (f === A ? aSrc : bSrc) }, 'k')
+    for (const root of [undefined, 'C:/repo']) {
+      const full = graphSnapshot('k', root)
+      expect(full.symbols.length).toBeGreaterThan(0)
+      expect(full.callEdges.length).toBeGreaterThan(0)
+      const lean = graphSnapshot('k', root, { structureOnly: true })
+      expect(lean.symbols).toEqual([])
+      expect(lean.callEdges).toEqual([])
+      expect(lean.root).toBe(full.root)
+      expect(lean.files).toEqual(full.files)
+      expect(lean.fileImports).toEqual(full.fileImports)
+    }
+    // Explicitly not structure-only is the full copy; an unknown key is the same empty shape.
+    expect(graphSnapshot('k', undefined, { structureOnly: false }).symbols.length).toBeGreaterThan(0)
+    expect(graphSnapshot('nope', 'C:/r', { structureOnly: true })).toEqual({ root: 'C:/r', files: [], symbols: [], callEdges: [], fileImports: {} })
+  })
 })

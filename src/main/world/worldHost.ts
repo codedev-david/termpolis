@@ -19,6 +19,7 @@ import type { GraphSnapshot } from '../codeGraph'
 import { lowerHostPriority } from '../hostPriority'
 import type { Claim, Evidence, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { compileWorld, createRecompileScheduler, type CompileDeps } from './compile'
+import { MAX_DETECT_FILE_CHARS } from './detectors'
 import type { LabelDeps } from './label'
 import { createWorldStore, type WorldStore } from './worldStore'
 
@@ -52,7 +53,12 @@ export interface WorldLlmResultMsg {
   id: number
   text: string | null
 }
-export type WorldHostRequest = WorldInitMsg | WorldCallMsg | WorldLlmResultMsg
+/** The `worldLabelling` setting changed: the next compile or watcher recompile honours it, no restart. */
+export interface WorldSettingsMsg {
+  kind: 'settings'
+  labelling: boolean
+}
+export type WorldHostRequest = WorldInitMsg | WorldCallMsg | WorldLlmResultMsg | WorldSettingsMsg
 
 export interface WorldReadyMsg { kind: 'ready'; pid: number }
 export interface WorldInitErrorMsg { kind: 'init-error'; error: SerializedError }
@@ -80,6 +86,10 @@ export function serializeError(err: unknown): SerializedError {
 
 /** Files larger than this read as absent: the biggest test report the status reader accepts. */
 export const MAX_READ_BYTES = 16 * 1024 * 1024
+/** Source files larger than this read as absent. The boundary scan drops a file over MAX_DETECT_FILE_CHARS
+ *  characters anyway; a UTF-8 character is at least one byte, so this cap never drops a file the scan
+ *  would keep, bar one whose multi-byte text runs past the margin. */
+export const MAX_SOURCE_READ_BYTES = MAX_DETECT_FILE_CHARS + 64 * 1024
 /** Report files one glob may return; a repository with more is not a normal one. */
 export const MAX_GLOB_RESULTS = 2000
 /** Lines an excerpt spans: centred on the line when one is given, else the file's start. */
@@ -89,14 +99,47 @@ export const LLM_TIMEOUT_MS = 120_000
 
 const SKIP_DIRS = new Set(['node_modules', '.git'])
 
-/** Reads a UTF-8 file, or null when it is missing, not a file, bigger than `max`, or unreadable. */
-export async function readCapped(p: string, max = MAX_READ_BYTES): Promise<string | null> {
+/** The slice of an open file readCapped uses (a `fs.promises` FileHandle fits it). */
+export interface ReadHandle {
+  stat(): Promise<{ isFile(): boolean; size: number }>
+  read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>
+  close(): Promise<void>
+}
+
+const openForRead = (p: string): Promise<ReadHandle> => fsp.open(p, 'r')
+
+/**
+ * Reads a UTF-8 file, or null when it is missing, not a file, bigger than `max`, or unreadable.
+ * A bounded read: one buffer of the file's size + 1 bytes, never more, so a file that grows past what
+ * stat said (one being written) reads as absent instead of being read without limit.
+ */
+export async function readCapped(
+  p: string,
+  max = MAX_READ_BYTES,
+  open: (p: string) => Promise<ReadHandle> = openForRead
+): Promise<string | null> {
+  let handle: ReadHandle
   try {
-    const st = await fsp.stat(p)
-    if (!st.isFile() || st.size > max) return null
-    return await fsp.readFile(p, 'utf8')
+    handle = await open(p)
   } catch {
     return null
+  }
+  try {
+    const st = await handle.stat()
+    if (!st.isFile() || st.size > max) return null
+    const buf = Buffer.alloc(st.size + 1)
+    let filled = 0
+    for (;;) {
+      const { bytesRead } = await handle.read(buf, filled, buf.length - filled, filled)
+      if (bytesRead === 0) break
+      filled += bytesRead
+      if (filled === buf.length) return null
+    }
+    return buf.toString('utf8', 0, filled)
+  } catch {
+    return null
+  } finally {
+    await handle.close().catch(() => undefined)
   }
 }
 
@@ -196,7 +239,10 @@ export function filterWorld(doc: WorldDoc | null, query: WorldQuery | null | und
 export interface WorldHostDeps {
   compile?: typeof compileWorld
   createStore?: (dir: string) => WorldStore
+  /** Reads test reports (default: readCapped up to MAX_READ_BYTES); also source when `readSource` is absent. */
   readFile?: (p: string) => Promise<string | null>
+  /** Reads source for the boundary scan and labelling excerpts (default: readCapped up to MAX_SOURCE_READ_BYTES). */
+  readSource?: (p: string) => Promise<string | null>
   glob?: (root: string, patterns: string[]) => Promise<string[]>
   now?: () => number
   /** The watcher recompile's debounce (default 1500 ms). */
@@ -219,15 +265,22 @@ function needKey(projectKey: unknown): string {
   return projectKey
 }
 
+interface HostState {
+  store: WorldStore
+  labelling: boolean
+}
+
 export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: WorldHostDeps = {}): WorldHost {
   const compile = deps.compile ?? compileWorld
   const createStore = deps.createStore ?? createWorldStore
   const readFile = deps.readFile ?? ((p: string) => readCapped(p))
+  const readSource = deps.readSource ?? deps.readFile ?? ((p: string) => readCapped(p, MAX_SOURCE_READ_BYTES))
   const glob = deps.glob ?? ((root: string, patterns: string[]) => globFiles(root, patterns))
   const now = deps.now ?? Date.now
   const llmTimeoutMs = deps.llmTimeoutMs ?? LLM_TIMEOUT_MS
 
-  let state: { store: WorldStore; labelling: boolean } | null = null
+  /** Set by init. `labelling` is read each time a compile starts, so a settings message applies to the next one. */
+  let state: HostState | null = null
   const chains = new Map<string, Promise<unknown>>()
   const latest = new Map<string, Latest>()
   const schedulers = new Map<string, ReturnType<typeof createRecompileScheduler>>()
@@ -261,18 +314,19 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         post({ kind: 'llm', id, projectKey, prompt })
       })
 
-  const depsFor = (store: WorldStore, labelling: boolean, projectKey: string, snap: GraphSnapshot): CompileDeps => {
+  const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot): CompileDeps => {
     const root = String(snap.root).replace(/\/+$/, '')
     const label: LabelDeps = {
-      llm: labelling ? askMain(projectKey) : null,
-      cache: store.labelCache,
+      llm: st.labelling ? askMain(projectKey) : null,
+      cache: st.store.labelCache,
       excerpt: async (file, line) => {
-        const text = await readFile(`${root}/${file}`)
+        const text = await readSource(`${root}/${file}`)
         return text === null ? '' : excerptOf(text, line)
       }
     }
     return {
       readFile,
+      readSource,
       glob,
       label,
       now,
@@ -280,18 +334,18 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     }
   }
 
-  const schedulerFor = (store: WorldStore, labelling: boolean, key: string): ReturnType<typeof createRecompileScheduler> => {
+  const schedulerFor = (st: HostState, key: string): ReturnType<typeof createRecompileScheduler> => {
     let s = schedulers.get(key)
     if (!s) {
       s = createRecompileScheduler(
         (changed) =>
           serial(key, async () => {
             // A watcher never makes the first world: no stored world, nothing to refresh.
-            const previous = await store.load(key)
+            const previous = await st.store.load(key)
             if (!previous) return
             const cur = latest.get(key) as Latest
-            const doc = await compile({ snap: cur.snap, projectKey: key, head: cur.head, previous, changed }, depsFor(store, labelling, key, cur.snap))
-            await store.save(doc)
+            const doc = await compile({ snap: cur.snap, projectKey: key, head: cur.head, previous, changed }, depsFor(st, key, cur.snap))
+            await st.store.save(doc)
             post({ kind: 'updated', projectKey: key })
           }),
         deps.debounceMs ?? 1500
@@ -302,29 +356,29 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   }
 
   type Handler = (...args: never[]) => Promise<unknown>
-  const handlers = (store: WorldStore, labelling: boolean): Record<string, Handler> => ({
+  const handlers = (st: HostState): Record<string, Handler> => ({
     compile: (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, opts?: { relayout?: boolean }) => {
       const key = needKey(projectKey)
       return serial(key, async () => {
         // A re-layout is a compile whose previous world has no positions (so it lays out afresh with
         // the same seed); everything else compile carries from previous still carries.
-        const stored = await store.load(key)
+        const stored = await st.store.load(key)
         const previous =
           stored && opts?.relayout === true ? { ...stored, layout: { seed: stored.layout.seed, positions: {} } } : stored
-        const doc = await compile({ snap, projectKey: key, head, previous }, depsFor(store, labelling, key, snap))
-        await store.save(doc)
+        const doc = await compile({ snap, projectKey: key, head, previous }, depsFor(st, key, snap))
+        await st.store.save(doc)
         post({ kind: 'updated', projectKey: key })
         return doc
       })
     },
-    get: async (projectKey: unknown) => store.load(needKey(projectKey)),
+    get: async (projectKey: unknown) => st.store.load(needKey(projectKey)),
     notifyChanged: async (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, files: unknown) => {
       const key = needKey(projectKey)
       latest.set(key, { snap, head })
-      schedulerFor(store, labelling, key).notify(Array.isArray(files) ? files.filter(isStr) : [])
+      schedulerFor(st, key).notify(Array.isArray(files) ? files.filter(isStr) : [])
       return true
     },
-    read: async (projectKey: unknown, query: WorldQuery) => filterWorld(await store.load(needKey(projectKey)), query)
+    read: async (projectKey: unknown, query: WorldQuery) => filterWorld(await st.store.load(needKey(projectKey)), query)
   })
 
   const fail = (id: number, message: string): void => post({ kind: 'result', id, ok: false, error: { name: 'Error', message } })
@@ -344,13 +398,18 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         }
         return
       }
+      if (msg.kind === 'settings') {
+        // Before init there is nothing to switch: init carries the setting itself.
+        if (state) state.labelling = msg.labelling !== false
+        return
+      }
       if (msg.kind === 'llm-result') {
         llmWaiting.get(msg.id)?.(isStr(msg.text) ? msg.text : null)
         return
       }
       if (msg.kind !== 'call') return
       if (!state) return fail(msg.id, `worldHost: not initialised (fn "${String(msg.fn)}")`)
-      const table = handlers(state.store, state.labelling)
+      const table = handlers(state)
       const handler = Object.hasOwn(table, msg.fn) ? table[msg.fn] : undefined
       if (!handler) return fail(msg.id, `worldHost: unknown fn "${String(msg.fn)}"`)
       try {

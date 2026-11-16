@@ -8,6 +8,8 @@
 // type is a clean error result (the gateway turns a thrown Error into { ok: false, error }), the
 // limit is clamped to 1..100 and at most 200 ids are passed on. A project with no world yet gets a
 // helpful message, never an empty answer that reads as "this project has no parts".
+import { stat } from 'fs/promises'
+import { isAbsolute } from 'path'
 import type { Transport, UpstreamTool } from '../mcpGateway'
 import type { WorldQuery } from '../../shared/world/types'
 import type { WorldClient } from './worldClient'
@@ -20,11 +22,30 @@ export const MAX_GATEWAY_LIMIT = 100
 export const MAX_GATEWAY_IDS = 200
 export const NO_WORLD_MESSAGE = 'No Lumopolis map for this project yet. Open Lumopolis in Termpolis to build one.'
 export const NO_ROOT_MESSAGE = 'world_read needs {"cwd": "<project folder>"}: pass your working directory as "cwd" in the arguments.'
+export const BAD_CWD_MESSAGE = 'world_read "cwd" must be the full path of a project folder on this computer (not a network path).'
 
 /** What the transport needs from the world client: the full client satisfies it. */
 export type WorldGatewayClient = Pick<WorldClient, 'read' | 'hasWorld'>
 /** The project root for an agent's working directory, or null when there is none. */
 export type WorldRootFor = (cwd?: string) => string | null | Promise<string | null>
+/** Whether a path is an existing directory. */
+export type IsDirectory = (p: string) => Promise<boolean>
+
+const isDirectory: IsDirectory = async (p) => (await stat(p)).isDirectory()
+
+/** Two leading separators: a UNC share (`\\server\share`, `//server/share`) or a device path (`\\?\`). */
+const NETWORK_OR_DEVICE = /^[\\/]{2}/
+
+/**
+ * A model's cwd, before it reaches git or the disk: it must be absolute, local (a UNC path would make
+ * Windows reach out to another machine, with the user's sign-in, just to answer a lookup) and an
+ * existing folder. Anything else is a clean error result, in the same style as the other messages.
+ */
+async function checkCwd(cwd: string, isDir: IsDirectory): Promise<void> {
+  if (NETWORK_OR_DEVICE.test(cwd) || !isAbsolute(cwd)) fail(BAD_CWD_MESSAGE)
+  const ok = await isDir(cwd).catch(() => false)
+  if (!ok) fail(BAD_CWD_MESSAGE)
+}
 
 const WORLD_READ: UpstreamTool = {
   name: WORLD_READ_TOOL,
@@ -77,14 +98,22 @@ export function parseWorldReadArgs(args: unknown): ReadArgs {
   return cwd === undefined ? { query } : { query, cwd }
 }
 
-export function createWorldGatewayTransport(client: WorldGatewayClient, rootFor: WorldRootFor): Transport & { trusted: true } {
+export function createWorldGatewayTransport(
+  client: WorldGatewayClient,
+  rootFor: WorldRootFor,
+  isDir: IsDirectory = isDirectory
+): Transport & { trusted: true } {
   return Object.freeze({
     id: WORLD_GATEWAY_ID,
     trusted: true as const,
     listTools: async (): Promise<UpstreamTool[]> => [WORLD_READ],
     async callTool(tool: string, args: unknown): Promise<string> {
       if (tool !== WORLD_READ_TOOL) fail(`unknown Lumopolis tool "${tool}"`)
-      const { query, cwd } = parseWorldReadArgs(args)
+      const parsed = parseWorldReadArgs(args)
+      // A blank cwd is no cwd: rootFor answers null and the caller is told to pass one.
+      const cwd = parsed.cwd?.trim() ? parsed.cwd : undefined
+      if (cwd !== undefined) await checkCwd(cwd, isDir)
+      const { query } = parsed
       const root = await rootFor(cwd)
       if (typeof root !== 'string' || root.trim() === '') fail(NO_ROOT_MESSAGE)
       if (!(await client.hasWorld(root))) fail(NO_WORLD_MESSAGE)

@@ -194,9 +194,10 @@ function parseReply(raw: string): Json | null {
   }
 }
 
-/** A field that may be absent (undefined) but, when present, must have the right type. */
+/** A field that may be absent (undefined) but, when present, must have the right type. Model output
+ *  is untrusted: only OWN properties count, so nothing is ever read through a prototype. */
 function field<T>(o: Json, key: string, ok: (v: unknown) => v is T): T | undefined {
-  const v = o[key]
+  const v = own(o, key)
   if (v === undefined) return undefined
   if (!ok(v)) throw new Reject()
   return v
@@ -207,9 +208,11 @@ function claimsFrom(o: Json, key: string, evidenceOf: ReadonlyMap<string, Eviden
   if (!arr) return undefined
   const out: Claim[] = []
   for (const item of arr) {
-    if (!isObj(item) || !isStr(item.text) || !isStrArr(item.evidence)) throw new Reject()
-    const labels = [...new Set(item.evidence)]
-    const text = cap(item.text, MAX_CLAIM_TEXT)
+    const itemText = own(item, 'text')
+    const itemEvidence = own(item, 'evidence')
+    if (!isStr(itemText) || !isStrArr(itemEvidence)) throw new Reject()
+    const labels = [...new Set(itemEvidence)]
+    const text = cap(itemText, MAX_CLAIM_TEXT)
     // A claim citing nothing, or anything outside this batch, is dropped.
     if (labels.length === 0 || text === '' || labels.some((l) => !evidenceOf.has(l))) continue
     out.push({ text, state: 'inferred', evidence: labels.slice(0, MAX_EVIDENCE).map((l) => ({ ...(evidenceOf.get(l) as Evidence) })) })
@@ -343,8 +346,15 @@ function sha(s: string): string {
 
 // ---------- labelWorld ----------
 
+/** A map keyed by strings that came (in part) from a model: no prototype, so a key like `__proto__`
+ *  or `constructor` is just a key, never a setter or an inherited value. */
+const dict = <T>(): Record<string, T> => Object.create(null) as Record<string, T>
+
+/** Glossary terms that would be dangerous or confusing as keys anywhere downstream: skipped. */
+const RESERVED_TERMS = new Set(['__proto__', 'constructor', 'prototype'])
+
 export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> {
-  const labels: Labels = { districts: {}, buildings: {}, edges: {}, glossary: {} }
+  const labels: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict() }
   for (const d of g.districts) labels.districts[d.id] = { name: d.name, subtitle: '' }
   for (const b of g.buildings) labels.buildings[b.id] = fallbackBuilding(b)
   for (const e of g.edges) labels.edges[edgeId(e)] = fallbackEdge(e)
@@ -377,6 +387,9 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
       batch = mk()
       prompt = buildLabelPrompt(batch)
     }
+    // Still over the cap with every excerpt gone (a district too big to describe in one prompt):
+    // never send it. The batch keeps its code-derived labels.
+    if (prompt.length > MAX_PROMPT_CHARS) continue
     const key = sha(`${LABEL_PROMPT_VERSION}\n${prompt}`)
 
     let accepted = 0
@@ -426,7 +439,7 @@ function applyReply(
   evidence: ReadonlyMap<string, Evidence>
 ): number {
   let accepted = 0
-  const dist = validDistrict(reply.district)
+  const dist = validDistrict(own(reply, 'district'))
   if (dist) {
     labels.districts[batch.district.id] = { ...labels.districts[batch.district.id], ...dist }
     accepted += countFields(dist)
@@ -449,13 +462,15 @@ function applyReply(
       accepted += countFields(v)
     }
   }
-  if (isObj(reply.glossary)) {
+  const glossary = own(reply, 'glossary')
+  if (isObj(glossary)) {
     let n = 0
-    for (const [term, def] of Object.entries(reply.glossary)) {
+    for (const [term, def] of Object.entries(glossary)) {
       if (n === MAX_GLOSSARY) break
       if (!isStr(def) || term.trim() === '' || def.trim() === '') continue
-      n++
       const k = cap(term, MAX_NAME)
+      if (RESERVED_TERMS.has(k)) continue
+      n++
       if (!Object.hasOwn(labels.glossary, k)) {
         labels.glossary[k] = cap(def, MAX_GLOSSARY_DEF)
         accepted++

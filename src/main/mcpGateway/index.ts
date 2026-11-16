@@ -33,7 +33,7 @@ export interface Transport {
   listTools: () => Promise<UpstreamTool[]>
   callTool: (tool: string, args: unknown) => Promise<string>
   /** A provider Termpolis ships itself (Lumopolis): its tools skip the allow-list and the 'ask'
-   *  prompt, because there is no third party to govern. Only built-in code sets it: the runtime
+   *  prompt, because there is no third party to govern (a deny rule naming it still blocks). Only built-in code sets it: the runtime
    *  (mcpGatewayRuntime.ts) rebuilds every transport made from the user's `servers` config with
    *  `trusted: false`, so a config entry claiming it is still asked. The kill switch (`enabled:
    *  false`), the secret scan, the result banner and the audit log still apply. */
@@ -92,6 +92,19 @@ async function resolveAsk(deps: GatewayDeps, server: string, tool: string, findi
 /** The verdict a trusted built-in transport gets in place of `decide()`. */
 const trustedVerdict: PolicyVerdict = { decision: 'allow', rule: null, reason: 'trusted built-in provider' }
 
+/**
+ * The policy verdict for one tool. A trusted built-in skips the allow-list (a wildcard deny, the
+ * default 'ask', strict mode) and the 'ask' prompt, but never the kill switch, and never a deny rule
+ * the user wrote for it by name (`lumopolis/world_read` or `lumopolis/*`): that is an explicit no,
+ * and it wins exactly as decide() resolves it, so a more specific allow still beats it.
+ */
+function verdictFor(policy: GatewayPolicy, transport: Transport | undefined, server: string, tool: string): PolicyVerdict {
+  const verdict = decide(policy, server, tool)
+  if (transport?.trusted !== true || !policy.enabled) return verdict
+  const namedDeny = verdict.rule !== null && verdict.rule.server !== '*' && verdict.rule.decision === 'deny'
+  return namedDeny ? verdict : trustedVerdict
+}
+
 export function createGateway(deps: GatewayDeps) {
   const now = deps.now ?? Date.now
 
@@ -116,10 +129,10 @@ export function createGateway(deps: GatewayDeps) {
       } catch {
         continue // one unreachable server must not hide the others
       }
-      const trusted = transport.trusted === true
       for (const tool of tools) {
-        // A trusted built-in is not filtered by the allow-list: nothing in it is a third party's.
-        const verdict = trusted ? trustedVerdict : decide(policy, transport.id, tool.name)
+        // A trusted built-in is not filtered by the allow-list (nothing in it is a third party's),
+        // only by a deny rule that names it.
+        const verdict = verdictFor(policy, transport, transport.id, tool.name)
         if (verdict.decision === 'deny') continue
 
         const meta = sanitizeToolMetadata(transport.id, tool.name, tool.description, tool.inputSchema)
@@ -161,9 +174,9 @@ export function createGateway(deps: GatewayDeps) {
     const transport = deps.transports().find(t => t.id === server)
 
     const policy = deps.getPolicy()
-    // A trusted built-in skips the allow-list and the 'ask' prompt, but never the kill switch:
-    // a disabled gateway refuses every call, Termpolis's own included.
-    const verdict = transport?.trusted === true && policy.enabled ? trustedVerdict : decide(policy, server, tool)
+    // A trusted built-in skips the allow-list and the 'ask' prompt, but never the kill switch (a
+    // disabled gateway refuses every call, Termpolis's own included) nor a deny rule naming it.
+    const verdict = verdictFor(policy, transport, server, tool)
 
     // The argument scan runs BEFORE the decision is finalised so an 'ask' prompt can
     // show the human what is about to leave. It is the whole reason the prompt is

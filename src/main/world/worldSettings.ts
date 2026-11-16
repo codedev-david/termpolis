@@ -7,8 +7,8 @@ import { atomicWriteText } from '../agentConfigIO'
 
 export interface WorldSettings {
   /**
-   * "Describe parts with AI": name and explain districts, buildings and edges with the default
-   * agent's cheapest model. ON by default; only a literal `false` turns it off, so a damaged or
+   * "Describe parts with AI": name and explain districts, buildings and edges with Claude's
+   * cheapest model (Haiku). ON by default; only a literal `false` turns it off, so a damaged or
    * hand-edited file never silently stops it. Off, the world still renders with code-derived names.
    */
   worldLabelling: boolean

@@ -246,7 +246,9 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
     return () => window.removeEventListener('keydown', onKey, true)
   }, [])
 
-  const projectName = doc ? doc.projectKey : resolvedRoot ? baseName(resolvedRoot) : ''
+  // The folder's name, never doc.projectKey: that is a sha1 slice of the path, not a name. A doc only
+  // loads for a resolved root, and WorldDoc carries no root of its own to fall back on.
+  const projectName = resolvedRoot ? baseName(resolvedRoot) : ''
   let empty: 'noRoot' | 'loading' | 'mapping' | 'error' | null = null
   if (!root) empty = 'noRoot'
   else if (error !== null) empty = 'error'

@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,6 +16,8 @@ import {
   filterWorld,
   globFiles,
   readCapped,
+  MAX_SOURCE_READ_BYTES,
+  type ReadHandle,
   serializeError,
   startWorldHost,
   type GlobFn,
@@ -142,6 +145,97 @@ describe('host file-system deps', () => {
     expect(await readCapped(join(dir, 'missing.txt'))).toBeNull()
     expect(await readCapped(dir)).toBeNull()
     expect(await readCapped(join(dir, 'a.txt'), 3)).toBeNull()
+  })
+
+  it('readCapped is a bounded read: never more than the file size + 1 bytes, short reads joined, handle always closed', async () => {
+    const text = 'héllo wörld' // multi-byte UTF-8
+    const bytes = Buffer.from(text, 'utf8')
+    const asked: number[] = []
+    let closed = 0
+    const fake = (over: Partial<ReadHandle> = {}, size = bytes.length, data = bytes): ReadHandle => {
+      let pos = 0
+      return {
+        stat: async () => ({ isFile: () => true, size }),
+        read: async (buf, offset, length) => {
+          asked.push(length)
+          const n = Math.min(4, length, data.length - pos) // at most 4 bytes per call: short reads
+          data.copy(buf, offset, pos, pos + n)
+          pos += n
+          return { bytesRead: n }
+        },
+        close: async () => {
+          closed++
+        },
+        ...over
+      }
+    }
+    expect(await readCapped('/f', 100, async () => fake())).toBe(text)
+    expect(Math.max(...asked)).toBeLessThanOrEqual(bytes.length + 1)
+    expect(closed).toBe(1)
+
+    // Bigger than the cap by its size: nothing is read at all.
+    asked.length = 0
+    expect(await readCapped('/f', bytes.length - 1, async () => fake())).toBeNull()
+    expect(asked).toEqual([])
+    expect(closed).toBe(2)
+
+    // The file grew after stat: more bytes than it claimed means it is changing, so it reads as absent,
+    // and the read still stops at size + 1.
+    asked.length = 0
+    expect(await readCapped('/f', 100, async () => fake({}, 3))).toBeNull()
+    expect(asked.reduce((a, b) => a + b, 0)).toBe(4)
+    expect(closed).toBe(3)
+
+    // Not a file, a failing read and a failing close all read as absent; the handle is still closed.
+    expect(await readCapped('/f', 100, async () => fake({ stat: async () => ({ isFile: () => false, size: 1 }) }))).toBeNull()
+    expect(closed).toBe(4)
+    expect(await readCapped('/f', 100, async () => fake({ read: async () => Promise.reject(new Error('EIO')) }))).toBeNull()
+    expect(closed).toBe(5)
+    const failingClose = fake({ close: async () => Promise.reject(new Error('EBADF')) })
+    expect(await readCapped('/f', 100, async () => failingClose)).toBe(text)
+    expect(await readCapped('/f', 100, async () => Promise.reject(new Error('ENOENT')))).toBeNull()
+    // An empty file is an empty string.
+    expect(await readCapped('/f', 100, async () => fake({}, 0, Buffer.alloc(0)))).toBe('')
+  })
+
+  it('source files are read through a reader capped near the detector limit; test reports keep the 16 MB one', async () => {
+    expect(MAX_SOURCE_READ_BYTES).toBe(MAX_DETECT_FILE_CHARS + 64 * 1024)
+    const big = join(dir, 'big.ts')
+    await writeFile(big, 'x'.repeat(MAX_SOURCE_READ_BYTES + 1))
+    await writeFile(join(dir, 'small.ts'), 'a\nb')
+    let got: CompileDeps | null = null
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      got = deps
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile })
+    await h.init(false)
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(dir), HEAD] })
+    const deps = got as unknown as CompileDeps
+    expect(await (deps.readSource as (p: string) => Promise<string | null>)(big)).toBeNull()
+    expect((await deps.readFile(big))?.length).toBe(MAX_SOURCE_READ_BYTES + 1)
+    // Excerpts for labelling are source too.
+    expect(await deps.label.excerpt('big.ts')).toBe('')
+    expect(await deps.label.excerpt('small.ts')).toBe('a\nb')
+  })
+
+  it('an injected readSource serves source and excerpts; readFile still serves reports', async () => {
+    let got: CompileDeps | null = null
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      got = deps
+      return doc(input.projectKey)
+    })
+    const readSource = vi.fn(async () => 'src')
+    const readFile = vi.fn(async () => 'report')
+    const h = harness({ compile, readSource, readFile })
+    await h.init(false)
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap('/repo'), HEAD] })
+    const deps = got as unknown as CompileDeps
+    expect(deps.readSource).toBe(readSource)
+    expect(deps.readFile).toBe(readFile)
+    expect(await deps.label.excerpt('src/a.ts')).toBe('src')
+    expect(readSource).toHaveBeenCalledWith('/repo/src/a.ts')
+    expect(readFile).not.toHaveBeenCalled()
   })
 
   it('globFiles returns absolute matches, skips node_modules and .git, and drops ! patterns', async () => {
@@ -447,6 +541,34 @@ describe('createWorldHost', () => {
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
     expect(h.last()).toMatchObject({ id: 1, ok: true })
     expect(h.out.some((m) => m.kind === 'llm')).toBe(false)
+  })
+
+  it('a settings message switches labelling for the next compile and the next watcher recompile', async () => {
+    const asked: string[] = []
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      if (deps.label.llm) {
+        asked.push(input.projectKey)
+        void deps.label.llm('describe')
+      }
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 5 }, memStore({ k1: doc() }))
+    await h.send({ kind: 'settings', labelling: false }) // before init: ignored, nothing to switch
+    await h.init(true)
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1)
+    // Off mid-session: the next compile and a watcher recompile make zero model requests.
+    await h.send({ kind: 'settings', labelling: false })
+    await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(2))
+    await h.send({ kind: 'call', id: 3, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(compile).toHaveBeenCalledTimes(3)
+    expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1)
+    expect(asked).toEqual(['k1'])
+    // And back on; a non-boolean counts as on (only a literal false turns it off).
+    await h.send({ kind: 'settings', labelling: 'yes' as unknown as boolean })
+    await h.send({ kind: 'call', id: 4, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2)
   })
 
   it('notifyChanged recompiles a stored world after the debounce with the latest snapshot, then pushes updated', async () => {

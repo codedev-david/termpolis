@@ -2634,8 +2634,9 @@ const worldClaudeExec = (root: string): ExecFn => async (cmd, args, opts) => {
 const worldClient = createWorldClient(undefined, {
   userDataPath: () => app.getPath('userData'),
   labelling: () => worldSettings.get().worldLabelling,
-  // The cheapest model of the default agent. For codex/gemini this goes through runHeadless read-only,
-  // which still allows read tools: acceptable, because the labelling prompt only asks for JSON back.
+  // Claude's cheapest model (Haiku), whatever agent the user prefers elsewhere: main has no notion of a
+  // default agent (Default Models are per-agent model ids kept by the renderer), and the settings copy
+  // says Claude. makeWorldLlm also runs codex/gemini (through runHeadless read-only) if that changes.
   llm: (root, prompt) =>
     makeWorldLlm('claude', cheapModelFor('claude', modelCatalog), {
       claudeExec: worldClaudeExec(root),
@@ -2655,10 +2656,10 @@ const worldClient = createWorldClient(undefined, {
   // stored one: that would throw away every stored position. The ipc handler answers err(message).
   snapshot: async (root) => {
     const key = graphKeyForRoot(root)
-    const snap = graphSnapshot(key, root)
+    const snap = graphSnapshot(key, root, { structureOnly: true })
     if (snap.files.length > 0) return snap
     await buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => whenNotShed() }, key)
-    const built = graphSnapshot(key, root)
+    const built = graphSnapshot(key, root, { structureOnly: true })
     if (built.files.length === 0) throw new Error('no source files found')
     return built
   },

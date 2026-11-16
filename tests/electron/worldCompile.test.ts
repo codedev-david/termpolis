@@ -437,6 +437,27 @@ describe('compileWorld', () => {
     expect(doc.tours).toEqual([])
   })
 
+  it('scans source through readSource when given, keeping readFile for the test reports', async () => {
+    const base = mkDeps(FIXTURE)
+    const fileReads: string[] = []
+    const sourceReads: string[] = []
+    const deps: CompileDeps = {
+      ...base,
+      readFile: async (p) => {
+        fileReads.push(p)
+        return p === REPORT ? REPORT_TEXT : null
+      },
+      readSource: async (p) => {
+        sourceReads.push(p)
+        return base.readFile(p)
+      }
+    }
+    const doc = await compileWorld({ snap: snapOf(FIXTURE), projectKey: 'demo', head: HEAD, previous: null }, deps)
+    expect(doc).toEqual(await compileFixture())
+    expect(fileReads).toEqual([REPORT])
+    expect([...sourceReads].sort()).toEqual(Object.keys(FIXTURE).map((f) => `${ROOT}/${f}`).sort())
+  })
+
   it('reads every file once, in chunks, with rising boundary progress', async () => {
     const files: Record<string, string> = {}
     for (let i = 0; i < 70; i++) files[`src/m${String(i).padStart(2, '0')}/f.ts`] = `export const v${i} = ${i}\n`

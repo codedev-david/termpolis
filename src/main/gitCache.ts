@@ -53,10 +53,13 @@ export function _gitCacheSizeForTests(): number {
   return entries.size
 }
 
-function keyFor(cwd: string, args: string[]): string {
+function keyFor(cwd: string, args: string[], cacheFailures: boolean): string {
   // NUL separator: it is the one byte that cannot appear in a path or a git argument, so no pair of
-  // different (cwd, argv) can collide by concatenation.
-  return `${cwd}\u0000${args.join('\u0000')}`
+  // different (cwd, argv) can collide by concatenation. The failure mode is part of the key: a
+  // failure kept for a `cacheFailures` caller must never be served to a caller that did not opt in
+  // (git:find-root would paint "not a repo" for a minute after one transient error). The cwd stays
+  // the first segment, which is what invalidateGitCache matches on.
+  return `${cwd}\u0000${cacheFailures ? 'F' : 'P'}\u0000${args.join('\u0000')}`
 }
 
 /**
@@ -73,7 +76,7 @@ export function cachedGit(
   ttlMs: number = GIT_CACHE_TTL_MS,
   { cacheFailures = false }: { cacheFailures?: boolean } = {},
 ): Promise<string> {
-  const key = keyFor(opts.cwd, args)
+  const key = keyFor(opts.cwd, args, cacheFailures)
   const now = clock()
   const hit = entries.get(key)
   if (hit && now - hit.at < ttlMs) return hit.value

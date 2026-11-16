@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { describe, expect, it, vi } from 'vitest'
 import { createGateway, defaultPolicy } from '../../src/main/mcpGateway'
 import { sanitizeToolMetadata, type SecretScan } from '../../src/main/mcpGateway/guard'
@@ -5,6 +8,7 @@ import { clearGatewayAudit } from '../../src/main/mcpGateway/audit'
 import {
   MAX_GATEWAY_IDS,
   MAX_GATEWAY_LIMIT,
+  BAD_CWD_MESSAGE,
   NO_ROOT_MESSAGE,
   NO_WORLD_MESSAGE,
   WORLD_GATEWAY_ID,
@@ -28,8 +32,10 @@ function setup(opts: { has?: boolean | (() => Promise<boolean>); root?: string |
   const hasWorld = vi.fn(typeof has === 'function' ? has : async () => has)
   const client: WorldGatewayClient = { read, hasWorld }
   const rootFor = vi.fn((cwd?: string) => (opts.root !== undefined ? opts.root : cwd ? `${cwd}-root` : null))
-  const transport = createWorldGatewayTransport(client, rootFor)
-  return { transport, read, hasWorld, rootFor }
+  // The fake cwds ('/repos/app') do not exist on disk: a stub stands in for the folder check.
+  const isDir = vi.fn(async () => true)
+  const transport = createWorldGatewayTransport(client, rootFor, isDir)
+  return { transport, read, hasWorld, rootFor, isDir }
 }
 
 describe('createWorldGatewayTransport', () => {
@@ -64,7 +70,7 @@ describe('createWorldGatewayTransport', () => {
 
   it('takes an async rootFor', async () => {
     const read = vi.fn(async () => RESULT)
-    const t = createWorldGatewayTransport({ read, hasWorld: async () => true }, async (cwd) => `${cwd}!`)
+    const t = createWorldGatewayTransport({ read, hasWorld: async () => true }, async (cwd) => `${cwd}!`, async () => true)
     await t.callTool('world_read', { cwd: '/x' })
     expect(read).toHaveBeenCalledWith('/x!', {})
   })
@@ -85,6 +91,43 @@ describe('createWorldGatewayTransport', () => {
     const { transport, rootFor } = setup()
     await expect(transport.callTool('world_read', undefined)).rejects.toThrow('world_read needs {"cwd": "<project folder>"}')
     expect(rootFor).toHaveBeenCalledWith(undefined)
+  })
+
+  it('refuses a cwd that is a network path, relative, missing or not a folder, before any root lookup', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'lumopolis-cwd-'))
+    try {
+      const file = join(dir, 'a-file.txt')
+      await writeFile(file, 'x')
+      const read = vi.fn(async () => RESULT)
+      const rootFor = vi.fn(async (cwd?: string) => cwd ?? null)
+      // No folder check passed in: the real one (an async stat) runs.
+      const t = createWorldGatewayTransport({ read, hasWorld: async () => true }, rootFor)
+      const unc = String.raw`\\server\share\repo`
+      const device = String.raw`\\?\C:\repo`
+      for (const cwd of [unc, '//server/share/repo', device, 'repos/app', '.', join(dir, 'missing'), file]) {
+        await expect(t.callTool('world_read', { cwd })).rejects.toThrow(BAD_CWD_MESSAGE)
+      }
+      expect(rootFor).not.toHaveBeenCalled()
+      expect(read).not.toHaveBeenCalled()
+      // A real local folder passes.
+      expect(JSON.parse(await t.callTool('world_read', { cwd: dir }))).toEqual(RESULT)
+      expect(rootFor).toHaveBeenCalledWith(dir)
+      // An empty cwd is no cwd: the "pass cwd" message, as before.
+      rootFor.mockClear()
+      await expect(t.callTool('world_read', { cwd: '  ' })).rejects.toThrow(NO_ROOT_MESSAGE)
+      expect(BAD_CWD_MESSAGE).toContain('"cwd"')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a folder check that throws counts as not a folder', async () => {
+    const rootFor = vi.fn(async () => '/r')
+    const t = createWorldGatewayTransport({ read: vi.fn(async () => RESULT), hasWorld: async () => true }, rootFor, async () => {
+      throw new Error('EPERM')
+    })
+    await expect(t.callTool('world_read', { cwd: process.cwd() })).rejects.toThrow(BAD_CWD_MESSAGE)
+    expect(rootFor).not.toHaveBeenCalled()
   })
 
   it('refuses an unknown tool', async () => {

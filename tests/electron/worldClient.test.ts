@@ -13,7 +13,7 @@ vi.mock('electron', () => ({
 }))
 
 import type { GraphSnapshot } from '../../src/main/codeGraph'
-import { graphKeyForRoot } from '../../src/main/codeGraph'
+import { _resetCodeGraphForTests, graphKeyForRoot, indexFileContent } from '../../src/main/codeGraph'
 import { createWorldClient, type WorldClientOptions, type WorldHostTransport } from '../../src/main/world/worldClient'
 import type { WorldHostRequest, WorldHostResponse } from '../../src/main/world/worldHost'
 import { worldFileName } from '../../src/main/world/worldStore'
@@ -125,11 +125,19 @@ describe('createWorldClient', () => {
       spawned.push(t)
       return t
     })
-    await client.compile(ROOT)
-    expect(spawned[0].posted[0]).toMatchObject({ userDataPath: '/fake-userdata' })
-    const snap = spawned[0].calls()[0].args[1] as GraphSnapshot
-    expect(snap.root).toBe(ROOT)
-    expect(Array.isArray(snap.files)).toBe(true)
+    indexFileContent(`${ROOT}/src/a.ts`, 'export function alpha() { return 1 }', KEY)
+    try {
+      await client.compile(ROOT)
+      expect(spawned[0].posted[0]).toMatchObject({ userDataPath: '/fake-userdata' })
+      const snap = spawned[0].calls()[0].args[1] as GraphSnapshot
+      expect(snap.root).toBe(ROOT)
+      expect(snap.files).toEqual(['src/a.ts'])
+      // Structure only: the indexed symbol is not copied across.
+      expect(snap.symbols).toEqual([])
+      expect(snap.callEdges).toEqual([])
+    } finally {
+      _resetCodeGraphForTests()
+    }
   })
 
   it('with no spawner it tries the real utilityProcess, fails, and tries again on the next call', async () => {
@@ -348,6 +356,39 @@ describe('createWorldClient', () => {
     t.throwOnPost = true
     t.emit({ kind: 'llm', id: 8, projectKey: KEY, prompt: 'late' })
     await flush()
+  })
+
+  it('turning labelling off mid-session answers the next labelling request with null, without asking the model', async () => {
+    let on = true
+    const llm = vi.fn(async () => 'label')
+    const { client, spawned } = setup({ llm, labelling: () => on })
+    await client.compile(ROOT)
+    const t = spawned[0]
+    expect(t.posted[0]).toEqual({ kind: 'init', userDataPath: '/ud', labelling: true })
+    t.emit({ kind: 'llm', id: 1, projectKey: KEY, prompt: 'a' })
+    await vi.waitFor(() => expect(t.posted).toContainEqual({ kind: 'llm-result', id: 1, text: 'label' }))
+    on = false
+    t.emit({ kind: 'llm', id: 2, projectKey: KEY, prompt: 'b' })
+    await vi.waitFor(() => expect(t.posted).toContainEqual({ kind: 'llm-result', id: 2, text: null }))
+    expect(llm).toHaveBeenCalledTimes(1)
+  })
+
+  it('applySettings tells a live host the current labelling setting, and never starts one', async () => {
+    let on = true
+    const { client, spawn, spawned } = setup({ labelling: () => on })
+    client.applySettings() // no host yet: nothing to tell, nothing spawned
+    expect(spawn).not.toHaveBeenCalled()
+    await client.compile(ROOT)
+    on = false
+    client.applySettings()
+    expect(spawned[0].posted[spawned[0].posted.length - 1]).toEqual({ kind: 'settings', labelling: false })
+    on = true
+    client.applySettings()
+    expect(spawned[0].posted[spawned[0].posted.length - 1]).toEqual({ kind: 'settings', labelling: true })
+    // A port that throws (the host is going away) is swallowed: its exit restarts it with the new value.
+    spawned[0].throwOnPost = true
+    expect(() => client.applySettings()).not.toThrow()
+    expect(spawn).toHaveBeenCalledTimes(1)
   })
 
   describe('notifyChanged', () => {

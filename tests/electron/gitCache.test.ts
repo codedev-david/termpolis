@@ -159,6 +159,20 @@ describe('failures, when the caller asks to keep them', () => {
     expect(await cachedGit(ASK, { cwd: '/other' }, 60_000, { cacheFailures: true })).toBe('/scratch')
   })
 
+  it('a failure kept for a cacheFailures caller is never served to a plain caller of the same question', async () => {
+    // The Lumopolis root lookup (cacheFailures, 60 s) and git:find-root (plain) ask the same thing.
+    H.safeGitAsync.mockRejectedValueOnce(new Error('index.lock busy')).mockResolvedValue('/repo')
+    await expect(cachedGit(ASK, { cwd: '/repo' }, 60_000, { cacheFailures: true })).rejects.toThrow('index.lock busy')
+    expect(await cachedGit(ASK, { cwd: '/repo' }, 60_000)).toBe('/repo')
+    expect(H.safeGitAsync).toHaveBeenCalledTimes(2)
+    // ...and the opted-in caller still gets its own kept answer for the window.
+    await expect(cachedGit(ASK, { cwd: '/repo' }, 60_000, { cacheFailures: true })).rejects.toThrow('index.lock busy')
+    expect(H.safeGitAsync).toHaveBeenCalledTimes(2)
+    // Invalidation still reaches both spellings of the key.
+    invalidateGitCache('/repo')
+    expect(_gitCacheSizeForTests()).toBe(0)
+  })
+
   it('leaves the default alone: without the opt-in a failure is still dropped', async () => {
     H.safeGitAsync.mockRejectedValueOnce(new Error('lock')).mockResolvedValue('ok')
     await expect(cachedGit(ASK, { cwd: '/repo' }, 60_000, {})).rejects.toThrow('lock')

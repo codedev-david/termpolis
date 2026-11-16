@@ -16,7 +16,9 @@ describe('LumopolisSettings', () => {
   it('shows the stored setting and names the cost', async () => {
     api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: false } })) })
     render(<LumopolisSettings />)
-    expect(screen.getByText(/Describe parts with AI \(uses your default agent's cheapest model\)/)).toBeInTheDocument()
+    // Honest about the model: labelling always runs on Claude's cheapest model, whatever the default agent is.
+    expect(screen.getByText(/Describe parts with AI \(uses Claude's cheapest model, Haiku\)/)).toBeInTheDocument()
+    expect(screen.queryByText(/default agent/)).toBeNull()
     expect(toggle()).toHaveAttribute('aria-checked', 'true') // ON until main answers
     await settle()
     expect(toggle()).toHaveAttribute('aria-checked', 'false')

@@ -700,17 +700,70 @@ describe('fix round 1', () => {
     expect(l.buildings.b00.why).toEqual([])
   })
 
-  it('a prompt that cannot fit even without excerpts is still sent', async () => {
+  it('a prompt that cannot fit even without excerpts is never sent: that batch keeps its fallback labels', async () => {
     const buildings = Array.from({ length: 150 }, (_, i) =>
       bld(`b${i}`, 'd', Array.from({ length: 12 }, (_, k) => `${'p'.repeat(190)}${i}-${k}.ts`))
     )
-    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings, edges: [] }
-    const llm = vi.fn(async () => '{}')
-    await labelWorld(g, mkDeps({ llm }))
+    const g: Grouping = {
+      districts: [{ id: 'd', name: 'D', members: [] }, { id: 'small', name: 'Small', members: ['s'] }],
+      buildings: [...buildings, bld('s', 'small', ['src/s.ts'])],
+      edges: []
+    }
+    // Sanity: even with every excerpt dropped, the big district's prompt is over the cap.
+    const bare = buildLabelPrompt({
+      district: { id: 'd', name: 'D' },
+      buildings: buildings.map((b) => ({ id: b.id, name: b.name, members: b.members, boundaries: [] })),
+      edges: [],
+      excerpts: []
+    })
+    expect(bare.length).toBeGreaterThan(MAX_PROMPT_CHARS)
+    const cacheGet = vi.fn(async () => null)
+    const llm = vi.fn(async () => JSON.stringify({ district: { name: 'Named' }, buildings: { b0: { name: 'Model name' } } }))
+    const l = await labelWorld(g, mkDeps({ llm, cache: { get: cacheGet, set: async () => undefined } }))
+    // Only the small district asked; every prompt that left was within the cap.
     expect(llm).toHaveBeenCalledTimes(1)
-    const p = llm.mock.calls[0][0] as string
-    expect(p.length).toBeGreaterThan(28_000)
-    expect(p).toContain('(none)')
+    expect(llm.mock.calls[0][0]).toContain('DISTRICT "small"')
+    for (const [p] of llm.mock.calls) expect((p as string).length).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
+    expect(cacheGet).toHaveBeenCalledTimes(1)
+    expect(l.districts.d).toEqual({ name: 'D', subtitle: '' })
+    expect(l.buildings.b0.name).toBe('b0-name')
+    expect(l.buildings.b0.how).toEqual([])
+  })
+
+  it('keys from the model like __proto__ and constructor never reach a prototype or the glossary', async () => {
+    const reply =
+      '{"__proto__": {"polluted": "yes"}, "district": {"name": "Alpha Zone", "__proto__": {"polluted": "d"}},' +
+      ' "buildings": {"__proto__": {"name": "Evil"}, "constructor": {"name": "Evil2"}, "a": {"name": "Alpha Hub", "__proto__": {"name": "x"}}},' +
+      ' "edges": {"__proto__": {"label": "Evil"}},' +
+      ' "glossary": {"__proto__": "evil", "constructor": "evil", "prototype": "evil", "IPC": "inter-process call"}}'
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm: async (p: string) => (p.includes('DISTRICT "d1"') ? reply : '{}') }))
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+    expect(Object.prototype).not.toHaveProperty('polluted')
+    expect(Object.keys(l.glossary)).toEqual(['IPC'])
+    expect(Object.hasOwn(l.glossary, '__proto__')).toBe(false)
+    expect(Object.hasOwn(l.glossary, 'constructor')).toBe(false)
+    expect(Object.getPrototypeOf(l.glossary)).toBeNull()
+    for (const m of [l.districts, l.buildings, l.edges]) expect(Object.getPrototypeOf(m)).toBeNull()
+    expect(Object.keys(l.buildings).sort()).toEqual(['a', 'b', 'c'])
+    expect(l.buildings.a.name).toBe('Alpha Hub')
+    expect(l.districts.d1.name).toBe('Alpha Zone')
+    expect(Object.keys(l.edges)).toEqual([edgeId({ from: 'a', to: 'b' }), edgeId({ from: 'c', to: 'a' })])
+  })
+
+  it('reads only own properties of a reply: inherited district, glossary and claim fields count as absent', async () => {
+    const inherited = Object.create({ name: 'Inherited', text: 'inherited', evidence: ['E1'] }) as Record<string, unknown>
+    const proto = { district: { name: 'Proto district' }, glossary: { P: 'proto' } }
+    const reply = Object.assign(Object.create(proto), { buildings: { a: { how: [inherited, { text: 'own', evidence: ['E1'] }] } } })
+    // parseReply only ever yields plain JSON objects; exercise the readers directly through a fake JSON.parse.
+    const parse = vi.spyOn(JSON, 'parse').mockReturnValueOnce(reply)
+    try {
+      const l = await labelWorld(twoDistricts(), mkDeps({ llm: async (p: string) => (p.includes('DISTRICT "d1"') ? 'x' : '{}') }))
+      expect(l.districts.d1).toEqual({ name: 'Alpha', subtitle: '' })
+      expect(Object.keys(l.glossary)).toEqual([])
+      expect(l.buildings.a.how).toEqual([])
+    } finally {
+      parse.mockRestore()
+    }
   })
 })
 

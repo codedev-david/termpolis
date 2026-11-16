@@ -3,7 +3,8 @@
 //   world:compile  { root } → ok(WorldDoc)
 //   world:relayout { root } → ok(WorldDoc)   (a compile that ignores the stored positions)
 //   world:settings-get       → ok(WorldSettings)
-//   world:settings-set patch → ok(WorldSettings)  (only the known fields of the patch apply)
+//   world:settings-set patch → ok(WorldSettings)  (only the known fields of the patch apply; a running
+//                              world host is told at once, so turning labelling off needs no restart)
 //   world:progress / world:updated           (webContents.send, while a world compiles / after a
 //                                             watcher-driven recompile saved)
 // `ipc` and `win` are parameters, so this module never imports Electron and tests pass fakes.
@@ -19,7 +20,7 @@ export interface WorldIpcWindow {
   webContents: { send(channel: string, ...args: unknown[]): void }
 }
 
-export type WorldIpcClient = Pick<WorldClient, 'get' | 'compile' | 'relayout' | 'onProgress' | 'onUpdated'>
+export type WorldIpcClient = Pick<WorldClient, 'get' | 'compile' | 'relayout' | 'applySettings' | 'onProgress' | 'onUpdated'>
 
 const rootOf = (args: unknown): string | null => {
   const root = args && typeof args === 'object' ? (args as { root?: unknown }).root : undefined
@@ -68,7 +69,10 @@ export function registerWorldIpc(
     const patch = settingsPatchOf(args)
     if (!patch) return err('settings patch required')
     try {
-      return ok(settings.set(patch))
+      const next = settings.set(patch)
+      // A running world host honours the change from its next compile, not from the next restart.
+      client.applySettings()
+      return ok(next)
     } catch (e) {
       return err(e instanceof Error ? e.message : String(e))
     }

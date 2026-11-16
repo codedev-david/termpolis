@@ -685,16 +685,28 @@ function commonDir(files: string[]): string {
   return parts ? parts.join('/') : ''
 }
 
+export interface GraphSnapshotOptions {
+  /** Copy only the structure (root, files, fileImports): `symbols` and `callEdges` come back empty.
+   *  The world compiler (Lumopolis) reads nothing else, and copying every symbol and call edge of a
+   *  big repo on the main thread for each compile or watcher batch is wasted work. */
+  structureOnly?: boolean
+}
+
+/** Every file path the graph knows (indexed, importing, or holding a symbol), raw. */
+function indexedFiles(st: GraphState): string[] {
+  const all = new Set<string>([...st.idsByFile.keys(), ...st.fileImports.keys()])
+  for (const s of st.symbolsById.values()) all.add(s.file)
+  return [...all]
+}
+
 /** Copy of a repo's graph with paths relative to the repo root. Pure read: an unknown key yields empty arrays
  *  and does NOT register a state (unlike stateFor). With an explicit `root`, paths are made relative to it and
  *  files outside it are excluded; without one the root is the longest common directory of the indexed absolute
  *  paths (the graph does not store the root it was built from). */
-export function graphSnapshot(projectKey: string, root?: string): GraphSnapshot {
+export function graphSnapshot(projectKey: string, root?: string, opts: GraphSnapshotOptions = {}): GraphSnapshot {
   const st = graphs.get(projectKey)
   if (!st) return { root: root ? slashed(root).replace(/\/+$/, '') : '', files: [], symbols: [], callEdges: [], fileImports: {} }
-  const all = new Set<string>([...st.idsByFile.keys(), ...st.fileImports.keys()])
-  for (const s of st.symbolsById.values()) all.add(s.file)
-  const base = root ? slashed(root).replace(/\/+$/, '') : commonDir([...all].map(slashed))
+  const base = root ? slashed(root).replace(/\/+$/, '') : commonDir(indexedFiles(st).map(slashed))
   const lowBase = base.toLowerCase() + '/'
   const rel = (p: string): string | null => {
     const n = slashed(p)
@@ -702,6 +714,12 @@ export function graphSnapshot(projectKey: string, root?: string): GraphSnapshot 
     return n.toLowerCase().startsWith(lowBase) ? n.slice(base.length + 1) : root ? null : n
   }
   const files = [...new Set([...st.idsByFile.keys(), ...st.fileImports.keys()].map(rel).filter((f): f is string => f !== null))].sort()
+  const fileImports: Record<string, string[]> = {}
+  for (const [f, imps] of st.fileImports) {
+    const r = rel(f)
+    if (r !== null) fileImports[r] = [...imps]
+  }
+  if (opts.structureOnly === true) return { root: base, files, symbols: [], callEdges: [], fileImports }
   const idMap = new Map<string, string>()
   const symbols: SymbolHit[] = []
   for (const s of st.symbolsById.values()) {
@@ -718,11 +736,6 @@ export function graphSnapshot(projectKey: string, root?: string): GraphSnapshot 
     const from = idMap.get(e.from)
     const to = idMap.get(e.to)
     if (from !== undefined && to !== undefined) callEdges.push({ from, to })
-  }
-  const fileImports: Record<string, string[]> = {}
-  for (const [f, imps] of st.fileImports) {
-    const r = rel(f)
-    if (r !== null) fileImports[r] = [...imps]
   }
   return { root: base, files, symbols, callEdges, fileImports }
 }

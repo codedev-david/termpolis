@@ -475,6 +475,34 @@ describe('mcpGateway orchestration', () => {
       expect((await gw.callTool('gh/read', {})).ok).toBe(false)
     })
 
+    it('still obeys an explicit deny rule that names it, for the tool or the whole server', async () => {
+      for (const rule of [{ server: 'lumopolis', tool: 'world_read' }, { server: 'lumopolis', tool: '*' }] as const) {
+        const policy: GatewayPolicy = { ...defaultPolicy(), rules: [{ ...rule, decision: 'deny' }] }
+        const t = builtin()
+        const spy = vi.spyOn(t, 'callTool')
+        const gw = createGateway({ getPolicy: () => policy, transports: () => [t], scanSecrets: noSecrets })
+        expect(await gw.listTools()).toEqual([])
+        const res = await gw.callTool('lumopolis/world_read', {})
+        expect(res).toMatchObject({ ok: false, decision: 'deny' })
+        expect(spy).not.toHaveBeenCalled()
+        expect(recentGatewayCalls().at(-1)).toMatchObject({ server: 'lumopolis', tool: 'world_read', ok: false, decision: 'deny' })
+        expect(recentGatewayCalls().at(-1)?.reason).not.toBe('trusted built-in provider')
+      }
+    })
+
+    it('a more specific allow beats a server-wide deny, and a named ask rule is not a deny (strict or not)', async () => {
+      const allowed: GatewayPolicy = { ...defaultPolicy(), rules: [{ server: 'lumopolis', tool: '*', decision: 'deny' }, { server: 'lumopolis', tool: 'world_read', decision: 'allow' }] }
+      const gw = createGateway({ getPolicy: () => allowed, transports: () => [builtin()], scanSecrets: noSecrets })
+      expect((await gw.listTools()).map(t => t.name)).toEqual(['lumopolis/world_read'])
+      expect((await gw.callTool('lumopolis/world_read', {})).ok).toBe(true)
+      for (const strict of [false, true]) {
+        const asked: GatewayPolicy = { ...defaultPolicy(), strict, rules: [{ server: 'lumopolis', tool: 'world_read', decision: 'ask' }] }
+        const gw2 = createGateway({ getPolicy: () => asked, transports: () => [builtin()], scanSecrets: noSecrets })
+        expect((await gw2.listTools()).map(t => t.name)).toEqual(['lumopolis/world_read'])
+        expect(await gw2.callTool('lumopolis/world_read', {})).toMatchObject({ ok: true, decision: 'allow' })
+      }
+    })
+
     it('never asks the prompter', async () => {
       const prompt = vi.fn(async () => 'deny' as const)
       const gw = createGateway({ getPolicy: () => defaultPolicy(), transports: () => [builtin()], scanSecrets: noSecrets, prompt })

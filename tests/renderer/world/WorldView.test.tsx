@@ -175,7 +175,7 @@ describe('WorldView', () => {
     rerender(<WorldView root="" onClose={onClose} />)
     await settle()
     const calls = b.api.worldGet.mock.calls.length
-    await b.updated({ root: '/x', projectKey: 'termpolis-min' })
+    await b.updated({ root: '/x', projectKey: '3f9a1c0e7b2d4a68' })
     expect(b.api.worldGet).toHaveBeenCalledTimes(calls)
   })
 
@@ -590,7 +590,7 @@ describe('WorldView', () => {
     })
   })
 
-  it('names the project after the doc, or after the folder while there is none', async () => {
+  it('names the project after its folder, before and after the doc arrives (never the hashed project key)', async () => {
     const get = deferred<Res<WorldDoc | null>>()
     bridge({ worldGet: vi.fn(() => get.promise), gitFindRoot: vi.fn(async () => ok('C:\\code\\my-app\\')) })
     await mount({ root: 'C:\\code\\my-app\\src' })
@@ -598,7 +598,9 @@ describe('WorldView', () => {
     expect(screen.getByTestId('world-loading')).toHaveTextContent('Opening Lumopolis…')
     await act(async () => { get.resolve(ok(minimal())) })
     await settle()
-    expect(screen.getByTestId('world-project')).toHaveTextContent('termpolis-min')
+    // The doc's projectKey is a sha1 slice (3f9a1c0e7b2d4a68): a person reads the folder name.
+    expect(screen.getByTestId('world-project')).toHaveTextContent('my-app')
+    expect(screen.getByTestId('world-project')).not.toHaveTextContent('3f9a1c0e7b2d4a68')
   })
 
   it('without a project folder it says so and asks main for nothing', async () => {

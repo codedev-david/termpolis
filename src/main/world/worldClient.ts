@@ -26,13 +26,15 @@ export interface WorldHostTransport {
 export interface WorldClientOptions {
   /** Electron's userData folder (the store lives under `<it>/world/`). Default: `app.getPath('userData')`. */
   userDataPath?: string | (() => string)
-  /** The `worldLabelling` setting, read each time a host starts. Default: on. */
+  /** The `worldLabelling` setting, read when a host starts, when `applySettings` runs, and again on every
+   *  labelling request (off: the request is answered null without asking the model). Default: on. */
   labelling?: () => boolean
   /** Runs one labelling prompt for the project at `root`. Absent, or throwing, the host labels from code. */
   llm?: (root: string, prompt: string) => Promise<string | null>
   /** The repository revision stamped on a world. Default: `{ head: '', dirty: false }`. */
   head?: (root: string) => Promise<WorldHead>
-  /** The code-graph snapshot posted to the host. Default: `graphSnapshot(graphKeyForRoot(root), root)`. */
+  /** The code-graph snapshot posted to the host. Default: the structure-only
+   *  `graphSnapshot(graphKeyForRoot(root), root, { structureOnly: true })` (the world reads no symbols). */
   snapshot?: (root: string) => GraphSnapshot | Promise<GraphSnapshot>
   /** Whether a world is stored for a project. Default: the store file exists under userData. */
   hasStoredWorld?: (projectKey: string) => boolean | Promise<boolean>
@@ -73,7 +75,7 @@ export function createWorldClient(
   }
   const labelling = opts.labelling ?? (() => true)
   const headOf = opts.head ?? (async () => ({ head: '', dirty: false }))
-  const snapshotOf = opts.snapshot ?? ((root: string) => graphSnapshot(graphKeyForRoot(root), root))
+  const snapshotOf = opts.snapshot ?? ((root: string) => graphSnapshot(graphKeyForRoot(root), root, { structureOnly: true }))
   const hasStoredWorld =
     opts.hasStoredWorld ??
     (async (key: string) => {
@@ -126,7 +128,9 @@ export function createWorldClient(
   const answerLlm = async (tr: WorldHostTransport, id: number, projectKey: string, prompt: string): Promise<void> => {
     let text: string | null = null
     const root = roots.get(projectKey)
-    if (opts.llm && root !== undefined) {
+    // Consent is checked at the moment of asking, not only when the host started: turning
+    // "Describe parts with AI" off stops model calls at once, even mid-compile.
+    if (opts.llm && root !== undefined && labelling() !== false) {
       try {
         const r = await opts.llm(root, prompt)
         text = typeof r === 'string' ? r : null
@@ -316,6 +320,19 @@ export function createWorldClient(
       updatedSubs.add(cb)
       return () => {
         updatedSubs.delete(cb)
+      }
+    },
+    /**
+     * The world settings changed: tell a running host so its next compile or watcher recompile
+     * honours them. Never starts a host (one that starts later reads the settings in its init).
+     */
+    applySettings(): void {
+      const tr = current
+      if (!tr) return
+      try {
+        tr.postMessage({ kind: 'settings', labelling: labelling() !== false })
+      } catch {
+        // the host is going away; the next one reads the setting in its init
       }
     },
     /** Stops the host (app quit). Calls after this reject. */

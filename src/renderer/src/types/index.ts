@@ -688,7 +688,7 @@ export interface TermpolisAPI {
   worldCompile: (root: string) => Promise<IpcResponse<WorldDoc>>
   /** Lumopolis: compile again, throwing away the previous layout. */
   worldRelayout: (root: string) => Promise<IpcResponse<WorldDoc>>
-  /** Lumopolis settings: whether the world compiler may ask the default agent's cheapest model to describe parts. */
+  /** Lumopolis settings: whether the world compiler may ask Claude's cheapest model (Haiku) to describe parts. */
   worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */
   worldSettingsSet: (patch: { worldLabelling?: boolean }) => Promise<IpcResponse<{ worldLabelling: boolean }>>

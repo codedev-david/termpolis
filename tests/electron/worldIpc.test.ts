@@ -35,6 +35,7 @@ function setup(win: () => Win | null | undefined = () => null, settings = fakeSe
       return DOC
     }),
     relayout: vi.fn(async () => DOC),
+    applySettings: vi.fn(),
     onProgress: (cb) => {
       progress.add(cb)
       return () => {
@@ -70,6 +71,21 @@ describe('registerWorldIpc', () => {
     // A wrong type or an unknown field is dropped: set() runs with nothing to change.
     expect(await invoke('world:settings-set', { worldLabelling: 'no' })).toEqual({ success: true, data: { worldLabelling: false } })
     expect(settings.set).toHaveBeenLastCalledWith({})
+  })
+
+  it('world:settings-set hands the new setting to the live world host after storing it', async () => {
+    const { invoke, settings, client } = setup()
+    await invoke('world:settings-set', { worldLabelling: false })
+    expect(client.applySettings).toHaveBeenCalledTimes(1)
+    const stored = settings.set.mock.invocationCallOrder[0]
+    expect((client.applySettings as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeGreaterThan(stored)
+    // A refused patch, or a store that throws, tells the host nothing.
+    await invoke('world:settings-set', 'nope')
+    settings.set.mockImplementation(() => {
+      throw new Error('disk gone')
+    })
+    await invoke('world:settings-set', { worldLabelling: true })
+    expect(client.applySettings).toHaveBeenCalledTimes(1)
   })
 
   it('world:settings-set refuses a patch that is not an object', async () => {

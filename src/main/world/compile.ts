@@ -19,8 +19,11 @@ import { readTestResults, statusFor, TEST_FILE, type TestRun } from './testStatu
 export type CompileStage = 'structure' | 'boundaries' | 'grouping' | 'status' | 'labelling' | 'layout'
 
 export interface CompileDeps {
-  /** Resolves null (or rejects) to skip a file. */
+  /** Resolves null (or rejects) to skip a file. Reads the test reports, and the source when there is no `readSource`. */
   readFile: (p: string) => Promise<string | null>
+  /** Reads a source file for the boundary scan (null or a rejection skips it). The host caps it near
+   *  MAX_DETECT_FILE_CHARS, so a huge source file is never read whole only to be dropped. */
+  readSource?: (p: string) => Promise<string | null>
   glob: (root: string, patterns: string[]) => Promise<string[]>
   label: LabelDeps
   now: () => number
@@ -326,9 +329,10 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
   const names = new Map<string, string[]>()
   const scanned = new Map<string, string[]>()
   progress('boundaries', 5)
+  const readSource = deps.readSource ?? deps.readFile
   for (let i = 0; i < files.length; i += READ_CHUNK) {
     const chunk = files.slice(i, i + READ_CHUNK)
-    const texts = await Promise.all(chunk.map((f) => safeRead(deps.readFile, `${root}/${f}`)))
+    const texts = await Promise.all(chunk.map((f) => safeRead(readSource, `${root}/${f}`)))
     chunk.forEach((f, k) => {
       const text = texts[k]
       if (text === null || text.length > MAX_DETECT_FILE_CHARS) return

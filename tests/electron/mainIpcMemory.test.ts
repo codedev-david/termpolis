@@ -4116,7 +4116,7 @@ describe('Lumopolis world wiring in index.ts', () => {
 
   it('snapshots the code graph, indexing a project first when nothing is indexed (through the governor)', async () => {
     expect(await world.opts.snapshot('/repos/x')).toEqual({ files: ['a.ts'], symbols: [], edges: [] })
-    expect(cg.graphSnapshot).toHaveBeenCalledWith('key:/repos/x', '/repos/x')
+    expect(cg.graphSnapshot).toHaveBeenCalledWith('key:/repos/x', '/repos/x', { structureOnly: true }) // the world needs no symbols or call edges
     expect(cg.buildCodeGraph).not.toHaveBeenCalled()
     cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] }).mockReturnValueOnce({ files: ['b.ts'], symbols: [], edges: [] })
     expect((await world.opts.snapshot('/repos/y')).files).toEqual(['b.ts'])

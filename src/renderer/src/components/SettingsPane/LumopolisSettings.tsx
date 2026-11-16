@@ -44,7 +44,7 @@ export function LumopolisSettings(): JSX.Element {
       <div className="flex flex-col gap-0.5">
         <span className="text-sm font-medium">
           <i className="fa-solid fa-earth-americas text-[#4fc1ff] mr-1.5" aria-hidden="true"></i>
-          Lumopolis: Describe parts with AI (uses your default agent&apos;s cheapest model)
+          Lumopolis: Describe parts with AI (uses Claude&apos;s cheapest model, Haiku)
         </span>
         <span className="text-xs text-[#9ca3af] leading-relaxed">
           Names and explains the districts, buildings and connections on your project&apos;s Lumopolis
