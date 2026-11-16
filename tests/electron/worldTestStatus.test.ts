@@ -120,6 +120,48 @@ describe('readTestResults', () => {
     ])
   })
 
+  it('never reads a truncated junit file as passed', async () => {
+    const S = '<testsuite name="x/f.test.ts" timestamp="2026-01-01T00:00:00Z">'
+    const run = async (xml: string): Promise<TestRun[]> => readTestResults(ROOT, deps({ '/repo/junit.xml': xml }).d)
+    const fail = [{ file: 'x/f.test.ts', passed: false, at: Date.parse('2026-01-01T00:00:00Z'), source: 'junit' }]
+    // (a) a later testcase cut inside its failure tag
+    expect(await run(S + '<testcase name="a"/><testcase name="b"><failure message="boom')).toEqual(fail)
+    // (b) a complete failure, cut before </testcase>
+    expect(await run(S + '<testcase name="a"/><testcase name="b"><failure/>')).toEqual(fail)
+    // an open testcase with no failure yet is not a pass either
+    expect(await run(S + '<testcase name="a"/><testcase name="b">')).toEqual(fail)
+    expect(await run(S + '<testcase name="a"/><testcase name="b"><skipped/>')).toEqual(fail)
+    // the unterminated tag is the testcase itself: suite file, then its own file attribute
+    expect(await run(S + '<testcase name="a"/><testcase name="b"')).toEqual(fail)
+    expect(await run('<testcase name="b" file="q/own.test.ts" cl')).toEqual([
+      { file: 'q/own.test.ts', passed: false, at: 0, source: 'junit' }
+    ])
+    // an open testcase followed by an unterminated testcase tag
+    expect(await run(S + '<testcase name="a"><testcase name="b"')).toEqual(fail)
+    // nothing attributable: nothing added, completed runs stay
+    expect(await run('<testcase name="a"><failure message="x')).toEqual([])
+    expect(await run('<testsuite name="x/f.test.ts"><testcase name="a"/></testsuite><testsuite name="y')).toEqual([
+      { file: 'x/f.test.ts', passed: true, at: 0, source: 'junit' }
+    ])
+    // (c) a clean file still passes
+    expect((await run(S + '<testcase name="a"/><testcase name="b"></testcase></testsuite>'))[0].passed).toBe(true)
+  })
+
+  it('does not end a tag at a > inside a quoted attribute value', async () => {
+    const xml =
+      '<testsuite name="a/x.test.ts"><testcase name="a > b"><failure message=\'1 > 0\'/></testcase></testsuite>'
+    const { d } = deps({ '/repo/junit.xml': xml })
+    expect(await readTestResults(ROOT, d)).toEqual([{ file: 'a/x.test.ts', passed: false, at: 0, source: 'junit' }])
+    const ok = '<testsuite name="a/y.test.ts"><testcase name="a > b"/></testsuite>'
+    expect((await readTestResults(ROOT, deps({ '/repo/junit.xml': ok }).d))[0].passed).toBe(true)
+    // a tag longer than the bound counts as unterminated and fails the open file
+    const long = '<testsuite name="a/z.test.ts"><testcase name="' + 'x'.repeat(5000) + '"/></testsuite>'
+    expect((await readTestResults(ROOT, deps({ '/repo/junit.xml': long }).d))[0]).toMatchObject({
+      file: 'a/z.test.ts',
+      passed: false
+    })
+  })
+
   it('scans pathological junit and transcript input in linear time', async () => {
     const start = Date.now()
     const { d } = deps({ '/repo/junit.xml': '<testcase '.repeat(Math.floor((2 * 1024 * 1024) / 10)) })
@@ -249,6 +291,14 @@ describe('parseTranscriptTestRuns', () => {
       mk('src/main/i.test.cts', false, 0),
       mk('src/main/j.test.js', false, 0)
     ])
+  })
+
+  it('does not walk tool_use blocks, even nested output keys', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 't', input: { stdout: ' ✓ src/x.test.ts (1 test)' } }] }
+    })
+    expect(parseTranscriptTestRuns(line, ROOT)).toEqual([])
   })
 
   it('does not count assistant text or tool_use input', () => {

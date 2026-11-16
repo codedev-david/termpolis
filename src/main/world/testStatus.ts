@@ -93,6 +93,19 @@ type CaseState = 'pass' | 'fail' | 'skip'
 const TAG_NAME = /\/?(testsuite|testcase|failure|error|skipped)\b/y
 const MAX_TAG = 4096
 
+/** Index of the '>' ending a tag, ignoring any inside quoted values; -1 if none within MAX_TAG chars. */
+function tagEnd(text: string, from: number): number {
+  const limit = Math.min(text.length, from + MAX_TAG)
+  let quote = 0
+  for (let i = from; i < limit; i++) {
+    const c = text.charCodeAt(i)
+    if (quote === 0 && (c === 34 || c === 39)) quote = c
+    else if (c === quote) quote = 0
+    else if (c === 62 && quote === 0) return i
+  }
+  return -1
+}
+
 /** Removes `<![CDATA[...]]>` sections (an unterminated one drops the rest). Linear. */
 function stripCdata(text: string): string {
   let out = ''
@@ -134,13 +147,22 @@ function parseJunit(raw: string, root: string): TestRun[] {
     TAG_NAME.lastIndex = pos
     const m = TAG_NAME.exec(text)
     if (!m) continue
-    const gt = text.indexOf('>', pos)
-    if (gt < 0) break
-    pos = gt + 1
     const closing = m[0].startsWith('/')
     const name = m[1]
     const from = lt + 1 + m[0].length
-    const a = text.slice(from, Math.min(gt, from + MAX_TAG))
+    const gt = tagEnd(text, from)
+    if (gt < 0) {
+      // Truncated input: an unterminated testcase tag still names the file that must not read as passed.
+      if (name === 'testcase' && !closing) {
+        finish()
+        const cut = text.slice(from, from + MAX_TAG)
+        const suite = stack[stack.length - 1] as Suite | undefined
+        current = { file: attrs(cut).file ?? suite?.file, at: suite?.at ?? 0, state: 'pass' }
+      }
+      break
+    }
+    pos = gt + 1
+    const a = text.slice(from, gt)
     const selfClosing = text[gt - 1] === '/'
     if (name === 'testsuite') {
       if (closing) {
@@ -170,6 +192,11 @@ function parseJunit(raw: string, root: string): TestRun[] {
         current.state = 'fail'
       }
     }
+  }
+  if (current) {
+    // A testcase still open at the end of input: a crashed or cut-off report is not a pass.
+    ;(current as { state: CaseState }).state = 'fail'
+    finish()
   }
   return [...files].map(([file, f]) => ({ file, passed: !f.failed, at: f.at, source: 'junit' as const }))
 }
@@ -213,6 +240,7 @@ function walk(v: unknown, at: number, root: string, out: TestRun[], on: boolean)
   } else if (Array.isArray(v)) {
     for (const x of v) walk(x, at, root, out, on)
   } else if (v !== null && typeof v === 'object') {
+    if ((v as { type?: unknown }).type === 'tool_use') return
     const here = on || (v as { type?: unknown }).type === 'tool_result'
     for (const [k, x] of Object.entries(v)) walk(x, at, root, out, here || (typeof x === 'string' && OUTPUT_KEYS.has(k)))
   }
