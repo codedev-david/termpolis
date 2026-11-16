@@ -135,7 +135,7 @@ The compiler runs off the main thread (my call: a new utility process, `termpoli
 
    Detectors are a pluggable list, so more frameworks can be added later.
 3. **Grouping.** Cluster files and modules into buildings and buildings into districts, using directory structure, import density and boundaries. The AI may rename groups or suggest merges, but proposed groupings stay `inferred`.
-4. **Labelling.** The default agent's cheapest model (Haiku on Claude Code; see section 10), through the proxy, writes `how`, `why`, the cargo and edge descriptions, technology chips and glossary lines from bounded excerpts: signatures, comments, docs, commit messages and memory decisions. **Every output must cite evidence ids**; uncited sentences are dropped. Results are cached by a content hash of their inputs, so only changed parts are re-labelled.
+4. **Labelling.** The default headless agent's cheapest model (Claude Code's Haiku; see section 10), through the proxy, writes `how`, `why`, the cargo and edge descriptions, technology chips and glossary lines from bounded excerpts: signatures, comments, docs, commit messages and memory decisions. **Every output must cite evidence ids**; uncited sentences are dropped. Results are cached by a content hash of their inputs, so only changed parts are re-labelled.
 5. **Status.** Tie tests to buildings through the code graph and the existing coverage tooling, and set verified, observed or gap.
 6. **Layout.** Seeded, stable positions. New items take free slots next to their neighbours; existing items don't move unless a person asks for a re-layout.
 7. **Incremental updates.** The file watcher already feeds the code graph. The compiler subscribes and recompiles only the affected buildings, debounced.
@@ -264,7 +264,7 @@ David (2026-11-15): the tool should also look into a **live running application,
 
 - **Order of delivery (section 8):** start with the existing project's world plus questions, because the plan layer needs the built map underneath it.
 - A dedicated `termpolis-lumopolis` utility process for the compiler.
-- Labelling with the default agent's cheapest model (Haiku on Claude Code), cached by content hash, with an off switch.
+- Labelling with the default headless agent's cheapest model (Claude Code's Haiku), cached by content hash, with an off switch.
 - The world document lives in per-user data, not committed to the repository. Exports are files the user chooses to share.
 - A hidden, read-only one-shot agent run per question, with a carried conversation summary (section 10).
 - Spoken answers through OS voices, off by default.
@@ -303,7 +303,7 @@ David (2026-11-15): the tool should also look into a **live running application,
 
   Agents learn about them from **one line in the project primer** ("this project has a World; use `gateway_call` world_* to read it or draw a plan"), not from new tool descriptions.
 - **Conversation sessions.** Phase 2 uses a **fresh, primed, read-only one-shot run per question** through `headlessExec`, with a compact summary of the conversation so far plus the selection's evidence. That works the same for Claude Code, Codex and Gemini CLI. Keeping a session warm (for example `--resume` on Claude) is a later speed and token optimisation, not a 2.0 requirement.
-- **Labelling providers.** Labelling uses the **user's default agent's cheapest model** through the same headless path: Haiku on Claude Code, the matching small model on Codex or Gemini. With no agent installed, or labelling turned off, the world is unlabelled: names from the code, structure and connections, with no prose.
+- **Labelling providers.** Labelling uses the **default headless agent's cheapest model** through the same headless path. Termpolis's default headless agent is Claude Code (the same default `agent_exec` uses), so that is Haiku; the labelling code can also run the matching small model on Codex or Gemini if a per-user default-agent setting is added later. With no agent installed, or labelling turned off, the world is unlabelled: names from the code, structure and connections, with no prose.
 - **Where "verified" comes from.** The compiler **only reads test results that already exist**: Vitest/Jest JSON or JUnit XML in the repository, test runs found in agent transcripts, and CI results through `gh` when available. It **never runs tests itself**, which keeps it light and EDR-quiet. A project with no results shows amber ("no test results yet"), never green.
 - **A world for an idea with no code yet.** World documents can also be keyed by a named workspace, not only a repository. A plan-only world is a world with an empty built layer. Its scope is in the 2.0 question below.
 - **Testing the 3D code.** All logic (layout, data, actions, card content, protocol parsing) lives in plain, tested modules. Only the thin Three.js drawing wrapper is excluded from unit coverage, the same way `embedWorker.ts` / `rerankWorker.ts` are excluded today, and it is covered by e2e screenshots and interaction tests instead. The coverage gate itself is unchanged.

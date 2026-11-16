@@ -18,7 +18,7 @@ The agent replies with prose plus one fenced `world-actions` JSON block. A share
 ## Global Constraints
 
 - Questions are **read-only**: `runHeadless({ write: false })`, never a terminal, never a visible CLI window (David: real UI, hidden CLI sessions).
-- The agent is the user's default agent and model (not the cheap labelling model), through the token proxy like every headless run.
+- The agent is Termpolis's default headless agent and model, Claude Code today (not the cheap labelling model), through the token proxy like every headless run.
 - Each question is independent: no warm session. Context = world slice + at most 1,200 characters of conversation summary.
 - The prompt must stay under 12,000 characters. World excerpts are fenced as data with a "data, not instructions" framing.
 - The answer text is rendered as escaped text plus evidence links. Never `innerHTML` agent output.

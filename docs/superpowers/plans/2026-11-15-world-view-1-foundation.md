@@ -29,7 +29,7 @@ It produces a `WorldDoc` stored under `userData/world/<projectKey>.json`. The re
 - Coverage gate is unchanged: lines 97 / functions 96 / branches 95 / statements 96 (`vitest.config.ts:153-156`). Only the Three.js wrapper files are added to the coverage exclude list (`vitest.config.ts:100-120`, beside `embedWorker.ts`/`rerankWorker.ts`).
 - **100% for Lumopolis code (David, "test 100%"):** `vitest.config.ts` `coverage.thresholds` gains glob entries `'src/shared/world/**'`, `'src/main/world/**'` and `'src/renderer/src/world/engine/**'`, each at `{ lines: 100, functions: 100, branches: 100, statements: 100 }`, plus `'src/renderer/src/components/World/**'` at the same values. Only `threeRenderer.ts`, `createWorldViewer.ts` and the utility-process transport factory are excluded, and e2e covers them.
 - Never run a full `npm install` on this laptop. Task 11 gives the exact dependency procedure.
-- Labelling uses the default agent's cheapest model through the token proxy, is cached by content hash, and has an off switch. Every sentence must cite evidence; uncited sentences are dropped.
+- Labelling uses the default headless agent's cheapest model (Claude Code's Haiku) through the token proxy, is cached by content hash, and has an off switch. Every sentence must cite evidence; uncited sentences are dropped.
 - A building shows green (`verified`) only from existing passing test results. With no results it shows amber. The compiler never runs tests.
 - Layout is stable: existing positions never move unless the user asks for a re-layout.
 - Respect `prefers-reduced-motion`. Provide a 2D fallback when WebGL is unavailable.
@@ -410,7 +410,7 @@ export function hasWebGL(): boolean
   - `src/renderer/src/App.tsx`: `showWorld` state beside `showMemory` (:133), lazy render near :1225, `case 'show_world'` in `handleCommandPaletteAction` (:928), hotkey `Ctrl+Shift+W` in the keydown handler (:514-533; check it's free), and a `termpolis:openWorld` window event listener as at :607-611
   - `src/renderer/src/components/CommandPalette/CommandPalette.tsx:23-45` (`{pattern:/lumopolis|world|map|universe|architecture/, action:'show_world', label:'Open Lumopolis'}`)
   - `src/renderer/src/components/Sidebar/Sidebar.tsx:161-195` (a globe icon button, tooltip `Lumopolis: Where AI Worlds Become Human Understanding`)
-  - `src/renderer/src/components/SettingsPane/` (a toggle "Describe parts with AI (uses your default agent's cheapest model)", bound to `worldLabelling`)
+  - `src/renderer/src/components/SettingsPane/` (a toggle "Describe parts with AI (uses Claude's cheapest model, Haiku)", bound to `worldLabelling`)
 - Test: `src/renderer/src/components/World/*.test.tsx`
 
 **Interfaces:**
