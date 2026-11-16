@@ -52,7 +52,7 @@ describe('buildContextPrimer', () => {
   describe('the Lumopolis line', () => {
     const line = worldPrimerLine('/repos/app')
     it('spells out the exact gateway call, with the project folder as its cwd', () => {
-      expect(line).toBe('This project has a Lumopolis map. Use gateway_call with tool "lumopolis/world_read" and arguments {"cwd":"/repos/app"} (optionally ids, text, limit) to look up its parts, connections and evidence. Agents can sketch planned parts with tool "world_propose".')
+      expect(line).toBe('This project has a Lumopolis map. Use gateway_call with tool "lumopolis/world_read" and arguments {"cwd":"/repos/app"} (optionally ids, text, limit) to look up its parts, connections and evidence. Agents can sketch planned parts with tool "lumopolis/world_propose".')
     })
 
     it('JSON-escapes the folder, so a Windows path still gives valid arguments', () => {

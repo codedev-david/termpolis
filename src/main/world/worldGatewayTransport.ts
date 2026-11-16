@@ -18,6 +18,7 @@ import type { Transport, UpstreamTool } from '../mcpGateway'
 import { MAX_DESIGN_OPS } from '../../shared/world/designPatch'
 import type { WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, type Designer } from './designer'
+import { createKeyedLock } from './keyedLock'
 import { keyForSource, type SourceRegistry, type WorldSource } from './sources'
 import type { WorldClient } from './worldClient'
 
@@ -174,6 +175,8 @@ export function createWorldGatewayTransport(
   isDir: IsDirectory = isDirectory,
   design?: WorldDesignDeps
 ): Transport & { trusted: true } {
+  /** One world_propose link step at a time per project (see propose). */
+  const linkLock = createKeyedLock()
   /** A model's cwd, checked, or undefined when blank or absent. */
   const usableCwd = async (raw: string | undefined): Promise<string | undefined> => {
     // A blank cwd is no cwd: the caller is told to pass one.
@@ -208,23 +211,28 @@ export function createWorldGatewayTransport(
     const root = await rootFor(cwd)
     if (typeof root !== 'string' || root.trim() === '') fail(NO_PROPOSE_ROOT_MESSAGE)
     // The project's registry entry (project, folder or git: one key per root) names its linked design.
-    const entry = await deps.registry.get(keyForSource({ kind: 'project', root }))
-    const own = entry && entry.source.kind !== 'design' ? entry.source : null
-    if (own?.linkedDesign) {
-      try {
-        return JSON.stringify(await deps.designer.propose({ key: own.linkedDesign }, p.ops))
-      } catch (e) {
-        if ((e as Error).message !== DESIGN_NOT_FOUND) throw e
+    // Look-up, create-or-propose and link run under the project's lock, so two first calls for one
+    // project make one linked design (the second finds the first's link) instead of orphaning one.
+    const projectKey = keyForSource({ kind: 'project', root })
+    return linkLock(projectKey, async () => {
+      const entry = await deps.registry.get(projectKey)
+      const own = entry && entry.source.kind !== 'design' ? entry.source : null
+      if (own?.linkedDesign) {
+        try {
+          return JSON.stringify(await deps.designer.propose({ key: own.linkedDesign }, p.ops))
+        } catch (e) {
+          if ((e as Error).message !== DESIGN_NOT_FOUND) throw e
+        }
       }
-    }
-    const made = await deps.designer.propose({ linkRoot: root }, p.ops)
-    const source: WorldSource = own ? { ...own, linkedDesign: made.key } : { kind: 'project', root, linkedDesign: made.key }
-    try {
-      await deps.registry.upsert(source, entry?.title)
-    } catch {
-      fail(DESIGN_SAVE_FAILED)
-    }
-    return JSON.stringify(made)
+      const made = await deps.designer.propose({ linkRoot: root }, p.ops)
+      const source: WorldSource = own ? { ...own, linkedDesign: made.key } : { kind: 'project', root, linkedDesign: made.key }
+      try {
+        await deps.registry.upsert(source, entry?.title)
+      } catch {
+        fail(DESIGN_SAVE_FAILED)
+      }
+      return JSON.stringify(made)
+    })
   }
 
   return Object.freeze({

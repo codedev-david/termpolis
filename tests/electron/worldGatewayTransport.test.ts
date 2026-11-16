@@ -298,6 +298,19 @@ describe('world_propose and design reads', () => {
     expect(readDesign).toHaveBeenCalledWith('design:n1', { text: 'auth' })
   })
 
+  it('two concurrent first-time cwd proposes end with one linked design that holds both ops', async () => {
+    const { transport, saved, reg } = proposeSetup()
+    const [a, b] = await Promise.all([
+      transport.callTool('world_propose', { cwd: '/repos/app', ops: OPS }),
+      transport.callTool('world_propose', { cwd: '/repos/app', ops: [{ op: 'addBuilding', id: 'pay', districtId: 'core', name: 'Payments' }] })
+    ])
+    expect(JSON.parse(a)).toEqual({ key: 'design:n1', applied: 3, skipped: 0 })
+    expect(JSON.parse(b)).toEqual({ key: 'design:n1', applied: 1, skipped: 0 })
+    expect([...saved.keys()]).toEqual(['design:n1'])
+    expect(saved.get('design:n1')?.buildings.map((x) => x.id)).toEqual(['auth', 'mail', 'pay'])
+    expect(reg.get(keyForSource({ kind: 'project', root: ROOT }))?.source).toEqual({ kind: 'project', root: ROOT, linkedDesign: 'design:n1' })
+  })
+
   it('keeps a folder entry a folder when it links the new design, and relinks when the linked design is gone', async () => {
     const key = keyForSource({ kind: 'folder', root: ROOT })
     const { transport, reg } = proposeSetup([{ key, source: { kind: 'folder', root: ROOT, linkedDesign: 'design:gone' }, title: 'App', lastOpened: 1 }])

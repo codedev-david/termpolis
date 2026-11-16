@@ -286,6 +286,59 @@ describe('createDesigner propose', () => {
   })
 })
 
+describe('createDesigner serialized writes', () => {
+  const noAgent = async (): Promise<ExecResult> => { throw new Error('propose never runs the agent') }
+  const add = (id: string): DesignOp[] => [{ op: 'addBuilding', id, districtId: 'core', name: id }]
+  /** The real store, with a slow load: unserialized writers would both read the same stale copy. */
+  const slowStore = (): WorldStore => {
+    const real = createWorldStore(dir)
+    return { ...real, load: async (k) => { const d = await real.load(k); await new Promise((r) => setTimeout(r, 15)); return d } }
+  }
+
+  it('two concurrent proposes on one key both persist', async () => {
+    const store = slowStore()
+    const { designer } = setup(noAgent, { store })
+    await stored(store)
+    const [a, b] = await Promise.all([designer.propose({ key: 'design:id1' }, add('mail')), designer.propose({ key: 'design:id1' }, add('search'))])
+    expect([a.applied, b.applied]).toEqual([1, 1])
+    expect(((await store.load('design:id1')) as WorldDoc).buildings.map((x) => x.id)).toEqual(['api', 'db', 'mail', 'search'])
+  })
+
+  it("a propose landing during a refine's agent run survives the refine's save", async () => {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((r) => { release = r })
+    let started: () => void = () => undefined
+    const running = new Promise<void>((r) => { started = r })
+    const { designer, store } = setup(async () => {
+      started()
+      await gate
+      return okRes(reply('Added search.', add('search')))
+    })
+    await stored(store)
+    const refining = designer.refine('design:id1', 'Add search', '')
+    await running
+    expect(await designer.propose({ key: 'design:id1' }, add('mail'))).toEqual({ key: 'design:id1', applied: 1, skipped: 0 })
+    release()
+    const res = await refining
+    expect(res.applied).toBe(1)
+    expect(res.doc.buildings.map((x) => x.id)).toEqual(['api', 'db', 'mail', 'search'])
+    expect(await store.load('design:id1')).toEqual(res.doc)
+  })
+
+  it('a failed write releases the lock: the next write on that key still runs', async () => {
+    const real = createWorldStore(dir)
+    let fails = 1
+    const store: WorldStore = { ...real, save: async (d) => { if (fails-- > 0) throw new Error('EIO'); await real.save(d) } }
+    const { designer } = setup(noAgent, { store })
+    await real.save(applyDesignPatch(emptyDesignDoc('design:id1', 1), DRAFT_OPS, layoutPlacer).doc)
+    const [first, second] = await Promise.allSettled([designer.propose({ key: 'design:id1' }, add('mail')), designer.propose({ key: 'design:id1' }, add('search'))])
+    expect(first.status).toBe('rejected')
+    expect((first as PromiseRejectedResult).reason.message).toBe(DESIGN_SAVE_FAILED)
+    expect(second).toEqual({ status: 'fulfilled', value: { key: 'design:id1', applied: 1, skipped: 0 } })
+    expect(((await real.load('design:id1')) as WorldDoc).buildings.map((x) => x.id)).toEqual(['api', 'db', 'search'])
+  })
+})
+
 describe('layoutPlacer', () => {
   it('keeps given positions, slots new districts and puts new buildings inside their district', () => {
     const doc = applyDesignPatch(emptyDesignDoc('design:x', 1), [
