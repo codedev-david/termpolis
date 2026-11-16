@@ -1,8 +1,14 @@
 // Lumopolis ask bar: a question box with suggestions, a thinking indicator and the answer panel.
 // The text is typed here or, when `voice` is supplied, spoken; answers can be read aloud (opt-in).
+//
+// Esc never reaches this component's own handlers: WorldView takes every Esc in the pane at window
+// level. Through `link` it asks here first, so Esc stops the speech and cancels a running question
+// (and leaves the camera alone) before it resets the view. `link` also tells WorldView when an answer
+// is under way (thinking, its tour, its speech), so a newer world waits instead of wiping the answer.
 import { useEffect, useRef, useState } from 'react'
 import type { WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
+import type { WorldAskLink } from './WorldView'
 import { WorldAnswerPanel } from './WorldAnswer'
 import { useWorldAsk } from './useWorldAsk'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
@@ -11,8 +17,11 @@ export interface WorldAskProps {
   viewer: WorldViewer | null
   /** The loaded world: chips open cards only for building and edge ids found in it. */
   doc?: WorldDoc | null
+  /** The project root the world was drawn for (WorldView's resolved git root). Empty: asking is off. */
   root: string
   voice?: { supported: boolean; listening: boolean; toggle: () => void }
+  /** WorldView's side of Esc and of world swaps; absent when the bar is used on its own. */
+  link?: WorldAskLink
 }
 
 const SUGGESTIONS = [
@@ -24,13 +33,21 @@ const SUGGESTIONS = [
 
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
-export function WorldAsk({ viewer, doc, root, voice: voiceOverride }: WorldAskProps): JSX.Element {
-  const { ask, cancel, retry, dismiss, state, answer, cited, error } = useWorldAsk(viewer, root)
+export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link }: WorldAskProps): JSX.Element {
+  const { ask, cancel, retry, replay, dismiss, state, answer, cited, error, playing } = useWorldAsk(viewer, root)
   const [text, setText] = useState('')
+  const [speaking, setSpeaking] = useState(false)
+  /** The utterance being read: an end event from an older one changes nothing. */
+  const utterance = useRef<unknown>(null)
+  const hush = (): void => {
+    stopSpeech()
+    utterance.current = null
+    setSpeaking(false)
+  }
   // A spoken question fills the box and is asked straight away; nothing reaches a terminal.
   // The push-to-talk hotkey is deliberately not wired here: the terminal owns it at window level.
   const mic = useVoiceInput(null, false, {
-    onTranscript: (t) => { stopSpeech(); setText(t); ask(t) },
+    onTranscript: (t) => { hush(); setText(t); ask(t) },
   })
   const micSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
   const voice = voiceOverride ?? { supported: micSupported, listening: mic.status === 'listening', toggle: mic.toggle }
@@ -52,17 +69,46 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride }: WorldAskPr
     spoken.current = answer
     if (!window.speechSynthesis) return
     const line = answer.text.replace(/\s*\[E\d+\]/g, '').trim()
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(line))
+    const u = new SpeechSynthesisUtterance(line)
+    const done = (): void => {
+      if (utterance.current !== u) return
+      utterance.current = null
+      setSpeaking(false)
+    }
+    u.onend = done
+    u.onerror = done
+    utterance.current = u
+    setSpeaking(true)
+    window.speechSynthesis.speak(u)
   }, [speak, state, answer])
+
+  // Esc from WorldView: used (true) when it stopped the speech or a running question.
+  const onEscape = useRef<(() => boolean) | null>(null)
+  onEscape.current = () => {
+    const used = state === 'thinking' || speaking
+    hush()
+    cancel()
+    return used
+  }
+  useEffect(() => {
+    if (!link) return
+    link.onEscape(() => (onEscape.current as () => boolean)())
+    return () => link.onEscape(null)
+  }, [link])
+
+  // An answer under way: WorldView holds a newer world until it is over.
+  const busy = state === 'thinking' || playing || speaking
+  useEffect(() => { link?.setBusy(busy) }, [link, busy])
+  useEffect(() => () => link?.setBusy(false), [link])
 
   const submit = (q: string): void => {
     if (q.trim() === '') return
-    stopSpeech()
+    hush()
     ask(q)
     setText('')
   }
 
-  const disabled = viewer === null
+  const disabled = viewer === null || root === ''
 
   return (
     <div className="flex flex-col items-center gap-2" data-testid="world-ask">
@@ -76,8 +122,8 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride }: WorldAskPr
           answer={answer}
           cited={cited}
           isPart={(id) => !!doc && (doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id))}
-          onClose={() => { stopSpeech(); dismiss() }}
-          onReplay={() => { viewer?.cancelActions(); viewer?.play(answer.actions)?.catch(() => undefined) }}
+          onClose={() => { hush(); dismiss() }}
+          onReplay={replay}
           onOpenPart={(id) => { viewer?.apply({ type: 'openCard', id })?.catch(() => undefined) }}
         />
       )}
@@ -85,7 +131,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride }: WorldAskPr
         <div className="w-[34rem] max-w-[90vw] rounded border border-[#3c3c3c] bg-[#252526] text-sm text-[#d4d4d4] p-3 flex items-center gap-2" role="alert">
           <span className="flex-1">{error}</span>
           <button type="button" onClick={retry} className="text-xs px-2 py-1 rounded border border-[#3c3c3c] hover:bg-[#2a2d2e]">Retry</button>
-          <button type="button" aria-label="Close answer" onClick={() => { stopSpeech(); dismiss() }} className="text-[#9ca3af] hover:text-white px-1">&times;</button>
+          <button type="button" aria-label="Close answer" onClick={() => { hush(); dismiss() }} className="text-[#9ca3af] hover:text-white px-1">&times;</button>
         </div>
       )}
       {text === '' && state === 'idle' && (
@@ -109,10 +155,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride }: WorldAskPr
           disabled={disabled}
           placeholder="Ask about this project…"
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') submit(text)
-            else if (e.key === 'Escape') { stopSpeech(); cancel() }
-          }}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(text) }}
           className="flex-1 bg-transparent outline-none text-sm text-[#d4d4d4] placeholder:text-[#6b7280] disabled:opacity-50"
         />
         {voice?.supported && (

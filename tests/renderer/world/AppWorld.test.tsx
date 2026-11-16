@@ -4,7 +4,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // App-level wiring of Lumopolis: the palette action show_world, Ctrl+Shift+R, and the
 // termpolis:openWorld window event (the Sidebar globe) open the overlay; its onClose closes it.
-// The pane gets the active terminal's cwd as its root.
+// The pane gets the active terminal's cwd as its root; the ask box gets the root the pane resolved
+// (the git root), never the cwd, so a terminal in a subfolder asks about the world on screen.
 
 const SEEN_KEY = 'termpolis.onboarding.seen.v1'
 
@@ -35,9 +36,19 @@ vi.mock('../../../src/renderer/src/components/ConsentReview/ConsentReviewModal',
   ConsentReviewModal: () => null,
 }))
 
+const askLink = vi.hoisted(() => ({ onEscape: () => undefined, setBusy: () => undefined }))
 vi.mock('../../../src/renderer/src/components/World', () => ({
-  WorldView: ({ root, onClose }: { root: string; onClose: () => void }) => (
-    <div role="dialog" aria-label="Lumopolis" data-root={root}><button onClick={onClose}>Close Lumopolis</button></div>
+  // The real pane resolves `root` to its git root; this stand-in says the cwd's root is /repos/app.
+  WorldView: ({ root, onClose, askSlot }: { root: string; onClose: () => void; askSlot?: (...a: unknown[]) => React.ReactNode }) => (
+    <div role="dialog" aria-label="Lumopolis" data-root={root}>
+      <button onClick={onClose}>Close Lumopolis</button>
+      {askSlot?.(null, null, root ? '/repos/app' : null, askLink)}
+    </div>
+  ),
+}))
+vi.mock('../../../src/renderer/src/components/World/WorldAsk', () => ({
+  WorldAsk: ({ root, link }: { root: string; link?: unknown }) => (
+    <div data-testid="world-ask-stub" data-root={root} data-linked={String(link === askLink)} />
   ),
 }))
 
@@ -120,5 +131,30 @@ describe('App Lumopolis wiring', () => {
     act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
     expect(world()).toBeNull()
     act(() => { useTerminalStore.setState({ terminals: [], activeTerminalId: null }) })
+  })
+
+  it('the ask box asks about the resolved project root, not the terminal subfolder', async () => {
+    act(() => {
+      useTerminalStore.setState({
+        terminals: [{ id: 't-sub', name: 'repo', shell: 'bash', cwd: '/repos/app/src/main', hidden: true } as any],
+        activeTerminalId: 't-sub',
+      })
+    })
+    render(<App />)
+    await settle()
+    act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
+    expect(await screen.findByRole('dialog', { name: 'Lumopolis' })).toHaveAttribute('data-root', '/repos/app/src/main')
+    const ask = screen.getByTestId('world-ask-stub')
+    expect(ask).toHaveAttribute('data-root', '/repos/app')
+    expect(ask).toHaveAttribute('data-linked', 'true')
+    act(() => { useTerminalStore.setState({ terminals: [], activeTerminalId: null }) })
+  })
+
+  it('no resolved root yet: the ask box gets an empty root', async () => {
+    render(<App />)
+    await settle()
+    fireEvent.keyDown(window, { key: 'R', ctrlKey: true, shiftKey: true })
+    await screen.findByRole('dialog', { name: 'Lumopolis' })
+    expect(screen.getByTestId('world-ask-stub')).toHaveAttribute('data-root', '')
   })
 })

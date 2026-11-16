@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
-import { useWorldAsk } from '../../../src/renderer/src/components/World/useWorldAsk'
+import { useWorldAsk, ASK_UNREACHABLE } from '../../../src/renderer/src/components/World/useWorldAsk'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
 type Res = { success: true; data: AskResult } | { success: false; error: string }
@@ -43,7 +43,6 @@ describe('useWorldAsk', () => {
     expect(req.askId).toMatch(/\S/)
     expect(result.current.state).toBe('answered')
     expect(result.current.answer?.text).toBe('Hello')
-    expect(result.current.history).toEqual([{ q: 'What is this?', a: 'Hello' }])
   })
 
   it('ignores a blank question and does nothing without a viewer', async () => {
@@ -79,7 +78,6 @@ describe('useWorldAsk', () => {
     await act(async () => { result.current.ask('two') })
     expect((ask.mock.calls[1][0] as AskRequest).summary).toBe('sum:Hello')
     expect(ask.mock.calls[0][0].askId).not.toBe(ask.mock.calls[1][0].askId)
-    expect(result.current.history).toHaveLength(2)
   })
 
   it('new question while thinking → worldAskCancel(prev) and viewer.cancelActions()', async () => {
@@ -166,12 +164,11 @@ describe('useWorldAsk', () => {
     ask.mockImplementationOnce(async (req: AskRequest) => ({ success: true, data: { askId: req.askId, ok: false, error: 'not mapped' } }))
     await act(async () => { result.current.ask('a') })
     expect(result.current.error).toBe('not mapped')
+    // A bridge that throws shows plain copy, never the raw error.
     ask.mockRejectedValueOnce(new Error('kaput'))
     await act(async () => { result.current.ask('b') })
-    expect(result.current.error).toBe('kaput')
-    ask.mockRejectedValueOnce('str')
-    await act(async () => { result.current.ask('c') })
-    expect(result.current.error).toBe('str')
+    expect(result.current.error).toBe(ASK_UNREACHABLE)
+    expect(ASK_UNREACHABLE).toContain('Lumopolis')
   })
 
   it('a cancelled result for the current ask goes back to idle', async () => {
@@ -193,11 +190,10 @@ describe('useWorldAsk', () => {
     expect(result.current.error).toBeNull()
   })
 
-  it('a root change cancels the in-flight ask and resets summary, answer, history and state', async () => {
+  it('a root change cancels the in-flight ask and resets summary, answer and state', async () => {
     const v = makeViewer()
     const { result, rerender } = renderHook(({ root }) => useWorldAsk(v as never, root), { initialProps: { root: 'A' } })
     await act(async () => { result.current.ask('one') })
-    expect(result.current.history).toHaveLength(1)
     const d = deferred<Res>()
     ask.mockImplementationOnce(() => d.promise)
     act(() => { result.current.ask('two') })
@@ -206,7 +202,6 @@ describe('useWorldAsk', () => {
     expect(cancel).toHaveBeenCalledWith(id)
     expect(result.current.state).toBe('idle')
     expect(result.current.answer).toBeNull()
-    expect(result.current.history).toEqual([])
     await act(async () => { d.resolve(okRes(id, 'stale')) })
     expect(result.current.answer).toBeNull()
     await act(async () => { result.current.ask('three') })
@@ -225,6 +220,50 @@ describe('useWorldAsk', () => {
     act(() => { result.current.dismiss() })
     expect(result.current.state).toBe('idle')
     expect(result.current.answer).toBeNull()
+  })
+
+  it('asks nothing while the project root is not known yet', async () => {
+    const { result } = renderHook(() => useWorldAsk(makeViewer() as never, ''))
+    await act(async () => { result.current.ask('q') })
+    expect(ask).not.toHaveBeenCalled()
+    expect(result.current.state).toBe('idle')
+  })
+
+  it('playing is true while the answer tour runs, and replay plays it again', async () => {
+    const v = makeViewer()
+    const first = deferred<undefined>()
+    const second = deferred<undefined>()
+    v.play.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise)
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    expect(result.current.playing).toBe(false)
+    await act(async () => { result.current.ask('q') })
+    expect(result.current.playing).toBe(true)
+    act(() => { result.current.replay() })
+    expect(v.cancelActions).toHaveBeenCalledTimes(2)
+    expect(v.play).toHaveBeenCalledTimes(2)
+    // The first tour ending (cancelled by the replay) does not clear the replay's flag.
+    await act(async () => { first.resolve(undefined) })
+    expect(result.current.playing).toBe(true)
+    await act(async () => { second.resolve(undefined) })
+    expect(result.current.playing).toBe(false)
+  })
+
+  it('replay with no answer or no viewer does nothing; a root change clears playing', async () => {
+    const v = makeViewer()
+    const tour = deferred<undefined>()
+    v.play.mockImplementationOnce(() => tour.promise)
+    const { result, rerender } = renderHook(({ root, viewer }) => useWorldAsk(viewer as never, root), { initialProps: { root: 'A', viewer: v as unknown } })
+    act(() => { result.current.replay() })
+    expect(v.play).not.toHaveBeenCalled()
+    await act(async () => { result.current.ask('q') })
+    expect(result.current.playing).toBe(true)
+    rerender({ root: 'B', viewer: v })
+    expect(result.current.playing).toBe(false)
+    await act(async () => { tour.resolve(undefined) })
+    expect(result.current.playing).toBe(false)
+    rerender({ root: 'B', viewer: null })
+    act(() => { result.current.replay() })
+    expect(v.play).toHaveBeenCalledTimes(1)
   })
 
   it('exposes the cited labels of the answer', async () => {

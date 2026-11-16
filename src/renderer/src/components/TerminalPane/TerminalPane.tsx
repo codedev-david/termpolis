@@ -635,6 +635,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   voiceStartRef.current = voice.start
   voiceStopRef.current = voice.stop
   voiceListeningRef.current = voice.listening
+  // Lumopolis opening stops this terminal's dictation: left running behind the pane, it would type the
+  // words meant for the Ask mic into this terminal, with two microphones open at once.
+  useEffect(() => {
+    const stop = (): void => { if (voiceListeningRef.current) voiceStopRef.current() }
+    window.addEventListener('termpolis:stopDictation', stop)
+    return () => window.removeEventListener('termpolis:stopDictation', stop)
+  }, [])
 
   // Voice dictation is Groq-cloud-only (local Whisper was removed in v1.13.0), so
   // starting a capture with no Groq key connected can only fail. BOTH entry points

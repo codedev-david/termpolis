@@ -32,8 +32,20 @@ export interface WorldViewProps {
   /** A folder inside the project (the active terminal's cwd). Empty when there is none. */
   root: string
   onClose: () => void
-  /** Plan 2's ask box: rendered at the bottom centre with the viewer (null without WebGL). */
-  askSlot?: (viewer: WorldViewer | null, doc: WorldDoc | null) => ReactNode
+  /**
+   * Plan 2's ask box: rendered at the bottom centre with the viewer (null without WebGL), the world,
+   * the project root the world was drawn for (the git root of `root`, null until it is known) and
+   * the link through which the box takes Esc first and holds newer worlds while it answers.
+   */
+  askSlot?: (viewer: WorldViewer | null, doc: WorldDoc | null, root: string | null, link: WorldAskLink) => ReactNode
+}
+
+/** How the ask box and the pane share Esc and world swaps. */
+export interface WorldAskLink {
+  /** The box's Esc handler, asked before the pane's own; true when it used the key. null removes it. */
+  onEscape(fn: (() => boolean) | null): void
+  /** True while an answer is under way: a world update waits, so the answer's tour is not wiped. */
+  setBusy(busy: boolean): void
 }
 
 /** The e2e probe on window.__termpolis_world. */
@@ -82,9 +94,28 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
     mountedRef.current = true
     return () => { mountedRef.current = false }
   }, [])
+  // The ask box's side: its Esc handler, whether it is answering, and a world held back meanwhile.
+  const askEscRef = useRef<(() => boolean) | null>(null)
+  const askBusyRef = useRef(false)
+  const heldDocRef = useRef<WorldDoc | null>(null)
+  const [askLink] = useState<WorldAskLink>(() => ({
+    onEscape: (fn) => { askEscRef.current = fn },
+    setBusy: (b) => {
+      askBusyRef.current = b
+      const held = heldDocRef.current
+      if (b || held === null) return
+      heldDocRef.current = null
+      if (!mountedRef.current) return
+      setError(null)
+      setDoc(held)
+    },
+  }))
 
   // Keep the keyboard in the pane, and give the focus back when it closes.
   useFocusTrap(dialogRef)
+
+  // A terminal still dictating behind the pane would also type what is said to the Ask mic: stop it.
+  useEffect(() => { window.dispatchEvent(new Event('termpolis:stopDictation')) }, [])
 
   // The project root: the git root of the folder, or the folder itself outside a repository. A cd
   // inside the same repository resolves to the same root, so nothing below runs again.
@@ -101,6 +132,7 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
   // The world: the stored one, or a fresh compile when none was saved yet.
   // No root: nothing is shown (the viewer is hidden while there is no doc, so no stale map stays up).
   useEffect(() => {
+    heldDocRef.current = null
     setDoc(null)
     setError(null)
     setMapping(false)
@@ -141,7 +173,13 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
       const at = rootRef.current
       if (!mine(e) || at === null) return
       window.termpolis.worldGet(at).then(
-        (res) => { if (res.success && res.data && rootRef.current === at) { setError(null); setDoc(res.data) } },
+        (res) => {
+          if (!res.success || !res.data || rootRef.current !== at) return
+          // Loading a world stops the answer's tour, so it waits until the answer is over.
+          if (askBusyRef.current) { heldDocRef.current = res.data; return }
+          setError(null)
+          setDoc(res.data)
+        },
         () => undefined,
       )
     })
@@ -246,6 +284,8 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
 
   escRef.current = () => {
     if (confirmRelayout) { setConfirmRelayout(false); return }
+    // The ask box first: an Esc that stops its speech or its question leaves the camera alone.
+    if (askEscRef.current?.()) { armedRef.current = false; return }
     if (armedRef.current && card === null) { onClose(); return }
     resetView()
   }
@@ -353,7 +393,7 @@ export function WorldView({ root, onClose, askSlot }: WorldViewProps): JSX.Eleme
       {card !== null && <WorldCard html={card} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
       {askSlot && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2" data-testid="world-ask-slot">
-          {askSlot(viewer, doc)}
+          {askSlot(viewer, doc, resolvedRoot, askLink)}
         </div>
       )}
     </div>

@@ -302,6 +302,18 @@ describe('WorldView', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it('opening the pane asks any dictating terminal to stop', async () => {
+    bridge()
+    const heard = vi.fn()
+    window.addEventListener('termpolis:stopDictation', heard)
+    try {
+      await mount()
+      expect(heard).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('termpolis:stopDictation', heard)
+    }
+  })
+
   it('no WebGL → renders renderFallback(doc) list', async () => {
     h.webgl = false
     bridge()
@@ -313,7 +325,7 @@ describe('WorldView', () => {
     const list = screen.getByTestId('world-fallback')
     expect(list.querySelector('section.world-fallback')).not.toBeNull()
     expect(list.querySelector('[data-kind="building"][data-id="b1"]')).toHaveTextContent('Desktop app')
-    expect(askSlot).toHaveBeenLastCalledWith(null, expect.objectContaining({ buildings: expect.any(Array) }))
+    expect(askSlot).toHaveBeenLastCalledWith(null, expect.objectContaining({ buildings: expect.any(Array) }), '/repo', expect.objectContaining({ onEscape: expect.any(Function), setBusy: expect.any(Function) }))
     const doc = minimal()
 
     // Clicking a building or a connection opens its card from the doc.
@@ -584,7 +596,7 @@ describe('WorldView', () => {
     await mount({ askSlot })
     const v = viewer()
     expect(screen.getByTestId('world-ask-slot')).toHaveTextContent('ask here')
-    expect(askSlot).toHaveBeenLastCalledWith(v, expect.objectContaining({ buildings: expect.any(Array) }))
+    expect(askSlot).toHaveBeenLastCalledWith(v, expect.objectContaining({ buildings: expect.any(Array) }), '/repo', expect.objectContaining({ onEscape: expect.any(Function), setBusy: expect.any(Function) }))
     act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
     const card = screen.getByTestId('world-card')
     fireEvent.click(card.querySelector('[data-edge]') as Element)

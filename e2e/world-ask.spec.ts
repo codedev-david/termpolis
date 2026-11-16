@@ -201,7 +201,6 @@ const askBox = () => page.getByPlaceholder('Ask about this project…')
 const answer = () => page.locator('[data-testid="world-answer"]')
 const chip = () => answer().getByRole('button', { name: 'Evidence E1' })
 
-/** Types `q` in the Ask bar and sends it with Enter. */
 /** Claims with evidence in the worlds saved under `userDataDir` (0 while only code labels exist). */
 function storedClaims(): number {
   const folder = path.join(userDataDir, 'world')
@@ -223,6 +222,7 @@ function storedClaims(): number {
   return n
 }
 
+/** Types `q` in the Ask bar and sends it with Enter. */
 async function ask(q: string): Promise<void> {
   await askBox().fill(q)
   await askBox().press('Enter')

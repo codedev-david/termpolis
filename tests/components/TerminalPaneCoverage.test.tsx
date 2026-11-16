@@ -914,6 +914,27 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(mockGroqGetKeyStatus).not.toHaveBeenCalled() // stopping never needs a key
     })
 
+    it('Lumopolis opening (termpolis:stopDictation) stops a listening dictation, and only a listening one', () => {
+      withVoiceOn()
+      setVoice({ listening: true, status: 'listening' })
+      const view = render(<TerminalPane {...defaultProps} />)
+      act(() => { window.dispatchEvent(new Event('termpolis:stopDictation')) })
+      expect(H.voiceStop).toHaveBeenCalledTimes(1)
+      view.unmount()
+      H.voiceStop.mockClear()
+      // Unmounted: the listener is gone.
+      act(() => { window.dispatchEvent(new Event('termpolis:stopDictation')) })
+      expect(H.voiceStop).not.toHaveBeenCalled()
+    })
+
+    it('termpolis:stopDictation with no dictation running stops nothing', () => {
+      withVoiceOn()
+      setVoice({ listening: false, status: 'idle' })
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { window.dispatchEvent(new Event('termpolis:stopDictation')) })
+      expect(H.voiceStop).not.toHaveBeenCalled()
+    })
+
     it('toggle mode: the hotkey while listening STOPS and skips the Groq check', () => {
       withVoiceOn({ pushToTalkMode: 'toggle' })
       setVoice({ listening: true, status: 'listening' })

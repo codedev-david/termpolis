@@ -57,6 +57,14 @@ afterEach(() => {
   delete (window as any).SpeechSynthesisUtterance
 })
 
+/** A stand-in for WorldView's side of the link: it holds the box's Esc handler and its busy flag. */
+function makeLink() {
+  let esc: (() => boolean) | null = null
+  const link = { onEscape: vi.fn((fn: (() => boolean) | null) => { esc = fn }), setBusy: vi.fn() }
+  return { link, esc: (): boolean => (esc as () => boolean)(), has: () => esc !== null }
+}
+const lastBusy = (link: { setBusy: ReturnType<typeof vi.fn> }): unknown => link.setBusy.mock.calls[link.setBusy.mock.calls.length - 1][0]
+
 const input = () => screen.getByPlaceholderText('Ask about this project…') as HTMLInputElement
 async function submit(v: ReturnType<typeof makeViewer>, q: string, extra: Record<string, unknown> = {}) {
   const view = render(<WorldAsk viewer={v as never} doc={minimal()} root="r" {...extra} />)
@@ -350,23 +358,81 @@ describe('WorldAsk', () => {
       expect(speech.speak.mock.calls[0][0].text).toBe('Memory lives in SQLite always.')
     })
 
-    it('Esc in the input cancels speech', async () => {
+    it('Esc from the pane stops the speech and says it used the key; with nothing to stop it does not', async () => {
       on()
-      render(<WorldAsk viewer={makeViewer() as never} root="r" />)
-      await settle()
-      fireEvent.keyDown(input(), { key: 'Escape' })
+      const l = makeLink()
+      await submit(makeViewer(), 'q', { link: l.link })
+      expect(speech.speak).toHaveBeenCalledTimes(1)
+      speech.cancel.mockClear()
+      let used: unknown
+      act(() => { used = l.esc() })
+      expect(used).toBe(true)
       expect(speech.cancel).toHaveBeenCalled()
+      expect(cancel).not.toHaveBeenCalled()
+      act(() => { used = l.esc() })
+      expect(used).toBe(false)
     })
 
-    it('Esc while thinking also cancels the ask', async () => {
+    it('Esc from the pane while thinking cancels the ask and says it used the key', async () => {
       const v = makeViewer()
+      const l = makeLink()
       ask.mockImplementationOnce(() => new Promise(() => undefined))
-      render(<WorldAsk viewer={v as never} root="r" />)
+      render(<WorldAsk viewer={v as never} root="r" link={l.link} />)
       await settle()
       fireEvent.change(input(), { target: { value: 'q' } })
       fireEvent.keyDown(input(), { key: 'Enter' })
-      fireEvent.keyDown(input(), { key: 'Escape' })
-      expect(cancel).toHaveBeenCalled()
+      let used: unknown
+      act(() => { used = l.esc() })
+      expect(used).toBe(true)
+      expect(cancel).toHaveBeenCalledWith(ask.mock.calls[0][0].askId)
+      expect(screen.queryByRole('status')).toBeNull()
+    })
+
+    it('tells the pane it is busy while thinking, playing or speaking, and idle once all of that is over', async () => {
+      on()
+      const l = makeLink()
+      const v = makeViewer()
+      let endTour!: () => void
+      v.play.mockImplementationOnce(() => new Promise<undefined>((r) => { endTour = () => r(undefined) }))
+      const d: { resolve?: (r: Res) => void } = {}
+      ask.mockImplementationOnce(() => new Promise<Res>((r) => { d.resolve = r }))
+      const view = render(<WorldAsk viewer={v as never} doc={minimal()} root="r" link={l.link} />)
+      await settle()
+      expect(l.has()).toBe(true)
+      expect(lastBusy(l.link)).toBe(false)
+      fireEvent.change(input(), { target: { value: 'q' } })
+      fireEvent.keyDown(input(), { key: 'Enter' })
+      expect(lastBusy(l.link)).toBe(true)
+      await act(async () => { (d.resolve as (r: Res) => void)(okRes(ask.mock.calls[0][0].askId, 'The answer.')) })
+      expect(lastBusy(l.link)).toBe(true)
+      await act(async () => { endTour() })
+      expect(lastBusy(l.link)).toBe(true) // still speaking
+      const u = speech.speak.mock.calls[0][0] as { onend: () => void; onerror: () => void }
+      act(() => { u.onend() })
+      expect(lastBusy(l.link)).toBe(false)
+      view.unmount()
+      expect(l.has()).toBe(false)
+      expect(lastBusy(l.link)).toBe(false)
+    })
+
+    it('the end of an utterance that was already hushed changes nothing', async () => {
+      on()
+      const l = makeLink()
+      ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'First.'))
+      await submit(makeViewer(), 'q', { link: l.link })
+      const first = speech.speak.mock.calls[0][0] as { onerror: () => void }
+      // A second question hushes the first answer; its answer is read aloud in turn.
+      fireEvent.change(input(), { target: { value: 'again' } })
+      fireEvent.keyDown(input(), { key: 'Enter' })
+      await settle()
+      expect(speech.speak).toHaveBeenCalledTimes(2)
+      act(() => { first.onerror() })
+      expect(lastBusy(l.link)).toBe(true)
+    })
+
+    it('without a root the bar is off', () => {
+      render(<WorldAsk viewer={makeViewer() as never} root="" />)
+      expect(input()).toBeDisabled()
     })
 
     it('closing the panel cancels speech', async () => {
@@ -400,9 +466,10 @@ describe('WorldAsk', () => {
       on()
       delete (window as any).speechSynthesis
       const v = makeViewer()
-      const { unmount } = await submit(v, 'q')
-      fireEvent.keyDown(input(), { key: 'Escape' })
-      fireEvent.click(screen.getByLabelText('Close answer'))
+      const l = makeLink()
+      const { unmount } = await submit(v, 'q', { link: l.link })
+      act(() => { l.esc() })
+      expect(speech.speak).not.toHaveBeenCalled()
       unmount()
     })
 

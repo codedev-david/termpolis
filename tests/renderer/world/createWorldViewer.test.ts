@@ -155,6 +155,14 @@ describe('2D fallback: apply()', () => {
     expect(viewer.getSelection()).toEqual(['sqlite'])
   })
 
+  it('openCard on a district id selects the district (answers may name districts) and opens no card', async () => {
+    const { viewer, sels, cards } = setup({ reducedMotion: true })
+    await viewer.apply({ type: 'openCard', id: 'd1' })
+    expect(sels.pop()).toEqual({ kind: 'district', id: 'd1' })
+    expect(cards.pop()).toBeNull()
+    expect(viewer.getSelection()).toEqual(['d1'])
+  })
+
   it('focus, highlight and flow leave the selection and card alone (nothing to light in 2D)', async () => {
     const { viewer, sels, cards } = setup({ reducedMotion: true })
     await viewer.apply({ type: 'openCard', id: 'b1' })
