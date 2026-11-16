@@ -62,6 +62,10 @@ export interface TerminalSession {
    *  remounts — on a view-mode toggle, a hide/unhide, a workspace switch — and a
    *  per-mount guard let every remount paste the pointer again. */
   primerPointed?: boolean
+  /** Termpolis recorded agentCommand but has not typed it yet (aiProfiles.ts, agentLaunch.ts): the
+   *  shell is still alone, so useAutoPrimer keeps its launch gate shut until this clears, whatever
+   *  the shell's first output looked like. */
+  agentLaunchPending?: boolean
 }
 
 export interface Workspace {

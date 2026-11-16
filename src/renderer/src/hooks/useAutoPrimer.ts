@@ -218,6 +218,11 @@ async function lineReady(
   return stillIdle ? await stillIdle(pasted) : true
 }
 
+/** Whether the terminal was seeded with memory at launch (launchPrimed), read from the store now. */
+function launchPrimedNow(terminalId: string): boolean {
+  return useTerminalStore.getState().terminals.find((t) => t.id === terminalId)?.launchPrimed === true
+}
+
 // Check that relevant memory exists for this project and, if so, paste a short
 // pointer into the freshly-launched agent terminal directing it to load the
 // digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
@@ -256,6 +261,11 @@ export async function injectAutoPrimer(
     // before typing (the OS up to ALONE_ASKS times, where the agent may simply not be up yet), and
     // again before the Enter.
     if ((await agentGone(terminalId, ALONE_ASKS, sleep)) || !(await lineReady(terminalId, false, stillIdle))) return false
+    // Claude's launch marks the terminal launch-primed once its recall is in, which can be after
+    // this attempt began: output detection can fire on the shell's first prompt, and the recall
+    // and the OS question both take their time. Looked at last, right before the paste, so a
+    // seeded agent never gets the pointer typed on top of its system prompt.
+    if (launchPrimedNow(terminalId)) return false
     const wrapped = BP_START + buildPrimerPointer(cwd, selfRecord) + BP_END
     api.writeToTerminal(terminalId, wrapped)
     // Then submit it. Pasting alone left the pointer sitting in the agent's
@@ -428,6 +438,9 @@ export async function primeOnLaunch(
     awaiting?: (id: string) => Promise<boolean>
     sleep?: (ms: number) => Promise<void>
     stopped?: () => boolean
+    /** Called right before the inject, once nothing can stop the attempt short of the inject's
+     *  own checks: until then a stopped attempt types nothing, whatever it was waiting on. */
+    onAttempt?: () => void
     pollMs?: number
     maxWaitMs?: number
     delayMs?: number
@@ -472,6 +485,8 @@ export async function primeOnLaunch(
     waited += pollMs
   }
   if (!open()) return false // they started typing while the CLI was booting
+  if (stopped()) return false // the pane went while the screen was being read
+  opts.onAttempt?.()
   return inject(terminalId, cwd, selfRecordsLessons(gate.launchCommand?.()))
 }
 
@@ -487,6 +502,16 @@ export async function primeOnLaunch(
 // The flag is set BEFORE the attempt rather than after it lands, so a pane that unmounts
 // mid-wait cannot leave a second attempt behind. A prime lost that way is a nuisance; a prompt
 // box full of duplicated pointer text is a bug — the same trade this file makes everywhere.
+// The one exception: a pane that goes while its attempt still waits at the gate or the boot
+// delay hands the flag back. That attempt stops at its next look at `stopped` and has typed
+// nothing, and the wait can now be seconds long (agentLaunchPending, below), long enough for a
+// layout change to come in it; the next mount takes the claim over. An attempt that reached the
+// inject, or ended, keeps it.
+//
+// Termpolis records a terminal's agentCommand when it opens the terminal, seconds before it types
+// the command, and the gate takes that command as proof of a launch. Until it is typed
+// (agentLaunchPending) the gate is held shut: output detection is a keyword on screen, and the
+// shell's own first prompt (a folder under ~/.claude, say) set off a pointer aimed at the shell.
 export function useAutoPrimer(
   terminalId: string,
   detectedAgent: AgentInfo | null,
@@ -526,7 +551,19 @@ export function useAutoPrimer(
       launchCommand,
     }
 
+    // Shut while Termpolis has yet to type the launch command, whichever gate is in use.
+    const chosen = gateRef.current ?? fallback
+    const launching = (): boolean =>
+      useTerminalStore.getState().terminals.find(t => t.id === terminalId)?.agentLaunchPending === true
+    const gate: PrimerGate = {
+      launchedAgent: () => (launching() ? null : chosen.launchedAgent()),
+      draft: () => chosen.draft(),
+      launchCommand: () => chosen.launchCommand?.(),
+    }
+
     let cancelled = false
+    let attempted = false
+    let settled = false
     let timer: ReturnType<typeof setTimeout> | null = null
     let wake: (() => void) | null = null
     const sleep = (ms: number): Promise<void> =>
@@ -539,13 +576,19 @@ export function useAutoPrimer(
         }, ms)
       })
 
-    void primeOnLaunch(terminalId, cwd, gateRef.current ?? fallback, {
+    void primeOnLaunch(terminalId, cwd, gate, {
       sleep,
       stopped: () => cancelled,
-    })
+      onAttempt: () => { attempted = true },
+    }).finally(() => { settled = true })
 
     return () => {
       cancelled = true
+      // Still waiting, nothing typed: the claim goes back for the next mount (see above).
+      if (!attempted && !settled) {
+        primedRef.current = false
+        if (term) useTerminalStore.getState().updateTerminal?.(terminalId, { primerPointed: false })
+      }
       if (timer) clearTimeout(timer)
       timer = null
       // Resume the loop so it observes `cancelled` and unwinds, instead of leaving a

@@ -395,4 +395,46 @@ describe('agentLaunch', () => {
       expect(useTerminalStore.getState().memoryNotice).toMatch(/Antigravity CLI no longer offers your default model "gemini-9"/)
     })
   })
+
+  // The launch gate in useAutoPrimer takes agentCommand as proof of a launch, and every caller
+  // records it before this types it: until the command is in, the terminal holds only its shell.
+  describe('the agent launch pending flag', () => {
+    const seed = (id: string, agentCommand: string): void =>
+      useTerminalStore.setState({ terminals: [{ id, name: 'a', color: '', shellType: 'bash', cwd: '/', fontSize: 1, theme: '', fontFamily: '', agentCommand }] })
+    const pendingOf = (id: string): boolean | undefined => useTerminalStore.getState().terminals.find((t) => t.id === id)?.agentLaunchPending
+    afterEach(() => useTerminalStore.setState({ terminals: [] }))
+
+    it('is set until the bare command is typed, and cleared once it is', () => {
+      seed('p1', 'codex')
+      const write = vi.fn()
+      launchAgents([{ id: 'p1', agentCommand: 'codex' }], { write, accounts: null })
+      expect(pendingOf('p1')).toBe(true)
+      vi.advanceTimersByTime(SHELL_SETTLE_MS)
+      expect(pendingOf('p1')).toBe(true) // the flush newline is not the command
+      vi.advanceTimersByTime(COMMAND_DELAY_MS)
+      expect(write).toHaveBeenLastCalledWith('p1', 'codex\r')
+      expect(pendingOf('p1')).toBe(false)
+    })
+
+    it("is cleared once main's line is typed on an account, and when the line is refused", async () => {
+      seed('p2', 'codex')
+      const write = vi.fn()
+      const accounts = {
+        launchAccount: vi.fn(async () => ({ success: true, data: { accountId: 'acc' } })),
+        launchLine: vi.fn(async () => ({ success: true, data: { line: 'X=1 codex', accountId: 'acc', explicit: true } })),
+      }
+      launchAgents([{ id: 'p2', agentCommand: 'codex' }], { write, accounts: accounts as never, onLaunched: vi.fn() })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS)
+      expect(pendingOf('p2')).toBe(true)
+      await vi.advanceTimersByTimeAsync(COMMAND_DELAY_MS)
+      expect(write).toHaveBeenLastCalledWith('p2', 'X=1 codex\r')
+      expect(pendingOf('p2')).toBe(false)
+
+      accounts.launchLine.mockResolvedValueOnce({ success: false, error: 'no' } as never)
+      launchAgents([{ id: 'p2', agentCommand: 'codex' }], { write, accounts: accounts as never, onRefused: vi.fn() })
+      expect(pendingOf('p2')).toBe(true)
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(pendingOf('p2')).toBe(false)
+    })
+  })
 })
