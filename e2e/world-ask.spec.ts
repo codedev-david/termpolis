@@ -215,7 +215,7 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
     // A focused terminal takes Ctrl+K as a key for the shell: the palette shortcut is the app's
     // only when the focus is outside it, as after clicking away.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
-    await page.keyboard.press('Control+k')
+    await page.keyboard.press('ControlOrMeta+k')
     const input = page.getByPlaceholder('Type a command...')
     await expect(input).toBeVisible()
     await input.fill('Open Lumopolis')
@@ -288,7 +288,7 @@ test.describe.serial('Lumopolis Ask bar evidence chip (labelling on)', () => {
   test('an answer citing [E1] shows a chip, and clicking it shows the evidence', async () => {
     await createTerminal('Notes', project)
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
-    await page.keyboard.press('Control+k')
+    await page.keyboard.press('ControlOrMeta+k')
     const input = page.getByPlaceholder('Type a command...')
     await expect(input).toBeVisible()
     await input.fill('Open Lumopolis')
