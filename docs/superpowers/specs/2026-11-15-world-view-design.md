@@ -38,7 +38,7 @@ David's framing: "almost a world model for humans to understand", a bridge betwe
 
 ### Non-goals (for this version)
 - Editing code by hand in the world. Code changes always go through agents.
-- Live runtime tracing (APM-style instrumentation of running programs). Flows are static and inferred, plus whatever the agent logs show. Runtime evidence can be added later.
+- Live production view in 2.0. It is the **next** project, with its own design (section 5.11). 2.0 must be built so it slots in without rework.
 - VR/AR headsets.
 - Multi-user, real-time shared worlds.
 - Supporting every language on day one. Coverage follows what the code graph (tree-sitter) already parses.
@@ -107,7 +107,8 @@ World {
   externals[]:  orbs (agent CLIs, providers, files, other machines)
   glossary:     { technologyId: plain-English line }
   layout:       { seed, positions by id }   // stable, persisted, never recomputed from scratch
-  layers:       { built, plan:[Proposal] }
+  layers:       { built, plan:[Proposal], live? }   // live: reserved for the production layer (5.11)
+  runtimeNames: { buildingId: [service names as they appear in traces/metrics] }
 }
 Claim    { text, state: proposed | observed | inferred | verified, evidence: Evidence[] }
 Evidence { kind: file | symbol | test | transcriptStep | memory | commit, ref, excerpt? }
@@ -205,6 +206,29 @@ Agents can then design in the world ("draw your plan before building") and expla
   - No tracking beyond what the site already does.
 - **Timing:** the demo can launch **before** the 2.0 app ships, as a "coming in 2.0" preview, because it doesn't depend on the compiler. My call: launch it with 2.0 so the claims match a downloadable product. David may prefer an early teaser.
 
+### 5.11 Next: live production view (own design, after 2.0)
+
+David (2026-11-15): the tool should also look into a **live running application, in the cloud or anywhere**, show **where the bottlenecks are**, and help **diagnose errors during production issues**. In his words, this "will bring it to the next level". It is the PDF's Observe mode, and it is planned as the headline of a 2.x release with its own design doc. In outline:
+
+- **The same world, alive:**
+  - Connections thicken with request rate and glow red with errors.
+  - Buildings heat with latency, so a bottleneck looks like packets piling up.
+  - A single slow or failed request replays as one packet walking its path.
+  - Clicking a hot building shows latency, errors, the slowest requests and what changed recently (deploys, agent commits).
+  - Questions by voice or text ("why is checkout slow since 2pm?") are answered from traces, logs and metrics, with evidence.
+  - A diagnosis can become a proposal for agents to build.
+- **Data:** OpenTelemetry first, because it works on any cloud or server (my call). Then connectors for existing monitoring tools, such as Azure Application Insights, Datadog and CloudWatch.
+- **Safety:**
+  - Access is read-only.
+  - Connections are added by the user in Termpolis settings and stored in Termpolis's own vault, never pulled from credentials other tools keep on the machine (EDR rule).
+  - Production data stays local, except the slice sent to the AI for a question, with personal data in logs masked first.
+
+**What 2.0 must do so this slots in:**
+- keep a `runtimeNames` mapping from buildings to the service names used in traces, filled from code where it's detectable (OpenTelemetry service names, deployment manifests) and editable by hand;
+- reserve a `live` layer in the world document;
+- have the renderer drive line width, colour and building heat from data, not hard-coded values;
+- use an answer protocol whose evidence kinds can grow (`trace`, `metric`, `log`, `deploy`).
+
 ## 6. Decided in brainstorming (David)
 
 - The idea and the framing: a 3D animated world for human understanding of AI-designed and AI-built software; it must convey deep understanding without showing code (2026-11-15).
@@ -216,6 +240,7 @@ Agents can then design in the world ("draw your plan before building") and expla
 - Approach A.
 - Released as **Termpolis 2.0**, with World View as its headline.
 - A public interactive demo page on termpolis.com, built from the prototype that shows how Termpolis works.
+- Next after 2.0: a live production view of running applications for bottlenecks and diagnosis (5.11), with its own design.
 
 ## 7. Calls I made (David can override)
 
