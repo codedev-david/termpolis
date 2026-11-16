@@ -16,11 +16,11 @@ on:
         required: false
         default: main
       os:
-        description: Runner
+        description: Runner (ubuntu-24.04 matches Tests e2e-full; ubuntu-latest is 26.04, where Playwright has no chromium yet)
         required: false
-        default: ubuntu-latest
+        default: ubuntu-24.04
         type: choice
-        options: [ubuntu-latest, windows-latest, macos-latest]
+        options: [ubuntu-24.04, ubuntu-latest, windows-latest, macos-latest]
       copies:
         description: How many times to run each shard, as a JSON list
         required: false
