@@ -28,7 +28,7 @@ export const PATTERNS: string[] = [
 ]
 
 const MAX_CHARS = 16 * 1024 * 1024
-const TEST_FILE = /\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/
+export const TEST_FILE = /\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/
 
 // ---- tiny path helpers ----------------------------------------------------
 
