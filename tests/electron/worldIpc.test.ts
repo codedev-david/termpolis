@@ -1,12 +1,24 @@
 import { describe, expect, it, vi } from 'vitest'
 import { registerWorldIpc, type WorldIpcClient } from '../../src/main/world/ipc'
 import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../src/shared/world/types'
+import type { WorldSettings, WorldSettingsStore } from '../../src/main/world/worldSettings'
 
 const DOC = { projectKey: 'k', version: 1 } as unknown as WorldDoc
 
 type Win = { webContents: { send: (...a: unknown[]) => void } }
 
-function setup(win: () => Win | null | undefined = () => null) {
+function fakeSettings(): WorldSettingsStore & { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> } {
+  let current: WorldSettings = { worldLabelling: true }
+  return {
+    get: vi.fn(() => ({ ...current })),
+    set: vi.fn((patch: Partial<WorldSettings>) => {
+      current = { ...current, ...patch }
+      return { ...current }
+    })
+  }
+}
+
+function setup(win: () => Win | null | undefined = () => null, settings = fakeSettings()) {
   const handlers = new Map<string, (e: unknown, args?: unknown) => unknown>()
   const ipc = {
     handle: vi.fn((ch: string, fn: (e: unknown, args?: unknown) => unknown) => {
@@ -36,14 +48,57 @@ function setup(win: () => Win | null | undefined = () => null) {
       }
     }
   }
-  const off = registerWorldIpc(ipc, client, win)
+  const off = registerWorldIpc(ipc, client, win, settings)
   const invoke = (ch: string, args?: unknown) => (handlers.get(ch) as (e: unknown, a?: unknown) => Promise<unknown>)({}, args)
-  return { handlers, client, off, invoke, progress, updated }
+  return { handlers, client, off, invoke, progress, updated, settings }
 }
 
 describe('registerWorldIpc', () => {
-  it('registers world:get, world:compile and world:relayout', () => {
-    expect([...setup().handlers.keys()]).toEqual(['world:get', 'world:compile', 'world:relayout'])
+  it('registers world:get, world:compile, world:relayout and the settings pair', () => {
+    expect([...setup().handlers.keys()]).toEqual(['world:get', 'world:compile', 'world:relayout', 'world:settings-get', 'world:settings-set'])
+  })
+
+  it('world:settings-get answers the stored settings', async () => {
+    const { invoke } = setup()
+    expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true } })
+  })
+
+  it('world:settings-set applies only the allowlisted field and answers the new settings', async () => {
+    const { invoke, settings } = setup()
+    expect(await invoke('world:settings-set', { worldLabelling: false, evil: 'x' })).toEqual({ success: true, data: { worldLabelling: false } })
+    expect(settings.set).toHaveBeenLastCalledWith({ worldLabelling: false })
+    // A wrong type or an unknown field is dropped: set() runs with nothing to change.
+    expect(await invoke('world:settings-set', { worldLabelling: 'no' })).toEqual({ success: true, data: { worldLabelling: false } })
+    expect(settings.set).toHaveBeenLastCalledWith({})
+  })
+
+  it('world:settings-set refuses a patch that is not an object', async () => {
+    const { invoke, settings } = setup()
+    for (const args of [undefined, null, 'off', 5, [true]]) {
+      expect(await invoke('world:settings-set', args)).toEqual({ success: false, error: 'settings patch required' })
+    }
+    expect(settings.set).not.toHaveBeenCalled()
+  })
+
+  it('the settings handlers answer err() when the store throws', async () => {
+    const settings = fakeSettings()
+    settings.get.mockImplementation(() => {
+      throw new Error('disk gone')
+    })
+    settings.set.mockImplementation(() => {
+      throw 'odd'
+    })
+    const { invoke } = setup(() => null, settings)
+    expect(await invoke('world:settings-get')).toEqual({ success: false, error: 'disk gone' })
+    expect(await invoke('world:settings-set', { worldLabelling: true })).toEqual({ success: false, error: 'odd' })
+    settings.get.mockImplementation(() => {
+      throw 'odd get'
+    })
+    settings.set.mockImplementation(() => {
+      throw new Error('read only')
+    })
+    expect(await invoke('world:settings-get')).toEqual({ success: false, error: 'odd get' })
+    expect(await invoke('world:settings-set', { worldLabelling: true })).toEqual({ success: false, error: 'read only' })
   })
 
   it('handlers return ok() shapes', async () => {

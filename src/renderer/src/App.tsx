@@ -15,6 +15,8 @@ const HistorySearchModal = lazy(() => import('./components/HistorySearch/History
 const PromptTemplates = lazy(() => import('./components/PromptTemplates/PromptTemplates').then(m => ({ default: m.PromptTemplates })))
 const ContextPanel = lazy(() => import('./components/ContextPanel/ContextPanel').then(m => ({ default: m.ContextPanel })))
 const Memory = lazy(() => import('./components/Memory/Memory').then(m => ({ default: m.Memory })))
+// Lumopolis (world view): its own chunk, so the engine and Three.js load only when it opens.
+const WorldView = lazy(() => import('./components/World').then(m => ({ default: m.WorldView })))
 const ActivityFeed = lazy(() => import('./components/ActivityFeed/ActivityFeed').then(m => ({ default: m.ActivityFeed })))
 const ContextPinsPanel = lazy(() => import('./components/ContextPins/ContextPinsPanel').then(m => ({ default: m.ContextPinsPanel })))
 const RedundancyPanel = lazy(() => import('./components/RedundancyPanel/RedundancyPanel').then(m => ({ default: m.RedundancyPanel })))
@@ -131,6 +133,7 @@ export default function App() {
   const [showConversationSearch, setShowConversationSearch] = useState(false)
   const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
+  const [showWorld, setShowWorld] = useState(false)
   // Bumped to open the Memory panel on its This week tab.
   const [memoryWeekRequest, setMemoryWeekRequest] = useState(0)
   const [showMemoryTour, setShowMemoryTour] = useState(false)
@@ -518,6 +521,13 @@ export default function App() {
         return
       }
 
+      // Ctrl+Shift+R to toggle Lumopolis. Not W: Ctrl+Shift+W is the default closeTerminal binding.
+      if (primaryMod && e.shiftKey && e.key === 'R') {
+        e.preventDefault()
+        setShowWorld(v => !v)
+        return
+      }
+
       // Ctrl+Shift+P to toggle prompt templates
       if (primaryMod && e.shiftKey && e.key === 'P') {
         e.preventDefault()
@@ -610,6 +620,10 @@ export default function App() {
     }
     window.addEventListener('termpolis:openMemory', onOpenMemory)
 
+    // The Sidebar globe (and anything else) opens Lumopolis through the same kind of bridge.
+    const onOpenWorld = () => setShowWorld(true)
+    window.addEventListener('termpolis:openWorld', onOpenWorld)
+
     // Same bridge for the app log, so the Help modal / command palette can open it
     // without threading a prop through every panel.
     const onOpenAppLog = () => setShowAppLog(true)
@@ -622,6 +636,7 @@ export default function App() {
       window.removeEventListener('termpolis:openChanges', onOpenChanges)
       window.removeEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
       window.removeEventListener('termpolis:openMemory', onOpenMemory)
+      window.removeEventListener('termpolis:openWorld', onOpenWorld)
       window.removeEventListener('termpolis:openAppLog', onOpenAppLog)
       unsubGlobal?.()
       unsubSwarm?.()
@@ -979,6 +994,9 @@ export default function App() {
       case 'show_memory':
         setShowMemory(v => !v)
         break
+      case 'show_world':
+        setShowWorld(true)
+        break
       case 'memory_tour':
         setShowMemoryTour(true)
         break
@@ -1182,6 +1200,12 @@ export default function App() {
               // A request to open on This week is used once: the next opening starts on Overview.
               onClose={() => { setShowMemory(false); setMemoryWeekRequest(0) }}
               weekRequest={memoryWeekRequest}
+            />
+          )}
+          {showWorld && (
+            <WorldView
+              root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
+              onClose={() => setShowWorld(false)}
             />
           )}
         </Suspense>

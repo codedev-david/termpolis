@@ -4052,6 +4052,11 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(world.client.relayout).toHaveBeenCalledWith('/repos/x')
   })
 
+  it('registers the Lumopolis settings pair over the world settings store', async () => {
+    expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true } })
+    expect(await invoke('world:settings-set', 'nope')).toEqual({ success: false, error: 'settings patch required' })
+  })
+
   it('a watched change refreshes the world after the re-index, and the gate still waits on the re-index alone', async () => {
     await invoke('memory:ingest-code', { repoRoot: '/repos/x' })
     const onChange = mneme.fsBackedWatchDeps.mock.calls[0][1]

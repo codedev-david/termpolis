@@ -198,6 +198,13 @@ export function Sidebar() {
           <i className="fa-solid fa-network-wired"></i>
           {swarmActive && <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse"></span>}
         </button>
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent('termpolis:openWorld'))}
+          title="Lumopolis: Where AI Worlds Become Human Understanding"
+          aria-label="Open Lumopolis"
+          data-testid="sidebar-open-world"
+          className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"
+        ><i className="fa-solid fa-earth-americas"></i></button>
         <div className="flex-1"></div>
         <button
           onClick={() => setSidebarCollapsed(true)}

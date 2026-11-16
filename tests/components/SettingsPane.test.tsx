@@ -209,6 +209,13 @@ describe('SettingsPane', () => {
     })
   })
 
+  it('the General tab carries the Lumopolis "Describe parts with AI" switch', async () => {
+    render(<SettingsPane />)
+    const sw = await screen.findByTestId('settings-world-labelling-toggle')
+    expect(sw).toHaveAttribute('role', 'switch')
+    expect(screen.getByText(/Describe parts with AI/)).toBeInTheDocument()
+  })
+
   // "Re-read search results": a local cross-encoder reorders each memory search's top hits. Nothing leaves the machine, so it is ON.
   describe('Re-read search results switch', () => {
     const tp = () => (window as any).termpolis

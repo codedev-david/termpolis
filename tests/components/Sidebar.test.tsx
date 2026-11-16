@@ -224,6 +224,20 @@ describe('Sidebar', () => {
     expect(mockSetShowSettings).toHaveBeenCalledWith(false)
   })
 
+  it('the globe button opens Lumopolis through the termpolis:openWorld window event', () => {
+    const onOpen = vi.fn()
+    window.addEventListener('termpolis:openWorld', onOpen)
+    try {
+      render(<Sidebar />)
+      const globe = screen.getByTitle('Lumopolis: Where AI Worlds Become Human Understanding')
+      expect(globe).toHaveAttribute('aria-label', 'Open Lumopolis')
+      fireEvent.click(globe)
+      expect(onOpen).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('termpolis:openWorld', onOpen)
+    }
+  })
+
   it('collapse button calls setSidebarCollapsed', () => {
     render(<Sidebar />)
     fireEvent.click(screen.getByTitle('Collapse sidebar'))

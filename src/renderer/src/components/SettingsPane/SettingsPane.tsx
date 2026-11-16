@@ -19,6 +19,7 @@ import { AgentIntegrationSettings } from './AgentIntegrationSettings'
 import { AccountsSettings } from './AccountsSettings'
 import { ProcessesSettings } from './ProcessesSettings'
 import { PrivacySettings } from './PrivacySettings'
+import { LumopolisSettings } from './LumopolisSettings'
 import { useSettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isSoloLearningEnabled, setSoloLearningEnabled } from '../../lib/sessionReflection'
@@ -708,6 +709,7 @@ export function SettingsPane() {
               </span>
             </span>
           </button>
+          <LumopolisSettings />
           <PrivacySettings onOpenTokenSavings={() => setActiveTab('tokenSavings')} />
 
           <div className="border-t border-[#3c3c3c] pt-3 flex flex-col gap-2" data-testid="brain-io">

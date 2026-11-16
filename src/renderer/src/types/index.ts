@@ -688,6 +688,10 @@ export interface TermpolisAPI {
   worldCompile: (root: string) => Promise<IpcResponse<WorldDoc>>
   /** Lumopolis: compile again, throwing away the previous layout. */
   worldRelayout: (root: string) => Promise<IpcResponse<WorldDoc>>
+  /** Lumopolis settings: whether the world compiler may ask the default agent's cheapest model to describe parts. */
+  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean }>>
+  /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */
+  worldSettingsSet: (patch: { worldLabelling?: boolean }) => Promise<IpcResponse<{ worldLabelling: boolean }>>
   onWorldProgress: (cb: (e: WorldProgressEvent) => void) => () => void
   onWorldUpdated: (cb: (e: WorldUpdatedEvent) => void) => () => void
   /** Export the full brain (memories + graph + learning stores + code graph) to a chosen .zip. */

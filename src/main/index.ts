@@ -2615,7 +2615,7 @@ ipcMain.handle('code-graph:impact', async (_, opts: { name: string }) => { try {
 // spawned on the first world request, never at app start. Main keeps three jobs: the code-graph
 // snapshot and git revision it posts, and the labelling model call, which needs the token-proxy
 // environment only main owns. world:get / world:compile / world:relayout, plus world:progress and
-// world:updated pushes, are registered by world/ipc.ts.
+// world:updated pushes and the world:settings-get/-set pair, are registered by world/ipc.ts.
 const worldSettings = createWorldSettings(() => join(app.getPath('userData'), WORLD_SETTINGS_FILE))
 /** `claude -p` for labelling, with the same launch environment (token proxy included) an agent gets in
  *  `root`. Spawned by the proc host, never on the main thread: a watcher-driven recompile can label. */
@@ -2661,7 +2661,7 @@ const worldClient = createWorldClient(undefined, {
     return built
   },
 })
-registerWorldIpc(ipcMain, worldClient, () => mainWindow)
+registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings)
 // v1.23 C5 — issue->location prediction (on-demand for the UI; agents get the code_locate MCP tool).
 ipcMain.handle('code-graph:locate', async (_, opts: { issue: string; projectKey?: string; limit?: number }) => { try { return ok(await locateIssueSites(opts?.issue || '', opts?.projectKey, opts?.limit)) } catch (e: any) { return err(e.message) } })
 // v1.23 C6 — DEEP recall over the archive tier (cold/consolidated memories beyond the hot window).

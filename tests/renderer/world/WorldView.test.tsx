@@ -1,0 +1,525 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-library/react'
+import type { WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../../src/shared/world/types'
+import type { WorldSelection, WorldViewerOptions } from '../../../src/renderer/src/world/engine'
+import { buildingCard, edgeCard } from '../../../src/renderer/src/world/engine'
+import { minimal } from './helpers'
+
+// The engine is real except the two things jsdom cannot do: a WebGL probe and a WebGL viewer.
+const h = vi.hoisted(() => ({ webgl: true, viewers: [] as any[] }))
+vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../../src/renderer/src/world/engine')>()
+  return {
+    ...real,
+    hasWebGL: () => h.webgl,
+    createWorldViewer: vi.fn((host: HTMLElement, opts: WorldViewerOptions) => {
+      const selectCbs = new Set<(s: WorldSelection | null) => void>()
+      const v = {
+        host, opts,
+        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(),
+        apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), cancelActions: vi.fn(),
+        on: vi.fn((ev: string, cb: (s: WorldSelection | null) => void) => {
+          if (ev !== 'select') return () => undefined
+          selectCbs.add(cb)
+          return () => { selectCbs.delete(cb) }
+        }),
+        emitSelect: (s: WorldSelection | null) => { for (const cb of selectCbs) cb(s) },
+        selectListeners: () => selectCbs.size,
+        getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), dispose: vi.fn(),
+      }
+      h.viewers.push(v)
+      return v
+    }),
+  }
+})
+
+import { WorldView } from '../../../src/renderer/src/components/World'
+
+type Res<T> = { success: true; data: T } | { success: false; error: string }
+const ok = <T,>(data: T): Res<T> => ({ success: true, data })
+const fail = (error: string): Res<never> => ({ success: false, error })
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+function bridge(over: Record<string, unknown> = {}) {
+  const progress = new Set<(e: WorldProgressEvent) => void>()
+  const updated = new Set<(e: WorldUpdatedEvent) => void>()
+  const api = {
+    gitFindRoot: vi.fn(async (cwd: string) => ok<string | null>(cwd)),
+    worldGet: vi.fn(async (_root: string): Promise<Res<WorldDoc | null>> => ok(minimal())),
+    worldCompile: vi.fn(async (_root: string): Promise<Res<WorldDoc>> => ok(minimal())),
+    worldRelayout: vi.fn(async (_root: string): Promise<Res<WorldDoc>> => ok(minimal())),
+    onWorldProgress: vi.fn((cb: (e: WorldProgressEvent) => void) => { progress.add(cb); return () => { progress.delete(cb) } }),
+    onWorldUpdated: vi.fn((cb: (e: WorldUpdatedEvent) => void) => { updated.add(cb); return () => { updated.delete(cb) } }),
+    ...over,
+  }
+  ;(window as any).termpolis = api
+  return {
+    api,
+    progress: (e: WorldProgressEvent) => act(() => { for (const cb of progress) cb(e) }),
+    updated: async (e: WorldUpdatedEvent) => { await act(async () => { for (const cb of updated) cb(e) }) },
+    listeners: () => progress.size + updated.size,
+  }
+}
+
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve() })
+}
+const viewer = () => h.viewers[h.viewers.length - 1]
+const dialog = () => screen.getByRole('dialog', { name: 'Lumopolis' })
+const esc = (target: Element = dialog()) => fireEvent.keyDown(target, { key: 'Escape' })
+
+async function mount(props: Partial<{ root: string; onClose: () => void; askSlot: (v: unknown) => React.ReactNode }> = {}) {
+  const onClose = props.onClose ?? vi.fn()
+  const utils = render(<WorldView root={props.root ?? '/repo'} onClose={onClose} askSlot={props.askSlot as never} />)
+  await settle()
+  return { ...utils, onClose }
+}
+
+beforeEach(() => {
+  h.webgl = true
+  h.viewers.length = 0
+  vi.clearAllMocks()
+})
+afterEach(() => {
+  cleanup()
+})
+
+describe('WorldView', () => {
+  it('shows "Mapping your project…" with progress while worldGet returns null and progress events arrive', async () => {
+    const compile = deferred<Res<WorldDoc>>()
+    const b = bridge({ worldGet: vi.fn(async () => ok(null)), worldCompile: vi.fn(() => compile.promise) })
+    await mount()
+    expect(dialog()).toBeInTheDocument()
+    expect(screen.getByText('Mapping your project…')).toBeInTheDocument()
+    expect(screen.getByTestId('world-progress-text')).toHaveTextContent('Starting…')
+    expect(b.api.worldCompile).toHaveBeenCalledWith('/repo')
+
+    b.progress({ root: '/repo', projectKey: 'k', stage: 'layout', pct: 40 })
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '40')
+    expect(screen.getByTestId('world-progress-text')).toHaveTextContent('40% · layout')
+    // Someone else's compile is not ours.
+    b.progress({ root: '/other', projectKey: 'other', stage: 'labels', pct: 90 })
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '40')
+    // The bar stays within 0..100.
+    b.progress({ root: '/repo', projectKey: 'k', stage: 'done', pct: 140 })
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100')
+    b.progress({ root: '/repo', projectKey: 'k', stage: 'start', pct: -3 })
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0')
+
+    const doc = minimal()
+    await act(async () => { compile.resolve(ok(doc)) })
+    await settle()
+    expect(screen.queryByTestId('world-empty')).toBeNull()
+    expect(viewer().load).toHaveBeenLastCalledWith(doc)
+  })
+
+  it('mounts viewer and loads doc on world:updated', async () => {
+    const first = minimal()
+    const second = { ...minimal(), generatedAt: 2 }
+    const b = bridge({ worldGet: vi.fn().mockResolvedValueOnce(ok(first)).mockResolvedValue(ok(second)) })
+    await mount()
+    const { createWorldViewer } = await import('../../../src/renderer/src/world/engine')
+    expect(createWorldViewer).toHaveBeenCalledTimes(1)
+    expect(viewer().host).toBe(screen.getByTestId('world-canvas-host'))
+    expect(viewer().load).toHaveBeenLastCalledWith(first)
+
+    // Another project's update is ignored.
+    await b.updated({ root: '/other', projectKey: 'other' })
+    expect(b.api.worldGet).toHaveBeenCalledTimes(1)
+    // Ours, by root.
+    await b.updated({ root: '/repo', projectKey: 'x' })
+    await settle()
+    expect(b.api.worldGet).toHaveBeenLastCalledWith('/repo')
+    expect(viewer().load).toHaveBeenLastCalledWith(second)
+    // Ours, by project key (a watcher names the repo by another spelling).
+    await b.updated({ root: 'C:/elsewhere', projectKey: first.projectKey })
+    await settle()
+    expect(b.api.worldGet).toHaveBeenCalledTimes(3)
+  })
+
+  it('an update whose fetch fails, comes back empty or arrives for an old root changes nothing', async () => {
+    const later = deferred<Res<WorldDoc | null>>()
+    const b = bridge()
+    const { rerender, onClose } = await mount()
+    const loads = viewer().load.mock.calls.length
+    b.api.worldGet.mockResolvedValueOnce(fail('gone'))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    b.api.worldGet.mockResolvedValueOnce(ok(null))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    b.api.worldGet.mockRejectedValueOnce(new Error('ipc down'))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(viewer().load).toHaveBeenCalledTimes(loads)
+
+    // The fetch resolves after the pane moved to another project: dropped.
+    b.api.worldGet.mockReturnValueOnce(later.promise)
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    const next = deferred<Res<WorldDoc | null>>()
+    b.api.worldGet.mockReturnValueOnce(next.promise)
+    rerender(<WorldView root="/next" onClose={onClose} />)
+    await settle()
+    await act(async () => { later.resolve(ok({ ...minimal(), projectKey: 'stale' })) })
+    await settle()
+    expect(viewer().load.mock.calls.some((c: [WorldDoc]) => c[0].projectKey === 'stale')).toBe(false)
+
+    // With no project at all, a matching project key has no root to fetch from.
+    rerender(<WorldView root="" onClose={onClose} />)
+    await settle()
+    const calls = b.api.worldGet.mock.calls.length
+    await b.updated({ root: '/x', projectKey: 'termpolis-min' })
+    expect(b.api.worldGet).toHaveBeenCalledTimes(calls)
+  })
+
+  it('toolbar toggles call viewer.setLayers with the right partial', async () => {
+    bridge()
+    await mount()
+    const v = viewer()
+    const press = (key: string) => fireEvent.click(screen.getByTestId(`world-layer-${key}`))
+    expect(screen.getByTestId('world-layer-labels')).toHaveAttribute('aria-pressed', 'false')
+    press('labels')
+    expect(v.setLayers).toHaveBeenLastCalledWith({ labels: 'tech' })
+    expect(screen.getByTestId('world-layer-labels')).toHaveAttribute('aria-pressed', 'true')
+    press('labels')
+    expect(v.setLayers).toHaveBeenLastCalledWith({ labels: 'jobs' })
+    press('processes')
+    expect(v.setLayers).toHaveBeenLastCalledWith({ processes: true })
+    press('processes')
+    expect(v.setLayers).toHaveBeenLastCalledWith({ processes: false })
+    press('allLineLabels')
+    expect(v.setLayers).toHaveBeenLastCalledWith({ allLineLabels: true })
+    press('allLineLabels')
+    expect(v.setLayers).toHaveBeenLastCalledWith({ allLineLabels: false })
+    expect(screen.getByTestId('world-layer-planned')).toHaveAttribute('aria-pressed', 'true')
+    press('planned')
+    expect(v.setLayers).toHaveBeenLastCalledWith({ planned: false })
+    press('planned')
+    expect(v.setLayers).toHaveBeenLastCalledWith({ planned: true })
+  })
+
+  it('theme select calls setTheme', async () => {
+    bridge()
+    await mount()
+    const select = screen.getByRole('combobox', { name: 'Theme' }) as HTMLSelectElement
+    expect([...select.options].map((o) => o.textContent)).toEqual(['Neon', 'Blueprint', 'Glass'])
+    fireEvent.change(select, { target: { value: 'blueprint' } })
+    expect(viewer().setTheme).toHaveBeenCalledWith('blueprint')
+    expect(select.value).toBe('blueprint')
+  })
+
+  it('tours menu lists doc.tours and plays the chosen one', async () => {
+    bridge()
+    await mount()
+    const doc = minimal()
+    const select = screen.getByRole('combobox', { name: 'Tours' }) as HTMLSelectElement
+    expect(select.disabled).toBe(false)
+    expect([...select.options].map((o) => o.textContent)).toEqual(['Take a tour…', 'First look'])
+    fireEvent.change(select, { target: { value: 't1' } })
+    expect(viewer().play).toHaveBeenCalledWith([{ type: 'tour', steps: doc.tours[0].steps }])
+    // The placeholder plays nothing.
+    fireEvent.change(select, { target: { value: '' } })
+    expect(viewer().play).toHaveBeenCalledTimes(1)
+  })
+
+  it('a world with no tours shows a disabled tours menu', async () => {
+    bridge({ worldGet: vi.fn(async () => ok({ ...minimal(), tours: [] })) })
+    await mount()
+    const select = screen.getByRole('combobox', { name: 'Tours' }) as HTMLSelectElement
+    expect(select.disabled).toBe(true)
+    expect(select.options[0].textContent).toBe('No tours yet')
+  })
+
+  it('Esc resets; second Esc closes', async () => {
+    bridge()
+    const { onClose } = await mount()
+    esc()
+    expect(viewer().resetView).toHaveBeenCalledTimes(1)
+    expect(onClose).not.toHaveBeenCalled()
+    esc()
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('Esc after a selection, a card, a tour or a drag resets again before it closes', async () => {
+    bridge()
+    const { onClose } = await mount()
+    const v = viewer()
+    esc() // reset: the next Esc would close
+    act(() => v.emitSelect({ kind: 'building', id: 'b1' }))
+    esc() // a selection since: reset again
+    expect(onClose).not.toHaveBeenCalled()
+    act(() => v.emitSelect(null)) // a cleared selection is no new activity
+    esc()
+    expect(onClose).toHaveBeenCalledTimes(1)
+
+    act(() => v.opts.renderCard('<p class="tour-caption">The app talks</p>'))
+    expect(screen.getByTestId('world-card')).toHaveTextContent('The app talks')
+    esc() // a card is open: it clears, the pane stays
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    expect(onClose).toHaveBeenCalledTimes(1)
+    act(() => v.opts.renderCard(null))
+    esc()
+    expect(onClose).toHaveBeenCalledTimes(2)
+
+    fireEvent.pointerDown(screen.getByTestId('world-canvas-host')) // dragging the map
+    esc()
+    expect(onClose).toHaveBeenCalledTimes(2)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Tours' }), { target: { value: 't1' } })
+    esc()
+    expect(onClose).toHaveBeenCalledTimes(2)
+    esc()
+    expect(onClose).toHaveBeenCalledTimes(3)
+  })
+
+  it('Esc closes the re-layout question first, ignores other keys and Esc from outside the pane', async () => {
+    bridge()
+    const { onClose } = await mount()
+    fireEvent.keyDown(dialog(), { key: 'Enter' })
+    expect(viewer().resetView).not.toHaveBeenCalled()
+    // A dialog opened on top of the pane (the command palette) keeps its own Esc.
+    const outside = document.createElement('input')
+    document.body.appendChild(outside)
+    const e = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    outside.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(false)
+    outside.remove()
+    // Esc with focus nowhere in particular is the pane's.
+    esc(document.body)
+    expect(viewer().resetView).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    expect(screen.getByRole('alertdialog', { name: 'Confirm re-layout' })).toBeInTheDocument()
+    esc(screen.getByTestId('world-relayout-cancel'))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
+    esc(document.documentElement)
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('no WebGL → renders renderFallback(doc) list', async () => {
+    h.webgl = false
+    bridge()
+    const askSlot = vi.fn(() => <span>ask</span>)
+    const { onClose } = await mount({ askSlot })
+    const { createWorldViewer } = await import('../../../src/renderer/src/world/engine')
+    expect(createWorldViewer).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('world-canvas-host')).toBeNull()
+    const list = screen.getByTestId('world-fallback')
+    expect(list.querySelector('section.world-fallback')).not.toBeNull()
+    expect(list.querySelector('[data-kind="building"][data-id="b1"]')).toHaveTextContent('Desktop app')
+    expect(askSlot).toHaveBeenLastCalledWith(null)
+    const doc = minimal()
+
+    // Clicking a building or a connection opens its card from the doc.
+    const textOf = (html: string) => { const d = document.createElement('div'); d.innerHTML = html; return d.textContent as string }
+    fireEvent.click(list.querySelector('[data-id="b1"]') as Element)
+    expect(screen.getByTestId('world-card')).toHaveTextContent(textOf(buildingCard(doc, 'b1')))
+    fireEvent.click(list.querySelector('[data-kind="edge"]') as Element)
+    expect(screen.getByTestId('world-card')).toHaveTextContent(textOf(edgeCard(doc, 'e1')))
+    // A link inside the card opens that part.
+    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-node]') as Element)
+    expect(screen.getByTestId('world-card')).toHaveTextContent('What it does')
+    expect(screen.getByTestId('world-card')).toHaveTextContent('Desktop app')
+    // A district closes the card; a heading is no item.
+    fireEvent.click(list.querySelector('[data-kind="district"] h3') as Element)
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    fireEvent.click(list.querySelector('h2') as Element)
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    // An unknown id shows no card.
+    fireEvent.click(list.querySelector('[data-id="b1"]') as Element)
+    const link = screen.getByTestId('world-card').querySelector('[data-node]') as Element
+    link.setAttribute('data-node', 'nope')
+    fireEvent.click(link)
+    expect(screen.queryByTestId('world-card')).toBeNull()
+
+    // Toolbar actions have no viewer to drive, and do not throw.
+    fireEvent.click(list.querySelector('[data-id="b1"]') as Element)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Tours' }), { target: { value: 't1' } })
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    fireEvent.click(screen.getByTestId('world-layer-processes'))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Theme' }), { target: { value: 'glass' } })
+    fireEvent.click(screen.getByTestId('world-reset'))
+    fireEvent.click(list.querySelector('[data-id="b1"]') as Element)
+    fireEvent.click(screen.getByTestId('world-card-close'))
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    esc()
+    esc()
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('palette action show_world opens the overlay', async () => {
+    // The App wiring is covered in AppWorld.test.tsx; here: the overlay it opens is the Lumopolis dialog.
+    bridge()
+    await mount()
+    expect(dialog()).toHaveAttribute('aria-modal', 'true')
+    expect(document.activeElement).toBe(dialog())
+  })
+
+  it('Re-layout asks for confirmation then calls worldRelayout', async () => {
+    const relaid = { ...minimal(), generatedAt: 99 }
+    const run = deferred<Res<WorldDoc>>()
+    const b = bridge({ worldRelayout: vi.fn(() => run.promise) })
+    await mount()
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Continue?')
+    fireEvent.click(screen.getByTestId('world-relayout-cancel'))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(b.api.worldRelayout).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-go'))
+    expect(b.api.worldRelayout).toHaveBeenCalledWith('/repo')
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Re-laying out…')
+    expect(screen.getByTestId('world-relayout')).toBeDisabled()
+    await act(async () => { run.resolve(ok(relaid)) })
+    await settle()
+    expect(viewer().load).toHaveBeenLastCalledWith(relaid)
+    expect(screen.queryByTestId('world-notice')).toBeNull()
+
+    b.api.worldRelayout.mockResolvedValueOnce(fail('host crashed'))
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-go'))
+    await settle()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Re-layout failed: host crashed')
+    b.api.worldRelayout.mockRejectedValueOnce(new Error('ipc down'))
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-go'))
+    await settle()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Re-layout failed: ipc down')
+  })
+
+  it('opens cards from the viewer, and card links and close drive the viewer', async () => {
+    bridge()
+    const askSlot = vi.fn(() => <span>ask here</span>)
+    await mount({ askSlot })
+    const v = viewer()
+    expect(screen.getByTestId('world-ask-slot')).toHaveTextContent('ask here')
+    expect(askSlot).toHaveBeenLastCalledWith(v)
+    act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
+    const card = screen.getByTestId('world-card')
+    fireEvent.click(card.querySelector('[data-edge]') as Element)
+    expect(v.apply).toHaveBeenLastCalledWith({ type: 'openCard', id: 'e1' })
+    fireEvent.click(card.querySelector('[data-node]') as Element)
+    expect(v.apply).toHaveBeenLastCalledWith({ type: 'openCard', id: expect.any(String) })
+    fireEvent.click(screen.getByTestId('world-card-close'))
+    expect(screen.queryByTestId('world-card')).toBeNull()
+    expect(v.resetView).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByTestId('world-reset'))
+    expect(v.resetView).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByTestId('world-close'))
+  })
+
+  it('the close button closes, and unmounting disposes the viewer and drops every listener', async () => {
+    const b = bridge()
+    const { onClose, unmount } = await mount()
+    fireEvent.click(screen.getByTestId('world-close'))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    const v = viewer()
+    expect(v.selectListeners()).toBe(1)
+    unmount()
+    expect(v.dispose).toHaveBeenCalled()
+    expect(v.selectListeners()).toBe(0)
+    expect(b.listeners()).toBe(0)
+  })
+
+  it('names the project after the doc, or after the folder while there is none', async () => {
+    const get = deferred<Res<WorldDoc | null>>()
+    bridge({ worldGet: vi.fn(() => get.promise), gitFindRoot: vi.fn(async () => ok('C:\\code\\my-app\\')) })
+    await mount({ root: 'C:\\code\\my-app\\src' })
+    expect(screen.getByTestId('world-project')).toHaveTextContent('my-app')
+    expect(screen.getByTestId('world-loading')).toHaveTextContent('Opening Lumopolis…')
+    await act(async () => { get.resolve(ok(minimal())) })
+    await settle()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('termpolis-min')
+  })
+
+  it('without a project folder it says so and asks main for nothing', async () => {
+    const b = bridge()
+    await mount({ root: '' })
+    expect(screen.getByTestId('world-no-root')).toHaveTextContent('Open a terminal in your project folder')
+    expect(screen.queryByTestId('world-project')).toBeNull()
+    expect(screen.getByTestId('world-relayout')).toBeDisabled()
+    expect(b.api.gitFindRoot).not.toHaveBeenCalled()
+    expect(b.api.worldGet).not.toHaveBeenCalled()
+  })
+
+  it('maps the git root of the folder, or the folder itself when there is no repository', async () => {
+    let b = bridge({ gitFindRoot: vi.fn(async () => ok('/repo')) })
+    await mount({ root: '/repo/src/deep' })
+    expect(b.api.worldGet).toHaveBeenCalledWith('/repo')
+    cleanup()
+    b = bridge({ gitFindRoot: vi.fn(async () => ok(null)) })
+    await mount({ root: '/loose' })
+    expect(b.api.worldGet).toHaveBeenCalledWith('/loose')
+    cleanup()
+    b = bridge({ gitFindRoot: vi.fn(async () => fail('git missing')) })
+    await mount({ root: '/loose2' })
+    expect(b.api.worldGet).toHaveBeenCalledWith('/loose2')
+    cleanup()
+    b = bridge({ gitFindRoot: vi.fn(async () => { throw new Error('ipc') }) })
+    await mount({ root: '/loose3' })
+    expect(b.api.worldGet).toHaveBeenCalledWith('/loose3')
+  })
+
+  it('a root lookup that lands after unmount is dropped', async () => {
+    for (const settleWith of ['resolve', 'reject'] as const) {
+      const find = deferred<Res<string | null>>()
+      const b = bridge({ gitFindRoot: vi.fn(() => find.promise) })
+      const { unmount } = await mount()
+      unmount()
+      await act(async () => { if (settleWith === 'resolve') find.resolve(ok('/repo')); else find.reject(new Error('x')) })
+      expect(b.api.worldGet).not.toHaveBeenCalled()
+    }
+  })
+
+  it('shows a load failure with a retry that asks again', async () => {
+    const b = bridge({ worldGet: vi.fn().mockResolvedValueOnce(fail('host down')).mockResolvedValue(ok(minimal())) })
+    await mount()
+    expect(screen.getByTestId('world-error')).toHaveTextContent('host down')
+    fireEvent.click(screen.getByTestId('world-retry'))
+    await settle()
+    expect(b.api.worldGet).toHaveBeenCalledTimes(2)
+    expect(screen.queryByTestId('world-error')).toBeNull()
+    expect(viewer().load).toHaveBeenCalled()
+  })
+
+  it('a compile failure and a thrown load are shown as errors', async () => {
+    bridge({ worldGet: vi.fn(async () => ok(null)), worldCompile: vi.fn(async () => fail('no source files found')) })
+    await mount()
+    expect(screen.getByTestId('world-error')).toHaveTextContent('no source files found')
+    cleanup()
+    bridge({ worldGet: vi.fn(async () => { throw new Error('boom') }) })
+    await mount()
+    expect(screen.getByTestId('world-error')).toHaveTextContent('boom')
+    cleanup()
+    bridge({ worldGet: vi.fn(() => Promise.reject('odd')) })
+    await mount()
+    expect(screen.getByTestId('world-error')).toHaveTextContent('odd')
+  })
+
+  it('answers that land after unmount are dropped (get, compile, failure)', async () => {
+    const get = deferred<Res<WorldDoc | null>>()
+    let b = bridge({ worldGet: vi.fn(() => get.promise) })
+    let r = await mount()
+    r.unmount()
+    await act(async () => { get.resolve(ok(null)) })
+    expect(b.api.worldCompile).not.toHaveBeenCalled()
+
+    const compile = deferred<Res<WorldDoc>>()
+    b = bridge({ worldGet: vi.fn(async () => ok(null)), worldCompile: vi.fn(() => compile.promise) })
+    r = await mount()
+    expect(b.api.worldCompile).toHaveBeenCalled()
+    r.unmount()
+    await act(async () => { compile.resolve(ok(minimal())) })
+
+    const broken = deferred<Res<WorldDoc | null>>()
+    bridge({ worldGet: vi.fn(() => broken.promise) })
+    r = await mount()
+    r.unmount()
+    await act(async () => { broken.reject(new Error('late')) })
+    await waitFor(() => expect(screen.queryByTestId('world-error')).toBeNull())
+  })
+})

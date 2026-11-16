@@ -76,6 +76,14 @@ describe('CommandPalette', () => {
     expect(onAction).toHaveBeenCalledWith('memory_tour', undefined)
   })
 
+  it.each(['lumopolis', 'world', 'map', 'universe', 'architecture'])('typing "%s" offers Open Lumopolis', (q) => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: q } })
+    fireEvent.click(screen.getByText('Open Lumopolis'))
+    expect(onAction).toHaveBeenCalledWith('show_world', undefined)
+  })
+
   it('offers Switch account… for the active agent terminal, once an account is registered', () => {
     const onAction = vi.fn()
     accountsView = { accounts: [{ id: 'acc_a' }] }
