@@ -656,7 +656,8 @@ export function codeGraphStats(projectKey?: string): CodeGraphStats {
   return statsOf(stateFor(projectKey))
 }
 
-/** A postMessage-safe, fully copied view of one repo's graph for the world compiler (utility process). */
+/** A postMessage-safe, fully copied view of one repo's graph for the world compiler (utility process).
+ *  `fileImports` values are the raw import specifiers as written (e.g. './lib/b'), not resolved paths. */
 export interface GraphSnapshot {
   root: string
   /** Repository-relative, `/` separated, sorted. */
@@ -699,7 +700,7 @@ export function graphSnapshot(projectKey: string, root?: string): GraphSnapshot 
     if (!base) return n
     return n.toLowerCase().startsWith(lowBase) ? n.slice(base.length + 1) : root ? null : n
   }
-  const files = [...new Set([...st.idsByFile.keys()].map(rel).filter((f): f is string => f !== null))].sort()
+  const files = [...new Set([...st.idsByFile.keys(), ...st.fileImports.keys()].map(rel).filter((f): f is string => f !== null))].sort()
   const idMap = new Map<string, string>()
   const symbols: SymbolHit[] = []
   for (const s of st.symbolsById.values()) {

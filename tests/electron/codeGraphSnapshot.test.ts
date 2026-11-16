@@ -25,7 +25,7 @@ describe('graphSnapshot', () => {
     indexFileContent(B, bSrc, 'k')
     const s = graphSnapshot('k')
     expect(s.fileImports['a.ts']).toBeTruthy()
-    expect(s.fileImports['a.ts'].length).toBeGreaterThan(0)
+    expect(s.fileImports['a.ts']).toEqual(['./lib/b'])
   })
 
   it('keeps relative paths as they are and drops edges to missing symbols', () => {
@@ -56,6 +56,7 @@ describe('graphSnapshot', () => {
     const cg = await import('../../src/main/codeGraph')
     await cg.buildCodeGraph({ listFiles: async () => [A, B], readFile: async (f) => (f === A ? aSrc : bSrc) }, 'k')
     const s = graphSnapshot('k')
+    expect(s.callEdges.length).toBeGreaterThan(0)
     for (const e of s.callEdges) {
       expect(s.symbols.some((x) => x.id === e.from)).toBe(true)
       expect(s.symbols.some((x) => x.id === e.to)).toBe(true)
@@ -90,5 +91,13 @@ describe('graphSnapshot', () => {
 
   it('unknown key with explicit root echoes the root', () => {
     expect(graphSnapshot('nope', ['C:', 'r', ''].join(BS)).root).toBe('C:/r')
+  })
+
+  it('lists a file that has imports but no symbols', () => {
+    indexFileContent('C:/repo/src/index.ts', "import { beta } from './lib/b'", 'k')
+    indexFileContent(B, bSrc, 'k')
+    const s = graphSnapshot('k')
+    expect(s.files).toEqual(['index.ts', 'lib/b.ts'])
+    expect(s.fileImports['index.ts']).toEqual(['./lib/b'])
   })
 })
