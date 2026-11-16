@@ -14,6 +14,7 @@ export interface WorldAnswer { text: string; actions: WorldAction[]; evidence: E
 
 const MAX_TOUR_STEPS = 12
 const BLOCK_RE = /```world-actions[ \t]*\r?\n([\s\S]*?)```/g
+const DANGLING_RE = /```world-actions[\s\S]*$/
 const MARKER_RE = /\[E(\d+)\]/g
 
 type Rec = Record<string, unknown>
@@ -98,13 +99,13 @@ function collectEvidence(text: string, labels: Record<string, Evidence>): Eviden
 /** Splits an agent answer into prose, validated world actions and the evidence it cites. Never throws. */
 export function parseAnswer(raw: string, doc: WorldDoc, labels: Record<string, Evidence> = {}): WorldAnswer {
   const input = typeof raw === 'string' ? raw : ''
+  const text = input.replace(BLOCK_RE, '').replace(DANGLING_RE, '').trim() // closed blocks, then a truncated opener
   try {
     const blocks = [...input.matchAll(BLOCK_RE)]
     const tally = { dropped: 0 }
     const actions = blocks.length > 0 ? parseActions(blocks[0][1], doc, tally) : []
-    const text = input.replace(BLOCK_RE, '').trim()
     return { text, actions, evidence: collectEvidence(text, labels), dropped: tally.dropped }
   } catch {
-    return { text: input.trim(), actions: [], evidence: [], dropped: 0 }
+    return { text, actions: [], evidence: [], dropped: 0 }
   }
 }

@@ -122,10 +122,20 @@ describe('parseAnswer', () => {
     expect(r.actions).toEqual([])
   })
 
+  it('a truncated (unclosed) fence is stripped from text, with no actions and dropped 0', () => {
+    const r = parseAnswer('Partial answer.\n```world-actions\n[{"type":"focus","ids":["' + bId, doc)
+    expect(r).toEqual({ text: 'Partial answer.', actions: [], evidence: [], dropped: 0 })
+    const both = parseAnswer(wrap([{ type: 'reset' }]) + '\nMore.\n```world-actions\n[{"ty', doc)
+    expect(both.text).toBe('Answer text.\n\nMore.')
+    expect(both.actions).toEqual([{ type: 'reset' }])
+  })
+
   it('never throws on hostile input', () => {
     expect(parseAnswer(undefined as Any, doc)).toEqual({ text: '', actions: [], evidence: [], dropped: 0 })
     expect(parseAnswer(42 as Any, doc).text).toBe('')
-    expect(parseAnswer(wrap([{ type: 'focus', ids: [bId] }]), null as Any).actions).toEqual([])
+    const bad = parseAnswer(wrap([{ type: 'focus', ids: [bId] }]), null as Any)
+    expect(bad.actions).toEqual([])
+    expect(bad.text).toBe('Answer text.')
     expect(parseAnswer('x [E1]', doc, null as Any).evidence).toEqual([])
   })
 })
