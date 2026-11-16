@@ -209,6 +209,16 @@ Agents can then design in the world ("draw your plan before building") and expla
   - No tracking beyond what the site already does.
 - **Timing:** the demo can launch **before** the 2.0 app ships, as a "coming in 2.0" preview, because it doesn't depend on the compiler. My call: launch it with 2.0 so the claims match a downloadable product. David may prefer an early teaser.
 
+### 5.12 Where a world comes from (added 2026-11-16, David: "start building it for how you think will work best")
+
+David wants three ways in, all inside the same city:
+
+1. **Point it at any code.** Choices are this project, any folder on the computer, or a git repository URL. A URL is cloned read-only (shallow) into Termpolis's own data folder, indexed by the existing code graph and compiled like any project. https and ssh URLs only. Git asks for nothing interactively: no prompts and no `file://` or `ext::` transports. Private repositories work through the user's own git setup; Termpolis never reads credentials itself.
+2. **Design ahead.** "Design something new": a person describes an app by voice or text, and their default agent drafts a **design world**. Every building is a wireframe and every claim is `proposed`. They refine it by conversation ("add a payments service", "split the API"); the agent replies with a design patch that the world applies on screen. Agents working in terminals can write the same designs through the gateway (`world_propose`).
+3. **Watch AI build it.** "Build it" starts the default agent in a new terminal in a chosen empty folder. Its task is the design, and it reads the design through `world_read`. That folder's world carries the design as its plan layer. As files appear, the compiler runs and planned buildings **rise and turn solid** when matched (plan versus built, 5.4). New or changed buildings pulse briefly after every recompile, so any agent's work (not only "Build it") is visible as it happens.
+
+A **Lumopolis home** screen lists these choices and recent worlds, and a toolbar switcher moves between them. Approval into multi-agent swarm worktrees stays in 2.x (5.4).
+
 ### 5.11 Next: live production view (own design, after 2.0)
 
 David (2026-11-15): the tool should also look into a **live running application, in the cloud or anywhere**, show **where the bottlenecks are**, and help **diagnose errors during production issues**. In his words, this "will bring it to the next level". It is the PDF's Observe mode, and it is planned as the headline of a 2.x release with its own design doc. In outline:
@@ -270,7 +280,9 @@ David (2026-11-15): the tool should also look into a **live running application,
 5. **Export** and the 2D fallback.
 6. **Website demo** (5.10). Work on it can run in parallel with phase 1, since it starts from the prototype. It goes live with the 2.0 release.
 
-**2.0 release scope (David):** phases 1 and 2 plus the website demo. Phases 3 to 5 ship as 2.x updates.
+**2.0 release scope (David):** phases 1 and 2 plus the website demo, plus (David, 2026-11-16) the three ways in from 5.12: any folder or git URL, design ahead, and watching AI build it, with basic plan versus built. Change tours and snapshots (phase 3), swarm approval (part of phase 4) and export (phase 5) ship as 2.x updates.
+
+**Testing (David, 2026-11-16: "test 100%"):** every new Lumopolis module under `src/shared/world/`, `src/main/world/` and the engine's pure modules is held to **100%** lines, functions, branches and statements by per-folder Vitest thresholds. The one Three.js drawing file, which unit tests can't exercise meaningfully, is covered by Playwright e2e instead. The repository-wide gate (97/96/95/96) is unchanged.
 
 ## 9. Left to the builder
 

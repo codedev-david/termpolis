@@ -27,6 +27,7 @@ It produces a `WorldDoc` stored under `userData/world/<projectKey>.json`. The re
 - No new top-level MCP tools. World access is a **trusted built-in gateway provider** reached through `gateway_call` (§10).
 - The renderer is ES2020 (no `.at()`).
 - Coverage gate is unchanged: lines 97 / functions 96 / branches 95 / statements 96 (`vitest.config.ts:153-156`). Only the Three.js wrapper files are added to the coverage exclude list (`vitest.config.ts:100-120`, beside `embedWorker.ts`/`rerankWorker.ts`).
+- **100% for Lumopolis code (David, "test 100%"):** `vitest.config.ts` `coverage.thresholds` gains glob entries `'src/shared/world/**'`, `'src/main/world/**'` and `'src/renderer/src/world/engine/**'`, each at `{ lines: 100, functions: 100, branches: 100, statements: 100 }`, plus `'src/renderer/src/components/World/**'` at the same values. Only `threeRenderer.ts`, `createWorldViewer.ts` and the utility-process transport factory are excluded, and e2e covers them.
 - Never run a full `npm install` on this laptop. Task 11 gives the exact dependency procedure.
 - Labelling uses the default agent's cheapest model through the token proxy, is cached by content hash, and has an off switch. Every sentence must cite evidence; uncited sentences are dropped.
 - A building shows green (`verified`) only from existing passing test results. With no results it shows amber. The compiler never runs tests.
@@ -102,7 +103,7 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
   - `accepts the minimal fixture` (`tests/shared/fixtures/world.min.json`: 1 district, 2 buildings, 1 edge) → `ok: true`
   - `rejects evidence refs that are absolute paths` → `C:\\x` and `/home/x` both error (exports must stay repository-relative, §5.9)
   - `proposal buildings need layout positions and status 'proposed'`
-- [ ] **Step 2:** Run `npx vitest run tests/shared/worldValidate.test.ts` → FAIL (module missing).
+- [ ] **Step 2:** Add the four 100% glob thresholds from Global Constraints to `vitest.config.ts`. Run `npx vitest run tests/shared/worldValidate.test.ts` → FAIL (module missing).
 - [ ] **Step 3:** Implement `types.ts` as above and `validateWorld` as a hand-written structural check with no dependencies (it must also run in the standalone bundle).
 - [ ] **Step 4:** Run the tests → PASS.
 - [ ] **Step 5:** Commit with the message `world: shared WorldDoc types + validator`.
