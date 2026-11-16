@@ -12,9 +12,11 @@ export interface WorldSettings {
    * hand-edited file never silently stops it. Off, the world still renders with code-derived names.
    */
   worldLabelling: boolean
+  /** "Read Lumopolis answers aloud": OFF by default; only a literal `true` turns it on. */
+  worldSpeakAnswers: boolean
 }
 
-export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true }
+export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false }
 
 /** The file name under userData. */
 export const WORLD_SETTINGS_FILE = 'world-settings.json'
@@ -38,7 +40,8 @@ export function createWorldSettings(file: string | (() => string)): WorldSetting
       if (!existsSync(p)) return
       const parsed: unknown = JSON.parse(readFileSync(p, 'utf8'))
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        settings = { worldLabelling: (parsed as Record<string, unknown>).worldLabelling !== false }
+        const rec = parsed as Record<string, unknown>
+        settings = { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true }
       }
     } catch {
       // keep the defaults on any read or parse error
@@ -53,6 +56,7 @@ export function createWorldSettings(file: string | (() => string)): WorldSetting
     set(patch) {
       load()
       if (typeof patch?.worldLabelling === 'boolean') settings = { ...settings, worldLabelling: patch.worldLabelling }
+      if (typeof patch?.worldSpeakAnswers === 'boolean') settings = { ...settings, worldSpeakAnswers: patch.worldSpeakAnswers }
       try {
         const p = path()
         mkdirSync(dirname(p), { recursive: true })

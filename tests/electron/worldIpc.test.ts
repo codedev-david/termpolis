@@ -73,6 +73,16 @@ describe('registerWorldIpc', () => {
     expect(settings.set).toHaveBeenLastCalledWith({})
   })
 
+  it('world:settings-set allowlists worldSpeakAnswers alone or with worldLabelling', async () => {
+    const { invoke, settings } = setup()
+    await invoke('world:settings-set', { worldSpeakAnswers: true })
+    expect(settings.set).toHaveBeenLastCalledWith({ worldSpeakAnswers: true })
+    await invoke('world:settings-set', { worldSpeakAnswers: false, worldLabelling: false, evil: 1 })
+    expect(settings.set).toHaveBeenLastCalledWith({ worldSpeakAnswers: false, worldLabelling: false })
+    await invoke('world:settings-set', { worldSpeakAnswers: 'yes' })
+    expect(settings.set).toHaveBeenLastCalledWith({})
+  })
+
   it('world:settings-set hands the new setting to the live world host after storing it', async () => {
     const { invoke, settings, client } = setup()
     await invoke('world:settings-set', { worldLabelling: false })

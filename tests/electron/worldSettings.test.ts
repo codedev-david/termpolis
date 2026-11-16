@@ -14,9 +14,9 @@ afterEach(() => {
 
 describe('worldSettings', () => {
   it('defaults to labelling on when there is no file', () => {
-    expect(DEFAULT_WORLD_SETTINGS).toEqual({ worldLabelling: true })
+    expect(DEFAULT_WORLD_SETTINGS).toEqual({ worldLabelling: true, worldSpeakAnswers: false })
     expect(WORLD_SETTINGS_FILE).toBe('world-settings.json')
-    expect(createWorldSettings(join(dir, WORLD_SETTINGS_FILE)).get()).toEqual({ worldLabelling: true })
+    expect(createWorldSettings(join(dir, WORLD_SETTINGS_FILE)).get()).toEqual({ worldLabelling: true, worldSpeakAnswers: false })
   })
 
   it('only a literal false turns labelling off', () => {
@@ -29,11 +29,28 @@ describe('worldSettings', () => {
     }
   })
 
+  it('speaking answers is off by default and only a literal true turns it on', () => {
+    const file = join(dir, WORLD_SETTINGS_FILE)
+    writeFileSync(file, JSON.stringify({ worldSpeakAnswers: true }))
+    expect(createWorldSettings(file).get().worldSpeakAnswers).toBe(true)
+    for (const v of ['true', 1, null, 'yes']) {
+      writeFileSync(file, JSON.stringify({ worldSpeakAnswers: v }))
+      expect(createWorldSettings(file).get().worldSpeakAnswers).toBe(false)
+    }
+  })
+
+  it('set applies worldSpeakAnswers on its own, with the other field unchanged', () => {
+    const s = createWorldSettings(join(dir, WORLD_SETTINGS_FILE))
+    expect(s.set({ worldSpeakAnswers: true })).toEqual({ worldLabelling: true, worldSpeakAnswers: true })
+    expect(s.set({ worldSpeakAnswers: 'x' } as never)).toEqual({ worldLabelling: true, worldSpeakAnswers: true })
+    expect(s.set({ worldLabelling: false, worldSpeakAnswers: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false })
+  })
+
   it('keeps the defaults for a broken file, an array or a non-object', () => {
     const file = join(dir, WORLD_SETTINGS_FILE)
     for (const text of ['{ broken', '[false]', 'false', '"x"']) {
       writeFileSync(file, text)
-      expect(createWorldSettings(file).get()).toEqual({ worldLabelling: true })
+      expect(createWorldSettings(file).get()).toEqual({ worldLabelling: true, worldSpeakAnswers: false })
     }
   })
 
@@ -50,12 +67,12 @@ describe('worldSettings', () => {
     expect(reads).toBe(1)
     a.worldLabelling = false // a copy: the store is unchanged
     expect(s.get().worldLabelling).toBe(true)
-    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false })
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: false })
+    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ worldLabelling: false, worldSpeakAnswers: false })
     expect(createWorldSettings(file).get().worldLabelling).toBe(false)
     // unknown or mistyped fields change nothing
-    expect(s.set({ worldLabelling: 'yes' } as never)).toEqual({ worldLabelling: false })
-    expect(s.set(undefined as never)).toEqual({ worldLabelling: false })
+    expect(s.set({ worldLabelling: 'yes' } as never)).toEqual({ worldLabelling: false, worldSpeakAnswers: false })
+    expect(s.set(undefined as never)).toEqual({ worldLabelling: false, worldSpeakAnswers: false })
   })
 
   it('a write that fails still applies for this run', () => {
@@ -63,7 +80,7 @@ describe('worldSettings', () => {
     const file = join(dir, WORLD_SETTINGS_FILE)
     mkdirSync(join(file, 'x'), { recursive: true })
     const s = createWorldSettings(file)
-    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false })
+    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false })
     expect(s.get().worldLabelling).toBe(false)
   })
 
@@ -71,7 +88,7 @@ describe('worldSettings', () => {
     const s = createWorldSettings(() => {
       throw new Error('no userData yet')
     })
-    expect(s.get()).toEqual({ worldLabelling: true })
-    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false })
+    expect(s.get()).toEqual({ worldLabelling: true, worldSpeakAnswers: false })
+    expect(s.set({ worldLabelling: false })).toEqual({ worldLabelling: false, worldSpeakAnswers: false })
   })
 })

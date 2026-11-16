@@ -34,8 +34,11 @@ const rootOf = (args: unknown): string | null => {
 /** The allowlisted fields of a settings patch from the renderer; null when it is not an object. */
 const settingsPatchOf = (args: unknown): Partial<WorldSettings> | null => {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return null
-  const v = (args as Record<string, unknown>).worldLabelling
-  return typeof v === 'boolean' ? { worldLabelling: v } : {}
+  const a = args as Record<string, unknown>
+  const patch: Partial<WorldSettings> = {}
+  if (typeof a.worldLabelling === 'boolean') patch.worldLabelling = a.worldLabelling
+  if (typeof a.worldSpeakAnswers === 'boolean') patch.worldSpeakAnswers = a.worldSpeakAnswers
+  return patch
 }
 
 export interface WorldAsker {

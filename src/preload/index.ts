@@ -288,7 +288,7 @@ const api: TermpolisAPI = {
   worldCompile: (root: string) => ipcRenderer.invoke('world:compile', { root }),
   worldRelayout: (root: string) => ipcRenderer.invoke('world:relayout', { root }),
   worldSettingsGet: () => ipcRenderer.invoke('world:settings-get'),
-  worldSettingsSet: (patch: { worldLabelling?: boolean }) => ipcRenderer.invoke('world:settings-set', patch),
+  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean }) => ipcRenderer.invoke('world:settings-set', patch),
   worldAsk: (req) => ipcRenderer.invoke('world:ask', req),
   worldAskCancel: (askId: string) => ipcRenderer.invoke('world:ask-cancel', { askId }),
   onWorldProgress: (cb) => { const h = (_: unknown, e: import('../shared/world/types').WorldProgressEvent) => cb(e); ipcRenderer.on('world:progress', h); return () => ipcRenderer.removeListener('world:progress', h) },

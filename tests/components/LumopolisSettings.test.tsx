@@ -84,4 +84,58 @@ describe('LumopolisSettings', () => {
     expect(toggle()).toHaveAttribute('aria-checked', 'true')
     expect(set).toHaveBeenCalledTimes(2)
   })
+
+  describe('read answers aloud', () => {
+    const speakToggle = () => screen.getByTestId('settings-world-speak-toggle')
+
+    it('is off until main says otherwise, and shows the stored value', async () => {
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, worldSpeakAnswers: true } })) })
+      render(<LumopolisSettings />)
+      expect(screen.getByText(/Read Lumopolis answers aloud/)).toBeInTheDocument()
+      expect(speakToggle()).toHaveAttribute('aria-checked', 'false')
+      await settle()
+      expect(speakToggle()).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('treats anything but a literal true as off', async () => {
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true } })) })
+      render(<LumopolisSettings />)
+      await settle()
+      expect(speakToggle()).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('writes only its own field, and takes the value main stored', async () => {
+      const set = vi.fn(async () => ({ success: true, data: { worldLabelling: true, worldSpeakAnswers: true } }))
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, worldSpeakAnswers: false } })), worldSettingsSet: set })
+      render(<LumopolisSettings />)
+      await settle()
+      fireEvent.click(speakToggle())
+      expect(set).toHaveBeenCalledWith({ worldSpeakAnswers: true })
+      expect(speakToggle()).toHaveAttribute('aria-checked', 'true')
+      await settle()
+      expect(speakToggle()).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('puts the old value back when the write is refused, fails or has no bridge', async () => {
+      const set = vi.fn()
+        .mockResolvedValueOnce({ success: false, error: 'disk full' })
+        .mockRejectedValueOnce(new Error('ipc down'))
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, worldSpeakAnswers: false } })), worldSettingsSet: set })
+      render(<LumopolisSettings />)
+      await settle()
+      fireEvent.click(speakToggle())
+      await settle()
+      expect(speakToggle()).toHaveAttribute('aria-checked', 'false')
+      fireEvent.click(speakToggle())
+      await settle()
+      expect(speakToggle()).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('flips locally when the bridge has no write call', async () => {
+      api({})
+      render(<LumopolisSettings />)
+      fireEvent.click(speakToggle())
+      expect(speakToggle()).toHaveAttribute('aria-checked', 'true')
+    })
+  })
 })

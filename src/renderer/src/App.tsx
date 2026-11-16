@@ -17,6 +17,7 @@ const ContextPanel = lazy(() => import('./components/ContextPanel/ContextPanel')
 const Memory = lazy(() => import('./components/Memory/Memory').then(m => ({ default: m.Memory })))
 // Lumopolis (world view): its own chunk, so the engine and Three.js load only when it opens.
 const WorldView = lazy(() => import('./components/World').then(m => ({ default: m.WorldView })))
+import { WorldAsk } from './components/World/WorldAsk'
 const ActivityFeed = lazy(() => import('./components/ActivityFeed/ActivityFeed').then(m => ({ default: m.ActivityFeed })))
 const ContextPinsPanel = lazy(() => import('./components/ContextPins/ContextPinsPanel').then(m => ({ default: m.ContextPinsPanel })))
 const RedundancyPanel = lazy(() => import('./components/RedundancyPanel/RedundancyPanel').then(m => ({ default: m.RedundancyPanel })))
@@ -1206,6 +1207,7 @@ export default function App() {
             <WorldView
               root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
               onClose={() => setShowWorld(false)}
+              askSlot={(v) => <WorldAsk viewer={v} root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''} />}
             />
           )}
         </Suspense>

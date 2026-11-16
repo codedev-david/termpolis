@@ -693,9 +693,9 @@ export interface TermpolisAPI {
   /** Lumopolis: cancel a running ask by its id. */
   worldAskCancel: (askId: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis settings: whether the world compiler may ask Claude's cheapest model (Haiku) to describe parts. */
-  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean }>>
+  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */
-  worldSettingsSet: (patch: { worldLabelling?: boolean }) => Promise<IpcResponse<{ worldLabelling: boolean }>>
+  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean }) => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean }>>
   onWorldProgress: (cb: (e: WorldProgressEvent) => void) => () => void
   onWorldUpdated: (cb: (e: WorldUpdatedEvent) => void) => () => void
   /** Export the full brain (memories + graph + learning stores + code graph) to a chosen .zip. */
