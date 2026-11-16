@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { __setHostPriorityDepsForTests } from '../../src/main/hostPriority'
-import type { CompileDeps, CompileInput } from '../../src/main/world/compile'
+import { compileWorld, type CompileDeps, type CompileInput } from '../../src/main/world/compile'
 import {
   DEFAULT_READ_LIMIT,
   EXCERPT_LINES,
@@ -287,14 +287,73 @@ describe('createWorldHost', () => {
     expect(h.out.slice(1)).toEqual([
       { kind: 'progress', projectKey: 'k1', stage: 'structure', pct: 0 },
       { kind: 'progress', projectKey: 'k1', stage: 'layout', pct: 100 },
+      // every successful save tells the window, so it re-reads (compile, relayout and the scheduler)
+      { kind: 'updated', projectKey: 'k1' },
       { kind: 'result', id: 1, ok: true, result: doc('k1', { generatedAt: 2 }) }
     ])
     expect(seen[0]).toEqual({ snap: snap(), projectKey: 'k1', head: HEAD, previous: doc() })
     expect(h.store.saves).toEqual([doc('k1', { generatedAt: 2 })])
+  })
 
-    // relayout ignores the stored world
-    await h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(), HEAD, { relayout: true }] })
+  it('relayout hands compile the stored world with only its positions cleared (seed and everything else kept)', async () => {
+    const seen: CompileInput[] = []
+    const compile = vi.fn(async (input: CompileInput) => {
+      seen.push(input)
+      return doc(input.projectKey, { generatedAt: 3 })
+    })
+    const stored = doc('k1', { glossary: { Store: 'where rows live' }, layout: { seed: 77, positions: { 'd-core': [1, 0, 2], 'b-api': [3, 0, 4] } } })
+    const h = harness({ compile }, memStore({ k1: stored }))
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD, { relayout: true }] })
+    expect(seen[0].previous).toEqual({ ...stored, layout: { seed: 77, positions: {} } })
+    expect(seen[0].previous?.glossary).toEqual({ Store: 'where rows live' }) // a non-layout field still carries
+    expect(seen[0].previous?.buildings).toEqual(stored.buildings)
+    expect(stored.layout.positions).toEqual({ 'd-core': [1, 0, 2], 'b-api': [3, 0, 4] }) // the stored doc is not mutated
+    expect(h.out.slice(-2)).toEqual([
+      { kind: 'updated', projectKey: 'k1' },
+      { kind: 'result', id: 1, ok: true, result: doc('k1', { generatedAt: 3 }) }
+    ])
+    // With nothing stored, a relayout is a first compile.
+    await h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k2', snap(), HEAD, { relayout: true }] })
     expect(seen[1].previous).toBeNull()
+    expect(h.out.slice(-2)[0]).toEqual({ kind: 'updated', projectKey: 'k2' })
+  })
+
+  it('relayout through the real compiler: fresh positions with the same seed, where a plain compile keeps them', async () => {
+    const seen: CompileInput[] = []
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      seen.push(input)
+      return compileWorld(input, deps)
+    })
+    const store = memStore()
+    const h = harness({ compile }, store)
+    await h.init(false) // label from code: no model round trip
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    const first = store.docs.get('k1') as WorldDoc
+    // Pin every stored position somewhere no layout would put it, under a recognisable seed.
+    const pinned = Object.fromEntries(Object.keys(first.layout.positions).map((id) => [id, [999, 0, 999] as [number, number, number]]))
+    expect(Object.keys(pinned).length).toBeGreaterThan(0)
+    store.docs.set('k1', { ...first, glossary: { Marker: 'kept' }, layout: { seed: 7, positions: pinned } })
+    await h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(store.docs.get('k1')?.layout.positions).toEqual(pinned) // a plain compile keeps them
+    store.docs.set('k1', { ...first, glossary: { Marker: 'kept' }, layout: { seed: 7, positions: pinned } })
+    await h.send({ kind: 'call', id: 3, fn: 'compile', args: ['k1', snap(), HEAD, { relayout: true }] })
+    const res = h.last() as { ok: boolean; result: WorldDoc }
+    expect(res.ok).toBe(true)
+    expect(seen[2].previous?.glossary).toEqual({ Marker: 'kept' }) // a non-layout field still reaches compile
+    expect(seen[2].previous?.layout).toEqual({ seed: 7, positions: {} })
+    expect(Object.values(res.result.layout.positions).some((p) => p[0] === 999)).toBe(false)
+    expect(res.result.layout.seed).toBe(7)
+  })
+
+  it('a failed compile pushes no updated', async () => {
+    const compile = vi.fn(async () => {
+      throw new Error('nope')
+    })
+    const h = harness({ compile })
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(h.out.some((m) => m.kind === 'updated')).toBe(false)
   })
 
   it('a failing compile answers ok:false and does not block the next one', async () => {

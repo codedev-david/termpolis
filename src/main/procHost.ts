@@ -46,6 +46,10 @@ export interface ProcOptions {
   timeout?: number
   maxBuffer?: number
   env?: Record<string, string | undefined>
+  /** argv form only: written to the child's stdin, which is then ended. For text that must not sit
+   *  on a command line (process command lines are visible to every endpoint scanner), such as a
+   *  prompt carrying repository source. Without it stdin is left as before. */
+  input?: string
 }
 
 export type ProcRequest = ProcExecMsg | ProcShellMsg
@@ -113,9 +117,14 @@ export interface RunOutcome {
 /** argv form: no shell, so a file name full of metacharacters is one literal argument. */
 export function runExec(bin: string, args: string[], opts: ProcOptions): Promise<RunOutcome> {
   return new Promise((resolve) => {
-    execFile(bin, args, { ...baseOptions(opts), shell: false }, (err, stdout, stderr) => {
+    const child = execFile(bin, args, { ...baseOptions(opts), shell: false }, (err, stdout, stderr) => {
       resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), ...(err ? { error: err } : {}) })
     })
+    if (opts.input !== undefined && child.stdin) {
+      // A child that exits before reading everything raises EPIPE here; its exit already reports it.
+      child.stdin.on('error', () => undefined)
+      child.stdin.end(opts.input)
+    }
   })
 }
 

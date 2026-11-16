@@ -289,7 +289,16 @@ const world = vi.hoisted(() => ({
   cheapModelFor: vi.fn(() => 'haiku'),
   execCapture: vi.fn(async (_bin: string, _args: string[], _opts?: any) => ({ stdout: 'out', stderr: '' }) as any),
   runHeadless: vi.fn(async (_req: any, _deps?: any) => ({ ok: true }) as any),
+  /** When set, stands in for the token proxy's launch env (otherwise the real getProxyEnv answers). */
+  proxyEnv: null as null | ((...a: unknown[]) => Record<string, string> | null),
 }))
+vi.mock('../../src/main/headroomProxy/proxySupervisor', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../src/main/headroomProxy/proxySupervisor')>()
+  return {
+    ...orig,
+    getProxyEnv: (...a: Parameters<typeof orig.getProxyEnv>) => (world.proxyEnv ? world.proxyEnv(...a) : orig.getProxyEnv(...a)),
+  }
+})
 vi.mock('../../src/main/world/worldClient', () => ({
   createWorldClient: (_spawn: unknown, opts: unknown) => {
     world.opts = opts
@@ -4083,17 +4092,40 @@ describe('Lumopolis world wiring in index.ts', () => {
     await expect(deps.readFile('a.ts')).resolves.toBe('{}')
   })
 
+  it('a folder with no source files even after indexing is an error, so world:compile never saves an empty world', async () => {
+    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] }).mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+    await expect(world.opts.snapshot('/mnt/gone')).rejects.toThrow('no source files found')
+    expect(cg.buildCodeGraph).toHaveBeenCalledWith(expect.anything(), 'key:/mnt/gone') // it did try to index first
+    // Through the real ipc handler: a rejected compile is answered err(message), never a saved world.
+    world.client.compile.mockImplementationOnce(async (root: string) => world.opts.snapshot(root))
+    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] }).mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+    expect(await invoke('world:compile', { root: '/mnt/gone' })).toEqual({ success: false, error: 'no source files found' })
+  })
+
   it('labels with the cheapest Claude model, through claude -p on the proc host with the launch env, or runHeadless in the root', async () => {
     expect(await world.opts.llm('/repos/x', 'name these')).toBe('labels')
     expect(world.llm).toHaveBeenCalledWith('name these')
     const [agent, model, deps] = world.makeWorldLlm.mock.calls[0] as [string, string, any]
     expect([agent, model]).toEqual(['claude', 'haiku'])
 
-    expect(await deps.claudeExec('claude', ['-p'], { timeoutMs: 5000 })).toEqual({ stdout: 'out', code: 0 })
+    // The launch env an agent in this root gets, token proxy included, reaches the labelling call.
+    world.proxyEnv = () => ({ TERMPOLIS_WORLD_PROXY_PROBE: 'http://127.0.0.1:1' })
+    try {
+      expect(await deps.claudeExec('claude', ['-p'], { timeoutMs: 5000 })).toEqual({ stdout: 'out', code: 0 })
+    } finally {
+      world.proxyEnv = null
+    }
     const [bin, args, opts] = world.execCapture.mock.calls[0]
     expect([bin, args]).toEqual(['claude', ['-p']])
     expect(opts).toMatchObject({ cwd: '/repos/x', timeout: 5000 })
     expect(typeof opts.env.PATH).toBe('string')
+    expect(opts.env.TERMPOLIS_WORLD_PROXY_PROBE).toBe('http://127.0.0.1:1')
+    expect('input' in opts).toBe(false) // no stdin unless the caller sends some
+    // The labelling prompt rides on stdin, never in argv.
+    await deps.claudeExec('claude', ['-p', '--model', 'haiku'], { timeoutMs: 5000, input: 'PROMPT BODY' })
+    const [, args2, opts2] = world.execCapture.mock.calls[1]
+    expect(args2).toEqual(['-p', '--model', 'haiku'])
+    expect(opts2.input).toBe('PROMPT BODY')
     world.execCapture.mockResolvedValueOnce({ stdout: 'partial', stderr: '', error: { message: 'exit 3', code: 3 } })
     expect(await deps.claudeExec('claude', [], { timeoutMs: 1 })).toEqual({ stdout: 'partial', code: 3 })
     world.execCapture.mockResolvedValueOnce({ stdout: undefined, stderr: '', error: { message: 'missing', code: 'ENOENT' } })

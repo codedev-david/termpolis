@@ -211,6 +211,44 @@ describe('createWorldClient', () => {
     expect(spawned).toHaveLength(2)
   })
 
+  it('a host that never answers init is given up on after 30 s, killed, and the next call respawns', async () => {
+    vi.useFakeTimers()
+    let n = 0
+    const { client, spawned } = setup({}, (t) => {
+      if (n++ === 0) {
+        t.autoReady = false
+        t.throwOnKill = true
+      }
+    })
+    const p = client.get(ROOT)
+    const seen = p.catch((e: Error) => e)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(spawned).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(spawned[0].killed).toBe(0)
+    await vi.advanceTimersByTimeAsync(1)
+    expect((await seen as Error).message).toBe('Lumopolis host did not start in time')
+    expect(spawned[0].killed).toBe(1)
+    const next = client.get(ROOT)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await next).toBeNull()
+    expect(spawned).toHaveLength(2)
+    // A host that did answer in time is never killed by the stale timer.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(spawned[1].killed).toBe(0)
+  })
+
+  it('takes a custom init timeout', async () => {
+    vi.useFakeTimers()
+    const { client, spawned } = setup({ initTimeoutMs: 50 }, (t) => {
+      t.autoReady = false
+    })
+    const seen = client.get(ROOT).catch((e: Error) => e)
+    await vi.advanceTimersByTimeAsync(50)
+    expect((await seen as Error).message).toContain('did not start in time')
+    expect(spawned[0].killed).toBe(1)
+  })
+
   it('ignores junk messages and unknown kinds', async () => {
     const { client, spawned } = setup()
     await client.get(ROOT)

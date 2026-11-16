@@ -4,7 +4,7 @@
 //
 // Same shape as memoryHost.ts: an `init` message, then `call` messages answered with `result`, all
 // discriminated on `kind`. Three extras:
-//   - pushes: `progress` while a world compiles, and `updated` after a watcher-driven recompile saved;
+//   - pushes: `progress` while a world compiles, and `updated` after every save (compile, relayout, watcher recompile);
 //   - a reverse RPC for labelling: the host posts `llm` and main answers `llm-result`. The model call
 //     runs in MAIN because it needs the token-proxy environment main owns (claudeLaunchEnv), and
 //     because spawning an agent CLI from here would put a second spawner beside procHost;
@@ -306,10 +306,14 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     compile: (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, opts?: { relayout?: boolean }) => {
       const key = needKey(projectKey)
       return serial(key, async () => {
-        // A re-layout is a compile that ignores the stored positions (and so lays out afresh).
-        const previous = opts?.relayout === true ? null : await store.load(key)
+        // A re-layout is a compile whose previous world has no positions (so it lays out afresh with
+        // the same seed); everything else compile carries from previous still carries.
+        const stored = await store.load(key)
+        const previous =
+          stored && opts?.relayout === true ? { ...stored, layout: { seed: stored.layout.seed, positions: {} } } : stored
         const doc = await compile({ snap, projectKey: key, head, previous }, depsFor(store, labelling, key, snap))
         await store.save(doc)
+        post({ kind: 'updated', projectKey: key })
         return doc
       })
     },

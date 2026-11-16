@@ -38,9 +38,12 @@ export interface WorldClientOptions {
   hasStoredWorld?: (projectKey: string) => boolean | Promise<boolean>
   /** How long one call may wait for its answer. Default 10 minutes (a first compile of a big repo). */
   callTimeoutMs?: number
+  /** How long a new host may take to answer init. Default 30 seconds. */
+  initTimeoutMs?: number
 }
 
 export const DEFAULT_CALL_TIMEOUT_MS = 600_000
+export const DEFAULT_INIT_TIMEOUT_MS = 30_000
 
 interface Waiter {
   resolve(v: unknown): void
@@ -82,6 +85,7 @@ export function createWorldClient(
       }
     })
   const callTimeoutMs = opts.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
+  const initTimeoutMs = opts.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS
 
   let current: WorldHostTransport | null = null
   let live: Promise<WorldHostTransport> | null = null
@@ -180,7 +184,26 @@ export function createWorldClient(
     const p = new Promise<WorldHostTransport>((resolve, reject) => {
       const tr = spawn()
       current = tr
-      initWaiter = { resolve: () => resolve(tr), reject }
+      // A host that neither answers init nor exits would otherwise hang every call forever (the
+      // per-call timer only starts once init is done). Give up, kill it, and let the next call respawn.
+      const initTimer = setTimeout(() => {
+        reset(tr, new Error('Lumopolis host did not start in time'))
+        try {
+          tr.kill()
+        } catch {
+          // already gone
+        }
+      }, initTimeoutMs)
+      initWaiter = {
+        resolve: () => {
+          clearTimeout(initTimer)
+          resolve(tr)
+        },
+        reject: (e) => {
+          clearTimeout(initTimer)
+          reject(e)
+        }
+      }
       tr.onMessage((m) => onMessage(tr, m))
       tr.onExit((code) => reset(tr, new Error(`Lumopolis host exited (code ${code})`)))
       tr.postMessage({ kind: 'init', userDataPath: dataPath(), labelling: labelling() !== false })

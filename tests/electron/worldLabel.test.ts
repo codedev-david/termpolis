@@ -507,6 +507,13 @@ describe('makeWorldLlm', () => {
     expect(args).toContain('haiku')
     expect(opts.timeoutMs).toBe(60_000)
     await makeWorldLlm('claude', 'sonnet', { claudeExec: exec })('p')
+    // The prompt (repository excerpts) goes on stdin, never into argv.
+    const third = vi.fn(async () => ({ stdout: 'ok', code: 0 }))
+    await makeWorldLlm('claude', undefined, { claudeExec: third })('REGION PROMPT TEXT')
+    const [, a3, o3] = third.mock.calls[0] as unknown as [string, string[], { timeoutMs: number; input?: string }]
+    expect(a3).toEqual(['-p', '--model', 'haiku', '--tools', '', '--strict-mcp-config'])
+    expect(a3.join(' ')).not.toContain('REGION PROMPT TEXT')
+    expect(o3).toEqual({ timeoutMs: 60_000, input: 'REGION PROMPT TEXT' })
     expect((exec.mock.calls[1] as unknown as [string, string[]])[1]).toContain('sonnet')
   })
 

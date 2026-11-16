@@ -93,7 +93,9 @@ export function makeWorldLlm(
   deps: { claudeExec?: ExecFn; run?: (req: ExecRequest) => Promise<ExecResult> } = {}
 ): (prompt: string) => Promise<string | null> {
   if (agent === 'claude') {
-    return makeHeadlessDistiller({ model: model ?? 'haiku', exec: deps.claudeExec, timeoutMs: 60_000 })
+    // The prompt carries repository excerpts, so it goes on stdin, never on the command line
+    // (endpoint scanners read command lines; source trips their credential-signature rules).
+    return makeHeadlessDistiller({ model: model ?? 'haiku', exec: deps.claudeExec, timeoutMs: 60_000, promptVia: 'stdin' })
   }
   const run = deps.run
   if (!run) return async () => null

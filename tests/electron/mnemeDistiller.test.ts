@@ -1,4 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
+
+// child_process is stubbed so defaultExec's stdin handling can be checked without a process (the real
+// spawn is covered by mnemeDistillerReal.test.ts). Nothing else in this file reaches execFile.
+const CP = vi.hoisted(() => ({ execFile: vi.fn() }))
+vi.mock('child_process', () => ({ default: { execFile: CP.execFile }, execFile: CP.execFile }))
+
 import { makeHeadlessDistiller, defaultExec, type ExecFn } from '../../src/main/mnemeDistiller'
 
 // A typed fake for the injectable subprocess seam. NEVER spawns a real process —
@@ -81,6 +87,29 @@ describe('mnemeDistiller — makeHeadlessDistiller', () => {
     expect(callOpts).toEqual({ timeoutMs: 5000 })
   })
 
+  it("promptVia 'stdin': argv carries no prompt text and the prompt reaches exec as input", async () => {
+    const exec = vi.fn(async (_cmd: string, _args: string[], _opts: { timeoutMs: number; input?: string }) => ({ stdout: ' label \n', code: 0 }))
+    const prompt = 'Label this region.\nconst apiKey = readSettings()\n'
+    const out = await makeHeadlessDistiller({ exec, model: 'sonnet', timeoutMs: 5000, promptVia: 'stdin' })(prompt)
+    expect(out).toBe('label')
+    const [cmd, args, callOpts] = exec.mock.calls[0]
+    expect(cmd).toBe('claude')
+    expect(args).toEqual(['-p', '--model', 'sonnet', '--tools', '', '--strict-mcp-config'])
+    expect(args.some((a) => a.includes('Label this region') || a.includes('apiKey'))).toBe(false)
+    expect(callOpts).toEqual({ timeoutMs: 5000, input: prompt })
+  })
+
+  it("the default (and an explicit promptVia 'argv') is unchanged: prompt in argv, no input", async () => {
+    for (const promptVia of [undefined, 'argv' as const]) {
+      const exec = fakeExec({ stdout: 'x', code: 0 })
+      await makeHeadlessDistiller({ exec, ...(promptVia ? { promptVia } : {}) })('the prompt')
+      const [, args, callOpts] = exec.mock.calls[0]
+      expect(args).toEqual(['-p', 'the prompt', '--model', 'haiku', '--tools', '', '--strict-mcp-config'])
+      expect(callOpts).toEqual({ timeoutMs: 60000 })
+      expect('input' in callOpts).toBe(false)
+    }
+  })
+
   it('falls back to the real defaultExec when no exec is injected (constructs a distiller without spawning anything)', () => {
     // No opts → `opts.exec ?? defaultExec` selects the real wrapper and the
     // bin/model/timeout defaults are applied. We do NOT invoke the returned
@@ -89,5 +118,35 @@ describe('mnemeDistiller — makeHeadlessDistiller', () => {
     expect(typeof distiller).toBe('function')
     // defaultExec is exported and is the real subprocess wrapper used as the fallback.
     expect(typeof defaultExec).toBe('function')
+  })
+})
+
+describe('mnemeDistiller — defaultExec stdin (child_process stubbed)', () => {
+  type Cb = (err: unknown, stdout: unknown) => void
+  it('writes input to stdin, ends it, swallows a late EPIPE, and coerces a null stdout', async () => {
+    const stdin = { on: vi.fn(), end: vi.fn() }
+    CP.execFile.mockImplementationOnce((_c: string, _a: string[], _o: unknown, cb: Cb) => {
+      queueMicrotask(() => cb(null, null))
+      return { stdin }
+    })
+    await expect(defaultExec('claude', ['-p'], { timeoutMs: 10, input: 'the prompt' })).resolves.toEqual({ stdout: '', code: 0 })
+    expect(stdin.end).toHaveBeenCalledWith('the prompt')
+    expect(stdin.on).toHaveBeenCalledWith('error', expect.any(Function))
+    expect((stdin.on.mock.calls[0][1] as () => unknown)()).toBeUndefined()
+  })
+
+  it('leaves stdin alone without input, and tolerates a child with no stdin pipe', async () => {
+    const stdin = { on: vi.fn(), end: vi.fn() }
+    CP.execFile.mockImplementationOnce((_c: string, _a: string[], _o: unknown, cb: Cb) => {
+      queueMicrotask(() => cb(Object.assign(new Error('x'), { code: 'ENOENT' }), 'o'))
+      return { stdin }
+    })
+    await expect(defaultExec('claude', ['-p', 'x'], { timeoutMs: 10 })).resolves.toEqual({ stdout: 'o', code: 1 })
+    expect(stdin.end).not.toHaveBeenCalled()
+    CP.execFile.mockImplementationOnce((_c: string, _a: string[], _o: unknown, cb: Cb) => {
+      queueMicrotask(() => cb(null, 'ok'))
+      return { stdin: null }
+    })
+    await expect(defaultExec('claude', ['-p'], { timeoutMs: 10, input: 'p' })).resolves.toEqual({ stdout: 'ok', code: 0 })
   })
 })

@@ -43,6 +43,16 @@ describe('mnemeDistiller - REAL defaultExec (spawns a real node subprocess)', ()
     expect(result.code).not.toBe(0)
   }, 20000)
 
+  it('writes opts.input to the real child stdin and ends it (the child reads to EOF)', async () => {
+    const { stdout, code } = await defaultExec(
+      NODE,
+      ['-e', 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write("GOT:"+d))'],
+      { timeoutMs: 10000, input: 'prompt via stdin' },
+    )
+    expect(code).toBe(0)
+    expect(stdout).toBe('GOT:prompt via stdin')
+  }, 20000)
+
   it('full seam: makeHeadlessDistiller runs a real subprocess and returns the TRIMMED stdout', async () => {
     // makeHeadlessDistiller hard-codes the args as
     // ['-p', prompt, '--model', ...], which `node` cannot run, so we inject the

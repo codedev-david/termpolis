@@ -28,11 +28,12 @@
 import { execFile } from 'child_process'
 import type { LlmDistiller } from './mnemeReflect'
 
-/** Injectable subprocess seam. Resolves with the child's stdout and exit code; never rejects. */
+/** Injectable subprocess seam. Resolves with the child's stdout and exit code; never rejects.
+ *  `input`, when present, is written to the child's stdin (which is then ended). */
 export type ExecFn = (
   cmd: string,
   args: string[],
-  opts: { timeoutMs: number },
+  opts: { timeoutMs: number; input?: string },
 ) => Promise<{ stdout: string; code: number }>
 
 export interface DistillerOptions {
@@ -44,6 +45,12 @@ export interface DistillerOptions {
   timeoutMs?: number
   /** CLI binary to invoke (default: `claude`). */
   bin?: string
+  /** Where the prompt goes. 'argv' (the default) is `claude -p <prompt>`. 'stdin' keeps it off the
+   *  command line entirely: argv is `claude -p --model … --tools "" --strict-mcp-config` and the
+   *  prompt reaches exec as `input` (`claude -p` with no positional prompt reads it from stdin).
+   *  Use 'stdin' for prompts that carry repository source: endpoint scanners read every process
+   *  command line, and source text routinely trips their credential-signature rules. */
+  promptVia?: 'argv' | 'stdin'
 }
 
 const DEFAULT_MODEL = 'haiku'
@@ -62,11 +69,15 @@ export const NO_TOOLS: readonly string[] = ['--tools', '', '--strict-mcp-config'
  */
 export const defaultExec: ExecFn = (cmd, args, opts) =>
   new Promise((resolve) => {
-    execFile(cmd, args, { timeout: opts.timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+    const child = execFile(cmd, args, { timeout: opts.timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
       const errCode = (err as { code?: unknown } | null)?.code
       const code = err ? (typeof errCode === 'number' ? errCode : 1) : 0
       resolve({ stdout: String(stdout ?? ''), code })
     })
+    if (opts.input !== undefined && child.stdin) {
+      child.stdin.on('error', () => undefined) // EPIPE from a child that exited early: its exit code says so
+      child.stdin.end(opts.input)
+    }
   })
 
 /**
@@ -82,14 +93,13 @@ export function makeHeadlessDistiller(opts: DistillerOptions = {}): LlmDistiller
   const bin = opts.bin ?? DEFAULT_BIN
   const model = opts.model ?? DEFAULT_MODEL
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const viaStdin = opts.promptVia === 'stdin'
 
   return async (prompt: string): Promise<string | null> => {
     try {
-      const { stdout, code } = await exec(
-        bin,
-        ['-p', prompt, '--model', model, ...NO_TOOLS],
-        { timeoutMs },
-      )
+      const { stdout, code } = viaStdin
+        ? await exec(bin, ['-p', '--model', model, ...NO_TOOLS], { timeoutMs, input: prompt })
+        : await exec(bin, ['-p', prompt, '--model', model, ...NO_TOOLS], { timeoutMs })
       const out = stdout.trim()
       return code === 0 && out.length > 0 ? out : null
     } catch {

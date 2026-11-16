@@ -132,6 +132,45 @@ describe('runExec — argv form', () => {
   })
 })
 
+describe('runExec input: text that must not sit on a command line goes to stdin', () => {
+  function fakeChild() {
+    const stdin = { on: vi.fn(), end: vi.fn() }
+    H.execFile.mockImplementation((_bin: string, _args: string[], _o: unknown, cb: ExecFileCb) => {
+      queueMicrotask(() => cb(null, 'ok', ''))
+      return { stdin }
+    })
+    return stdin
+  }
+
+  it('writes the input to stdin and ends it, never putting it in argv or the exec options', async () => {
+    const stdin = fakeChild()
+    await expect(runExec('claude', ['-p', '--model', 'haiku'], { input: 'secret-free prompt text' })).resolves.toEqual({ stdout: 'ok', stderr: '' })
+    expect(stdin.end).toHaveBeenCalledWith('secret-free prompt text')
+    expect(stdin.on).toHaveBeenCalledWith('error', expect.any(Function))
+    expect((stdin.on.mock.calls[0][1] as () => unknown)()).toBeUndefined() // EPIPE is swallowed
+    expect(H.execFile.mock.calls.at(-1)![1]).toEqual(['-p', '--model', 'haiku'])
+    expect(lastExecFileOpts()).not.toHaveProperty('input')
+  })
+
+  it('leaves stdin alone without input (the default path is unchanged)', async () => {
+    const stdin = fakeChild()
+    await runExec('git', ['status'], {})
+    expect(stdin.end).not.toHaveBeenCalled()
+    expect(stdin.on).not.toHaveBeenCalled()
+  })
+
+  it('an empty string is still input; a child without a stdin pipe is tolerated', async () => {
+    const stdin = fakeChild()
+    await runExec('claude', ['-p'], { input: '' })
+    expect(stdin.end).toHaveBeenCalledWith('')
+    H.execFile.mockImplementation((_bin: string, _args: string[], _o: unknown, cb: ExecFileCb) => {
+      queueMicrotask(() => cb(null, '', ''))
+      return { stdin: null }
+    })
+    await expect(runExec('claude', ['-p'], { input: 'x' })).resolves.toEqual({ stdout: '', stderr: '' })
+  })
+})
+
 describe('runShell — the flavour that needs a shell', () => {
   it('runs the command line as given and resolves with its output', async () => {
     execAnswers(null, 'C:\\bin\\claude.cmd\n')

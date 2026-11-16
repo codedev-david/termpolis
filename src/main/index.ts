@@ -2622,7 +2622,7 @@ const worldSettings = createWorldSettings(() => join(app.getPath('userData'), WO
 const worldClaudeExec = (root: string): ExecFn => async (cmd, args, opts) => {
   try {
     const env = { ...process.env, PATH: getExtendedPath(), ...((await claudeLaunchEnv(root)) ?? {}) }
-    const out = await execCaptureOffThread(cmd, args, { cwd: root, timeout: opts.timeoutMs, maxBuffer: 8 * 1024 * 1024, env })
+    const out = await execCaptureOffThread(cmd, args, { cwd: root, timeout: opts.timeoutMs, maxBuffer: 8 * 1024 * 1024, env, ...(opts.input !== undefined ? { input: opts.input } : {}) })
     const code = out.error ? (typeof out.error.code === 'number' ? out.error.code : 1) : 0
     return { stdout: String(out.stdout ?? ''), code }
   } catch {
@@ -2648,13 +2648,17 @@ const worldClient = createWorldClient(undefined, {
       return { head: '', dirty: false }
     }
   },
-  // A project nobody indexed yet is indexed first, so a first world never compiles from nothing.
+  // A project nobody indexed yet is indexed first, so a first world never compiles from nothing. Still
+  // nothing (an unmounted drive, an emptied folder) is an error, never an empty world saved over the
+  // stored one: that would throw away every stored position. The ipc handler answers err(message).
   snapshot: async (root) => {
     const key = graphKeyForRoot(root)
     const snap = graphSnapshot(key, root)
     if (snap.files.length > 0) return snap
     await buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => whenNotShed() }, key)
-    return graphSnapshot(key, root)
+    const built = graphSnapshot(key, root)
+    if (built.files.length === 0) throw new Error('no source files found')
+    return built
   },
 })
 registerWorldIpc(ipcMain, worldClient, () => mainWindow)
