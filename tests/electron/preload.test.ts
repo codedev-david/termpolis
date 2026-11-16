@@ -1282,6 +1282,30 @@ describe('preload — workflow orchestrator bridge', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:design-refine', { key: 'design:d1', message: 'Add a cache', summary: 'Q: a' })
   })
 
+  it('world source bridge methods invoke the Lumopolis home channels', async () => {
+    const api = exposed.termpolis
+    const calls: [() => Promise<unknown>, string, unknown?][] = [
+      [() => api.worldDesignDraft('A shop', 'draft:t1'), 'world:design-draft', { description: 'A shop', cancelKey: 'draft:t1' }],
+      [() => api.worldDesignCancel('draft:t1'), 'world:design-cancel', { key: 'draft:t1' }],
+      [() => api.worldSourcesList(), 'world:sources-list'],
+      [() => api.worldMapProject('C:/repo'), 'world:map-project', { root: 'C:/repo' }],
+      [() => api.worldOpenFolder(), 'world:open-folder'],
+      [() => api.worldPickFolder(), 'world:pick-folder'],
+      [() => api.worldClone('https://x/r', 'main'), 'world:clone', { url: 'https://x/r', ref: 'main' }],
+      [() => api.worldClone('https://x/r'), 'world:clone', { url: 'https://x/r' }],
+      [() => api.worldCloneCancel('https://x/r', 'dev'), 'world:clone-cancel', { url: 'https://x/r', ref: 'dev' }],
+      [() => api.worldCloneCancel('https://x/r'), 'world:clone-cancel', { url: 'https://x/r' }],
+      [() => api.worldRemoveSource('design:d1'), 'world:remove-source', { key: 'design:d1' }],
+      [() => api.worldDesignGet('design:d1'), 'world:design-get', { key: 'design:d1' }],
+      [() => api.worldBuildIt({ key: 'design:d1', root: 'C:/b', agent: 'claude', confirmNonEmpty: true }), 'world:build-it', { key: 'design:d1', root: 'C:/b', agent: 'claude', confirmNonEmpty: true }],
+    ]
+    for (const [call, channel, args] of calls) {
+      await call()
+      if (args === undefined) expect(mockIpcRenderer.invoke).toHaveBeenLastCalledWith(channel)
+      else expect(mockIpcRenderer.invoke).toHaveBeenLastCalledWith(channel, args)
+    }
+  })
+
   it.each([
     ['onWorldProgress', 'world:progress', { root: 'C:/repo', projectKey: 'k', stage: 'layout', pct: 50 }],
     ['onWorldUpdated', 'world:updated', { root: 'C:/repo', projectKey: 'k' }],

@@ -16,7 +16,7 @@
 //   world:sources-list               → ok(WorldEntry[])        (recent worlds, newest first, `missing` marked)
 //   world:map-project { root }       → ok(WorldEntry)          (the active terminal's project)
 //   world:open-folder                → ok(WorldEntry | null)   (native folder dialog; null on cancel)
-//   world:pick-folder                → ok(PickFolderResult | null)  (the dialog only: registers nothing)
+//   world:pick-folder                → ok(WorldFolderPick | null)  (the dialog only: registers nothing)
 //   world:clone { url, ref? }        → ok(WorldEntry)          (shallow clone into userData, then registered)
 //   world:clone-cancel { url, ref? } → ok(boolean)
 //   world:remove-source { key }      → ok(true)

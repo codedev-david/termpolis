@@ -13,7 +13,7 @@ import type { SignInInput, SignInStartRequest, SignInState } from '../../../shar
 import type { LimitLook } from '../../../shared/accountLimits'
 import type { RouteDecision } from '../../../shared/taskRouter'
 import type { ModelCatalog } from '../lib/modelCatalog'
-import type { AskRequest, AskResult, DesignDraftResult, DesignRefineResult, WorldDoc, WorldProgressEvent, WorldUpdatedEvent } from '../../../shared/world/types'
+import type { AskRequest, AskResult, BuildItResult, DesignDraftResult, DesignRefineResult, WorldDoc, WorldEntry, WorldFolderPick, WorldProgressEvent, WorldUpdatedEvent } from '../../../shared/world/types'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
 
@@ -700,10 +700,31 @@ export interface TermpolisAPI {
   worldAsk: (req: AskRequest) => Promise<IpcResponse<AskResult>>
   /** Lumopolis: cancel a running ask by its id. */
   worldAskCancel: (askId: string) => Promise<IpcResponse<boolean>>
-  /** Lumopolis: draft a new design world (a planned system, keyed design:<id>) from a description. */
-  worldDesignDraft: (description: string) => Promise<IpcResponse<DesignDraftResult>>
+  /** Lumopolis: draft a new design world (a planned system, keyed design:<id>) from a description; `cancelKey`
+   *  (draft:<token>) lets worldDesignCancel stop it before its design key is known. */
+  worldDesignDraft: (description: string, cancelKey?: string) => Promise<IpcResponse<DesignDraftResult>>
   /** Lumopolis: one conversational change to a design; `summary` is the running summary the last call returned. */
   worldDesignRefine: (key: string, message: string, summary: string) => Promise<IpcResponse<DesignRefineResult>>
+  /** Lumopolis: stop a running draft (draft:<token>) or refine (design:<id>); true when one was running. */
+  worldDesignCancel: (key: string) => Promise<IpcResponse<boolean>>
+  /** Lumopolis: a stored design world. */
+  worldDesignGet: (key: string) => Promise<IpcResponse<WorldDoc>>
+  /** Lumopolis home: recent worlds, newest first; `missing` marks one whose folder, clone or design is gone. */
+  worldSourcesList: () => Promise<IpcResponse<WorldEntry[]>>
+  /** Lumopolis home: remember the active terminal's project as a world. */
+  worldMapProject: (root: string) => Promise<IpcResponse<WorldEntry>>
+  /** Lumopolis home: the native folder dialog; the folder becomes a world (null when cancelled). */
+  worldOpenFolder: () => Promise<IpcResponse<WorldEntry | null>>
+  /** Lumopolis Build it: the native folder dialog only, and whether the folder is empty (null when cancelled). */
+  worldPickFolder: () => Promise<IpcResponse<WorldFolderPick | null>>
+  /** Lumopolis home: shallow-clone a git repository into Termpolis's data folder and remember it. */
+  worldClone: (url: string, ref?: string) => Promise<IpcResponse<WorldEntry>>
+  /** Lumopolis home: stop a running clone of the same url and branch. */
+  worldCloneCancel: (url: string, ref?: string) => Promise<IpcResponse<boolean>>
+  /** Lumopolis home: forget a world (its files are left alone). */
+  worldRemoveSource: (key: string) => Promise<IpcResponse<boolean>>
+  /** Lumopolis Build it: link the design to the folder; answers the first prompt for the agent terminal. */
+  worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => Promise<IpcResponse<BuildItResult>>
   /** Lumopolis settings: whether the world compiler may ask Claude's cheapest model (Haiku) to describe parts. */
   worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */

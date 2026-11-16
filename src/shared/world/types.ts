@@ -85,6 +85,6 @@ export interface WorldEntry {
 }
 
 /** A folder picked for Build it: nothing is registered yet; `empty` drives the "not empty" warning. */
-export interface PickFolderResult { root: string; empty: boolean }
+export interface WorldFolderPick { root: string; empty: boolean }
 /** Build it: the folder now linked to the design, and the first prompt for the agent opened there. */
 export interface BuildItResult { root: string; key: string; title: string; prompt: string }

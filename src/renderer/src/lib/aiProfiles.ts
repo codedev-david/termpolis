@@ -67,6 +67,10 @@ export interface LaunchAgentDeps {
   /** v1.55.0 Auto: what the user typed in "What's the task?". Routes the model and effort, and
    *  becomes the session's first prompt. Ignored unless the Claude default is Auto. */
   task?: string
+  /** Lumopolis Build it: launch in this folder (the user picked it in Build it), with no folder dialog. */
+  cwd?: string
+  /** Lumopolis Build it: the session's first prompt, whatever the model default (Claude only, like task). */
+  prompt?: string
 }
 
 /** v1.58.0: does a Codex command choose its own endpoint, provider or profile? Then it is launched as it is. */
@@ -100,10 +104,13 @@ async function launchAgentProfileSteps(
   launch: { id: string | null; typed: boolean },
 ): Promise<void> {
   const { availableShells, addTerminal, setLaunchingAgent } = deps
-  // Prompt user to pick a project directory
-  const dirRes = await window.termpolis.pickDirectory()
-  if (!dirRes.success || !dirRes.data) return // user cancelled
-  const cwd = dirRes.data
+  // Prompt user to pick a project directory (Build it has picked one already)
+  let cwd = deps.cwd
+  if (!cwd) {
+    const dirRes = await window.termpolis.pickDirectory()
+    if (!dirRes.success || !dirRes.data) return // user cancelled
+    cwd = dirRes.data
+  }
   setLaunchingAgent(profile.name)
   const id = uuid()
   const shellType = resolveShellType(profile.shell, availableShells)
@@ -332,8 +339,9 @@ async function launchAgentProfileSteps(
   // the command through regardless.
   // Main builds the line on the account, now that the command is whole: with no accounts, the
   // command itself. Refused, nothing is typed.
-  const built = auto
-    ? await accountLaunchLine(id, shellType, launchCommand, profile.command, accountId, undefined, deps.task)
+  const firstPrompt = (auto ? deps.task : undefined) ?? deps.prompt
+  const built = firstPrompt !== undefined
+    ? await accountLaunchLine(id, shellType, launchCommand, profile.command, accountId, undefined, firstPrompt)
     : await accountLaunchLine(id, shellType, launchCommand, profile.command, accountId)
   if ('refused' in built) {
     useTerminalStore.getState().setMemoryNotice(`⚠️ ${built.refused}`)

@@ -75,6 +75,15 @@ describe('launchAgentProfile on an account', () => {
     expect(accounts.launchAccount).toHaveBeenCalledWith('claude', 'acc_w')
   })
 
+  it('Build it: a given folder skips the folder dialog, and the first prompt rides on the line', async () => {
+    await launchAgentProfile(claude, { availableShells: shells, addTerminal, setLaunchingAgent, cwd: 'C:/build/shop', prompt: 'Build the app.' })
+    expect(api().pickDirectory).not.toHaveBeenCalled()
+    const id = createdId()
+    expect(api().createTerminal).toHaveBeenCalledWith(id, 'powershell', 'C:/build/shop', undefined, true, 'acc_b', 'claude')
+    expect(api().claudeTrustWorkspace).toHaveBeenCalledWith('C:/build/shop', 'acc_b')
+    expect(accounts.launchLine).toHaveBeenCalledWith({ terminalId: id, agent: 'claude', shellType: 'powershell', command: 'claude', accountId: 'acc_b', task: 'Build the app.' })
+  })
+
   it('prepares Codex in the account\'s own home, and builds its line with the instruction on it', async () => {
     await launchAgentProfile(codex, { availableShells: shells, addTerminal, setLaunchingAgent })
     expect(api().memoryPrepareCodexContext).toHaveBeenCalledWith('/repo', 'acc_b')
