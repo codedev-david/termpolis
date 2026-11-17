@@ -10,6 +10,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
+import { createCameraRig, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
 import { busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, nameBudget, overviewDir, placeLabels, sameArea, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type V3 } from './viewMath'
@@ -142,6 +143,10 @@ const CSS = `
 
 const FLOOR_W = 5
 const ORB_R = 2.2
+/** A framing on screen: what it frames, the neighbours kept in view, and the side it looks from. */
+interface Framing { ids: string[]; around: string[] | undefined; from: THREE.Vector3 }
+const v3 = (v: THREE.Vector3): RigVec => [v.x, v.y, v.z]
+
 /** How far behind an edge pick tube (radius 0.8) a node hit may lie and still win the pick. */
 const PICK_NODE_EPS = 1
 /** How steeply a line's close-up may look down (height over ground distance), tried in turn until the arch is in sight. */
@@ -281,8 +286,33 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let lowReserve = opts.bottomReserve ?? 0
   /** The open card's box from the top left corner, or null: kept out of every fit but the overview's. */
   let cardBox: [number, number] | null = null
-  /** The camera is at (or flying to) the overview, so a resize fits it again. */
-  let atOverview = false
+  /**
+   * What the camera is doing (cameraRig): at the overview, on a framing (kept so it is done again,
+   * from the same side, when a panel opens, closes or changes size, or the view is resized), or left
+   * where a hand moved it. Its deps are only called once the camera and controls exist.
+   */
+  const rig = createCameraRig<Framing>({
+    home: () => ({ pos: v3(overviewPos), target: v3(overviewTarget) }),
+    shot: (f) => {
+      const s = shotFor(f.ids, f.around, f.from)
+      return s ? { pos: v3(s.pos), target: v3(s.target) } : null
+    },
+    current: () => ({ pos: v3(camera.position), target: v3(controls.target) }),
+    apply: (pose) => {
+      camera.position.set(pose.pos[0], pose.pos[1], pose.pos[2])
+      controls.target.set(pose.target[0], pose.target[1], pose.target[2])
+      controls.update()
+    },
+    // A drag's glide (OrbitControls damping) is spent at once, where the camera is now.
+    halt: () => {
+      controls.enableDamping = false
+      controls.update()
+      controls.enableDamping = true
+    },
+    onMode: () => applyView(false),
+    now: () => performance.now(),
+    reduced,
+  })
   /**
    * The part of the view the panels leave free (freeArea). The overview is the home view, the one
    * with no card: it fits around the legend and the ask bar only. Every other framing (a building's
@@ -310,7 +340,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   /** The panels, the view's size or the camera's place changed: the picture moves to the new free area (`snap`: at once, else it eases). */
   function applyView(snap = true): void {
-    areaGoal = areaFor(!atOverview)
+    areaGoal = areaFor(rig.withCard())
     if (snap || reduced) area = areaGoal
     project(area)
   }
@@ -329,8 +359,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   controls.maxDistance = 420
   controls.autoRotate = !reduced
   controls.autoRotateSpeed = 0.3
-  const onControlStart = (): void => { controls.autoRotate = false; atOverview = false; framing = null; endTween(); applyView(false) }
+  // A press only stops the turning; the hand takes the camera over once it really moves it (a plain
+  // click leaves the camera, its flight and the picture as they are).
+  const onControlStart = (): void => { controls.autoRotate = false; rig.press() }
+  const onControlChange = (): void => { rig.move() }
+  const onControlEnd = (): void => { rig.release() }
   controls.addEventListener('start', onControlStart)
+  controls.addEventListener('change', onControlChange)
+  controls.addEventListener('end', onControlEnd)
 
   let composer: EffectComposer | null = null
   let renderPass: RenderPass | null = null
@@ -912,28 +948,6 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
 
   // ---------------- camera ----------------
-  interface Tween { p0: THREE.Vector3; p1: THREE.Vector3; t0: THREE.Vector3; t1: THREE.Vector3; start: number; dur: number; done: () => void }
-  let tween: Tween | null = null
-  function endTween(): void {
-    const t = tween
-    tween = null
-    t?.done()
-  }
-  function flyTo(pos: THREE.Vector3, target: THREE.Vector3, instant: boolean, dur = 1.5): Promise<void> {
-    controls.autoRotate = false
-    atOverview = false
-    applyView(false)
-    endTween()
-    if (instant || reduced) {
-      camera.position.copy(pos)
-      controls.target.copy(target)
-      controls.update()
-      return Promise.resolve()
-    }
-    return new Promise<void>((resolve) => {
-      tween = { p0: camera.position.clone(), p1: pos.clone(), t0: controls.target.clone(), t1: target.clone(), start: performance.now(), dur: dur * 1000, done: resolve }
-    })
-  }
   /** Where a framing puts the camera, and what it looks at. */
   interface Shot { pos: THREE.Vector3; target: THREE.Vector3 }
   /** The side a framing looks from, across the ground: that of `from`, the camera's offset from its target. */
@@ -953,12 +967,6 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return t
   }
 
-  /**
-   * The framing on screen (frame), kept so it is done again, from the same side, when a panel opens,
-   * closes or changes size, or the view is resized: the fit follows the free area. Dropped when the
-   * camera goes to the overview or is moved by hand.
-   */
-  let framing: { ids: string[]; around: string[] | undefined; from: THREE.Vector3 } | null = null
   /** Where `ids` are framed from the side of `from` (the camera's offset from its target when asked). */
   function shotFor(ids: string[], around: string[] | undefined, from: THREE.Vector3): Shot | null {
     const pts: THREE.Vector3[] = []
@@ -980,31 +988,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   function frame(ids: string[], instant: boolean, around?: string[]): Promise<void> {
     const from = camera.position.clone().sub(controls.target)
-    const shot = shotFor(ids, around, from)
-    if (!shot) return Promise.resolve()
-    const flight = flyTo(shot.pos, shot.target, instant)
-    framing = { ids: [...ids], around, from }
-    return flight
-  }
-  /**
-   * The camera moves to `shot` without a new flight: a flight under way is aimed at it instead (its
-   * promise still settles when it lands, so a tour step is not cut short), a still camera glides there.
-   */
-  function glide(shot: Shot): void {
-    if (tween) { tween.p1.copy(shot.pos); tween.t1.copy(shot.target); return }
-    if (camera.position.distanceToSquared(shot.pos) < 1e-6 && controls.target.distanceToSquared(shot.target) < 1e-6) return
-    if (reduced) {
-      camera.position.copy(shot.pos)
-      controls.target.copy(shot.target)
-      controls.update()
-      return
-    }
-    tween = { p0: camera.position.clone(), p1: shot.pos.clone(), t0: controls.target.clone(), t1: shot.target.clone(), start: performance.now(), dur: 600, done: () => undefined }
-  }
-  /** The camera's framing for the free area as it is now: the overview, or the framing on screen (none once moved by hand). */
-  function refitCamera(): Shot | null {
-    if (atOverview) return { pos: overviewPos.clone(), target: overviewTarget.clone() }
-    return framing ? shotFor(framing.ids, framing.around, framing.from) : null
+    controls.autoRotate = false // a flight ends the idle turn
+    return rig.frame({ ids: [...ids], around, from }, instant)
   }
   /** A panel opened, closed or changed size: the picture eases to the new free area and the camera follows. */
   function reframe(): void {
@@ -1012,8 +997,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (!lastModel) return
     fitOverview(lastModel)
     fogTarget = fogFor()
-    const shot = refitCamera()
-    if (shot) glide(shot)
+    rig.refit()
   }
 
   /**
@@ -1316,7 +1300,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const onKeyDown = (e: KeyboardEvent): void => {
     const k = e.key.toLowerCase()
     keys[k] = true
-    if ('wasdqe'.includes(k) && k.length === 1) { controls.autoRotate = false; atOverview = false; framing = null; endTween(); applyView(false) }
+    if ('wasdqe'.includes(k) && k.length === 1) { controls.autoRotate = false; rig.keys() }
   }
   const onKeyUp = (e: KeyboardEvent): void => { keys[e.key.toLowerCase()] = false }
   const onBlur = (): void => { for (const k of Object.keys(keys)) keys[k] = false }
@@ -1336,20 +1320,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     renderer.setSize(width, height)
     composer?.setSize(width, height)
     labelRenderer.setSize(width, height)
-    // The city is fitted again to the new shape; a camera at the overview moves to the new one.
+    // The city is fitted again to the new shape; a camera at the overview moves to the new one, a
+    // framing on screen is done again for it.
     if (!lastModel) return
     fitOverview(lastModel)
     fogTarget = fogFor()
-    if (!atOverview) {
-      // A framing on screen is done again for the new shape.
-      const shot = refitCamera()
-      if (shot) glide(shot)
-      return
-    }
-    if (tween) { tween.p1.copy(overviewPos); tween.t1.copy(overviewTarget); return }
-    camera.position.copy(overviewPos)
-    controls.target.copy(overviewTarget)
-    controls.update()
+    rig.resized()
   }
   const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize)
   ro?.observe(host)
@@ -1489,13 +1465,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       area = easeArea(area, areaGoal, dt)
       project(area)
     }
-    if (tween) {
-      const k = Math.min(1, (performance.now() - tween.start) / tween.dur)
-      const ez = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2
-      camera.position.lerpVectors(tween.p0, tween.p1, ez)
-      controls.target.lerpVectors(tween.t0, tween.t1, ez)
-      if (k >= 1) endTween()
-    }
+    rig.step()
     for (const n of nodes.values()) {
       n.floors.forEach((fl, k) => {
         const d = n.exploded ? fl.userData.explodedY : fl.userData.baseY
@@ -1606,7 +1576,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     setCardReserve(w, h) {
       const box: [number, number] | null = w > 0 && h > 0 ? [w, h] : null
       if (box?.[0] === cardBox?.[0] && box?.[1] === cardBox?.[1]) return
+      const closed = cardBox !== null && box === null
       cardBox = box
+      // A closed card drops the framing where it is: the camera never flies back into its close-up.
+      if (closed) rig.cardClosed()
       reframe() // a focus or a close-up is fitted again around the card
     },
     setTheme(name, th) {
@@ -1628,12 +1601,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       fogTarget = fogFor()
     },
     frame,
+    // The home view (its free area has no card), from wherever the camera is: any framing is dropped.
     overview(instant) {
-      const flight = flyTo(overviewPos, overviewTarget, instant, 1.8)
-      atOverview = true
-      framing = null
-      applyView(false) // the home view's free area: no card
-      return flight
+      controls.autoRotate = false // a flight ends the idle turn
+      return rig.overview(instant)
     },
     pulse,
     stopPulses,
@@ -1680,8 +1651,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       host.removeEventListener('keyup', onKeyUp)
       host.removeEventListener('blur', onBlur, true)
       controls.removeEventListener('start', onControlStart)
+      controls.removeEventListener('change', onControlChange)
+      controls.removeEventListener('end', onControlEnd)
       controls.dispose()
-      endTween()
+      rig.stop()
       stopPulses()
       clearWorld()
       if (grid) { grid.geometry.dispose(); ([] as THREE.Material[]).concat(grid.material).forEach((m) => m.dispose()) }
