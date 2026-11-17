@@ -1199,23 +1199,25 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     // A long line, or ends buried under the lines and towers around them: from more sides, lower
     // and higher, and as far out as it takes for both ends to show beside the card (and the arch's
-    // middle in sight). Failing that, the view that shows the most of them.
+    // middle in sight). Failing that, the view that shows the most of them, never one that hides
+    // them all: then the overhead view below.
     let best: { shot: Shot; score: number } | null = null
     rays.left = LINE_RAY_BUDGET
-    for (const [x, z] of turnAcross([h.x, h.z], LINE_TURNS)) {
+    wide: for (const [x, z] of turnAcross([h.x, h.z], LINE_TURNS)) {
       for (const lift of LINE_WIDE_LIFTS) {
         const dir = new THREE.Vector3(x, lift, z).normalize()
         const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
         const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
         for (const dist of backOffs(fit.dist, controls.maxDistance, LINE_BACK_STEP)) {
           const eye = target.clone().addScaledVector(dir, dist)
-          if (insideAny(eye)) continue
+          // Clear of every roof, as in the near search: an eye grazing a roof whites the picture out.
+          if (insideAny(eye) || !clearOf(eye, target, e)) continue
           const hidden = endsHidden(ends, eye, target)
           const midSeen = hidden === 0 && mids.some((p) => inSight(eye, p))
           if (midSeen) return { pos: eye, target }
           const score = hidden === 0 ? 0.5 : hidden
           if (!best || score < best.score) best = { shot: { pos: eye, target }, score }
-          if (rays.left <= 0) return best.shot
+          if (rays.left <= 0) break wide
         }
       }
     }
