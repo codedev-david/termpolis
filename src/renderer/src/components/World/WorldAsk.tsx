@@ -42,7 +42,7 @@ const SUGGESTIONS = [
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
 export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link }: WorldAskProps): JSX.Element {
-  const { ask, cancel, retry, replay, dismiss, state, answer, cited, error, playing, cost } = useWorldAsk(viewer, root, link?.setDoc, doc?.layers.plan.find((p) => p.reconcile)?.id)
+  const { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost } = useWorldAsk(viewer, root, link?.setDoc, doc?.layers.plan.find((p) => p.reconcile)?.id)
   const design = isDesignKey(root)
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
@@ -154,10 +154,17 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link }: Worl
         <WorldAnswerPanel
           answer={answer}
           cited={cited}
+          revealed={revealed}
           isPart={(id) => !!doc && (doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id))}
           onClose={() => { hush(); dismiss() }}
           onReplay={replay}
-          onOpenPart={(id) => { viewer?.apply({ type: 'openCard', id })?.catch(() => undefined) }}
+          partName={(id) => doc?.buildings.find((b) => b.id === id)?.name ?? doc?.edges.find((e) => e.id === id)?.label}
+          onOpenPart={(id, highlight) => {
+            // Open the part first: opening a card moves the focus, so the highlight follows it.
+            void Promise.resolve(viewer?.apply({ type: 'openCard', id }))
+              .then(() => (highlight.length > 0 ? viewer?.apply({ type: 'highlight', ids: highlight }) : undefined))
+              .catch(() => undefined)
+          }}
         />
       )}
       {state === 'error' && (

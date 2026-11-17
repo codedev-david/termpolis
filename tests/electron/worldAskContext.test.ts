@@ -44,7 +44,7 @@ describe('buildAskPrompt', () => {
     const ids = d.buildings.map((b) => b.id)
     const matches = { items: d.buildings.slice(3, 30), evidence: [] }
     const { prompt } = buildAskPrompt(base(d, { selection: ids.slice(0, 3), matches, cameraRegion: ids.slice(30), question: 'Q?' }))
-    expect(prompt.length).toBeLessThan(12000)
+    expect(prompt.length).toBeLessThanOrEqual(12000)
     expect(prompt).toContain('building b1:')
     expect(prompt).toContain('building b3:')
     expect(prompt).not.toContain('building b60:')

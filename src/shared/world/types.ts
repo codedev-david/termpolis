@@ -67,8 +67,10 @@ export interface WorldUpdatedEvent { root: string; projectKey: string }
 
 // ---- Lumopolis ask (renderer <-> main): one question about the world, answered by the user's agent ----
 export interface AskRequest { askId: string; root: string; question: string; selection: string[]; cameraRegion: string[]; summary: string; /** The model id for the Lumopolis agent; absent means the CLI's own default. */ model?: string; /** The design proposal on show (an id in doc.layers.plan); main looks it up and adds it to the question. */ proposalId?: string }
+/** Evidence an answer cites, with the ids of the buildings and lines it points at. */
+export type CitedEvidence = Evidence & { items: string[] }
 export type AskResult =
-  | { askId: string; ok: true; answer: import('./answerProtocol').WorldAnswer; summary: string; cited: Record<string, Evidence>; tokens: number }
+  | { askId: string; ok: true; answer: import('./answerProtocol').WorldAnswer; summary: string; cited: Record<string, CitedEvidence>; tokens: number }
   | { askId: string; ok: false; error: string; cancelled?: boolean }
 
 // ---- Lumopolis design (renderer <-> main): a planned system drafted and refined by conversation ----

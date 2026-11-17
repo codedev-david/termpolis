@@ -1,8 +1,9 @@
 // Lumopolis ask runner: one question about a stored world, answered by the user's own agent run
 // hidden and read-only through runHeadless. A second ask for the same root cancels the first.
 import { parseAnswer } from '../../shared/world/answerProtocol'
+import { itemsForEvidence } from '../../shared/world/evidenceLinks'
 import { estimateTokens } from '../../shared/world/tokens'
-import type { AskRequest, AskResult, Evidence, WorldDoc, WorldReadResult } from '../../shared/world/types'
+import type { AskRequest, AskResult, CitedEvidence, Evidence, WorldDoc, WorldReadResult } from '../../shared/world/types'
 import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import { buildAskPrompt, summarize } from './askContext'
@@ -31,9 +32,9 @@ export interface AskRunner {
 const MARKER = /\[(E\d+)\]/g
 
 /** The labels whose [E<n>] markers appear in the answer text. */
-const citedLabels = (text: string, labels: Record<string, Evidence>): Record<string, Evidence> => {
-  const out: Record<string, Evidence> = {}
-  for (const m of text.matchAll(MARKER)) if (labels[m[1]]) out[m[1]] = labels[m[1]]
+const citedLabels = (text: string, labels: Record<string, Evidence>, doc: WorldDoc): Record<string, CitedEvidence> => {
+  const out: Record<string, CitedEvidence> = {}
+  for (const m of text.matchAll(MARKER)) if (labels[m[1]]) out[m[1]] = { ...labels[m[1]], items: itemsForEvidence(doc, labels[m[1]]) }
   return out
 }
 
@@ -126,7 +127,7 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       if (!res.ok && isMissingCli(res.error)) return { askId, ok: false, error: agentMissingMessage(agent) }
       if (!res.ok) return { askId, ok: false, error: `Lumopolis couldn't reach your agent: ${res.error ?? 'no answer'}` }
       const answer = parseAnswer(res.output, doc, labels)
-      return { askId, ok: true, answer, summary: summarize(req.summary, req.question, answer.text), cited: citedLabels(answer.text, labels), tokens: estimateTokens(prompt) + estimateTokens(res.output) + Math.ceil(res.primerChars / 4) }
+      return { askId, ok: true, answer, summary: summarize(req.summary, req.question, answer.text), cited: citedLabels(answer.text, labels, doc), tokens: estimateTokens(prompt) + estimateTokens(res.output) + Math.ceil(res.primerChars / 4) }
     } finally {
       byAsk.delete(askId)
       if (byRoot.get(root) === askId) byRoot.delete(root)

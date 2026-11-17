@@ -151,6 +151,9 @@ function runWorldAnswer(args, at) {
       lines.splice(1, 1, "The evidence doesn't say why.");
       lines.push('', '```world-actions', JSON.stringify([{ type: 'fog', ids: [building] }]), '```');
     } else if (building) {
+      // [A1] and [A2] pin the steps to the two sentences: the pane plays each as its sentence appears.
+      lines[0] += ' [A1]';
+      lines[1] = lines[1].replace(/\.$/, ' [A2].');
       lines.push('', '```world-actions', JSON.stringify([{ type: 'focus', ids: [building] }, { type: 'openCard', id: building }]), '```');
     }
     const delay = Number(process.env.MOCK_CLAUDE_REPLY_DELAY_MS) || 0;

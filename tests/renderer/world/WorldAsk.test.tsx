@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
 import { minimal } from './helpers'
 
 const vm = vi.hoisted(() => ({
@@ -26,7 +26,7 @@ type Res = { success: true; data: AskResult } | { success: false; error: string 
 const okRes = (askId: string, text: string, over: Record<string, unknown> = {}): Res => ({
   success: true,
   data: {
-    askId, ok: true, answer: { text, actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false },
+    askId, ok: true, answer: { text, sentences: [{ text, actions: [0] }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false },
     summary: 's', cited: {}, ...over
   } as AskResult
 })
@@ -147,7 +147,7 @@ describe('WorldAsk', () => {
   it('says so when the evidence does not support the answer, and when it cites none', async () => {
     const v = makeViewer()
     ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'Nothing records why.', {
-      answer: { text: 'Nothing records why.', actions: [{ type: 'fog', ids: ['b1'] }], evidence: [], dropped: 0, unsupported: ['b1'], uncited: true }
+      answer: { text: 'Nothing records why.', sentences: [{ text: 'Nothing records why.', actions: [0] }], actions: [{ type: 'fog', ids: ['b1'] }], evidence: [], dropped: 0, unsupported: ['b1'], uncited: true }
     }))
     await submit(v, 'why?')
     const note = screen.getByRole('note')
@@ -231,7 +231,7 @@ describe('WorldAsk', () => {
     const v = makeViewer()
     v.play.mockRejectedValue(new Error('play boom'))
     v.apply.mockRejectedValue(new Error('apply boom'))
-    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'See [E1].', { cited: { E1: { kind: 'symbol', ref: 'b1' } } }))
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'See [E1].', { cited: { E1: { kind: 'symbol', ref: 'b1', items: [] } } }))
     render(<WorldAsk viewer={v as never} doc={minimal()} root="r" />)
     await settle()
     fireEvent.change(input(), { target: { value: 'q' } })
@@ -267,7 +267,7 @@ describe('WorldAsk', () => {
 
     it('a chip for a part id opens its card in the viewer', async () => {
       const v = makeViewer()
-      withCited('See [E1] now.', { E1: { kind: 'symbol', ref: 'b1' } })
+      withCited('See [E1] now.', { E1: { kind: 'symbol', ref: 'b1', items: [] } })
       await submit(v, 'q')
       fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
       expect(v.apply).toHaveBeenCalledWith({ type: 'openCard', id: 'b1' })
@@ -275,7 +275,7 @@ describe('WorldAsk', () => {
 
     it('a chip opens a card for an edge id too, whatever its kind', async () => {
       const v = makeViewer()
-      withCited('See [E1].', { E1: { kind: 'file', ref: 'e1' } })
+      withCited('See [E1].', { E1: { kind: 'file', ref: 'e1', items: [] } })
       await submit(v, 'q')
       fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
       expect(v.apply).toHaveBeenCalledWith({ type: 'openCard', id: 'e1' })
@@ -283,18 +283,18 @@ describe('WorldAsk', () => {
 
     it('an id that is not in the loaded world (or no doc) shows the inline line instead', async () => {
       const v = makeViewer()
-      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'nope' } })
+      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'nope', items: [] } })
       await submit(v, 'q')
       fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
       expect(screen.getByText('symbol nope')).toBeInTheDocument()
       expect(v.apply).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'openCard' }))
       cleanup()
-      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'b1' } })
+      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'b1', items: [] } })
       await submit(v, 'q', { doc: null })
       fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
       expect(screen.getByText('symbol b1')).toBeInTheDocument()
       cleanup()
-      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'b1' } })
+      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'b1', items: [] } })
       render(<WorldAsk viewer={v as never} root="r" />)
       await settle()
       fireEvent.change(input(), { target: { value: 'q' } })
@@ -306,7 +306,7 @@ describe('WorldAsk', () => {
 
     it('a file chip toggles an inline line showing kind and ref', async () => {
       const v = makeViewer()
-      withCited('See [E2].', { E2: { kind: 'file', ref: 'src/main/x.ts' } })
+      withCited('See [E2].', { E2: { kind: 'file', ref: 'src/main/x.ts', items: [] } })
       await submit(v, 'q')
       const chip = screen.getByRole('button', { name: 'Evidence E2' })
       fireEvent.click(chip)
@@ -314,6 +314,53 @@ describe('WorldAsk', () => {
       expect(v.apply).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'openCard' }))
       fireEvent.click(chip)
       expect(screen.queryByText('file src/main/x.ts')).toBeNull()
+    })
+
+    it('a chip names the part it cites: E1 · <building name>, or the edge label', async () => {
+      const v = makeViewer()
+      const doc = minimal()
+      withCited('See [E1] and [E2] and [E3].', {
+        E1: { kind: 'file', ref: 'src/main/index.ts', items: ['b1'] },
+        E2: { kind: 'file', ref: 'e1', items: [] },
+        E3: { kind: 'file', ref: 'x.ts', items: [] }
+      })
+      await submit(v, 'q', { doc })
+      expect(screen.getByRole('button', { name: 'Evidence E1' })).toHaveTextContent(`E1 · ${doc.buildings[0].name}`)
+      expect(screen.getByRole('button', { name: 'Evidence E2' })).toHaveTextContent(`E2 · ${doc.edges[0].label}`)
+      expect(screen.getByRole('button', { name: 'Evidence E3' })).toHaveTextContent(/^E3$/)
+    })
+
+    it('clicking a chip opens its part, then highlights its items', async () => {
+      const v = makeViewer()
+      withCited('See [E1].', { E1: { kind: 'file', ref: 'src/main/index.ts', items: ['b1', 'e1'] } })
+      await submit(v, 'q')
+      v.apply.mockClear()
+      fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
+      await settle()
+      expect(v.apply.mock.calls).toEqual([[{ type: 'openCard', id: 'b1' }], [{ type: 'highlight', ids: ['b1', 'e1'] }]])
+      expect(screen.getByText('file src/main/index.ts')).toBeInTheDocument()
+    })
+
+    it('a chip for a part id highlights its items too', async () => {
+      const v = makeViewer()
+      withCited('See [E1].', { E1: { kind: 'symbol', ref: 'b1', items: ['b2'] } })
+      await submit(v, 'q')
+      v.apply.mockClear()
+      fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
+      await settle()
+      expect(v.apply.mock.calls).toEqual([[{ type: 'openCard', id: 'b1' }], [{ type: 'highlight', ids: ['b2'] }]])
+    })
+
+    it('the answer text appears one sentence at a time', async () => {
+      const v = makeViewer()
+      ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'First one. Second one.', {
+        answer: { text: 'First one. Second one.', sentences: [{ text: 'First one.', actions: [0] }, { text: 'Second one.', actions: [] }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false }
+      }))
+      await submit(v, 'q')
+      const shown = (): string => screen.getByTestId('world-answer').textContent ?? ''
+      expect(shown()).toContain('First one.')
+      expect(shown()).not.toContain('Second one.')
+      await waitFor(() => expect(shown()).toContain('Second one.'), { timeout: 3000 })
     })
 
     it('an unknown marker stays plain text', async () => {

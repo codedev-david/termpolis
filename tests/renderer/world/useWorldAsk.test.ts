@@ -4,7 +4,7 @@ import { useWorldAsk, ASK_UNREACHABLE, REFINE_UNREACHABLE } from '../../../src/r
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
 type Res = { success: true; data: AskResult } | { success: false; error: string }
-const answerOf = (text: string, actions: unknown[] = []) => ({ text, actions, evidence: [], dropped: 0 })
+const answerOf = (text: string, actions: unknown[] = []) => ({ text, sentences: [{ text, actions: actions.map((_, i) => i) }], actions, evidence: [], dropped: 0 })
 const okRes = (askId: string, text = 'Hello', over: Record<string, unknown> = {}): Res => ({
   success: true,
   data: { askId, ok: true, answer: answerOf(text, [{ type: 'reset' }]), summary: 'sum:' + text, cited: {}, ...over } as AskResult
@@ -308,10 +308,10 @@ describe('useWorldAsk', () => {
   })
 
   it('exposes the cited labels of the answer', async () => {
-    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'x [E1]', { cited: { E1: { kind: 'file', ref: 'a.ts' } } }))
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'x [E1]', { cited: { E1: { kind: 'file', ref: 'a.ts', items: ['b1'] } } }))
     const { result } = renderHook(() => useWorldAsk(makeViewer() as never, 'r'))
     await act(async () => { result.current.ask('q') })
-    expect(result.current.cited).toEqual({ E1: { kind: 'file', ref: 'a.ts' } })
+    expect(result.current.cited).toEqual({ E1: { kind: 'file', ref: 'a.ts', items: ['b1'] } })
   })
 })
 
@@ -329,7 +329,7 @@ describe('useWorldAsk on a design', () => {
     expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '', undefined)
     expect(onDesign).toHaveBeenCalledWith({ projectKey: 'design:d1' })
     expect(result.current.state).toBe('answered')
-    expect(result.current.answer).toEqual({ text: 'Added Payments.', actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
+    expect(result.current.answer).toEqual({ text: 'Added Payments.', sentences: [{ text: 'Added Payments.', actions: [] }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
     expect(result.current.cited).toEqual({})
     await act(async () => { result.current.ask('rename it') })
     expect(refine).toHaveBeenLastCalledWith('design:d1', 'rename it', 'sum:1', undefined)
@@ -378,5 +378,124 @@ describe('useWorldAsk on a design', () => {
     await act(async () => { result.current.ask('b') })
     expect(result.current.state).toBe('error')
     expect(result.current.error).toBe(REFINE_UNREACHABLE)
+  })
+})
+
+describe('useWorldAsk reveal', () => {
+  const sentences = [{ text: 'One two.', actions: [0] }, { text: 'Three four five six seven eight nine ten.', actions: [1] }, { text: 'Last.', actions: [] }]
+  const actions = [{ type: 'focus', ids: ['b1'] }, { type: 'flow', edgeIds: ['e1'] }]
+  const revealing = (askId: string, over: Record<string, unknown> = {}): Res => ({
+    success: true,
+    data: { askId, ok: true, answer: { text: 'One two. Three four five six seven eight nine ten. Last.', sentences, actions, evidence: [], dropped: 0, unsupported: [], uncited: false }, summary: 's', cited: {}, ...over } as AskResult
+  })
+  const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    ask.mockImplementation(async (req: AskRequest) => revealing(req.askId))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    delete (window as any).matchMedia
+  })
+
+  it('reveals sentence 1 and plays focus b1, then after the reveal time sentence 2 and flow e1', async () => {
+    const order: string[] = []
+    const v = makeViewer()
+    v.play.mockImplementation(async (steps: unknown[]) => { order.push(`play ${(steps[0] as { type: string }).type}`) })
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    expect(result.current.revealed).toBe(1)
+    expect(order).toEqual(['play focus'])
+    expect(result.current.playing).toBe(true)
+    await tick(599)
+    expect(result.current.revealed).toBe(1)
+    await tick(1)
+    expect(result.current.revealed).toBe(2)
+    expect(order).toEqual(['play focus', 'play flow'])
+    // Sentence 2 has eight words: 560 ms is under the 600 ms floor, so the floor applies.
+    await tick(600)
+    expect(result.current.revealed).toBe(3)
+    expect(order).toHaveLength(2)
+    expect(result.current.playing).toBe(false)
+  })
+
+  it('a new question during the reveal stops it and plays nothing more from the old answer', async () => {
+    const v = makeViewer()
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    expect(v.play).toHaveBeenCalledTimes(1)
+    ask.mockImplementationOnce(() => new Promise(() => undefined))
+    await act(async () => { result.current.ask('next') })
+    expect(result.current.playing).toBe(false)
+    await tick(5000)
+    expect(v.play).toHaveBeenCalledTimes(1)
+  })
+
+  it('unmounting and dismissing clear the reveal', async () => {
+    const v = makeViewer()
+    const a = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { a.result.current.ask('q') })
+    a.unmount()
+    await tick(5000)
+    expect(v.play).toHaveBeenCalledTimes(1)
+    const b = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { b.result.current.ask('q') })
+    act(() => { b.result.current.dismiss() })
+    expect(b.result.current.playing).toBe(false)
+    await tick(5000)
+    expect(v.play).toHaveBeenCalledTimes(2)
+  })
+
+  it('reduced motion reveals every sentence with no wait', async () => {
+    ;(window as any).matchMedia = vi.fn(() => ({ matches: true }))
+    const v = makeViewer()
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    expect(result.current.revealed).toBe(1)
+    await tick(0)
+    expect(result.current.revealed).toBe(2)
+    await tick(1)
+    expect(result.current.revealed).toBe(3)
+    expect(v.play).toHaveBeenCalledTimes(2)
+  })
+
+  it('a failing media query counts as full motion, and a plain one too', async () => {
+    ;(window as any).matchMedia = vi.fn(() => { throw new Error('no') })
+    const v = makeViewer()
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    await tick(0)
+    expect(result.current.revealed).toBe(1)
+    ;(window as any).matchMedia = vi.fn(() => ({ matches: false }))
+    await act(async () => { result.current.ask('q2') })
+    await tick(0)
+    expect(result.current.revealed).toBe(1)
+  })
+
+  it('replay replays the same schedule', async () => {
+    const v = makeViewer()
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    await tick(1200)
+    expect(result.current.revealed).toBe(3)
+    expect(v.play).toHaveBeenCalledTimes(2)
+    act(() => { result.current.replay() })
+    expect(result.current.revealed).toBe(1)
+    expect(v.play).toHaveBeenCalledTimes(3)
+    await tick(600)
+    expect(result.current.revealed).toBe(2)
+    expect(v.play).toHaveBeenCalledTimes(4)
+    expect(v.play).toHaveBeenLastCalledWith([{ type: 'flow', edgeIds: ['e1'] }])
+  })
+
+  it('an answer with no sentences plays nothing and is not playing; a design reply is shown whole', async () => {
+    ask.mockImplementationOnce(async (req: AskRequest) => revealing(req.askId, { answer: { text: '', sentences: [], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false } }))
+    const v = makeViewer()
+    const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
+    await act(async () => { result.current.ask('q') })
+    expect(v.play).not.toHaveBeenCalled()
+    expect(result.current.playing).toBe(false)
+    expect(result.current.revealed).toBe(0)
   })
 })

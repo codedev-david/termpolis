@@ -12,10 +12,25 @@ that show your answer in the World. Allowed steps:
 {"type":"focus","ids":[...]} {"type":"highlight","ids":[...]} {"type":"flow","edgeIds":[...]}
 {"type":"openCard","id":"..."} {"type":"tour","steps":[{"ids":[...],"caption":"..."}]} {"type":"reset"}
 Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the labels in the WORLD DATA.
+Put [A<n>] in your text where step n (1-based) should play.
 ${HONESTY_RULE}`
 
+/** Reading pace of the reveal: each sentence stays on show this long per word, and never less than the minimum. */
+export const REVEAL_MS_PER_WORD = 70
+export const MIN_SENTENCE_MS = 600
+
+/** How long a sentence is read before the next one appears; 0 with reduced motion. */
+export const revealMs = (text: string, reducedMotion: boolean): number =>
+  reducedMotion ? 0 : Math.max(MIN_SENTENCE_MS, text.split(/\s+/).filter(Boolean).length * REVEAL_MS_PER_WORD)
+
+/** One sentence of the answer and the indexes (into `actions`) of the steps that play as it appears. */
+export interface AnswerSentence { text: string; actions: number[] }
+
 export interface WorldAnswer {
-  text: string; actions: WorldAction[]; evidence: Evidence[]; dropped: number
+  text: string
+  /** The text split on sentence ends, each with the steps its [A<n>] markers name (markers removed). */
+  sentences: AnswerSentence[]
+  actions: WorldAction[]; evidence: Evidence[]; dropped: number
   /** Ids from the answer's fog steps: the parts the evidence does not support. */
   unsupported: string[]
   /** True when the answer has text but no [E<n>] marker. */
@@ -26,6 +41,9 @@ const MAX_TOUR_STEPS = 12
 const BLOCK_RE = /```world-actions[ \t]*\r?\n([\s\S]*?)```/g
 const DANGLING_RE = /```world-actions[\s\S]*$/
 const MARKER_RE = /\[E(\d+)\]/g
+const STEP_RE = /\[A(\d+)\]/g
+// A sentence ends at . ! or ? before a space or the end; markers right after the end belong to it.
+const SENTENCE_RE = /[\s\S]+?(?:[.!?]+(?:\s*\[[AE]\d+\])*(?=\s|$)|$)/g
 
 type Rec = Record<string, unknown>
 const isRec = (v: unknown): v is Rec => typeof v === 'object' && v !== null
@@ -81,16 +99,46 @@ function cleanAction(step: unknown, all: Set<string>, edges: Set<string>, tally:
   }
 }
 
-function parseActions(json: string, doc: WorldDoc, tally: { dropped: number }): WorldAction[] {
+/** The valid steps, and where each of the model's raw steps went (its index among them, or -1 when dropped). */
+interface Parsed { actions: WorldAction[]; slots: number[] }
+
+function parseActions(json: string, doc: WorldDoc, tally: { dropped: number }): Parsed {
   let parsed: unknown
-  try { parsed = JSON.parse(json) } catch { return [] }
-  if (!Array.isArray(parsed)) return []
+  try { parsed = JSON.parse(json) } catch { return { actions: [], slots: [] } }
+  if (!Array.isArray(parsed)) return { actions: [], slots: [] }
   const edges = new Set(doc.edges.map(e => e.id))
   const all = new Set<string>([...doc.buildings.map(b => b.id), ...doc.districts.map(d => d.id), ...edges])
   const out: WorldAction[] = []
+  const slots: number[] = []
   for (const step of parsed) {
     const action = cleanAction(step, all, edges, tally)
-    if (action) out.push(action)
+    slots.push(action ? out.push(action) - 1 : -1)
+  }
+  return { actions: out, slots }
+}
+
+/**
+ * Splits `text` into sentences and attaches each [A<n>] step to the sentence its marker sits in. `n`
+ * counts the model's raw steps: a marker for a dropped or missing step attaches nothing and is counted.
+ * A step no marker names plays with the last sentence, so it is never lost.
+ */
+function sentencesOf(text: string, parsed: Parsed, tally: { dropped: number }): AnswerSentence[] {
+  const out: AnswerSentence[] = []
+  const placed = new Set<number>()
+  for (const raw of text.match(SENTENCE_RE) ?? []) {
+    const actions: number[] = []
+    for (const m of raw.matchAll(STEP_RE)) {
+      const slot = parsed.slots[Number(m[1]) - 1] ?? -1
+      if (slot < 0) tally.dropped++
+      else if (!placed.has(slot)) { placed.add(slot); actions.push(slot) }
+    }
+    const clean = raw.replace(/\s*\[A\d+\]/g, '').trim()
+    if (clean !== '' || actions.length > 0) out.push({ text: clean, actions })
+  }
+  const rest = parsed.actions.map((_, i) => i).filter((i) => !placed.has(i))
+  if (rest.length > 0) {
+    if (out.length === 0) out.push({ text: '', actions: [] })
+    out[out.length - 1].actions.push(...rest)
   }
   return out
 }
@@ -112,14 +160,17 @@ const isUncited = (text: string): boolean => text !== '' && !new RegExp(MARKER_R
 /** Splits an agent answer into prose, validated world actions and the evidence it cites. Never throws. */
 export function parseAnswer(raw: string, doc: WorldDoc, labels: Record<string, Evidence> = {}): WorldAnswer {
   const input = typeof raw === 'string' ? raw : ''
-  const text = input.replace(BLOCK_RE, '').replace(DANGLING_RE, '').trim() // closed blocks, then a truncated opener
+  const marked = input.replace(BLOCK_RE, '').replace(DANGLING_RE, '').trim() // closed blocks, then a truncated opener
+  const text = marked.replace(/\s*\[A\d+\]/g, '').trim()
   try {
     const blocks = [...input.matchAll(BLOCK_RE)]
     const tally = { dropped: 0 }
-    const actions = blocks.length > 0 ? parseActions(blocks[0][1], doc, tally) : []
+    const parsed = blocks.length > 0 ? parseActions(blocks[0][1], doc, tally) : { actions: [], slots: [] }
+    const { actions } = parsed
+    const sentences = sentencesOf(marked, parsed, tally)
     const unsupported = actions.flatMap((a) => (a.type === 'fog' ? a.ids : []))
-    return { text, actions, evidence: collectEvidence(text, labels), dropped: tally.dropped, unsupported, uncited: isUncited(text) }
+    return { text, sentences, actions, evidence: collectEvidence(text, labels), dropped: tally.dropped, unsupported, uncited: isUncited(text) }
   } catch {
-    return { text, actions: [], evidence: [], dropped: 0, unsupported: [], uncited: isUncited(text) }
+    return { text, sentences: text === '' ? [] : [{ text, actions: [] }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: isUncited(text) }
   }
 }

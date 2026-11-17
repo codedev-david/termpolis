@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ANSWER_PROTOCOL, HONESTY_RULE, parseAnswer } from '../../src/shared/world/answerProtocol'
+import { ANSWER_PROTOCOL, HONESTY_RULE, MIN_SENTENCE_MS, REVEAL_MS_PER_WORD, parseAnswer, revealMs } from '../../src/shared/world/answerProtocol'
 import type { Evidence } from '../../src/shared/world/types'
 import minDoc from './fixtures/world.min.json'
 
@@ -32,7 +32,7 @@ describe('parseAnswer', () => {
 
   it('no block → actions [] and full text', () => {
     const r = parseAnswer('  Just prose.  ', doc)
-    expect(r).toEqual({ text: 'Just prose.', actions: [], evidence: [], dropped: 0, unsupported: [], uncited: true })
+    expect(r).toEqual({ text: 'Just prose.', sentences: [{ text: 'Just prose.', actions: [] }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: true })
   })
 
   it('malformed JSON → actions [], dropped 0, text intact', () => {
@@ -125,18 +125,20 @@ describe('parseAnswer', () => {
 
   it('a truncated (unclosed) fence is stripped from text, with no actions and dropped 0', () => {
     const r = parseAnswer('Partial answer.\n```world-actions\n[{"type":"focus","ids":["' + bId, doc)
-    expect(r).toEqual({ text: 'Partial answer.', actions: [], evidence: [], dropped: 0, unsupported: [], uncited: true })
+    expect(r).toEqual({ text: 'Partial answer.', sentences: [{ text: 'Partial answer.', actions: [] }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: true })
     const both = parseAnswer(wrap([{ type: 'reset' }]) + '\nMore.\n```world-actions\n[{"ty', doc)
     expect(both.text).toBe('Answer text.\n\nMore.')
     expect(both.actions).toEqual([{ type: 'reset' }])
   })
 
   it('never throws on hostile input', () => {
-    expect(parseAnswer(undefined as Any, doc)).toEqual({ text: '', actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
+    expect(parseAnswer(undefined as Any, doc)).toEqual({ text: '', sentences: [], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
     expect(parseAnswer(42 as Any, doc).text).toBe('')
     const bad = parseAnswer(wrap([{ type: 'focus', ids: [bId] }]), null as Any)
     expect(bad.actions).toEqual([])
     expect(bad.text).toBe('Answer text.')
+    expect(bad.sentences).toEqual([{ text: 'Answer text.', actions: [] }])
+    expect(parseAnswer(block('[{"type":"reset"}]'), null as Any).sentences).toEqual([])
     expect(parseAnswer('x [E1]', doc, null as Any).evidence).toEqual([])
   })
 
@@ -163,5 +165,68 @@ describe('parseAnswer', () => {
     expect(parseAnswer('It is fast.', doc, labels).uncited).toBe(true)
     expect(parseAnswer('It is fast. [E1]', doc, labels).uncited).toBe(false)
     expect(parseAnswer('', doc, labels).uncited).toBe(false)
+  })
+})
+
+describe('answer steps ([A<n>] markers)', () => {
+  const two = [{ type: 'focus', ids: [bId] }, { type: 'flow', edgeIds: [eId] }]
+  const fence = (steps: unknown): string => '\n' + block(JSON.stringify(steps))
+
+  it('ANSWER_PROTOCOL tells the model to place [A<n>]', () => {
+    expect(ANSWER_PROTOCOL).toContain('Put [A<n>] in your text where step n (1-based) should play.')
+  })
+
+  it('[A1] and [A2] markers attach steps to their sentences and are removed from the text', () => {
+    const a = parseAnswer('Typing goes to the PTY host. [A1] It then reaches the agent. [A2]' + fence(two), doc, labels)
+    expect(a.sentences).toEqual([{ text: 'Typing goes to the PTY host.', actions: [0] }, { text: 'It then reaches the agent.', actions: [1] }])
+    expect(a.text).toBe('Typing goes to the PTY host. It then reaches the agent.')
+    expect(a.dropped).toBe(0)
+  })
+
+  it('a marker before the full stop and a marker after an [E1] citation both stay in their sentence', () => {
+    const a = parseAnswer('It starts here [A1]. Then it ends [E1] [A2].' + fence(two), doc, labels)
+    expect(a.sentences.map((s) => s.actions)).toEqual([[0], [1]])
+    expect(a.sentences[1].text).toBe('Then it ends [E1].')
+  })
+
+  it('an out-of-range [A9] is dropped and counted', () => {
+    const a = parseAnswer('One. [A1] Two. [A9]' + fence(two), doc, labels)
+    expect(a.sentences).toEqual([{ text: 'One.', actions: [0] }, { text: 'Two.', actions: [1] }])
+    expect(a.dropped).toBe(1)
+    expect(parseAnswer('Only. [A0]', doc, labels).dropped).toBe(1)
+  })
+
+  it('[A<n>] indexes the raw steps: a step dropped as invalid attaches nothing and is counted', () => {
+    const steps = [{ type: 'focus', ids: ['nope'] }, { type: 'flow', edgeIds: [eId] }]
+    const a = parseAnswer('First. [A1] Second. [A2]' + fence(steps), doc, labels)
+    // Step 1 was dropped (1 for the id, 1 for the step), its marker is one more; step 2 is the only valid action.
+    expect(a.actions).toEqual([{ type: 'flow', edgeIds: [eId] }])
+    expect(a.sentences).toEqual([{ text: 'First.', actions: [] }, { text: 'Second.', actions: [0] }])
+    expect(a.dropped).toBe(3)
+  })
+
+  it('a step no marker names plays with the last sentence; a repeated marker plays its step once', () => {
+    const a = parseAnswer('One. [A1] Two.' + fence(two), doc, labels)
+    expect(a.sentences).toEqual([{ text: 'One.', actions: [0] }, { text: 'Two.', actions: [1] }])
+    const b = parseAnswer('One. [A1] Two. [A1]' + fence(two), doc, labels)
+    expect(b.sentences).toEqual([{ text: 'One.', actions: [0] }, { text: 'Two.', actions: [1] }])
+  })
+
+  it('an answer that is only markers or only a block keeps its steps', () => {
+    expect(parseAnswer('[A1]' + fence(two), doc, labels).sentences).toEqual([{ text: '', actions: [0, 1] }])
+    expect(parseAnswer(fence(two), doc, labels).sentences).toEqual([{ text: '', actions: [0, 1] }])
+    expect(parseAnswer('[A9]', doc, labels).sentences).toEqual([])
+  })
+
+  it('a decimal point does not end a sentence, and text without an end is one sentence', () => {
+    expect(parseAnswer('It is v1.5 now! Really', doc, labels).sentences.map((s) => s.text)).toEqual(['It is v1.5 now!', 'Really'])
+  })
+
+  it('revealMs: 70 ms a word, at least 600 ms, and 0 with reduced motion', () => {
+    expect(REVEAL_MS_PER_WORD).toBe(70)
+    expect(MIN_SENTENCE_MS).toBe(600)
+    expect(revealMs('Short one.', false)).toBe(600)
+    expect(revealMs('one two three four five six seven eight nine ten', false)).toBe(700)
+    expect(revealMs('one two three four five six seven eight nine ten', true)).toBe(0)
   })
 })

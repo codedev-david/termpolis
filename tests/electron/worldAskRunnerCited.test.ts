@@ -16,7 +16,7 @@ const run = async (output: string) => {
     agent: () => 'claude',
     runEnv: async () => ({ env: {} }),
     primer: async () => null,
-    client: { get: async () => ({ buildings: [], edges: [], districts: [], layers: { plan: [] } }), read: async () => ({ items: [], evidence: [] }) } as never
+    client: { get: async () => ({ buildings: [{ id: 'b1', members: ['src/a.ts'], how: [], why: [], claims: [] }], edges: [], districts: [], layers: { plan: [] } }), read: async () => ({ items: [], evidence: [] }) } as never
   })
   return runner.ask(REQ)
 }
@@ -24,7 +24,7 @@ const run = async (output: string) => {
 describe('askRunner cited labels', () => {
   it('cited holds the labels whose [E<n>] markers appear in the answer text, once each', async () => {
     const res = await run('See [E1] and again [E1], also [E7] which is unknown.')
-    expect(res).toMatchObject({ ok: true, cited: { E1: { kind: 'file', ref: 'src/a.ts' } } })
+    expect(res).toMatchObject({ ok: true, cited: { E1: { kind: 'file', ref: 'src/a.ts', items: ['b1'] } } })
     expect(Object.keys((res as { cited: object }).cited)).toEqual(['E1'])
   })
   it('cited is empty when the answer cites nothing', async () => {

@@ -2,15 +2,20 @@
 // markers are split out of it and become evidence chips, nothing is parsed as HTML.
 import { useState } from 'react'
 import type { WorldAnswer as Answer } from '../../../../shared/world/answerProtocol'
-import type { Evidence } from '../../../../shared/world/types'
+import type { CitedEvidence } from '../../../../shared/world/types'
 import { EvidenceView } from './EvidenceView'
 
 export interface WorldAnswerPanelProps {
   answer: Answer
-  cited: Record<string, Evidence>
+  cited: Record<string, CitedEvidence>
+  /** How many sentences are on show: the answer appears one sentence at a time. */
+  revealed: number
   onClose: () => void
   onReplay: () => void
-  onOpenPart: (id: string) => void
+  /** Opens the part's card; `highlight` (when not empty) names the parts to highlight with it. */
+  onOpenPart: (id: string, highlight: string[]) => void
+  /** The name of a building or edge, for the chip that cites it. */
+  partName: (id: string) => string | undefined
   /** True when the id is a building or edge in the loaded world. */
   isPart: (id: string) => boolean
 }
@@ -18,15 +23,26 @@ export interface WorldAnswerPanelProps {
 const MARKER = /(\[E\d+\])/
 const LABEL = /^\[(E\d+)\]$/
 
-export function WorldAnswerPanel({ answer, cited, onClose, onReplay, onOpenPart, isPart }: WorldAnswerPanelProps): JSX.Element {
+export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, onOpenPart, partName, isPart }: WorldAnswerPanelProps): JSX.Element {
   const [open, setOpen] = useState<Record<string, boolean>>({})
-  const parts = answer.text.split(MARKER)
+  const parts = answer.sentences.slice(0, revealed).map((x) => x.text).join(' ').split(MARKER)
   const shown = Object.keys(open).filter((k) => open[k])
 
   const click = (label: string): void => {
     const ev = cited[label]
-    if (isPart(ev.ref)) onOpenPart(ev.ref)
-    else setOpen((o) => ({ ...o, [label]: !o[label] }))
+    if (isPart(ev.ref)) onOpenPart(ev.ref, ev.items)
+    else {
+      setOpen((o) => ({ ...o, [label]: !o[label] }))
+      if (ev.items.length > 0) onOpenPart(ev.items[0], ev.items)
+    }
+  }
+
+  /** `E1`, or `E1 · <part name>` when the evidence points at a part. */
+  const chipText = (label: string): string => {
+    const ev = cited[label]
+    const id = isPart(ev.ref) ? ev.ref : ev.items[0]
+    const name = id === undefined ? undefined : partName(id)
+    return name === undefined ? label : `${label} · ${name}`
   }
 
   return (
@@ -44,7 +60,7 @@ export function WorldAnswerPanel({ answer, cited, onClose, onReplay, onOpenPart,
                 onClick={() => click(label)}
                 className="mx-0.5 px-1.5 rounded bg-[#0078d4]/30 text-[#4fc1ff] text-xs hover:bg-[#0078d4]/50"
               >
-                {label}
+                {chipText(label)}
               </button>
             )
           })}

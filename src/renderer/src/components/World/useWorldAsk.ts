@@ -3,10 +3,13 @@
 // The rolling `summary` (from main) is what carries the conversation from one question to the next.
 // Design mode (the key is design:<id>): each message is a change to the design, sent through
 // world:design-refine; the changed design goes back to the pane through `onDesign`, and the answer
-// is the designer's reply (no tour). A design needs no viewer: it can be changed from the 2D view.
+// is the designer's reply (no tour).
+// An answer arrives whole, so it is revealed one sentence at a time at reading pace and each
+// sentence's steps play as it appears (REVEAL_MS_PER_WORD). Reduced motion reveals it at once; a new
+// question, a replay, a dismissal and unmount all clear the pending reveal first. A design needs no viewer: it can be changed from the 2D view.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { WorldAnswer } from '../../../../shared/world/answerProtocol'
-import type { Evidence, WorldAction, WorldDoc } from '../../../../shared/world/types'
+import { revealMs, type WorldAnswer } from '../../../../shared/world/answerProtocol'
+import type { CitedEvidence, WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
 import { lumopolisModel } from './worldAgentModel'
 
@@ -23,7 +26,9 @@ export interface UseWorldAsk {
   state: AskState
   answer: WorldAnswer | null
   /** The evidence labels (E1, E2, ...) cited by the answer text. */
-  cited: Record<string, Evidence>
+  cited: Record<string, CitedEvidence>
+  /** How many of the answer's sentences are on show (they appear one by one at reading pace). */
+  revealed: number
   error: string | null
   /** True while the answer's actions (its tour) play in the viewer. */
   playing: boolean
@@ -39,15 +44,24 @@ export const REFINE_UNREACHABLE = "Lumopolis couldn't change the design. Try aga
 
 const noop = (): void => undefined
 
+function reducedMotion(): boolean {
+  try {
+    return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+  } catch {
+    return false
+  }
+}
+
 /** True for a design world's key. */
 export const isDesignKey = (key: string): boolean => key.startsWith('design:')
 
 export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string): UseWorldAsk {
   const [state, setState] = useState<AskState>('idle')
   const [answer, setAnswer] = useState<WorldAnswer | null>(null)
-  const [cited, setCited] = useState<Record<string, Evidence>>({})
+  const [cited, setCited] = useState<Record<string, CitedEvidence>>({})
   const [error, setError] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
+  const [revealed, setRevealed] = useState(0)
   const [cost, setCost] = useState<{ answer: number; session: number } | null>(null)
   const sessionTokens = useRef(0)
   const current = useRef<string | null>(null)
@@ -63,6 +77,15 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   const lastQ = useRef<string | null>(null)
   /** Bumped by every play (and a root change): only the latest play may clear `playing`. */
   const playGen = useRef(0)
+  /** The pending reveal steps of the answer on show. */
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
+  /** Stops the pending reveal: its timers, and the `playing` it would have cleared when it finished. */
+  const clearTimers = useCallback((): void => {
+    for (const t of timers.current) clearTimeout(t)
+    timers.current = []
+    playGen.current++
+    setPlaying(false)
+  }, [])
   /** Adds one finished answer's tokens to the session (a failed or cancelled ask adds nothing). */
   const spend = (tokens: number): void => {
     sessionTokens.current += tokens
@@ -75,19 +98,36 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     if (id !== null) void Promise.resolve(stopCurrent.current()).catch(noop)
   }, [])
 
-  const playOn = useCallback((v: WorldViewer, actions: WorldAction[]): void => {
+  /** Shows the answer sentence by sentence, playing each one's steps as it appears. */
+  const reveal = useCallback((v: WorldViewer, a: WorldAnswer): void => {
+    clearTimers()
     const gen = ++playGen.current
+    const reduced = reducedMotion()
+    const plays: Promise<void>[] = []
+    setRevealed(0)
     setPlaying(true)
     // Lifts the fog an earlier answer left; 'reset' would also close the card and move the camera.
     void Promise.resolve(v.apply({ type: 'fog', ids: [] })).catch(noop)
-    v.play(actions).catch(noop).then(() => { if (playGen.current === gen) setPlaying(false) })
-  }, [])
+    const step = (i: number): void => {
+      setRevealed(i + 1)
+      const steps = a.sentences[i].actions.map((n) => a.actions[n])
+      if (steps.length > 0) plays.push(v.play(steps).catch(noop))
+      if (i + 1 < a.sentences.length) {
+        timers.current.push(setTimeout(() => step(i + 1), revealMs(a.sentences[i].text, reduced)))
+        return
+      }
+      void Promise.all(plays).then(() => { if (playGen.current === gen) setPlaying(false) })
+    }
+    if (a.sentences.length === 0) setPlaying(false)
+    else step(0)
+  }, [clearTimers])
 
   const ask = useCallback((raw: string): void => {
     const q = raw.trim()
     const design = isDesignKey(root)
     if (q === '' || (!viewer && !design) || !root) return
     cancelCurrent()
+    clearTimers()
     viewer?.cancelActions()
     const askId = `ask-${Date.now()}-${++counter.current}`
     current.current = askId
@@ -111,8 +151,9 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
           summary.current = res.data.summary
           spend(res.data.tokens)
           onDesignRef.current?.(res.data.doc)
-          setAnswer({ text: res.data.text, actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
+          setAnswer({ text: res.data.text, sentences: [{ text: res.data.text, actions: [] }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
           setCited({})
+          setRevealed(1)
           setState('answered')
         },
         () => fail(REFINE_UNREACHABLE),
@@ -137,12 +178,12 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
         setAnswer(r.answer)
         setCited(r.cited)
         setState('answered')
-        playOn(v, r.answer.actions)
+        reveal(v, r.answer)
       } catch {
         fail(ASK_UNREACHABLE)
       }
     })()
-  }, [viewer, root, cancelCurrent, playOn])
+  }, [viewer, root, cancelCurrent, clearTimers, reveal])
 
   const cancel = useCallback((): void => {
     if (current.current === null) return
@@ -157,17 +198,19 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   const replay = useCallback((): void => {
     if (!viewer || !answer) return
     viewer.cancelActions()
-    playOn(viewer, answer.actions)
-  }, [viewer, answer, playOn])
+    reveal(viewer, answer)
+  }, [viewer, answer, reveal])
 
   const dismiss = useCallback((): void => {
+    clearTimers()
     setAnswer(null)
     setCited({})
     setError(null)
     setState('idle')
-  }, [])
+  }, [clearTimers])
 
   useEffect(() => cancelCurrent, [cancelCurrent])
+  useEffect(() => clearTimers, [clearTimers])
 
   // A different project: drop the old project's question, answer and conversation.
   const lastRoot = useRef(root)
@@ -175,17 +218,16 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     if (lastRoot.current === root) return
     lastRoot.current = root
     cancelCurrent()
+    clearTimers()
     summary.current = ''
     sessionTokens.current = 0
     setCost(null)
     lastQ.current = null
-    playGen.current++
-    setPlaying(false)
     setAnswer(null)
     setCited({})
     setError(null)
     setState('idle')
-  }, [root, cancelCurrent])
+  }, [root, cancelCurrent, clearTimers])
 
-  return { ask, cancel, retry, replay, dismiss, state, answer, cited, error, playing, cost }
+  return { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost }
 }

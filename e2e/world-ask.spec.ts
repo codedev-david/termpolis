@@ -12,9 +12,12 @@
  *   1. Lumopolis opens on a temp git project and draws its map.
  *   2. A question typed and sent with Enter shows the answer text and opens the building's card.
  *   3. Two questions in a row: only the second is answered.
- *   4. The renderer logged no console error and threw no page error.
+ *   5. An unsupported answer says so and leaves its building fogged.
+ *   6. The camera moves while the answer is still being revealed: the answer appears one sentence
+ *      at a time and the mock's [A1] and [A2] markers play its steps as their sentences appear.
+ *   7. The renderer logged no console error and threw no page error (last, so it covers every test).
  *
- * Labelling is off for those four, so the world has no claims (the labelling run is spawned
+ * Labelling is off for those, so the world has no claims (the labelling run is spawned
  * without a shell and cannot launch a Windows shim). A fifth test, skipped on Windows, restarts the
  * app with labelling on (the mock answers the labelling prompt with one claim per building citing
  * an excerpt), waits until the labelled world (saved after the code-labelled one) holds a claim,
@@ -298,8 +301,28 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
     await expect.poll(fogged, { timeout: 15_000 }).toEqual([])
   })
 
-  test('6. the renderer logged no console errors and threw no page errors', async () => {
-    expect(consoleErrors).toEqual([])
+  test('6. the camera moves while the answer is still being revealed', async () => {
+    const highlighted = (): Promise<string[]> => page.evaluate(
+      () => (window as unknown as { __termpolis_world?: { drawn(): { highlighted: string[] } } }).__termpolis_world?.drawn().highlighted ?? []
+    )
+    // A machine set to reduce motion reveals the whole answer at once: this test is about the paced reveal.
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    // The mock answers in two sentences, [A1] focusing a building and [A2] opening its card. The first
+    // one holds the question, so a long question keeps the second sentence back for seconds (70 ms a word).
+    await ask(`Please explain ${'alpha beta '.repeat(30)}to me?`)
+    await expect(answer()).toContainText('Answer to: Please explain', { timeout: 30_000 })
+    await expect(answer()).not.toContainText('The first part')
+    // The first sentence's step is already playing: its building is highlighted.
+    await expect.poll(async () => (await highlighted()).length, { timeout: 15_000 }).toBeGreaterThan(0)
+    expect((await highlighted())[0]).not.toBe('')
+    // Still only the first sentence: the second (and its [A2] card) has not appeared yet.
+    await expect(answer()).not.toContainText('The first part')
+    // Then the rest appears at reading pace.
+    await expect(answer()).toContainText('The first part is shown in the map', { timeout: 30_000 })
+    await expect(card()).toBeVisible({ timeout: 15_000 })
+    await expect(answer()).not.toContainText('[A1]')
+    await expect(answer()).not.toContainText('[A2]')
+    await page.emulateMedia({ reducedMotion: null })
   })
 })
 
@@ -311,6 +334,7 @@ test.describe.serial('Lumopolis Ask bar evidence chip (labelling on)', () => {
 
   test.beforeAll(async () => {
     // Same app again on a fresh user-data folder state, with the default labelling (on).
+    const before = consoleErrors.length
     await quitApp(app)
     fs.writeFileSync(
       path.join(userDataDir, 'session.json'),
@@ -319,8 +343,8 @@ test.describe.serial('Lumopolis Ask bar evidence chip (labelling on)', () => {
     fs.rmSync(path.join(userDataDir, 'world'), { recursive: true, force: true })
     fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: true }))
     await launchApp()
-    // Errors logged while the first app quit are not this test's.
-    consoleErrors.length = 0
+    // Errors logged while the first app quit and this one started are not a test's; the earlier tests' stay.
+    consoleErrors.splice(before)
   })
 
   test('an answer citing [E1] shows a chip, and clicking it shows the evidence', async () => {
@@ -354,6 +378,12 @@ test.describe.serial('Lumopolis Ask bar evidence chip (labelling on)', () => {
     await expect(evidence).toHaveText(/^file \S+/)
     await chip().click()
     await expect(evidence).toHaveCount(0)
+  })
+})
+
+// Last, so it covers every test above, including the labelled run.
+test.describe.serial('Lumopolis Ask bar console', () => {
+  test('7. the renderer logged no console errors and threw no page errors', async () => {
     expect(consoleErrors).toEqual([])
   })
 })
