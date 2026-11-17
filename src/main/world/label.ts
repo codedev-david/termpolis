@@ -15,6 +15,8 @@ import { buildLabelPrompt, LABEL_PROMPT_VERSION, MAX_PROMPT_CHARS, type BatchExc
 
 export interface BuildingLabel {
   name: string
+  /** True when the model's cited name replaced the code-derived one. */
+  nameInferred: boolean
   techLabel: string
   how: Claim[]
   why: Claim[]
@@ -43,6 +45,8 @@ export interface LabelDeps {
   llm: ((prompt: string) => Promise<string | null>) | null
   cache: { get(h: string): Promise<string | null>; set(h: string, v: string): Promise<void> }
   excerpt: (file: string, line?: number) => Promise<string>
+  /** Extra evidence for a building (commit subjects, docs lines, memory decisions), from main. Optional; a throw is ignored. */
+  context?: (members: string[]) => Promise<Evidence[]>
   /** Per-excerpt cap, default 1200. */
   maxExcerptChars?: number
 }
@@ -155,7 +159,7 @@ function fallbackFloors(members: string[]): Floor[] {
 }
 
 function fallbackBuilding(b: GroupBuilding): BuildingLabel {
-  return { name: b.name, techLabel: fallbackTechLabel(b), how: [], why: [], stack: [], floors: fallbackFloors(b.members) }
+  return { name: b.name, nameInferred: false, techLabel: fallbackTechLabel(b), how: [], why: [], stack: [], floors: fallbackFloors(b.members) }
 }
 
 function fallbackEdge(e: GroupEdge): EdgeLabel {
@@ -227,6 +231,30 @@ function claimsFrom(o: Json, key: string, evidenceOf: ReadonlyMap<string, Eviden
   return out
 }
 
+/** The valid evidence labels a `{ value, evidence }` field cites: only labels that were in this batch's prompt count. */
+function citations(raw: unknown, evidenceOf: ReadonlyMap<string, Evidence>): string[] {
+  const cites = own(raw, 'evidence')
+  return isStrArr(cites) ? [...new Set(cites)].filter((l) => evidenceOf.has(l)) : []
+}
+
+/** A cited text field: `{ value: string, evidence: ["E1"] }`. A bare string, a wrong type, or no valid citation: undefined
+ *  (the caller keeps the code-derived value). */
+function citedText(o: Json, key: string, max: number, ev: ReadonlyMap<string, Evidence>): string | undefined {
+  return citedOf(own(o, key), max, ev)
+}
+
+function citedOf(raw: unknown, max: number, ev: ReadonlyMap<string, Evidence>): string | undefined {
+  const v = own(raw, 'value')
+  if (!isStr(v) || v.trim() === '' || citations(raw, ev).length === 0) return undefined
+  return cap(v, max)
+}
+
+function citedList(o: Json, key: string, ev: ReadonlyMap<string, Evidence>): string[] | undefined {
+  const raw = own(o, key)
+  const v = own(raw, 'value')
+  return isStrArr(v) && citations(raw, ev).length > 0 ? shortList(v) : undefined
+}
+
 function textField(o: Json, key: string, max: number, into: Record<string, unknown>): void {
   const v = field(o, key, isStr)
   if (v !== undefined && v.trim() !== '') into[key] = cap(v, max)
@@ -248,9 +276,15 @@ function validBuilding(raw: unknown, b: GroupBuilding, ev: ReadonlyMap<string, E
   try {
     if (!isObj(raw)) throw new Reject()
     const out: Record<string, unknown> = {}
-    textField(raw, 'name', MAX_NAME, out)
-    textField(raw, 'techLabel', MAX_LABEL, out)
-    strList(raw, 'stack', out)
+    const name = citedText(raw, 'name', MAX_NAME, ev)
+    if (name !== undefined) {
+      out.name = name
+      out.nameInferred = name !== b.name
+    }
+    const techLabel = citedText(raw, 'techLabel', MAX_LABEL, ev)
+    if (techLabel !== undefined) out.techLabel = techLabel
+    const stack = citedList(raw, 'stack', ev)
+    if (stack) out.stack = stack
     const how = claimsFrom(raw, 'how', ev)
     if (how) out.how = how
     const why = claimsFrom(raw, 'why', ev)
@@ -276,8 +310,10 @@ function validEdge(raw: unknown, ev: ReadonlyMap<string, Evidence>): Partial<Edg
     if (!isObj(raw)) throw new Reject()
     const out: Record<string, unknown> = {}
     textField(raw, 'label', MAX_LABEL, out)
-    textField(raw, 'cargo', MAX_CARGO, out)
-    textField(raw, 'rate', MAX_LABEL, out)
+    const cargo = citedText(raw, 'cargo', MAX_CARGO, ev)
+    if (cargo !== undefined) out.cargo = cargo
+    const rate = citedText(raw, 'rate', MAX_LABEL, ev)
+    if (rate !== undefined) out.rate = rate
     strList(raw, 'tech', out)
     const how = claimsFrom(raw, 'how', ev)
     if (how) out.how = how
@@ -289,18 +325,14 @@ function validEdge(raw: unknown, ev: ReadonlyMap<string, Evidence>): Partial<Edg
   }
 }
 
-function validDistrict(raw: unknown): { name?: string; subtitle?: string } | null {
-  try {
-    if (!isObj(raw)) throw new Reject()
-    const out: { name?: string; subtitle?: string } = {}
-    const name = field(raw, 'name', isStr)
-    if (name !== undefined && name.trim() !== '') out.name = cap(name, MAX_NAME)
-    const sub = field(raw, 'subtitle', isStr)
-    if (sub !== undefined) out.subtitle = cap(sub, MAX_LABEL)
-    return out
-  } catch {
-    return null
-  }
+function validDistrict(raw: unknown, ev: ReadonlyMap<string, Evidence>): { name?: string; subtitle?: string } | null {
+  if (!isObj(raw)) return null
+  const out: { name?: string; subtitle?: string } = {}
+  const name = citedText(raw, 'name', MAX_NAME, ev)
+  if (name !== undefined) out.name = name
+  const sub = citedText(raw, 'subtitle', MAX_LABEL, ev)
+  if (sub !== undefined) out.subtitle = sub
+  return out
 }
 
 // ---------- batching ----------
@@ -341,6 +373,22 @@ async function collectExcerpts(
       const ref = c.line === undefined ? c.file : boundaryRef(c.file, c.line)
       excerpts.push({ label, ref, text })
       evidence.set(label, { kind: 'file', ref, excerpt: text })
+    }
+    // Commits, docs and memory decisions about this building, when main supplies them. A hook that
+    // throws costs only this evidence: the building is labelled from its file excerpts alone.
+    if (deps.context) {
+      try {
+        for (const e of await deps.context(b.members)) {
+          const text = (e.excerpt ?? '').slice(0, max)
+          if (text.trim() === '' || used + text.length > BATCH_EXCERPT_BUDGET) continue
+          used += text.length
+          const label = `E${excerpts.length + 1}`
+          excerpts.push({ label, ref: e.ref, text, ...(e.kind === 'file' ? {} : { kind: e.kind }) })
+          evidence.set(label, { kind: e.kind, ref: e.ref, excerpt: text })
+        }
+      } catch {
+        // file excerpts alone
+      }
     }
   }
   return { excerpts, evidence }
@@ -447,7 +495,7 @@ function applyReply(
   evidence: ReadonlyMap<string, Evidence>
 ): number {
   let accepted = 0
-  const dist = validDistrict(own(reply, 'district'))
+  const dist = validDistrict(own(reply, 'district'), evidence)
   if (dist) {
     labels.districts[batch.district.id] = { ...labels.districts[batch.district.id], ...dist }
     accepted += countFields(dist)
@@ -475,12 +523,14 @@ function applyReply(
     let n = 0
     for (const [term, def] of Object.entries(glossary)) {
       if (n === MAX_GLOSSARY) break
-      if (!isStr(def) || term.trim() === '' || def.trim() === '') continue
+      // A definition citing no excerpt of this batch is dropped: there is no code-derived glossary value to keep.
+      const text = citedOf(def, MAX_GLOSSARY_DEF, evidence)
+      if (text === undefined || term.trim() === '') continue
       const k = cap(term, MAX_NAME)
       if (RESERVED_TERMS.has(k)) continue
       n++
       if (!Object.hasOwn(labels.glossary, k)) {
-        labels.glossary[k] = cap(def, MAX_GLOSSARY_DEF)
+        labels.glossary[k] = text
         accepted++
       }
     }

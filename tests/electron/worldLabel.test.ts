@@ -14,6 +14,8 @@ import {
 import { buildLabelPrompt, fenceFor, LABEL_PROMPT_VERSION, MAX_PROMPT_CHARS } from '../../src/main/world/labelPrompt'
 
 const TICK = '`'
+/** A cited field, as the model must answer it. */
+const F = (value: unknown, ev: string | string[] = 'E1'): { value: unknown; evidence: string[] } => ({ value, evidence: Array.isArray(ev) ? ev : [ev] })
 
 function B(kind: Boundary['kind'], key: string, file: string, line = 1): Boundary {
   return { kind, key, side: 'provide', file, line }
@@ -52,18 +54,18 @@ function mkDeps(over: Partial<LabelDeps> = {}): LabelDeps & { store: Map<string,
 }
 
 const GOOD = JSON.stringify({
-  district: { name: 'Alpha Zone', subtitle: 'the a side' },
+  district: { name: F('Alpha Zone'), subtitle: F('the a side') },
   buildings: {
     a: {
-      name: 'Alpha Hub',
-      techLabel: 'Electron IPC',
-      stack: ['ts'],
+      name: F('Alpha Hub'),
+      techLabel: F('Electron IPC'),
+      stack: F(['ts']),
       how: [{ text: 'Sends over a channel.', evidence: ['E1', 'E3'] }],
       why: [{ text: 'Keeps the UI thin.', evidence: ['E2'], state: 'verified' }]
     }
   },
-  edges: { [edgeId({ from: 'a', to: 'b' })]: { label: 'chan', cargo: 'msg', how: [{ text: 'x', evidence: ['E1'] }] } },
-  glossary: { IPC: 'inter-process call' }
+  edges: { [edgeId({ from: 'a', to: 'b' })]: { label: 'chan', cargo: F('msg'), how: [{ text: 'x', evidence: ['E1'] }] } },
+  glossary: { IPC: F('inter-process call') }
 })
 
 describe('edgeId', () => {
@@ -125,7 +127,7 @@ describe('labelWorld', () => {
 
   it('glossary merges across batches; the first batch wins a collision', async () => {
     const llm = async (p: string): Promise<string> =>
-      JSON.stringify({ glossary: p.includes('DISTRICT "d1"') ? { X: 'first', Y: 'y' } : { X: 'second', Z: 'z' } })
+      JSON.stringify({ glossary: p.includes('DISTRICT "d1"') ? { X: F('first'), Y: F('y') } : { X: F('second'), Z: F('z') } })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
     expect(l.glossary).toEqual({ X: 'first', Y: 'y', Z: 'z' })
   })
@@ -151,9 +153,9 @@ describe('labelWorld', () => {
   it('caps claims and lengths', async () => {
     const many = Array.from({ length: 9 }, (_, i) => ({ text: `c${i}`, evidence: ['E1'] }))
     const reply = JSON.stringify({
-      district: { name: 'n'.repeat(200), subtitle: 's'.repeat(500) },
-      buildings: { a: { name: 'b'.repeat(200), techLabel: 't'.repeat(500), how: many, why: [{ text: 'w'.repeat(900), evidence: ['E1'] }] } },
-      glossary: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`t${i}`, 'd'.repeat(500)]))
+      district: { name: F('n'.repeat(200)), subtitle: F('s'.repeat(500)) },
+      buildings: { a: { name: F('b'.repeat(200)), techLabel: F('t'.repeat(500)), how: many, why: [{ text: 'w'.repeat(900), evidence: ['E1'] }] } },
+      glossary: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`t${i}`, F('d'.repeat(500))]))
     })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
     expect(l.districts.d1.name).toHaveLength(60)
@@ -170,9 +172,9 @@ describe('labelWorld', () => {
     const reply = JSON.stringify({
       district: { name: 5 },
       buildings: {
-        a: { name: 'Bad', how: 'not an array' },
-        b: { name: 'Fine', stack: ['x'] },
-        ghost: { name: 'Unknown id' }
+        a: { name: F('Bad'), how: 'not an array' },
+        b: { name: F('Fine'), stack: F(['x']) },
+        ghost: { name: F('Unknown id') }
       },
       edges: { [edgeId({ from: 'a', to: 'b' })]: { label: 7 }, nope: { label: 'unknown' } }
     })
@@ -199,7 +201,6 @@ describe('labelWorld', () => {
     ['claim not an object', { how: ['x'] }],
     ['claim text not a string', { how: [{ text: 1, evidence: ['E1'] }] }],
     ['evidence not strings', { how: [{ text: 'x', evidence: [1] }] }],
-    ['stack not strings', { stack: [1] }],
     ['entity not an object', 'oops'],
     ['floors not an array', { floors: 'x' }],
     ['floor not an object', { floors: [5] }],
@@ -208,7 +209,7 @@ describe('labelWorld', () => {
     ['floor members wrong', { floors: [{ name: 'f', tech: [], members: 'x' }] }],
     ['floor member not in building', { floors: [{ name: 'f', tech: [], members: ['nope.ts'] }] }]
   ])('building with %s falls back entirely', async (_n, raw) => {
-    const reply = JSON.stringify({ buildings: { a: typeof raw === 'string' ? raw : { name: 'Model Name', ...raw } } })
+    const reply = JSON.stringify({ buildings: { a: typeof raw === 'string' ? raw : { name: F('Model Name'), ...raw } } })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
     expect(l.buildings.a.name).toBe('a-name')
   })
@@ -222,12 +223,12 @@ describe('labelWorld', () => {
   it('accepts valid floors and edge fields, ignoring empty strings', async () => {
     const e = edgeId({ from: 'a', to: 'b' })
     const reply = JSON.stringify({
-      district: { name: ' ', subtitle: 'sub' },
+      district: { name: F(' '), subtitle: F('sub') },
       buildings: {
-        a: { name: ' ', techLabel: '', stack: ['x', ' '], floors: [{ name: 'Core', tech: ['ts'], members: ['src/a/one.ts'] }] }
+        a: { name: F(' '), techLabel: F(''), stack: F(['x', ' ']), floors: [{ name: 'Core', tech: ['ts'], members: ['src/a/one.ts'] }] }
       },
-      edges: { [e]: { cargo: 'c', rate: '2/s', tech: ['http', ' '], why: [{ text: 'y', evidence: ['E2'] }], label: ' ' } },
-      glossary: { '': 'x', t: '', u: 5 }
+      edges: { [e]: { cargo: F('c'), rate: F('2/s'), tech: ['http', ' '], why: [{ text: 'y', evidence: ['E2'] }], label: ' ' } },
+      glossary: { '': F('x'), t: F(''), u: 5 }
     })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
     expect(l.districts.d1).toEqual({ name: 'Alpha', subtitle: 'sub' })
@@ -259,6 +260,7 @@ describe('labelWorld', () => {
     expect(l.districts).toEqual({ d1: { name: 'Alpha', subtitle: '' }, d2: { name: 'Beta', subtitle: '' } })
     expect(l.buildings.a).toEqual({
       name: 'a-name',
+      nameInferred: false,
       techLabel: 'IPC',
       how: [],
       why: [],
@@ -317,7 +319,7 @@ describe('labelWorld', () => {
   })
 
   it('llm timeout/rejection behaves like null for that batch only', async () => {
-    const reply2 = JSON.stringify({ district: { name: 'Beta Zone' } })
+    const reply2 = JSON.stringify({ district: { name: F('Beta Zone') } })
     const llm = vi.fn(async (p: string) => (p.includes('DISTRICT "d1"') ? Promise.reject(new Error('boom')) : reply2))
     const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
     expect(l.districts.d1.name).toBe('Alpha')
@@ -570,7 +572,7 @@ describe('fix round 1', () => {
     const bads = [
       '{}',
       JSON.stringify({ buildings: { a: { name: 5 } }, district: { name: 1 }, glossary: { x: 1 } }),
-      JSON.stringify({ buildings: { zzz: { name: 'x' } } })
+      JSON.stringify({ buildings: { zzz: { name: F('x') } } })
     ]
     for (const out of bads) {
       const deps = mkDeps({ llm: vi.fn(async () => out) })
@@ -603,7 +605,7 @@ describe('fix round 1', () => {
 
   it('fence parsing is linear: an unclosed fence with huge whitespace is fast', async () => {
     const big = ' '.repeat(100_000)
-    const raw = TICK.repeat(3) + 'json' + big + '{"district":{"name":"Fast"}}' + big
+    const raw = TICK.repeat(3) + 'json' + big + '{"district":{"name":{"value":"Fast","evidence":["E1"]}}}' + big
     const t0 = Date.now()
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => raw }))
     expect(Date.now() - t0).toBeLessThan(200)
@@ -615,7 +617,7 @@ describe('fix round 1', () => {
   })
 
   it('a closed fence without a language tag parses', async () => {
-    const raw = TICK.repeat(3) + '\n' + JSON.stringify({ district: { name: 'Closed' } }) + '\n' + TICK.repeat(3) + '\n'
+    const raw = TICK.repeat(3) + '\n' + JSON.stringify({ district: { name: F('Closed') } }) + '\n' + TICK.repeat(3) + '\n'
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => raw }))
     expect(l.districts.d1.name).toBe('Closed')
   })
@@ -644,8 +646,8 @@ describe('fix round 1', () => {
     const e = edgeId({ from: 'a', to: 'b' })
     const items = [...Array.from({ length: 12 }, (_, i) => `i${i}`), 'z'.repeat(41)]
     const reply = JSON.stringify({
-      buildings: { a: { stack: items, floors: [{ name: 'f', tech: items, members: ['src/a/one.ts'] }] } },
-      edges: { [e]: { tech: ['y'.repeat(41), ...items], cargo: 'c'.repeat(90) } }
+      buildings: { a: { stack: F(items), floors: [{ name: 'f', tech: items, members: ['src/a/one.ts'] }] } },
+      edges: { [e]: { tech: ['y'.repeat(41), ...items], cargo: F('c'.repeat(90)) } }
     })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
     expect(l.buildings.a.stack).toEqual(items.slice(0, 8))
@@ -744,7 +746,7 @@ describe('fix round 1', () => {
     })
     expect(bare.length).toBeGreaterThan(MAX_PROMPT_CHARS)
     const cacheGet = vi.fn(async () => null)
-    const llm = vi.fn(async () => JSON.stringify({ district: { name: 'Named' }, buildings: { b0: { name: 'Model name' } } }))
+    const llm = vi.fn(async () => JSON.stringify({ district: { name: F('Named') }, buildings: { b0: { name: F('Model name') } } }))
     const l = await labelWorld(g, mkDeps({ llm, cache: { get: cacheGet, set: async () => undefined } }))
     // Only the small district asked; every prompt that left was within the cap.
     expect(llm).toHaveBeenCalledTimes(1)
@@ -758,10 +760,10 @@ describe('fix round 1', () => {
 
   it('keys from the model like __proto__ and constructor never reach a prototype or the glossary', async () => {
     const reply =
-      '{"__proto__": {"polluted": "yes"}, "district": {"name": "Alpha Zone", "__proto__": {"polluted": "d"}},' +
-      ' "buildings": {"__proto__": {"name": "Evil"}, "constructor": {"name": "Evil2"}, "a": {"name": "Alpha Hub", "__proto__": {"name": "x"}}},' +
+      '{"__proto__": {"polluted": "yes"}, "district": {"name": {"value": "Alpha Zone", "evidence": ["E1"]}, "__proto__": {"polluted": "d"}},' +
+      ' "buildings": {"__proto__": {"name": "Evil"}, "constructor": {"name": "Evil2"}, "a": {"name": {"value": "Alpha Hub", "evidence": ["E1"]}, "__proto__": {"name": "x"}}},' +
       ' "edges": {"__proto__": {"label": "Evil"}},' +
-      ' "glossary": {"__proto__": "evil", "constructor": "evil", "prototype": "evil", "IPC": "inter-process call"}}'
+      ' "glossary": {"__proto__": {"value": "evil", "evidence": ["E1"]}, "constructor": {"value": "evil", "evidence": ["E1"]}, "prototype": {"value": "evil", "evidence": ["E1"]}, "IPC": {"value": "inter-process call", "evidence": ["E1"]}}}'
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async (p: string) => (p.includes('DISTRICT "d1"') ? reply : '{}') }))
     expect(({} as Record<string, unknown>).polluted).toBeUndefined()
     expect(Object.prototype).not.toHaveProperty('polluted')
@@ -813,5 +815,126 @@ describe('task 8 fix round 1', () => {
     expect(p).not.toContain(JSON.stringify(ghostId))
     expect(l.edges[inId].label).toBe('Feeds a')
     expect(l.edges[ghostId].label).toBe('imports')
+  })
+})
+
+describe('citations on every field (task 6)', () => {
+  const e = edgeId({ from: 'a', to: 'b' })
+
+  it('an uncited name, subtitle, techLabel, rate, cargo, stack or glossary line is dropped for the code-derived value', async () => {
+    const bare = JSON.stringify({
+      district: { name: 'Plain', subtitle: 'plain' },
+      buildings: { a: { name: 'Plain', techLabel: 'Plain', stack: ['x'] } },
+      edges: { [e]: { cargo: 'plain', rate: 'plain' } },
+      glossary: { T: 'plain' }
+    })
+    const noIds = JSON.stringify({
+      district: { name: F('N', []), subtitle: F('S', ['E99']) },
+      buildings: { a: { name: F('N', []), techLabel: F('T', ['E99']), stack: F(['x'], []) } },
+      edges: { [e]: { cargo: F('c', ['E99']), rate: F('r', []) } },
+      glossary: { T: F('t', ['E99']), U: { value: 5, evidence: ['E1'] }, V: { value: 'v', evidence: 'E1' } }
+    })
+    for (const reply of [bare, noIds]) {
+      const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
+      expect(l.districts.d1).toEqual({ name: 'Alpha', subtitle: '' })
+      expect(l.buildings.a).toMatchObject({ name: 'a-name', nameInferred: false, techLabel: 'IPC', stack: [] })
+      expect(l.edges[e]).toMatchObject({ cargo: 'messages', rate: '' })
+      expect(l.glossary).toEqual({})
+    }
+  })
+
+  it('a cited AI rename sets nameInferred; a cited name equal to the code name does not', async () => {
+    const reply = JSON.stringify({ buildings: { a: { name: F('Alpha Hub') }, b: { name: F('b-name') } } })
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
+    expect(l.buildings.a).toMatchObject({ name: 'Alpha Hub', nameInferred: true })
+    expect(l.buildings.b).toMatchObject({ name: 'b-name', nameInferred: false })
+  })
+
+  it('keeps only the valid labels of a citation', async () => {
+    const reply = JSON.stringify({ buildings: { a: { name: F('Alpha Hub', ['E99', 'E1', 'E1']) } } })
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
+    expect(l.buildings.a.name).toBe('Alpha Hub')
+  })
+
+  it('asks for evidence on every field in the prompt, and a cached pre-citation reply is not reused', async () => {
+    const llm = vi.fn(async (_p: string) => '{}')
+    await labelWorld(twoDistricts(), mkDeps({ llm }))
+    expect(llm.mock.calls[0][0]).toContain('where F is { "value": string, "evidence": ["E1"] }')
+    expect(LABEL_PROMPT_VERSION).toBe('world-label-v2')
+  })
+})
+
+describe('context evidence (task 6)', () => {
+  const ev = (n: number): { kind: 'commit'; ref: string; excerpt: string }[] =>
+    Array.from({ length: n }, (_, i) => ({ kind: 'commit', ref: `abc123${i}`, excerpt: `commit subject ${i}` }))
+
+  it('the batch prompt carries commit, docs and memory evidence from context, within BATCH_EXCERPT_BUDGET', async () => {
+    const context = vi.fn(async (members: string[]) =>
+      members[0] === 'src/a/one.ts'
+        ? [
+            { kind: 'commit' as const, ref: 'abc1234', excerpt: 'wire the channel' },
+            { kind: 'file' as const, ref: 'docs/a.md:3', excerpt: 'one.ts sends the message' },
+            { kind: 'memory' as const, ref: 'mem-1', excerpt: 'we chose IPC for isolation' },
+            { kind: 'commit' as const, ref: 'big', excerpt: 'x'.repeat(5000) },
+            { kind: 'commit' as const, ref: 'blank', excerpt: '  ' },
+            { kind: 'commit' as const, ref: 'none' }
+          ]
+        : []
+    )
+    const llm = vi.fn(async (_p: string) =>
+      JSON.stringify({ buildings: { a: { name: F('Alpha Hub', 'E4'), techLabel: F('IPC', 'E5') }, b: { name: F('Nope', 'E9') } } })
+    )
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm, context, maxExcerptChars: 100 }))
+    const p = llm.mock.calls[0][0]
+    expect(p).toContain('commit "abc1234"')
+    expect(p).toContain('wire the channel')
+    expect(p).toContain('[E5] "docs/a.md:3"')
+    expect(p).toContain('memory "mem-1"')
+    expect(p).not.toContain('"blank"')
+    expect(p).not.toContain('"none"')
+    expect(l.buildings.a).toMatchObject({ name: 'Alpha Hub', nameInferred: true })
+    expect(l.buildings.b.name).toBe('b-name')
+    expect(context).toHaveBeenCalledTimes(3)
+  })
+
+  it('the batch excerpt budget bounds context evidence', async () => {
+    const big = Array.from({ length: 30 }, (_, i) => ({ kind: 'memory' as const, ref: `m${i}`, excerpt: 'y'.repeat(1200) }))
+    const llm = vi.fn(async (_p: string) => '{}')
+    await labelWorld(twoDistricts(), mkDeps({ llm, context: async () => big }))
+    const p = llm.mock.calls[0][0]
+    const used = [...p.matchAll(/y{1200}/g)].length * 1200
+    expect(used).toBeLessThanOrEqual(BATCH_EXCERPT_BUDGET)
+    expect(used).toBeGreaterThan(0)
+  })
+
+  it('a context hook that throws or rejects labels from file excerpts alone', async () => {
+    const llm = vi.fn(async (_p: string) => JSON.stringify({ buildings: { a: { name: F('Alpha Hub') } } }))
+    for (const context of [async () => Promise.reject(new Error('boom')), () => { throw new Error('sync') }, async () => 5 as never]) {
+      const l = await labelWorld(twoDistricts(), mkDeps({ llm, context }))
+      expect(l.buildings.a.name).toBe('Alpha Hub')
+      expect(llm.mock.calls.map((c) => c[0]).some((x) => x.includes('[E1] "src/a/one.ts"'))).toBe(true)
+    }
+  })
+
+  it('a new commit changes the cache key of the buildings it touches only', async () => {
+    const deps = mkDeps({ llm: vi.fn(async () => GOOD) })
+    await labelWorld(twoDistricts(), { ...deps, context: async (m) => (m[0] === 'src/a/one.ts' ? ev(1) : []) })
+    expect(deps.llm).toHaveBeenCalledTimes(2)
+    await labelWorld(twoDistricts(), { ...deps, context: async (m) => (m[0] === 'src/a/one.ts' ? ev(1) : []) })
+    expect(deps.llm).toHaveBeenCalledTimes(2)
+    // d1 holds building a (new commit): asked again; d2 is unchanged: still cached.
+    await labelWorld(twoDistricts(), { ...deps, context: async (m) => (m[0] === 'src/a/one.ts' ? ev(2) : []) })
+    expect(deps.llm).toHaveBeenCalledTimes(3)
+  })
+
+  it('a batch prompt gives non-file evidence its kind', () => {
+    const p = buildLabelPrompt({
+      district: { id: 'd', name: 'D' },
+      buildings: [],
+      edges: [],
+      excerpts: [{ label: 'E1', ref: 'abc1234', text: 'subject', kind: 'commit' }, { label: 'E2', ref: 'a.ts', text: 'code' }]
+    })
+    expect(p).toContain('[E1] commit "abc1234"')
+    expect(p).toContain('[E2] "a.ts"')
   })
 })

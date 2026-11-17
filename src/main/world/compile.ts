@@ -136,7 +136,7 @@ function linkTests(snap: GraphSnapshot, g: Grouping): Record<string, string[]> {
 }
 
 function fromPrevious(b: WorldDoc['buildings'][number]): BuildingLabel {
-  return { name: b.name, techLabel: b.techLabel, how: b.how, why: b.why, stack: b.stack, floors: b.floors }
+  return { name: b.name, nameInferred: b.nameState === 'inferred', techLabel: b.techLabel, how: b.how, why: b.why, stack: b.stack, floors: b.floors }
 }
 
 function edgeFromPrevious(e: WorldEdge): EdgeLabel {
@@ -417,7 +417,7 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
       status: statusFor(b.members, runs, testsByMember),
       members: b.members,
       claims: testClaims(b.members, runs, testsByMember),
-      nameState: l.name === b.name ? 'observed' : 'inferred'
+      nameState: l.nameInferred ? 'inferred' : 'observed'
     }
   })
   const ext = externalsOf(g)

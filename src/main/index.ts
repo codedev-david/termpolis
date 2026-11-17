@@ -340,6 +340,7 @@ import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
 import { cheapModelFor, makeWorldLlm } from './world/label'
+import { createLabelContext, GIT_TIMEOUT_MS } from './world/labelContext'
 import { ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -2656,6 +2657,14 @@ const worldDesigner = createDesigner({
   designsDir: join(worldUserData, 'world', 'designs'),
   newId: () => randomUUID(),
 })
+const worldLabelContext = createLabelContext({
+  git: (args, cwd) => safeGitAsync(args, { cwd, timeout: GIT_TIMEOUT_MS }),
+  // The brain's decisions that name the building; none while it is unavailable or locked (the context hook treats a throw as none).
+  memory: async (query) => {
+    const rows = await correctedSearch({ query, limit: 3, kind: 'decision' })
+    return rows.map((r) => ({ id: r.id, text: r.content }))
+  },
+})
 const worldClient = createWorldClient(undefined, {
   userDataPath: () => app.getPath('userData'),
   // A project's linked design (plan versus built): registry entry -> linkedDesign -> the stored design.
@@ -2679,6 +2688,8 @@ const worldClient = createWorldClient(undefined, {
       },
     })(prompt)
   },
+  // Evidence a label may cite beyond the files: commit subjects, markdown docs lines, and the brain's decisions.
+  context: worldLabelContext,
   head: async (root) => {
     try {
       const head = (await safeGitAsync(['rev-parse', 'HEAD'], { cwd: root, timeout: 3000 })).trim()

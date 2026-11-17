@@ -11,6 +11,7 @@ import {
   EXCERPT_LINES,
   MAX_GLOB_RESULTS,
   MAX_READ_LIMIT,
+  cleanEvidence,
   createWorldHost,
   excerptOf,
   filterWorld,
@@ -559,6 +560,55 @@ describe('createWorldHost', () => {
     expect(readFile).toHaveBeenCalledWith('/repo/src/a.ts')
   })
 
+  it('labelling asks main for context through context / context-result, and a bad or missing answer is no evidence', async () => {
+    const got: unknown[] = []
+    let pass = 0
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      if (pass++ === 0) {
+        await (deps.label.llm as (p: string) => Promise<string | null>)('first')
+        return doc(input.projectKey)
+      }
+      const ctx = deps.label.context as (m: string[]) => Promise<unknown>
+      got.push(await ctx(['a.ts']))
+      got.push(await ctx(['b.ts']))
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile, contextTimeoutMs: 400 })
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(h.out.some((m) => m.kind === 'context')).toBe(true))
+    const ask1 = h.out.find((m) => m.kind === 'context') as Extract<WorldHostResponse, { kind: 'context' }>
+    expect(ask1).toMatchObject({ kind: 'context', projectKey: 'k1', members: ['a.ts'] })
+    await h.send({ kind: 'context-result', id: 999, evidence: [] }) // unknown id: ignored
+    const good = { kind: 'commit', ref: 'abc1234', excerpt: 'subject' }
+    await h.send({
+      kind: 'context-result',
+      id: ask1.id,
+      evidence: [good, null, { kind: 'trace', ref: 'x', excerpt: 'y' }, { kind: 'file', ref: 1, excerpt: 'y' }, { kind: 'file', ref: 'f' }, { ...good, extra: 1 }] as never
+    })
+    // the second request is never answered: it times out as no evidence
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+    expect(got).toEqual([[good, good], []])
+  })
+
+  it('cleanEvidence keeps whole file, commit and memory items and at most 11', () => {
+    expect(cleanEvidence('x')).toEqual([])
+    const many = Array.from({ length: 20 }, (_, i) => ({ kind: 'memory', ref: `m${i}`, excerpt: 't' }))
+    expect(cleanEvidence(many)).toHaveLength(11)
+  })
+
+  it('a compile with labelling off offers no context hook', async () => {
+    let seen: CompileDeps['label'] | null = null
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      seen = deps.label
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile })
+    await h.init(false)
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect((seen as CompileDeps['label'] | null)?.context).toBeUndefined()
+  })
+
   it('an unanswered labelling request times out as null', async () => {
     const answers: (string | null)[] = []
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
@@ -714,7 +764,7 @@ describe('createWorldHost', () => {
         const pinned = Object.fromEntries(Object.keys(world.layout.positions).map((id) => [id, [999, 0, 999] as [number, number, number]]))
         return { ...world, layout: { ...world.layout, positions: pinned } }
       })
-      const h = harness({ compile, llmTimeoutMs: 5 }, store)
+      const h = harness({ compile, llmTimeoutMs: 5, contextTimeoutMs: 5 }, store)
       await h.init(true)
       await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
       await vi.waitFor(() => expect(store.saves).toHaveLength(2))

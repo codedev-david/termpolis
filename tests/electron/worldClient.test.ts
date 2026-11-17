@@ -358,6 +358,52 @@ describe('createWorldClient', () => {
     await flush()
   })
 
+  it('worldClient relays context requests from the host to the main-side hook', async () => {
+    const context = vi.fn(async (_root: string, members: string[]) => {
+      if (members[0] === 'throw') throw new Error('brain down')
+      if (members[0] === 'junk') return 5 as never
+      return [{ kind: 'commit' as const, ref: 'abc1234', excerpt: `about ${members.join(',')}` }]
+    })
+    const { client, spawned } = setup({ context })
+    await client.compile(ROOT)
+    const t = spawned[0]
+    t.emit({ kind: 'context', id: 1, projectKey: KEY, members: ['a.ts', 7 as never] })
+    t.emit({ kind: 'context', id: 2, projectKey: KEY, members: ['throw'] })
+    t.emit({ kind: 'context', id: 3, projectKey: KEY, members: ['junk'] })
+    t.emit({ kind: 'context', id: 4, projectKey: 'unknown', members: ['a.ts'] })
+    t.emit({ kind: 'context', id: 5, projectKey: KEY, members: 'nope' as never })
+    await vi.waitFor(() => expect(t.posted.filter((m) => m.kind === 'context-result')).toHaveLength(5))
+    const answers = t.posted.filter((m) => m.kind === 'context-result')
+    expect(answers).toEqual(
+      expect.arrayContaining([
+        { kind: 'context-result', id: 1, evidence: [{ kind: 'commit', ref: 'abc1234', excerpt: 'about a.ts' }] },
+        { kind: 'context-result', id: 2, evidence: [] },
+        { kind: 'context-result', id: 3, evidence: [] },
+        { kind: 'context-result', id: 4, evidence: [] },
+        { kind: 'context-result', id: 5, evidence: [] }
+      ])
+    )
+    expect(context).toHaveBeenCalledWith(ROOT, ['a.ts'])
+
+    const plain = setup()
+    await plain.client.compile(ROOT)
+    plain.spawned[0].emit({ kind: 'context', id: 7, projectKey: KEY, members: ['a.ts'] })
+    await vi.waitFor(() => expect(plain.spawned[0].posted).toContainEqual({ kind: 'context-result', id: 7, evidence: [] }))
+
+    // labelling off: main reads nothing
+    let on = false
+    const off = setup({ context, labelling: () => on })
+    await off.client.compile(ROOT)
+    off.spawned[0].emit({ kind: 'context', id: 8, projectKey: KEY, members: ['a.ts'] })
+    await vi.waitFor(() => expect(off.spawned[0].posted).toContainEqual({ kind: 'context-result', id: 8, evidence: [] }))
+    on = true
+
+    // a host that died while main looked: the answer is dropped quietly
+    t.throwOnPost = true
+    t.emit({ kind: 'context', id: 9, projectKey: KEY, members: ['a.ts'] })
+    await flush()
+  })
+
   it('turning labelling off mid-session answers the next labelling request with null, without asking the model', async () => {
     let on = true
     const llm = vi.fn(async () => 'label')

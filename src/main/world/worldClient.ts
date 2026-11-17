@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url'
 import { app, utilityProcess } from 'electron'
 import { graphKeyForRoot, graphSnapshot, type GraphSnapshot } from '../codeGraph'
 import { killUtility } from '../utilityKill'
-import type { Claim, WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
+import type { Claim, Evidence, WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
 import type { SerializedError, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
 import { worldFileName } from './worldStore'
 import { linkedPlanStamp, planStamp } from '../../shared/world/reconcile'
@@ -32,6 +32,9 @@ export interface WorldClientOptions {
   labelling?: () => boolean
   /** Runs one labelling prompt for the project at `root`. Absent, or throwing, the host labels from code. */
   llm?: (root: string, prompt: string) => Promise<string | null>
+  /** Evidence about a building's files (commit subjects, docs lines, memory decisions) for labelling, for the project at
+   *  `root`. Absent, or throwing: labelling uses file excerpts alone. */
+  context?: (root: string, members: string[]) => Promise<Evidence[]>
   /** The repository revision stamped on a world. Default: `{ head: '', dirty: false }`. */
   head?: (root: string) => Promise<WorldHead>
   /** The code-graph snapshot posted to the host. Default: the structure-only
@@ -160,6 +163,24 @@ export function createWorldClient(
     }
   }
 
+  const answerContext = async (tr: WorldHostTransport, id: number, projectKey: string, members: unknown): Promise<void> => {
+    let evidence: Evidence[] = []
+    const root = roots.get(projectKey)
+    if (opts.context && root !== undefined && labelling() !== false && Array.isArray(members)) {
+      try {
+        const r = await opts.context(root, members.filter((x): x is string => typeof x === 'string'))
+        evidence = Array.isArray(r) ? r : []
+      } catch {
+        evidence = []
+      }
+    }
+    try {
+      tr.postMessage({ kind: 'context-result', id, evidence })
+    } catch {
+      // the host went away while main looked; its exit already failed the compile
+    }
+  }
+
   const onMessage = (tr: WorldHostTransport, m: WorldHostResponse): void => {
     if (current !== tr || !m || typeof m !== 'object') return
     switch (m.kind) {
@@ -194,6 +215,9 @@ export function createWorldClient(
         return
       case 'llm':
         void answerLlm(tr, m.id, m.projectKey, m.prompt)
+        return
+      case 'context':
+        void answerContext(tr, m.id, m.projectKey, m.members)
         return
     }
   }

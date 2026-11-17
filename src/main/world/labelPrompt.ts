@@ -3,7 +3,7 @@
 // Pure: no fs, no Electron.
 
 /** Bump to invalidate every cached label reply (the prompt text itself is hashed too). */
-export const LABEL_PROMPT_VERSION = 'world-label-v1'
+export const LABEL_PROMPT_VERSION = 'world-label-v2'
 
 /** The whole prompt travels on a command line; Windows caps that near 32k chars. */
 export const MAX_PROMPT_CHARS = 28_000
@@ -20,6 +20,8 @@ export interface BatchExcerpt {
   label: string
   /** Where the text came from: a file, or `file:line` for a boundary. */
   ref: string
+  /** Set for evidence that is not a file excerpt: a `commit` subject or a `memory` decision. */
+  kind?: string
   text: string
 }
 
@@ -62,7 +64,7 @@ export function buildLabelPrompt(batch: LabelBatch): string {
   ]
   for (const e of batch.excerpts) {
     const fence = fenceFor(e.text)
-    lines.push(`[${e.label}] ${meta(e.ref)}`, fence, e.text, fence)
+    lines.push(`[${e.label}] ${e.kind ? `${e.kind} ` : ''}${meta(e.ref)}`, fence, e.text, fence)
   }
   if (batch.excerpts.length === 0) lines.push('(none)')
   lines.push('', `DISTRICT ${meta(batch.district.id)}: ${meta(batch.district.name)}`, '', 'BUILDINGS')
@@ -82,15 +84,16 @@ export function buildLabelPrompt(batch: LabelBatch): string {
     '',
     'Answer with JSON only (no prose; a ```json fence is tolerated) in exactly this shape. Omit any field you cannot support.',
     '{',
-    '  "district": { "name": string, "subtitle": string },',
-    '  "buildings": { "<building id>": { "name": string, "techLabel": string, "stack": string[],',
+    '  "district": { "name": F, "subtitle": F },',
+    '  "buildings": { "<building id>": { "name": F, "techLabel": F, "stack": { "value": string[], "evidence": ["E1"] },',
     '    "how": [{ "text": string, "evidence": ["E1"] }], "why": [{ "text": string, "evidence": ["E2"] }],',
     '    "floors": [{ "name": string, "tech": string[], "members": string[] }] } },',
-    '  "edges": { "<edge id>": { "label": string, "cargo": string, "tech": string[], "rate": string,',
+    '  "edges": { "<edge id>": { "label": string, "tech": string[], "cargo": F, "rate": F,',
     '    "how": [{ "text": string, "evidence": ["E1"] }], "why": [{ "text": string, "evidence": ["E1"] }] } },',
-    '  "glossary": { "<term>": "<one-line definition>" }',
+    '  "glossary": { "<term>": F }',
     '}',
-    'Rules: every claim in how and why must cite at least one excerpt label from the list above in "evidence"; a claim with no valid label is discarded. Use only the ids listed above. Floor members must be files of that building.'
+    'where F is { "value": string, "evidence": ["E1"] }.',
+    'Rules: every field marked F, and every claim in how and why, must cite at least one excerpt label from the list above in "evidence". Cite only what an excerpt supports. A field or claim with no valid label is discarded and the name taken from the code is kept. A name you choose yourself instead of the one given must cite the excerpt that justifies it. Use only the ids listed above. Floor members must be files of that building.'
   )
   return lines.join('\n')
 }

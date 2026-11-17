@@ -15,6 +15,7 @@ import { edgeId, type GroupBuilding, type Grouping } from '../../src/main/world/
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
 import type { Boundary } from '../../src/main/world/detectors'
 import { edgeSummary } from '../../src/shared/world/edgeText'
+/** A cited field, as the model must answer it. */const F = (value: unknown, ev = 'E1'): { value: unknown; evidence: string[] } => ({ value, evidence: [ev] })
 
 const ROOT = '/repo'
 
@@ -270,6 +271,7 @@ describe('compileWorld', () => {
     const prev: WorldDoc = JSON.parse(JSON.stringify(previous))
     const main = prev.buildings.find((b) => b.id === MAIN) as WorldDoc['buildings'][number]
     main.name = 'Kept Main'
+    main.nameState = 'inferred'
     prev.districts[0].subtitle = 'kept subtitle'
     const ipcId = edgeId({ from: RENDERER, to: MAIN })
     const importEdge = edgeId({ from: RENDERER, to: VIEW })
@@ -283,10 +285,10 @@ describe('compileWorld', () => {
     const llm = vi.fn(async (prompt: string) => {
       expect(prompt).toContain(VIEW)
       return JSON.stringify({
-        buildings: { [VIEW]: { name: 'View Layer', stack: ['TypeScript', 'Mystery'], how: [{ text: 'Renders.', evidence: ['E1'] }] } },
+        buildings: { [VIEW]: { name: F('View Layer'), stack: F(['TypeScript', 'Mystery']), how: [{ text: 'Renders.', evidence: ['E1'] }] } },
         // The incoming edge (its from building is untouched) is batched with the changed building.
         edges: { [importEdge]: { label: 'Hands the view its data' } },
-        glossary: { TypeScript: 'Typed JavaScript', IPC: 'model says otherwise' }
+        glossary: { TypeScript: F('Typed JavaScript'), IPC: F('model says otherwise') }
       })
     })
     const doc = await compileFixture({ label: labelDeps({ llm }) }, prev, ['src/renderer/view.ts'])
@@ -297,6 +299,8 @@ describe('compileWorld', () => {
     expect(byId.get(VIEW)?.stack).toEqual(['TypeScript'])
     expect(byId.get(VIEW)?.how[0].evidence[0].ref).toBe('src/renderer/view.test.ts')
     expect(byId.get(MAIN)?.name).toBe('Kept Main')
+    expect(byId.get(MAIN)?.nameState).toBe('inferred')
+    expect(byId.get(RENDERER)?.nameState).toBe('observed')
     expect(byId.get(RENDERER)?.name).toBe('renderer')
     expect(doc.districts[0].subtitle).toBe('kept subtitle')
     const edges = new Map(doc.edges.map((e) => [e.id, e]))
@@ -372,7 +376,7 @@ describe('compileWorld', () => {
 
     const llm = vi.fn(async (prompt: string) => {
       expect(prompt).toContain(lib.id)
-      return JSON.stringify({ buildings: { [lib.id]: { name: 'New lib' } } })
+      return JSON.stringify({ buildings: { [lib.id]: { name: F('New lib') } } })
     })
     const doc = await compile(prev, ['src/lib/b.ts'], llm)
     expectValid(doc)
@@ -384,7 +388,7 @@ describe('compileWorld', () => {
     // A building the previous doc does not have is labelled even when nothing in it changed.
     const without: WorldDoc = JSON.parse(JSON.stringify(fresh))
     without.buildings = without.buildings.filter((b) => b.id !== lib.id)
-    const llm2 = vi.fn(async () => JSON.stringify({ buildings: { [lib.id]: { name: 'Brand new lib' } } }))
+    const llm2 = vi.fn(async () => JSON.stringify({ buildings: { [lib.id]: { name: F('Brand new lib') } } }))
     const doc2 = await compile(without, [], llm2)
     expect(llm2).toHaveBeenCalledTimes(1)
     expect(doc2.buildings.find((b) => b.id === lib.id)?.name).toBe('Brand new lib')
@@ -407,15 +411,15 @@ describe('compileWorld', () => {
     const llm = vi.fn(async (prompt: string) => {
       if (!prompt.includes('DISTRICT "d-src-main"')) return null
       return JSON.stringify({
-        district: { name: 'Main side', subtitle: 'the Electron main process' },
+        district: { name: F('Main side'), subtitle: F('the Electron main process') },
         buildings: {
           [MAIN]: {
             floors: [{ name: 'entry', tech: ['Electron', 'IPC', 'Nope'], members: ['src/main/index.ts'] }],
-            stack: ['Electron']
+            stack: F(['Electron'])
           }
         },
         edges: { [edgeId({ from: MAIN, to: MAIN })]: { label: 'never used' } },
-        glossary: { Electron: 'Desktop app framework' }
+        glossary: { Electron: F('Desktop app framework') }
       })
     })
     const doc = await compileFixture({ label: labelDeps({ llm }) })
@@ -756,7 +760,7 @@ describe('claims, name states and annotations', () => {
     const b = plain.buildings[0]
     const d = plain.districts.find((x) => x.id === b.districtId) as WorldDoc['districts'][number]
     const llm = vi.fn(async (prompt: string): Promise<string | null> =>
-      prompt.includes(`DISTRICT "${d.id}"`) ? JSON.stringify({ district: { name: 'Renamed District', subtitle: 's' }, buildings: { [b.id]: { name: 'Renamed Building' } } }) : null
+      prompt.includes(`DISTRICT "${d.id}"`) ? JSON.stringify({ district: { name: F('Renamed District'), subtitle: F('s') }, buildings: { [b.id]: { name: F('Renamed Building') } } }) : null
     )
     const doc = await compileFixture({ label: labelDeps({ llm }) })
     const nb = doc.buildings.find((x) => x.id === b.id) as WorldDoc['buildings'][number]

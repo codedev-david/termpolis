@@ -62,7 +62,13 @@ export interface WorldSettingsMsg {
   kind: 'settings'
   labelling: boolean
 }
-export type WorldHostRequest = WorldInitMsg | WorldCallMsg | WorldLlmResultMsg | WorldSettingsMsg
+/** Main's answer to a `context` request: the evidence it found for the building (empty when it found none). */
+export interface WorldContextResultMsg {
+  kind: 'context-result'
+  id: number
+  evidence: Evidence[]
+}
+export type WorldHostRequest = WorldInitMsg | WorldCallMsg | WorldLlmResultMsg | WorldContextResultMsg | WorldSettingsMsg
 
 export interface WorldReadyMsg { kind: 'ready'; pid: number }
 export interface WorldInitErrorMsg { kind: 'init-error'; error: SerializedError }
@@ -71,6 +77,8 @@ export interface WorldErrMsg { kind: 'result'; id: number; ok: false; error: Ser
 export interface WorldProgressMsg { kind: 'progress'; projectKey: string; stage: string; pct: number }
 export interface WorldUpdatedMsg { kind: 'updated'; projectKey: string }
 export interface WorldLlmMsg { kind: 'llm'; id: number; projectKey: string; prompt: string }
+/** The host asks main for commit, docs and memory evidence about a building's files. */
+export interface WorldContextMsg { kind: 'context'; id: number; projectKey: string; members: string[] }
 export type WorldHostResponse =
   | WorldReadyMsg
   | WorldInitErrorMsg
@@ -79,6 +87,7 @@ export type WorldHostResponse =
   | WorldProgressMsg
   | WorldUpdatedMsg
   | WorldLlmMsg
+  | WorldContextMsg
 
 /** Errors do not survive structured clone (an Error posts as `{}`), so flatten them. */
 export function serializeError(err: unknown): SerializedError {
@@ -100,6 +109,23 @@ export const MAX_GLOB_RESULTS = 2000
 export const EXCERPT_LINES = 40
 /** How long a compile waits for main to answer one labelling request before labelling from code. */
 export const LLM_TIMEOUT_MS = 120_000
+/** How long a compile waits for main's commit, docs and memory evidence for one building. */
+export const CONTEXT_WAIT_MS = 10_000
+const CONTEXT_KINDS = new Set(['file', 'commit', 'memory'])
+const MAX_CONTEXT_ITEMS = 11
+
+/** Main's evidence list, checked: only whole file, commit and memory items with text survive. */
+export function cleanEvidence(v: unknown): Evidence[] {
+  if (!Array.isArray(v)) return []
+  const out: Evidence[] = []
+  for (const e of v) {
+    if (out.length === MAX_CONTEXT_ITEMS) break
+    if (typeof e === 'object' && e !== null && CONTEXT_KINDS.has((e as Evidence).kind) && isStr((e as Evidence).ref) && isStr((e as Evidence).excerpt)) {
+      out.push({ kind: (e as Evidence).kind, ref: (e as Evidence).ref, excerpt: (e as Evidence).excerpt })
+    }
+  }
+  return out
+}
 
 const SKIP_DIRS = new Set(['node_modules', '.git'])
 
@@ -254,6 +280,8 @@ export interface WorldHostDeps {
   /** The watcher recompile's debounce (default 1500 ms). */
   debounceMs?: number
   llmTimeoutMs?: number
+  /** How long to wait for main's evidence for one building (default CONTEXT_WAIT_MS). */
+  contextTimeoutMs?: number
   /** Clones a git source (default: gitSource's cloneRepo with the real git, size check and remover). */
   cloneRepo?: typeof cloneRepo
   /** Overrides for the real clone deps (tests). */
@@ -297,6 +325,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const glob = deps.glob ?? ((root: string, patterns: string[]) => globFiles(root, patterns))
   const now = deps.now ?? Date.now
   const llmTimeoutMs = deps.llmTimeoutMs ?? LLM_TIMEOUT_MS
+  const contextTimeoutMs = deps.contextTimeoutMs ?? CONTEXT_WAIT_MS
   const clone = deps.cloneRepo ?? cloneRepo
 
   /** Set by init. `labelling` is read each time a compile starts, so a settings message applies to the next one. */
@@ -306,6 +335,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const schedulers = new Map<string, ReturnType<typeof createRecompileScheduler>>()
   const llmWaiting = new Map<number, (text: string | null) => void>()
   let llmSeq = 0
+  const contextWaiting = new Map<number, (evidence: Evidence[]) => void>()
   /** cloneKey → the running clone and its abort controller: a repeat call joins it, cancel aborts it. */
   const clones = new Map<string, { ctl: AbortController; done: Promise<unknown> }>()
 
@@ -336,6 +366,24 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         post({ kind: 'llm', id, projectKey, prompt })
       })
 
+  /** Asks main for evidence about a building; no answer in time is no evidence. */
+  const askContext =
+    (projectKey: string) =>
+    (members: string[]): Promise<Evidence[]> =>
+      new Promise((resolve) => {
+        const id = ++llmSeq
+        const timer = setTimeout(() => {
+          contextWaiting.delete(id)
+          resolve([])
+        }, contextTimeoutMs)
+        contextWaiting.set(id, (evidence) => {
+          clearTimeout(timer)
+          contextWaiting.delete(id)
+          resolve(evidence)
+        })
+        post({ kind: 'context', id, projectKey, members })
+      })
+
   /** `llm` defaults to the setting: main's model when labelling is on, none when it is off. */
   const depsFor = (
     st: HostState,
@@ -354,6 +402,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     const rs = cloned ? confine(readSource) : readSource
     const label: LabelDeps = {
       llm,
+      ...(st.labelling ? { context: askContext(projectKey) } : {}),
       cache: st.store.labelCache,
       excerpt: async (file, line) => {
         const text = await rs(`${root}/${file}`)
@@ -510,6 +559,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       if (msg.kind === 'settings') {
         // Before init there is nothing to switch: init carries the setting itself.
         if (state) state.labelling = msg.labelling !== false
+        return
+      }
+      if (msg.kind === 'context-result') {
+        contextWaiting.get(msg.id)?.(cleanEvidence(msg.evidence))
         return
       }
       if (msg.kind === 'llm-result') {
