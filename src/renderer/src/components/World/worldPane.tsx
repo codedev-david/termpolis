@@ -42,6 +42,21 @@ export function saveWorldPaneWidth(px: number): void {
   } catch { /* storage unavailable: the width lasts for this session only */ }
 }
 
+/** The ask bar's gap to the bottom of the pane. */
+export const ASK_BOTTOM_PX = 16
+/** The ask bar's width: 34rem, or the pane less 12 px each side when that is narrower. */
+export const ASK_SLOT_WIDTH = 'min(34rem, calc(100% - 24px))'
+/** Room kept between the city and the top of the ask bar. */
+const ASK_CLEARANCE_PX = 8
+
+/**
+ * The strip at the bottom of the view the ask bar covers, for the overview's fit (setBottomReserve):
+ * its measured height, its gap to the bottom and a little clearance; none while it is not there (0).
+ */
+export function askReserve(height: number): number {
+  return height > 0 ? Math.ceil(height) + ASK_BOTTOM_PX + ASK_CLEARANCE_PX : 0
+}
+
 export function worldPaneStyle(background: string, width: number): CSSProperties {
   return {
     position: 'relative', flex: '0 0 auto', width, minWidth: width, overflow: 'hidden',

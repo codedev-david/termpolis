@@ -76,6 +76,28 @@ async function submit(v: ReturnType<typeof makeViewer>, q: string, extra: Record
 }
 
 describe('WorldAsk', () => {
+  it('fills its slot and never sets its own width, so in a 360 px pane the chips wrap and the input shrinks', async () => {
+    const v = makeViewer()
+    ask.mockResolvedValueOnce({ success: false, error: 'bridge down' })
+    const { container } = render(<WorldAsk viewer={v as never} doc={minimal()} root="r" />)
+    await settle()
+    expect(screen.getByTestId('world-ask')).toHaveClass('w-full')
+    expect(screen.getByTestId('world-ask-chips')).toHaveClass('flex-wrap', 'max-w-full')
+    for (const chip of screen.getByTestId('world-ask-chips').querySelectorAll('button')) expect(chip).toHaveClass('max-w-full')
+    expect(screen.getByTestId('world-ask-row')).toHaveClass('w-full')
+    expect(input()).toHaveClass('flex-1', 'min-w-0')
+    fireEvent.change(input(), { target: { value: 'q' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    expect(screen.getByRole('alert')).toHaveClass('w-full')
+    fireEvent.change(input(), { target: { value: 'q2' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    expect(screen.getByTestId('world-answer')).toHaveClass('w-full')
+    // No fixed rem width or window-relative cap anywhere in the bar: those overflowed a narrow pane.
+    expect(container.innerHTML).not.toMatch(/w-\[\d+rem\]|\d+vw/)
+  })
+
   it('is disabled and greyed while the viewer is null', () => {
     render(<WorldAsk viewer={null} root="r" />)
     expect(input()).toBeDisabled()

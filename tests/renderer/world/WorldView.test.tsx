@@ -16,7 +16,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
       const selectCbs = new Set<(s: WorldSelection | null) => void>()
       const v = {
         host, opts,
-        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(),
+        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(),
         apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), cancelActions: vi.fn(),
         on: vi.fn((ev: string, cb: (s: WorldSelection | null) => void) => {
           if (ev !== 'select') return () => undefined

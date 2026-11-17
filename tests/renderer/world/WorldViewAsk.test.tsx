@@ -15,7 +15,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
     createWorldViewer: vi.fn((host: HTMLElement, opts: WorldViewerOptions) => {
       const v = {
         host, opts,
-        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(),
+        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(),
         apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), cancelActions: vi.fn(),
         on: vi.fn(() => () => undefined),
         getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), dispose: vi.fn(),
@@ -110,6 +110,54 @@ afterEach(() => {
 })
 
 describe('Ask bar inside the Lumopolis pane', () => {
+  /** The slot's height as the page lays it out (jsdom lays nothing out): `px` for the ask slot, 0 elsewhere. */
+  function slotHeight(px: { v: number }): void {
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'world-ask-slot' ? px.v : 0
+    })
+  }
+
+  it('keeps the strip the ask bar covers out of the fit, from its measured height, and follows it as it changes', async () => {
+    const seen: Array<() => void> = []
+    const disconnect = vi.fn()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { seen.push(cb) }
+      observe(): void {}
+      disconnect(): void { disconnect() }
+    })
+    const px = { v: 126 }
+    slotHeight(px)
+    try {
+      bridge()
+      const view = await mount()
+      // 126 tall, 16 above the bottom, 8 clear of the city.
+      expect(viewer().setBottomReserve).toHaveBeenLastCalledWith(150)
+      px.v = 170 // its chips wrapped, or an answer opened
+      act(() => { for (const cb of seen) cb() })
+      expect(viewer().setBottomReserve).toHaveBeenLastCalledWith(194)
+      view.unmount()
+      expect(disconnect).toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('reads the height once where there is no ResizeObserver', async () => {
+    const had = 'ResizeObserver' in globalThis
+    const saved = (globalThis as any).ResizeObserver
+    delete (globalThis as any).ResizeObserver
+    slotHeight({ v: 100 })
+    try {
+      bridge()
+      await mount()
+      expect(viewer().setBottomReserve).toHaveBeenLastCalledWith(124)
+    } finally {
+      if (had) (globalThis as any).ResizeObserver = saved
+      vi.restoreAllMocks()
+    }
+  })
+
   it('a terminal in a subfolder asks about the git root the world was drawn for', async () => {
     const b = bridge({ gitFindRoot: vi.fn(async () => ok<string | null>('/repo')) })
     await mount('/repo/src/main')

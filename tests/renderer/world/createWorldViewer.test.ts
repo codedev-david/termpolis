@@ -426,7 +426,7 @@ function fakeRenderer(host: HTMLElement) {
   let hit: RenderPick | null = null
   const r = {
     canvas,
-    draw: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
+    draw: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
     frame: vi.fn(async () => undefined), overview: vi.fn(async () => undefined), pulse: vi.fn(async () => undefined),
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
@@ -764,6 +764,25 @@ describe('WebGL path (stand-in renderer)', () => {
     createWorldViewer(host)
     expect(createThreeRenderer.mock.calls[0][1]).toMatchObject({ rightReserve: 244 })
     expect(createThreeRenderer.mock.calls[1][1]).not.toHaveProperty('rightReserve')
+  })
+
+  it('passes the ask bar strip on to the renderer, at creation and when it changes, and not after dispose', () => {
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const v = createWorldViewer(host, { bottomReserve: 150 })
+    const r = (fake as unknown as ReturnType<typeof fakeRenderer>).r
+    expect(createThreeRenderer.mock.calls[0][1]).toMatchObject({ bottomReserve: 150 })
+    createWorldViewer(host)
+    expect(createThreeRenderer.mock.calls[1][1]).not.toHaveProperty('bottomReserve')
+    v.setBottomReserve(170)
+    expect(r.setBottomReserve).toHaveBeenCalledWith(170)
+    v.dispose()
+    v.setBottomReserve(90)
+    expect(r.setBottomReserve).toHaveBeenCalledTimes(1)
+    expect(() => createWorldViewer(document.createElement('div')).setBottomReserve(1)).not.toThrow()
   })
 
   it('a redraw keeps the open building or line lit and selected, and draws nothing before a world is loaded', () => {

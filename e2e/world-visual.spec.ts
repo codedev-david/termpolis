@@ -299,6 +299,42 @@ const districtLabels = (): Promise<LabelState[]> =>
     })
   })
 
+/**
+ * The ask bar's controls (its chips, its input and its buttons) whose box runs past the pane's stage,
+ * as "text: box": in a narrow pane the chips must wrap and the input shrink, not clip at the edges.
+ */
+const askOutsideStage = (): Promise<string[]> =>
+  page.evaluate(() => {
+    const s = document.querySelector('[data-testid="world-stage"]')!.getBoundingClientRect()
+    const out: string[] = []
+    for (const el of document.querySelectorAll<HTMLElement>('[data-testid="world-ask"] button, [data-testid="world-ask"] input')) {
+      const r = el.getBoundingClientRect()
+      if (r.width === 0 && r.height === 0) continue
+      if (r.left < s.left - 0.5 || r.right > s.right + 0.5 || r.top < s.top - 0.5 || r.bottom > s.bottom + 0.5) {
+        out.push(`${el.textContent || el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.tagName}: ${Math.round(r.left)},${Math.round(r.top)}-${Math.round(r.right)},${Math.round(r.bottom)} stage ${Math.round(s.left)},${Math.round(s.top)}-${Math.round(s.right)},${Math.round(s.bottom)}`)
+      }
+    }
+    return out
+  })
+
+/** Pairs of district labels on show whose boxes overlap by more than a pixel, as "a / b". */
+const overlappingDistrictLabels = (): Promise<string[]> =>
+  page.evaluate(() => {
+    const boxes = [...document.querySelectorAll<HTMLElement>('.lw-district')]
+      .filter((el) => getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility === 'visible')
+      .map((el) => ({ t: el.textContent ?? '', r: el.getBoundingClientRect() }))
+      .filter((b) => b.r.width > 0 && b.r.height > 0)
+    const out: string[] = []
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i].r
+        const b = boxes[j].r
+        if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) out.push(`${boxes[i].t} / ${boxes[j].t}`)
+      }
+    }
+    return out
+  })
+
 interface Line { id: string; from: string; to: string; label: string }
 interface World { ids: string[]; connected: string[]; names: Record<string, string>; districts: number; edges: Line[] }
 
@@ -539,6 +575,15 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
     expect(readable.length, `${tag}/${theme}: readable district labels ${JSON.stringify(labels)}`).toBeGreaterThanOrEqual(wantLabels)
     expect(await underLegend(ids), `${tag}/${theme}: under the legend at overview`).toEqual([])
     expect(await overlappingLabels(), `${tag}/${theme}: labels overlap at overview`).toEqual([])
+    if (tag === 'small') {
+      // The pane at its default width (40% of the window, a portrait canvas): every district of the
+      // small project is named, and no two names overlap.
+      const paneWidth = await pane().evaluate((el) => Math.round(el.getBoundingClientRect().width))
+      expect(readable.map((l) => l.text).sort(), `${tag}/${theme}: every district named in a ${paneWidth} px pane ${JSON.stringify(labels)}`).toEqual(labels.map((l) => l.text).sort())
+      expect(readable.length, `${tag}/${theme}: district labels in a ${paneWidth} px pane`).toBe(districts)
+      expect(await overlappingDistrictLabels(), `${tag}/${theme}: district labels overlap in a ${paneWidth} px pane`).toEqual([])
+    }
+    if (t === 0) expect(await askOutsideStage(), `${tag}: the ask bar runs past the pane`).toEqual([])
     // A still camera keeps the same labels: nothing flickers in or out.
     const still = await shownLabels()
     await page.waitForTimeout(400)
@@ -654,6 +699,7 @@ test.describe.serial('Lumopolis can be seen', () => {
       await page.waitForTimeout(1500)
       expect(await underLegend(ids), `${label}: under the legend after a resize`).toEqual([])
       expect(await overlappingLabels(), `${label}: labels overlap after a resize`).toEqual([])
+      expect(await askOutsideStage(), `${label}: the ask bar runs past the pane after a resize`).toEqual([])
       await page.screenshot({ path: path.join(SHOTS, `${label}-neon-resized.png`) })
       await page.setViewportSize({ width: 1280, height: 800 })
       await page.waitForTimeout(1500)

@@ -29,7 +29,7 @@ export function WorldAnswerPanel({ answer, cited, onClose, onReplay, onOpenPart,
   }
 
   return (
-    <div className="w-[34rem] max-w-[90vw] rounded border border-[#3c3c3c] bg-[#252526] text-sm text-[#d4d4d4] shadow-lg p-3" data-testid="world-answer">
+    <div className="w-full rounded border border-[#3c3c3c] bg-[#252526] text-sm text-[#d4d4d4] shadow-lg p-3" data-testid="world-answer">
       <div className="flex items-start gap-2">
         <p className="flex-1 whitespace-pre-wrap leading-relaxed">
           {parts.map((part, i) => {

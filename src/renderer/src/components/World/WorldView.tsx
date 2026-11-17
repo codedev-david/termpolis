@@ -41,7 +41,7 @@ import { WorldHome } from './WorldHome'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
 import { legendDefaultOpen, legendReserve, WorldLegend } from './WorldLegend'
-import { worldPaneStyle } from './worldPane'
+import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, worldPaneStyle } from './worldPane'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
 
@@ -271,6 +271,23 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // The overview is fitted to what the legend leaves free: it follows the legend and the pane's width.
   const reserve = legendReserve(legendOpen, width)
   useEffect(() => { viewer?.setRightReserve(reserve) }, [viewer, reserve])
+  // ...and to what the ask bar leaves free above it: its measured height, which changes as its chips
+  // wrap in a narrow pane, or as it thinks and answers.
+  const askRef = useRef<HTMLDivElement>(null)
+  const [askHeight, setAskHeight] = useState(0)
+  const showAsk = !!askSlot && world.kind !== 'home'
+  useEffect(() => {
+    const el = askRef.current
+    if (!el) { setAskHeight(0); return }
+    const read = (): void => setAskHeight(el.offsetHeight)
+    read()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [showAsk])
+  const below = askReserve(askHeight)
+  useEffect(() => { viewer?.setBottomReserve(below) }, [viewer, below])
 
   // The 3D viewer, once, when WebGL is there.
   useEffect(() => {
@@ -528,7 +545,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         )}
         {card !== null && <WorldCard html={card} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
         {askSlot && !home && (
-          <div style={{ position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', zIndex: 3 }} data-testid="world-ask-slot">
+          <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3 }} data-testid="world-ask-slot">
             {askSlot(viewer, doc, worldKey, askLink)}
           </div>
         )}

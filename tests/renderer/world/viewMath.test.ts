@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clampIntoView, districtNameHalf, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { bottomInset, clampIntoView, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -168,6 +168,33 @@ describe('placeLabels', () => {
     expect(placeLabels([...wall, nudged('b', 0, 0)], none).has('b')).toBe(false)
   })
 
+  it('moves a district name only up or down (vertical), and drops it when no row is clear', () => {
+    const district = (id: string, x: number, y: number): LabelCandidate => ({ ...box(id, x, y, 3), nudge: 'vertical' })
+    expect(VERTICAL_NUDGES).toEqual([[0, 0], [0, -1], [0, 1], [0, -2], [0, 2]])
+    // Its point is taken: a row up is free.
+    expect(placeLabels([district('api', 0, 100), district('auth', 40, 100)], none).get('auth')).toEqual([0, -(18 + LABEL_GAP)])
+    // Up and down both taken one row off: two rows up.
+    const rows = [box('a', 0, 100), box('up', 0, 76), box('down', 0, 124)]
+    expect(placeLabels([...rows, district('b', 0, 100)], none).get('b')).toEqual([0, -2 * (18 + LABEL_GAP)])
+    // Beside its point is free, but a district name never moves across: with every row taken it is dropped.
+    const column = VERTICAL_NUDGES.map(([, uy], i) => box(`c${i}`, 0, 100 + uy * (18 + LABEL_GAP)))
+    expect(placeLabels([...column, district('b', 0, 100)], none).has('b')).toBe(false)
+    expect(placeLabels([...column, { ...box('b', 0, 100, 3), nudge: true }], none).get('b')).toEqual([-(100 + LABEL_GAP), 0])
+  })
+
+  it('keeps a moved label inside keepIn, and always allows its own point', () => {
+    const view = [0, 0, 400, 300] as const
+    const district = (id: string, x: number, y: number): LabelCandidate => ({ ...box(id, x, y, 3), nudge: 'vertical', keepIn: view })
+    // At the top edge a row up would leave the view: it goes a row down.
+    expect(placeLabels([box('a', 200, 12), district('b', 200, 12)], none).get('b')).toEqual([0, 18 + LABEL_GAP])
+    // At the bottom edge it goes up.
+    expect(placeLabels([box('a', 200, 288), district('b', 200, 288)], none).get('b')).toEqual([0, -(18 + LABEL_GAP)])
+    // Its own point is allowed even if it pokes out; a kept place outside keepIn is not kept.
+    expect(placeLabels([district('b', 200, 2)], none).get('b')).toEqual([0, 0])
+    expect(placeLabels([district('b', 200, 12)], new Map([['b', [0, -24] as const]])).get('b')).toEqual([0, 0])
+    expect(placeLabels([district('b', 200, 100)], new Map([['b', [0, -24] as const]])).get('b')).toEqual([0, -24])
+  })
+
   it('keeps a shown label where it was while that place stays clear, else finds another', () => {
     const nudged: LabelCandidate = { ...box('b', 0, 0, 1), nudge: true }
     // Shown below last time, and below is still clear (above is clear too): it stays below.
@@ -244,5 +271,93 @@ describe('district name fit and clamp', () => {
   it('leaves a box already inside alone, and centres one bigger than the view', () => {
     expect(clampIntoView(250, 150, 100, 20, 500, 300, 4)).toEqual([0, 0])
     expect(clampIntoView(100, 150, 600, 20, 500, 300, 4)).toEqual([150, 0])
+  })
+})
+
+describe('the bottom reserve (the ask bar)', () => {
+  it('keeps the strip out of the fit only while it leaves the city half the height or more', () => {
+    expect(bottomInset(586, 150)).toBe(150)
+    expect(bottomInset(300, 150)).toBe(150)
+    expect(bottomInset(299, 150)).toBe(0)
+    expect(bottomInset(586, 0)).toBe(0)
+  })
+
+  it('stretches the field of view to a taller picture at the same scale, and back to a part of it', () => {
+    const tan = (deg: number): number => Math.tan((deg * Math.PI) / 360)
+    expect(stretchFov(55, 400, 0)).toBe(55)
+    expect(stretchFov(55, 0, 100)).toBe(55)
+    expect(tan(stretchFov(55, 400, 100)) / tan(55)).toBeCloseTo(500 / 400, 10)
+    expect(tan(stretchFov(55, 400, -100)) / tan(55)).toBeCloseTo(300 / 400, 10)
+    // The scale stays: pixels per unit at a distance are height / (2 tan(fov / 2)) over the taller picture too.
+    expect(500 / tan(stretchFov(55, 400, 100))).toBeCloseTo(400 / tan(55), 8)
+    expect(stretchFov(55, 400, -500)).toBe(0)
+  })
+})
+
+describe("the overview direction for the pane's shape", () => {
+  // The small project's four districts on the hex lattice (api, auth, store, ui), 70 apart: wider in x
+  // (105) than deep in z (61).
+  const wide: Array<[number, number]> = [[0, 0], [-35, 60.62], [35, 60.62], [70, 0]]
+  const deepCity: Array<[number, number]> = wide.map(([x, z]) => [z, x])
+  const elevation = (d: readonly number[]): number => (Math.atan2(d[1], Math.hypot(d[0], d[2])) * 180) / Math.PI
+
+  it('keeps OVERVIEW_DIR exactly in a landscape or square view, or one with no size', () => {
+    for (const aspect of [1, 1.6, 3, 0, Number.NaN, Infinity]) {
+      const o = overviewDir(aspect, wide)
+      expect(o.dir).toBe(OVERVIEW_DIR)
+      expect(o).toMatchObject({ portrait: false, turned: false })
+    }
+    expect(OVERVIEW_DIR[0] / OVERVIEW_DIR[2]).toBeCloseTo(0.24, 12)
+    expect(OVERVIEW_DIR[1] / OVERVIEW_DIR[2]).toBeCloseTo(0.72, 12)
+  })
+
+  it('looks down more steeply in a portrait view, on the same bearing', () => {
+    expect(Math.hypot(...PORTRAIT_DIR)).toBeCloseTo(1, 12)
+    expect(elevation(OVERVIEW_DIR)).toBeCloseTo(35, 0)
+    expect(elevation(PORTRAIT_DIR)).toBeGreaterThan(55)
+    expect(elevation(PORTRAIT_DIR)).toBeLessThan(60)
+    expect(PORTRAIT_DIR[0] / PORTRAIT_DIR[2]).toBeCloseTo(OVERVIEW_DIR[0] / OVERVIEW_DIR[2], 12)
+    const o = overviewDir(0.71, deepCity)
+    expect(o).toEqual({ dir: PORTRAIT_DIR, portrait: true, turned: false })
+  })
+
+  it('turns a city wider than deep a quarter, so its long side runs up the picture', () => {
+    const o = overviewDir(0.71, wide)
+    expect(o.portrait).toBe(true)
+    expect(o.turned).toBe(true)
+    expect(o.dir).toEqual([PORTRAIT_DIR[2], PORTRAIT_DIR[1], -PORTRAIT_DIR[0]])
+    expect(elevation(o.dir)).toBeCloseTo(elevation(PORTRAIT_DIR), 12)
+    // Seen from the turned direction, the ground's x (105 long) now runs into the picture, z (61) across.
+    const flat = Math.hypot(o.dir[0], o.dir[2])
+    const deepAxis = [o.dir[0] / flat, o.dir[2] / flat]
+    const span = (ax: number[]): number => Math.max(...wide.map(([x, z]) => x * ax[0] + z * ax[1])) - Math.min(...wide.map(([x, z]) => x * ax[0] + z * ax[1]))
+    expect(span(deepAxis)).toBeGreaterThan(span([deepAxis[1], -deepAxis[0]]))
+  })
+
+  it('does not turn a city near square (within TURN_RATIO), nor one with no ground', () => {
+    // On the portrait direction's own ground axes: deep (into the picture) and across.
+    const flat = Math.hypot(PORTRAIT_DIR[0], PORTRAIT_DIR[2])
+    const deep = [PORTRAIT_DIR[0] / flat, PORTRAIT_DIR[2] / flat]
+    const city = (across: number): Array<[number, number]> => [[0, 0], [deep[1] * across, -deep[0] * across], [deep[0] * 100, deep[1] * 100]]
+    expect(overviewDir(0.7, city(100 * (TURN_RATIO - 0.01))).turned).toBe(false)
+    expect(overviewDir(0.7, city(100 * (TURN_RATIO + 0.01))).turned).toBe(true)
+    expect(overviewDir(0.7, []).turned).toBe(false)
+  })
+
+  it('stays portrait through a small resize near square, and never flips the turn with the size', () => {
+    expect(overviewDir(1.05, wide).portrait).toBe(false)
+    expect(overviewDir(1.05, wide, true).portrait).toBe(true)
+    expect(overviewDir(PORTRAIT_HOLD, wide, true).portrait).toBe(false)
+    const turns = [0.4, 0.6, 0.8, 0.95, 0.99].map((a) => overviewDir(a, wide).turned)
+    expect(new Set(turns)).toEqual(new Set([true]))
+  })
+
+  it('turns a ground offset the same quarter as the direction', () => {
+    expect(turnGround(0, 10, false)).toEqual([0, 10])
+    // The name's offset toward the camera (+z) turns to +x, where the turned camera stands.
+    expect(turnGround(0, 10, true)).toEqual([10, -0])
+    const o = overviewDir(0.7, wide)
+    const [x, z] = turnGround(0, 1, o.turned)
+    expect(x * o.dir[0] + z * o.dir[2]).toBeGreaterThan(0)
   })
 })

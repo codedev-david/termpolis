@@ -126,9 +126,13 @@ function clearOf(a: LabelBox, b: LabelBox, gap: number): boolean {
 
 /**
  * A label that wants a place on screen: lower tiers are more wanted; a group can be capped. One that
- * may `nudge` can move off its point (NUDGES) when that point is taken.
+ * may `nudge` can move off its point when that point is taken: to any of NUDGES (true), or only a row
+ * or two up or down (VERTICAL_NUDGES, 'vertical'). With `keepIn` (left, top, right, bottom, in pixels)
+ * a move off its point must keep the whole box inside that rectangle; its own point is always allowed.
  */
-export interface LabelCandidate extends LabelBox { tier: number; group?: string; nudge?: boolean }
+export interface LabelCandidate extends LabelBox {
+  tier: number; group?: string; nudge?: boolean | 'vertical'; keepIn?: readonly [number, number, number, number]
+}
 
 /** Room a label needs round it to appear, and the room it needs to stay once shown (LABEL_KEEP_GAP). */
 export const LABEL_GAP = 6
@@ -143,6 +147,8 @@ export type Nudge = readonly [number, number]
  * then two rows off, then beside it.
  */
 export const NUDGES: ReadonlyArray<readonly [number, number]> = [[0, 0], [0, -1], [0, 1], [0, -2], [0, 2], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]]
+/** The NUDGES that stay over or under the label's point: its point, then a row up or down, then two. */
+export const VERTICAL_NUDGES: ReadonlyArray<readonly [number, number]> = NUDGES.filter(([ux]) => ux === 0)
 
 /**
  * Which labels to show so that no two overlap, and where: the lowest tier first (the order given
@@ -167,14 +173,24 @@ export function placeLabels(
     const tries: Array<{ d: Nudge; g: number }> = []
     const was = shown.get(c.id)
     if (was) tries.push({ d: was, g: keepGap })
-    for (const [ux, uy] of c.nudge ? NUDGES : NUDGES.slice(0, 1)) tries.push({ d: [ux * (c.w + gap), uy * (c.h + gap)], g: gap })
-    const fit = tries.find(({ d, g }) => clear({ ...c, x: c.x + d[0], y: c.y + d[1] }, g))
+    const steps = c.nudge === 'vertical' ? VERTICAL_NUDGES : c.nudge ? NUDGES : NUDGES.slice(0, 1)
+    for (const [ux, uy] of steps) tries.push({ d: [ux * (c.w + gap), uy * (c.h + gap)], g: gap })
+    const fit = tries.find(({ d, g }) => within(c, d) && clear({ ...c, x: c.x + d[0], y: c.y + d[1] }, g))
     if (!fit) continue
     kept.push({ ...c, x: c.x + fit.d[0], y: c.y + fit.d[1] })
     out.set(c.id, fit.d)
     if (c.group !== undefined) used.set(c.group, n + 1)
   }
   return out
+}
+
+/** Whether a label moved by `d` stays inside its `keepIn` rectangle; unmoved, or with none, it always does. */
+function within(c: LabelCandidate, d: Nudge): boolean {
+  if (!c.keepIn || (d[0] === 0 && d[1] === 0)) return true
+  const [l, t, r, b] = c.keepIn
+  const x = c.x + d[0]
+  const y = c.y + d[1]
+  return x - c.w / 2 >= l && x + c.w / 2 <= r && y - c.h / 2 >= t && y + c.h / 2 <= b
 }
 
 /** From this zoom in (camera distance over the overview's), every building's name may show. */
@@ -198,6 +214,83 @@ export function nameBudget(n: number, zoom: number): number {
  */
 export function rightInset(width: number, reserve: number): number {
   return reserve > 0 && width >= reserve * 3 ? reserve : 0
+}
+
+/**
+ * The strip at the bottom of the view the ask bar covers, kept out of the overview's fit: `reserve`
+ * pixels, or none when that would leave the city less than half the view's height.
+ */
+export function bottomInset(height: number, reserve: number): number {
+  return reserve > 0 && height >= reserve * 2 ? reserve : 0
+}
+
+/**
+ * The vertical field of view (degrees) that shows `extra` more pixels of height than a `fovDeg`
+ * camera does over `height` pixels, at the same scale: the picture is (height + extra) / height as
+ * tall. A negative `extra` gives the field of the smaller part (height + extra pixels) of the view.
+ */
+export function stretchFov(fovDeg: number, height: number, extra: number): number {
+  if (!(height > 0) || extra === 0) return fovDeg
+  const t = Math.tan((fovDeg * Math.PI) / 360) * Math.max(0, height + extra) / height
+  return (Math.atan(t) * 360) / Math.PI
+}
+
+const unit = (a: V3): V3 => {
+  const k = 1 / Math.hypot(a[0], a[1], a[2])
+  return [a[0] * k, a[1] * k, a[2] * k]
+}
+
+/**
+ * The overview's direction (from the city toward the camera) in a landscape view: from ahead of the
+ * city and a little to its right, about 35 degrees up.
+ */
+export const OVERVIEW_DIR: V3 = unit([0.24, 0.72, 1])
+/**
+ * The overview's direction in a portrait view: the same bearing, about 57 degrees up, so the city's
+ * depth spreads over the picture's height instead of lying in a flat band across it.
+ */
+export const PORTRAIT_DIR: V3 = unit([0.24, 1.6, 1])
+/** A portrait overview turns the city a quarter only when its ground is this much wider across than deep. */
+export const TURN_RATIO = 1.05
+/** A portrait overview stays portrait up to this aspect, so a small resize near square does not flip it. */
+export const PORTRAIT_HOLD = 1.1
+
+/** The overview's direction, whether the view counts as portrait, and whether the city is turned a quarter. */
+export interface OverviewDir { dir: V3; portrait: boolean; turned: boolean }
+
+/**
+ * The direction the overview looks from, for a fit area of this width-to-height and a city covering
+ * the `ground` points (x, z). A landscape area (aspect 1 or more) gets OVERVIEW_DIR, untouched. A
+ * portrait one (under 1; under PORTRAIT_HOLD once `wasPortrait`) looks down more steeply
+ * (PORTRAIT_DIR), and turns a quarter (the camera moves 90 degrees round the city, toward +x) when the
+ * city's ground is wider across the picture than deep into it by more than TURN_RATIO, so its longest
+ * side runs up the screen. The turn depends only on the ground, never on the camera, so it holds
+ * from frame to frame and through any resize that keeps the view portrait.
+ */
+export function overviewDir(aspect: number, ground: ReadonlyArray<readonly [number, number]>, wasPortrait = false): OverviewDir {
+  const portrait = Number.isFinite(aspect) && aspect > 0 && aspect < (wasPortrait ? PORTRAIT_HOLD : 1)
+  if (!portrait) return { dir: OVERVIEW_DIR, portrait: false, turned: false }
+  const d = PORTRAIT_DIR
+  const flat = Math.hypot(d[0], d[2])
+  const extent = (ax: number, az: number): number => {
+    let lo = Infinity
+    let hi = -Infinity
+    for (const [x, z] of ground) {
+      const v = (x * ax + z * az) / flat
+      lo = Math.min(lo, v)
+      hi = Math.max(hi, v)
+    }
+    return ground.length > 0 ? hi - lo : 0
+  }
+  // On the ground, `deep` runs from the camera's side of the city to the far side (up the picture),
+  // `across` from left to right.
+  const turned = extent(d[2], -d[0]) > extent(d[0], d[2]) * TURN_RATIO
+  return { dir: turned ? [d[2], d[1], -d[0]] : d, portrait: true, turned }
+}
+
+/** A ground offset (x, z) turned the same quarter as a turned overview (overviewDir). */
+export function turnGround(x: number, z: number, turned: boolean): [number, number] {
+  return turned ? [z, -x] : [x, z]
 }
 
 /** Pixels a district name's glow (text-shadow 12px) reaches past its box. */

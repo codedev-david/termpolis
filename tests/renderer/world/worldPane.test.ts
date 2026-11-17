@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import {
-  clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneStyle, useWorldPaneWidth,
+  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneStyle, useWorldPaneWidth,
   WORLD_PANE_MIN_PX, TERMINAL_MIN_PX, WORLD_PANE_DEFAULT_FRACTION,
 } from '../../../src/renderer/src/components/World/worldPane'
 
@@ -124,5 +124,16 @@ describe('useWorldPaneWidth', () => {
     expect(result.current.width).toBe(420)
     act(() => result.current.onDrag(-5000))
     expect(result.current.width).toBe(1480) // the room 1400 + 400 + 4, less the terminals' 320 and the divider's 4
+  })
+})
+
+describe('askReserve', () => {
+  it('keeps the ask bar, its gap to the bottom and a little clearance out of the fit; nothing while it is not there', () => {
+    expect(ASK_BOTTOM_PX).toBe(16)
+    expect(ASK_SLOT_WIDTH).toBe('min(34rem, calc(100% - 24px))')
+    expect(askReserve(126)).toBe(150)
+    expect(askReserve(125.2)).toBe(150)
+    expect(askReserve(0)).toBe(0)
+    expect(askReserve(-3)).toBe(0)
   })
 })

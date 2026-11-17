@@ -12,7 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { busyness, clamp, clampIntoView, districtNameHalf, edgeLabelSize, fitDistance, fitView, fogDensity, nameBudget, placeLabels, rightInset, type LabelCandidate, type Nudge, type V3 } from './viewMath'
+import { bottomInset, busyness, clamp, clampIntoView, districtNameHalf, edgeLabelSize, fitDistance, fitView, fogDensity, nameBudget, overviewDir, placeLabels, rightInset, stretchFov, turnGround, type LabelCandidate, type Nudge, type V3 } from './viewMath'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -52,6 +52,11 @@ export interface RendererOptions {
    * frame the city in the rest, and the picture's centre moves to the middle of the rest.
    */
   rightReserve?: number
+  /**
+   * Pixels at the bottom of the view that a panel covers (the ask bar): kept out of the overview's
+   * and the close-ups' fit the same way, and district names stay above it.
+   */
+  bottomReserve?: number
 }
 
 export interface ThreeRenderer {
@@ -59,6 +64,8 @@ export interface ThreeRenderer {
   draw(model: SceneModel, text: SceneText, allEdgeLabels: boolean): void
   /** The strip on the right the legend covers has changed (it opened or closed): fit the city to the rest. */
   setRightReserve(px: number): void
+  /** The strip at the bottom the ask bar covers has changed (its height): fit the city to the rest. */
+  setBottomReserve(px: number): void
   setTheme(name: ThemeName, theme: Theme): void
   setFocus(focus: RenderFocus | null): void
   setSelected(id: string | null): void
@@ -151,7 +158,11 @@ const LINE_END_SNAP = 2.5
  */
 const LINE_REACH = 2
 const MIN_LINE_REACH = 0.5
-const OVERVIEW_DIR = new THREE.Vector3(0.24, 0.72, 1).normalize()
+/**
+ * The camera's vertical field of view (degrees) over the view's own height. With a bottom reserve the
+ * camera's picture is taller than the view (stretchFov), at the same scale.
+ */
+const BASE_FOV = 55
 /**
  * How far the camera stands from the city at the overview of a prototype-sized world (about ten
  * buildings). A bigger world puts the camera further out; the line widths, packet sizes and zoom
@@ -258,24 +269,34 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   host.appendChild(labelRenderer.domElement)
 
   const scene = new THREE.Scene()
-  const camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 3000)
+  const camera = new THREE.PerspectiveCamera(BASE_FOV, width / height, 0.1, 3000)
   /** The strip on the right the legend covers (rightInset), out of the fit and the picture's centre. */
   let inset = 0
   /** The reserve rightInset works from: the legend's footprint, which changes as it opens and closes. */
   let reserve = opts.rightReserve ?? 0
+  /** The strip at the bottom the ask bar covers (bottomInset), out of the fit and the picture's centre. */
+  let below = 0
+  /** The reserve bottomInset works from: the ask bar's height, which changes as it wraps or answers. */
+  let lowReserve = opts.bottomReserve ?? 0
   /**
-   * The camera sees a picture `inset` wider than the view, whose left `inset` pixels are cut off:
-   * the centre of what shows moves to the middle of the part the legend leaves free.
+   * The camera sees a picture `inset` wider and `below` taller than the view, whose left `inset` and
+   * top `below` pixels are cut off: the centre of what shows moves to the middle of the part the
+   * legend and the ask bar leave free. The field of view grows with the taller picture, so the scale
+   * stays that of a BASE_FOV camera over the view.
    */
   function applyView(): void {
     inset = rightInset(width, reserve)
-    camera.aspect = (width + inset) / height
-    if (inset > 0) camera.setViewOffset(width + inset, height, inset, 0, width, height)
+    below = bottomInset(height, lowReserve)
+    camera.fov = stretchFov(BASE_FOV, height, below)
+    camera.aspect = (width + inset) / (height + below)
+    if (inset > 0 || below > 0) camera.setViewOffset(width + inset, height + below, inset, below, width, height)
     else camera.clearViewOffset()
     camera.updateProjectionMatrix()
   }
-  /** The width-to-height of the part of the view the legend leaves free: what a fit fills. */
-  const fitAspect = (): number => (width - inset) / height
+  /** The width-to-height of the part of the view the legend and the ask bar leave free: what a fit fills. */
+  const fitAspect = (): number => (width - inset) / (height - below)
+  /** The vertical field of view over that part, at the camera's scale. */
+  const fitFov = (): number => stretchFov(BASE_FOV, height, -below)
   applyView()
   const overviewPos = new THREE.Vector3(40, 120, 165)
   const overviewTarget = new THREE.Vector3(10, 0, 4)
@@ -489,7 +510,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const light = new THREE.PointLight(col, 40, Math.max(40, d.radius * 2.4))
     light.position.set(0, 8, 0)
     g.add(light)
-    districtRecs.set(d.id, addLabel(g, 'district', [0, 0.4, d.radius + 2], (el) => {
+    const [nx, nz] = turnGround(0, d.radius + 2, turned)
+    districtRecs.set(d.id, addLabel(g, 'district', [nx, 0.4, nz], (el) => {
       el.style.color = hex(col.getHex())
       el.textContent = d.label
       const sub = document.createElement('span')
@@ -697,10 +719,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     edges.set(c.id, rec)
   }
 
+  /** Whether the overview looks from the portrait direction, and whether it turns the city a quarter (overviewDir). */
+  let portrait = false
+  let turned = false
   /**
    * The overview frames the whole city: every platform's rim, every building to the top of its name
    * and every external, fitted with OVERVIEW_MARGIN to spare into the part of the picture the legend
-   * leaves free, seen from OVERVIEW_DIR. Done again when the view is resized.
+   * and the ask bar leave free. It looks from OVERVIEW_DIR in a landscape fit area; in a portrait one,
+   * more steeply down, the city turned so its long side runs up the picture (overviewDir). Done again
+   * when the view is resized.
    */
   function fitOverview(model: SceneModel): void {
     if (model.buildings.length === 0 && model.orbs.length === 0) return
@@ -716,27 +743,46 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         const a = (k / 6) * Math.PI * 2
         pts.push([d.pos[0] + Math.cos(a) * d.radius, d.pos[1], d.pos[2] + Math.sin(a) * d.radius])
       }
-      pts.push([d.pos[0], d.pos[1] - 2, d.pos[2] + d.radius + 4]) // the district's name below its rim
     }
-    const dir: V3 = [OVERVIEW_DIR.x, OVERVIEW_DIR.y, OVERVIEW_DIR.z]
-    let fit = fitView(pts, dir, camera.fov, fitAspect(), OVERVIEW_MARGIN, 40)
-    // A district's name is DISTRICT_NAME_HALF_PX wide on each side of its point, whatever the
-    // distance: at the fitted distance that is so many world units, so the fit is done again with
-    // the name's ends in it (twice: the wider fit makes the name a little wider in the world).
-    const side = new THREE.Vector3(OVERVIEW_DIR.z, 0, -OVERVIEW_DIR.x).normalize()
+    const view = overviewDir(fitAspect(), pts.map((p) => [p[0], p[2]] as const), portrait)
+    portrait = view.portrait
+    if (view.turned !== turned) {
+      turned = view.turned
+      // Each district's name sits on the camera's side of its platform.
+      for (const d of model.districts) {
+        const [nx, nz] = turnGround(0, d.radius + 2, turned)
+        districtRecs.get(d.id)?.o.position.set(nx, 0.4, nz)
+      }
+    }
+    const dir = view.dir
+    const nameAt = (d: SceneDistrict): [number, number] => {
+      const [ox, oz] = turnGround(0, d.radius + 4, turned)
+      return [d.pos[0] + ox, d.pos[2] + oz]
+    }
+    for (const d of model.districts) {
+      const [x, z] = nameAt(d)
+      pts.push([x, d.pos[1] - 2, z]) // the district's name below its rim
+    }
+    let fit = fitView(pts, dir, fitFov(), fitAspect(), OVERVIEW_MARGIN, 40)
+    // A district's name is its measured half width (DISTRICT_NAME_HALF_PX before it is measured) on
+    // each side of its point, whatever the distance: at the fitted distance that is so many world
+    // units, so the fit is done again with the name's ends in it (twice: the wider fit makes the name
+    // a little wider in the world).
+    const side = new THREE.Vector3(dir[2], 0, -dir[0]).normalize()
     for (let pass = 0; pass < 2 && model.districts.length > 0; pass++) {
-      const perPx = (2 * fit.dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / height
+      const perPx = (2 * fit.dist * Math.tan(THREE.MathUtils.degToRad(BASE_FOV / 2))) / height
       const named = [...pts]
       for (const d of model.districts) {
         const half = districtHalfPx(d.id) * perPx
         const drop = districtDropPx(d.id) * perPx
-        for (const k of [-1, 1]) named.push([d.pos[0] + side.x * half * k, d.pos[1] - 2 - drop, d.pos[2] + d.radius + 4 + side.z * half * k])
+        const [x, z] = nameAt(d)
+        for (const k of [-1, 1]) named.push([x + side.x * half * k, d.pos[1] - 2 - drop, z + side.z * half * k])
       }
-      fit = fitView(named, dir, camera.fov, fitAspect(), OVERVIEW_MARGIN, 40)
+      fit = fitView(named, dir, fitFov(), fitAspect(), OVERVIEW_MARGIN, 40)
     }
     overviewDist = fit.dist
     overviewTarget.set(fit.target[0], fit.target[1], fit.target[2])
-    overviewPos.copy(overviewTarget).addScaledVector(OVERVIEW_DIR, overviewDist)
+    overviewPos.set(overviewTarget.x + dir[0] * overviewDist, overviewTarget.y + dir[1] * overviewDist, overviewTarget.z + dir[2] * overviewDist)
     // Room to step back from the overview of even a very big world.
     controls.maxDistance = Math.max(420, overviewDist * 1.6)
   }
@@ -774,6 +820,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     scene.add(grid)
 
     for (const d of model.districts) buildDistrict(d, text)
+    // Again, now the district names are in the page: the fit keeps their measured widths clear.
+    fitOverview(model)
     for (const b of model.buildings) buildBuilding(b, hueColor(hueAt(model, b.pos)), text)
     for (const o of model.orbs) buildOrb(o, text)
     const heightAt = new Map<string, number>()
@@ -916,7 +964,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       pts.push([base.x, base.y, base.z], [m.anchor.x, m.anchor.y + 3, m.anchor.z])
     }
     const t: V3 = [target.x, target.y, target.z]
-    const fit = fitDistance(pts, t, [dir.x, dir.y, dir.z], camera.fov, fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+    const fit = fitDistance(pts, t, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
     const dist = clamp(fit, CLOSE_UP_MIN, overviewDist * 0.7)
     return flyTo(target.clone().addScaledVector(dir, dist), target, instant)
   }
@@ -1018,7 +1066,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     })]
     for (const lift of LINE_LIFTS) {
       const dir = new THREE.Vector3(h.x, lift, h.z).normalize()
-      const fit = fitView(pts, [dir.x, dir.y, dir.z], camera.fov, fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+      const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
       const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
       const far = Math.max(fit.dist, overviewDist * 0.7)
       let dist = fit.dist
@@ -1031,7 +1079,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     // Nothing gave a clear view: from high above, as far back as it takes to clear the roofs.
     const dir = new THREE.Vector3(h.x, LINE_LIFTS[2], h.z).normalize()
-    const fit = fitView(pts, [dir.x, dir.y, dir.z], camera.fov, fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+    const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
     const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
     const far = Math.max(fit.dist, overviewDist * 0.7)
     let dist = fit.dist
@@ -1262,25 +1310,28 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const el of todo) if (el.offsetWidth > 0) sizes.set(el, { w: el.offsetWidth, h: el.offsetHeight })
     todo.forEach((el, i) => { el.style.display = was[i][0]; el.style.visibility = was[i][1] })
   }
-  function candidate(o: CSS2DObject, id: string, tier: number, group?: string, nudge?: boolean, pin?: boolean): LabelCandidate | null {
+  function candidate(o: CSS2DObject, id: string, tier: number, group?: string, nudge?: boolean | 'vertical', pin?: boolean): LabelCandidate | null {
     o.getWorldPosition(labelAt)
     labelAt.project(camera)
     if (labelAt.z < -1 || labelAt.z > 1) return null
     const { w, h } = sizes.get(o.element) ?? edgeLabelSize((o.element.textContent ?? '').length)
     let x = ((labelAt.x + 1) / 2) * width
     let y = ((1 - labelAt.y) / 2) * height
+    let keepIn: LabelCandidate['keepIn']
     if (pin) {
-      // A district's name stays whole inside the view; the shift is added back to its nudge (layLabels).
-      const [sx, sy] = clampIntoView(x, y, w, h, width, height, LABEL_VIEW_INSET)
+      // A district's name stays whole inside the view, above the ask bar, and moves up or down only
+      // within it; the shift is added back to its nudge (layLabels).
+      const [sx, sy] = clampIntoView(x, y, w, h, width, height - below, LABEL_VIEW_INSET)
       x += sx
       y += sy
       if (sx !== 0 || sy !== 0) pinned.set(id, [sx, sy])
+      keepIn = [LABEL_VIEW_INSET, LABEL_VIEW_INSET, width - LABEL_VIEW_INSET, height - below - LABEL_VIEW_INSET]
     } else if (x + w / 2 < 0 || x - w / 2 > width || y + h / 2 < 0 || y - h / 2 > height) return null
-    return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}) }
+    return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}), ...(keepIn ? { keepIn } : {}) }
   }
   function layLabels(): Map<string, Nudge> {
     camera.updateMatrixWorld()
-    const want: { o: CSS2DObject; id: string; tier: number; group?: string; nudge?: boolean; pin?: boolean }[] = []
+    const want: { o: CSS2DObject; id: string; tier: number; group?: string; nudge?: boolean | 'vertical'; pin?: boolean }[] = []
     pinned.clear()
     const targets = new Set([hoveredId, selectedId])
     for (const n of nodes.values()) {
@@ -1299,7 +1350,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         else if (rank < budget || (placed.has(l.key) && rank < budget * 1.25 + 1)) want.push({ o: l.o, id: l.key, tier: 4 })
       }
     })
-    for (const l of labels) if (l.kind === 'district' || l.kind === 'proc') want.push({ o: l.o, id: l.key, tier: 3, pin: l.kind === 'district' })
+    // A district's name moves a row up or down before it is dropped (another name sits on its point).
+    for (const l of labels) {
+      if (l.kind === 'district') want.push({ o: l.o, id: l.key, tier: 3, nudge: 'vertical', pin: true })
+      else if (l.kind === 'proc') want.push({ o: l.o, id: l.key, tier: 3 })
+    }
     if (allLabels) for (const e of edges.values()) if (!e.focus) want.push({ o: e.label, id: 'e:' + e.id, tier: 5 })
     measure(want.map((w) => w.o.element))
     const cands: LabelCandidate[] = []
@@ -1462,6 +1517,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (px === reserve) return
       reserve = px
       resize() // the city is fitted again to the part the legend leaves free
+    },
+    setBottomReserve(px) {
+      if (px === lowReserve) return
+      lowReserve = px
+      resize() // the city is fitted again to the part above the ask bar
     },
     setTheme(name, th) {
       themeName = name

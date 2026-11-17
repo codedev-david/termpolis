@@ -28,6 +28,8 @@ export interface WorldViewer {
   setTheme(t: ThemeName): void
   /** Pixels on the right the legend covers now; the overview is fitted to the rest. Ignored without WebGL. */
   setRightReserve(px: number): void
+  /** Pixels at the bottom the ask bar covers now; the overview is fitted above it. Ignored without WebGL. */
+  setBottomReserve(px: number): void
   /** Runs one action now: camera flight, highlight, flow pulse, card open, tour, proposal reveal or reset. */
   apply(a: WorldAction): Promise<void>
   play(actions: WorldAction[]): Promise<void>
@@ -86,6 +88,8 @@ export interface WorldViewerOptions {
   renderCard?: (html: string | null) => void
   /** Pixels on the right that a panel covers (the legend); the city is framed in the rest. */
   rightReserve?: number
+  /** Pixels at the bottom that a panel covers (the ask bar); the city is framed above them. */
+  bottomReserve?: number
 }
 
 /** True when this browser can create a WebGL context. */
@@ -147,6 +151,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         reducedMotion: reduced,
         onEdgeLabel: (id) => { void select(id) },
         ...(opts.rightReserve !== undefined ? { rightReserve: opts.rightReserve } : {}),
+        ...(opts.bottomReserve !== undefined ? { bottomReserve: opts.bottomReserve } : {}),
       })
       r3.setTheme(themeName, THEMES[themeName])
     } catch {
@@ -551,6 +556,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     },
     setRightReserve(px) {
       if (!disposed) r3?.setRightReserve(px)
+    },
+    setBottomReserve(px) {
+      if (!disposed) r3?.setBottomReserve(px)
     },
     setTheme(t) {
       if (disposed || !THEMES[t]) return
