@@ -30,6 +30,8 @@ export interface WorldAskProps {
   voice?: { supported: boolean; listening: boolean; toggle: () => void; start?: () => void; stop?: () => void }
   /** WorldView's side of Esc and of world swaps; absent when the bar is used on its own. */
   link?: WorldAskLink
+  /** The proposal selected in the toolbar; null or absent: none. A question carries it to the agent. */
+  proposal?: string | null
 }
 
 const SUGGESTIONS = [
@@ -41,8 +43,8 @@ const SUGGESTIONS = [
 
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
-export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link }: WorldAskProps): JSX.Element {
-  const { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost } = useWorldAsk(viewer, root, link?.setDoc, doc?.layers.plan.find((p) => p.reconcile)?.id)
+export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, proposal }: WorldAskProps): JSX.Element {
+  const { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined)
   const design = isDesignKey(root)
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)

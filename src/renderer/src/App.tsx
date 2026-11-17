@@ -1244,7 +1244,7 @@ export default function App() {
                   root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
                   width={worldWidth}
                   onClose={() => setShowWorld(false)}
-                  askSlot={(v, d, r, link) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} />}
+                  askSlot={(v, d, r, link, proposal) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} proposal={proposal} />}
                   buildIt={worldBuildIt}
                 />
               </Suspense>

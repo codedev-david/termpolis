@@ -91,6 +91,10 @@ export interface WorldDrawn {
   changing: number
   /** Ids of the buildings drawn as wireframes: planned parts not built yet (always empty in 2D). */
   wireframes: string[]
+  /** Ids of the solid buildings drawn with an outline: parts the code changed since the last reconcile (always empty in 2D). */
+  outlined: string[]
+  /** Ids of the buildings drawn fading: parts the shown proposal takes away (always empty in 2D). */
+  fading: string[]
   /** Ids an answer fogged (the evidence does not support them) until the next reset. */
   fogged: string[]
   /** Ids lit now (the buildings and lines a selection, a tech chip or an action asked for); empty when nothing is. */
@@ -327,12 +331,16 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
 
   let wireframes: string[] = []
+  let outlined: string[] = []
+  let fading: string[] = []
   function redraw(): void {
     const d = doc
     if (!d) return
     if (!r3) { drawFallback(d); return }
     const model = buildSceneModel(d, layers, { revealProposal, fogged })
     wireframes = model.buildings.filter((b) => b.look === 'wire').map((b) => b.id)
+    outlined = model.buildings.filter((b) => b.outline).map((b) => b.id)
+    fading = model.buildings.filter((b) => b.look === 'fading').map((b) => b.id)
     r3.draw(model, sceneText(d), layers.allLineLabels)
     r3.setExploded(exploded)
     if (selection && kindOf(selection.id)) {
@@ -625,7 +633,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [] }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [] }),
     resetView() {
       cancelActions()
       deselect()

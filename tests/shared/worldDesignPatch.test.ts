@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  applyDesignPatch, defaultPlacer, DESIGN_PROTOCOL, emptyDesignDoc, MAX_DESIGN_OPS, parseDesignReply,
+  applyDesignPatch, defaultPlacer, DESIGN_PROTOCOL, emptyDesignDoc, MAX_DESIGN_OPS, parseDesignReply, REMOVALS_ID, REMOVALS_TITLE,
   type DesignOp
 } from '../../src/shared/world/designPatch'
 import type { WorldDoc } from '../../src/shared/world/types'
@@ -256,6 +256,37 @@ describe('applyDesignPatch', () => {
     const before = JSON.stringify(doc)
     applyDesignPatch(doc, [{ op: 'remove', id: 'core' }, { op: 'addDistrict', id: 'x', name: 'X' }])
     expect(JSON.stringify(doc)).toBe(before)
+  })
+})
+
+describe('removePart', () => {
+  it('designPatch removePart adds the built id to removes; an unknown id is skipped and counted', () => {
+    const r = applyDesignPatch(base(), [
+      { op: 'removePart', id: 'api' }, { op: 'removePart', id: 'api' }, { op: 'removePart', id: 'ghost' }, { op: 'removePart', id: 'db' }
+    ])
+    expect(r.applied).toBe(3)
+    expect(r.skipped).toHaveLength(1)
+    expect(r.skipped[0].reason).toBe('there is no building "ghost"')
+    const p = r.doc.layers.plan.find((x) => x.id === REMOVALS_ID)
+    expect(p).toMatchObject({ title: REMOVALS_TITLE, buildings: [], edges: [], removes: ['api', 'db'] })
+    expect(r.doc.layers.plan).toHaveLength(1) // one removals proposal, reused
+    expect(validateWorld(r.doc).ok).toBe(true)
+    // Deleting a part drops it from removes too.
+    const gone = applyDesignPatch(r.doc, [{ op: 'remove', id: 'api' }])
+    expect(gone.doc.layers.plan[0].removes).toEqual(['db'])
+    // A removals proposal stored without a list still takes the id.
+    const bare = JSON.parse(JSON.stringify(r.doc)) as WorldDoc
+    delete bare.layers.plan[0].removes
+    expect(applyDesignPatch(bare, [{ op: 'removePart', id: 'ui' }]).doc.layers.plan[0].removes).toEqual(['ui'])
+    // Other proposals without removes are left alone.
+    const other = JSON.parse(JSON.stringify(gone.doc)) as WorldDoc
+    other.layers.plan.push({ id: 'x', title: 'X', summary: [], buildings: [], edges: [] })
+    expect(applyDesignPatch(other, [{ op: 'remove', id: 'db' }]).doc.layers.plan[1].removes).toBeUndefined()
+  })
+
+  it('is described in the protocol and parsed from a reply', () => {
+    expect(DESIGN_PROTOCOL).toContain('removePart')
+    expect(parseDesignReply('ok\n```design-patch\n[{"op":"removePart","id":"api"}]\n```').ops).toEqual([{ op: 'removePart', id: 'api' }])
   })
 })
 

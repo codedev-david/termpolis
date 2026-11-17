@@ -187,6 +187,46 @@ describe('WorldView', () => {
     expect(b.api.worldGet).toHaveBeenCalledTimes(calls)
   })
 
+  const withPlan = (): WorldDoc => {
+    const d = minimal()
+    d.layers.plan.push(
+      { id: 'pA', title: 'Alpha plan', summary: [], buildings: [], edges: [] },
+      { id: 'design:p', title: 'Linked design', summary: [], buildings: [], edges: [], reconcile: { matched: {}, missing: [], extra: [], changed: [], planAt: 1 } }
+    )
+    return d
+  }
+
+  it('the selector lists every plan proposal and defaults to the linked design', async () => {
+    bridge({ worldGet: vi.fn(async () => ok(withPlan())) })
+    const askSlot = vi.fn(() => <span>ask</span>)
+    await mount({ askSlot })
+    const sel = screen.getByTestId('world-proposal') as HTMLSelectElement
+    expect([...sel.options].map((o) => o.textContent)).toEqual(['No proposal', 'Alpha plan', 'Linked design'])
+    expect(sel.value).toBe('design:p')
+    expect(viewer().setLayers).toHaveBeenCalledWith({ proposal: 'design:p' })
+    expect(askSlot).toHaveBeenLastCalledWith(viewer(), expect.anything(), '/repo', expect.anything(), 'design:p')
+  })
+
+  it('choosing "No proposal" hides the wireframes, outlines and fades; choosing a proposal shows them', async () => {
+    bridge({ worldGet: vi.fn(async () => ok(withPlan())) })
+    const askSlot = vi.fn(() => <span>ask</span>)
+    await mount({ askSlot })
+    const sel = screen.getByTestId('world-proposal')
+    fireEvent.change(sel, { target: { value: '' } })
+    expect(viewer().setLayers).toHaveBeenLastCalledWith({ proposal: null })
+    expect(askSlot).toHaveBeenLastCalledWith(viewer(), expect.anything(), '/repo', expect.anything(), null)
+    fireEvent.change(sel, { target: { value: 'pA' } })
+    expect(viewer().setLayers).toHaveBeenLastCalledWith({ proposal: 'pA' })
+    expect(askSlot).toHaveBeenLastCalledWith(viewer(), expect.anything(), '/repo', expect.anything(), 'pA')
+  })
+
+  it('has no selector for a world with no proposals, and keeps the pick null', async () => {
+    bridge()
+    await mount()
+    expect(screen.queryByTestId('world-proposal')).toBeNull()
+    expect(viewer().setLayers).toHaveBeenCalledWith({ proposal: null })
+  })
+
   it('toolbar toggles call viewer.setLayers with the right partial', async () => {
     bridge()
     await mount()
@@ -337,7 +377,7 @@ describe('WorldView', () => {
     const list = screen.getByTestId('world-fallback')
     expect(list.querySelector('section.world-fallback')).not.toBeNull()
     expect(list.querySelector('[data-kind="building"][data-id="b1"]')).toHaveTextContent('Desktop app')
-    expect(askSlot).toHaveBeenLastCalledWith(null, expect.objectContaining({ buildings: expect.any(Array) }), '/repo', expect.objectContaining({ onEscape: expect.any(Function), setBusy: expect.any(Function) }))
+    expect(askSlot).toHaveBeenLastCalledWith(null, expect.objectContaining({ buildings: expect.any(Array) }), '/repo', expect.objectContaining({ onEscape: expect.any(Function), setBusy: expect.any(Function) }), null)
     const doc = minimal()
 
     // Clicking a building or a connection opens its card from the doc.
@@ -781,7 +821,7 @@ describe('WorldView', () => {
     await mount({ askSlot })
     const v = viewer()
     expect(screen.getByTestId('world-ask-slot')).toHaveTextContent('ask here')
-    expect(askSlot).toHaveBeenLastCalledWith(v, expect.objectContaining({ buildings: expect.any(Array) }), '/repo', expect.objectContaining({ onEscape: expect.any(Function), setBusy: expect.any(Function) }))
+    expect(askSlot).toHaveBeenLastCalledWith(v, expect.objectContaining({ buildings: expect.any(Array) }), '/repo', expect.objectContaining({ onEscape: expect.any(Function), setBusy: expect.any(Function) }), null)
     act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
     const card = screen.getByTestId('world-card')
     fireEvent.click(card.querySelector('[data-edge]') as Element)
@@ -1166,7 +1206,7 @@ describe('WorldView 2D map switch and bookmarks', () => {
     expect(screen.getByTestId('world-canvas-host').style.visibility).toBe('hidden')
     expect(viewer().setPaused).toHaveBeenLastCalledWith(true)
     expect(screen.queryByTestId('world-legend')).toBeNull()
-    expect(askSlot).toHaveBeenLastCalledWith(null, expect.anything(), '/repo', expect.anything())
+    expect(askSlot).toHaveBeenLastCalledWith(null, expect.anything(), '/repo', expect.anything(), null)
     expect(localStorage.getItem('termpolis.world.map2d')).toBe('1')
     // A click on the map opens the card from the doc, not through the viewer.
     fireEvent.click(list.querySelector('svg rect[data-id="b1"]') as Element)
@@ -1184,7 +1224,7 @@ describe('WorldView 2D map switch and bookmarks', () => {
     expect(screen.getByTestId('world-canvas-host').style.visibility).toBe('visible')
     expect(viewer().setPaused).toHaveBeenLastCalledWith(false)
     expect(localStorage.getItem('termpolis.world.map2d')).toBe('0')
-    expect(askSlot).toHaveBeenLastCalledWith(viewer(), expect.anything(), '/repo', expect.anything())
+    expect(askSlot).toHaveBeenLastCalledWith(viewer(), expect.anything(), '/repo', expect.anything(), null)
   })
 
   it('starts in 2D when it was left on, and still switches when storage is blocked', async () => {

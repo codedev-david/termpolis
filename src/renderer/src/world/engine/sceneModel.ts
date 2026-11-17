@@ -3,7 +3,8 @@ import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
 import type { Building, Proposal, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 
 export type Vec3 = [number, number, number]
-export type Look = 'solid' | 'wire' | 'amber' | 'fog'
+/** `fading`: a built part the shown proposal takes away, drawn pulsing out. */
+export type Look = 'solid' | 'wire' | 'amber' | 'fog' | 'fading'
 
 export interface LayerState {
   /** Which names the renderer prints on buildings. A render switch: the scene model carries no label text for buildings. */
@@ -13,12 +14,16 @@ export interface LayerState {
   allLineLabels: boolean
   /** Show planned (proposed) buildings, the linked design and the connections that touch them. */
   planned: boolean
+  /** The id of the proposal drawn over the world (its parts, outlines and fades); null: none. */
+  proposal: string | null
 }
-export const DEFAULT_LAYERS: LayerState = { labels: 'jobs', processes: false, allLineLabels: false, planned: true }
+export const DEFAULT_LAYERS: LayerState = { labels: 'jobs', processes: false, allLineLabels: false, planned: true, proposal: null }
 
 export interface SceneDistrict { id: string; pos: Vec3; radius: number; hue: number; label: string }
 export interface SceneBuilding {
   id: string; pos: Vec3; floors: number; height: number; look: Look; ring: boolean; processShell?: string
+  /** A wireframe shell a little larger than a solid building the code changed since the last reconcile. */
+  outline: boolean
   /** A short card tag, e.g. a built part the linked design does not have. */
   tag?: string
 }
@@ -88,9 +93,12 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
   const proposal = opts?.revealProposal === undefined ? undefined : doc.layers.plan.find((p) => p.id === opts.revealProposal)
   // The linked design (a proposal carrying reconcile) shows with the planned layer; its missing parts are
   // wireframes at their design position, and the parts it matched are the built buildings themselves.
-  const linked = layers.planned ? doc.layers.plan.filter((p): p is Linked => p.reconcile !== undefined) : []
-  const shown: Proposal[] = proposal && !linked.some((p) => p === proposal) ? [...linked, proposal] : linked
+  const chosen = layers.planned && layers.proposal !== null ? doc.layers.plan.filter((p) => p.id === layers.proposal) : []
+  const linked = chosen.filter((p): p is Linked => p.reconcile !== undefined)
+  const shown: Proposal[] = proposal && !chosen.some((p) => p === proposal) ? [...chosen, proposal] : chosen
   const notInDesign = new Set(linked.flatMap((p) => p.reconcile.extra))
+  const changed = new Set(linked.flatMap((p) => p.reconcile.changed ?? []))
+  const removed = new Set(shown.flatMap((p) => p.removes ?? []))
   const buildings: Building[] = doc.buildings.filter((b) => layers.planned || b.status !== 'proposed')
   const known = new Set(buildings.map((b) => b.id))
   // The existing doc item wins over a revealed proposal item with the same id.
@@ -111,9 +119,10 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
 
   const sceneBuildings: SceneBuilding[] = buildings.map((b) => {
     const fogged = opts?.fogged?.has(b.id) === true // an answer the evidence does not support fogs its parts
-    const { look, ring } = fogged ? { look: 'fog' as const, ring: false } : lookOf(b)
+    const base = fogged ? { look: 'fog' as const, ring: false } : lookOf(b)
+    const { look, ring } = removed.has(b.id) && !fogged ? { look: 'fading' as const, ring: false } : base
     const floors = Math.max(1, b.floors.length)
-    const sb: SceneBuilding = { id: b.id, pos: place(b.id), floors, height: floors * FLOOR_HEIGHT, look, ring }
+    const sb: SceneBuilding = { id: b.id, pos: place(b.id), floors, height: floors * FLOOR_HEIGHT, look, ring, outline: changed.has(b.id) }
     if (layers.processes) sb.processShell = b.process
     if (notInDesign.has(b.id)) sb.tag = NOT_IN_DESIGN
     return sb

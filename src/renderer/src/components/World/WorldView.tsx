@@ -56,9 +56,10 @@ export interface WorldViewProps {
    * Plan 2's ask box: rendered at the bottom centre with the viewer (null without WebGL), the world,
    * the world's key (the project root it was drawn for, or design:<id> for a design; null until it
    * is known) and the link through which the box takes Esc first, holds newer worlds while it
-   * answers and hands back a changed design. Not shown on the home.
+   * answers and hands back a changed design, and the proposal selected in the toolbar (null: none), which
+   * a question carries to the agent. Not shown on the home.
    */
-  askSlot?: (viewer: WorldViewer | null, doc: WorldDoc | null, worldKey: string | null, link: WorldAskLink) => ReactNode
+  askSlot?: (viewer: WorldViewer | null, doc: WorldDoc | null, worldKey: string | null, link: WorldAskLink, proposal: string | null) => ReactNode
   /** Build it on design worlds: the agents it can start, and how App opens the agent terminal. */
   buildIt?: { agents: BuildAgent[]; defaultAgent?: string; launch: (res: BuildItResult, agentId: string) => void }
   /** The pane's width in px (App owns it: the divider and the window size change it). */
@@ -121,6 +122,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** The evidence a card's button opened, shown under the card until closed or the card changes. */
   const [evidence, setEvidence] = useState<Evidence | null>(null)
   const [layers, setLayersState] = useState<LayerState>(DEFAULT_LAYERS)
+  /** The proposal the toolbar chose; undefined until it does: the world's linked design is shown. */
+  const [proposalPick, setProposalPick] = useState<string | null | undefined>(undefined)
+  const proposal = proposalPick === undefined ? (doc?.layers.plan.find((p) => p.reconcile)?.id ?? null) : proposalPick
+  useEffect(() => { viewer?.setLayers({ proposal }) }, [viewer, proposal])
   // The legend is expanded on a wide pane and a chip on a narrow one, until the user chooses.
   const [legendChoice, setLegendChoice] = useState<boolean | null>(null)
   const legendOpen = legendChoice ?? legendDefaultOpen(width)
@@ -234,6 +239,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   useEffect(() => {
     heldDocRef.current = null
     setDoc(null)
+    setProposalPick(undefined)
     setError(null)
     setMapping(false)
     setProgress(null)
@@ -579,8 +585,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     >
       <WorldToolbar
         projectName={projectName}
-        layers={layers}
+        layers={{ ...layers, proposal }}
         onLayers={onLayers}
+        proposals={doc ? doc.layers.plan.map((p) => ({ id: p.id, title: p.title })) : []}
+        onProposal={setProposalPick}
         theme={theme}
         onTheme={onTheme}
         tours={doc ? doc.tours : []}
@@ -674,7 +682,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         )}
         {askSlot && !home && (
           <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3 }} data-testid="world-ask-slot">
-            {askSlot(map2d ? null : viewer, doc, worldKey, askLink)}
+            {askSlot(map2d ? null : viewer, doc, worldKey, askLink, proposal)}
           </div>
         )}
       </div>

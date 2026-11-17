@@ -241,13 +241,16 @@ const checkProposal = (ctx: Ctx, pr: unknown, i: number, baseNodes: Set<string>)
   if (!Array.isArray(rec.edges)) ctx.errors.push(`${label}: edges must be an array`)
   else rec.edges.forEach((e, n) => checkEdge(ctx, p, e, n, nodes))
   if (rec.reconcile !== undefined) checkReconcile(ctx, label, rec.reconcile)
+  if (rec.removes !== undefined && !(Array.isArray(rec.removes) && rec.removes.every(isStr))) ctx.errors.push(`${label}: removes must be an array of ids`)
 }
 
 /** A linked design's plan-versus-built lists (optional: docs from before it existed have none). */
 const checkReconcile = (ctx: Ctx, label: string, r: unknown): void => {
   const ok = isRecord(r) && isRecord(r.matched) && Object.values(r.matched).every(isStr)
     && Array.isArray(r.missing) && r.missing.every(isStr) && Array.isArray(r.extra) && r.extra.every(isStr) && isNum(r.planAt)
-  if (!ok) ctx.errors.push(`${label}: reconcile must be { matched, missing, extra, planAt }`)
+    && (r.changed === undefined || (Array.isArray(r.changed) && r.changed.every(isStr)))
+    && (r.seen === undefined || (isRecord(r.seen) && Object.values(r.seen).every(isStr)))
+  if (!ok) ctx.errors.push(`${label}: reconcile must be { matched, missing, extra, planAt } with optional changed and seen`)
 }
 
 const checkMaps = (ctx: Ctx, doc: Rec): void => {

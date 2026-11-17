@@ -28,14 +28,31 @@ function segmentsOf(b: Building): Set<string> {
   return out
 }
 
+/** A short stable fingerprint of what a building is made of: its files, its floors and its tech. */
+function fingerprint(b: Building): string {
+  const sig = JSON.stringify([
+    [...b.members].sort(), [...b.stack].sort(),
+    b.floors.map((f) => [f.name, [...f.tech].sort(), [...f.members].sort()])
+  ])
+  let h = 2166136261
+  for (let i = 0; i < sig.length; i++) {
+    h ^= sig.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return (h >>> 0).toString(36)
+}
+
 const byId = (a: Building, b: Building): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 
 /**
  * Pairs plan buildings with built ones in three passes: same id, then the same normalized name, then
  * a built file path with the normalized plan name as one of its segments. Each built building stands
  * for at most one plan building; within a pass the first match wins, in plan id order.
+ * `previous` is the reconcile the last compile stored: a matched built building whose fingerprint
+ * differs from the one its plan part recorded there is `changed` (keyed by plan id: a built id can
+ * change when the grouper regroups files). With no previous (the first reconcile), or no record yet, nothing is changed.
  */
-export function reconcilePlan(plan: WorldDoc, built: WorldDoc): PlanReconcile {
+export function reconcilePlan(plan: WorldDoc, built: WorldDoc, previous?: PlanReconcile): PlanReconcile {
   const planned = [...plan.buildings].sort(byId)
   const have = [...built.buildings].sort(byId)
   const names = new Map(have.map((b) => [b.id, normalizePartName(b.name)]))
@@ -57,10 +74,22 @@ export function reconcilePlan(plan: WorldDoc, built: WorldDoc): PlanReconcile {
     return n !== '' && n === names.get(b.id)
   })
   pass((p, b) => (segments.get(b.id) as Set<string>).has(normalizePartName(p.name)))
+  const seen: Record<string, string> = {}
+  const changed: string[] = []
+  const builtById = new Map(have.map((b) => [b.id, b]))
+  for (const p of planned) {
+    const b = builtById.get(matched[p.id])
+    if (!b) continue
+    seen[p.id] = fingerprint(b)
+    const was = previous?.seen?.[p.id]
+    if (was !== undefined && was !== seen[p.id]) changed.push(b.id)
+  }
   return {
     matched,
     missing: planned.filter((p) => matched[p.id] === undefined).map((p) => p.id),
-    extra: have.filter((b) => !used.has(b.id)).map((b) => b.id)
+    extra: have.filter((b) => !used.has(b.id)).map((b) => b.id),
+    changed,
+    seen
   }
 }
 

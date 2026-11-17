@@ -27,7 +27,8 @@ function plannedBefore(previous: WorldDoc | null): Set<string> {
 }
 
 export function overlayPlan(doc: WorldDoc, plan: WorldDoc, previous: WorldDoc | null): WorldDoc {
-  const rec = reconcilePlan(plan, doc)
+  const before = (previous?.layers.plan ?? []).find((p) => p.reconcile)?.reconcile
+  const rec = reconcilePlan(plan, doc, before)
   const used = new Set([...doc.districts, ...doc.buildings, ...doc.edges, ...doc.externals].map((x) => x.id))
   const free = (want: string): string => {
     let id = want
@@ -91,9 +92,14 @@ export function overlayPlan(doc: WorldDoc, plan: WorldDoc, previous: WorldDoc | 
     edges.push({ ...e, id: free(e.id), from, to })
   }
 
+  // Parts the design takes away (its removePart changes), as the built buildings that stand for them.
+  const removes = [...new Set(plan.layers.plan.flatMap((p) => p.removes ?? []))]
+    .map((id) => rec.matched[id])
+    .filter((id): id is string => id !== undefined)
   const proposal: Proposal = {
     id: plan.projectKey, title: LINKED_DESIGN_TITLE, summary: [], buildings, edges,
-    reconcile: { ...rec, planAt: plan.generatedAt }
+    reconcile: { ...rec, planAt: plan.generatedAt },
+    ...(removes.length > 0 ? { removes } : {})
   }
   const out: WorldDoc = {
     ...doc, glossary, cargo,

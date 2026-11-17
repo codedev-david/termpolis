@@ -16,6 +16,7 @@ export type DesignOp =
   | { op: 'remove'; id: string }
   | { op: 'move'; id: string; districtId: string }
   | { op: 'describe'; id: string; does: string }
+  | { op: 'removePart'; id: string }
 
 type Pos = [number, number, number]
 /** Given a doc whose layout holds only the positions to keep, returns positions for every district and building. */
@@ -31,11 +32,15 @@ After your reply, add one fenced block tagged design-patch containing a JSON arr
 {"op":"addEdge","from":"<building id>","to":"<building id>","label":"...","cargo":"..."}
 {"op":"rename","id":"...","name":"..."} {"op":"remove","id":"..."}
 {"op":"move","id":"<building id>","districtId":"..."} {"op":"describe","id":"...","does":"..."}
+{"op":"removePart","id":"<building id>"} marks a part the code already has as one the design takes away (it stays in the design).
 A district is an area of the system; a building is one part (a service, an app, a store) inside a district.
 New ids are short lowercase words joined by dashes and unique across the design. Use only ids from the
 DESIGN DATA or ones you add earlier in the same block.`
 
 export const MAX_DESIGN_OPS = 200
+/** The design proposal removePart writes to. */
+export const REMOVALS_ID = 'removals'
+export const REMOVALS_TITLE = 'Removals'
 const MAX_NAME = 120
 const MAX_TEXT = 1000
 const MAX_TECH = 40
@@ -92,6 +97,8 @@ function normalizeOp(raw: unknown): DesignOp | null {
       return { op: 'remove', id }
     case 'move':
       return str(raw.districtId) ? { op: 'move', id, districtId: raw.districtId.trim() } : null
+    case 'removePart':
+      return { op: 'removePart', id }
     case 'describe':
       return str(raw.does) ? { op: 'describe', id, does: clip(raw.does, MAX_TEXT) } : null
     default:
@@ -183,6 +190,7 @@ function removeItem(doc: WorldDoc, id: string): string | null {
   doc.buildings = doc.buildings.filter((b) => !gone.has(b.id))
   doc.edges = doc.edges.filter((e) => !gone.has(e.id) && !gone.has(e.from) && !gone.has(e.to))
   for (const g of gone) delete doc.runtimeNames[g]
+  for (const p of doc.layers.plan) if (p.removes) p.removes = p.removes.filter((x) => !gone.has(x))
   const live = allIds(doc)
   for (const t of doc.tours) {
     t.steps = t.steps.map((s) => ({ ...s, ids: s.ids.filter((x) => live.has(x)) })).filter((s) => s.ids.length > 0)
@@ -238,6 +246,16 @@ function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>):
       if (op.op === 'rename') target.name = op.name
       else if ('how' in target) target.how = [claim(op.does)]
       else target.subtitle = op.does
+      return null
+    }
+    case 'removePart': {
+      if (!building(op.id)) return `there is no building "${op.id}"`
+      let p = doc.layers.plan.find((x) => x.id === REMOVALS_ID)
+      if (!p) {
+        p = { id: REMOVALS_ID, title: REMOVALS_TITLE, summary: [], buildings: [], edges: [], removes: [] }
+        doc.layers.plan.push(p)
+      }
+      p.removes = [...new Set([...(p.removes ?? []), op.id])]
       return null
     }
     case 'move': {

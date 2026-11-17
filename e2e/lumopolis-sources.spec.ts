@@ -14,7 +14,9 @@
  *      never a real agent), and the pane switches to the folder's world: the plan alone, four
  *      wireframes. The test then writes src/payments/index.ts; the folder watcher re-indexes it, the
  *      world refreshes, the plan's Payments part is matched by the new code (no longer a wireframe)
- *      and the change toast says "+1 part".
+ *      and the change toast says "+1 part". A second file in that part makes the world draw it with
+ *      an outline (changed since the last reconcile). Back in the design, "remove Payments" (the
+ *      design's removePart) and the folder's world draws that built part fading.
  *   5. The renderer logged no console error and threw no page error.
  *
  * Labelling is off: its hidden run is spawned without a shell and cannot launch a Windows shim.
@@ -149,6 +151,15 @@ async function wireframes(): Promise<string[] | null> {
   })
 }
 
+/** The probe's drawn lists: ids outlined (changed parts) and fading (parts the design removes). */
+async function drawnLists(): Promise<{ outlined: string[]; fading: string[] }> {
+  return await page.evaluate(() => {
+    const probe = (window as unknown as { __termpolis_world?: { drawn(): { outlined: string[]; fading: string[] } } }).__termpolis_world
+    const d = probe?.drawn()
+    return { outlined: d ? [...d.outlined].sort() : [], fading: d ? [...d.fading].sort() : [] }
+  })
+}
+
 /** The active terminal's text, all whitespace removed (a long typed line wraps across rows). */
 async function terminalText(): Promise<string> {
   const text = await page.evaluate(
@@ -236,6 +247,24 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     fs.writeFileSync(path.join(buildDir, 'src', 'payments', 'index.ts'), 'export function charge(cents: number): boolean {\n  return cents > 0\n}\n')
     await expect(canvasHost().locator('.lw-toast')).toHaveText(/\+1 part/, { timeout: 60_000 })
     await expect.poll(wireframes, { timeout: 30_000 }).toEqual(['catalog', 'orders', 'storefront'])
+    expect((await drawnLists()).outlined).toEqual([]) // the first reconcile has nothing to compare to
+
+    // The agent adds a test for the Payments part: the part has more files, so it is outlined (changed).
+    fs.writeFileSync(path.join(buildDir, 'src', 'payments', 'index.test.ts'), "import { charge } from './index'\nconsole.assert(charge(5))\n")
+    await expect.poll(async () => (await drawnLists()).outlined.length, { timeout: 60_000, intervals: [100] }).toBe(1)
+    const part = (await drawnLists()).outlined[0]
+
+    // The design takes Payments away: back in the folder's world the built part fades.
+    await page.getByRole('combobox', { name: 'Worlds' }).selectOption({ label: DESCRIPTION })
+    await expect(projectName()).toHaveText(DESCRIPTION, { timeout: 30_000 })
+    const box = page.getByPlaceholder('Change the design…')
+    await expect(box).toBeEnabled({ timeout: 30_000 })
+    await box.fill('remove Payments')
+    await box.press('Enter')
+    await expect(page.locator('[data-testid="world-answer"]')).toContainText('Removed the Payments part.', { timeout: 60_000 })
+    await page.getByRole('combobox', { name: 'Worlds' }).selectOption({ label: path.basename(buildDir) })
+    await expect(projectName()).toHaveText(path.basename(buildDir), { timeout: 30_000 })
+    await expect.poll(async () => (await drawnLists()).fading, { timeout: 60_000 }).toEqual([part])
   })
 
   test('5. the renderer logged no console errors and threw no page errors', async () => {

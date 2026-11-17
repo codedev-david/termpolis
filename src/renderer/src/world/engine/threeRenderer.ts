@@ -146,6 +146,11 @@ const CSS = `
 `
 
 const FLOOR_W = 5
+/** A changed part's outline shell is this much larger than the building. */
+const OUTLINE_SCALE = 1.08
+/** A removed part's opacity pulse: between 0.15 and 0.45. */
+const FADE_MID = 0.3
+const FADE_AMP = 0.15
 const ORB_R = 2.2
 /** A framing on screen: what it frames, the neighbours kept in view, and the side it looks from. */
 interface Framing { ids: string[]; around: string[] | undefined; from: THREE.Vector3 }
@@ -518,6 +523,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let frameNo = 0
   let labels: LabelRec[] = []
   let ghostMats: THREE.Material[] = []
+  /** Materials of buildings drawn fading: pulsed in animate, emptied with the scene. */
+  let fadeMats: THREE.Material[] = []
   let seals: THREE.Mesh[] = []
   let fogSprites: THREE.Sprite[] = []
   let pulseBalls: THREE.Mesh[] = []
@@ -558,7 +565,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     })
     world.clear()
     hoverLabels = []
-    nodes = new Map(); edges = new Map(); pickables = []; boxFrame = -1; labels = []; districtRecs.clear(); ghostMats = []; seals = []; fogSprites = []; pulseBalls = []
+    nodes = new Map(); edges = new Map(); pickables = []; boxFrame = -1; labels = []; districtRecs.clear(); ghostMats = []; fadeMats = []; seals = []; fogSprites = []; pulseBalls = []
     shellCount = 0
     selRing = null
   }
@@ -701,6 +708,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         n.flow.dots.push(d)
       }
     }
+    if (b.outline) { // the code changed this part since the last reconcile: a proposed-colour shell, 8% larger, around the solid
+      const om = trackBase(new THREE.LineBasicMaterial({ color: extras.ghost, transparent: true, opacity: 0.8 }))
+      n.mats.push(om)
+      ghostMats.push(om)
+      const shell = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(FLOOR_W * OUTLINE_SCALE, b.height * OUTLINE_SCALE, FLOOR_W * OUTLINE_SCALE)), om)
+      shell.position.y = b.height / 2
+      g.add(shell)
+    }
     if (b.ring) {
       const ringMat = trackBase(new THREE.MeshBasicMaterial({ color: extras.seal, transparent: true }))
       n.mats.push(ringMat)
@@ -714,6 +729,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (b.processShell !== undefined) processShell(n, b.processShell, text, false)
     const label = addLabel(g, 'bldg', [0, b.height + 3, 0], (el) => { el.textContent = text.labels[b.id] ?? b.id })
     n.labels.push(label)
+    if (b.look === 'fading') fadeMats.push(...n.mats)
     nodes.set(b.id, n)
   }
 
@@ -1667,6 +1683,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     const gp = 0.55 + 0.45 * Math.sin(t * 2.2)
     for (const m of ghostMats) m.opacity = Math.min(1, m.userData.base * gp * (m.userData.f ?? 1))
+    // A part the proposal takes away pulses between FADE_MIN and FADE_MAX at 0.5 Hz; reduced motion holds it at the middle.
+    const fade = reduced ? FADE_MID : FADE_MID + FADE_AMP * Math.sin(t * Math.PI)
+    for (const m of fadeMats) m.opacity = fade * (m.userData.f ?? 1)
     if (selRing && selRing.visible) selRing.rotation.z += dt * 0.5
     if (pulseAnim) {
       const pa = pulseAnim

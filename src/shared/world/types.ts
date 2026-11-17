@@ -27,12 +27,20 @@ export interface WorldEdge {
 }
 export interface External { id: string; name: string; kind: 'agent' | 'provider' | 'files' | 'machine' | 'service'; fog: boolean }
 /** Plan versus built (shared/world/reconcile.ts): plan building id → built building id, plus what each side lacks. */
-export interface PlanReconcile { matched: Record<string, string>; missing: string[]; extra: string[] }
+export interface PlanReconcile {
+  matched: Record<string, string>; missing: string[]; extra: string[]
+  /** Built ids a plan part matched whose members, floors or tech differ from when the world was last reconciled. */
+  changed: string[]
+  /** A short fingerprint of the built building each plan part matched, by plan id, as of this reconcile: the baseline the next one compares to. */
+  seen?: Record<string, string>
+}
 /** A planned change drawn over the world. One carrying `reconcile` is the project's linked design, overlaid
  *  by compile: its buildings are the missing ones only, and `planAt` is the design's generatedAt. */
 export interface Proposal {
   id: string; title: string; summary: Claim[]; buildings: Building[]; edges: WorldEdge[]
   reconcile?: PlanReconcile & { planAt: number }
+  /** Built building ids this proposal takes away: drawn fading. */
+  removes?: string[]
 }
 export interface Tour { id: string; title: string; steps: { ids: string[]; caption: string }[] }
 export interface WorldDoc {

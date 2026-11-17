@@ -534,14 +534,18 @@ describe('WorldAsk', () => {
       })
     })
 
-    it('sends the id of the design proposal on show (the one that was reconciled)', async () => {
+    it('sends the id of the proposal the toolbar selected, and none when "No proposal" is chosen', async () => {
       const d = minimal()
       d.layers.plan.push(
         { id: 'pA', title: 'A', summary: [], buildings: [], edges: [] },
-        { id: 'pB', title: 'B', summary: [], buildings: [], edges: [], reconcile: { matched: {}, missing: [], extra: [], planAt: 1 } }
+        { id: 'pB', title: 'B', summary: [], buildings: [], edges: [], reconcile: { matched: {}, missing: [], extra: [], changed: [], planAt: 1 } }
       )
-      await submit(makeViewer(), 'q', { doc: d })
+      const first = await submit(makeViewer(), 'q', { doc: d, proposal: 'pB' })
       expect((ask.mock.calls[0][0] as AskRequest).proposalId).toBe('pB')
+      first.unmount()
+      ask.mockClear()
+      await submit(makeViewer(), 'q', { doc: d, proposal: null })
+      expect((ask.mock.calls[0][0] as AskRequest).proposalId).toBeUndefined()
     })
 
     it('is hidden when the voice is unsupported', () => {

@@ -171,6 +171,9 @@ describe('conduitStyle', () => {
   })
 })
 
+/** The linked design chosen in the selector. */
+const ON = { ...DEFAULT_LAYERS, proposal: 'design:p' }
+
 describe('linked design overlay', () => {
   /** minimal() plus a linked design: plan "auth" matched b1, "mailer" is missing (drawn as pm), b2 is not in the design. */
   const linked = () => {
@@ -180,14 +183,14 @@ describe('linked design overlay', () => {
       id: 'design:p', title: 'Linked design', summary: [],
       buildings: [building('pm', { status: 'proposed', districtId: 'd1' })],
       edges: [edge('pe', 'b1', 'pm')],
-      reconcile: { matched: { auth: 'b1' }, missing: ['mailer'], extra: ['b2'], planAt: 1 }
+      reconcile: { matched: { auth: 'b1' }, missing: ['mailer'], extra: ['b2'], changed: [], planAt: 1 }
     })
     return doc
   }
 
   it('sceneModel draws matched as solid at built pos, missing as wire', () => {
     const doc = linked()
-    const m = buildSceneModel(doc, DEFAULT_LAYERS)
+    const m = buildSceneModel(doc, ON)
     const b1 = m.buildings.find((b) => b.id === 'b1')
     const pm = m.buildings.find((b) => b.id === 'pm')
     const b2 = m.buildings.find((b) => b.id === 'b2')
@@ -200,8 +203,30 @@ describe('linked design overlay', () => {
     expect(m.districts[0].radius).toBeGreaterThan(20)
   })
 
+  it('changed => solid with outline; removes => fading; new => wireframe; done => solid without outline', () => {
+    const doc = linked()
+    const rec = doc.layers.plan[0]
+    rec.reconcile = { ...(rec.reconcile as NonNullable<typeof rec.reconcile>), changed: ['b1'] }
+    rec.removes = ['b2']
+    const m = buildSceneModel(doc, ON)
+    const at = (id: string) => m.buildings.find((b) => b.id === id)
+    expect(at('b1')).toMatchObject({ look: 'solid', outline: true })
+    expect(at('b2')).toMatchObject({ look: 'fading', outline: false, ring: false })
+    expect(at('pm')).toMatchObject({ look: 'wire', outline: false })
+    // A fogged answer part stays fog even when it is being removed.
+    const fog = buildSceneModel(doc, ON, { fogged: new Set(['b2']) })
+    expect(fog.buildings.find((b) => b.id === 'b2')?.look).toBe('fog')
+    // No proposal chosen: no wireframe, outline or fade.
+    const none = buildSceneModel(doc, DEFAULT_LAYERS)
+    expect(none.buildings.map((b) => b.id)).toEqual(['b1', 'b2'])
+    expect(none.buildings.every((b) => !b.outline && b.look === 'solid')).toBe(true)
+    // A reconcile stored before `changed` existed outlines nothing.
+    delete (rec.reconcile as { changed?: string[] }).changed
+    expect(buildSceneModel(doc, ON).buildings.every((b) => !b.outline)).toBe(true)
+  })
+
   it('hides the linked design, and its tags, when planned is off', () => {
-    const m = buildSceneModel(linked(), { ...DEFAULT_LAYERS, planned: false })
+    const m = buildSceneModel(linked(), { ...ON, planned: false })
     expect(m.buildings.map((b) => b.id)).toEqual(['b1', 'b2'])
     expect(m.buildings.every((b) => b.tag === undefined)).toBe(true)
     expect(m.conduits.map((c) => c.id)).toEqual(['e1'])
@@ -209,11 +234,11 @@ describe('linked design overlay', () => {
 
   it('draws the linked design once when it is also the revealed proposal, beside another revealed one', () => {
     const doc = linked()
-    const once = buildSceneModel(doc, DEFAULT_LAYERS, { revealProposal: 'design:p' })
+    const once = buildSceneModel(doc, ON, { revealProposal: 'design:p' })
     expect(once.buildings.filter((b) => b.id === 'pm')).toHaveLength(1)
     expect(once.conduits.filter((c) => c.id === 'pe')).toHaveLength(1)
     doc.layers.plan.push({ id: 'p2', title: 'Other', summary: [], buildings: [building('q1', { status: 'proposed' })], edges: [] })
-    const both = buildSceneModel(doc, DEFAULT_LAYERS, { revealProposal: 'p2' })
+    const both = buildSceneModel(doc, ON, { revealProposal: 'p2' })
     expect(both.buildings.map((b) => b.id)).toEqual(['b1', 'b2', 'pm', 'q1'])
   })
 })

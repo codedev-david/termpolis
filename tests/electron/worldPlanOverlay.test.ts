@@ -44,7 +44,7 @@ describe('overlayPlan', () => {
     expect(out.layers.plan).toHaveLength(1)
     const p = out.layers.plan[0]
     expect(p).toMatchObject({ id: 'design:p', title: LINKED_DESIGN_TITLE, summary: [] })
-    expect(p.reconcile).toEqual({ matched: { b1: 'b1', mem: 'b2' }, missing: ['cron', 'e1', 'mail'], extra: [], planAt: 900 })
+    expect(p.reconcile).toEqual({ matched: { b1: 'b1', mem: 'b2' }, missing: ['cron', 'e1', 'mail'], extra: [], changed: [], seen: { b1: expect.any(String), mem: expect.any(String) }, planAt: 900 })
     // A missing plan id that is taken in the world gets a free one.
     expect(p.buildings.map((b) => b.id)).toEqual(['cron', 'e1-plan', 'mail'])
     expect(bld(out, 'mail')).toMatchObject({ districtId: 'd1', status: 'proposed', process: '' })
@@ -66,6 +66,23 @@ describe('overlayPlan', () => {
     expect(out.buildings).toEqual(doc.buildings)
     expect(out.edges).toEqual(doc.edges)
     expect(doc.layers.plan).toEqual([])
+  })
+
+  it('maps the removals of the design to built ids, and outlines a matched part whose files changed since the last overlay', () => {
+    const plan = design([...OPS, { op: 'removePart', id: 'mem' }, { op: 'removePart', id: 'mail' }])
+    const first = overlayPlan(built(), plan, null)
+    // mem is matched to the built b2; mail is missing (nothing built to fade).
+    expect(first.layers.plan[0].removes).toEqual(['b2'])
+    expect(first.layers.plan[0].reconcile?.changed).toEqual([])
+    const grown = built()
+    grown.buildings[0].members = [...grown.buildings[0].members, 'src/new.ts']
+    const again = overlayPlan(grown, plan, first)
+    expect(again.layers.plan[0].reconcile?.changed).toEqual(['b1'])
+    expect(overlayPlan(built(), design(OPS), null).layers.plan[0].removes).toBeUndefined()
+    // A design proposal that takes nothing away adds nothing.
+    const plain = design(OPS)
+    plain.layers.plan.push({ id: 'x', title: 'X', summary: [], buildings: [], edges: [] })
+    expect(overlayPlan(built(), plain, null).layers.plan[0].removes).toBeUndefined()
   })
 
   it('keeps a previous overlay position, places a second part in the same district clear of the first, and lists extras', () => {

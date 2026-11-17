@@ -10,6 +10,9 @@ export interface WorldToolbarProps {
   projectName: string
   layers: LayerState
   onLayers: (patch: Partial<LayerState>) => void
+  /** Every proposal of the world, in plan order; the select offers none first. Empty: no select. */
+  proposals: { id: string; title: string }[]
+  onProposal: (id: string | null) => void
   theme: ThemeName
   onTheme: (t: ThemeName) => void
   tours: Tour[]
@@ -88,6 +91,19 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
           onClick={() => onLayers(t.patch)}
         >{t.label}</button>
       ))}
+      {props.proposals.length > 0 && (
+        <select
+          aria-label="Proposal"
+          title="Which planned change is drawn over the world"
+          data-testid="world-proposal"
+          value={layers.proposal ?? ''}
+          onChange={(e) => props.onProposal(e.target.value === '' ? null : e.target.value)}
+          className="text-xs px-1.5 py-1 rounded border border-[#3c3c3c] bg-[#1e1e1e] text-[#cccccc]"
+        >
+          <option value="">No proposal</option>
+          {props.proposals.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
+        </select>
+      )}
       <select
         aria-label="Theme"
         data-testid="world-theme"
