@@ -215,6 +215,19 @@ export function ensureRepoWatch(root: string, deps: WatchDeps): boolean {
   return true
 }
 
+/** Stop and forget the watch on `root` (a removed Build it folder). Returns true if one was running. */
+export function stopRepoWatch(root: string): boolean {
+  const w = active.get(root)
+  if (!w) return false
+  active.delete(root)
+  try {
+    w.close()
+  } catch {
+    /* best effort */
+  }
+  return true
+}
+
 /** Stop and forget every active watch (call on app quit). */
 export function stopRepoWatches(): void {
   for (const w of active.values()) {

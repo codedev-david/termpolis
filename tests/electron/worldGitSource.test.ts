@@ -3,12 +3,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  AUTH_MESSAGE,
   BAD_REF_MESSAGE,
   BAD_URL_MESSAGE,
   CANCELLED_MESSAGE,
   CLEAR_MESSAGE,
   CLONE_MARKER,
   FINISH_MESSAGE,
+  DROPPED_ENV,
+  TIMEOUT_MESSAGE,
   TOO_BIG_MESSAGE,
   cloneArgs,
   cloneKey,
@@ -19,6 +22,7 @@ import {
   pathExists,
   renameWithRetry,
   removeDir,
+  safetyFlags,
   validateGitUrl,
   type CloneDeps,
   type ExecFn
@@ -54,10 +58,17 @@ function mkDeps(over: Partial<CloneDeps> = {}) {
   return { deps, calls, rm, mark, rename }
 }
 
-const FLAGS = ['-c', 'protocol.file.allow=never', '-c', 'core.hooksPath=/dev/null']
+const FLAGS = [
+  '-c', 'protocol.file.allow=never',
+  '-c', 'core.hooksPath=/dev/null',
+  '-c', 'core.symlinks=false',
+  '-c', 'credential.helper=',
+  '-c', 'credential.interactive=false',
+  '-c', 'core.askPass='
+]
 
 describe('validateGitUrl', () => {
-  it.each(['--upload-pack=x', 'ext::sh -c touch/tmp/x', 'file:///etc', 'C:\\x', '-oProxyCommand=x', '', 'https://a b/c', ' https://a/b', 'http://a/b', 'https://a/\nb', 'https://a/\u0000b'])(
+  it.each(['--upload-pack=x', 'ext::sh -c touch/tmp/x', 'file:///etc', 'C:\\x', '-oProxyCommand=x', '', 'ssh://-oProxyCommand=x/a', 'ssh://a@-o/x', 'git@-oX:a/b', 'https://-x/a', 'https://u@-x/a', 'https://a b/c', ' https://a/b', 'http://a/b', 'https://a/\nb', 'https://a/\u0000b'])(
     'rejects %j',
     (u) => {
       expect(validateGitUrl(u)).toEqual({ ok: false, reason: BAD_URL_MESSAGE })
@@ -66,7 +77,7 @@ describe('validateGitUrl', () => {
   it('rejects a non-string', () => {
     expect(validateGitUrl(undefined as unknown as string).ok).toBe(false)
   })
-  it.each(['https://github.com/a/b.git', 'git@github.com:a/b.git', 'ssh://git@host/a/b'])('accepts %s', (u) => {
+  it.each(['https://github.com/a/b.git', 'git@github.com:a/b.git', 'ssh://git@host/a/b', 'https://host/-a/b', 'ssh://git@my-host/a'])('accepts %s', (u) => {
     expect(validateGitUrl(u)).toEqual({ ok: true })
   })
 })
@@ -89,6 +100,10 @@ describe('cloneArgs', () => {
   it('defaults the platform from the process', () => {
     expect(cloneArgs(URL1, '/d')).toContain(`core.hooksPath=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`)
   })
+  it('never lets git ask for a login: an empty helper list, no askpass, no interactive helper, no symlinks', () => {
+    expect(safetyFlags(true)).toEqual(FLAGS.map((f) => (f === 'core.hooksPath=/dev/null' ? 'core.hooksPath=NUL' : f)))
+    expect(safetyFlags(false)).toEqual(FLAGS)
+  })
 })
 
 describe('cloneKey', () => {
@@ -96,6 +111,9 @@ describe('cloneKey', () => {
     expect(cloneKey(URL1)).toMatch(/^[0-9a-f]{16}$/)
     expect(cloneKey(URL1, 'x')).not.toBe(cloneKey(URL1))
     expect(cloneKey(URL1, undefined)).toBe(cloneKey(URL1, ''))
+  })
+  it('separates the url from the branch, so moving characters between them changes the key', () => {
+    expect(cloneKey('https://h/ab', 'c')).not.toBe(cloneKey('https://h/a', 'bc'))
   })
 })
 
@@ -111,7 +129,7 @@ describe('cloneRepo', () => {
   })
 
   it('clones into a temp sibling, marks it, renames it into <base>/world/repos/<hash>', async () => {
-    const { deps, calls, mark, rename } = mkDeps({ env: { PATH: 'p', GONE: undefined } })
+    const { deps, calls, mark, rename } = mkDeps({ env: { PATH: 'p', GONE: undefined }, now: () => 1000 })
     const r = await cloneRepo(URL1, undefined, deps)
     expect(r).toEqual({ ok: true, root: ROOT })
     expect(calls).toHaveLength(1)
@@ -120,6 +138,8 @@ describe('cloneRepo', () => {
     expect(calls[0].opts.env).toEqual({
       PATH: 'p',
       GIT_TERMINAL_PROMPT: '0',
+      GCM_INTERACTIVE: 'never',
+      SSH_ASKPASS_REQUIRE: 'never',
       GIT_ALLOW_PROTOCOL: 'https:ssh',
       GIT_CEILING_DIRECTORIES: REPOS
     })
@@ -135,6 +155,21 @@ describe('cloneRepo', () => {
     expect(calls[0].opts.env.GIT_TERMINAL_PROMPT).toBe('0')
     expect(calls[0].opts.env.GIT_ALLOW_PROTOCOL).toBe('https:ssh')
     expect(calls[0].args).toContain('v1.0/x')
+    expect(calls[0].opts.timeout).toBeGreaterThan(0)
+    expect(calls[0].opts.timeout).toBeLessThanOrEqual(300_000)
+  })
+
+  it('drops inherited variables that point git elsewhere or run an askpass program, in any case', async () => {
+    const env: Record<string, string> = { PATH: 'p' }
+    for (const k of DROPPED_ENV) env[k] = 'x'
+    env.git_dir = 'x'
+    env.Ssh_AskPass = 'x'
+    const { deps, calls } = mkDeps({ env })
+    await cloneRepo(URL1, undefined, deps)
+    expect(Object.keys(calls[0].opts.env).sort()).toEqual(
+      ['GCM_INTERACTIVE', 'GIT_ALLOW_PROTOCOL', 'GIT_CEILING_DIRECTORIES', 'GIT_TERMINAL_PROMPT', 'PATH', 'SSH_ASKPASS_REQUIRE'].sort()
+    )
+    expect(DROPPED_ENV).toEqual(expect.arrayContaining(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_CONFIG_PARAMETERS', 'GIT_ASKPASS', 'SSH_ASKPASS']))
   })
 
   it('a 404 shows git\'s own error line, not "Cloning into", and leaves nothing at root', async () => {
@@ -151,13 +186,111 @@ describe('cloneRepo', () => {
     expect(mark).not.toHaveBeenCalled()
   })
 
-  it('an auth failure shows the fatal line, with any user:pass@ removed', async () => {
-    const stderr = "Cloning into 'x'...\nfatal: could not read Username for 'https://user:pw@github.com': terminal prompts disabled"
-    const { deps } = mkDeps({ execFile: async () => ({ code: 128, stderr }) })
-    expect(await cloneRepo(URL1, undefined, deps)).toEqual({
-      ok: false,
-      error: "Couldn't reach that repository: fatal: could not read Username for 'https://***@github.com': terminal prompts disabled"
+  it('a repository that needs a sign-in gives the plain in-app message, never a prompt', async () => {
+    for (const line of [
+      "fatal: could not read Username for 'https://user:pw@github.com': terminal prompts disabled",
+      "remote: Invalid username or token. fatal: Authentication failed for 'https://github.com/a/b.git/'",
+      'git@github.com: Permission denied (publickey).',
+      'Host key verification failed.',
+      'remote: Access denied'
+    ]) {
+      const { deps, rm } = mkDeps({ execFile: async () => ({ code: 128, stderr: `Cloning into 'x'...\n${line}` }) })
+      expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: AUTH_MESSAGE })
+      expect(rm).toHaveBeenLastCalledWith(WORK)
+    }
+    expect(AUTH_MESSAGE).not.toMatch(/user:pw/)
+  })
+
+  it('one 5-minute deadline: a first clone that runs out removes its temp folder', async () => {
+    let t = 0
+    const { deps, rm, rename } = mkDeps({
+      now: () => t,
+      execFile: async (_c, _a, opts) => {
+        expect(opts.timeout).toBe(300_000)
+        t = 300_000
+        return { code: 1, stderr: 'it took too long' }
+      }
     })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: TIMEOUT_MESSAGE })
+    expect(rm).toHaveBeenLastCalledWith(WORK)
+    expect(rename).not.toHaveBeenCalled()
+  })
+
+  it('an update shares the deadline: the reset gets only what the fetch left', async () => {
+    let t = 0
+    const timeouts: number[] = []
+    const { deps, rm } = mkDeps({
+      exists: async () => true,
+      now: () => t,
+      execFile: async (_c, _a, opts) => {
+        timeouts.push(opts.timeout)
+        t += 200_000
+        return { code: 0, stderr: '' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root: ROOT })
+    expect(timeouts).toEqual([300_000, 100_000])
+    expect(rm).not.toHaveBeenCalled()
+  })
+
+  it('an update whose fetch runs out keeps the earlier clone; one whose reset runs out drops it', async () => {
+    let t = 0
+    const fetchOut = mkDeps({
+      exists: async () => true,
+      now: () => t,
+      execFile: async () => {
+        t = 300_000
+        return { code: 1, stderr: 'it took too long' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, fetchOut.deps)).toEqual({ ok: false, error: TIMEOUT_MESSAGE })
+    expect(fetchOut.rm).not.toHaveBeenCalled()
+
+    t = 0
+    const resetOut = mkDeps({
+      exists: async () => true,
+      now: () => t,
+      execFile: async (_c, args) => {
+        if (args.includes('reset')) {
+          t = 300_000
+          return { code: 1, stderr: 'it took too long' }
+        }
+        return { code: 0, stderr: '' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, resetOut.deps)).toEqual({ ok: false, error: TIMEOUT_MESSAGE })
+    expect(resetOut.rm).toHaveBeenCalledWith(ROOT)
+  })
+
+  it('no time left before a step: that step never runs', async () => {
+    let t = 0
+    const calls: string[][] = []
+    const { deps, rm } = mkDeps({
+      exists: async () => true,
+      now: () => t,
+      execFile: async (_c, args) => {
+        calls.push(args)
+        t = 300_000 // the fetch finished exactly at the deadline
+        return { code: 0, stderr: '' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: TIMEOUT_MESSAGE })
+    expect(calls).toHaveLength(1)
+    expect(rm).toHaveBeenCalledWith(ROOT)
+
+    let first = true
+    const late = mkDeps({
+      now: () => {
+        if (first) {
+          first = false
+          return 0
+        }
+        return 400_000
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, late.deps)).toEqual({ ok: false, error: TIMEOUT_MESSAGE })
+    expect(late.calls).toHaveLength(0)
+    expect(late.rm).toHaveBeenLastCalledWith(WORK)
   })
 
   it('without a fatal/error/remote line the first line is used; empty stderr and a rejecting execFile still clean up', async () => {

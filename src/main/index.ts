@@ -329,6 +329,7 @@ import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYT
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
 import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
+import { confinedReader, isCloneRoot, isFolderEmpty } from './world/folderSafety'
 import { registerWorldIpc } from './world/ipc'
 import { createAskRunner } from './world/askRunner'
 import { createDesigner } from './world/designer'
@@ -338,7 +339,7 @@ import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
 import { cheapModelFor, makeWorldLlm } from './world/label'
-import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
+import { ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer, nudgeIndexer } from './memoryIndexer'
@@ -2675,7 +2676,9 @@ const worldClient = createWorldClient(undefined, {
     const key = graphKeyForRoot(root)
     const snap = graphSnapshot(key, root, { structureOnly: true })
     if (snap.files.length > 0) return snap
-    await buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => whenNotShed() }, key)
+    // A cloned repository is someone else's content: a committed symlink never leads a read out of the clone.
+    const read = (f: string): Promise<string> => fsPromises.readFile(f, 'utf8')
+    await buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: isCloneRoot(worldUserData, root) ? confinedReader(root, read) : read, pause: () => whenNotShed() }, key)
     const built = graphSnapshot(key, root, { structureOnly: true })
     // A Build it folder starts empty: its world is the linked design's plan alone until files arrive.
     if (built.files.length === 0) {
@@ -2688,9 +2691,9 @@ const worldClient = createWorldClient(undefined, {
 /** Keeps a folder's code graph fresh and, once the graph has a change, refreshes that project's world, but
  *  only if one is already stored (a watcher never makes the first world). Fire and forget: the watch gate
  *  waits on the re-index alone, and notifyChanged never throws. Used by code ingest and by Build it (a new
- *  build folder is often outside git, so nothing else would watch it). */
-function watchRepoForGraphAndWorld(repoRoot: string): void {
-  ensureRepoWatch(repoRoot, fsBackedWatchDeps(
+ *  build folder is often outside git, so nothing else would watch it). True when a new watch started. */
+function watchRepoForGraphAndWorld(repoRoot: string): boolean {
+  return ensureRepoWatch(repoRoot, fsBackedWatchDeps(
     fsWatch,
     (root, files) => {
       const reindexed = reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
@@ -2721,10 +2724,12 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAs
       : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], title: 'Choose a folder for Lumopolis' })
     return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
   },
-  isEmpty: async (root) => (await fsPromises.readdir(root)).length === 0,
+  isEmpty: (root) => isFolderEmpty(root),
   clone: (url, ref) => worldClient.clone(url, ref),
   cancelClone: (url, ref) => worldClient.cancelClone(url, ref),
   watch: (root) => watchRepoForGraphAndWorld(root),
+  unwatch: (root) => void stopRepoWatch(root),
+  userDataDir: worldUserData,
 })
 /** An agent's working directory → the project root Lumopolis keys its world by: the git root of the
  *  folder, or the folder itself outside a repository. The same rule the Lumopolis pane applies

@@ -27,11 +27,13 @@
 //   world:progress / world:updated           (webContents.send, while a world compiles / after a
 //                                             watcher-driven recompile saved)
 // `ipc` and `win` are parameters, so this module never imports Electron and tests pass fakes.
+import { homedir } from 'os'
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
 import type { AskRequest, AskResult, BuildItResult, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
+import { folderKey, forbiddenFolder } from './folderSafety'
 import type { SourceRegistry } from './sources'
 import type { WorldClient } from './worldClient'
 import type { WorldSettings, WorldSettingsStore } from './worldSettings'
@@ -100,7 +102,7 @@ const textOf = (v: unknown): v is string => typeof v === 'string' && v.trim() !=
 const refineRequestOf = (args: unknown): { key: string; message: string; summary: string } | string => {
   if (!args || typeof args !== 'object') return 'design request required'
   const a = args as Record<string, unknown>
-  if (typeof a.key !== 'string' || !a.key.startsWith('design:')) return 'design key required'
+  if (typeof a.key !== 'string' || !DESIGN_KEY_RE.test(a.key)) return 'design key required'
   if (!textOf(a.message)) return 'message required (up to 4000 characters)'
   if (a.summary !== undefined && typeof a.summary !== 'string') return 'summary must be a string'
   return { key: a.key, message: a.message, summary: (a.summary as string | undefined) ?? '' }
@@ -118,20 +120,44 @@ export interface WorldSourcesDeps {
   isEmpty(root: string): Promise<boolean>
   clone(url: string, ref?: string): Promise<{ ok: true; root: string } | { ok: false; error: string }>
   cancelClone(url: string, ref?: string): Promise<boolean>
-  /** Watches a Build it folder, so its world follows the agent's writes (a folder outside git has no other watch). */
-  watch?(root: string): void
+  /** Watches a Build it folder, so its world follows the agent's writes (a folder outside git has no other
+   *  watch). True when this started a new watch, false when the folder was already watched. */
+  watch?(root: string): boolean
+  /** Stops a watch that Build it started, when its world is removed from the home. */
+  unwatch?(root: string): void
+  /** The home folder (default os.homedir()): it, and every folder above it, is never a Build it target. */
+  homeDir?: string
+  /** Termpolis's data folder: nothing inside it is ever a Build it or open-folder target. */
+  userDataDir?: string
 }
 
 export const SOURCES_FAILED = "Lumopolis couldn't update its list of worlds. Try again."
 export const FOLDER_FAILED = "Lumopolis couldn't open that folder."
 export const CLONE_FAILED = "Lumopolis couldn't clone that repository. Try again."
 export const NOT_EMPTY = "That folder isn't empty."
+export const NOT_PICKED = 'Choose the folder with the Choose folder button first.'
 const AGENT_RE = /^[A-Za-z0-9._-]{1,64}$/
 const MAX_KEY = 200
+/** The design title's share of the first prompt; the whole prompt stays under the launcher's 500 characters. */
+const MAX_PROMPT_TITLE = 80
 
-/** The first prompt of the Build it agent terminal. */
+/** A title as plain words: no character the launcher's shell-safety pass (taskPromptArg) would drop or change. */
+const promptTitle = (title: string): string =>
+  title
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    .replace(/["`$%\\!()\u201c-\u201f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_PROMPT_TITLE)
+    .trim() || 'untitled'
+
+/**
+ * The first prompt of the Build it agent terminal. It reaches the agent through taskPromptArg, which
+ * drops quotes, parentheses and the like, so it uses none of them and arrives exactly as written. It names
+ * the gateway call in the form gateway_call takes: tool "server/tool" with an arguments object.
+ */
 export const BUILD_PROMPT = (title: string, key: string): string =>
-  `Build the app described by the Lumopolis design "${title}". Read it with gateway_call server "lumopolis", tool "world_read" (designKey "${key}"). Work in this folder.`
+  `Read the Lumopolis design first: call gateway_call with tool lumopolis/world_read and arguments {designKey: ${key}}. Then build the app it describes in this folder. Design title: ${promptTitle(title)}.`
 
 const field = (args: unknown, name: string): unknown => (args && typeof args === 'object' ? (args as Record<string, unknown>)[name] : undefined)
 const absolute = (v: unknown): v is string => nonEmpty(v) && win32.isAbsolute(v)
@@ -267,6 +293,19 @@ export function registerWorldIpc(
 /** The Lumopolis home's handlers. Every failure is a fixed friendly string; nothing raw reaches the renderer. */
 function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void {
   const { registry } = deps
+  const home = deps.homeDir ?? homedir()
+  const forbidden = (root: string): string | null => forbiddenFolder(root, { home, userData: deps.userDataDir })
+  /** Folders the native dialog returned this session: the only new folders Build it may write into. */
+  const picked = new Set<string>()
+  /** Build it folders whose watch Build it started, by registry key, so removing the world stops it. */
+  const watched = new Map<string, string>()
+
+  /** Whether Build it may use `root`: a folder the dialog returned, or the folder of a world already in the home. */
+  const knownFolder = async (root: string): Promise<boolean> => {
+    const key = folderKey(root)
+    if (picked.has(key)) return true
+    return (await registry.list()).some((e) => e.source.kind !== 'design' && folderKey(e.source.root) === key)
+  }
 
   ipc.handle('world:sources-list', async () => {
     try {
@@ -289,7 +328,10 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
   ipc.handle('world:open-folder', async () => {
     try {
       const root = await deps.pickFolder()
-      return ok(root === null ? null : await registry.upsert({ kind: 'folder', root }))
+      if (root === null) return ok(null)
+      const refused = forbidden(root)
+      if (refused) return err(refused)
+      return ok(await registry.upsert({ kind: 'folder', root }))
     } catch {
       return err(FOLDER_FAILED)
     }
@@ -298,7 +340,11 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
   ipc.handle('world:pick-folder', async () => {
     try {
       const root = await deps.pickFolder()
-      return ok(root === null ? null : { root, empty: await deps.isEmpty(root) })
+      if (root === null) return ok(null)
+      const refused = forbidden(root)
+      if (refused) return err(refused)
+      picked.add(folderKey(root))
+      return ok({ root, empty: await deps.isEmpty(root) })
     } catch {
       return err(FOLDER_FAILED)
     }
@@ -336,6 +382,15 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     if (!nonEmpty(key) || key.length > MAX_KEY) return err('key required')
     try {
       await registry.remove(key)
+      const root = watched.get(key)
+      if (root !== undefined) {
+        watched.delete(key)
+        try {
+          deps.unwatch?.(root)
+        } catch {
+          // the watch ends at quit instead
+        }
+      }
       return ok(true)
     } catch {
       return err(SOURCES_FAILED)
@@ -368,12 +423,16 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     const root = field(args, 'root')
     const agent = field(args, 'agent')
     const confirm = field(args, 'confirmNonEmpty')
-    if (typeof key !== 'string' || !DESIGN_KEY_RE.test(key)) return err(DESIGN_NOT_FOUND)
+    if (typeof key !== 'string' || key.length > MAX_KEY || !DESIGN_KEY_RE.test(key)) return err(DESIGN_NOT_FOUND)
     if (!absolute(root)) return err('root required')
     if (typeof agent !== 'string' || !AGENT_RE.test(agent)) return err('agent required')
     if (confirm !== undefined && typeof confirm !== 'boolean') return err('confirmNonEmpty must be a boolean')
+    const refused = forbidden(root)
+    if (refused) return err(refused)
     let title: string
     try {
+      // Only a folder the user chose in the dialog (or one already in the home): never one the renderer names.
+      if (!(await knownFolder(root))) return err(NOT_PICKED)
       const entry = await registry.get(key)
       if (!entry || entry.source.kind !== 'design') return err(DESIGN_NOT_FOUND)
       title = entry.title
@@ -385,13 +444,14 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     } catch {
       return err(FOLDER_FAILED)
     }
+    let folderEntryKey: string
     try {
-      await registry.upsert({ kind: 'folder', root, linkedDesign: key })
+      folderEntryKey = (await registry.upsert({ kind: 'folder', root, linkedDesign: key })).key
     } catch {
       return err(SOURCES_FAILED)
     }
     try {
-      deps.watch?.(root)
+      if (deps.watch?.(root) === true) watched.set(folderEntryKey, root)
     } catch {
       // the world still opens; it refreshes on the next open instead of live
     }

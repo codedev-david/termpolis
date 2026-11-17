@@ -240,6 +240,32 @@ describe('host file-system deps', () => {
     expect(readFile).not.toHaveBeenCalled()
   })
 
+  it('a cloned repository is read only inside itself: a path that leaves the clone reads as null', async () => {
+    const clone = join(dir, 'world', 'repos', 'abc')
+    await mkdir(join(clone, 'src'), { recursive: true })
+    await writeFile(join(clone, 'src', 'a.ts'), 'inside')
+    await writeFile(join(dir, 'world', 'repos', 'outside.ts'), 'outside')
+    await writeFile(join(dir, 'plain.ts'), 'plain')
+    const seen: CompileDeps[] = []
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      seen.push(deps)
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile })
+    await h.send({ kind: 'init', userDataPath: dir, labelling: false })
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(clone), HEAD] })
+    const cloned = seen[0]
+    expect(await cloned.readSource(join(clone, 'src', 'a.ts'))).toBe('inside')
+    expect(await cloned.readFile(join(clone, 'src', 'a.ts'))).toBe('inside')
+    expect(await cloned.label.excerpt('src/a.ts')).toBe('inside')
+    expect(await cloned.readSource(join(clone, '..', 'outside.ts'))).toBeNull()
+    expect(await cloned.readFile(join(clone, '..', 'outside.ts'))).toBeNull()
+    expect(await cloned.readSource(join(clone, 'src', 'missing.ts'))).toBeNull()
+    // A folder that is not a clone keeps the plain reader.
+    await h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k2', snap(dir), HEAD] })
+    expect(await seen[1].readSource(join(dir, 'world', 'repos', 'outside.ts'))).toBe('outside')
+  })
+
   it('globFiles returns absolute matches, skips node_modules and .git, and drops ! patterns', async () => {
     await mkdir(join(dir, 'a', 'node_modules', 'x'), { recursive: true })
     await mkdir(join(dir, '.git'), { recursive: true })

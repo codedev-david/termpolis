@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { watchRepo, ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps, _activeWatchCountForTests, _resetWatchesForTests, type WatchDeps } from '../../src/main/codeWatch'
+import { watchRepo, ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps, _activeWatchCountForTests, _resetWatchesForTests, type WatchDeps } from '../../src/main/codeWatch'
 
 function harness(over: Partial<WatchDeps> = {}) {
   let listener: (event: string, filename: string | null) => void = () => {}
@@ -115,6 +115,24 @@ describe('codeWatch', () => {
     expect(_activeWatchCountForTests()).toBe(2)
     stopRepoWatches()
     expect(_activeWatchCountForTests()).toBe(0)
+  })
+
+  it('registry: stopRepoWatch closes one root and leaves the others (a removed Build it folder)', () => {
+    _resetWatchesForTests()
+    const h = harness()
+    ensureRepoWatch('/a', h.deps)
+    ensureRepoWatch('/b', h.deps)
+    expect(stopRepoWatch('/a')).toBe(true)
+    expect(h.closes[0].close).toHaveBeenCalled()
+    expect(h.closes[1].close).not.toHaveBeenCalled()
+    expect(_activeWatchCountForTests()).toBe(1)
+    expect(stopRepoWatch('/a')).toBe(false)
+    // a watch whose handle throws on close is still forgotten
+    const t = harness({ watch: () => ({ close: () => { throw new Error('gone') } }) })
+    ensureRepoWatch('/c', t.deps)
+    expect(stopRepoWatch('/c')).toBe(true)
+    expect(ensureRepoWatch('/a', h.deps)).toBe(true) // it can be watched again
+    stopRepoWatches()
   })
 
   it('fsBackedWatchDeps wires fs.watch (recursive) + real timers', () => {

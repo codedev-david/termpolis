@@ -11,8 +11,9 @@ export interface BuildAgent { id: string; name: string }
 export interface BuildItDialogProps {
   designKey: string
   title: string
-  /** The agents Build it can start (those that take a first prompt on launch). */
+  /** The agents Build it can start: Claude Code's profiles, the one agent that takes a first prompt on launch. */
   agents: BuildAgent[]
+  /** The user's default among them (defaultBuildAgent), preselected. */
   defaultAgent?: string
   onBuilt: (res: BuildItResult, agentId: string) => void
   onClose: () => void
@@ -82,6 +83,9 @@ export function BuildItDialog({ designKey, title, agents, defaultAgent, onBuilt,
           {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
       </label>
+      <p data-testid="world-build-claude-only" className="text-xs text-[#9ca3af]">
+        Build it starts Claude Code: it is the one agent that takes the design as its first prompt when it opens.
+      </p>
       {agents.length === 0 && <p className="text-xs text-[#f0b429]">Build it needs Claude Code: add a Claude Code profile in the sidebar first.</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
       <div className="flex justify-end gap-2">

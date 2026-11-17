@@ -1,9 +1,13 @@
+import { homedir } from 'node:os'
+import { parse } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  BUILD_PROMPT, CLONE_FAILED, FOLDER_FAILED, NOT_EMPTY, SOURCES_FAILED, registerWorldIpc,
+  BUILD_PROMPT, CLONE_FAILED, FOLDER_FAILED, NOT_EMPTY, NOT_PICKED, SOURCES_FAILED, registerWorldIpc,
   type WorldDesigner, type WorldIpcClient, type WorldSourcesDeps
 } from '../../src/main/world/ipc'
 import { DESIGN_NOT_FOUND } from '../../src/main/world/designer'
+import { FORBIDDEN_FOLDER } from '../../src/main/world/folderSafety'
+import { taskPromptArg } from '../../src/shared/taskRouter'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE } from '../../src/shared/world/gitUrl'
 import type { WorldDoc, WorldEntry, WorldSource } from '../../src/shared/world/types'
 import type { WorldSettingsStore } from '../../src/main/world/worldSettings'
@@ -33,6 +37,8 @@ function setup(over: Partial<WorldSourcesDeps> = {}, designer?: WorldDesigner) {
     isEmpty: vi.fn(async () => true),
     clone: vi.fn(async () => ({ ok: true as const, root: 'C:/ud/world/repos/abc' })),
     cancelClone: vi.fn(async () => true),
+    homeDir: 'C:/Users/me',
+    userDataDir: 'C:/ud',
     ...over
   }
   registerWorldIpc(ipc, client, () => null, settings, undefined, designer, deps)
@@ -164,47 +170,117 @@ describe('registerWorldIpc sources handlers', () => {
 
 describe('registerWorldIpc world:build-it', () => {
   const GOOD = { key: 'design:d1', root: 'C:/build/shop', agent: 'claude' }
+  /** A setup where the user already chose GOOD.root in the folder dialog. */
+  async function picked(over: Partial<WorldSourcesDeps> = {}) {
+    const s = setup({ pickFolder: vi.fn(async () => GOOD.root), ...over })
+    await s.invoke('world:pick-folder')
+    return s
+  }
 
   it('links the design to the folder and answers the folder, the title and the first prompt', async () => {
-    const s = setup()
-    const prompt = 'Build the app described by the Lumopolis design "Shop". Read it with gateway_call server "lumopolis", tool "world_read" (designKey "design:d1"). Work in this folder.'
+    const s = await picked()
+    const prompt = 'Read the Lumopolis design first: call gateway_call with tool lumopolis/world_read and arguments {designKey: design:d1}. Then build the app it describes in this folder. Design title: Shop.'
     expect(BUILD_PROMPT('Shop', 'design:d1')).toBe(prompt)
     expect(await s.invoke('world:build-it', GOOD)).toEqual({ success: true, data: { root: 'C:/build/shop', key: 'design:d1', title: 'Shop', prompt } })
     expect(s.registry.upsert).toHaveBeenCalledWith({ kind: 'folder', root: 'C:/build/shop', linkedDesign: 'design:d1' })
   })
 
+  it('the first prompt passes the launcher unchanged, whatever the title holds', () => {
+    for (const title of ['Shop', 'Pet "shop" (beta) $HOME %PATH% `x` \\ !', 'a\u0000b\nc\u2028d\u201cq\u201d', '   ', 'x'.repeat(400)]) {
+      const prompt = BUILD_PROMPT(title, 'design:d1')
+      expect(taskPromptArg(prompt)).toBe(` "${prompt}"`)
+      expect(prompt.length).toBeLessThan(500)
+    }
+    expect(BUILD_PROMPT('   ', 'design:d1')).toMatch(/Design title: untitled\.$/)
+    expect(BUILD_PROMPT('Pet "shop" (beta)', 'design:d1')).toMatch(/Design title: Pet shop beta\.$/)
+    expect(BUILD_PROMPT('x'.repeat(400), 'design:d1')).toMatch(/Design title: x{80}\.$/)
+  })
+
   it('starts watching the folder, so the world follows the build; a watch failure does not fail Build it', async () => {
-    const watch = vi.fn()
-    const s = setup({ watch })
+    const watch = vi.fn(() => true)
+    const s = await picked({ watch })
     await s.invoke('world:build-it', GOOD)
     expect(watch).toHaveBeenCalledWith('C:/build/shop')
     watch.mockImplementationOnce(() => { throw new Error('EMFILE') })
     expect((await s.invoke('world:build-it', GOOD) as { success: boolean }).success).toBe(true)
   })
 
+  it('removing the folder world stops the watch Build it started, and only that one', async () => {
+    const unwatch = vi.fn()
+    const s = await picked({ watch: vi.fn(() => true), unwatch })
+    await s.invoke('world:build-it', GOOD)
+    await s.invoke('world:remove-source', { key: 'k-C:/a' })
+    expect(unwatch).not.toHaveBeenCalled()
+    await s.invoke('world:remove-source', { key: 'k-C:/build/shop' })
+    expect(unwatch).toHaveBeenCalledWith('C:/build/shop')
+    await s.invoke('world:remove-source', { key: 'k-C:/build/shop' })
+    expect(unwatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('a folder that was already watched keeps its watch on remove; a failing unwatch still removes', async () => {
+    const unwatch = vi.fn(() => { throw new Error('gone') })
+    const s = await picked({ watch: vi.fn(() => false), unwatch })
+    await s.invoke('world:build-it', GOOD)
+    expect(await s.invoke('world:remove-source', { key: 'k-C:/build/shop' })).toEqual({ success: true, data: true })
+    expect(unwatch).not.toHaveBeenCalled()
+    const t = await picked({ watch: vi.fn(() => true), unwatch })
+    await t.invoke('world:build-it', GOOD)
+    expect(await t.invoke('world:remove-source', { key: 'k-C:/build/shop' })).toEqual({ success: true, data: true })
+    expect(unwatch).toHaveBeenCalledWith('C:/build/shop')
+  })
+
   it('refuses a folder that is not empty unless the user confirmed it', async () => {
-    const s = setup({ isEmpty: vi.fn(async () => false) })
+    const s = await picked({ isEmpty: vi.fn(async () => false) })
     expect(await s.invoke('world:build-it', GOOD)).toEqual({ success: false, error: NOT_EMPTY })
     expect(s.registry.upsert).not.toHaveBeenCalled()
     expect((await s.invoke('world:build-it', { ...GOOD, confirmNonEmpty: true }) as { success: boolean }).success).toBe(true)
   })
 
+  it('refuses a folder the dialog did not return, unless it is already a world in the home', async () => {
+    const s = setup()
+    expect(await s.invoke('world:build-it', GOOD)).toEqual({ success: false, error: NOT_PICKED })
+    expect(s.registry.upsert).not.toHaveBeenCalled()
+    // The registry holds C:/a: a world already in the home may be built in.
+    expect((await s.invoke('world:build-it', { ...GOOD, root: 'C:/a' }) as { success: boolean }).success).toBe(true)
+    s.registry.list.mockResolvedValueOnce([entryOf({ kind: 'design', id: 'd1', title: 'Shop' })])
+    expect(await s.invoke('world:build-it', GOOD)).toEqual({ success: false, error: NOT_PICKED })
+    s.registry.list.mockRejectedValueOnce(new Error('disk'))
+    expect(await s.invoke('world:build-it', GOOD)).toEqual({ success: false, error: SOURCES_FAILED })
+  })
+
+  it('refuses a drive root, the home folder or above it, and Termpolis data, in Build it, pick-folder and open-folder', async () => {
+    const drive = parse(process.cwd()).root
+    for (const root of [drive, 'C:/Users/me', 'C:/Users', 'C:/ud', 'C:/ud/world/repos/abc']) {
+      const s = setup({ pickFolder: vi.fn(async () => root) })
+      expect(await s.invoke('world:pick-folder')).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+      expect(await s.invoke('world:open-folder')).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+      expect(await s.invoke('world:build-it', { ...GOOD, root })).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+      expect(s.registry.upsert).not.toHaveBeenCalled()
+      expect(s.deps.isEmpty).not.toHaveBeenCalled()
+    }
+    const real = setup({ homeDir: undefined, pickFolder: vi.fn(async () => homedir()) })
+    expect(await real.invoke('world:pick-folder')).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+    const inHome = setup({ pickFolder: vi.fn(async () => 'C:/Users/me/code/shop') })
+    expect(await inHome.invoke('world:pick-folder')).toEqual({ success: true, data: { root: 'C:/Users/me/code/shop', empty: true } })
+  })
+
   it.each([
     [undefined, DESIGN_NOT_FOUND],
     [{ ...GOOD, key: 'C:/x' }, DESIGN_NOT_FOUND],
+    [{ ...GOOD, key: `design:${'x'.repeat(200)}` }, DESIGN_NOT_FOUND],
     [{ ...GOOD, root: 'rel' }, 'root required'],
     [{ ...GOOD, root: 7 }, 'root required'],
     [{ ...GOOD, agent: '' }, 'agent required'],
     [{ ...GOOD, agent: 'rm -rf' }, 'agent required'],
     [{ ...GOOD, confirmNonEmpty: 'yes' }, 'confirmNonEmpty must be a boolean']
   ])('refuses %j', async (args, error) => {
-    const s = setup()
+    const s = await picked()
     expect(await s.invoke('world:build-it', args)).toEqual({ success: false, error })
     expect(s.registry.upsert).not.toHaveBeenCalled()
   })
 
   it('a design that is not registered is not found; an unreadable folder or a failed save are fixed messages', async () => {
-    const s = setup()
+    const s = await picked()
     expect(await s.invoke('world:build-it', { ...GOOD, key: 'design:gone' })).toEqual({ success: false, error: DESIGN_NOT_FOUND })
     s.registry.get.mockResolvedValueOnce(entryOf({ kind: 'folder', root: 'C:/a' }))
     expect(await s.invoke('world:build-it', GOOD)).toEqual({ success: false, error: DESIGN_NOT_FOUND })

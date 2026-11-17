@@ -227,8 +227,9 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await expect.poll(wireframes, { timeout: 60_000 }).toEqual(['catalog', 'orders', 'payments', 'storefront'])
 
     // The agent terminal opened with the build prompt (typed on its launch line).
-    await expect.poll(terminalText, { timeout: 60_000 }).toContain('BuildtheappdescribedbytheLumopolisdesign')
-    expect(await terminalText()).toContain('world_read')
+    // Nothing in it is dropped by the launcher's shell-safety pass: the gateway call arrives whole.
+    await expect.poll(terminalText, { timeout: 60_000 }).toContain('ReadtheLumopolisdesignfirst')
+    expect(await terminalText()).toMatch(/callgateway_callwithtoollumopolis\/world_readandarguments\{designKey:design:[A-Za-z0-9._-]+\}/)
 
     // The agent's first file: the Payments part now exists in code.
     fs.mkdirSync(path.join(buildDir, 'src', 'payments'), { recursive: true })

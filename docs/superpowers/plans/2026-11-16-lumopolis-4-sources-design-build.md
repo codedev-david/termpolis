@@ -182,8 +182,10 @@
 - Design start: a text area plus mic (the Plan 2 voice sink): "Describe the app you want…", then `world:design-draft`, then it opens the design world with the Ask bar in design mode (placeholder `Change the design…`).
 - `Build it` (design worlds only) opens `BuildItDialog`: pick a folder (native dialog), warn if it's non-empty, choose an agent (default preselected), confirm. Main then:
   1. links the design to that folder (`registry.upsert({kind:'folder', root})` with `linkedDesign`);
-  2. opens a normal agent terminal there via the existing launch path. The first prompt is: `Build the app described by the Lumopolis design "<title>". Read it with gateway_call server "lumopolis", tool "world_read" (designKey "<key>"). Work in this folder.`;
+  2. opens a normal agent terminal there via the existing launch path. The first prompt is: `Read the Lumopolis design first: call gateway_call with tool lumopolis/world_read and arguments {designKey: <key>}. Then build the app it describes in this folder. Design title: <title>.` (final-review fix I4: no quotes or parentheses, which the launcher's taskPromptArg drops, and the gateway's own `server/tool` call form; the title is cleaned and capped at 80 characters);
   3. switches the pane to that folder's world, where the plan overlay is on.
+- **Ruling (final review I6, 2026-11-16): Build it is Claude Code only in 2.0.** Claude Code is the one agent that takes a first prompt on launch (`taskPromptArg`, applied in the renderer and again in main, only for `claude`). The dialog says so, offers the user's Claude Code profiles, and preselects the user's default among them (`defaultBuildAgent`: the active terminal's agent profile, else the newest terminal running one, else a profile the user added, else the built-in). Extending the first prompt to Codex and Gemini is post-2.0 work.
+- **Folder rule (final review I3):** main accepts a Build it folder only when `world:pick-folder` returned it this session or it is already a world in the home, and never a drive or file-system root, the home folder or a folder above it, or anything under Termpolis's data folder. Removing the world stops the watch Build it started.
 - `WorldSwitcher`: a toolbar dropdown of recent worlds plus "Home".
 
 - [ ] **Step 1:** Write the component tests:

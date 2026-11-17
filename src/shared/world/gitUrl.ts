@@ -8,9 +8,12 @@ export const BAD_REF_MESSAGE = "That branch name isn't valid."
 const URL_RE = /^(https:\/\/|ssh:\/\/|git@)[^\s]+$/
 const REF_RE = /^[A-Za-z0-9._/-]+$/
 const CONTROL_RE = /[\u0000-\u001f\u007f]/
+// A host that starts with '-' reaches ssh as an option (ssh://-oProxyCommand=..., git@-o...), so it is
+// refused even though git itself also guards it. Matches the host position after any user@ part.
+const DASH_HOST_RE = /^(?:(?:https|ssh):\/\/(?:[^\s/@]*@)?|git@)-/
 
 export function validateGitUrl(url: string): { ok: true } | { ok: false; reason: string } {
-  if (typeof url !== 'string' || !URL_RE.test(url) || CONTROL_RE.test(url)) return { ok: false, reason: BAD_URL_MESSAGE }
+  if (typeof url !== 'string' || !URL_RE.test(url) || CONTROL_RE.test(url) || DASH_HOST_RE.test(url)) return { ok: false, reason: BAD_URL_MESSAGE }
   return { ok: true }
 }
 

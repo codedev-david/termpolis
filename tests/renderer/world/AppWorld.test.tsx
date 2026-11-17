@@ -186,4 +186,21 @@ describe('App Lumopolis wiring', () => {
     expect(typeof deps.addTerminal).toBe('function')
     expect(typeof deps.setLaunchingAgent).toBe('function')
   })
+
+  it('Build it preselects the Claude Code profile the active terminal runs', async () => {
+    render(<App />)
+    await settle()
+    act(() => {
+      useTerminalStore.setState({
+        aiProfiles: [{ id: 'opus-claude', name: 'Claude (Opus)', icon: '', command: 'claude --model opus', shell: 'bash', color: '#000' }],
+        terminals: [{ id: 't-agent', name: 'agent', shell: 'bash', cwd: '/repos/app', hidden: true, agentCommand: 'claude --model opus' } as any],
+        activeTerminalId: 't-agent',
+      })
+    })
+    fireEvent.keyDown(window, { key: 'R', ctrlKey: true, shiftKey: true })
+    const pane = await screen.findByRole('dialog', { name: 'Lumopolis' })
+    expect(pane.getAttribute('data-agents')?.split(',')).toEqual(['claude', 'opus-claude'])
+    expect(pane).toHaveAttribute('data-default', 'opus-claude')
+    act(() => { useTerminalStore.setState({ aiProfiles: [], terminals: [], activeTerminalId: null }) })
+  })
 })

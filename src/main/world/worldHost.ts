@@ -20,6 +20,7 @@ import { lowerHostPriority } from '../hostPriority'
 import type { Claim, Evidence, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { compileWorld, createRecompileScheduler, type CompileDeps } from './compile'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
+import { confinedReader, isCloneRoot } from './folderSafety'
 import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps } from './gitSource'
 import type { LabelDeps } from './label'
 import { createWorldStore, type WorldStore } from './worldStore'
@@ -338,17 +339,25 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     llm: LabelDeps['llm'] = st.labelling ? askMain(projectKey) : null
   ): CompileDeps => {
     const root = String(snap.root).replace(/\/+$/, '')
+    // A cloned repository is someone else's content: its reads never follow a link out of the clone.
+    const confine = (read: (p: string) => Promise<string | null>): ((p: string) => Promise<string | null>) => {
+      const inside = confinedReader(root, read)
+      return (p) => inside(p).catch(() => null)
+    }
+    const cloned = isCloneRoot(st.userDataPath, root)
+    const rf = cloned ? confine(readFile) : readFile
+    const rs = cloned ? confine(readSource) : readSource
     const label: LabelDeps = {
       llm,
       cache: st.store.labelCache,
       excerpt: async (file, line) => {
-        const text = await readSource(`${root}/${file}`)
+        const text = await rs(`${root}/${file}`)
         return text === null ? '' : excerptOf(text, line)
       }
     }
     return {
-      readFile,
-      readSource,
+      readFile: rf,
+      readSource: rs,
       glob,
       label,
       now,

@@ -83,6 +83,7 @@ import { SwarmRestartOffers } from './components/Accounts/SwarmRestartOffers'
 import { splitActivePane, exportActivePane, toggleRecordingActivePane } from './lib/paneCommands'
 import { useSwarmCompleteDialog } from './lib/swarmCompleteDialog'
 import { WorldAsk } from './components/World/WorldAsk'
+import { defaultBuildAgent } from './components/World/buildAgent'
 import type { BuildItResult } from '../../shared/world/types'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
@@ -326,14 +327,15 @@ export default function App() {
     }
   }, [terminals, workspaces, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, agentRatingOverrides, allowAppMouseControl])
 
-  // Lumopolis Build it: the agents that take a first prompt on launch (Claude Code's profiles), and
-  // the launch itself, through the same path as the sidebar's (so the launch flags and the account
-  // apply), in the folder the design was linked to, with the build prompt as the first message.
+  // Lumopolis Build it: the agents that take a first prompt on launch (Claude Code's profiles; the 2.0
+  // ruling, see buildAgent.ts), the user's default among them preselected, and the launch itself,
+  // through the same path as the sidebar's (so the launch flags and the account apply), in the folder
+  // the design was linked to, with the build prompt as the first message.
   const worldBuildIt = useMemo(() => {
     const profiles = [...DEFAULT_AI_PROFILES, ...aiProfiles].filter((p) => agentOfCommand(p.command) === 'claude')
     return {
       agents: profiles.map((p) => ({ id: p.id, name: p.name })),
-      defaultAgent: profiles[0]?.id,
+      defaultAgent: defaultBuildAgent(profiles, DEFAULT_AI_PROFILES.map((p) => p.id), terminals, activeTerminalId),
       launch: (res: BuildItResult, agentId: string) => {
         const profile = profiles.find((p) => p.id === agentId)
         if (!profile) return
@@ -347,7 +349,7 @@ export default function App() {
         })
       },
     }
-  }, [aiProfiles])
+  }, [aiProfiles, terminals, activeTerminalId])
 
   // Global keyboard shortcuts
   useEffect(() => {

@@ -457,6 +457,8 @@ describe('BuildItDialog', () => {
     const api = bridge()
     const props = mount()
     expect(screen.getByLabelText('Agent')).toHaveValue('claude')
+    // The 2.0 ruling: Build it starts Claude Code, and the dialog says so.
+    expect(screen.getByTestId('world-build-claude-only')).toHaveTextContent('Build it starts Claude Code')
     expect(buildBtn()).toBeDisabled()
     // A cancelled folder dialog leaves nothing chosen.
     api.worldPickFolder.mockResolvedValueOnce(ok(null))

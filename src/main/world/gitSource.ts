@@ -6,6 +6,11 @@
 // `^(https://|ssh://|git@)[^\s]+$`, the branch a conservative character set, both are placed after
 // `--` or validated not to start with `-`, and the environment forbids prompts and other protocols.
 //
+// Never interactive: git is never allowed to ask for a login. No terminal prompt, no askpass program,
+// no helper (so no OS sign-in window), and an auth failure becomes a plain in-app message.
+// Never outside the clone: symlinks check out as small text files (core.symlinks=false), so indexing
+// cannot be led to a file elsewhere on the computer.
+//
 // This runs inside the world host utilityProcess: no Electron imports (worldHostImports.test.ts).
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
@@ -18,28 +23,63 @@ export const TOO_BIG_MESSAGE = 'That repository is larger than 2 GB, so Lumopoli
 export const CANCELLED_MESSAGE = 'Cancelled'
 export const CLEAR_MESSAGE = "Lumopolis couldn't clear an earlier partial copy of that repository. Try again in a moment."
 export const FINISH_MESSAGE = "Lumopolis couldn't save that repository. Try again in a moment."
+export const TIMEOUT_MESSAGE = 'That repository took longer than 5 minutes to download, so Lumopolis stopped.'
+export const AUTH_MESSAGE =
+  'That repository needs you to sign in, and Lumopolis never asks git for a login. Use an ssh URL your ssh agent can open, or clone it yourself and choose Open a folder.'
 /** Written inside `.git` once a clone is complete; only a marked clone is updated in place. */
 export const CLONE_MARKER = 'lumopolis-complete'
 
 /** A clone larger than this is aborted and deleted. */
 export const MAX_CLONE_BYTES = 2 * 1024 * 1024 * 1024
-/** One git command may run this long. */
+/** A whole clone or update (every git command in it together) may run this long; kept well under the
+ *  world client's 10-minute call timeout, with room for the kill grace. */
 export const CLONE_TIMEOUT_MS = 5 * 60_000
 /** How often the clone's folder size is checked while git runs. */
 export const SIZE_POLL_MS = 2000
 
-/** The folder name for a clone: the first 16 hex digits of sha1(url + ref). */
+/** The folder name for a clone: the first 16 hex digits of sha1(url + NUL + ref). The separator keeps
+ *  `a.gitx` with no ref apart from `a.git` with ref `x`. */
 export function cloneKey(url: string, ref?: string): string {
   return createHash('sha1')
-    .update(String(url) + (typeof ref === 'string' ? ref : ''))
+    .update(`${String(url)}\0${typeof ref === 'string' ? ref : ''}`)
     .digest('hex')
     .slice(0, 16)
 }
 
-/** The flags every git command here carries: no local-file transport, no hooks. */
-function safetyFlags(isWindows: boolean): string[] {
-  return ['-c', 'protocol.file.allow=never', '-c', `core.hooksPath=${isWindows ? 'NUL' : '/dev/null'}`]
+/**
+ * The flags every git command here carries: no local-file transport, no hooks, symlinks checked out as
+ * plain files, and no way to ask for a login (an empty helper list resets any configured helper, and an
+ * empty askPass turns off a configured askpass program).
+ */
+export function safetyFlags(isWindows: boolean): string[] {
+  return [
+    '-c', 'protocol.file.allow=never',
+    '-c', `core.hooksPath=${isWindows ? 'NUL' : '/dev/null'}`,
+    '-c', 'core.symlinks=false',
+    '-c', 'credential.helper=',
+    '-c', 'credential.interactive=false',
+    '-c', 'core.askPass='
+  ]
 }
+
+/** Inherited variables that would point git at another repository, index, object store or config, or
+ *  run a program to ask for a login. */
+export const DROPPED_ENV = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_COUNT',
+  'GIT_NAMESPACE',
+  'GIT_COMMON_DIR',
+  'GIT_ASKPASS',
+  'SSH_ASKPASS'
+]
+
+/** What git's own messages say when a host wanted a login it was not given. */
+const AUTH_RE = /terminal prompts disabled|could not read (username|password)|authentication failed|permission denied \(publickey|access denied|host key verification failed|invalid username or/i
 
 export function cloneArgs(url: string, dir: string, ref?: string, isWindows: boolean = process.platform === 'win32'): string[] {
   return [
@@ -92,6 +132,8 @@ export interface CloneDeps {
   pollMs?: number
   /** The size cap (default MAX_CLONE_BYTES). */
   maxBytes?: number
+  /** The clock for the overall deadline (default Date.now). */
+  now?: () => number
 }
 
 // ── Real implementations of the injectable deps ──────────────────────────────────────────────────
@@ -246,8 +288,14 @@ export async function cloneRepo(
   const work = updating ? root : `${root}.tmp-${(deps.random ?? randomSuffix)()}`
 
   const env: Record<string, string> = {}
-  for (const [k, v] of Object.entries(deps.env ?? process.env)) if (typeof v === 'string') env[k] = v
+  const dropped = new Set(DROPPED_ENV)
+  for (const [k, v] of Object.entries(deps.env ?? process.env)) {
+    if (typeof v === 'string' && !dropped.has(k.toUpperCase())) env[k] = v
+  }
   env.GIT_TERMINAL_PROMPT = '0'
+  // Git Credential Manager and ssh must never open a window or prompt either.
+  env.GCM_INTERACTIVE = 'never'
+  env.SSH_ASKPASS_REQUIRE = 'never'
   env.GIT_ALLOW_PROTOCOL = 'https:ssh'
   // git must never search upward out of the clone and act on a parent repository.
   env.GIT_CEILING_DIRECTORIES = reposDir
@@ -284,13 +332,28 @@ export async function cloneRepo(
       })
   }, deps.pollMs ?? SIZE_POLL_MS)
 
+  // One deadline for the whole job, so fetch plus reset can never add up past the client's call timeout.
+  const now = deps.now ?? Date.now
+  const deadline = now() + CLONE_TIMEOUT_MS
   let failure = ''
+  let timedOut = false
+  let auth = false
+  let failedStep = -1
   try {
-    for (const args of commands) {
+    for (const [step, args] of commands.entries()) {
+      const left = deadline - now()
+      if (left <= 0) {
+        timedOut = true
+        failedStep = step
+        break
+      }
       const r = await deps
-        .execFile('git', args, { env, timeout: CLONE_TIMEOUT_MS, signal: ctl.signal })
+        .execFile('git', args, { env, timeout: left, signal: ctl.signal })
         .catch((e: unknown) => ({ code: 1, stderr: e instanceof Error ? e.message : String(e) }))
       if (r.code !== 0) {
+        failedStep = step
+        timedOut = now() >= deadline
+        auth = AUTH_RE.test(r.stderr)
         failure = firstLine(r.stderr)
         break
       }
@@ -301,7 +364,7 @@ export async function cloneRepo(
   }
 
   // A cap hit or a cancel aborts git, which then also looks like a failed exit: check those first.
-  if (!tooBig && !ext?.aborted && !failure && (await deps.dirSize(work).catch(() => 0)) > maxBytes) tooBig = true
+  if (!tooBig && !ext?.aborted && !failure && !timedOut && (await deps.dirSize(work).catch(() => 0)) > maxBytes) tooBig = true
   if (tooBig) {
     await rmq(work)
     return { ok: false, error: TOO_BIG_MESSAGE }
@@ -310,10 +373,15 @@ export async function cloneRepo(
     await rmq(work)
     return { ok: false, error: CANCELLED_MESSAGE }
   }
+  if (timedOut) {
+    // A reset stopped half way leaves a working tree nobody can trust: drop it so the next open clones fresh.
+    if (!updating || failedStep > 0) await rmq(work)
+    return { ok: false, error: TIMEOUT_MESSAGE }
+  }
   if (failure) {
     // A failed update leaves the earlier complete clone alone; a failed first clone leaves nothing.
     if (!updating) await rmq(work)
-    return { ok: false, error: `Couldn't reach that repository: ${failure}` }
+    return { ok: false, error: auth ? AUTH_MESSAGE : `Couldn't reach that repository: ${failure}` }
   }
   if (!updating) {
     try {

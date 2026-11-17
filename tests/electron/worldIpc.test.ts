@@ -288,6 +288,8 @@ describe('registerWorldIpc design handlers', () => {
     [{ message: 'm' }, 'design key required'],
     [{ key: 'C:/repo', message: 'm' }, 'design key required'],
     [{ key: 7, message: 'm' }, 'design key required'],
+    [{ key: 'design:..', message: 'm' }, 'design key required'],
+    [{ key: 'design:a/b', message: 'm' }, 'design key required'],
     [{ key: 'design:d1' }, 'message required (up to 4000 characters)'],
     [{ key: 'design:d1', message: ' ' }, 'message required (up to 4000 characters)'],
     [{ key: 'design:d1', message: 'x'.repeat(4001) }, 'message required (up to 4000 characters)'],
