@@ -656,8 +656,17 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
       const steady = await jitterAim(connected)
       for (const [dx, dy] of CLICK_JITTER) {
         await toOverview()
+        // What the page holds at the click point just before the click, so a miss names its cause.
+        const at = await page.evaluate(({ id, x, y }) => {
+          const probe = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world
+          const p = probe?.screenPoint(id) ?? null
+          const el = document.elementFromPoint(x, y) as HTMLElement | null
+          const pick = probe?.pickAt(x, y) ?? null
+          return `aim ${p ? `${p.x.toFixed(1)},${p.y.toFixed(1)}` : 'none'}; pick ${pick ? `${pick.kind}:${pick.id}` : 'none'}; top ${el ? `${el.tagName.toLowerCase()}.${el.className}` : 'none'}`
+        }, { id: steady.id, x: steady.x + dx, y: steady.y + dy })
         await page.mouse.click(steady.x + dx, steady.y + dy)
-        await expect(card(), `${tag}: no card for a click ${dx},${dy} px off ${names[steady.id]}`).toBeVisible()
+        if (!(await card().count())) await page.locator('[data-testid="world-canvas-host"]').screenshot({ path: test.info().outputPath(`${tag}-jitter-${dx}-${dy}-host.png`) })
+        await expect(card(), `${tag}: no card for a click ${dx},${dy} px off ${names[steady.id]} (steady ${steady.x.toFixed(1)},${steady.y.toFixed(1)}; ${at})`).toBeVisible()
         await expect(card().locator('h3').first(), `${tag}: a click ${dx},${dy} px off the aim point opened another card`).toHaveText(names[steady.id])
       }
       // A line clicked where it runs over open ground opens its card.
