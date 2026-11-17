@@ -47,8 +47,8 @@ type BuildItProp = { agents: { id: string; name: string }[]; defaultAgent?: stri
 const BUILT = { root: '/build/pets', key: 'design:d1', title: 'Pets', prompt: 'Build the app.' }
 vi.mock('../../../src/renderer/src/components/World', () => ({
   // The real pane resolves `root` to its git root; this stand-in says the cwd's root is /repos/app.
-  WorldView: ({ root, onClose, askSlot, buildIt }: { root: string; onClose: () => void; askSlot?: (...a: unknown[]) => React.ReactNode; buildIt?: BuildItProp }) => (
-    <div role="dialog" aria-label="Lumopolis" data-root={root} data-agents={buildIt?.agents.map((a) => a.id).join(',')} data-default={buildIt?.defaultAgent}>
+  WorldView: ({ root, width, onClose, askSlot, buildIt }: { root: string; width?: number; onClose: () => void; askSlot?: (...a: unknown[]) => React.ReactNode; buildIt?: BuildItProp }) => (
+    <div role="region" aria-label="Lumopolis" data-testid="world-view" style={{ width }} data-root={root} data-agents={buildIt?.agents.map((a) => a.id).join(',')} data-default={buildIt?.defaultAgent}>
       <button onClick={onClose}>Close Lumopolis</button>
       <button onClick={() => buildIt?.launch(BUILT, 'claude')}>Build with claude</button>
       <button onClick={() => buildIt?.launch(BUILT, 'nobody')}>Build with nobody</button>
@@ -86,7 +86,7 @@ function bridge() {
 }
 
 const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)) })
-const world = () => screen.queryByRole('dialog', { name: 'Lumopolis' })
+const world = () => screen.queryByRole('region', { name: 'Lumopolis' })
 
 beforeEach(() => {
   localStorage.clear()
@@ -100,13 +100,39 @@ afterEach(() => {
 })
 
 describe('App Lumopolis wiring', () => {
+  it('opening Lumopolis keeps the terminal area rendered beside the pane, with a divider between them', async () => {
+    render(<App />)
+    await settle()
+    act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
+    const pane = await screen.findByTestId('world-view')
+    expect(pane.parentElement).toBe(screen.getByRole('main').parentElement)
+    expect(screen.getByRole('main')).toBeVisible()
+    expect(screen.getByRole('main').nextElementSibling).toBe(screen.getByRole('separator'))
+    expect(screen.getByRole('separator').nextElementSibling).toBe(pane)
+  })
+
+  it('the divider resizes the pane, and the width is remembered', async () => {
+    localStorage.setItem('termpolis.world.paneWidth', '400')
+    // jsdom has no layout: say the terminals' column is 1200 px wide.
+    const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1200)
+    render(<App />)
+    await settle()
+    act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
+    const pane = await screen.findByTestId('world-view')
+    expect(pane).toHaveStyle({ width: '400px' })
+    fireEvent.keyDown(screen.getByRole('separator'), { key: 'ArrowLeft' })
+    expect(pane).toHaveStyle({ width: '424px' })
+    expect(localStorage.getItem('termpolis.world.paneWidth')).toBe('424')
+    client.mockRestore()
+  })
+
   it('palette action show_world opens the overlay, and its close button closes it', async () => {
     render(<App />)
     await settle()
     expect(world()).toBeNull()
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
     fireEvent.click(await screen.findByRole('button', { name: 'Palette: Open Lumopolis' }))
-    expect(await screen.findByRole('dialog', { name: 'Lumopolis' })).toHaveAttribute('data-root', '')
+    expect(await screen.findByRole('region', { name: 'Lumopolis' })).toHaveAttribute('data-root', '')
     fireEvent.click(screen.getByRole('button', { name: 'Close Lumopolis' }))
     expect(world()).toBeNull()
   })
@@ -118,7 +144,7 @@ describe('App Lumopolis wiring', () => {
     await settle()
     expect(world()).toBeNull()
     fireEvent.keyDown(window, { key: 'R', ctrlKey: true, shiftKey: true })
-    expect(await screen.findByRole('dialog', { name: 'Lumopolis' })).toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: 'Lumopolis' })).toBeInTheDocument()
     fireEvent.keyDown(window, { key: 'R', ctrlKey: true, shiftKey: true })
     expect(world()).toBeNull()
   })
@@ -133,7 +159,7 @@ describe('App Lumopolis wiring', () => {
     const view = render(<App />)
     await settle()
     act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
-    expect(await screen.findByRole('dialog', { name: 'Lumopolis' })).toHaveAttribute('data-root', '/repos/app')
+    expect(await screen.findByRole('region', { name: 'Lumopolis' })).toHaveAttribute('data-root', '/repos/app')
     act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
     expect(world()).toBeInTheDocument()
     view.unmount()
@@ -153,7 +179,7 @@ describe('App Lumopolis wiring', () => {
     render(<App />)
     await settle()
     act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
-    expect(await screen.findByRole('dialog', { name: 'Lumopolis' })).toHaveAttribute('data-root', '/repos/app/src/main')
+    expect(await screen.findByRole('region', { name: 'Lumopolis' })).toHaveAttribute('data-root', '/repos/app/src/main')
     const ask = screen.getByTestId('world-ask-stub')
     expect(ask).toHaveAttribute('data-root', '/repos/app')
     expect(ask).toHaveAttribute('data-linked', 'true')
@@ -164,7 +190,7 @@ describe('App Lumopolis wiring', () => {
     render(<App />)
     await settle()
     fireEvent.keyDown(window, { key: 'R', ctrlKey: true, shiftKey: true })
-    await screen.findByRole('dialog', { name: 'Lumopolis' })
+    await screen.findByRole('region', { name: 'Lumopolis' })
     expect(screen.getByTestId('world-ask-stub')).toHaveAttribute('data-root', '')
   })
 
@@ -172,7 +198,7 @@ describe('App Lumopolis wiring', () => {
     render(<App />)
     await settle()
     fireEvent.keyDown(window, { key: 'R', ctrlKey: true, shiftKey: true })
-    const pane = await screen.findByRole('dialog', { name: 'Lumopolis' })
+    const pane = await screen.findByRole('region', { name: 'Lumopolis' })
     expect(pane.getAttribute('data-agents')?.split(',')).toContain('claude')
     expect(pane.getAttribute('data-agents')).not.toContain('codex')
     expect(pane).toHaveAttribute('data-default', 'claude')
@@ -198,7 +224,7 @@ describe('App Lumopolis wiring', () => {
       })
     })
     fireEvent.keyDown(window, { key: 'R', ctrlKey: true, shiftKey: true })
-    const pane = await screen.findByRole('dialog', { name: 'Lumopolis' })
+    const pane = await screen.findByRole('region', { name: 'Lumopolis' })
     expect(pane.getAttribute('data-agents')?.split(',')).toEqual(['claude', 'opus-claude'])
     expect(pane).toHaveAttribute('data-default', 'opus-claude')
     act(() => { useTerminalStore.setState({ aiProfiles: [], terminals: [], activeTerminalId: null }) })

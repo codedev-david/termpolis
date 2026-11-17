@@ -226,7 +226,7 @@ describe('WorldView sources', () => {
     switchTo('design:d1')
     await settle()
     fireEvent.click(screen.getByTestId('world-build-it-open'))
-    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Lumopolis' }), { key: 'Escape' })
+    fireEvent.keyDown(screen.getByRole('region', { name: 'Lumopolis' }), { key: 'Escape' })
     expect(screen.queryByRole('dialog', { name: 'Build it' })).toBeNull()
     expect(viewer().resetView).not.toHaveBeenCalled()
     fireEvent.click(screen.getByTestId('world-build-it-open'))

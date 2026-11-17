@@ -34,7 +34,8 @@ import { exposesWorldProbe } from '../../lib/testAgents'
 import { WorldToolbar } from './WorldToolbar'
 import { WorldCard } from './WorldCard'
 import { WorldEmptyState } from './WorldEmptyState'
-import { useFocusTrap } from '../../hooks/useFocusTrap'
+import { focusTerminal } from '../../lib/accountMenu'
+import { useTerminalStore } from '../../store/terminalStore'
 import { useOpenWorld } from './useOpenWorld'
 import { WorldHome } from './WorldHome'
 import { WorldSwitcher } from './WorldSwitcher'
@@ -57,7 +58,12 @@ export interface WorldViewProps {
   askSlot?: (viewer: WorldViewer | null, doc: WorldDoc | null, worldKey: string | null, link: WorldAskLink) => ReactNode
   /** Build it on design worlds: the agents it can start, and how App opens the agent terminal. */
   buildIt?: { agents: BuildAgent[]; defaultAgent?: string; launch: (res: BuildItResult, agentId: string) => void }
+  /** The pane's width in px (App owns it: the divider and the window size change it). */
+  width?: number
 }
+
+/** The width a pane gets from no one (a test, a stand-alone mount). */
+const DEFAULT_WIDTH = 480
 
 /** How the ask box and the pane share Esc and world swaps. */
 export interface WorldAskLink {
@@ -82,7 +88,7 @@ const baseName = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).
 /** A building's or a connection's card, straight from the doc (the 2D view); null when the id names neither. */
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
-export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): JSX.Element {
+export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH }: WorldViewProps): JSX.Element {
   const { world, open, goHome, entries, refresh } = useOpenWorld(root)
   const [webgl] = useState(() => hasWebGL())
   const [viewer, setViewer] = useState<WorldViewer | null>(null)
@@ -150,8 +156,20 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
     },
   }))
 
-  // Keep the keyboard in the pane, and give the focus back when it closes.
-  useFocusTrap(dialogRef)
+  // Take the focus on open (so Esc reaches the pane), and give it back on close: to the control that
+  // opened it, else to the active terminal. No trap: the terminals beside it stay in reach.
+  useEffect(() => {
+    const el = dialogRef.current as HTMLDivElement
+    const before = document.activeElement as HTMLElement | null
+    el.focus()
+    return () => {
+      if (before && before !== document.body && document.contains(before)) before.focus()
+      else {
+        const id = useTerminalStore.getState().activeTerminalId
+        if (id) focusTerminal(id)
+      }
+    }
+  }, [])
 
   // A terminal still dictating behind the pane would also type what is said to the Ask mic: stop it.
   useEffect(() => { window.dispatchEvent(new Event('termpolis:stopDictation')) }, [])
@@ -373,7 +391,7 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape') return
       const t = e.target as Node | null
-      const inside = t === document.body || t === document.documentElement || (dialogRef.current as HTMLDivElement).contains(t)
+      const inside = (dialogRef.current as HTMLDivElement).contains(t)
       if (!inside) return
       e.preventDefault()
       e.stopPropagation()
@@ -398,13 +416,12 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
   return (
     <div
       ref={dialogRef}
-      role="dialog"
-      aria-modal="true"
+      role="region"
       aria-label="Lumopolis"
       tabIndex={-1}
       data-testid="world-view"
       className="outline-none"
-      style={worldPaneStyle(THEMES[theme].background)}
+      style={worldPaneStyle(THEMES[theme].background, width)}
     >
       <WorldToolbar
         projectName={projectName}

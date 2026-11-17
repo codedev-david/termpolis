@@ -530,4 +530,20 @@ test.describe.serial('Lumopolis in the real app', () => {
   test('6. over the whole session, the renderer logged no console errors and threw no page errors', async () => {
     expect(consoleErrors).toEqual([])
   })
+
+  test('7. the terminal stays visible and takes typing while Lumopolis is open', async () => {
+    await expect(pane()).toBeVisible()
+    // Click the terminal: the pane is beside it, not over it, so the click lands on the terminal.
+    const term = page.locator('.xterm').last()
+    await term.click()
+    await expect.poll(() => page.evaluate(() => !!document.activeElement?.classList.contains('xterm-helper-textarea')), { message: 'the terminal to have focus' }).toBe(true)
+    await page.keyboard.type('echo beside')
+    await expect.poll(() => page.evaluate(
+      () => ((window as unknown as { __termpolis_terminal_text?: () => string }).__termpolis_terminal_text?.() ?? '').includes('echo beside')), { message: 'the typed text on the terminal' }).toBe(true)
+    const [a, b] = await Promise.all([pane().boundingBox(), term.boundingBox()])
+    expect(a && b).toBeTruthy()
+    const overlapX = Math.min(a!.x + a!.width, b!.x + b!.width) - Math.max(a!.x, b!.x)
+    expect(overlapX, 'the pane and the terminal overlap').toBeLessThanOrEqual(1)
+    await page.keyboard.press('Control+u')
+  })
 })

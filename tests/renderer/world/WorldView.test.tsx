@@ -38,6 +38,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
 })
 
 import { WorldView } from '../../../src/renderer/src/components/World'
+import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import { focusables } from '../../../src/renderer/src/hooks/useFocusTrap'
 
 type Res<T> = { success: true; data: T } | { success: false; error: string }
@@ -77,7 +78,7 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve() })
 }
 const viewer = () => h.viewers[h.viewers.length - 1]
-const dialog = () => screen.getByRole('dialog', { name: 'Lumopolis' })
+const dialog = () => screen.getByRole('region', { name: 'Lumopolis' })
 const esc = (target: Element = dialog()) => fireEvent.keyDown(target, { key: 'Escape' })
 
 async function mount(props: Partial<{ root: string; onClose: () => void; askSlot: (v: unknown) => React.ReactNode }> = {}) {
@@ -294,15 +295,19 @@ describe('WorldView', () => {
     outside.dispatchEvent(e)
     expect(e.defaultPrevented).toBe(false)
     outside.remove()
-    // Esc with focus nowhere in particular is the pane's.
-    esc(document.body)
+    // Esc with focus nowhere in particular (a terminal beside the pane has it) is left alone.
+    const lone = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    document.body.dispatchEvent(lone)
+    expect(lone.defaultPrevented).toBe(false)
+    expect(viewer().resetView).not.toHaveBeenCalled()
+    esc()
     expect(viewer().resetView).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByTestId('world-relayout'))
     expect(screen.getByRole('alertdialog', { name: 'Confirm re-layout' })).toBeInTheDocument()
     esc(screen.getByTestId('world-relayout-cancel'))
     expect(screen.queryByRole('alertdialog')).toBeNull()
     expect(onClose).not.toHaveBeenCalled()
-    esc(document.documentElement)
+    esc()
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
@@ -369,15 +374,16 @@ describe('WorldView', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('is a modal Lumopolis dialog that takes the focus on open', async () => {
+  it('is a region beside the terminals, not a modal dialog, and takes the focus on open', async () => {
     // The palette and hotkey wiring that opens it is covered in AppWorld.test.tsx.
     bridge()
     await mount()
-    expect(dialog()).toHaveAttribute('aria-modal', 'true')
-    expect(dialog().contains(document.activeElement)).toBe(true)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(dialog()).not.toHaveAttribute('aria-modal')
+    expect(document.activeElement).toBe(dialog())
   })
 
-  it('keeps Tab and Shift+Tab inside the pane, and gives the focus back on close', async () => {
+  it('leaves Tab alone, and gives the focus back to its opener on close', async () => {
     bridge()
     const opener = document.createElement('button')
     opener.textContent = 'globe'
@@ -385,17 +391,41 @@ describe('WorldView', () => {
     opener.focus()
     const { unmount } = await mount()
     const list = focusables(dialog())
-    expect(list.length).toBeGreaterThan(2)
-    const first = list[0]
     const last = list[list.length - 1]
     last.focus()
-    fireEvent.keyDown(last, { key: 'Tab' })
-    expect(document.activeElement).toBe(first)
-    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
-    expect(document.activeElement).toBe(last)
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    last.dispatchEvent(tab)
+    expect(tab.defaultPrevented).toBe(false) // no trap: Tab may leave the pane for the terminals
     unmount()
     expect(document.activeElement).toBe(opener)
     opener.remove()
+  })
+
+  it('gives the focus to the active terminal on close when nothing opened it', async () => {
+    bridge()
+    const host = document.createElement('div')
+    host.setAttribute('data-terminal-id', 't-1')
+    const input = document.createElement('textarea')
+    host.appendChild(input)
+    document.body.appendChild(host)
+    useTerminalStore.setState({ activeTerminalId: 't-1' })
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    const { unmount } = await mount()
+    unmount()
+    expect(document.activeElement).toBe(input)
+    // With no active terminal either, the focus is simply not moved.
+    useTerminalStore.setState({ activeTerminalId: null })
+    const again = await mount()
+    expect(() => again.unmount()).not.toThrow()
+    host.remove()
+    useTerminalStore.setState({ activeTerminalId: null })
+  })
+
+  it('takes its width from the width prop', async () => {
+    const get = deferred<Res<WorldDoc | null>>()
+    bridge({ worldGet: vi.fn(() => get.promise) })
+    render(<WorldView root="/repo" width={512} onClose={vi.fn()} />)
+    expect(dialog()).toHaveStyle({ width: '512px' })
   })
 
   it('drops a re-layout answer for a project the pane has left, and one that lands after close', async () => {
@@ -780,12 +810,13 @@ describe('WorldView', () => {
 })
 
 describe('WorldView layout (visual fidelity)', () => {
-  it('sits below the title bar in the theme background from the first render, toolbar in flow above the map', async () => {
+  it('is a flex column in the theme background from the first render, toolbar in flow above the map', async () => {
     const get = deferred<Res<WorldDoc | null>>()
     bridge({ worldGet: vi.fn(() => get.promise) })
     render(<WorldView root="/repo" onClose={vi.fn()} />)
-    // Before the world loads: opaque Neon background, 40px down so the window controls stay free.
-    expect(dialog()).toHaveStyle({ position: 'fixed', top: '40px', left: '0px', right: '0px', bottom: '0px', background: '#03050a' })
+    // Before the world loads: opaque Neon background, in the flow beside the terminals.
+    expect(dialog()).toHaveStyle({ position: 'relative', width: '480px', background: '#03050a' })
+    expect(dialog().style.zIndex).toBe('')
     expect(dialog()).not.toHaveClass('animate-fadeIn')
     expect(screen.getByTestId('world-loading')).toBeInTheDocument()
     const toolbar = screen.getByRole('toolbar', { name: 'Lumopolis controls' })

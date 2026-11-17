@@ -29,7 +29,8 @@ const SwarmCompleteDialog = lazy(() => import('./components/SwarmDashboard/Swarm
 const AddTerminalModal = lazy(() => import('./components/Sidebar/AddTerminalModal').then(m => ({ default: m.AddTerminalModal })))
 const AppLogModal = lazy(() => import('./components/AppLogModal/AppLogModal').then(m => ({ default: m.AppLogModal })))
 import { TitleBar } from './components/TitleBar/TitleBar'
-import { WorldPaneOpening } from './components/World/worldPane'
+import { useWorldPaneWidth, WorldPaneOpening } from './components/World/worldPane'
+import { WorldPaneDivider } from './components/World/WorldPaneDivider'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
 import { SecretSentBanner } from './components/SecretSentBanner/SecretSentBanner'
@@ -138,6 +139,8 @@ export default function App() {
   const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
   const [showWorld, setShowWorld] = useState(false)
+  const mainRef = useRef<HTMLElement>(null)
+  const { width: worldWidth, onDrag: onWorldDrag } = useWorldPaneWidth(mainRef, showWorld)
   // Bumped to open the Memory panel on its This week tab.
   const [memoryWeekRequest, setMemoryWeekRequest] = useState(0)
   const [showMemoryTour, setShowMemoryTour] = useState(false)
@@ -1127,7 +1130,7 @@ export default function App() {
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        <main className="flex-1 overflow-hidden relative flex flex-col">
+        <main ref={mainRef} className="flex-1 overflow-hidden relative flex flex-col">
           {swarmNotification && (
             <div className={`px-4 py-2.5 flex items-center justify-between text-sm ${
               swarmNotification.type === 'success'
@@ -1231,16 +1234,21 @@ export default function App() {
             />
           )}
           {showWorld && (
-            // Its own boundary: the opaque pane frame covers the terminals at once while the
-            // Lumopolis chunk (the engine and Three.js) loads.
-            <Suspense fallback={<WorldPaneOpening />}>
-              <WorldView
-                root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
-                onClose={() => setShowWorld(false)}
-                askSlot={(v, d, r, link) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} />}
-                buildIt={worldBuildIt}
-              />
-            </Suspense>
+            // A pane beside the terminals, like the Changes panel, with a divider to resize it. Its own
+            // boundary: the opaque pane frame fills its column at once while the Lumopolis chunk (the
+            // engine and Three.js) loads.
+            <>
+              <WorldPaneDivider onDrag={onWorldDrag} />
+              <Suspense fallback={<WorldPaneOpening width={worldWidth} />}>
+                <WorldView
+                  root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
+                  width={worldWidth}
+                  onClose={() => setShowWorld(false)}
+                  askSlot={(v, d, r, link) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} />}
+                  buildIt={worldBuildIt}
+                />
+              </Suspense>
+            </>
           )}
         </Suspense>
       </div>

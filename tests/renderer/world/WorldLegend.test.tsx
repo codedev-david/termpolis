@@ -3,7 +3,6 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { WorldLegend, LEGEND_MAX_CARGO, LEGEND_RESERVE } from '../../../src/renderer/src/components/World/WorldLegend'
 import { WorldPaneOpening, worldPaneStyle, WORLD_OPENING_BACKGROUND } from '../../../src/renderer/src/components/World/worldPane'
 import { THEMES } from '../../../src/renderer/src/world/engine'
-import { TITLE_BAR_HEIGHT } from '../../../src/renderer/src/components/TitleBar/constants'
 import { edge, minimal, rich } from './helpers'
 
 describe('WorldLegend', () => {
@@ -74,14 +73,14 @@ describe('WorldLegend', () => {
 })
 
 describe('worldPane', () => {
-  it('frames the pane below the title bar with the given opaque background', () => {
-    expect(worldPaneStyle('#123456')).toMatchObject({ position: 'fixed', top: TITLE_BAR_HEIGHT, left: 0, right: 0, bottom: 0, background: '#123456' })
+  it('frames the pane as a column of the given width with the given opaque background', () => {
+    expect(worldPaneStyle('#123456', 480)).toMatchObject({ position: 'relative', width: 480, background: '#123456' })
   })
 
   it('opens in the Neon background, the theme the pane starts in', () => {
     expect(WORLD_OPENING_BACKGROUND).toBe(THEMES.neon.background)
-    render(<WorldPaneOpening />)
-    expect(screen.getByTestId('world-view-opening')).toHaveStyle({ top: '40px', background: '#03050a' })
+    render(<WorldPaneOpening width={500} />)
+    expect(screen.getByTestId('world-view-opening')).toHaveStyle({ width: '500px', background: '#03050a' })
     expect(screen.getByRole('status')).toHaveTextContent('Opening Lumopolis…')
   })
 })
