@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { clampIntoView, districtNameHalf, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -224,5 +224,25 @@ describe('rightInset', () => {
     expect(rightInset(732, 244)).toBe(244)
     expect(rightInset(700, 244)).toBe(0)
     expect(rightInset(1600, 0)).toBe(0)
+  })
+})
+
+describe('district name fit and clamp', () => {
+  it('uses the measured half width plus the glow, and the fallback when unmeasured', () => {
+    expect(districtNameHalf(200, 64)).toBe(100 + LABEL_GLOW_PX)
+    expect(districtNameHalf(0, 64)).toBe(64)
+  })
+  it('a long name ("1 PART · 1 FILE" at 15px/11px with letter spacing is ~130px+) keeps more than the 64 px half', () => {
+    expect(districtNameHalf(140, 64)).toBeGreaterThan(64)
+  })
+  it('shifts a box back inside the view with the inset, on each side', () => {
+    expect(clampIntoView(10, 100, 100, 20, 500, 300, 4)).toEqual([44, 0])
+    expect(clampIntoView(490, 100, 100, 20, 500, 300, 4)).toEqual([-44, 0])
+    expect(clampIntoView(250, 5, 100, 20, 500, 300, 4)).toEqual([0, 9])
+    expect(clampIntoView(250, 299, 100, 20, 500, 300, 4)).toEqual([0, -13])
+  })
+  it('leaves a box already inside alone, and centres one bigger than the view', () => {
+    expect(clampIntoView(250, 150, 100, 20, 500, 300, 4)).toEqual([0, 0])
+    expect(clampIntoView(100, 150, 600, 20, 500, 300, 4)).toEqual([150, 0])
   })
 })

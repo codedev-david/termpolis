@@ -12,7 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { busyness, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, nameBudget, placeLabels, rightInset, type LabelCandidate, type Nudge, type V3 } from './viewMath'
+import { busyness, clamp, clampIntoView, districtNameHalf, edgeLabelSize, fitDistance, fitView, fogDensity, nameBudget, placeLabels, rightInset, type LabelCandidate, type Nudge, type V3 } from './viewMath'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -162,6 +162,8 @@ const PROTO_OVERVIEW = 120
 const OVERVIEW_MARGIN = 1.1
 /** Half the width of a district's name on screen ("6 PARTS · 14 FILES"), kept in the overview. */
 const DISTRICT_NAME_HALF_PX = 64
+/** A district's name keeps this many pixels from the edge of the view. */
+const LABEL_VIEW_INSET = 4
 /** Room round a clicked building and its neighbours. */
 const CLOSE_UP_MARGIN = 1.2
 /** The closest a click flies to a building: the prototype's framing distance (28 out, half that up). */
@@ -429,6 +431,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   /** busyness() of the drawn city: 1 for a small one, lower as its lines grow past BUSY_LINES. */
   let busy = 1
 
+  const districtRecs = new Map<string, LabelRec>()
   function addLabel(parent: THREE.Object3D, kind: LabelKind, pos: [number, number, number], build: (el: HTMLDivElement) => void): LabelRec {
     const el = document.createElement('div')
     el.className = 'lw-' + kind
@@ -450,7 +453,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     })
     world.clear()
     hoverLabels = []
-    nodes = new Map(); edges = new Map(); pickables = []; labels = []; ghostMats = []; seals = []; fogSprites = []; pulseBalls = []
+    nodes = new Map(); edges = new Map(); pickables = []; labels = []; districtRecs.clear(); ghostMats = []; seals = []; fogSprites = []; pulseBalls = []
     shellCount = 0
     selRing = null
   }
@@ -486,13 +489,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const light = new THREE.PointLight(col, 40, Math.max(40, d.radius * 2.4))
     light.position.set(0, 8, 0)
     g.add(light)
-    addLabel(g, 'district', [0, 0.4, d.radius + 2], (el) => {
+    districtRecs.set(d.id, addLabel(g, 'district', [0, 0.4, d.radius + 2], (el) => {
       el.style.color = hex(col.getHex())
       el.textContent = d.label
       const sub = document.createElement('span')
       sub.textContent = text.districts[d.id] ?? ''
       el.appendChild(sub)
-    })
+    }))
   }
 
   /**
@@ -722,10 +725,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // the name's ends in it (twice: the wider fit makes the name a little wider in the world).
     const side = new THREE.Vector3(OVERVIEW_DIR.z, 0, -OVERVIEW_DIR.x).normalize()
     for (let pass = 0; pass < 2 && model.districts.length > 0; pass++) {
-      const half = (DISTRICT_NAME_HALF_PX * 2 * fit.dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / height
+      const perPx = (2 * fit.dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / height
       const named = [...pts]
       for (const d of model.districts) {
-        for (const k of [-1, 1]) named.push([d.pos[0] + side.x * half * k, d.pos[1] - 2, d.pos[2] + d.radius + 4 + side.z * half * k])
+        const half = districtHalfPx(d.id) * perPx
+        const drop = districtDropPx(d.id) * perPx
+        for (const k of [-1, 1]) named.push([d.pos[0] + side.x * half * k, d.pos[1] - 2 - drop, d.pos[2] + d.radius + 4 + side.z * half * k])
       }
       fit = fitView(named, dir, camera.fov, fitAspect(), OVERVIEW_MARGIN, 40)
     }
@@ -735,6 +740,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // Room to step back from the overview of even a very big world.
     controls.maxDistance = Math.max(420, overviewDist * 1.6)
   }
+
+  /** A district name's own half width (measured; the constant when it cannot be) and the height under its point. */
+  function districtLabel(id: string): { w: number; h: number } | undefined {
+    const rec = districtRecs.get(id)
+    if (!rec) return undefined
+    measure([rec.o.element])
+    return sizes.get(rec.o.element)
+  }
+  const districtHalfPx = (id: string): number => districtNameHalf(districtLabel(id)?.w ?? 0, DISTRICT_NAME_HALF_PX)
+  const districtDropPx = (id: string): number => (districtLabel(id)?.h ?? 0) / 2
 
   function draw(model: SceneModel, text: SceneText, allEdgeLabels: boolean): void {
     lastModel = model
@@ -1233,6 +1248,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    */
   const labelAt = new THREE.Vector3()
   let placed = new Map<string, Nudge>()
+  const pinned = new Map<string, Nudge>()
   const sizes = new WeakMap<HTMLElement, { w: number; h: number }>()
   function measure(els: HTMLElement[]): void {
     const todo = els.filter((el) => !sizes.has(el))
@@ -1246,19 +1262,26 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const el of todo) if (el.offsetWidth > 0) sizes.set(el, { w: el.offsetWidth, h: el.offsetHeight })
     todo.forEach((el, i) => { el.style.display = was[i][0]; el.style.visibility = was[i][1] })
   }
-  function candidate(o: CSS2DObject, id: string, tier: number, group?: string, nudge?: boolean): LabelCandidate | null {
+  function candidate(o: CSS2DObject, id: string, tier: number, group?: string, nudge?: boolean, pin?: boolean): LabelCandidate | null {
     o.getWorldPosition(labelAt)
     labelAt.project(camera)
     if (labelAt.z < -1 || labelAt.z > 1) return null
     const { w, h } = sizes.get(o.element) ?? edgeLabelSize((o.element.textContent ?? '').length)
-    const x = ((labelAt.x + 1) / 2) * width
-    const y = ((1 - labelAt.y) / 2) * height
-    if (x + w / 2 < 0 || x - w / 2 > width || y + h / 2 < 0 || y - h / 2 > height) return null
+    let x = ((labelAt.x + 1) / 2) * width
+    let y = ((1 - labelAt.y) / 2) * height
+    if (pin) {
+      // A district's name stays whole inside the view; the shift is added back to its nudge (layLabels).
+      const [sx, sy] = clampIntoView(x, y, w, h, width, height, LABEL_VIEW_INSET)
+      x += sx
+      y += sy
+      if (sx !== 0 || sy !== 0) pinned.set(id, [sx, sy])
+    } else if (x + w / 2 < 0 || x - w / 2 > width || y + h / 2 < 0 || y - h / 2 > height) return null
     return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}) }
   }
   function layLabels(): Map<string, Nudge> {
     camera.updateMatrixWorld()
-    const want: { o: CSS2DObject; id: string; tier: number; group?: string; nudge?: boolean }[] = []
+    const want: { o: CSS2DObject; id: string; tier: number; group?: string; nudge?: boolean; pin?: boolean }[] = []
+    pinned.clear()
     const targets = new Set([hoveredId, selectedId])
     for (const n of nodes.values()) {
       if (n.exploded) n.floorLabels.forEach((l) => { if (l) want.push({ o: l.o, id: l.key, tier: 0 }) })
@@ -1276,16 +1299,22 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         else if (rank < budget || (placed.has(l.key) && rank < budget * 1.25 + 1)) want.push({ o: l.o, id: l.key, tier: 4 })
       }
     })
-    for (const l of labels) if (l.kind === 'district' || l.kind === 'proc') want.push({ o: l.o, id: l.key, tier: 3 })
+    for (const l of labels) if (l.kind === 'district' || l.kind === 'proc') want.push({ o: l.o, id: l.key, tier: 3, pin: l.kind === 'district' })
     if (allLabels) for (const e of edges.values()) if (!e.focus) want.push({ o: e.label, id: 'e:' + e.id, tier: 5 })
     measure(want.map((w) => w.o.element))
     const cands: LabelCandidate[] = []
     for (const w of want) {
-      const c = candidate(w.o, w.id, w.tier, w.group, w.nudge)
+      const c = candidate(w.o, w.id, w.tier, w.group, w.nudge, w.pin)
       if (c) cands.push(c)
     }
     placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS })
-    return placed
+    if (pinned.size === 0) return placed
+    const out = new Map(placed)
+    for (const [id, [sx, sy]] of pinned) {
+      const n = placed.get(id)
+      if (n) out.set(id, [n[0] + sx, n[1] + sy])
+    }
+    return out
   }
 
   /** Moves a label off its point by its nudge (CSS2DRenderer owns its transform, so the margins). */

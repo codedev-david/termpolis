@@ -17,7 +17,7 @@ export function targetOf(entry: WorldEntry): OpenTarget {
   return s.kind === 'design' ? { kind: 'design', key: entry.key } : { kind: 'root', root: s.root, key: entry.key }
 }
 
-export const dialogCls = 'absolute left-1/2 top-24 -translate-x-1/2 z-10 w-[32rem] max-w-[92vw] rounded-lg border border-[#3c3c3c] bg-[#252526] shadow-2xl p-4 flex flex-col gap-3 text-sm text-[#d4d4d4]'
+export const dialogCls = 'absolute left-1/2 top-24 -translate-x-1/2 z-10 w-[32rem] max-w-[calc(100%-24px)] rounded-lg border border-[#3c3c3c] bg-[#252526] shadow-2xl p-4 flex flex-col gap-3 text-sm text-[#d4d4d4]'
 export const btnCls = 'text-xs px-3 py-1.5 rounded border border-[#3c3c3c] hover:bg-[#37373d] disabled:opacity-50 disabled:hover:bg-transparent'
 export const primaryCls = 'text-xs px-3 py-1.5 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white disabled:opacity-50 disabled:hover:bg-[#0078d4]'
 export const fieldCls = 'w-full rounded border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#0078d4] disabled:opacity-60'

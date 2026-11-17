@@ -199,3 +199,28 @@ export function nameBudget(n: number, zoom: number): number {
 export function rightInset(width: number, reserve: number): number {
   return reserve > 0 && width >= reserve * 3 ? reserve : 0
 }
+
+/** Pixels a district name's glow (text-shadow 12px) reaches past its box. */
+export const LABEL_GLOW_PX = 6
+
+/**
+ * Half the width the overview's fit must keep clear on each side of a district's name: its measured
+ * width (offsetWidth) halved, plus the glow; `fallback` (a half width) when it has not been measured (0).
+ */
+export function districtNameHalf(measuredWidth: number, fallback: number): number {
+  return measuredWidth > 0 ? measuredWidth / 2 + LABEL_GLOW_PX : fallback
+}
+
+/**
+ * The shift, in pixels, that puts a label box (centre x, y; size w, h) inside a w0 by h0 view with
+ * `inset` pixels to spare. A box wider or taller than the view is centred on it.
+ */
+export function clampIntoView(x: number, y: number, w: number, h: number, w0: number, h0: number, inset: number): [number, number] {
+  const axis = (c: number, size: number, total: number): number => {
+    const lo = inset + size / 2
+    const hi = total - inset - size / 2
+    if (lo > hi) return total / 2 - c
+    return c < lo ? lo - c : c > hi ? hi - c : 0
+  }
+  return [axis(x, w, w0), axis(y, h, h0)]
+}
