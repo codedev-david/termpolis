@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import type { GraphSnapshot } from '../codeGraph'
 import { lowerHostPriority } from '../hostPriority'
 import type { Claim, Evidence, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
-import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, type AnnotationStore } from './annotations'
+import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotations, type AnnotationStore } from './annotations'
 import { compileWorld, createRecompileScheduler, type CompileDeps } from './compile'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { confinedReader, isCloneRoot } from './folderSafety'
@@ -499,7 +499,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           if (!isStr(msg.userDataPath) || msg.userDataPath === '') throw new Error('worldHost: userDataPath required')
           for (const s of schedulers.values()) s.dispose()
           schedulers.clear()
-          state = { store: createStore(msg.userDataPath), annotations: createAnnotations(msg.userDataPath), userDataPath: msg.userDataPath, labelling: msg.labelling !== false }
+          const annotations = createAnnotations(msg.userDataPath)
+          state = { store: withAnnotations(createStore(msg.userDataPath), annotations), annotations, userDataPath: msg.userDataPath, labelling: msg.labelling !== false }
           post({ kind: 'ready', pid: process.pid })
         } catch (err) {
           post({ kind: 'init-error', error: serializeError(err) })

@@ -11,6 +11,7 @@ import type { WorldDoc } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import { districtRadius } from '../../src/main/world/layout'
 import { createSourceRegistry, type SourceRegistry } from '../../src/main/world/sources'
+import { createAnnotationStore, withAnnotations } from '../../src/main/world/annotations'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 
@@ -446,5 +447,41 @@ describe('createDesigner cancel', () => {
     const r = await designer.draft('a shop')
     expect(r.key).toBe('design:id1')
     expect(execFn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('design worlds keep their annotations', () => {
+  const confirm = { text: 'Takes orders.', state: 'verified' as const, evidence: [{ kind: 'person' as const, ref: 'confirmed in Lumopolis' }] }
+
+  it('a confirm landing while a refine runs is in the saved design, and a draft keeps one for its key too', async () => {
+    const annotations = createAnnotationStore(dir)
+    const inner = createWorldStore(dir)
+    const store = withAnnotations(inner, annotations)
+    const s = setup(async () => {
+      await annotations.add('design:id1', 'api', confirm)
+      return okRes(reply('ok', [{ op: 'rename', id: 'db', name: 'Orders DB' }]))
+    }, { store })
+    await stored(store)
+    await s.designer.refine('design:id1', 'rename it', '')
+    const raw = (await inner.load('design:id1')) as WorldDoc
+    const api = raw.buildings.find((b) => b.id === 'api')!
+    expect(api.claims.filter((c) => c.evidence.some((e) => e.kind === 'person'))).toEqual([confirm])
+    expect(raw.buildings.find((b) => b.id === 'db')!.name).toBe('Orders DB')
+  })
+
+  it('reading after an out-of-band save still shows the confirm, once, and passes other keys through', async () => {
+    const annotations = createAnnotationStore(dir)
+    const inner = createWorldStore(dir)
+    const store = withAnnotations(inner, annotations)
+    const base = await stored(inner)
+    await annotations.add('design:id1', 'api', confirm)
+    const once = (await store.load('design:id1')) as WorldDoc
+    await inner.save(once)
+    const twice = (await store.load('design:id1')) as WorldDoc
+    expect(twice.buildings.find((b) => b.id === 'api')!.claims.filter((c) => c.text === confirm.text)).toHaveLength(1)
+    expect(await store.load('design:missing')).toBeNull()
+    await store.save({ ...base, projectKey: 'C:/proj' })
+    expect(((await inner.load('C:/proj')) as WorldDoc).buildings.every((b) => b.claims.length === 0)).toBe(true)
+    expect(store.labelCache).toBe(inner.labelCache)
   })
 })

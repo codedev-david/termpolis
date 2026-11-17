@@ -5,6 +5,18 @@ import type { MouseEvent, Ref } from 'react'
 import type { Evidence } from '../../../../shared/world/types'
 import { CARD_INSET_PX, CARD_WIDTH_PX } from './worldPane'
 
+const EVIDENCE_KINDS = ['file', 'symbol', 'test', 'transcriptStep', 'memory', 'commit', 'trace', 'metric', 'log', 'deploy', 'person']
+
+/** The evidence a button carries, or null when its value does not parse or is not {kind, ref}. */
+function readEvidence(raw: string | null): Evidence | null {
+  try {
+    const v = JSON.parse(raw as string) as { kind?: unknown; ref?: unknown } | null
+    return v && EVIDENCE_KINDS.includes(v.kind as string) && typeof v.ref === 'string' ? (v as Evidence) : null
+  } catch {
+    return null
+  }
+}
+
 export interface WorldCardProps {
   /** Escaped HTML from an engine card builder. */
   html: string
@@ -84,8 +96,8 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
     const ev = target.closest('[data-evidence]')
     if (ev) {
       e.preventDefault()
-      const parsed = JSON.parse(ev.getAttribute('data-evidence') as string) as Evidence
-      onEvidence(parsed)
+      const parsed = readEvidence(ev.getAttribute('data-evidence'))
+      if (parsed) onEvidence(parsed)
       return
     }
     const link = target.closest('[data-node],[data-edge]')

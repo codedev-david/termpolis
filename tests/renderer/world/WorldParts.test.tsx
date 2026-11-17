@@ -27,6 +27,17 @@ describe('WorldCard', () => {
     expect(onEvidence).toHaveBeenCalledWith({ kind: 'file', ref: 'a.ts:3' })
   })
 
+  it('ignores evidence that does not parse or is not {kind, ref}', () => {
+    const onEvidence = vi.fn()
+    const html =
+      '<button data-evidence="not json">a</button><button data-evidence="null">b</button>' +
+      '<button data-evidence="{&quot;kind&quot;:&quot;nope&quot;,&quot;ref&quot;:&quot;x&quot;}">c</button>' +
+      '<button data-evidence="{&quot;kind&quot;:&quot;file&quot;,&quot;ref&quot;:3}">d</button>'
+    render(<WorldCard html={html} onOpen={vi.fn()} onClose={vi.fn()} onTech={vi.fn()} onConfirm={vi.fn()} onEvidence={onEvidence} />)
+    for (const t of ['a', 'b', 'c', 'd']) fireEvent.click(screen.getByText(t))
+    expect(onEvidence).not.toHaveBeenCalled()
+  })
+
   it('opens the part a data-node or data-edge link names, and ignores other clicks', () => {
     const onOpen = vi.fn()
     const onClose = vi.fn()

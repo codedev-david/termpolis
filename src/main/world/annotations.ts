@@ -7,6 +7,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../shared/world/types'
 import { createKeyedLock } from './keyedLock'
+import type { WorldStore } from './worldStore'
 
 export const MAX_ANNOTATION_TEXT = 400
 export const MAX_ANNOTATION_EVIDENCE = 8
@@ -109,3 +110,22 @@ export function mergeAnnotations(doc: WorldDoc, byItem: Record<string, Claim[]>)
 
 /** Whether `id` names a building or an edge of the doc (the parts a person can annotate). */
 export const hasPart = (doc: WorldDoc, id: string): boolean => doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id)
+
+/**
+ * A store whose design worlds (keys `design:<id>`) always carry their annotations: they are merged on
+ * load and on save, so a confirmation made while a designer run was saving a stale copy is still
+ * shown, whatever order the writes landed in. Merging is idempotent. Other keys pass through (a
+ * project world is recompiled, which merges them).
+ */
+export function withAnnotations(store: WorldStore, annotations: Pick<AnnotationStore, 'list'>): WorldStore {
+  const merged = async (doc: WorldDoc): Promise<WorldDoc> =>
+    doc.projectKey.startsWith('design:') ? mergeAnnotations(doc, await annotations.list(doc.projectKey)) : doc
+  return {
+    labelCache: store.labelCache,
+    load: async (key) => {
+      const doc = await store.load(key)
+      return doc ? merged(doc) : null
+    },
+    save: async (doc) => store.save(await merged(doc))
+  }
+}

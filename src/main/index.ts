@@ -333,6 +333,7 @@ import { confinedReader, isCloneRoot, isFolderEmpty } from './world/folderSafety
 import { registerWorldIpc } from './world/ipc'
 import { createAskRunner } from './world/askRunner'
 import { createDesigner } from './world/designer'
+import { createAnnotationStore, withAnnotations } from './world/annotations'
 import { createSourceRegistry } from './world/sources'
 import { testPickedFolder } from './world/testHooks'
 import { createWorldStore } from './world/worldStore'
@@ -2643,7 +2644,8 @@ const worldSources = createSourceRegistry(worldUserData, {
   exists: (p) => fsPromises.access(p).then(() => true, () => false),
   now: () => Date.now(),
 })
-const worldDesignStore = createWorldStore(worldUserData)
+// Design worlds always carry their stored annotations, merged on load and save (a confirm during a refine survives).
+const worldDesignStore = withAnnotations(createWorldStore(worldUserData), createAnnotationStore(worldUserData))
 const worldDesigner = createDesigner({
   exec: runHeadless,
   execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
