@@ -247,12 +247,18 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     fs.writeFileSync(path.join(buildDir, 'src', 'payments', 'index.ts'), 'export function charge(cents: number): boolean {\n  return cents > 0\n}\n')
     await expect(canvasHost().locator('.lw-toast')).toHaveText(/\+1 part/, { timeout: 60_000 })
     await expect.poll(wireframes, { timeout: 30_000 }).toEqual(['catalog', 'orders', 'storefront'])
-    expect((await drawnLists()).outlined).toEqual([]) // the first reconcile has nothing to compare to
+    // The design asks for Stripe in Payments and the first file does not name it: the part is outlined.
+    await expect.poll(async () => (await drawnLists()).outlined.length, { timeout: 30_000 }).toBe(1)
+    expect((await drawnLists()).outlined).toHaveLength(1)
 
-    // The agent adds a test for the Payments part: the part has more files, so it is outlined (changed).
+    // The agent adds a test beside it. The world recompiles, and the outline stays: the build still falls short of the plan.
     fs.writeFileSync(path.join(buildDir, 'src', 'payments', 'index.test.ts'), "import { charge } from './index'\nconsole.assert(charge(5))\n")
-    await expect.poll(async () => (await drawnLists()).outlined.length, { timeout: 60_000, intervals: [100] }).toBe(1)
-    const part = (await drawnLists()).outlined[0]
+    // Give the watcher time to recompile with the new file.
+    await page.waitForTimeout(8_000)
+    // (The test joins the Payments building, which takes a new id; the one part is still outlined.)
+    const outlined = (await drawnLists()).outlined
+    expect(outlined).toHaveLength(1)
+    const part = outlined[0]
 
     // The design takes Payments away: back in the folder's world the built part fades.
     await page.getByRole('combobox', { name: 'Worlds' }).selectOption({ label: DESCRIPTION })

@@ -78,14 +78,14 @@ describe('reconcilePlan', () => {
     expect(r.extra).toEqual(['x0', 'x1'])
 
     // Nothing planned: everything built is extra. Nothing built: everything planned is missing.
-    expect(reconcilePlan(planWith([]), built)).toEqual({ matched: {}, missing: [], extra: ['x0', 'x1', 'x2', 'x3'], changed: [], seen: {} })
-    expect(reconcilePlan(plan, builtWith([]))).toEqual({ matched: {}, missing: ['mail', 'orders', 'search', 'zeta'], extra: [], changed: [], seen: {} })
+    expect(reconcilePlan(planWith([]), built)).toEqual({ matched: {}, missing: [], extra: ['x0', 'x1', 'x2', 'x3'], changed: [] })
+    expect(reconcilePlan(plan, builtWith([]))).toEqual({ matched: {}, missing: ['mail', 'orders', 'search', 'zeta'], extra: [], changed: [] })
   })
 
   it('an empty normalized name never matches by name or path', () => {
     const plan = planWith([{ id: 'p', name: '---' }])
     const built = builtWith([{ id: 'q', name: '...', members: ['a//b.ts'] }])
-    expect(reconcilePlan(plan, built)).toEqual({ matched: {}, missing: ['p'], extra: ['q'], changed: [], seen: {} })
+    expect(reconcilePlan(plan, built)).toEqual({ matched: {}, missing: ['p'], extra: ['q'], changed: [] })
   })
 
   it('an unchecked world with a repeated id still reconciles: one built building per plan id', () => {
@@ -96,38 +96,39 @@ describe('reconcilePlan', () => {
 })
 
 describe('reconcilePlan changed', () => {
-  const plan = planWith([{ id: 'pay', name: 'Payments' }, { id: 'web', name: 'Web' }])
-  const at = (members: string[], stack: string[] = [], floors: Building['floors'] = []): WorldDoc =>
-    builtWith([{ id: 'b1', name: 'Payments', members, stack, floors }, { id: 'b2', name: 'Web', members: ['w.ts'] }])
+  const planOf = (over: Partial<Building>): WorldDoc => {
+    const doc = planWith([{ id: 'pay', name: 'Payments' }, { id: 'web', name: 'Web' }])
+    Object.assign(doc.buildings.find((b) => b.id === 'pay') as Building, over)
+    return doc
+  }
+  const at = (over: Partial<Building> = {}): WorldDoc =>
+    builtWith([{ id: 'b1', name: 'Payments', members: [], stack: [], floors: [], ...over }, { id: 'b2', name: 'Web', members: ['w.ts'] }])
 
-  it('marks nothing changed on the first reconcile, and records a fingerprint per matched building', () => {
-    const r = reconcilePlan(plan, at(['a.ts']))
-    expect(r.changed).toEqual([])
-    expect(Object.keys(r.seen ?? {}).sort()).toEqual(['pay', 'web'])
+  it('reconcile marks a matched part with different members as changed', () => {
+    const plan = planOf({ members: ['src/pay.ts', 'src/refund.ts'] })
+    expect(reconcilePlan(plan, at({ members: ['src/pay.ts'] })).changed).toEqual(['b1'])
+    expect(reconcilePlan(plan, at({ members: ['src/pay.ts', 'src/refund.ts', 'x.ts'] })).changed).toEqual([]) // met: done
+    // A planned file inside a floor counts as present.
+    expect(reconcilePlan(plan, at({ members: ['src/pay.ts'], floors: [{ name: 'F', tech: [], members: ['src/refund.ts'] }] })).changed).toEqual([])
+    // Unmatched parts, and parts that ask for nothing, are never changed.
+    expect(reconcilePlan(planOf({}), at()).changed).toEqual([])
+    expect(reconcilePlan(plan, builtWith([])).changed).toEqual([])
   })
 
-  it('marks a matched part changed when its files, floors or tech differ from the last reconcile', () => {
-    const base = reconcilePlan(plan, at(['a.ts']))
-    expect(reconcilePlan(plan, at(['a.ts']), base).changed).toEqual([]) // same files: nothing changed
-    expect(reconcilePlan(plan, at(['a.ts', 'b.ts']), base).changed).toEqual(['b1'])
-    expect(reconcilePlan(plan, at(['a.ts'], ['Stripe']), base).changed).toEqual(['b1'])
-    expect(reconcilePlan(plan, at(['a.ts'], [], [{ name: 'F', tech: ['x'], members: ['a.ts'] }]), base).changed).toEqual(['b1'])
-    // Order never counts: the same files, tech and floor members in another order are the same part.
-    const wide = reconcilePlan(plan, at(['b.ts', 'a.ts'], ['y', 'x'], [{ name: 'F', tech: ['q', 'p'], members: ['m', 'n'] }]))
-    expect(reconcilePlan(plan, at(['a.ts', 'b.ts'], ['x', 'y'], [{ name: 'F', tech: ['p', 'q'], members: ['n', 'm'] }]), wide).changed).toEqual([])
+  it('marks a part changed while a planned floor or tech is missing, whatever the case or order', () => {
+    const plan = planOf({ floors: [{ name: 'Checkout', tech: ['Stripe'], members: [] }], stack: ['Node'] })
+    expect(reconcilePlan(plan, at()).changed).toEqual(['b1'])
+    expect(reconcilePlan(plan, at({ floors: [{ name: 'checkout', tech: [], members: [] }], stack: ['node'] })).changed).toEqual(['b1']) // Stripe missing
+    expect(reconcilePlan(plan, at({ floors: [{ name: 'Other', tech: ['stripe'], members: [] }], stack: ['node'] })).changed).toEqual(['b1']) // floor missing
+    expect(reconcilePlan(plan, at({ floors: [{ name: 'checkout', tech: ['stripe'], members: [] }], stack: ['NODE'] })).changed).toEqual([])
   })
 
-  it('still compares when the grouper gives the matched building a new id', () => {
-    const base = reconcilePlan(plan, builtWith([{ id: 'b-src-payments-index', name: 'Payments', members: ['src/payments/index.ts'], stack: [] }]))
-    const next = reconcilePlan(plan, builtWith([{ id: 'b-src-payments', name: 'Payments', members: ['src/payments/index.ts', 'src/payments/refund.ts'], stack: [] }]), base)
-    expect(next.changed).toEqual(['b-src-payments'])
-  })
-
-  it('has no baseline for a part first matched now, nor in a world stored before fingerprints', () => {
-    const early = reconcilePlan(plan, builtWith([{ id: 'b1', name: 'Payments', members: ['a.ts'], stack: [] }]))
-    expect(reconcilePlan(plan, at(['a.ts']), early).changed).toEqual([]) // b2 was not matched then: no baseline
-    const old = { matched: {}, missing: [], extra: [], changed: [] }
-    expect(reconcilePlan(plan, at(['z.ts']), old).changed).toEqual([])
+  it('is stateless: the same build gives the same answer every time, so a recompile keeps the outline', () => {
+    const plan = planOf({ stack: ['Stripe'] })
+    const built = at({ members: ['a.ts'] })
+    expect(reconcilePlan(plan, built).changed).toEqual(['b1'])
+    expect(reconcilePlan(plan, built).changed).toEqual(['b1'])
+    expect(reconcilePlan(plan, at({ members: ['a.ts'], stack: ['Stripe'] })).changed).toEqual([])
   })
 })
 

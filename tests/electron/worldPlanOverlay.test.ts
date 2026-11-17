@@ -44,7 +44,7 @@ describe('overlayPlan', () => {
     expect(out.layers.plan).toHaveLength(1)
     const p = out.layers.plan[0]
     expect(p).toMatchObject({ id: 'design:p', title: LINKED_DESIGN_TITLE, summary: [] })
-    expect(p.reconcile).toEqual({ matched: { b1: 'b1', mem: 'b2' }, missing: ['cron', 'e1', 'mail'], extra: [], changed: [], seen: { b1: expect.any(String), mem: expect.any(String) }, planAt: 900 })
+    expect(p.reconcile).toEqual({ matched: { b1: 'b1', mem: 'b2' }, missing: ['cron', 'e1', 'mail'], extra: [], changed: [], planAt: 900 })
     // A missing plan id that is taken in the world gets a free one.
     expect(p.buildings.map((b) => b.id)).toEqual(['cron', 'e1-plan', 'mail'])
     expect(bld(out, 'mail')).toMatchObject({ districtId: 'd1', status: 'proposed', process: '' })
@@ -68,16 +68,23 @@ describe('overlayPlan', () => {
     expect(doc.layers.plan).toEqual([])
   })
 
-  it('maps the removals of the design to built ids, and outlines a matched part whose files changed since the last overlay', () => {
+  it('maps the removals of the design to built ids, and outlines a matched part the build does not yet meet, on every overlay', () => {
     const plan = design([...OPS, { op: 'removePart', id: 'mem' }, { op: 'removePart', id: 'mail' }])
     const first = overlayPlan(built(), plan, null)
     // mem is matched to the built b2; mail is missing (nothing built to fade).
     expect(first.layers.plan[0].removes).toEqual(['b2'])
+    // The design wants b1 on Electron: met by the fixture, so nothing is outlined.
     expect(first.layers.plan[0].reconcile?.changed).toEqual([])
-    const grown = built()
-    grown.buildings[0].members = [...grown.buildings[0].members, 'src/new.ts']
-    const again = overlayPlan(grown, plan, first)
-    expect(again.layers.plan[0].reconcile?.changed).toEqual(['b1'])
+    // Take Electron away and b1 is outlined, and still outlined on a recompile that changes nothing.
+    const bare = built()
+    bare.buildings[0].stack = []
+    bare.buildings[0].floors = bare.buildings[0].floors.map((f) => ({ ...f, tech: [] }))
+    const out = overlayPlan(bare, plan, first)
+    expect(out.layers.plan[0].reconcile?.changed).toEqual(['b1'])
+    expect(overlayPlan(bare, plan, out).layers.plan[0].reconcile?.changed).toEqual(['b1'])
+    // Once the build names it, the part is done.
+    const met = built()
+    expect(overlayPlan(met, plan, out).layers.plan[0].reconcile?.changed).toEqual([])
     expect(overlayPlan(built(), design(OPS), null).layers.plan[0].removes).toBeUndefined()
     // A design proposal that takes nothing away adds nothing.
     const plain = design(OPS)

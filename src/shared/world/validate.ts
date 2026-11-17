@@ -249,8 +249,7 @@ const checkReconcile = (ctx: Ctx, label: string, r: unknown): void => {
   const ok = isRecord(r) && isRecord(r.matched) && Object.values(r.matched).every(isStr)
     && Array.isArray(r.missing) && r.missing.every(isStr) && Array.isArray(r.extra) && r.extra.every(isStr) && isNum(r.planAt)
     && (r.changed === undefined || (Array.isArray(r.changed) && r.changed.every(isStr)))
-    && (r.seen === undefined || (isRecord(r.seen) && Object.values(r.seen).every(isStr)))
-  if (!ok) ctx.errors.push(`${label}: reconcile must be { matched, missing, extra, planAt } with optional changed and seen`)
+  if (!ok) ctx.errors.push(`${label}: reconcile must be { matched, missing, extra, planAt } with optional changed`)
 }
 
 const checkMaps = (ctx: Ctx, doc: Rec): void => {

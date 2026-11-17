@@ -27,8 +27,7 @@ function plannedBefore(previous: WorldDoc | null): Set<string> {
 }
 
 export function overlayPlan(doc: WorldDoc, plan: WorldDoc, previous: WorldDoc | null): WorldDoc {
-  const before = (previous?.layers.plan ?? []).find((p) => p.reconcile)?.reconcile
-  const rec = reconcilePlan(plan, doc, before)
+  const rec = reconcilePlan(plan, doc)
   const used = new Set([...doc.districts, ...doc.buildings, ...doc.edges, ...doc.externals].map((x) => x.id))
   const free = (want: string): string => {
     let id = want

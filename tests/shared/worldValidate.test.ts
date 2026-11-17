@@ -405,11 +405,11 @@ describe('linked design overlay', () => {
       { matched: {}, missing: [], extra: {}, planAt: 1 }, { matched: {}, missing: [], extra: [3], planAt: 1 },
       { matched: {}, missing: [], extra: [], planAt: '1' }]
     for (const reconcile of bad) {
-      expect(errorsOf(linkedDoc({ reconcile }))).toContain('proposal design:x: reconcile must be { matched, missing, extra, planAt } with optional changed and seen')
+      expect(errorsOf(linkedDoc({ reconcile }))).toContain('proposal design:x: reconcile must be { matched, missing, extra, planAt } with optional changed')
     }
     const base = { matched: {}, missing: [], extra: [], planAt: 1 }
-    expect(validateWorld(linkedDoc({ reconcile: { ...base, changed: ['b1'], seen: { b1: 'x1' } } })).ok).toBe(true)
-    for (const extra of [{ changed: 'b1' }, { changed: [1] }, { seen: [] }, { seen: { b1: 2 } }]) {
+    expect(validateWorld(linkedDoc({ reconcile: { ...base, changed: ['b1'] } })).ok).toBe(true)
+    for (const extra of [{ changed: 'b1' }, { changed: [1] }]) {
       expect(validateWorld(linkedDoc({ reconcile: { ...base, ...extra } })).ok).toBe(false)
     }
   })

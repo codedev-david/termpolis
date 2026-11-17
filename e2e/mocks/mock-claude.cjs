@@ -142,7 +142,7 @@ function runWorldAnswer(args, at) {
         process.exit(0);
       }
       const ops = /payments/i.test(request) && district
-        ? [{ op: 'addBuilding', id: 'payments', districtId: district, name: 'Payments', techLabel: 'Stripe', does: 'Takes card payments.' }]
+        ? [{ op: 'addBuilding', id: 'payments', districtId: district, name: 'Payments', techLabel: 'Stripe', stack: ['Stripe'], does: 'Takes card payments.' }]
         : [];
       console.log(designReply(ops.length ? 'Added a Payments part.' : 'Nothing to change.', ops));
       process.exit(0);

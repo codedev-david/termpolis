@@ -28,18 +28,23 @@ function segmentsOf(b: Building): Set<string> {
   return out
 }
 
-/** A short stable fingerprint of what a building is made of: its files, its floors and its tech. */
-function fingerprint(b: Building): string {
-  const sig = JSON.stringify([
-    [...b.members].sort(), [...b.stack].sort(),
-    b.floors.map((f) => [f.name, [...f.tech].sort(), [...f.members].sort()])
-  ])
-  let h = 2166136261
-  for (let i = 0; i < sig.length; i++) {
-    h ^= sig.charCodeAt(i)
-    h = Math.imul(h, 16777619)
-  }
-  return (h >>> 0).toString(36)
+/** The tech a building names: its stack and every floor's tech, lower-cased. */
+function techOf(b: Building): Set<string> {
+  return new Set([...b.stack, ...b.floors.flatMap((f) => f.tech)].map((t) => t.toLowerCase()))
+}
+
+/**
+ * Whether the built building still falls short of the plan part: a planned file it lacks, a planned
+ * floor it has no floor of that name for, or planned tech it does not name. Stateless: it is true for
+ * as long as the build differs from the plan, however often the world recompiles.
+ */
+function unmet(p: Building, b: Building): boolean {
+  const files = new Set([...b.members, ...b.floors.flatMap((f) => f.members)])
+  if ([...p.members, ...p.floors.flatMap((f) => f.members)].some((m) => !files.has(m))) return true
+  const floors = new Set(b.floors.map((f) => normalizePartName(f.name)))
+  if (p.floors.some((f) => !floors.has(normalizePartName(f.name)))) return true
+  const tech = techOf(b)
+  return [...techOf(p)].some((t) => !tech.has(t))
 }
 
 const byId = (a: Building, b: Building): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
@@ -48,11 +53,9 @@ const byId = (a: Building, b: Building): number => (a.id < b.id ? -1 : a.id > b.
  * Pairs plan buildings with built ones in three passes: same id, then the same normalized name, then
  * a built file path with the normalized plan name as one of its segments. Each built building stands
  * for at most one plan building; within a pass the first match wins, in plan id order.
- * `previous` is the reconcile the last compile stored: a matched built building whose fingerprint
- * differs from the one its plan part recorded there is `changed` (keyed by plan id: a built id can
- * change when the grouper regroups files). With no previous (the first reconcile), or no record yet, nothing is changed.
+ * `changed` lists the matched built buildings that do not yet meet their plan part (see `unmet`).
  */
-export function reconcilePlan(plan: WorldDoc, built: WorldDoc, previous?: PlanReconcile): PlanReconcile {
+export function reconcilePlan(plan: WorldDoc, built: WorldDoc): PlanReconcile {
   const planned = [...plan.buildings].sort(byId)
   const have = [...built.buildings].sort(byId)
   const names = new Map(have.map((b) => [b.id, normalizePartName(b.name)]))
@@ -74,22 +77,16 @@ export function reconcilePlan(plan: WorldDoc, built: WorldDoc, previous?: PlanRe
     return n !== '' && n === names.get(b.id)
   })
   pass((p, b) => (segments.get(b.id) as Set<string>).has(normalizePartName(p.name)))
-  const seen: Record<string, string> = {}
-  const changed: string[] = []
   const builtById = new Map(have.map((b) => [b.id, b]))
-  for (const p of planned) {
+  const changed = planned.flatMap((p) => {
     const b = builtById.get(matched[p.id])
-    if (!b) continue
-    seen[p.id] = fingerprint(b)
-    const was = previous?.seen?.[p.id]
-    if (was !== undefined && was !== seen[p.id]) changed.push(b.id)
-  }
+    return b && unmet(p, b) ? [b.id] : []
+  })
   return {
     matched,
     missing: planned.filter((p) => matched[p.id] === undefined).map((p) => p.id),
     extra: have.filter((b) => !used.has(b.id)).map((b) => b.id),
-    changed,
-    seen
+    changed
   }
 }
 
