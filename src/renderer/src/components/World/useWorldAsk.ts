@@ -42,7 +42,7 @@ const noop = (): void => undefined
 /** True for a design world's key. */
 export const isDesignKey = (key: string): boolean => key.startsWith('design:')
 
-export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?: (doc: WorldDoc) => void): UseWorldAsk {
+export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?: (doc: WorldDoc) => void, proposalId?: string): UseWorldAsk {
   const [state, setState] = useState<AskState>('idle')
   const [answer, setAnswer] = useState<WorldAnswer | null>(null)
   const [cited, setCited] = useState<Record<string, Evidence>>({})
@@ -55,6 +55,9 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   const stopCurrent = useRef<() => unknown>(noop)
   const onDesignRef = useRef(onDesign)
   onDesignRef.current = onDesign
+  /** The design proposal on show; read when a question is sent, so a change of proposal never recreates `ask`. */
+  const proposalRef = useRef(proposalId)
+  proposalRef.current = proposalId
   const counter = useRef(0)
   const summary = useRef('')
   const lastQ = useRef<string | null>(null)
@@ -120,7 +123,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     void (async () => {
       try {
         const model = await lumopolisModel()
-        const res = await window.termpolis.worldAsk({ askId, root, question: q, selection: v.getSelection(), cameraRegion: v.cameraRegion(), summary: summary.current, ...(model === undefined ? {} : { model }) })
+        const res = await window.termpolis.worldAsk({ askId, root, question: q, selection: v.getSelection(), cameraRegion: v.cameraRegion(), summary: summary.current, ...(model === undefined ? {} : { model }), ...(proposalRef.current === undefined ? {} : { proposalId: proposalRef.current }) })
         if (current.current !== askId) return
         if (!res.success) return fail(res.error)
         const r = res.data

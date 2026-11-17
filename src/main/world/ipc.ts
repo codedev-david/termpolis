@@ -82,6 +82,9 @@ const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim() 
 const modelField = (v: unknown): { model?: string } => (isSafeModelId(v) ? { model: v } : {})
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
+/** `{ proposalId }` for a short non-empty string, else nothing: anything else is dropped. */
+const proposalField = (v: unknown): { proposalId?: string } => (typeof v === 'string' && v !== '' && v.length <= 128 ? { proposalId: v } : {})
+
 /** A checked AskRequest from the renderer's args, or the reason it is not one. */
 const askRequestOf = (args: unknown): AskRequest | string => {
   if (!args || typeof args !== 'object') return 'ask request required'
@@ -92,7 +95,7 @@ const askRequestOf = (args: unknown): AskRequest | string => {
   if (typeof a.question !== 'string' || a.question.trim() === '' || a.question.length > MAX_QUESTION) return 'question required (up to 4000 characters)'
   if (!strings(a.selection) || !strings(a.cameraRegion)) return 'selection and cameraRegion must be string arrays'
   if (a.summary !== undefined && typeof a.summary !== 'string') return 'summary must be a string'
-  return { askId: a.askId, root: a.root, question: a.question, selection: a.selection, cameraRegion: a.cameraRegion, summary: (a.summary as string | undefined) ?? '', ...modelField(a.model) }
+  return { askId: a.askId, root: a.root, question: a.question, selection: a.selection, cameraRegion: a.cameraRegion, summary: (a.summary as string | undefined) ?? '', ...modelField(a.model), ...proposalField(a.proposalId) }
 }
 
 export interface WorldDesigner {

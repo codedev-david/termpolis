@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildAskPrompt, ROLE, summarize } from '../../src/main/world/askContext'
+import { ASK_TOKEN_BUDGET, MAX_SUMMARY_TOKENS, buildAskPrompt, ROLE, summarize } from '../../src/main/world/askContext'
+import { estimateTokens } from '../../src/shared/world/tokens'
 import { ANSWER_PROTOCOL } from '../../src/shared/world/answerProtocol'
-import type { Building, Claim, WorldDoc, WorldEdge } from '../../src/shared/world/types'
+import type { Building, Claim, Proposal, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 
 const claim = (text: string, refs: string[] = []): Claim => ({
   text, state: 'inferred', evidence: refs.map((ref) => ({ kind: 'file' as const, ref, excerpt: 'SECRET EXCERPT' }))
@@ -47,7 +48,6 @@ describe('buildAskPrompt', () => {
     expect(prompt).toContain('building b1:')
     expect(prompt).toContain('building b3:')
     expect(prompt).not.toContain('building b60:')
-    expect(prompt).toContain('b60: Building 60')
     expect(prompt).toContain('Q?')
     const detailedIds = new Set([...prompt.matchAll(/^building (\S+):/gm)].map((m) => m[1]))
     const matchIds = d.buildings.slice(3, 30).map((b) => b.id)
@@ -61,10 +61,11 @@ describe('buildAskPrompt', () => {
   it('cuts the name-only list as a last resort, and never the question', () => {
     const { prompt } = buildAskPrompt(base(doc(1500), { question: 'Keep me?', selection: ['b1500'] }))
     expect(prompt.length).toBeLessThan(12000)
-    expect(prompt).toContain('\nb1500: Building 1500\n')
     expect(prompt).toContain('b1: Building 1')
     expect(prompt).not.toContain('b1499: Building 1499')
-    expect(prompt).not.toContain('building b1500:')
+    expect(prompt).not.toContain('\nb1500: Building 1500')
+    // OTHER goes first: the selected building keeps its detail while the name list is cut.
+    expect(prompt).toContain('building b1500:')
     expect(prompt).toContain('Keep me?')
     expect(prompt).toContain('d1: District One')
   })
@@ -190,4 +191,90 @@ describe('summarize', () => {
 it('ROLE tells the agent to say so when the evidence does not support an answer', () => {
   expect(ROLE).toMatch(/say so/)
   expect(buildAskPrompt(base(doc(1))).prompt).toContain(ROLE)
+})
+
+describe('token budget and the active proposal', () => {
+  const proposal = (over: Partial<Proposal> = {}): Proposal => ({
+    id: 'p1', title: 'Add a cache', summary: [claim('A cache in front of the API', ['plan.md'])],
+    buildings: [building(901, { id: 'pb1', name: 'Cache' }), building(902, { id: 'pb2', name: 'Queue' })], edges: [],
+    reconcile: { matched: { pb1: 'b1' }, missing: ['pb2', 'gone'], extra: [], planAt: 5 }, ...over
+  })
+
+  it('the prompt never exceeds ASK_TOKEN_BUDGET tokens on a 2,000-building world', () => {
+    const big = base(doc(2000), { proposal: proposal(), selection: ['b1', 'b2'], summary: 'Q: x\nA: y\n'.repeat(500) })
+    const { prompt } = buildAskPrompt(big)
+    expect(estimateTokens(prompt)).toBeLessThanOrEqual(ASK_TOKEN_BUDGET)
+    expect(ASK_TOKEN_BUDGET).toBe(3000)
+    expect(prompt).toContain('QUESTION\nWhat is this?')
+    expect(prompt.endsWith(ANSWER_PROTOCOL)).toBe(true)
+  })
+
+  it('the summary is cut at MAX_SUMMARY_TOKENS', () => {
+    const old = Array.from({ length: 200 }, (_, i) => `Q: q${i}\nA: a${i}`).join('\n')
+    const { prompt } = buildAskPrompt(base(doc(1), { summary: old }))
+    const section = prompt.split('\n```\n')[1]
+    expect(MAX_SUMMARY_TOKENS).toBe(300)
+    expect(estimateTokens(section)).toBeLessThanOrEqual(300)
+    expect(section.endsWith('A: a199')).toBe(true)
+  })
+
+  it('an active proposal is in the prompt as a PROPOSAL section, with its missing parts named', () => {
+    const { prompt, labels } = buildAskPrompt(base(doc(2), { proposal: proposal(), selection: ['b1'] }))
+    const section = prompt.slice(prompt.indexOf('PROPOSAL'))
+    expect(section).toContain('proposal p1: Add a cache')
+    expect(section).toContain('summary (inferred): A cache in front of the API [E')
+    expect(section).toContain('planned parts: Cache, Queue, Building 1')
+    expect(section).toContain('missing parts: Queue, gone')
+    expect(prompt.indexOf('DETAIL')).toBeLessThan(prompt.indexOf('PROPOSAL'))
+    expect(prompt.indexOf('PROPOSAL')).toBeLessThan(prompt.indexOf('OTHER'))
+    expect(Object.values(labels)).toContainEqual({ kind: 'file', ref: 'plan.md' })
+  })
+
+  it('a plan with no reconcile has no missing line, and empty lists say (none)', () => {
+    const a = buildAskPrompt(base(doc(1), { proposal: proposal({ reconcile: undefined }) })).prompt
+    expect(a).toContain('planned parts: Cache, Queue')
+    expect(a).not.toContain('missing parts')
+    const empty = proposal({ buildings: [], summary: [], reconcile: { matched: { x: 'unknown' }, missing: [], extra: [], planAt: 1 } })
+    const b = buildAskPrompt(base(doc(1), { proposal: empty })).prompt
+    expect(b).toContain('planned parts: unknown')
+    expect(b).toContain('missing parts: (none)')
+    const none = buildAskPrompt(base(doc(1), { proposal: proposal({ buildings: [], reconcile: undefined }) })).prompt
+    expect(none).toContain('planned parts: (none)')
+  })
+
+  it('without a proposal there is no PROPOSAL section', () => {
+    expect(buildAskPrompt(base(doc(1))).prompt).not.toContain('PROPOSAL')
+  })
+
+  it('under pressure OTHER goes first, then the PROPOSAL, then detail', () => {
+    const big = doc(900)
+    big.buildings.forEach((b) => { b.how = [claim('x'.repeat(380))]; b.why = [] })
+    const p = proposal()
+    const sel = ['b1', 'b2', 'b3']
+    const names = (s: string): number => (s.match(/^b\d+: Building/gm) ?? []).length
+    const full = buildAskPrompt(base(big, { proposal: p, selection: sel })).prompt
+    expect(full).toContain('PROPOSAL')
+    expect(full).toContain('building b3:')
+    expect(names(full)).toBeLessThan(897)
+    // A small world (no other names) so only detail and proposal compete for the budget.
+    const d = doc(3)
+    d.buildings.forEach((b) => { b.why = [] })
+    // Grow the detail until the proposal no longer fits beside it (the same detail without it still does).
+    const grow = (len: number): number => {
+      d.buildings.slice(0, 3).forEach((b) => { b.how = [claim('x'.repeat(len))] })
+      return estimateTokens(buildAskPrompt(base(d, { selection: sel })).prompt)
+    }
+    let len = 2000
+    while (grow(len) < ASK_TOKEN_BUDGET - 20) len += 10
+    d.buildings.slice(0, 3).forEach((b) => { b.how = [claim('x'.repeat(len))] })
+    const noProp = buildAskPrompt(base(d, { proposal: p, selection: sel })).prompt
+    expect(noProp).not.toContain('PROPOSAL')
+    expect(noProp).toContain('building b3:')
+    expect(estimateTokens(noProp)).toBeLessThanOrEqual(ASK_TOKEN_BUDGET)
+    d.buildings.slice(0, 3).forEach((b) => { b.how = [claim('x'.repeat(11000))] })
+    const demoted = buildAskPrompt(base(d, { proposal: p, selection: sel })).prompt
+    expect(demoted).not.toContain('PROPOSAL')
+    expect(demoted).not.toContain('building b1:')
+    expect(demoted).toContain('b1: Building 1')
+  })
 })

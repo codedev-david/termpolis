@@ -93,8 +93,11 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
         matches = { items: [], evidence: [] }
       }
       if (ctl.signal.aborted) return cancelled()
+      // An id that is not in the world (a stale or invented one) sends no proposal.
+      const proposal = req.proposalId === undefined ? undefined : doc.layers.plan.find((p) => p.id === req.proposalId)
       const { prompt, labels } = buildAskPrompt({
-        question: req.question, doc, selection: req.selection, cameraRegion: req.cameraRegion, matches, summary: req.summary
+        question: req.question, doc, selection: req.selection, cameraRegion: req.cameraRegion, matches, summary: req.summary,
+        ...(proposal ? { proposal } : {})
       })
       const agent = deps.agent()
       let run: { env: Record<string, string>; baseUrl?: string } = { env: {} }

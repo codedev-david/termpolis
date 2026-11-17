@@ -210,6 +210,19 @@ describe('registerWorldIpc ask handlers', () => {
     expect(asker.ask).toHaveBeenLastCalledWith(GOOD)
   })
 
+  it('world:ask passes a short proposalId on and drops any other', async () => {
+    const asker = fakeAsker()
+    const s = setup(undefined, undefined, asker)
+    await s.invoke('world:ask', { ...GOOD, proposalId: 'p1' })
+    expect(asker.ask).toHaveBeenLastCalledWith({ ...GOOD, proposalId: 'p1' })
+    for (const bad of ['', 'x'.repeat(129), 7, null]) {
+      await s.invoke('world:ask', { ...GOOD, proposalId: bad })
+      expect(asker.ask).toHaveBeenLastCalledWith(GOOD)
+    }
+    await s.invoke('world:ask', { ...GOOD, proposalId: 'x'.repeat(128) })
+    expect(asker.ask).toHaveBeenLastCalledWith({ ...GOOD, proposalId: 'x'.repeat(128) })
+  })
+
   it.each([
     ['not an object', 'nope', 'ask request required'],
     ['missing args', undefined, 'ask request required'],

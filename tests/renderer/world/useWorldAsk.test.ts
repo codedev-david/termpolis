@@ -45,6 +45,16 @@ describe('useWorldAsk', () => {
     expect(result.current.answer?.text).toBe('Hello')
   })
 
+  it('sends the proposal id on show with the question, and none when there is none', async () => {
+    const v = makeViewer()
+    const { result, rerender } = renderHook(({ id }: { id?: string }) => useWorldAsk(v as never, 'C:/repo', undefined, id), { initialProps: { id: 'p1' } as { id?: string } })
+    await act(async () => { result.current.ask('one') })
+    expect((ask.mock.calls[0][0] as AskRequest).proposalId).toBe('p1')
+    rerender({ id: undefined })
+    await act(async () => { result.current.ask('two') })
+    expect('proposalId' in (ask.mock.calls[1][0] as AskRequest)).toBe(false)
+  })
+
   it('sends the Default Models id of the Lumopolis agent; "auto" sends no model', async () => {
     localStorage.setItem('termpolis.agent.modelDefaults', JSON.stringify({ claude: 'opus' }))
     ;(window as any).termpolis.worldSettingsGet = vi.fn(async () => ({ success: true, data: { worldAgent: 'claude' } }))

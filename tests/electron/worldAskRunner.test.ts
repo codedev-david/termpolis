@@ -36,6 +36,19 @@ const hanging = (req: ExecRequest) =>
   new Promise<ExecResult>((_res, rej) => req.signal?.addEventListener('abort', () => rej(new Error('aborted'))))
 
 describe('createAskRunner', () => {
+  it('looks up request.proposalId in the doc; an unknown id or none sends no proposal', async () => {
+    const plan = { id: 'p1', title: 'Add a cache', summary: [], buildings: [], edges: [] }
+    const withPlan = { ...DOC, layers: { plan: [plan] } } as unknown as WorldDoc
+    const task = (m: { mock: { calls: unknown[][] } }): string => (m.mock.calls[m.mock.calls.length - 1][0] as ExecRequest).task
+    const { runner, execFn } = setup(async () => okRes('hi'), withPlan)
+    await runner.ask({ ...REQ, proposalId: 'p1' })
+    expect(task(execFn)).toContain('proposal p1: Add a cache')
+    await runner.ask({ ...REQ, proposalId: 'nope' })
+    expect(task(execFn)).not.toContain('PROPOSAL')
+    await runner.ask(REQ)
+    expect(task(execFn)).not.toContain('PROPOSAL')
+  })
+
   it('passes write:false, noRemember:true, cwd=root', async () => {
     const { runner, execFn, execDeps, client } = setup(async () => okRes('hi'))
     await runner.ask(REQ)

@@ -8,15 +8,18 @@ const vm = vi.hoisted(() => ({
   toggle: vi.fn(),
   sink: null as ((t: string) => void) | null,
   args: null as unknown[] | null,
+  start: vi.fn(),
+  stop: vi.fn(),
 }))
 vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
   useVoiceInput: (...args: unknown[]) => {
     vm.args = args
     vm.sink = (args[2] as { onTranscript: (t: string) => void }).onTranscript
-    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle }
+    return { status: vm.status, errorMsg: vm.errorMsg, toggle: vm.toggle, start: vm.start, stop: vm.stop }
   }
 }))
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
+import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
 type Res = { success: true; data: AskResult } | { success: false; error: string }
@@ -382,6 +385,116 @@ describe('WorldAsk', () => {
       b.unmount()
       render(<WorldAsk viewer={v as never} root="r" voice={{ supported: true, listening: true, toggle }} />)
       expect(screen.getByLabelText('Stop listening')).toBeInTheDocument()
+    })
+
+    describe('tap or hold', () => {
+      const mode = (m: 'tapOrHold' | 'toggle' | 'tapSpace'): void => { useTerminalStore.getState().setVoiceSettings({ pushToTalkMode: m }) }
+      const mount = (listening = false) => {
+        const voice = { supported: true, listening, toggle: vi.fn(), start: vi.fn(), stop: vi.fn() }
+        render(<WorldAsk viewer={makeViewer() as never} root="r" voice={voice} />)
+        return { voice, btn: screen.getByLabelText(listening ? 'Stop listening' : 'Ask by voice') }
+      }
+      beforeEach(() => { vi.useFakeTimers(); mode('tapOrHold') })
+      afterEach(() => { vi.useRealTimers(); mode('tapOrHold') })
+
+      it('holding 600 ms records and stops on release', () => {
+        const { voice, btn } = mount()
+        const capture = vi.fn()
+        ;(btn as any).setPointerCapture = capture
+        fireEvent.pointerDown(btn, { button: 0, pointerId: 3 })
+        expect(voice.start).toHaveBeenCalledTimes(1)
+        expect(capture).toHaveBeenCalledWith(3)
+        vi.advanceTimersByTime(600)
+        fireEvent.pointerUp(btn, { button: 0 })
+        expect(voice.stop).toHaveBeenCalledTimes(1)
+        fireEvent.click(btn, { detail: 1 })
+        expect(voice.toggle).not.toHaveBeenCalled()
+      })
+
+      it('a 100 ms tap starts and the next tap stops', () => {
+        const a = mount()
+        fireEvent.pointerDown(a.btn, { button: 0 })
+        vi.advanceTimersByTime(100)
+        fireEvent.pointerUp(a.btn, { button: 0 })
+        expect(a.voice.start).toHaveBeenCalledTimes(1)
+        expect(a.voice.stop).not.toHaveBeenCalled()
+        cleanup()
+        const b = mount(true)
+        fireEvent.pointerDown(b.btn, { button: 0 })
+        expect(b.voice.stop).toHaveBeenCalledTimes(1)
+        expect(b.voice.start).not.toHaveBeenCalled()
+        fireEvent.pointerUp(b.btn, { button: 0 })
+        expect(b.voice.stop).toHaveBeenCalledTimes(1)
+      })
+
+      it('ignores a non-primary button, and a second press while one is in progress', () => {
+        const { voice, btn } = mount()
+        fireEvent.pointerDown(btn, { button: 2 })
+        expect(voice.start).not.toHaveBeenCalled()
+        fireEvent.pointerDown(btn, { button: 0 })
+        fireEvent.pointerDown(btn, { button: 0 })
+        expect(voice.start).toHaveBeenCalledTimes(1)
+      })
+
+      it('a pointercancel stops a hold and leaves a tap running', () => {
+        const a = mount()
+        fireEvent.pointerDown(a.btn, { button: 0 })
+        vi.advanceTimersByTime(500)
+        fireEvent.pointerCancel(a.btn)
+        expect(a.voice.stop).toHaveBeenCalledTimes(1)
+        cleanup()
+        const b = mount()
+        fireEvent.pointerDown(b.btn, { button: 0 })
+        vi.advanceTimersByTime(50)
+        fireEvent.pointerCancel(b.btn)
+        expect(b.voice.stop).not.toHaveBeenCalled()
+      })
+
+      it('keyboard activation (a click with no pointer) still toggles', () => {
+        const { voice, btn } = mount()
+        fireEvent.click(btn)
+        expect(voice.toggle).toHaveBeenCalledTimes(1)
+      })
+
+      it.each(['toggle', 'tapSpace'] as const)('in %s mode a click toggles and a press does nothing', (m) => {
+        mode(m)
+        const { voice, btn } = mount()
+        fireEvent.pointerDown(btn, { button: 0 })
+        fireEvent.pointerUp(btn, { button: 0 })
+        expect(voice.start).not.toHaveBeenCalled()
+        fireEvent.click(btn, { detail: 1 })
+        expect(voice.toggle).toHaveBeenCalledTimes(1)
+      })
+
+      it('a voice with no start and stop falls back to a click toggle', () => {
+        const toggle = vi.fn()
+        render(<WorldAsk viewer={makeViewer() as never} root="r" voice={{ supported: true, listening: false, toggle }} />)
+        const btn = screen.getByLabelText('Ask by voice')
+        fireEvent.pointerDown(btn, { button: 0 })
+        fireEvent.click(btn, { detail: 1 })
+        expect(toggle).toHaveBeenCalledTimes(1)
+      })
+
+      it("the built-in mic hands the hook's start and stop to the button", () => {
+        Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: vi.fn() }, configurable: true })
+        render(<WorldAsk viewer={makeViewer() as never} root="r" />)
+        const btn = screen.getByLabelText('Ask by voice')
+        fireEvent.pointerDown(btn, { button: 0 })
+        vi.advanceTimersByTime(700)
+        fireEvent.pointerUp(btn, { button: 0 })
+        expect(vm.start).toHaveBeenCalled()
+        expect(vm.stop).toHaveBeenCalled()
+      })
+    })
+
+    it('sends the id of the design proposal on show (the one that was reconciled)', async () => {
+      const d = minimal()
+      d.layers.plan.push(
+        { id: 'pA', title: 'A', summary: [], buildings: [], edges: [] },
+        { id: 'pB', title: 'B', summary: [], buildings: [], edges: [], reconcile: { matched: {}, missing: [], extra: [], planAt: 1 } }
+      )
+      await submit(makeViewer(), 'q', { doc: d })
+      expect((ask.mock.calls[0][0] as AskRequest).proposalId).toBe('pB')
     })
 
     it('is hidden when the voice is unsupported', () => {

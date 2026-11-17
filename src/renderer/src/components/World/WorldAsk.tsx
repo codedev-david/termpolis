@@ -9,7 +9,7 @@
 // no suggestions, and the changed design goes back to the pane through `link.setDoc`.
 // Width: the bar fills the slot WorldView puts it in (34rem, the pane less 24 px when narrower), so
 // in a narrow pane the suggestion chips wrap and the input shrinks instead of running past the edge.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type PointerEvent } from 'react'
 import type { WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
 import type { WorldAskLink } from './WorldView'
@@ -17,6 +17,8 @@ import { WorldAnswerPanel } from './WorldAnswer'
 import { formatTokens } from '../../../../shared/world/tokens'
 import { isDesignKey, useWorldAsk } from './useWorldAsk'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
+import { useTerminalStore } from '../../store/terminalStore'
+import { tapOrHoldKeydownAction, tapOrHoldKeyupAction } from '../../lib/voice/voicePipeline'
 
 export interface WorldAskProps {
   viewer: WorldViewer | null
@@ -24,7 +26,8 @@ export interface WorldAskProps {
   doc?: WorldDoc | null
   /** The world's key: the project root it was drawn for (WorldView's resolved git root), or design:<id>. Empty: asking is off. */
   root: string
-  voice?: { supported: boolean; listening: boolean; toggle: () => void }
+  /** `start` and `stop` (both) let the mic button take a hold as well as a tap; without them a click toggles. */
+  voice?: { supported: boolean; listening: boolean; toggle: () => void; start?: () => void; stop?: () => void }
   /** WorldView's side of Esc and of world swaps; absent when the bar is used on its own. */
   link?: WorldAskLink
 }
@@ -39,7 +42,7 @@ const SUGGESTIONS = [
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
 export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link }: WorldAskProps): JSX.Element {
-  const { ask, cancel, retry, replay, dismiss, state, answer, cited, error, playing, cost } = useWorldAsk(viewer, root, link?.setDoc)
+  const { ask, cancel, retry, replay, dismiss, state, answer, cited, error, playing, cost } = useWorldAsk(viewer, root, link?.setDoc, doc?.layers.plan.find((p) => p.reconcile)?.id)
   const design = isDesignKey(root)
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
@@ -56,7 +59,31 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link }: Worl
     onTranscript: (t) => { hush(); setText(t); ask(t) },
   })
   const micSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
-  const voice = voiceOverride ?? { supported: micSupported, listening: mic.status === 'listening', toggle: mic.toggle }
+  const voice = voiceOverride ?? { supported: micSupported, listening: mic.status === 'listening', toggle: mic.toggle, start: mic.start, stop: mic.stop }
+  // Tap or hold (the default): a hold records until release, a tap starts and the next tap stops. In the
+  // other modes, and where the voice has no start and stop, a click toggles.
+  const pushToTalk = useTerminalStore((s) => s.voiceSettings.pushToTalkMode)
+  const startMic = voice.start
+  const stopMic = voice.stop
+  const hold = pushToTalk === 'tapOrHold' && !!startMic && !!stopMic
+  /** When the press in progress began (null: none). */
+  const pressAt = useRef<number | null>(null)
+  const onMicDown = (e: PointerEvent<HTMLButtonElement>): void => {
+    if (!hold || e.button !== 0) return
+    const act = tapOrHoldKeydownAction({ listening: voice.listening, pressActive: pressAt.current !== null, repeat: false })
+    if (act === 'none') return
+    if (act === 'stop') { (stopMic as () => void)(); return }
+    // A release outside the button still ends the press.
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+    pressAt.current = Date.now()
+    ;(startMic as () => void)()
+  }
+  const onMicUp = (): void => {
+    if (pressAt.current === null) return
+    const heldMs = Date.now() - pressAt.current
+    pressAt.current = null
+    if (tapOrHoldKeyupAction({ pressActive: true, heldMs }) === 'stop') (stopMic as () => void)()
+  }
   const transcribing = !voiceOverride && mic.status === 'transcribing'
   const [speak, setSpeak] = useState(false)
 
@@ -168,7 +195,11 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link }: Worl
           <button
             type="button"
             aria-label={voice.listening ? 'Stop listening' : 'Ask by voice'}
-            onClick={voice.toggle}
+            onPointerDown={onMicDown}
+            onPointerUp={onMicUp}
+            onPointerCancel={onMicUp}
+            // A mouse or touch press is handled above; a click with no pointer (Enter or Space) still toggles.
+            onClick={(e) => { if (!hold || e.detail === 0) voice.toggle() }}
             disabled={disabled}
             className={`px-1.5 ${voice.listening ? 'text-[#f14c4c]' : 'text-[#9ca3af] hover:text-white'}${transcribing ? ' animate-pulse' : ''}`}
           >
