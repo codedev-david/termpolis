@@ -277,7 +277,7 @@ async function measure(file: string): Promise<{ mean: number; lit: number; white
   return { mean: sum / n, lit: lit / n, white: white / n, bgY }
 }
 
-interface LabelState { text: string; inside: boolean; opacity: number; visibility: string; font: number }
+interface LabelState { text: string; inside: boolean; opacity: number; visibility: string; font: number; box: string }
 
 /** Every district label: whether its box is on the canvas, its effective opacity and its font size. */
 const districtLabels = (): Promise<LabelState[]> =>
@@ -294,6 +294,7 @@ const districtLabels = (): Promise<LabelState[]> =>
         opacity,
         visibility: cs.visibility,
         font: parseFloat(cs.fontSize),
+        box: `label ${Math.round(r.left)},${Math.round(r.top)}-${Math.round(r.right)},${Math.round(r.bottom)} canvas ${Math.round(c.left)},${Math.round(c.top)}-${Math.round(c.right)},${Math.round(c.bottom)}`,
       }
     })
   })
@@ -534,6 +535,7 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
 
     const labels = await districtLabels()
     const readable = labels.filter((l) => l.inside && l.opacity > 0.05 && l.visibility === 'visible' && l.font >= MIN_LABEL_FONT_PX)
+    if (readable.length < wantLabels) await page.locator('[data-testid="world-canvas-host"]').screenshot({ path: test.info().outputPath(`${tag}-${theme}-host.png`) })
     expect(readable.length, `${tag}/${theme}: readable district labels ${JSON.stringify(labels)}`).toBeGreaterThanOrEqual(wantLabels)
     expect(await underLegend(ids), `${tag}/${theme}: under the legend at overview`).toEqual([])
     expect(await overlappingLabels(), `${tag}/${theme}: labels overlap at overview`).toEqual([])
