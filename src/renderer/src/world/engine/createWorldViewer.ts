@@ -98,6 +98,8 @@ export interface WorldDrawn {
   outlined: string[]
   /** Ids of the buildings drawn fading: parts the shown proposal takes away (always empty in 2D). */
   fading: string[]
+  /** Ids of the buildings drawn hot: their live latency is above 0 (always empty in 2D). */
+  hot: string[]
   /** Ids an answer fogged (the evidence does not support them) until the next reset. */
   fogged: string[]
   /** Ids lit now (the buildings and lines a selection, a tech chip or an action asked for); empty when nothing is. */
@@ -338,6 +340,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let wireframes: string[] = []
   let outlined: string[] = []
   let fading: string[] = []
+  let hot: string[] = []
   function redraw(): void {
     const d = doc
     if (!d) return
@@ -346,6 +349,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     wireframes = model.buildings.filter((b) => b.look === 'wire').map((b) => b.id)
     outlined = model.buildings.filter((b) => b.outline).map((b) => b.id)
     fading = model.buildings.filter((b) => b.look === 'fading').map((b) => b.id)
+    hot = model.buildings.filter((b) => b.heat > 0).map((b) => b.id)
     r3.draw(model, sceneText(d), layers.allLineLabels)
     r3.setExploded(exploded)
     if (selection && kindOf(selection.id)) {
@@ -638,7 +642,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
     resetView() {
       cancelActions()
       deselect()

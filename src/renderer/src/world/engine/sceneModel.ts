@@ -86,6 +86,14 @@ export function isMostlyInferred(b: Pick<Building, 'how' | 'why'>): boolean {
   return claims.filter((c) => c.state === 'inferred').length * 2 > claims.length
 }
 
+/** The warm colour a building's glow moves toward as its latency rises. */
+export const HEAT_COLOR = '#ff6a2b'
+/** How far the glow colour moves toward HEAT_COLOR (0..0.75) and how much brighter it burns (1..1.8) at heat 0..1. Heat 0 changes nothing. */
+export function heatMix(heat: number): { toward: number; glow: number } {
+  const h = Math.min(1, Math.max(0, heat))
+  return { toward: h * 0.75, glow: 1 + h * 0.8 }
+}
+
 /** Status to look. Precedence: proposed, mostly inferred, gap, built, then verified (solid plus ring). */
 export function lookOf(b: Building): { look: Look; ring: boolean } {
   if (b.status === 'proposed') return { look: 'wire', ring: false }

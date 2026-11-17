@@ -14,7 +14,7 @@ import { createCameraRig, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
 import { backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
-import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
+import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
 /** Label strings and presentation lookups. The viewer derives these from the doc; the renderer only prints them. */
@@ -662,11 +662,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // A guessed-at building keeps its district's hue, washed toward the fog tint: still a building
     // of that district, only less certain.
     const lineColor = b.look === 'amber' ? extras.amber : ghost ? extras.ghost : b.look === 'fog' ? col.clone().lerp(new THREE.Color(extras.fogTint), 0.4) : col
+    const heat = heatMix(b.heat)
+    const glowColor = col.clone().lerp(new THREE.Color(HEAT_COLOR), heat.toward) // heat 0: the district colour itself
     const captions = text.floors[b.id] ?? []
     for (let k = 0; k < b.floors; k++) {
       const geo = new THREE.BoxGeometry(FLOOR_W, fh * 0.85, FLOOR_W)
       const mat = trackBase(new THREE.MeshStandardMaterial({
-        color: extras.fill, emissive: col, emissiveIntensity: ghost ? 0.05 : extras.fillGlow, metalness: 0.5, roughness: 0.3,
+        color: extras.fill, emissive: glowColor, emissiveIntensity: ghost ? 0.05 : extras.fillGlow * heat.glow, metalness: 0.5, roughness: 0.3,
         transparent: true, opacity: ghost ? 0.07 : b.look === 'fog' ? extras.fillOpacity * 0.6 : extras.fillOpacity, depthWrite: !ghost,
       }))
       n.mats.push(mat)

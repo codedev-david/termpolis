@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildSceneModel, conduitStyle, DEFAULT_LAYERS, isMostlyInferred, lookOf } from '../../../src/renderer/src/world/engine/sceneModel'
+import { buildSceneModel, conduitStyle, DEFAULT_LAYERS, heatMix, HEAT_COLOR, isMostlyInferred, lookOf } from '../../../src/renderer/src/world/engine/sceneModel'
 import { NOT_IN_DESIGN } from '../../../src/shared/world/reconcile'
 import { building, claim, edge, minimal, rich } from './helpers'
 
@@ -287,5 +287,16 @@ describe('linked design overlay', () => {
     doc.layers.plan.push({ id: 'p2', title: 'Other', summary: [], buildings: [building('q1', { status: 'proposed' })], edges: [] })
     const both = buildSceneModel(doc, ON, { revealProposal: 'p2' })
     expect(both.buildings.map((b) => b.id)).toEqual(['b1', 'b2', 'pm', 'q1'])
+  })
+})
+
+describe('heatMix', () => {
+  it('changes nothing at heat 0, and warms and brightens as heat rises, within bounds', () => {
+    expect(heatMix(0)).toEqual({ toward: 0, glow: 1 })
+    expect(heatMix(1)).toEqual({ toward: 0.75, glow: 1.8 })
+    expect(heatMix(0.5).toward).toBeCloseTo(0.375)
+    expect(heatMix(7)).toEqual(heatMix(1))
+    expect(heatMix(-3)).toEqual(heatMix(0))
+    expect(HEAT_COLOR).toMatch(/^#[0-9a-f]{6}$/)
   })
 })

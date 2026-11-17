@@ -92,7 +92,7 @@ const WORLD_B = JSON.parse(fs.readFileSync(path.resolve('tests/shared/fixtures/w
 type Visual = { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
 interface Harness {
   load(doc: unknown, opts?: { animateFrom?: unknown }): void
-  drawn(): { changing: number; visual: Visual }
+  drawn(): { changing: number; visual: Visual; hot: string[] }
   project(id: string): Promise<{ x: number; y: number }>
   screenPoint(id: string): { x: number; y: number } | null
 }
@@ -161,6 +161,19 @@ test('reduced motion freezes the ring, fog drift, wireframe pulse and selection 
   const [c, d] = await motionTwice()
   expect(d.ringAngle).not.toBe(c.ringAngle)
   expect(d.fogDrift).not.toBe(c.fogDrift)
+})
+
+test('a building with live latency is drawn hot, and one without is not', async () => {
+  await page.goto(page.url().split('?')[0])
+  await page.waitForSelector('body[data-ready="1"]', { timeout: 30_000 })
+  const hot = await page.evaluate((a) => {
+    const t = (window as unknown as HarnessWindow).__worldTest
+    const doc = JSON.parse(JSON.stringify(a)) as { layers: { live?: unknown } }
+    doc.layers.live = { b2: { latencyMs: 600 } }
+    t.load(doc)
+    return t.drawn().hot
+  }, WORLD_A)
+  expect(hot).toEqual(['b2'])
 })
 
 test('logs no console errors', async () => {
