@@ -2,6 +2,7 @@
 // (buildingCard, edgeCard, the tour caption), which escape every string from the world document,
 // so it is safe to set as innerHTML. Never pass raw document strings here.
 import type { MouseEvent, Ref } from 'react'
+import type { Evidence } from '../../../../shared/world/types'
 import { CARD_INSET_PX, CARD_WIDTH_PX } from './worldPane'
 
 export interface WorldCardProps {
@@ -10,6 +11,12 @@ export interface WorldCardProps {
   onClose: () => void
   /** A link inside the card (data-node / data-edge) was clicked: open that part's card. */
   onOpen: (id: string) => void
+  /** A technology chip (data-tech) was clicked: open its glossary card and light up every use. */
+  onTech: (techId: string) => void
+  /** Confirm (data-confirm) on an inferred claim: a person vouches for its text. */
+  onConfirm: (itemId: string, text: string) => void
+  /** An evidence button (data-evidence) was clicked. */
+  onEvidence: (ev: Evidence) => void
   /** The card's element, measured so the close-ups are framed beside it. */
   boxRef?: Ref<HTMLElement>
   /**
@@ -46,7 +53,15 @@ const CARD_CSS = `
 .world-card-body .status-gap{background:#451a03;color:#fbbf24}
 .world-card-body .status-proposed{background:#1e293b;color:#93c5fd}
 .world-card-body .status-external{background:#334155;color:#e2e8f0}
-.world-card-body .claim-inferred{color:#cbd5e1}
+.world-card-body ul.claims{list-style:none;padding-left:0}
+.world-card-body .claim .state{display:inline-block;padding:0 6px;border-radius:99px;font-size:10.5px;background:#334155;color:#cbd5e1}
+.world-card-body .claim[data-state=verified] .state{background:#14532d;color:#4ade80}
+.world-card-body .claim[data-state=observed] .state{background:#1e3a5f;color:#7dd3fc}
+.world-card-body .claim[data-state=inferred] .state{background:#451a03;color:#fbbf24}
+.world-card-body .claim button{margin-left:4px;padding:0 6px;border-radius:6px;font-size:11px;color:#7dd3fc;background:transparent;border:1px solid rgba(125,211,252,.4);cursor:pointer}
+.world-card-body .claim button:hover{color:#e0f2fe;background:rgba(56,189,248,.18)}
+.world-card-body .chip[data-tech]{cursor:pointer}
+.world-card-body .chip[data-tech]:hover{background:rgba(167,139,250,.3)}
 .world-card-body .chip{display:inline-block;margin:2px 3px 2px 0;padding:2px 8px;border-radius:99px;font-size:11.5px;background:rgba(167,139,250,.14);border:1px solid rgba(167,139,250,.45);color:#ede9fe}
 .world-card-body .cargo{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
 .world-card-body a{color:#7dd3fc;cursor:pointer;text-decoration:underline dotted}
@@ -54,9 +69,26 @@ const CARD_CSS = `
 .world-card-body .tour-caption{font-size:13px;color:#e2e8f0}
 `
 
-export function WorldCard({ html, onClose, onOpen, boxRef, maxHeight = null }: WorldCardProps): JSX.Element {
+export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, boxRef, maxHeight = null }: WorldCardProps): JSX.Element {
   const onClick = (e: MouseEvent<HTMLDivElement>): void => {
-    const link = (e.target as Element).closest('[data-node],[data-edge]')
+    const target = e.target as Element
+    const chip = target.closest('[data-tech]')
+    if (chip) { e.preventDefault(); onTech(chip.getAttribute('data-tech') as string); return }
+    const confirm = target.closest('[data-confirm]')
+    if (confirm) {
+      e.preventDefault()
+      const itemId = (confirm.getAttribute('data-confirm') as string).split('|')[0]
+      onConfirm(itemId, confirm.closest('.claim')?.querySelector('.ctext')?.textContent ?? '')
+      return
+    }
+    const ev = target.closest('[data-evidence]')
+    if (ev) {
+      e.preventDefault()
+      const parsed = JSON.parse(ev.getAttribute('data-evidence') as string) as Evidence
+      onEvidence(parsed)
+      return
+    }
+    const link = target.closest('[data-node],[data-edge]')
     if (!link) return
     e.preventDefault()
     onOpen(link.getAttribute('data-node') ?? (link.getAttribute('data-edge') as string))

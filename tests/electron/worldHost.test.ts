@@ -27,6 +27,7 @@ import {
   type WorldHostResponse
 } from '../../src/main/world/worldHost'
 import { cloneKey } from '../../src/main/world/gitSource'
+import type { AnnotationStore } from '../../src/main/world/annotations'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
@@ -39,7 +40,7 @@ const claim = (text: string, refs: string[] = []): Claim => ({
 })
 
 function doc(projectKey = 'k1', over: Partial<WorldDoc> = {}): WorldDoc {
-  const district: District = { id: 'd-core', name: 'Core', subtitle: 'the middle', hue: 1, members: ['b-api', 'b-db'] }
+  const district: District = { id: 'd-core', name: 'Core', subtitle: 'the middle', hue: 1, members: ['b-api', 'b-db'], nameState: 'observed' }
   const api: Building = {
     id: 'b-api',
     districtId: 'd-core',
@@ -51,7 +52,9 @@ function doc(projectKey = 'k1', over: Partial<WorldDoc> = {}): WorldDoc {
     how: [claim('routes requests', ['src/api.ts', 'src/shared.ts'])],
     why: [claim('one front door', ['src/api.ts'])],
     status: 'built',
-    members: ['src/api.ts']
+    members: ['src/api.ts'],
+    claims: [],
+    nameState: 'observed'
   }
   const db: Building = { ...api, id: 'b-db', name: 'Store', techLabel: 'SQLite', stack: [], how: [], why: [], members: ['src/db.ts'] }
   const edge: WorldEdge = {
@@ -64,7 +67,8 @@ function doc(projectKey = 'k1', over: Partial<WorldDoc> = {}): WorldDoc {
     tech: ['sql'],
     why: [],
     rate: 'often',
-    twoWay: false
+    twoWay: false,
+    claims: []
   }
   return {
     version: 1,
@@ -995,5 +999,63 @@ describe('startWorldHost (the child bootstrap)', () => {
     } finally {
       delete proc.parentPort
     }
+  })
+})
+
+describe('annotate', () => {
+  const person = (text: string): Claim => ({ text, state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }] })
+  function memAnnotations(): AnnotationStore & { added: Array<[string, string, Claim]> } {
+    const byKey = new Map<string, Record<string, Claim[]>>()
+    const added: Array<[string, string, Claim]> = []
+    return {
+      added,
+      list: async (k) => ({ ...(byKey.get(k) ?? {}) }),
+      add: async (k, id, c) => {
+        added.push([k, id, c])
+        const cur = byKey.get(k) ?? {}
+        byKey.set(k, { ...cur, [id]: [...(cur[id] ?? []), c] })
+      }
+    }
+  }
+
+  it('stores the claim, merges it into the saved world and answers that world', async () => {
+    const ann = memAnnotations()
+    const h = harness({ createAnnotations: () => ann }, memStore({ k1: doc() }))
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'annotate', args: ['k1', 'b-api', person('Front door')] })
+    const saved = h.store.docs.get('k1') as WorldDoc
+    expect(saved.buildings.find((b) => b.id === 'b-api')?.claims).toEqual([person('Front door')])
+    expect(h.last()).toEqual({ kind: 'result', id: 1, ok: true, result: saved })
+    expect(saved.generatedAt).toBeGreaterThan(doc().generatedAt) // a new generation, so an open pane reloads it
+    // An edge is annotated the same way, and a second claim on the building joins the first.
+    await h.send({ kind: 'call', id: 2, fn: 'annotate', args: ['k1', 'e-1', person('Reads rows')] })
+    await h.send({ kind: 'call', id: 3, fn: 'annotate', args: ['k1', 'b-api', person('Second')] })
+    const again = h.store.docs.get('k1') as WorldDoc
+    expect(again.edges[0].claims).toEqual([person('Reads rows')])
+    expect(again.buildings[0].claims.map((c) => c.text)).toEqual(['Front door', 'Second'])
+    expect(ann.added).toHaveLength(3)
+  })
+
+  it('rejects an unknown part, an unknown world and a non-string id with "No part with that id."', async () => {
+    const ann = memAnnotations()
+    const h = harness({ createAnnotations: () => ann }, memStore({ k1: doc() }))
+    await h.init()
+    for (const [i, args] of [['k1', 'nope', person('x')], ['gone', 'b-api', person('x')], ['k1', 7, person('x')]].entries()) {
+      await h.send({ kind: 'call', id: i + 1, fn: 'annotate', args })
+      expect(h.last()).toMatchObject({ id: i + 1, ok: false, error: { message: 'No part with that id.' } })
+    }
+    expect(ann.added).toEqual([])
+  })
+
+  it('a compile merges what was annotated, by item id', async () => {
+    const ann = memAnnotations()
+    await ann.add('k1', 'b-api', person('Kept across compiles'))
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => compileWorld(input, deps))
+    const h = harness({ compile, createAnnotations: () => ann })
+    await h.init(false)
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(compile).toHaveBeenCalled()
+    const deps = compile.mock.calls[0][1]
+    expect(await (deps.annotations as () => Promise<unknown>)()).toEqual({ 'b-api': [person('Kept across compiles')] })
   })
 })

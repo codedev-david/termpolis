@@ -37,6 +37,7 @@ function setup(win: () => Win | null | undefined = () => null, settings = fakeSe
     }),
     relayout: vi.fn(async () => DOC),
     applySettings: vi.fn(),
+    annotate: vi.fn(async () => DOC),
     onProgress: (cb) => {
       progress.add(cb)
       return () => {
@@ -56,8 +57,8 @@ function setup(win: () => Win | null | undefined = () => null, settings = fakeSe
 }
 
 describe('registerWorldIpc', () => {
-  it('registers world:get, world:compile, world:relayout and the settings pair', () => {
-    expect([...setup().handlers.keys()]).toEqual(['world:get', 'world:compile', 'world:relayout', 'world:settings-get', 'world:settings-set'])
+  it('registers world:get, world:compile, world:relayout the annotation and the settings pair', () => {
+    expect([...setup().handlers.keys()]).toEqual(['world:get', 'world:compile', 'world:relayout', 'world:annotate', 'world:settings-get', 'world:settings-set'])
   })
 
   it('world:settings-get answers the stored settings', async () => {
@@ -341,5 +342,41 @@ describe('registerWorldIpc design handlers', () => {
     expect(await s.invoke('world:design-refine', { key: 'design:d1', message: 'm' })).toEqual({ success: false, error: DESIGN_SAVE_FAILED })
     d.refine.mockRejectedValueOnce('odd')
     expect(await s.invoke('world:design-refine', { key: 'design:d1', message: 'm' })).toEqual({ success: false, error: DESIGN_FAILED })
+  })
+})
+
+describe('world:annotate', () => {
+  const annotated = (s: ReturnType<typeof setup>) => s.client as unknown as { annotate: ReturnType<typeof vi.fn> }
+
+  it('stores a verified claim with person evidence and answers the doc', async () => {
+    const s = setup()
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: '  Keeps the DB out of the UI  ' })).toEqual({ success: true, data: DOC })
+    expect(annotated(s).annotate).toHaveBeenCalledWith('k', 'b1', {
+      text: 'Keeps the DB out of the UI', state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }]
+    })
+  })
+
+  it('answers "No part with that id." for an unknown id, and a plain line for an unknown world', async () => {
+    const s = setup()
+    annotated(s).annotate.mockRejectedValueOnce(new Error('No part with that id.'))
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'nope', text: 'x' })).toEqual({ success: false, error: 'No part with that id.' })
+    annotated(s).annotate.mockRejectedValueOnce(new Error('No world with that key.'))
+    expect(await s.invoke('world:annotate', { key: 'zz', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: 'No world with that key.' })
+  })
+
+  it('never shows a raw failure', async () => {
+    const s = setup()
+    annotated(s).annotate.mockRejectedValueOnce(new Error('EACCES: C:\secret\path'))
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: "Couldn't save that confirmation." })
+    annotated(s).annotate.mockRejectedValueOnce('odd')
+    expect(await s.invoke('world:annotate', { key: 'k', itemId: 'b1', text: 'x' })).toEqual({ success: false, error: "Couldn't save that confirmation." })
+  })
+
+  it('rejects a missing key, a non-string id, and blank or non-string text', async () => {
+    const s = setup()
+    for (const args of [undefined, {}, { key: '', itemId: 'b', text: 'x' }, { key: 'k', itemId: 3, text: 'x' }, { key: 'k', itemId: 'b', text: '   ' }, { key: 'k', itemId: 'b', text: 7 }]) {
+      expect(await s.invoke('world:annotate', args)).toEqual({ success: false, error: 'key, itemId and text required' })
+    }
+    expect(annotated(s).annotate).not.toHaveBeenCalled()
   })
 })

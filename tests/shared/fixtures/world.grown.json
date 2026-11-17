@@ -12,6 +12,7 @@
       "name": "Core",
       "subtitle": "The app and its memory",
       "hue": 210,
+      "nameState": "observed",
       "members": [
         "b1",
         "b2",
@@ -69,6 +70,8 @@
         }
       ],
       "status": "built",
+      "claims": [],
+      "nameState": "observed",
       "members": [
         "src/main/index.ts"
       ]
@@ -122,6 +125,8 @@
         }
       ],
       "status": "verified",
+      "claims": [],
+      "nameState": "observed",
       "members": [
         "src/main/memory/store.ts"
       ]
@@ -171,6 +176,8 @@
         }
       ],
       "status": "built",
+      "claims": [],
+      "nameState": "observed",
       "members": [
         "src/main/agentBridge.ts"
       ]
@@ -220,6 +227,8 @@
         }
       ],
       "status": "built",
+      "claims": [],
+      "nameState": "observed",
       "members": [
         "src/main/settingsStore.ts"
       ]
@@ -260,7 +269,7 @@
         }
       ],
       "rate": "on demand",
-      "twoWay": true
+      "twoWay": true, "claims": []
     }
   ],
   "externals": [

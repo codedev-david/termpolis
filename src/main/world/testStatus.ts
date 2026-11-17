@@ -4,7 +4,7 @@
  * tests or launches anything; all I/O comes in through `deps`. Pure: no fs,
  * or path imports, and nothing that launches a process.
  */
-import type { BuildStatus } from '../../shared/world/types'
+import type { BuildStatus, Claim } from '../../shared/world/types'
 
 export interface TestRun {
   file: string
@@ -293,11 +293,8 @@ export async function readTestResults(root: string, deps: TestResultDeps): Promi
 
 // ---- status ---------------------------------------------------------------
 
-export function statusFor(
-  members: string[],
-  runs: TestRun[],
-  testsByMember: Record<string, string[]>
-): BuildStatus {
+/** The newest run of each test file linked to the members (a tie goes to the failing one), by file. */
+function latestRuns(members: string[], runs: TestRun[], testsByMember: Record<string, string[]>): Map<string, TestRun> {
   const linked = new Set<string>()
   for (const m of members) for (const t of testsByMember[m] ?? []) linked.add(t)
   const latest = new Map<string, TestRun>()
@@ -306,7 +303,33 @@ export function statusFor(
     const cur = latest.get(r.file)
     if (!cur || r.at > cur.at || (r.at === cur.at && !r.passed)) latest.set(r.file, r)
   }
+  return latest
+}
+
+export function statusFor(
+  members: string[],
+  runs: TestRun[],
+  testsByMember: Record<string, string[]>
+): BuildStatus {
+  const latest = latestRuns(members, runs, testsByMember)
   if (latest.size === 0) return 'gap'
   for (const r of latest.values()) if (!r.passed) return 'built'
   return 'verified'
+}
+
+/** Most test files one claim cites. */
+const MAX_TEST_REFS = 8
+
+/**
+ * What the test results say about a building, as claims: every linked test passing is a verified claim
+ * citing them; any failing is an observed claim saying how many, citing the failing ones; no results, none.
+ */
+export function testClaims(members: string[], runs: TestRun[], testsByMember: Record<string, string[]>): Claim[] {
+  const latest = latestRuns(members, runs, testsByMember)
+  if (latest.size === 0) return []
+  const refs = (list: TestRun[]): Claim['evidence'] => list.map((r) => r.file).sort().slice(0, MAX_TEST_REFS).map((ref) => ({ kind: 'test' as const, ref }))
+  const all = [...latest.values()]
+  const failed = all.filter((r) => !r.passed)
+  if (failed.length === 0) return [{ text: `Its ${all.length} linked tests passed`, state: 'verified', evidence: refs(all) }]
+  return [{ text: `${failed.length} of ${all.length} linked tests failed`, state: 'observed', evidence: refs(failed) }]
 }

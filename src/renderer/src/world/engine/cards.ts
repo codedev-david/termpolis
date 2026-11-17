@@ -7,7 +7,7 @@ import { escapeHtml as esc } from './html'
 export { escapeHtml } from './html'
 
 const STATUS: Record<Building['status'], string> = {
-  verified: 'Built · tests pass', built: 'Built · not yet checked', gap: 'Built · no tests', proposed: 'Planned only',
+  verified: 'Built · tests pass', built: 'Built · not yet checked', gap: 'Built · no test results yet', proposed: 'Planned only',
 }
 
 const allBuildings = (doc: WorldDoc): Building[] => [...doc.buildings, ...doc.layers.plan.flatMap((p) => p.buildings)]
@@ -15,13 +15,25 @@ const allEdges = (doc: WorldDoc): WorldEdge[] => [...doc.edges, ...doc.layers.pl
 
 const section = (title: string, body: string): string => `<h4>${esc(title)}</h4>${body}`
 
-/** The claims as paragraphs; none yet (the model has not described this part) reads as such, not as a blank. */
-function claims(list: Claim[]): string {
-  if (list.length === 0) return '<p class="muted">Not described yet.</p>'
-  return list.map((c) => c.state === 'inferred'
-    ? `<p class="claim claim-inferred">${esc(c.text)} <span class="tag">inferred</span></p>`
-    : `<p class="claim">${esc(c.text)}</p>`).join('')
+/**
+ * The claims as a list, each with its state and a button per piece of evidence (the evidence rides in the
+ * attribute as escaped JSON, so a click needs nothing but the DOM). An inferred claim can be confirmed.
+ * `start` numbers the claims of a part across its lists. None yet (the model has not described this part)
+ * reads as such, not as a blank.
+ */
+function claims(list: Claim[], itemId: string, start: number, empty = '<p class="muted">Not described yet.</p>'): string {
+  if (list.length === 0) return empty
+  const rows = list.map((c, i) => {
+    const ev = c.evidence.map((e) => `<button class="ev" data-evidence="${esc(JSON.stringify({ kind: e.kind, ref: e.ref }))}">evidence</button>`).join(' ')
+    const confirm = c.state === 'inferred' ? ` <button class="confirm" data-confirm="${esc(itemId)}|${start + i}">Confirm</button>` : ''
+    return `<li class="claim" data-state="${esc(c.state)}"><span class="ctext">${esc(c.text)}</span> <span class="state">${esc(c.state)}</span>${ev ? ` ${ev}` : ''}${confirm}</li>`
+  })
+  return `<ul class="claims">${rows.join('')}</ul>`
 }
+
+/** "What we know": the facts found beyond the descriptions (tests, code, a person's confirmation), only when there are some. */
+const known = (b: { id: string; how: Claim[]; why: Claim[]; claims: Claim[] }): string =>
+  b.claims.length ? section('What we know', claims(b.claims, b.id, b.how.length + b.why.length)) : ''
 
 function chips(doc: WorldDoc, techs: string[]): string {
   return techs.map((t) => `<span class="chip" data-tech="${esc(t)}" title="${esc(doc.glossary[t] ?? '')}">${esc(t)}</span>`).join('')
@@ -60,13 +72,15 @@ export function buildingCard(doc: WorldDoc, id: string): string {
   // As the prototype's inspector: the name, its technology, a status pill, then the process box
   // (left out when the code shows no process for this part, rather than an empty "Runs in:").
   const runsIn = proc ? proc.label : b.process
-  return `<h3>${esc(b.name)}</h3>${b.techLabel ? `<p class="muted">${esc(b.techLabel)}</p>` : ''}`
+  const aiName = b.nameState === 'inferred' ? ' <span class="muted">(name suggested by AI)</span>' : ''
+  return `<h3>${esc(b.name)}${aiName}</h3>${b.techLabel ? `<p class="muted">${esc(b.techLabel)}</p>` : ''}`
     + `<p class="status"><span class="tag status-${esc(b.status)}">${esc(STATUS[b.status])}</span>${tag}</p>`
     + (runsIn.trim() ? `<div class="proc">Runs in: <b>${esc(runsIn)}</b></div>` : '')
-    + section('What it does', claims(b.how))
+    + section('What it does', claims(b.how, b.id, 0))
     + (parts ? section('What\'s inside', `<ul>${parts}</ul>`) : '')
     + (b.stack.length ? section('Technology', `<div>${chips(doc, b.stack)}</div>`) : '')
-    + section('Why it\'s built this way', claims(b.why))
+    + section('Why it\'s built this way', claims(b.why, b.id, b.how.length))
+    + known(b)
     + (ins.length ? section('What comes in', edgeList(doc, ins, 'from')) : '')
     + (outs.length ? section('What goes out', edgeList(doc, outs, 'to')) : '')
 }
@@ -84,9 +98,10 @@ export function edgeCard(doc: WorldDoc, id: string): string {
   return `<h3>${esc(title)}</h3><p class="muted">${nodeLink(doc, e.from)} → ${nodeLink(doc, e.to)}${e.twoWay ? ' (both ways)' : ''}</p>`
     + carries
     + section('What travels', `<p>${swatch(doc, e)}${esc(cargo ? cargo.label : e.cargo)}</p>`)
-    + section('How it travels', claims(e.how))
+    + section('How it travels', claims(e.how, e.id, 0))
     + (e.tech.length ? section('Technology', `<div>${chips(doc, e.tech)}</div>`) : '')
-    + section('Why it\'s done this way', claims(e.why))
+    + section('Why it\'s done this way', claims(e.why, e.id, e.how.length))
+    + known(e)
     + (e.rate ? section('How often', `<p>${esc(e.rate)}</p>`) : '')
 }
 

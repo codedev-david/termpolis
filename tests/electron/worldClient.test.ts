@@ -507,6 +507,35 @@ describe('createWorldClient', () => {
     })
   })
 
+  describe('annotate', () => {
+    const CLAIM = { text: 'ok', state: 'verified' as const, evidence: [{ kind: 'person' as const, ref: 'confirmed in Lumopolis' }] }
+
+    it('asks the host about a world compiled this run, or stored (a design too), and answers its doc', async () => {
+      const hasStoredWorld = vi.fn((key: string) => key === 'design:d1')
+      const { client, spawned } = setup({ hasStoredWorld })
+      await client.compile(ROOT)
+      expect(await client.annotate(KEY, 'b1', CLAIM)).toEqual(DOC)
+      expect(await client.annotate('design:d1', 'b1', CLAIM)).toEqual(DOC)
+      expect(spawned[0].calls().map((c) => [c.fn, c.args])).toContainEqual(['annotate', ['design:d1', 'b1', CLAIM]])
+    })
+
+    it('rejects a key no world has, an empty or non-string one, and a check that throws', async () => {
+      const { client, spawn } = setup({ hasStoredWorld: () => false })
+      for (const key of ['nope', '', 42 as unknown as string]) await expect(client.annotate(key, 'b1', CLAIM)).rejects.toThrow('No world with that key.')
+      const throwing = setup({ hasStoredWorld: () => { throw new Error('disk gone') } })
+      await expect(throwing.client.annotate('k', 'b1', CLAIM)).rejects.toThrow('No world with that key.')
+      expect(spawn).not.toHaveBeenCalled()
+    })
+
+    it('carries the host answer for an unknown part through', async () => {
+      const { client } = setup({}, (t) => {
+        t.reply = (m) => ({ kind: 'result', id: m.id, ok: m.fn !== 'annotate', result: DOC, error: { message: 'No part with that id.', name: 'Error' } } as WorldHostResponse)
+      })
+      await client.compile(ROOT)
+      await expect(client.annotate(KEY, 'zz', CLAIM)).rejects.toThrow('No part with that id.')
+    })
+  })
+
   describe('hasWorld', () => {
     it('answers from the store check without starting the world process', async () => {
       const hasStoredWorld = vi.fn((key: string) => key === KEY)

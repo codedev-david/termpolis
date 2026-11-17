@@ -4,19 +4,26 @@
 
 export type ClaimState = 'proposed' | 'observed' | 'inferred' | 'verified'
 export type EvidenceKind = 'file' | 'symbol' | 'test' | 'transcriptStep' | 'memory' | 'commit'
-  | 'trace' | 'metric' | 'log' | 'deploy'            // last four reserved for the live layer (§5.11)
+  | 'trace' | 'metric' | 'log' | 'deploy'            // trace..deploy reserved for the live layer (§5.11)
+  | 'person'                                         // a person confirmed it in Lumopolis (only the pane's annotate writes it)
 export interface Evidence { kind: EvidenceKind; ref: string; excerpt?: string }
 export interface Claim { text: string; state: ClaimState; evidence: Evidence[] }
 export type BuildStatus = 'verified' | 'built' | 'gap' | 'proposed'
 export interface Floor { name: string; tech: string[]; members: string[] }
-export interface District { id: string; name: string; subtitle: string; hue: number; members: string[] }
+/** Whether a name came from the code ('observed') or was suggested by the model ('inferred'). */
+export type NameState = 'observed' | 'inferred'
+export interface District { id: string; name: string; subtitle: string; hue: number; members: string[]; nameState: NameState }
 export interface Building {
   id: string; districtId: string; name: string; techLabel: string; process: string
   floors: Floor[]; stack: string[]; how: Claim[]; why: Claim[]; status: BuildStatus; members: string[]
+  /** Facts beyond how and why: observed in code, verified by tests, or confirmed by a person. */
+  claims: Claim[]; nameState: NameState
 }
 export interface WorldEdge {
   id: string; from: string; to: string; cargo: string; label: string
   how: Claim[]; tech: string[]; why: Claim[]; rate: string; twoWay: boolean
+  /** Facts beyond how and why (Seen in code, a person's confirmation). */
+  claims: Claim[]
 }
 export interface External { id: string; name: string; kind: 'agent' | 'provider' | 'files' | 'machine' | 'service'; fog: boolean }
 /** Plan versus built (shared/world/reconcile.ts): plan building id → built building id, plus what each side lacks. */

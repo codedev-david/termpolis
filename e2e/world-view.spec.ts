@@ -219,7 +219,7 @@ async function buildings(root: string): Promise<Array<{ id: string; name: string
   }, root)
 }
 
-interface Drawn { layers: { processes: boolean }; processShells: number; conduits: number }
+interface Drawn { layers: { processes: boolean }; processShells: number; conduits: number; highlighted: string[] }
 interface Probe { screenPoint(id: string): { x: number; y: number } | null; drawn(): Drawn }
 const drawn = (): Promise<Drawn | null> =>
   page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn() ?? null)
@@ -253,7 +253,8 @@ test.describe.serial('Lumopolis in the real app', () => {
     expect((await buildings(project)).length).toBeGreaterThan(1)
   })
 
-  test('2. clicking a building opens its card', async () => {
+  /** Clicks a building a person could click (on screen, nothing over it, clear of its neighbours) and returns it. */
+  async function clickABuilding(): Promise<{ id: string; name: string; floors: string[] }> {
     const all = await buildings(project)
     // Let the camera's first framing settle before aiming at it.
     await page.waitForTimeout(1500)
@@ -286,11 +287,16 @@ test.describe.serial('Lumopolis in the real app', () => {
     if (best < NEIGHBOUR_PX) target = null
     expect(target, `no building of ${all.length} is on screen with nothing over it and ${NEIGHBOUR_PX} px from the next one`).not.toBeNull()
     await page.mouse.click(target!.x, target!.y)
+    return target!
+  }
+
+  test('2. clicking a building opens its card', async () => {
+    const target = await clickABuilding()
     await expect(card()).toBeVisible()
     // The card is that building's: its name, and its floors in "What's inside", in order.
-    await expect(card().locator('h3').first()).toHaveText(target!.name)
+    await expect(card().locator('h3').first()).toHaveText(target.name)
     const inside = card().locator(`h4:text-is("What's inside") + ul > li > b`)
-    await expect(inside).toHaveText(target!.floors)
+    await expect(inside).toHaveText(target.floors)
     await expect(card()).toContainText('What it does')
     await expect(card()).toContainText('Runs in:')
   })
@@ -564,7 +570,27 @@ test.describe.serial('Lumopolis in the real app', () => {
     await page.keyboard.press('Control+u')
   })
 
-  test('7. over the whole session, the renderer logged no console errors and threw no page errors', async () => {
+  test('7. clicking a technology chip opens its glossary card and lights up every use', async () => {
+    if (!(await card().isVisible())) await clickABuilding()
+    // The e2e project is compiled without a model's labels, so a building has no technology chips;
+    // a connection to a spawned agent or a service does (Spawn, HTTP client). Follow the card's own
+    // links until a card carries a chip.
+    for (let hop = 0; hop < 12 && (await card().locator('[data-tech]').count()) === 0; hop++) {
+      const links = card().locator('a.lnk')
+      const n = await links.count()
+      if (n === 0) break
+      await links.nth(hop % n).click()
+      await page.waitForTimeout(150)
+    }
+    await expect(card()).toBeVisible()
+    const chip = card().locator('[data-tech]').first()
+    const term = (await chip.getAttribute('data-tech'))!
+    await chip.click()
+    await expect.poll(async () => ((await card().locator('h3').first().textContent()) ?? '').toLowerCase()).toContain(term.toLowerCase())
+    await expect.poll(async () => (await drawn())?.highlighted.length ?? 0).toBeGreaterThanOrEqual(2)
+  })
+
+  test('8. over the whole session, the renderer logged no console errors and threw no page errors', async () => {
     expect(consoleErrors).toEqual([])
   })
 })

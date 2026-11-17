@@ -7,17 +7,18 @@
 // reader reads the report files its own glob finds. Each file text feeds the detectors, the
 // OpenTelemetry service-name scan and the relative-import scan (merged into `snap.fileImports`).
 import type { GraphSnapshot } from '../codeGraph'
-import type { Building, District, External, Tour, WorldDoc, WorldEdge } from '../../shared/world/types'
+import type { Building, Claim, District, Evidence, External, Tour, WorldDoc, WorldEdge } from '../../shared/world/types'
 import { detectBoundaries, MAX_DETECT_FILE_CHARS, stripComments, type Boundary } from './detectors'
 import { baseKey } from './detectors/common'
 import { cargoColors, cargoLabel, cargoOf } from './cargoTypes'
 import { edgeSummary } from '../../shared/world/edgeText'
 import { edgeId, groupProject, isIgnored, resolveImport, slug, type GroupBuilding, type Grouping } from './group'
+import { mergeAnnotations } from './annotations'
 import { relativeImports, withImports } from './imports'
 import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
-import { readTestResults, statusFor, TEST_FILE, type TestRun } from './testStatus'
+import { readTestResults, statusFor, TEST_FILE, testClaims, type TestRun } from './testStatus'
 
 export type CompileStage = 'structure' | 'boundaries' | 'grouping' | 'status' | 'labelling' | 'layout'
 
@@ -31,6 +32,8 @@ export interface CompileDeps {
   label: LabelDeps
   now: () => number
   transcriptRuns?: () => Promise<TestRun[]>
+  /** What people confirmed in the pane, by item id, merged into the claims of the buildings and lines. Absent: none. */
+  annotations?: () => Promise<Record<string, Claim[]>>
   onProgress?: (stage: CompileStage, pct: number) => void
 }
 
@@ -60,6 +63,8 @@ export const BUILTIN_GLOSSARY: Readonly<Record<string, string>> = {
 }
 
 const READ_CHUNK = 32
+/** Places one "Seen in code" claim cites at most. */
+const MAX_SEEN = 3
 const MAX_LABEL = 120
 const RING_MARGIN = 40
 const RING_Y = 12
@@ -188,6 +193,25 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
   return labels
 }
 
+const seenIn = (refs: string[]): Claim[] =>
+  [refs]
+    .filter((r) => r.length > 0)
+    .map((r): Claim => ({ text: 'Seen in code', state: 'observed', evidence: r.slice(0, MAX_SEEN).map((ref): Evidence => ({ kind: 'file', ref })) }))
+
+/** Where a line shows in the code: its boundaries (file:line), else the files whose imports reach the other end. */
+function seenInCode(e: Grouping['edges'][number], g: Grouping, snap: GraphSnapshot): Claim[] {
+  if (e.via.length > 0) return seenIn(e.via.map((v) => `${v.file}:${v.line}`))
+  const files = new Set(snap.files)
+  const target = new Set((g.buildings.find((b) => b.id === e.to) as GroupBuilding).members)
+  const importers = (g.buildings.find((b) => b.id === e.from) as GroupBuilding).members.filter((m) =>
+    (snap.fileImports[m] ?? []).some((spec) => {
+      const r = resolveImport(m, spec, files)
+      return r !== null && target.has(r)
+    })
+  )
+  return seenIn([...importers].sort())
+}
+
 /** Agent CLIs and non-local web services the buildings reach, each with one conduit per building. */
 function externalsOf(g: Grouping): { externals: External[]; edges: WorldEdge[] } {
   const externals = new Map<string, External>()
@@ -215,7 +239,8 @@ function externalsOf(g: Grouping): { externals: External[]; edges: WorldEdge[] }
         why: [],
         tech: [found.tech],
         rate: '',
-        twoWay: false
+        twoWay: false,
+        claims: seenIn([`${bd.file}:${bd.line}`])
       })
     }
   }
@@ -373,7 +398,9 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
       name: labels.districts[d.id].name,
       subtitle: labels.districts[d.id].subtitle,
       hue: Math.round((i * 137.508) % 360),
-      members: d.members
+      members: d.members,
+      // A name the model changed is a suggestion; one still equal to the code's own is observed.
+      nameState: labels.districts[d.id].name === d.name ? 'observed' : 'inferred'
     }))
   const buildings: Building[] = g.buildings.map((b) => {
     const l = labels.buildings[b.id]
@@ -388,7 +415,9 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
       how: l.how,
       why: l.why,
       status: statusFor(b.members, runs, testsByMember),
-      members: b.members
+      members: b.members,
+      claims: testClaims(b.members, runs, testsByMember),
+      nameState: l.name === b.name ? 'observed' : 'inferred'
     }
   })
   const ext = externalsOf(g)
@@ -396,7 +425,7 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
     ...g.edges.map((e): WorldEdge => {
       const id = edgeId(e)
       const l = labels.edges[id]
-      return { id, from: e.from, to: e.to, cargo: l.cargo, label: l.label, how: l.how, tech: l.tech.filter(known), why: l.why, rate: l.rate, twoWay: false }
+      return { id, from: e.from, to: e.to, cargo: l.cargo, label: l.label, how: l.how, tech: l.tech.filter(known), why: l.why, rate: l.rate, twoWay: false, claims: seenInCode(e, g, snap) }
     }),
     ...ext.edges
   ].sort((a, z) => cmp(a.id, z.id))
@@ -445,8 +474,10 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
     layers: { plan: [] },
     labelTokens: labels.tokens
   }
+  // Annotations are merged by item id before the plan is laid over, so a recompile never loses one.
+  const merged = deps.annotations ? mergeAnnotations(doc, await deps.annotations()) : doc
   progress('layout', 100)
-  return input.plan ? overlayPlan(doc, input.plan, previous) : doc
+  return input.plan ? overlayPlan(merged, input.plan, previous) : merged
 }
 
 // ---------- recompile scheduler ----------

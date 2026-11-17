@@ -5,6 +5,7 @@ import {
   parseTranscriptTestRuns,
   readTestResults,
   statusFor,
+  testClaims,
   type TestRun
 } from '../../src/main/world/testStatus'
 
@@ -379,5 +380,35 @@ describe('never spawns', () => {
     expect(Object.keys(d).sort()).toEqual(['glob', 'readFile'])
     expect(SRC).not.toMatch(/child_process|require\(|spawn\(|execFile?\(/)
     expect(SRC).not.toMatch(/from 'node:|from 'fs'|from 'path'/)
+  })
+})
+
+describe('testClaims', () => {
+  const run = (file: string, passed: boolean, at = 1): TestRun => ({ file, passed, at, source: 'vitest' })
+  const linked = { 'src/a.ts': ['t/a.test.ts', 't/b.test.ts'] }
+
+  it('every linked test passing is one verified claim citing them', () => {
+    expect(testClaims(['src/a.ts'], [run('t/a.test.ts', true), run('t/b.test.ts', true), run('t/other.test.ts', false)], linked)).toEqual([
+      { text: 'Its 2 linked tests passed', state: 'verified', evidence: [{ kind: 'test', ref: 't/a.test.ts' }, { kind: 'test', ref: 't/b.test.ts' }] }
+    ])
+  })
+
+  it('a failing one is an observed claim saying how many, citing the failing', () => {
+    expect(testClaims(['src/a.ts'], [run('t/a.test.ts', true), run('t/b.test.ts', false)], linked)).toEqual([
+      { text: '1 of 2 linked tests failed', state: 'observed', evidence: [{ kind: 'test', ref: 't/b.test.ts' }] }
+    ])
+  })
+
+  it('the newest run of a file decides, and no runs is no claim', () => {
+    expect(testClaims(['src/a.ts'], [run('t/a.test.ts', false, 1), run('t/a.test.ts', true, 2)], linked)[0].text).toBe('Its 1 linked tests passed')
+    expect(testClaims(['src/a.ts'], [], linked)).toEqual([])
+    expect(testClaims(['src/zzz.ts'], [run('t/a.test.ts', true)], linked)).toEqual([])
+  })
+
+  it('cites at most eight tests', () => {
+    const files = Array.from({ length: 12 }, (_, i) => `t/${String(i).padStart(2, '0')}.test.ts`)
+    const c = testClaims(['m'], files.map((f) => run(f, true)), { m: files })
+    expect(c[0].text).toBe('Its 12 linked tests passed')
+    expect(c[0].evidence).toHaveLength(8)
   })
 })

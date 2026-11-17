@@ -86,6 +86,8 @@ export interface WorldDrawn {
   wireframes: string[]
   /** Ids an answer fogged (the evidence does not support them) until the next reset. */
   fogged: string[]
+  /** Ids lit now (the buildings and lines a selection, a tech chip or an action asked for); empty when nothing is. */
+  highlighted: string[]
 }
 
 export interface WorldViewerOptions {
@@ -476,9 +478,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         await r3.pulse(a.edgeIds, instant)
         return
       }
-      case 'openCard':
-        await select(a.id, instant)
+      case 'openCard': {
+        // `tech:<term>` opens a glossary card (a term can share its name with a part).
+        const tech = a.id.startsWith('tech:')
+        await select(tech ? a.id.slice('tech:'.length) : a.id, instant, tech ? 'tech' : undefined)
         return
+      }
       case 'tour': {
         const mine = ++tourToken
         for (const step of a.steps) {
@@ -609,7 +614,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     screenPoint: (id) => (r3 ? r3.screenPoint(id) : null),
     linePoints: (id) => (r3 ? r3.linePoints(id) : []),
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], fogged: [...fogged] }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [] }),
     resetView() {
       cancelActions()
       deselect()

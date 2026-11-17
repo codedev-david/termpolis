@@ -21,15 +21,15 @@ describe('cards', () => {
     const html = buildingCard(minimal(), 'b1')
     for (const s of ['class="tag status-', 'class="proc">Runs in:', 'What it does', 'inside', 'Technology', 'Why it', 'What goes out']) expect(html).toContain(s)
     expect(html).toContain('Main process')
-    expect(html).toContain('claim claim-inferred')
-    expect(html).toContain('<span class="tag">inferred</span>')
+    expect(html).toContain('<li class="claim" data-state="inferred">')
+    expect(html).toContain('<span class="state">inferred</span>')
     expect(html).not.toContain('What comes in')
     expect(buildingCard(minimal(), 'b2')).toContain('What comes in')
     expect(html).toContain('title="A framework for building desktop apps with web technology."')
   })
 
   it('does not tag observed claims', () => {
-    expect(buildingCard(minimal(), 'b2')).toContain('<p class="claim">Memories are stored')
+    expect(buildingCard(minimal(), 'b2')).toContain('<li class="claim" data-state="verified"><span class="ctext">Memories are stored')
   })
 
   it('escapes names, claims, ids, glossary and attributes', () => {
@@ -54,7 +54,7 @@ describe('cards', () => {
     expect(buildingCard(doc, 'b1')).toContain('Runs in: <b>weird</b>')
     expect(buildingCard(doc, 'pb1')).toContain('Built · not yet checked')
     expect(buildingCard(doc, 'b4')).toContain('Planned only')
-    expect(buildingCard(doc, 'b3')).toContain('Built · no tests')
+    expect(buildingCard(doc, 'b3')).toContain('Built · no test results yet')
     expect(buildingCard(doc, 'b2')).toContain('Built · tests pass')
     expect(buildingCard(doc, 'x1')).toContain('agent')
     expect(buildingCard(doc, 'x1')).not.toContain('not fully known')
@@ -175,5 +175,62 @@ describe('linked design tag', () => {
     })
     expect(buildingCard(doc, 'b2')).toContain('<span class="tag">not in the design</span>')
     expect(buildingCard(doc, 'b1')).not.toContain('not in the design')
+  })
+})
+
+describe('claim states, evidence and confirm', () => {
+  it('each claim shows its state and an evidence button; only an inferred one has Confirm, numbered across how, why and known', () => {
+    const doc = minimal()
+    const b = doc.buildings[0]
+    b.how = [claim('a', 'inferred')]
+    b.why = [claim('b', 'observed')]
+    b.claims = [claim('c', 'inferred')]
+    const html = buildingCard(doc, b.id)
+    expect(html).toContain(`<button class="ev" data-evidence="{&quot;kind&quot;:&quot;file&quot;,&quot;ref&quot;:&quot;a/b.ts&quot;}">evidence</button>`)
+    expect(html).toContain(`data-confirm="${b.id}|0"`)
+    expect(html).not.toContain(`data-confirm="${b.id}|1"`)
+    expect(html).toContain(`data-confirm="${b.id}|2"`)
+    expect(html).toContain('What we know')
+  })
+
+  it('a claim with no evidence has no evidence button, and a part with no extra claims has no What we know', () => {
+    const doc = minimal()
+    doc.buildings[0].how = [claim('plain', 'observed', false)]
+    doc.buildings[0].why = []
+    doc.buildings[0].claims = []
+    const html = buildingCard(doc, doc.buildings[0].id)
+    expect(html).not.toContain('class="ev"')
+    expect(html).not.toContain('What we know')
+  })
+
+  it('a line shows its claims too, including a person confirmation', () => {
+    const doc = minimal()
+    doc.edges[0].claims = [{ text: 'Seen in code', state: 'observed', evidence: [{ kind: 'file', ref: 'src/a.ts:3' }] }, { text: 'Checked', state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }] }]
+    const html = edgeCard(doc, doc.edges[0].id)
+    expect(html).toContain('What we know')
+    expect(html).toContain('Seen in code')
+    expect(html).toContain('person')
+  })
+
+  it('an AI-named part says so, an observed name does not', () => {
+    const doc = minimal()
+    doc.buildings[0].nameState = 'inferred'
+    expect(buildingCard(doc, doc.buildings[0].id)).toContain('(name suggested by AI)')
+    doc.buildings[0].nameState = 'observed'
+    expect(buildingCard(doc, doc.buildings[0].id)).not.toContain('name suggested by AI')
+  })
+
+  it('claim text, refs and states are escaped: an <img onerror> is text, not an element', () => {
+    const doc = minimal()
+    const evil = '<img src=x onerror=alert(1)>'
+    doc.buildings[0].how = []
+    doc.buildings[0].why = []
+    doc.buildings[0].claims = [{ text: evil, state: 'inferred', evidence: [{ kind: 'file', ref: evil }] }]
+    const host = document.createElement('div')
+    host.innerHTML = buildingCard(doc, doc.buildings[0].id)
+    expect(host.querySelector('img')).toBeNull()
+    expect(host.textContent).toContain(evil)
+    const ev = host.querySelector('button.ev') as HTMLElement
+    expect(JSON.parse(ev.getAttribute('data-evidence') as string)).toEqual({ kind: 'file', ref: evil })
   })
 })

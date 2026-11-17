@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import type { GraphSnapshot } from '../codeGraph'
 import { lowerHostPriority } from '../hostPriority'
 import type { Claim, Evidence, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
+import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, type AnnotationStore } from './annotations'
 import { compileWorld, createRecompileScheduler, type CompileDeps } from './compile'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { confinedReader, isCloneRoot } from './folderSafety'
@@ -242,6 +243,8 @@ export function filterWorld(doc: WorldDoc | null, query: WorldQuery | null | und
 export interface WorldHostDeps {
   compile?: typeof compileWorld
   createStore?: (dir: string) => WorldStore
+  /** The annotation store for a userData folder (default: annotations.ts's). */
+  createAnnotations?: (dir: string) => AnnotationStore
   /** Reads test reports (default: readCapped up to MAX_READ_BYTES); also source when `readSource` is absent. */
   readFile?: (p: string) => Promise<string | null>
   /** Reads source for the boundary scan and labelling excerpts (default: readCapped up to MAX_SOURCE_READ_BYTES). */
@@ -280,6 +283,7 @@ function needKey(projectKey: unknown): string {
 
 interface HostState {
   store: WorldStore
+  annotations: AnnotationStore
   userDataPath: string
   labelling: boolean
 }
@@ -287,6 +291,7 @@ interface HostState {
 export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: WorldHostDeps = {}): WorldHost {
   const compile = deps.compile ?? compileWorld
   const createStore = deps.createStore ?? createWorldStore
+  const createAnnotations = deps.createAnnotations ?? createAnnotationStore
   const readFile = deps.readFile ?? ((p: string) => readCapped(p))
   const readSource = deps.readSource ?? deps.readFile ?? ((p: string) => readCapped(p, MAX_SOURCE_READ_BYTES))
   const glob = deps.glob ?? ((root: string, patterns: string[]) => globFiles(root, patterns))
@@ -361,6 +366,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       glob,
       label,
       now,
+      annotations: () => st.annotations.list(projectKey),
       onProgress: (stage, pct) => post({ kind: 'progress', projectKey, stage, pct })
     }
   }
@@ -428,6 +434,21 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       return first
     },
     get: async (projectKey: unknown) => st.store.load(needKey(projectKey)),
+    // A person's confirmation: stored apart from the world (a recompile keeps it) and merged into the saved
+    // doc, which is returned so the pane shows it at once. Works on design worlds as well (their files sit in
+    // the same store).
+    annotate: (projectKey: unknown, itemId: unknown, claim: unknown) => {
+      const key = needKey(projectKey)
+      return serial(key, async () => {
+        const doc = await st.store.load(key)
+        if (!doc || !isStr(itemId) || !hasPart(doc, itemId)) throw new Error(NO_PART)
+        await st.annotations.add(key, itemId, claim as Claim)
+        // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
+        const merged = { ...mergeAnnotations(doc, await st.annotations.list(key)), generatedAt: Math.max(now(), doc.generatedAt + 1) }
+        await st.store.save(merged)
+        return merged
+      })
+    },
     notifyChanged: async (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, files: unknown, plan?: unknown) => {
       const key = needKey(projectKey)
       latest.set(key, { snap, head, ...planArg(plan) })
@@ -478,7 +499,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           if (!isStr(msg.userDataPath) || msg.userDataPath === '') throw new Error('worldHost: userDataPath required')
           for (const s of schedulers.values()) s.dispose()
           schedulers.clear()
-          state = { store: createStore(msg.userDataPath), userDataPath: msg.userDataPath, labelling: msg.labelling !== false }
+          state = { store: createStore(msg.userDataPath), annotations: createAnnotations(msg.userDataPath), userDataPath: msg.userDataPath, labelling: msg.labelling !== false }
           post({ kind: 'ready', pid: process.pid })
         } catch (err) {
           post({ kind: 'init-error', error: serializeError(err) })

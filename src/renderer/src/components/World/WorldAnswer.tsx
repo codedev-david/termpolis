@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import type { WorldAnswer as Answer } from '../../../../shared/world/answerProtocol'
 import type { Evidence } from '../../../../shared/world/types'
+import { EvidenceView } from './EvidenceView'
 
 export interface WorldAnswerPanelProps {
   answer: Answer
@@ -59,7 +60,7 @@ export function WorldAnswerPanel({ answer, cited, onClose, onReplay, onOpenPart,
         </div>
       )}
       {shown.map((label) => (
-        <div key={label} className="mt-1 text-xs text-[#9ca3af] font-mono break-all">{`${cited[label].kind} ${cited[label].ref}`}</div>
+        <EvidenceView key={label} evidence={cited[label]} />
       ))}
       <div className="mt-2">
         <button type="button" onClick={onReplay} className="text-xs px-2 py-1 rounded border border-[#3c3c3c] hover:bg-[#2a2d2e]">

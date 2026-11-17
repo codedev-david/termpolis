@@ -1,0 +1,111 @@
+// Lumopolis annotations: what a person confirmed in the pane, kept apart from the compiled world so a
+// recompile never loses it. One JSON file per world under `<dir>/world/annotations/`, named by the
+// sha256 of the world key (any key is safe as a file name), written atomically with async fs. A file
+// that does not parse reads as empty and the next add overwrites it.
+import { createHash } from 'node:crypto'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../shared/world/types'
+import { createKeyedLock } from './keyedLock'
+
+export const MAX_ANNOTATION_TEXT = 400
+export const MAX_ANNOTATION_EVIDENCE = 8
+export const MAX_ANNOTATIONS_PER_ITEM = 20
+/** What annotating an id that is not a building or line of the world answers. */
+export const NO_PART = 'No part with that id.'
+
+export interface AnnotationStore {
+  /** Item id → its annotations, oldest first. Empty when none were stored or the file is unreadable. */
+  list(key: string): Promise<Record<string, Claim[]>>
+  /** Adds one annotation: text capped at MAX_ANNOTATION_TEXT, evidence at MAX_ANNOTATION_EVIDENCE, the oldest dropped past MAX_ANNOTATIONS_PER_ITEM. */
+  add(key: string, itemId: string, claim: Claim): Promise<void>
+}
+
+const STATES = new Set<string>(['proposed', 'observed', 'inferred', 'verified'])
+const KINDS = new Set<string>(['file', 'symbol', 'test', 'transcriptStep', 'memory', 'commit', 'trace', 'metric', 'log', 'deploy', 'person'])
+const isRec = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** A well-formed, capped claim from whatever was given (or read back from disk), else null. */
+function cleanClaim(v: unknown): Claim | null {
+  if (!isRec(v) || typeof v.text !== 'string' || !STATES.has(v.state as string) || !Array.isArray(v.evidence)) return null
+  const evidence: Evidence[] = []
+  for (const e of v.evidence) {
+    if (evidence.length === MAX_ANNOTATION_EVIDENCE) break
+    if (isRec(e) && KINDS.has(e.kind as string) && typeof e.ref === 'string') {
+      evidence.push(typeof e.excerpt === 'string' ? { kind: e.kind as EvidenceKind, ref: e.ref, excerpt: e.excerpt } : { kind: e.kind as EvidenceKind, ref: e.ref })
+    }
+  }
+  if (evidence.length === 0) return null
+  return { text: v.text.slice(0, MAX_ANNOTATION_TEXT), state: v.state as ClaimState, evidence }
+}
+
+/** The file holds `{ [itemId]: Claim[] }`; anything malformed in it is dropped rather than trusted. */
+function cleanFile(parsed: unknown): Record<string, Claim[]> {
+  const out: Record<string, Claim[]> = Object.create(null)
+  if (!isRec(parsed)) return out
+  for (const [id, list] of Object.entries(parsed)) {
+    if (!Array.isArray(list)) continue
+    const claims = list.map(cleanClaim).filter((c): c is Claim => c !== null).slice(-MAX_ANNOTATIONS_PER_ITEM)
+    if (claims.length > 0) out[id] = claims
+  }
+  return out
+}
+
+export function createAnnotationStore(dir: string): AnnotationStore {
+  const folder = join(dir, 'world', 'annotations')
+  const lock = createKeyedLock()
+  const fileOf = (key: string): string => join(folder, `${createHash('sha256').update(key).digest('hex')}.json`)
+
+  const read = async (key: string): Promise<Record<string, Claim[]>> => {
+    let text: string
+    try {
+      text = await readFile(fileOf(key), 'utf8')
+    } catch {
+      return cleanFile(undefined)
+    }
+    try {
+      return cleanFile(JSON.parse(text))
+    } catch {
+      return cleanFile(undefined)
+    }
+  }
+
+  return {
+    list: (key) => read(key),
+    add: (key, itemId, claim) =>
+      lock(key, async () => {
+        const clean = cleanClaim(claim)
+        if (clean === null) throw new Error('annotation needs text, a state and evidence')
+        const all = await read(key)
+        all[itemId] = [...(all[itemId] ?? []), clean].slice(-MAX_ANNOTATIONS_PER_ITEM)
+        const target = fileOf(key)
+        const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+        await mkdir(folder, { recursive: true })
+        try {
+          await writeFile(tmp, JSON.stringify(all), 'utf8')
+          await rename(tmp, target)
+        } catch (err) {
+          await rm(tmp, { force: true })
+          throw err
+        }
+      })
+  }
+}
+
+/** True when a claim was added by a person (only annotations carry person evidence). */
+const isPerson = (c: Claim): boolean => c.evidence.some((e) => e.kind === 'person')
+
+/**
+ * The doc with each building's and edge's annotations as its person claims: any person claim it carried
+ * is replaced, so merging twice, or after the store dropped an old one, never duplicates or keeps a stale claim.
+ */
+export function mergeAnnotations(doc: WorldDoc, byItem: Record<string, Claim[]>): WorldDoc {
+  const merge = <T extends { id: string; claims: Claim[] }>(item: T): T => {
+    const own = Object.prototype.hasOwnProperty.call(byItem, item.id) ? byItem[item.id] : []
+    return { ...item, claims: [...item.claims.filter((c) => !isPerson(c)), ...own] }
+  }
+  return { ...doc, buildings: doc.buildings.map(merge), edges: doc.edges.map(merge) }
+}
+
+/** Whether `id` names a building or an edge of the doc (the parts a person can annotate). */
+export const hasPart = (doc: WorldDoc, id: string): boolean => doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id)

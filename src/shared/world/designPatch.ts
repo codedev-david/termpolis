@@ -202,7 +202,7 @@ function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>):
       const why = fresh(op.id)
       if (why) return why
       const hue = Math.round((doc.districts.length * 137.508) % 360)
-      doc.districts.push({ id: op.id, name: op.name, subtitle: op.subtitle ?? '', hue, members: [] })
+      doc.districts.push({ id: op.id, name: op.name, subtitle: op.subtitle ?? '', hue, members: [], nameState: 'observed' })
       return null
     }
     case 'addBuilding': {
@@ -212,7 +212,7 @@ function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>):
       for (const t of stack) if (!has(doc.glossary, t)) doc.glossary[t] = ''
       doc.buildings.push({
         id: op.id, districtId: op.districtId, name: op.name, techLabel: op.techLabel ?? '', process: '', floors: [], stack,
-        how: op.does ? [claim(op.does)] : [], why: [], status: 'proposed', members: []
+        how: op.does ? [claim(op.does)] : [], why: [], status: 'proposed', members: [], claims: [], nameState: 'observed'
       })
       return null
     }
@@ -228,7 +228,7 @@ function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>):
         const h = hashOf(cargo)
         doc.cargo[cargo] = { shape: SHAPES[h % SHAPES.length], color: PALETTE[h % PALETTE.length], label: cargo }
       }
-      doc.edges.push({ id, from: op.from, to: op.to, cargo, label: op.label, how: [claim(op.label)], tech: [], why: [], rate: '', twoWay: false })
+      doc.edges.push({ id, from: op.from, to: op.to, cargo, label: op.label, how: [claim(op.label)], tech: [], why: [], rate: '', twoWay: false, claims: [] })
       return null
     }
     case 'rename':

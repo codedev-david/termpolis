@@ -410,3 +410,35 @@ describe('linked design overlay', () => {
   })
 })
 })
+
+describe('claims and name states', () => {
+  it('fills claims [] and nameState observed on a world saved before them', () => {
+    const old = fresh()
+    for (const b of old.buildings) { delete b.claims; delete b.nameState }
+    for (const e of old.edges) delete e.claims
+    for (const d of old.districts) delete d.nameState
+    const v = validateWorld(old)
+    expect(v.ok).toBe(true)
+    if (!v.ok) return
+    expect(v.doc.buildings.map((b) => [b.claims, b.nameState])).toEqual([[[], 'observed'], [[], 'observed']])
+    expect(v.doc.edges[0].claims).toEqual([])
+    expect(v.doc.districts[0].nameState).toBe('observed')
+  })
+
+  it('keeps claims and an inferred name state, and accepts person evidence', () => {
+    const doc = fresh()
+    doc.buildings[0].claims = [{ text: 'ok', state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }] }]
+    doc.buildings[0].nameState = 'inferred'
+    doc.districts[0].nameState = 'inferred'
+    const v = validateWorld(doc)
+    expect(v.ok).toBe(true)
+    if (v.ok) expect(v.doc.buildings[0].claims[0].evidence[0].kind).toBe('person')
+  })
+
+  it('rejects an unknown name state and a claim without evidence', () => {
+    const a = fresh(); a.buildings[0].nameState = 'guessed'
+    expect(errorsOf(a).join(' ')).toContain('nameState "guessed" is invalid')
+    const b = fresh(); b.edges[0].claims = [{ text: 't', state: 'observed', evidence: [] }]
+    expect(errorsOf(b).length).toBeGreaterThan(0)
+  })
+})

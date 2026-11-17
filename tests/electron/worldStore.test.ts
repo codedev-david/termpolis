@@ -11,7 +11,7 @@ function doc(projectKey = 'demo'): WorldDoc {
     projectKey,
     generatedAt: 1,
     sourceRevision: { head: 'abc', dirty: false },
-    districts: [{ id: 'd-a', name: 'a', subtitle: '', hue: 0, members: ['b-a'] }],
+    districts: [{ id: 'd-a', name: 'a', subtitle: '', hue: 0, members: ['b-a'], nameState: 'observed' }],
     buildings: [
       {
         id: 'b-a',
@@ -24,7 +24,9 @@ function doc(projectKey = 'demo'): WorldDoc {
         how: [],
         why: [],
         status: 'gap',
-        members: ['src/a.ts']
+        members: ['src/a.ts'],
+        claims: [],
+        nameState: 'observed'
       }
     ],
     edges: [],

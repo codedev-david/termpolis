@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url'
 import { app, utilityProcess } from 'electron'
 import { graphKeyForRoot, graphSnapshot, type GraphSnapshot } from '../codeGraph'
 import { killUtility } from '../utilityKill'
-import type { WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
+import type { Claim, WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
 import type { SerializedError, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
 import { worldFileName } from './worldStore'
 import { linkedPlanStamp, planStamp } from '../../shared/world/reconcile'
@@ -346,6 +346,20 @@ export function createWorldClient(
     async readDesign(key: string, q: WorldQuery): Promise<WorldReadResult | null> {
       if (!(await hasStoredWorld(key))) return null
       return call<WorldReadResult>('read', [key, q ?? {}])
+    },
+    /**
+     * Stores a person's claim on a building or line of the world `key` (a project key or a design:<id> key
+     * this run knows or has stored) and answers the doc with it merged in. An unknown world or part rejects.
+     */
+    async annotate(key: string, itemId: string, claim: Claim): Promise<WorldDoc> {
+      if (typeof key !== 'string' || key === '') throw new Error('No world with that key.')
+      if (!known.has(key)) {
+        const stored = await Promise.resolve()
+          .then(() => hasStoredWorld(key))
+          .catch(() => false)
+        if (stored !== true) throw new Error('No world with that key.')
+      }
+      return call<WorldDoc>('annotate', [key, itemId, claim])
     },
     /**
      * Whether a world exists for `root`: compiled or loaded this run, or stored on disk. Never starts

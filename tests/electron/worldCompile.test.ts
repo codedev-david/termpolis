@@ -152,7 +152,8 @@ describe('compileWorld', () => {
       why: [],
       tech: ['Spawn'],
       rate: '',
-      twoWay: false
+      twoWay: false,
+      claims: [{ text: 'Seen in code', state: 'observed', evidence: [{ kind: 'file', ref: 'src/main/index.ts:6' }] }]
     })
     expect(doc.edges.find((e) => e.to === 'x-api-example-com')?.tech).toEqual(['HTTP client'])
 
@@ -710,3 +711,71 @@ describe('createRecompileScheduler', () => {
     expect(run).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('claims, name states and annotations', () => {
+  const person = { text: 'Confirmed by a person', state: 'verified' as const, evidence: [{ kind: 'person' as const, ref: 'confirmed in Lumopolis' }] }
+
+  it('a building with passing linked tests gets one verified claim; one with none gets none', async () => {
+    const doc = await compileFixture()
+    const byId = new Map(doc.buildings.map((b) => [b.id, b]))
+    expect(byId.get(VIEW)?.claims).toEqual([
+      { text: 'Its 1 linked tests passed', state: 'verified', evidence: [{ kind: 'test', ref: 'src/renderer/view.test.ts' }] }
+    ])
+    expect(byId.get(MAIN)?.claims).toEqual([])
+  })
+
+  it('a line shows where it is seen in code: its boundaries file:line, else the importing files', async () => {
+    const doc = await compileFixture()
+    const ipc = doc.edges.find((e) => e.id === edgeId({ from: RENDERER, to: MAIN })) as WorldDoc['edges'][number]
+    expect(ipc.claims).toHaveLength(1)
+    expect(ipc.claims[0]).toMatchObject({ text: 'Seen in code', state: 'observed' })
+    expect(ipc.claims[0].evidence.every((e) => e.kind === 'file' && /^src\/.+:\d+$/.test(e.ref))).toBe(true)
+    // Every line has either claim or none, never a malformed one; at least one comes from imports (no line number).
+    expect(doc.edges.every((e) => e.claims.every((c) => c.text === 'Seen in code' && c.evidence.length >= 1 && c.evidence.length <= 3))).toBe(true)
+    expect(doc.edges.some((e) => e.claims.some((c) => c.evidence.some((x) => !/:\d+$/.test(x.ref))))).toBe(true)
+  })
+
+  it('cites at most three places', async () => {
+    const files: Record<string, string> = { ...FIXTURE }
+    const imports: Record<string, string[]> = { ...IMPORTS }
+    for (const n of ['a', 'b', 'c', 'd']) {
+      files[`src/renderer/ui/${n}.ts`] = "import './view'\n"
+      imports[`src/renderer/ui/${n}.ts`] = ['../view']
+    }
+    files['src/renderer/ui/e.ts'] = 'export const e = 1\n' // a member that imports nothing
+    imports['src/renderer/ui/a.ts'] = ['../view', 'some-package'] // a package is no place in this code
+    const doc = await compileWorld({ snap: snapOf(files, imports), projectKey: 'k', head: HEAD, previous: null }, mkDeps(files))
+    const line = doc.edges.find((e) => e.id === edgeId({ from: 'b-src-renderer-ui', to: VIEW })) as WorldDoc['edges'][number]
+    expect(line.claims[0].evidence.map((e) => e.ref)).toEqual(['src/renderer/ui/a.ts', 'src/renderer/ui/b.ts', 'src/renderer/ui/c.ts'])
+  })
+
+  it('a name the model gave is inferred, one from the code is observed', async () => {
+    const plain = await compileFixture()
+    expect(plain.buildings.every((b) => b.nameState === 'observed')).toBe(true)
+    expect(plain.districts.every((d) => d.nameState === 'observed')).toBe(true)
+    const b = plain.buildings[0]
+    const d = plain.districts.find((x) => x.id === b.districtId) as WorldDoc['districts'][number]
+    const llm = vi.fn(async (prompt: string): Promise<string | null> =>
+      prompt.includes(`DISTRICT "${d.id}"`) ? JSON.stringify({ district: { name: 'Renamed District', subtitle: 's' }, buildings: { [b.id]: { name: 'Renamed Building' } } }) : null
+    )
+    const doc = await compileFixture({ label: labelDeps({ llm }) })
+    const nb = doc.buildings.find((x) => x.id === b.id) as WorldDoc['buildings'][number]
+    expect(nb.name).toBe('Renamed Building')
+    expect(nb.nameState).toBe('inferred')
+    expect(doc.districts.find((x) => x.id === d.id)?.nameState).toBe('inferred')
+    expectValid(doc)
+  })
+
+  it('merges stored annotations by item id into buildings and lines, and again on every compile', async () => {
+    const first = await compileFixture()
+    const edge = first.edges[0]
+    const annotations = vi.fn(async () => ({ [VIEW]: [person], [edge.id]: [person], nothing: [person] }))
+    const doc = await compileFixture({ annotations })
+    expect(doc.buildings.find((b) => b.id === VIEW)?.claims.slice(-1)[0]).toEqual(person)
+    expect(doc.edges.find((e) => e.id === edge.id)?.claims.slice(-1)[0]).toEqual(person)
+    expectValid(doc)
+    // A recompile over that doc does not double them.
+    const again = await compileFixture({ annotations }, doc)
+    expect(again.buildings.find((b) => b.id === VIEW)?.claims.filter((c) => c.evidence.some((e) => e.kind === 'person'))).toEqual([person])
+  })
+});

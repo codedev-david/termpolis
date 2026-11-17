@@ -726,6 +726,7 @@ export interface TermpolisAPI {
   /** Lumopolis home/switcher: a recent world was opened, so it is marked opened now (null if unknown). */
   worldTouchSource: (key: string) => Promise<IpcResponse<WorldEntry | null>>
   /** Lumopolis Build it: link the design to the folder; answers the first prompt for the agent terminal. */
+  worldAnnotate: (key: string, itemId: string, text: string) => Promise<IpcResponse<WorldDoc>>
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => Promise<IpcResponse<BuildItResult>>
   /** Lumopolis settings: whether the world compiler may ask the Lumopolis agent's cheapest model to describe parts. */
   worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldAgent: 'claude' | 'codex' | 'gemini' }>>

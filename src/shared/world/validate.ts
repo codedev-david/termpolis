@@ -7,7 +7,8 @@ type Rec = Record<string, unknown>
 
 const CLAIM_STATES = new Set(['proposed', 'observed', 'inferred', 'verified'])
 const EVIDENCE_KINDS = new Set(['file', 'symbol', 'test', 'transcriptStep', 'memory', 'commit',
-  'trace', 'metric', 'log', 'deploy'])
+  'trace', 'metric', 'log', 'deploy', 'person'])
+const NAME_STATES = new Set(['observed', 'inferred'])
 // Kinds whose ref is a path inside the repository: exports must stay repository-relative (§5.9).
 const PATH_KINDS = new Set(['file', 'symbol', 'test'])
 const BUILD_STATUSES = new Set(['verified', 'built', 'gap', 'proposed'])
@@ -115,6 +116,16 @@ const checkClaims = (ctx: Ctx, p: string, field: string, v: unknown): void => {
   }
 }
 
+/** A world saved before claims and name states existed still loads: a missing list is empty, a missing name state observed. */
+const fillClaims = (ctx: Ctx, p: string, rec: Rec): void => {
+  if (!has(rec, 'claims')) rec.claims = []
+  checkClaims(ctx, p, 'claims', rec.claims)
+}
+const fillNameState = (ctx: Ctx, p: string, rec: Rec): void => {
+  if (!has(rec, 'nameState')) rec.nameState = 'observed'
+  else if (!NAME_STATES.has(rec.nameState as string)) ctx.errors.push(`${p}: nameState "${String(rec.nameState)}" is invalid`)
+}
+
 const checkFloors = (ctx: Ctx, p: string, floors: unknown): void => {
   if (!Array.isArray(floors)) {
     ctx.errors.push(`${p}: floors must be an array`)
@@ -148,6 +159,8 @@ const checkBuilding = (ctx: Ctx, prefix: string, b: unknown, i: number, proposed
   checkFloors(ctx, p, rec.floors)
   checkClaims(ctx, p, 'how', rec.how)
   checkClaims(ctx, p, 'why', rec.why)
+  fillClaims(ctx, p, rec)
+  fillNameState(ctx, p, rec)
   if (id !== null && ctx.positions) {
     if (!has(ctx.positions, id)) ctx.errors.push(`${p}: no layout position`)
     else {
@@ -169,6 +182,7 @@ const checkEdge = (ctx: Ctx, prefix: string, e: unknown, i: number, nodes: Set<s
   checkTech(ctx, p, 'tech', rec.tech)
   checkClaims(ctx, p, 'how', rec.how)
   checkClaims(ctx, p, 'why', rec.why)
+  fillClaims(ctx, p, rec)
 }
 
 const checkDistrict = (ctx: Ctx, d: unknown, i: number): void => {
@@ -179,6 +193,7 @@ const checkDistrict = (ctx: Ctx, d: unknown, i: number): void => {
   checkStr(ctx, p, rec, 'subtitle')
   if (!isNum(rec.hue)) ctx.errors.push(`${p}: hue must be a number`)
   checkStrings(ctx, p, 'members', rec.members)
+  fillNameState(ctx, p, rec)
 }
 
 const checkExternal = (ctx: Ctx, x: unknown, i: number): void => {

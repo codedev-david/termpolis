@@ -27,13 +27,14 @@
 // without guessing at the 3D scene. Off in every normal run.
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
-import type { BuildItResult, Tour, WorldDoc } from '../../../../shared/world/types'
+import type { BuildItResult, Evidence, Tour, WorldDoc } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
-import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, renderFallback, THEMES } from '../../world/engine'
+import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, renderFallback, techCard, THEMES, usesTech } from '../../world/engine'
 import type { LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
 import { WorldToolbar } from './WorldToolbar'
 import { WorldCard } from './WorldCard'
+import { EvidenceView } from './EvidenceView'
 import { WorldEmptyState } from './WorldEmptyState'
 import { focusTerminal } from '../../lib/accountMenu'
 import { useTerminalStore } from '../../store/terminalStore'
@@ -105,6 +106,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [progress, setProgress] = useState<{ stage: string; pct: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [card, setCard] = useState<string | null>(null)
+  /** The evidence a card's button opened, shown under the card until closed or the card changes. */
+  const [evidence, setEvidence] = useState<Evidence | null>(null)
   const [layers, setLayersState] = useState<LayerState>(DEFAULT_LAYERS)
   // The legend is expanded on a wide pane and a chip on a narrow one, until the user chooses.
   const [legendChoice, setLegendChoice] = useState<boolean | null>(null)
@@ -414,6 +417,29 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     fallbackIdRef.current = id
     setCard(partCard(d, id))
   }
+  /** A technology chip: the glossary card, and every building and line that uses it lit up. */
+  const openTech = (techId: string): void => {
+    armedRef.current = false
+    const d = docRef.current as WorldDoc
+    if (viewer) {
+      void viewer.apply({ type: 'openCard', id: 'tech:' + techId })
+      void viewer.apply({ type: 'highlight', ids: usesTech(d, techId) })
+      return
+    }
+    fallbackIdRef.current = null
+    setCard(techCard(d, techId))
+  }
+  /** Confirm on an inferred claim: a person's verified copy is stored and the pane shows the doc that comes back. */
+  const confirmClaim = (itemId: string, text: string): void => {
+    const d = docRef.current as WorldDoc
+    window.termpolis.worldAnnotate(d.projectKey, itemId, text)
+      .then((res) => {
+        if (!mountedRef.current) return
+        if (res.success) setDoc(res.data)
+        else setNotice(`Couldn't confirm: ${res.error}`)
+      })
+      .catch((e: unknown) => { if (mountedRef.current) setNotice(`Couldn't confirm: ${messageOf(e)}`) })
+  }
   const onFallbackClick = (e: MouseEvent<HTMLDivElement>): void => {
     const item = (e.target as Element).closest('[data-kind][data-id]')
     if (!item) return
@@ -589,7 +615,12 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             {busy ? 'Re-laying out…' : notice}
           </div>
         )}
-        {card !== null && <WorldCard boxRef={cardRef} html={card} maxHeight={cardCap} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
+        {card !== null && <WorldCard boxRef={cardRef} html={card} maxHeight={cardCap} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onEvidence={setEvidence} />}
+        {card !== null && evidence !== null && (
+          <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 4, maxWidth: 360 }} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1">
+            <EvidenceView evidence={evidence} onClose={() => setEvidence(null)} />
+          </div>
+        )}
         {askSlot && !home && (
           <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3 }} data-testid="world-ask-slot">
             {askSlot(viewer, doc, worldKey, askLink)}

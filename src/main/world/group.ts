@@ -50,7 +50,7 @@ export interface GroupEdge {
 }
 
 export interface Grouping {
-  districts: Omit<District, 'hue' | 'subtitle'>[]
+  districts: Omit<District, 'hue' | 'subtitle' | 'nameState'>[]
   buildings: GroupBuilding[]
   edges: GroupEdge[]
 }

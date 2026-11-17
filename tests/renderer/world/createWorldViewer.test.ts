@@ -155,6 +155,13 @@ describe('2D fallback: apply()', () => {
     expect(viewer.getSelection()).toEqual(['sqlite'])
   })
 
+  it('openCard "tech:<term>" opens that glossary card even when a part shares the name', async () => {
+    const { viewer, sels, lastCard } = setup({ reducedMotion: true })
+    await viewer.apply({ type: 'openCard', id: 'tech:sqlite' })
+    expect(sels.pop()).toEqual({ kind: 'tech', id: 'sqlite' })
+    expect(lastCard()).toContain('A small database stored in a single file.')
+  })
+
   it('openCard on a district id selects the district (answers may name districts) and opens no card', async () => {
     const { viewer, sels, cards } = setup({ reducedMotion: true })
     await viewer.apply({ type: 'openCard', id: 'd1' })
@@ -345,7 +352,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, wireframes: [], fogged: [] })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, wireframes: [], fogged: [], highlighted: [] })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -690,6 +697,14 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(viewer.cameraRegion()).toEqual(['b1'])
   })
 
+  it('drawn reports what a highlight lit, and nothing once the focus is gone', async () => {
+    const { viewer } = setup3d()
+    await viewer.apply({ type: 'highlight', ids: ['b1', 'b2'] })
+    expect([...viewer.drawn().highlighted].sort()).toEqual(['b1', 'b2', 'e1'])
+    await viewer.apply({ type: 'reset' })
+    expect(viewer.drawn().highlighted).toEqual([])
+  })
+
   it('screenPoint, linePoints, pickAt and drawn come from the renderer', () => {
     const { viewer, r, aim } = setup3d()
     expect(viewer.screenPoint('b1')).toEqual({ x: 5, y: 6 })
@@ -699,7 +714,7 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.pick).toHaveBeenLastCalledWith(3, 4)
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, wireframes: ['b4'], fogged: [] })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, wireframes: ['b4'], fogged: [], highlighted: [] })
   })
 
   it('viewer.apply(fog) fogs the ids until the next reset; a highlight keeps the fog; resetView, load and an empty fog lift it', async () => {

@@ -1267,6 +1267,8 @@ describe('preload — workflow orchestrator bridge', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:compile', { root: 'C:/repo' })
     await api.worldRelayout('C:/repo')
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:relayout', { root: 'C:/repo' })
+    await api.worldAnnotate('k', 'b1', 'text')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:annotate', { key: 'k', itemId: 'b1', text: 'text' })
     await api.worldSettingsGet()
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('world:settings-get')
     await api.worldSettingsSet({ worldLabelling: false })

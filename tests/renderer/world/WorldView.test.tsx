@@ -1049,3 +1049,88 @@ describe('WorldView layout (visual fidelity)', () => {
     expect(screen.queryByTestId('world-legend')).toBeNull()
   })
 })
+
+describe('WorldView card actions', () => {
+  const infer = (): WorldDoc => {
+    const d = minimal()
+    d.buildings[0].how = [{ text: 'Guessed role', state: 'inferred', evidence: [{ kind: 'file', ref: 'src/a.ts:3' }] }]
+    return d
+  }
+  const open = async (doc: WorldDoc, extra: Record<string, unknown> = {}) => {
+    const b = bridge({ worldGet: vi.fn(async () => ok(doc)), ...extra })
+    await mount()
+    act(() => viewer().opts.renderCard(buildingCard(doc, 'b1')))
+    return b
+  }
+
+  it('a chip opens its glossary card and lights every building and line that uses it (3D)', async () => {
+    await open(infer())
+    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-tech]') as Element)
+    const calls = viewer().apply.mock.calls.map((c: unknown[]) => c[0] as { type: string; id?: string; ids?: string[] })
+    expect(calls[0]).toMatchObject({ type: 'openCard' })
+    expect(calls[0].id?.startsWith('tech:')).toBe(true)
+    expect(calls[1].type).toBe('highlight')
+    expect((calls[1].ids as string[]).length).toBeGreaterThan(0)
+  })
+
+  it('a chip opens the glossary card in the 2D list too', async () => {
+    h.webgl = false
+    const doc = infer()
+    bridge({ worldGet: vi.fn(async () => ok(doc)) })
+    await mount()
+    fireEvent.click(screen.getByTestId('world-fallback').querySelector('[data-id="b1"]') as Element)
+    const chip = screen.getByTestId('world-card').querySelector('[data-tech]') as Element
+    const term = chip.getAttribute('data-tech') as string
+    fireEvent.click(chip)
+    expect(screen.getByTestId('world-card').querySelector('h3')?.textContent?.toLowerCase()).toContain(term.toLowerCase())
+  })
+
+  it('Confirm stores the claim and the pane shows the doc that comes back', async () => {
+    const doc = infer()
+    const returned = infer()
+    returned.generatedAt = doc.generatedAt + 1
+    returned.buildings[0].claims = [{ text: 'Guessed role', state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }] }]
+    const worldAnnotate = vi.fn(async () => ok(returned))
+    await open(doc, { worldAnnotate })
+    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
+    await settle()
+    expect(worldAnnotate).toHaveBeenCalledWith(doc.projectKey, 'b1', 'Guessed role')
+    expect(viewer().load).toHaveBeenLastCalledWith(returned, expect.anything())
+  })
+
+  it('Confirm that fails, by an answer or a throw, says so and keeps the doc', async () => {
+    const worldAnnotate = vi.fn().mockResolvedValueOnce(fail('No part with that id.')).mockRejectedValueOnce(new Error('boom'))
+    await open(infer(), { worldAnnotate })
+    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
+    await settle()
+    expect(screen.getByRole('status')).toHaveTextContent("Couldn't confirm: No part with that id.")
+    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
+    await settle()
+    expect(screen.getByRole('status')).toHaveTextContent("Couldn't confirm: boom")
+  })
+
+  it('an evidence button shows what it points at under the card, and closing the card or the evidence clears it', async () => {
+    await open(infer())
+    fireEvent.click(screen.getByTestId('world-card').querySelector('.claim .ev') as Element)
+    expect(screen.getByTestId('evidence-view')).toHaveTextContent('file src/a.ts:3')
+    fireEvent.click(screen.getByRole('button', { name: 'Close evidence' }))
+    expect(screen.queryByTestId('evidence-view')).toBeNull()
+    fireEvent.click(screen.getByTestId('world-card').querySelector('.claim .ev') as Element)
+    fireEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    expect(screen.queryByTestId('evidence-view')).toBeNull()
+  })
+
+  it('a Confirm answered after the pane closed changes nothing and does not throw', async () => {
+    const late = deferred<Res<WorldDoc>>()
+    const late2 = deferred<Res<WorldDoc>>()
+    const worldAnnotate = vi.fn().mockReturnValueOnce(late.promise).mockReturnValueOnce(late2.promise)
+    await open(infer(), { worldAnnotate })
+    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
+    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
+    cleanup()
+    late.resolve(ok(infer()))
+    late2.reject(new Error('late'))
+    await settle()
+    expect(worldAnnotate).toHaveBeenCalledTimes(2)
+  })
+})

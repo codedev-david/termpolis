@@ -302,6 +302,7 @@ const api: TermpolisAPI = {
   worldClone: (url: string, ref?: string) => ipcRenderer.invoke('world:clone', ref === undefined ? { url } : { url, ref }),
   worldCloneCancel: (url: string, ref?: string) => ipcRenderer.invoke('world:clone-cancel', ref === undefined ? { url } : { url, ref }),
   worldRemoveSource: (key: string) => ipcRenderer.invoke('world:remove-source', { key }),
+  worldAnnotate: (key: string, itemId: string, text: string) => ipcRenderer.invoke('world:annotate', { key, itemId, text }),
   worldTouchSource: (key: string) => ipcRenderer.invoke('world:touch-source', { key }),
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => ipcRenderer.invoke('world:build-it', req),
   onWorldProgress: (cb) => { const h = (_: unknown, e: import('../shared/world/types').WorldProgressEvent) => cb(e); ipcRenderer.on('world:progress', h); return () => ipcRenderer.removeListener('world:progress', h) },

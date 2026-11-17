@@ -2,6 +2,8 @@
 //   world:get      { root } → ok(WorldDoc | null)
 //   world:compile  { root } → ok(WorldDoc)
 //   world:relayout { root } → ok(WorldDoc)   (a compile that ignores the stored positions)
+//   world:annotate { key, itemId, text } → ok(WorldDoc)   (a person confirms a claim: stored as a verified claim with
+//                                      person evidence, merged into the world; the pane shows the returned doc)
 //   world:settings-get       → ok(WorldSettings)
 //   world:settings-set patch → ok(WorldSettings)  (only the known fields of the patch apply; a running
 //                              world host is told at once, so turning labelling off needs no restart)
@@ -29,9 +31,10 @@
 // `ipc` and `win` are parameters, so this module never imports Electron and tests pass fakes.
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
+import { NO_PART } from './annotations'
 import { isExecAgent } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
-import type { AskRequest, AskResult, BuildItResult, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
+import type { AskRequest, AskResult, BuildItResult, Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
 import { folderKey, forbiddenFolder } from './folderSafety'
@@ -47,7 +50,9 @@ export interface WorldIpcWindow {
   webContents: { send(channel: string, ...args: unknown[]): void }
 }
 
-export type WorldIpcClient = Pick<WorldClient, 'get' | 'compile' | 'relayout' | 'applySettings' | 'onProgress' | 'onUpdated'>
+const ANNOTATE_FAILED = "Couldn't save that confirmation."
+
+export type WorldIpcClient = Pick<WorldClient, 'get' | 'compile' | 'relayout' | 'applySettings' | 'annotate' | 'onProgress' | 'onUpdated'>
 
 const rootOf = (args: unknown): string | null => {
   const root = args && typeof args === 'object' ? (args as { root?: unknown }).root : undefined
@@ -202,6 +207,21 @@ export function registerWorldIpc(
   ipc.handle('world:get', handler((root) => client.get(root)))
   ipc.handle('world:compile', handler((root) => client.compile(root)))
   ipc.handle('world:relayout', handler((root) => client.relayout(root)))
+
+  // A person's confirmation: the only writer of person evidence. The claim is built here, never taken from the pane.
+  ipc.handle('world:annotate', async (_event: unknown, args?: unknown) => {
+    const key = field(args, 'key')
+    const itemId = field(args, 'itemId')
+    const text = field(args, 'text')
+    if (!nonEmpty(key) || typeof itemId !== 'string' || typeof text !== 'string' || text.trim() === '') return err('key, itemId and text required')
+    try {
+      const claim: Claim = { text: text.trim(), state: 'verified', evidence: [{ kind: 'person', ref: 'confirmed in Lumopolis' }] }
+      return ok(await client.annotate(key, itemId, claim))
+    } catch (e) {
+      const m = e instanceof Error ? e.message : ''
+      return err(m === NO_PART || m === 'No world with that key.' ? m : ANNOTATE_FAILED)
+    }
+  })
 
   // The Settings toggle "Describe parts with AI" (worldLabelling).
   ipc.handle('world:settings-get', () => {
