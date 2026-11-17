@@ -201,8 +201,9 @@ describe('nameBudget', () => {
 describe('rightInset', () => {
   it('keeps the panel strip out of a wide view only', () => {
     expect(rightInset(1600, 244)).toBe(244)
-    expect(rightInset(732, 244)).toBe(244)
-    expect(rightInset(700, 244)).toBe(0)
+    expect(rightInset(360, 244)).toBe(244) // the pane's narrowest
+    expect(rightInset(342, 244)).toBe(244)
+    expect(rightInset(341, 244)).toBe(0)
     expect(rightInset(1600, 0)).toBe(0)
   })
 })

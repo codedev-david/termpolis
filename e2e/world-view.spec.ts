@@ -527,11 +527,16 @@ test.describe.serial('Lumopolis in the real app', () => {
     expect(p95, `p95 keystroke echo over budget: ${summary}`).toBeLessThan(P95_BUDGET_MS)
   })
 
-  test('6. over the whole session, the renderer logged no console errors and threw no page errors', async () => {
-    expect(consoleErrors).toEqual([])
-  })
-
-  test('7. the terminal stays visible and takes typing while Lumopolis is open', async () => {
+  test('6. the terminal stays visible and takes typing while Lumopolis is open', async () => {
+    // Test 5 closed the pane: open it again the way a person does, from the command palette.
+    if (await pane().count() === 0) {
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+      await page.keyboard.press('ControlOrMeta+k')
+      const input = page.getByPlaceholder('Type a command...')
+      await expect(input).toBeVisible()
+      await input.fill('Open Lumopolis')
+      await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()
+    }
     await expect(pane()).toBeVisible()
     // Click the terminal: the pane is beside it, not over it, so the click lands on the terminal.
     const term = page.locator('.xterm').last()
@@ -545,5 +550,9 @@ test.describe.serial('Lumopolis in the real app', () => {
     const overlapX = Math.min(a!.x + a!.width, b!.x + b!.width) - Math.max(a!.x, b!.x)
     expect(overlapX, 'the pane and the terminal overlap').toBeLessThanOrEqual(1)
     await page.keyboard.press('Control+u')
+  })
+
+  test('7. over the whole session, the renderer logged no console errors and threw no page errors', async () => {
+    expect(consoleErrors).toEqual([])
   })
 })

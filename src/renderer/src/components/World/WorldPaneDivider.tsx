@@ -1,11 +1,16 @@
 // The handle between the terminals and the Lumopolis pane: drag it, or focus it and press the arrow
 // keys. It reports how far it moved to the right; App turns that into the pane's width.
+import { useEffect, useRef } from 'react'
 import type { KeyboardEvent, MouseEvent } from 'react'
 import { WORLD_DIVIDER_PX } from './worldPane'
 
 export const DIVIDER_KEY_STEP_PX = 24
 
-export function WorldPaneDivider({ onDrag }: { onDrag(dx: number): void }): JSX.Element {
+export function WorldPaneDivider({ onDrag, width, min, max }: { onDrag(dx: number): void; width: number; min: number; max: number }): JSX.Element {
+  // Ends a drag in progress: the mouse-up, or the divider unmounting under it (the pane closed by a
+  // shortcut mid-drag), which must not leave its listeners on the window.
+  const stopRef = useRef<(() => void) | null>(null)
+  useEffect(() => () => stopRef.current?.(), [])
   const onMouseDown = (down: MouseEvent): void => {
     down.preventDefault()
     let last = down.clientX
@@ -16,7 +21,9 @@ export function WorldPaneDivider({ onDrag }: { onDrag(dx: number): void }): JSX.
     const up = (): void => {
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
+      stopRef.current = null
     }
+    stopRef.current = up
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
   }
@@ -29,6 +36,9 @@ export function WorldPaneDivider({ onDrag }: { onDrag(dx: number): void }): JSX.
     <div
       role="separator"
       aria-orientation="vertical"
+      aria-valuenow={width}
+      aria-valuemin={min}
+      aria-valuemax={max}
       aria-label="Resize Lumopolis"
       tabIndex={0}
       data-testid="world-pane-divider"

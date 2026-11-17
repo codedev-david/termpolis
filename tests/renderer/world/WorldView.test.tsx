@@ -421,6 +421,38 @@ describe('WorldView', () => {
     useTerminalStore.setState({ activeTerminalId: null })
   })
 
+  it('takes the focus back when a focused child closes and the browser drops it to the body', async () => {
+    bridge()
+    const { onClose } = await mount()
+    const relayout = screen.getByTestId('world-relayout')
+    relayout.focus()
+    fireEvent.click(relayout)
+    const cancel = screen.getByTestId('world-relayout-cancel')
+    cancel.focus()
+    fireEvent.click(cancel) // the question closes and its focused button is gone
+    ;(document.activeElement as HTMLElement).blur()
+    expect(document.activeElement).toBe(document.body)
+    // The next render of the pane puts the focus back on it, so Esc is still the pane's.
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-cancel'))
+    expect(document.activeElement).toBe(dialog())
+    esc()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('does not take the focus back once it has gone to something outside the pane', async () => {
+    bridge()
+    await mount()
+    screen.getByTestId('world-relayout').focus()
+    const outside = document.createElement('input')
+    document.body.appendChild(outside)
+    outside.focus()
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-cancel')) // a second render: still not taken back
+    expect(document.activeElement).toBe(outside)
+    outside.remove()
+  })
+
   it('takes its width from the width prop', async () => {
     const get = deferred<Res<WorldDoc | null>>()
     bridge({ worldGet: vi.fn(() => get.promise) })

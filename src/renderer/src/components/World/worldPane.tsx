@@ -21,9 +21,9 @@ export const WORLD_PANE_DEFAULT_FRACTION = 0.5
 export const WORLD_DIVIDER_PX = 4
 const WIDTH_KEY = 'termpolis.world.paneWidth'
 
-/** The pane's width within a row `rowWidth` wide (the room for the terminals and the pane together). */
+/** The pane's width within a row `rowWidth` wide (the room for the terminals, the divider and the pane). */
 export function clampWorldPaneWidth(px: number, rowWidth: number): number {
-  const room = Math.max(0, rowWidth - TERMINAL_MIN_PX)
+  const room = Math.max(0, rowWidth - TERMINAL_MIN_PX - WORLD_DIVIDER_PX)
   return Math.min(Math.max(px, WORLD_PANE_MIN_PX), room)
 }
 
@@ -53,7 +53,7 @@ export function worldPaneStyle(background: string, width: number): CSSProperties
  * The pane's width and its divider's drag handler. `mainRef` is the terminals' column: the room is its
  * width plus the pane and divider now beside it, so it holds whatever else shares the row.
  */
-export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active: boolean): { width: number; onDrag: (dx: number) => void } {
+export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active: boolean): { width: number; min: number; max: number; onDrag: (dx: number) => void } {
   const [room, setRoom] = useState(() => window.innerWidth)
   const [saved, setSaved] = useState<number | null>(loadWorldPaneWidth)
   const width = clampWorldPaneWidth(saved ?? Math.round(room * WORLD_PANE_DEFAULT_FRACTION), room)
@@ -65,7 +65,13 @@ export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active
     const measure = (): void => setRoom((mainRef.current as HTMLElement).clientWidth + widthRef.current + WORLD_DIVIDER_PX)
     measure()
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
+    // Anything else that resizes the terminals' column (the Changes panel, the sidebar) re-clamps too.
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    observer?.observe(mainRef.current as HTMLElement)
+    return () => {
+      window.removeEventListener('resize', measure)
+      observer?.disconnect()
+    }
   }, [active, mainRef])
 
   const roomRef = useRef(room)
@@ -77,7 +83,7 @@ export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active
     saveWorldPaneWidth(next)
     setSaved(next)
   }, [])
-  return { width, onDrag }
+  return { width, min: clampWorldPaneWidth(0, room), max: clampWorldPaneWidth(Infinity, room), onDrag }
 }
 
 export function WorldPaneOpening({ width }: { width: number }): JSX.Element {

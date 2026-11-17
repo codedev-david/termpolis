@@ -12,12 +12,12 @@ describe('clampWorldPaneWidth', () => {
     expect(WORLD_PANE_MIN_PX).toBe(360)
     expect(TERMINAL_MIN_PX).toBe(320)
     expect(WORLD_PANE_DEFAULT_FRACTION).toBe(0.5)
-    expect(clampWorldPaneWidth(900, 1000)).toBe(680)
+    expect(clampWorldPaneWidth(900, 1000)).toBe(676) // 1000 less the terminals' 320 and the divider's 4
     expect(clampWorldPaneWidth(100, 1000)).toBe(360)
-    expect(clampWorldPaneWidth(500, 800)).toBe(480)
+    expect(clampWorldPaneWidth(500, 800)).toBe(476)
   })
   it('lets the terminal minimum win when the row cannot hold both (Ruling P12)', () => {
-    expect(clampWorldPaneWidth(500, 600)).toBe(280)
+    expect(clampWorldPaneWidth(500, 600)).toBe(276)
     expect(clampWorldPaneWidth(500, 100)).toBe(0)
   })
 })
@@ -72,6 +72,33 @@ describe('useWorldPaneWidth', () => {
     expect(result.current.width).toBe(418) // half of 100 + 731 + 4, rounded: it follows the window until it is dragged
   })
 
+  it('re-clamps when the terminals column changes size on its own (the Changes panel, the sidebar)', () => {
+    let notify: () => void = () => {}
+    const disconnect = vi.fn()
+    const observe = vi.fn()
+    vi.stubGlobal('ResizeObserver', class { constructor(cb: () => void) { notify = cb } observe = observe; disconnect = disconnect })
+    saveWorldPaneWidth(700)
+    const el = main(1000)
+    const { result, unmount } = renderHook(() => useWorldPaneWidth(el, true))
+    expect(observe).toHaveBeenCalledWith(el.current)
+    expect(result.current.width).toBe(700)
+    // Changes opens beside it: the column is 300 px, the room 300 + 700 + 4. The pane gives way, so
+    // the column grows back to the terminals' 320.
+    act(() => { el.current.clientWidth = 300; notify() })
+    expect(result.current.width).toBe(680)
+    unmount()
+    expect(disconnect).toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('exposes the width limits for the divider', () => {
+    const el = main(1000)
+    const { result } = renderHook(() => useWorldPaneWidth(el, true))
+    // room 1000 + 512 + 4 = 1516
+    expect(result.current.min).toBe(360)
+    expect(result.current.max).toBe(1516 - 320 - 4)
+  })
+
   it('stops listening when it is not active, and when it unmounts', () => {
     const add = vi.spyOn(window, 'addEventListener')
     const remove = vi.spyOn(window, 'removeEventListener')
@@ -96,6 +123,6 @@ describe('useWorldPaneWidth', () => {
     act(() => { result.current.onDrag(40); result.current.onDrag(40) })
     expect(result.current.width).toBe(420)
     act(() => result.current.onDrag(-5000))
-    expect(result.current.width).toBe(1484) // the room 1400 + 400 + 4, less the terminals' 320
+    expect(result.current.width).toBe(1480) // the room 1400 + 400 + 4, less the terminals' 320 and the divider's 4
   })
 })

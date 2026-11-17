@@ -140,7 +140,7 @@ export default function App() {
   const [showMemory, setShowMemory] = useState(false)
   const [showWorld, setShowWorld] = useState(false)
   const mainRef = useRef<HTMLElement>(null)
-  const { width: worldWidth, onDrag: onWorldDrag } = useWorldPaneWidth(mainRef, showWorld)
+  const { width: worldWidth, min: worldMin, max: worldMax, onDrag: onWorldDrag } = useWorldPaneWidth(mainRef, showWorld)
   // Bumped to open the Memory panel on its This week tab.
   const [memoryWeekRequest, setMemoryWeekRequest] = useState(0)
   const [showMemoryTour, setShowMemoryTour] = useState(false)
@@ -1238,7 +1238,7 @@ export default function App() {
             // boundary: the opaque pane frame fills its column at once while the Lumopolis chunk (the
             // engine and Three.js) loads.
             <>
-              <WorldPaneDivider onDrag={onWorldDrag} />
+              <WorldPaneDivider onDrag={onWorldDrag} width={worldWidth} min={worldMin} max={worldMax} />
               <Suspense fallback={<WorldPaneOpening width={worldWidth} />}>
                 <WorldView
                   root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}

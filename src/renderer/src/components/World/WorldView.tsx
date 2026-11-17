@@ -113,6 +113,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const worldRoot = world.kind === 'root' ? resolvedRoot : null
 
   const dialogRef = useRef<HTMLDivElement>(null)
+  // True while the focus is somewhere in the pane. When a focused child unmounts (a card or dialog
+  // closes) the browser drops the focus to the body: take it back, so Esc keeps working.
+  const hadFocusRef = useRef(false)
   const hostRef = useRef<HTMLDivElement>(null)
   // Latest values for the long-lived listeners (push events, Esc).
   const rootRef = useRef<string | null>(null)
@@ -379,6 +382,13 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       .finally(() => { if (mountedRef.current) setBusy(false) })
   }
 
+  useEffect(() => {
+    if (!hadFocusRef.current) return
+    const active = document.activeElement
+    if (active === document.body) (dialogRef.current as HTMLDivElement).focus()
+    else if (!(dialogRef.current as HTMLDivElement).contains(active)) hadFocusRef.current = false
+  })
+
   escRef.current = () => {
     if (confirmRelayout) { setConfirmRelayout(false); return }
     if (building) { setBuilding(false); return }
@@ -422,6 +432,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       data-testid="world-view"
       className="outline-none"
       style={worldPaneStyle(THEMES[theme].background, width)}
+      onFocusCapture={() => { hadFocusRef.current = true }}
     >
       <WorldToolbar
         projectName={projectName}
