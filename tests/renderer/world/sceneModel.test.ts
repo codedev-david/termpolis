@@ -76,7 +76,7 @@ describe('buildSceneModel', () => {
     expect(e1.from).toEqual([0, 0, 0])
     expect(e1.to).toEqual([6, 0, 0])
     expect(e1.ctrl).toEqual([3, 6 * 0.22 + 4, 0])
-    expect(e1).toMatchObject({ dashed: false, color: '#6aa9ff', cargo: 'memory', width: 0.1 })
+    expect(e1).toMatchObject({ dashed: false, color: '#6aa9ff', cargo: 'memory', width: 0.06 })
     expect(m.buildings.find((b) => b.id === 'b1')).toMatchObject({ floors: 1, height: 3, processShell: 'main' })
     expect(m.orbs).toEqual([{ id: 'x1', pos: [16, 0, 14], fog: false }])
     const d1 = m.districts.find((d) => d.id === 'd1')!
@@ -143,31 +143,78 @@ describe('proposal reveal and edge cases', () => {
     expect(c.ctrl).toEqual([3, 4, 0])
     expect(c.ctrl).not.toEqual(c.from)
   })
-
-  it('classifies rates on word boundaries', () => {
-    const w = (rate: string) => conduitStyle(minimal(), edge('a', 'b1', 'b2', { rate })).width
-    expect(w('rarely')).toBe(0.1)
-    expect(w('upstream traffic')).toBe(0.18)
-    expect(w('at once')).toBe(0.18)
-    expect(w('once')).toBe(0.1)
-    expect(w('Streaming')).toBe(0.3)
-    expect(w('every second')).toBe(0.3)
-    expect(w('')).toBe(0.18)
-  })
 })
 
 describe('conduitStyle', () => {
   const doc = rich()
-  it('derives width from rate and colour from cargo', () => {
-    expect(conduitStyle(doc, edge('a', 'b1', 'b2', { rate: 'constant stream' }))).toEqual({ width: 0.3, color: '#6aa9ff' })
-    expect(conduitStyle(doc, edge('a', 'b1', 'b2', { rate: 'on demand' })).width).toBe(0.1)
-    expect(conduitStyle(doc, edge('a', 'b1', 'b2', { rate: 'sometimes' })).width).toBe(0.18)
+  it('derives colour from cargo, and falls back for unknown cargo', () => {
+    expect(conduitStyle(doc, edge('a', 'b1', 'b2')).color).toBe('#6aa9ff')
     expect(conduitStyle(doc, edge('a', 'b1', 'b2', { cargo: 'nope' })).color).toBe('#94a3b8')
   })
-  it('accepts a live override', () => {
-    const e = edge('a', 'b1', 'b2')
-    expect(conduitStyle(doc, e, { width: 1, color: '#fff' })).toEqual({ width: 1, color: '#fff' })
-    expect(conduitStyle(doc, e, {})).toEqual({ width: 0.1, color: '#6aa9ff' })
+  it('width grows with the parsed rate and with live rate, within 0.04..0.2', () => {
+    const w = (rate: string, live?: Record<string, { rate?: number }>) => conduitStyle(doc, edge('a', 'b1', 'b2', { rate }), live).width
+    expect(w('')).toBeCloseTo(0.06) // no number: rate 1
+    expect(w('on demand')).toBeCloseTo(0.06)
+    expect(w('3 per second')).toBeCloseTo(0.08)
+    expect(w('3 per second')).toBeLessThan(w('30 per second'))
+    expect(w('2.5')).toBeCloseTo(0.04 + 0.02 * Math.log2(3.5))
+    expect(w('1000000 a second')).toBe(0.2)
+    expect(w('x', { a: { rate: 0 } })).toBe(0.04)
+    expect(w('x', { a: { rate: 7 } })).toBeCloseTo(0.1)
+    expect(w('3 per second', { other: { rate: 7 } })).toBeCloseTo(0.08) // another id's live rate is not this edge's
+    expect(w('3 per second', { a: {} })).toBeCloseTo(0.08) // live without a rate
+  })
+  it('an inferred edge with no observed claim is dashed; an observed edge is solid', () => {
+    const d = (over: Partial<ReturnType<typeof edge>>) => conduitStyle(doc, edge('a', 'b1', 'b2', over)).dashed
+    expect(d({ how: [claim('a', 'inferred')], why: [] })).toBe(true)
+    expect(d({ how: [claim('a', 'proposed')], why: [] })).toBe(true)
+    expect(d({ how: [claim('a', 'observed')], why: [claim('b', 'inferred')] })).toBe(false)
+    expect(d({ how: [claim('a', 'verified')], why: [] })).toBe(false)
+    expect(d({ how: [claim('a', 'observed'), claim('b', 'inferred'), claim('c', 'inferred')], why: [] })).toBe(true) // mostly inferred
+    expect(d({ how: [], why: [], claims: [claim('a', 'observed')] })).toBe(false)
+    expect(d({ how: [], why: [], claims: [claim('a', 'inferred')] })).toBe(true)
+  })
+  it('an edge with no claims at all stays solid', () => {
+    expect(conduitStyle(doc, edge('a', 'b1', 'b2', { how: [], why: [], claims: [] })).dashed).toBe(false)
+  })
+  it('touching a proposed part dashes it, whatever its claims', () => {
+    const e = edge('a', 'b1', 'b2', { how: [claim('a', 'observed')] })
+    expect(conduitStyle(doc, e, undefined, new Set(['b2'])).dashed).toBe(true)
+    expect(conduitStyle(doc, e, undefined, new Set(['b1'])).dashed).toBe(true)
+    expect(conduitStyle(doc, e, undefined, new Set(['zz'])).dashed).toBe(false)
+  })
+  it('buildSceneModel dashes a guessed line and leaves a claimless one solid', () => {
+    const d = minimal()
+    d.edges = [edge('g', 'b1', 'b2', { how: [claim('a', 'inferred')], why: [] }), edge('c', 'b1', 'b2', { how: [], why: [], claims: [] })]
+    const m = buildSceneModel(d, DEFAULT_LAYERS)
+    expect(m.conduits.find((c) => c.id === 'g')!.dashed).toBe(true)
+    expect(m.conduits.find((c) => c.id === 'c')!.dashed).toBe(false)
+  })
+})
+
+describe('heat from the live layer', () => {
+  const heats = (live: unknown) => {
+    const d = minimal()
+    d.layers.live = live
+    return Object.fromEntries(buildSceneModel(d, DEFAULT_LAYERS).buildings.map((b) => [b.id, b.heat]))
+  }
+  it('comes from layers.live latency, clamped to 0..1', () => {
+    expect(heats({ b1: { latencyMs: 250 }, b2: { latencyMs: 5000 } })).toEqual({ b1: 0.25, b2: 1 })
+  })
+  it('is 0 with no live data, and a malformed live layer gives 0', () => {
+    expect(heats(undefined)).toEqual({ b1: 0, b2: 0 })
+    for (const bad of [null, 5, 'x', [], [{ latencyMs: 9 }], { b1: 3 }, { b1: null }, { b1: { latencyMs: 'slow' } }, { b1: { latencyMs: -5 } }, { b1: { latencyMs: NaN } }, { b1: {} }]) {
+      expect(heats(bad)).toEqual({ b1: 0, b2: 0 })
+    }
+  })
+  it('keeps a good record beside a bad one, and drops a bad rate', () => {
+    expect(heats({ b1: { latencyMs: 500, rate: 'fast' }, b2: 'bad' })).toEqual({ b1: 0.5, b2: 0 })
+    const d = minimal()
+    d.edges = [edge('e', 'b1', 'b2', { rate: '' })]
+    d.layers.live = { e: { rate: -3 } }
+    expect(buildSceneModel(d, DEFAULT_LAYERS).conduits[0].width).toBeCloseTo(0.06) // negative rate ignored: rate 1
+    d.layers.live = { e: { rate: 7 } }
+    expect(buildSceneModel(d, DEFAULT_LAYERS).conduits[0].width).toBeCloseTo(0.1) // a live rate sets the width
   })
 })
 

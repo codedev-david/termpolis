@@ -89,9 +89,10 @@ test('clicking a building opens its card, Esc closes it', async () => {
 const WORLD_A = JSON.parse(fs.readFileSync(path.resolve('tests/shared/fixtures/world.min.json'), 'utf8')) as unknown
 const WORLD_B = JSON.parse(fs.readFileSync(path.resolve('tests/shared/fixtures/world.grown.json'), 'utf8')) as unknown
 
+type Visual = { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
 interface Harness {
   load(doc: unknown, opts?: { animateFrom?: unknown }): void
-  drawn(): { changing: number }
+  drawn(): { changing: number; visual: Visual }
   project(id: string): Promise<{ x: number; y: number }>
   screenPoint(id: string): { x: number; y: number } | null
 }
@@ -131,6 +132,35 @@ test('load A, then B with 2 added: after 1 s both are visible and the toast read
     }, id)
     expect(point, `${id} is drawn and in view`).not.toBeNull()
   }
+})
+
+/** Loads A with its first building guessed (so it is fog), selects the verified one, and reads the four motions 800 ms apart. */
+async function motionTwice(): Promise<[Visual, Visual]> {
+  await page.waitForSelector('body[data-ready="1"]', { timeout: 30_000 })
+  const point = await page.evaluate(async (a) => {
+    const t = (window as unknown as HarnessWindow).__worldTest
+    const doc = JSON.parse(JSON.stringify(a)) as { buildings: Array<{ id: string; how: Array<{ state: string }>; why: Array<{ state: string }> }> }
+    for (const c of [...doc.buildings[0].how, ...doc.buildings[0].why]) c.state = 'inferred'
+    t.load(doc)
+    return t.project('b2')
+  }, WORLD_A)
+  await page.mouse.click(point.x, point.y)
+  await expect(page.locator('#card')).toBeVisible()
+  const read = (): Promise<Visual> => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().visual)
+  const first = await read()
+  await page.waitForTimeout(800)
+  return [first, await read()]
+}
+
+test('reduced motion freezes the ring, fog drift, wireframe pulse and selection ring', async () => {
+  const base = page.url().split('?')[0]
+  await page.goto(base) // reduced motion: the harness default
+  const [a, b] = await motionTwice()
+  expect(b).toEqual(a)
+  await page.goto(base + '?motion=1')
+  const [c, d] = await motionTwice()
+  expect(d.ringAngle).not.toBe(c.ringAngle)
+  expect(d.fogDrift).not.toBe(c.fogDrift)
 })
 
 test('logs no console errors', async () => {

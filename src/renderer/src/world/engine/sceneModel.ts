@@ -1,6 +1,6 @@
 // Pure description of what to draw. No Three.js: the renderer (Task 12) consumes a SceneModel.
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
-import type { Building, Proposal, WorldDoc, WorldEdge } from '../../../../shared/world/types'
+import type { Building, Claim, Proposal, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 
 export type Vec3 = [number, number, number]
 /** `fading`: a built part the shown proposal takes away, drawn pulsing out. */
@@ -24,6 +24,8 @@ export interface SceneBuilding {
   id: string; pos: Vec3; floors: number; height: number; look: Look; ring: boolean; processShell?: string
   /** A wireframe shell a little larger than a solid building the code changed since the last reconcile. */
   outline: boolean
+  /** 0..1 from the live layer's latency (a second is 1); 0 with no live data. */
+  heat: number
   /** A short card tag, e.g. a built part the linked design does not have. */
   tag?: string
 }
@@ -35,19 +37,41 @@ export interface SceneModel {
   districts: SceneDistrict[]; buildings: SceneBuilding[]; conduits: SceneConduit[]; orbs: SceneOrb[]
 }
 
-/** Optional data-driven override for a conduit (the live layer, section 5.11). */
-export interface ConduitLive { width?: number; color?: string }
+/** What the live layer knows about one building or line, keyed by its id. */
+export type LiveRecord = Record<string, { rate?: number; latencyMs?: number }>
 
 const FLOOR_HEIGHT = 3
 const MIN_DISTRICT_RADIUS = 6
 const DISTRICT_MARGIN = 4
 const SELF_LOOP_OFFSET = 3
 const FALLBACK_COLOR = '#94a3b8'
-const WIDTH_BUSY = 0.3
-const WIDTH_STEADY = 0.18
-const WIDTH_RARE = 0.1
-const BUSY = /\b(?:constant(?:ly)?|continuous(?:ly)?|stream(?:s|ing)?|real.?time)\b|\bevery (?:second|frame|keystroke)\b|\bper second\b/i
-const RARE = /\b(?:on demand|rare(?:ly)?|occasional(?:ly)?|startup|manual(?:ly)?)\b|(?<!\bat )\bonce\b/i
+const WIDTH_MIN = 0.04
+const WIDTH_MAX = 0.2
+const HEAT_FULL_MS = 1000
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+/** `doc.layers.live` as a record of `{rate?, latencyMs?}` when it is shaped right; an empty one otherwise (never throws). */
+export function liveOf(doc: WorldDoc): LiveRecord {
+  const raw = doc.layers.live
+  if (!isRecord(raw)) return {}
+  const out: LiveRecord = {}
+  for (const [id, v] of Object.entries(raw)) {
+    if (!isRecord(v)) continue
+    const rec: { rate?: number; latencyMs?: number } = {}
+    if (finite(v.rate) && v.rate >= 0) rec.rate = v.rate
+    if (finite(v.latencyMs) && v.latencyMs >= 0) rec.latencyMs = v.latencyMs
+    out[id] = rec
+  }
+  return out
+}
+
+/** 0..1 of how slow a building is now, from its live latency (a second is full); 0 with no live data. */
+export function heatOf(live: LiveRecord, id: string): number {
+  const ms = live[id]?.latencyMs
+  return ms === undefined ? 0 : Math.min(1, ms / HEAT_FULL_MS)
+}
 
 /**
  * "Mostly inferred": the building makes claims (`how` plus `why`) and more than half of them are
@@ -55,7 +79,7 @@ const RARE = /\b(?:on demand|rare(?:ly)?|occasional(?:ly)?|startup|manual(?:ly)?
  * A building with no claims at all guesses nothing: its structure comes from the code itself
  * (spec lines 50 and 93: fog marks uncertain claims, never certain structure), so it is not fog.
  */
-export function isMostlyInferred(b: Building): boolean {
+export function isMostlyInferred(b: Pick<Building, 'how' | 'why'>): boolean {
   const claims = [...b.how, ...b.why]
   if (claims.length === 0) return false
   if (!claims.some((c) => c.evidence.length > 0)) return true
@@ -70,17 +94,25 @@ export function lookOf(b: Building): { look: Look; ring: boolean } {
   return { look: 'solid', ring: b.status === 'verified' }
 }
 
+/** The edge's claims (how, why and the rest): the facts it rests on. */
+const edgeClaims = (e: WorldEdge): Claim[] => [...e.how, ...e.why, ...e.claims]
+
 /**
- * Width and colour of a conduit. Width comes from `edge.rate` (three fixed widths), colour from
- * the document's cargo map; `live` overrides either. Callers do not pass `live` yet.
- * Takes the doc as well as the edge because the cargo map lives on the doc.
+ * Width, colour and dash of a conduit. Width grows with the traffic: the live rate, else the number in
+ * `edge.rate`, else 1 (clamp(0.04 + 0.02 * log2(1 + rate), 0.04, 0.2)). Colour comes from the document's
+ * cargo map. Dashed marks a guess or a plan: a line that touches a proposed part, or that has claims and
+ * none of them is seen (observed or verified), or that is mostly inferred. A line with no claims is solid.
+ * `live` is keyed by edge id.
  */
-export function conduitStyle(doc: WorldDoc, edge: WorldEdge, live?: ConduitLive): { width: number; color: string } {
-  let width = WIDTH_STEADY
-  if (BUSY.test(edge.rate)) width = WIDTH_BUSY
-  else if (RARE.test(edge.rate)) width = WIDTH_RARE
+export function conduitStyle(doc: WorldDoc, edge: WorldEdge, live?: LiveRecord, proposedIds?: ReadonlySet<string>): { width: number; color: string; dashed: boolean } {
+  const parsed = Number.parseFloat(/\d+(?:\.\d+)?/.exec(edge.rate)?.[0] ?? '')
+  const rate = live?.[edge.id]?.rate ?? (Number.isFinite(parsed) ? parsed : 1)
+  const width = Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, 0.04 + 0.02 * Math.log2(1 + rate)))
   const cargo = doc.cargo[edge.cargo]
-  return { width: live?.width ?? width, color: live?.color ?? (cargo ? cargo.color : FALLBACK_COLOR) }
+  const claims = edgeClaims(edge)
+  const guess = claims.length > 0 && (isMostlyInferred(edge) || !claims.some((c) => c.state === 'observed' || c.state === 'verified'))
+  const planned = proposedIds !== undefined && (proposedIds.has(edge.from) || proposedIds.has(edge.to))
+  return { width, color: cargo ? cargo.color : FALLBACK_COLOR, dashed: planned || guess }
 }
 
 type Linked = Proposal & { reconcile: NonNullable<Proposal['reconcile']> }
@@ -109,6 +141,7 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
   }
   const proposedIds = new Set(buildings.filter((b) => b.status === 'proposed').map((b) => b.id))
 
+  const live = liveOf(doc)
   let slot = 0
   const positions = new Map<string, Vec3>()
   const place = (id: string): Vec3 => {
@@ -122,7 +155,7 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
     const base = fogged ? { look: 'fog' as const, ring: false } : lookOf(b)
     const { look, ring } = removed.has(b.id) && !fogged ? { look: 'fading' as const, ring: false } : base
     const floors = Math.max(1, b.floors.length)
-    const sb: SceneBuilding = { id: b.id, pos: place(b.id), floors, height: floors * FLOOR_HEIGHT, look, ring, outline: changed.has(b.id) }
+    const sb: SceneBuilding = { id: b.id, pos: place(b.id), floors, height: floors * FLOOR_HEIGHT, look, ring, outline: changed.has(b.id), heat: heatOf(live, b.id) }
     if (layers.processes) sb.processShell = b.process
     if (notInDesign.has(b.id)) sb.tag = NOT_IN_DESIGN
     return sb
@@ -156,9 +189,9 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
     // A self-loop has no span, so push its control point sideways to keep the curve a visible arc.
     const side = e.from === e.to ? SELF_LOOP_OFFSET : 0
     const ctrl: Vec3 = [(from[0] + to[0]) / 2 + side, (from[1] + to[1]) / 2 + lift, (from[2] + to[2]) / 2]
-    const style = conduitStyle(doc, e)
+    const style = conduitStyle(doc, e, live, proposedIds)
     conduits.push({
-      id: e.id, from, to, ctrl, dashed: revealedIds.has(e.id) || proposedIds.has(e.from) || proposedIds.has(e.to),
+      id: e.id, from, to, ctrl, dashed: revealedIds.has(e.id) || style.dashed,
       width: style.width, color: style.color, cargo: e.cargo,
     })
   }

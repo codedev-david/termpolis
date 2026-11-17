@@ -83,6 +83,9 @@ export interface WorldLoadOptions {
   animateFrom?: WorldDoc
 }
 
+/** The looping motions as they stand now; under reduced motion each holds still (all 0 in 2D). */
+export interface WorldDrawnVisual { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
+
 export interface WorldDrawn {
   layers: LayerState
   processShells: number
@@ -99,6 +102,8 @@ export interface WorldDrawn {
   fogged: string[]
   /** Ids lit now (the buildings and lines a selection, a tech chip or an action asked for); empty when nothing is. */
   highlighted: string[]
+  /** The looping motions now: the seal rings, the fog drift, the wireframe pulse and the selection ring. */
+  visual: WorldDrawnVisual
 }
 
 export interface WorldViewerOptions {
@@ -633,7 +638,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [] }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
     resetView() {
       cancelActions()
       deselect()

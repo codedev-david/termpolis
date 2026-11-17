@@ -69,6 +69,21 @@ function busiestCargo(doc: WorldDoc): { shown: string[]; more: number } {
   return { shown: ranked.slice(0, LEGEND_MAX_CARGO), more: Math.max(0, ranked.length - LEGEND_MAX_CARGO) }
 }
 
+/** The cargo's shape in its colour, as the packets on the lines are drawn. */
+const SHAPE_PATHS: Record<'cube' | 'sphere' | 'octa' | 'tetra', JSX.Element> = {
+  cube: <rect x="3" y="3" width="10" height="10" />,
+  sphere: <circle cx="8" cy="8" r="6" />,
+  octa: <polygon points="8,1 15,8 8,15 1,8" />,
+  tetra: <polygon points="8,2 15,14 1,14" />,
+}
+function CargoShape({ shape, color }: { shape: 'cube' | 'sphere' | 'octa' | 'tetra'; color: string }): JSX.Element {
+  return (
+    <svg aria-hidden="true" data-shape={shape} width="16" height="16" viewBox="0 0 16 16" fill={color} style={{ flex: 'none' }}>
+      {SHAPE_PATHS[shape]}
+    </svg>
+  )
+}
+
 export function WorldLegend({ doc, processes, open, onToggle }: WorldLegendProps): JSX.Element {
   const { shown: cargo, more } = busiestCargo(doc)
   const procs = usedKeys(doc.processes, new Set(doc.buildings.map((b) => b.process)))
@@ -91,7 +106,7 @@ export function WorldLegend({ doc, processes, open, onToggle }: WorldLegendProps
               <b style={HEAD}>What&apos;s moving on the lines</b>
               {cargo.map((k) => (
                 <div key={k} style={ROW} data-testid="world-legend-cargo">
-                  <span aria-hidden="true" style={{ ...SWATCH, background: doc.cargo[k].color }} />
+                  <CargoShape shape={doc.cargo[k].shape} color={doc.cargo[k].color} />
                   <span>{doc.cargo[k].label}</span>
                 </div>
               ))}
@@ -100,7 +115,7 @@ export function WorldLegend({ doc, processes, open, onToggle }: WorldLegendProps
           )}
           <b style={HEAD}>Lines</b>
           <Item swatch={{ height: 4, borderRadius: 2, background: '#94a3b8' }}>Solid: a built connection</Item>
-          <Item swatch={{ height: 0, borderRadius: 0, borderTop: '3px dashed #94a3b8' }}>Dashed: planned or a guess</Item>
+          <Item swatch={{ height: 0, borderRadius: 0, borderTop: '3px dashed #94a3b8' }}>Dashed: planned, or a guess the code does not show</Item>
           <Item swatch={{ height: 6, borderRadius: 3, background: '#94a3b8' }}>Thicker: busier</Item>
           <b style={HEAD}>Buildings</b>
           <Item swatch={{ border: '2px solid #4ade80', borderRadius: 99 }}>Green ring: tests pass</Item>

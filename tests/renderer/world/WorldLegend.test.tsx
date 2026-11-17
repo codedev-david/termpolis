@@ -39,8 +39,8 @@ describe('WorldLegend', () => {
     render(<Legend doc={doc} processes={false} />)
     const cargo = screen.getAllByTestId('world-legend-cargo')
     expect(cargo.map((c) => c.textContent)).toEqual(['Memory'])
-    expect((cargo[0].firstChild as HTMLElement).style.background).toBe('rgb(106, 169, 255)')
-    for (const t of ['Solid: a built connection', 'Dashed: planned or a guess', 'Green ring: tests pass', 'Amber: no tests', 'Wireframe: planned only', 'Fog: partly unknown']) {
+    expect((cargo[0].firstChild as SVGElement).getAttribute('fill')).toBe('#6aa9ff')
+    for (const t of ['Solid: a built connection', 'Dashed: planned, or a guess the code does not show', 'Green ring: tests pass', 'Amber: no tests', 'Wireframe: planned only', 'Fog: partly unknown']) {
       expect(screen.getByText(t)).toBeInTheDocument()
     }
     expect(screen.queryByText('What runs where')).toBeNull() // processes layer off
@@ -109,5 +109,20 @@ describe('worldPane', () => {
     render(<WorldPaneOpening width={500} />)
     expect(screen.getByTestId('world-view-opening')).toHaveStyle({ width: '500px', background: '#03050a' })
     expect(screen.getByRole('status')).toHaveTextContent('Opening Lumopolis…')
+  })
+})
+
+describe('WorldLegend cargo shapes', () => {
+  it('draws each cargo shape in its colour', () => {
+    const doc = minimal()
+    doc.cargo = {
+      a: { shape: 'cube', color: '#111111', label: 'A' }, b: { shape: 'sphere', color: '#222222', label: 'B' },
+      c: { shape: 'octa', color: '#333333', label: 'C' }, d: { shape: 'tetra', color: '#444444', label: 'D' },
+    }
+    doc.edges = ['a', 'b', 'c', 'd'].map((k) => edge('e' + k, 'b1', 'b2', { cargo: k }))
+    const { container } = render(<Legend doc={doc} processes={false} />)
+    for (const [shape, color] of [['cube', '#111111'], ['sphere', '#222222'], ['octa', '#333333'], ['tetra', '#444444']]) {
+      expect(container.querySelector(`[data-shape="${shape}"]`)?.getAttribute('fill')).toBe(color)
+    }
   })
 })

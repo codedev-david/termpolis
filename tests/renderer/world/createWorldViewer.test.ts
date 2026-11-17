@@ -353,7 +353,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, wireframes: [], outlined: [], fading: [], fogged: [], highlighted: [] })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, wireframes: [], outlined: [], fading: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -441,6 +441,7 @@ function fakeRenderer(host: HTMLElement) {
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
     drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1 })),
+    motionState: vi.fn(() => ({ ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 })),
     keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(),
     dispose: vi.fn(() => { canvas.remove() }),
   } satisfies ThreeRenderer
@@ -716,7 +717,7 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.pick).toHaveBeenLastCalledWith(3, 4)
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, wireframes: ['b4'], outlined: [], fading: [], fogged: [], highlighted: [] })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, wireframes: ['b4'], outlined: [], fading: [], fogged: [], highlighted: [], visual: { ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 } })
   })
 
   it('viewer.apply(fog) fogs the ids until the next reset; a highlight keeps the fog; resetView, load and an empty fog lift it', async () => {

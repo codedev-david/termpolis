@@ -107,6 +107,8 @@ export interface ThreeRenderer {
   linePoints(id: string): Array<{ x: number; y: number }>
   /** How many process shells and conduits the last draw put up, and how many changes are still animating. */
   drawnCounts(): { processShells: number; conduits: number; changing: number }
+  /** The four looping motions as they stand now (radians, or the pulse's level); all four hold still under reduced motion. */
+  motionState(): { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
   /** Takes these buildings out of the current scene to fade out (call before draw() clears it). */
   keepGhosts(ids: string[]): void
   /** After a draw: these buildings rise from the ground, these flash their glow. */
@@ -1617,13 +1619,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let raf = 0
   let disposed = false
   let paused = false
+  let wirePulse = 0.55 + 0.45 * Math.sin(0) // the ghost pulse's level, as the last frame set it
   function animate(): void {
     if (disposed || paused) return
     raf = requestAnimationFrame(animate)
     frameNo++
     const dt = Math.min(clock.getDelta(), 0.05)
     changes.tick(performance.now()) // wall-clock time: a slow frame rate never stretches a change
-    const t = clock.elapsedTime
+    // Reduced motion reads a frozen clock and a zero step: the rings, the fog and the wireframe pulse stand still.
+    const t = reduced ? 0 : clock.elapsedTime
+    const mdt = reduced ? 0 : dt
     const sp = (keys.shift ? 60 : 28) * dt
     camera.getWorldDirection(fwd)
     fwd.y = 0
@@ -1663,7 +1668,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         }
       }
     }
-    for (const s of seals) s.rotation.z += dt * 0.8
+    for (const s of seals) s.rotation.z += mdt * 0.8
     if (!reduced) {
       for (const e of edges.values()) {
         for (const p of e.packets) {
@@ -1676,17 +1681,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     for (const s of fogSprites) {
       const u = s.userData
-      u.a += u.sp * dt
+      u.a += u.sp * mdt
       s.position.x = Math.cos(u.a) * u.r
       s.position.z = Math.sin(u.a) * u.r
       s.position.y = u.y + Math.sin(t + u.a) * 0.6
     }
     const gp = 0.55 + 0.45 * Math.sin(t * 2.2)
+    wirePulse = gp
     for (const m of ghostMats) m.opacity = Math.min(1, m.userData.base * gp * (m.userData.f ?? 1))
     // A part the proposal takes away pulses between FADE_MIN and FADE_MAX at 0.5 Hz; reduced motion holds it at the middle.
     const fade = reduced ? FADE_MID : FADE_MID + FADE_AMP * Math.sin(t * Math.PI)
     for (const m of fadeMats) m.opacity = fade * (m.userData.f ?? 1)
-    if (selRing && selRing.visible) selRing.rotation.z += dt * 0.5
+    if (selRing && selRing.visible) selRing.rotation.z += mdt * 0.5
     if (pulseAnim) {
       const pa = pulseAnim
       pa.t = Math.min(1.25, pa.t + dt * 0.65)
@@ -1799,6 +1805,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     screenPoint,
     linePoints,
     drawnCounts: () => ({ processShells: shellCount, conduits: edges.size, changing: changes.active() }),
+    motionState: () => ({
+      ringAngle: seals[0]?.rotation.z ?? 0,
+      fogDrift: fogSprites[0]?.userData.a ?? 0,
+      wirePulse,
+      selectionRingAngle: selRing?.rotation.z ?? 0,
+    }),
     keepGhosts(ids) {
       const groups: THREE.Object3D[] = []
       for (const id of ids) {
