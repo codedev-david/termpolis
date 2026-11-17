@@ -485,6 +485,23 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(sels).toEqual([])
   })
 
+  it('picks a click at its pointerup point: Chromium cuts a click to whole pixels, and a building edge sits in between', () => {
+    const { r, aim, at, sels } = setup3d()
+    aim({ kind: 'node', id: 'b1' })
+    // The e2e jitter's -2,0 click: pressed at 1111.4, the click arrives as 1111, where routes ends.
+    at('pointerdown', 1111.4, 341.3); at('pointerup', 1111.4, 341.3); at('click', 1111, 341)
+    expect(r.pick).toHaveBeenLastCalledWith(1111.4, 341.3)
+    expect(sels.pop()).toEqual({ kind: 'building', id: 'b1' })
+    at('dblclick', 1111, 341)
+    expect(r.pick).toHaveBeenLastCalledWith(1111.4, 341.3)
+    // A pointerup under another pixel is not this click's (a click raised without a pointer):
+    // the click's own point is used.
+    at('click', 20, 341)
+    expect(r.pick).toHaveBeenLastCalledWith(20, 341)
+    at('click', 1111, 30)
+    expect(r.pick).toHaveBeenLastCalledWith(1111, 30)
+  })
+
   it('double-click opens a building but never an external orb', () => {
     const { r, aim, at, sels } = setup3d()
     aim({ kind: 'node', id: 'x1' })

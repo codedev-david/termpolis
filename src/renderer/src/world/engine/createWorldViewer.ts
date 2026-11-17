@@ -340,6 +340,14 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
 
   // ---------------- input ----------------
   let down: { x: number; y: number } | null = null
+  // Chromium reports a click's (and a double-click's) clientX/clientY as whole pixels, cut down,
+  // while the pointer events around it carry the true fractional point. A click near a building's
+  // edge was picked up to a pixel left of and above where the press landed and missed it (the e2e
+  // jitter's -2,0 click: frac hit routes, trunc missed). So a click picks at the pointerup that
+  // made it, when there is one under the same whole pixel.
+  let up: { x: number; y: number } | null = null
+  const clickAt = (e: MouseEvent): { x: number; y: number } =>
+    up && Math.floor(up.x) === e.clientX && Math.floor(up.y) === e.clientY ? up : { x: e.clientX, y: e.clientY }
   let hoverRaf = 0
   let hoverAt: { x: number; y: number } | null = null
   const canvas = r3 ? r3.canvas : null
@@ -348,18 +356,23 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     down = { x: e.clientX, y: e.clientY }
     container.focus({ preventScroll: true })
   }
+  const onPointerUp = (e: PointerEvent): void => {
+    up = { x: e.clientX, y: e.clientY }
+  }
   const onClick = (e: MouseEvent): void => {
     if (!r3) return
     const start = down
     down = null
-    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > DRAG_PX) return
-    const hit = r3.pick(e.clientX, e.clientY)
+    const at = clickAt(e)
+    if (start && Math.hypot(at.x - start.x, at.y - start.y) > DRAG_PX) return
+    const hit = r3.pick(at.x, at.y)
     if (hit) void select(hit.id)
     else deselect()
   }
   const onDblClick = (e: MouseEvent): void => {
     if (!r3) return
-    const hit = r3.pick(e.clientX, e.clientY)
+    const at = clickAt(e)
+    const hit = r3.pick(at.x, at.y)
     if (!hit || hit.kind !== 'node') return
     // Only buildings open floor by floor; an external is an orb with nothing inside.
     if (!doc?.externals.some((x) => x.id === hit.id)) {
@@ -429,6 +442,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
   if (canvas) {
     canvas.addEventListener('pointerdown', onPointerDown)
+    canvas.addEventListener('pointerup', onPointerUp)
     canvas.addEventListener('click', onClick)
     canvas.addEventListener('dblclick', onDblClick)
     canvas.addEventListener('pointermove', onPointerMove)
@@ -602,6 +616,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       if (hoverRaf) cancelAnimationFrame(hoverRaf)
       if (canvas) {
         canvas.removeEventListener('pointerdown', onPointerDown)
+        canvas.removeEventListener('pointerup', onPointerUp)
         canvas.removeEventListener('click', onClick)
         canvas.removeEventListener('dblclick', onDblClick)
         canvas.removeEventListener('pointermove', onPointerMove)
