@@ -148,8 +148,8 @@ describe('WorldAsk', () => {
     }))
     await submit(v, 'why?')
     const note = screen.getByRole('note')
-    expect(note.textContent).toContain("The evidence doesn't say")
-    expect(note.textContent).toContain('This answer cites no evidence')
+    expect(screen.getByText("The evidence doesn't say. The fogged parts aren't supported.")).toBeInTheDocument()
+    expect(screen.getByText('This answer cites no evidence.')).toBeInTheDocument()
     expect(note.textContent).not.toContain('b1')
   })
 
