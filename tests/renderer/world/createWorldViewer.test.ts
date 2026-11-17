@@ -357,6 +357,34 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
   })
 })
 
+describe('2D fallback: tagged items the list did not draw', () => {
+  it('takes the tag only when it names that kind, else the kind the id names, and nothing before a world', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const sels: (WorldSelection | null)[] = []
+    const viewer = createWorldViewer(host, { reducedMotion: true })
+    viewer.on('select', (s) => { sels.push(s) })
+    const tagged = (kind: string, id: string): HTMLElement => {
+      const el = document.createElement('span')
+      el.setAttribute('data-kind', kind)
+      el.setAttribute('data-id', id)
+      host.appendChild(el)
+      return el
+    }
+    tagged('building', 'b1').click() // no world yet
+    expect(sels).toEqual([])
+    viewer.load(rich())
+    tagged('building', 'pb1').click() // a planned building
+    expect(sels.pop()).toEqual({ kind: 'building', id: 'pb1' })
+    tagged('district', 'b1').click() // not a district: the kind its id names
+    expect(sels.pop()).toEqual({ kind: 'building', id: 'b1' })
+    tagged('tech', 'electron').click()
+    expect(sels.pop()).toEqual({ kind: 'tech', id: 'electron' })
+    tagged('tech', 'd1').click()
+    expect(sels.pop()).toEqual({ kind: 'district', id: 'd1' })
+  })
+})
+
 describe('2D fallback: dispose', () => {
   it('removes listeners, empties the list, and ignores later loads, layers and themes', async () => {
     const { viewer, item, sels, cards, host, esc } = setup({ reducedMotion: true })
@@ -431,11 +459,15 @@ describe('WebGL path (stand-in renderer)', () => {
     at('pointerdown'); at('click')
     expect(sels.pop()).toEqual({ kind: 'building', id: 'b1' })
     expect(r.setSelected).toHaveBeenLastCalledWith('b1')
-    expect(r.frame).toHaveBeenLastCalledWith(['b1'], true)
+    // Framed with its neighbours in view: b2 (by e1) and b4 (by e2), never itself.
+    const around = r.frame.mock.calls[r.frame.mock.calls.length - 1] as unknown as [string[], boolean, string[]]
+    expect(around.slice(0, 2)).toEqual([['b1'], true])
+    expect([...around[2]].sort()).toEqual(['b2', 'b4'])
     aim({ kind: 'edge', id: 'e1' })
     at('click')
     expect(sels.pop()).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.setSelected).toHaveBeenLastCalledWith(null)
+    expect(r.frame).toHaveBeenLastCalledWith(['e1'], true) // a line is framed on its own
     aim(null)
     at('click')
     expect(sels.pop()).toBeNull()
@@ -502,6 +534,99 @@ describe('WebGL path (stand-in renderer)', () => {
     at('pointerleave')
     expect(hovers).toEqual(['b1', 'e1', null])
     expect(r.setHovered).toHaveBeenLastCalledWith(null)
+  })
+
+  it('hovering a building lights its connections and dims the rest; leaving restores the selection', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
+    const { aim, at, r } = setup3d()
+    const flush = (): void => { for (const f of frames.splice(0)) f(0) }
+    const lastFocus = () => r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0] as { ids: Set<string>; edgeIds: Set<string> } | null
+    aim({ kind: 'edge', id: 'e3' }) // the selection: line b3 to x1
+    at('pointerdown'); at('click')
+    aim({ kind: 'node', id: 'b1' })
+    at('pointermove'); flush()
+    expect([...(lastFocus()?.ids ?? [])].sort()).toEqual(['b1', 'b2', 'b4'])
+    expect([...(lastFocus()?.edgeIds ?? [])].sort()).toEqual(['e1', 'e2']) // their labels show (renderer: focus shows edge labels)
+    aim({ kind: 'edge', id: 'e1' })
+    at('pointermove'); flush()
+    expect([...(lastFocus()?.edgeIds ?? [])]).toEqual(['e3']) // a hovered line lights nothing: back to the selection
+    aim({ kind: 'node', id: 'b1' })
+    at('pointermove'); flush()
+    at('pointerleave')
+    expect([...(lastFocus()?.edgeIds ?? [])]).toEqual(['e3'])
+    aim({ kind: 'node', id: 'b2' })
+    at('pointerdown'); at('click')
+    aim(null)
+    at('pointermove'); flush()
+    expect(r.setCursor).toHaveBeenLastCalledWith(false)
+    expect([...(lastFocus()?.ids ?? [])].sort()).toEqual(['b1', 'b2'])
+  })
+
+  it('keeps the hover while the pointer is on a lit connection label, and ends it when the pointer leaves the label', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
+    const { aim, at, r, host } = setup3d()
+    const label = document.createElement('div')
+    label.className = 'lw-edge'
+    const inner = document.createElement('span')
+    label.appendChild(inner)
+    host.appendChild(label)
+    const outside = document.createElement('div')
+    document.body.appendChild(outside)
+    const leave = (el: Element, to: Element | null): void => { el.dispatchEvent(new MouseEvent('pointerleave', { relatedTarget: to })) }
+    aim({ kind: 'node', id: 'b1' })
+    at('pointermove'); for (const f of frames.splice(0)) f(0)
+    r.setHovered.mockClear()
+    leave(r.canvas, inner) // onto a label (its child): still hovering b1
+    expect(r.setHovered).not.toHaveBeenCalled()
+    leave(label, r.canvas) // back to the canvas: pointermove decides, nothing is dropped
+    expect(r.setHovered).not.toHaveBeenCalled()
+    leave(r.canvas, label)
+    leave(label, outside) // off the label to elsewhere: the hover ends
+    expect(r.setHovered).toHaveBeenLastCalledWith(null)
+    r.setHovered.mockClear()
+    leave(r.canvas, label) // nothing hovered: a label is just elsewhere, and nothing is listened for
+    leave(label, outside)
+    expect(r.setHovered).not.toHaveBeenCalled()
+    aim({ kind: 'node', id: 'b2' })
+    at('pointermove'); for (const f of frames.splice(0)) f(0)
+    r.setHovered.mockClear()
+    leave(r.canvas, outside.appendChild(Object.assign(document.createElement('div'), { className: 'lw-edge' }))) // a label not in this map
+    expect(r.setHovered).toHaveBeenLastCalledWith(null)
+    outside.remove()
+  })
+
+  it('keeps the hovered building lit across a redraw, and forgets it when a new world drops it', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
+    const { aim, at, r, viewer } = setup3d()
+    aim({ kind: 'node', id: 'b1' })
+    at('pointermove'); for (const f of frames.splice(0)) f(0)
+    r.setHovered.mockClear()
+    viewer.setLayers({ allLineLabels: true })
+    expect(r.setHovered).toHaveBeenLastCalledWith('b1')
+    const lit = r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0] as { ids: Set<string> }
+    expect(lit.ids.has('b2')).toBe(true)
+    const next = minimal()
+    next.buildings = next.buildings.filter((b) => b.id !== 'b1')
+    next.edges = []
+    viewer.load(next)
+    expect(r.setHovered).toHaveBeenLastCalledWith(null)
+    expect(r.setFocus).toHaveBeenLastCalledWith(null)
+  })
+
+  it('subtitles a district with its role, or with its parts and files when the model wrote none', () => {
+    const { r, viewer } = setup3d()
+    const districts = (): Record<string, string> => (r.draw.mock.calls[r.draw.mock.calls.length - 1][1] as { districts: Record<string, string> }).districts
+    expect(districts().d1).toBe('The app and its memory')
+    const doc = rich()
+    doc.districts[0].subtitle = ' '
+    doc.districts[1].subtitle = ''
+    doc.buildings.push(building('b5', { districtId: 'd2', members: ['a.ts'] }))
+    viewer.load(doc)
+    expect(districts().d1).toBe('4 parts · 2 files')
+    expect(districts().d2).toBe('1 part · 1 file')
   })
 
   it('setPaused stops and restarts the renderer, and does nothing after dispose', () => {
@@ -576,6 +701,93 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(sels).toEqual([])
   })
 
+  it('a click on a line label opens that line; before a world is loaded it opens nothing', () => {
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const viewer = createWorldViewer(host) // no renderCard: the card is simply not shown
+    const sels: (WorldSelection | null)[] = []
+    viewer.on('select', (s) => { sels.push(s) })
+    const onEdgeLabel = (createThreeRenderer.mock.calls[0][1] as { onEdgeLabel: (id: string) => void }).onEdgeLabel
+    onEdgeLabel('e1')
+    expect(sels).toEqual([])
+    viewer.load(rich())
+    onEdgeLabel('e1')
+    expect(sels.pop()).toEqual({ kind: 'edge', id: 'e1' })
+    expect((fake as ReturnType<typeof fakeRenderer> | null)?.r.frame).toHaveBeenLastCalledWith(['e1'], expect.any(Boolean))
+  })
+
+  it('a redraw keeps the open building or line lit and selected, and draws nothing before a world is loaded', () => {
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const viewer = createWorldViewer(host, { reducedMotion: true })
+    const f = fake as unknown as ReturnType<typeof fakeRenderer>
+    viewer.setLayers({ allLineLabels: true })
+    expect(f.r.draw).not.toHaveBeenCalled()
+    viewer.load(rich())
+    const at = (type: string): void => { f.r.canvas.dispatchEvent(new MouseEvent(type, { clientX: 1, clientY: 1, bubbles: true })) }
+    f.aim({ kind: 'node', id: 'b1' })
+    at('pointerdown'); at('click')
+    f.r.setSelected.mockClear()
+    viewer.setLayers({ allLineLabels: false })
+    expect(f.r.setSelected).toHaveBeenLastCalledWith('b1')
+    f.aim({ kind: 'edge', id: 'e1' })
+    at('click')
+    f.r.setSelected.mockClear()
+    viewer.setLayers({ allLineLabels: true })
+    expect(f.r.setSelected).toHaveBeenLastCalledWith(null)
+    const lit = f.r.setFocus.mock.calls[f.r.setFocus.mock.calls.length - 1][0] as { edgeIds: Set<string> }
+    expect([...lit.edgeIds]).toContain('e1')
+  })
+
+  it('names buildings by their technology with the tech layer, and a planned part or line never overrides a built one', () => {
+    const { r, viewer } = setup3d()
+    const d = rich()
+    d.layers.plan[0].buildings.push(building('b1', { name: 'Planned b1', techLabel: 'Planned tech' }))
+    d.layers.plan[0].edges.push({ ...d.edges[0], label: 'planned e1' })
+    viewer.load(d)
+    viewer.setLayers({ labels: 'tech' })
+    const text = r.draw.mock.calls[r.draw.mock.calls.length - 1][1] as { labels: Record<string, string>; edges: Record<string, string> }
+    expect(text.labels.b1).toBe('Electron + React')
+    expect(text.edges.e1).toBe(d.edges[0].label)
+  })
+
+  it('a highlighted planned line not on show lights the line alone, not its ends', async () => {
+    const { r, viewer } = setup3d()
+    await viewer.apply({ type: 'highlight', ids: ['pe1'] })
+    const lit = r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0] as { ids: Set<string>; edgeIds: Set<string> }
+    expect([...lit.edgeIds]).toEqual(['pe1'])
+    expect([...lit.ids]).toEqual([])
+  })
+
+  it('ignores canvas events and a pending hover frame that arrive after dispose, and a label left after dispose', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
+    const cancel = vi.fn()
+    vi.stubGlobal('cancelAnimationFrame', cancel)
+    const { r, aim, at, host, viewer } = setup3d()
+    aim({ kind: 'node', id: 'b1' })
+    at('pointermove'); for (const f of frames.splice(0)) f(0)
+    const label = document.createElement('div')
+    label.className = 'lw-edge'
+    host.appendChild(label)
+    r.canvas.dispatchEvent(new MouseEvent('pointerleave', { relatedTarget: label })) // onto a lit label: still hovering
+    at('pointermove') // a frame is pending at dispose
+    r.canvas.removeEventListener = (): void => undefined // as if these events were already queued
+    viewer.dispose()
+    expect(cancel).toHaveBeenCalled()
+    r.pick.mockClear()
+    for (const f of frames.splice(0)) f(0)
+    at('click'); at('dblclick')
+    label.dispatchEvent(new MouseEvent('pointerleave', { relatedTarget: document.body }))
+    expect(r.pick).not.toHaveBeenCalled()
+  })
+
   it('falls back to the 2D list on a clean host when the renderer throws after adding its canvas', () => {
     withWebGL()
     createThreeRenderer.mockImplementation((host: HTMLElement) => {
@@ -586,6 +798,20 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(host.querySelector('canvas')).toBeNull()
     item('building', 'b1').click()
     expect(sels.pop()).toEqual({ kind: 'building', id: 'b1' })
+  })
+
+  it('keeps what the host held before when the renderer throws', () => {
+    withWebGL()
+    createThreeRenderer.mockImplementation((h: HTMLElement) => {
+      h.appendChild(document.createElement('canvas'))
+      throw new Error('no context')
+    })
+    const host = document.createElement('div')
+    const mine = host.appendChild(document.createElement('p'))
+    document.body.appendChild(host)
+    createWorldViewer(host)
+    expect(host.contains(mine)).toBe(true)
+    expect(host.querySelector('canvas')).toBeNull()
   })
 
   it('disposes a renderer that throws after it was made (theme) and falls back', () => {

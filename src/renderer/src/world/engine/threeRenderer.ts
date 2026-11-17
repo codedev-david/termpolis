@@ -12,6 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
+import { busyness, clamp, fitDistance, fitView, fogDensity, type V3 } from './viewMath'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -48,8 +49,11 @@ export interface ThreeRenderer {
   setFocus(focus: RenderFocus | null): void
   setSelected(id: string | null): void
   setExploded(id: string | null): void
-  /** Flies to frame the given node and edge ids. Resolves when the flight lands. */
-  frame(ids: string[], instant: boolean): Promise<void>
+  /**
+   * Flies to frame the given node and edge ids. Resolves when the flight lands. With `around`, a
+   * single building is framed with those parts (its neighbours) in view as well.
+   */
+  frame(ids: string[], instant: boolean, around?: string[]): Promise<void>
   overview(instant: boolean): Promise<void>
   /** Runs a bright pulse along each edge in turn. Resolves when the last one arrives. */
   pulse(edgeIds: string[], instant: boolean): Promise<void>
@@ -102,7 +106,7 @@ const CSS = `
 .lw-district span{display:block;font-size:11px;letter-spacing:1px;font-weight:500;opacity:.75;text-shadow:none}
 .lw-bldg{font:12px system-ui,sans-serif;color:#e2e8f0;padding:2px 8px;border-radius:6px;background:rgba(3,7,18,.65);border:1px solid rgba(148,163,184,.25);white-space:nowrap}
 .lw-floor{font:11px system-ui,sans-serif;color:#e2e8f0;padding:1px 6px;border-radius:4px;background:rgba(3,7,18,.82);border-left:2px solid #38bdf8;white-space:nowrap;opacity:0}
-.lw-edge{font:11px system-ui,sans-serif;padding:2px 7px;border-radius:99px;background:rgba(3,7,18,.85);border:1px solid;white-space:nowrap;pointer-events:auto;cursor:pointer;display:none}
+.lw-edge{font:11px system-ui,sans-serif;padding:2px 7px;border-radius:99px;background:rgba(3,7,18,.85);border:1px solid;white-space:nowrap;pointer-events:auto;cursor:pointer}
 .lw-edge:hover{background:rgba(30,41,59,.95)}
 .lw-proc{font:10.5px system-ui,sans-serif;padding:1px 7px;border-radius:4px;background:rgba(3,7,18,.8);border:1px dashed;white-space:nowrap}
 `
@@ -118,13 +122,20 @@ const OVERVIEW_DIR = new THREE.Vector3(0.24, 0.72, 1).normalize()
  * limit scale from this so a big repository reads like the prototype.
  */
 const PROTO_OVERVIEW = 120
+/** Room round the city at the overview: the whole city fills the picture with a tenth to spare. */
+const OVERVIEW_MARGIN = 1.1
+/** Room round a clicked building and its neighbours. */
+const CLOSE_UP_MARGIN = 1.2
+/** The closest a click flies to a building: the prototype's framing distance (28 out, half that up). */
+const CLOSE_UP_MIN = 28 * Math.hypot(1, 0.5)
 /**
- * The fog at the overview target: density x distance stays at or below this, so certain structure
- * at the overview is at most about a quarter fogged (1 - exp(-0.55^2) = 0.26). The theme's own
- * density still applies to a small world, where it is the lower of the two. Fog is a depth cue and
- * the look of uncertain parts (fog clouds, dashed lines), never a curtain over certain structure.
+ * Line and packet sizes grow with the world (scale) up to this, so a big city's lines stay lines:
+ * past it, dozens of fat tubes meeting at one building bloom into a white or pink glare.
  */
-const FOG_REACH = 0.55
+const MAX_LINE_SCALE = 1.5
+/** The faintest a line gets in a very busy city, and the least of the theme's glow it keeps. */
+const MIN_TUBE_OPACITY = 0.07
+const MIN_BLOOM = 0.5
 
 type LabelKind = 'district' | 'bldg' | 'floor' | 'proc'
 /** dim: the focus dimming (1 or 0.2); lit: its part is hovered or selected, so the label shows at any distance. */
@@ -343,7 +354,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let explodedId: string | null = null
   let shellCount = 0
   /** The fog density: the theme's, thinned for a big world (FOG_REACH), thicker while a building is open. */
-  const fogFor = (): number => Math.min(theme.fogDensity, FOG_REACH / overviewDist) * (explodedId === null ? 1 : 2.2)
+  const fogFor = (): number => fogDensity(theme.fogDensity, overviewDist, explodedId !== null)
+  /** The resting opacity of a line, lower in a busy city (more than BUSY_LINES lines). */
+  let tubeOpacity = 0.38
+  /** busyness() of the drawn city: 1 for a small one, lower as its lines grow past BUSY_LINES. */
+  let busy = 1
 
   function addLabel(parent: THREE.Object3D, kind: LabelKind, pos: [number, number, number], build: (el: HTMLDivElement) => void): LabelRec {
     const el = document.createElement('div')
@@ -411,13 +426,21 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     })
   }
 
-  function fogCloud(n: NodeRec, h: number): void {
-    for (let i = 0; i < 7; i++) {
-      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: fogTex, color: extras.fogTint, transparent: true, opacity: 0.28, depthWrite: false }))
-      const a = (i / 7) * Math.PI * 2
-      s.position.set(Math.cos(a) * 4, h * 0.5 + Math.random() * 3, Math.sin(a) * 4)
-      s.scale.setScalar(7 + Math.random() * 4)
-      s.userData = { a, r: 4, y: s.position.y, sp: 0.1 + Math.random() * 0.15 }
+  /**
+   * A drifting haze round a part we are guessing about. An unknown external gets the prototype's
+   * thick cloud; a building whose claims are mostly inferred gets a light veil that keeps it legible
+   * (several thick clouds side by side bloom into a white wall).
+   */
+  function fogCloud(n: NodeRec, h: number, thick: boolean): void {
+    const count = thick ? 6 : 3
+    const color = new THREE.Color(extras.fogTint).multiplyScalar(thick ? 0.8 : 0.6)
+    for (let i = 0; i < count; i++) {
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: fogTex, color, transparent: true, opacity: thick ? 0.2 : 0.1, depthWrite: false }))
+      const a = (i / count) * Math.PI * 2
+      const r = thick ? 4 : 5
+      s.position.set(Math.cos(a) * r, h * 0.5 + Math.random() * 3, Math.sin(a) * r)
+      s.scale.setScalar((thick ? 7 : 5) + Math.random() * (thick ? 4 : 2))
+      s.userData = { a, r, y: s.position.y, sp: 0.1 + Math.random() * 0.15 }
       n.group.add(s)
       fogSprites.push(s)
     }
@@ -449,13 +472,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       anchor: new THREE.Vector3(b.pos[0], b.pos[1] + b.height, b.pos[2]), orb: false, exploded: false,
     }
     const ghost = b.look === 'wire'
-    const lineColor = b.look === 'amber' ? extras.amber : ghost ? extras.ghost : b.look === 'fog' ? extras.fogTint : col
+    // A guessed-at building keeps its district's hue, washed toward the fog tint: still a building
+    // of that district, only less certain.
+    const lineColor = b.look === 'amber' ? extras.amber : ghost ? extras.ghost : b.look === 'fog' ? col.clone().lerp(new THREE.Color(extras.fogTint), 0.4) : col
     const captions = text.floors[b.id] ?? []
     for (let k = 0; k < b.floors; k++) {
       const geo = new THREE.BoxGeometry(FLOOR_W, fh * 0.85, FLOOR_W)
       const mat = trackBase(new THREE.MeshStandardMaterial({
         color: extras.fill, emissive: col, emissiveIntensity: ghost ? 0.05 : extras.fillGlow, metalness: 0.5, roughness: 0.3,
-        transparent: true, opacity: ghost ? 0.07 : b.look === 'fog' ? extras.fillOpacity * 0.4 : extras.fillOpacity, depthWrite: !ghost,
+        transparent: true, opacity: ghost ? 0.07 : b.look === 'fog' ? extras.fillOpacity * 0.6 : extras.fillOpacity, depthWrite: !ghost,
       }))
       n.mats.push(mat)
       const mesh = new THREE.Mesh(geo, mat)
@@ -507,7 +532,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       g.add(ring)
       seals.push(ring)
     }
-    if (b.look === 'fog') fogCloud(n, b.height)
+    if (b.look === 'fog') fogCloud(n, b.height, false)
     if (b.processShell !== undefined) processShell(n, b.processShell, text, false)
     const label = addLabel(g, 'bldg', [0, b.height + 3, 0], (el) => { el.textContent = text.labels[b.id] ?? b.id })
     n.labels.push(label)
@@ -532,7 +557,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     mesh.userData.nodeId = o.id
     pickables.push(mesh)
     g.add(mesh)
-    if (o.fog) fogCloud(n, ORB_R * 2)
+    if (o.fog) fogCloud(n, ORB_R * 2, true)
     n.labels.push(addLabel(g, 'bldg', [0, ORB_R * 2 + 3, 0], (el) => { el.textContent = text.labels[o.id] ?? o.id }))
     nodes.set(o.id, n)
   }
@@ -547,9 +572,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const col = new THREE.Color(c.color)
     const rec: EdgeRec = { id: c.id, curve, tubeMats: [], packetMats: [], packets: [], pick: null as unknown as THREE.Mesh, label: null as unknown as CSS2DObject, focus: false }
     if (!c.dashed) {
-      const m = trackBase(new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.38 }))
+      const m = trackBase(new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: tubeOpacity }))
       rec.tubeMats.push(m)
-      world.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 64, c.width * 0.55 * scale, 6), m))
+      world.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 64, c.width * 0.55 * Math.min(scale, MAX_LINE_SCALE), 6), m))
     } else {
       const m = trackBase(new THREE.LineDashedMaterial({ color: extras.ghost, dashSize: 1, gapSize: 0.7, transparent: true, opacity: 0.85 }))
       rec.tubeMats.push(m)
@@ -567,10 +592,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const shape = text.cargoShapes[c.cargo] ?? 'sphere'
     const count = c.dashed ? 2 : 3
     for (let i = 0; i < count; i++) {
-      const m = trackBase(new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: c.dashed ? 0.6 : 1 }))
+      const m = trackBase(new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: c.dashed ? 0.6 : Math.min(1, tubeOpacity * 2.4) }))
       rec.packetMats.push(m)
       const s = new THREE.Mesh(GEO[shape], m)
-      s.scale.setScalar(0.7 * scale)
+      s.scale.setScalar(0.7 * Math.min(scale, MAX_LINE_SCALE))
       const t = reduced ? (i + 0.5) / count : Math.random()
       s.position.copy(curve.getPoint(t))
       world.add(s)
@@ -587,20 +612,41 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     el.addEventListener('click', (ev) => { ev.stopPropagation(); opts.onEdgeLabel?.(c.id) })
     const lo = new CSS2DObject(el)
     lo.position.copy(lp)
+    // Shown only for the lit lines (animate). Hidden through the object, never the element's
+    // display: CSS2DRenderer rewrites style.display on every render, so a display set by hand is lost.
+    lo.visible = false
     world.add(lo)
     rec.label = lo
     edges.set(c.id, rec)
   }
 
+  /**
+   * The overview frames the whole city: every platform's rim, every building to the top of its name
+   * and every external, fitted to the picture with OVERVIEW_MARGIN to spare, seen from OVERVIEW_DIR.
+   */
   function computeOverview(model: SceneModel): void {
-    const pts: Vec3[] = [...model.buildings.map((b) => b.pos), ...model.orbs.map((o) => o.pos)]
-    if (pts.length === 0) return
-    const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length
-    const cz = pts.reduce((s, p) => s + p[2], 0) / pts.length
-    const r = Math.max(10, ...pts.map((p) => Math.hypot(p[0] - cx, p[2] - cz)))
-    overviewDist = Math.max(40, r * 2.6)
+    if (model.buildings.length === 0 && model.orbs.length === 0) return
+    const pts: V3[] = []
+    const h = FLOOR_W / 2
+    for (const b of model.buildings) {
+      const [x, y, z] = b.pos
+      for (const [dx, dz] of [[h, h], [-h, h], [h, -h], [-h, -h]]) pts.push([x + dx, y, z + dz], [x + dx, y + b.height + 4, z + dz])
+    }
+    for (const o of model.orbs) pts.push([o.pos[0] - ORB_R, o.pos[1], o.pos[2] - ORB_R], [o.pos[0] + ORB_R, o.pos[1] + ORB_R * 2 + 4, o.pos[2] + ORB_R])
+    for (const d of model.districts) {
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * Math.PI * 2
+        pts.push([d.pos[0] + Math.cos(a) * d.radius, d.pos[1], d.pos[2] + Math.sin(a) * d.radius])
+      }
+      pts.push([d.pos[0], d.pos[1] - 2, d.pos[2] + d.radius + 4]) // the district's name below its rim
+    }
+    const dir: V3 = [OVERVIEW_DIR.x, OVERVIEW_DIR.y, OVERVIEW_DIR.z]
+    const fit = fitView(pts, dir, camera.fov, camera.aspect, OVERVIEW_MARGIN, 40)
+    overviewDist = fit.dist
     scale = Math.max(1, Math.sqrt(overviewDist / PROTO_OVERVIEW))
-    overviewTarget.set(cx, 0, cz)
+    busy = busyness(model.conduits.length)
+    tubeOpacity = clamp(0.38 * busy, MIN_TUBE_OPACITY, 0.38)
+    overviewTarget.set(fit.target[0], fit.target[1], fit.target[2])
     overviewPos.copy(overviewTarget).addScaledVector(OVERVIEW_DIR, overviewDist)
     // Room to step back from the overview of even a very big world.
     controls.maxDistance = Math.max(420, overviewDist * 1.6)
@@ -615,9 +661,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     computeOverview(model) // first: the world's scale sizes the lines, packets and fog below
     scene.background = new THREE.Color(theme.background)
     fog.color.set(theme.background)
-    fogTarget = fogFor()
-    fog.density = fogTarget
-    if (bloom) bloom.strength = extras.bloom
+    if (bloom) bloom.strength = extras.bloom * Math.max(MIN_BLOOM, busy) // a busy city glows less
     if (grid) { scene.remove(grid); grid.geometry.dispose(); ([] as THREE.Material[]).concat(grid.material).forEach((m) => m.dispose()) }
     const gridSize = Math.max(700, Math.ceil((overviewDist * 4) / 100) * 100)
     grid = new THREE.GridHelper(gridSize, gridSize / 5, extras.grid, extras.grid)
@@ -648,6 +692,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     world.add(selRing)
     if (explodedId !== null && (nodes.get(explodedId)?.orb ?? true)) explodedId = null
     for (const n of nodes.values()) n.exploded = n.id === explodedId && !n.orb
+    // After the open building is settled: a building gone from the new world no longer thickens it.
+    fogTarget = fogFor()
+    fog.density = fogTarget
     applyFocus()
     placeRing()
   }
@@ -723,7 +770,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return t
   }
 
-  function frame(ids: string[], instant: boolean): Promise<void> {
+  function frame(ids: string[], instant: boolean, around?: string[]): Promise<void> {
     const pts: THREE.Vector3[] = []
     let single: NodeRec | EdgeRec | null = null
     for (const id of ids) {
@@ -737,12 +784,34 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         const span = single.curve.v0.distanceTo(single.curve.v2)
         return frameAt(pts[0], Math.max(26, span * 0.75), instant)
       }
-      const dist = single.exploded ? 22 + single.floors.length * 2.5 : 28
-      return frameAt(pts[0], dist, instant)
+      if (single.exploded) return frameAt(pts[0], 22 + single.floors.length * 2.5, instant)
+      return frameWith(single, pts[0], around ?? [], instant)
     }
     const c = pts.reduce((s, p) => s.add(p), new THREE.Vector3()).divideScalar(pts.length)
     const spread = Math.max(...pts.map((p) => p.distanceTo(c)))
     return frameAt(c, Math.max(30, spread * 2.2), instant)
+  }
+
+  /**
+   * One building with its neighbours in view: looking at the building from the current side, as
+   * close as the neighbours allow (never closer than the prototype's framing, never further than
+   * most of the overview: a neighbour across a big city stays lit by the focus, if out of the picture).
+   */
+  function frameWith(n: NodeRec, target: THREE.Vector3, around: string[], instant: boolean): Promise<void> {
+    const h = camera.position.clone().sub(controls.target).setY(0).normalize()
+    if (!h.lengthSq()) h.set(0, 0, 1)
+    const dir = new THREE.Vector3(h.x, 0.5, h.z).normalize()
+    const pts: V3[] = []
+    for (const id of [n.id, ...around]) {
+      const m = nodes.get(id)
+      if (!m) continue
+      const base = m.group.position
+      pts.push([base.x, base.y, base.z], [m.anchor.x, m.anchor.y + 3, m.anchor.z])
+    }
+    const t: V3 = [target.x, target.y, target.z]
+    const fit = fitDistance(pts, t, [dir.x, dir.y, dir.z], camera.fov, camera.aspect, CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+    const dist = clamp(fit, CLOSE_UP_MIN, overviewDist * 0.7)
+    return flyTo(target.clone().addScaledVector(dir, dist), target, instant)
   }
 
   // ---------------- pulses ----------------
@@ -973,7 +1042,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     for (const e of edges.values()) {
       const on = allLabels || e.focus
-      e.label.element.style.display = on ? 'block' : 'none'
+      e.label.visible = on
       if (on) {
         e.label.getWorldPosition(wp)
         e.label.element.style.opacity = String(Math.max(0.35, Math.min(1, 1.8 - wp.distanceTo(camera.position) / 110)))

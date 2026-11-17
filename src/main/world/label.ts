@@ -8,6 +8,7 @@ import type { ExecAgent, ExecRequest, ExecResult } from '../headlessExec'
 import type { ModelCatalog } from '../modelCatalog'
 import type { Claim, Evidence, Floor } from '../../shared/world/types'
 import type { BoundaryKind } from './detectors/common'
+import { cargoOf } from './cargoTypes'
 import { edgeId, type GroupBuilding, type GroupEdge, type Grouping } from './group'
 import { buildLabelPrompt, LABEL_PROMPT_VERSION, MAX_PROMPT_CHARS, type BatchExcerpt, type LabelBatch } from './labelPrompt'
 
@@ -158,7 +159,7 @@ function fallbackEdge(e: GroupEdge): EdgeLabel {
   const label = e.via.length === 0 ? 'imports' : [...new Set(e.via.map((v) => `${v.kind} ${v.key}`))].join(', ').slice(0, MAX_LABEL)
   return {
     label,
-    cargo: e.via.length === 0 ? 'code' : e.via[0].key.slice(0, MAX_CARGO),
+    cargo: cargoOf(e.via.map((v) => v.kind)),
     how: [],
     why: [],
     tech: kindWords(e.via.map((v) => v.kind)),

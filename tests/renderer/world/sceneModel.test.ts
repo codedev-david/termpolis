@@ -27,8 +27,14 @@ describe('buildSceneModel', () => {
 
   it('treats exactly half inferred as not mostly inferred, and no evidence as fog', () => {
     expect(isMostlyInferred(building('h', { how: [claim('a')], why: [claim('b', 'inferred')] }))).toBe(false)
-    expect(isMostlyInferred(building('i', { how: [], why: [] }))).toBe(true)
+    expect(isMostlyInferred(building('j2', { how: [claim('a', 'inferred'), claim('b', 'inferred')], why: [] }))).toBe(true)
     expect(isMostlyInferred(building('j', { how: [claim('a', 'observed', false)], why: [] }))).toBe(true)
+  })
+
+  it('draws a building with no claims (code-derived names only) as certain structure, not fog', () => {
+    expect(isMostlyInferred(building('i', { how: [], why: [] }))).toBe(false)
+    expect(lookOf(building('i2', { status: 'gap', how: [], why: [] }))).toEqual({ look: 'amber', ring: false })
+    expect(lookOf(building('i3', { status: 'built', how: [], why: [] }))).toEqual({ look: 'solid', ring: false })
   })
 
   it('lets proposed win over fog', () => {

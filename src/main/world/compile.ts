@@ -10,6 +10,7 @@ import type { GraphSnapshot } from '../codeGraph'
 import type { Building, District, External, Tour, WorldDoc, WorldEdge } from '../../shared/world/types'
 import { detectBoundaries, MAX_DETECT_FILE_CHARS, stripComments, type Boundary } from './detectors'
 import { baseKey } from './detectors/common'
+import { cargoLabel, cargoOf } from './cargoTypes'
 import { edgeId, groupProject, isIgnored, resolveImport, slug, type GroupBuilding, type Grouping } from './group'
 import { relativeImports, withImports } from './imports'
 import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
@@ -58,7 +59,6 @@ export const BUILTIN_GLOSSARY: Readonly<Record<string, string>> = {
 }
 
 const READ_CHUNK = 32
-const MAX_CARGO = 40
 const MAX_LABEL = 120
 const RING_MARGIN = 40
 const RING_Y = 12
@@ -207,7 +207,7 @@ function externalsOf(g: Grouping): { externals: External[]; edges: WorldEdge[] }
         id,
         from: b.id,
         to: x.id,
-        cargo: bd.key.slice(0, MAX_CARGO),
+        cargo: cargoOf([bd.kind]),
         label: `${bd.kind} ${bd.key}`.slice(0, MAX_LABEL),
         how: [],
         why: [],
@@ -402,7 +402,7 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
   const cargo = Object.fromEntries(
     [...new Set(edges.map((e) => e.cargo).filter(Boolean))].sort().map((c) => {
       const h = hash(c)
-      return [c, { shape: SHAPES[h % SHAPES.length], color: colorOf(c), label: c }]
+      return [c, { shape: SHAPES[h % SHAPES.length], color: colorOf(c), label: cargoLabel(c) }]
     })
   )
   const processes = Object.fromEntries(

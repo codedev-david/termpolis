@@ -8,10 +8,14 @@
  * the overview camera far enough out for the fixed fog to swallow the city), in each theme:
  *   - the canvas at overview, with the DOM overlays hidden, is bright enough (mean luminance) and
  *     has enough pixels clearly above the theme's background (lit fraction);
+ *   - no part of it whites out: few pixels are saturated white (fog and bloom stay below saturation,
+ *     also where many lines meet at one building);
  *   - at least MIN_DISTRICT_LABELS district labels are on the canvas, visible and readable;
- *   - clicking a building opens its card.
- * Each time the pane opens, on the first frame it exists: it starts below the title bar and its
- * background is opaque.
+ *   - hovering a building shows its connections' labels;
+ *   - clicking a building opens its card, which is drawn over the map's labels: the card is what is
+ *     under its own centre, and wherever a label's box overlaps a panel the panel is on top.
+ * Each time the pane opens, on the first frame it exists: it starts below the title bar, its
+ * background is opaque, and neither it nor any ancestor is faded (their opacities multiply to 1).
  *
  * Screenshots go to test-results/world-visual/, which the e2e-soak workflow uploads, so a CI run
  * gives screenshots of the real build.
@@ -29,19 +33,28 @@ import { quitApp, ensureE2eBuild } from './helpers/launch'
  * Thresholds, from luminance Y = 0.2126 R + 0.7152 G + 0.0722 B (0 to 255) over the canvas with the
  * labels and panels hidden. The background is the canvas's most common Y; a pixel is "lit" when its
  * Y is LIT_MARGIN above it, and the mean is taken over the background's Y, so the lighter Blueprint
- * and Glass backgrounds never pass on their colour alone.
+ * and Glass backgrounds never pass on their colour alone. A pixel is "white" when its darkest
+ * channel is at least WHITE_MIN: saturated white, what a bloomed-out fog cloud or a knot of
+ * lines turns into.
  *
- * Measured locally (SwiftShader, 1280x800 window), mean over background / lit fraction:
- *   fixed:  small  neon 7.7 / 4.5 %   blueprint 11.6 / 12.1 %   glass 5.2 / 2.1 %
- *           big    neon 29.1 / 24.1 %  blueprint 32.8 / 35.9 %   glass 16.2 / 12.9 %
- *   before the fix (the old fog and label fade): big neon 0.7 / 0.2 % (the city fogged to black),
- *           small neon 2.5 / 1.6 %.
- *   The approved prototype's page measures 10.5 / 5.8 % (labels and panels included).
- * The floors sit under the dimmest fixed case (the small project in Glass) and over the broken ones.
+ * Measured locally (SwiftShader, 1280x800 window), mean over background / lit / white:
+ *
+ *   | case                         | neon                     | blueprint                | glass                    |
+ *   |------------------------------|--------------------------|--------------------------|--------------------------|
+ *   | small, after fix round 1     | 11.6 / 8.23 % / 0.000 %  | 12.4 / 11.32 % / 0.000 % | 7.6 / 4.89 % / 0.004 %   |
+ *   | big, after fix round 1       | 35.4 / 32.31 % / 0.000 % | 33.3 / 32.28 % / 0.000 % | 20.4 / 14.08 % / 0.002 % |
+ *   | big, first pass (whited out) | 29.1 / 24.1 % / -        | 32.8 / 35.9 % / -        | 16.2 / 12.9 % / -        |
+ *   | big, before Task 7 (fogged)  | 0.7 / 0.2 % / -          |                          |                          |
+ *
+ * The approved prototype's page measures 10.5 / 5.8 % (labels and panels included).
+ * The floors sit under the dimmest fixed case and over the fogged one; the white cap sits over the
+ * fixed cases and under the first pass's whiteout.
  */
 const LIT_MARGIN = 32
 const MIN_MEAN_OVER_BACKGROUND = 3.5
 const MIN_LIT_FRACTION = 0.01
+const WHITE_MIN = 235
+const MAX_WHITE_FRACTION = 0.005
 /** District labels that must be readable at overview (fewer if the world has fewer districts). */
 const MIN_DISTRICT_LABELS = 4
 /** The smallest label font a person can read on the map. */
@@ -168,7 +181,7 @@ async function createTerminal(name: string, cwd: string): Promise<void> {
   await page.waitForTimeout(1500)
 }
 
-interface FirstFrame { top: number; titleBottom: number; background: string; testid: string }
+interface FirstFrame { top: number; titleBottom: number; background: string; testid: string; opacity: number }
 
 /** Opens the pane from the command palette, recording the pane on the first frame it exists. */
 async function openPane(): Promise<FirstFrame> {
@@ -182,7 +195,11 @@ async function openPane(): Promise<FirstFrame> {
         return
       }
       const bar = document.querySelector('[data-testid="title-bar"]')
+      // The pane and every ancestor: a fade anywhere up the tree lets the terminal show through.
+      let opacity = 1
+      for (let e: Element | null = el; e; e = e.parentElement) opacity *= Number(getComputedStyle(e).opacity)
       w.__firstPane = {
+        opacity,
         top: el.getBoundingClientRect().top,
         titleBottom: bar ? bar.getBoundingClientRect().bottom : 0,
         background: getComputedStyle(el).backgroundColor,
@@ -214,7 +231,7 @@ async function settled(): Promise<void> {
 /** Mean luminance and lit fraction of the canvas alone (labels and panels hidden for the shot),
  *  against the canvas's own background: its most common luminance (the tone mapping shifts the
  *  theme's background colour, so the colour in themes.ts is not what is on screen). */
-async function measure(file: string): Promise<{ mean: number; lit: number; bgY: number }> {
+async function measure(file: string): Promise<{ mean: number; lit: number; white: number; bgY: number }> {
   const style = await page.addStyleTag({
     content: '.lw-labels, [data-testid="world-stage"] > :not([data-testid="world-canvas-host"]) { visibility: hidden !important }',
   })
@@ -226,8 +243,10 @@ async function measure(file: string): Promise<{ mean: number; lit: number; bgY: 
   const ys = new Float32Array(n)
   const hist = new Array<number>(256).fill(0)
   let sum = 0
+  let white = 0
   for (let p = 0; p < n; p++) {
     const i = p * 4
+    if (Math.min(png.data[i], png.data[i + 1], png.data[i + 2]) >= WHITE_MIN) white++
     const y = 0.2126 * png.data[i] + 0.7152 * png.data[i + 1] + 0.0722 * png.data[i + 2]
     ys[p] = y
     sum += y
@@ -236,7 +255,7 @@ async function measure(file: string): Promise<{ mean: number; lit: number; bgY: 
   const bgY = hist.indexOf(Math.max(...hist))
   let lit = 0
   for (const y of ys) if (y > bgY + LIT_MARGIN) lit++
-  return { mean: sum / n, lit: lit / n, bgY }
+  return { mean: sum / n, lit: lit / n, white: white / n, bgY }
 }
 
 interface LabelState { text: string; inside: boolean; opacity: number; visibility: string; font: number }
@@ -260,32 +279,77 @@ const districtLabels = (): Promise<LabelState[]> =>
     })
   })
 
-/** Building ids from the stored world of `root`, and its district count. */
-async function world(root: string): Promise<{ ids: string[]; districts: number }> {
+/** Building ids from the stored world of `root` (also those with a connection), and its district count. */
+async function world(root: string): Promise<{ ids: string[]; connected: string[]; districts: number }> {
   return page.evaluate(async (r) => {
-    interface Doc { buildings: { id: string }[]; districts: unknown[] }
+    interface Doc { buildings: { id: string }[]; districts: unknown[]; edges: { from: string; to: string }[] }
     const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
     const top = await api.gitFindRoot(r)
     const res = await api.worldGet(top.success && top.data ? top.data : r)
-    return res.success && res.data ? { ids: res.data.buildings.map((b) => b.id), districts: res.data.districts.length } : { ids: [], districts: 0 }
+    if (!res.success || !res.data) return { ids: [], connected: [], districts: 0 }
+    const ends = new Set(res.data.edges.flatMap((e) => [e.from, e.to]))
+    const ids = res.data.buildings.map((b) => b.id)
+    return { ids, connected: ids.filter((id) => ends.has(id)), districts: res.data.districts.length }
   }, root)
 }
 
-/** Clicks the first building whose point on screen has the bare canvas under it. */
-async function clickABuilding(ids: string[]): Promise<void> {
+/** The first building whose point on screen has the bare canvas under it. */
+async function aimAtABuilding(ids: string[]): Promise<{ x: number; y: number }> {
   for (const id of ids) {
     const pt = await page.evaluate((b) => {
       const p = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.screenPoint(b) ?? null
       const host = document.querySelector('[data-testid="world-canvas-host"] canvas')
       return p && document.elementFromPoint(p.x, p.y) === host ? p : null
     }, id)
-    if (pt) {
-      await page.mouse.click(pt.x, pt.y)
-      return
-    }
+    if (pt) return pt
   }
   throw new Error(`no building of ${ids.length} has the bare canvas under it`)
 }
+
+/** Connection labels on show (the hovered or selected part's lines). */
+const shownLineLabels = (): Promise<number> =>
+  page.evaluate(() => [...document.querySelectorAll<HTMLElement>('.lw-edge')].filter((el) => getComputedStyle(el).display !== 'none').length)
+
+/**
+ * Whether the card and the other panels are drawn over the labels: the card is the element under its
+ * own centre, and for each label whose box overlaps a panel's, the panel is on top at the middle of
+ * the overlap. Returns what failed, empty when nothing did.
+ */
+const panelsOverLabels = (): Promise<string[]> =>
+  page.evaluate(() => {
+    // Labels ignore the pointer (pointer-events: none), and elementFromPoint looks through such
+    // elements; let them be hit for the check, so one painted over a panel is found.
+    const hit = document.createElement('style')
+    hit.textContent = '.lw-labels, .lw-labels * { pointer-events: auto !important }'
+    document.head.appendChild(hit)
+    const bad: string[] = []
+    const cardEl = document.querySelector('[data-testid="world-card"]')!
+    const c = cardEl.getBoundingClientRect()
+    const atCentre = document.elementFromPoint(c.left + c.width / 2, c.top + c.height / 2)
+    if (!atCentre || !cardEl.contains(atCentre)) bad.push(`card centre shows ${atCentre?.className ?? 'nothing'}`)
+    const stage = document.querySelector('[data-testid="world-stage"]')!
+    const panels = [...stage.children].filter((el) => el.getAttribute('data-testid') !== 'world-canvas-host')
+    const labels = [...document.querySelectorAll<HTMLElement>('.lw-labels > *')].filter((el) => {
+      const cs = getComputedStyle(el)
+      return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.05
+    })
+    for (const panel of panels) {
+      const p = panel.getBoundingClientRect()
+      if (p.width === 0 || p.height === 0) continue
+      for (const l of labels) {
+        const r = l.getBoundingClientRect()
+        const x0 = Math.max(r.left, p.left)
+        const x1 = Math.min(r.right, p.right)
+        const y0 = Math.max(r.top, p.top)
+        const y1 = Math.min(r.bottom, p.bottom)
+        if (x1 - x0 < 1 || y1 - y0 < 1) continue
+        const top = document.elementFromPoint((x0 + x1) / 2, (y0 + y1) / 2)
+        if (!top || !panel.contains(top)) bad.push(`label "${l.textContent}" over ${panel.getAttribute('data-testid') ?? panel.tagName}`)
+      }
+    }
+    hit.remove()
+    return bad
+  })
 
 test.describe.serial('Lumopolis can be seen', () => {
   for (const [index, label] of ['small', 'big'].entries()) {
@@ -303,9 +367,10 @@ test.describe.serial('Lumopolis can be seen', () => {
       expect(first.top, `pane top ${first.top} is above the title bar's bottom ${first.titleBottom}`).toBeGreaterThanOrEqual(first.titleBottom - 0.5)
       expect(first.titleBottom).toBeGreaterThan(0)
       expect(first.background, `the pane's first frame (${first.testid}) is not opaque`).toMatch(/^rgb\(/)
+      expect(first.opacity, `the pane's first frame (${first.testid}) is faded`).toBe(1)
 
       await settled()
-      const { ids, districts } = await world(fx.dir)
+      const { ids, connected, districts } = await world(fx.dir)
       expect(ids.length).toBeGreaterThan(1)
       const wantLabels = Math.min(MIN_DISTRICT_LABELS, districts)
 
@@ -315,21 +380,33 @@ test.describe.serial('Lumopolis can be seen', () => {
         await page.waitForTimeout(2500)
 
         const m = await measure(`${label}-${theme}-canvas.png`)
-        console.log(`[world-visual] ${label} ${theme}: mean ${m.mean.toFixed(1)} (background ${m.bgY.toFixed(1)}), lit ${(m.lit * 100).toFixed(2)}%`)
+        console.log(`[world-visual] ${label} ${theme}: mean ${m.mean.toFixed(1)} (background ${m.bgY.toFixed(1)}), lit ${(m.lit * 100).toFixed(2)}%, white ${(m.white * 100).toFixed(3)}%`)
         expect(m.mean - m.bgY, `${label}/${theme}: the canvas is too dark (mean ${m.mean.toFixed(1)})`).toBeGreaterThan(MIN_MEAN_OVER_BACKGROUND)
         expect(m.lit, `${label}/${theme}: too few pixels stand out from the background`).toBeGreaterThan(MIN_LIT_FRACTION)
+        expect(m.white, `${label}/${theme}: ${(m.white * 100).toFixed(2)}% of the canvas is saturated white`).toBeLessThan(MAX_WHITE_FRACTION)
 
         const labels = await districtLabels()
         const readable = labels.filter((l) => l.inside && l.opacity > 0.05 && l.visibility === 'visible' && l.font >= MIN_LABEL_FONT_PX)
         expect(readable.length, `${label}/${theme}: readable district labels ${JSON.stringify(labels)}`).toBeGreaterThanOrEqual(wantLabels)
         await page.screenshot({ path: path.join(SHOTS, `${label}-${theme}-overview.png`) })
 
-        await clickABuilding(ids)
+        // Hover: the building's connections light up with their labels (spec: hover shows how it connects).
+        expect(await shownLineLabels(), `${label}/${theme}: line labels show before any hover`).toBe(0)
+        const over = await aimAtABuilding(connected)
+        await page.mouse.move(over.x, over.y)
+        await expect.poll(shownLineLabels, { message: `${label}/${theme}: hovering shows no line labels` }).toBeGreaterThan(0)
+        await page.waitForTimeout(600)
+        await page.screenshot({ path: path.join(SHOTS, `${label}-${theme}-hover.png`) })
+
+        await page.mouse.click(over.x, over.y)
         await expect(card()).toBeVisible()
         await page.waitForTimeout(1500)
+        expect(await panelsOverLabels(), `${label}/${theme}: a label is drawn over a panel`).toEqual([])
         await page.screenshot({ path: path.join(SHOTS, `${label}-${theme}-click.png`) })
         await page.locator('[data-testid="world-card-close"]').click()
         await expect(card()).toHaveCount(0)
+        // Off the canvas, so the next theme starts with nothing hovered.
+        await page.mouse.move(2, 400)
       }
       await page.getByRole('combobox', { name: 'Theme' }).selectOption('neon')
     })

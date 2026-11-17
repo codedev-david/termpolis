@@ -259,8 +259,8 @@ test.describe.serial('Lumopolis in the real app', () => {
     await page.waitForTimeout(1500)
     const box = (await canvas().boundingBox())!
     // The probe gives a point where the viewer's own pick lands on the building (nothing drawn in
-    // front of it); the first such point clear of the card's strip on the right, with the canvas
-    // itself under it (no label or panel on top), is clicked as a person would.
+    // front of it); the first such point inside the canvas with the canvas itself under it (no
+    // label, legend or other panel on top) is clicked as a person would.
     type Target = { id: string; name: string; floors: string[]; x: number; y: number }
     let target: Target | null = null
     for (const b of all) {
@@ -269,12 +269,12 @@ test.describe.serial('Lumopolis in the real app', () => {
         const host = document.querySelector('[data-testid="world-canvas-host"] canvas')
         return p && document.elementFromPoint(p.x, p.y) === host ? p : null
       }, b.id)
-      if (pt && pt.x > box.x + 8 && pt.x < box.x + box.width - 380 && pt.y > box.y + 8 && pt.y < box.y + box.height - 8) {
+      if (pt && pt.x > box.x + 8 && pt.x < box.x + box.width - 8 && pt.y > box.y + 8 && pt.y < box.y + box.height - 8) {
         target = { ...b, ...pt }
         break
       }
     }
-    expect(target, `no building of ${all.length} is on screen clear of the card strip`).not.toBeNull()
+    expect(target, `no building of ${all.length} is on screen with nothing over it`).not.toBeNull()
     await page.mouse.click(target!.x, target!.y)
     await expect(card()).toBeVisible()
     // The card is that building's: its name, and its floors in "What's inside", in order.
@@ -282,7 +282,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     const inside = card().locator(`h4:text-is("What's inside") + ul > li > b`)
     await expect(inside).toHaveText(target!.floors)
     await expect(card()).toContainText('What it does')
-    await expect(card()).toContainText('Process')
+    await expect(card()).toContainText('Runs in:')
   })
 
   test('3. "What runs where" draws the process shells, and takes them away again', async () => {

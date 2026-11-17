@@ -116,6 +116,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let selection: WorldSelection | null = null
   let exploded: string | null = null
   let hovered: string | null = null
+  /** The hovered building or external (a hovered line lights nothing): its connections light up. */
+  let hoverNode: string | null = null
+  /** The lit set the selection, a tour or an action asked for; a hovered building overrides it while hovered. */
+  let baseFocus: RenderFocus | null = null
   let tourToken = 0
   let disposed = false
   const toast = createChangeToast(container)
@@ -132,7 +136,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       r3 = createThreeRenderer(container, {
         quality: opts.quality ?? 'high',
         reducedMotion: reduced,
-        onEdgeLabel: (id) => { void select(id, true) },
+        onEdgeLabel: (id) => { void select(id) },
       })
       r3.setTheme(themeName, THEMES[themeName])
     } catch {
@@ -170,9 +174,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
 
   /** The lit set for a group of ids: the nodes and edges named, plus the edges joining two named nodes. */
   function groupFocus(ids: string[]): RenderFocus {
-    const d = doc
+    const d = doc as WorldDoc // only asked while a world is loaded (an action, a selection)
     const out: RenderFocus = { ids: new Set(), edgeIds: new Set() }
-    if (!d) return out
     const edgeIds = edgeIdSet(d)
     const all = [...d.edges, ...(revealProposal === undefined ? [] : planEdges(d))]
     for (const id of ids) {
@@ -202,6 +205,18 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     return { focus: groupFocus(used), frameIds: used }
   }
 
+  /** Spec line 156: hovering a building lights its connections and dims the rest, until the pointer leaves. */
+  function showFocus(): void {
+    if (!r3) return
+    const d = doc
+    const opt = revealProposal === undefined ? undefined : { revealProposal }
+    r3.setFocus(hoverNode !== null && d ? neighbours(d, hoverNode, opt) : baseFocus)
+  }
+  function setFocus(f: RenderFocus | null): void {
+    baseFocus = f
+    showFocus()
+  }
+
   function cardFor(sel: WorldSelection): string | null {
     const d = doc as WorldDoc
     if (sel.kind === 'building') return buildingCard(d, sel.id)
@@ -216,8 +231,11 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   }
 
   // ---------------- selection ----------------
-  /** `hint` is the kind the 2D list tagged the item with; it wins when the id names more than one thing. */
-  function select(id: string, fly: boolean, instant = reduced, hint?: SelectionKind): Promise<void> {
+  /**
+   * Opens what `id` names and, with a renderer, flies to it. `hint` is the kind the 2D list tagged
+   * the item with; it wins when the id names more than one thing.
+   */
+  function select(id: string, instant = reduced, hint?: SelectionKind): Promise<void> {
     const kind = hint !== undefined && kindMatches(id, hint) ? hint : kindOf(id)
     if (!kind) return Promise.resolve()
     selection = { kind, id }
@@ -226,15 +244,16 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     emitSelect()
     if (!r3) return Promise.resolve()
     r3.setSelected(kind === 'building' ? id : null)
-    r3.setFocus(focus)
-    return fly ? r3.frame(frameIds, instant) : Promise.resolve()
+    setFocus(focus)
+    // A building is framed with its neighbours in view, so the click shows where it sits.
+    return kind === 'building' ? r3.frame(frameIds, instant, [...focus.ids].filter((x) => x !== id)) : r3.frame(frameIds, instant)
   }
 
   function deselect(): void {
     const had = selection !== null
     selection = null
     renderCard(null)
-    if (r3) { r3.setSelected(null); r3.setFocus(null) }
+    if (r3) { r3.setSelected(null); setFocus(null) }
     if (had) emitSelect()
   }
 
@@ -247,10 +266,21 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       text.floors[b.id] = b.floors.map((f) => f.name)
     }
     for (const x of d.externals) text.labels[x.id] = x.name
-    for (const x of d.districts) text.districts[x.id] = x.subtitle
+    for (const x of d.districts) text.districts[x.id] = districtSubtitle(d, x)
     for (const e of [...d.edges, ...planEdges(d)]) if (text.edges[e.id] === undefined) text.edges[e.id] = e.label
     for (const [k, c] of Object.entries(d.cargo)) text.cargoShapes[k] = c.shape
     return text
+  }
+
+  /**
+   * Under a district's name: its role when the model wrote one, else what the code alone shows,
+   * how many parts (buildings) and files it holds.
+   */
+  function districtSubtitle(d: WorldDoc, x: WorldDoc['districts'][number]): string {
+    if (x.subtitle.trim() !== '') return x.subtitle
+    const parts = d.buildings.filter((b) => b.districtId === x.id)
+    const files = parts.reduce((n, b) => n + b.members.length, 0)
+    return `${parts.length} ${parts.length === 1 ? 'part' : 'parts'} · ${files} ${files === 1 ? 'file' : 'files'}`
   }
 
   let wireframes: string[] = []
@@ -265,8 +295,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     if (selection && kindOf(selection.id)) {
       const { focus } = focusFor(selection)
       r3.setSelected(selection.kind === 'building' ? selection.id : null)
-      r3.setFocus(focus)
+      baseFocus = focus
     }
+    // The hovered building's name and connections stay lit across a redraw, unless it is gone.
+    if (hoverNode !== null && kindOf(hoverNode) === null) hoverNode = null
+    r3.setHovered(hoverNode)
+    showFocus()
   }
 
   // ---------------- 2D fallback ----------------
@@ -292,7 +326,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     down = null
     if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > DRAG_PX) return
     const hit = r3.pick(e.clientX, e.clientY)
-    if (hit) void select(hit.id, true)
+    if (hit) void select(hit.id)
     else deselect()
   }
   const onDblClick = (e: MouseEvent): void => {
@@ -304,7 +338,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       exploded = exploded === hit.id ? null : hit.id
       r3.setExploded(exploded)
     }
-    void select(hit.id, true)
+    void select(hit.id)
   }
   const onPointerMove = (e: PointerEvent): void => {
     hoverAt = { x: e.clientX, y: e.clientY }
@@ -317,16 +351,32 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       r3.setCursor(id !== null)
       if (id !== hovered) {
         hovered = id
-        r3.setHovered(hit && hit.kind === 'node' ? hit.id : null)
+        hoverNode = hit && hit.kind === 'node' ? hit.id : null
+        r3.setHovered(hoverNode)
+        showFocus()
         for (const cb of hoverCbs) cb(id)
       }
     })
   }
-  const onPointerLeave = (): void => {
+  // The lit connections' labels can appear under the pointer (a busy building's labels gather at
+  // its top). Moving onto one leaves the canvas but is still the hover; leaving that label for
+  // anything but the canvas or another label ends it. Back on the canvas, pointermove takes over.
+  const onLabelLeave = (e: Event): void => {
+    if ((e as MouseEvent).relatedTarget !== canvas) onPointerLeave(e as MouseEvent)
+  }
+  const onPointerLeave = (e: MouseEvent): void => {
+    const to = e.relatedTarget as Element | null
+    const label = to && typeof to.closest === 'function' ? to.closest('.lw-edge') : null
+    if (label && container.contains(label) && hovered !== null) {
+      label.addEventListener('pointerleave', onLabelLeave, { once: true })
+      return
+    }
     hoverAt = null
     if (hovered !== null) {
       hovered = null
+      hoverNode = null
       r3?.setHovered(null)
+      showFocus()
       for (const cb of hoverCbs) cb(null)
     }
   }
@@ -337,7 +387,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     const id = el.getAttribute('data-id')
     const kind = el.getAttribute('data-kind')
     const hint = kind === 'building' || kind === 'edge' || kind === 'district' || kind === 'tech' ? kind : undefined
-    if (id) void select(id, false, reduced, hint)
+    if (id) void select(id, reduced, hint)
   }
   const onKeyDown = (e: KeyboardEvent): void => {
     if (e.key !== 'Escape') return
@@ -369,19 +419,19 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       case 'focus':
       case 'highlight': {
         if (!r3) return
-        r3.setFocus(groupFocus(a.ids))
+        setFocus(groupFocus(a.ids))
         if (a.type === 'focus') await r3.frame(a.ids, instant)
         return
       }
       case 'flow': {
         if (!r3) return
-        r3.setFocus(groupFocus(a.edgeIds))
+        setFocus(groupFocus(a.edgeIds))
         await r3.frame(a.edgeIds, instant)
         await r3.pulse(a.edgeIds, instant)
         return
       }
       case 'openCard':
-        await select(a.id, true, instant)
+        await select(a.id, instant)
         return
       case 'tour': {
         const mine = ++tourToken
@@ -391,7 +441,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
           renderCard(`<p class="tour-caption">${escapeHtml(step.caption)}</p>`)
           if (r3) {
             r3.setSelected(null)
-            r3.setFocus(groupFocus(step.ids))
+            setFocus(groupFocus(step.ids))
             await r3.frame(step.ids, instant)
           }
           if (!instant && mine === tourToken) await sleep(TOUR_STEP_MS)
@@ -405,7 +455,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         redraw()
         const ids = [...p.buildings.map((b) => b.id), ...p.edges.map((e) => e.id)]
         if (r3) {
-          r3.setFocus(groupFocus(ids))
+          setFocus(groupFocus(ids))
           await r3.frame(ids, instant)
         }
         return
@@ -470,7 +520,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       redraw()
       if (r3) {
         r3.setSelected(null)
-        r3.setFocus(null)
+        setFocus(null)
         void r3.overview(true)
         if (motion) r3.animateChanges({ rise: riseIds(motion), pulse: motion.changed })
       }

@@ -423,7 +423,9 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
           <div
             ref={hostRef}
             data-testid="world-canvas-host"
-            style={{ position: 'absolute', inset: 0, visibility: doc ? 'visible' : 'hidden' }}
+            // Its own stacking context beneath the panels: the label layer numbers each label's
+            // z-index up from zero, which would otherwise draw names over the card and legend.
+            style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc ? 'visible' : 'hidden' }}
             onPointerDown={() => { armedRef.current = false }}
           />
         )}

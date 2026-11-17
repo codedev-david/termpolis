@@ -45,12 +45,14 @@ const BUSY = /\b(?:constant(?:ly)?|continuous(?:ly)?|stream(?:s|ing)?|real.?time
 const RARE = /\b(?:on demand|rare(?:ly)?|occasional(?:ly)?|startup|manual(?:ly)?)\b|(?<!\bat )\bonce\b/i
 
 /**
- * "Mostly inferred": more than half of the building's claims (`how` plus `why`) are `inferred`,
- * or the building has no evidence-backed claims at all (no claims, or none cites evidence).
- * Such a building is drawn as fog: we are guessing.
+ * "Mostly inferred": the building makes claims (`how` plus `why`) and more than half of them are
+ * `inferred`, or none of them cites evidence. Such a building is drawn as fog: we are guessing.
+ * A building with no claims at all guesses nothing: its structure comes from the code itself
+ * (spec lines 50 and 93: fog marks uncertain claims, never certain structure), so it is not fog.
  */
 export function isMostlyInferred(b: Building): boolean {
   const claims = [...b.how, ...b.why]
+  if (claims.length === 0) return false
   if (!claims.some((c) => c.evidence.length > 0)) return true
   return claims.filter((c) => c.state === 'inferred').length * 2 > claims.length
 }

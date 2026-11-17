@@ -126,9 +126,12 @@ describe('compileWorld', () => {
 
     // IPC edge renderer -> main with its cargo, tech glossed.
     const ipc = doc.edges.find((e) => e.id === edgeId({ from: RENDERER, to: MAIN })) as WorldDoc['edges'][number]
-    expect(ipc).toMatchObject({ from: RENDERER, to: MAIN, cargo: 'checkout:run', tech: ['IPC'], twoWay: false })
-    expect(doc.cargo['checkout:run']).toEqual({ shape: expect.any(String), color: expect.any(String), label: 'checkout:run' })
-    expect(doc.cargo.code.label).toBe('code')
+    // Its cargo is a human type (spec line 88); the channel name stays in the line's label.
+    expect(ipc).toMatchObject({ from: RENDERER, to: MAIN, cargo: 'messages', tech: ['IPC'], twoWay: false })
+    expect(ipc.label).toContain('checkout:run')
+    expect(doc.cargo.messages).toEqual({ shape: expect.any(String), color: expect.any(String), label: 'Messages inside the app' })
+    expect(doc.cargo.code.label).toBe('Code')
+    expect(doc.cargo['checkout:run']).toBeUndefined()
     expect(doc.glossary.IPC).toBe(BUILTIN_GLOSSARY.IPC)
 
     // Externals: agent CLIs and non-local hosts only, each with a conduit from its building.
@@ -142,7 +145,7 @@ describe('compileWorld', () => {
       id: edgeId({ from: MAIN, to: 'x-claude' }),
       from: MAIN,
       to: 'x-claude',
-      cargo: 'claude',
+      cargo: 'jobs',
       label: 'spawn claude',
       how: [],
       why: [],

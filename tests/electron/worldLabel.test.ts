@@ -244,7 +244,7 @@ describe('labelWorld', () => {
       ]
     })
     expect(l.buildings.b.techLabel).toBe('TS')
-    expect(l.edges['e-a--b']).toEqual({ label: 'ipc chan:x', cargo: 'chan:x', how: [], why: [], tech: ['IPC'], rate: '' })
+    expect(l.edges['e-a--b']).toEqual({ label: 'ipc chan:x', cargo: 'messages', how: [], why: [], tech: ['IPC'], rate: '' })
     expect(l.edges['e-c--a']).toMatchObject({ label: 'imports', cargo: 'code', tech: [] })
     expect(l.glossary).toEqual({})
   })
@@ -633,7 +633,8 @@ describe('fix round 1', () => {
       edges: [{ from: 'p', to: 'q', via: [B('ipc', 'k'.repeat(90), 'p.ts')] }]
     }
     const f = await labelWorld(g, mkDeps({ llm: null }))
-    expect(f.edges[edgeId(g.edges[0])].cargo).toHaveLength(40)
+    // Without a model the cargo is the boundary's human type, never the 90-char key.
+    expect(f.edges[edgeId(g.edges[0])].cargo).toBe('messages')
   })
 
   it('repo-derived metadata is JSON-quoted on one line, so a newline in a key cannot inject', async () => {

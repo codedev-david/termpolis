@@ -19,7 +19,7 @@ describe('escapeHtml coercion', () => {
 describe('cards', () => {
   it('buildingCard has every section and tags inferred claims', () => {
     const html = buildingCard(minimal(), 'b1')
-    for (const s of ['Status', 'Process', 'What it does', 'inside', 'Technology', 'Why it', 'What goes out']) expect(html).toContain(s)
+    for (const s of ['class="tag status-', 'class="proc">Runs in:', 'What it does', 'inside', 'Technology', 'Why it', 'What goes out']) expect(html).toContain(s)
     expect(html).toContain('Main process')
     expect(html).toContain('claim claim-inferred')
     expect(html).toContain('<span class="tag">inferred</span>')
@@ -51,7 +51,7 @@ describe('cards', () => {
   it('shows an unknown process id, planned buildings and edges, and externals', () => {
     const doc = rich()
     doc.buildings[0].process = 'weird'
-    expect(buildingCard(doc, 'b1')).toContain('<p>weird</p>')
+    expect(buildingCard(doc, 'b1')).toContain('Runs in: <b>weird</b>')
     expect(buildingCard(doc, 'pb1')).toContain('Built · not yet checked')
     expect(buildingCard(doc, 'b4')).toContain('Planned only')
     expect(buildingCard(doc, 'b3')).toContain('Built · no tests')
@@ -99,10 +99,46 @@ describe('cards', () => {
     expect(techCard(doc, 'unknown')).toBe('<h3>unknown</h3><p></p>')
   })
 
-  it('keeps a building with no claims or parts valid', () => {
+  it('keeps a building with no claims or parts valid, leaving out the empty sections', () => {
     const doc = minimal()
-    doc.buildings.push(building('e', { how: [], why: [], floors: [], stack: [] }))
-    expect(buildingCard(doc, 'e')).toContain('What it does')
+    doc.buildings.push(building('e', { how: [], why: [], floors: [], stack: [], techLabel: '' }))
+    const html = buildingCard(doc, 'e')
+    expect(html).toContain('What it does')
+    expect(html).toContain('<p class="muted">Not described yet.</p>')
+    expect(html).not.toContain("What's inside")
+    expect(html).not.toContain('Technology')
+    expect(html).toMatch(/^<h3>[^<]*<\/h3><p class="status">/)
+    expect(html).toContain('class="proc">Runs in:') // its process is known
+    doc.buildings[doc.buildings.length - 1].process = ' '
+    expect(buildingCard(doc, 'e')).not.toContain('Runs in') // no process: no empty box
+  })
+
+  it('lists a part with no technology by name alone, with no dangling separator', () => {
+    const doc = minimal()
+    doc.buildings[0].floors = [{ ...doc.buildings[0].floors[0], name: 'Bare', tech: [] }]
+    const html = buildingCard(doc, 'b1')
+    expect(html).toContain('<li><b>Bare</b></li>')
+    expect(html).not.toContain('· </span>')
+  })
+
+  it('shows a status pill, cargo swatches on the lines and an external tag', () => {
+    const doc = minimal()
+    expect(buildingCard(doc, 'b2')).toContain('<span class="tag status-verified">Built · tests pass</span>')
+    const color = doc.cargo[doc.edges[0].cargo].color
+    expect(buildingCard(doc, 'b1')).toContain(`<span class="cargo" style="background:${color}"></span><a class="lnk link-edge"`)
+    expect(edgeCard(doc, 'e1')).toContain(`<p><span class="cargo" style="background:${color}"></span>`)
+    doc.edges[0].cargo = 'nothing-known'
+    expect(edgeCard(doc, 'e1')).toContain('<p>nothing-known</p>')
+    expect(buildingCard(rich(), 'x1')).toContain('<span class="tag status-external">Outside the project</span>')
+  })
+
+  it("leaves out an edge's empty technology and rate", () => {
+    const doc = minimal()
+    doc.edges[0].tech = []
+    doc.edges[0].rate = ''
+    const html = edgeCard(doc, 'e1')
+    expect(html).not.toContain('Technology')
+    expect(html).not.toContain('How often')
   })
 })
 
