@@ -12,7 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { busyness, clamp, declutter, edgeLabelSize, fitDistance, fitView, fogDensity, rightInset, type LabelBox, type V3 } from './viewMath'
+import { busyness, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, nameBudget, placeLabels, rightInset, type LabelCandidate, type Nudge, type V3 } from './viewMath'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -30,6 +30,8 @@ export interface SceneText {
   processes: Record<string, { label: string; color: string }>
   /** Packet shape per cargo id. */
   cargoShapes: Record<string, 'cube' | 'sphere' | 'octa' | 'tetra'>
+  /** How many lines meet at each building or orb: at a distance, only the busiest are named (semantic zoom). */
+  importance: Record<string, number>
 }
 
 export type RenderPick = { kind: 'node'; id: string } | { kind: 'edge'; id: string }
@@ -78,9 +80,12 @@ export interface ThreeRenderer {
    * A point on screen, in client pixels, where a click picks the node: its top floor's centre (an
    * orb's centre) when nothing stands in front of it, else the first of its other floors' centres
    * and roof corners that pick() gives to this node. Null when it is not drawn, or no such point is
-   * in view (hidden behind other buildings or a conduit's pick tube).
+   * in view (hidden behind other buildings or a conduit's pick tube). For a line: a point along it
+   * over open ground (no building along the ray) where a click picks the line, or null.
    */
   screenPoint(id: string): { x: number; y: number } | null
+  /** Points of line `id` (client pixels) that are on screen with no building in front of them: where it can be seen. */
+  linePoints(id: string): Array<{ x: number; y: number }>
   /** How many process shells and conduits the last draw put up, and how many changes are still animating. */
   drawnCounts(): { processShells: number; conduits: number; changing: number }
   /** Takes these buildings out of the current scene to fade out (call before draw() clears it). */
@@ -125,6 +130,18 @@ const FLOOR_W = 5
 const ORB_R = 2.2
 /** How far behind an edge pick tube (radius 0.8) a node hit may lie and still win the pick. */
 const PICK_NODE_EPS = 1
+/** How steeply a line's close-up may look down (height over ground distance), tried in turn until the arch is in sight. */
+const LINE_LIFTS = [0.7, 1, 2, 4]
+/** How far a line's close-up may step back at each lift (times the fitted distance), tried in turn. */
+const LINE_BACKS = [1, 1.4, 1.9]
+/** How far clear of every building a line's camera stands, as a share of its distance to the line. */
+const LINE_CLEAR = 0.45
+/**
+ * How near a line's end (world units; at most a fifth of the line's span) a click on the line still
+ * picks the building or orb there: a busy building's lines all rise from its roof, and a click just
+ * above the roof is meant for the building.
+ */
+const LINE_END_SNAP = 2.5
 /**
  * In front of a building, a line takes the click only where the ray passes within LINE_REACH times
  * its drawn radius of it (at least MIN_LINE_REACH world units): its fat pick tube is there to make a
@@ -160,8 +177,11 @@ const HOVER_EDGE_LABELS = 6
 const FOCUS_EDGE_LABELS = 10
 
 type LabelKind = 'district' | 'bldg' | 'floor' | 'proc'
-/** dim: the focus dimming (1 or 0.2); lit: its part is hovered or selected, so the label shows at any distance. */
-interface LabelRec { o: CSS2DObject; kind: LabelKind; dim: number; lit: boolean }
+/**
+ * dim: the focus dimming (1 or 0.2); lit: its part is hovered or selected, so the label shows at any
+ * distance. key: its name in the label placement (placeLabels).
+ */
+interface LabelRec { o: CSS2DObject; kind: LabelKind; dim: number; lit: boolean; key: string }
 interface NodeRec {
   id: string; group: THREE.Group; floors: THREE.Group[]; floorLabels: (LabelRec | null)[]
   mats: THREE.Material[]; labels: LabelRec[]; height: number; anchor: THREE.Vector3; orb: boolean
@@ -378,8 +398,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let scale = 1
 
   let nodes = new Map<string, NodeRec>()
-  /** The labels of the hovered building or external. */
+  /** The hovered building or external, and its labels. */
+  let hoveredId: string | null = null
   let hoverLabels: LabelRec[] = []
+  /** Buildings and orbs, the most lines first (then the tallest): the order their names show in at a distance. */
+  let ranked: NodeRec[] = []
   let edges = new Map<string, EdgeRec>()
   let pickables: THREE.Object3D[] = []
   let labels: LabelRec[] = []
@@ -409,7 +432,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const o = new CSS2DObject(el)
     o.position.set(pos[0], pos[1], pos[2])
     parent.add(o)
-    const rec: LabelRec = { o, kind, dim: 1, lit: false }
+    const rec: LabelRec = { o, kind, dim: 1, lit: false, key: `${kind}:${labels.length}` }
     labels.push(rec)
     return rec
   }
@@ -738,6 +761,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const b of model.buildings) heightAt.set(posKey(b.pos), b.height)
     for (const o of model.orbs) heightAt.set(posKey(o.pos), ORB_R * 2)
     for (const c of model.conduits) buildConduit(c, heightAt, text)
+    const lines = (n: NodeRec): number => text.importance[n.id] ?? 0
+    ranked = [...nodes.values()].sort((a, b) => lines(b) - lines(a) || b.height - a.height || (a.id < b.id ? -1 : 1))
+    placed = new Map()
 
     for (let k = 0; k < 10; k++) {
       const s = new THREE.Mesh(new THREE.SphereGeometry(0.75 * scale * (1 - k / 12), 16, 12), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 - k / 10 }))
@@ -845,10 +871,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     if (pts.length === 0) return Promise.resolve()
     if (pts.length === 1 && single) {
-      if ('curve' in single) {
-        const span = single.curve.v0.distanceTo(single.curve.v2)
-        return frameAt(pts[0], Math.max(26, span * 0.75), instant)
-      }
+      if ('curve' in single) return frameLine(single, instant)
       if (single.exploded) return frameAt(pts[0], 22 + single.floors.length * 2.5, instant)
       return frameWith(single, pts[0], around ?? [], instant)
     }
@@ -877,6 +900,124 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const fit = fitDistance(pts, t, [dir.x, dir.y, dir.z], camera.fov, fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
     const dist = clamp(fit, CLOSE_UP_MIN, overviewDist * 0.7)
     return flyTo(target.clone().addScaledVector(dir, dist), target, instant)
+  }
+
+  /** The building or orb standing at a line's end: the nearest one across the ground, if any is that near. */
+  function nodeAt(p: THREE.Vector3): NodeRec | null {
+    let best: NodeRec | null = null
+    let bestD = FLOOR_W * 1.5
+    for (const n of nodes.values()) {
+      const d = Math.hypot(n.group.position.x - p.x, n.group.position.z - p.z)
+      if (d < bestD) { best = n; bestD = d }
+    }
+    return best
+  }
+
+  /** Whether a camera at `p` would stand inside a building or an orb (or just above its roof). */
+  function insideAny(p: THREE.Vector3): boolean {
+    for (const n of nodes.values()) {
+      const g = n.group.position
+      const reach = n.orb ? ORB_R + 1.5 : FLOOR_W + 1.5
+      if (Math.hypot(g.x - p.x, g.z - p.z) < reach && p.y < g.y + n.height + 3) return true
+    }
+    return false
+  }
+
+  /**
+   * Whether a camera at `eye` looking at `target` stands well clear of every building, orb and
+   * other line (`skip` is the line being looked at): the nearest one is at least LINE_CLEAR of the
+   * way to the target. A camera skimming the roofs of a busy district passes `insideAny` yet shows
+   * nothing but the walls next to it, or the underside of the lines passing just over it.
+   */
+  function clearOf(eye: THREE.Vector3, target: THREE.Vector3, skip: EdgeRec): boolean {
+    const need = eye.distanceTo(target) * LINE_CLEAR
+    for (const e of edges.values()) {
+      if (e !== skip && e.path.some((p) => p.distanceTo(eye) < need)) return false
+    }
+    for (const n of nodes.values()) {
+      const g = n.group.position
+      const r = n.orb ? ORB_R : FLOOR_W * 0.5
+      const out = Math.max(0, Math.hypot(g.x - eye.x, g.z - eye.z) - r)
+      const up = Math.max(0, g.y - eye.y, eye.y - (g.y + n.height))
+      if (Math.hypot(out, up) < need) return false
+    }
+    return true
+  }
+
+  /** Whether nothing stands between `eye` and `p`: no building or orb crosses the sight line. */
+  function inSight(eye: THREE.Vector3, p: THREE.Vector3): boolean {
+    const steps = Math.max(8, Math.ceil(eye.distanceTo(p) / (FLOOR_W * 0.4)))
+    const q = new THREE.Vector3()
+    for (let i = 1; i < steps; i++) {
+      q.lerpVectors(eye, p, i / steps)
+      for (const n of nodes.values()) {
+        const g = n.group.position
+        const r = n.orb ? ORB_R : FLOOR_W * 0.5
+        if (Math.hypot(g.x - q.x, g.z - q.z) < r && q.y > g.y - 0.5 && q.y < g.y + n.height) return false
+      }
+    }
+    return true
+  }
+
+  /**
+   * A line from outside: looking across it from the side the camera is on, a little from above,
+   * far enough out that the whole arch and both end buildings (their upper part, to the name) are in the picture,
+   * never closer than the prototype's framing, and never from inside a building (the camera steps
+   * back until it is clear of them all). Between buildings in a busy district the near towers can
+   * hide the arch or its ends, so the camera steps back (LINE_BACKS) and climbs (LINE_LIFTS, up to
+   * nearly overhead) until the middle of the line and both end buildings are in clear sight, from
+   * a spot well clear of every roof. When nothing passes (a line deep inside a dense district), the
+   * camera looks down from high above, backing off until it is clear of the roofs around it.
+   */
+  function frameLine(e: EdgeRec, instant: boolean): Promise<void> {
+    // The arch, and each end building's upper part up to its name: in a tall, busy district the
+    // whole towers would fill the picture and squeeze the line itself to a sliver at the top.
+    const pts: V3[] = e.path.map((p) => [p.x, p.y, p.z])
+    for (const end of [e.curve.v0, e.curve.v2]) {
+      const m = nodeAt(end)
+      if (!m) continue
+      pts.push([m.anchor.x, m.anchor.y - m.height * 0.4, m.anchor.z], [m.anchor.x, m.anchor.y + 3, m.anchor.z])
+    }
+    const h = camera.position.clone().sub(controls.target).setY(0).normalize()
+    if (!h.lengthSq()) h.set(0, 0, 1)
+    const along = e.curve.v2.clone().sub(e.curve.v0).setY(0)
+    if (along.lengthSq() > 1e-6) {
+      // Across the line, on the camera's side of it.
+      const side = new THREE.Vector3(along.z, 0, -along.x).normalize()
+      h.copy(side.dot(h) < 0 ? side.negate() : side)
+    }
+    // What must be in clear sight from `eye`: the middle of the arch, and each end building's face
+    // toward the camera at 60% of its height (an orb: its top), so the ends are seen, not peeked at.
+    const mids = [0.3, 0.5, 0.7].map((t) => e.curve.getPoint(t))
+    const ends = [e.curve.v0, e.curve.v2].map((end) => nodeAt(end)).filter((m): m is NodeRec => !!m)
+    const seen = (eye: THREE.Vector3): THREE.Vector3[] => [...mids, ...ends.map((m) => {
+      if (m.orb) return m.anchor.clone().setY(m.anchor.y + 0.5)
+      const c = m.group.position
+      const toward = eye.clone().sub(c).setY(0)
+      if (toward.lengthSq() > 1e-9) toward.normalize()
+      return c.clone().addScaledVector(toward, FLOOR_W * 0.5 + 0.3).setY(c.y + m.height * 0.6)
+    })]
+    for (const lift of LINE_LIFTS) {
+      const dir = new THREE.Vector3(h.x, lift, h.z).normalize()
+      const fit = fitView(pts, [dir.x, dir.y, dir.z], camera.fov, fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+      const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
+      const far = Math.max(fit.dist, overviewDist * 0.7)
+      let dist = fit.dist
+      while (dist < far && insideAny(target.clone().addScaledVector(dir, dist))) dist *= 1.15
+      // Step back a little (never past `far`) before climbing: a few metres more often clears the towers.
+      for (const back of LINE_BACKS) {
+        const eye = target.clone().addScaledVector(dir, Math.min(dist * back, far))
+        if (!insideAny(eye) && clearOf(eye, target, e) && seen(eye).every((p) => inSight(eye, p))) return flyTo(eye, target, instant)
+      }
+    }
+    // Nothing gave a clear view: from high above, as far back as it takes to clear the roofs.
+    const dir = new THREE.Vector3(h.x, LINE_LIFTS[2], h.z).normalize()
+    const fit = fitView(pts, [dir.x, dir.y, dir.z], camera.fov, fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+    const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
+    const far = Math.max(fit.dist, overviewDist * 0.7)
+    let dist = fit.dist
+    while (dist < far && !clearOf(target.clone().addScaledVector(dir, dist), target, e)) dist *= 1.15
+    return flyTo(target.clone().addScaledVector(dir, Math.min(dist, far)), target, instant)
   }
 
   // ---------------- pulses ----------------
@@ -926,7 +1067,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       return !rec || touches(rec)
     })
     if (node && (!edge || node.distance <= edge.distance + PICK_NODE_EPS)) return { kind: 'node', id: node.object.userData.nodeId as string }
-    return edge ? { kind: 'edge', id: edge.object.userData.edgeId as string } : null
+    if (!edge) return null
+    const id = edge.object.userData.edgeId as string
+    const rec = edges.get(id)
+    if (rec) {
+      const at = world.worldToLocal(edge.point.clone())
+      const snap = Math.min(LINE_END_SNAP, rec.curve.v0.distanceTo(rec.curve.v2) * 0.2)
+      for (const end of [rec.curve.v0, rec.curve.v2]) {
+        const m = at.distanceTo(end) < snap ? nodeAt(end) : null
+        if (m) return { kind: 'node', id: m.id }
+      }
+    }
+    return { kind: 'edge', id }
   }
 
   /** Whether the pick ray passes within the line's reach of any segment of its drawn path (world space). */
@@ -942,12 +1094,56 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return false
   }
 
-  function screenPoint(id: string): { x: number; y: number } | null {
-    const n = nodes.get(id)
+  /**
+   * Where line `id` can be seen: the points along it (every 5% of the way) that are on screen with
+   * no building or orb in front of them. A line's close-up promises at least one. Other lines in
+   * front do not count: a bundle of lines is still a line to see.
+   */
+  function linePoints(id: string): Array<{ x: number; y: number }> {
+    const e = edges.get(id)
     const r = renderer.domElement.getBoundingClientRect()
-    if (!n || r.width === 0 || r.height === 0) return null
+    if (!e || r.width === 0 || r.height === 0) return []
     scene.updateMatrixWorld()
     camera.updateMatrixWorld()
+    const eye = camera.getWorldPosition(new THREE.Vector3())
+    const out: Array<{ x: number; y: number }> = []
+    for (let k = 1; k < 20; k++) {
+      const p = e.curve.getPoint(k / 20).applyMatrix4(world.matrixWorld)
+      const ndc = p.clone().project(camera)
+      if (Math.abs(ndc.x) > 1 || Math.abs(ndc.y) > 1 || Math.abs(ndc.z) > 1) continue
+      const far = eye.distanceTo(p)
+      ray.set(eye, p.clone().sub(eye).normalize())
+      const blocked = ray.intersectObjects(pickables, false).some((h) => typeof h.object.userData.nodeId === 'string' && h.distance < far - 0.5)
+      if (!blocked) out.push({ x: r.left + ((ndc.x + 1) / 2) * r.width, y: r.top + ((1 - ndc.y) / 2) * r.height })
+    }
+    return out
+  }
+
+  function screenPoint(id: string): { x: number; y: number } | null {
+    const n = nodes.get(id)
+    const e = edges.get(id)
+    const r = renderer.domElement.getBoundingClientRect()
+    if ((!n && !e) || r.width === 0 || r.height === 0) return null
+    scene.updateMatrixWorld()
+    camera.updateMatrixWorld()
+    const onScreen = (p: THREE.Vector3): { x: number; y: number } | null => {
+      p.project(camera)
+      if (Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || Math.abs(p.z) > 1) return null
+      return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height }
+    }
+    if (!n) {
+      // A line: a point along it, from the middle outward, over open ground (no building anywhere
+      // along the ray) where a click picks this line.
+      const line = e as EdgeRec
+      for (let k = 0; k <= 16; k++) {
+        const t = 0.5 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 0.05
+        const pt = onScreen(line.curve.getPoint(t).applyMatrix4(world.matrixWorld))
+        if (!pt) continue
+        const hit = pick(pt.x, pt.y)
+        if (hit && hit.kind === 'edge' && hit.id === id && !ray.intersectObjects(pickables, false).some((h) => typeof h.object.userData.nodeId === 'string')) return pt
+      }
+      return null
+    }
     // In world space: the top floor first, then the floors below, then the roof's corners pulled a
     // little inward. An orb: its centre, then its upper half.
     const points: THREE.Vector3[] = []
@@ -959,9 +1155,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       for (const [dx, dz] of [[c, c], [-c, c], [c, -c], [-c, -c]]) points.push(top.localToWorld(new THREE.Vector3(dx, 0, dz)))
     }
     for (const p of points) {
-      p.project(camera)
-      if (Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || Math.abs(p.z) > 1) continue
-      const pt = { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height }
+      const pt = onScreen(p)
+      if (!pt) continue
       const hit = pick(pt.x, pt.y)
       if (hit && hit.kind === 'node' && hit.id === id) return pt
     }
@@ -1018,24 +1213,83 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   undo.push(() => { ro?.disconnect() })
 
   /**
-   * The focus-lit lines whose labels show: nearest the camera first, each clear of the ones already
-   * shown, at most HOVER_EDGE_LABELS for a hover (FOCUS_EDGE_LABELS for a selection). A label off the
-   * picture is not shown.
+   * Which labels show, so that no two overlap on screen (placeLabels), most wanted first:
+   *   0. the hovered or selected part's own name, and the open building's floors;
+   *   1. the lit lines' labels, nearest the camera first, at most HOVER_EDGE_LABELS for a hover
+   *      (FOCUS_EDGE_LABELS for a selection; every line with "all line labels" on);
+   *   2. the lit neighbours' names, the busiest first;
+   * (these two move a row up or down, or aside, when their point is taken: a busy building's lines
+   * and neighbours all end at its top, under its own name);
+   *   3. district names and process captions;
+   *   4. other building names, by semantic zoom: at the overview only the few busiest
+   *      (nameBudget), more as the camera nears;
+   *   5. with "all line labels" on, the other lines' labels.
+   * A label off the picture or behind the camera takes no room. Sizes are measured once from the
+   * DOM. The labels shown last frame need less room to stay (placeLabels), so they hold still.
    */
   const labelAt = new THREE.Vector3()
-  function focusLabels(): Set<string> {
-    const lit: { box: LabelBox; d: number }[] = []
-    for (const e of edges.values()) {
-      if (!e.focus) continue
-      e.label.getWorldPosition(labelAt)
-      const d = labelAt.distanceTo(camera.position)
-      labelAt.project(camera)
-      if (Math.abs(labelAt.x) > 1 || Math.abs(labelAt.y) > 1 || labelAt.z > 1) continue
-      const { w, h } = edgeLabelSize(e.chars)
-      lit.push({ box: { id: e.id, x: ((labelAt.x + 1) / 2) * width, y: ((1 - labelAt.y) / 2) * height, w, h }, d })
+  let placed = new Map<string, Nudge>()
+  const sizes = new WeakMap<HTMLElement, { w: number; h: number }>()
+  function measure(els: HTMLElement[]): void {
+    const todo = els.filter((el) => !sizes.has(el))
+    if (todo.length === 0) return
+    const was = todo.map((el) => [el.style.display, el.style.visibility])
+    for (const el of todo) {
+      if (el.parentNode !== labelRenderer.domElement) labelRenderer.domElement.appendChild(el)
+      el.style.display = ''
+      el.style.visibility = 'hidden'
     }
-    lit.sort((a, b) => a.d - b.d)
-    return declutter(lit.map((l) => l.box), focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS)
+    for (const el of todo) if (el.offsetWidth > 0) sizes.set(el, { w: el.offsetWidth, h: el.offsetHeight })
+    todo.forEach((el, i) => { el.style.display = was[i][0]; el.style.visibility = was[i][1] })
+  }
+  function candidate(o: CSS2DObject, id: string, tier: number, group?: string, nudge?: boolean): LabelCandidate | null {
+    o.getWorldPosition(labelAt)
+    labelAt.project(camera)
+    if (labelAt.z < -1 || labelAt.z > 1) return null
+    const { w, h } = sizes.get(o.element) ?? edgeLabelSize((o.element.textContent ?? '').length)
+    const x = ((labelAt.x + 1) / 2) * width
+    const y = ((1 - labelAt.y) / 2) * height
+    if (x + w / 2 < 0 || x - w / 2 > width || y + h / 2 < 0 || y - h / 2 > height) return null
+    return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}) }
+  }
+  function layLabels(): Map<string, Nudge> {
+    camera.updateMatrixWorld()
+    const want: { o: CSS2DObject; id: string; tier: number; group?: string; nudge?: boolean }[] = []
+    const targets = new Set([hoveredId, selectedId])
+    for (const n of nodes.values()) {
+      if (n.exploded) n.floorLabels.forEach((l) => { if (l) want.push({ o: l.o, id: l.key, tier: 0 }) })
+      if (targets.has(n.id)) for (const l of n.labels) want.push({ o: l.o, id: l.key, tier: 0 })
+    }
+    const lit = [...edges.values()].filter((e) => e.focus)
+    const near = (e: EdgeRec): number => e.label.getWorldPosition(labelAt).distanceTo(camera.position)
+    for (const e of lit.sort((a, b) => near(a) - near(b))) want.push({ o: e.label, id: 'e:' + e.id, tier: 1, group: 'line', nudge: true })
+    const budget = nameBudget(ranked.length, camera.position.distanceTo(controls.target) / overviewDist)
+    ranked.forEach((n, rank) => {
+      if (targets.has(n.id)) return
+      for (const l of n.labels) {
+        if (l.lit) want.push({ o: l.o, id: l.key, tier: 2, nudge: true })
+        // A name already on show keeps its place a little past the budget, so a zoom does not flicker it.
+        else if (rank < budget || (placed.has(l.key) && rank < budget * 1.25 + 1)) want.push({ o: l.o, id: l.key, tier: 4 })
+      }
+    })
+    for (const l of labels) if (l.kind === 'district' || l.kind === 'proc') want.push({ o: l.o, id: l.key, tier: 3 })
+    if (allLabels) for (const e of edges.values()) if (!e.focus) want.push({ o: e.label, id: 'e:' + e.id, tier: 5 })
+    measure(want.map((w) => w.o.element))
+    const cands: LabelCandidate[] = []
+    for (const w of want) {
+      const c = candidate(w.o, w.id, w.tier, w.group, w.nudge)
+      if (c) cands.push(c)
+    }
+    placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS })
+    return placed
+  }
+
+  /** Moves a label off its point by its nudge (CSS2DRenderer owns its transform, so the margins). */
+  function nudgeLabel(el: HTMLElement, [dx, dy]: Nudge): void {
+    const left = dx ? `${dx}px` : ''
+    const top = dy ? `${dy}px` : ''
+    if (el.style.marginLeft !== left) el.style.marginLeft = left
+    if (el.style.marginTop !== top) el.style.marginTop = top
   }
 
   // ---------------- loop ----------------
@@ -1139,30 +1393,29 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       for (let i = 1; i < dp.length; i += 3) { dp[i] += dt * 1.1; if (dp[i] > 58) dp[i] = -2 }
       dustGeo.attributes.position.needsUpdate = true
     }
-    // Semantic zoom: district names read from the overview of any size of world (their fade starts
-    // past it), building names come in at middle distance as in the prototype, and the names of
-    // the hovered or selected part and its neighbours show at any distance.
+    controls.update()
+    // Semantic zoom and no overlaps (layLabels); then how strongly each shown label reads. District
+    // names read from the overview of any size of world (their fade starts past it); building names
+    // read at the overview and fade a little with distance; the hovered or selected part's and its
+    // neighbours' names read in full.
+    const shown = layLabels()
     const districtFade = Math.max(170, overviewDist * 1.15)
     for (const l of labels) {
-      if (l.kind === 'floor' || l.kind === 'proc') continue
+      l.o.visible = shown.has(l.key)
+      if (l.o.visible) nudgeLabel(l.o.element, shown.get(l.key) as Nudge)
+      if (!l.o.visible || l.kind === 'floor' || l.kind === 'proc') continue
       let o = 1
       if (!l.lit && !hoverLabels.includes(l)) {
-        l.o.getWorldPosition(wp)
-        const d = wp.distanceTo(camera.position)
-        o = Math.max(0, Math.min(1, l.kind === 'district' ? 1.9 - d / districtFade : 1.7 - d / 105)) * l.dim
+        const d = l.o.getWorldPosition(wp).distanceTo(camera.position)
+        o = (l.kind === 'district' ? clamp(1.9 - d / districtFade, 0, 1) : clamp(2 - d / overviewDist, 0.55, 1)) * l.dim
       }
       l.o.element.style.opacity = String(o)
     }
-    const shownFocus = allLabels ? null : focusLabels()
     for (const e of edges.values()) {
-      const on = allLabels || (e.focus && (shownFocus as Set<string>).has(e.id))
-      e.label.visible = on
-      if (on) {
-        e.label.getWorldPosition(wp)
-        e.label.element.style.opacity = String(Math.max(0.35, Math.min(1, 1.8 - wp.distanceTo(camera.position) / 110)))
-      }
+      e.label.visible = shown.has('e:' + e.id)
+      if (e.label.visible) nudgeLabel(e.label.element, shown.get('e:' + e.id) as Nudge)
+      if (e.label.visible) e.label.element.style.opacity = String(Math.max(0.35, Math.min(1, 1.8 - e.label.getWorldPosition(wp).distanceTo(camera.position) / 110)))
     }
-    controls.update()
     if (composer) composer.render()
     else renderer.render(scene, camera)
     labelRenderer.render(scene, camera)
@@ -1200,9 +1453,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     stopPulses,
     pick,
     setCursor(pointer) { renderer.domElement.style.cursor = pointer ? 'pointer' : 'default' },
-    setHovered(id) { hoverLabels = id === null ? [] : nodes.get(id)?.labels ?? [] },
+    setHovered(id) { hoveredId = id; hoverLabels = id === null ? [] : nodes.get(id)?.labels ?? [] },
     visibleIds,
     screenPoint,
+    linePoints,
     drawnCounts: () => ({ processShells: shellCount, conduits: edges.size, changing: changes.active() }),
     keepGhosts(ids) {
       const groups: THREE.Object3D[] = []

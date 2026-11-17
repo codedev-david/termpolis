@@ -27,6 +27,8 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         selectListeners: () => selectCbs.size,
         getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), dispose: vi.fn(),
         screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 1, y: 2 } : null)),
+        linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 3, y: 4 }] : [])),
+        pickAt: vi.fn((x: number) => (x === 1 ? { kind: 'node', id: 'b1' } : null)),
         drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4 })),
       }
       h.viewers.push(v)
@@ -647,6 +649,9 @@ describe('WorldView', () => {
       const { unmount } = await mount()
       expect(probe().screenPoint('b1')).toEqual({ x: 1, y: 2 })
       expect(probe().screenPoint('zz')).toBeNull()
+      expect(probe().linePoints('e1')).toEqual([{ x: 3, y: 4 }])
+      expect(probe().pickAt(1, 2)).toEqual({ kind: 'node', id: 'b1' })
+      expect(probe().pickAt(9, 9)).toBeNull()
       expect(probe().drawn()).toEqual({ layers: expect.objectContaining({ processes: false }), processShells: 0, conduits: 4 })
       unmount()
       expect(probe()).toBeUndefined()

@@ -343,6 +343,8 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     const { viewer } = setup({ doc: minimal() })
     viewer.setLayers({ processes: true })
     expect(viewer.screenPoint('b1')).toBeNull()
+    expect(viewer.linePoints('e1')).toEqual([])
+    expect(viewer.pickAt(1, 2)).toBeNull()
     expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, wireframes: [] })
   })
 
@@ -428,6 +430,7 @@ function fakeRenderer(host: HTMLElement) {
     frame: vi.fn(async () => undefined), overview: vi.fn(async () => undefined), pulse: vi.fn(async () => undefined),
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
+    linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
     drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1 })),
     keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(),
     dispose: vi.fn(() => { canvas.remove() }),
@@ -670,10 +673,15 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(viewer.cameraRegion()).toEqual(['b1'])
   })
 
-  it('screenPoint and drawn come from the renderer', () => {
-    const { viewer } = setup3d()
+  it('screenPoint, linePoints, pickAt and drawn come from the renderer', () => {
+    const { viewer, r, aim } = setup3d()
     expect(viewer.screenPoint('b1')).toEqual({ x: 5, y: 6 })
     expect(viewer.screenPoint('nope')).toBeNull()
+    expect(viewer.linePoints('e1')).toEqual([{ x: 7, y: 8 }])
+    expect(viewer.linePoints('nope')).toEqual([])
+    aim({ kind: 'edge', id: 'e1' })
+    expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
+    expect(r.pick).toHaveBeenLastCalledWith(3, 4)
     expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, wireframes: ['b4'] })
   })
 
@@ -773,6 +781,19 @@ describe('WebGL path (stand-in renderer)', () => {
     const text = r.draw.mock.calls[r.draw.mock.calls.length - 1][1] as { labels: Record<string, string>; edges: Record<string, string> }
     expect(text.labels.b1).toBe('Electron + React')
     expect(text.edges.e1).toBe(d.edges[0].label)
+  })
+
+  it('counts the built lines at each part, once for a line to itself, for the semantic zoom', () => {
+    const { r, viewer } = setup3d()
+    const d = rich()
+    d.edges.push({ ...d.edges[0], id: 'self', from: 'b2', to: 'b2' })
+    viewer.load(d)
+    const text = r.draw.mock.calls[r.draw.mock.calls.length - 1][1] as { importance: Record<string, number> }
+    const want: Record<string, number> = {}
+    for (const e of d.edges) for (const end of new Set([e.from, e.to])) want[end] = (want[end] ?? 0) + 1
+    expect(text.importance).toEqual(want)
+    expect(text.importance.b2).toBe(d.edges.filter((e) => e.from === 'b2' || e.to === 'b2').length)
+    expect(text.importance.pb1).toBeUndefined()
   })
 
   it('shows a code-written line label as a short summary, and caps a long one', () => {

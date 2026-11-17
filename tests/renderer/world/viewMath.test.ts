@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { busyness, BUSY_LINES, clamp, declutter, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, OPEN_FOG, rightInset, type LabelBox, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -123,18 +123,78 @@ describe('edgeLabelSize', () => {
   })
 })
 
-describe('declutter', () => {
-  const box = (id: string, x: number, y: number): LabelBox => ({ id, x, y, w: 100, h: 18 })
+describe('placeLabels', () => {
+  const box = (id: string, x: number, y: number, tier = 0, group?: string): LabelCandidate => ({ id, x, y, w: 100, h: 18, tier, ...(group ? { group } : {}) })
+  const none = new Map<string, readonly [number, number]>()
+  const was = (...ids: string[]): Map<string, readonly [number, number]> => new Map(ids.map((id) => [id, [0, 0] as const]))
+  const ids = (m: Map<string, unknown>): string[] => [...m.keys()]
   it('keeps the first of overlapping labels and every label clear of the kept ones', () => {
-    const shown = declutter([box('a', 100, 100), box('b', 150, 105), box('c', 220, 100), box('d', 100, 130)], 10)
-    expect([...shown]).toEqual(['a', 'c', 'd'])
+    const shown = placeLabels([box('a', 100, 100), box('b', 150, 105), box('c', 220, 100), box('d', 100, 130)], none)
+    expect(ids(shown)).toEqual(['a', 'c', 'd'])
+    expect([...shown.values()]).toEqual([[0, 0], [0, 0], [0, 0]])
+    expect(placeLabels([], none).size).toBe(0)
   })
 
-  it('keeps at most max labels, and a gap between them', () => {
-    expect([...declutter([box('a', 0, 0), box('b', 0, 100), box('c', 0, 200)], 2)]).toEqual(['a', 'b'])
-    expect([...declutter([box('a', 0, 0), box('b', 102, 0)], 5, 4)]).toEqual(['a'])
-    expect([...declutter([box('a', 0, 0), box('b', 108, 0)], 5, 4)]).toEqual(['a', 'b'])
-    expect(declutter([], 5).size).toBe(0)
+  it('places the lower tiers first, keeping the given order within a tier', () => {
+    const shown = placeLabels([box('far', 0, 0, 3), box('near', 40, 0, 1), box('next', 300, 0, 3), box('beside', 340, 0, 3)], none)
+    expect(ids(shown)).toEqual(['near', 'next'])
+  })
+
+  it('caps a group, and lets labels with no group or an uncapped group through', () => {
+    const cands = [box('e1', 0, 0, 0, 'line'), box('e2', 0, 100, 0, 'line'), box('e3', 0, 200, 0, 'line'), box('n', 0, 300), box('o', 0, 400, 0, 'other')]
+    expect(ids(placeLabels(cands, none, { line: 2 }))).toEqual(['e1', 'e2', 'n', 'o'])
+  })
+
+  it('needs LABEL_GAP pixels to show a label and only LABEL_KEEP_GAP to keep one shown', () => {
+    const edge = 100 + LABEL_KEEP_GAP * 2 + 1 // clear by more than the keep gap, less than the gap
+    expect(edge).toBeLessThan(100 + LABEL_GAP * 2)
+    expect(ids(placeLabels([box('a', 0, 0), box('b', edge, 0)], none))).toEqual(['a'])
+    expect(ids(placeLabels([box('a', 0, 0), box('b', edge, 0)], was('b')))).toEqual(['a', 'b'])
+    expect(ids(placeLabels([box('a', 0, 0), box('b', 102, 0)], none, {}, 4, 0))).toEqual(['a'])
+    expect(ids(placeLabels([box('a', 0, 0), box('b', 108, 0)], none, {}, 4, 0))).toEqual(['a', 'b'])
+    expect(ids(placeLabels([box('a', 0, 0), box('b', 0, 18)], was('b'), {}, 4, 0))).toEqual(['a', 'b'])
+  })
+
+  it('moves a label that may nudge to the first clear place round its point, else drops it', () => {
+    const nudged = (id: string, x: number, y: number, tier = 1): LabelCandidate => ({ ...box(id, x, y, tier), nudge: true })
+    // Its point is taken: just above it is free.
+    expect([...placeLabels([box('a', 0, 0), nudged('b', 0, 0)], none)]).toEqual([['a', [0, 0]], ['b', [0, -(18 + LABEL_GAP)]]])
+    // Its point is free: it stays there.
+    expect(placeLabels([nudged('b', 0, 300)], none).get('b')).toEqual([0, 0])
+    // Above taken too: below.
+    expect(placeLabels([box('a', 0, 0), box('up', 0, -24), nudged('b', 0, 0)], none).get('b')).toEqual([0, 18 + LABEL_GAP])
+    // Every place taken: not shown.
+    const wall = NUDGES.map(([ux, uy], i) => box(`w${i}`, ux * (100 + LABEL_GAP), uy * (18 + LABEL_GAP)))
+    expect(placeLabels([...wall, nudged('b', 0, 0)], none).has('b')).toBe(false)
+  })
+
+  it('keeps a shown label where it was while that place stays clear, else finds another', () => {
+    const nudged: LabelCandidate = { ...box('b', 0, 0, 1), nudge: true }
+    // Shown below last time, and below is still clear (above is clear too): it stays below.
+    expect(placeLabels([box('a', 0, 0), nudged], new Map([['b', [0, 24] as const]])).get('b')).toEqual([0, 24])
+    // Its old place is now taken: it moves to the first clear place.
+    expect(placeLabels([box('a', 0, 0), box('c', 0, 24), nudged], new Map([['b', [0, 24] as const]])).get('b')).toEqual([0, -(18 + LABEL_GAP)])
+  })
+})
+
+describe('nameBudget', () => {
+  it('shows a few names at the overview and further out, never more than there are', () => {
+    expect(nameBudget(100, 1)).toBe(10)
+    expect(nameBudget(100, 1.6)).toBe(10)
+    expect(nameBudget(25, 1)).toBe(5)
+    expect(nameBudget(4, 1)).toBe(3)
+    expect(nameBudget(2, 1)).toBe(2)
+    expect(nameBudget(0, 1)).toBe(0)
+    expect(nameBudget(400, 1)).toBe(10)
+  })
+
+  it('shows more as the camera nears, all of them from ZOOM_ALL_NAMES in', () => {
+    const mid = nameBudget(100, 0.65)
+    expect(mid).toBeGreaterThan(10)
+    expect(mid).toBeLessThan(100)
+    expect(nameBudget(100, 0.8)).toBeLessThan(mid)
+    expect(nameBudget(100, ZOOM_ALL_NAMES)).toBe(100)
+    expect(nameBudget(100, 0.1)).toBe(100)
   })
 })
 

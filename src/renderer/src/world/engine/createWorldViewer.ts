@@ -12,7 +12,7 @@ import { buildingCard, edgeCard, escapeHtml, techCard, usesTech } from './cards'
 import { renderFallback } from './fallback2d'
 import { neighbours } from './interaction'
 import { buildSceneModel, DEFAULT_LAYERS, type LayerState } from './sceneModel'
-import { createThreeRenderer, type RenderFocus, type SceneText, type ThreeRenderer } from './threeRenderer'
+import { createThreeRenderer, type RenderFocus, type RenderPick, type SceneText, type ThreeRenderer } from './threeRenderer'
 import { THEMES, type ThemeName } from './themes'
 
 export type SelectionKind = 'building' | 'edge' | 'district' | 'tech'
@@ -35,8 +35,12 @@ export interface WorldViewer {
   getSelection(): string[]
   /** Ids of the buildings, externals and edges currently in view. */
   cameraRegion(): string[]
-  /** Where a building or external is on screen, in client pixels: null when it is not drawn in 3D or not in view. */
+  /** Where a click picks a building, external or line, in client pixels: null when it is not drawn in 3D or no such point is in view. */
   screenPoint(id: string): { x: number; y: number } | null
+  /** Where line `id` can be seen, in client pixels: its points on screen with no building in front (none in 2D). */
+  linePoints(id: string): Array<{ x: number; y: number }>
+  /** What a click at this point (client pixels) picks: a building or external, a line, or null (also in 2D). */
+  pickAt(x: number, y: number): RenderPick | null
   /** What is drawn now: the layer switches, and the process shells and conduits on the 3D map (0 in 2D). */
   drawn(): WorldDrawn
   /**
@@ -270,7 +274,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
 
   // ---------------- drawing ----------------
   function sceneText(d: WorldDoc): SceneText {
-    const text: SceneText = { labels: {}, floors: {}, districts: {}, edges: {}, processes: d.processes, cargoShapes: {} }
+    const text: SceneText = { labels: {}, floors: {}, districts: {}, edges: {}, processes: d.processes, cargoShapes: {}, importance: {} }
     for (const b of [...d.buildings, ...planBuildings(d)]) {
       if (text.labels[b.id] !== undefined) continue
       text.labels[b.id] = layers.labels === 'tech' ? b.techLabel : b.name
@@ -280,6 +284,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     for (const x of d.districts) text.districts[x.id] = districtSubtitle(d, x)
     for (const e of [...d.edges, ...planEdges(d)]) if (text.edges[e.id] === undefined) text.edges[e.id] = edgeSummary(e.label)
     for (const [k, c] of Object.entries(d.cargo)) text.cargoShapes[k] = c.shape
+    for (const e of d.edges) for (const end of new Set([e.from, e.to])) text.importance[end] = (text.importance[end] ?? 0) + 1
     return text
   }
 
@@ -554,6 +559,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     getSelection: () => (selection ? [selection.id] : []),
     cameraRegion: () => (r3 ? r3.visibleIds() : allIds()),
     screenPoint: (id) => (r3 ? r3.screenPoint(id) : null),
+    linePoints: (id) => (r3 ? r3.linePoints(id) : []),
+    pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [] }),
     resetView() {
       cancelActions()

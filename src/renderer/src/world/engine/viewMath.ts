@@ -119,18 +119,77 @@ export function edgeLabelSize(chars: number): { w: number; h: number } {
   return { w: Math.ceil(chars * 6.2) + 16, h: 18 }
 }
 
+/** Whether two labels keep `gap` pixels clear of each other, across or up and down. */
+function clearOf(a: LabelBox, b: LabelBox, gap: number): boolean {
+  return Math.abs(a.x - b.x) * 2 >= a.w + b.w + gap * 2 || Math.abs(a.y - b.y) * 2 >= a.h + b.h + gap * 2
+}
+
 /**
- * Which labels to show so that none overlaps another: in the order given (the most wanted first),
- * each one that keeps `gap` pixels clear of every label already kept, up to `max` of them.
+ * A label that wants a place on screen: lower tiers are more wanted; a group can be capped. One that
+ * may `nudge` can move off its point (NUDGES) when that point is taken.
  */
-export function declutter(boxes: LabelBox[], max: number, gap = 4): Set<string> {
+export interface LabelCandidate extends LabelBox { tier: number; group?: string; nudge?: boolean }
+
+/** Room a label needs round it to appear, and the room it needs to stay once shown (LABEL_KEEP_GAP). */
+export const LABEL_GAP = 6
+export const LABEL_KEEP_GAP = 1
+
+/** How far a label moves off its point, in pixels across and down. */
+export type Nudge = readonly [number, number]
+
+/**
+ * Where a label that may nudge tries to go, in order, as steps of its own height (plus the gap) up
+ * and down and of its own width (plus the gap) across: its point first, then just above or below,
+ * then two rows off, then beside it.
+ */
+export const NUDGES: ReadonlyArray<readonly [number, number]> = [[0, 0], [0, -1], [0, 1], [0, -2], [0, 2], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]]
+
+/**
+ * Which labels to show so that no two overlap, and where: the lowest tier first (the order given
+ * within a tier), each one that keeps clear of every label already kept, up to its group's cap in
+ * `caps`. A label that may nudge takes the first of its NUDGES places that is clear. A label in
+ * `shown` (on screen last time, with its nudge) needs only `keepGap` pixels round it to stay where
+ * it was, a new one `gap` to appear: a label at the edge of its room stays put while the camera
+ * moves, instead of flickering in and out or hopping. Returns each shown label's nudge, in the
+ * order they were placed.
+ */
+export function placeLabels(
+  cands: LabelCandidate[], shown: ReadonlyMap<string, Nudge>, caps: Readonly<Record<string, number>> = {}, gap = LABEL_GAP, keepGap = LABEL_KEEP_GAP,
+): Map<string, Nudge> {
+  const order = cands.map((c, i) => ({ c, i })).sort((a, b) => a.c.tier - b.c.tier || a.i - b.i)
   const kept: LabelBox[] = []
-  for (const b of boxes) {
-    if (kept.length >= max) break
-    const clear = kept.every((k) => Math.abs(k.x - b.x) * 2 >= k.w + b.w + gap * 2 || Math.abs(k.y - b.y) * 2 >= k.h + b.h + gap * 2)
-    if (clear) kept.push(b)
+  const out = new Map<string, Nudge>()
+  const used = new Map<string, number>()
+  const clear = (box: LabelBox, g: number): boolean => kept.every((k) => clearOf(k, box, g))
+  for (const { c } of order) {
+    const n = c.group === undefined ? 0 : used.get(c.group) ?? 0
+    if (c.group !== undefined && n >= (caps[c.group] ?? Infinity)) continue
+    const tries: Array<{ d: Nudge; g: number }> = []
+    const was = shown.get(c.id)
+    if (was) tries.push({ d: was, g: keepGap })
+    for (const [ux, uy] of c.nudge ? NUDGES : NUDGES.slice(0, 1)) tries.push({ d: [ux * (c.w + gap), uy * (c.h + gap)], g: gap })
+    const fit = tries.find(({ d, g }) => clear({ ...c, x: c.x + d[0], y: c.y + d[1] }, g))
+    if (!fit) continue
+    kept.push({ ...c, x: c.x + fit.d[0], y: c.y + fit.d[1] })
+    out.set(c.id, fit.d)
+    if (c.group !== undefined) used.set(c.group, n + 1)
   }
-  return new Set(kept.map((k) => k.id))
+  return out
+}
+
+/** From this zoom in (camera distance over the overview's), every building's name may show. */
+export const ZOOM_ALL_NAMES = 0.3
+
+/**
+ * Semantic zoom: how many building names, the most important first, may show among `n` at `zoom`
+ * (the camera's distance over the overview's). At the overview and further out, a few: the square
+ * root of the count, 3 to 10 (never more than there are); all of them from ZOOM_ALL_NAMES in; in
+ * between, a smooth ramp.
+ */
+export function nameBudget(n: number, zoom: number): number {
+  const few = Math.min(n, clamp(Math.round(Math.sqrt(n)), 3, 10))
+  const s = clamp((1 - zoom) / (1 - ZOOM_ALL_NAMES), 0, 1)
+  return Math.round(few + (n - few) * s * s * (3 - 2 * s))
 }
 
 /**

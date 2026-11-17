@@ -72,6 +72,8 @@ export interface WorldAskLink {
 /** The e2e probe on window.__termpolis_world. */
 export interface WorldProbe {
   screenPoint(id: string): { x: number; y: number } | null
+  linePoints(id: string): Array<{ x: number; y: number }>
+  pickAt(x: number, y: number): { kind: 'node' | 'edge'; id: string } | null
   drawn(): WorldDrawn
 }
 
@@ -264,7 +266,7 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
   useEffect(() => {
     if (!viewer || !exposesWorldProbe()) return
     const w = window as unknown as { __termpolis_world?: WorldProbe }
-    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), drawn: () => viewer.drawn() }
+    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), linePoints: (id) => viewer.linePoints(id), pickAt: (x, y) => viewer.pickAt(x, y), drawn: () => viewer.drawn() }
     w.__termpolis_world = probe
     return () => { if (w.__termpolis_world === probe) delete w.__termpolis_world }
   }, [viewer])
