@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import {
-  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneStyle, useWorldPaneWidth,
+  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, CARD_INSET_PX, cardReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneStyle, useWorldPaneWidth,
   WORLD_PANE_MIN_PX, TERMINAL_MIN_PX, WORLD_PANE_DEFAULT_FRACTION,
 } from '../../../src/renderer/src/components/World/worldPane'
 
@@ -135,5 +135,20 @@ describe('askReserve', () => {
     expect(askReserve(125.2)).toBe(150)
     expect(askReserve(0)).toBe(0)
     expect(askReserve(-3)).toBe(0)
+  })
+})
+
+describe('cardReserve', () => {
+  it('keeps the card, its gap to the edges and a little clearance out of the close-ups, in 8 px steps; nothing while closed', () => {
+    expect(CARD_INSET_PX).toBe(12)
+    // 330 + 12 + 8 = 350 -> 352; 225 + 20 = 245 -> 248.
+    expect(cardReserve(330, 225)).toEqual([352, 248])
+    // A pixel more or less in the card's content does not move the camera.
+    expect(cardReserve(330, 226)).toEqual([352, 248])
+    expect(cardReserve(330, 228)).toEqual([352, 248])
+    expect(cardReserve(330, 229)).toEqual([352, 256])
+    expect(cardReserve(0, 0)).toEqual([0, 0])
+    expect(cardReserve(330, 0)).toEqual([0, 0])
+    expect(cardReserve(0, 225)).toEqual([0, 0])
   })
 })

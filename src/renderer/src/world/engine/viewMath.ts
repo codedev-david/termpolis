@@ -235,6 +235,88 @@ export function stretchFov(fovDeg: number, height: number, extra: number): numbe
   return (Math.atan(t) * 360) / Math.PI
 }
 
+/** The least room, each way, the free part of the view keeps: a card that would leave less is not reserved. */
+export const MIN_FREE_PX = 120
+
+/** The view's edges a panel covers, in pixels from each side: what the fits leave out. */
+export interface FreeArea { left: number; top: number; right: number; bottom: number }
+
+/**
+ * The part of the view the panels leave free, which every fit fills (the overview, a building's
+ * focus, a line's close-up, a tour step): the legend's strip on the right (`legend`, rightInset),
+ * the ask bar's at the bottom (`ask`, bottomInset), and the open card's box in the top left corner
+ * (`card`, its width and height from the corner, gaps included). The card is kept out as a strip
+ * along the top or along the left, whichever leaves the larger free area: in a narrow pane, where
+ * the card spans nearly the width, the top. A card that would leave less than MIN_FREE_PX either
+ * way on both sides is not reserved (the fit keeps the rest of the view).
+ */
+export function freeArea(width: number, height: number, legend: number, ask: number, card: readonly [number, number] | null): FreeArea {
+  const out: FreeArea = { left: 0, top: 0, right: rightInset(width, legend), bottom: bottomInset(height, ask) }
+  if (!card || !(card[0] > 0) || !(card[1] > 0)) return out
+  const [cw, ch] = card
+  const fw = width - out.right
+  const fh = height - out.bottom
+  const below = fw >= MIN_FREE_PX && fh - ch >= MIN_FREE_PX ? fw * (fh - ch) : -1
+  const beside = fw - cw >= MIN_FREE_PX && fh >= MIN_FREE_PX ? (fw - cw) * fh : -1
+  if (below < 0 && beside < 0) return out
+  return below >= beside ? { ...out, top: ch } : { ...out, left: cw }
+}
+
+/** Whether two free areas are the same to within half a pixel on every side. */
+export function sameArea(a: FreeArea, b: FreeArea): boolean {
+  return Math.abs(a.left - b.left) < 0.5 && Math.abs(a.top - b.top) < 0.5 && Math.abs(a.right - b.right) < 0.5 && Math.abs(a.bottom - b.bottom) < 0.5
+}
+
+/**
+ * One frame (`dt` seconds) of the free area easing from `a` toward `goal`, so the picture glides
+ * when a panel opens, closes or changes size: most of the way in a quarter of a second, and
+ * exactly there once every side is within half a pixel.
+ */
+export function easeArea(a: FreeArea, goal: FreeArea, dt: number): FreeArea {
+  const k = 1 - Math.exp(-Math.max(0, dt) * 12)
+  const next: FreeArea = {
+    left: a.left + (goal.left - a.left) * k,
+    top: a.top + (goal.top - a.top) * k,
+    right: a.right + (goal.right - a.right) * k,
+    bottom: a.bottom + (goal.bottom - a.bottom) * k,
+  }
+  return sameArea(next, goal) ? { ...goal } : next
+}
+
+/** How the camera's picture is set so the free part of the view is what it centres on and fits. */
+export interface ViewFrame {
+  /** The full picture (setViewOffset): the view lies at (offX, offY) inside it. */
+  fullW: number
+  fullH: number
+  offX: number
+  offY: number
+  /** The camera's vertical field (over fullH) and aspect. */
+  fov: number
+  aspect: number
+  /** The field and aspect of the free part, at the camera's scale: what a fit fills. */
+  fitFov: number
+  fitAspect: number
+}
+
+/**
+ * The camera's picture for a view with panels over it: centred on the middle of the free part, as
+ * large as it takes to cover the whole view from there (the parts past the view's edges are cut
+ * off), at the pixel scale of a `fovDeg` camera over the view. With nothing reserved it is the view.
+ */
+export function viewFrame(width: number, height: number, fovDeg: number, f: FreeArea): ViewFrame {
+  const fw = Math.max(1, width - f.left - f.right)
+  const fh = Math.max(1, height - f.top - f.bottom)
+  const cx = f.left + fw / 2
+  const cy = f.top + fh / 2
+  const fullW = 2 * Math.max(cx, width - cx)
+  const fullH = 2 * Math.max(cy, height - cy)
+  return {
+    fullW, fullH, offX: fullW / 2 - cx, offY: fullH / 2 - cy,
+    fov: stretchFov(fovDeg, height, fullH - height), aspect: fullW / fullH,
+    fitFov: stretchFov(fovDeg, height, fh - height), fitAspect: fw / fh,
+  }
+}
+
 const unit = (a: V3): V3 => {
   const k = 1 / Math.hypot(a[0], a[1], a[2])
   return [a[0] * k, a[1] * k, a[2] * k]

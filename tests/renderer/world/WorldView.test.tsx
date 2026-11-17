@@ -16,7 +16,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
       const selectCbs = new Set<(s: WorldSelection | null) => void>()
       const v = {
         host, opts,
-        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(),
+        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(),
         apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), cancelActions: vi.fn(),
         on: vi.fn((ev: string, cb: (s: WorldSelection | null) => void) => {
           if (ev !== 'select') return () => undefined
@@ -520,6 +520,72 @@ describe('WorldView', () => {
     expect(v.load).toHaveBeenCalledTimes(before)
     expect(errors).not.toHaveBeenCalled()
     errors.mockRestore()
+  })
+
+  describe('the open card is kept out of the close-ups', () => {
+    /** The card's box as the page lays it out (jsdom lays nothing out): `box` for the card, 0 elsewhere. */
+    function cardBox(box: { w: number; h: number }): void {
+      vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-card' ? box.w : 0
+      })
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-card' ? box.h : 0
+      })
+    }
+
+    it('from its measured box, following it as it opens, changes size, shows another part and closes', async () => {
+      const seen: Array<() => void> = []
+      const disconnect = vi.fn()
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(cb: () => void) { seen.push(cb) }
+        observe(): void {}
+        disconnect(): void { disconnect() }
+      })
+      const box = { w: 330, h: 225 }
+      cardBox(box)
+      try {
+        bridge()
+        const view = await mount()
+        const v = viewer()
+        expect(v.setCardReserve).toHaveBeenLastCalledWith(0, 0)
+        act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
+        // 330 x 225, 12 from the corner, 8 clear of the city, in 8 px steps.
+        expect(v.setCardReserve).toHaveBeenLastCalledWith(352, 248)
+        const calls = v.setCardReserve.mock.calls.length
+        box.h = 226 // a pixel's change in its content: the camera stays
+        act(() => { for (const cb of seen) cb() })
+        expect(v.setCardReserve).toHaveBeenCalledTimes(calls)
+        box.h = 300 // a section opened in it
+        act(() => { for (const cb of seen) cb() })
+        expect(v.setCardReserve).toHaveBeenLastCalledWith(352, 320)
+        box.h = 180 // another part's card, shorter
+        act(() => v.opts.renderCard(edgeCard(minimal(), 'e1')))
+        expect(v.setCardReserve).toHaveBeenLastCalledWith(352, 200)
+        fireEvent.click(screen.getByTestId('world-card-close'))
+        expect(v.setCardReserve).toHaveBeenLastCalledWith(0, 0)
+        expect(disconnect).toHaveBeenCalled()
+        view.unmount()
+      } finally {
+        vi.unstubAllGlobals()
+        vi.restoreAllMocks()
+      }
+    })
+
+    it('reads the box once where there is no ResizeObserver', async () => {
+      const had = 'ResizeObserver' in globalThis
+      const saved = (globalThis as any).ResizeObserver
+      delete (globalThis as any).ResizeObserver
+      cardBox({ w: 330, h: 100 })
+      try {
+        bridge()
+        await mount()
+        act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
+        expect(viewer().setCardReserve).toHaveBeenLastCalledWith(352, 120)
+      } finally {
+        if (had) (globalThis as any).ResizeObserver = saved
+        vi.restoreAllMocks()
+      }
+    })
   })
 
   it('losing the project folder clears the map and its card and shows the home', async () => {

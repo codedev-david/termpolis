@@ -30,6 +30,11 @@ export interface WorldViewer {
   setRightReserve(px: number): void
   /** Pixels at the bottom the ask bar covers now; the overview is fitted above it. Ignored without WebGL. */
   setBottomReserve(px: number): void
+  /**
+   * The open card's box from the view's top left corner (width and height, gaps included; 0, 0 with
+   * no card): a focus, a line's close-up or a tour step is framed around it. Ignored without WebGL.
+   */
+  setCardReserve(w: number, h: number): void
   /** Runs one action now: camera flight, highlight, flow pulse, card open, tour, proposal reveal or reset. */
   apply(a: WorldAction): Promise<void>
   play(actions: WorldAction[]): Promise<void>
@@ -559,6 +564,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     },
     setBottomReserve(px) {
       if (!disposed) r3?.setBottomReserve(px)
+    },
+    setCardReserve(w, h) {
+      if (!disposed) r3?.setCardReserve(w, h)
     },
     setTheme(t) {
       if (disposed || !THEMES[t]) return

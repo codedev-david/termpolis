@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bottomInset, clampIntoView, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { bottomInset, clampIntoView, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -359,5 +359,150 @@ describe("the overview direction for the pane's shape", () => {
     const o = overviewDir(0.7, wide)
     const [x, z] = turnGround(0, 1, o.turned)
     expect(x * o.dir[0] + z * o.dir[2]).toBeGreaterThan(0)
+  })
+})
+
+describe('freeArea', () => {
+  it('with no card: the legend strip on the right and the ask bar strip at the bottom', () => {
+    expect(freeArea(900, 700, 244, 158, null)).toEqual({ left: 0, top: 0, right: 244, bottom: 158 })
+    // Each strip only where the view has room for it (rightInset, bottomInset).
+    expect(freeArea(600, 300, 244, 158, null)).toEqual({ left: 0, top: 0, right: 0, bottom: 0 })
+    // A card of no size reserves nothing.
+    expect(freeArea(900, 700, 0, 0, [0, 248])).toEqual({ left: 0, top: 0, right: 0, bottom: 0 })
+    expect(freeArea(900, 700, 0, 0, [352, 0])).toEqual({ left: 0, top: 0, right: 0, bottom: 0 })
+  })
+
+  it('a narrow pane keeps the card out as a strip along the top, with the ask bar below', () => {
+    // 416 px wide, the 330 px card spans nearly the width: beside it only 64 px would be left.
+    const a = freeArea(416, 586, 0, 158, [352, 248])
+    expect(a).toEqual({ left: 0, top: 248, right: 0, bottom: 158 })
+    expect(586 - a.top - a.bottom).toBeGreaterThanOrEqual(MIN_FREE_PX)
+  })
+
+  it('a wide, short pane keeps the card out along the left, beside the legend strip', () => {
+    // 1200 x 500 with the legend: below the card 500-248-120 = 132 px tall by 956 wide,
+    // beside it 604 wide by 380 tall, the larger area.
+    expect(freeArea(1200, 500, 244, 120, [352, 248])).toEqual({ left: 352, top: 0, right: 244, bottom: 120 })
+  })
+
+  it('a wide, tall pane keeps the card out along the top when that leaves the larger area', () => {
+    // 800 x 900, legend 244, ask 150: below 556 x 502, beside 204 x 750.
+    expect(freeArea(800, 900, 244, 150, [352, 248])).toEqual({ left: 0, top: 248, right: 244, bottom: 150 })
+  })
+
+  it('reserves no card when neither strip would leave MIN_FREE_PX each way', () => {
+    // The ask bar strip stays; the card is not kept out.
+    expect(freeArea(416, 400, 0, 158, [352, 248])).toEqual({ left: 0, top: 0, right: 0, bottom: 158 })
+  })
+})
+
+describe('viewFrame', () => {
+  it('is the view itself when nothing is reserved', () => {
+    const f = viewFrame(800, 600, 55, { left: 0, top: 0, right: 0, bottom: 0 })
+    expect(f).toEqual({ fullW: 800, fullH: 600, offX: 0, offY: 0, fov: 55, aspect: 800 / 600, fitFov: 55, fitAspect: 800 / 600 })
+  })
+
+  it('matches the right and bottom strips alone: a wider and taller picture, cut off at the left and top', () => {
+    const f = viewFrame(800, 600, 55, { left: 0, top: 0, right: 200, bottom: 100 })
+    expect(f.fullW).toBe(1000)
+    expect(f.fullH).toBe(700)
+    expect(f.offX).toBe(200)
+    expect(f.offY).toBe(100)
+    expect(f.fov).toBeCloseTo(stretchFov(55, 600, 100), 9)
+    expect(f.aspect).toBeCloseTo(1000 / 700, 9)
+    expect(f.fitFov).toBeCloseTo(stretchFov(55, 600, -100), 9)
+    expect(f.fitAspect).toBeCloseTo(600 / 500, 9)
+  })
+
+  it('centres the picture on the free part between a top card strip and the ask bar', () => {
+    const f = viewFrame(416, 586, 55, { left: 0, top: 248, right: 0, bottom: 158 })
+    // The free part runs 248..428, its middle at 338: the picture is 676 tall, none cut at its top.
+    expect(f.fullH).toBe(676)
+    expect(f.offY).toBe(0)
+    expect(f.fullW).toBe(416)
+    expect(f.offX).toBe(0)
+    expect(f.fitAspect).toBeCloseTo(416 / 180, 9)
+    expect(f.fitFov).toBeCloseTo(stretchFov(55, 586, 180 - 586), 9)
+  })
+
+  it('a left card strip moves the centre right: the picture is cut off at its right edge', () => {
+    const f = viewFrame(1200, 500, 55, { left: 352, top: 0, right: 244, bottom: 120 })
+    // Free 352..956, middle 654: the picture spans 2 x 654 wide, the view at its left.
+    expect(f.fullW).toBe(1308)
+    expect(f.offX).toBe(0)
+    expect(f.fullH).toBe(620)
+    expect(f.offY).toBe(120)
+  })
+
+  it('never divides by a free part of no size', () => {
+    const f = viewFrame(100, 100, 55, { left: 60, top: 60, right: 60, bottom: 60 })
+    expect(Number.isFinite(f.fitAspect)).toBe(true)
+    expect(Number.isFinite(f.fitFov)).toBe(true)
+  })
+})
+
+describe('close-up fit inside the free area', () => {
+  /** Where a point lands in view pixels, for a camera with this view frame at target + dir * dist. */
+  function pixel(p: V3, target: V3, dir: V3, dist: number, width: number, height: number, area: FreeArea): [number, number] {
+    const f = viewFrame(width, height, 55, area)
+    const [x, y] = project(p, target, dir, dist, f.fov, f.aspect)
+    return [((x + 1) / 2) * f.fullW - f.offX, ((1 - y) / 2) * f.fullH - f.offY]
+  }
+  // A line's arch and both end buildings, seen from the front and above.
+  const pts: V3[] = [[-30, 0, 4], [-30, 18, 4], [0, 12, -2], [30, 0, -4], [30, 26, -4], [-10, 9, 0], [10, 9, 0]]
+  const dir: V3 = [0.2, 0.6, 1]
+
+  for (const [name, width, height, legend, ask] of [['narrow', 416, 586, 0, 158], ['wide', 1200, 500, 244, 120], ['tall', 800, 900, 244, 150]] as const) {
+    it(`a ${name} pane: every point lands in the part the legend, the ask bar and the card leave free`, () => {
+      const area = freeArea(width, height, legend, ask, [352, 248])
+      expect(area.top + area.left).toBeGreaterThan(0) // the card is reserved
+      const f = viewFrame(width, height, 55, area)
+      const fit = fitView(pts, dir, f.fitFov, f.fitAspect, 1.1, 1)
+      for (const p of pts) {
+        const [x, y] = pixel(p, fit.target, dir, fit.dist, width, height, area)
+        expect(x).toBeGreaterThanOrEqual(area.left - 0.5)
+        expect(x).toBeLessThanOrEqual(width - area.right + 0.5)
+        expect(y).toBeGreaterThanOrEqual(area.top - 0.5)
+        expect(y).toBeLessThanOrEqual(height - area.bottom + 0.5)
+      }
+    })
+  }
+
+  it('the same fit without the card reserve puts points under the card', () => {
+    const width = 416
+    const height = 586
+    const open = freeArea(width, height, 0, 158, null)
+    const f = viewFrame(width, height, 55, open)
+    const fit = fitView(pts, dir, f.fitFov, f.fitAspect, 1.1, 1)
+    const under = pts.some((p) => {
+      const [x, y] = pixel(p, fit.target, dir, fit.dist, width, height, open)
+      return x < 352 && y < 248
+    })
+    expect(under).toBe(true)
+  })
+})
+
+describe('easeArea', () => {
+  const a: FreeArea = { left: 0, top: 0, right: 0, bottom: 0 }
+  const goal: FreeArea = { left: 0, top: 248, right: 244, bottom: 158 }
+
+  it('moves part of the way each frame, and lands exactly within half a pixel', () => {
+    const next = easeArea(a, goal, 1 / 60)
+    expect(next.top).toBeGreaterThan(0)
+    expect(next.top).toBeLessThan(248)
+    expect(sameArea(next, goal)).toBe(false)
+    let cur = a
+    for (let i = 0; i < 120 && !sameArea(cur, goal); i++) cur = easeArea(cur, goal, 1 / 60)
+    expect(cur).toEqual(goal)
+  })
+
+  it('a frame of no time (or negative) does not move it', () => {
+    expect(easeArea(a, goal, 0)).toEqual(a)
+    expect(easeArea(a, goal, -1)).toEqual(a)
+  })
+
+  it('sameArea looks at every side', () => {
+    expect(sameArea(a, { ...a, left: 0.4 })).toBe(true)
+    for (const k of ['left', 'top', 'right', 'bottom'] as const) expect(sameArea(a, { ...a, [k]: 1 })).toBe(false)
   })
 })

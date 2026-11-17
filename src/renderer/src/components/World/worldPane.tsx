@@ -57,6 +57,23 @@ export function askReserve(height: number): number {
   return height > 0 ? Math.ceil(height) + ASK_BOTTOM_PX + ASK_CLEARANCE_PX : 0
 }
 
+/** The card's gap to the pane's top and left edges (WorldCard), and the room kept between it and the city. */
+export const CARD_INSET_PX = 12
+const CARD_CLEARANCE_PX = 8
+/** The card's box is kept in steps this large, so a pixel's change in its content never moves the camera. */
+const CARD_STEP_PX = 8
+
+/**
+ * The box from the pane's top left corner the open card covers, for the close-ups' fit
+ * (setCardReserve): its measured width and height, its gap to the edges and a little clearance,
+ * rounded up to CARD_STEP_PX; 0, 0 while no card is open.
+ */
+export function cardReserve(width: number, height: number): [number, number] {
+  if (!(width > 0) || !(height > 0)) return [0, 0]
+  const step = (v: number): number => Math.ceil((v + CARD_INSET_PX + CARD_CLEARANCE_PX) / CARD_STEP_PX) * CARD_STEP_PX
+  return [step(width), step(height)]
+}
+
 export function worldPaneStyle(background: string, width: number): CSSProperties {
   return {
     position: 'relative', flex: '0 0 auto', width, minWidth: width, overflow: 'hidden',

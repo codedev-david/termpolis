@@ -41,7 +41,7 @@ import { WorldHome } from './WorldHome'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
 import { legendDefaultOpen, legendReserve, WorldLegend } from './WorldLegend'
-import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, worldPaneStyle } from './worldPane'
+import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardReserve, worldPaneStyle } from './worldPane'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
 
@@ -288,6 +288,22 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   }, [showAsk])
   const below = askReserve(askHeight)
   useEffect(() => { viewer?.setBottomReserve(below) }, [viewer, below])
+  // A focus, a line's close-up or a tour step is framed beside the open card: its measured box, read
+  // again when it opens, shows another part, or changes size; none while it is closed.
+  const cardRef = useRef<HTMLElement>(null)
+  const [cardSize, setCardSize] = useState<[number, number]>([0, 0])
+  useEffect(() => {
+    const el = cardRef.current
+    if (!el) { setCardSize([0, 0]); return }
+    const read = (): void => setCardSize([el.offsetWidth, el.offsetHeight])
+    read()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [card])
+  const [cardW, cardH] = cardReserve(cardSize[0], cardSize[1])
+  useEffect(() => { viewer?.setCardReserve(cardW, cardH) }, [viewer, cardW, cardH])
 
   // The 3D viewer, once, when WebGL is there.
   useEffect(() => {
@@ -543,7 +559,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             {busy ? 'Re-laying out…' : notice}
           </div>
         )}
-        {card !== null && <WorldCard html={card} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
+        {card !== null && <WorldCard boxRef={cardRef} html={card} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
         {askSlot && !home && (
           <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3 }} data-testid="world-ask-slot">
             {askSlot(viewer, doc, worldKey, askLink)}

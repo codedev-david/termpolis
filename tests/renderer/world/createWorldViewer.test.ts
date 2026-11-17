@@ -426,7 +426,7 @@ function fakeRenderer(host: HTMLElement) {
   let hit: RenderPick | null = null
   const r = {
     canvas,
-    draw: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
+    draw: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
     frame: vi.fn(async () => undefined), overview: vi.fn(async () => undefined), pulse: vi.fn(async () => undefined),
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
@@ -783,6 +783,24 @@ describe('WebGL path (stand-in renderer)', () => {
     v.setBottomReserve(90)
     expect(r.setBottomReserve).toHaveBeenCalledTimes(1)
     expect(() => createWorldViewer(document.createElement('div')).setBottomReserve(1)).not.toThrow()
+  })
+
+  it('passes the open card box on to the renderer, and not after dispose', () => {
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const v = createWorldViewer(host)
+    const r = (fake as unknown as ReturnType<typeof fakeRenderer>).r
+    v.setCardReserve(352, 248)
+    expect(r.setCardReserve).toHaveBeenCalledWith(352, 248)
+    v.setCardReserve(0, 0)
+    expect(r.setCardReserve).toHaveBeenLastCalledWith(0, 0)
+    v.dispose()
+    v.setCardReserve(352, 248)
+    expect(r.setCardReserve).toHaveBeenCalledTimes(2)
+    expect(() => createWorldViewer(document.createElement('div')).setCardReserve(1, 1)).not.toThrow()
   })
 
   it('a redraw keeps the open building or line lit and selected, and draws nothing before a world is loaded', () => {

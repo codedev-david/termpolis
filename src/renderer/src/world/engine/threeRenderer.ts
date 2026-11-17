@@ -12,7 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { bottomInset, busyness, clamp, clampIntoView, districtNameHalf, edgeLabelSize, fitDistance, fitView, fogDensity, nameBudget, overviewDir, placeLabels, rightInset, stretchFov, turnGround, type LabelCandidate, type Nudge, type V3 } from './viewMath'
+import { busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, nameBudget, overviewDir, placeLabels, sameArea, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type V3 } from './viewMath'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -66,6 +66,11 @@ export interface ThreeRenderer {
   setRightReserve(px: number): void
   /** The strip at the bottom the ask bar covers has changed (its height): fit the city to the rest. */
   setBottomReserve(px: number): void
+  /**
+   * The open card's box from the view's top left corner (its width and height, gaps included; 0, 0
+   * when no card is open): a focus, a line's close-up or a tour step fits the city around it.
+   */
+  setCardReserve(w: number, h: number): void
   setTheme(name: ThemeName, theme: Theme): void
   setFocus(focus: RenderFocus | null): void
   setSelected(id: string | null): void
@@ -270,33 +275,48 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
 
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(BASE_FOV, width / height, 0.1, 3000)
-  /** The strip on the right the legend covers (rightInset), out of the fit and the picture's centre. */
-  let inset = 0
   /** The reserve rightInset works from: the legend's footprint, which changes as it opens and closes. */
   let reserve = opts.rightReserve ?? 0
-  /** The strip at the bottom the ask bar covers (bottomInset), out of the fit and the picture's centre. */
-  let below = 0
   /** The reserve bottomInset works from: the ask bar's height, which changes as it wraps or answers. */
   let lowReserve = opts.bottomReserve ?? 0
+  /** The open card's box from the top left corner, or null: kept out of every fit but the overview's. */
+  let cardBox: [number, number] | null = null
+  /** The camera is at (or flying to) the overview, so a resize fits it again. */
+  let atOverview = false
   /**
-   * The camera sees a picture `inset` wider and `below` taller than the view, whose left `inset` and
-   * top `below` pixels are cut off: the centre of what shows moves to the middle of the part the
-   * legend and the ask bar leave free. The field of view grows with the taller picture, so the scale
-   * stays that of a BASE_FOV camera over the view.
+   * The part of the view the panels leave free (freeArea). The overview is the home view, the one
+   * with no card: it fits around the legend and the ask bar only. Every other framing (a building's
+   * focus, a line's close-up, a tour step) fits around the open card too.
    */
-  function applyView(): void {
-    inset = rightInset(width, reserve)
-    below = bottomInset(height, lowReserve)
-    camera.fov = stretchFov(BASE_FOV, height, below)
-    camera.aspect = (width + inset) / (height + below)
-    if (inset > 0 || below > 0) camera.setViewOffset(width + inset, height + below, inset, below, width, height)
+  const areaFor = (withCard: boolean): FreeArea => freeArea(width, height, reserve, lowReserve, withCard ? cardBox : null)
+  /** The free area the picture is centred on now, and the one it eases toward (no jump when a panel opens or closes). */
+  let area: FreeArea = areaFor(false)
+  let areaGoal: FreeArea = area
+  /** The strip at the bottom out of the picture now: district names stay above it. */
+  let below = area.bottom
+  /**
+   * The camera sees a larger picture than the view, centred on the middle of the free area, and the
+   * parts past the view's edges are cut off (viewFrame). The field of view grows with the picture, so
+   * the scale stays that of a BASE_FOV camera over the view.
+   */
+  function project(a: FreeArea): void {
+    const f = viewFrame(width, height, BASE_FOV, a)
+    below = a.bottom
+    camera.fov = f.fov
+    camera.aspect = f.aspect
+    if (f.fullW !== width || f.fullH !== height) camera.setViewOffset(f.fullW, f.fullH, f.offX, f.offY, width, height)
     else camera.clearViewOffset()
     camera.updateProjectionMatrix()
   }
-  /** The width-to-height of the part of the view the legend and the ask bar leave free: what a fit fills. */
-  const fitAspect = (): number => (width - inset) / (height - below)
-  /** The vertical field of view over that part, at the camera's scale. */
-  const fitFov = (): number => stretchFov(BASE_FOV, height, -below)
+  /** The panels, the view's size or the camera's place changed: the picture moves to the new free area (`snap`: at once, else it eases). */
+  function applyView(snap = true): void {
+    areaGoal = areaFor(!atOverview)
+    if (snap || reduced) area = areaGoal
+    project(area)
+  }
+  /** The width-to-height and the vertical field of what a fit fills, at the camera's scale (`withCard`: around the open card too). */
+  const fitAspect = (withCard = true): number => viewFrame(width, height, BASE_FOV, areaFor(withCard)).fitAspect
+  const fitFov = (withCard = true): number => viewFrame(width, height, BASE_FOV, areaFor(withCard)).fitFov
   applyView()
   const overviewPos = new THREE.Vector3(40, 120, 165)
   const overviewTarget = new THREE.Vector3(10, 0, 4)
@@ -309,7 +329,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   controls.maxDistance = 420
   controls.autoRotate = !reduced
   controls.autoRotateSpeed = 0.3
-  const onControlStart = (): void => { controls.autoRotate = false; atOverview = false; endTween() }
+  const onControlStart = (): void => { controls.autoRotate = false; atOverview = false; framing = null; endTween(); applyView(false) }
   controls.addEventListener('start', onControlStart)
 
   let composer: EffectComposer | null = null
@@ -744,7 +764,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         pts.push([d.pos[0] + Math.cos(a) * d.radius, d.pos[1], d.pos[2] + Math.sin(a) * d.radius])
       }
     }
-    const view = overviewDir(fitAspect(), pts.map((p) => [p[0], p[2]] as const), portrait)
+    const view = overviewDir(fitAspect(false), pts.map((p) => [p[0], p[2]] as const), portrait)
     portrait = view.portrait
     if (view.turned !== turned) {
       turned = view.turned
@@ -763,7 +783,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const [x, z] = nameAt(d)
       pts.push([x, d.pos[1] - 2, z]) // the district's name below its rim
     }
-    let fit = fitView(pts, dir, fitFov(), fitAspect(), OVERVIEW_MARGIN, 40)
+    let fit = fitView(pts, dir, fitFov(false), fitAspect(false), OVERVIEW_MARGIN, 40)
     // A district's name is its measured half width (DISTRICT_NAME_HALF_PX before it is measured) on
     // each side of its point, whatever the distance: at the fitted distance that is so many world
     // units, so the fit is done again with the name's ends in it (twice: the wider fit makes the name
@@ -778,7 +798,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         const [x, z] = nameAt(d)
         for (const k of [-1, 1]) named.push([x + side.x * half * k, d.pos[1] - 2 - drop, z + side.z * half * k])
       }
-      fit = fitView(named, dir, fitFov(), fitAspect(), OVERVIEW_MARGIN, 40)
+      fit = fitView(named, dir, fitFov(false), fitAspect(false), OVERVIEW_MARGIN, 40)
     }
     overviewDist = fit.dist
     overviewTarget.set(fit.target[0], fit.target[1], fit.target[2])
@@ -899,11 +919,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     tween = null
     t?.done()
   }
-  /** The camera is at (or flying to) the overview, so a resize fits it again. */
-  let atOverview = false
   function flyTo(pos: THREE.Vector3, target: THREE.Vector3, instant: boolean, dur = 1.5): Promise<void> {
     controls.autoRotate = false
     atOverview = false
+    applyView(false)
     endTween()
     if (instant || reduced) {
       camera.position.copy(pos)
@@ -915,12 +934,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       tween = { p0: camera.position.clone(), p1: pos.clone(), t0: controls.target.clone(), t1: target.clone(), start: performance.now(), dur: dur * 1000, done: resolve }
     })
   }
-  function frameAt(target: THREE.Vector3, dist: number, instant: boolean): Promise<void> {
-    const dir = camera.position.clone().sub(controls.target).setY(0).normalize()
-    if (!dir.lengthSq()) dir.set(0, 0, 1)
-    const pos = target.clone().addScaledVector(dir, dist)
+  /** Where a framing puts the camera, and what it looks at. */
+  interface Shot { pos: THREE.Vector3; target: THREE.Vector3 }
+  /** The side a framing looks from, across the ground: that of `from`, the camera's offset from its target. */
+  function sideOf(from: THREE.Vector3): THREE.Vector3 {
+    const h = from.clone().setY(0)
+    if (h.lengthSq() < 1e-12) return h.set(0, 0, 1)
+    return h.normalize()
+  }
+  function shotAt(target: THREE.Vector3, dist: number, from: THREE.Vector3): Shot {
+    const pos = target.clone().addScaledVector(sideOf(from), dist)
     pos.y = target.y + dist * 0.5
-    return flyTo(pos, target, instant)
+    return { pos, target }
   }
   function nodeTarget(n: NodeRec): THREE.Vector3 {
     const t = n.anchor.clone()
@@ -928,7 +953,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return t
   }
 
-  function frame(ids: string[], instant: boolean, around?: string[]): Promise<void> {
+  /**
+   * The framing on screen (frame), kept so it is done again, from the same side, when a panel opens,
+   * closes or changes size, or the view is resized: the fit follows the free area. Dropped when the
+   * camera goes to the overview or is moved by hand.
+   */
+  let framing: { ids: string[]; around: string[] | undefined; from: THREE.Vector3 } | null = null
+  /** Where `ids` are framed from the side of `from` (the camera's offset from its target when asked). */
+  function shotFor(ids: string[], around: string[] | undefined, from: THREE.Vector3): Shot | null {
     const pts: THREE.Vector3[] = []
     let single: NodeRec | EdgeRec | null = null
     for (const id of ids) {
@@ -936,15 +968,52 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const e = edges.get(id)
       if (n) { pts.push(nodeTarget(n)); single = n } else if (e) { pts.push(e.curve.getPoint(0.5)); single = e }
     }
-    if (pts.length === 0) return Promise.resolve()
+    if (pts.length === 0) return null
     if (pts.length === 1 && single) {
-      if ('curve' in single) return frameLine(single, instant)
-      if (single.exploded) return frameAt(pts[0], 22 + single.floors.length * 2.5, instant)
-      return frameWith(single, pts[0], around ?? [], instant)
+      if ('curve' in single) return lineShot(single, from)
+      if (single.exploded) return shotAt(pts[0], 22 + single.floors.length * 2.5, from)
+      return shotWith(single, pts[0], around ?? [], from)
     }
     const c = pts.reduce((s, p) => s.add(p), new THREE.Vector3()).divideScalar(pts.length)
     const spread = Math.max(...pts.map((p) => p.distanceTo(c)))
-    return frameAt(c, Math.max(30, spread * 2.2), instant)
+    return shotAt(c, Math.max(30, spread * 2.2), from)
+  }
+  function frame(ids: string[], instant: boolean, around?: string[]): Promise<void> {
+    const from = camera.position.clone().sub(controls.target)
+    const shot = shotFor(ids, around, from)
+    if (!shot) return Promise.resolve()
+    const flight = flyTo(shot.pos, shot.target, instant)
+    framing = { ids: [...ids], around, from }
+    return flight
+  }
+  /**
+   * The camera moves to `shot` without a new flight: a flight under way is aimed at it instead (its
+   * promise still settles when it lands, so a tour step is not cut short), a still camera glides there.
+   */
+  function glide(shot: Shot): void {
+    if (tween) { tween.p1.copy(shot.pos); tween.t1.copy(shot.target); return }
+    if (camera.position.distanceToSquared(shot.pos) < 1e-6 && controls.target.distanceToSquared(shot.target) < 1e-6) return
+    if (reduced) {
+      camera.position.copy(shot.pos)
+      controls.target.copy(shot.target)
+      controls.update()
+      return
+    }
+    tween = { p0: camera.position.clone(), p1: shot.pos.clone(), t0: controls.target.clone(), t1: shot.target.clone(), start: performance.now(), dur: 600, done: () => undefined }
+  }
+  /** The camera's framing for the free area as it is now: the overview, or the framing on screen (none once moved by hand). */
+  function refitCamera(): Shot | null {
+    if (atOverview) return { pos: overviewPos.clone(), target: overviewTarget.clone() }
+    return framing ? shotFor(framing.ids, framing.around, framing.from) : null
+  }
+  /** A panel opened, closed or changed size: the picture eases to the new free area and the camera follows. */
+  function reframe(): void {
+    applyView(false)
+    if (!lastModel) return
+    fitOverview(lastModel)
+    fogTarget = fogFor()
+    const shot = refitCamera()
+    if (shot) glide(shot)
   }
 
   /**
@@ -952,9 +1021,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * close as the neighbours allow (never closer than the prototype's framing, never further than
    * most of the overview: a neighbour across a big city stays lit by the focus, if out of the picture).
    */
-  function frameWith(n: NodeRec, target: THREE.Vector3, around: string[], instant: boolean): Promise<void> {
-    const h = camera.position.clone().sub(controls.target).setY(0).normalize()
-    if (!h.lengthSq()) h.set(0, 0, 1)
+  function shotWith(n: NodeRec, target: THREE.Vector3, around: string[], from: THREE.Vector3): Shot {
+    const h = sideOf(from)
     const dir = new THREE.Vector3(h.x, 0.5, h.z).normalize()
     const pts: V3[] = []
     for (const id of [n.id, ...around]) {
@@ -966,7 +1034,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const t: V3 = [target.x, target.y, target.z]
     const fit = fitDistance(pts, t, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
     const dist = clamp(fit, CLOSE_UP_MIN, overviewDist * 0.7)
-    return flyTo(target.clone().addScaledVector(dir, dist), target, instant)
+    return { pos: target.clone().addScaledVector(dir, dist), target }
   }
 
   /** The building or orb standing at a line's end: the nearest one across the ground, if any is that near. */
@@ -1036,7 +1104,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * a spot well clear of every roof. When nothing passes (a line deep inside a dense district), the
    * camera looks down from high above, backing off until it is clear of the roofs around it.
    */
-  function frameLine(e: EdgeRec, instant: boolean): Promise<void> {
+  function lineShot(e: EdgeRec, from: THREE.Vector3): Shot {
     // The arch, and each end building's upper part up to its name: in a tall, busy district the
     // whole towers would fill the picture and squeeze the line itself to a sliver at the top.
     const pts: V3[] = e.path.map((p) => [p.x, p.y, p.z])
@@ -1045,8 +1113,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (!m) continue
       pts.push([m.anchor.x, m.anchor.y - m.height * 0.4, m.anchor.z], [m.anchor.x, m.anchor.y + 3, m.anchor.z])
     }
-    const h = camera.position.clone().sub(controls.target).setY(0).normalize()
-    if (!h.lengthSq()) h.set(0, 0, 1)
+    const h = sideOf(from)
     const along = e.curve.v2.clone().sub(e.curve.v0).setY(0)
     if (along.lengthSq() > 1e-6) {
       // Across the line, on the camera's side of it.
@@ -1064,17 +1131,21 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (toward.lengthSq() > 1e-9) toward.normalize()
       return c.clone().addScaledVector(toward, FLOOR_W * 0.5 + 0.3).setY(c.y + m.height * 0.6)
     })]
-    for (const lift of LINE_LIFTS) {
-      const dir = new THREE.Vector3(h.x, lift, h.z).normalize()
-      const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
-      const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
-      const far = Math.max(fit.dist, overviewDist * 0.7)
-      let dist = fit.dist
-      while (dist < far && insideAny(target.clone().addScaledVector(dir, dist))) dist *= 1.15
-      // Step back a little (never past `far`) before climbing: a few metres more often clears the towers.
-      for (const back of LINE_BACKS) {
-        const eye = target.clone().addScaledVector(dir, Math.min(dist * back, far))
-        if (!insideAny(eye) && clearOf(eye, target, e) && seen(eye).every((p) => inSight(eye, p))) return flyTo(eye, target, instant)
+    // From the camera's side of the line first, then from the other side, before climbing out of
+    // reach: towers that hide the line from one side seldom hide it from both.
+    for (const across of along.lengthSq() > 1e-6 ? [h, h.clone().negate()] : [h]) {
+      for (const lift of LINE_LIFTS) {
+        const dir = new THREE.Vector3(across.x, lift, across.z).normalize()
+        const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+        const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
+        const far = Math.max(fit.dist, overviewDist * 0.7)
+        let dist = fit.dist
+        while (dist < far && insideAny(target.clone().addScaledVector(dir, dist))) dist *= 1.15
+        // Step back a little (never past `far`) before climbing: a few metres more often clears the towers.
+        for (const back of LINE_BACKS) {
+          const eye = target.clone().addScaledVector(dir, Math.min(dist * back, far))
+          if (!insideAny(eye) && clearOf(eye, target, e) && seen(eye).every((p) => inSight(eye, p))) return { pos: eye, target }
+        }
       }
     }
     // Nothing gave a clear view: from high above, as far back as it takes to clear the roofs.
@@ -1084,7 +1155,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const far = Math.max(fit.dist, overviewDist * 0.7)
     let dist = fit.dist
     while (dist < far && !clearOf(target.clone().addScaledVector(dir, dist), target, e)) dist *= 1.15
-    return flyTo(target.clone().addScaledVector(dir, Math.min(dist, far)), target, instant)
+    return { pos: target.clone().addScaledVector(dir, Math.min(dist, far)), target }
   }
 
   // ---------------- pulses ----------------
@@ -1245,7 +1316,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const onKeyDown = (e: KeyboardEvent): void => {
     const k = e.key.toLowerCase()
     keys[k] = true
-    if ('wasdqe'.includes(k) && k.length === 1) { controls.autoRotate = false; atOverview = false; endTween() }
+    if ('wasdqe'.includes(k) && k.length === 1) { controls.autoRotate = false; atOverview = false; framing = null; endTween(); applyView(false) }
   }
   const onKeyUp = (e: KeyboardEvent): void => { keys[e.key.toLowerCase()] = false }
   const onBlur = (): void => { for (const k of Object.keys(keys)) keys[k] = false }
@@ -1269,7 +1340,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (!lastModel) return
     fitOverview(lastModel)
     fogTarget = fogFor()
-    if (!atOverview) return
+    if (!atOverview) {
+      // A framing on screen is done again for the new shape.
+      const shot = refitCamera()
+      if (shot) glide(shot)
+      return
+    }
     if (tween) { tween.p1.copy(overviewPos); tween.t1.copy(overviewTarget); return }
     camera.position.copy(overviewPos)
     controls.target.copy(overviewTarget)
@@ -1409,6 +1485,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (keys.e) mv.y += 1
     if (keys.q) mv.y -= 1
     if (mv.lengthSq()) { mv.normalize().multiplyScalar(sp); camera.position.add(mv); controls.target.add(mv) }
+    if (!sameArea(area, areaGoal)) {
+      area = easeArea(area, areaGoal, dt)
+      project(area)
+    }
     if (tween) {
       const k = Math.min(1, (performance.now() - tween.start) / tween.dur)
       const ez = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2
@@ -1516,12 +1596,18 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     setRightReserve(px) {
       if (px === reserve) return
       reserve = px
-      resize() // the city is fitted again to the part the legend leaves free
+      reframe() // the city is fitted again to the part the legend leaves free
     },
     setBottomReserve(px) {
       if (px === lowReserve) return
       lowReserve = px
-      resize() // the city is fitted again to the part above the ask bar
+      reframe() // the city is fitted again to the part above the ask bar (the answer included)
+    },
+    setCardReserve(w, h) {
+      const box: [number, number] | null = w > 0 && h > 0 ? [w, h] : null
+      if (box?.[0] === cardBox?.[0] && box?.[1] === cardBox?.[1]) return
+      cardBox = box
+      reframe() // a focus or a close-up is fitted again around the card
     },
     setTheme(name, th) {
       themeName = name
@@ -1545,6 +1631,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     overview(instant) {
       const flight = flyTo(overviewPos, overviewTarget, instant, 1.8)
       atOverview = true
+      framing = null
+      applyView(false) // the home view's free area: no card
       return flight
     },
     pulse,

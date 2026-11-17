@@ -1,7 +1,8 @@
 // The detail card over the Lumopolis map, top left. Its HTML comes only from the engine's card builders
 // (buildingCard, edgeCard, the tour caption), which escape every string from the world document,
 // so it is safe to set as innerHTML. Never pass raw document strings here.
-import type { MouseEvent } from 'react'
+import type { MouseEvent, Ref } from 'react'
+import { CARD_INSET_PX } from './worldPane'
 
 export interface WorldCardProps {
   /** Escaped HTML from an engine card builder. */
@@ -9,6 +10,8 @@ export interface WorldCardProps {
   onClose: () => void
   /** A link inside the card (data-node / data-edge) was clicked: open that part's card. */
   onOpen: (id: string) => void
+  /** The card's element, measured so the close-ups are framed beside it. */
+  boxRef?: Ref<HTMLElement>
 }
 
 /**
@@ -42,7 +45,7 @@ const CARD_CSS = `
 .world-card-body .tour-caption{font-size:13px;color:#e2e8f0}
 `
 
-export function WorldCard({ html, onClose, onOpen }: WorldCardProps): JSX.Element {
+export function WorldCard({ html, onClose, onOpen, boxRef }: WorldCardProps): JSX.Element {
   const onClick = (e: MouseEvent<HTMLDivElement>): void => {
     const link = (e.target as Element).closest('[data-node],[data-edge]')
     if (!link) return
@@ -51,11 +54,12 @@ export function WorldCard({ html, onClose, onOpen }: WorldCardProps): JSX.Elemen
   }
   return (
     <aside
+      ref={boxRef}
       aria-label="Lumopolis details"
       data-testid="world-card"
       className="world-card"
       // Top left over the map, where the prototype's inspector sits (the legend is top right).
-      style={{ position: 'absolute', top: 12, left: 12, width: 330, maxHeight: 'calc(100% - 110px)', overflow: 'auto', zIndex: 3 }}
+      style={{ position: 'absolute', top: CARD_INSET_PX, left: CARD_INSET_PX, width: 330, maxHeight: 'calc(100% - 110px)', overflow: 'auto', zIndex: 3 }}
     >
       <style>{CARD_CSS}</style>
       <button
