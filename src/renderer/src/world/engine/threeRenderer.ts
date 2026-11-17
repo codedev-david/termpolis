@@ -57,6 +57,8 @@ export interface RendererOptions {
 export interface ThreeRenderer {
   readonly canvas: HTMLCanvasElement
   draw(model: SceneModel, text: SceneText, allEdgeLabels: boolean): void
+  /** The strip on the right the legend covers has changed (it opened or closed): fit the city to the rest. */
+  setRightReserve(px: number): void
   setTheme(name: ThemeName, theme: Theme): void
   setFocus(focus: RenderFocus | null): void
   setSelected(id: string | null): void
@@ -257,12 +259,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 3000)
   /** The strip on the right the legend covers (rightInset), out of the fit and the picture's centre. */
   let inset = 0
+  /** The reserve rightInset works from: the legend's footprint, which changes as it opens and closes. */
+  let reserve = opts.rightReserve ?? 0
   /**
    * The camera sees a picture `inset` wider than the view, whose left `inset` pixels are cut off:
    * the centre of what shows moves to the middle of the part the legend leaves free.
    */
   function applyView(): void {
-    inset = rightInset(width, opts.rightReserve ?? 0)
+    inset = rightInset(width, reserve)
     camera.aspect = (width + inset) / height
     if (inset > 0) camera.setViewOffset(width + inset, height, inset, 0, width, height)
     else camera.clearViewOffset()
@@ -1425,6 +1429,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   return {
     canvas: renderer.domElement,
     draw,
+    setRightReserve(px) {
+      if (px === reserve) return
+      reserve = px
+      resize() // the city is fitted again to the part the legend leaves free
+    },
     setTheme(name, th) {
       themeName = name
       theme = th

@@ -426,7 +426,7 @@ function fakeRenderer(host: HTMLElement) {
   let hit: RenderPick | null = null
   const r = {
     canvas,
-    draw: vi.fn(), setTheme: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
+    draw: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
     frame: vi.fn(async () => undefined), overview: vi.fn(async () => undefined), pulse: vi.fn(async () => undefined),
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
@@ -732,6 +732,27 @@ describe('WebGL path (stand-in renderer)', () => {
     onEdgeLabel('e1')
     expect(sels.pop()).toEqual({ kind: 'edge', id: 'e1' })
     expect((fake as ReturnType<typeof fakeRenderer> | null)?.r.frame).toHaveBeenLastCalledWith(['e1'], expect.any(Boolean))
+  })
+
+  it('passes a changed legend strip on to the renderer, and not after dispose', () => {
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const v = createWorldViewer(host, { rightReserve: 244 })
+    const r = (fake as unknown as ReturnType<typeof fakeRenderer>).r
+    v.setRightReserve(108)
+    expect(r.setRightReserve).toHaveBeenCalledWith(108)
+    v.dispose()
+    v.setRightReserve(244)
+    expect(r.setRightReserve).toHaveBeenCalledTimes(1)
+  })
+
+  it('has no renderer to tell about the legend without WebGL', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    expect(() => createWorldViewer(host).setRightReserve(108)).not.toThrow()
   })
 
   it('passes the legend strip to the renderer only when given one', () => {

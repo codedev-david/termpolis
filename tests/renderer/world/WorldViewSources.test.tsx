@@ -14,7 +14,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
     createWorldViewer: vi.fn((host: HTMLElement, opts: WorldViewerOptions) => {
       const v = {
         host, opts,
-        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(),
+        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(),
         apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), cancelActions: vi.fn(),
         on: vi.fn(() => () => undefined),
         getSelection: vi.fn(() => []), cameraRegion: vi.fn(() => []), resetView: vi.fn(), setPaused: vi.fn(), dispose: vi.fn(),

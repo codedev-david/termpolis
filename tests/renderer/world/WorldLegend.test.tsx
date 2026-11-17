@@ -1,15 +1,42 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { WorldLegend, LEGEND_MAX_CARGO, LEGEND_RESERVE } from '../../../src/renderer/src/components/World/WorldLegend'
+import { useState } from 'react'
+import { rightInset } from '../../../src/renderer/src/world/engine/viewMath'
+import type { WorldDoc } from '../../../src/shared/world/types'
+import { WorldLegend, LEGEND_MAX_CARGO, LEGEND_RESERVE, LEGEND_CHIP_RESERVE, legendDefaultOpen, legendReserve } from '../../../src/renderer/src/components/World/WorldLegend'
 import { WorldPaneOpening, worldPaneStyle, WORLD_OPENING_BACKGROUND } from '../../../src/renderer/src/components/World/worldPane'
 import { THEMES } from '../../../src/renderer/src/world/engine'
 import { edge, minimal, rich } from './helpers'
+
+/** WorldView owns the open state; this stands in for it. */
+function Legend({ doc, processes, start = true }: { doc: WorldDoc; processes: boolean; start?: boolean }): JSX.Element {
+  const [open, setOpen] = useState(start)
+  return <WorldLegend doc={doc} processes={processes} open={open} onToggle={() => setOpen((o) => !o)} />
+}
+
+describe('the legend state', () => {
+  it('starts expanded from 732 px and as a chip below it, and reserves only what it covers', () => {
+    expect(legendDefaultOpen(732)).toBe(true)
+    expect(legendDefaultOpen(731)).toBe(false)
+    expect(legendReserve(true, 1000)).toBe(LEGEND_RESERVE)
+    expect(legendReserve(true, 520)).toBe(LEGEND_CHIP_RESERVE) // opened over the map by choice: no refit
+    expect(legendReserve(false, 1000)).toBe(LEGEND_CHIP_RESERVE)
+    expect(LEGEND_CHIP_RESERVE).toBeLessThan(LEGEND_RESERVE)
+    expect(rightInset(360, LEGEND_CHIP_RESERVE)).toBe(LEGEND_CHIP_RESERVE) // a chip is kept clear even in the narrowest pane
+  })
+  it('a collapsed legend is a chip as wide as its reserve says', () => {
+    render(<Legend doc={minimal()} processes={false} start={false} />)
+    const panel = screen.getByTestId('world-legend')
+    expect(parseFloat(panel.style.width) + 2 * parseFloat(panel.style.right)).toBe(LEGEND_CHIP_RESERVE)
+    expect(screen.queryByTestId('world-legend-body')).toBeNull()
+  })
+})
 
 describe('WorldLegend', () => {
   it('lists the cargo the lines carry, the line and building meanings, and collapses', () => {
     const doc = minimal()
     doc.cargo.jobs = { shape: 'cube', color: '#ff0000', label: 'Jobs' } // in the map but on no line
-    render(<WorldLegend doc={doc} processes={false} />)
+    render(<Legend doc={doc} processes={false} />)
     const cargo = screen.getAllByTestId('world-legend-cargo')
     expect(cargo.map((c) => c.textContent)).toEqual(['Memory'])
     expect((cargo[0].firstChild as HTMLElement).style.background).toBe('rgb(106, 169, 255)')
@@ -27,7 +54,7 @@ describe('WorldLegend', () => {
   })
 
   it('reserves its width and both margins on the right of the map', () => {
-    render(<WorldLegend doc={minimal()} processes={false} />)
+    render(<Legend doc={minimal()} processes={false} />)
     const panel = screen.getByTestId('world-legend')
     expect(LEGEND_RESERVE).toBe(parseFloat(panel.style.width) + 2 * parseFloat(panel.style.right))
   })
@@ -35,7 +62,7 @@ describe('WorldLegend', () => {
   it('with the processes layer on, names the programs the buildings run in, in their colours', () => {
     const doc = minimal()
     doc.processes.unused = { label: 'Nobody', color: '#000000' }
-    render(<WorldLegend doc={doc} processes />)
+    render(<Legend doc={doc} processes />)
     expect(screen.getByText('What runs where')).toBeInTheDocument()
     const procs = screen.getAllByTestId('world-legend-process')
     expect(procs.map((p) => p.textContent)).toEqual(['Main process', 'Memory host'])
@@ -53,7 +80,7 @@ describe('WorldLegend', () => {
     }
     doc.cargo.tie = { shape: 'cube', color: '#123456', label: 'Tie' }
     doc.edges.push(edge('t1', 'b1', 'b2', { cargo: 'tie' }), edge('t2', 'b1', 'b2', { cargo: 'tie' }))
-    render(<WorldLegend doc={doc} processes={false} />)
+    render(<Legend doc={doc} processes={false} />)
     const cargo = screen.getAllByTestId('world-legend-cargo').map((c) => c.textContent)
     expect(cargo).toHaveLength(LEGEND_MAX_CARGO)
     expect(cargo[0]).toBe('Cargo 13')
@@ -65,7 +92,7 @@ describe('WorldLegend', () => {
     const doc = rich()
     doc.edges = [edge('e9', 'b1', 'b2', { cargo: 'nope' })]
     doc.processes = {}
-    render(<WorldLegend doc={doc} processes />)
+    render(<Legend doc={doc} processes />)
     expect(screen.queryByText("What's moving on the lines")).toBeNull()
     expect(screen.queryByText('What runs where')).toBeNull()
     expect(screen.getByText('Lines')).toBeInTheDocument()

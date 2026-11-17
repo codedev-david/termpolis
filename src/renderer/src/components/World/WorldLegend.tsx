@@ -3,7 +3,6 @@
 // building shows its state, and, with the processes layer on, which program each shell colour is.
 // Everything is text from the world doc rendered by React (escaped); colours only go into styles.
 // Layout and colours are inline styles so the panel looks the same whatever CSS the build ships.
-import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { WorldDoc } from '../../../../shared/world/types'
 
@@ -11,12 +10,30 @@ export interface WorldLegendProps {
   doc: WorldDoc
   /** The processes layer is on: list the program colours of the shells. */
   processes: boolean
+  /** Expanded, or the compact chip. WorldView owns it: the fit reserves the legend's footprint. */
+  open: boolean
+  onToggle(): void
 }
 
 const EDGE = 12
 const WIDTH = 220
 /** The strip on the right of the map the legend covers, with a margin each side: the overview frames the city in the rest. */
 export const LEGEND_RESERVE = EDGE + WIDTH + EDGE
+/** The collapsed legend, a chip top right: its footprint with a margin each side. */
+const CHIP_WIDTH = 84
+export const LEGEND_CHIP_RESERVE = EDGE + CHIP_WIDTH + EDGE
+/** From this canvas width the legend starts expanded and its strip is kept out of the fit (three times the strip). */
+export const LEGEND_WIDE_PX = 732
+
+/** Whether the legend is expanded when the user has not chosen: only a wide canvas has room for it. */
+export const legendDefaultOpen = (canvasWidth: number): boolean => canvasWidth >= LEGEND_WIDE_PX
+
+/**
+ * The strip the overview's fit keeps clear. An expanded legend takes its full strip on a wide canvas;
+ * on a narrow one it opens over the map (the user asked for it), so only the chip's footprint counts.
+ */
+export const legendReserve = (open: boolean, canvasWidth: number): number =>
+  open && canvasWidth >= LEGEND_WIDE_PX ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE
 
 const PANEL: CSSProperties = {
   position: 'absolute', top: EDGE, right: EDGE, width: WIDTH, maxHeight: 'calc(100% - 120px)', overflowY: 'auto', overflowX: 'hidden',
@@ -52,17 +69,16 @@ function busiestCargo(doc: WorldDoc): { shown: string[]; more: number } {
   return { shown: ranked.slice(0, LEGEND_MAX_CARGO), more: Math.max(0, ranked.length - LEGEND_MAX_CARGO) }
 }
 
-export function WorldLegend({ doc, processes }: WorldLegendProps): JSX.Element {
-  const [open, setOpen] = useState(true)
+export function WorldLegend({ doc, processes, open, onToggle }: WorldLegendProps): JSX.Element {
   const { shown: cargo, more } = busiestCargo(doc)
   const procs = usedKeys(doc.processes, new Set(doc.buildings.map((b) => b.process)))
   return (
-    <section aria-label="Lumopolis legend" data-testid="world-legend" style={PANEL}>
+    <section aria-label="Lumopolis legend" data-testid="world-legend" style={open ? PANEL : { ...PANEL, width: CHIP_WIDTH, padding: '8px 12px', boxSizing: 'border-box' }}>
       <button
         type="button"
         data-testid="world-legend-toggle"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={onToggle}
         style={{ display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center', background: 'none', border: 0, padding: 0, color: 'inherit', font: 'inherit', fontWeight: 600, cursor: 'pointer' }}
       >
         <span>Legend</span>

@@ -40,7 +40,7 @@ import { useOpenWorld } from './useOpenWorld'
 import { WorldHome } from './WorldHome'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
-import { LEGEND_RESERVE, WorldLegend } from './WorldLegend'
+import { legendDefaultOpen, legendReserve, WorldLegend } from './WorldLegend'
 import { worldPaneStyle } from './worldPane'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
@@ -100,6 +100,13 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [error, setError] = useState<string | null>(null)
   const [card, setCard] = useState<string | null>(null)
   const [layers, setLayersState] = useState<LayerState>(DEFAULT_LAYERS)
+  // The legend is expanded on a wide pane and a chip on a narrow one, until the user chooses.
+  const [legendChoice, setLegendChoice] = useState<boolean | null>(null)
+  const legendOpen = legendChoice ?? legendDefaultOpen(width)
+  const legendOpenRef = useRef(legendOpen)
+  legendOpenRef.current = legendOpen
+  const widthRef = useRef(width)
+  widthRef.current = width
   const [theme, setThemeState] = useState<ThemeName>('neon')
   const [confirmRelayout, setConfirmRelayout] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -261,11 +268,15 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     return () => { offProgress(); offUpdated() }
   }, [])
 
+  // The overview is fitted to what the legend leaves free: it follows the legend and the pane's width.
+  const reserve = legendReserve(legendOpen, width)
+  useEffect(() => { viewer?.setRightReserve(reserve) }, [viewer, reserve])
+
   // The 3D viewer, once, when WebGL is there.
   useEffect(() => {
     if (!webgl) return
     const v = createWorldViewer(hostRef.current as HTMLDivElement, {
-      rightReserve: LEGEND_RESERVE,
+      rightReserve: legendReserve(legendOpenRef.current, widthRef.current),
       renderCard: (html) => {
         if (html !== null) armedRef.current = false
         setCard(html)
@@ -479,7 +490,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             onRetry={() => setAttempt((n) => n + 1)}
           />
         )}
-        {webgl && doc && !home && <WorldLegend doc={doc} processes={layers.processes} />}
+        {webgl && doc && !home && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} onToggle={() => setLegendChoice(!legendOpen)} />}
         {confirmRelayout && (
           <div
             role="alertdialog"

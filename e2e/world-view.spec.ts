@@ -262,19 +262,29 @@ test.describe.serial('Lumopolis in the real app', () => {
     // front of it); the first such point inside the canvas with the canvas itself under it (no
     // label, legend or other panel on top) is clicked as a person would.
     type Target = { id: string; name: string; floors: string[]; x: number; y: number }
+    // Every building's screen point in one pass, so a target can be chosen that no other building
+    // stands near: in a narrow pane the buildings are close, and a click between two picks either.
+    const pts = await page.evaluate((ids) => {
+      const probe = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world
+      const host = document.querySelector('[data-testid="world-canvas-host"] canvas')
+      return ids.map((id) => {
+        const p = probe?.screenPoint(id) ?? null
+        return { id, p, free: !!p && document.elementFromPoint(p.x, p.y) === host }
+      })
+    }, all.map((b) => b.id))
+    const NEIGHBOUR_PX = 24
     let target: Target | null = null
+    let best = -1
     for (const b of all) {
-      const pt = await page.evaluate((id) => {
-        const p = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.screenPoint(id) ?? null
-        const host = document.querySelector('[data-testid="world-canvas-host"] canvas')
-        return p && document.elementFromPoint(p.x, p.y) === host ? p : null
-      }, b.id)
-      if (pt && pt.x > box.x + 8 && pt.x < box.x + box.width - 8 && pt.y > box.y + 8 && pt.y < box.y + box.height - 8) {
-        target = { ...b, ...pt }
-        break
-      }
+      const me = pts.find((q) => q.id === b.id)!
+      if (!me.p || !me.free) continue
+      const pt = me.p
+      if (!(pt.x > box.x + 8 && pt.x < box.x + box.width - 8 && pt.y > box.y + 8 && pt.y < box.y + box.height - 8)) continue
+      const gap = Math.min(Infinity, ...pts.filter((q) => q.id !== b.id && q.p).map((q) => Math.hypot(q.p!.x - pt.x, q.p!.y - pt.y)))
+      if (gap > best) { best = gap; target = { ...b, ...pt } }
     }
-    expect(target, `no building of ${all.length} is on screen with nothing over it`).not.toBeNull()
+    if (best < NEIGHBOUR_PX) target = null
+    expect(target, `no building of ${all.length} is on screen with nothing over it and ${NEIGHBOUR_PX} px from the next one`).not.toBeNull()
     await page.mouse.click(target!.x, target!.y)
     await expect(card()).toBeVisible()
     // The card is that building's: its name, and its floors in "What's inside", in order.

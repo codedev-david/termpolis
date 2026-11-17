@@ -11,7 +11,7 @@ describe('clampWorldPaneWidth', () => {
   it('keeps the terminals at TERMINAL_MIN_PX and the pane at its minimum', () => {
     expect(WORLD_PANE_MIN_PX).toBe(360)
     expect(TERMINAL_MIN_PX).toBe(320)
-    expect(WORLD_PANE_DEFAULT_FRACTION).toBe(0.5)
+    expect(WORLD_PANE_DEFAULT_FRACTION).toBe(0.4)
     expect(clampWorldPaneWidth(900, 1000)).toBe(676) // 1000 less the terminals' 320 and the divider's 4
     expect(clampWorldPaneWidth(100, 1000)).toBe(360)
     expect(clampWorldPaneWidth(500, 800)).toBe(476)
@@ -55,21 +55,21 @@ describe('the saved width', () => {
 describe('useWorldPaneWidth', () => {
   const main = (clientWidth: number) => ({ current: { clientWidth } as HTMLElement })
 
-  it('starts at half the room, from the window until it is measured', () => {
+  it('starts at 40% of the room, from the window until it is measured', () => {
     const el = main(0)
     const { result } = renderHook(() => useWorldPaneWidth(el, false))
-    expect(result.current.width).toBe(clampWorldPaneWidth(window.innerWidth * 0.5, window.innerWidth))
+    expect(result.current.width).toBe(clampWorldPaneWidth(Math.round(window.innerWidth * 0.4), window.innerWidth))
   })
 
   it('measures the room as the terminals plus the pane and divider, and re-clamps on resize', () => {
     const el = main(1000)
     const { result } = renderHook(() => useWorldPaneWidth(el, true))
-    // The window's 1024 gave 512; the measured room is 1000 + 512 + 4, half of it 758.
-    expect(result.current.width).toBe(758)
+    // The window's 1024 gave 410; the measured room is 1000 + 410 + 4, 40% of it 566.
+    expect(result.current.width).toBe(566)
     act(() => { el.current.clientWidth = 700; window.dispatchEvent(new Event('resize')) })
-    expect(result.current.width).toBe(731) // room 700 + 758 + 4
+    expect(result.current.width).toBe(508) // room 700 + 566 + 4, 40% of it
     act(() => { el.current.clientWidth = 100; window.dispatchEvent(new Event('resize')) })
-    expect(result.current.width).toBe(418) // half of 100 + 731 + 4, rounded: it follows the window until it is dragged
+    expect(result.current.width).toBe(288) // the room 612 leaves the terminals 320 and the divider 4: the pane gives way under its own minimum
   })
 
   it('re-clamps when the terminals column changes size on its own (the Changes panel, the sidebar)', () => {
@@ -94,9 +94,9 @@ describe('useWorldPaneWidth', () => {
   it('exposes the width limits for the divider', () => {
     const el = main(1000)
     const { result } = renderHook(() => useWorldPaneWidth(el, true))
-    // room 1000 + 512 + 4 = 1516
+    // room 1000 + 410 + 4 = 1414
     expect(result.current.min).toBe(360)
-    expect(result.current.max).toBe(1516 - 320 - 4)
+    expect(result.current.max).toBe(1414 - 320 - 4)
   })
 
   it('stops listening when it is not active, and when it unmounts', () => {

@@ -2,7 +2,7 @@
 // the Changes panel), never an overlay. Opaque background from its first frame. Inline styles, so the
 // frame never depends on which utility classes the CSS build happens to contain.
 //
-// Width: the saved width (localStorage) or half the row, kept within [WORLD_PANE_MIN_PX, row minus
+// Width: the saved width (localStorage) or 40% of the row, kept within [WORLD_PANE_MIN_PX, row minus
 // TERMINAL_MIN_PX]. The terminal minimum wins when the row is too narrow for both: the pane shrinks
 // under its minimum rather than squeeze the terminals.
 //
@@ -16,7 +16,7 @@ export const WORLD_OPENING_BACKGROUND = '#03050a'
 
 export const WORLD_PANE_MIN_PX = 360
 export const TERMINAL_MIN_PX = 320
-export const WORLD_PANE_DEFAULT_FRACTION = 0.5
+export const WORLD_PANE_DEFAULT_FRACTION = 0.4
 /** The divider's width: it sits in the same row, between the terminals and the pane. */
 export const WORLD_DIVIDER_PX = 4
 const WIDTH_KEY = 'termpolis.world.paneWidth'

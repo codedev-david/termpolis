@@ -194,9 +194,8 @@ export function nameBudget(n: number, zoom: number): number {
 
 /**
  * The strip on the right of the view a panel covers (the legend), kept out of the overview's fit:
- * `reserve` pixels, or none when the view is too narrow to give that much up (under 1.4 times it, 342 px
- * for the legend: the pane beside the terminals is 360 px at its narrowest, so it always reserves).
+ * `reserve` pixels, or none when the view is too narrow to give that much up (under three times it).
  */
 export function rightInset(width: number, reserve: number): number {
-  return reserve > 0 && width >= reserve * 1.4 ? reserve : 0
+  return reserve > 0 && width >= reserve * 3 ? reserve : 0
 }

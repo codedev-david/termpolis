@@ -198,12 +198,31 @@ describe('nameBudget', () => {
   })
 })
 
+describe('the overview fit in a 500 px pane', () => {
+  // A city 120 wide and 60 deep, seen from above and a little ahead, in a 500 x 700 canvas with the legend's chip on its right.
+  const city: V3[] = [[-60, 0, -30], [60, 0, -30], [60, 0, 30], [-60, 0, 30], [-60, 20, 0], [60, 20, 0]]
+  const view: V3 = [0.3, 1, 0.5]
+  const chip = 108
+
+  it('is fitted to the part the chip leaves free, and fills it', () => {
+    const inset = rightInset(500, chip)
+    expect(inset).toBe(chip)
+    const free = (500 - inset) / 700
+    const tight = fitView(city, view, 55, free, 1, 1).dist // the city touching the fit area's edge
+    const fitted = fitView(city, view, 55, free, 1.1, 1).dist // what the overview uses
+    expect(tight / fitted).toBeGreaterThan(0.85) // the city spans 85% or more of the fit area's limiting side
+    expect(tight / fitted).toBeLessThan(1)
+    // The 244 px strip would have left a 256 px fit area: the city smaller by the ratio of the areas.
+    const strip = fitView(city, view, 55, (500 - 244) / 700, 1.1, 1).dist
+    expect(strip).toBeGreaterThan(fitted * 1.3)
+  })
+})
+
 describe('rightInset', () => {
   it('keeps the panel strip out of a wide view only', () => {
     expect(rightInset(1600, 244)).toBe(244)
-    expect(rightInset(360, 244)).toBe(244) // the pane's narrowest
-    expect(rightInset(342, 244)).toBe(244)
-    expect(rightInset(341, 244)).toBe(0)
+    expect(rightInset(732, 244)).toBe(244)
+    expect(rightInset(700, 244)).toBe(0)
     expect(rightInset(1600, 0)).toBe(0)
   })
 })

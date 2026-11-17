@@ -26,6 +26,8 @@ export interface WorldViewer {
   load(doc: WorldDoc, opts?: WorldLoadOptions): void
   setLayers(l: Partial<LayerState>): void
   setTheme(t: ThemeName): void
+  /** Pixels on the right the legend covers now; the overview is fitted to the rest. Ignored without WebGL. */
+  setRightReserve(px: number): void
   /** Runs one action now: camera flight, highlight, flow pulse, card open, tour, proposal reveal or reset. */
   apply(a: WorldAction): Promise<void>
   play(actions: WorldAction[]): Promise<void>
@@ -546,6 +548,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       if (disposed) return
       layers = { ...layers, ...l }
       redraw()
+    },
+    setRightReserve(px) {
+      if (!disposed) r3?.setRightReserve(px)
     },
     setTheme(t) {
       if (disposed || !THEMES[t]) return

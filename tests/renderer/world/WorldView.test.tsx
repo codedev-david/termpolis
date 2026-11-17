@@ -16,7 +16,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
       const selectCbs = new Set<(s: WorldSelection | null) => void>()
       const v = {
         host, opts,
-        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(),
+        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(),
         apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), cancelActions: vi.fn(),
         on: vi.fn((ev: string, cb: (s: WorldSelection | null) => void) => {
           if (ev !== 'select') return () => undefined
@@ -133,7 +133,7 @@ describe('WorldView', () => {
     await mount()
     const { createWorldViewer } = await import('../../../src/renderer/src/world/engine')
     expect(createWorldViewer).toHaveBeenCalledTimes(1)
-    expect((createWorldViewer as unknown as { mock: { calls: [HTMLElement, WorldViewerOptions][] } }).mock.calls[0][1].rightReserve).toBe(244) // the legend's strip
+    expect((createWorldViewer as unknown as { mock: { calls: [HTMLElement, WorldViewerOptions][] } }).mock.calls[0][1].rightReserve).toBe(108) // the legend chip's footprint: the default pane is narrow
     expect(viewer().host).toBe(screen.getByTestId('world-canvas-host'))
     expect(viewer().load).toHaveBeenLastCalledWith(first)
 
@@ -451,6 +451,25 @@ describe('WorldView', () => {
     fireEvent.click(screen.getByTestId('world-relayout-cancel')) // a second render: still not taken back
     expect(document.activeElement).toBe(outside)
     outside.remove()
+  })
+
+  it('keeps the legend a chip in a narrow pane and an expanded strip in a wide one, and tells the viewer', async () => {
+    bridge()
+    const narrow = await mount()
+    expect(screen.getByTestId('world-legend-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108)
+    // Opened by choice in a narrow pane it covers the map: the fit keeps its chip-sized strip.
+    fireEvent.click(screen.getByTestId('world-legend-toggle'))
+    expect(screen.getByTestId('world-legend-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108)
+    narrow.unmount()
+    bridge()
+    render(<WorldView root="/repo" width={800} onClose={vi.fn()} />)
+    await screen.findByTestId('world-legend')
+    expect(screen.getByTestId('world-legend-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(244)
+    fireEvent.click(screen.getByTestId('world-legend-toggle'))
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108)
   })
 
   it('takes its width from the width prop', async () => {
@@ -879,6 +898,7 @@ describe('WorldView layout (visual fidelity)', () => {
     bridge()
     await mount()
     expect(screen.getByTestId('world-legend')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('world-legend-toggle')) // a narrow pane starts it as a chip
     expect(screen.queryByTestId('world-legend-process')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Processes' }))
     expect(screen.getAllByTestId('world-legend-process').length).toBeGreaterThan(0)
