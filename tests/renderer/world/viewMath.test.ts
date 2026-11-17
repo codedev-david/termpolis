@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bottomInset, clampIntoView, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -479,6 +479,60 @@ describe('close-up fit inside the free area', () => {
       return x < 352 && y < 248
     })
     expect(under).toBe(true)
+  })
+})
+
+describe("a long line's close-up: both ends beside the card", () => {
+  const card = freeArea(416, 618, 108, 158, [400, 176])
+  it('inFreeArea takes the free part of the view, inset pixels inside its edges', () => {
+    expect(card).toEqual({ left: 0, top: 176, right: 108, bottom: 158 })
+    const ndc = (x: number, y: number): [number, number] => [(x / 416) * 2 - 1, 1 - (y / 618) * 2]
+    expect(inFreeArea(...ndc(150, 300), 416, 618, card)).toBe(true)
+    expect(inFreeArea(...ndc(150, 100), 416, 618, card)).toBe(false) // under the card
+    expect(inFreeArea(...ndc(350, 300), 416, 618, card)).toBe(false) // under the legend
+    expect(inFreeArea(...ndc(150, 500), 416, 618, card)).toBe(false) // under the ask bar
+    expect(inFreeArea(...ndc(3, 300), 416, 618, card)).toBe(true)
+    expect(inFreeArea(...ndc(3, 300), 416, 618, card, 6)).toBe(false) // on the view's edge
+    expect(inFreeArea(...ndc(150, 180), 416, 618, card, 6)).toBe(false) // on the card's edge
+    expect(inFreeArea(...ndc(150, 190), 416, 618, card, 6)).toBe(true)
+  })
+  it('backOffs steps out from the fit to the reach, the reach last', () => {
+    expect(backOffs(100, 300, 1.5)).toEqual([100, 150, 225, 300])
+    expect(backOffs(100, 100, 1.5)).toEqual([100])
+    expect(backOffs(200, 100, 1.5)).toEqual([200])
+    expect(backOffs(100, 300, 1)).toEqual([100])
+    expect(backOffs(100, 300, Number.NaN)).toEqual([100])
+  })
+  it('turnAcross turns a ground direction about the vertical', () => {
+    const [a, b, c, d] = turnAcross([0, 1], [0, 180, 90, -45])
+    expect(a[0]).toBeCloseTo(0); expect(a[1]).toBeCloseTo(1)
+    expect(b[0]).toBeCloseTo(0); expect(b[1]).toBeCloseTo(-1)
+    expect(c[0]).toBeCloseTo(1); expect(c[1]).toBeCloseTo(0)
+    expect(d[0]).toBeCloseTo(-Math.SQRT1_2); expect(d[1]).toBeCloseTo(Math.SQRT1_2)
+    expect(turnAcross([1, 0], [])).toEqual([])
+  })
+  it('a line across the city in a narrow pane: backing off brings an end cut off at the side into the free area', () => {
+    // The two ends of a long line, and a camera fitted only to a point near one of them: the far
+    // end falls outside the view; backing off along the same direction brings it inside.
+    const width = 416
+    const height = 618
+    const f = viewFrame(width, height, 55, card)
+    const dir: V3 = [0.2, 0.7, 1]
+    const near: V3 = [0, 20, 0]
+    const far: V3 = [-160, 20, 0]
+    const fit = fitView([near], dir, f.fitFov, f.fitAspect, 1.2, 30)
+    const at = (dist: number): boolean => {
+      const [x, y] = project(far, fit.target, dir, dist, f.fov, f.aspect)
+      // From the camera's full picture to the view, then to the view's -1..1.
+      const px = ((x + 1) / 2) * f.fullW - f.offX
+      const py = ((1 - y) / 2) * f.fullH - f.offY
+      return inFreeArea((px / width) * 2 - 1, 1 - (py / height) * 2, width, height, card, 6)
+    }
+    const steps = backOffs(fit.dist, 2000, 1.3)
+    expect(at(steps[0])).toBe(false)
+    const first = steps.findIndex(at)
+    expect(first).toBeGreaterThan(0)
+    expect(steps.slice(first).every(at)).toBe(true)
   })
 })
 

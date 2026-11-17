@@ -262,6 +262,38 @@ export function freeArea(width: number, height: number, legend: number, ask: num
   return below >= beside ? { ...out, top: ch } : { ...out, left: cw }
 }
 
+/**
+ * Whether the view point at (ndcX, ndcY), -1..1 each way across a `width` by `height` view (y up),
+ * lies in the part the panels leave free (`f`), at least `inset` pixels inside its edges.
+ */
+export function inFreeArea(ndcX: number, ndcY: number, width: number, height: number, f: FreeArea, inset = 0): boolean {
+  const x = ((ndcX + 1) / 2) * width
+  const y = ((1 - ndcY) / 2) * height
+  return x >= f.left + inset && x <= width - f.right - inset && y >= f.top + inset && y <= height - f.bottom - inset
+}
+
+/**
+ * The distances a framing backs off through, from `from` out to `to`: each `step` times the one
+ * before, and `to` itself last. Only `from` when it is already as far as `to` (or `step` does not grow).
+ */
+export function backOffs(from: number, to: number, step: number): number[] {
+  const out = [from]
+  if (!(to > from) || !(step > 1)) return out
+  for (let d = from * step; d < to; d *= step) out.push(d)
+  out.push(to)
+  return out
+}
+
+/** The ground direction `h` (its x and z) turned about the vertical by each of `degrees`. */
+export function turnAcross(h: readonly [number, number], degrees: readonly number[]): Array<[number, number]> {
+  return degrees.map((deg) => {
+    const a = (deg * Math.PI) / 180
+    const c = Math.cos(a)
+    const s = Math.sin(a)
+    return [h[0] * c + h[1] * s, -h[0] * s + h[1] * c]
+  })
+}
+
 /** Whether two free areas are the same to within half a pixel on every side. */
 export function sameArea(a: FreeArea, b: FreeArea): boolean {
   return Math.abs(a.left - b.left) < 0.5 && Math.abs(a.top - b.top) < 0.5 && Math.abs(a.right - b.right) < 0.5 && Math.abs(a.bottom - b.bottom) < 0.5

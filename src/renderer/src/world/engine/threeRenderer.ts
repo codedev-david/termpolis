@@ -13,7 +13,7 @@ import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRe
 import { createCameraRig, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, nameBudget, overviewDir, placeLabels, sameArea, toleratedPick, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
+import { backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -155,6 +155,18 @@ const LINE_LIFTS = [0.7, 1, 2, 4]
 const LINE_BACKS = [1, 1.4, 1.9]
 /** How far clear of every building a line's camera stands, as a share of its distance to the line. */
 const LINE_CLEAR = 0.45
+/**
+ * When no near, clear view of a line shows both its ends, the close-up looks again from more sides
+ * (LINE_TURNS degrees off straight across the line), lower as well as higher (LINE_WIDE_LIFTS), and
+ * further out (each LINE_BACK_STEP times the last, up to the controls' reach) until both ends show.
+ */
+const LINE_TURNS = [0, 180, 45, -45, 135, -135]
+const LINE_WIDE_LIFTS = [0.45, ...LINE_LIFTS]
+const LINE_BACK_STEP = 1.3
+/** The most click tests (rays) the wider look may spend on a line's ends: a click stays quick. */
+const LINE_RAY_BUDGET = 150
+/** How far inside the free part of the view (pixels) a line's end must show: not on a panel's edge. */
+const END_INSET_PX = 12
 /**
  * How near a line's end (world units; at most a fifth of the line's span) a click on the line still
  * picks the building or orb there: a busy building's lines all rise from its roof, and a click just
@@ -329,14 +341,17 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * parts past the view's edges are cut off (viewFrame). The field of view grows with the picture, so
    * the scale stays that of a BASE_FOV camera over the view.
    */
-  function project(a: FreeArea): void {
+  function lens(cam: THREE.PerspectiveCamera, a: FreeArea): void {
     const f = viewFrame(width, height, BASE_FOV, a)
+    cam.fov = f.fov
+    cam.aspect = f.aspect
+    if (f.fullW !== width || f.fullH !== height) cam.setViewOffset(f.fullW, f.fullH, f.offX, f.offY, width, height)
+    else cam.clearViewOffset()
+    cam.updateProjectionMatrix()
+  }
+  function project(a: FreeArea): void {
     below = a.bottom
-    camera.fov = f.fov
-    camera.aspect = f.aspect
-    if (f.fullW !== width || f.fullH !== height) camera.setViewOffset(f.fullW, f.fullH, f.offX, f.offY, width, height)
-    else camera.clearViewOffset()
-    camera.updateProjectionMatrix()
+    lens(camera, a)
   }
   /** The panels, the view's size or the camera's place changed: the picture moves to the new free area (`snap`: at once, else it eases). */
   function applyView(snap = true): void {
@@ -1072,6 +1087,42 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return true
   }
 
+  /** A camera for trying a framing before the camera flies there: the view's picture with the card open. */
+  const scout = new THREE.PerspectiveCamera(BASE_FOV, 1, camera.near, camera.far)
+  const scoutPt = new THREE.Vector3()
+  /** The click tests left for the line being framed (LINE_RAY_BUDGET); the first, nearer looks spend none of it. */
+  const rays = { left: Infinity }
+  /**
+   * How many of `ends` show nowhere from `eye` looking at `target`, with the card open. An end shows
+   * where one of its probe points (probePoints) lies END_INSET_PX or more inside the part of the
+   * view the panels leave free, and a click there picks that end (rayHit), not a tower or a line in
+   * front of it: the promise of a line's close-up, both ends in view beside the card.
+   */
+  function endsHidden(ends: NodeRec[], eye: THREE.Vector3, target: THREE.Vector3): number {
+    const a = areaFor(true)
+    lens(scout, a)
+    scout.position.copy(eye)
+    scout.up.copy(camera.up)
+    scout.lookAt(target)
+    scout.updateMatrixWorld()
+    // Where each end falls in the free area first (cheap), then the clicks there (rays).
+    const spots = ends.map((m) => probePoints(m).flatMap((p) => {
+      scoutPt.copy(p).project(scout)
+      return Math.abs(scoutPt.z) <= 1 && inFreeArea(scoutPt.x, scoutPt.y, width, height, a, END_INSET_PX) ? [[scoutPt.x, scoutPt.y] as const] : []
+    }))
+    let hidden = spots.filter((sp) => sp.length === 0).length
+    if (hidden > 0) return hidden
+    ends.forEach((m, k) => {
+      const shows = spots[k].some(([x, y]) => {
+        rays.left--
+        const hit = rayHit(scout, x, y)
+        return !!hit && hit.kind === 'node' && hit.id === m.id
+      })
+      if (!shows) hidden++
+    })
+    return hidden
+  }
+
   /** Whether nothing stands between `eye` and `p`: no building or orb crosses the sight line. */
   function inSight(eye: THREE.Vector3, p: THREE.Vector3): boolean {
     const steps = Math.max(8, Math.ceil(eye.distanceTo(p) / (FLOOR_W * 0.4)))
@@ -1094,10 +1145,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * back until it is clear of them all). Between buildings in a busy district the near towers can
    * hide the arch or its ends, so the camera steps back (LINE_BACKS) and climbs (LINE_LIFTS, up to
    * nearly overhead) until the middle of the line and both end buildings are in clear sight, from
-   * a spot well clear of every roof. When nothing passes (a line deep inside a dense district), the
-   * camera looks down from high above, backing off until it is clear of the roofs around it.
+   * a spot well clear of every roof, with a click on each end picking it beside the card (endsHidden).
+   * A long line across the city, or ends buried in towers, gets a wider look (LINE_TURNS,
+   * LINE_WIDE_LIFTS, backing off up to the controls' reach) until both ends show, else the view
+   * that shows the most of them. When nothing shows an end, the camera looks down from high above,
+   * backing off until it is clear of the roofs around it.
    */
   function lineShot(e: EdgeRec, from: THREE.Vector3): Shot {
+    scene.updateMatrixWorld()
+    rays.left = Infinity
     // The arch, and each end building's upper part up to its name: in a tall, busy district the
     // whole towers would fill the picture and squeeze the line itself to a sliver at the top.
     const pts: V3[] = e.path.map((p) => [p.x, p.y, p.z])
@@ -1137,11 +1193,34 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         // Step back a little (never past `far`) before climbing: a few metres more often clears the towers.
         for (const back of LINE_BACKS) {
           const eye = target.clone().addScaledVector(dir, Math.min(dist * back, far))
-          if (!insideAny(eye) && clearOf(eye, target, e) && seen(eye).every((p) => inSight(eye, p))) return { pos: eye, target }
+          if (!insideAny(eye) && clearOf(eye, target, e) && seen(eye).every((p) => inSight(eye, p)) && endsHidden(ends, eye, target) === 0) return { pos: eye, target }
         }
       }
     }
-    // Nothing gave a clear view: from high above, as far back as it takes to clear the roofs.
+    // A long line, or ends buried under the lines and towers around them: from more sides, lower
+    // and higher, and as far out as it takes for both ends to show beside the card (and the arch's
+    // middle in sight). Failing that, the view that shows the most of them.
+    let best: { shot: Shot; score: number } | null = null
+    rays.left = LINE_RAY_BUDGET
+    for (const [x, z] of turnAcross([h.x, h.z], LINE_TURNS)) {
+      for (const lift of LINE_WIDE_LIFTS) {
+        const dir = new THREE.Vector3(x, lift, z).normalize()
+        const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+        const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
+        for (const dist of backOffs(fit.dist, controls.maxDistance, LINE_BACK_STEP)) {
+          const eye = target.clone().addScaledVector(dir, dist)
+          if (insideAny(eye)) continue
+          const hidden = endsHidden(ends, eye, target)
+          const midSeen = hidden === 0 && mids.some((p) => inSight(eye, p))
+          if (midSeen) return { pos: eye, target }
+          const score = hidden === 0 ? 0.5 : hidden
+          if (!best || score < best.score) best = { shot: { pos: eye, target }, score }
+          if (rays.left <= 0) return best.shot
+        }
+      }
+    }
+    if (best && best.score < ends.length) return best.shot
+    // Nothing shows an end: from high above, as far back as it takes to clear the roofs.
     const dir = new THREE.Vector3(h.x, LINE_LIFTS[2], h.z).normalize()
     const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
     const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
@@ -1189,10 +1268,17 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return toleratedPick(rayPick(clientX, clientY, r), () => ({ boxes: screenBoxes(r), count: boxCount }), clientX, clientY)
   }
   function rayPick(clientX: number, clientY: number, r: DOMRect): RenderPick | null {
-    mouse.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
     scene.updateMatrixWorld()
     camera.updateMatrixWorld()
-    ray.setFromCamera(mouse, camera)
+    return rayHit(camera, ((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
+  }
+  /**
+   * What a ray from `cam` through the view point (ndcX, ndcY) picks (rayPick, for any camera: a
+   * framing is tried before the flight). The scene's matrices must be current.
+   */
+  function rayHit(cam: THREE.Camera, ndcX: number, ndcY: number): RenderPick | null {
+    mouse.set(ndcX, ndcY)
+    ray.setFromCamera(mouse, cam)
     // Hits come nearest first. The nearest one wins, except that a node just behind an edge's
     // fat pick tube (within PICK_NODE_EPS) still wins: a conduit runs into the building it ends
     // at, and its tube must not swallow clicks on that building's face.
@@ -1326,8 +1412,21 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       }
       return null
     }
-    // In world space: the top floor first, then the floors below, then the roof's corners pulled a
-    // little inward. An orb: its centre, then its upper half.
+    for (const p of probePoints(n)) {
+      const pt = onScreen(p)
+      if (!pt) continue
+      const hit = pick(pt.x, pt.y)
+      if (hit && hit.kind === 'node' && hit.id === id) return pt
+    }
+    return null
+  }
+
+  /**
+   * The points of a building where the probe looks for a click that picks it, in world space: the
+   * top floor first, then the floors below, then the roof's corners pulled a little inward. An orb:
+   * its centre, then its upper half.
+   */
+  function probePoints(n: NodeRec): THREE.Vector3[] {
     const points: THREE.Vector3[] = []
     const top = n.floors[n.floors.length - 1]
     if (!top) for (const y of [ORB_R, ORB_R * 1.6]) points.push(n.group.localToWorld(new THREE.Vector3(0, y, 0)))
@@ -1336,13 +1435,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const c = FLOOR_W * 0.35
       for (const [dx, dz] of [[c, c], [-c, c], [c, -c], [-c, -c]]) points.push(top.localToWorld(new THREE.Vector3(dx, 0, dz)))
     }
-    for (const p of points) {
-      const pt = onScreen(p)
-      if (!pt) continue
-      const hit = pick(pt.x, pt.y)
-      if (hit && hit.kind === 'node' && hit.id === id) return pt
-    }
-    return null
+    return points
   }
 
   function visibleIds(): string[] {

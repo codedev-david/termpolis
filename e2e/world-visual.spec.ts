@@ -532,7 +532,10 @@ async function lineInSight(id: string): Promise<boolean> {
 
 /** The line on the open card: one of `at`'s lines with the card's title, whose ends' names its "From → To" line holds. */
 function cardLine(w: World, at: string, title: string, route: string): Line | undefined {
-  return w.edges.find((e) => edgeSummary(e.label) === title && (e.from === at || e.to === at) && [e.from, e.to].every((x) => !w.names[x] || route.includes(w.names[x])))
+  // The route reads "from -> to" (an arrow between the two names): each named end must be one of
+  // the two names exactly, so "main" does not match a route through "mainAgentIntegrationIpc.test".
+  const ends = route.replace(/ \(both ways\)$/, '').split('→').map((s) => s.trim())
+  return w.edges.find((e) => edgeSummary(e.label) === title && (e.from === at || e.to === at) && [e.from, e.to].every((x) => !w.names[x] || ends.includes(w.names[x])))
 }
 
 /**
@@ -634,11 +637,12 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
     await page.waitForTimeout(1800)
     const line = cardLine(w, over.id, tagPt!.text, (await card().locator('p.muted').first().textContent()) ?? '')
     expect(line, `${tag}/${theme}: the line card names no line of the world`).toBeTruthy()
+    // The shot first, so a failing end below can be seen.
+    await page.screenshot({ path: path.join(SHOTS, `${tag}-${theme}-line-card.png`) })
     for (const end of [line!.from, line!.to]) {
       if (!names[end]) continue // an external: an orb, not a building
       expect(await probePoint(end), `${tag}/${theme}: ${names[end]}, an end of "${tagPt!.text}", is not in view`).not.toBeNull()
     }
-    await page.screenshot({ path: path.join(SHOTS, `${tag}-${theme}-line-card.png`) })
     // The line itself is in sight, not hidden behind the towers in front of it: seen from the
     // camera, some stretch of it has no building in front of it and no panel over it.
     expect(await lineInSight(line!.id), `${tag}/${theme}: "${tagPt!.text}" is hidden in its own close-up`).toBe(true)
