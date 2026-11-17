@@ -2729,6 +2729,7 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAs
   cancelClone: (url, ref) => worldClient.cancelClone(url, ref),
   watch: (root) => watchRepoForGraphAndWorld(root),
   unwatch: (root) => void stopRepoWatch(root),
+  homeDir: homedir(),
   userDataDir: worldUserData,
 })
 /** An agent's working directory → the project root Lumopolis keys its world by: the git root of the

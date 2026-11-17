@@ -27,7 +27,6 @@
 //   world:progress / world:updated           (webContents.send, while a world compiles / after a
 //                                             watcher-driven recompile saved)
 // `ipc` and `win` are parameters, so this module never imports Electron and tests pass fakes.
-import { homedir } from 'os'
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
 import type { AskRequest, AskResult, BuildItResult, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
@@ -125,8 +124,8 @@ export interface WorldSourcesDeps {
   watch?(root: string): boolean
   /** Stops a watch that Build it started, when its world is removed from the home. */
   unwatch?(root: string): void
-  /** The home folder (default os.homedir()): it, and every folder above it, is never a Build it target. */
-  homeDir?: string
+  /** The home folder (os.homedir() in the app): it, and every folder above it, is never a Build it target. */
+  homeDir: string
   /** Termpolis's data folder: nothing inside it is ever a Build it or open-folder target. */
   userDataDir?: string
 }
@@ -293,7 +292,7 @@ export function registerWorldIpc(
 /** The Lumopolis home's handlers. Every failure is a fixed friendly string; nothing raw reaches the renderer. */
 function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void {
   const { registry } = deps
-  const home = deps.homeDir ?? homedir()
+  const home = deps.homeDir
   const forbidden = (root: string): string | null => forbiddenFolder(root, { home, userData: deps.userDataDir })
   /** Folders the native dialog returned this session: the only new folders Build it may write into. */
   const picked = new Set<string>()

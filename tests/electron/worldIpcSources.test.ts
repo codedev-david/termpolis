@@ -258,7 +258,7 @@ describe('registerWorldIpc world:build-it', () => {
       expect(s.registry.upsert).not.toHaveBeenCalled()
       expect(s.deps.isEmpty).not.toHaveBeenCalled()
     }
-    const real = setup({ homeDir: undefined, pickFolder: vi.fn(async () => homedir()) })
+    const real = setup({ homeDir: homedir(), pickFolder: vi.fn(async () => homedir()) })
     expect(await real.invoke('world:pick-folder')).toEqual({ success: false, error: FORBIDDEN_FOLDER })
     const inHome = setup({ pickFolder: vi.fn(async () => 'C:/Users/me/code/shop') })
     expect(await inHome.invoke('world:pick-folder')).toEqual({ success: true, data: { root: 'C:/Users/me/code/shop', empty: true } })
