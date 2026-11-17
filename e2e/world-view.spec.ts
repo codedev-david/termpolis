@@ -553,8 +553,10 @@ test.describe.serial('Lumopolis in the real app', () => {
     await term.click()
     await expect.poll(() => page.evaluate(() => !!document.activeElement?.classList.contains('xterm-helper-textarea')), { message: 'the terminal to have focus' }).toBe(true)
     await page.keyboard.type('echo beside')
+    // Whitespace removed: beside the pane the terminal is narrow, and a long prompt (Linux CI's
+    // runner@ip-...:/tmp/...$) soft-wraps the typed line onto the next row, at any column.
     await expect.poll(() => page.evaluate(
-      () => ((window as unknown as { __termpolis_terminal_text?: () => string }).__termpolis_terminal_text?.() ?? '').includes('echo beside')), { message: 'the typed text on the terminal' }).toBe(true)
+      () => ((window as unknown as { __termpolis_terminal_text?: () => string }).__termpolis_terminal_text?.() ?? '').replace(/\s+/g, '').includes('echobeside')), { message: 'the typed text on the terminal' }).toBe(true)
     const [a, b] = await Promise.all([pane().boundingBox(), term.boundingBox()])
     expect(a && b).toBeTruthy()
     const overlapX = Math.min(a!.x + a!.width, b!.x + b!.width) - Math.max(a!.x, b!.x)
