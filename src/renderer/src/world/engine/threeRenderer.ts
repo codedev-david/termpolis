@@ -82,6 +82,10 @@ export interface ThreeRenderer {
    */
   frame(ids: string[], instant: boolean, around?: string[]): Promise<void>
   overview(instant: boolean): Promise<void>
+  /** Where the camera stands and what it looks at now (a bookmark saves it). */
+  getCamera(): { pos: [number, number, number]; target: [number, number, number] }
+  /** Flies the camera to a saved pose (`instant`: lands at once) and leaves it there. */
+  flyTo(pose: { pos: [number, number, number]; target: [number, number, number] }, instant: boolean): Promise<void>
   /** Runs a bright pulse along each edge in turn. Resolves when the last one arrives. */
   pulse(edgeIds: string[], instant: boolean): Promise<void>
   stopPulses(): void
@@ -1761,6 +1765,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     overview(instant) {
       controls.autoRotate = false // a flight ends the idle turn
       return rig.overview(instant)
+    },
+    getCamera: () => ({ pos: [camera.position.x, camera.position.y, camera.position.z], target: [controls.target.x, controls.target.y, controls.target.z] }),
+    flyTo(pose, instant) {
+      controls.autoRotate = false // a flight ends the idle turn
+      return rig.to(pose, instant)
     },
     pulse,
     stopPulses,

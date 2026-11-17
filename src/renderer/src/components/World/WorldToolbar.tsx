@@ -1,9 +1,10 @@
 // The Lumopolis toolbar: the world switcher, layer toggles, theme, tours, reset, re-layout, Build it
 // (design worlds) and close.
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Tour } from '../../../../shared/world/types'
 import { THEMES } from '../../world/engine'
-import type { LayerState, ThemeName } from '../../world/engine'
+import type { Bookmark, LayerState, ThemeName } from '../../world/engine'
 
 export interface WorldToolbarProps {
   projectName: string
@@ -23,6 +24,18 @@ export interface WorldToolbarProps {
   onBuildIt?: () => void
   /** The last labelling run's cost line, shown small and muted under the controls; absent: nothing. */
   labelCost?: string
+  /** The saved views of this world, newest first. */
+  bookmarks: Bookmark[]
+  /** Saves the camera and what is open now under this name. */
+  onSaveBookmark: (name: string) => void
+  /** Goes to a saved view. */
+  onBookmark: (b: Bookmark) => void
+  onRemoveBookmark: (name: string) => void
+  /** Saving needs the 3D camera: off while there is none (no WebGL). */
+  bookmarkSaveDisabled?: boolean
+  /** The 2D map is on: a flat SVG map with a list, for screen readers and machines without WebGL. */
+  map2d: boolean
+  onMap2d: (on: boolean) => void
 }
 
 const THEME_NAMES = Object.keys(THEMES) as ThemeName[]
@@ -33,6 +46,14 @@ const toggleCls = (on: boolean): string => `${btn} ${on ? 'bg-[#094771] text-whi
 
 export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   const { layers, onLayers } = props
+  const [menu, setMenu] = useState(false)
+  const [name, setName] = useState('')
+  const save = (): void => {
+    const n = name.trim()
+    if (n === '') return
+    props.onSaveBookmark(n)
+    setName('')
+  }
   const toggles: { key: string; label: string; title: string; on: boolean; patch: Partial<LayerState> }[] = [
     {
       key: 'labels', label: 'Tech names', title: 'Name buildings by their technology instead of their job',
@@ -90,6 +111,73 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         <option value="">{props.tours.length === 0 ? 'No tours yet' : 'Take a tour…'}</option>
         {props.tours.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
       </select>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={props.map2d}
+        title="A flat map with a list instead of the 3D city"
+        data-testid="world-map2d"
+        className={toggleCls(props.map2d)}
+        onClick={() => props.onMap2d(!props.map2d)}
+      >2D map</button>
+      <div className="relative">
+        <button
+          type="button"
+          aria-haspopup="true"
+          aria-expanded={menu}
+          data-testid="world-bookmarks"
+          className={`${btn} text-[#cccccc]`}
+          onClick={() => setMenu(!menu)}
+          title="Saved views of this map"
+        >Bookmarks</button>
+        {menu && (
+          <div
+            role="group"
+            aria-label="Bookmarks"
+            data-testid="world-bookmarks-menu"
+            className="absolute left-0 top-full mt-1 p-2 rounded border border-[#3c3c3c] shadow-xl flex flex-col gap-1 text-xs w-64"
+            style={{ zIndex: 7, background: '#252526' }}
+          >
+            <div className="flex gap-1">
+              <input
+                aria-label="Name this view"
+                data-testid="world-bookmark-name"
+                value={name}
+                maxLength={60}
+                placeholder="Name this view"
+                className="flex-1 min-w-0 px-1.5 py-1 rounded border border-[#3c3c3c] bg-[#1e1e1e] text-[#cccccc]"
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') save() }}
+              />
+              <button
+                type="button"
+                data-testid="world-bookmark-save"
+                className={`${btn} text-[#cccccc]`}
+                disabled={props.bookmarkSaveDisabled === true || name.trim() === ''}
+                onClick={save}
+              >Save view</button>
+            </div>
+            {props.bookmarks.length === 0 && <p className="text-[#9ca3af] px-1">No saved views yet</p>}
+            {props.bookmarks.map((b) => (
+              <div key={b.name} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  data-testid="world-bookmark-go"
+                  className="flex-1 min-w-0 text-left truncate px-1.5 py-1 rounded hover:bg-[#37373d] text-[#cccccc]"
+                  onClick={() => { props.onBookmark(b); setMenu(false) }}
+                >{b.name}</button>
+                <button
+                  type="button"
+                  aria-label={`Remove ${b.name}`}
+                  data-testid="world-bookmark-remove"
+                  className="px-1.5 py-1 rounded text-[#999] hover:text-white hover:bg-[#37373d]"
+                  onClick={() => props.onRemoveBookmark(b.name)}
+                ><i className="fa-solid fa-xmark" aria-hidden="true" /></button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="flex-1" />
       {props.onBuildIt && (
         <button

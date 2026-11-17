@@ -30,6 +30,8 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
         linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 3, y: 4 }] : [])),
         pickAt: vi.fn((x: number) => (x === 1 ? { kind: 'node', id: 'b1' } : null)),
         drawn: vi.fn(() => ({ layers: real.DEFAULT_LAYERS, processShells: 0, conduits: 4 })),
+        cameraState: vi.fn((): { pos: number[]; target: number[] } | null => ({ pos: [1, 2, 3], target: [4, 5, 6] })),
+        setCamera: vi.fn(async () => undefined),
       }
       h.viewers.push(v)
       return v
@@ -91,6 +93,7 @@ async function mount(props: Partial<{ root: string; onClose: () => void; askSlot
 beforeEach(() => {
   h.webgl = true
   h.viewers.length = 0
+  localStorage.clear()
   vi.clearAllMocks()
 })
 afterEach(() => {
@@ -829,6 +832,7 @@ describe('WorldView', () => {
       expect(probe().linePoints('e1')).toEqual([{ x: 3, y: 4 }])
       expect(probe().pickAt(1, 2)).toEqual({ kind: 'node', id: 'b1' })
       expect(probe().pickAt(9, 9)).toBeNull()
+      expect(probe().cameraState()).toEqual({ pos: [1, 2, 3], target: [4, 5, 6] })
       expect(probe().drawn()).toEqual({ layers: expect.objectContaining({ processes: false }), processShells: 0, conduits: 4 })
       unmount()
       expect(probe()).toBeUndefined()
@@ -1132,5 +1136,191 @@ describe('WorldView card actions', () => {
     late2.reject(new Error('late'))
     await settle()
     expect(worldAnnotate).toHaveBeenCalledTimes(2)
+  })
+})
+
+
+describe('WorldView 2D map switch and bookmarks', () => {
+  const cam = { pos: [1, 2, 3], target: [4, 5, 6] }
+  const card = () => screen.queryByTestId('world-card')
+  const openMenu = () => fireEvent.click(screen.getByTestId('world-bookmarks'))
+  const saveAs = (name: string) => {
+    fireEvent.change(screen.getByTestId('world-bookmark-name'), { target: { value: name } })
+    fireEvent.click(screen.getByTestId('world-bookmark-save'))
+  }
+  const keyOf = () => 'termpolis.world.bookmarks.' + minimal().projectKey
+
+  it('the 2D map switch shows the fallback with WebGL present, and is remembered', async () => {
+    bridge()
+    const askSlot = vi.fn(() => <span>ask</span>)
+    await mount({ askSlot })
+    const sw = screen.getByTestId('world-map2d')
+    expect(sw).toHaveAttribute('role', 'switch')
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByTestId('world-fallback')).toBeNull()
+    expect(screen.getByTestId('world-legend')).toBeInTheDocument()
+    fireEvent.click(sw)
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    const list = screen.getByTestId('world-fallback')
+    expect(list.querySelector('svg[role="img"] rect[data-kind="building"]')).not.toBeNull()
+    expect(screen.getByTestId('world-canvas-host').style.visibility).toBe('hidden')
+    expect(viewer().setPaused).toHaveBeenLastCalledWith(true)
+    expect(screen.queryByTestId('world-legend')).toBeNull()
+    expect(askSlot).toHaveBeenLastCalledWith(null, expect.anything(), '/repo', expect.anything())
+    expect(localStorage.getItem('termpolis.world.map2d')).toBe('1')
+    // A click on the map opens the card from the doc, not through the viewer.
+    fireEvent.click(list.querySelector('svg rect[data-id="b1"]') as Element)
+    expect(card()).toHaveTextContent('Desktop app')
+    expect(viewer().apply).not.toHaveBeenCalled()
+    // The district shape closes the card.
+    fireEvent.click(list.querySelector('svg polygon[data-kind="district"]') as Element)
+    expect(card()).toBeNull()
+    fireEvent.click(list.querySelector('svg rect[data-id="b1"]') as Element)
+    expect(card()).not.toBeNull()
+    // Switching it off brings the 3D city back and clears the card.
+    fireEvent.click(sw)
+    expect(screen.queryByTestId('world-fallback')).toBeNull()
+    expect(card()).toBeNull()
+    expect(screen.getByTestId('world-canvas-host').style.visibility).toBe('visible')
+    expect(viewer().setPaused).toHaveBeenLastCalledWith(false)
+    expect(localStorage.getItem('termpolis.world.map2d')).toBe('0')
+    expect(askSlot).toHaveBeenLastCalledWith(viewer(), expect.anything(), '/repo', expect.anything())
+  })
+
+  it('starts in 2D when it was left on, and still switches when storage is blocked', async () => {
+    localStorage.setItem('termpolis.world.map2d', '1')
+    bridge()
+    await mount()
+    expect(screen.getByTestId('world-map2d')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('world-fallback')).toBeInTheDocument()
+    const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+    try {
+      cleanup()
+      bridge()
+      await mount()
+      expect(screen.getByTestId('world-map2d')).toHaveAttribute('aria-checked', 'false')
+      fireEvent.click(screen.getByTestId('world-map2d'))
+      expect(screen.getByTestId('world-fallback')).toBeInTheDocument()
+    } finally {
+      get.mockRestore()
+      set.mockRestore()
+    }
+  })
+
+  it('in the 2D map with a viewer a newer world rebuilds the open card, and a tour does not use the viewer', async () => {
+    const b = bridge()
+    await mount()
+    fireEvent.click(screen.getByTestId('world-map2d'))
+    const list = screen.getByTestId('world-fallback')
+    fireEvent.click(list.querySelector('svg rect[data-id="b1"]') as Element)
+    const d = minimal()
+    b.api.worldGet.mockResolvedValueOnce(ok({ ...d, generatedAt: d.generatedAt + 1, buildings: d.buildings.map((x) => (x.id === 'b1' ? { ...x, name: 'Renamed desk' } : x)) }))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(card()).toHaveTextContent('Renamed desk')
+    const tours = screen.getByTestId('world-tours') as HTMLSelectElement
+    if (tours.options.length > 1) {
+      fireEvent.change(tours, { target: { value: tours.options[1].value } })
+      expect(viewer().play).not.toHaveBeenCalled()
+    }
+  })
+
+  it('the 2D heading shows the project display name, not the hashed key', async () => {
+    h.webgl = false
+    bridge({ gitFindRoot: vi.fn(async () => ok('C:\\code\\my-app')) })
+    await mount({ root: 'C:\\code\\my-app' })
+    const list = screen.getByTestId('world-fallback')
+    expect(list.querySelector('h2')).toHaveTextContent('my-app')
+    expect(list.innerHTML).not.toContain(minimal().projectKey)
+    expect(list.querySelector('svg')).toHaveAttribute('aria-label', 'Map of my-app')
+  })
+
+  it('saves a view with the camera and the open part, lists it newest first, and keeps it per project', async () => {
+    bridge()
+    await mount()
+    openMenu()
+    expect(screen.getByText('No saved views yet')).toBeInTheDocument()
+    expect(screen.getByTestId('world-bookmark-save')).toBeDisabled() // no name yet
+    viewer().getSelection.mockReturnValue(['b1'])
+    saveAs('  Home view ')
+    expect(JSON.parse(localStorage.getItem(keyOf()) as string)).toEqual([{ name: 'Home view', camera: cam, selection: ['b1'] }])
+    expect(screen.getByTestId('world-bookmark-name')).toHaveValue('')
+    fireEvent.change(screen.getByTestId('world-bookmark-name'), { target: { value: '   ' } })
+    fireEvent.keyDown(screen.getByTestId('world-bookmark-name'), { key: 'Enter' }) // blank: nothing
+    expect(screen.getAllByTestId('world-bookmark-go')).toHaveLength(1)
+    fireEvent.change(screen.getByTestId('world-bookmark-name'), { target: { value: 'Second' } })
+    fireEvent.keyDown(screen.getByTestId('world-bookmark-name'), { key: 'a' }) // not Enter: nothing yet
+    expect(screen.getAllByTestId('world-bookmark-go')).toHaveLength(1)
+    fireEvent.keyDown(screen.getByTestId('world-bookmark-name'), { key: 'Enter' })
+    expect(screen.getAllByTestId('world-bookmark-go').map((x) => x.textContent)).toEqual(['Second', 'Home view'])
+    // Another visit finds them again.
+    cleanup()
+    bridge()
+    await mount()
+    openMenu()
+    expect(screen.getAllByTestId('world-bookmark-go').map((x) => x.textContent)).toEqual(['Second', 'Home view'])
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Second' }))
+    expect(screen.getAllByTestId('world-bookmark-go').map((x) => x.textContent)).toEqual(['Home view'])
+    // The menu closes on a second click of its button.
+    openMenu()
+    expect(screen.queryByTestId('world-bookmarks-menu')).toBeNull()
+  })
+
+  it('does not save when the viewer has no camera', async () => {
+    bridge()
+    await mount()
+    viewer().cameraState.mockReturnValue(null)
+    openMenu()
+    saveAs('Nope')
+    expect(screen.getByText('No saved views yet')).toBeInTheDocument()
+  })
+
+  it('choosing a bookmark calls setCamera(camera, false) and restores its selection; an id no longer in the world is skipped', async () => {
+    localStorage.setItem(keyOf(), JSON.stringify([
+      { name: 'Open b1', camera: cam, selection: ['gone', 'b1'] },
+      { name: 'Empty', camera: cam, selection: ['gone'] },
+    ]))
+    bridge()
+    await mount()
+    openMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Open b1' }))
+    await settle()
+    expect(viewer().apply).toHaveBeenCalledWith({ type: 'openCard', id: 'b1' })
+    expect(viewer().setCamera).toHaveBeenLastCalledWith(cam, false)
+    expect(viewer().resetView).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('world-bookmarks-menu')).toBeNull()
+    openMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Empty' }))
+    expect(viewer().apply).toHaveBeenCalledTimes(1)
+    expect(viewer().resetView).toHaveBeenCalledTimes(1)
+    expect(viewer().setCamera).toHaveBeenLastCalledWith(cam, false)
+  })
+
+  it('finds a line, a district and an outside part in the world', async () => {
+    const d = minimal()
+    for (const id of [d.edges[0].id, d.districts[0].id, d.externals[0].id]) {
+      localStorage.setItem(keyOf(), JSON.stringify([{ name: 'K', camera: cam, selection: [id] }]))
+      bridge()
+      await mount()
+      openMenu()
+      fireEvent.click(screen.getByRole('button', { name: 'K' }))
+      expect(viewer().apply).toHaveBeenCalledWith({ type: 'openCard', id })
+      cleanup()
+    }
+  })
+
+  it('without WebGL a view cannot be saved or gone to, and removing one still works', async () => {
+    h.webgl = false
+    localStorage.setItem(keyOf(), JSON.stringify([{ name: 'Old', camera: cam, selection: [] }]))
+    bridge()
+    await mount()
+    openMenu()
+    fireEvent.change(screen.getByTestId('world-bookmark-name'), { target: { value: 'New' } })
+    expect(screen.getByTestId('world-bookmark-save')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Old' })) // nothing to fly to: no throw
+    openMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Old' }))
+    expect(screen.getByText('No saved views yet')).toBeInTheDocument()
   })
 })

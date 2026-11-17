@@ -373,6 +373,35 @@ describe('createCameraRig', () => {
     rig.stop() // nothing to stop
   })
 
+  it('to flies to a pose of its own and leaves the camera free there; a card kept open stays kept', async () => {
+    const { w, rig, run } = rigWith()
+    const saved = pose(7, 8, 9, 1, 2, 3)
+    await rig.to(saved, true)
+    expect(w.cam).toEqual(saved)
+    expect(w.cam.pos).not.toBe(saved.pos)
+    expect(rig.mode()).toBe('free')
+    expect(rig.withCard()).toBe(false)
+    void rig.overview(true)
+    await rig.to(saved, true)
+    expect(rig.mode()).toBe('free')
+    expect(rig.withCard()).toBe(false)
+    void rig.frame('routes', true)
+    expect(rig.mode()).toBe('framing')
+    await rig.to(saved, true)
+    expect(rig.mode()).toBe('free')
+    expect(rig.withCard()).toBe(true)
+    await rig.to(pose(1, 1, 1), true)
+    expect(rig.withCard()).toBe(true)
+    void rig.overview(false)
+    run(100)
+    const landed = vi.fn()
+    void rig.to(saved, false).then(landed)
+    run(FRAME_FLIGHT_S * 1000)
+    await Promise.resolve()
+    expect(w.cam).toEqual(saved)
+    expect(landed).toHaveBeenCalled()
+  })
+
   it('a throwing apply does not leave the rig deaf to the hand', () => {
     const { w, rig } = rigWith()
     w.apply = () => { throw new Error('boom') }

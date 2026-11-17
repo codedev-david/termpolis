@@ -220,7 +220,8 @@ async function buildings(root: string): Promise<Array<{ id: string; name: string
 }
 
 interface Drawn { layers: { processes: boolean }; processShells: number; conduits: number; highlighted: string[] }
-interface Probe { screenPoint(id: string): { x: number; y: number } | null; drawn(): Drawn }
+interface Cam { pos: number[]; target: number[] }
+interface Probe { screenPoint(id: string): { x: number; y: number } | null; drawn(): Drawn; cameraState(): Cam | null }
 const drawn = (): Promise<Drawn | null> =>
   page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn() ?? null)
 
@@ -590,7 +591,50 @@ test.describe.serial('Lumopolis in the real app', () => {
     await expect.poll(async () => (await drawn())?.highlighted.length ?? 0).toBeGreaterThanOrEqual(2)
   })
 
-  test('8. over the whole session, the renderer logged no console errors and threw no page errors', async () => {
+  test('8. a saved view comes back after moving away, and the 2D map switch draws an svg map', async () => {
+    const cam = (): Promise<Cam | null> =>
+      page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.cameraState() ?? null)
+    await page.getByTestId('world-bookmarks').click()
+    await page.getByTestId('world-bookmark-name').fill('Home view')
+    await page.getByTestId('world-bookmark-save').click()
+    // The pose the bookmark holds (the camera may drift a little between a read and the click).
+    const saved = await page.evaluate(() => {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i) as string
+        if (!k.startsWith('termpolis.world.bookmarks.')) continue
+        const list = JSON.parse(localStorage.getItem(k) as string) as Array<{ name: string; camera: { pos: number[]; target: number[] } }>
+        const mine = list.find((b) => b.name === 'Home view')
+        if (mine) return mine.camera
+      }
+      return null
+    })
+    expect(saved).not.toBeNull()
+    await page.getByTestId('world-bookmarks').click() // close the menu
+    await clickABuilding() // the camera moves to frame it
+    await expect.poll(async () => {
+      const c = await cam()
+      return c ? Math.max(...c.pos.map((v, i) => Math.abs(v - saved!.pos[i]))) : 0
+    }, { timeout: 8000 }).toBeGreaterThan(0.5)
+    await page.getByTestId('world-bookmarks').click()
+    await page.getByTestId('world-bookmark-go').filter({ hasText: 'Home view' }).click()
+    await expect.poll(async () => {
+      const c = await cam()
+      if (!c) return 99
+      return Math.max(...c.pos.map((v, i) => Math.abs(v - saved!.pos[i])), ...c.target.map((v, i) => Math.abs(v - saved!.target[i])))
+    }, { timeout: 8000 }).toBeLessThan(0.5)
+    // The 2D map: an svg with a rect per building, and a click on one opens its card.
+    await page.getByTestId('world-map2d').click()
+    const map = page.locator('svg[role=img]')
+    await expect(map).toBeVisible()
+    const rects = map.locator('rect[data-kind="building"]')
+    expect(await rects.count()).toBeGreaterThan(0)
+    await rects.first().click()
+    await expect(card()).toBeVisible()
+    await page.getByTestId('world-map2d').click() // off again
+    await expect(map).toHaveCount(0)
+  })
+
+  test('9. over the whole session, the renderer logged no console errors and threw no page errors', async () => {
     expect(consoleErrors).toEqual([])
   })
 })

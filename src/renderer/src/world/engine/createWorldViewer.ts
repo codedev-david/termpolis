@@ -18,6 +18,9 @@ import { THEMES, type ThemeName } from './themes'
 export type SelectionKind = 'building' | 'edge' | 'district' | 'tech'
 export interface WorldSelection { kind: SelectionKind; id: string }
 
+/** Where the camera stands and what it looks at: a bookmark keeps this. */
+export interface CameraState { pos: [number, number, number]; target: [number, number, number] }
+
 export interface WorldViewer {
   /**
    * Draws a world. With animateFrom (the previous world of the same project) the parts that changed
@@ -50,6 +53,10 @@ export interface WorldViewer {
   linePoints(id: string): Array<{ x: number; y: number }>
   /** What a click at this point (client pixels) picks: a building or external, a line, or null (also in 2D). */
   pickAt(x: number, y: number): RenderPick | null
+  /** Where the camera stands now; null in 2D (no camera). */
+  cameraState(): CameraState | null
+  /** Flies the camera to a saved view (`instant`: lands at once; always instant under reduced motion). Resolves when it lands; nothing in 2D. */
+  setCamera(s: CameraState, instant: boolean): Promise<void>
   /** What is drawn now: the layer switches, and the process shells and conduits on the 3D map (0 in 2D). */
   drawn(): WorldDrawn
   /**
@@ -91,6 +98,8 @@ export interface WorldDrawn {
 }
 
 export interface WorldViewerOptions {
+  /** The project's display name: the 2D map's heading and label (never the hashed project key). */
+  title?: string
   quality?: 'high' | 'low'
   reducedMotion?: boolean
   /** Receives the inspector card HTML for the selection, or null when nothing is selected. */
@@ -340,7 +349,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   // ---------------- 2D fallback ----------------
   // renderFallback tags each item with data-kind and data-id; clicks are wired from those.
   function drawFallback(d: WorldDoc): void {
-    container.innerHTML = renderFallback(d)
+    container.innerHTML = renderFallback(d, opts.title ?? 'This project')
     for (const el of Array.from(container.querySelectorAll<HTMLElement>('[data-id]'))) el.style.cursor = 'pointer'
   }
 
@@ -614,6 +623,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     screenPoint: (id) => (r3 ? r3.screenPoint(id) : null),
     linePoints: (id) => (r3 ? r3.linePoints(id) : []),
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
+    cameraState: () => (r3 ? r3.getCamera() : null),
+    setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
     drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [] }),
     resetView() {
       cancelActions()

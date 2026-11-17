@@ -29,8 +29,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldDoc } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
-import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, renderFallback, techCard, THEMES, usesTech } from '../../world/engine'
-import type { LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
+import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
+import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
 import { WorldToolbar } from './WorldToolbar'
 import { WorldCard } from './WorldCard'
@@ -84,6 +84,7 @@ export interface WorldProbe {
   linePoints(id: string): Array<{ x: number; y: number }>
   pickAt(x: number, y: number): { kind: 'node' | 'edge'; id: string } | null
   drawn(): WorldDrawn
+  cameraState(): CameraState | null
 }
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
@@ -93,11 +94,22 @@ const baseName = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).
 const labelCostLine = (tokens: number): string =>
   tokens > 0 ? `Describing parts: ${formatTokens(tokens)} on the last update` : 'Describing parts: cached, no tokens'
 
+/** True while the 2D map is chosen (kept between sessions). */
+const MAP2D_KEY = 'termpolis.world.map2d'
+const readMap2d = (): boolean => {
+  try { return localStorage.getItem(MAP2D_KEY) === '1' } catch { return false }
+}
+const hasPart = (d: WorldDoc, id: string): boolean =>
+  d.buildings.some((b) => b.id === id) || d.externals.some((x) => x.id === id) || d.edges.some((e) => e.id === id) || d.districts.some((x) => x.id === id)
+
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
 export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH }: WorldViewProps): JSX.Element {
   const { world, open, goHome, entries, refresh } = useOpenWorld(root)
   const [webgl] = useState(() => hasWebGL())
+  const [map2d, setMap2d] = useState(readMap2d)
+  /** The flat map shows: no WebGL, or the switch is on. */
+  const flat = !webgl || map2d
   const [viewer, setViewer] = useState<WorldViewer | null>(null)
   const [resolvedRoot, setResolvedRoot] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
@@ -357,13 +369,13 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
 
   // Nothing to draw while the home or a loading screen covers the map: stop the render loop.
   const covered = world.kind === 'home' || !doc
-  useEffect(() => { viewer?.setPaused(covered) }, [viewer, covered])
+  useEffect(() => { viewer?.setPaused(covered || map2d) }, [viewer, covered, map2d])
 
   // The e2e probe, while this viewer is up (and only under the test flag).
   useEffect(() => {
     if (!viewer || !exposesWorldProbe()) return
     const w = window as unknown as { __termpolis_world?: WorldProbe }
-    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), linePoints: (id) => viewer.linePoints(id), pickAt: (x, y) => viewer.pickAt(x, y), drawn: () => viewer.drawn() }
+    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), linePoints: (id) => viewer.linePoints(id), pickAt: (x, y) => viewer.pickAt(x, y), drawn: () => viewer.drawn(), cameraState: () => viewer.cameraState() }
     w.__termpolis_world = probe
     return () => { if (w.__termpolis_world === probe) delete w.__termpolis_world }
   }, [viewer])
@@ -387,9 +399,41 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // its part is gone).
   useEffect(() => {
     const id = fallbackIdRef.current
-    if (viewer || !doc || id === null) return
+    if ((viewer && !map2d) || !doc || id === null) return
     setCard((c) => (c === null ? null : partCard(doc, id)))
-  }, [viewer, doc])
+  }, [viewer, map2d, doc])
+
+  // Saved views of this world.
+  const projectKey = doc ? doc.projectKey : null
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
+  useEffect(() => { setBookmarks(projectKey === null ? [] : loadBookmarks(projectKey)) }, [projectKey])
+  const onSaveBookmark = (name: string): void => {
+    const v = viewer as WorldViewer // the save button is off without a viewer
+    const cam = v.cameraState()
+    if (!cam) return
+    setBookmarks(saveBookmark((docRef.current as WorldDoc).projectKey, { name, camera: cam, selection: v.getSelection() }))
+  }
+  const onBookmark = (b: Bookmark): void => {
+    if (!viewer) return
+    const d = docRef.current as WorldDoc
+    // A part the world no longer has is skipped.
+    const ids = b.selection.filter((id) => hasPart(d, id))
+    armedRef.current = false
+    // The card's own framing flight lands first, then the saved pose takes the camera from it.
+    if (ids.length > 0) void viewer.apply({ type: 'openCard', id: ids[0] }).then(() => viewer.setCamera(b.camera, false))
+    else {
+      viewer.resetView()
+      void viewer.setCamera(b.camera, false)
+    }
+  }
+  const onRemoveBookmark = (name: string): void => setBookmarks(removeBookmark((docRef.current as WorldDoc).projectKey, name))
+  const onMap2d = (on: boolean): void => {
+    try { localStorage.setItem(MAP2D_KEY, on ? '1' : '0') } catch { /* not remembered */ }
+    armedRef.current = false
+    fallbackIdRef.current = null
+    setCard(null)
+    setMap2d(on)
+  }
 
   const onLayers = (patch: Partial<LayerState>): void => {
     setLayersState((l) => ({ ...l, ...patch }))
@@ -401,7 +445,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   }
   const onTour = (tour: Tour): void => {
     armedRef.current = false
-    if (viewer) void viewer.play([{ type: 'tour', steps: tour.steps }])
+    if (viewer && !map2d) void viewer.play([{ type: 'tour', steps: tour.steps }])
     else setCard(null)
   }
   const resetView = (): void => {
@@ -412,7 +456,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** Open a part's card: through the viewer (it flies there), or straight from the doc in 2D. */
   const openPart = (id: string): void => {
     armedRef.current = false
-    if (viewer) { void viewer.apply({ type: 'openCard', id }); return }
+    if (viewer && !map2d) { void viewer.apply({ type: 'openCard', id }); return }
     const d = docRef.current as WorldDoc
     fallbackIdRef.current = id
     setCard(partCard(d, id))
@@ -421,7 +465,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const openTech = (techId: string): void => {
     armedRef.current = false
     const d = docRef.current as WorldDoc
-    if (viewer) {
+    if (viewer && !map2d) {
       void viewer.apply({ type: 'openCard', id: 'tech:' + techId })
       void viewer.apply({ type: 'highlight', ids: usesTech(d, techId) })
       return
@@ -547,6 +591,13 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         onClose={onClose}
         switcher={<WorldSwitcher entries={entries} onOpen={(t) => openWorld(t)} onHome={goHome} />}
         onBuildIt={designKey !== null && buildIt && doc ? () => setBuilding(true) : undefined}
+        bookmarks={bookmarks}
+        onSaveBookmark={onSaveBookmark}
+        onBookmark={onBookmark}
+        onRemoveBookmark={onRemoveBookmark}
+        bookmarkSaveDisabled={!viewer || !doc}
+        map2d={map2d}
+        onMap2d={onMap2d}
         labelCost={labelling && doc && doc.labelTokens !== undefined ? labelCostLine(doc.labelTokens) : undefined}
       />
       <div ref={stageRef} data-testid="world-stage" style={{ position: 'relative', flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
@@ -556,18 +607,18 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             data-testid="world-canvas-host"
             // Its own stacking context beneath the panels: the label layer numbers each label's
             // z-index up from zero, which would otherwise draw names over the card and legend.
-            style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc ? 'visible' : 'hidden' }}
+            style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc && !map2d ? 'visible' : 'hidden' }}
             onPointerDown={() => { armedRef.current = false }}
           />
         )}
-        {!webgl && doc && (
+        {flat && doc && (
           <div
             data-testid="world-fallback"
             className="overflow-auto p-6 text-sm [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:cursor-pointer [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
             style={{ position: 'absolute', inset: 0 }}
             onClick={onFallbackClick}
             // renderFallback escapes every string from the doc.
-            dangerouslySetInnerHTML={{ __html: renderFallback(doc) }}
+            dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName) }}
           />
         )}
         {home && <WorldHome entries={entries} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} />}
@@ -579,7 +630,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             onRetry={() => setAttempt((n) => n + 1)}
           />
         )}
-        {webgl && doc && !home && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} onToggle={() => setLegendChoice(!legendOpen)} />}
+        {webgl && !map2d && doc && !home && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} onToggle={() => setLegendChoice(!legendOpen)} />}
         {confirmRelayout && (
           <div
             role="alertdialog"
@@ -623,7 +674,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         )}
         {askSlot && !home && (
           <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3 }} data-testid="world-ask-slot">
-            {askSlot(viewer, doc, worldKey, askLink)}
+            {askSlot(map2d ? null : viewer, doc, worldKey, askLink)}
           </div>
         )}
       </div>

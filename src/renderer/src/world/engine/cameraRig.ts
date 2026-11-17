@@ -47,6 +47,8 @@ export interface CameraRig<F> {
   overview(instant: boolean): Promise<void>
   /** Flies to framing `f` and keeps it. Nothing to frame: nothing changes. */
   frame(f: F, instant: boolean): Promise<void>
+  /** Flies to a pose of its own (a saved view) and leaves the camera there, free of any framing. */
+  to(pose: Pose, instant: boolean): Promise<void>
   /** A panel opened, closed or changed size: the overview or the framing on screen is done again. */
   refit(): void
   /** The view changed size: a camera at the overview with no flight moves there at once, else as refit. */
@@ -158,6 +160,10 @@ export function createCameraRig<F>(deps: CameraRigDeps<F>): CameraRig<F> {
       if (!to) return Promise.resolve()
       setMode('framing', f)
       return fly(to, instant, FRAME_FLIGHT_S)
+    },
+    to(pose, instant) {
+      setMode('free', null, mode === 'framing' || (mode === 'free' && handCard))
+      return fly({ pos: [...pose.pos], target: [...pose.target] }, instant, FRAME_FLIGHT_S)
     },
     refit() {
       const to = goal()

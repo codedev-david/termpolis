@@ -27,7 +27,7 @@ function setup(opts: { reducedMotion?: boolean; doc?: WorldDoc } = {}) {
   viewer.on('select', (s) => { sels.push(s) })
   viewer.load(opts.doc ?? rich())
   const item = (kind: string, id: string): HTMLElement => {
-    const el = host.querySelector<HTMLElement>(`[data-kind="${kind}"][data-id="${id}"]`)
+    const el = host.querySelector<HTMLElement>(`li[data-kind="${kind}"][data-id="${id}"]`)
     if (!el) throw new Error(`no ${kind} ${id} in the list`)
     return el
   }
@@ -336,7 +336,8 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     viewer.load(doc)
     expect(sels.pop()).toBeNull()
     expect(lastCard()).toBeNull()
-    expect(host.querySelector('h2')?.textContent).toBe('second')
+    expect(host.querySelector('h2')?.textContent).toBe('This project')
+    expect(host.innerHTML).not.toContain('second') // the hashed key is never shown
     viewer.load(doc) // nothing selected now: no event
     expect(sels.filter((s) => s === null)).toEqual([])
   })
@@ -434,6 +435,7 @@ function fakeRenderer(host: HTMLElement) {
   const r = {
     canvas,
     draw: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
+    getCamera: vi.fn(() => ({ pos: [1, 2, 3] as [number, number, number], target: [4, 5, 6] as [number, number, number] })), flyTo: vi.fn(async () => undefined),
     frame: vi.fn(async () => undefined), overview: vi.fn(async () => undefined), pulse: vi.fn(async () => undefined),
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
@@ -800,6 +802,52 @@ describe('WebGL path (stand-in renderer)', () => {
     v.dispose()
     v.setRightReserve(244)
     expect(r.setRightReserve).toHaveBeenCalledTimes(1)
+  })
+
+  it('cameraState reads the renderer camera and setCamera flies it there, instantly under reduced motion, and neither does anything in 2D or after dispose', async () => {
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const v = createWorldViewer(host, { reducedMotion: false })
+    const r = (fake as unknown as ReturnType<typeof fakeRenderer>).r
+    expect(v.cameraState()).toEqual({ pos: [1, 2, 3], target: [4, 5, 6] })
+    const s = { pos: [7, 8, 9] as [number, number, number], target: [1, 1, 1] as [number, number, number] }
+    await v.setCamera(s, false)
+    expect(r.flyTo).toHaveBeenLastCalledWith(s, false)
+    await v.setCamera(s, true)
+    expect(r.flyTo).toHaveBeenLastCalledWith(s, true)
+    const host2 = document.createElement('div')
+    document.body.appendChild(host2)
+    const calm = createWorldViewer(host2, { reducedMotion: true })
+    await calm.setCamera(s, false)
+    expect(r.flyTo).toHaveBeenLastCalledWith(s, true)
+    v.dispose()
+    const flights = r.flyTo.mock.calls.length
+    await v.setCamera(s, false)
+    expect(r.flyTo).toHaveBeenCalledTimes(flights)
+    createThreeRenderer.mockReset()
+    getContext.mockReturnValue(null)
+    const flat = createWorldViewer(document.createElement('div'))
+    expect(flat.cameraState()).toBeNull()
+    await expect(flat.setCamera(s, false)).resolves.toBeUndefined()
+  })
+
+  it('the 2D map is headed by the title it was given, never the project key', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const doc = rich()
+    const named = createWorldViewer(host, { title: 'termpolis' })
+    named.load(doc)
+    expect(host.querySelector('h2')?.textContent).toBe('termpolis')
+    expect(host.innerHTML).not.toContain(doc.projectKey)
+    const host2 = document.createElement('div')
+    document.body.appendChild(host2)
+    const plain = createWorldViewer(host2)
+    plain.load(doc)
+    expect(host2.querySelector('h2')?.textContent).toBe('This project')
+    expect(host2.querySelector('svg[role="img"] rect[data-kind="building"]')).not.toBeNull()
   })
 
   it('has no renderer to tell about the legend without WebGL', () => {
