@@ -110,3 +110,33 @@ export const BUSY_LINES = 40
 export function busyness(lines: number): number {
   return Math.sqrt(BUSY_LINES / Math.max(BUSY_LINES, lines))
 }
+
+/** A label on screen: its centre and size in pixels. */
+export interface LabelBox { id: string; x: number; y: number; w: number; h: number }
+
+/** The size on screen of a line label of `chars` characters (11px type, 7px padding each side, border). */
+export function edgeLabelSize(chars: number): { w: number; h: number } {
+  return { w: Math.ceil(chars * 6.2) + 16, h: 18 }
+}
+
+/**
+ * Which labels to show so that none overlaps another: in the order given (the most wanted first),
+ * each one that keeps `gap` pixels clear of every label already kept, up to `max` of them.
+ */
+export function declutter(boxes: LabelBox[], max: number, gap = 4): Set<string> {
+  const kept: LabelBox[] = []
+  for (const b of boxes) {
+    if (kept.length >= max) break
+    const clear = kept.every((k) => Math.abs(k.x - b.x) * 2 >= k.w + b.w + gap * 2 || Math.abs(k.y - b.y) * 2 >= k.h + b.h + gap * 2)
+    if (clear) kept.push(b)
+  }
+  return new Set(kept.map((k) => k.id))
+}
+
+/**
+ * The strip on the right of the view a panel covers (the legend), kept out of the overview's fit:
+ * `reserve` pixels, or none when the view is too narrow to give that much up (under three times it).
+ */
+export function rightInset(width: number, reserve: number): number {
+  return reserve > 0 && width >= reserve * 3 ? reserve : 0
+}

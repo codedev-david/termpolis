@@ -541,16 +541,19 @@ describe('WebGL path (stand-in renderer)', () => {
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
     const { aim, at, r } = setup3d()
     const flush = (): void => { for (const f of frames.splice(0)) f(0) }
-    const lastFocus = () => r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0] as { ids: Set<string>; edgeIds: Set<string> } | null
+    const lastFocus = () => r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0] as { ids: Set<string>; edgeIds: Set<string>; hover?: boolean; passive?: Set<string> } | null
     aim({ kind: 'edge', id: 'e3' }) // the selection: line b3 to x1
     at('pointerdown'); at('click')
     aim({ kind: 'node', id: 'b1' })
     at('pointermove'); flush()
     expect([...(lastFocus()?.ids ?? [])].sort()).toEqual(['b1', 'b2', 'b4'])
     expect([...(lastFocus()?.edgeIds ?? [])].sort()).toEqual(['e1', 'e2']) // their labels show (renderer: focus shows edge labels)
+    expect(lastFocus()).toMatchObject({ hover: true })
+    expect([...(lastFocus()?.passive ?? [])].sort()).toEqual(['e1', 'e2']) // and let a click through to the building under them
     aim({ kind: 'edge', id: 'e1' })
     at('pointermove'); flush()
     expect([...(lastFocus()?.edgeIds ?? [])]).toEqual(['e3']) // a hovered line lights nothing: back to the selection
+    expect(lastFocus()).not.toHaveProperty('hover') // the selection's labels stay clickable
     aim({ kind: 'node', id: 'b1' })
     at('pointermove'); flush()
     at('pointerleave')
@@ -561,6 +564,10 @@ describe('WebGL path (stand-in renderer)', () => {
     at('pointermove'); flush()
     expect(r.setCursor).toHaveBeenLastCalledWith(false)
     expect([...(lastFocus()?.ids ?? [])].sort()).toEqual(['b1', 'b2'])
+    // Hovering b1 while b2 is selected: their shared line e1 is the selection's own and stays clickable.
+    aim({ kind: 'node', id: 'b1' })
+    at('pointermove'); flush()
+    expect([...(lastFocus()?.passive ?? [])]).toEqual(['e2'])
   })
 
   it('keeps the hover while the pointer is on a lit connection label, and ends it when the pointer leaves the label', () => {
@@ -719,6 +726,17 @@ describe('WebGL path (stand-in renderer)', () => {
     expect((fake as ReturnType<typeof fakeRenderer> | null)?.r.frame).toHaveBeenLastCalledWith(['e1'], expect.any(Boolean))
   })
 
+  it('passes the legend strip to the renderer only when given one', () => {
+    withWebGL()
+    createThreeRenderer.mockImplementation((h: HTMLElement) => fakeRenderer(h).r)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    createWorldViewer(host, { rightReserve: 244 })
+    createWorldViewer(host)
+    expect(createThreeRenderer.mock.calls[0][1]).toMatchObject({ rightReserve: 244 })
+    expect(createThreeRenderer.mock.calls[1][1]).not.toHaveProperty('rightReserve')
+  })
+
   it('a redraw keeps the open building or line lit and selected, and draws nothing before a world is loaded', () => {
     withWebGL()
     let fake: ReturnType<typeof fakeRenderer> | null = null
@@ -755,6 +773,17 @@ describe('WebGL path (stand-in renderer)', () => {
     const text = r.draw.mock.calls[r.draw.mock.calls.length - 1][1] as { labels: Record<string, string>; edges: Record<string, string> }
     expect(text.labels.b1).toBe('Electron + React')
     expect(text.edges.e1).toBe(d.edges[0].label)
+  })
+
+  it('shows a code-written line label as a short summary, and caps a long one', () => {
+    const { r, viewer } = setup3d()
+    const d = rich()
+    d.edges[0].label = 'env TERMPOLIS_TEST_AGENTS, env TERMPOLIS_TEST_TIMING, env TERMPOLIS_E2E, ipc pty:data'
+    d.edges[1].label = 'Sends every keystroke and resize event to the shell host'
+    viewer.load(d)
+    const text = r.draw.mock.calls[r.draw.mock.calls.length - 1][1] as { edges: Record<string, string> }
+    expect(text.edges.e1).toBe('reads 3 settings +1 more')
+    expect(text.edges.e2).toBe('Sends every keystroke and…')
   })
 
   it('a highlighted planned line not on show lights the line alone, not its ends', async () => {

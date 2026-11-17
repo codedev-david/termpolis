@@ -4,6 +4,7 @@
 // Excluded from the coverage gate (its WebGL path needs a GPU): tests/renderer/world/createWorldViewer.test.ts
 // pins the 2D path in jsdom, and e2e/world-engine.spec.ts covers the WebGL path.
 import { diffSummary, diffWorlds, riseIds } from '../../../../shared/world/diff'
+import { edgeSummary } from '../../../../shared/world/edgeText'
 import type { WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { ACTION_GAP_MS, createActionQueue } from './actionQueue'
 import { createChangeToast } from './changeToast'
@@ -77,6 +78,8 @@ export interface WorldViewerOptions {
   reducedMotion?: boolean
   /** Receives the inspector card HTML for the selection, or null when nothing is selected. */
   renderCard?: (html: string | null) => void
+  /** Pixels on the right that a panel covers (the legend); the city is framed in the rest. */
+  rightReserve?: number
 }
 
 /** True when this browser can create a WebGL context. */
@@ -137,6 +140,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         quality: opts.quality ?? 'high',
         reducedMotion: reduced,
         onEdgeLabel: (id) => { void select(id) },
+        ...(opts.rightReserve !== undefined ? { rightReserve: opts.rightReserve } : {}),
       })
       r3.setTheme(themeName, THEMES[themeName])
     } catch {
@@ -205,12 +209,19 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     return { focus: groupFocus(used), frameIds: used }
   }
 
-  /** Spec line 156: hovering a building lights its connections and dims the rest, until the pointer leaves. */
+  /**
+   * Spec line 156: hovering a building lights its connections and dims the rest, until the pointer
+   * leaves. The hover's focus says so (`hover`), and its labels that are not the selection's own let a
+   * click through to the building under them (`passive`): a busy building's labels gather over it.
+   */
   function showFocus(): void {
     if (!r3) return
     const d = doc
     const opt = revealProposal === undefined ? undefined : { revealProposal }
-    r3.setFocus(hoverNode !== null && d ? neighbours(d, hoverNode, opt) : baseFocus)
+    if (hoverNode === null || !d) { r3.setFocus(baseFocus); return }
+    const f = neighbours(d, hoverNode, opt)
+    const passive = new Set([...f.edgeIds].filter((id) => !baseFocus?.edgeIds.has(id)))
+    r3.setFocus({ ...f, hover: true, passive })
   }
   function setFocus(f: RenderFocus | null): void {
     baseFocus = f
@@ -267,7 +278,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     }
     for (const x of d.externals) text.labels[x.id] = x.name
     for (const x of d.districts) text.districts[x.id] = districtSubtitle(d, x)
-    for (const e of [...d.edges, ...planEdges(d)]) if (text.edges[e.id] === undefined) text.edges[e.id] = e.label
+    for (const e of [...d.edges, ...planEdges(d)]) if (text.edges[e.id] === undefined) text.edges[e.id] = edgeSummary(e.label)
     for (const [k, c] of Object.entries(d.cargo)) text.cargoShapes[k] = c.shape
     return text
   }

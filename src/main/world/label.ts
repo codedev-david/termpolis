@@ -156,7 +156,9 @@ function fallbackBuilding(b: GroupBuilding): BuildingLabel {
 }
 
 function fallbackEdge(e: GroupEdge): EdgeLabel {
-  const label = e.via.length === 0 ? 'imports' : [...new Set(e.via.map((v) => `${v.kind} ${v.key}`))].join(', ').slice(0, MAX_LABEL)
+  // Every identifier, in full: the line shows a short summary of them (shared/world/edgeText.ts)
+  // and its card lists them all.
+  const label = e.via.length === 0 ? 'imports' : [...new Set(e.via.map((v) => `${v.kind} ${v.key}`.slice(0, MAX_LABEL)))].join(', ')
   return {
     label,
     cargo: cargoOf(e.via.map((v) => v.kind)),

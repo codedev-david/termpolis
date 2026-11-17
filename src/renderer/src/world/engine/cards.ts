@@ -1,6 +1,7 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Building, Claim, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
+import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
 export { escapeHtml } from './html'
@@ -29,7 +30,7 @@ function chips(doc: WorldDoc, techs: string[]): string {
 const nodeName = (doc: WorldDoc, id: string): string =>
   allBuildings(doc).find((b) => b.id === id)?.name ?? doc.externals.find((x) => x.id === id)?.name ?? id
 const nodeLink = (doc: WorldDoc, id: string): string => `<a class="lnk link-node" data-node="${esc(id)}">${esc(nodeName(doc, id))}</a>`
-const edgeLink = (e: WorldEdge): string => `<a class="lnk link-edge" data-edge="${esc(e.id)}">${esc(e.label)}</a>`
+const edgeLink = (e: WorldEdge): string => `<a class="lnk link-edge" data-edge="${esc(e.id)}">${esc(edgeSummary(e.label))}</a>`
 /** The small colour square of a line's cargo, as in the legend. */
 const swatch = (doc: WorldDoc, e: WorldEdge): string => {
   const c = doc.cargo[e.cargo]
@@ -74,7 +75,14 @@ export function edgeCard(doc: WorldDoc, id: string): string {
   const e = allEdges(doc).find((x) => x.id === id)
   if (!e) return ''
   const cargo = doc.cargo[e.cargo]
-  return `<h3>${esc(e.label)}</h3><p class="muted">${nodeLink(doc, e.from)} → ${nodeLink(doc, e.to)}${e.twoWay ? ' (both ways)' : ''}</p>`
+  // The title is the line's short summary; the card lists what it carries in full.
+  const title = edgeSummary(e.label)
+  const items = edgeItems(e.label)
+  const carries = items
+    ? section('What it carries', `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`)
+    : title !== e.label.trim() ? `<p>${esc(e.label)}</p>` : ''
+  return `<h3>${esc(title)}</h3><p class="muted">${nodeLink(doc, e.from)} → ${nodeLink(doc, e.to)}${e.twoWay ? ' (both ways)' : ''}</p>`
+    + carries
     + section('What travels', `<p>${swatch(doc, e)}${esc(cargo ? cargo.label : e.cargo)}</p>`)
     + section('How it travels', claims(e.how))
     + (e.tech.length ? section('Technology', `<div>${chips(doc, e.tech)}</div>`) : '')

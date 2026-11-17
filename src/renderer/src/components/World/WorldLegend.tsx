@@ -13,8 +13,13 @@ export interface WorldLegendProps {
   processes: boolean
 }
 
+const EDGE = 12
+const WIDTH = 220
+/** The strip on the right of the map the legend covers, with a margin each side: the overview frames the city in the rest. */
+export const LEGEND_RESERVE = EDGE + WIDTH + EDGE
+
 const PANEL: CSSProperties = {
-  position: 'absolute', top: 12, right: 12, width: 220, maxHeight: 'calc(100% - 120px)', overflowY: 'auto', overflowX: 'hidden',
+  position: 'absolute', top: EDGE, right: EDGE, width: WIDTH, maxHeight: 'calc(100% - 120px)', overflowY: 'auto', overflowX: 'hidden',
   background: 'rgba(8,12,22,.82)', backdropFilter: 'blur(10px)', border: '1px solid rgba(148,163,184,.18)',
   borderRadius: 12, padding: '10px 14px', fontSize: 12, color: '#e2e8f0', zIndex: 2,
 }

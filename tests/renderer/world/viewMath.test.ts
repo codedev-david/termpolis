@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { busyness, BUSY_LINES, clamp, fitDistance, fitView, fogDensity, FOG_REACH, OPEN_FOG, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { busyness, BUSY_LINES, clamp, declutter, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, OPEN_FOG, rightInset, type LabelBox, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -113,5 +113,36 @@ describe('busyness', () => {
     expect(busyness(BUSY_LINES)).toBe(1)
     expect(busyness(BUSY_LINES * 4)).toBeCloseTo(0.5)
     expect(busyness(612)).toBeLessThan(busyness(200))
+  })
+})
+
+describe('edgeLabelSize', () => {
+  it('grows with the text and keeps one line height', () => {
+    expect(edgeLabelSize(0)).toEqual({ w: 16, h: 18 })
+    expect(edgeLabelSize(32).w).toBeGreaterThan(edgeLabelSize(10).w)
+  })
+})
+
+describe('declutter', () => {
+  const box = (id: string, x: number, y: number): LabelBox => ({ id, x, y, w: 100, h: 18 })
+  it('keeps the first of overlapping labels and every label clear of the kept ones', () => {
+    const shown = declutter([box('a', 100, 100), box('b', 150, 105), box('c', 220, 100), box('d', 100, 130)], 10)
+    expect([...shown]).toEqual(['a', 'c', 'd'])
+  })
+
+  it('keeps at most max labels, and a gap between them', () => {
+    expect([...declutter([box('a', 0, 0), box('b', 0, 100), box('c', 0, 200)], 2)]).toEqual(['a', 'b'])
+    expect([...declutter([box('a', 0, 0), box('b', 102, 0)], 5, 4)]).toEqual(['a'])
+    expect([...declutter([box('a', 0, 0), box('b', 108, 0)], 5, 4)]).toEqual(['a', 'b'])
+    expect(declutter([], 5).size).toBe(0)
+  })
+})
+
+describe('rightInset', () => {
+  it('keeps the panel strip out of a wide view only', () => {
+    expect(rightInset(1600, 244)).toBe(244)
+    expect(rightInset(732, 244)).toBe(244)
+    expect(rightInset(700, 244)).toBe(0)
+    expect(rightInset(1600, 0)).toBe(0)
   })
 })

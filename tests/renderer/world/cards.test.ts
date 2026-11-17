@@ -83,6 +83,28 @@ describe('cards', () => {
     expect(edgeCard(doc, 'e9')).toContain('>ghost<')
   })
 
+  it('edgeCard titles a line with its short summary and lists what it carries in full', () => {
+    const doc = minimal()
+    doc.edges[0].label = 'env TERMPOLIS_TEST_AGENTS, env TERMPOLIS_TEST_TIMING, ipc <pty:data>'
+    const html = edgeCard(doc, 'e1')
+    expect(html).toContain('<h3>reads 2 settings +1 more</h3>')
+    expect(html).toContain('What it carries')
+    expect(html).toContain('<li>env TERMPOLIS_TEST_AGENTS</li><li>env TERMPOLIS_TEST_TIMING</li><li>ipc &lt;pty:data&gt;</li>')
+    // A long model label: the title is cut, the body keeps every word.
+    const long = 'Sends every keystroke and resize event to the shell host process'
+    doc.edges[0].label = long
+    const card = edgeCard(doc, 'e1')
+    expect(card).toContain('<h3>Sends every keystroke and…</h3>')
+    expect(card).toContain(`<p>${long}</p>`)
+    expect(card).not.toContain('What it carries')
+    // A short one is only the title.
+    doc.edges[0].label = 'Memory calls'
+    expect(edgeCard(doc, 'e1').match(/Memory calls/g)).toHaveLength(1)
+    // A link to the line shows its summary too.
+    doc.edges[0].label = 'env A, env B'
+    expect(techCard(doc, 'ipc')).toContain('>reads 2 settings</a>')
+  })
+
   it('usesTech and techCard list buildings and edges', () => {
     const doc = minimal()
     expect(usesTech(doc, 'electron')).toEqual(['b1'])

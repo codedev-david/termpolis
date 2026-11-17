@@ -14,6 +14,7 @@ import {
 import { edgeId, type GroupBuilding, type Grouping } from '../../src/main/world/group'
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
 import type { Boundary } from '../../src/main/world/detectors'
+import { edgeSummary } from '../../src/shared/world/edgeText'
 
 const ROOT = '/repo'
 
@@ -170,7 +171,7 @@ describe('compileWorld', () => {
     const follow = doc.tours.find((t) => t.id === 'tour-follow-request')
     expect(follow?.steps).toEqual([
       { ids: [RENDERER], caption: 'renderer' },
-      { ids: [ipc.id], caption: ipc.label },
+      { ids: [ipc.id], caption: edgeSummary(ipc.label) }, // the line's short summary, not its identifier list
       { ids: [MAIN], caption: 'main' }
     ])
 
@@ -539,7 +540,7 @@ describe('buildTours', () => {
     }
     const follow = (await toursOf(g)).find((t) => t.id === 'tour-follow-request')
     expect(follow?.steps.map((s) => s.ids[0])).toEqual(['a', 'e-a--z', 'z', 'e-z--c', 'c'])
-    expect(follow?.steps[1].caption).toBe('http-out h.io')
+    expect(follow?.steps[1].caption).toBe('calls 1 web address') // 'http-out h.io', summarised
   })
 
   it('starts at the renderer, caps depth at 8 edges and bounds the search on dense graphs', async () => {

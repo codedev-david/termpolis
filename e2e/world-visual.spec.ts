@@ -11,9 +11,12 @@
  *   - no part of it whites out: few pixels are saturated white (fog and bloom stay below saturation,
  *     also where many lines meet at one building);
  *   - at least MIN_DISTRICT_LABELS district labels are on the canvas, visible and readable;
- *   - hovering a building shows its connections' labels;
- *   - clicking a building opens its card, which is drawn over the map's labels: the card is what is
- *     under its own centre, and wherever a label's box overlaps a panel the panel is on top.
+ *   - the overview leaves the legend's strip free: no building and no district label under it, also
+ *     after the window is resized;
+ *   - hovering a building shows its connections' labels, a few at most, none overlapping another;
+ *   - clicking that building (where its hover labels gather) opens THAT building's card, which is
+ *     drawn over the map's labels: the card is what is under its own centre, and wherever a label's
+ *     box overlaps a panel the panel is on top; the close-up does not white out either.
  * Each time the pane opens, on the first frame it exists: it starts below the title bar, its
  * background is opaque, and neither it nor any ancestor is faded (their opacities multiply to 1).
  *
@@ -59,6 +62,8 @@ const MAX_WHITE_FRACTION = 0.005
 const MIN_DISTRICT_LABELS = 4
 /** The smallest label font a person can read on the map. */
 const MIN_LABEL_FONT_PX = 11
+/** The most line labels a hovered building shows (threeRenderer HOVER_EDGE_LABELS). */
+const MAX_HOVER_LINE_LABELS = 6
 
 const THEMES = ['neon', 'blueprint', 'glass'] as const
 const SHOTS = path.resolve('test-results/world-visual')
@@ -279,29 +284,32 @@ const districtLabels = (): Promise<LabelState[]> =>
     })
   })
 
-/** Building ids from the stored world of `root` (also those with a connection), and its district count. */
-async function world(root: string): Promise<{ ids: string[]; connected: string[]; districts: number }> {
+/** Building ids from the stored world of `root` (also those with a connection, the busiest first), their names, and its district count. */
+async function world(root: string): Promise<{ ids: string[]; connected: string[]; names: Record<string, string>; districts: number }> {
   return page.evaluate(async (r) => {
-    interface Doc { buildings: { id: string }[]; districts: unknown[]; edges: { from: string; to: string }[] }
+    interface Doc { buildings: { id: string; name: string }[]; districts: unknown[]; edges: { from: string; to: string }[] }
     const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
     const top = await api.gitFindRoot(r)
     const res = await api.worldGet(top.success && top.data ? top.data : r)
-    if (!res.success || !res.data) return { ids: [], connected: [], districts: 0 }
-    const ends = new Set(res.data.edges.flatMap((e) => [e.from, e.to]))
+    if (!res.success || !res.data) return { ids: [], connected: [], names: {}, districts: 0 }
+    const lines = new Map<string, number>()
+    for (const e of res.data.edges) for (const end of [e.from, e.to]) lines.set(end, (lines.get(end) ?? 0) + 1)
     const ids = res.data.buildings.map((b) => b.id)
-    return { ids, connected: ids.filter((id) => ends.has(id)), districts: res.data.districts.length }
+    // The busiest building first: its hover labels gather over it, the case where they caught the click.
+    const connected = ids.filter((id) => lines.has(id)).sort((a, b) => (lines.get(b) as number) - (lines.get(a) as number))
+    return { ids, connected, names: Object.fromEntries(res.data.buildings.map((b) => [b.id, b.name])), districts: res.data.districts.length }
   }, root)
 }
 
-/** The first building whose point on screen has the bare canvas under it. */
-async function aimAtABuilding(ids: string[]): Promise<{ x: number; y: number }> {
+/** The first building whose point on screen has the bare canvas under it, and that point. */
+async function aimAtABuilding(ids: string[]): Promise<{ id: string; x: number; y: number }> {
   for (const id of ids) {
     const pt = await page.evaluate((b) => {
       const p = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.screenPoint(b) ?? null
       const host = document.querySelector('[data-testid="world-canvas-host"] canvas')
       return p && document.elementFromPoint(p.x, p.y) === host ? p : null
     }, id)
-    if (pt) return pt
+    if (pt) return { id, ...pt }
   }
   throw new Error(`no building of ${ids.length} has the bare canvas under it`)
 }
@@ -309,6 +317,49 @@ async function aimAtABuilding(ids: string[]): Promise<{ x: number; y: number }> 
 /** Connection labels on show (the hovered or selected part's lines). */
 const shownLineLabels = (): Promise<number> =>
   page.evaluate(() => [...document.querySelectorAll<HTMLElement>('.lw-edge')].filter((el) => getComputedStyle(el).display !== 'none').length)
+
+/** Pairs of shown connection labels whose boxes overlap, as "a / b". */
+const overlappingLineLabels = (): Promise<string[]> =>
+  page.evaluate(() => {
+    const shown = [...document.querySelectorAll<HTMLElement>('.lw-edge')].filter((el) => getComputedStyle(el).display !== 'none')
+    const boxes = shown.map((el) => ({ t: el.textContent ?? '', r: el.getBoundingClientRect() }))
+    const out: string[] = []
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i].r
+        const b = boxes[j].r
+        if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) out.push(`${boxes[i].t} / ${boxes[j].t}`)
+      }
+    }
+    return out
+  })
+
+/**
+ * What the legend covers at overview: the buildings whose visible point on screen (the probe finds
+ * one only on the canvas) is under the legend's box, and the district labels whose box overlaps it
+ * or runs past the canvas edge.
+ */
+const underLegend = (ids: string[]): Promise<string[]> =>
+  page.evaluate((all) => {
+    const legend = document.querySelector('[data-testid="world-legend"]')
+    const probe = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world
+    if (!legend || !probe) return ['no legend or probe']
+    const l = legend.getBoundingClientRect()
+    const c = document.querySelector('[data-testid="world-canvas-host"] canvas')!.getBoundingClientRect()
+    const out: string[] = []
+    for (const id of all) {
+      const p = probe.screenPoint(id)
+      if (!p) continue
+      if (p.x >= l.left && p.x <= l.right && p.y >= l.top && p.y <= l.bottom) out.push(`building ${id}`)
+    }
+    for (const el of document.querySelectorAll<HTMLElement>('.lw-district')) {
+      const r = el.getBoundingClientRect()
+      if (r.width === 0 || getComputedStyle(el).display === 'none') continue
+      if (r.left < c.left - 1 || r.right > c.right + 1 || r.top < c.top - 1 || r.bottom > c.bottom + 1) out.push(`district ${el.textContent} cut off by the canvas edge`)
+      if (Math.min(r.right, l.right) - Math.max(r.left, l.left) > 1 && Math.min(r.bottom, l.bottom) - Math.max(r.top, l.top) > 1) out.push(`district ${el.textContent}`)
+    }
+    return out
+  }, ids)
 
 /**
  * Whether the card and the other panels are drawn over the labels: the card is the element under its
@@ -370,7 +421,7 @@ test.describe.serial('Lumopolis can be seen', () => {
       expect(first.opacity, `the pane's first frame (${first.testid}) is faded`).toBe(1)
 
       await settled()
-      const { ids, connected, districts } = await world(fx.dir)
+      const { ids, connected, names, districts } = await world(fx.dir)
       expect(ids.length).toBeGreaterThan(1)
       const wantLabels = Math.min(MIN_DISTRICT_LABELS, districts)
 
@@ -388,27 +439,48 @@ test.describe.serial('Lumopolis can be seen', () => {
         const labels = await districtLabels()
         const readable = labels.filter((l) => l.inside && l.opacity > 0.05 && l.visibility === 'visible' && l.font >= MIN_LABEL_FONT_PX)
         expect(readable.length, `${label}/${theme}: readable district labels ${JSON.stringify(labels)}`).toBeGreaterThanOrEqual(wantLabels)
+        expect(await underLegend(ids), `${label}/${theme}: under the legend at overview`).toEqual([])
         await page.screenshot({ path: path.join(SHOTS, `${label}-${theme}-overview.png`) })
 
-        // Hover: the building's connections light up with their labels (spec: hover shows how it connects).
+        // Hover: the building's connections light up with their labels (spec: hover shows how it
+        // connects), a few at most and none over another.
         expect(await shownLineLabels(), `${label}/${theme}: line labels show before any hover`).toBe(0)
         const over = await aimAtABuilding(connected)
         await page.mouse.move(over.x, over.y)
         await expect.poll(shownLineLabels, { message: `${label}/${theme}: hovering shows no line labels` }).toBeGreaterThan(0)
         await page.waitForTimeout(600)
+        expect(await shownLineLabels(), `${label}/${theme}: too many line labels on hover`).toBeLessThanOrEqual(MAX_HOVER_LINE_LABELS)
+        expect(await overlappingLineLabels(), `${label}/${theme}: hover line labels overlap`).toEqual([])
         await page.screenshot({ path: path.join(SHOTS, `${label}-${theme}-hover.png`) })
 
+        // The click lands where the hover labels gather: it must open the building's own card.
         await page.mouse.click(over.x, over.y)
         await expect(card()).toBeVisible()
+        await expect(card().locator('h3').first(), `${label}/${theme}: the click opened another card`).toHaveText(names[over.id])
         await page.waitForTimeout(1500)
         expect(await panelsOverLabels(), `${label}/${theme}: a label is drawn over a panel`).toEqual([])
+        expect(await overlappingLineLabels(), `${label}/${theme}: the selection's line labels overlap`).toEqual([])
         await page.screenshot({ path: path.join(SHOTS, `${label}-${theme}-click.png`) })
+        const close = await measure(`${label}-${theme}-click-canvas.png`)
+        console.log(`[world-visual] ${label} ${theme} close-up: white ${(close.white * 100).toFixed(3)}%`)
+        expect(close.white, `${label}/${theme}: ${(close.white * 100).toFixed(2)}% of the close-up is saturated white`).toBeLessThan(MAX_WHITE_FRACTION)
         await page.locator('[data-testid="world-card-close"]').click()
         await expect(card()).toHaveCount(0)
         // Off the canvas, so the next theme starts with nothing hovered.
         await page.mouse.move(2, 400)
       }
       await page.getByRole('combobox', { name: 'Theme' }).selectOption('neon')
+
+      // A resize fits the overview again: the city stays on the canvas and out of the legend's strip.
+      await page.locator('[data-testid="world-reset"]').click()
+      await page.waitForTimeout(2500)
+      await page.setViewportSize({ width: 1000, height: 700 })
+      await page.waitForTimeout(1500)
+      expect(await underLegend(ids), `${label}: under the legend after a resize`).toEqual([])
+      await page.screenshot({ path: path.join(SHOTS, `${label}-neon-resized.png`) })
+      await page.setViewportSize({ width: 1280, height: 800 })
+      await page.waitForTimeout(1500)
+      expect(await underLegend(ids), `${label}: under the legend after resizing back`).toEqual([])
     })
   }
 })

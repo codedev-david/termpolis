@@ -39,7 +39,7 @@ import { useOpenWorld } from './useOpenWorld'
 import { WorldHome } from './WorldHome'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
-import { WorldLegend } from './WorldLegend'
+import { LEGEND_RESERVE, WorldLegend } from './WorldLegend'
 import { worldPaneStyle } from './worldPane'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
@@ -242,6 +242,7 @@ export function WorldView({ root, onClose, askSlot, buildIt }: WorldViewProps): 
   useEffect(() => {
     if (!webgl) return
     const v = createWorldViewer(hostRef.current as HTMLDivElement, {
+      rightReserve: LEGEND_RESERVE,
       renderCard: (html) => {
         if (html !== null) armedRef.current = false
         setCard(html)

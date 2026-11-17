@@ -130,6 +130,7 @@ describe('WorldView', () => {
     await mount()
     const { createWorldViewer } = await import('../../../src/renderer/src/world/engine')
     expect(createWorldViewer).toHaveBeenCalledTimes(1)
+    expect((createWorldViewer as unknown as { mock: { calls: [HTMLElement, WorldViewerOptions][] } }).mock.calls[0][1].rightReserve).toBe(244) // the legend's strip
     expect(viewer().host).toBe(screen.getByTestId('world-canvas-host'))
     expect(viewer().load).toHaveBeenLastCalledWith(first)
 

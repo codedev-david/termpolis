@@ -24,6 +24,8 @@ describe('renderFallback', () => {
     expect(html).toContain('Claude Code')
     expect(html).toContain('Desktop app to Memory host: Memory calls')
     expect(html).toContain('to ghost: odd')
+    doc.edges[0].label = 'env A, env B, env C'
+    expect(renderFallback(doc)).toContain('Memory host: reads 3 settings</li>')
     expect(html).not.toContain('<b>Core')
   })
 

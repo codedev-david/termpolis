@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { WorldLegend, LEGEND_MAX_CARGO } from '../../../src/renderer/src/components/World/WorldLegend'
+import { WorldLegend, LEGEND_MAX_CARGO, LEGEND_RESERVE } from '../../../src/renderer/src/components/World/WorldLegend'
 import { WorldPaneOpening, worldPaneStyle, WORLD_OPENING_BACKGROUND } from '../../../src/renderer/src/components/World/worldPane'
 import { THEMES } from '../../../src/renderer/src/world/engine'
 import { TITLE_BAR_HEIGHT } from '../../../src/renderer/src/components/TitleBar/constants'
@@ -25,6 +25,12 @@ describe('WorldLegend', () => {
     expect(screen.queryByTestId('world-legend-body')).toBeNull()
     fireEvent.click(toggle)
     expect(screen.getByTestId('world-legend-body')).toBeInTheDocument()
+  })
+
+  it('reserves its width and both margins on the right of the map', () => {
+    render(<WorldLegend doc={minimal()} processes={false} />)
+    const panel = screen.getByTestId('world-legend')
+    expect(LEGEND_RESERVE).toBe(parseFloat(panel.style.width) + 2 * parseFloat(panel.style.right))
   })
 
   it('with the processes layer on, names the programs the buildings run in, in their colours', () => {

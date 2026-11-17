@@ -225,6 +225,17 @@ describe('labelWorld', () => {
     expect(l.glossary).toEqual({})
   })
 
+  it('a code-written edge label keeps every identifier in full, each capped, duplicates once', async () => {
+    const g = twoDistricts()
+    const envs = Array.from({ length: 12 }, (_, i) => B('env', `TERMPOLIS_SETTING_NUMBER_${i}`, 'src/a/one.ts', i + 1))
+    g.edges[0].via = [...envs, B('env', 'TERMPOLIS_SETTING_NUMBER_0', 'src/a/two.ts', 3), B('http-out', 'u'.repeat(300), 'src/a/one.ts', 40)]
+    const l = await labelWorld(g, { llm: null, cache: { get: async () => null, set: async () => undefined }, excerpt: async () => '' })
+    const items = l.edges[edgeId({ from: 'a', to: 'b' })].label.split(', ')
+    expect(items).toHaveLength(13)
+    expect(items[11]).toBe('env TERMPOLIS_SETTING_NUMBER_11')
+    expect(items[12]).toBe(('http-out ' + 'u'.repeat(300)).slice(0, 120))
+  })
+
   it('llm null: names from paths, techLabel from boundaries, no claims, no excerpt reads', async () => {
     const excerpt = vi.fn(async () => 'x')
     const cache = { get: vi.fn(async () => null), set: vi.fn(async () => undefined) }
@@ -277,7 +288,7 @@ describe('labelWorld', () => {
     expect(l.edges[edgeId(g.edges[0])].label.length).toBeLessThanOrEqual(120)
   })
 
-  it('fallback floors: capped at 12 with an "other" floor, edge label capped at 120', async () => {
+  it('fallback floors: capped at 12 with an "other" floor, every edge identifier kept', async () => {
     const files = Array.from({ length: 15 }, (_, i) => `f/${String(i).padStart(2, '0')}.ts`)
     const g: Grouping = {
       districts: [{ id: 'd', name: 'D', members: [] }],
@@ -288,7 +299,7 @@ describe('labelWorld', () => {
     const fl = l.buildings.big.floors
     expect(fl).toHaveLength(12)
     expect(fl[11]).toEqual({ name: 'other', tech: [], members: files.slice(11) })
-    expect(l.edges[edgeId(g.edges[0])].label).toHaveLength(120)
+    expect(l.edges[edgeId(g.edges[0])].label.split(', ')).toHaveLength(30)
   })
 
   it('llm timeout/rejection behaves like null for that batch only', async () => {

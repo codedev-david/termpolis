@@ -10,7 +10,8 @@ import type { GraphSnapshot } from '../codeGraph'
 import type { Building, District, External, Tour, WorldDoc, WorldEdge } from '../../shared/world/types'
 import { detectBoundaries, MAX_DETECT_FILE_CHARS, stripComments, type Boundary } from './detectors'
 import { baseKey } from './detectors/common'
-import { cargoLabel, cargoOf } from './cargoTypes'
+import { cargoColors, cargoLabel, cargoOf } from './cargoTypes'
+import { edgeSummary } from '../../shared/world/edgeText'
 import { edgeId, groupProject, isIgnored, resolveImport, slug, type GroupBuilding, type Grouping } from './group'
 import { relativeImports, withImports } from './imports'
 import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
@@ -298,7 +299,7 @@ function followRequest(g: Grouping, labels: Labels): Tour | null {
   const steps: Tour['steps'] = [{ ids: [best.nodes[0]], caption: labels.buildings[best.nodes[0]].name }]
   best.edges.forEach((e, i) => {
     const n = best.nodes[i + 1]
-    steps.push({ ids: [e], caption: labels.edges[e].label }, { ids: [n], caption: labels.buildings[n].name })
+    steps.push({ ids: [e], caption: edgeSummary(labels.edges[e].label) }, { ids: [n], caption: labels.buildings[n].name })
   })
   return { id: 'tour-follow-request', title: 'Follow a request', steps }
 }
@@ -399,11 +400,10 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
     ...ext.edges
   ].sort((a, z) => cmp(a.id, z.id))
 
+  const cargoKeys = [...new Set(edges.map((e) => e.cargo).filter(Boolean))].sort()
+  const cargoColor = cargoColors(cargoKeys)
   const cargo = Object.fromEntries(
-    [...new Set(edges.map((e) => e.cargo).filter(Boolean))].sort().map((c) => {
-      const h = hash(c)
-      return [c, { shape: SHAPES[h % SHAPES.length], color: colorOf(c), label: cargoLabel(c) }]
-    })
+    cargoKeys.map((c) => [c, { shape: SHAPES[hash(c) % SHAPES.length], color: cargoColor[c], label: cargoLabel(c) }])
   )
   const processes = Object.fromEntries(
     [...new Set(buildings.map((b) => b.process).filter(Boolean))].sort().map((p) => [p, { label: p, color: colorOf(p) }])

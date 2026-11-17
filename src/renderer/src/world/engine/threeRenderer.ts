@@ -12,7 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { busyness, clamp, fitDistance, fitView, fogDensity, type V3 } from './viewMath'
+import { busyness, clamp, declutter, edgeLabelSize, fitDistance, fitView, fogDensity, rightInset, type LabelBox, type V3 } from './viewMath'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -33,13 +33,23 @@ export interface SceneText {
 }
 
 export type RenderPick = { kind: 'node'; id: string } | { kind: 'edge'; id: string }
-export interface RenderFocus { ids: Set<string>; edgeIds: Set<string> }
+/**
+ * What to light. `hover`: the focus of a hovered building (it shows fewer line labels). `passive`:
+ * lines whose labels let a click through to the building under them (a busy building's hover labels
+ * gather over it); the others stay clickable.
+ */
+export interface RenderFocus { ids: Set<string>; edgeIds: Set<string>; hover?: boolean; passive?: Set<string> }
 
 export interface RendererOptions {
   quality: 'high' | 'low'
   reducedMotion: boolean
   /** An edge's floating label was clicked. */
   onEdgeLabel?: (edgeId: string) => void
+  /**
+   * Pixels on the right of the view that a panel covers (the legend): the overview and close-ups
+   * frame the city in the rest, and the picture's centre moves to the middle of the rest.
+   */
+  rightReserve?: number
 }
 
 export interface ThreeRenderer {
@@ -115,6 +125,13 @@ const FLOOR_W = 5
 const ORB_R = 2.2
 /** How far behind an edge pick tube (radius 0.8) a node hit may lie and still win the pick. */
 const PICK_NODE_EPS = 1
+/**
+ * In front of a building, a line takes the click only where the ray passes within LINE_REACH times
+ * its drawn radius of it (at least MIN_LINE_REACH world units): its fat pick tube is there to make a
+ * thin line clickable over open ground, not to cover the building behind it.
+ */
+const LINE_REACH = 2
+const MIN_LINE_REACH = 0.5
 const OVERVIEW_DIR = new THREE.Vector3(0.24, 0.72, 1).normalize()
 /**
  * How far the camera stands from the city at the overview of a prototype-sized world (about ten
@@ -124,6 +141,8 @@ const OVERVIEW_DIR = new THREE.Vector3(0.24, 0.72, 1).normalize()
 const PROTO_OVERVIEW = 120
 /** Room round the city at the overview: the whole city fills the picture with a tenth to spare. */
 const OVERVIEW_MARGIN = 1.1
+/** Half the width of a district's name on screen ("6 PARTS · 14 FILES"), kept in the overview. */
+const DISTRICT_NAME_HALF_PX = 64
 /** Room round a clicked building and its neighbours. */
 const CLOSE_UP_MARGIN = 1.2
 /** The closest a click flies to a building: the prototype's framing distance (28 out, half that up). */
@@ -136,6 +155,9 @@ const MAX_LINE_SCALE = 1.5
 /** The faintest a line gets in a very busy city, and the least of the theme's glow it keeps. */
 const MIN_TUBE_OPACITY = 0.07
 const MIN_BLOOM = 0.5
+/** The most line labels a hovered building shows at once, and a selection; none overlaps another. */
+const HOVER_EDGE_LABELS = 6
+const FOCUS_EDGE_LABELS = 10
 
 type LabelKind = 'district' | 'bldg' | 'floor' | 'proc'
 /** dim: the focus dimming (1 or 0.2); lit: its part is hovered or selected, so the label shows at any distance. */
@@ -150,6 +172,10 @@ interface Packet { s: THREE.Mesh; t: number; sp: number }
 interface EdgeRec {
   id: string; curve: THREE.QuadraticBezierCurve3; tubeMats: THREE.Material[]; packetMats: THREE.Material[]
   packets: Packet[]; pick: THREE.Mesh; label: CSS2DObject; focus: boolean
+  /** The label's length in characters, for its size on screen (declutter). */
+  chars: number
+  /** Points along the drawn line, and how near a ray must pass to touch it (pick). */
+  path: THREE.Vector3[]; reach: number
 }
 
 const hex = (c: number | string): string => '#' + new THREE.Color(c).getHexString()
@@ -209,6 +235,22 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
 
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 3000)
+  /** The strip on the right the legend covers (rightInset), out of the fit and the picture's centre. */
+  let inset = 0
+  /**
+   * The camera sees a picture `inset` wider than the view, whose left `inset` pixels are cut off:
+   * the centre of what shows moves to the middle of the part the legend leaves free.
+   */
+  function applyView(): void {
+    inset = rightInset(width, opts.rightReserve ?? 0)
+    camera.aspect = (width + inset) / height
+    if (inset > 0) camera.setViewOffset(width + inset, height, inset, 0, width, height)
+    else camera.clearViewOffset()
+    camera.updateProjectionMatrix()
+  }
+  /** The width-to-height of the part of the view the legend leaves free: what a fit fills. */
+  const fitAspect = (): number => (width - inset) / height
+  applyView()
   const overviewPos = new THREE.Vector3(40, 120, 165)
   const overviewTarget = new THREE.Vector3(10, 0, 4)
   camera.position.copy(overviewPos)
@@ -220,7 +262,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   controls.maxDistance = 420
   controls.autoRotate = !reduced
   controls.autoRotateSpeed = 0.3
-  const onControlStart = (): void => { controls.autoRotate = false; endTween() }
+  const onControlStart = (): void => { controls.autoRotate = false; atOverview = false; endTween() }
   controls.addEventListener('start', onControlStart)
 
   let composer: EffectComposer | null = null
@@ -570,11 +612,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const ctrl = vec(c.ctrl).setY(c.ctrl[1] + (hf + ht) / 2)
     const curve = new THREE.QuadraticBezierCurve3(a, ctrl, b)
     const col = new THREE.Color(c.color)
-    const rec: EdgeRec = { id: c.id, curve, tubeMats: [], packetMats: [], packets: [], pick: null as unknown as THREE.Mesh, label: null as unknown as CSS2DObject, focus: false }
+    const rec: EdgeRec = { id: c.id, curve, tubeMats: [], packetMats: [], packets: [], pick: null as unknown as THREE.Mesh, label: null as unknown as CSS2DObject, focus: false, chars: 0, path: curve.getPoints(48), reach: 0 }
     if (!c.dashed) {
       const m = trackBase(new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: tubeOpacity }))
       rec.tubeMats.push(m)
       world.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 64, c.width * 0.55 * Math.min(scale, MAX_LINE_SCALE), 6), m))
+      rec.reach = c.width * 0.55 * Math.min(scale, MAX_LINE_SCALE)
     } else {
       const m = trackBase(new THREE.LineDashedMaterial({ color: extras.ghost, dashSize: 1, gapSize: 0.7, transparent: true, opacity: 0.85 }))
       rec.tubeMats.push(m)
@@ -583,7 +626,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       line.computeLineDistances()
       world.add(line)
     }
-    // Fat invisible tube: a thin line is impossible to click.
+    // Fat invisible tube: a thin line is impossible to click. It does not hide a building behind it
+    // (pick): there, only the drawn line itself takes the click.
+    rec.reach = Math.max(rec.reach * LINE_REACH, MIN_LINE_REACH)
     const pick = new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.8 * scale, 5), new THREE.MeshBasicMaterial({ visible: false }))
     pick.userData.edgeId = c.id
     world.add(pick)
@@ -605,7 +650,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     lp.y += 0.8
     const el = document.createElement('div')
     el.className = 'lw-edge'
-    el.textContent = text.edges[c.id] ?? c.id
+    const words = text.edges[c.id] ?? c.id
+    el.textContent = words
     const lc = hex(c.dashed ? extras.ghost : col.getHex())
     el.style.borderColor = lc
     el.style.color = lc
@@ -617,14 +663,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     lo.visible = false
     world.add(lo)
     rec.label = lo
+    rec.chars = words.length
     edges.set(c.id, rec)
   }
 
   /**
    * The overview frames the whole city: every platform's rim, every building to the top of its name
-   * and every external, fitted to the picture with OVERVIEW_MARGIN to spare, seen from OVERVIEW_DIR.
+   * and every external, fitted with OVERVIEW_MARGIN to spare into the part of the picture the legend
+   * leaves free, seen from OVERVIEW_DIR. Done again when the view is resized.
    */
-  function computeOverview(model: SceneModel): void {
+  function fitOverview(model: SceneModel): void {
     if (model.buildings.length === 0 && model.orbs.length === 0) return
     const pts: V3[] = []
     const h = FLOOR_W / 2
@@ -641,11 +689,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       pts.push([d.pos[0], d.pos[1] - 2, d.pos[2] + d.radius + 4]) // the district's name below its rim
     }
     const dir: V3 = [OVERVIEW_DIR.x, OVERVIEW_DIR.y, OVERVIEW_DIR.z]
-    const fit = fitView(pts, dir, camera.fov, camera.aspect, OVERVIEW_MARGIN, 40)
+    let fit = fitView(pts, dir, camera.fov, fitAspect(), OVERVIEW_MARGIN, 40)
+    // A district's name is DISTRICT_NAME_HALF_PX wide on each side of its point, whatever the
+    // distance: at the fitted distance that is so many world units, so the fit is done again with
+    // the name's ends in it (twice: the wider fit makes the name a little wider in the world).
+    const side = new THREE.Vector3(OVERVIEW_DIR.z, 0, -OVERVIEW_DIR.x).normalize()
+    for (let pass = 0; pass < 2 && model.districts.length > 0; pass++) {
+      const half = (DISTRICT_NAME_HALF_PX * 2 * fit.dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / height
+      const named = [...pts]
+      for (const d of model.districts) {
+        for (const k of [-1, 1]) named.push([d.pos[0] + side.x * half * k, d.pos[1] - 2, d.pos[2] + d.radius + 4 + side.z * half * k])
+      }
+      fit = fitView(named, dir, camera.fov, fitAspect(), OVERVIEW_MARGIN, 40)
+    }
     overviewDist = fit.dist
-    scale = Math.max(1, Math.sqrt(overviewDist / PROTO_OVERVIEW))
-    busy = busyness(model.conduits.length)
-    tubeOpacity = clamp(0.38 * busy, MIN_TUBE_OPACITY, 0.38)
     overviewTarget.set(fit.target[0], fit.target[1], fit.target[2])
     overviewPos.copy(overviewTarget).addScaledVector(OVERVIEW_DIR, overviewDist)
     // Room to step back from the overview of even a very big world.
@@ -658,7 +715,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     allLabels = allEdgeLabels
     changes.settle() // the objects rising or pulsing are about to be freed
     clearWorld()
-    computeOverview(model) // first: the world's scale sizes the lines, packets and fog below
+    fitOverview(model) // first: the world's scale sizes the lines, packets and fog below
+    scale = Math.max(1, Math.sqrt(overviewDist / PROTO_OVERVIEW))
+    busy = busyness(model.conduits.length)
+    tubeOpacity = clamp(0.38 * busy, MIN_TUBE_OPACITY, 0.38)
     scene.background = new THREE.Color(theme.background)
     fog.color.set(theme.background)
     if (bloom) bloom.strength = extras.bloom * Math.max(MIN_BLOOM, busy) // a busy city glows less
@@ -713,6 +773,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const e of edges.values()) {
       const on = !f || f.edgeIds.has(e.id)
       e.focus = !!f && on
+      // A hovered building's labels gather over it: they must not catch the click meant for it.
+      e.label.element.style.pointerEvents = e.focus && f?.passive?.has(e.id) ? 'none' : ''
       for (const m of e.tubeMats) {
         const base = m.userData.base as number
         const o = f ? focusOpacity(base, on) : base
@@ -744,8 +806,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     tween = null
     t?.done()
   }
+  /** The camera is at (or flying to) the overview, so a resize fits it again. */
+  let atOverview = false
   function flyTo(pos: THREE.Vector3, target: THREE.Vector3, instant: boolean, dur = 1.5): Promise<void> {
     controls.autoRotate = false
+    atOverview = false
     endTween()
     if (instant || reduced) {
       camera.position.copy(pos)
@@ -809,7 +874,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       pts.push([base.x, base.y, base.z], [m.anchor.x, m.anchor.y + 3, m.anchor.z])
     }
     const t: V3 = [target.x, target.y, target.z]
-    const fit = fitDistance(pts, t, [dir.x, dir.y, dir.z], camera.fov, camera.aspect, CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+    const fit = fitDistance(pts, t, [dir.x, dir.y, dir.z], camera.fov, fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
     const dist = clamp(fit, CLOSE_UP_MIN, overviewDist * 0.7)
     return flyTo(target.clone().addScaledVector(dir, dist), target, instant)
   }
@@ -853,9 +918,28 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // at, and its tube must not swallow clicks on that building's face.
     const hits = ray.intersectObjects(pickables, false)
     const node = hits.find((h) => typeof h.object.userData.nodeId === 'string')
-    const edge = hits.find((h) => typeof h.object.userData.edgeId === 'string')
+    // In front of a building, only a line the ray really touches counts (LINE_REACH).
+    const edge = hits.find((h) => {
+      if (typeof h.object.userData.edgeId !== 'string') return false
+      if (!node || node.distance <= h.distance) return true
+      const rec = edges.get(h.object.userData.edgeId as string)
+      return !rec || touches(rec)
+    })
     if (node && (!edge || node.distance <= edge.distance + PICK_NODE_EPS)) return { kind: 'node', id: node.object.userData.nodeId as string }
     return edge ? { kind: 'edge', id: edge.object.userData.edgeId as string } : null
+  }
+
+  /** Whether the pick ray passes within the line's reach of any segment of its drawn path (world space). */
+  const segA = new THREE.Vector3()
+  const segB = new THREE.Vector3()
+  function touches(rec: EdgeRec): boolean {
+    const r2 = rec.reach * rec.reach
+    for (let i = 1; i < rec.path.length; i++) {
+      segA.copy(rec.path[i - 1]).applyMatrix4(world.matrixWorld)
+      segB.copy(rec.path[i]).applyMatrix4(world.matrixWorld)
+      if (ray.ray.distanceSqToSegment(segA, segB) <= r2) return true
+    }
+    return false
   }
 
   function screenPoint(id: string): { x: number; y: number } | null {
@@ -899,7 +983,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const onKeyDown = (e: KeyboardEvent): void => {
     const k = e.key.toLowerCase()
     keys[k] = true
-    if ('wasdqe'.includes(k) && k.length === 1) { controls.autoRotate = false; endTween() }
+    if ('wasdqe'.includes(k) && k.length === 1) { controls.autoRotate = false; atOverview = false; endTween() }
   }
   const onKeyUp = (e: KeyboardEvent): void => { keys[e.key.toLowerCase()] = false }
   const onBlur = (): void => { for (const k of Object.keys(keys)) keys[k] = false }
@@ -915,15 +999,44 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // ---------------- resize ----------------
   const resize = (): void => {
     ;[width, height] = size()
-    camera.aspect = width / height
-    camera.updateProjectionMatrix()
+    applyView()
     renderer.setSize(width, height)
     composer?.setSize(width, height)
     labelRenderer.setSize(width, height)
+    // The city is fitted again to the new shape; a camera at the overview moves to the new one.
+    if (!lastModel) return
+    fitOverview(lastModel)
+    fogTarget = fogFor()
+    if (!atOverview) return
+    if (tween) { tween.p1.copy(overviewPos); tween.t1.copy(overviewTarget); return }
+    camera.position.copy(overviewPos)
+    controls.target.copy(overviewTarget)
+    controls.update()
   }
   const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize)
   ro?.observe(host)
   undo.push(() => { ro?.disconnect() })
+
+  /**
+   * The focus-lit lines whose labels show: nearest the camera first, each clear of the ones already
+   * shown, at most HOVER_EDGE_LABELS for a hover (FOCUS_EDGE_LABELS for a selection). A label off the
+   * picture is not shown.
+   */
+  const labelAt = new THREE.Vector3()
+  function focusLabels(): Set<string> {
+    const lit: { box: LabelBox; d: number }[] = []
+    for (const e of edges.values()) {
+      if (!e.focus) continue
+      e.label.getWorldPosition(labelAt)
+      const d = labelAt.distanceTo(camera.position)
+      labelAt.project(camera)
+      if (Math.abs(labelAt.x) > 1 || Math.abs(labelAt.y) > 1 || labelAt.z > 1) continue
+      const { w, h } = edgeLabelSize(e.chars)
+      lit.push({ box: { id: e.id, x: ((labelAt.x + 1) / 2) * width, y: ((1 - labelAt.y) / 2) * height, w, h }, d })
+    }
+    lit.sort((a, b) => a.d - b.d)
+    return declutter(lit.map((l) => l.box), focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS)
+  }
 
   // ---------------- loop ----------------
   const clock = new THREE.Clock()
@@ -1040,8 +1153,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       }
       l.o.element.style.opacity = String(o)
     }
+    const shownFocus = allLabels ? null : focusLabels()
     for (const e of edges.values()) {
-      const on = allLabels || e.focus
+      const on = allLabels || (e.focus && (shownFocus as Set<string>).has(e.id))
       e.label.visible = on
       if (on) {
         e.label.getWorldPosition(wp)
@@ -1077,7 +1191,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       fogTarget = fogFor()
     },
     frame,
-    overview: (instant) => flyTo(overviewPos, overviewTarget, instant, 1.8),
+    overview(instant) {
+      const flight = flyTo(overviewPos, overviewTarget, instant, 1.8)
+      atOverview = true
+      return flight
+    },
     pulse,
     stopPulses,
     pick,
