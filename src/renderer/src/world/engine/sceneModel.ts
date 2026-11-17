@@ -84,7 +84,7 @@ function fallbackPos(index: number): Vec3 {
   return [(index % 6) * 8, 0, 14 + Math.floor(index / 6) * 8]
 }
 
-export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { revealProposal?: string }): SceneModel {
+export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { revealProposal?: string; fogged?: ReadonlySet<string> }): SceneModel {
   const proposal = opts?.revealProposal === undefined ? undefined : doc.layers.plan.find((p) => p.id === opts.revealProposal)
   // The linked design (a proposal carrying reconcile) shows with the planned layer; its missing parts are
   // wireframes at their design position, and the parts it matched are the built buildings themselves.
@@ -110,7 +110,8 @@ export function buildSceneModel(doc: WorldDoc, layers: LayerState, opts?: { reve
   }
 
   const sceneBuildings: SceneBuilding[] = buildings.map((b) => {
-    const { look, ring } = lookOf(b)
+    const fogged = opts?.fogged?.has(b.id) === true // an answer the evidence does not support fogs its parts
+    const { look, ring } = fogged ? { look: 'fog' as const, ring: false } : lookOf(b)
     const floors = Math.max(1, b.floors.length)
     const sb: SceneBuilding = { id: b.id, pos: place(b.id), floors, height: floors * FLOOR_HEIGHT, look, ring }
     if (layers.processes) sb.processShell = b.process

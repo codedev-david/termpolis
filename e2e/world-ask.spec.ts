@@ -282,7 +282,23 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
     await expect(answer()).toHaveCount(1)
   })
 
-  test('4. the renderer logged no console errors and threw no page errors', async () => {
+  test('5. an unsupported answer says so and leaves its building fogged', async () => {
+    const fogged = (): Promise<string[]> => page.evaluate(
+      () => (window as unknown as { __termpolis_world?: { drawn(): { fogged: string[] } } }).__termpolis_world?.drawn().fogged ?? []
+    )
+    await ask('Why was it built this way?')
+    await expect(answer()).toContainText('Answer to: Why was it built this way?', { timeout: 30_000 })
+    await expect(answer()).toContainText("evidence doesn't say")
+    // The fog step named the first building in the prompt: it is the one fogged now.
+    await expect.poll(async () => (await fogged()).length, { timeout: 15_000 }).toBe(1)
+    expect((await fogged())[0]).not.toBe('')
+    // The next answer lifts it.
+    await ask('Where is the data kept?')
+    await expect(answer()).toContainText('Answer to: Where is the data kept?', { timeout: 30_000 })
+    await expect.poll(fogged, { timeout: 15_000 }).toEqual([])
+  })
+
+  test('6. the renderer logged no console errors and threw no page errors', async () => {
     expect(consoleErrors).toEqual([])
   })
 })

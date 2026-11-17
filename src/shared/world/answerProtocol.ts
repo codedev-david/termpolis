@@ -3,14 +3,24 @@
 // not in the WorldDoc is removed and counted in `dropped`.
 import type { Evidence, WorldAction, WorldDoc } from './types'
 
+/** Spec gap #101: an answer the evidence does not support says so, and its parts are drawn in fog. */
+export const HONESTY_RULE = 'If the WORLD DATA and evidence do not support an answer (for example nothing records why something was built this way), say so plainly in your first sentence, do not guess, and add {"type":"fog","ids":[...]} for the parts you could not support.'
+
 export const ANSWER_PROTOCOL = `Answer in plain language for someone who does not read code. Keep it under 150 words.
 After your answer, add one fenced block tagged world-actions containing a JSON array of steps
 that show your answer in the World. Allowed steps:
 {"type":"focus","ids":[...]} {"type":"highlight","ids":[...]} {"type":"flow","edgeIds":[...]}
 {"type":"openCard","id":"..."} {"type":"tour","steps":[{"ids":[...],"caption":"..."}]} {"type":"reset"}
-Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the labels in the WORLD DATA.`
+Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the labels in the WORLD DATA.
+${HONESTY_RULE}`
 
-export interface WorldAnswer { text: string; actions: WorldAction[]; evidence: Evidence[]; dropped: number }
+export interface WorldAnswer {
+  text: string; actions: WorldAction[]; evidence: Evidence[]; dropped: number
+  /** Ids from the answer's fog steps: the parts the evidence does not support. */
+  unsupported: string[]
+  /** True when the answer has text but no [E<n>] marker. */
+  uncited: boolean
+}
 
 const MAX_TOUR_STEPS = 12
 const BLOCK_RE = /```world-actions[ \t]*\r?\n([\s\S]*?)```/g
@@ -36,7 +46,8 @@ function cleanAction(step: unknown, all: Set<string>, edges: Set<string>, tally:
   switch (step.type) {
     case 'reset': return { type: 'reset' }
     case 'focus':
-    case 'highlight': {
+    case 'highlight':
+    case 'fog': {
       const ids = keepIds(step.ids, all, tally)
       if (ids.length === 0) { tally.dropped++; return null }
       return { type: step.type, ids }
@@ -96,6 +107,8 @@ function collectEvidence(text: string, labels: Record<string, Evidence>): Eviden
   return out
 }
 
+const isUncited = (text: string): boolean => text !== '' && !new RegExp(MARKER_RE.source).test(text)
+
 /** Splits an agent answer into prose, validated world actions and the evidence it cites. Never throws. */
 export function parseAnswer(raw: string, doc: WorldDoc, labels: Record<string, Evidence> = {}): WorldAnswer {
   const input = typeof raw === 'string' ? raw : ''
@@ -104,8 +117,9 @@ export function parseAnswer(raw: string, doc: WorldDoc, labels: Record<string, E
     const blocks = [...input.matchAll(BLOCK_RE)]
     const tally = { dropped: 0 }
     const actions = blocks.length > 0 ? parseActions(blocks[0][1], doc, tally) : []
-    return { text, actions, evidence: collectEvidence(text, labels), dropped: tally.dropped }
+    const unsupported = actions.flatMap((a) => (a.type === 'fog' ? a.ids : []))
+    return { text, actions, evidence: collectEvidence(text, labels), dropped: tally.dropped, unsupported, uncited: isUncited(text) }
   } catch {
-    return { text, actions: [], evidence: [], dropped: 0 }
+    return { text, actions: [], evidence: [], dropped: 0, unsupported: [], uncited: isUncited(text) }
   }
 }

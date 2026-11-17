@@ -84,6 +84,8 @@ export interface WorldDrawn {
   changing: number
   /** Ids of the buildings drawn as wireframes: planned parts not built yet (always empty in 2D). */
   wireframes: string[]
+  /** Ids an answer fogged (the evidence does not support them) until the next reset. */
+  fogged: string[]
 }
 
 export interface WorldViewerOptions {
@@ -131,6 +133,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let layers: LayerState = { ...DEFAULT_LAYERS }
   let themeName: ThemeName = 'neon'
   let revealProposal: string | undefined
+  /** Parts an answer fogged; cleared by reset, resetView and load. */
+  const fogged = new Set<string>()
   let selection: WorldSelection | null = null
   let exploded: string | null = null
   let hovered: string | null = null
@@ -316,7 +320,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     const d = doc
     if (!d) return
     if (!r3) { drawFallback(d); return }
-    const model = buildSceneModel(d, layers, revealProposal === undefined ? undefined : { revealProposal })
+    const model = buildSceneModel(d, layers, { revealProposal, fogged })
     wireframes = model.buildings.filter((b) => b.look === 'wire').map((b) => b.id)
     r3.draw(model, sceneText(d), layers.allLineLabels)
     r3.setExploded(exploded)
@@ -502,9 +506,17 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         }
         return
       }
+      case 'fog': {
+        // No ids lifts the fog: the parser never yields that, so only the app asks for it.
+        if (a.ids.length === 0) fogged.clear()
+        else for (const id of a.ids) fogged.add(id)
+        redraw()
+        return
+      }
       case 'reset': {
-        const had = revealProposal !== undefined
+        const had = revealProposal !== undefined || fogged.size > 0
         revealProposal = undefined
+        fogged.clear()
         exploded = null
         if (had) redraw()
         deselect()
@@ -555,6 +567,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       if (motion) r3?.keepGhosts(motion.removed)
       doc = d
       revealProposal = undefined
+      fogged.clear()
       exploded = null
       const hadSelection = selection !== null
       selection = null
@@ -596,11 +609,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     screenPoint: (id) => (r3 ? r3.screenPoint(id) : null),
     linePoints: (id) => (r3 ? r3.linePoints(id) : []),
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [] }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], fogged: [...fogged] }),
     resetView() {
       cancelActions()
       deselect()
       exploded = null
+      if (fogged.size > 0) { fogged.clear(); redraw() }
       if (r3) {
         r3.setExploded(null)
         void r3.overview(reduced)

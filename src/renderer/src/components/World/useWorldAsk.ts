@@ -65,6 +65,8 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   const playOn = useCallback((v: WorldViewer, actions: WorldAction[]): void => {
     const gen = ++playGen.current
     setPlaying(true)
+    // Lifts the fog an earlier answer left; 'reset' would also close the card and move the camera.
+    void Promise.resolve(v.apply({ type: 'fog', ids: [] })).catch(noop)
     v.play(actions).catch(noop).then(() => { if (playGen.current === gen) setPlaying(false) })
   }, [])
 
@@ -94,7 +96,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
           current.current = null
           summary.current = res.data.summary
           onDesignRef.current?.(res.data.doc)
-          setAnswer({ text: res.data.text, actions: [], evidence: [], dropped: 0 })
+          setAnswer({ text: res.data.text, actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
           setCited({})
           setState('answered')
         },

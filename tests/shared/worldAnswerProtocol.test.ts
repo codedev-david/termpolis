@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { ANSWER_PROTOCOL, parseAnswer } from '../../src/shared/world/answerProtocol'
+import { ANSWER_PROTOCOL, HONESTY_RULE, parseAnswer } from '../../src/shared/world/answerProtocol'
 import type { Evidence } from '../../src/shared/world/types'
 import minDoc from './fixtures/world.min.json'
 
 type Any = any
 const doc: Any = minDoc
 const bId: string = doc.buildings[0].id
+const labels: Record<string, Evidence> = {}
 const dId: string = doc.districts[0].id
 const eId: string = doc.edges[0].id
 const block = (json: string): string => '```world-actions\n' + json + '\n```'
@@ -31,7 +32,7 @@ describe('parseAnswer', () => {
 
   it('no block → actions [] and full text', () => {
     const r = parseAnswer('  Just prose.  ', doc)
-    expect(r).toEqual({ text: 'Just prose.', actions: [], evidence: [], dropped: 0 })
+    expect(r).toEqual({ text: 'Just prose.', actions: [], evidence: [], dropped: 0, unsupported: [], uncited: true })
   })
 
   it('malformed JSON → actions [], dropped 0, text intact', () => {
@@ -124,18 +125,43 @@ describe('parseAnswer', () => {
 
   it('a truncated (unclosed) fence is stripped from text, with no actions and dropped 0', () => {
     const r = parseAnswer('Partial answer.\n```world-actions\n[{"type":"focus","ids":["' + bId, doc)
-    expect(r).toEqual({ text: 'Partial answer.', actions: [], evidence: [], dropped: 0 })
+    expect(r).toEqual({ text: 'Partial answer.', actions: [], evidence: [], dropped: 0, unsupported: [], uncited: true })
     const both = parseAnswer(wrap([{ type: 'reset' }]) + '\nMore.\n```world-actions\n[{"ty', doc)
     expect(both.text).toBe('Answer text.\n\nMore.')
     expect(both.actions).toEqual([{ type: 'reset' }])
   })
 
   it('never throws on hostile input', () => {
-    expect(parseAnswer(undefined as Any, doc)).toEqual({ text: '', actions: [], evidence: [], dropped: 0 })
+    expect(parseAnswer(undefined as Any, doc)).toEqual({ text: '', actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
     expect(parseAnswer(42 as Any, doc).text).toBe('')
     const bad = parseAnswer(wrap([{ type: 'focus', ids: [bId] }]), null as Any)
     expect(bad.actions).toEqual([])
     expect(bad.text).toBe('Answer text.')
     expect(parseAnswer('x [E1]', doc, null as Any).evidence).toEqual([])
+  })
+
+  it('ANSWER_PROTOCOL carries the honesty rule and the fog step', () => {
+    expect(ANSWER_PROTOCOL).toContain(HONESTY_RULE)
+    expect(ANSWER_PROTOCOL).toContain('{"type":"fog","ids":[...]}')
+  })
+
+  it('a fog step keeps known ids, drops unknown ones and fills unsupported', () => {
+    const a = parseAnswer('Nothing records why. [E1]\n```world-actions\n[{"type":"fog","ids":["' + bId + '","nope"]}]\n```', doc, labels)
+    expect(a.actions).toEqual([{ type: 'fog', ids: [bId] }])
+    expect(a.unsupported).toEqual([bId])
+    expect(a.dropped).toBe(1)
+  })
+
+  it('a fog step with no known id is dropped whole; plain answers have nothing unsupported', () => {
+    const a = parseAnswer('x [E1]\n```world-actions\n[{"type":"fog","ids":["nope"]}]\n```', doc, labels)
+    expect(a.actions).toEqual([])
+    expect(a.unsupported).toEqual([])
+    expect(a.dropped).toBe(2)
+  })
+
+  it('an answer with no [E<n>] marker is uncited; empty text is not', () => {
+    expect(parseAnswer('It is fast.', doc, labels).uncited).toBe(true)
+    expect(parseAnswer('It is fast. [E1]', doc, labels).uncited).toBe(false)
+    expect(parseAnswer('', doc, labels).uncited).toBe(false)
   })
 })

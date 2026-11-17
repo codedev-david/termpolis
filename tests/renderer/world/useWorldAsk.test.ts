@@ -288,7 +288,7 @@ describe('useWorldAsk on a design', () => {
     expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '')
     expect(onDesign).toHaveBeenCalledWith({ projectKey: 'design:d1' })
     expect(result.current.state).toBe('answered')
-    expect(result.current.answer).toEqual({ text: 'Added Payments.', actions: [], evidence: [], dropped: 0 })
+    expect(result.current.answer).toEqual({ text: 'Added Payments.', actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
     expect(result.current.cited).toEqual({})
     await act(async () => { result.current.ask('rename it') })
     expect(refine).toHaveBeenLastCalledWith('design:d1', 'rename it', 'sum:1')

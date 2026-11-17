@@ -52,6 +52,12 @@ export function WorldAnswerPanel({ answer, cited, onClose, onReplay, onOpenPart,
           &times;
         </button>
       </div>
+      {(answer.unsupported.length > 0 || answer.uncited) && (
+        <div role="note" className="mt-2 text-xs text-[#d7ba7d] space-y-0.5" data-testid="world-answer-honesty">
+          {answer.unsupported.length > 0 && <p>The evidence doesn&apos;t say — the fogged parts aren&apos;t supported.</p>}
+          {answer.uncited && <p>This answer cites no evidence.</p>}
+        </div>
+      )}
       {shown.map((label) => (
         <div key={label} className="mt-1 text-xs text-[#9ca3af] font-mono break-all">{`${cited[label].kind} ${cited[label].ref}`}</div>
       ))}

@@ -146,7 +146,11 @@ function runWorldAnswer(args, at) {
     const building = (/\nbuilding (\S+):/.exec(prompt) || /\nOTHER\n([^\s:]+):/.exec(prompt) || [])[1];
     const hasEvidence = /\nE1: /.test(prompt);
     const lines = [`Answer to: ${question}`, `The first part is shown in the map${hasEvidence ? ' [E1]' : ''}.`];
-    if (building) {
+    if (building && /why/i.test(question)) {
+      // Nothing in the data answers a "why" question: say so and fog the building (spec gap 101).
+      lines.splice(1, 1, "The evidence doesn't say why.");
+      lines.push('', '```world-actions', JSON.stringify([{ type: 'fog', ids: [building] }]), '```');
+    } else if (building) {
       lines.push('', '```world-actions', JSON.stringify([{ type: 'focus', ids: [building] }, { type: 'openCard', id: building }]), '```');
     }
     const delay = Number(process.env.MOCK_CLAUDE_REPLY_DELAY_MS) || 0;

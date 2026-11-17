@@ -10,7 +10,7 @@ export const MAX_SUMMARY_CHARS = 1200
 const MAX_FIRST_SENTENCE = 300
 const MAX_QUESTION_CHARS = 2000
 const MAX_SUMMARY_Q_CHARS = 300
-const ROLE = 'You explain the software shown in Termpolis Lumopolis.'
+export const ROLE = 'You explain the software shown in Termpolis Lumopolis. When the evidence does not support an answer, say so plainly instead of guessing.'
 
 export interface AskInput {
   question: string

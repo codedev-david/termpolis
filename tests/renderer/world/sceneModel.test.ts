@@ -19,6 +19,12 @@ describe('buildSceneModel', () => {
     expect(by('b4')).toMatchObject({ look: 'wire', ring: false })
   })
 
+  it('a fogged id is fog even when its claims are verified; others are untouched', () => {
+    const m = buildSceneModel(rich(), DEFAULT_LAYERS, { fogged: new Set(['b2']) })
+    expect(m.buildings.find((b) => b.id === 'b2')).toMatchObject({ look: 'fog', ring: false })
+    expect(m.buildings.find((b) => b.id === 'b1')).toMatchObject({ look: 'solid' })
+  })
+
   it('draws a mostly inferred building as fog, even when verified', () => {
     const b = building('f', { status: 'verified', how: [claim('a', 'inferred')], why: [claim('b', 'inferred')] })
     expect(lookFor(b)).toMatchObject({ look: 'fog', ring: false })

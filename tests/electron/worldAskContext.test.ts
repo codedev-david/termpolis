@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildAskPrompt, summarize } from '../../src/main/world/askContext'
+import { buildAskPrompt, ROLE, summarize } from '../../src/main/world/askContext'
 import { ANSWER_PROTOCOL } from '../../src/shared/world/answerProtocol'
 import type { Building, Claim, WorldDoc, WorldEdge } from '../../src/shared/world/types'
 
@@ -185,4 +185,9 @@ describe('summarize', () => {
     const flat = buildAskPrompt(base(doc(1), { summary: 's'.repeat(2000) })).prompt
     expect(flat).toContain('\n' + 's'.repeat(1200) + '\n')
   })
+})
+
+it('ROLE tells the agent to say so when the evidence does not support an answer', () => {
+  expect(ROLE).toMatch(/say so/)
+  expect(buildAskPrompt(base(doc(1))).prompt).toContain(ROLE)
 })

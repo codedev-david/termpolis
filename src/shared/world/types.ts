@@ -41,6 +41,7 @@ export interface WorldDoc {
 export type WorldAction =
   | { type: 'focus'; ids: string[] } | { type: 'highlight'; ids: string[] }
   | { type: 'flow'; edgeIds: string[] } | { type: 'openCard'; id: string }
+  | { type: 'fog'; ids: string[] }                   // parts the evidence does not support: drawn in fog until the next reset
   | { type: 'tour'; steps: { ids: string[]; caption: string }[] }
   | { type: 'draftProposal'; proposalId: string }    // website demo only in 2.0
   | { type: 'reset' }

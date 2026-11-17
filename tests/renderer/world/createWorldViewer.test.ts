@@ -345,7 +345,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, wireframes: [] })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, wireframes: [], fogged: [] })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -699,7 +699,28 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.pick).toHaveBeenLastCalledWith(3, 4)
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, wireframes: ['b4'] })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, wireframes: ['b4'], fogged: [] })
+  })
+
+  it('viewer.apply(fog) fogs the ids until the next reset; a highlight keeps the fog; resetView, load and an empty fog lift it', async () => {
+    const { viewer, r } = setup3d()
+    await viewer.apply({ type: 'fog', ids: ['b1'] })
+    expect(viewer.drawn().fogged).toEqual(['b1'])
+    expect((r.draw.mock.calls.at(-1)![0] as { buildings: { id: string; look: string }[] }).buildings.find((b) => b.id === 'b1')!.look).toBe('fog')
+    await viewer.apply({ type: 'highlight', ids: ['b1'] })
+    expect(viewer.drawn().fogged).toEqual(['b1'])
+    await viewer.apply({ type: 'reset' })
+    expect(viewer.drawn().fogged).toEqual([])
+    await viewer.apply({ type: 'fog', ids: ['b1', 'b2'] })
+    viewer.resetView()
+    expect(viewer.drawn().fogged).toEqual([])
+    viewer.resetView()
+    await viewer.apply({ type: 'fog', ids: ['b1'] })
+    await viewer.apply({ type: 'fog', ids: [] })
+    expect(viewer.drawn().fogged).toEqual([])
+    await viewer.apply({ type: 'fog', ids: ['b1'] })
+    viewer.load(rich())
+    expect(viewer.drawn().fogged).toEqual([])
   })
 
   it('drawn lists the buildings drawn as wireframes (planned, not built), and hides them with the planned layer off', () => {

@@ -23,7 +23,7 @@ type Res = { success: true; data: AskResult } | { success: false; error: string 
 const okRes = (askId: string, text: string, over: Record<string, unknown> = {}): Res => ({
   success: true,
   data: {
-    askId, ok: true, answer: { text, actions: [{ type: 'reset' }], evidence: [], dropped: 0 },
+    askId, ok: true, answer: { text, actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false },
     summary: 's', cited: {}, ...over
   } as AskResult
 })
@@ -132,6 +132,31 @@ describe('WorldAsk', () => {
     const v = makeViewer()
     await submit(v, 'q')
     expect(v.play).toHaveBeenCalledWith([{ type: 'reset' }])
+  })
+
+  it('lifts an older answer fog (not reset: that would close the card) before it plays a new one', async () => {
+    const v = makeViewer()
+    await submit(v, 'q')
+    expect(v.apply).toHaveBeenCalledWith({ type: 'fog', ids: [] })
+    expect(v.apply).not.toHaveBeenCalledWith({ type: 'reset' })
+  })
+
+  it('says so when the evidence does not support the answer, and when it cites none', async () => {
+    const v = makeViewer()
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'Nothing records why.', {
+      answer: { text: 'Nothing records why.', actions: [{ type: 'fog', ids: ['b1'] }], evidence: [], dropped: 0, unsupported: ['b1'], uncited: true }
+    }))
+    await submit(v, 'why?')
+    const note = screen.getByRole('note')
+    expect(note.textContent).toContain("The evidence doesn't say")
+    expect(note.textContent).toContain('This answer cites no evidence')
+    expect(note.textContent).not.toContain('b1')
+  })
+
+  it('shows no honesty note for a supported, cited answer', async () => {
+    const v = makeViewer()
+    await submit(v, 'q')
+    expect(screen.queryByRole('note')).toBeNull()
   })
 
   it('Show me again cancels running actions then replays them', async () => {
@@ -258,7 +283,7 @@ describe('WorldAsk', () => {
       await submit(v, 'q')
       fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
       expect(screen.getByText('symbol nope')).toBeInTheDocument()
-      expect(v.apply).not.toHaveBeenCalled()
+      expect(v.apply).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'openCard' }))
       cleanup()
       withCited('See [E1].', { E1: { kind: 'symbol', ref: 'b1' } })
       await submit(v, 'q', { doc: null })
@@ -272,7 +297,7 @@ describe('WorldAsk', () => {
       fireEvent.keyDown(input(), { key: 'Enter' })
       await settle()
       fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
-      expect(v.apply).not.toHaveBeenCalled()
+      expect(v.apply).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'openCard' }))
     })
 
     it('a file chip toggles an inline line showing kind and ref', async () => {
@@ -282,7 +307,7 @@ describe('WorldAsk', () => {
       const chip = screen.getByRole('button', { name: 'Evidence E2' })
       fireEvent.click(chip)
       expect(screen.getByText('file src/main/x.ts')).toBeInTheDocument()
-      expect(v.apply).not.toHaveBeenCalled()
+      expect(v.apply).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'openCard' }))
       fireEvent.click(chip)
       expect(screen.queryByText('file src/main/x.ts')).toBeNull()
     })
