@@ -571,6 +571,36 @@ describe('WorldView', () => {
       }
     })
 
+    it('caps a card in a narrow pane from the measured stage, and follows the stage as it widens', async () => {
+      const seen: Array<() => void> = []
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(cb: () => void) { seen.push(cb) }
+        observe(): void {}
+        disconnect(): void {}
+      })
+      const stage = { w: 416, h: 586 }
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? stage.w : 0
+      })
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? stage.h : 0
+      })
+      cardBox({ w: 330, h: 300 })
+      try {
+        bridge()
+        await mount()
+        act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
+        // No ask bar here: 586 - 264 = 322 for the card's reserve, 320 on a step, less 20.
+        expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(300px, calc(100% - 110px))')
+        stage.w = 1000
+        act(() => { for (const cb of seen) cb() })
+        expect(screen.getByTestId('world-card').style.maxHeight).toBe('calc(100% - 110px)')
+      } finally {
+        vi.unstubAllGlobals()
+        vi.restoreAllMocks()
+      }
+    })
+
     it('reads the box once where there is no ResizeObserver', async () => {
       const had = 'ResizeObserver' in globalThis
       const saved = (globalThis as any).ResizeObserver

@@ -2,7 +2,7 @@
 // (buildingCard, edgeCard, the tour caption), which escape every string from the world document,
 // so it is safe to set as innerHTML. Never pass raw document strings here.
 import type { MouseEvent, Ref } from 'react'
-import { CARD_INSET_PX } from './worldPane'
+import { CARD_INSET_PX, CARD_WIDTH_PX } from './worldPane'
 
 export interface WorldCardProps {
   /** Escaped HTML from an engine card builder. */
@@ -12,6 +12,11 @@ export interface WorldCardProps {
   onOpen: (id: string) => void
   /** The card's element, measured so the close-ups are framed beside it. */
   boxRef?: Ref<HTMLElement>
+  /**
+   * The card's greatest height in pixels (cardMaxHeight: a narrow pane keeps the city room below it);
+   * null or left out, the stage less 110 px. Past it the body scrolls under the title and the ×.
+   */
+  maxHeight?: number | null
 }
 
 /**
@@ -20,9 +25,13 @@ export interface WorldCardProps {
  * pills, technology chips and dotted links. Scoped to .world-card so nothing leaks into the app.
  */
 const CARD_CSS = `
-.world-card{background:rgba(8,12,22,.78);backdrop-filter:blur(10px);border:1px solid rgba(148,163,184,.18);border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.45;color:#e2e8f0;box-shadow:0 8px 24px rgba(0,0,0,.35)}
-.world-card-close{float:right;margin:-4px -6px 0 8px;padding:2px 7px;border-radius:6px;color:#94a3b8;background:transparent;border:0;cursor:pointer}
+.world-card{display:flex;flex-direction:column;overflow:hidden;background:rgba(8,12,22,.78);backdrop-filter:blur(10px);border:1px solid rgba(148,163,184,.18);border-radius:12px;padding:12px 6px 12px 14px;font-size:13px;line-height:1.45;color:#e2e8f0;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.world-card-close{position:absolute;top:8px;right:10px;z-index:2;padding:2px 7px;border-radius:6px;color:#94a3b8;background:transparent;border:0;cursor:pointer}
 .world-card-close:hover{color:#e0f2fe;background:rgba(56,189,248,.18)}
+.world-card-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding-right:8px;scrollbar-width:thin;scrollbar-color:rgba(125,211,252,.55) rgba(148,163,184,.12)}
+.world-card-body:focus-visible{outline:1px solid rgba(125,211,252,.6);outline-offset:2px;border-radius:4px}
+.world-card-body > h3:first-child{position:sticky;top:0;z-index:1;padding:0 26px 4px 0;background:rgba(8,12,22,.96)}
+.world-card-body > :first-child:not(h3){padding-right:26px}
 .world-card-body h3,.world-card-body h2{margin:0 0 4px;font-size:16px;font-weight:600;color:#f1f5f9;text-transform:none;letter-spacing:0}
 .world-card-body h4{margin:12px 0 4px;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:#7dd3fc}
 .world-card-body p{margin:4px 0}
@@ -45,7 +54,7 @@ const CARD_CSS = `
 .world-card-body .tour-caption{font-size:13px;color:#e2e8f0}
 `
 
-export function WorldCard({ html, onClose, onOpen, boxRef }: WorldCardProps): JSX.Element {
+export function WorldCard({ html, onClose, onOpen, boxRef, maxHeight = null }: WorldCardProps): JSX.Element {
   const onClick = (e: MouseEvent<HTMLDivElement>): void => {
     const link = (e.target as Element).closest('[data-node],[data-edge]')
     if (!link) return
@@ -59,7 +68,7 @@ export function WorldCard({ html, onClose, onOpen, boxRef }: WorldCardProps): JS
       data-testid="world-card"
       className="world-card"
       // Top left over the map, where the prototype's inspector sits (the legend is top right).
-      style={{ position: 'absolute', top: CARD_INSET_PX, left: CARD_INSET_PX, width: 330, maxHeight: 'calc(100% - 110px)', overflow: 'auto', zIndex: 3 }}
+      style={{ position: 'absolute', top: CARD_INSET_PX, left: CARD_INSET_PX, width: CARD_WIDTH_PX, maxHeight: maxHeight === null ? 'calc(100% - 110px)' : `min(${maxHeight}px, calc(100% - 110px))`, boxSizing: 'border-box', zIndex: 3 }}
     >
       <style>{CARD_CSS}</style>
       <button
@@ -69,7 +78,16 @@ export function WorldCard({ html, onClose, onOpen, boxRef }: WorldCardProps): JS
         data-testid="world-card-close"
         className="world-card-close"
       ><i className="fa-solid fa-xmark" aria-hidden="true" /></button>
-      <div className="world-card-body" onClick={onClick} dangerouslySetInnerHTML={{ __html: html }} />
+      {/* Its own scroller, reachable by Tab, so the arrow keys and Page Up/Down scroll a capped card. */}
+      <div
+        className="world-card-body"
+        data-testid="world-card-body"
+        role="region"
+        aria-label="Details"
+        tabIndex={0}
+        onClick={onClick}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
     </aside>
   )
 }

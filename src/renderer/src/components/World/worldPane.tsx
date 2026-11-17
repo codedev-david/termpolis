@@ -74,6 +74,32 @@ export function cardReserve(width: number, height: number): [number, number] {
   return [step(width), step(height)]
 }
 
+/** The card's width (WorldCard). */
+export const CARD_WIDTH_PX = 330
+/** The least room the city keeps beside or below the card: viewMath's MIN_FREE_PX, kept equal by a test. */
+export const CARD_MIN_FREE_PX = 120
+/** In a narrow pane, the share of the stage's height kept free between the card and the ask bar's reserve. */
+export const CARD_FREE_SHARE = 0.45
+/** The shortest a capped card gets: its title row and a few lines of its body. */
+export const CARD_MIN_HEIGHT_PX = 96
+
+/**
+ * The open card's greatest height (WorldCard maxHeight), in a stage `width` x `height` whose right
+ * `right` pixels the legend covers (viewMath rightInset) and bottom `ask` pixels the ask bar
+ * (askReserve). Where the card leaves the city CARD_MIN_FREE_PX beside it, the pane is wide and the
+ * card is not capped (null). In a narrow pane the city can only go below the card, so a tall card
+ * (a busy building's) would leave nowhere for the selection and its line labels: there the card is
+ * kept short enough that CARD_FREE_SHARE of the height stays free between its reserve
+ * (cardReserve, which this lands on a step of) and the ask bar's, and its body scrolls.
+ */
+export function cardMaxHeight(width: number, height: number, right: number, ask: number): number | null {
+  if (!(width > 0) || !(height > 0)) return null
+  if (width - right - cardReserve(CARD_WIDTH_PX, 1)[0] >= CARD_MIN_FREE_PX) return null
+  const room = height - ask - Math.ceil(height * CARD_FREE_SHARE)
+  const box = Math.floor(room / CARD_STEP_PX) * CARD_STEP_PX - CARD_INSET_PX - CARD_CLEARANCE_PX
+  return Math.max(CARD_MIN_HEIGHT_PX, box)
+}
+
 export function worldPaneStyle(background: string, width: number): CSSProperties {
   return {
     position: 'relative', flex: '0 0 auto', width, minWidth: width, overflow: 'hidden',

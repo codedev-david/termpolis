@@ -41,7 +41,8 @@ import { WorldHome } from './WorldHome'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
 import { legendDefaultOpen, legendReserve, WorldLegend } from './WorldLegend'
-import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardReserve, worldPaneStyle } from './worldPane'
+import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardReserve, worldPaneStyle } from './worldPane'
+import { rightInset } from '../../world/engine/viewMath'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
 
@@ -303,6 +304,20 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     return () => ro.disconnect()
   }, [card])
   const [cardW, cardH] = cardReserve(cardSize[0], cardSize[1])
+  // In a narrow pane a tall card is capped so the city keeps room below it (cardMaxHeight): the stage's
+  // measured size, read again as the pane or the window changes.
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [stageSize, setStageSize] = useState<[number, number]>([0, 0])
+  useEffect(() => {
+    const el = stageRef.current as HTMLDivElement
+    const read = (): void => setStageSize([el.clientWidth, el.clientHeight])
+    read()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const cardCap = cardMaxHeight(stageSize[0], stageSize[1], rightInset(stageSize[0], reserve), below)
   useEffect(() => { viewer?.setCardReserve(cardW, cardH) }, [viewer, cardW, cardH])
 
   // The 3D viewer, once, when WebGL is there.
@@ -493,7 +508,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         switcher={<WorldSwitcher entries={entries} onOpen={(t) => openWorld(t)} onHome={goHome} />}
         onBuildIt={designKey !== null && buildIt && doc ? () => setBuilding(true) : undefined}
       />
-      <div data-testid="world-stage" style={{ position: 'relative', flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
+      <div ref={stageRef} data-testid="world-stage" style={{ position: 'relative', flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
         {webgl && (
           <div
             ref={hostRef}
@@ -559,7 +574,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             {busy ? 'Re-laying out…' : notice}
           </div>
         )}
-        {card !== null && <WorldCard boxRef={cardRef} html={card} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
+        {card !== null && <WorldCard boxRef={cardRef} html={card} maxHeight={cardCap} onClose={() => { setCard(null); viewer?.resetView() }} onOpen={openPart} />}
         {askSlot && !home && (
           <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3 }} data-testid="world-ask-slot">
             {askSlot(viewer, doc, worldKey, askLink)}
