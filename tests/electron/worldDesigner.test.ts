@@ -31,7 +31,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { store?: WorldStore; registry?: SourceRegistry; designsDir?: string; timeoutMs?: number; now?: () => number } = {}) {
+function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { agent?: () => 'claude' | 'codex' | 'gemini'; runEnv?: () => Promise<{ env: Record<string, string>; baseUrl?: string }>; store?: WorldStore; registry?: SourceRegistry; designsDir?: string; timeoutMs?: number; now?: () => number } = {}) {
   const execFn = vi.fn(exec)
   const execDeps = { deliver: vi.fn() }
   const store = over.store ?? createWorldStore(dir)
@@ -39,6 +39,7 @@ function setup(exec: (req: ExecRequest) => Promise<ExecResult>, over: { store?: 
   let n = 0
   const designer = createDesigner({
     exec: execFn as never, execDeps: execDeps as never, store, registry,
+    agent: over.agent ?? (() => 'claude'), runEnv: over.runEnv ?? (async () => ({ env: {} })),
     designsDir: over.designsDir ?? join(dir, 'world', 'designs'), newId: () => `id${++n}`,
     timeoutMs: over.timeoutMs, now: over.now
   })
@@ -66,8 +67,10 @@ describe('createDesigner draft', () => {
     const cwd = join(dir, 'world', 'designs', 'id1')
     expect(req).toMatchObject({ cwd, write: false, noRemember: true, noPrimer: true, timeoutMs: 90_000 })
     expect(req.signal).toBeInstanceOf(AbortSignal)
-    expect(req.agent).toBeUndefined()
+    expect(req.agent).toBe('claude')
+    expect(req.model).toBeUndefined()
     expect(deps).toBe(execDeps)
+    expect((deps as { primer?: unknown }).primer).toBeUndefined()
     expect((await stat(cwd)).isDirectory()).toBe(true)
     expect(req.task).toContain('A shop that takes orders')
     expect(req.task).toContain('There is no design yet')
@@ -96,13 +99,53 @@ describe('createDesigner draft', () => {
   })
 
   it('an agent that fails or throws is a friendly error and writes nothing', async () => {
-    const { designer, registry } = setup(async () => ({ ok: false, error: 'spawn ENOENT claude', output: '' }) as ExecResult)
+    const { designer, registry } = setup(async () => ({ ok: false, error: 'exit 1', output: '' }) as ExecResult)
     expect(await failure(designer.draft('A shop'))).toBe(DESIGN_AGENT_FAILED)
     const thrower = setup(async () => {
       throw new Error('boom')
     })
     expect(await failure(thrower.designer.draft('A shop'))).toBe(DESIGN_AGENT_FAILED)
     expect(await registry.list()).toEqual([])
+  })
+
+  it('drafts with the settings agent and model, the runEnv env and baseUrl, and without a primer', async () => {
+    const runEnv = vi.fn(async () => ({ env: { A: '1' }, baseUrl: 'u' }))
+    const { designer, execFn } = setup(async () => okRes(reply('', DRAFT_OPS)), { agent: () => 'codex', runEnv })
+    await designer.draft('A shop', undefined, 'gpt-5.5-mini')
+    expect(execFn).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'codex', model: 'gpt-5.5-mini', env: { A: '1' }, baseUrl: 'u', write: false, noRemember: true, noPrimer: true }),
+      expect.anything()
+    )
+    expect(runEnv).toHaveBeenCalledWith('codex', join(dir, 'world', 'designs', 'id1'))
+  })
+
+  it('an unsafe model id is dropped, and a runEnv that throws is absorbed', async () => {
+    const { designer, execFn } = setup(async () => okRes(reply('', DRAFT_OPS)), { runEnv: async () => { throw new Error('proxy down') } })
+    await designer.draft('A shop', undefined, 'x; rm')
+    const req = execFn.mock.calls[0][0] as ExecRequest
+    expect('model' in req).toBe(false)
+    expect(req.env).toEqual({})
+    expect('baseUrl' in req).toBe(false)
+  })
+
+  it('a missing agent CLI answers the install message at once; a cancel during runEnv is replaced', async () => {
+    const { designer } = setup(async () => ({ ok: false, error: 'spawn codex ENOENT', output: '' }) as ExecResult, { agent: () => 'codex' })
+    expect(await failure(designer.draft('A shop'))).toBe("Codex isn't installed. Choose another agent in Settings › Lumopolis.")
+    let release!: () => void
+    const slow = setup(async () => okRes(reply('', DRAFT_OPS)), { runEnv: () => new Promise((r) => { release = () => r({ env: {} }) }) })
+    const p = failure(slow.designer.draft('A shop', 'draft:t1'))
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    expect(slow.designer.cancel('draft:t1')).toBe(true)
+    release()
+    expect(await p).toBe(DESIGN_REPLACED)
+    expect(slow.execFn).not.toHaveBeenCalled()
+  })
+
+  it('refine passes the model too', async () => {
+    const s = setup(async () => okRes(reply('ok', [])))
+    await stored(s.store)
+    await s.designer.refine('design:id1', 'more', '', 'opus')
+    expect((s.execFn.mock.calls[0][0] as ExecRequest).model).toBe('opus')
   })
 
   it('a designs folder that cannot be made is a friendly error, and the agent never runs', async () => {

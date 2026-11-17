@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { WorldAnswer } from '../../../../shared/world/answerProtocol'
 import type { Evidence, WorldAction, WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
+import { lumopolisModel } from './worldAgentModel'
 
 export type AskState = 'idle' | 'thinking' | 'answered' | 'error'
 
@@ -98,7 +99,8 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
       setState('error')
     }
     if (design) {
-      window.termpolis.worldDesignRefine(root, q, summary.current).then(
+      const said = summary.current
+      lumopolisModel().then((model) => window.termpolis.worldDesignRefine(root, q, said, model)).then(
         (res) => {
           if (current.current !== askId) return
           if (!res.success) return fail(res.error)
@@ -117,7 +119,8 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     const v = viewer as WorldViewer
     void (async () => {
       try {
-        const res = await window.termpolis.worldAsk({ askId, root, question: q, selection: v.getSelection(), cameraRegion: v.cameraRegion(), summary: summary.current })
+        const model = await lumopolisModel()
+        const res = await window.termpolis.worldAsk({ askId, root, question: q, selection: v.getSelection(), cameraRegion: v.cameraRegion(), summary: summary.current, ...(model === undefined ? {} : { model }) })
         if (current.current !== askId) return
         if (!res.success) return fail(res.error)
         const r = res.data

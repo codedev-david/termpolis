@@ -1,18 +1,27 @@
-// Settings ▸ Lumopolis: the two Lumopolis settings, "Describe parts with AI" and "Read Lumopolis answers aloud". They live in main
+// Settings ▸ Lumopolis: the agent Lumopolis runs on, "Describe parts with AI" and "Read Lumopolis answers aloud". They live in main
 // (world-settings.json) because main's labeller reads it; this switch reads it on mount and writes
 // it on click, optimistically, putting the old value back if the write fails.
 import { useEffect, useState } from 'react'
+
+type WorldAgent = 'claude' | 'codex' | 'gemini'
+const AGENT_CHOICES: { id: WorldAgent; label: string }[] = [
+  { id: 'claude', label: 'Claude Code' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'gemini', label: 'Gemini CLI' },
+]
+const isWorldAgent = (v: unknown): v is WorldAgent => AGENT_CHOICES.some((c) => c.id === v)
 
 export function LumopolisSettings(): JSX.Element {
   // ON by default, as in main: only a stored `false` turns it off.
   const [labelling, setLabelling] = useState(true)
   // OFF by default, as in main: only a stored `true` turns it on.
   const [speak, setSpeak] = useState(false)
+  const [agent, setAgent] = useState<WorldAgent>('claude')
 
   useEffect(() => {
     let live = true
     window.termpolis.worldSettingsGet?.()
-      ?.then((res) => { if (live && res.success) { setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true) } })
+      ?.then((res) => { if (live && res.success) { setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true); if (isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent) } })
       ?.catch(() => undefined)
     return () => { live = false }
   }, [])
@@ -37,11 +46,44 @@ export function LumopolisSettings(): JSX.Element {
       ?.catch(revert)
   }
 
+  const chooseAgent = (next: string): void => {
+    if (!isWorldAgent(next)) return
+    const prev = agent
+    setAgent(next)
+    const revert = (): void => setAgent(prev)
+    window.termpolis.worldSettingsSet?.({ worldAgent: next })
+      ?.then((res) => { if (res.success && isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent); else revert() })
+      ?.catch(revert)
+  }
+
   return (
     <div className="flex flex-col gap-2" data-testid="lumopolis-settings-list">
       <p className="text-xs text-[#9ca3af] leading-relaxed" data-testid="lumopolis-cost-note">
         Describing parts and asking questions use tokens on your own agent account. Lumopolis shows an estimate after each one.
       </p>
+      <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="lumopolis-agent-settings">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="settings-world-agent" className="text-sm font-medium">
+            <i className="fa-solid fa-robot text-[#4fc1ff] mr-1.5" aria-hidden="true"></i>
+            Lumopolis agent
+          </label>
+          <span className="text-xs text-[#9ca3af] leading-relaxed">
+            The agent that answers your questions, drafts designs and describes parts. It uses its model from Settings, Default Models, and goes through the same token saving and memory as your terminals.
+          </span>
+          <select
+            id="settings-world-agent"
+            data-testid="settings-world-agent"
+            value={agent}
+            onChange={(e) => chooseAgent(e.target.value)}
+            className="mt-1 w-48 px-2 py-1 text-sm bg-[#1e1e1e] border border-[#3c3c3c] rounded"
+          >
+            {AGENT_CHOICES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+          {agent === 'gemini' && (
+            <span className="text-xs text-[#d7ba7d]" data-testid="lumopolis-gemini-note">Gemini: not compressed (no proxy route)</span>
+          )}
+        </div>
+      </div>
       <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="lumopolis-settings">
         <button
           onClick={toggle}
@@ -60,7 +102,7 @@ export function LumopolisSettings(): JSX.Element {
         <div className="flex flex-col gap-0.5">
           <span className="text-sm font-medium">
             <i className="fa-solid fa-earth-americas text-[#4fc1ff] mr-1.5" aria-hidden="true"></i>
-            Lumopolis: Describe parts with AI (uses Claude&apos;s cheapest model, Haiku)
+            Lumopolis: Describe parts with AI (uses your agent&apos;s cheapest model)
           </span>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             Names and explains the districts, buildings and connections on your project&apos;s Lumopolis

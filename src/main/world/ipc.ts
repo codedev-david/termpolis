@@ -29,6 +29,8 @@
 // `ipc` and `win` are parameters, so this module never imports Electron and tests pass fakes.
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'
+import { isExecAgent } from '../headlessExec'
+import { isSafeModelId } from '../modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
@@ -59,6 +61,7 @@ const settingsPatchOf = (args: unknown): Partial<WorldSettings> | null => {
   const patch: Partial<WorldSettings> = {}
   if (typeof a.worldLabelling === 'boolean') patch.worldLabelling = a.worldLabelling
   if (typeof a.worldSpeakAnswers === 'boolean') patch.worldSpeakAnswers = a.worldSpeakAnswers
+  if (isExecAgent(a.worldAgent)) patch.worldAgent = a.worldAgent
   return patch
 }
 
@@ -70,6 +73,8 @@ export interface WorldAsker {
 const MAX_QUESTION = 4000
 export const ASK_FAILED = "Lumopolis couldn't answer that question. Try again."
 const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
+/** `{ model }` for a model id safe to put on a command line, else nothing: an unsafe id is dropped, never passed on. */
+const modelField = (v: unknown): { model?: string } => (isSafeModelId(v) ? { model: v } : {})
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
 
 /** A checked AskRequest from the renderer's args, or the reason it is not one. */
@@ -82,12 +87,12 @@ const askRequestOf = (args: unknown): AskRequest | string => {
   if (typeof a.question !== 'string' || a.question.trim() === '' || a.question.length > MAX_QUESTION) return 'question required (up to 4000 characters)'
   if (!strings(a.selection) || !strings(a.cameraRegion)) return 'selection and cameraRegion must be string arrays'
   if (a.summary !== undefined && typeof a.summary !== 'string') return 'summary must be a string'
-  return { askId: a.askId, root: a.root, question: a.question, selection: a.selection, cameraRegion: a.cameraRegion, summary: (a.summary as string | undefined) ?? '' }
+  return { askId: a.askId, root: a.root, question: a.question, selection: a.selection, cameraRegion: a.cameraRegion, summary: (a.summary as string | undefined) ?? '', ...modelField(a.model) }
 }
 
 export interface WorldDesigner {
-  draft(description: string, cancelKey?: string): Promise<DesignDraftResult>
-  refine(key: string, message: string, summary: string): Promise<DesignRefineResult>
+  draft(description: string, cancelKey?: string, model?: string): Promise<DesignDraftResult>
+  refine(key: string, message: string, summary: string, model?: string): Promise<DesignRefineResult>
   cancel(key: string): boolean
 }
 
@@ -98,13 +103,13 @@ export const DESIGN_FAILED = "Lumopolis couldn't work on that design. Try again.
 const textOf = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '' && v.length <= MAX_DESIGN_TEXT
 
 /** A checked refine request from the renderer's args, or the reason it is not one. */
-const refineRequestOf = (args: unknown): { key: string; message: string; summary: string } | string => {
+const refineRequestOf = (args: unknown): { key: string; message: string; summary: string; model?: string } | string => {
   if (!args || typeof args !== 'object') return 'design request required'
   const a = args as Record<string, unknown>
   if (typeof a.key !== 'string' || !DESIGN_KEY_RE.test(a.key)) return 'design key required'
   if (!textOf(a.message)) return 'message required (up to 4000 characters)'
   if (a.summary !== undefined && typeof a.summary !== 'string') return 'summary must be a string'
-  return { key: a.key, message: a.message, summary: (a.summary as string | undefined) ?? '' }
+  return { key: a.key, message: a.message, summary: (a.summary as string | undefined) ?? '', ...modelField(a.model) }
 }
 
 /** The designer's own friendly failure as it is; anything else that escapes it is never shown raw. */
@@ -245,7 +250,7 @@ export function registerWorldIpc(
       const cancelKey = field(args, 'cancelKey')
       if (cancelKey !== undefined && (typeof cancelKey !== 'string' || !DRAFT_KEY_RE.test(cancelKey))) return err('cancelKey must be draft:<id>')
       try {
-        return ok(await (cancelKey === undefined ? designer.draft(description) : designer.draft(description, cancelKey)))
+        return ok(await designer.draft(description, cancelKey, modelField(field(args, 'model')).model))
       } catch (e) {
         return designErr(e)
       }
@@ -254,7 +259,7 @@ export function registerWorldIpc(
       const req = refineRequestOf(args)
       if (typeof req === 'string') return err(req)
       try {
-        return ok(await designer.refine(req.key, req.message, req.summary))
+        return ok(await designer.refine(req.key, req.message, req.summary, req.model))
       } catch (e) {
         return designErr(e)
       }

@@ -11,8 +11,11 @@ import type { AskRequest } from '../../src/shared/world/types'
 const REQ: AskRequest = { askId: 'a1', root: 'C:/repo', question: 'q', selection: [], cameraRegion: [], summary: '' }
 const run = async (output: string) => {
   const runner = createAskRunner({
-    exec: (async () => ({ ok: true, output })) as never,
+    exec: (async () => ({ ok: true, output, primerChars: 0 })) as never,
     execDeps: {} as never,
+    agent: () => 'claude',
+    runEnv: async () => ({ env: {} }),
+    primer: async () => null,
     client: { get: async () => ({ buildings: [], edges: [], districts: [], layers: { plan: [] } }), read: async () => ({ items: [], evidence: [] }) } as never
   })
   return runner.ask(REQ)

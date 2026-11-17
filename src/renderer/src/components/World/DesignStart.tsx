@@ -5,6 +5,7 @@
 import { useRef, useState } from 'react'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { btnCls, dialogCls, fieldCls, primaryCls } from './worldTargets'
+import { lumopolisModel } from './worldAgentModel'
 
 export interface DesignStartProps {
   onDrafted: (key: string) => void
@@ -40,7 +41,7 @@ export function DesignStart({ onDrafted, onClose }: DesignStartProps): JSX.Eleme
       if (designKey) onDrafted(designKey)
       else setError(message)
     }
-    window.termpolis.worldDesignDraft(description, key).then(
+    lumopolisModel().then((model) => window.termpolis.worldDesignDraft(description, key, model)).then(
       (res) => (res.success ? done(null, res.data.key) : done(res.error)),
       () => done(DRAFT_UNREACHABLE),
     )

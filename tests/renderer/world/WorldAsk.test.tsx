@@ -201,6 +201,7 @@ describe('WorldAsk', () => {
     await settle()
     fireEvent.change(input(), { target: { value: 'one' } })
     fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
     const firstId = ask.mock.calls[0][0].askId
     fireEvent.change(input(), { target: { value: 'two' } })
     fireEvent.keyDown(input(), { key: 'Enter' })
@@ -428,6 +429,7 @@ describe('WorldAsk', () => {
       await settle()
       fireEvent.change(input(), { target: { value: 'q' } })
       fireEvent.keyDown(input(), { key: 'Enter' })
+      await settle()
       let used: unknown
       act(() => { used = l.esc() })
       expect(used).toBe(true)
@@ -450,6 +452,7 @@ describe('WorldAsk', () => {
       fireEvent.change(input(), { target: { value: 'q' } })
       fireEvent.keyDown(input(), { key: 'Enter' })
       expect(lastBusy(l.link)).toBe(true)
+      await settle()
       await act(async () => { (d.resolve as (r: Res) => void)(okRes(ask.mock.calls[0][0].askId, 'The answer.')) })
       expect(lastBusy(l.link)).toBe(true)
       await act(async () => { endTour() })
@@ -593,7 +596,7 @@ describe('WorldAsk on a design', () => {
     fireEvent.change(box, { target: { value: 'add Payments' } })
     fireEvent.keyDown(box, { key: 'Enter' })
     await settle()
-    expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '')
+    expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '', undefined)
     expect(setDoc).toHaveBeenCalledWith(doc)
     expect(screen.getByText('Added Payments.')).toBeInTheDocument()
   })

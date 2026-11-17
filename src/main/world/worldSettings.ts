@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname } from 'path'
 import { atomicWriteText } from '../agentConfigIO'
+import { isExecAgent, type ExecAgent } from '../headlessExec'
 
 export interface WorldSettings {
   /**
@@ -14,9 +15,11 @@ export interface WorldSettings {
   worldLabelling: boolean
   /** "Read Lumopolis answers aloud": OFF by default; only a literal `true` turns it on. */
   worldSpeakAnswers: boolean
+  /** The agent that answers questions, drafts designs and (cheapest model) describes parts. Claude by default; an unknown value reads as claude. */
+  worldAgent: ExecAgent
 }
 
-export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false }
+export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldAgent: 'claude' }
 
 /** The file name under userData. */
 export const WORLD_SETTINGS_FILE = 'world-settings.json'
@@ -41,7 +44,7 @@ export function createWorldSettings(file: string | (() => string)): WorldSetting
       const parsed: unknown = JSON.parse(readFileSync(p, 'utf8'))
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const rec = parsed as Record<string, unknown>
-        settings = { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true }
+        settings = { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude' }
       }
     } catch {
       // keep the defaults on any read or parse error
@@ -57,6 +60,7 @@ export function createWorldSettings(file: string | (() => string)): WorldSetting
       load()
       if (typeof patch?.worldLabelling === 'boolean') settings = { ...settings, worldLabelling: patch.worldLabelling }
       if (typeof patch?.worldSpeakAnswers === 'boolean') settings = { ...settings, worldSpeakAnswers: patch.worldSpeakAnswers }
+      if (isExecAgent(patch?.worldAgent)) settings = { ...settings, worldAgent: patch.worldAgent }
       try {
         const p = path()
         mkdirSync(dirname(p), { recursive: true })

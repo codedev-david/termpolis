@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createAskRunner } from '../../src/main/world/askRunner'
+import { agentMissingMessage, createAskRunner } from '../../src/main/world/askRunner'
 import type { AskRequest, WorldDoc } from '../../src/shared/world/types'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 
@@ -10,17 +10,25 @@ const DOC = {
 } as unknown as WorldDoc
 
 const REQ: AskRequest = { askId: 'a1', root: 'C:/repo', question: 'What is this?', selection: [], cameraRegion: [], summary: '' }
-const okRes = (output: string): ExecResult => ({ ok: true, output }) as ExecResult
+const okRes = (output: string): ExecResult => ({ ok: true, output, primerChars: 0 }) as ExecResult
 
-function setup(exec: (req: ExecRequest) => Promise<ExecResult>, doc: WorldDoc | null = DOC, timeoutMs?: number, getTimeoutMs?: number) {
+function setup(
+  exec: (req: ExecRequest) => Promise<ExecResult>, doc: WorldDoc | null = DOC, timeoutMs?: number, getTimeoutMs?: number,
+  over: Partial<Pick<Parameters<typeof createAskRunner>[0], 'agent' | 'runEnv' | 'primer'>> = {}
+) {
   const execFn = vi.fn(exec)
   const client = {
     get: vi.fn((_root: string, _opts?: { refresh?: boolean }): Promise<WorldDoc | null> => Promise.resolve(doc)),
     read: vi.fn(async () => ({ items: [], evidence: [] }))
   }
   const execDeps = { deliver: vi.fn() }
-  const runner = createAskRunner({ exec: execFn as never, execDeps: execDeps as never, client: client as never, timeoutMs, getTimeoutMs })
-  return { runner, execFn, client, execDeps }
+  const runEnv = vi.fn(async () => ({ env: {} as Record<string, string> }))
+  const primer = vi.fn(async () => null as string | null)
+  const runner = createAskRunner({
+    exec: execFn as never, execDeps: execDeps as never, client: client as never, timeoutMs, getTimeoutMs,
+    agent: () => 'claude', runEnv, primer, ...over
+  })
+  return { runner, execFn, client, execDeps, runEnv, primer }
 }
 
 /** An exec that never answers by itself and rejects when its signal aborts. */
@@ -34,10 +42,80 @@ describe('createAskRunner', () => {
     expect(client.read).toHaveBeenCalledWith('C:/repo', { text: 'What is this?', limit: 20 })
     const [req, deps] = execFn.mock.calls[0] as [ExecRequest, unknown]
     expect(req).toMatchObject({ cwd: 'C:/repo', write: false, noRemember: true, timeoutMs: 90_000 })
-    expect(req.agent).toBeUndefined()
+    expect(req.agent).toBe('claude')
     expect(req.model).toBeUndefined()
+    expect(req.baseUrl).toBeUndefined()
     expect(req.signal).toBeInstanceOf(AbortSignal)
-    expect(deps).toBe(execDeps)
+    expect(deps).toMatchObject({ deliver: execDeps.deliver, primer: expect.any(Function) })
+  })
+
+  it('runs the settings agent with the request model, the runEnv env and baseUrl, the primer dep, write:false, noRemember:true', async () => {
+    const runEnv = vi.fn(async () => ({ env: { A: '1' }, baseUrl: 'u' }))
+    const primer = vi.fn(async () => 'PRIMER')
+    const { runner, execFn } = setup(async () => okRes('hi'), DOC, undefined, undefined, { agent: () => 'codex', runEnv, primer })
+    await runner.ask({ ...REQ, model: 'gpt-5.5-mini' })
+    expect(execFn).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'codex', model: 'gpt-5.5-mini', env: { A: '1' }, baseUrl: 'u', write: false, noRemember: true }),
+      expect.objectContaining({ primer: expect.any(Function) })
+    )
+    expect(runEnv).toHaveBeenCalledWith('codex', 'C:/repo')
+    const deps = execFn.mock.calls[0][1] as { primer: (cwd: string) => Promise<string | null> }
+    expect(await deps.primer('C:/repo')).toBe('PRIMER')
+    expect(primer).toHaveBeenCalledWith('C:/repo')
+  })
+
+  it('an unsafe model id in the request is dropped, not passed', async () => {
+    const { runner, execFn } = setup(async () => okRes('hi'))
+    await runner.ask({ ...REQ, model: 'x; rm' })
+    expect('model' in (execFn.mock.calls[0][0] as ExecRequest)).toBe(false)
+  })
+
+  it('a runEnv or primer that throws is absorbed: the run goes on with no env and no primer', async () => {
+    const runEnv = vi.fn(async () => { throw new Error('proxy down') })
+    const primer = vi.fn(async () => { throw new Error('memory down') })
+    const { runner, execFn } = setup(async () => okRes('hi'), DOC, undefined, undefined, { runEnv, primer })
+    const res = await runner.ask(REQ)
+    expect(res).toMatchObject({ ok: true })
+    expect((execFn.mock.calls[0][0] as ExecRequest).env).toEqual({})
+    const deps = execFn.mock.calls[0][1] as { primer: (cwd: string) => Promise<string | null> }
+    expect(await deps.primer('C:/repo')).toBeNull()
+  })
+
+  it('a cancel while runEnv is working answers cancelled and never starts the agent', async () => {
+    let release!: () => void
+    const runEnv = vi.fn(() => new Promise<{ env: Record<string, string> }>((r) => { release = () => r({ env: {} }) }))
+    const { runner, execFn } = setup(async () => okRes('hi'), DOC, undefined, undefined, { runEnv })
+    const p = runner.ask(REQ)
+    await vi.waitFor(() => expect(runEnv).toHaveBeenCalled())
+    runner.cancel('a1')
+    release()
+    expect(await p).toMatchObject({ ok: false, cancelled: true })
+    expect(execFn).not.toHaveBeenCalled()
+  })
+
+  it('a missing agent CLI (ENOENT) answers agentMissingMessage at once', async () => {
+    const { runner } = setup(async () => ({ ok: false, error: 'spawn codex ENOENT' }) as ExecResult, DOC, undefined, undefined, { agent: () => 'codex' })
+    expect(await runner.ask(REQ)).toEqual({ askId: 'a1', ok: false, error: "Codex isn't installed. Choose another agent in Settings › Lumopolis." })
+  })
+
+  it('names each agent the way Settings does, and PowerShell "not recognized" counts as missing', async () => {
+    expect(agentMissingMessage('claude')).toBe("Claude Code isn't installed. Choose another agent in Settings › Lumopolis.")
+    expect(agentMissingMessage('gemini')).toBe("Gemini CLI isn't installed. Choose another agent in Settings › Lumopolis.")
+    const { runner } = setup(async () => ({ ok: false, error: "The term 'agy' is not recognized as the name of a cmdlet" }) as ExecResult, DOC, undefined, undefined, { agent: () => 'gemini' })
+    expect(await runner.ask(REQ)).toMatchObject({ ok: false, error: agentMissingMessage('gemini') })
+  })
+
+  it('adds the primer the run carried (chars / 4) to the token estimate', async () => {
+    const { runner, execFn } = setup(async () => ({ ok: true, output: 'x'.repeat(400), primerChars: 800 }) as ExecResult)
+    const res = await runner.ask(REQ)
+    const prompt = (execFn.mock.calls[0][0] as ExecRequest).task
+    expect(res).toMatchObject({ ok: true, tokens: Math.ceil(prompt.length / 4) + 100 + 200 })
+  })
+
+  it('an answer that cites a label nobody sent cites nothing', async () => {
+    const { runner } = setup(async () => okRes('It is a tool [E9].'))
+    const r = await runner.ask(REQ)
+    expect(r.ok && r.cited).toEqual({})
   })
 
   it('honours a custom timeout', async () => {

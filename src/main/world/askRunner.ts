@@ -3,7 +3,8 @@
 import { parseAnswer } from '../../shared/world/answerProtocol'
 import { estimateTokens } from '../../shared/world/tokens'
 import type { AskRequest, AskResult, Evidence, WorldDoc, WorldReadResult } from '../../shared/world/types'
-import type { ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
+import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
+import { isSafeModelId } from '../modelCatalog'
 import { buildAskPrompt, summarize } from './askContext'
 import type { WorldClient } from './worldClient'
 
@@ -11,6 +12,12 @@ export interface AskRunnerDeps {
   exec: (req: ExecRequest, deps: ExecDeps) => Promise<ExecResult>
   execDeps: ExecDeps
   client: Pick<WorldClient, 'get' | 'read'>
+  /** The agent every ask runs on (the Lumopolis agent setting). */
+  agent(): ExecAgent
+  /** The environment (and, for Codex, the proxy base URL) a run in `cwd` gets. A failure here never blocks a question. */
+  runEnv(agent: ExecAgent, cwd: string): Promise<{ env: Record<string, string>; baseUrl?: string }>
+  /** The memory primer for the project folder; null for none. A failure never blocks a question. */
+  primer(cwd: string): Promise<string | null>
   timeoutMs?: number
   /** How long loading the stored world may take before the ask gives up. Default 15 s. */
   getTimeoutMs?: number
@@ -34,6 +41,12 @@ const NOT_MAPPED = 'This project has not been mapped yet.'
 /** Shown for any failure to load the stored world (host down, restarting or too slow): never the raw error. */
 export const MAP_FAILED = "Lumopolis couldn't load this project's map. Try again."
 export const DEFAULT_GET_TIMEOUT_MS = 15_000
+
+const AGENT_NAMES: Record<ExecAgent, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' }
+/** Shown when the chosen agent's CLI is not installed. */
+export const agentMissingMessage = (agent: ExecAgent): string => `${AGENT_NAMES[agent]} isn't installed. Choose another agent in Settings › Lumopolis.`
+/** True when a failed run says the agent's program could not be found. */
+export const isMissingCli = (error: string | undefined): boolean => /ENOENT|is not recognized as/i.test(error ?? '')
 
 /** `p`, or a rejection once `ms` pass or `signal` aborts, whichever comes first. */
 const bounded = <T>(p: Promise<T>, ms: number, signal: AbortSignal): Promise<T> =>
@@ -83,20 +96,34 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       const { prompt, labels } = buildAskPrompt({
         question: req.question, doc, selection: req.selection, cameraRegion: req.cameraRegion, matches, summary: req.summary
       })
+      const agent = deps.agent()
+      let run: { env: Record<string, string>; baseUrl?: string } = { env: {} }
+      try {
+        run = await deps.runEnv(agent, root)
+      } catch {
+        // A broken proxy must not block a question: the run goes direct.
+      }
+      if (ctl.signal.aborted) return cancelled()
       let res: ExecResult
       try {
         res = await deps.exec(
-          { task: prompt, cwd: root, write: false, noRemember: true, timeoutMs: deps.timeoutMs ?? 90_000, signal: ctl.signal },
-          deps.execDeps
+          {
+            task: prompt, agent, cwd: root, write: false, noRemember: true, timeoutMs: deps.timeoutMs ?? 90_000, signal: ctl.signal,
+            ...(isSafeModelId(req.model) ? { model: req.model } : {}),
+            env: run.env,
+            ...(run.baseUrl ? { baseUrl: run.baseUrl } : {})
+          },
+          { ...deps.execDeps, primer: async (cwd) => { try { return await deps.primer(cwd) } catch { return null } } }
         )
       } catch (e) {
         if (ctl.signal.aborted) return cancelled()
         res = { ok: false, error: e instanceof Error ? e.message : String(e) } as ExecResult
       }
       if (ctl.signal.aborted) return cancelled()
+      if (!res.ok && isMissingCli(res.error)) return { askId, ok: false, error: agentMissingMessage(agent) }
       if (!res.ok) return { askId, ok: false, error: `Lumopolis couldn't reach your agent: ${res.error ?? 'no answer'}` }
       const answer = parseAnswer(res.output, doc, labels)
-      return { askId, ok: true, answer, summary: summarize(req.summary, req.question, answer.text), cited: citedLabels(answer.text, labels), tokens: estimateTokens(prompt) + estimateTokens(res.output) }
+      return { askId, ok: true, answer, summary: summarize(req.summary, req.question, answer.text), cited: citedLabels(answer.text, labels), tokens: estimateTokens(prompt) + estimateTokens(res.output) + Math.ceil(res.primerChars / 4) }
     } finally {
       byAsk.delete(askId)
       if (byRoot.get(root) === askId) byRoot.delete(root)

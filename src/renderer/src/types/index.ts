@@ -702,9 +702,9 @@ export interface TermpolisAPI {
   worldAskCancel: (askId: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis: draft a new design world (a planned system, keyed design:<id>) from a description; `cancelKey`
    *  (draft:<token>) lets worldDesignCancel stop it before its design key is known. */
-  worldDesignDraft: (description: string, cancelKey?: string) => Promise<IpcResponse<DesignDraftResult>>
+  worldDesignDraft: (description: string, cancelKey?: string, model?: string) => Promise<IpcResponse<DesignDraftResult>>
   /** Lumopolis: one conversational change to a design; `summary` is the running summary the last call returned. */
-  worldDesignRefine: (key: string, message: string, summary: string) => Promise<IpcResponse<DesignRefineResult>>
+  worldDesignRefine: (key: string, message: string, summary: string, model?: string) => Promise<IpcResponse<DesignRefineResult>>
   /** Lumopolis: stop a running draft (draft:<token>) or refine (design:<id>); true when one was running. */
   worldDesignCancel: (key: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis: a stored design world. */
@@ -727,10 +727,10 @@ export interface TermpolisAPI {
   worldTouchSource: (key: string) => Promise<IpcResponse<WorldEntry | null>>
   /** Lumopolis Build it: link the design to the folder; answers the first prompt for the agent terminal. */
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => Promise<IpcResponse<BuildItResult>>
-  /** Lumopolis settings: whether the world compiler may ask Claude's cheapest model (Haiku) to describe parts. */
-  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean }>>
+  /** Lumopolis settings: whether the world compiler may ask the Lumopolis agent's cheapest model to describe parts. */
+  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldAgent: 'claude' | 'codex' | 'gemini' }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */
-  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean }) => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean }>>
+  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini' }) => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldAgent: 'claude' | 'codex' | 'gemini' }>>
   onWorldProgress: (cb: (e: WorldProgressEvent) => void) => () => void
   onWorldUpdated: (cb: (e: WorldUpdatedEvent) => void) => () => void
   /** Export the full brain (memories + graph + learning stores + code graph) to a chosen .zip. */

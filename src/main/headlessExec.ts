@@ -94,6 +94,8 @@ export interface ExecRequest {
    *  another machine started gets this machine's memory and code index, read-only, and can't
    *  reach terminals, memory writes or other machines. */
   linkedJob?: string
+  /** Codex only: the base URL its requests go through (the token proxy), as `-c openai_base_url="<url>"`. Other agents ignore it. */
+  baseUrl?: string
   /** Variables set on top of the agent's environment. */
   env?: Record<string, string>
   /** Aborting stops the run, its whole process tree included. */
@@ -271,7 +273,7 @@ export function execCommand(
   model: string | undefined,
   write: boolean,
   timeoutMs: number = EXEC_DEFAULT_TIMEOUT_MS,
-  opts: { linkedJob?: LinkedJobArgs; cwd?: string } = {},
+  opts: { linkedJob?: LinkedJobArgs; cwd?: string; baseUrl?: string } = {},
 ): { bin: string; args: string[] } {
   const job = opts.linkedJob
   if (agent === 'codex') {
@@ -292,6 +294,7 @@ export function execCommand(
       ...(job && write ? CODEX_LINKED_WRITE_ARGS : []),
       ...(job?.noPersist ? [CODEX_NO_PERSIST] : []),
       ...(opts.cwd ? ['-C', opts.cwd] : []),
+      ...(opts.baseUrl ? ['-c', `openai_base_url=${JSON.stringify(opts.baseUrl)}`] : []),
     )
     return { bin: base.bin, args }
   }
@@ -404,6 +407,7 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
   const { bin, args } = execCommand(agent, req.model, req.write === true, timeoutMs, {
     ...(linkedJob ? { linkedJob } : {}),
     ...(req.cwd ? { cwd: req.cwd } : {}),
+    ...(req.baseUrl ? { baseUrl: req.baseUrl } : {}),
   })
   // Only what this run has, so deliver's options never carry an explicit undefined.
   const extra = {

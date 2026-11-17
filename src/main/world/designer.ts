@@ -9,7 +9,9 @@ import { join } from 'node:path'
 import { applyDesignPatch, DESIGN_PROTOCOL, emptyDesignDoc, parseDesignReply, type DesignOp, type DesignPatchResult, type DesignPlacer, type DesignReply } from '../../shared/world/designPatch'
 import { estimateTokens } from '../../shared/world/tokens'
 import type { DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
-import type { ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
+import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
+import { isSafeModelId } from '../modelCatalog'
+import { agentMissingMessage, isMissingCli } from './askRunner'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
 import { createKeyedLock } from './keyedLock'
 import { districtRadius, layoutWorld, placeBuilding } from './layout'
@@ -23,6 +25,10 @@ export interface DesignerDeps {
   registry: SourceRegistry
   /** Parent of the per-design working folders (<userData>/world/designs). */
   designsDir: string
+  /** The agent every design run uses (the Lumopolis agent setting). */
+  agent(): ExecAgent
+  /** The environment (and, for Codex, the proxy base URL) a run in `cwd` gets. A failure never blocks a design. */
+  runEnv(agent: ExecAgent, cwd: string): Promise<{ env: Record<string, string>; baseUrl?: string }>
   newId(): string
   now?(): number
   timeoutMs?: number
@@ -39,8 +45,8 @@ export interface ProposeResult {
 
 export interface Designer {
   /** `cancelKey` (draft:<token>, from the renderer) lets cancel() stop a draft whose design key is not known yet. */
-  draft(description: string, cancelKey?: string): Promise<DesignDraftResult>
-  refine(key: string, message: string, summary: string): Promise<DesignRefineResult>
+  draft(description: string, cancelKey?: string, model?: string): Promise<DesignDraftResult>
+  refine(key: string, message: string, summary: string, model?: string): Promise<DesignRefineResult>
   /** Applies an agent's design ops directly (no agent run): to the named design, or to a new one linked to a folder. */
   propose(target: ProposeTarget, ops: unknown[]): Promise<ProposeResult>
   /** Stops the running draft (by its cancel key) or refine (by its design key); false when none runs. */
@@ -152,7 +158,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
   const now = (): number => (deps.now ? deps.now() : Date.now())
 
   /** Makes the design's folder, runs the agent there and parses its reply. */
-  const run = async (key: string, cwd: string, task: string): Promise<DesignReply & { tokens: number }> => {
+  const run = async (key: string, cwd: string, task: string, model?: string): Promise<DesignReply & { tokens: number }> => {
     try {
       await mkdir(cwd, { recursive: true })
     } catch {
@@ -162,16 +168,30 @@ export function createDesigner(deps: DesignerDeps): Designer {
     const ctl = new AbortController()
     running.set(key, ctl)
     try {
+      const agent = deps.agent()
+      let route: { env: Record<string, string>; baseUrl?: string } = { env: {} }
+      try {
+        route = await deps.runEnv(agent, cwd)
+      } catch {
+        // A broken proxy must not block a design: the run goes direct.
+      }
+      if (ctl.signal.aborted) throw new DesignFailure(DESIGN_REPLACED)
       let res: ExecResult
       try {
         res = await deps.exec(
-          { task, cwd, write: false, noRemember: true, noPrimer: true, timeoutMs: deps.timeoutMs ?? DEFAULT_DESIGN_TIMEOUT_MS, signal: ctl.signal },
+          {
+            task, agent, cwd, write: false, noRemember: true, noPrimer: true, timeoutMs: deps.timeoutMs ?? DEFAULT_DESIGN_TIMEOUT_MS, signal: ctl.signal,
+            ...(isSafeModelId(model) ? { model } : {}),
+            env: route.env,
+            ...(route.baseUrl ? { baseUrl: route.baseUrl } : {})
+          },
           deps.execDeps
         )
       } catch {
         throw new DesignFailure(ctl.signal.aborted ? DESIGN_REPLACED : DESIGN_AGENT_FAILED)
       }
       if (ctl.signal.aborted) throw new DesignFailure(DESIGN_REPLACED)
+      if (!res.ok && isMissingCli(res.error)) throw new DesignFailure(agentMissingMessage(agent))
       if (!res.ok) throw new DesignFailure(DESIGN_AGENT_FAILED)
       return { ...parseDesignReply(res.output), tokens: estimateTokens(task) + estimateTokens(res.output) }
     } finally {
@@ -223,10 +243,10 @@ export function createDesigner(deps: DesignerDeps): Designer {
   }
 
   return {
-    async draft(description, cancelKey) {
+    async draft(description, cancelKey, model) {
       const id = deps.newId()
       const key = `design:${id}`
-      const reply = await run(cancelKey ?? key, join(deps.designsDir, id), buildDesignPrompt(null, description, ''))
+      const reply = await run(cancelKey ?? key, join(deps.designsDir, id), buildDesignPrompt(null, description, ''), model)
       const patch = applyDesignPatch(emptyDesignDoc(key, now()), reply.ops, layoutPlacer)
       if (patch.applied === 0) throw new DesignFailure(DESIGN_EMPTY)
       await save(patch.doc)
@@ -235,11 +255,11 @@ export function createDesigner(deps: DesignerDeps): Designer {
       return { key, doc: patch.doc, text: reply.text, tokens: reply.tokens }
     },
 
-    async refine(key, message, summary) {
+    async refine(key, message, summary, model) {
       const { id, doc } = await open(key)
       // The agent run holds no lock (it can take minutes). Its ops are applied to the design as it is
       // after the run, under the design's lock, so a propose saved meanwhile is kept, not overwritten.
-      const reply = await run(key, join(deps.designsDir, id), buildDesignPrompt(doc, message, summary))
+      const reply = await run(key, join(deps.designsDir, id), buildDesignPrompt(doc, message, summary), model)
       const { patch, out } = await designLock(key, () => mutate(key, reply.ops))
       return {
         doc: out, text: reply.text, applied: patch.applied, skipped: patch.skipped.length + reply.dropped,

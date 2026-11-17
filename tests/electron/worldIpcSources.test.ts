@@ -316,7 +316,7 @@ describe('registerWorldIpc design cancel and draft cancel key', () => {
     const d = fake()
     const s = setup({}, d)
     await s.invoke('world:design-draft', { description: 'A shop', cancelKey: 'draft:t1' })
-    expect(d.draft).toHaveBeenCalledWith('A shop', 'draft:t1')
+    expect(d.draft).toHaveBeenCalledWith('A shop', 'draft:t1', undefined)
     expect(await s.invoke('world:design-draft', { description: 'A shop', cancelKey: 'design:x' })).toEqual({ success: false, error: 'cancelKey must be draft:<id>' })
     expect(d.draft).toHaveBeenCalledTimes(1)
   })

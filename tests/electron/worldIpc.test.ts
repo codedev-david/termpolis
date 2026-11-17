@@ -84,6 +84,14 @@ describe('registerWorldIpc', () => {
     expect(settings.set).toHaveBeenLastCalledWith({})
   })
 
+  it('world:settings-set allowlists worldAgent: a known agent passes, anything else is dropped', async () => {
+    const { invoke, settings } = setup()
+    await invoke('world:settings-set', { worldAgent: 'codex' })
+    expect(settings.set).toHaveBeenLastCalledWith({ worldAgent: 'codex' })
+    await invoke('world:settings-set', { worldAgent: 'llama' })
+    expect(settings.set).toHaveBeenLastCalledWith({})
+  })
+
   it('world:settings-set hands the new setting to the live world host after storing it', async () => {
     const { invoke, settings, client } = setup()
     await invoke('world:settings-set', { worldLabelling: false })
@@ -192,6 +200,15 @@ describe('registerWorldIpc ask handlers', () => {
     expect(asker.ask).toHaveBeenLastCalledWith({ ...GOOD, summary: '' })
   })
 
+  it('world:ask passes a safe model on and drops an unsafe one', async () => {
+    const asker = fakeAsker()
+    const s = setup(undefined, undefined, asker)
+    await s.invoke('world:ask', { ...GOOD, model: 'gpt-5.5-mini' })
+    expect(asker.ask).toHaveBeenLastCalledWith({ ...GOOD, model: 'gpt-5.5-mini' })
+    await s.invoke('world:ask', { ...GOOD, model: 'x; rm' })
+    expect(asker.ask).toHaveBeenLastCalledWith(GOOD)
+  })
+
   it.each([
     ['not an object', 'nope', 'ask request required'],
     ['missing args', undefined, 'ask request required'],
@@ -261,7 +278,20 @@ describe('registerWorldIpc design handlers', () => {
   it('world:design-draft passes the description through', async () => {
     const d = fakeDesigner()
     expect(await withDesigner(d).invoke('world:design-draft', { description: 'A shop' })).toEqual({ success: true, data: draftResult })
-    expect(d.draft).toHaveBeenCalledWith('A shop')
+    expect(d.draft).toHaveBeenCalledWith('A shop', undefined, undefined)
+  })
+
+  it('world:design-draft and world:design-refine pass a safe model on and drop an unsafe one', async () => {
+    const d = fakeDesigner()
+    const s = withDesigner(d)
+    await s.invoke('world:design-draft', { description: 'A shop', cancelKey: 'draft:t1', model: 'gpt-5.5-mini' })
+    expect(d.draft).toHaveBeenLastCalledWith('A shop', 'draft:t1', 'gpt-5.5-mini')
+    await s.invoke('world:design-draft', { description: 'A shop', model: 'x; rm' })
+    expect(d.draft).toHaveBeenLastCalledWith('A shop', undefined, undefined)
+    await s.invoke('world:design-refine', { key: 'design:d1', message: 'm', model: 'opus' })
+    expect(d.refine).toHaveBeenLastCalledWith('design:d1', 'm', '', 'opus')
+    await s.invoke('world:design-refine', { key: 'design:d1', message: 'm', model: '--bad' })
+    expect(d.refine).toHaveBeenLastCalledWith('design:d1', 'm', '', undefined)
   })
 
   it.each([undefined, 'A shop', {}, { description: '' }, { description: '   ' }, { description: 7 }, { description: 'x'.repeat(4001) }])(
@@ -277,9 +307,9 @@ describe('registerWorldIpc design handlers', () => {
     const d = fakeDesigner()
     const s = withDesigner(d)
     expect(await s.invoke('world:design-refine', { key: 'design:d1', message: 'Add a cache', summary: 'Q: a' })).toEqual({ success: true, data: refineResult })
-    expect(d.refine).toHaveBeenCalledWith('design:d1', 'Add a cache', 'Q: a')
+    expect(d.refine).toHaveBeenCalledWith('design:d1', 'Add a cache', 'Q: a', undefined)
     await s.invoke('world:design-refine', { key: 'design:d1', message: 'x'.repeat(4000) })
-    expect(d.refine).toHaveBeenLastCalledWith('design:d1', 'x'.repeat(4000), '')
+    expect(d.refine).toHaveBeenLastCalledWith('design:d1', 'x'.repeat(4000), '', undefined)
   })
 
   it.each([

@@ -369,7 +369,7 @@ describe('DesignStart', () => {
     fireEvent.change(box(), { target: { value: '  A small shop with a cart  ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
     await settle()
-    expect(api.worldDesignDraft).toHaveBeenCalledWith('A small shop with a cart', expect.stringMatching(/^draft:[A-Za-z0-9][A-Za-z0-9-]*$/))
+    expect(api.worldDesignDraft).toHaveBeenCalledWith('A small shop with a cart', expect.stringMatching(/^draft:[A-Za-z0-9][A-Za-z0-9-]*$/), undefined)
     expect(props.onDrafted).toHaveBeenCalledWith('design:new')
   })
 
@@ -387,7 +387,7 @@ describe('DesignStart', () => {
     expect(api.worldDesignDraft).not.toHaveBeenCalled()
     fireEvent.keyDown(box(), { key: 'Enter', ctrlKey: true })
     await settle()
-    expect(api.worldDesignDraft).toHaveBeenCalledWith('A shop with a cart', expect.any(String))
+    expect(api.worldDesignDraft).toHaveBeenCalledWith('A shop with a cart', expect.any(String), undefined)
   })
 
   it('shows the mic listening, transcribing and its error', () => {
@@ -412,6 +412,7 @@ describe('DesignStart', () => {
     fireEvent.change(box(), { target: { value: 'A shop' } })
     fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
     expect(screen.getByRole('status')).toHaveTextContent('Drafting your design…')
+    await settle()
     // Ctrl+Enter while drafting starts nothing new.
     fireEvent.keyDown(box(), { key: 'Enter', ctrlKey: true })
     expect(api.worldDesignDraft).toHaveBeenCalledTimes(1)

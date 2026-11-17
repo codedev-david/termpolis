@@ -341,6 +341,22 @@ describe('headlessExec/runHeadless', () => {
     expect(args).not.toContain('-C')
   })
 
+  it('runHeadless(codex, baseUrl) passes -c openai_base_url="..." before the prompt token; claude and gemini ignore baseUrl', async () => {
+    const url = 'http://127.0.0.1:9/x'
+    const deliver = okDeliver('ok')
+    await runHeadless({ task: 't', agent: 'codex', baseUrl: url }, { deliver })
+    const [, args] = (deliver as ReturnType<typeof vi.fn>).mock.calls[0]
+    const i = (args as string[]).indexOf('-c')
+    expect((args as string[]).slice(i, i + 2)).toEqual(['-c', 'openai_base_url="http://127.0.0.1:9/x"'])
+    expect(i).toBeLessThan((args as string[]).indexOf(PROMPT_TOKEN))
+    expect(execCommand('codex', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, {}).args).not.toContain('-c')
+    for (const agent of ['claude', 'gemini'] as const) {
+      const d = okDeliver('ok')
+      await runHeadless({ task: 't', agent, baseUrl: url }, { deliver: d })
+      expect(JSON.stringify((d as ReturnType<typeof vi.fn>).mock.calls[0][1])).not.toContain('openai_base_url')
+    }
+  })
+
   it('hands deliver a linked job\'s environment and abort signal', async () => {
     const deliver = okDeliver('ok')
     const signal = new AbortController().signal

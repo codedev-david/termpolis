@@ -4090,8 +4090,8 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(r).toMatchObject({ success: true, data: { askId: 'a1', ok: true, answer: { text: 'It is a tool.' } } })
     const [req, deps] = world.runHeadless.mock.calls.at(-1) as [any, any]
     expect(req).toMatchObject({ cwd: '/repos/x', write: false, noRemember: true })
-    expect(req.agent).toBeUndefined()
-    expect(deps.primer).toBeUndefined()
+    expect(req.agent).toBe('claude')
+    expect(deps.primer).toEqual(expect.any(Function))
     expect(deps.deliver).toEqual(expect.any(Function))
     expect(await invoke('world:ask-cancel', { askId: 'a1' })).toEqual({ success: true, data: true })
   })
@@ -4105,7 +4105,7 @@ describe('Lumopolis world wiring in index.ts', () => {
       expect(req).toMatchObject({ write: false, noRemember: true, noPrimer: true, timeoutMs: 90_000 })
       expect(require('path').dirname(req.cwd)).toBe(designs)
       expect(require('path').basename(req.cwd)).toMatch(/^[0-9a-f-]{36}$/)
-      expect(req.agent).toBeUndefined()
+      expect(req.agent).toBe('claude')
       expect(deps.deliver).toEqual(expect.any(Function))
     } finally {
       await require('fs/promises').rm(req.cwd, { recursive: true, force: true })
@@ -4116,7 +4116,7 @@ describe('Lumopolis world wiring in index.ts', () => {
   })
 
   it('registers the Lumopolis settings pair over the world settings store', async () => {
-    expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true, worldSpeakAnswers: false } })
+    expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true, worldSpeakAnswers: false, worldAgent: 'claude' } })
     expect(await invoke('world:settings-set', 'nope')).toEqual({ success: false, error: 'settings patch required' })
   })
 
@@ -4202,7 +4202,37 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(await deps.claudeExec('claude', [], { timeoutMs: 1 })).toEqual({ stdout: '', code: 1 })
 
     await deps.run({ task: 'json please', agent: 'codex', write: false })
-    expect(world.runHeadless).toHaveBeenCalledWith({ task: 'json please', agent: 'codex', write: false, cwd: '/repos/x' }, { deliver: expect.any(Function) })
+    expect(world.runHeadless).toHaveBeenCalledWith({ task: 'json please', agent: 'codex', write: false, cwd: '/repos/x', env: {} }, { deliver: expect.any(Function) })
+  })
+
+  it('runs the Lumopolis agent from the settings: Codex and Gemini ask and label direct or by proxy URL, and a broken proxy still runs', async () => {
+    const doc = { version: 1, projectKey: 'k', districts: [], buildings: [], edges: [], externals: [], glossary: {}, cargo: {}, processes: {}, tours: [], layout: { seed: 1, positions: {} }, runtimeNames: {}, layers: { plan: [] } }
+    try {
+      for (const agent of ['codex', 'gemini'] as const) {
+        await invoke('world:settings-set', { worldAgent: agent }) // the mock client has no applySettings; the store still changed
+        expect(await invoke('world:settings-get')).toMatchObject({ data: { worldAgent: agent } })
+        world.client.get.mockResolvedValueOnce(doc)
+        world.runHeadless.mockResolvedValueOnce({ ok: true, output: 'It is a tool.' })
+        await invoke('world:ask', { askId: 'a-' + agent, root: '/repos/x', question: 'What is this?', selection: [], cameraRegion: [], model: 'some-model' })
+        const [req] = world.runHeadless.mock.calls.at(-1) as [any]
+        expect(req).toMatchObject({ agent, model: 'some-model', cwd: '/repos/x', env: {} })
+        await world.opts.llm('/repos/x', 'name these')
+        const [lAgent, , deps] = world.makeWorldLlm.mock.calls.at(-1) as [string, string, any]
+        expect(lAgent).toBe(agent)
+        await deps.run({ task: 't', agent, write: false })
+        expect(world.runHeadless).toHaveBeenLastCalledWith(expect.objectContaining({ agent, cwd: '/repos/x', env: {} }), { deliver: expect.any(Function) })
+      }
+      // The proxy route failing for Claude: labelling still runs, without it.
+      await invoke('world:settings-set', { worldAgent: 'claude' })
+      world.proxyEnv = () => { throw new Error('proxy down') }
+      await world.opts.llm('/repos/x', 'name these')
+      const deps = (world.makeWorldLlm.mock.calls.at(-1) as [string, string, any])[2]
+      await deps.run({ task: 't', agent: 'claude', write: false })
+      expect(world.runHeadless).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/repos/x', env: {} }), { deliver: expect.any(Function) })
+    } finally {
+      world.proxyEnv = null
+      await invoke('world:settings-set', { worldAgent: 'claude' })
+    }
   })
 
   it('labelling turned off while the launch env is being built sends nothing (consent at the last moment)', async () => {

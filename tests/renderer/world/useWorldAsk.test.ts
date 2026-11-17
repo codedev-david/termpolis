@@ -45,6 +45,18 @@ describe('useWorldAsk', () => {
     expect(result.current.answer?.text).toBe('Hello')
   })
 
+  it('sends the Default Models id of the Lumopolis agent; "auto" sends no model', async () => {
+    localStorage.setItem('termpolis.agent.modelDefaults', JSON.stringify({ claude: 'opus' }))
+    ;(window as any).termpolis.worldSettingsGet = vi.fn(async () => ({ success: true, data: { worldAgent: 'claude' } }))
+    const { result } = renderHook(() => useWorldAsk(makeViewer() as never, 'r'))
+    await act(async () => { result.current.ask('one') })
+    expect(ask.mock.calls[0][0]).toMatchObject({ model: 'opus' })
+    localStorage.setItem('termpolis.agent.modelDefaults', JSON.stringify({ claude: 'auto' }))
+    await act(async () => { result.current.ask('two') })
+    expect(ask.mock.calls[1][0]).not.toHaveProperty('model')
+    localStorage.clear()
+  })
+
   it('ignores a blank question and does nothing without a viewer', async () => {
     const v = makeViewer()
     const a = renderHook(() => useWorldAsk(v as never, 'r'))
@@ -85,7 +97,7 @@ describe('useWorldAsk', () => {
     const d = deferred<Res>()
     ask.mockImplementationOnce(() => d.promise)
     const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
-    act(() => { result.current.ask('first') })
+    await act(async () => { result.current.ask('first') })
     expect(result.current.state).toBe('thinking')
     const firstId = ask.mock.calls[0][0].askId
     await act(async () => { result.current.ask('second') })
@@ -100,7 +112,7 @@ describe('useWorldAsk', () => {
     const d = deferred<Res>()
     ask.mockImplementationOnce(() => d.promise)
     const { result } = renderHook(() => useWorldAsk(v as never, 'r'))
-    act(() => { result.current.ask('first') })
+    await act(async () => { result.current.ask('first') })
     const id = ask.mock.calls[0][0].askId
     act(() => { result.current.cancel() })
     expect(result.current.state).toBe('idle')
@@ -122,7 +134,7 @@ describe('useWorldAsk', () => {
     const d = deferred<Res>()
     ask.mockImplementationOnce(() => d.promise)
     const { result } = renderHook(() => useWorldAsk(makeViewer() as never, 'r'))
-    act(() => { result.current.ask('q') })
+    await act(async () => { result.current.ask('q') })
     await act(async () => { result.current.cancel() })
     expect(result.current.state).toBe('idle')
   })
@@ -131,7 +143,7 @@ describe('useWorldAsk', () => {
     const d = deferred<Res>()
     ask.mockImplementationOnce(() => d.promise)
     const { result, unmount } = renderHook(() => useWorldAsk(makeViewer() as never, 'r'))
-    act(() => { result.current.ask('q') })
+    await act(async () => { result.current.ask('q') })
     const id = ask.mock.calls[0][0].askId
     unmount()
     expect(cancel).toHaveBeenCalledWith(id)
@@ -183,7 +195,7 @@ describe('useWorldAsk', () => {
     let reject!: (e: unknown) => void
     ask.mockImplementationOnce(() => new Promise((_r, rej) => { reject = rej }))
     const { result } = renderHook(() => useWorldAsk(makeViewer() as never, 'r'))
-    act(() => { result.current.ask('first') })
+    await act(async () => { result.current.ask('first') })
     await act(async () => { result.current.ask('second') })
     await act(async () => { reject(new Error('late boom')) })
     expect(result.current.state).toBe('answered')
@@ -215,7 +227,7 @@ describe('useWorldAsk', () => {
     await act(async () => { result.current.ask('one') })
     const d = deferred<Res>()
     ask.mockImplementationOnce(() => d.promise)
-    act(() => { result.current.ask('two') })
+    await act(async () => { result.current.ask('two') })
     const id = ask.mock.calls[1][0].askId
     rerender({ root: 'B' })
     expect(cancel).toHaveBeenCalledWith(id)
@@ -304,13 +316,13 @@ describe('useWorldAsk on a design', () => {
     // No viewer needed: a design can be changed from the 2D view.
     const { result } = renderHook(() => useWorldAsk(null, 'design:d1', onDesign))
     await act(async () => { result.current.ask(' add Payments ') })
-    expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '')
+    expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '', undefined)
     expect(onDesign).toHaveBeenCalledWith({ projectKey: 'design:d1' })
     expect(result.current.state).toBe('answered')
     expect(result.current.answer).toEqual({ text: 'Added Payments.', actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
     expect(result.current.cited).toEqual({})
     await act(async () => { result.current.ask('rename it') })
-    expect(refine).toHaveBeenLastCalledWith('design:d1', 'rename it', 'sum:1')
+    expect(refine).toHaveBeenLastCalledWith('design:d1', 'rename it', 'sum:1', undefined)
   })
 
   it('a design change adds its tokens to the session', async () => {

@@ -282,7 +282,7 @@ import { registerMemoryAuditIpc } from './memoryAuditIpc'
 import { withBorrowedNotes, withoutUnshareableNotes, type NoteRow } from './claudeNotesShare'
 import { fillVisible, type FillBounds } from './doorFill'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
-import { runHeadless, execRequestFromVerb } from './headlessExec'
+import { runHeadless, execRequestFromVerb, type ExecAgent } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
 import { renderReceiptMarkdown, renderReceiptJson, type SignedReceipt } from './headroom/receiptArtifact'
 import { buildProbes, runBench, checkRegression, baselineFrom, formatBench, type BenchMemory } from './recallBench'
@@ -2627,8 +2627,17 @@ const worldClaudeExec = (root: string): ExecFn => async (cmd, args, opts) => {
     return { stdout: '', code: 1 }
   }
 }
+/** The environment a Lumopolis run of `agent` in `cwd` gets: the token proxy where the agent has a route
+ *  (Claude's launch env, Codex's base URL). Gemini has no proxy route for any Termpolis launch, so it runs
+ *  direct, as a Gemini terminal does. A failure is the caller's to absorb: a run never waits on the proxy. */
+const worldRunEnv = async (agent: ExecAgent, cwd: string): Promise<{ env: Record<string, string>; baseUrl?: string }> => {
+  if (agent === 'claude') return { env: (await claudeLaunchEnv(cwd)) ?? {} }
+  if (agent === 'codex') return { env: {}, baseUrl: (await codexLaunchUrl('lumopolis', undefined)) ?? undefined }
+  return { env: {} }
+}
 // Design worlds (keyed design:<id>): main's own store and the one source registry; the agent runs read-only
-// in an empty folder per design under <userData>/world/designs, with no primer and noRemember like ask.
+// in an empty folder per design under <userData>/world/designs, on the Lumopolis agent, with no primer
+// (there is no project to prime from) and noRemember.
 const worldUserData = app.getPath('userData')
 const worldSources = createSourceRegistry(worldUserData, {
   exists: (p) => fsPromises.access(p).then(() => true, () => false),
@@ -2638,6 +2647,8 @@ const worldDesignStore = createWorldStore(worldUserData)
 const worldDesigner = createDesigner({
   exec: runHeadless,
   execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
+  agent: () => worldSettings.get().worldAgent,
+  runEnv: worldRunEnv,
   store: worldDesignStore,
   registry: worldSources,
   designsDir: join(worldUserData, 'world', 'designs'),
@@ -2652,14 +2663,20 @@ const worldClient = createWorldClient(undefined, {
     return design ? worldDesignStore.load(design) : null
   },
   labelling: () => worldSettings.get().worldLabelling,
-  // Claude's cheapest model (Haiku), whatever agent the user prefers elsewhere: main has no notion of a
-  // default agent (Default Models are per-agent model ids kept by the renderer), and the settings copy
-  // says Claude. makeWorldLlm also runs codex/gemini (through runHeadless read-only) if that changes.
-  llm: (root, prompt) =>
-    makeWorldLlm('claude', cheapModelFor('claude', modelCatalog), {
+  // The cheapest model of the Lumopolis agent (worldAgent): Haiku for Claude, a mini or flash model for the
+  // others. Claude goes through worldClaudeExec; Codex and Gemini through runHeadless, read-only, with the
+  // same run environment (Codex's proxy URL) a question gets.
+  llm: (root, prompt) => {
+    const agent = worldSettings.get().worldAgent
+    return makeWorldLlm(agent, cheapModelFor(agent, modelCatalog), {
       claudeExec: worldClaudeExec(root),
-      run: (req) => runHeadless({ ...req, cwd: root }, { deliver: deliverSecondOpinion }),
-    })(prompt),
+      run: async (req) => {
+        let route: { env: Record<string, string>; baseUrl?: string } = { env: {} }
+        try { route = await worldRunEnv(agent, root) } catch { /* a broken proxy must not stop labelling: it runs direct */ }
+        return runHeadless({ ...req, cwd: root, env: route.env, ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}) }, { deliver: deliverSecondOpinion })
+      },
+    })(prompt)
+  },
   head: async (root) => {
     try {
       const head = (await safeGitAsync(['rev-parse', 'HEAD'], { cwd: root, timeout: 3000 })).trim()
@@ -2704,11 +2721,15 @@ function watchRepoForGraphAndWorld(repoRoot: string): boolean {
     true,
   ))
 }
-// Ask: no primer and noRemember, so a question about the world never reads or writes the brain. deliver is
-// resolved at call time because deliverSecondOpinion is declared further down this file.
+// Ask: the Lumopolis agent runs read-only with the project's memory primer (headlessPrimer) and noRemember, so
+// a question reads the brain but never writes to it. deliver and headlessPrimer are resolved at call time
+// because they are declared further down this file.
 registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAskRunner({
   exec: runHeadless,
   execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
+  agent: () => worldSettings.get().worldAgent,
+  runEnv: worldRunEnv,
+  primer: (cwd) => headlessPrimer(cwd),
   client: worldClient,
 }), worldDesigner, {
   registry: worldSources,
