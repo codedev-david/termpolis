@@ -7,6 +7,7 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { applyDesignPatch, DESIGN_PROTOCOL, emptyDesignDoc, parseDesignReply, type DesignOp, type DesignPatchResult, type DesignPlacer, type DesignReply } from '../../shared/world/designPatch'
+import { estimateTokens } from '../../shared/world/tokens'
 import type { DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import type { ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { MAX_PROMPT_CHARS, MAX_SUMMARY_CHARS, summarize } from './askContext'
@@ -151,7 +152,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
   const now = (): number => (deps.now ? deps.now() : Date.now())
 
   /** Makes the design's folder, runs the agent there and parses its reply. */
-  const run = async (key: string, cwd: string, task: string): Promise<DesignReply> => {
+  const run = async (key: string, cwd: string, task: string): Promise<DesignReply & { tokens: number }> => {
     try {
       await mkdir(cwd, { recursive: true })
     } catch {
@@ -172,7 +173,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
       }
       if (ctl.signal.aborted) throw new DesignFailure(DESIGN_REPLACED)
       if (!res.ok) throw new DesignFailure(DESIGN_AGENT_FAILED)
-      return parseDesignReply(res.output)
+      return { ...parseDesignReply(res.output), tokens: estimateTokens(task) + estimateTokens(res.output) }
     } finally {
       if (running.get(key) === ctl) running.delete(key)
     }
@@ -231,7 +232,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
       await save(patch.doc)
       const title = titleFor(description)
       await register({ kind: 'design', id, title }, title)
-      return { key, doc: patch.doc, text: reply.text }
+      return { key, doc: patch.doc, text: reply.text, tokens: reply.tokens }
     },
 
     async refine(key, message, summary) {
@@ -242,7 +243,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
       const { patch, out } = await designLock(key, () => mutate(key, reply.ops))
       return {
         doc: out, text: reply.text, applied: patch.applied, skipped: patch.skipped.length + reply.dropped,
-        summary: summarize(summary, message, reply.text)
+        summary: summarize(summary, message, reply.text), tokens: reply.tokens
       }
     },
 

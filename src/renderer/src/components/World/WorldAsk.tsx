@@ -14,6 +14,7 @@ import type { WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
 import type { WorldAskLink } from './WorldView'
 import { WorldAnswerPanel } from './WorldAnswer'
+import { formatTokens } from '../../../../shared/world/tokens'
 import { isDesignKey, useWorldAsk } from './useWorldAsk'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 
@@ -38,7 +39,7 @@ const SUGGESTIONS = [
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
 export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link }: WorldAskProps): JSX.Element {
-  const { ask, cancel, retry, replay, dismiss, state, answer, cited, error, playing } = useWorldAsk(viewer, root, link?.setDoc)
+  const { ask, cancel, retry, replay, dismiss, state, answer, cited, error, playing, cost } = useWorldAsk(viewer, root, link?.setDoc)
   const design = isDesignKey(root)
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
@@ -184,6 +185,11 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link }: Worl
           <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
         </button>
       </div>
+      {state === 'answered' && cost && (
+        <div className="max-w-full text-center text-[11px] leading-snug text-[#9ca3af]" data-testid="world-ask-cost">
+          This answer: {formatTokens(cost.answer)} · this session: {formatTokens(cost.session)}
+        </div>
+      )}
       {mic.errorMsg && (
         <div role="alert" className="max-w-full text-xs text-[#f14c4c]">{mic.errorMsg}</div>
       )}

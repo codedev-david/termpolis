@@ -18,6 +18,18 @@ describe('validateWorld', () => {
     if (r.ok) expect(r.doc.buildings).toHaveLength(2)
   })
 
+  it('labelTokens is optional: absent loads, a number is kept, junk is dropped', () => {
+    const none = validateWorld(fresh())
+    expect(none.ok && 'labelTokens' in none.doc).toBe(false)
+    const kept = validateWorld({ ...fresh(), labelTokens: 4200 })
+    expect(kept.ok && kept.doc.labelTokens).toBe(4200)
+    for (const junk of ['lots', NaN, null, {}]) {
+      const r = validateWorld({ ...fresh(), labelTokens: junk })
+      expect(r.ok).toBe(true)
+      expect(r.ok && 'labelTokens' in r.doc).toBe(false)
+    }
+  })
+
   it('rejects non-objects', () => {
     for (const v of [null, undefined, 5, 'x', [], true]) expect(validateWorld(v).ok).toBe(false)
     expect(errorsOf(null)[0]).toMatch(/object/)

@@ -21,6 +21,8 @@ export interface WorldToolbarProps {
   switcher?: ReactNode
   /** Set on a design world: the Build it button. */
   onBuildIt?: () => void
+  /** The last labelling run's cost line, shown small and muted under the controls; absent: nothing. */
+  labelCost?: string
 }
 
 const THEME_NAMES = Object.keys(THEMES) as ThemeName[]
@@ -117,6 +119,9 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         className="px-2 py-1 rounded text-[#999] hover:text-white hover:bg-[#37373d]"
         onClick={props.onClose}
       ><i className="fa-solid fa-xmark" aria-hidden="true" /></button>
+      {props.labelCost && (
+        <div className="basis-full text-[11px] leading-snug text-[#9ca3af]" data-testid="world-label-cost">{props.labelCost}</div>
+      )}
     </div>
   )
 }

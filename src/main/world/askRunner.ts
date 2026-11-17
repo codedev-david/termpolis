@@ -1,6 +1,7 @@
 // Lumopolis ask runner: one question about a stored world, answered by the user's own agent run
 // hidden and read-only through runHeadless. A second ask for the same root cancels the first.
 import { parseAnswer } from '../../shared/world/answerProtocol'
+import { estimateTokens } from '../../shared/world/tokens'
 import type { AskRequest, AskResult, Evidence, WorldDoc, WorldReadResult } from '../../shared/world/types'
 import type { ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { buildAskPrompt, summarize } from './askContext'
@@ -95,7 +96,7 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       if (ctl.signal.aborted) return cancelled()
       if (!res.ok) return { askId, ok: false, error: `Lumopolis couldn't reach your agent: ${res.error ?? 'no answer'}` }
       const answer = parseAnswer(res.output, doc, labels)
-      return { askId, ok: true, answer, summary: summarize(req.summary, req.question, answer.text), cited: citedLabels(answer.text, labels) }
+      return { askId, ok: true, answer, summary: summarize(req.summary, req.question, answer.text), cited: citedLabels(answer.text, labels), tokens: estimateTokens(prompt) + estimateTokens(res.output) }
     } finally {
       byAsk.delete(askId)
       if (byRoot.get(root) === askId) byRoot.delete(root)

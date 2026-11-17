@@ -53,6 +53,16 @@ describe('createAskRunner', () => {
     expect((res as { summary: string }).summary).toContain('What is this?')
   })
 
+  it('reports tokens = estimate(prompt) + estimate(output), and nothing for a failed ask', async () => {
+    const { runner, execFn } = setup(async () => okRes('x'.repeat(400)))
+    const res = await runner.ask(REQ)
+    const prompt = (execFn.mock.calls[0][0] as ExecRequest).task
+    expect(res).toMatchObject({ ok: true, tokens: Math.ceil(prompt.length / 4) + 100 })
+    expect((res as { tokens: number }).tokens).toBeGreaterThanOrEqual(100)
+    const failed = await setup(async () => ({ ok: false, error: 'boom' }) as ExecResult).runner.ask(REQ)
+    expect(failed).not.toHaveProperty('tokens')
+  })
+
   it('answers an ok exec with empty output as an empty answer', async () => {
     const { runner } = setup(async () => okRes(''))
     expect(await runner.ask(REQ)).toMatchObject({ ok: true, answer: { text: '' } })

@@ -305,5 +305,11 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
   if (!isRecord(doc.layers)) e.push('layers must be an object')
   else listOf(ctx, 'layers.plan', doc.layers.plan, (pr, i) => checkProposal(ctx, pr, i, nodes))
 
-  return e.length ? { ok: false, errors: e } : { ok: true, doc: doc as unknown as WorldDoc }
+  if (e.length) return { ok: false, errors: e }
+  // labelTokens is optional and only a number is kept: a stored world without it, or with junk in it, still loads.
+  if (doc.labelTokens !== undefined && !isNum(doc.labelTokens)) {
+    const { labelTokens: _dropped, ...rest } = doc
+    return { ok: true, doc: rest as unknown as WorldDoc }
+  }
+  return { ok: true, doc: doc as unknown as WorldDoc }
 }

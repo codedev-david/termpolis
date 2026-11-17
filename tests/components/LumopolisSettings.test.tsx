@@ -13,6 +13,13 @@ function api(over: Record<string, unknown>) {
 afterEach(() => { delete (window as any).termpolis })
 
 describe('LumopolisSettings', () => {
+  it('explains the cost', () => {
+    api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true } })) })
+    render(<LumopolisSettings />)
+    expect(screen.getByText(/Lumopolis shows an estimate after each one/)).toBeInTheDocument()
+    expect(screen.getByText('Describing parts and asking questions use tokens on your own agent account. Lumopolis shows an estimate after each one.')).toBeInTheDocument()
+  })
+
   it('shows the stored setting and names the cost', async () => {
     api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: false } })) })
     render(<LumopolisSettings />)

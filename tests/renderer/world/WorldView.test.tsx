@@ -956,6 +956,41 @@ describe('WorldView', () => {
   })
 })
 
+describe('WorldView labelling cost line', () => {
+  const withTokens = (labelTokens?: number) => ({ ...minimal(), ...(labelTokens === undefined ? {} : { labelTokens }) })
+  const settings = (worldLabelling: boolean) => vi.fn(async () => ok({ worldLabelling, worldSpeakAnswers: false }))
+
+  it('names the cost of the last update, small, in the toolbar', async () => {
+    bridge({ worldGet: vi.fn(async () => ok(withTokens(42_040))), worldSettingsGet: settings(true) })
+    await mount()
+    expect(screen.getByTestId('world-label-cost')).toHaveTextContent('Describing parts: about 42.0k tokens on the last update')
+  })
+
+  it('says cached at 0', async () => {
+    bridge({ worldGet: vi.fn(async () => ok(withTokens(0))), worldSettingsGet: settings(true) })
+    await mount()
+    expect(screen.getByTestId('world-label-cost')).toHaveTextContent('Describing parts: cached, no tokens')
+  })
+
+  it('shows nothing while labelling is off or for an older world, and stays on when settings cannot be read', async () => {
+    bridge({ worldGet: vi.fn(async () => ok(withTokens(500))), worldSettingsGet: settings(false) })
+    const off = await mount()
+    expect(screen.queryByTestId('world-label-cost')).toBeNull()
+    off.unmount()
+    bridge({ worldGet: vi.fn(async () => ok(withTokens())), worldSettingsGet: settings(true) })
+    const old = await mount()
+    expect(screen.queryByTestId('world-label-cost')).toBeNull()
+    old.unmount()
+    bridge({ worldGet: vi.fn(async () => ok(withTokens(500))), worldSettingsGet: vi.fn(async () => fail('no')) })
+    const failed = await mount()
+    expect(screen.getByTestId('world-label-cost')).toBeInTheDocument()
+    failed.unmount()
+    bridge({ worldGet: vi.fn(async () => ok(withTokens(500))), worldSettingsGet: vi.fn(async () => { throw new Error('down') }) })
+    await mount()
+    expect(screen.getByTestId('world-label-cost')).toBeInTheDocument()
+  })
+})
+
 describe('WorldView layout (visual fidelity)', () => {
   it('is a flex column in the theme background from the first render, toolbar in flow above the map', async () => {
     const get = deferred<Res<WorldDoc | null>>()

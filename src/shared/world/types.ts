@@ -37,6 +37,8 @@ export interface WorldDoc {
   layout: { seed: number; positions: Record<string, [number, number, number]> }
   runtimeNames: Record<string, string[]>             // §5.11 hook
   layers: { plan: Proposal[]; live?: unknown }       // plan authoring arrives in 2.x; live in §5.11
+  /** Estimated tokens the last labelling run spent on model calls (cached replies cost none). Absent on older worlds. */
+  labelTokens?: number
 }
 export type WorldAction =
   | { type: 'focus'; ids: string[] } | { type: 'highlight'; ids: string[] }
@@ -59,14 +61,14 @@ export interface WorldUpdatedEvent { root: string; projectKey: string }
 // ---- Lumopolis ask (renderer <-> main): one question about the world, answered by the user's agent ----
 export interface AskRequest { askId: string; root: string; question: string; selection: string[]; cameraRegion: string[]; summary: string }
 export type AskResult =
-  | { askId: string; ok: true; answer: import('./answerProtocol').WorldAnswer; summary: string; cited: Record<string, Evidence> }
+  | { askId: string; ok: true; answer: import('./answerProtocol').WorldAnswer; summary: string; cited: Record<string, Evidence>; tokens: number }
   | { askId: string; ok: false; error: string; cancelled?: boolean }
 
 // ---- Lumopolis design (renderer <-> main): a planned system drafted and refined by conversation ----
 /** A new design world, keyed design:<id>, and the agent's plain-language note about it. */
-export interface DesignDraftResult { key: string; doc: WorldDoc; text: string }
+export interface DesignDraftResult { key: string; doc: WorldDoc; text: string; tokens: number }
 /** The design after one refine: changes applied and skipped (malformed ones count as skipped), plus the running summary. */
-export interface DesignRefineResult { doc: WorldDoc; text: string; applied: number; skipped: number; summary: string }
+export interface DesignRefineResult { doc: WorldDoc; text: string; applied: number; skipped: number; summary: string; tokens: number }
 
 // ---- Lumopolis sources (renderer <-> main): the worlds the user has opened, newest first ----
 /** Where a world comes from: this project, a folder, a cloned repository, or a design (keyed design:<id>). */

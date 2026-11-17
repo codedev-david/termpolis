@@ -184,6 +184,7 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
     else if (p) labels.edges[id] = edgeFromPrevious(p)
   }
   labels.glossary = { ...previous.glossary, ...fresh.glossary }
+  labels.tokens = fresh.tokens
   return labels
 }
 
@@ -441,7 +442,8 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
     tours: buildTours(g, labels),
     layout,
     runtimeNames,
-    layers: { plan: [] }
+    layers: { plan: [] },
+    labelTokens: labels.tokens
   }
   progress('layout', 100)
   return input.plan ? overlayPlan(doc, input.plan, previous) : doc

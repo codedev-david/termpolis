@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { makeHeadlessDistiller, type ExecFn } from '../mnemeDistiller'
 import type { ExecAgent, ExecRequest, ExecResult } from '../headlessExec'
 import type { ModelCatalog } from '../modelCatalog'
+import { estimateTokens } from '../../shared/world/tokens'
 import type { Claim, Evidence, Floor } from '../../shared/world/types'
 import type { BoundaryKind } from './detectors/common'
 import { cargoOf } from './cargoTypes'
@@ -34,6 +35,8 @@ export interface Labels {
   /** Keyed by edgeId(). */
   edges: Record<string, EdgeLabel>
   glossary: Record<string, string>
+  /** Estimated tokens (prompt plus reply) of the model calls that missed the cache. */
+  tokens: number
 }
 
 export interface LabelDeps {
@@ -357,7 +360,7 @@ const dict = <T>(): Record<string, T> => Object.create(null) as Record<string, T
 const RESERVED_TERMS = new Set(['__proto__', 'constructor', 'prototype'])
 
 export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> {
-  const labels: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict() }
+  const labels: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
   for (const d of g.districts) labels.districts[d.id] = { name: d.name, subtitle: '' }
   for (const b of g.buildings) labels.buildings[b.id] = fallbackBuilding(b)
   for (const e of g.edges) labels.edges[edgeId(e)] = fallbackEdge(e)
@@ -410,6 +413,8 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
     } catch {
       raw = null
     }
+    // The call was made, so its prompt counts even when nothing came back.
+    labels.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
     if (raw === null) continue
     const reply = parseReply(raw)
     if (!reply) continue

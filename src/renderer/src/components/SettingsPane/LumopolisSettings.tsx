@@ -39,6 +39,9 @@ export function LumopolisSettings(): JSX.Element {
 
   return (
     <div className="flex flex-col gap-2" data-testid="lumopolis-settings-list">
+      <p className="text-xs text-[#9ca3af] leading-relaxed" data-testid="lumopolis-cost-note">
+        Describing parts and asking questions use tokens on your own agent account. Lumopolis shows an estimate after each one.
+      </p>
       <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="lumopolis-settings">
         <button
           onClick={toggle}

@@ -545,6 +545,39 @@ describe('WorldAsk', () => {
   })
 })
 
+describe('WorldAsk cost line', () => {
+  it('shows the answer and session cost after two answers, and nothing after dismiss', async () => {
+    ask.mockImplementation(async (req: AskRequest) => okRes(req.askId, 'The answer.', { tokens: 1000 }))
+    await submit(makeViewer(), 'one')
+    expect(screen.getByTestId('world-ask-cost')).toHaveTextContent('This answer: about 1.0k tokens · this session: about 1.0k tokens')
+    fireEvent.change(input(), { target: { value: 'two' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    await settle()
+    expect(screen.getByTestId('world-ask-cost')).toHaveTextContent('This answer: about 1.0k tokens · this session: about 2.0k tokens')
+    fireEvent.click(screen.getByRole('button', { name: 'Close answer' }))
+    expect(screen.queryByTestId('world-ask-cost')).toBeNull()
+  })
+
+  it('shows no line before the first answer', async () => {
+    render(<WorldAsk viewer={makeViewer() as never} doc={minimal()} root="r" />)
+    await settle()
+    expect(screen.queryByTestId('world-ask-cost')).toBeNull()
+  })
+
+  it('a design change shows the same line', async () => {
+    const doc = { ...minimal(), projectKey: 'design:d1' }
+    const refine = vi.fn(async () => ({ success: true, data: { doc, text: 'Added.', applied: 1, skipped: 0, summary: 's', tokens: 3150 } }))
+    ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignCancel: vi.fn(), worldSettingsGet: settingsGet }
+    render(<WorldAsk viewer={null} doc={doc} root="design:d1" link={{ onEscape: vi.fn(), setBusy: vi.fn(), setDoc: vi.fn() }} />)
+    await settle()
+    const box = screen.getByPlaceholderText('Change the design…')
+    fireEvent.change(box, { target: { value: 'add' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await settle()
+    expect(screen.getByTestId('world-ask-cost')).toHaveTextContent('This answer: about 3.2k tokens · this session: about 3.2k tokens')
+  })
+})
+
 describe('WorldAsk on a design', () => {
   it('asks for a change to the design, with no suggestions and no viewer needed, and hands the doc to the pane', async () => {
     const doc = { ...minimal(), projectKey: 'design:d1' }

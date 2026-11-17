@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { estimateTokens } from '../../src/shared/world/tokens'
 import type { ModelCatalog } from '../../src/main/modelCatalog'
 import type { ExecResult } from '../../src/main/headlessExec'
 import type { Boundary } from '../../src/main/world/detectors'
@@ -87,8 +88,21 @@ describe('labelWorld', () => {
     expect(deps.llm).toHaveBeenCalledTimes(2)
     const again = await labelWorld(twoDistricts(), deps)
     expect(deps.llm).toHaveBeenCalledTimes(2)
-    expect(again).toEqual(first)
+    expect(first.tokens).toBeGreaterThan(0)
+    expect(again.tokens).toBe(0)
+    expect({ ...again, tokens: 0 }).toEqual({ ...first, tokens: 0 })
     expect(deps.store.size).toBe(2)
+  })
+
+  it('counts the prompt and reply of every uncached call, and the prompt alone when nothing came back', async () => {
+    const llm = vi.fn(async (_prompt: string): Promise<string | null> => GOOD)
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
+    const expected = llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p) + estimateTokens(GOOD), 0)
+    expect(l.tokens).toBe(expected)
+    const none = await labelWorld(twoDistricts(), mkDeps({ llm: vi.fn(async () => null) }))
+    expect(none.tokens).toBeGreaterThan(0)
+    expect(none.tokens).toBeLessThan(expected)
+    expect((await labelWorld(twoDistricts(), mkDeps({ llm: null }))).tokens).toBe(0)
   })
 
   it('maps E labels to evidence, forces inferred, and applies valid model fields', async () => {
@@ -326,7 +340,7 @@ describe('labelWorld', () => {
     const l = await labelWorld(twoDistricts(), deps)
     expect(l.buildings.a.name).toBe('Alpha Hub')
     expect([...deps.store.values()]).toContain(raw)
-    expect(await labelWorld(twoDistricts(), { ...deps, llm: async () => '{}' })).toEqual(l)
+    expect(await labelWorld(twoDistricts(), { ...deps, llm: async () => '{}' })).toEqual({ ...l, tokens: 0 })
   })
 
   it('a bad cached value is a miss; a throwing cache get/set is tolerated', async () => {

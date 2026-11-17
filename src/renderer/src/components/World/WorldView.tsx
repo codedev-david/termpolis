@@ -28,6 +28,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Tour, WorldDoc } from '../../../../shared/world/types'
+import { formatTokens } from '../../../../shared/world/tokens'
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, renderFallback, THEMES } from '../../world/engine'
 import type { LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
@@ -87,6 +88,10 @@ export interface WorldProbe {
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 const baseName = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() as string
 /** A building's or a connection's card, straight from the doc (the 2D view); null when the id names neither. */
+/** The toolbar's line about the last labelling run. */
+const labelCostLine = (tokens: number): string =>
+  tokens > 0 ? `Describing parts: ${formatTokens(tokens)} on the last update` : 'Describing parts: cached, no tokens'
+
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
 export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH }: WorldViewProps): JSX.Element {
@@ -113,6 +118,15 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [building, setBuilding] = useState(false)
+  // Describing parts with AI (Settings): while it is off there is nothing to show the cost of.
+  const [labelling, setLabelling] = useState(true)
+  useEffect(() => {
+    let live = true
+    window.termpolis.worldSettingsGet?.()
+      ?.then((res) => { if (live && res.success) setLabelling(res.data.worldLabelling) })
+      ?.catch(() => undefined)
+    return () => { live = false }
+  }, [doc])
   // The open world: a folder (its key is the resolved root) or a design.
   const target = world.kind === 'root' ? world.root : ''
   const follow = world.kind === 'root' && world.follow
@@ -507,6 +521,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         onClose={onClose}
         switcher={<WorldSwitcher entries={entries} onOpen={(t) => openWorld(t)} onHome={goHome} />}
         onBuildIt={designKey !== null && buildIt && doc ? () => setBuilding(true) : undefined}
+        labelCost={labelling && doc && doc.labelTokens !== undefined ? labelCostLine(doc.labelTokens) : undefined}
       />
       <div ref={stageRef} data-testid="world-stage" style={{ position: 'relative', flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
         {webgl && (

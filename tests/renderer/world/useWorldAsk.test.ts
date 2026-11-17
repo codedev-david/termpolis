@@ -190,6 +190,25 @@ describe('useWorldAsk', () => {
     expect(result.current.error).toBeNull()
   })
 
+  it('keeps the answer cost and a session total; a failed ask adds nothing; a root change resets it', async () => {
+    const v = makeViewer()
+    const { result, rerender } = renderHook(({ root }) => useWorldAsk(v as never, root), { initialProps: { root: 'A' } })
+    expect(result.current.cost).toBeNull()
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'one', { tokens: 1000 }))
+    await act(async () => { result.current.ask('one') })
+    expect(result.current.cost).toEqual({ answer: 1000, session: 1000 })
+    ask.mockImplementationOnce(async () => ({ success: false, error: 'no' }))
+    await act(async () => { result.current.ask('bad') })
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'two', { tokens: 1000 }))
+    await act(async () => { result.current.ask('two') })
+    expect(result.current.cost).toEqual({ answer: 1000, session: 2000 })
+    rerender({ root: 'B' })
+    expect(result.current.cost).toBeNull()
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'three', { tokens: 300 }))
+    await act(async () => { result.current.ask('three') })
+    expect(result.current.cost).toEqual({ answer: 300, session: 300 })
+  })
+
   it('a root change cancels the in-flight ask and resets summary, answer and state', async () => {
     const v = makeViewer()
     const { result, rerender } = renderHook(({ root }) => useWorldAsk(v as never, root), { initialProps: { root: 'A' } })
@@ -292,6 +311,15 @@ describe('useWorldAsk on a design', () => {
     expect(result.current.cited).toEqual({})
     await act(async () => { result.current.ask('rename it') })
     expect(refine).toHaveBeenLastCalledWith('design:d1', 'rename it', 'sum:1')
+  })
+
+  it('a design change adds its tokens to the session', async () => {
+    const refine = vi.fn(async () => ({ success: true, data: { ...refined().data, tokens: 800 } }))
+    ;(window as any).termpolis = { worldDesignRefine: refine, worldDesignCancel: vi.fn() }
+    const { result } = renderHook(() => useWorldAsk(null, 'design:d1'))
+    await act(async () => { result.current.ask('one') })
+    await act(async () => { result.current.ask('two') })
+    expect(result.current.cost).toEqual({ answer: 800, session: 1600 })
   })
 
   it('works without an onDesign handler, and stops a running tour first when there is a viewer', async () => {

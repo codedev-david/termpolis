@@ -250,6 +250,20 @@ describe('compileWorld', () => {
     expect(third.layout.positions['x-codex']).toEqual(first.layout.positions['x-codex'])
   })
 
+  it('copies labels.tokens to doc.labelTokens, and an incremental run reports only its own calls', async () => {
+    const reply = JSON.stringify({ buildings: {} })
+    const llm = vi.fn(async (_prompt: string) => reply)
+    const cost = (): number => llm.mock.calls.reduce((n, [p]) => n + Math.ceil(p.length / 4) + Math.ceil(reply.length / 4), 0)
+    const first = await compileFixture({ label: labelDeps({ llm }) })
+    expect(first.labelTokens).toBeGreaterThan(0)
+    expect(first.labelTokens).toBe(cost())
+    expect((await compileFixture()).labelTokens).toBe(0)
+    llm.mockClear()
+    const again = await compileFixture({ label: labelDeps({ llm }) }, first, ['src/renderer/view.ts'])
+    expect(llm).toHaveBeenCalledTimes(1)
+    expect(again.labelTokens).toBe(cost())
+  })
+
   it('changed=[one file] relabels only that building', async () => {
     const previous = await compileFixture()
     const prev: WorldDoc = JSON.parse(JSON.stringify(previous))

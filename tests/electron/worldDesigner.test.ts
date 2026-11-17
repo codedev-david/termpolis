@@ -135,6 +135,19 @@ describe('createDesigner draft', () => {
   })
 })
 
+describe('createDesigner tokens', () => {
+  it('a draft and a refine report the estimated tokens of the agent call', async () => {
+    const out = reply('Sketched.', DRAFT_OPS)
+    const { designer, execFn } = setup(async () => okRes(out))
+    const draft = await designer.draft('A shop')
+    const task = (execFn.mock.calls[0][0] as ExecRequest).task
+    expect(draft.tokens).toBe(Math.ceil(task.length / 4) + Math.ceil(out.length / 4))
+    const refined = await designer.refine(draft.key, 'Add a mailer', '')
+    const task2 = (execFn.mock.calls[1][0] as ExecRequest).task
+    expect(refined.tokens).toBe(Math.ceil(task2.length / 4) + Math.ceil(out.length / 4))
+  })
+})
+
 describe('createDesigner refine', () => {
   it('refine applies ops, saves, returns counts', async () => {
     const ops = [

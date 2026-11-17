@@ -26,6 +26,8 @@ export interface UseWorldAsk {
   error: string | null
   /** True while the answer's actions (its tour) play in the viewer. */
   playing: boolean
+  /** Estimated tokens of the answer on show and of every answer since this world opened; null before the first. */
+  cost: { answer: number; session: number } | null
 }
 
 /** Shown when the question could not even reach main (the bridge failed): never the raw error. */
@@ -45,6 +47,8 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   const [cited, setCited] = useState<Record<string, Evidence>>({})
   const [error, setError] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
+  const [cost, setCost] = useState<{ answer: number; session: number } | null>(null)
+  const sessionTokens = useRef(0)
   const current = useRef<string | null>(null)
   /** Stops the running question or design change in main (set with it). */
   const stopCurrent = useRef<() => unknown>(noop)
@@ -55,6 +59,11 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   const lastQ = useRef<string | null>(null)
   /** Bumped by every play (and a root change): only the latest play may clear `playing`. */
   const playGen = useRef(0)
+  /** Adds one finished answer's tokens to the session (a failed or cancelled ask adds nothing). */
+  const spend = (tokens: number): void => {
+    sessionTokens.current += tokens
+    setCost({ answer: tokens, session: sessionTokens.current })
+  }
 
   const cancelCurrent = useCallback((): void => {
     const id = current.current
@@ -95,6 +104,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
           if (!res.success) return fail(res.error)
           current.current = null
           summary.current = res.data.summary
+          spend(res.data.tokens)
           onDesignRef.current?.(res.data.doc)
           setAnswer({ text: res.data.text, actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
           setCited({})
@@ -117,6 +127,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
         }
         current.current = null
         summary.current = r.summary
+        spend(r.tokens)
         setAnswer(r.answer)
         setCited(r.cited)
         setState('answered')
@@ -159,6 +170,8 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     lastRoot.current = root
     cancelCurrent()
     summary.current = ''
+    sessionTokens.current = 0
+    setCost(null)
     lastQ.current = null
     playGen.current++
     setPlaying(false)
@@ -168,5 +181,5 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     setState('idle')
   }, [root, cancelCurrent])
 
-  return { ask, cancel, retry, replay, dismiss, state, answer, cited, error, playing }
+  return { ask, cancel, retry, replay, dismiss, state, answer, cited, error, playing, cost }
 }
