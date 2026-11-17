@@ -13,7 +13,7 @@ import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRe
 import { createCameraRig, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, nameBudget, overviewDir, placeLabels, sameArea, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type V3 } from './viewMath'
+import { busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, nameBudget, overviewDir, placeLabels, sameArea, toleratedPick, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
 import type { SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -488,6 +488,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let ranked: NodeRec[] = []
   let edges = new Map<string, EdgeRec>()
   let pickables: THREE.Object3D[] = []
+  // The pick's tolerance boxes (screenBoxes): see there.
+  const boxes: ScreenBox[] = []
+  let boxCount = 0
+  let boxFrame = -1
+  const boxView = new THREE.Matrix4()
+  const boxViewNow = new THREE.Matrix4()
+  const boxRect = [NaN, NaN, NaN, NaN]
+  const corner = new THREE.Vector3()
+  let frameNo = 0
   let labels: LabelRec[] = []
   let ghostMats: THREE.Material[] = []
   let seals: THREE.Mesh[] = []
@@ -530,7 +539,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     })
     world.clear()
     hoverLabels = []
-    nodes = new Map(); edges = new Map(); pickables = []; labels = []; districtRecs.clear(); ghostMats = []; seals = []; fogSprites = []; pulseBalls = []
+    nodes = new Map(); edges = new Map(); pickables = []; boxFrame = -1; labels = []; districtRecs.clear(); ghostMats = []; seals = []; fogSprites = []; pulseBalls = []
     shellCount = 0
     selRing = null
   }
@@ -1169,9 +1178,17 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // ---------------- picking ----------------
   const ray = new THREE.Raycaster()
   const mouse = new THREE.Vector2()
+  /**
+   * What a click or hover at this point picks: what the ray hits (rayPick), or else a building or orb
+   * within PICK_TOLERANCE_PX of it on screen (toleratedPick), so a building a few pixels across in a
+   * big world's overview still takes a click a pixel or two beside it. The probe's pickAt is this.
+   */
   function pick(clientX: number, clientY: number): RenderPick | null {
     const r = renderer.domElement.getBoundingClientRect()
     if (r.width === 0 || r.height === 0) return null
+    return toleratedPick(rayPick(clientX, clientY, r), () => ({ boxes: screenBoxes(r), count: boxCount }), clientX, clientY)
+  }
+  function rayPick(clientX: number, clientY: number, r: DOMRect): RenderPick | null {
     mouse.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
     scene.updateMatrixWorld()
     camera.updateMatrixWorld()
@@ -1201,6 +1218,49 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       }
     }
     return { kind: 'edge', id }
+  }
+
+  // Every building's and orb's projected bounding box, for the pick's tolerance. Kept between picks
+  // (hover picks once a frame, the probe many times at once) and worked out again only when a frame
+  // has been drawn since (the camera, a floor or a rise may have moved) or the view or canvas changed.
+  // The boxes and scratch vectors are reused: no allocation per pick.
+  function screenBoxes(r: DOMRect): ScreenBox[] {
+    boxViewNow.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+    if (boxFrame === frameNo && boxView.equals(boxViewNow) && boxRect[0] === r.left && boxRect[1] === r.top && boxRect[2] === r.width && boxRect[3] === r.height) return boxes
+    boxFrame = frameNo
+    boxView.copy(boxViewNow)
+    boxRect[0] = r.left; boxRect[1] = r.top; boxRect[2] = r.width; boxRect[3] = r.height
+    boxCount = 0
+    for (const o of pickables) {
+      const id = o.userData.nodeId
+      if (typeof id !== 'string') continue
+      const geo = (o as THREE.Mesh).geometry
+      if (!geo.boundingBox) geo.computeBoundingBox()
+      const bb = geo.boundingBox as THREE.Box3
+      let l = Infinity, t = Infinity, rr = -Infinity, b = -Infinity
+      let behind = false
+      for (let k = 0; k < 8 && !behind; k++) {
+        corner.set(k & 1 ? bb.max.x : bb.min.x, k & 2 ? bb.max.y : bb.min.y, k & 4 ? bb.max.z : bb.min.z).applyMatrix4(o.matrixWorld).project(camera)
+        if (corner.z < -1 || corner.z > 1) { behind = true; break }
+        const x = r.left + ((corner.x + 1) / 2) * r.width
+        const y = r.top + ((1 - corner.y) / 2) * r.height
+        if (x < l) l = x
+        if (x > rr) rr = x
+        if (y < t) t = y
+        if (y > b) b = y
+      }
+      if (behind) continue
+      // A building's floors were added one after another: they grow one box.
+      const last = boxCount > 0 ? boxes[boxCount - 1] : null
+      if (last && last.id === id) {
+        last.l = Math.min(last.l, l); last.t = Math.min(last.t, t); last.r = Math.max(last.r, rr); last.b = Math.max(last.b, b)
+        continue
+      }
+      const box = boxes[boxCount] ?? (boxes[boxCount] = { id, l, t, r: rr, b })
+      box.id = id; box.l = l; box.t = t; box.r = rr; box.b = b
+      boxCount++
+    }
+    return boxes
   }
 
   /** Whether the pick ray passes within the line's reach of any segment of its drawn path (world space). */
@@ -1445,6 +1505,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   function animate(): void {
     if (disposed || paused) return
     raf = requestAnimationFrame(animate)
+    frameNo++
     const dt = Math.min(clock.getDelta(), 0.05)
     changes.tick(performance.now()) // wall-clock time: a slow frame rate never stretches a change
     const t = clock.elapsedTime

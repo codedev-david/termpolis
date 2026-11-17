@@ -399,3 +399,39 @@ export function clampIntoView(x: number, y: number, w: number, h: number, w0: nu
   }
   return [axis(x, w, w0), axis(y, h, h0)]
 }
+
+/** How near (client pixels) a click or hover that hits nothing may land to a building or orb and still pick it. */
+export const PICK_TOLERANCE_PX = 6
+
+/** A building's or orb's footprint on screen: its projected bounding box, in client pixels. */
+export interface ScreenBox { id: string; l: number; t: number; r: number; b: number }
+
+/**
+ * The building or orb a pointer at (x, y) that hit nothing is meant for: the one whose box among the
+ * first `count` of `boxes` lies nearest, within `tol` pixels (0 inside it); null when none does. A
+ * tie goes to the earlier box. Small buildings in a big world's overview are a few pixels across, so
+ * a click a pixel or two beside one still opens it.
+ */
+export function nearestBox(boxes: readonly ScreenBox[], count: number, x: number, y: number, tol = PICK_TOLERANCE_PX): string | null {
+  let best: string | null = null
+  let bestD = tol * tol
+  for (let i = 0; i < count; i++) {
+    const b = boxes[i]
+    const dx = x < b.l ? b.l - x : x > b.r ? x - b.r : 0
+    const dy = y < b.t ? b.t - y : y > b.b ? y - b.b : 0
+    const d = dx * dx + dy * dy
+    if (d < bestD || (best === null && d === bestD)) { best = b.id; bestD = d }
+  }
+  return best
+}
+
+/**
+ * A pick with the tolerance: what the ray hit (a building, orb or line) always wins; only when it hit
+ * nothing is the nearest box within `tol` asked for, and `boxes` (projecting them) is only called then.
+ */
+export function toleratedPick<H>(hit: H | null, boxes: () => { boxes: readonly ScreenBox[]; count: number }, x: number, y: number, tol = PICK_TOLERANCE_PX): H | { kind: 'node'; id: string } | null {
+  if (hit !== null) return hit
+  const b = boxes()
+  const id = nearestBox(b.boxes, b.count, x, y, tol)
+  return id === null ? null : { kind: 'node', id }
+}

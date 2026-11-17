@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bottomInset, clampIntoView, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { bottomInset, clampIntoView, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -504,5 +504,56 @@ describe('easeArea', () => {
   it('sameArea looks at every side', () => {
     expect(sameArea(a, { ...a, left: 0.4 })).toBe(true)
     for (const k of ['left', 'top', 'right', 'bottom'] as const) expect(sameArea(a, { ...a, [k]: 1 })).toBe(false)
+  })
+})
+
+describe('nearestBox (the pick tolerance)', () => {
+  const box = (id: string, l: number, t: number, r: number, b: number): ScreenBox => ({ id, l, t, r, b })
+  const small = box('m3', 100, 100, 104, 103) // a building a few pixels across in a big world's overview
+
+  it('picks a building a miss lands within 6 px of, inside it as well', () => {
+    expect(PICK_TOLERANCE_PX).toBe(6)
+    expect(nearestBox([small], 1, 102, 101)).toBe('m3') // inside
+    expect(nearestBox([small], 1, 98, 101)).toBe('m3') // 2 px left
+    expect(nearestBox([small], 1, 102, 97)).toBe('m3') // 3 px above
+    expect(nearestBox([small], 1, 110, 101)).toBe('m3') // exactly 6 px right
+    expect(nearestBox([small], 1, 108, 107)).toBe('m3') // 4, 4 off the corner: 5.7 px
+  })
+
+  it('picks nothing beyond 6 px', () => {
+    expect(nearestBox([small], 1, 110.5, 101)).toBeNull()
+    expect(nearestBox([small], 1, 109, 108)).toBeNull() // 5, 5 off the corner: 7.1 px
+    expect(nearestBox([small], 1, 102, 90)).toBeNull()
+    expect(nearestBox([], 0, 102, 101)).toBeNull()
+  })
+
+  it('takes the nearest of two, and the earlier on a tie', () => {
+    const a = box('a', 100, 100, 104, 104)
+    const b = box('b', 110, 100, 114, 104)
+    expect(nearestBox([a, b], 2, 106, 102)).toBe('a') // 2 px from a, 4 from b
+    expect(nearestBox([a, b], 2, 108.5, 102)).toBe('b') // 4.5 from a, 1.5 from b
+    expect(nearestBox([a, b], 2, 107, 102)).toBe('a') // 3 from each
+    expect(nearestBox([b, a], 2, 107, 102)).toBe('b')
+    // A box inside counts as 0 and beats one only near.
+    expect(nearestBox([a, box('big', 90, 90, 130, 130)], 2, 106, 102)).toBe('big')
+  })
+
+  it('reads only the first `count` boxes (the rest are kept for reuse)', () => {
+    expect(nearestBox([box('gone', 0, 0, 10, 10), small], 1, 102, 101)).toBeNull()
+    expect(nearestBox([small, box('stale', 100, 100, 104, 103)], 1, 102, 101)).toBe('m3')
+  })
+})
+
+describe('toleratedPick', () => {
+  const near = [{ id: 'm3', l: 100, t: 100, r: 104, b: 103 }]
+  it('lets a direct ray hit win over a nearer box, and projects the boxes only on a miss', () => {
+    let projected = 0
+    const boxes = (): { boxes: ScreenBox[]; count: number } => { projected++; return { boxes: near, count: 1 } }
+    expect(toleratedPick({ kind: 'edge', id: 'e1' }, boxes, 102, 101)).toEqual({ kind: 'edge', id: 'e1' })
+    expect(toleratedPick({ kind: 'node', id: 'far' }, boxes, 102, 101)).toEqual({ kind: 'node', id: 'far' })
+    expect(projected).toBe(0)
+    expect(toleratedPick(null, boxes, 98, 101)).toEqual({ kind: 'node', id: 'm3' })
+    expect(toleratedPick(null, boxes, 120, 101)).toBeNull()
+    expect(projected).toBe(2)
   })
 })
