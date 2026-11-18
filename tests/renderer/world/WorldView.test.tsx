@@ -62,6 +62,7 @@ function bridge(over: Record<string, unknown> = {}) {
     worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([])),
     worldGet: vi.fn(async (_root: string): Promise<Res<WorldDoc | null>> => ok(minimal())),
     worldCompile: vi.fn(async (_root: string): Promise<Res<WorldDoc>> => ok(minimal())),
+    worldMapProject: vi.fn(async (root: string) => ok({ key: root, source: { kind: 'project', root }, title: root, lastOpened: 1 } as WorldEntry)),
     worldRelayout: vi.fn(async (_root: string): Promise<Res<WorldDoc>> => ok(minimal())),
     onWorldProgress: vi.fn((cb: (e: WorldProgressEvent) => void) => { progress.add(cb); return () => { progress.delete(cb) } }),
     onWorldUpdated: vi.fn((cb: (e: WorldUpdatedEvent) => void) => { updated.add(cb); return () => { updated.delete(cb) } }),
@@ -912,6 +913,53 @@ describe('WorldView', () => {
     // The doc's projectKey is a sha1 slice (3f9a1c0e7b2d4a68): a person reads the folder name.
     expect(screen.getByTestId('world-project')).toHaveTextContent('my-app')
     expect(screen.getByTestId('world-project')).not.toHaveTextContent('3f9a1c0e7b2d4a68')
+  })
+
+  it('a project mapped from the terminal joins the recent worlds at once (film bug 10)', async () => {
+    const entry: WorldEntry = { key: 'k', source: { kind: 'project', root: '/repo' }, title: 'repo', lastOpened: 1 } as WorldEntry
+    const lists = [ok<WorldEntry[]>([]), ok<WorldEntry[]>([entry])]
+    const b = bridge({
+      worldGet: vi.fn(async () => ok(null)),
+      worldMapProject: vi.fn(async () => ok(entry)),
+      worldSourcesList: vi.fn(async () => lists.shift() ?? ok([entry]))
+    })
+    await mount()
+    expect(b.api.worldMapProject).toHaveBeenCalledWith('/repo')
+    const worlds = screen.getByRole('combobox', { name: 'Worlds' }) as HTMLSelectElement
+    expect([...worlds.options].map((o) => o.textContent)).toContain('repo')
+    fireEvent.change(worlds, { target: { value: [...worlds.options].find((o) => o.textContent === 'Home')?.value } })
+    await settle()
+    expect(screen.queryByText(/No worlds yet/)).toBeNull()
+    expect(screen.getByRole('list', { name: 'Recent worlds' })).toHaveTextContent('repo')
+  })
+
+  it('a world already saved, a failed compile, a refused or failing registration and a world the user picked register nothing more', async () => {
+    let b = bridge({ worldMapProject: vi.fn(async () => ok({})) })
+    await mount()
+    expect(b.api.worldMapProject).not.toHaveBeenCalled() // the world was there already
+    cleanup()
+    b = bridge({ worldGet: vi.fn(async () => ok(null)), worldCompile: vi.fn(async () => fail('no source files found')), worldMapProject: vi.fn(async () => ok({})) })
+    await mount()
+    expect(b.api.worldMapProject).not.toHaveBeenCalled()
+    cleanup()
+    b = bridge({ worldGet: vi.fn(async () => ok(null)), worldMapProject: vi.fn(async () => fail("That folder doesn't look like a project.")) })
+    await mount()
+    expect(b.api.worldMapProject).toHaveBeenCalledTimes(1)
+    expect(b.api.worldSourcesList).toHaveBeenCalledTimes(1) // nothing new to list
+    expect(screen.queryByRole('alert')).toBeNull() // and nothing to tell: the world is shown
+    cleanup()
+    b = bridge({ worldGet: vi.fn(async () => ok(null)), worldMapProject: vi.fn(async () => { throw new Error('ipc') }) })
+    await mount()
+    expect(screen.queryByRole('alert')).toBeNull()
+    cleanup()
+    // A world opened from the list is registered already: mapping it registers nothing.
+    const other: WorldEntry = { key: 'o', source: { kind: 'folder', root: '/other' }, title: 'other', lastOpened: 1 } as WorldEntry
+    b = bridge({ worldGet: vi.fn(async (root: string) => ok(root === '/other' ? null : minimal())), worldMapProject: vi.fn(async () => ok({})), worldSourcesList: vi.fn(async () => ok([other])), worldTouchSource: vi.fn(async () => ok(other)) })
+    await mount()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Worlds' }), { target: { value: 'o' } })
+    await settle()
+    expect(b.api.worldCompile).toHaveBeenCalledWith('/other')
+    expect(b.api.worldMapProject).not.toHaveBeenCalled()
   })
 
   it('without a project folder it shows the home and asks main for no world', async () => {

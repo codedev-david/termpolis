@@ -167,6 +167,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   rootRef.current = worldRoot
   const docRef = useRef<WorldDoc | null>(null)
   docRef.current = doc
+  const followRef = useRef(follow)
+  followRef.current = follow
   /** True after an Esc reset with nothing done since: the next Esc closes. */
   const armedRef = useRef(false)
   const escRef = useRef<() => void>(onClose) // replaced on every render, below
@@ -271,8 +273,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         return api.worldCompile(at).then((c) => {
           if (!live) return
           setMapping(false)
-          if (c.success) setDoc(c.data)
-          else setError(c.error)
+          if (!c.success) { setError(c.error); return }
+          setDoc(c.data)
+          // The terminal's project was just mapped: it joins the recent worlds now, not only when it is
+          // mapped from the home. A folder main refuses (not a project) stays off the list, silently.
+          if (followRef.current) api.worldMapProject(at).then((r) => { if (r.success) refresh() }, () => undefined)
         })
       })
       .catch((e: unknown) => {
@@ -281,7 +286,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         setError(messageOf(e))
       })
     return () => { live = false }
-  }, [worldRoot, designKey, attempt])
+  }, [worldRoot, designKey, attempt, refresh])
 
   // Pushes from main: compile progress, and a saved world (a compile, or a watched change).
   useEffect(() => {
