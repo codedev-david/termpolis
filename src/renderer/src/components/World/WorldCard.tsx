@@ -42,6 +42,8 @@ export interface WorldCardProps {
    * null or left out, the stage less 110 px. Past it the body scrolls under the title and the ×.
    */
   maxHeight?: number | null
+  /** True when a click on the map opened the card: it then lets clicks through for CARD_CLICK_GRACE_MS. */
+  clickThrough?: boolean
 }
 
 /**
@@ -94,18 +96,21 @@ const CARD_CSS = `
 `
 
 /**
- * How long a newly opened card lets clicks through to the map. A double-click's first click opens the
+ * How long a card a map click opened lets clicks through to the map. A double-click's first click opens the
  * card, which can open over the pointer; the second click then has to reach the map, or the building
- * never explodes. 500 ms is the usual system double-click time.
+ * never explodes. 500 ms is the usual system double-click time. A card opened any other way (the tree,
+ * an answer, a bookmark) takes clicks at once.
  */
 export const CARD_CLICK_GRACE_MS = 500
 
-export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, boxRef, maxHeight = null }: WorldCardProps): JSX.Element {
-  const [opening, setOpening] = useState(true)
+export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, boxRef, maxHeight = null, clickThrough = false }: WorldCardProps): JSX.Element {
+  // Only how the card opened counts: a later card shown in it takes clicks at once.
+  const [opening, setOpening] = useState(clickThrough)
   useEffect(() => {
+    if (!opening) return
     const t = setTimeout(() => setOpening(false), CARD_CLICK_GRACE_MS)
     return () => clearTimeout(t)
-  }, [])
+  }, [opening])
   // The service-names editor: the part it edits and what is typed. A new card (another part, or the saved one) closes it.
   const [edit, setEdit] = useState<{ id: string; text: string; was: string; error: boolean } | null>(null)
   useEffect(() => setEdit(null), [html])

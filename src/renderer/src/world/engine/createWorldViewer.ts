@@ -134,8 +134,11 @@ export interface WorldViewerOptions {
   title?: string
   quality?: 'high' | 'low'
   reducedMotion?: boolean
-  /** Receives the inspector card HTML for the selection, or null when nothing is selected. */
-  renderCard?: (html: string | null) => void
+  /**
+   * Receives the inspector card HTML for the selection, or null when nothing is selected. `fromClick` is
+   * true when a click or double-click on the map opened it, so the card can let that double-click through.
+   */
+  renderCard?: (html: string | null, fromClick?: boolean) => void
   /** Pixels on the right that a panel covers (the legend); the city is framed in the rest. */
   rightReserve?: number
   /** Pixels at the bottom that a panel covers (the ask bar); the city is framed above them. */
@@ -321,14 +324,14 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   // ---------------- selection ----------------
   /**
    * Opens what `id` names and, with a renderer, flies to it. `hint` is the kind the 2D list tagged
-   * the item with; it wins when the id names more than one thing.
+   * the item with; it wins when the id names more than one thing. `fromClick`: a click on the map chose it.
    */
-  function select(id: string, instant = reduced, hint?: SelectionKind): Promise<void> {
+  function select(id: string, instant = reduced, hint?: SelectionKind, fromClick = false): Promise<void> {
     const kind = hint !== undefined && kindMatches(id, hint) ? hint : kindOf(id)
     if (!kind) return Promise.resolve()
     selection = { kind, id }
     const { focus, frameIds } = focusFor(selection)
-    renderCard(cardFor(selection))
+    renderCard(cardFor(selection), fromClick)
     emitSelect()
     if (!r3) return Promise.resolve()
     r3.setSelected(kind === 'building' || kind === 'edge' ? id : null)
@@ -457,7 +460,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     const hit = r3.pick(at.x, at.y)
     lastClick = { ...at, hit }
     // A district's slab (the districts tier) focuses the district, as choosing it in the tree does.
-    if (hit) void select(hit.id, reduced, hit.kind === 'district' ? 'district' : undefined)
+    if (hit) void select(hit.id, reduced, hit.kind === 'district' ? 'district' : undefined, true)
     else deselect()
   }
   const onDblClick = (e: MouseEvent): void => {
@@ -470,7 +473,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       exploded = exploded === hit.id ? null : hit.id
       r3.setExploded(exploded)
     }
-    void select(hit.id)
+    void select(hit.id, reduced, undefined, true)
   }
   const onPointerMove = (e: PointerEvent): void => {
     hoverAt = { x: e.clientX, y: e.clientY }

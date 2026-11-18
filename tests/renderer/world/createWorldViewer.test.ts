@@ -19,10 +19,11 @@ function setup(opts: { reducedMotion?: boolean; doc?: WorldDoc } = {}) {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const cards: Card[] = []
+  const fromClicks: boolean[] = []
   const sels: (WorldSelection | null)[] = []
   const viewer = createWorldViewer(host, {
     ...(opts.reducedMotion === undefined ? {} : { reducedMotion: opts.reducedMotion }),
-    renderCard: (html) => { cards.push(html) },
+    renderCard: (html, fromClick) => { cards.push(html); fromClicks.push(fromClick === true) },
   })
   viewer.on('select', (s) => { sels.push(s) })
   viewer.load(opts.doc ?? rich())
@@ -32,7 +33,7 @@ function setup(opts: { reducedMotion?: boolean; doc?: WorldDoc } = {}) {
     return el
   }
   const esc = (): void => { host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) }
-  return { host, viewer, cards, sels, item, esc, lastCard: (): Card | undefined => cards[cards.length - 1] }
+  return { host, viewer, cards, fromClicks, sels, item, esc, lastCard: (): Card | undefined => cards[cards.length - 1] }
 }
 
 let getContext: ReturnType<typeof vi.spyOn>
@@ -515,6 +516,20 @@ describe('WebGL path (stand-in renderer)', () => {
     const flat = createWorldViewer(flatHost)
     flat.load(rich())
     expect(press(flatHost.querySelector('section.world-fallback') as Element, 2)).toBe(true)
+  })
+
+  it('a card opened by a click or double-click on the map says so; one opened any other way does not (fix wave M1)', () => {
+    const { aim, at, fromClicks, viewer } = setup3d()
+    aim({ kind: 'node', id: 'b1' })
+    at('pointerdown'); at('click')
+    expect(fromClicks.pop()).toBe(true)
+    at('dblclick')
+    expect(fromClicks.pop()).toBe(true)
+    void viewer.apply({ type: 'openCard', id: 'b2' }) // an answer's step
+    expect(fromClicks.pop()).toBe(false)
+    aim(null)
+    at('click', 300, 300)
+    expect(fromClicks.pop()).toBe(false) // the card closes: nothing to let clicks through
   })
 
   it('ignores a click that ends a drag', () => {

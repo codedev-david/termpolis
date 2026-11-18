@@ -136,7 +136,12 @@ describe('WorldCard', () => {
   it('lets clicks through for a double-click time after it opens, so a double-click whose first click opened it reaches the map (film bug 6)', () => {
     vi.useFakeTimers()
     try {
-      const { rerender, unmount } = render(<WorldCard html="<h3>A</h3>" onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
+      // A card opened from the tree, an answer or a bookmark takes clicks at once (fix wave M1).
+      const plain = render(<WorldCard html="<h3>P</h3>" onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
+      expect(screen.getByTestId('world-card').style.pointerEvents).toBe('')
+      plain.unmount()
+      expect(vi.getTimerCount()).toBe(0)
+      const { rerender, unmount } = render(<WorldCard html="<h3>A</h3>" clickThrough onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
       const card = screen.getByTestId('world-card')
       expect(CARD_CLICK_GRACE_MS).toBe(500)
       expect(card.style.pointerEvents).toBe('none')
@@ -145,11 +150,11 @@ describe('WorldCard', () => {
       act(() => { vi.advanceTimersByTime(1) })
       expect(card.style.pointerEvents).toBe('')
       // Another part's card in the open card takes clicks at once: it is no new card over the map.
-      rerender(<WorldCard html="<h3>B</h3>" onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
+      rerender(<WorldCard html="<h3>B</h3>" clickThrough onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
       expect(card.style.pointerEvents).toBe('')
       unmount()
       // Closed before the time is up: nothing is left running.
-      const third = render(<WorldCard html="<h3>C</h3>" onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
+      const third = render(<WorldCard html="<h3>C</h3>" clickThrough onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
       third.unmount()
       expect(vi.getTimerCount()).toBe(0)
     } finally {

@@ -122,6 +122,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [progress, setProgress] = useState<{ stage: string; pct: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [card, setCard] = useState<string | null>(null)
+  // Whether a click on the map opened the card; a closed card forgets it, so a tree or legend open never inherits it.
+  const [clickThrough, setClickThrough] = useState(false)
+  useEffect(() => { if (card === null) setClickThrough(false) }, [card])
   /** The evidence a card's button opened, shown under the card until closed or the card changes. */
   const [evidence, setEvidence] = useState<Evidence | null>(null)
   const [layers, setLayersState] = useState<LayerState>(DEFAULT_LAYERS)
@@ -368,9 +371,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     if (!webgl) return
     const v = createWorldViewer(hostRef.current as HTMLDivElement, {
       rightReserve: legendReserve(legendOpenRef.current, widthRef.current),
-      renderCard: (html) => {
+      renderCard: (html, fromClick) => {
         if (html !== null) armedRef.current = false
         setCard(html)
+        setClickThrough(fromClick === true)
       },
     })
     const offSelect = v.on('select', (sel) => { if (sel) armedRef.current = false })
@@ -709,7 +713,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             {busy ? 'Re-laying out…' : notice}
           </div>
         )}
-        {card !== null && <WorldCard boxRef={cardRef} html={card} maxHeight={cardCap} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
+        {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
         {card !== null && evidence !== null && (
           <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 4, maxWidth: 360 }} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1">
             <EvidenceView evidence={evidence} onClose={() => setEvidence(null)} />

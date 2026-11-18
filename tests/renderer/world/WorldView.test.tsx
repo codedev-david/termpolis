@@ -310,12 +310,18 @@ describe('WorldView', () => {
 
     act(() => v.opts.renderCard('<p class="tour-caption">The app talks</p>'))
     expect(screen.getByTestId('world-card')).toHaveTextContent('The app talks')
+    // A card the viewer opened another way takes clicks at once (fix wave M1).
+    expect(screen.getByTestId('world-card').style.pointerEvents).toBe('')
     esc() // a card is open: it clears, the pane stays
     expect(screen.queryByTestId('world-card')).toBeNull()
     expect(onClose).toHaveBeenCalledTimes(1)
     act(() => v.opts.renderCard(null))
     esc()
     expect(onClose).toHaveBeenCalledTimes(2)
+    // A card a map click opened lets clicks through to the map at first (film bug 6).
+    act(() => v.opts.renderCard('<p>Clicked</p>', true))
+    expect(screen.getByTestId('world-card').style.pointerEvents).toBe('none')
+    act(() => v.opts.renderCard(null))
 
     fireEvent.pointerDown(screen.getByTestId('world-canvas-host')) // dragging the map
     esc()
