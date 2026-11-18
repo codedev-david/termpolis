@@ -14,7 +14,7 @@ import {
   makeWorldLlm,
   type LabelDeps
 } from '../../src/main/world/label'
-import { buildLabelPrompt, fenceFor, LABEL_PROMPT_VERSION, MAX_PROMPT_CHARS } from '../../src/main/world/labelPrompt'
+import { buildLabelPrompt, fenceFor, LABEL_PROMPT_VERSION, MAX_PROMPT_CHARS, promptCommandChars } from '../../src/main/world/labelPrompt'
 
 const TICK = '`'
 /** A cited field, as the model must answer it. */
@@ -947,8 +947,68 @@ describe('every building is described (film bug 2)', () => {
     })
     const l = await labelWorld(g, mkDeps({ llm, excerpt: async () => 'x'.repeat(1200) }))
     expect(llm).toHaveBeenCalledTimes(50)
-    for (const [p] of llm.mock.calls) expect(p.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
+    for (const [p] of llm.mock.calls) expect(promptCommandChars(p)).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
     for (const b of buildings) expect(l.buildings[b.id].how.map((c) => c.text)).toEqual([`${b.id} works`])
+  })
+
+  /** A path or key that is all quotes: each one costs two characters in the JSON and two more on a Windows command line. */
+  const quoted = (tail: string): string => `${'"'.repeat(185)}${tail}`
+  const describeAll = vi.fn(async (p: string) => {
+    const ids = [...p.matchAll(/^- "([a-z]\w*)": /gm)].map((m) => m[1])
+    return JSON.stringify({ district: { name: F('Named') }, buildings: Object.fromEntries(ids.map((id) => [id, { how: [{ text: `${id} works`, evidence: ['E1'] }] }])) })
+  })
+
+  it('an edge with hundreds of identifiers lists the first few and a count, so the prompt still fits (fix wave I2)', async () => {
+    const via = Array.from({ length: 500 }, (_, i) => B('ipc', `channel:${String(i).padStart(3, '0')}`, 'src/a.ts', i + 1))
+    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings: [bld('a', 'd', ['src/a.ts']), bld('b', 'd', ['src/b.ts'])], edges: [{ from: 'a', to: 'b', via }] }
+    const llm = vi.fn(async (_p: string) => '{}')
+    await labelWorld(g, mkDeps({ llm }))
+    const [p] = llm.mock.calls[0]
+    expect(p).toContain('"ipc channel:007" (+492 more)')
+    expect(p).not.toContain('channel:008')
+    expect(promptCommandChars(p)).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
+  })
+
+  it('a batch still too big with no excerpts is split in halves; every prompt fits a Windows command line (fix wave I2)', async () => {
+    const buildings = ['a', 'b', 'c'].map((id) => bld(id, 'd', Array.from({ length: 12 }, (_, k) => quoted(`/${id}/f${k}.ts`))))
+    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings, edges: [{ from: 'a', to: 'c', via: [] }, { from: 'c', to: 'a', via: [] }, { from: 'gone', to: 'c', via: [] }] }
+    describeAll.mockClear()
+    const l = await labelWorld(g, mkDeps({ llm: describeAll }))
+    expect(describeAll).toHaveBeenCalledTimes(2)
+    const [first, second] = describeAll.mock.calls.map(([p]) => p)
+    for (const p of [first, second]) expect(promptCommandChars(p)).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
+    // Each half lists its own buildings and the lines they own.
+    expect([...first.matchAll(/^- "([a-z]\w*)": /gm)].map((m) => m[1])).toEqual(['a', 'b'])
+    expect(first).toContain('"e-a--c"')
+    expect([...second.matchAll(/^- "([a-z]\w*)": /gm)].map((m) => m[1])).toEqual(['c'])
+    expect(second).toContain('"e-c--a"')
+    // A line whose from part is outside this re-label rides with its to part.
+    expect(second).toContain('"e-gone--c"')
+    expect(first).not.toContain('"e-gone--c"')
+    for (const id of ['a', 'b', 'c']) expect(l.buildings[id].how.map((c) => c.text)).toEqual([`${id} works`])
+    expect(l.districts.d.name).toBe('Named')
+  })
+
+  it('one building too large to describe is never sent, keeps the names from the code, and asks no model again (fix wave I2)', async () => {
+    const heavy = bld('a', 'd', Array.from({ length: 12 }, (_, k) => quoted(`/a/f${k}.ts`)), Array.from({ length: 12 }, (_, k) => B('ipc', quoted(`k${k}`), 'src/x.ts')))
+    const others = [1, 2, 3, 4].map((i) => bld(`o${i}`, 'o', [`src/o${i}.ts`]))
+    const via = Array.from({ length: 8 }, (_, k) => B('ipc', quoted(`v${k}`), 'src/x.ts'))
+    const g: Grouping = {
+      districts: [{ id: 'd', name: 'D', members: [] }, { id: 'o', name: 'O', members: [] }],
+      buildings: [heavy, ...others],
+      edges: others.map((o) => ({ from: 'a', to: o.id, via }))
+    }
+    const deps = mkDeps({ llm: describeAll })
+    describeAll.mockClear()
+    const l = await labelWorld(g, deps)
+    // District d's only batch is the heavy building: nothing sent for it; district o is asked as usual.
+    expect(describeAll.mock.calls.map(([p]) => [...p.matchAll(/^- "([a-z]\w*)": /gm)].map((m) => m[1]).join(' ')).sort()).toEqual(['o1 o2 o3', 'o4'])
+    expect(l.buildings.a).toMatchObject({ name: 'a-name', nameInferred: false, how: [], why: [], stack: [] })
+    expect(l.districts.d.name).toBe('D')
+    // The next pass answers every batch from the label cache: no model is asked, so no labelled follow-up runs.
+    const next = vi.fn(async (_p: string) => null)
+    await labelWorld(g, { ...deps, llm: next })
+    expect(next).not.toHaveBeenCalled()
   })
 
   it('every building of a batch gets its own excerpts, even when the first building has big files', async () => {

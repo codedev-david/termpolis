@@ -11,7 +11,7 @@ import type { Claim, Evidence, Floor } from '../../shared/world/types'
 import type { BoundaryKind } from './detectors/common'
 import { cargoOf } from './cargoTypes'
 import { edgeId, type GroupBuilding, type GroupEdge, type Grouping } from './group'
-import { buildLabelPrompt, LABEL_PROMPT_VERSION, MAX_PROMPT_CHARS, type BatchExcerpt, type LabelBatch } from './labelPrompt'
+import { buildLabelPrompt, LABEL_PROMPT_VERSION, MAX_PROMPT_CHARS, promptCommandChars, type BatchExcerpt, type LabelBatch } from './labelPrompt'
 
 export interface BuildingLabel {
   name: string
@@ -495,13 +495,16 @@ async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => 
   })
   let batch = mk()
   let prompt = buildLabelPrompt(batch)
-  // A batch's listed files, boundaries and lines are capped, so dropping excerpts from the end
-  // always brings it under the cap.
-  while (prompt.length > MAX_PROMPT_CHARS && excerpts.length > 0) {
+  const over = (): boolean => promptCommandChars(prompt) > MAX_PROMPT_CHARS
+  while (over() && excerpts.length > 0) {
     evidence.delete((excerpts.pop() as BatchExcerpt).label)
     batch = mk()
     prompt = buildLabelPrompt(batch)
   }
+  // Still too big with no excerpts (long or quote-heavy names): never sent. Its halves are asked instead,
+  // down to one building; a building that alone does not fit asks nothing, now or on any later pass, and
+  // keeps the names taken from the code.
+  if (over()) return buildings.length > 1 ? labelHalves(p, deps, llm) : out
   const key = sha(`${LABEL_PROMPT_VERSION}\n${prompt}`)
 
   try {
@@ -530,6 +533,31 @@ async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => 
   return out
 }
 
+/** Labels a batch too big for one prompt as two smaller ones, one after the other. */
+async function labelHalves(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<Labels> {
+  const all = new Set(p.buildings.map((b) => b.id))
+  const half = (buildings: GroupBuilding[], first: boolean): Planned => {
+    const ids = new Set(buildings.map((b) => b.id))
+    // A line rides with its from building when that is in the batch, else with its to building.
+    return { district: p.district, buildings, edges: p.edges.filter((e) => ids.has(e.from) || (!all.has(e.from) && ids.has(e.to))), first }
+  }
+  const cut = Math.ceil(p.buildings.length / 2)
+  const out: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
+  merge(out, await labelBatch(half(p.buildings.slice(0, cut), p.first), deps, llm), p.district.id)
+  merge(out, await labelBatch(half(p.buildings.slice(cut), false), deps, llm), null)
+  return out
+}
+
+/** Merges one batch's labels into `into`; `district` names the district whose name it may set, if any. The
+ *  first batch to define a glossary term wins. */
+function merge(into: Labels, r: Labels, district: string | null): void {
+  if (district !== null && Object.hasOwn(r.districts, district)) into.districts[district] = { ...into.districts[district], ...r.districts[district] }
+  for (const [id, v] of Object.entries(r.buildings)) into.buildings[id] = { ...into.buildings[id], ...v }
+  for (const [id, v] of Object.entries(r.edges)) into.edges[id] = { ...into.edges[id], ...v }
+  for (const [term, def] of Object.entries(r.glossary)) if (!Object.hasOwn(into.glossary, term)) into.glossary[term] = def
+  into.tokens += r.tokens
+}
+
 export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> {
   const labels: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
   for (const d of g.districts) labels.districts[d.id] = { name: d.name, subtitle: '' }
@@ -542,14 +570,7 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelBatch(p, deps, llm))
   // Merged in batch order whatever order the calls finished in, so the world is the same every run:
   // a district takes its first batch's name, and the first batch to define a glossary term wins.
-  results.forEach((r, i) => {
-    const d = plan[i].district.id
-    if (plan[i].first && Object.hasOwn(r.districts, d)) labels.districts[d] = { ...labels.districts[d], ...r.districts[d] }
-    for (const [id, v] of Object.entries(r.buildings)) labels.buildings[id] = { ...labels.buildings[id], ...v }
-    for (const [id, v] of Object.entries(r.edges)) labels.edges[id] = { ...labels.edges[id], ...v }
-    for (const [term, def] of Object.entries(r.glossary)) if (!Object.hasOwn(labels.glossary, term)) labels.glossary[term] = def
-    labels.tokens += r.tokens
-  })
+  results.forEach((r, i) => merge(labels, r, plan[i].first ? plan[i].district.id : null))
   return labels
 }
 

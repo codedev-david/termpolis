@@ -5,15 +5,24 @@
 /** Bump to invalidate every cached label reply (the prompt text itself is hashed too). */
 export const LABEL_PROMPT_VERSION = 'world-label-v4'
 
-/** Bounds one batch's input (it reaches the model on stdin, or a command line for agents that take one). */
+/** Bounds one batch's input as promptCommandChars measures it (it reaches the model on stdin, or a
+ *  command line for agents that take one, and a Windows command line holds 32,767 characters in all). */
 export const MAX_PROMPT_CHARS = 28_000
 const MAX_LISTED_MEMBERS = 12
 const MAX_LISTED_BOUNDARIES = 12
+/** Identifiers listed per edge: enough to name its cargo. The code-written edge label keeps them all. */
+export const MAX_LISTED_VIA = 8
 const MAX_META_CHARS = 200
 
 /** A repo-derived metadata string as one JSON-quoted line: control chars stripped, whitespace collapsed, capped. */
 export function meta(s: string): string {
   return JSON.stringify(s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_META_CHARS))
+}
+
+/** A prompt's length once passed as one Windows command-line argument: every quote and backslash may be
+ *  escaped with a backslash (secondOpinionSpawnPlan), so each counts twice. */
+export function promptCommandChars(prompt: string): number {
+  return prompt.length + prompt.replace(/[^"\\]/g, '').length
 }
 
 export interface BatchExcerpt {
@@ -82,7 +91,9 @@ export function buildLabelPrompt(batch: LabelBatch): string {
   }
   lines.push('', 'EDGES (from -> to)')
   for (const e of batch.edges) {
-    lines.push(`- ${meta(e.id)}: ${meta(e.from)} -> ${meta(e.to)}${e.via.length > 0 ? ` via ${e.via.map(meta).join(', ')}` : ''}`)
+    const moreV = e.via.length - MAX_LISTED_VIA
+    const via = e.via.length > 0 ? ` via ${e.via.slice(0, MAX_LISTED_VIA).map(meta).join(', ')}${moreV > 0 ? ` (+${moreV} more)` : ''}` : ''
+    lines.push(`- ${meta(e.id)}: ${meta(e.from)} -> ${meta(e.to)}${via}`)
   }
   lines.push(
     '',
