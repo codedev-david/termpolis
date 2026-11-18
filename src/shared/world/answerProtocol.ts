@@ -60,6 +60,8 @@ const MARKER_RE = /\[E(\d+)\]/g
 const STEP_RE = /\[A(\d+)\]/g
 // A sentence ends at . ! or ? before a space or the end; markers right after the end belong to it.
 const SENTENCE_RE = /[\s\S]+?(?:[.!?]+(?:\s*\[[AE]\d+\])*(?=\s|$)|$)/g
+// A sentence that ends in a numbered list marker at the start of a line: "Steps:\n1." or "\n2.".
+const LIST_MARKER_END_RE = /(?:^|\n)[ \t]*\d+\.$/
 
 type Rec = Record<string, unknown>
 const isRec = (v: unknown): v is Rec => typeof v === 'object' && v !== null
@@ -141,7 +143,11 @@ function parseActions(json: string, doc: WorldDoc, tally: { dropped: number }): 
 function sentencesOf(text: string, parsed: Parsed, tally: { dropped: number }): AnswerSentence[] {
   const out: AnswerSentence[] = []
   const placed = new Set<number>()
-  for (const raw of text.match(SENTENCE_RE) ?? []) {
+  const raws = text.match(SENTENCE_RE) ?? []
+  for (let i = 0; i < raws.length; i++) {
+    // A numbered list marker at a line start ("1.") ends no sentence: it opens the item that follows.
+    if (i + 1 < raws.length && LIST_MARKER_END_RE.test(raws[i])) { raws[i + 1] = raws[i] + raws[i + 1]; continue }
+    const raw = raws[i]
     const actions: number[] = []
     for (const m of raw.matchAll(STEP_RE)) {
       const slot = parsed.slots[Number(m[1]) - 1] ?? -1
@@ -149,7 +155,11 @@ function sentencesOf(text: string, parsed: Parsed, tally: { dropped: number }): 
       else if (!placed.has(slot)) { placed.add(slot); actions.push(slot) }
     }
     const clean = raw.replace(/\s*\[A\d+\]/g, '').trim()
-    if (clean !== '' || actions.length > 0) out.push({ text: clean, actions, sep: sepOf((/^\s*/.exec(raw) as RegExpExecArray)[0], out.length === 0) })
+    const lead = (/^\s*/.exec(raw) as RegExpExecArray)[0]
+    const sep = sepOf(lead, out.length === 0)
+    // An indented line right after a line break keeps its indent, so a list item's continuation stays in the item.
+    const indent = sep === '\n' && clean !== '' ? lead.slice(lead.lastIndexOf('\n') + 1) : ''
+    if (clean !== '' || actions.length > 0) out.push({ text: indent + clean, actions, sep })
   }
   const rest = parsed.actions.map((_, i) => i).filter((i) => !placed.has(i))
   if (rest.length > 0) {

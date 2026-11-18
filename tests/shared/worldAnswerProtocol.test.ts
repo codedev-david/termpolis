@@ -183,6 +183,27 @@ describe('answer steps ([A<n>] markers)', () => {
     expect(a.dropped).toBe(0)
   })
 
+  it('a numbered list marker opens its item instead of showing alone, and an indented line keeps its indent (fix wave M2)', () => {
+    const a = parseAnswer('Two steps:\n1. Typing goes in. [A1]\n2. It reaches\n   the agent.\n\n3.' + fence(two), doc, labels)
+    expect(a.sentences).toEqual([
+      { text: 'Two steps:\n1. Typing goes in.', actions: [0], sep: '' },
+      { text: '2. It reaches\n   the agent.', actions: [], sep: '\n' },
+      // A marker alone at the end stays (step 2, placed nowhere, plays with the last sentence).
+      { text: '3.', actions: [1], sep: '\n\n' }
+    ])
+    expect(answerText(a.sentences, 3)).toBe('Two steps:\n1. Typing goes in.\n2. It reaches\n   the agent.\n\n3.')
+    // A list that opens the answer, and an item whose next line is indented.
+    const b = parseAnswer('1. First item.\n   More of it.\n2. Second.', doc, labels)
+    expect(b.sentences).toEqual([
+      { text: '1. First item.', actions: [], sep: '' },
+      { text: '   More of it.', actions: [], sep: '\n' },
+      { text: '2. Second.', actions: [], sep: '\n' }
+    ])
+    expect(answerText(b.sentences, 3)).toBe('1. First item.\n   More of it.\n2. Second.')
+    // A number that ends a sentence mid-line is a sentence like any other.
+    expect(parseAnswer('I counted 2. Then 3.', doc, labels).sentences.map((s) => s.text)).toEqual(['I counted 2.', 'Then 3.'])
+  })
+
   it('a marker before the full stop and a marker after an [E1] citation both stay in their sentence', () => {
     const a = parseAnswer('It starts here [A1]. Then it ends [E1] [A2].' + fence(two), doc, labels)
     expect(a.sentences.map((s) => s.actions)).toEqual([[0], [1]])
