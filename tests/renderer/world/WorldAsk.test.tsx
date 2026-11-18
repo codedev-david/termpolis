@@ -627,6 +627,13 @@ describe('WorldAsk', () => {
       expect(speech.speak.mock.calls[0][0].text).toBe('Memory lives in SQLite always.')
     })
 
+    it('on: a formatted answer is read without its marks, each list step ending in a pause (round 3 C)', async () => {
+      on()
+      ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'It goes:\n1. **Terminal** [E1]\n2. **Proxy**', { cited: {} }))
+      await submit(makeViewer(), 'q')
+      expect(speech.speak.mock.calls[0][0].text).toBe('It goes: 1. Terminal. 2. Proxy.')
+    })
+
     it('Esc from the pane stops the speech and says it used the key; with nothing to stop it does not', async () => {
       on()
       const l = makeLink()

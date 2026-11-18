@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseAnswerMarkdown, parseInline } from '../../src/shared/world/answerMarkdown'
+import { parseAnswerMarkdown, parseInline, spokenText } from '../../src/shared/world/answerMarkdown'
 
 describe('answer markdown (film bug 3)', () => {
   it('a list of bold names becomes list items with strong text, not literal stars', () => {
@@ -68,5 +68,20 @@ describe('answer markdown (film bug 3)', () => {
   it('empty text and blank lines give no blocks', () => {
     expect(parseAnswerMarkdown('')).toEqual([])
     expect(parseAnswerMarkdown('\n\n  \n')).toEqual([])
+  })
+})
+
+describe('spokenText (round 3 C)', () => {
+  it('reads the answer without its marks: no evidence markers, bold, italic, code ticks or bullets', () => {
+    expect(spokenText('Memory lives in **SQLite** [E1] always.')).toBe('Memory lives in SQLite always.')
+    expect(spokenText('A *small* `cache` [E2] [E3].')).toBe('A small cache.')
+    expect(spokenText('## Where it goes\nThe __store__ keeps it.')).toBe('Where it goes The store keeps it.')
+  })
+
+  it('a numbered list keeps its numbers, and each item ends in a pause so the voice stops between steps', () => {
+    expect(spokenText('A prompt goes through three parts:\n1. **Terminal** takes it [E1]\n2. **Router** picks a model,\n3. **Proxy** sends it.\n\n- one more\n- last!')).toBe(
+      'A prompt goes through three parts: 1. Terminal takes it. 2. Router picks a model, 3. Proxy sends it. one more. last!'
+    )
+    expect(spokenText('')).toBe('')
   })
 })

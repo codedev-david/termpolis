@@ -18,6 +18,12 @@ describe('ANSWER_PROTOCOL', () => {
     expect(ANSWER_PROTOCOL).toContain('{"type":"reset"}')
     expect(ANSWER_PROTOCOL).toContain('Cite evidence inline as [E<n>]')
   })
+
+  it('asks for a short numbered list for a sequence and bold part names, and nothing a voice cannot read (round 3 C)', () => {
+    expect(ANSWER_PROTOCOL).toContain('short numbered list')
+    expect(ANSWER_PROTOCOL).toContain('**bold**')
+    expect(ANSWER_PROTOCOL).toContain('No headings, tables or code blocks')
+  })
 })
 
 describe('parseAnswer', () => {

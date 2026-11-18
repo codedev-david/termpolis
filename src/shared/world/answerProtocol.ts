@@ -7,6 +7,9 @@ import type { Evidence, WorldAction, WorldDoc } from './types'
 export const HONESTY_RULE = 'If the WORLD DATA and evidence do not support an answer (for example nothing records why something was built this way), say so plainly in your first sentence, do not guess, and add {"type":"fog","ids":[...]} for the parts you could not support.'
 
 export const ANSWER_PROTOCOL = `Answer in plain language for someone who does not read code. Keep it under 150 words.
+Write short sentences that read well aloud. When the answer is a sequence (steps, or a flow from one
+part to the next), give it as a short numbered list, one step per line. Put each part's name in **bold**
+the first time you name it. No headings, tables or code blocks.
 After your answer, add one fenced block tagged world-actions containing a JSON array of steps
 that show your answer in the World. Allowed steps:
 {"type":"focus","ids":[...]} {"type":"highlight","ids":[...]} {"type":"flow","edgeIds":[...]}

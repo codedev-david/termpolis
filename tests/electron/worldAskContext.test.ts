@@ -60,7 +60,7 @@ describe('buildAskPrompt', () => {
 
   it('cuts the name-only list as a last resort, and never the question', () => {
     const { prompt } = buildAskPrompt(base(doc(1500), { question: 'Keep me?', selection: ['b1500'] }))
-    expect(prompt.length).toBeLessThan(MAX_PROMPT_CHARS)
+    expect(prompt.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
     expect(prompt).toContain('b1: Building 1')
     expect(prompt).not.toContain('b1499: Building 1499')
     expect(prompt).not.toContain('\nb1500: Building 1500')

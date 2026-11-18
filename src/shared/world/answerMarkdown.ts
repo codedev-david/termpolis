@@ -84,3 +84,20 @@ export function parseAnswerMarkdown(text: string): Block[] {
   }
   return blocks
 }
+
+/** An inline tree's words alone: no evidence markers, no marks. */
+const plain = (xs: Inline[]): string => xs.map((x) => (x.t === 'marker' ? '' : x.t === 'b' || x.t === 'i' ? plain(x.c) : x.v)).join('')
+
+/** A list item ends in a stop, so a voice pauses between steps. */
+const paused = (s: string): string => (/[.!?:;,]$/.test(s) ? s : `${s}.`)
+
+/**
+ * The answer as a voice should read it (spoken answers): the words of every block without the
+ * markers or the marks, a numbered list's items after their numbers, each item ending in a pause.
+ */
+export function spokenText(text: string): string {
+  const lines = parseAnswerMarkdown(text).flatMap((b) =>
+    b.type === 'p' ? b.lines.map(plain) : b.items.map((item, i) => (b.type === 'ol' ? `${i + 1}. ` : '') + paused(plain(item).trim()))
+  )
+  return lines.join(' ').replace(/\s+/g, ' ').replace(/ ([.!?:;,])/g, '$1').trim()
+}
