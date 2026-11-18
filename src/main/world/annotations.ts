@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../shared/world/types'
+import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/world/runtimeNames'
 import { createKeyedLock } from './keyedLock'
 import type { WorldStore } from './worldStore'
 
@@ -41,7 +42,16 @@ function cleanClaim(v: unknown): Claim | null {
     }
   }
   if (evidence.length === 0) return null
-  return { text: v.text.slice(0, MAX_ANNOTATION_TEXT), state: v.state as ClaimState, evidence }
+  // A runtime-names claim is rebuilt from its checked names: never cut mid-name by the text cap.
+  const text = isRuntimeText(v.text) ? runtimeText(namesOfRuntimeText(v.text)) : v.text.slice(0, MAX_ANNOTATION_TEXT)
+  return { text, state: v.state as ClaimState, evidence }
+}
+
+const isRuntime = (c: Claim): boolean => isRuntimeText(c.text)
+
+/** The claims of one item as kept: the newest MAX_ANNOTATIONS_PER_ITEM notes, plus at most one runtime-names claim (the newest), which no cap counts. */
+function capClaims(list: Claim[]): Claim[] {
+  return [...list.filter((c) => !isRuntime(c)).slice(-MAX_ANNOTATIONS_PER_ITEM), ...list.filter(isRuntime).slice(-1)]
 }
 
 /** The file holds `{ [itemId]: Claim[] }`; anything malformed in it is dropped rather than trusted. */
@@ -50,7 +60,7 @@ function cleanFile(parsed: unknown): Record<string, Claim[]> {
   if (!isRec(parsed)) return out
   for (const [id, list] of Object.entries(parsed)) {
     if (!Array.isArray(list)) continue
-    const claims = list.map(cleanClaim).filter((c): c is Claim => c !== null).slice(-MAX_ANNOTATIONS_PER_ITEM)
+    const claims = capClaims(list.map(cleanClaim).filter((c): c is Claim => c !== null))
     if (claims.length > 0) out[id] = claims
   }
   return out
@@ -82,7 +92,7 @@ export function createAnnotationStore(dir: string): AnnotationStore {
         const clean = cleanClaim(claim)
         if (clean === null) throw new Error('annotation needs text, a state and evidence')
         const all = await read(key)
-        all[itemId] = [...(all[itemId] ?? []), clean].slice(-MAX_ANNOTATIONS_PER_ITEM)
+        all[itemId] = capClaims([...(all[itemId] ?? []), clean])
         const target = fileOf(key)
         const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
         await mkdir(folder, { recursive: true })
@@ -105,11 +115,21 @@ const isPerson = (c: Claim): boolean => c.evidence.some((e) => e.kind === 'perso
  * is replaced, so merging twice, or after the store dropped an old one, never duplicates or keeps a stale claim.
  */
 export function mergeAnnotations(doc: WorldDoc, byItem: Record<string, Claim[]>): WorldDoc {
+  const runtimeNames: Record<string, string[]> = { ...doc.runtimeNames }
   const merge = <T extends { id: string; claims: Claim[] }>(item: T): T => {
     const own = Object.prototype.hasOwnProperty.call(byItem, item.id) ? byItem[item.id] : []
-    return { ...item, claims: [...item.claims.filter((c) => !isPerson(c)), ...own] }
+    // A hand-edited runtime-names claim is the part's service names (an empty one clears them), never a note on its card.
+    const edited = own.filter(isRuntime).slice(-1)[0]
+    if (edited) {
+      const names = namesOfRuntimeText(edited.text)
+      if (names.length > 0) runtimeNames[item.id] = names
+      else delete runtimeNames[item.id]
+    }
+    return { ...item, claims: [...item.claims.filter((c) => !isPerson(c) && !isRuntime(c)), ...own.filter((c) => !isRuntime(c))] }
   }
-  return { ...doc, buildings: doc.buildings.map(merge), edges: doc.edges.map(merge) }
+  const buildings = doc.buildings.map(merge)
+  const edges = doc.edges.map(merge)
+  return { ...doc, buildings, edges, runtimeNames }
 }
 
 /** Whether `id` names a building or an edge of the doc (the parts a person can annotate). */

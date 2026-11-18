@@ -145,6 +145,47 @@ describe('LumopolisSettings', () => {
     })
   })
 
+  describe('read CI results with GitHub CLI', () => {
+    const ciToggle = () => screen.getByTestId('settings-world-ci-toggle')
+
+    it('is labelled, says it runs the gh command, and is off until main says otherwise', async () => {
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, worldCiResults: true } })) })
+      render(<LumopolisSettings />)
+      expect(screen.getByText('Read CI results with GitHub CLI')).toBeInTheDocument()
+      expect(screen.getByTestId('lumopolis-ci-settings').textContent).toContain('runs the gh command')
+      expect(ciToggle()).toHaveAttribute('aria-checked', 'false')
+      await settle()
+      expect(ciToggle()).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('writes only its own field and takes the stored value; a refused or failed write puts it back', async () => {
+      const set = vi.fn()
+        .mockResolvedValueOnce({ success: true, data: { worldLabelling: true, worldCiResults: true } })
+        .mockResolvedValueOnce({ success: false, error: 'disk full' })
+        .mockRejectedValueOnce(new Error('ipc down'))
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, worldCiResults: false } })), worldSettingsSet: set })
+      render(<LumopolisSettings />)
+      await settle()
+      fireEvent.click(ciToggle())
+      expect(set).toHaveBeenLastCalledWith({ worldCiResults: true })
+      await settle()
+      expect(ciToggle()).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(ciToggle())
+      await settle()
+      expect(ciToggle()).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(ciToggle())
+      await settle()
+      expect(ciToggle()).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('flips locally when the bridge has no write call', async () => {
+      api({})
+      render(<LumopolisSettings />)
+      fireEvent.click(ciToggle())
+      expect(ciToggle()).toHaveAttribute('aria-checked', 'true')
+    })
+  })
+
   describe('your agent', () => {
     const pick = () => screen.getByTestId('settings-world-agent') as HTMLSelectElement
     const note = () => screen.queryByTestId('lumopolis-gemini-note')

@@ -23,7 +23,7 @@ export interface StageFile {
  * older version is then ignored and the next compile reads and groups every file afresh, so a detector
  * fix reaches worlds that already exist.
  */
-export const STAGE_CACHE_VERSION = 1
+export const STAGE_CACHE_VERSION = 2
 
 export interface StageCache {
   /** STAGE_CACHE_VERSION of the compiler that wrote it; any other value is no cache. */

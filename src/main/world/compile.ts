@@ -21,6 +21,7 @@ import { relativeImports, withImports } from './imports'
 import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
+import { cleanRuntimeNames } from '../../shared/world/runtimeNames'
 import { readTestResults, statusFor, TEST_FILE, testClaims, type TestRun } from './testStatus'
 import { isStageCache, STAGE_CACHE_VERSION, type StageCache, type StageFile } from './stageCache'
 
@@ -36,6 +37,8 @@ export interface CompileDeps {
   label: LabelDeps
   now: () => number
   transcriptRuns?: () => Promise<TestRun[]>
+  /** The newest CI conclusion as runs; each run's file is a file the commit changed (compile links it to the tests of that file). Absent: none. */
+  ciRuns?: () => Promise<TestRun[]>
   /** What people confirmed in the pane, by item id, merged into the claims of the buildings and lines. Absent: none. */
   annotations?: () => Promise<Record<string, Claim[]>>
   onProgress?: (stage: CompileStage, pct: number) => void
@@ -113,6 +116,81 @@ async function safeRead(read: CompileDeps['readFile'], p: string): Promise<strin
 export function serviceNames(file: string, text: string): string[] {
   if (baseName(file).startsWith('.env')) return [...text.matchAll(OTEL_ENV)].map((m) => m[1])
   return [...stripComments(text).matchAll(OTEL_SOURCE)].map((m) => m[2].trim()).filter(Boolean)
+}
+
+const COMPOSE = /^docker-compose.*\.ya?ml$/
+const K8S_DOC = /^kind:\s*(?:Deployment|Service)\s*$/m
+const K8S_NAME = /^metadata:\s*\r?\n(?:[ \t]+[^\n]*\n)*?[ \t]+name:\s*['"]?([\w.-]+)['"]?\s*$/m
+/** Manifest files compile reads for runtime names: compose files, package.json and Kubernetes YAML in the usual folders. */
+export const MANIFEST_PATTERNS = ['**/docker-compose*.yml', '**/docker-compose*.yaml', '**/package.json', '**/{k8s,kubernetes,deploy,manifests}/**/*.{yml,yaml}', '!**/node_modules/**']
+const MAX_MANIFESTS = 300
+const MAX_MANIFEST_CHARS = 256 * 1024
+
+/**
+ * The names a manifest gives its parts: the service keys of a docker-compose file, the `metadata.name` of a Kubernetes
+ * Deployment or Service, the `name` of a package.json (without its @scope/). Names that do not fit are left out.
+ */
+export function manifestServiceNames(file: string, text: string): string[] {
+  const base = baseName(file)
+  let found: string[] = []
+  if (base === 'package.json') {
+    try {
+      const name = (JSON.parse(text) as { name?: unknown } | null)?.name
+      if (typeof name === 'string') found = [name.slice(name.lastIndexOf('/') + 1)]
+    } catch {
+      // not JSON: no name
+    }
+  } else if (COMPOSE.test(base)) {
+    let indent = -1
+    let inServices = false
+    for (const line of text.split(/\r?\n/)) {
+      if (/^\s*(#.*)?$/.test(line)) continue
+      const lead = line.length - line.trimStart().length
+      if (lead === 0) { inServices = /^services:\s*(#.*)?$/.test(line); indent = -1; continue }
+      if (!inServices) continue
+      if (indent < 0) indent = lead
+      const key = lead === indent ? /^\s+['"]?([\w.-]+)['"]?:\s*(#.*)?$/.exec(line) : null
+      if (key) found.push(key[1])
+    }
+  } else {
+    for (const doc of text.split(/^---\s*$/m)) {
+      const name = K8S_DOC.test(doc) ? K8S_NAME.exec(doc) : null
+      if (name) found.push(name[1])
+    }
+  }
+  return cleanRuntimeNames(found)
+}
+
+/** Runtime names the manifests under the project give, by building: a manifest's names go to the building with the most members in its folder. */
+async function manifestNames(deps: CompileDeps, root: string, g: Grouping): Promise<Map<string, string[]>> {
+  let paths: string[]
+  try {
+    paths = await deps.glob(root, MANIFEST_PATTERNS)
+  } catch {
+    paths = []
+  }
+  const out = new Map<string, string[]>()
+  const prefix = `${root.replace(/\\/g, '/')}/`
+  for (const abs of paths.map((p) => p.replace(/\\/g, '/')).filter((p) => p.startsWith(prefix) && /(?:\.ya?ml|\/package\.json)$/.test(p) && !p.split('/').includes('node_modules')).sort().slice(0, MAX_MANIFESTS)) {
+    const text = await safeRead(deps.readFile, abs)
+    if (text === null || text.length > MAX_MANIFEST_CHARS) continue
+    const rel = abs.slice(prefix.length)
+    const names = manifestServiceNames(rel, text)
+    if (names.length === 0) continue
+    const dir = rel.includes('/') ? `${rel.slice(0, rel.lastIndexOf('/'))}/` : ''
+    let best: { id: string; n: number } | null = null
+    for (const b of g.buildings) {
+      const n = b.members.filter((m) => m.startsWith(dir)).length
+      if (n > 0 && (best === null || n > best.n || (n === best.n && cmp(b.id, best.id) < 0))) best = { id: b.id, n }
+    }
+    if (best) out.set(best.id, [...(out.get(best.id) ?? []), ...names])
+  }
+  return out
+}
+
+/** A CI run names a file the commit changed: a test file stands for itself, any other becomes a run of each test linked to it. */
+function expandCi(runs: TestRun[], testsByMember: Record<string, string[]>): TestRun[] {
+  return runs.flatMap((r) => (r.source !== 'ci' || TEST_FILE.test(r.file) ? [r] : (testsByMember[r.file] ?? []).map((file) => ({ ...r, file }))))
 }
 
 /** Test files linked to each member: tests that import it, or share its basename stem. */
@@ -489,7 +567,8 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   const changed = input.changed ? [...new Set([...input.changed, ...differs])].sort() : undefined
 
   progress('status', 55)
-  const runs = await readTestResults(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns })
+  const testsByMember = linkTests(snap, g)
+  const runs = expandCi(await readTestResults(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns, ciRuns: deps.ciRuns }), testsByMember)
   const tests = contentHash(runs.map((r) => JSON.stringify([r.file, r.passed, r.at, r.source])).sort().join('\n'))
   const cache: StageCache = { version: STAGE_CACHE_VERSION, files: Object.fromEntries(entries), structureHash, grouping: g, tests }
   // Status for the touched buildings only: with the grouping reused (so the same files, imports and test
@@ -497,7 +576,6 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   const statusScoped = reused && previous !== null && changed !== undefined && (prior as StageCache).tests === tests
   const restatus = statusScoped ? new Set(touchedBuildings(g, previous as WorldDoc, changed as string[]).map((b) => b.id)) : null
   const prevStatus = new Map((previous?.buildings ?? []).map((b) => [b.id, b]))
-  const testsByMember = linkTests(snap, g)
   const statusOf = (b: GroupBuilding): Pick<Building, 'status' | 'claims'> => {
     const p = restatus && !restatus.has(b.id) ? prevStatus.get(b.id) : undefined
     if (p) return { status: p.status, claims: p.claims.filter((c) => !c.evidence.some((e) => e.kind === 'person')) }
@@ -567,6 +645,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     const id = ownerOf.get(f) as string
     runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
   }
+  for (const [id, list] of await manifestNames(deps, root, g)) runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
   const runtimeNames = Object.fromEntries([...runtime].sort((a, z) => cmp(a[0], z[0])).map(([id, s]) => [id, [...s].sort()]))
 
   const layout = layoutWorld(g, previous?.layout ?? null)

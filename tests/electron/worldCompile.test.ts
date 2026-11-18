@@ -10,6 +10,7 @@ import {
   compileWorldStaged,
   contentHash,
   createRecompileScheduler,
+  manifestServiceNames,
   type CompileDeps,
   type CompileStage,
   type StagedInput
@@ -20,6 +21,8 @@ import { edgeId, type GroupBuilding, type Grouping } from '../../src/main/world/
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
 import type { Boundary } from '../../src/main/world/detectors'
 import { edgeSummary } from '../../src/shared/world/edgeText'
+import { runtimeText } from '../../src/shared/world/runtimeNames'
+import type { TestRun } from '../../src/main/world/testStatus'
 /** A cited field, as the model must answer it. */const F = (value: unknown, ev = 'E1'): { value: unknown; evidence: string[] } => ({ value, evidence: [ev] })
 
 const ROOT = '/repo'
@@ -790,6 +793,118 @@ describe('claims, name states and annotations', () => {
 });
 
 // ── Task 14: the staged compile re-reads only what changed ─────────────────────────────────────
+
+describe('manifestServiceNames', () => {
+  it('reads compose services, k8s Deployment and Service names, and the package.json name', () => {
+    const compose = [
+      'version: "3"',
+      'services:',
+      '  web:',
+      '    image: nginx',
+      '    environment:',
+      '      A: b',
+      '  # a comment',
+      '',
+      '  "api.v2":   # trailing',
+      '    build: .',
+      'volumes:',
+      '  data: {}'
+    ].join('\r\n')
+    expect(manifestServiceNames('deploy/docker-compose.prod.yml', compose)).toEqual(['web', 'api.v2'])
+    expect(manifestServiceNames('docker-compose.yml', 'services: # top\n    only:\n      image: x\n')).toEqual(['only'])
+    const k8s = ['apiVersion: apps/v1', 'kind: Deployment', 'metadata:', '  name: orders', '---', 'kind: Service', 'metadata:', '  name: orders-svc', '---', 'kind: ConfigMap', 'metadata:', '  name: not-me', '---', 'kind: Deployment', 'metadata:', '  name: "bad name!"'].join('\n')
+    expect(manifestServiceNames('k8s/app.yaml', k8s)).toEqual(['orders', 'orders-svc'])
+    expect(manifestServiceNames('package.json', '{"name":"@acme/checkout-web"}')).toEqual(['checkout-web'])
+    expect(manifestServiceNames('web/package.json', '{"name":"plain"}')).toEqual(['plain'])
+    expect(manifestServiceNames('package.json', '{"version":"1"}')).toEqual([])
+    expect(manifestServiceNames('package.json', '{"name":7}')).toEqual([])
+    expect(manifestServiceNames('package.json', 'null')).toEqual([])
+    expect(manifestServiceNames('package.json', 'not json')).toEqual([])
+    expect(manifestServiceNames('notes.yml', 'kind: Deployment\n')).toEqual([])
+  })
+})
+
+describe('compile sources: manifests, hand-edited names, transcript and CI runs', () => {
+  const MANIFESTS: Record<string, string> = {
+    [`${ROOT}/src/main/package.json`]: '{"name":"main-svc"}',
+    [`${ROOT}/src/renderer/docker-compose.yml`]: 'services:\n  viewer:\n    image: x\n',
+    [`${ROOT}/node_modules/x/package.json`]: '{"name":"vendor"}',
+    [`${ROOT}/src/big/package.json`]: `{"name":"big"}${' '.repeat(300 * 1024)}`,
+    [`${ROOT}/nowhere/package.json`]: '{"name":"orphan"}',
+    '/elsewhere/package.json': '{"name":"outside"}',
+    [`${ROOT}/src/main/unreadable.yml`]: 'x',
+    [`${ROOT}/src/main/nonames.yml`]: 'key: 1'
+  }
+  const baseDeps = mkDeps()
+  const withManifests = (over: Partial<CompileDeps> = {}): Partial<CompileDeps> => ({
+    glob: async (_r, pats) => (pats.includes('**/package.json') ? [...Object.keys(MANIFESTS), `${ROOT}\\src\\main\\win\\package.json`] : []),
+    readFile: async (p) => {
+      if (p.endsWith('unreadable.yml')) return null
+      return p in MANIFESTS ? MANIFESTS[p] : baseDeps.readFile(p)
+    },
+    ...over
+  })
+  const person = (text: string): { text: string; state: 'verified'; evidence: { kind: 'person'; ref: string }[] } => ({ text, state: 'verified', evidence: [{ kind: 'person', ref: 'edited in Lumopolis' }] })
+
+  it('manifest names go to the building owning the most files under the manifest folder', async () => {
+    const doc = await compileFixture(withManifests())
+    const names = doc.runtimeNames
+    expect(names[MAIN]).toEqual(expect.arrayContaining(['checkout', 'main-svc']))
+    expect(names[VIEW]).toEqual(['viewer'])
+    const all = Object.values(names).flat()
+    for (const skipped of ['vendor', 'big', 'orphan', 'outside']) expect(all).not.toContain(skipped)
+  })
+
+  it('a glob that rejects leaves the OpenTelemetry names alone', async () => {
+    const doc = await compileFixture({ glob: async (_r, pats) => (pats.includes('**/package.json') ? Promise.reject(new Error('x')) : []) })
+    expect(doc.runtimeNames[MAIN]).toEqual(['checkout'])
+  })
+
+  it('a root package.json goes to one building, the biggest, a tie to the smaller id', async () => {
+    const files: Record<string, string> = { 'src/a/x.ts': 'a', 'src/b/y.ts': 'b' }
+    const base = mkDeps(files)
+    const deps = mkDeps(files, { glob: async () => [`${ROOT}/package.json`], readFile: async (p) => (p === `${ROOT}/package.json` ? '{"name":"whole"}' : base.readFile(p)) })
+    const doc = await compileWorld({ snap: snapOf(files, {}), projectKey: 'k', head: HEAD, previous: null }, deps)
+    const owners = Object.entries(doc.runtimeNames).filter(([, n]) => n.includes('whole'))
+    expect(owners).toHaveLength(1)
+    expect(owners[0][0]).toBe(doc.buildings.map((b) => b.id).sort()[0])
+  })
+
+  it('runtimeNames merges OpenTelemetry names, manifest names and hand-edited names', async () => {
+    const merged = await compileFixture(withManifests())
+    expect(merged.runtimeNames[MAIN]).toEqual(['checkout', 'main-svc'])
+    // A hand-edited claim is authoritative for its building; another building keeps its detected names.
+    const edited = await compileFixture(withManifests({ annotations: async () => ({ [MAIN]: [person(runtimeText(['mine', 'checkout']))] }) }))
+    expect(edited.runtimeNames[MAIN]).toEqual(['mine', 'checkout'])
+    expect(edited.runtimeNames[VIEW]).toEqual(['viewer'])
+    expect(edited.buildings.find((b) => b.id === MAIN)?.claims.some((c) => c.text.startsWith('runtime:'))).toBe(false)
+    expectValid(edited)
+    const cleared = await compileFixture(withManifests({ annotations: async () => ({ [MAIN]: [person(runtimeText([]))] }) }))
+    expect(cleared.runtimeNames[MAIN]).toBeUndefined()
+  })
+
+  const TEST_ID = 'src/renderer/view.test.ts'
+  const noReport = { glob: async (): Promise<string[]> => [] }
+
+  it('transcript test runs reach readTestResults and can turn a building verified', async () => {
+    const doc = await compileFixture({ ...noReport, transcriptRuns: async () => [{ file: TEST_ID, passed: true, at: 7, source: 'transcript' }] })
+    const view = doc.buildings.find((b) => b.id === VIEW)
+    expect(view?.status).toBe('verified')
+    expect(view?.claims.some((c) => c.state === 'verified')).toBe(true)
+    const none = await compileFixture(noReport)
+    expect(none.buildings.find((b) => b.id === VIEW)?.status).not.toBe('verified')
+  })
+
+  it('a CI result marks the tests linked to the changed files, and a test file stands for itself', async () => {
+    const ci = (file: string, passed: boolean): TestRun => ({ file, passed, at: 9, source: 'ci' })
+    const viaSource = await compileFixture({ ...noReport, ciRuns: async () => [ci('src/renderer/view.ts', true), ci('docs/readme.md', true)] })
+    expect(viaSource.buildings.find((b) => b.id === VIEW)?.status).toBe('verified')
+    const viaTest = await compileFixture({ ...noReport, ciRuns: async () => [ci(TEST_ID, true)] })
+    expect(viaTest.buildings.find((b) => b.id === VIEW)?.status).toBe('verified')
+    const failed = await compileFixture({ ...noReport, ciRuns: async () => [ci('src/renderer/view.ts', false)] })
+    expect(failed.buildings.find((b) => b.id === VIEW)?.status).not.toBe('verified')
+  })
+})
 
 describe('compileWorldStaged', () => {
   const sources = (reads: string[]): string[] => reads.filter((p) => p !== REPORT).map((p) => p.slice(ROOT.length + 1))

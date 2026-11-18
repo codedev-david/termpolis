@@ -248,6 +248,22 @@ describe('Lumopolis acceptance on the Termpolis repository', () => {
     expect(compileMs).toBeLessThan(COMPILE_BUDGET_MS)
   })
 
+  it('acceptance: Termpolis recovers the gateway, code graph, swarm and remote bridge connections as well', () => {
+    const edgeBetween = (from: string, to: string, pred: (e: WorldEdge) => boolean = () => true): boolean => {
+      const a = ownerOf(from)?.id
+      const b = ownerOf(to)?.id
+      return world.edges.some((e) => e.from === a && e.to === b && pred(e))
+    }
+    // The main entry reaches the gateway (MCP server), the code graph and the swarm.
+    expect(edgeBetween(MAIN, 'src/main/mcpGateway/')).toBe(true)
+    expect(edgeBetween(MAIN, 'src/main/codeGraph.ts')).toBe(true)
+    expect(edgeBetween(MAIN, SWARM)).toBe(true)
+    // The remote bridge's main side forks the bridge process.
+    expect(
+      edgeBetween('src/main/remoteBridgeSupervisor.ts', 'src/main/remoteBridge/entry.ts', (e) => carries(e, 'fork'))
+    ).toBe(true)
+  })
+
   it('names the main process entry', () => {
     expect(ownerOf(MAIN)?.process).toBe('main')
   })

@@ -66,6 +66,7 @@ const settingsPatchOf = (args: unknown): Partial<WorldSettings> | null => {
   const patch: Partial<WorldSettings> = {}
   if (typeof a.worldLabelling === 'boolean') patch.worldLabelling = a.worldLabelling
   if (typeof a.worldSpeakAnswers === 'boolean') patch.worldSpeakAnswers = a.worldSpeakAnswers
+  if (typeof a.worldCiResults === 'boolean') patch.worldCiResults = a.worldCiResults
   if (isExecAgent(a.worldAgent)) patch.worldAgent = a.worldAgent
   return patch
 }

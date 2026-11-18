@@ -10,13 +10,15 @@ export interface TestRun {
   file: string
   passed: boolean
   at: number
-  source: 'vitest' | 'jest' | 'junit' | 'transcript'
+  source: 'vitest' | 'jest' | 'junit' | 'transcript' | 'ci'
 }
 
 export interface TestResultDeps {
   readFile(p: string): Promise<string | null>
   glob(root: string, patterns: string[]): Promise<string[]>
   transcriptRuns?: () => Promise<TestRun[]>
+  /** The newest CI conclusion as runs (source 'ci'). The caller decides whether CI is read at all. */
+  ciRuns?: () => Promise<TestRun[]>
 }
 
 export const PATTERNS: string[] = [
@@ -287,6 +289,11 @@ export async function readTestResults(root: string, deps: TestResultDeps): Promi
     runs.push(...((await deps.transcriptRuns?.()) ?? []))
   } catch {
     // transcripts unavailable: no runs
+  }
+  try {
+    runs.push(...((await deps.ciRuns?.()) ?? []))
+  } catch {
+    // CI unavailable: no runs
   }
   return runs
 }

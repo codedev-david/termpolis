@@ -26,6 +26,7 @@ import {
   MAX_GLOB_RESULTS,
   MAX_READ_LIMIT,
   cleanEvidence,
+  cleanRuns,
   createWorldHost,
   excerptOf,
   filterWorld,
@@ -126,7 +127,7 @@ function memStore(initial: Record<string, WorldDoc> = {}): WorldStore & { docs: 
 /** A host wired to an in-memory store and a recording `post`. */
 function harness(deps: WorldHostDeps = {}, store = memStore()) {
   const out: WorldHostResponse[] = []
-  const host = createWorldHost((m) => out.push(m), { createStore: () => store, ...deps })
+  const host = createWorldHost((m) => out.push(m), { createStore: () => store, runsTimeoutMs: 5, ...deps })
   const send = (m: WorldHostRequest) => host.handle(m)
   const init = (labelling = true) => send({ kind: 'init', userDataPath: '/ud', labelling })
   const results = () => out.filter((m) => m.kind === 'result')
@@ -611,6 +612,51 @@ describe('createWorldHost', () => {
     expect(cleanEvidence(many)).toHaveLength(11)
   })
 
+  it('cleanRuns keeps whole runs, stamps the source and caps the count', () => {
+    expect(cleanRuns('x', 'ci')).toEqual([])
+    const good = { file: 'a.test.ts', passed: true, at: 3 }
+    expect(cleanRuns([good, null, { ...good, file: 1 }, { ...good, passed: 'yes' }, { ...good, at: NaN }, { ...good, source: 'file' }], 'ci')).toEqual([
+      { ...good, source: 'ci' },
+      { ...good, source: 'ci' }
+    ])
+    expect(cleanRuns(Array.from({ length: 6000 }, () => good), 'transcript')).toHaveLength(5000)
+  })
+
+  it('a compile asks main for transcript and CI runs through runs / runs-result; no answer in time is none', async () => {
+    const got: unknown[] = []
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      got.push(await deps.transcriptRuns?.(), await deps.ciRuns?.())
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile, runsTimeoutMs: 300 })
+    await h.init(false)
+    const call = h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(h.out.some((m) => m.kind === 'runs')).toBe(true))
+    const ask = h.out.find((m) => m.kind === 'runs') as Extract<WorldHostResponse, { kind: 'runs' }>
+    expect(ask).toMatchObject({ kind: 'runs', projectKey: 'k1', source: 'transcript' })
+    await h.send({ kind: 'runs-result', id: 999, runs: [] }) // unknown id: ignored
+    await h.send({ kind: 'runs-result', id: ask.id, runs: [{ file: 't.test.ts', passed: false, at: 4, source: 'ci' }] })
+    // the CI request is never answered: it times out as no runs
+    await call
+    expect(got).toEqual([[{ file: 't.test.ts', passed: false, at: 4, source: 'transcript' }], []])
+    expect(h.out.filter((m) => m.kind === 'runs').map((m) => (m as { source: string }).source)).toEqual(['transcript', 'ci'])
+  })
+
+  it('a cloned repository gets no runs from main', async () => {
+    const clone = join(dir, 'world', 'repos', 'abc')
+    await mkdir(clone, { recursive: true })
+    const seen: CompileDeps[] = []
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      seen.push(deps)
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile })
+    await h.send({ kind: 'init', userDataPath: dir, labelling: false })
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(clone), HEAD] })
+    expect(seen[0].transcriptRuns).toBeUndefined()
+    expect(seen[0].ciRuns).toBeUndefined()
+  })
+
   it('a compile with labelling off offers no context hook', async () => {
     let seen: CompileDeps['label'] | null = null
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
@@ -890,7 +936,7 @@ describe('createWorldHost', () => {
     const root = join(dir, 'repo').replace(/\\/g, '/')
     const s: GraphSnapshot = { root, files: ['src/a.ts', 'src/b.ts'], symbols: [], callEdges: [], fileImports: { 'src/a.ts': ['src/b.ts'] } }
     const out: WorldHostResponse[] = []
-    const host = createWorldHost((m) => out.push(m))
+    const host = createWorldHost((m) => out.push(m), { runsTimeoutMs: 5 })
     await host.handle({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: false })
     await host.handle({ kind: 'call', id: 1, fn: 'compile', args: ['real', s, HEAD] })
     const res = out.find((m) => m.kind === 'result') as Extract<WorldHostResponse, { kind: 'result'; ok: true }>

@@ -299,6 +299,16 @@ describe('readTestResults', () => {
     const c = deps({})
     expect(await readTestResults(ROOT, c.d)).toEqual([])
   })
+
+  it('merges CI runs, and a rejection or throw gives no CI runs', async () => {
+    const ci: TestRun = { file: 'src/a.ts', passed: true, at: 5, source: 'ci' }
+    const a = deps({}, { ciRuns: async () => [ci] })
+    expect(await readTestResults(ROOT, a.d)).toEqual([ci])
+    const b = deps({}, { ciRuns: () => Promise.reject(new Error('gh')) })
+    expect(await readTestResults(ROOT, b.d)).toEqual([])
+    const c = deps({}, { ciRuns: () => { throw new Error('sync') } })
+    expect(await readTestResults(ROOT, c.d)).toEqual([])
+  })
 })
 
 describe('parseTranscriptTestRuns', () => {

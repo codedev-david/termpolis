@@ -13,6 +13,7 @@ import { graphKeyForRoot, graphSnapshot, type GraphSnapshot } from '../codeGraph
 import { killUtility } from '../utilityKill'
 import type { Claim, Evidence, WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
 import type { SerializedError, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
+import type { TestRun } from './testStatus'
 import { worldFileName } from './worldStore'
 import { linkedPlanStamp, planStamp } from '../../shared/world/reconcile'
 
@@ -35,6 +36,10 @@ export interface WorldClientOptions {
   /** Evidence about a building's files (commit subjects, docs lines, memory decisions) for labelling, for the project at
    *  `root`. Absent, or throwing: labelling uses file excerpts alone. */
   context?: (root: string, members: string[]) => Promise<Evidence[]>
+  /** Test runs from the agent transcripts of the project at `root`. Absent, or throwing: none. */
+  transcriptRuns?: (root: string) => Promise<TestRun[]>
+  /** The newest CI conclusion of the project at `root`, as runs of the files the commit changed. Absent, or throwing: none. */
+  ciRuns?: (root: string) => Promise<TestRun[]>
   /** The repository revision stamped on a world. Default: `{ head: '', dirty: false }`. */
   head?: (root: string) => Promise<WorldHead>
   /** The code-graph snapshot posted to the host. Default: the structure-only
@@ -181,6 +186,25 @@ export function createWorldClient(
     }
   }
 
+  const answerRuns = async (tr: WorldHostTransport, id: number, projectKey: string, source: unknown): Promise<void> => {
+    let runs: TestRun[] = []
+    const root = roots.get(projectKey)
+    const ask = source === 'ci' ? opts.ciRuns : source === 'transcript' ? opts.transcriptRuns : undefined
+    if (ask && root !== undefined) {
+      try {
+        const r = await ask(root)
+        runs = Array.isArray(r) ? r : []
+      } catch {
+        runs = []
+      }
+    }
+    try {
+      tr.postMessage({ kind: 'runs-result', id, runs })
+    } catch {
+      // the host went away while main looked; its exit already failed the compile
+    }
+  }
+
   const onMessage = (tr: WorldHostTransport, m: WorldHostResponse): void => {
     if (current !== tr || !m || typeof m !== 'object') return
     switch (m.kind) {
@@ -218,6 +242,9 @@ export function createWorldClient(
         return
       case 'context':
         void answerContext(tr, m.id, m.projectKey, m.members)
+        return
+      case 'runs':
+        void answerRuns(tr, m.id, m.projectKey, m.source)
         return
     }
   }

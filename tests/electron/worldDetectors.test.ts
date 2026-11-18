@@ -102,6 +102,54 @@ ${url('host.js')}`)).toEqual([b('spawn', 'host', 'consume'), b('fork', 'host', '
   })
 })
 
+describe('message ports and child_process', () => {
+  it('detectProcesses finds MessageChannel ports, exec, execSync and child_process.fork', () => {
+    expect(run(`const ch = new MessageChannel()
+const { port1 } = ch
+port1.postMessage(1)
+workerPort.postMessage(2)
+mainPort2.postMessage(3)`)).toEqual([
+      b('port', 'ch', 'provide'),
+      b('port', 'port1', 'consume', 3),
+      b('port', 'workerPort', 'consume', 4),
+      b('port', 'mainPort2', 'consume', 5)
+    ])
+    // Not a port: a name that merely ends in "port", or a member of something else.
+    expect(run(`report.postMessage(1); a.port.postMessage(3)`)).toEqual([])
+    expect(run(`import { exec, execSync as sh, fork, spawn as sp } from 'node:child_process'
+exec('git status')
+sh("ls")
+fork('./w.js')
+sp('x')`)).toEqual([
+      b('spawn', 'git status', 'consume', 2),
+      b('spawn', 'ls', 'consume', 3),
+      b('spawn', './w.js', 'consume', 4)
+    ])
+    expect(run(`const { exec: run, $q: q, fork } = require('child_process')
+run('a')
+q('no')
+fork(\`b\`)`).map((x) => x.key)).toEqual(['a', 'b'])
+    expect(run(`import * as cp from 'child_process'
+cp.exec('x')
+cp.execSync('y')
+cp.fork('z')`).map((x) => x.key)).toEqual(['x', 'y', 'z'])
+    expect(run(`import cp from 'child_process'
+cp.exec('d')`).map((x) => x.key)).toEqual(['d'])
+    expect(run(`const $cp = require('child_process')
+$cp.exec('e')`).map((x) => x.key)).toEqual(['e'])
+    expect(run(`const cp = require('node:child_process')
+child_process.fork('./f.js')`).map((x) => x.key)).toEqual(['./f.js'])
+  })
+  it('does not count exec or fork that does not come from child_process', () => {
+    expect(run(`const m = /a(b)/.exec('abc'); db.exec('create table x'); exec('ls'); fork('./w.js')`)).toEqual([])
+    // child_process is imported, but these are not its functions or are member calls or variable arguments.
+    expect(run(`import { spawn } from 'child_process'
+db.exec('x'); re.exec('y'); exec('z'); other.fork('w'); cp.exec('v')`)).toEqual([])
+    expect(run(`import { exec } from 'child_process'
+exec(cmd); exec()`)).toEqual([])
+  })
+})
+
 describe('http', () => {
   it('detects outbound hosts only', () => {
     expect(run(`fetch('https://api.example.com/x')`)).toEqual([b('http-out', 'api.example.com', 'consume')])

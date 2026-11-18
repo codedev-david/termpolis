@@ -27,6 +27,35 @@ describe('WorldCard', () => {
     expect(onEvidence).toHaveBeenCalledWith({ kind: 'file', ref: 'a.ts:3' })
   })
 
+  it('the card Edit button saves service names; bad names say why and save nothing', () => {
+    const onRuntimeNames = vi.fn()
+    const html = '<h3>T</h3><button data-runtime-edit="b1" data-names="a, b">Edit</button><button data-runtime-edit="b2">Edit</button>'
+    render(<WorldCard html={html} onOpen={vi.fn()} onClose={vi.fn()} {...noop} onRuntimeNames={onRuntimeNames} />)
+    fireEvent.click(screen.getAllByText('Edit')[0])
+    const input = screen.getByLabelText(/Service names/) as HTMLInputElement
+    expect(input.value).toBe('a, b')
+    fireEvent.change(input, { target: { value: 'has space' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Use only letters')
+    expect(onRuntimeNames).not.toHaveBeenCalled()
+    fireEvent.change(input, { target: { value: 'orders-api, db.1,' } })
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onRuntimeNames).toHaveBeenCalledWith('b1', ['orders-api', 'db.1'])
+    expect(screen.queryByTestId('world-card-names')).toBeNull()
+    // Cancel closes it; a part with no names starts empty.
+    fireEvent.click(screen.getAllByText('Edit')[1])
+    expect((screen.getByLabelText(/Service names/) as HTMLInputElement).value).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('world-card-names')).toBeNull()
+  })
+
+  it('without a save handler the Edit button does nothing', () => {
+    render(<WorldCard html={'<button data-runtime-edit="b1">Edit</button>'} onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
+    fireEvent.click(screen.getByText('Edit'))
+    expect(screen.queryByTestId('world-card-names')).toBeNull()
+  })
+
   it('ignores evidence that does not parse or is not {kind, ref}', () => {
     const onEvidence = vi.fn()
     const html =

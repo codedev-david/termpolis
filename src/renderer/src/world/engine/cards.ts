@@ -29,6 +29,20 @@ function claims(list: Claim[], itemId: string, start: number, empty = '<p class=
 const known = (b: { id: string; how: Claim[]; why: Claim[]; claims: Claim[] }): string =>
   b.claims.length ? section('What we know', claims(b.claims, b.id, b.how.length + b.why.length)) : ''
 
+/**
+ * "Service names": what a part goes by while it runs. A building of the world has an Edit button (the
+ * pane saves what is typed as an annotation); a planned building has no names to edit. Nothing when
+ * there are none and none can be edited.
+ */
+function serviceNames(doc: WorldDoc, id: string): string {
+  const names = doc.runtimeNames[id] ?? []
+  const editable = doc.buildings.some((x) => x.id === id)
+  if (names.length === 0 && !editable) return ''
+  const list = names.length ? `<span class="rtnames">${esc(names.join(', '))}</span>` : '<span class="muted">None yet</span>'
+  const edit = editable ? ` <button class="edit-names" data-runtime-edit="${esc(id)}" data-names="${esc(names.join(', '))}">Edit</button>` : ''
+  return section('Service names', `<p>${list}${edit}</p>`)
+}
+
 function chips(doc: WorldDoc, techs: string[]): string {
   return techs.map((t) => `<span class="chip" data-tech="${esc(t)}" title="${esc(doc.glossary[t] ?? '')}">${esc(t)}</span>`).join('')
 }
@@ -70,6 +84,7 @@ export function buildingCard(doc: WorldDoc, id: string): string {
     + (parts ? section('What\'s inside', `<ul>${parts}</ul>`) : '')
     + (b.stack.length ? section('Technology', `<div>${chips(doc, b.stack)}</div>`) : '')
     + section('Why it\'s built this way', claims(b.why, b.id, b.how.length))
+    + serviceNames(doc, id)
     + known(b)
     + (ins.length ? section('What comes in', edgeList(doc, ins, 'from')) : '')
     + (outs.length ? section('What goes out', edgeList(doc, outs, 'to')) : '')

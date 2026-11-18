@@ -729,9 +729,9 @@ export interface TermpolisAPI {
   worldAnnotate: (key: string, itemId: string, text: string) => Promise<IpcResponse<WorldDoc>>
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => Promise<IpcResponse<BuildItResult>>
   /** Lumopolis settings: whether the world compiler may ask the Lumopolis agent's cheapest model to describe parts. */
-  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldAgent: 'claude' | 'codex' | 'gemini' }>>
+  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini' }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */
-  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini' }) => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldAgent: 'claude' | 'codex' | 'gemini' }>>
+  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini' }) => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini' }>>
   onWorldProgress: (cb: (e: WorldProgressEvent) => void) => () => void
   onWorldUpdated: (cb: (e: WorldUpdatedEvent) => void) => () => void
   /** Export the full brain (memories + graph + learning stores + code graph) to a chosen .zip. */

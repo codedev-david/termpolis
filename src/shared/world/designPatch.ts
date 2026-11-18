@@ -6,6 +6,7 @@
 // would break it applies nothing). Positions come from an injected placer (main passes one built on
 // layout.ts; shared-only callers get defaultPlacer), and a position once given is always kept.
 import type { Claim, WorldDoc } from './types'
+import { cleanRuntimeNames } from './runtimeNames'
 import { validateWorld } from './validate'
 
 export type DesignOp =
@@ -17,6 +18,7 @@ export type DesignOp =
   | { op: 'move'; id: string; districtId: string }
   | { op: 'describe'; id: string; does: string }
   | { op: 'removePart'; id: string }
+  | { op: 'setRuntimeNames'; id: string; names: string[] }
 
 type Pos = [number, number, number]
 /** Given a doc whose layout holds only the positions to keep, returns positions for every district and building. */
@@ -32,6 +34,7 @@ After your reply, add one fenced block tagged design-patch containing a JSON arr
 {"op":"addEdge","from":"<building id>","to":"<building id>","label":"...","cargo":"..."}
 {"op":"rename","id":"...","name":"..."} {"op":"remove","id":"..."}
 {"op":"move","id":"<building id>","districtId":"..."} {"op":"describe","id":"...","does":"..."}
+{"op":"setRuntimeNames","id":"<building id>","names":["..."]} sets the names the part goes by while it runs (at most 10, letters, digits, dots, dashes and underscores).
 {"op":"removePart","id":"<building id>"} marks a part the code already has as one the design takes away (it stays in the design).
 A district is an area of the system; a building is one part (a service, an app, a store) inside a district.
 New ids are short lowercase words joined by dashes and unique across the design. Use only ids from the
@@ -99,6 +102,8 @@ function normalizeOp(raw: unknown): DesignOp | null {
       return str(raw.districtId) ? { op: 'move', id, districtId: raw.districtId.trim() } : null
     case 'removePart':
       return { op: 'removePart', id }
+    case 'setRuntimeNames':
+      return Array.isArray(raw.names) ? { op: 'setRuntimeNames', id, names: raw.names.filter(str).map((n) => n.trim()) } : null
     case 'describe':
       return str(raw.does) ? { op: 'describe', id, does: clip(raw.does, MAX_TEXT) } : null
     default:
@@ -246,6 +251,15 @@ function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>):
       if (op.op === 'rename') target.name = op.name
       else if ('how' in target) target.how = [claim(op.does)]
       else target.subtitle = op.does
+      return null
+    }
+    case 'setRuntimeNames': {
+      if (!building(op.id)) return `there is no building "${op.id}"`
+      const bad = op.names.find((n) => cleanRuntimeNames([n]).length === 0)
+      if (bad !== undefined) return `"${bad}" is not a usable service name`
+      const names = cleanRuntimeNames(op.names)
+      if (names.length > 0) doc.runtimeNames[op.id] = names
+      else delete doc.runtimeNames[op.id]
       return null
     }
     case 'removePart': {

@@ -358,6 +358,45 @@ describe('createWorldClient', () => {
     await flush()
   })
 
+  it('worldClient answers runs requests from the transcript and CI hooks, and an absent or failing hook gives none', async () => {
+    const run = { file: 'a.test.ts', passed: true, at: 1, source: 'transcript' as const }
+    const transcriptRuns = vi.fn(async (_root: string) => [run])
+    const ciRuns = vi.fn(async (root: string): Promise<(typeof run)[]> => {
+      if (ciRuns.mock.calls.length === 1) throw new Error('gh down')
+      return 5 as never
+    })
+    const { client, spawned } = setup({ transcriptRuns, ciRuns })
+    await client.compile(ROOT)
+    const t = spawned[0]
+    t.emit({ kind: 'runs', id: 1, projectKey: KEY, source: 'transcript' })
+    t.emit({ kind: 'runs', id: 2, projectKey: KEY, source: 'ci' })
+    t.emit({ kind: 'runs', id: 3, projectKey: 'unknown', source: 'transcript' })
+    t.emit({ kind: 'runs', id: 4, projectKey: KEY, source: 'other' as never })
+    await vi.waitFor(() => expect(t.posted.filter((m) => m.kind === 'runs-result')).toHaveLength(4))
+    t.emit({ kind: 'runs', id: 5, projectKey: KEY, source: 'ci' })
+    await vi.waitFor(() => expect(t.posted.filter((m) => m.kind === 'runs-result')).toHaveLength(5))
+    expect(t.posted.filter((m) => m.kind === 'runs-result')).toEqual(
+      expect.arrayContaining([
+        { kind: 'runs-result', id: 1, runs: [run] },
+        { kind: 'runs-result', id: 2, runs: [] },
+        { kind: 'runs-result', id: 3, runs: [] },
+        { kind: 'runs-result', id: 4, runs: [] },
+        { kind: 'runs-result', id: 5, runs: [] }
+      ])
+    )
+    expect(transcriptRuns).toHaveBeenCalledWith(ROOT)
+
+    const plain = setup()
+    await plain.client.compile(ROOT)
+    plain.spawned[0].emit({ kind: 'runs', id: 7, projectKey: KEY, source: 'ci' })
+    await vi.waitFor(() => expect(plain.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 7, runs: [] }))
+
+    // a host that died while main looked: the answer is dropped quietly
+    t.throwOnPost = true
+    t.emit({ kind: 'runs', id: 8, projectKey: KEY, source: 'transcript' })
+    await flush()
+  })
+
   it('worldClient relays context requests from the host to the main-side hook', async () => {
     const context = vi.fn(async (_root: string, members: string[]) => {
       if (members[0] === 'throw') throw new Error('brain down')

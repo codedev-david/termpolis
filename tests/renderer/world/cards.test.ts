@@ -28,6 +28,23 @@ describe('cards', () => {
     expect(html).toContain('title="A framework for building desktop apps with web technology."')
   })
 
+  it('buildingCard shows service names with an Edit button; a planned building has none to edit', () => {
+    const doc = minimal()
+    expect(buildingCard(doc, 'b1')).toContain('<span class="muted">None yet</span>')
+    expect(buildingCard(doc, 'b1')).toContain('data-runtime-edit="b1" data-names=""')
+    doc.runtimeNames = { b1: ['orders-api', 'db'] }
+    const html = buildingCard(doc, 'b1')
+    expect(html).toContain('Service names')
+    expect(html).toContain('<span class="rtnames">orders-api, db</span>')
+    expect(html).toContain('data-names="orders-api, db"')
+    const planned = { ...doc.buildings[0], id: 'p1' }
+    doc.layers.plan = [{ id: 'x', title: 'X', summary: [], buildings: [planned], edges: [] }]
+    expect(buildingCard(doc, 'p1')).not.toContain('Service names')
+    doc.runtimeNames.p1 = ['svc']
+    expect(buildingCard(doc, 'p1')).toContain('svc')
+    expect(buildingCard(doc, 'p1')).not.toContain('data-runtime-edit')
+  })
+
   it('does not tag observed claims', () => {
     expect(buildingCard(minimal(), 'b2')).toContain('<li class="claim" data-state="verified"><span class="ctext">Memories are stored')
   })

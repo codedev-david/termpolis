@@ -209,7 +209,7 @@ import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from 
 import { runWorkflow as wfRun, cancelRun as wfCancel } from './workflow/workflowEngine'
 import { registerWorkflowIpc } from './workflow/ipc'
 import { TriggerSupervisor, setTriggerGitChecksPaused } from './workflow/triggers'
-import { setClaudeLocatePaused } from './transcriptWatchers/claudeCodeWatcher'
+import { setClaudeLocatePaused, listSessionFiles as listClaudeSessionFiles } from './transcriptWatchers/claudeCodeWatcher'
 import { sessionProjectCwds, type SessionLike } from './workflow/sessionProjects'
 import { startLearningSignals, stopLearningSignals } from './learningSignals'
 import { cleanupDemoWorkflows, oncePerVersion } from './workflow/demoCleanup'
@@ -339,6 +339,7 @@ import { testPickedFolder } from './world/testHooks'
 import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
+import { createWorldRuns, tailOfFile } from './world/worldRuns'
 import { cheapModelFor, makeWorldLlm } from './world/label'
 import { createLabelContext, GIT_TIMEOUT_MS } from './world/labelContext'
 import { ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
@@ -2685,7 +2686,26 @@ const worldLabelContext = createLabelContext({
     return rows.map((r) => ({ id: r.id, text: r.content }))
   },
 })
+// Test runs for the world: what the agents' transcripts ran, and (only when the person turned on "Read CI results
+// with GitHub CLI") the newest CI conclusion. Reads are async and the commands go to the proc host.
+const worldRuns = createWorldRuns({
+  listTranscripts: (root) => listClaudeSessionFiles(root),
+  readTail: tailOfFile,
+  transcriptsAllowed: () => getLearnFromConversations(),
+  ciAllowed: async () => { await worldSettings.ready(); return worldSettings.get().worldCiResults === true },
+  exec: async (bin, args, opts) => {
+    try {
+      const out = await execCaptureOffThread(bin, args, { cwd: opts.cwd, timeout: opts.timeout, maxBuffer: 4 * 1024 * 1024 })
+      return { stdout: String(out.stdout ?? ''), ...(out.error ? { error: out.error } : {}) }
+    } catch (error) {
+      return { stdout: '', error }
+    }
+  },
+  now: () => Date.now(),
+})
 const worldClient = createWorldClient(undefined, {
+  transcriptRuns: worldRuns.transcriptRuns,
+  ciRuns: worldRuns.ciRuns,
   userDataPath: () => app.getPath('userData'),
   // A project's linked design (plan versus built): registry entry -> linkedDesign -> the stored design.
   planFor: async (projectKey) => {

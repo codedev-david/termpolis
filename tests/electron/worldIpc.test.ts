@@ -85,6 +85,14 @@ describe('registerWorldIpc', () => {
     expect(settings.set).toHaveBeenLastCalledWith({})
   })
 
+  it('world:settings-set allowlists worldCiResults: a boolean passes, anything else is dropped', async () => {
+    const { invoke, settings } = setup()
+    await invoke('world:settings-set', { worldCiResults: true })
+    expect(settings.set).toHaveBeenLastCalledWith({ worldCiResults: true })
+    await invoke('world:settings-set', { worldCiResults: 'yes' })
+    expect(settings.set).toHaveBeenLastCalledWith({})
+  })
+
   it('world:settings-set allowlists worldAgent: a known agent passes, anything else is dropped', async () => {
     const { invoke, settings } = setup()
     await invoke('world:settings-set', { worldAgent: 'codex' })

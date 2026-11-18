@@ -1166,6 +1166,45 @@ describe('WorldView card actions', () => {
     expect(screen.queryByTestId('evidence-view')).toBeNull()
   })
 
+  it('the card Edit button saves service names through world:annotate and shows the doc that comes back; a failure says so', async () => {
+    const doc = infer()
+    const returned = infer()
+    returned.generatedAt = doc.generatedAt + 1
+    const worldAnnotate = vi.fn().mockResolvedValueOnce(ok(returned)).mockResolvedValueOnce(fail('nope')).mockRejectedValueOnce(new Error('boom'))
+    await open(doc, { worldAnnotate })
+    const save = (text: string) => {
+      fireEvent.click(screen.getByTestId('world-card').querySelector('[data-runtime-edit="b1"]') as Element)
+      fireEvent.change(screen.getByLabelText(/Service names/), { target: { value: text } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    }
+    save('orders-api, db')
+    await settle()
+    expect(worldAnnotate).toHaveBeenLastCalledWith(doc.projectKey, 'b1', 'runtime:orders-api,db')
+    expect(viewer().load).toHaveBeenLastCalledWith(returned, expect.anything())
+    save('x')
+    await settle()
+    expect(screen.getByRole('status')).toHaveTextContent("Couldn't save the service names: nope")
+    save('y')
+    await settle()
+    expect(screen.getByRole('status')).toHaveTextContent("Couldn't save the service names: boom")
+  })
+
+  it('service names saved after the pane closed change nothing and do not throw', async () => {
+    const late = deferred<Res<WorldDoc>>()
+    const late2 = deferred<Res<WorldDoc>>()
+    const worldAnnotate = vi.fn().mockReturnValueOnce(late.promise).mockReturnValueOnce(late2.promise)
+    await open(infer(), { worldAnnotate })
+    for (let i = 0; i < 2; i++) {
+      fireEvent.click(screen.getByTestId('world-card').querySelector('[data-runtime-edit="b1"]') as Element)
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    }
+    cleanup()
+    late.resolve(ok(infer()))
+    late2.reject(new Error('late'))
+    await settle()
+    expect(worldAnnotate).toHaveBeenCalledTimes(2)
+  })
+
   it('a Confirm answered after the pane closed changes nothing and does not throw', async () => {
     const late = deferred<Res<WorldDoc>>()
     const late2 = deferred<Res<WorldDoc>>()

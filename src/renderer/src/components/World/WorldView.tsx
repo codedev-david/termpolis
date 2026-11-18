@@ -29,6 +29,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
+import { runtimeText } from '../../../../shared/world/runtimeNames'
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
 import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
@@ -492,6 +493,17 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       })
       .catch((e: unknown) => { if (mountedRef.current) setNotice(`Couldn't confirm: ${messageOf(e)}`) })
   }
+  /** The "Service names" editor saved: the names are stored as an annotation, and the pane shows the doc that comes back. */
+  const saveRuntimeNames = (itemId: string, names: string[]): void => {
+    const d = docRef.current as WorldDoc
+    window.termpolis.worldAnnotate(d.projectKey, itemId, runtimeText(names))
+      .then((res) => {
+        if (!mountedRef.current) return
+        if (res.success) setDoc(res.data)
+        else setNotice(`Couldn't save the service names: ${res.error}`)
+      })
+      .catch((e: unknown) => { if (mountedRef.current) setNotice(`Couldn't save the service names: ${messageOf(e)}`) })
+  }
   const onFallbackClick = (e: MouseEvent<HTMLDivElement>): void => {
     const item = (e.target as Element).closest('[data-kind][data-id]')
     if (!item) return
@@ -676,7 +688,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             {busy ? 'Re-laying out…' : notice}
           </div>
         )}
-        {card !== null && <WorldCard boxRef={cardRef} html={card} maxHeight={cardCap} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onEvidence={setEvidence} />}
+        {card !== null && <WorldCard boxRef={cardRef} html={card} maxHeight={cardCap} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
         {card !== null && evidence !== null && (
           <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 4, maxWidth: 360 }} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1">
             <EvidenceView evidence={evidence} onClose={() => setEvidence(null)} />

@@ -16,12 +16,14 @@ export function LumopolisSettings(): JSX.Element {
   const [labelling, setLabelling] = useState(true)
   // OFF by default, as in main: only a stored `true` turns it on.
   const [speak, setSpeak] = useState(false)
+  // OFF by default, as in main: reading CI runs the `gh` command, which uses its stored GitHub login.
+  const [ci, setCi] = useState(false)
   const [agent, setAgent] = useState<WorldAgent>('claude')
 
   useEffect(() => {
     let live = true
     window.termpolis.worldSettingsGet?.()
-      ?.then((res) => { if (live && res.success) { setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true); if (isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent) } })
+      ?.then((res) => { if (live && res.success) { setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true); setCi(res.data.worldCiResults === true); if (isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent) } })
       ?.catch(() => undefined)
     return () => { live = false }
   }, [])
@@ -43,6 +45,16 @@ export function LumopolisSettings(): JSX.Element {
     const revert = (): void => setSpeak(prev)
     window.termpolis.worldSettingsSet?.({ worldSpeakAnswers: next })
       ?.then((res) => { if (res.success) setSpeak(res.data.worldSpeakAnswers === true); else revert() })
+      ?.catch(revert)
+  }
+
+  const toggleCi = (): void => {
+    const prev = ci
+    const next = !prev
+    setCi(next)
+    const revert = (): void => setCi(prev)
+    window.termpolis.worldSettingsSet?.({ worldCiResults: next })
+      ?.then((res) => { if (res.success) setCi(res.data.worldCiResults === true); else revert() })
       ?.catch(revert)
   }
 
@@ -132,6 +144,32 @@ export function LumopolisSettings(): JSX.Element {
           </span>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             When you ask Lumopolis a question, speak the answer with your computer&apos;s voice. Off by default.
+          </span>
+        </div>
+      </div>
+      <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="lumopolis-ci-settings">
+        <button
+          onClick={toggleCi}
+          role="switch"
+          aria-checked={ci}
+          aria-label="Toggle reading CI results with GitHub CLI"
+          data-testid="settings-world-ci-toggle"
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+            ci ? 'bg-[#0078d4]' : 'bg-[#555]'
+          }`}
+        >
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+            ci ? 'translate-x-5' : 'translate-x-0.5'
+          }`} />
+        </button>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium">
+            <i className="fa-solid fa-circle-check text-[#4fc1ff] mr-1.5" aria-hidden="true"></i>
+            Read CI results with GitHub CLI
+          </span>
+          <span className="text-xs text-[#9ca3af] leading-relaxed">
+            Lumopolis runs the <code>gh</code> command to read your project&apos;s latest CI result, so a part whose tests
+            passed there shows as verified. <code>gh</code> uses the GitHub login it already has. Off by default.
           </span>
         </div>
       </div>

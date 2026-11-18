@@ -1,8 +1,9 @@
 // The detail card over the Lumopolis map, top left. Its HTML comes only from the engine's card builders
 // (buildingCard, edgeCard, the tour caption), which escape every string from the world document,
 // so it is safe to set as innerHTML. Never pass raw document strings here.
-import type { MouseEvent, Ref } from 'react'
+import { useEffect, useState, type FormEvent, type MouseEvent, type Ref } from 'react'
 import type { Evidence } from '../../../../shared/world/types'
+import { cleanRuntimeNames, MAX_RUNTIME_NAMES } from '../../../../shared/world/runtimeNames'
 import { CARD_INSET_PX, CARD_WIDTH_PX } from './worldPane'
 
 const EVIDENCE_KINDS = ['file', 'symbol', 'test', 'transcriptStep', 'memory', 'commit', 'trace', 'metric', 'log', 'deploy', 'person']
@@ -27,6 +28,8 @@ export interface WorldCardProps {
   onTech: (techId: string) => void
   /** Confirm (data-confirm) on an inferred claim: a person vouches for its text. */
   onConfirm: (itemId: string, text: string) => void
+  /** Save on the "Service names" editor: the part and the names typed (already checked). Left out, the Edit button does nothing. */
+  onRuntimeNames?: (itemId: string, names: string[]) => void
   /** An evidence button (data-evidence) was clicked. */
   onEvidence: (ev: Evidence) => void
   /** The card's element, measured so the close-ups are framed beside it. */
@@ -78,14 +81,37 @@ const CARD_CSS = `
 .world-card-body .cargo{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
 .world-card-body a{color:#7dd3fc;cursor:pointer;text-decoration:underline dotted}
 .world-card-body a:hover{color:#e0f2fe}
+.world-card-names{margin-top:8px;padding:8px 8px 0 0;border-top:1px solid rgba(148,163,184,.18)}
+.world-card-names label{display:block;font-size:11px;color:#7dd3fc;margin-bottom:4px}
+.world-card-names input{width:100%;box-sizing:border-box;padding:4px 6px;border-radius:6px;font-size:12px;color:#e2e8f0;background:rgba(15,23,42,.8);border:1px solid rgba(148,163,184,.35)}
+.world-card-names button{margin:6px 6px 0 0;padding:1px 8px;border-radius:6px;font-size:11px;color:#7dd3fc;background:transparent;border:1px solid rgba(125,211,252,.4);cursor:pointer}
+.world-card-names [role=alert]{margin:4px 0 0;font-size:11px;color:#fbbf24}
+.world-card-body .edit-names{padding:0 6px;border-radius:6px;font-size:11px;color:#7dd3fc;background:transparent;border:1px solid rgba(125,211,252,.4);cursor:pointer}
 .world-card-body .tour-caption{font-size:13px;color:#e2e8f0}
 `
 
-export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, boxRef, maxHeight = null }: WorldCardProps): JSX.Element {
+export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, boxRef, maxHeight = null }: WorldCardProps): JSX.Element {
+  // The service-names editor: the part it edits and what is typed. A new card (another part, or the saved one) closes it.
+  const [edit, setEdit] = useState<{ id: string; text: string; error: boolean } | null>(null)
+  useEffect(() => setEdit(null), [html])
+  const save = (e: FormEvent): void => {
+    e.preventDefault()
+    const typed = (edit as { id: string; text: string }).text.split(',').map((n) => n.trim()).filter((n) => n !== '')
+    const names = cleanRuntimeNames(typed)
+    if (names.length !== typed.length) { setEdit({ ...(edit as { id: string; text: string }), error: true }); return }
+    onRuntimeNames?.((edit as { id: string }).id, names)
+    setEdit(null)
+  }
   const onClick = (e: MouseEvent<HTMLDivElement>): void => {
     const target = e.target as Element
     const chip = target.closest('[data-tech]')
     if (chip) { e.preventDefault(); onTech(chip.getAttribute('data-tech') as string); return }
+    const rename = target.closest('[data-runtime-edit]')
+    if (rename) {
+      e.preventDefault()
+      if (onRuntimeNames) setEdit({ id: rename.getAttribute('data-runtime-edit') as string, text: rename.getAttribute('data-names') ?? '', error: false })
+      return
+    }
     const confirm = target.closest('[data-confirm]')
     if (confirm) {
       e.preventDefault()
@@ -132,6 +158,15 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
         onClick={onClick}
         dangerouslySetInnerHTML={{ __html: html }}
       />
+      {edit && (
+        <form className="world-card-names" data-testid="world-card-names" onSubmit={save}>
+          <label htmlFor="world-card-names-input">Service names (up to {MAX_RUNTIME_NAMES}, separated by commas)</label>
+          <input id="world-card-names-input" autoFocus value={edit.text} onChange={(e) => setEdit({ ...edit, text: e.target.value, error: false })} />
+          {edit.error && <p role="alert">Use only letters, digits, dots, dashes and underscores, up to {MAX_RUNTIME_NAMES} names.</p>}
+          <button type="submit">Save</button>
+          <button type="button" onClick={() => setEdit(null)}>Cancel</button>
+        </form>
+      )}
     </aside>
   )
 }

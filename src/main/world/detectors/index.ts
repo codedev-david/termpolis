@@ -16,7 +16,7 @@ export type { Boundary, BoundaryKind, Detector } from './common'
  */
 export const MAX_DETECT_FILE_CHARS = 512 * 1024
 
-// Not detected: exec/execSync, child_process.fork, env destructuring
+// Not detected: env destructuring
 // (`const { X } = process.env`), dynamic channel/host/command names.
 export const DEFAULT_DETECTORS: readonly Detector[] = [
   detectIpc,

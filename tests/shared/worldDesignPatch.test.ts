@@ -355,3 +355,27 @@ describe('parseDesignReply', () => {
     expect(r.dropped).toBe(7)
   })
 })
+
+describe('setRuntimeNames', () => {
+  it('setRuntimeNames rejects bad names and keeps at most 10', () => {
+    const doc = base()
+    const names = Array.from({ length: 12 }, (_, i) => `svc-${i}`)
+    const r = applyDesignPatch(doc, [
+      { op: 'setRuntimeNames', id: 'api', names: ['orders.api', 'orders.api', 'db_1'] },
+      { op: 'setRuntimeNames', id: 'db', names },
+      { op: 'setRuntimeNames', id: 'ui', names: ['has space'] },
+      { op: 'setRuntimeNames', id: 'ghost', names: ['x'] },
+      { op: 'setRuntimeNames', id: 'ui', names: 'nope' as unknown as string[] }
+    ])
+    expect(r.doc.runtimeNames.api).toEqual(['orders.api', 'db_1'])
+    expect(r.doc.runtimeNames.db).toEqual(names.slice(0, 10))
+    expect(r.doc.runtimeNames.ui).toBeUndefined()
+    expect(r.skipped.map((s) => s.reason)).toEqual(['"has space" is not a usable service name', 'there is no building "ghost"', 'not a change Lumopolis understands'])
+    valid(r.doc)
+    // An empty list clears; a non-string entry is dropped by the parser.
+    const cleared = applyDesignPatch(r.doc, [{ op: 'setRuntimeNames', id: 'api', names: [] }])
+    expect(cleared.doc.runtimeNames.api).toBeUndefined()
+    expect(parseDesignReply('```design-patch\n[{"op":"setRuntimeNames","id":"api","names":["a",3,"b"]}]\n```').ops).toEqual([{ op: 'setRuntimeNames', id: 'api', names: ['a', 'b'] }])
+    expect(DESIGN_PROTOCOL).toContain('setRuntimeNames')
+  })
+})

@@ -189,3 +189,35 @@ describe('mergeAnnotations and hasPart', () => {
     expect(hasPart(doc(), 'd1')).toBe(false)
   })
 })
+
+describe('runtime-names claims', () => {
+  const rt = (names: string): Claim => ({ ...person(`runtime:${names}`) })
+
+  it('are kept out of the card and out of the 20-claim cap, one per item, with checked names', async () => {
+    const store = createAnnotationStore(dir)
+    for (let i = 0; i < MAX_ANNOTATIONS_PER_ITEM + 3; i++) await store.add('k', 'b1', person(`n${i}`))
+    await store.add('k', 'b1', rt('a,b'))
+    await store.add('k', 'b1', rt('c d,ok.1,' + 'x'.repeat(70)))
+    const list = (await store.list('k')).b1
+    expect(list.filter((c) => !c.text.startsWith('runtime:'))).toHaveLength(MAX_ANNOTATIONS_PER_ITEM)
+    expect(list.filter((c) => c.text.startsWith('runtime:')).map((c) => c.text)).toEqual(['runtime:ok.1'])
+    const long = Array.from({ length: 30 }, (_, i) => `service-name-${i}`).join(',')
+    await store.add('k', 'b2', rt(long))
+    expect((await store.list('k')).b2[0].text.split(',')).toHaveLength(10)
+    // The same rules apply to what a file holds.
+    await writeFile(fileFor('f'), JSON.stringify({ b1: [rt('a'), rt('b'), person('n')] }))
+    expect((await store.list('f')).b1.map((c) => c.text)).toEqual(['n', 'runtime:b'])
+  })
+
+  it('merge into runtimeNames, not into claims; an empty claim clears; design worlds and idempotence hold', () => {
+    const d = doc()
+    d.runtimeNames = { b1: ['from-otel'], b2: ['keep'] }
+    const m = mergeAnnotations(d, { b1: [person('n'), rt('hand-1,hand-2')], b2: [rt('')], e1: [rt('edge-x')] })
+    expect(m.runtimeNames).toEqual({ b1: ['hand-1', 'hand-2'], e1: ['edge-x'] })
+    expect(m.buildings[0].claims.map((c) => c.text)).toEqual(['seen', 'n'])
+    expect(m.buildings[1].claims).toEqual([])
+    expect(mergeAnnotations(m, { b1: [person('n'), rt('hand-1,hand-2')], b2: [rt('')], e1: [rt('edge-x')] })).toEqual(m)
+    expect(d.runtimeNames.b1).toEqual(['from-otel'])
+    expect(mergeAnnotations(doc(), {}).runtimeNames).toEqual({})
+  })
+})

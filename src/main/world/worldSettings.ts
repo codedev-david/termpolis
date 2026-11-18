@@ -16,11 +16,16 @@ export interface WorldSettings {
   worldLabelling: boolean
   /** "Read Lumopolis answers aloud": OFF by default; only a literal `true` turns it on. */
   worldSpeakAnswers: boolean
+  /**
+   * "Read CI results with GitHub CLI": OFF by default; only a literal `true` turns it on. On, Lumopolis runs the `gh`
+   * command (which uses its own stored GitHub login) to read the newest CI result. Off, the compile never starts `gh`.
+   */
+  worldCiResults: boolean
   /** The agent that answers questions, drafts designs and (cheapest model) describes parts. Claude by default; an unknown value reads as claude. */
   worldAgent: ExecAgent
 }
 
-export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldAgent: 'claude' }
+export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: false, worldAgent: 'claude' }
 
 /** The file name under userData. */
 export const WORLD_SETTINGS_FILE = 'world-settings.json'
@@ -40,7 +45,7 @@ function parse(text: string): WorldSettings | null {
   const parsed: unknown = JSON.parse(text)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
   const rec = parsed as Record<string, unknown>
-  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude' }
+  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldCiResults: rec.worldCiResults === true, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude' }
 }
 
 let tmpCounter = 0
@@ -107,6 +112,7 @@ export function createWorldSettings(file: string | (() => string)): WorldSetting
       const next: Partial<WorldSettings> = {}
       if (typeof patch?.worldLabelling === 'boolean') next.worldLabelling = patch.worldLabelling
       if (typeof patch?.worldSpeakAnswers === 'boolean') next.worldSpeakAnswers = patch.worldSpeakAnswers
+      if (typeof patch?.worldCiResults === 'boolean') next.worldCiResults = patch.worldCiResults
       if (isExecAgent(patch?.worldAgent)) next.worldAgent = patch.worldAgent
       settings = { ...settings, ...next }
       if (!loaded) early = { ...early, ...next }
