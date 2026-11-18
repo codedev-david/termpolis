@@ -2741,9 +2741,12 @@ const worldClient = createWorldClient(undefined, {
   context: worldLabelContext,
   head: async (root) => {
     try {
-      const head = (await safeGitAsync(['rev-parse', 'HEAD'], { cwd: root, timeout: 3000 })).trim()
-      const status = await safeGitAsync(['-c', 'core.fsmonitor=false', 'status', '--porcelain', '--untracked-files=no'], { cwd: root, timeout: 5000 })
-      return { head, dirty: status.trim() !== '' }
+      // Both at once: a live change waits on these before the world recompiles.
+      const [rev, status] = await Promise.all([
+        safeGitAsync(['rev-parse', 'HEAD'], { cwd: root, timeout: 3000 }),
+        safeGitAsync(['-c', 'core.fsmonitor=false', 'status', '--porcelain', '--untracked-files=no'], { cwd: root, timeout: 5000 }),
+      ])
+      return { head: rev.trim(), dirty: status.trim() !== '' }
     } catch {
       return { head: '', dirty: false }
     }

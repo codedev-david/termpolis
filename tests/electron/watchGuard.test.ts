@@ -522,6 +522,32 @@ async function second(s: ReturnType<typeof setup>, n: number, o?: { priority?: b
 const gaps = (a: number[]): number[] => a.slice(1).map((v, i) => v - a[i])
 
 describe('createRunGate: pacing', () => {
+  it('minGapMs: a change after quiet runs one short window later, but runs never start closer than the gap (round 3 D)', async () => {
+    const s = setup({ mode: 'trailing', windowMs: 750, minGapMs: 2000 })
+    s.gate.note()
+    await s.clock.advance(749)
+    expect(s.starts).toHaveLength(0)
+    await s.clock.advance(1)
+    expect(s.starts).toHaveLength(1) // quiet before: only the short window
+    s.gate.note() // straight after a run: the gap holds it back
+    await s.clock.advance(1999)
+    expect(s.starts).toHaveLength(1)
+    await s.clock.advance(1)
+    expect(gaps(s.starts)).toEqual([2000])
+    await s.clock.advance(5000)
+    s.gate.note() // quiet again: the short window
+    await s.clock.advance(750)
+    expect(gaps(s.starts)).toEqual([2000, 5750])
+    // Leading mode: the window opened after a run lasts the gap too.
+    const l = setup({ windowMs: 750, minGapMs: 2000 })
+    l.gate.note()
+    l.gate.note()
+    await l.clock.advance(1999)
+    expect(l.starts).toHaveLength(1)
+    await l.clock.advance(1)
+    expect(l.starts).toHaveLength(2)
+  })
+
   it('leading: the first event after quiet runs at once, the rest of the window is ONE trailing run, then quiet is quiet', async () => {
     const s = setup()
     s.gate.note()

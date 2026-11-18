@@ -532,6 +532,22 @@ describe('createWorldClient', () => {
       expect(spawned[0].calls()[1].args).toEqual([KEY, SNAP, { head: 'h', dirty: false }, ['src/a.ts', 'src/b.ts']])
     })
 
+    it('asks for the snapshot, the git head and the linked plan at once, so a slow git costs no extra wait (round 3 D)', async () => {
+      let release: (v: { head: string; dirty: boolean }) => void = () => undefined
+      let calls = 0
+      const head = vi.fn(() => (++calls === 1 ? Promise.resolve({ head: 'h', dirty: false }) : new Promise<{ head: string; dirty: boolean }>((r) => { release = r })))
+      const planFor = vi.fn(async () => null)
+      const { client, spawned } = setup({ head, planFor, hasStoredWorld: () => true })
+      await client.compile(ROOT)
+      planFor.mockClear()
+      client.notifyChanged(ROOT, ['src/a.ts'])
+      // git has not answered, and the plan is already being read
+      await vi.waitFor(() => expect(planFor).toHaveBeenCalledWith(KEY))
+      release({ head: 'h2', dirty: true })
+      await vi.waitFor(() => expect(spawned[0].calls().map((c) => c.fn)).toContain('notifyChanged'))
+      expect(spawned[0].calls().find((c) => c.fn === 'notifyChanged')?.args.slice(0, 4)).toEqual([KEY, SNAP, { head: 'h2', dirty: true }, ['src/a.ts']])
+    })
+
     it('an empty list counts every indexed file as changed; a non-array is empty', async () => {
       const { client, spawned } = setup({ hasStoredWorld: () => true })
       await client.get(ROOT) // starts the host; null keeps the root unknown, so the store is asked

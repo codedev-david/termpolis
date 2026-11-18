@@ -451,10 +451,9 @@ export function createWorldClient(
           known.add(key)
         }
         roots.set(key, root)
-        const snap = await snapshotOf(root)
-        const head = await headOf(root)
+        // One wait, not three: git is the slow one, and the snapshot and the plan need nothing from it.
+        const [snap, head, plan] = await Promise.all([snapshotOf(root), headOf(root), planOf(key)])
         const rel = normaliseFiles(files)
-        const plan = await planOf(key)
         await call('notifyChanged', [key, snap, head, rel.length > 0 ? rel : snap.files, ...(plan ? [plan] : [])])
       })().catch(() => undefined)
     },

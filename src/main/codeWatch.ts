@@ -104,9 +104,21 @@ export async function listSourceFiles(
   return out
 }
 
+/**
+ * The re-index window: a change after quiet is re-indexed this long after it is first heard. Short enough
+ * that a live world shows a saved file within about a second and a half (the world recompiles straight
+ * after). Busy editing is paced by CODE_WATCH_GAP_MS and a storm by the flood guard, not by this window.
+ */
+export const CODE_WATCH_MS = 500
+/** The least time between two re-index starts by default: a busy session re-indexes no more often than it
+ *  did before the window shrank. */
+export const CODE_WATCH_GAP_MS = 2000
+
 /** Watch `root` and re-index (debounced) whenever a source file changes. Returns a disposer. */
 export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
-  const debounceMs = deps.debounceMs ?? 2000
+  const debounceMs = deps.debounceMs ?? CODE_WATCH_MS
+  // A caller that sets its own window is paced by it alone, as before.
+  const minGapMs = deps.debounceMs === undefined ? CODE_WATCH_GAP_MS : debounceMs
   let handle: WatchHandle | null = null
   const changed = new Set<string>() // source files touched during the current debounce window
   const appeared = new Set<string>() // non-source names renamed in (maybe new directories), to list
@@ -145,6 +157,7 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
   const gate = createRunGate({
     mode: 'trailing',
     windowMs: debounceMs,
+    minGapMs,
     setTimer: deps.setTimer,
     clearTimer: deps.clearTimer,
     now: deps.now,

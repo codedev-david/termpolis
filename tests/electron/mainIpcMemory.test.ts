@@ -4159,6 +4159,15 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(await world.opts.head('/repos/x')).toEqual({ head: '', dirty: false })
   })
 
+  it('asks git for the head and the status at once, so a live change waits for one git call, not two (round 3 D)', async () => {
+    let release: (v: string) => void = () => undefined
+    gitMock.safeGitAsync.mockReturnValueOnce(new Promise<string>((r) => { release = r })).mockResolvedValueOnce('')
+    const out = world.opts.head('/repos/x')
+    await vi.waitFor(() => expect(gitMock.safeGitAsync).toHaveBeenCalledTimes(2)) // the status was asked while rev-parse runs
+    release('abc123\n')
+    expect(await out).toEqual({ head: 'abc123', dirty: false })
+  })
+
   it('snapshots the code graph when it has the project, with no host snapshot and no build', async () => {
     expect(await world.opts.snapshot('/repos/x')).toEqual({ files: ['a.ts'], symbols: [], edges: [] })
     expect(cg.graphSnapshot).toHaveBeenCalledWith('key:/repos/x', '/repos/x', { structureOnly: true }) // the world needs no symbols or call edges

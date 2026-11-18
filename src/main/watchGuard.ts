@@ -488,6 +488,9 @@ export interface RunGateOptions {
    *  for `windowMs` and the run happens when it fires (what an indexer wants). */
   mode: 'leading' | 'trailing'
   windowMs: number | (() => number)
+  /** No run starts sooner than this after the previous run STARTED (default: none beyond the window). A
+   *  change after quiet still runs one window later; a busy stream is paced at the gap instead. */
+  minGapMs?: number
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (t: unknown) => void
   /** Clock for the flood meter and the hung-run watchdog ONLY. Pacing itself is driven by timers, so
@@ -530,6 +533,8 @@ export function createRunGate(o: RunGateOptions): RunGate {
   const clearT = o.clearTimer ?? ((t: unknown): void => clearTimeout(t as ReturnType<typeof setTimeout>))
   const now = o.now ?? Date.now
   const windowMs = (): number => Math.max(0, typeof o.windowMs === 'function' ? o.windowMs() : o.windowMs)
+  /** The least time between two run starts: the window, or the gap when that is longer. */
+  const pace = (): number => Math.max(windowMs(), o.minGapMs ?? 0)
   const base = o.backoffBaseMs ?? FLOOD_BACKOFF_BASE_MS
   const cap = o.backoffMaxMs ?? FLOOD_BACKOFF_MAX_MS
   const runTimeout = o.runTimeoutMs ?? RUN_TIMEOUT_MS
@@ -615,12 +620,11 @@ export function createRunGate(o: RunGateOptions): RunGate {
   function startWindow(): void {
     if (paused) return
     clear()
-    arm('window', windowMs(), onTimer)
+    arm('window', pace(), onTimer)
   }
 
-  /** How much of the window since the last run START is still left. Only the back-off and priority
-   *  paths need it: a window or debounce timer already encodes the gap in its own delay. */
-  const gapLeft = (): number => windowMs() - (now() - runStartedAt)
+  /** How much of the pace (window or gap) since the last run START is still left. */
+  const gapLeft = (): number => pace() - (now() - runStartedAt)
 
   function onTimer(): void {
     const kind = timerKind
@@ -706,7 +710,7 @@ export function createRunGate(o: RunGateOptions): RunGate {
       runNow()
       afterRun()
     } else {
-      arm('window', windowMs(), onTimer)
+      arm('window', Math.max(windowMs(), gapLeft()), onTimer)
     }
   }
 

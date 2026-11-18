@@ -132,6 +132,12 @@ export const LLM_TIMEOUT_MS = 150_000
 export const CONTEXT_WAIT_MS = 10_000
 /** How long a compile waits for main's test runs (CI asks `gh` for up to 5 s, then git). */
 export const RUNS_WAIT_MS = 20_000
+/**
+ * The watcher recompile's debounce. Its input is already paced: main tells the host only after the code
+ * watcher's window (CODE_WATCH_MS) and its re-index, and no more often than every 2 s. So this wait only gathers what
+ * lands together; a longer one would add itself to the time from a saved file to the world showing it.
+ */
+export const WATCH_RECOMPILE_MS = 100
 const MAX_RUNS = 5000
 
 /** Main's test runs, checked: whole runs only, as `source`, at most MAX_RUNS. */
@@ -348,7 +354,7 @@ export interface WorldHostDeps {
   readSource?: (p: string) => Promise<string | null>
   glob?: (root: string, patterns: string[]) => Promise<string[]>
   now?: () => number
-  /** The watcher recompile's debounce (default 1500 ms). */
+  /** The watcher recompile's debounce (default WATCH_RECOMPILE_MS). */
   debounceMs?: number
   llmTimeoutMs?: number
   /** How long to wait for main's evidence for one building (default CONTEXT_WAIT_MS). */
@@ -662,7 +668,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
             st.carried.delete(key)
             if (missed) labelLater(st, key, out.doc, from, out.cache, changed)
           }),
-        deps.debounceMs ?? 1500
+        deps.debounceMs ?? WATCH_RECOMPILE_MS
       )
       schedulers.set(key, s)
     }

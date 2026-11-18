@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { watchRepo, ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps, _activeWatchCountForTests, _resetWatchesForTests, type WatchDeps } from '../../src/main/codeWatch'
+import { CODE_WATCH_GAP_MS, CODE_WATCH_MS, watchRepo, ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps, _activeWatchCountForTests, _resetWatchesForTests, type WatchDeps } from '../../src/main/codeWatch'
 
 function harness(over: Partial<WatchDeps> = {}) {
   let listener: (event: string, filename: string | null) => void = () => {}
@@ -32,6 +32,32 @@ function harness(over: Partial<WatchDeps> = {}) {
 }
 
 describe('codeWatch', () => {
+  it('by default re-indexes 500 ms after a change: a live world shows a saved file within about a second and a half (round 3 D)', () => {
+    expect(CODE_WATCH_MS).toBe(500)
+    const waits: number[] = []
+    const h = harness({ debounceMs: undefined, setTimer: (_fn, ms) => { waits.push(ms); return 1 } })
+    watchRepo('/repo', h.deps)
+    h.fire('src/a.ts')
+    expect(waits).toEqual([500])
+  })
+
+  it('by default a change straight after a re-index still waits 2 s from that re-index: a busy session re-indexes no more often than before (round 3 D)', () => {
+    expect(CODE_WATCH_GAP_MS).toBe(2000)
+    let t = 0
+    const h = harness({ debounceMs: undefined, now: () => t })
+    const waits: number[] = []
+    const set = h.deps.setTimer
+    h.deps.setTimer = (fn, ms) => { waits.push(ms); return set(fn, ms) }
+    watchRepo('/repo', h.deps)
+    h.fire('src/a.ts')
+    t = 500
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenCalledTimes(1)
+    t = 1000
+    h.fire('src/b.ts')
+    expect(waits).toEqual([500, 1500])
+  })
+
   it('re-indexes after the debounce on a source-file change', () => {
     const h = harness()
     watchRepo('/repo', h.deps)

@@ -35,6 +35,7 @@ import {
   type ReadHandle,
   serializeError,
   startWorldHost,
+  WATCH_RECOMPILE_MS,
   type GlobFn,
   type ParentPortLike,
   type WorldHostDeps,
@@ -710,6 +711,17 @@ describe('createWorldHost', () => {
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
     expect(h.last()).toMatchObject({ id: 1, ok: true })
     expect(h.out.some((m) => m.kind === 'llm')).toBe(false)
+  })
+
+  it('a watcher recompile starts 100 ms after the change: the code watcher already paced it (round 3 D)', async () => {
+    expect(WATCH_RECOMPILE_MS).toBe(100)
+    const compile = vi.fn(async (input: CompileInput) => doc(input.projectKey))
+    const h = harness({ compile }, memStore({ k1: doc() }))
+    await h.init(false)
+    const sent = Date.now()
+    await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+    await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(1), { timeout: 1000, interval: 5 })
+    expect(Date.now() - sent).toBeLessThan(1000)
   })
 
   it('a settings message switches labelling for the next compile and the next watcher recompile', async () => {
