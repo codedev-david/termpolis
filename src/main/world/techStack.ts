@@ -104,10 +104,13 @@ function packageOf(spec: string): string {
   return s.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
 }
 
-// `import type ... from 'x'` and `export type ... from 'x'`: types only, gone once compiled.
-const TYPE_ONLY = /\b(?:import|export)\s+type\s[^'"`;]*?\bfrom\s*['"`][^'"`]*['"`]/g
+// `import type ... from 'x'` and `export type ... from 'x'`: types only, gone once compiled. What may stand
+// between `type` and `from` is spelled out (a braced list, a name, or `* as name`), so a type alias such as
+// `export type A = number` never reaches into the next statement. Every scan is bounded, so a huge
+// generated file is read in linear time.
+const TYPE_ONLY = /\b(?:import|export)\s+type\s+(?:\{[^}]{0,2000}\}|\*\s+as\s+[\w$]+|[\w$]+)\s*from\s*['"`][^'"`\n]{0,300}['"`]/g
 // `import { a, type B } from 'x'`: types only when every name it brings in is marked `type`.
-const BRACED = /\bimport\s*\{([^}]*)\}\s*from\s*['"`][^'"`]*['"`]/g
+const BRACED = /\bimport\s*\{([^}]{0,2000})\}\s*from\s*['"`][^'"`\n]{0,300}['"`]/g
 
 /** The text without its type-only imports and re-exports, which name no technology the code runs. */
 function dropTypeOnly(text: string): string {

@@ -67,6 +67,31 @@ describe('techStack', () => {
     expect(packageImports('src/a.ts', text)).toEqual(['react-dom', 'lodash', 'zod'])
   })
 
+  it('a type alias never swallows the import or re-export after it, and a multi-line type-only import is still types only (round 2 N2)', () => {
+    const text = [
+      'export type A = number',
+      "export { x } from 'electron'",
+      'import type B = C.D',
+      "import { useState } from 'react'",
+      'import type {',
+      '  Mesh,',
+      '  Scene',
+      "} from 'three'",
+      "export type Big = { a: string; b: 'x' }",
+      "import ws from 'ws'"
+    ].join('\n')
+    expect(packageImports('src/a.ts', text)).toEqual(['electron', 'react', 'ws'])
+  })
+
+  it('reads a huge file of type aliases, open braces and braced imports in linear time (round 2 N3)', () => {
+    const lines = (line: string): string => Array.from({ length: 20_000 }, () => line).join('\n')
+    for (const text of [lines('export type A = number'), lines('export type {'), lines('import {'), lines('import type A')]) {
+      const start = performance.now()
+      expect(packageImports('src/gen.ts', text + "\nimport 'zod'")).toEqual(['zod'])
+      expect(performance.now() - start).toBeLessThan(200)
+    }
+  })
+
   it('a Node built-in imported by code in the renderer is a browser polyfill, not Node.js (fix wave M5)', () => {
     const of = (): string[] => ['events', 'buffer', 'electron']
     expect(detectStack(['src/preload/index.ts'], of, { browser: true })).toEqual(['TypeScript', 'Electron'])
