@@ -5,9 +5,10 @@
 // helper. Dependencies are injected so the logic is tested without a disk, a git repository or the GitHub CLI.
 // CI is read by default (David, 2026-11-18) and only where it can work: `gh` must be on PATH (found by looking at
 // the PATH folders, never by starting anything, and then started by that full path) and the repository must have a
-// GitHub remote.
+// GitHub remote. Git is started by its full path too (binPath.ts), never by the bare name: on Windows a bare `git`
+// with cwd at the repository would run a `git.exe` planted in it. Neither program runs if it lies inside the repository.
 
-import { posix, win32 } from 'path'
+import { binInside } from '../binPath'
 import type { TestRun } from './testStatus'
 import { MAX_TRANSCRIPTS, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 
@@ -26,60 +27,6 @@ const FULL_SHA = /^[0-9a-f]{40,64}$/
 /** A remote URL on GitHub: https://github.com/o/r, git@github.com:o/r or ssh://git@github.com/o/r. */
 const GITHUB_REMOTE = /(^|[@/])github\.com[:/]/i
 
-/** A PATH folder that names one place whatever the current folder is: on Windows a drive path (`C:\…`) or a share
- *  (`\\server\…`), never `\tools` or `C:tools`, which hang off the current drive or folder. */
-const FIXED_WIN_DIR = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/])/
-
-/** The full path of the program `name` in the PATH folders, or null. Only a folder fixed on disk counts: relative
- *  entries, `.` and the current folder (`cwd`) are skipped, so a `gh.exe` planted in a repository never answers. On
- *  Windows only `name.exe` counts: the exec helper starts it without a shell, and a `.cmd` or `.bat` would need
- *  one, so they are refused rather than run. `runnable` throws for a file that is missing or may not be run; it
- *  is the only thing that touches the disk, and nothing is started. */
-export async function commandOnPath(
-  name: string,
-  env: Readonly<Record<string, string | undefined>>,
-  platform: NodeJS.Platform,
-  runnable: (file: string) => Promise<unknown>,
-  cwd?: string
-): Promise<string | null> {
-  const win = platform === 'win32'
-  const p = win ? win32 : posix
-  const key = (dir: string): string => {
-    const n = p.normalize(dir).replace(/[\\/]+$/, '')
-    return win ? n.toLowerCase() : n
-  }
-  const here = cwd === undefined ? null : key(cwd)
-  const dirs = (env.PATH ?? env.Path ?? '').replace(/"/g, '').split(win ? ';' : ':')
-  for (const dir of dirs) {
-    if (!(win ? FIXED_WIN_DIR.test(dir) : p.isAbsolute(dir)) || key(dir) === here) continue
-    const file = p.join(dir, win ? name + '.exe' : name)
-    try {
-      await runnable(file)
-      return file
-    } catch {
-      // not in this folder, or not a program this process may run
-    }
-  }
-  return null
-}
-
-/** Throws unless `file` is a regular file this process may run (the execute bit on POSIX; on Windows X_OK only
- *  checks that it exists, so the regular-file check is what keeps a folder named `gh.exe` out). */
-export async function assertRunnable(
-  file: string,
-  fs: { stat: (f: string) => Promise<{ isFile: () => boolean }>; access: (f: string, mode: number) => Promise<unknown> },
-  xOk: number
-): Promise<void> {
-  if (!(await fs.stat(file)).isFile()) throw new Error('not a file')
-  await fs.access(file, xOk)
-}
-
-/** Whether `file` lies inside the folder `root` (compared case-blind with either slash, which can only refuse more). */
-function inside(file: string, root: string): boolean {
-  const n = (s: string): string => s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-  return n(file).startsWith(n(root) + '/')
-}
-
 export interface ExecOutcome {
   stdout: string
   error?: unknown
@@ -94,6 +41,11 @@ export interface RunsDeps {
   /** The full path of `gh` on PATH, or null, found without starting anything (see commandOnPath). No git or `gh`
    *  runs for CI without it, and `gh` is started by exactly this path, never by name. */
   ghOnPath: () => Promise<string | null>
+  /** The full path of git, or null when git is not installed (binPath.ts resolveGitBin). Git is started by exactly
+   *  this path, never by name; without it nothing runs for CI. */
+  gitBin: () => Promise<string | null>
+  /** Resolves links, so a program reached through a junction into the repository still counts as inside it. */
+  realpath: (p: string) => Promise<string>
   /** Runs a command off the main thread, never throwing. */
   exec: (bin: string, args: string[], opts: { cwd: string; timeout: number }) => Promise<ExecOutcome>
   now: () => number
@@ -140,8 +92,8 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
     return files
   }
 
-  const git = async (root: string, args: string[]): Promise<string | null> => {
-    const out = await d.exec('git', args, { cwd: root, timeout: GIT_TIMEOUT_MS })
+  const run = async (gitBin: string, root: string, args: string[]): Promise<string | null> => {
+    const out = await d.exec(gitBin, args, { cwd: root, timeout: GIT_TIMEOUT_MS })
     return out.error ? null : out.stdout.trim()
   }
 
@@ -154,7 +106,7 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
     return path
   }
 
-  const lookUp = async (root: string, head: string, ghBin: string): Promise<TestRun[]> => {
+  const lookUp = async (root: string, head: string, ghBin: string, git: (root: string, args: string[]) => Promise<string | null>): Promise<TestRun[]> => {
     // `gh` reads GitHub only: a repository with no GitHub remote has no run to find.
     const remotes = await git(root, ['remote', '-v'])
     if (remotes === null || !remotes.split('\n').some((line) => GITHUB_REMOTE.test(line.split(/\s+/)[1] ?? ''))) return []
@@ -197,7 +149,11 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
     // No `gh` on PATH: no CI result, quietly, and no git started for it. A `gh` inside the repository itself is
     // never run either, whatever PATH says.
     const ghBin = await ghPath()
-    if (ghBin === null || inside(ghBin, root)) return []
+    if (ghBin === null || (await binInside(ghBin, root, d.realpath))) return []
+    // The same for git: no git, or one inside the repository, and nothing runs.
+    const gitBin = await d.gitBin()
+    if (gitBin === null || (await binInside(gitBin, root, d.realpath))) return []
+    const git = (at: string, args: string[]): Promise<string | null> => run(gitBin, at, args)
     let runs: TestRun[] = []
     try {
       const head = ((await git(root, ['rev-parse', 'HEAD'])) ?? '').toLowerCase()
@@ -205,7 +161,7 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
       const hit = ci.get(root)
       // A cached answer holds only while HEAD is the commit it judged.
       if (hit && hit.head === head && d.now() - hit.at < CI_CACHE_MS) return hit.runs
-      runs = await lookUp(root, head, ghBin)
+      runs = await lookUp(root, head, ghBin, git)
       ci.set(root, { at: d.now(), head, runs })
     } catch {
       runs = []

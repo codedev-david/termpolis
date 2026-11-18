@@ -19,6 +19,9 @@ import {
   SAFE_RUNNERS,
 } from '../../src/main/gitCommand'
 
+/** Git is started by the full path binPath found on this machine, never by the bare name `git`. */
+const ABS_GIT = /^(?:[A-Za-z]:\\|\/).*[\\/]git(\.exe)?$/i
+
 // ---------------------------------------------------------------------------
 // Pure-function tests for gitCommand helpers
 // ---------------------------------------------------------------------------
@@ -444,7 +447,7 @@ describe('IPC handler security — malicious file names never hit a shell', () =
       // Whatever git did (success/fail), shell never interpreted it
       expect(mockExecFileSync).toHaveBeenCalledTimes(1)
       const callArgs = mockExecFileSync.mock.calls[0]
-      expect(callArgs[0]).toBe('git')
+      expect(callArgs[0]).toMatch(ABS_GIT)
       // argv contains the raw file name with no shell-escaping
       expect(callArgs[1]).toContain(evil)
       // shell: false is the critical flag
@@ -458,7 +461,7 @@ describe('IPC handler security — malicious file names never hit a shell', () =
       expect(r.success).toBe(true)
       expect(mockExecFileSync).toHaveBeenCalledTimes(1)
       const callArgs = mockExecFileSync.mock.calls[0]
-      expect(callArgs[0]).toBe('git')
+      expect(callArgs[0]).toMatch(ABS_GIT)
       expect(callArgs[1]).toContain(evil)
       expect(callArgs[2].shell).toBe(false)
     })
@@ -479,7 +482,7 @@ describe('IPC handler security — git:commit message injection', () => {
     const commitCall = mockExecFileSync.mock.calls.find((c) => (c[1] as string[])[0] === 'commit')
     expect(commitCall).toBeDefined()
     const [bin, argv, opts] = commitCall as [string, string[], { shell: boolean }]
-    expect(bin).toBe('git')
+    expect(bin).toMatch(ABS_GIT)
     expect(argv).toEqual(['commit', '-m', evil])
     expect(opts.shell).toBe(false)
     // …and the shield genuinely scanned the staged diff first.
@@ -541,7 +544,7 @@ describe('IPC handler security — git read handlers pass argv safely', () => {
     const r = await invoke(channel as string, args)
     expect(r.success).toBe(true)
     const [bin, argv, opts] = mockExecFileSync.mock.calls[0]
-    expect(bin).toBe('git')
+    expect(bin).toMatch(ABS_GIT)
     expect(argv).toEqual(expectedArgv)
     expect(opts.shell).toBe(false)
   })

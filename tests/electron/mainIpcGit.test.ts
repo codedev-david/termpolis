@@ -168,6 +168,18 @@ vi.mock('child_process', () => ({
 }))
 vi.mock('fs', () => ({ ...H.fs, default: H.fs }))
 vi.mock('node:fs', () => ({ ...H.fs, default: H.fs }))
+// Git is found once and started by that full path (binPath.ts, tested on its own). Here it is a fixed path, and the
+// inside-the-repository check compares paths without touching the disk, so a handler's git calls land in the test
+// that made them rather than after a real disk look.
+vi.mock('../../src/main/binPath', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/binPath')>()
+  return {
+    ...real,
+    resolveGitBin: async () => '/usr/bin/git',
+    forgetGitBin: () => undefined,
+    binInsideFolder: async (file: string, root: string) => real.insideFolder(file, root),
+  }
+})
 
 // ---------------------------------------------------------------------------
 // aiSecurity — REAL rule engine and REAL settings (so the shield toggle behaves exactly as it does

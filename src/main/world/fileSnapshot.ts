@@ -12,6 +12,7 @@
 import type { GraphSnapshot } from '../codeGraph'
 import { isIndexableCodeFile } from '../codeFileFilter'
 import { extractFile, languageForFile } from '../codeGraphExtract'
+import { binInsideFolder, resolveGitBin } from '../binPath'
 import { DROPPED_ENV, nodeExecFile, safetyFlags } from './gitSource'
 
 /** Files longer than this are left out, as the code graph's sweep leaves them out (512 KB of source). */
@@ -43,26 +44,23 @@ export const captureExec: CaptureFn = async (cmd, args, opts) => {
   return { code: r.code, stdout: r.stdout as string, missing: r.missing as boolean }
 }
 
-/** Where git is looked for after the PATH: a packaged app started from the Start menu may have no git on its PATH. */
-export function gitCandidates(isWindows: boolean = process.platform === 'win32'): string[] {
-  return isWindows
-    ? ['git', 'C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\cmd\\git.exe', 'C:\\Program Files\\Git\\bin\\git.exe']
-    : ['git', '/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git', '/bin/git']
-}
-
 /**
  * The files git tracks under `root`, relative to it, as `git ls-files` lists them (what the code ingest
  * indexes). A folder outside git, a git failure, or no git at all lists nothing. Git runs with the same
- * safety flags as a clone (no hooks, no askpass, no login helper) and with fsmonitor off.
+ * safety flags as a clone (no hooks, no askpass, no login helper) and with fsmonitor off, and by its full
+ * path (binPath.ts resolveGitBin, never the bare name); a git inside the folder itself is never run.
  */
-export async function gitListFiles(root: string, exec: CaptureFn = captureExec, isWindows: boolean = process.platform === 'win32'): Promise<string[]> {
+export async function gitListFiles(
+  root: string,
+  exec: CaptureFn = captureExec,
+  isWindows: boolean = process.platform === 'win32',
+  gitBin: () => Promise<string | null> = resolveGitBin
+): Promise<string[]> {
+  const bin = await gitBin()
+  if (bin === null || (await binInsideFolder(bin, root))) return []
   const args = [...safetyFlags(isWindows), '-c', 'core.fsmonitor=false', '-C', root, 'ls-files', '-z']
-  for (const bin of gitCandidates(isWindows)) {
-    const r = await exec(bin, args, { timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
-    if (r.missing) continue
-    return r.code === 0 ? r.stdout.split('\0').filter((f) => f !== '') : []
-  }
-  return []
+  const r = await exec(bin, args, { timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
+  return r.code === 0 ? r.stdout.split('\0').filter((f) => f !== '') : []
 }
 
 export interface FileSnapshotDeps {

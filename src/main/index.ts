@@ -339,11 +339,12 @@ import { testPickedFolder } from './world/testHooks'
 import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
-import { assertRunnable, commandOnPath, createWorldRuns } from './world/worldRuns'
+import { createWorldRuns } from './world/worldRuns'
+import { assertRunnableFile, commandOnPath, resolveGitBin } from './binPath'
 import { cheapModelFor, makeWorldLlm } from './world/label'
 import { createLabelContext, GIT_TIMEOUT_MS } from './world/labelContext'
 import { ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
-import { watch as fsWatch, promises as fsPromises, constants as fsConstants } from 'fs'
+import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer, nudgeIndexer } from './memoryIndexer'
 import { runWeave, WEAVE_NEIGHBOUR_K, type WeaveStats } from './mnemeWeave'
@@ -2695,7 +2696,10 @@ const worldRuns = createWorldRuns({
   ciAllowed: async () => { await worldSettings.ready(); return worldSettings.get().worldCiResults },
   // Looked for in the fixed PATH folders (never the current one), never by starting a program: no `gh` means no CI
   // result, and the one found is started by its full path.
-  ghOnPath: () => commandOnPath('gh', process.env, process.platform, (f) => assertRunnable(f, fsPromises, fsConstants.X_OK), process.cwd()),
+  ghOnPath: () => commandOnPath('gh', process.env, process.platform, assertRunnableFile, process.cwd()),
+  // git by its full path, found the same way (never the bare name, which on Windows runs a git.exe in the repository).
+  gitBin: resolveGitBin,
+  realpath: (p) => fsPromises.realpath(p),
   exec: async (bin, args, opts) => {
     try {
       const out = await execCaptureOffThread(bin, args, { cwd: opts.cwd, timeout: opts.timeout, maxBuffer: 4 * 1024 * 1024 })

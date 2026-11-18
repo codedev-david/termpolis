@@ -28,6 +28,7 @@ import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from '.
 import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { confinedReader, isCloneRoot } from './folderSafety'
 import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps } from './gitSource'
+import { resolveGitBin } from '../binPath'
 import type { LabelDeps } from './label'
 import { createWorldStore, type WorldStore } from './worldStore'
 import { validateWorld } from '../../shared/world/validate'
@@ -660,6 +661,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       post({ kind: 'progress', projectKey, stage: 'cloning', pct: 0 })
       const done = clone(u, r, {
         execFile: nodeExecFile,
+        gitBin: resolveGitBin,
         baseDir: st.userDataPath,
         dirSize: dirSizeOf,
         rm: removeDir,

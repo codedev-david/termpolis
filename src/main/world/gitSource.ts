@@ -17,12 +17,14 @@ import { createHash, randomBytes } from 'node:crypto'
 import * as fsp from 'node:fs/promises'
 import { join } from 'node:path'
 import { BAD_REF_MESSAGE, stripUrlUserinfo, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
+import { binInside } from '../binPath'
 
 export { BAD_URL_MESSAGE, BAD_REF_MESSAGE, validateGitUrl } from '../../shared/world/gitUrl'
 export const TOO_BIG_MESSAGE = 'That repository is larger than 2 GB, so Lumopolis stopped cloning it.'
 export const CANCELLED_MESSAGE = 'Cancelled'
 export const CLEAR_MESSAGE = "Lumopolis couldn't clear an earlier partial copy of that repository. Try again in a moment."
 export const FINISH_MESSAGE = "Lumopolis couldn't save that repository. Try again in a moment."
+export const NO_GIT_MESSAGE = 'Lumopolis needs git to open a repository, and git was not found on this computer.'
 export const TIMEOUT_MESSAGE = 'That repository took longer than 5 minutes to download, so Lumopolis stopped.'
 export const AUTH_MESSAGE =
   'That repository needs you to sign in, and Lumopolis never asks git for a login. Use an ssh URL your ssh agent can open, or clone it yourself and choose Open a folder.'
@@ -118,6 +120,11 @@ export type ExecFn = (cmd: string, args: string[], opts: ExecOpts) => Promise<Ex
 
 export interface CloneDeps {
   execFile: ExecFn
+  /** The full path of git, or null when it is not installed (binPath.ts resolveGitBin). Git is started by exactly
+   *  this path, never by the bare name, and never when it lies inside the clone folder. */
+  gitBin: () => Promise<string | null>
+  /** Resolves links, so a git reached through a junction into the clone folder counts as inside it (default: fs realpath). */
+  realpath?: (p: string) => Promise<string>
   baseDir: string
   dirSize(p: string): Promise<number>
   rm(p: string): Promise<void>
@@ -310,6 +317,10 @@ export async function cloneRepo(
       () => false
     )
 
+  // Git by its full path; no git (or one inside the clone folder) means nothing is started.
+  const gitBin = await deps.gitBin()
+  if (gitBin === null || (await binInside(gitBin, reposDir, deps.realpath ?? ((p) => fsp.realpath(p))))) return { ok: false, error: NO_GIT_MESSAGE }
+
   // Only a clone that finished (marker inside .git) is updated in place. Anything else is not trusted.
   const updating = await exists(join(root, '.git', CLONE_MARKER))
   if (!updating) {
@@ -385,7 +396,7 @@ export async function cloneRepo(
         break
       }
       const r = await deps
-        .execFile('git', args, { env, timeout: left, signal: ctl.signal })
+        .execFile(gitBin, args, { env, timeout: left, signal: ctl.signal })
         .catch((e: unknown) => ({ code: 1, stderr: e instanceof Error ? e.message : String(e) }))
       if (r.code !== 0) {
         failedStep = step

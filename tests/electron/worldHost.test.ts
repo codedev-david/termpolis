@@ -3,7 +3,6 @@ import { symlinkSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import {
   captureExec,
-  gitCandidates,
   gitListFiles,
   LIST_TIMEOUT_MS,
   MAX_LIST_BYTES,
@@ -1326,25 +1325,29 @@ describe('fileSnapshot', () => {
     expect(failing.files).toEqual([])
   })
 
-  it('gitListFiles runs git with the clone safety flags, falls back past a missing git, and lists nothing on failure', async () => {
+  it('gitListFiles runs git by its full path with the clone safety flags, and lists nothing on failure or with no git', async () => {
     const calls: { cmd: string; args: string[]; opts: { timeout: number; maxBytes: number } }[] = []
-    const answers: CaptureResult[] = [
-      { code: 1, stdout: '', missing: true },
-      { code: 0, stdout: 'src/a.ts\0src/b c.ts\0', missing: false }
-    ]
     const exec: CaptureFn = async (cmd, args, opts) => {
       calls.push({ cmd, args, opts })
-      return answers.shift() as CaptureResult
+      return { code: 0, stdout: 'src/a.ts\0src/b c.ts\0', missing: false }
     }
-    expect(await gitListFiles('/r', exec, false)).toEqual(['src/a.ts', 'src/b c.ts'])
-    expect(calls.map((c) => c.cmd)).toEqual(['git', '/usr/bin/git'])
+    const git = async (): Promise<string | null> => '/usr/bin/git'
+    expect(await gitListFiles('/r', exec, false, git)).toEqual(['src/a.ts', 'src/b c.ts'])
+    expect(calls.map((c) => c.cmd)).toEqual(['/usr/bin/git'])
     expect(calls[0].args).toEqual([...safetyFlags(false), '-c', 'core.fsmonitor=false', '-C', '/r', 'ls-files', '-z'])
     expect(calls[0].opts).toEqual({ timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
-    expect(await gitListFiles('/r', async () => ({ code: 128, stdout: 'x', missing: false }), true)).toEqual([])
-    expect(await gitListFiles('/r', async () => ({ code: 1, stdout: '', missing: true }), true)).toEqual([])
-    expect(gitCandidates(true)).toEqual(['git', 'C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\cmd\\git.exe', 'C:\\Program Files\\Git\\bin\\git.exe'])
-    expect(gitCandidates(false)).toEqual(['git', '/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git', '/bin/git'])
-    expect(gitCandidates()).toEqual(gitCandidates(process.platform === 'win32'))
+    expect(await gitListFiles('/r', async () => ({ code: 128, stdout: 'x', missing: false }), true, git)).toEqual([])
+    expect(await gitListFiles('/r', async () => ({ code: 1, stdout: '', missing: true }), true, git)).toEqual([])
+    // No git, or a git inside the folder being listed: nothing starts.
+    for (const bin of [null, '/r/git', '/r/tools/git.exe']) {
+      calls.length = 0
+      expect(await gitListFiles('/r', exec, false, async () => bin)).toEqual([])
+      expect(calls).toHaveLength(0)
+    }
+    // The default looks git up for this process and never asks for the bare name.
+    calls.length = 0
+    await gitListFiles('/nowhere-' + Date.now(), exec)
+    expect(calls.every((c) => c.cmd !== 'git' && /[\\/]git(\.exe)?$/i.test(c.cmd))).toBe(true)
   })
 
   it('captureExec collects stdout, drops the git path variables, and fails on a timeout, too much output or a missing program', async () => {

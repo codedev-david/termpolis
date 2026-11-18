@@ -5,13 +5,13 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-const { mockExec, mockExecFile, mockAccess } = vi.hoisted(() => ({
+const { mockExec, mockExecFile, bin } = vi.hoisted(() => ({
   // The callback flavours. With no proc host wired up, procClient runs the spawn in-process through
   // exactly these.
   mockExec: vi.fn(),
   mockExecFile: vi.fn(),
-  // The thread-pool lookup of the git install locations.
-  mockAccess: vi.fn(),
+  // Where binPath says git is (null: not installed), and how often it was told to forget.
+  bin: { path: null as string | null, forgets: 0, looks: 0 },
 }))
 
 vi.mock('child_process', () => ({
@@ -19,55 +19,83 @@ vi.mock('child_process', () => ({
   exec: mockExec,
   execFile: mockExecFile,
 }))
-vi.mock('fs', () => ({ promises: { access: mockAccess }, default: { promises: { access: mockAccess } } }))
+// binPath's lookup is tested on its own (binPath.test.ts); here it answers what each test says. The inside-the-folder
+// check is the real one.
+vi.mock('../../src/main/binPath', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/binPath')>()
+  return {
+    ...real,
+    resolveGitBin: async () => {
+      bin.looks++
+      return bin.path
+    },
+    forgetGitBin: () => {
+      bin.forgets++
+    },
+  }
+})
 
 import { safeGitAsync, runSafeCommandAsync, parseSafeCommand, isValidGitRef, _resetGitBinForTests } from '../../src/main/gitCommand'
+
+const GIT = process.platform === 'win32' ? 'C:\\Program Files\\Git\\cmd\\git.exe' : '/usr/bin/git'
 
 beforeEach(() => {
   mockExec.mockReset()
   mockExecFile.mockReset()
-  mockAccess.mockReset()
-  _resetGitBinForTests()
+  bin.path = GIT
+  bin.forgets = 0
+  bin.looks = 0
 })
 
 // safeGitAsync runs git in the proc host; with none wired up (here) procClient runs the same call in-process through
 // execFile, which is what the mock below answers. There is no synchronous safeGit or runSafeCommand any more.
-describe('safeGitAsync — git-not-on-PATH fallback', () => {
+describe('safeGitAsync: git by its full path, never the bare name', () => {
   const enoent = (): Error => Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })
   type Cb = (e: Error | null, out: string, err: string) => void
 
-  it('resolves git from a known install path when the PATH lookup ENOENTs, and caches it', async () => {
-    mockExecFile.mockImplementation((bin: string, _a: string[], _o: unknown, cb: Cb) => {
-      if (bin === 'git') return cb(enoent(), '', '') // `git` on PATH → not found
-      cb(null, '/repo/root\n', '') // the resolved absolute git works
-    })
-    mockAccess.mockImplementation(async (p: string) => { if (!String(p).toLowerCase().includes('git')) throw enoent() }) // an install exists
+  it('starts git by the absolute path binPath found, with the cwd and defaults', async () => {
+    mockExecFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: Cb) => cb(null, '/repo/root\n', ''))
     expect((await safeGitAsync(['rev-parse', '--show-toplevel'], { cwd: '/repo' })).trim()).toBe('/repo/root')
-    // cached: a second call does NOT retry `git` on PATH (no more ENOENT path)
-    mockExecFile.mockClear()
-    expect((await safeGitAsync(['rev-parse', 'HEAD'], { cwd: '/repo' })).trim()).toBe('/repo/root')
     expect(mockExecFile).toHaveBeenCalledTimes(1)
-    expect(mockExecFile.mock.calls[0][0]).not.toBe('git')
+    const [spawned, args, opts] = mockExecFile.mock.calls[0]
+    expect(spawned).toBe(GIT)
+    expect(spawned).not.toBe('git')
+    expect(args).toEqual(['rev-parse', '--show-toplevel'])
+    expect(opts).toMatchObject({ cwd: '/repo', timeout: 10000, maxBuffer: 1024 * 1024 })
   })
 
-  it('looks for the install on the thread pool: it never calls a synchronous existence check', async () => {
-    mockExecFile.mockImplementation((bin: string, _a: string[], _o: unknown, cb: Cb) => (bin === 'git' ? cb(enoent(), '', '') : cb(null, 'ok\n', '')))
-    mockAccess.mockResolvedValue(undefined)
-    await safeGitAsync(['status'], { cwd: '/repo' })
-    expect(mockAccess).toHaveBeenCalled()
+  it('when git is not installed, starts nothing and fails with ENOENT, as a missing git always did', async () => {
+    bin.path = null
+    await expect(safeGitAsync(['status'], { cwd: '/repo' })).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(mockExecFile).not.toHaveBeenCalled()
   })
 
-  it('re-throws a genuine git error (not ENOENT) without falling back', async () => {
+  it('a git.exe inside the repository it would run in is never started', async () => {
+    const repo = process.platform === 'win32' ? 'C:\\work\\cloned' : '/work/cloned'
+    bin.path = process.platform === 'win32' ? 'C:\\work\\cloned\\git.exe' : '/work/cloned/git'
+    await expect(safeGitAsync(['log', '-1'], { cwd: repo })).rejects.toMatchObject({ code: 'ENOENT' })
+    // …nor one deeper in it (a tools folder on PATH).
+    bin.path = process.platform === 'win32' ? 'C:\\work\\cloned\\tools\\git.exe' : '/work/cloned/tools/git'
+    await expect(safeGitAsync(['log', '-1'], { cwd: repo })).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(mockExecFile).not.toHaveBeenCalled()
+  })
+
+  it('an ENOENT from the spawn (git uninstalled since) makes binPath look again next time', async () => {
+    mockExecFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: Cb) => cb(enoent(), '', ''))
+    await expect(safeGitAsync(['status'], { cwd: '/repo' })).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(bin.forgets).toBe(1)
+  })
+
+  it('re-throws a genuine git error (not ENOENT) and keeps the git it found', async () => {
     const notRepo = Object.assign(new Error('not a git repository'), { code: 128 })
     mockExecFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: Cb) => cb(notRepo, '', 'fatal: not a git repository'))
     await expect(safeGitAsync(['rev-parse', '--show-toplevel'], { cwd: '/tmp' })).rejects.toThrow(/not a git repository/)
-    expect(mockAccess).not.toHaveBeenCalled() // no fallback attempted
+    expect(bin.forgets).toBe(0)
   })
 
-  it('throws the ENOENT when no install exists anywhere', async () => {
-    mockExecFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: Cb) => cb(enoent(), '', ''))
-    mockAccess.mockRejectedValue(enoent())
-    await expect(safeGitAsync(['status'], { cwd: '/repo' })).rejects.toMatchObject({ code: 'ENOENT' })
+  it('_resetGitBinForTests forgets the cached git', () => {
+    _resetGitBinForTests()
+    expect(bin.forgets).toBe(1)
   })
 })
 

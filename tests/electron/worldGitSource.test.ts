@@ -12,6 +12,7 @@ import {
   CLONE_MARKER,
   FINISH_MESSAGE,
   DROPPED_ENV,
+  NO_GIT_MESSAGE,
   TIMEOUT_MESSAGE,
   TOO_BIG_MESSAGE,
   cloneArgs,
@@ -28,12 +29,15 @@ import {
   type CloneDeps,
   type ExecFn
 } from '../../src/main/world/gitSource'
+import { resolveGitBin } from '../../src/main/binPath'
 
 const URL1 = 'https://github.com/a/b.git'
 const REPOS = join('/ud', 'world', 'repos')
 const HASH = cloneKey(URL1)
 const ROOT = join(REPOS, HASH)
 const WORK = `${ROOT}.tmp-r1`
+/** Where the tests' git was found: every clone command starts exactly this path. */
+const GIT = '/usr/bin/git'
 
 function mkDeps(over: Partial<CloneDeps> = {}) {
   const calls: { cmd: string; args: string[]; opts: Parameters<ExecFn>[2] }[] = []
@@ -45,6 +49,8 @@ function mkDeps(over: Partial<CloneDeps> = {}) {
       calls.push({ cmd, args, opts })
       return { code: 0, stderr: '' }
     },
+    gitBin: async () => GIT,
+    realpath: async (p) => p,
     baseDir: join('/ud'),
     dirSize: async () => 10,
     rm,
@@ -158,6 +164,7 @@ describe('cloneRepo', () => {
         exists: pathExists,
         mark: undefined,
         rename: undefined,
+        gitBin: resolveGitBin,
         execFile: async (cmd, args, opts) => {
           if (!args.includes('clone')) return nodeExecFile(cmd, args, opts)
           const [from, dir] = args.slice(-2)
@@ -186,12 +193,30 @@ describe('cloneRepo', () => {
     expect(rm).not.toHaveBeenCalled()
   })
 
+  it('starts git by the full path it found, never the bare name', async () => {
+    const { deps, calls } = mkDeps()
+    expect(await cloneRepo(URL1, undefined, deps)).toMatchObject({ ok: true })
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.every((c) => c.cmd === GIT)).toBe(true)
+  })
+
+  it('with no git, or a git planted in the clone folder, starts nothing and says git was not found', async () => {
+    const planted = [join(REPOS, 'git.exe'), join(ROOT, 'git.exe'), join(ROOT, 'tools', 'git')]
+    for (const gitBin of [async () => null, ...planted.map((p) => async () => p)]) {
+      const { deps, calls, rm } = mkDeps({ gitBin })
+      expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: NO_GIT_MESSAGE })
+      expect(calls).toHaveLength(0)
+      expect(rm).not.toHaveBeenCalled()
+    }
+    expect(NO_GIT_MESSAGE).toMatch(/^Lumopolis needs git/)
+  })
+
   it('clones into a temp sibling, marks it, renames it into <base>/world/repos/<hash>', async () => {
     const { deps, calls, mark, rename } = mkDeps({ env: { PATH: 'p', GONE: undefined }, now: () => 1000 })
     const r = await cloneRepo(URL1, undefined, deps)
     expect(r).toEqual({ ok: true, root: ROOT })
     expect(calls).toHaveLength(1)
-    expect(calls[0].cmd).toBe('git')
+    expect(calls[0].cmd).toBe(GIT)
     expect(calls[0].args).toEqual(cloneArgs(URL1, WORK, undefined, false))
     expect(calls[0].opts.env).toEqual({
       PATH: 'p',
@@ -689,6 +714,7 @@ describe('cloneRepo with the real fs defaults', () => {
         if (args.includes('clone')) await mkdir(join(args[args.length - 1], '.git'), { recursive: true })
         return { code: 0, stderr: '' }
       },
+      gitBin: async () => GIT,
       baseDir: base,
       dirSize: dirSizeOf,
       rm: removeDir,

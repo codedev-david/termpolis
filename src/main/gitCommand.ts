@@ -8,33 +8,14 @@
 // project's test suite" feature from turning into arbitrary RCE if a
 // compromised renderer (or unsanitised MCP client) sends a crafted string.
 
-import { promises as fsp } from 'fs'
 import { getExtendedPathAsync } from './agentPaths'
+import { binInsideFolder, forgetGitBin, resolveGitBin } from './binPath'
 import { execOffThread, execCaptureOffThread, execShellCaptureOffThread } from './procClient'
 
 export interface GitOptions {
   cwd: string
   timeout?: number
   maxBuffer?: number
-}
-
-// A packaged Electron app (especially on Windows launched from the Start Menu) can inherit a PATH
-// without git — which silently broke code indexing, git-root detection, and the status bar. Resolve
-// git from common install locations if the PATH lookup ENOENTs, and cache the result.
-let resolvedGit: string | null = null
-function gitInstallCandidates(): string[] {
-  return process.platform === 'win32'
-    ? ['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\cmd\\git.exe', 'C:\\Program Files\\Git\\bin\\git.exe']
-    : ['/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git', '/bin/git']
-}
-
-async function isFile(p: string): Promise<boolean> {
-  try {
-    await fsp.access(p)
-    return true
-  } catch {
-    return false
-  }
 }
 
 /**
@@ -55,36 +36,38 @@ async function isFile(p: string): Promise<boolean> {
  * git. So the work now leaves the process entirely: execOffThread hands it to the procHost
  * utilityProcess, where a blocked thread blocks nobody's typing.
  *
- * Argv-safe (shell: false), and a packaged app with no git on PATH finds it in the common install locations.
+ * Argv-safe (shell: false), and git is always started by its FULL path (binPath.ts resolveGitBin: the fixed PATH
+ * folders, then the install locations, so a packaged app with no git on PATH still finds it). Never by the bare
+ * name: on Windows a bare `git` with `cwd` at a repository runs a `git.exe` planted in that repository. A git that
+ * lies inside the folder it would run in is refused too. When there is no git, nothing is started and the call
+ * fails with code 'ENOENT', exactly as a missing git always did, so every caller degrades as it did before.
  */
 export async function safeGitAsync(args: string[], opts: GitOptions): Promise<string> {
-  const run = (bin: string): Promise<string> => execOffThread(bin, args, {
-    cwd: opts.cwd,
-    timeout: opts.timeout ?? 10000,
-    maxBuffer: opts.maxBuffer ?? 1024 * 1024,
-  })
-  const bin = resolvedGit ?? 'git'
+  const bin = await resolveGitBin()
+  if (bin === null || (await binInsideFolder(bin, opts.cwd))) throw gitNotFound()
   try {
-    return await run(bin)
+    return await execOffThread(bin, args, {
+      cwd: opts.cwd,
+      timeout: opts.timeout ?? 10000,
+      maxBuffer: opts.maxBuffer ?? 1024 * 1024,
+    })
   } catch (e) {
-    // `code` still means what it always meant: the string 'ENOENT' when the binary was not found,
-    // a number when git ran and refused. ProcError carries it across the process boundary precisely
-    // so this branch keeps working.
-    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT' && bin === 'git') {
-      for (const candidate of gitInstallCandidates()) {
-        if (await isFile(candidate)) {
-          resolvedGit = candidate
-          return await run(candidate)
-        }
-      }
-    }
+    // `code` still means what it always meant: the string 'ENOENT' when the binary was not found, a number when
+    // git ran and refused. ProcError carries it across the process boundary. The git found earlier has gone
+    // (uninstalled or moved): look for it again on the next call.
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') forgetGitBin()
     throw e
   }
 }
 
+/** The error a missing git has always given: code 'ENOENT', and nothing was started. */
+function gitNotFound(): NodeJS.ErrnoException {
+  return Object.assign(new Error('git was not found'), { code: 'ENOENT' })
+}
+
 /** Test seam: reset the cached git binary resolution. */
 export function _resetGitBinForTests(): void {
-  resolvedGit = null
+  forgetGitBin()
 }
 
 // Conservative subset of git-check-ref-format(1): start with alphanumeric,
