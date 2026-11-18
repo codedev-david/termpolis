@@ -326,7 +326,7 @@ import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
 import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYTES } from './outlineHint'
-import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
+import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef, type GraphSnapshot } from './codeGraph'
 import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
 import { confinedReader, isCloneRoot, isFolderEmpty } from './world/folderSafety'
@@ -2595,11 +2595,29 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
   } catch (e: any) { return err(e.message) }
 })
 
+/** Indexes `root` into the code graph (async reads, paused while the app sheds load). A cloned repository is
+ *  someone else's content: a committed symlink never leads a read out of the clone. */
+function buildGraphFor(root: string) {
+  const read = (f: string): Promise<string> => fsPromises.readFile(f, 'utf8')
+  return buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: isCloneRoot(worldUserData, root) ? confinedReader(root, read) : read, pause: () => whenNotShed() }, graphKeyForRoot(root))
+}
+/** Background indexes started for a first world, one per graph key at a time. */
+const worldGraphBuilds = new Map<string, Promise<void>>()
+function indexInBackground(root: string): void {
+  const key = graphKeyForRoot(root)
+  if (worldGraphBuilds.has(key)) return
+  const run = buildGraphFor(root)
+    .then(() => undefined)
+    .catch((e: unknown) => console.error('[world] background index failed:', (e as Error)?.message ?? e))
+    .finally(() => worldGraphBuilds.delete(key))
+  worldGraphBuilds.set(key, run)
+}
+
 // Native code-graph IPC (for the app UI / on-demand build + structural queries).
 ipcMain.handle('code-graph:build', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
-    return ok(await buildCodeGraph({ listFiles: () => discoverRepoFiles(opts.repoRoot), readFile: (f) => fsPromises.readFile(f, 'utf8'), pause: () => whenNotShed() }, graphKeyForRoot(opts.repoRoot)))
+    return ok(await buildGraphFor(opts.repoRoot))
   } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('memory:anomalies', async (_, opts?: { limit?: number }) => { try { return ok({ anomalies: getAnomalies(opts?.limit ?? 100), total: anomalyCount() }) } catch (e: any) { return err(e.message) } })
@@ -2615,6 +2633,8 @@ ipcMain.handle('code-graph:impact', async (_, opts: { name: string }) => { try {
 // environment only main owns. world:get / world:compile / world:relayout, plus world:progress and
 // world:updated pushes and the world:settings-get/-set pair, are registered by world/ipc.ts.
 const worldSettings = createWorldSettings(() => join(app.getPath('userData'), WORLD_SETTINGS_FILE))
+// Loaded off the main thread at startup; until it lands get() answers the defaults, and a labelling call waits for it.
+void worldSettings.ready()
 /** `claude -p` for labelling, with the same launch environment (token proxy included) an agent gets in
  *  `root`. Spawned by the proc host, never on the main thread: a watcher-driven recompile can label. */
 const worldClaudeExec = (root: string): ExecFn => async (cmd, args, opts) => {
@@ -2677,7 +2697,9 @@ const worldClient = createWorldClient(undefined, {
   // The cheapest model of the Lumopolis agent (worldAgent): Haiku for Claude, a mini or flash model for the
   // others. Claude goes through worldClaudeExec; Codex and Gemini through runHeadless, read-only, with the
   // same run environment (Codex's proxy URL) a question gets.
-  llm: (root, prompt) => {
+  llm: async (root, prompt) => {
+    // The saved agent and consent, never the defaults, decide a model call.
+    await worldSettings.ready()
     const agent = worldSettings.get().worldAgent
     return makeWorldLlm(agent, cheapModelFor(agent, modelCatalog), {
       claudeExec: worldClaudeExec(root),
@@ -2699,17 +2721,18 @@ const worldClient = createWorldClient(undefined, {
       return { head: '', dirty: false }
     }
   },
-  // A project nobody indexed yet is indexed first, so a first world never compiles from nothing. Still
-  // nothing (an unmounted drive, an emptied folder) is an error, never an empty world saved over the
-  // stored one: that would throw away every stored position. The ipc handler answers err(message).
-  snapshot: async (root) => {
+  // A project the code graph has not indexed yet compiles from a snapshot the world process makes (it
+  // lists and parses the files there, never on the main thread), and main's own index starts in the
+  // background (not awaited) for the next compile and the code tools. Still nothing (an unmounted
+  // drive, an emptied folder) is an error, never an empty world saved over the stored one: that would
+  // throw away every stored position. The ipc handler answers err(message).
+  snapshot: async (root): Promise<GraphSnapshot> => {
     const key = graphKeyForRoot(root)
+    // graphSnapshot reads the in-memory graph only: no file or database access on this path.
     const snap = graphSnapshot(key, root, { structureOnly: true })
     if (snap.files.length > 0) return snap
-    // A cloned repository is someone else's content: a committed symlink never leads a read out of the clone.
-    const read = (f: string): Promise<string> => fsPromises.readFile(f, 'utf8')
-    await buildCodeGraph({ listFiles: () => discoverRepoFiles(root), readFile: isCloneRoot(worldUserData, root) ? confinedReader(root, read) : read, pause: () => whenNotShed() }, key)
-    const built = graphSnapshot(key, root, { structureOnly: true })
+    const built = await worldClient.snapshotFromFiles(root)
+    indexInBackground(root)
     // A Build it folder starts empty: its world is the linked design's plan alone until files arrive.
     if (built.files.length === 0) {
       const source = (await worldSources.get(key))?.source

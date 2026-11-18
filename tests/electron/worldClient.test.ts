@@ -460,6 +460,15 @@ describe('createWorldClient', () => {
     })
   })
 
+  it('snapshotFromFiles asks the host for a structure-only snapshot of the folder', async () => {
+    const snap = { root: '/r', files: ['a.ts'], symbols: [], callEdges: [], fileImports: { 'a.ts': [] } }
+    const { client, spawned } = setup({}, (t) => {
+      t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: snap })
+    })
+    expect(await client.snapshotFromFiles('/r')).toEqual(snap)
+    expect(spawned[0].calls().map((c) => [c.fn, c.args])).toEqual([['snapshotFromFiles', ['/r']]])
+  })
+
   describe('notifyChanged', () => {
     it('refreshes a world compiled this run, with normalised files', async () => {
       const head = vi.fn(async () => ({ head: 'h', dirty: false }))

@@ -6,6 +6,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { graphKeyForRoot } from '../codeGraph'
 import { worldFileName } from './worldStore'
+import { stripUrlUserinfo } from '../../shared/world/gitUrl'
 import type { WorldEntry, WorldSource } from '../../shared/world/types'
 
 export type { WorldEntry, WorldSource }
@@ -52,6 +53,11 @@ function validEntry(e: unknown): e is WorldEntry {
   if (typeof e !== 'object' || e === null) return false
   const o = e as Record<string, unknown>
   return isStr(o.key) && isStr(o.title) && typeof o.lastOpened === 'number' && validSource(o.source)
+}
+
+/** The source as it may be stored or shown: a git URL never keeps the user-info it was cloned with. */
+function withoutUserinfo(s: WorldSource): WorldSource {
+  return s.kind === 'git' ? { ...s, url: stripUrlUserinfo(s.url) } : s
 }
 
 /** A readable default title: the folder name, the repository name, or the design's own title. */
@@ -111,7 +117,8 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
 
   async function decorate(e: WorldEntry): Promise<WorldEntry> {
     const target = e.source.kind === 'design' ? join(folder, worldFileName(e.key)) : e.source.root
-    const out: WorldEntry = { ...e }
+    // An entry stored before user-info was stripped on the way in is cleaned on the way out.
+    const out: WorldEntry = { ...e, source: withoutUserinfo(e.source) }
     if (!(await deps.exists(target))) out.missing = true
     return out
   }
@@ -122,8 +129,9 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
       return Promise.all(sorted.map(decorate))
     },
 
-    upsert(s, title) {
+    upsert(given, title) {
       return serial(async () => {
+        const s = withoutUserinfo(given)
         const key = keyForSource(s)
         const entries = await load()
         const old = entries.find((e) => e.key === key)

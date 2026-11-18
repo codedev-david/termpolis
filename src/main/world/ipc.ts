@@ -16,7 +16,7 @@
 //   world:design-cancel { key }                   → ok(boolean)  (stops a running draft (draft:<token>) or refine)
 // Sources (the Lumopolis home; registered only when sources are passed):
 //   world:sources-list               → ok(WorldEntry[])        (recent worlds, newest first, `missing` marked)
-//   world:map-project { root }       → ok(WorldEntry)          (the active terminal's project)
+//   world:map-project { root }       → ok(WorldEntry)          (the active terminal's project: a folder that looks like one)
 //   world:open-folder                → ok(WorldEntry | null)   (native folder dialog; null on cancel)
 //   world:pick-folder                → ok(WorldFolderPick | null)  (the dialog only: registers nothing)
 //   world:clone { url, ref? }        → ok(WorldEntry)          (shallow clone into userData, then registered)
@@ -37,7 +37,7 @@ import { isSafeModelId } from '../modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
-import { folderKey, forbiddenFolder } from './folderSafety'
+import { folderKey, forbiddenFolderReal, isProjectFolder } from './folderSafety'
 import type { SourceRegistry } from './sources'
 import type { WorldClient } from './worldClient'
 import type { WorldSettings, WorldSettingsStore } from './worldSettings'
@@ -141,6 +141,10 @@ export interface WorldSourcesDeps {
   homeDir: string
   /** Termpolis's data folder: nothing inside it is ever a Build it or open-folder target. */
   userDataDir?: string
+  /** A folder's real path (default fs.promises.realpath), so a link never disguises a refused folder. */
+  realpath?(p: string): Promise<string>
+  /** Whether a folder looks like a project (default: a project marker among its first entries). */
+  isProject?(root: string): Promise<boolean>
 }
 
 export const SOURCES_FAILED = "Lumopolis couldn't update its list of worlds. Try again."
@@ -148,6 +152,7 @@ export const FOLDER_FAILED = "Lumopolis couldn't open that folder."
 export const CLONE_FAILED = "Lumopolis couldn't clone that repository. Try again."
 export const NOT_EMPTY = "That folder isn't empty."
 export const NOT_PICKED = 'Choose the folder with the Choose folder button first.'
+export const NOT_A_PROJECT = "That folder doesn't look like a project. Use Open folder instead."
 const AGENT_RE = /^[A-Za-z0-9._-]{1,64}$/
 const MAX_KEY = 200
 /** The design title's share of the first prompt; the whole prompt stays under the launcher's 500 characters. */
@@ -190,7 +195,7 @@ export function registerWorldIpc(
   ipc: WorldIpcMain,
   client: WorldIpcClient,
   win: () => WorldIpcWindow | null | undefined,
-  settings: WorldSettingsStore,
+  settings: Pick<WorldSettingsStore, 'get' | 'set'>,
   asker?: WorldAsker,
   designer?: WorldDesigner,
   sources?: WorldSourcesDeps
@@ -321,7 +326,8 @@ export function registerWorldIpc(
 function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void {
   const { registry } = deps
   const home = deps.homeDir
-  const forbidden = (root: string): string | null => forbiddenFolder(root, { home, userData: deps.userDataDir })
+  const forbidden = (root: string): Promise<string | null> => forbiddenFolderReal(root, { home, userData: deps.userDataDir }, deps.realpath)
+  const isProject = deps.isProject ?? ((root: string) => isProjectFolder(root))
   /** Folders the native dialog returned this session: the only new folders Build it may write into. */
   const picked = new Set<string>()
   /** Build it folders whose watch Build it started, by registry key, so removing the world stops it. */
@@ -346,6 +352,11 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     const root = field(args, 'root')
     if (!absolute(root)) return err('root required')
     try {
+      // The renderer names this folder, so it must look like a project (or already be in the home), and
+      // never be a refused one under any of its names.
+      const refused = await forbidden(root)
+      if (refused) return err(refused)
+      if (!(await knownFolder(root)) && !(await isProject(root))) return err(NOT_A_PROJECT)
       return ok(await registry.upsert({ kind: 'project', root }))
     } catch {
       return err(SOURCES_FAILED)
@@ -356,7 +367,7 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     try {
       const root = await deps.pickFolder()
       if (root === null) return ok(null)
-      const refused = forbidden(root)
+      const refused = await forbidden(root)
       if (refused) return err(refused)
       return ok(await registry.upsert({ kind: 'folder', root }))
     } catch {
@@ -368,7 +379,7 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     try {
       const root = await deps.pickFolder()
       if (root === null) return ok(null)
-      const refused = forbidden(root)
+      const refused = await forbidden(root)
       if (refused) return err(refused)
       picked.add(folderKey(root))
       return ok({ root, empty: await deps.isEmpty(root) })
@@ -454,7 +465,7 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     if (!absolute(root)) return err('root required')
     if (typeof agent !== 'string' || !AGENT_RE.test(agent)) return err('agent required')
     if (confirm !== undefined && typeof confirm !== 'boolean') return err('confirmNonEmpty must be a boolean')
-    const refused = forbidden(root)
+    const refused = await forbidden(root)
     if (refused) return err(refused)
     let title: string
     try {

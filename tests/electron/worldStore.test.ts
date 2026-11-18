@@ -136,3 +136,29 @@ describe('worldStore', () => {
     expect(await store.labelCache.get('k1')).toBeNull()
   })
 })
+
+describe('worldStore stage cache', () => {
+  const cache = {
+    files: { 'src/a.ts': { hash: 'h', boundaries: [{ kind: 'ipc' as const, key: 'k', side: 'provide' as const, file: 'src/a.ts', line: 2 }], imports: ['./b'] } },
+    structureHash: 's'
+  }
+  it('round-trips beside the world as <world file>.stages.json; a missing or wrong-shape file loads as null', async () => {
+    const store = createWorldStore(dir)
+    expect(await store.loadStages?.('C:/repos/x')).toBeNull()
+    await store.saveStages?.('C:/repos/x', cache)
+    expect(await store.loadStages?.('C:/repos/x')).toEqual(cache)
+    const files = await readdir(join(dir, 'world'))
+    expect(files).toEqual([`${worldFileName('C:/repos/x')}.stages.json`])
+    await writeFile(join(dir, 'world', files[0]), JSON.stringify({ files: [], structureHash: 's' }))
+    expect(await store.loadStages?.('C:/repos/x')).toBeNull()
+    await writeFile(join(dir, 'world', files[0]), '{torn')
+    expect(await store.loadStages?.('C:/repos/x')).toBeNull()
+  })
+
+  it('a stage cache that cannot be written is dropped quietly', async () => {
+    await writeFile(join(dir, 'world'), 'not a folder')
+    const store = createWorldStore(dir)
+    await expect(store.saveStages?.('demo', cache)).resolves.toBeUndefined()
+    expect(await store.loadStages?.('demo')).toBeNull()
+  })
+})

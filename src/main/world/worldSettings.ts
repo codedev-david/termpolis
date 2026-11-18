@@ -1,9 +1,10 @@
-// Lumopolis settings (main process), persisted the way memorySettings.ts persists its own: a cached
-// object backed by a small JSON file under userData, read lazily on first use, best effort on write.
+// Lumopolis settings (main process): a cached object backed by a small JSON file under userData.
+// Nothing here blocks the main thread: `ready()` loads the file once with fs/promises, `get()` reads
+// the cache, and `set()` changes the cache at once and queues one atomic write, so several quick
+// sets write the file once with the last values. Writes are best effort.
 // The file path is a parameter, so this module never imports Electron and the tests use a temp dir.
-import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { mkdir, readFile, rename, rm, writeFile } from 'fs/promises'
 import { dirname } from 'path'
-import { atomicWriteText } from '../agentConfigIO'
 import { isExecAgent, type ExecAgent } from '../headlessExec'
 
 export interface WorldSettings {
@@ -25,50 +26,95 @@ export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling:
 export const WORLD_SETTINGS_FILE = 'world-settings.json'
 
 export interface WorldSettingsStore {
+  /** The cached settings; the defaults until `ready()` has loaded the file. */
   get(): WorldSettings
-  /** Applies the known fields of `patch`, writes the file (best effort) and returns the new settings. */
+  /** Loads the file once (later calls share the first load). Never rejects. */
+  ready(): Promise<void>
+  /** Applies the known fields of `patch` at once, queues a write (best effort) and returns the new settings. */
   set(patch: Partial<WorldSettings>): WorldSettings
+  /** Resolves once every queued write has finished. Never rejects. */
+  flush(): Promise<void>
+}
+
+function parse(text: string): WorldSettings | null {
+  const parsed: unknown = JSON.parse(text)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const rec = parsed as Record<string, unknown>
+  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude' }
+}
+
+let tmpCounter = 0
+
+/** Best-effort steps swallow their failure. */
+const ignore = (): void => undefined
+
+/** Writes `text` beside `p` and renames it into place, so a reader never sees half a file. */
+async function writeAtomic(p: string, text: string): Promise<void> {
+  await mkdir(dirname(p), { recursive: true })
+  const tmp = `${p}.tmp-${process.pid}-${++tmpCounter}`
+  try {
+    await writeFile(tmp, text, 'utf8')
+    await rename(tmp, p)
+  } catch (e) {
+    await rm(tmp, { force: true }).catch(ignore)
+    throw e
+  }
 }
 
 export function createWorldSettings(file: string | (() => string)): WorldSettingsStore {
   const path = (): string => (typeof file === 'function' ? file() : file)
   let settings: WorldSettings = { ...DEFAULT_WORLD_SETTINGS }
+  // Fields set before the file finished loading win over the file's values.
+  let early: Partial<WorldSettings> = {}
   let loaded = false
+  let loading: Promise<void> | null = null
+  let writing: Promise<void> = Promise.resolve()
+  let queued = false
 
-  const load = (): void => {
-    if (loaded) return
-    loaded = true
-    try {
-      const p = path()
-      if (!existsSync(p)) return
-      const parsed: unknown = JSON.parse(readFileSync(p, 'utf8'))
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const rec = parsed as Record<string, unknown>
-        settings = { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude' }
+  const ready = (): Promise<void> => {
+    loading ??= (async () => {
+      try {
+        const fromFile = parse(await readFile(path(), 'utf8'))
+        if (fromFile) settings = { ...fromFile, ...early }
+      } catch {
+        // keep the defaults on a missing file, a read or parse error, or a path that throws
       }
-    } catch {
-      // keep the defaults on any read or parse error
-    }
+      loaded = true
+      early = {}
+    })()
+    return loading
+  }
+
+  const queueWrite = (): void => {
+    if (queued) return
+    queued = true
+    writing = writing
+      .then(() => ready())
+      .then(() => {
+        queued = false
+        return writeAtomic(path(), JSON.stringify(settings, null, 2))
+      })
+      // best effort: the setting still applies for this run
+      .catch(ignore)
   }
 
   return {
     get() {
-      load()
       return { ...settings }
     },
+    ready,
     set(patch) {
-      load()
-      if (typeof patch?.worldLabelling === 'boolean') settings = { ...settings, worldLabelling: patch.worldLabelling }
-      if (typeof patch?.worldSpeakAnswers === 'boolean') settings = { ...settings, worldSpeakAnswers: patch.worldSpeakAnswers }
-      if (isExecAgent(patch?.worldAgent)) settings = { ...settings, worldAgent: patch.worldAgent }
-      try {
-        const p = path()
-        mkdirSync(dirname(p), { recursive: true })
-        atomicWriteText(p, JSON.stringify(settings, null, 2))
-      } catch {
-        // best effort: the setting still applies for this run
-      }
+      const next: Partial<WorldSettings> = {}
+      if (typeof patch?.worldLabelling === 'boolean') next.worldLabelling = patch.worldLabelling
+      if (typeof patch?.worldSpeakAnswers === 'boolean') next.worldSpeakAnswers = patch.worldSpeakAnswers
+      if (isExecAgent(patch?.worldAgent)) next.worldAgent = patch.worldAgent
+      settings = { ...settings, ...next }
+      if (!loaded) early = { ...early, ...next }
+      queueWrite()
       return { ...settings }
+    },
+    flush() {
+      return writing
     }
   }
 }

@@ -7,10 +7,15 @@ import {
   BUILTIN_GLOSSARY,
   buildTours,
   compileWorld,
+  compileWorldStaged,
+  contentHash,
   createRecompileScheduler,
   type CompileDeps,
-  type CompileStage
+  type CompileStage,
+  type StagedInput
 } from '../../src/main/world/compile'
+import { isStageCache, type StageCache } from '../../src/main/world/stageCache'
+import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
 import { edgeId, type GroupBuilding, type Grouping } from '../../src/main/world/group'
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
 import type { Boundary } from '../../src/main/world/detectors'
@@ -783,3 +788,167 @@ describe('claims, name states and annotations', () => {
     expect(again.buildings.find((b) => b.id === VIEW)?.claims.filter((c) => c.evidence.some((e) => e.kind === 'person'))).toEqual([person])
   })
 });
+
+// ── Task 14: the staged compile re-reads only what changed ─────────────────────────────────────
+
+describe('compileWorldStaged', () => {
+  const sources = (reads: string[]): string[] => reads.filter((p) => p !== REPORT).map((p) => p.slice(ROOT.length + 1))
+  const staged = (files: Record<string, string>, extra: Partial<StagedInput> = {}, deps = mkDeps(files)) =>
+    compileWorldStaged({ snap: snapOf(files), projectKey: 'demo', head: HEAD, previous: null, ...extra }, deps)
+
+  it('a world from before the cache (no stage cache stored) compiles in full and stores one', async () => {
+    const deps = mkDeps()
+    const out = await staged(FIXTURE, {}, deps)
+    expectValid(out.doc)
+    expect(out.doc).toEqual(await compileFixture())
+    expect(sources(deps.reads).sort()).toEqual(Object.keys(FIXTURE).sort())
+    expect(isStageCache(out.cache)).toBe(true)
+    expect(Object.keys(out.cache.files).sort()).toEqual(Object.keys(FIXTURE).sort())
+    expect(out.cache.files['src/main/index.ts'].imports).toEqual(['./ipc', './telemetry'])
+    expect(out.cache.files['src/main/telemetry.ts'].names).toEqual(['checkout'])
+    expect(out.cache.files['src/renderer/view.ts'].names).toBeUndefined()
+    expect(out.cache.grouping?.buildings.length).toBe(out.doc.buildings.length)
+    // A cache of the wrong shape is ignored: a full read again.
+    const deps2 = mkDeps()
+    await staged(FIXTURE, { cache: { files: 1 } as unknown as StageCache }, deps2)
+    expect(sources(deps2.reads)).toHaveLength(Object.keys(FIXTURE).length)
+  })
+
+  it('compile with changed=[a.ts] re-reads only a.ts (readFile spy) and reuses the grouping when imports are unchanged', async () => {
+    const first = await staged(FIXTURE)
+    const moved = { ...FIXTURE, 'src/main/index.ts': '// a comment that moves every line down\n\n' + FIXTURE['src/main/index.ts'] }
+    const deps = mkDeps(moved)
+    const readFile = vi.spyOn(deps, 'readFile')
+    const out = await staged(moved, { cache: first.cache, changed: ['src/main/index.ts'] }, deps)
+    expect(sources(readFile.mock.calls.map((c) => c[0]))).toEqual(['src/main/index.ts'])
+    // The grouping was reused (the same districts), with the boundaries moved to their new lines.
+    expect(out.cache.structureHash).toBe(first.cache.structureHash)
+    expect(out.cache.grouping?.districts).toBe(first.cache.grouping?.districts)
+    const lines = (c: StageCache): number[] =>
+      (c.grouping?.buildings.find((b) => b.id === MAIN)?.boundaries ?? []).filter((b) => b.file === 'src/main/index.ts').map((b) => b.line)
+    expect(lines(out.cache)).toEqual(lines(first.cache).map((l) => l + 2))
+    expect(out.cache.files['src/main/ipc.ts']).toBe(first.cache.files['src/main/ipc.ts'])
+    // The same world as a full compile of the moved text.
+    expect(out.doc).toEqual((await staged(moved)).doc)
+  })
+
+  it('compile with a new import edge regroups', async () => {
+    const first = await staged(FIXTURE)
+    const linked = { ...FIXTURE, 'src/main/ipc.ts': "import './telemetry'\n" + FIXTURE['src/main/ipc.ts'] }
+    const deps = mkDeps(linked)
+    const out = await staged(linked, { cache: first.cache, changed: ['src/main/ipc.ts'] }, deps)
+    expect(sources(deps.reads)).toEqual(['src/main/ipc.ts'])
+    expect(out.cache.structureHash).not.toBe(first.cache.structureHash)
+    expect(out.cache.grouping?.districts).not.toBe(first.cache.grouping?.districts)
+    // The new edge joins ipc and telemetry into one building.
+    const members = (d: WorldDoc): string[][] => d.buildings.map((b) => b.members)
+    expect(members(first.doc)).toContainEqual(['src/main/ipc.ts'])
+    expect(members(out.doc)).toContainEqual(['src/main/ipc.ts', 'src/main/telemetry.ts'])
+    expect(out.doc).toEqual((await staged(linked)).doc)
+  })
+
+  it('without a changed list every file is read, and a file whose text is the same keeps its old scan', async () => {
+    const first = await staged(FIXTURE)
+    const edited = { ...FIXTURE, 'src/renderer/view.ts': 'export const view = 2\n' }
+    const deps = mkDeps(edited)
+    const out = await staged(edited, { cache: first.cache }, deps)
+    expect(sources(deps.reads)).toHaveLength(Object.keys(FIXTURE).length)
+    expect(out.cache.files['src/main/index.ts']).toBe(first.cache.files['src/main/index.ts'])
+    expect(out.cache.files['src/renderer/view.ts']).not.toBe(first.cache.files['src/renderer/view.ts'])
+    // reread wins over changed: an empty list reads nothing at all.
+    const none = mkDeps(edited)
+    const again = await staged(edited, { cache: out.cache, changed: ['src/main/index.ts'], reread: [] }, none)
+    expect(sources(none.reads)).toEqual([])
+    expect(again.cache.files).toEqual(out.cache.files)
+  })
+
+  it('a deleted, unreadable or too-long file has no cache entry; a file the cache lacks is read', async () => {
+    const first = await staged(FIXTURE)
+    const files = { ...FIXTURE, 'src/main/huge.ts': 'x'.repeat(MAX_DETECT_FILE_CHARS + 1), 'src/main/new.ts': "spawn('claude', [])\n" }
+    delete (files as Record<string, string>)['src/main/telemetry.ts']
+    const snap = { ...snapOf(files), files: [...Object.keys(files), 'src/main/telemetry.ts'].sort() }
+    const deps = mkDeps(files)
+    const out = await compileWorldStaged({ snap, projectKey: 'demo', head: HEAD, previous: null, cache: first.cache, changed: ['src/main/telemetry.ts', 'src/main/huge.ts'] }, deps)
+    expect(sources(deps.reads).sort()).toEqual(['src/main/huge.ts', 'src/main/new.ts', 'src/main/telemetry.ts'])
+    expect(Object.hasOwn(out.cache.files, 'src/main/telemetry.ts')).toBe(false)
+    expect(Object.hasOwn(out.cache.files, 'src/main/huge.ts')).toBe(false)
+    expect(out.cache.files['src/main/new.ts'].boundaries.map((b) => b.kind)).toEqual(['spawn'])
+  })
+
+  it('a reused grouping keeps a boundary it cannot place, and lists each boundary once', async () => {
+    const first = await staged(FIXTURE)
+    const g = first.cache.grouping as Grouping
+    const main = g.buildings.find((b) => b.id === MAIN) as GroupBuilding
+    const lost: Boundary = { kind: 'env', key: 'NOWHERE', side: 'consume', file: 'gone.ts', line: 9 }
+    const stray: Boundary = { ...main.boundaries[0], line: 999 }
+    const tampered: StageCache = {
+      ...first.cache,
+      grouping: {
+        ...g,
+        buildings: g.buildings.map((b) => (b.id === MAIN ? { ...b, boundaries: [...b.boundaries, b.boundaries[0], lost, stray] } : b)),
+        edges: g.edges.map((e) => ({ ...e, via: [...e.via, ...e.via] }))
+      }
+    }
+    const out = await staged(FIXTURE, { cache: tampered, reread: [] })
+    const got = out.cache.grouping?.buildings.find((b) => b.id === MAIN)?.boundaries ?? []
+    expect(got).toEqual([...main.boundaries, lost, stray].sort((a, z) => a.file.localeCompare(z.file) || a.line - z.line))
+    expect(out.cache.grouping?.edges.map((e) => e.via)).toEqual(g.edges.map((e) => e.via))
+  })
+
+  it('contentHash tells texts of the same length apart', () => {
+    expect(contentHash('ab')).not.toBe(contentHash('ba'))
+    expect(contentHash('ab')).toBe(contentHash('ab'))
+    expect(contentHash('')).toMatch(/^0\./)
+  })
+})
+
+describe('isStageCache', () => {
+  const b: Boundary = { kind: 'ipc', key: 'k', side: 'provide', file: 'a.ts', line: 1 }
+  const file = { hash: 'h', boundaries: [b], imports: ['./b'] }
+  const grouping: Grouping = {
+    districts: [{ id: 'd', name: 'd', members: ['b'] }],
+    buildings: [{ id: 'b', districtId: 'd', name: 'b', members: ['a.ts'], process: '', boundaries: [b] }],
+    edges: [{ from: 'b', to: 'b', via: [b] }]
+  }
+  it('accepts the shape, with and without a grouping or names', () => {
+    expect(isStageCache({ files: { 'a.ts': file }, structureHash: 's' })).toBe(true)
+    expect(isStageCache({ files: { 'a.ts': { ...file, names: ['svc'] } }, structureHash: 's', grouping })).toBe(true)
+  })
+  it.each([
+    ['null', null],
+    ['an array', []],
+    ['files not an object', { files: [], structureHash: 's' }],
+    ['no structure hash', { files: {} }],
+    ['a file without a hash', { files: { a: { ...file, hash: 1 } }, structureHash: 's' }],
+    ['imports not strings', { files: { a: { ...file, imports: [1] } }, structureHash: 's' }],
+    ['names not strings', { files: { a: { ...file, names: 'x' } }, structureHash: 's' }],
+    ['an unknown boundary kind', { files: { a: { ...file, boundaries: [{ ...b, kind: 'nope' }] } }, structureHash: 's' }],
+    ['a boundary key not a string', { files: { a: { ...file, boundaries: [{ ...b, key: 1 }] } }, structureHash: 's' }],
+    ['a bad side', { files: { a: { ...file, boundaries: [{ ...b, side: 'both' }] } }, structureHash: 's' }],
+    ['a boundary file not a string', { files: { a: { ...file, boundaries: [{ ...b, file: null }] } }, structureHash: 's' }],
+    ['a line not a number', { files: { a: { ...file, boundaries: [{ ...b, line: '1' }] } }, structureHash: 's' }],
+    ['an infinite line', { files: { a: { ...file, boundaries: [{ ...b, line: Infinity }] } }, structureHash: 's' }],
+    ['boundaries not a list', { files: { a: { ...file, boundaries: {} } }, structureHash: 's' }],
+    ['a grouping not an object', { files: {}, structureHash: 's', grouping: 1 }],
+    ['grouping lists missing', { files: {}, structureHash: 's', grouping: { districts: [], buildings: [] } }],
+    ['grouping districts missing', { files: {}, structureHash: 's', grouping: { buildings: [], edges: [] } }],
+    ['grouping buildings missing', { files: {}, structureHash: 's', grouping: { districts: [], edges: [] } }],
+    ['a bad district', { files: {}, structureHash: 's', grouping: { ...grouping, districts: [{ id: 'd', name: 'd', members: [1] }] } }],
+    ['a district not an object', { files: {}, structureHash: 's', grouping: { ...grouping, districts: [null] } }],
+    ['a district without a name', { files: {}, structureHash: 's', grouping: { ...grouping, districts: [{ id: 'd', members: [] }] } }],
+    ['a district without an id', { files: {}, structureHash: 's', grouping: { ...grouping, districts: [{ name: 'd', members: [] }] } }],
+    ['a building not an object', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [1] } }],
+    ['a building without an id', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], id: 1 }] } }],
+    ['a building without a district', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], districtId: 1 }] } }],
+    ['a building without a name', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], name: 1 }] } }],
+    ['a building with bad members', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], members: 'a' }] } }],
+    ['a building without a process', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], process: 1 }] } }],
+    ['a building with bad boundaries', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], boundaries: [1] }] } }],
+    ['an edge not an object', { files: {}, structureHash: 's', grouping: { ...grouping, edges: ['e'] } }],
+    ['an edge without a source', { files: {}, structureHash: 's', grouping: { ...grouping, edges: [{ to: 'b', via: [] }] } }],
+    ['an edge without a target', { files: {}, structureHash: 's', grouping: { ...grouping, edges: [{ from: 'b', via: [] }] } }],
+    ['an edge with bad via', { files: {}, structureHash: 's', grouping: { ...grouping, edges: [{ from: 'b', to: 'b', via: null }] } }]
+  ])('rejects %s', (_name, v) => {
+    expect(isStageCache(v)).toBe(false)
+  })
+})

@@ -281,6 +281,7 @@ const world = vi.hoisted(() => ({
     relayout: vi.fn(async (_root: string) => ({ projectKey: 'k' }) as unknown),
     notifyChanged: vi.fn(),
     hasWorld: vi.fn(async (_root: string) => true),
+    snapshotFromFiles: vi.fn(async (root: string) => ({ root, files: ['h.ts'], symbols: [], callEdges: [], fileImports: { 'h.ts': [] } }) as any),
     read: vi.fn(async (_root: string, _q: unknown) => ({ items: [], evidence: [] }) as unknown),
     onProgress: vi.fn(() => () => {}),
     onUpdated: vi.fn(() => () => {}),
@@ -4146,27 +4147,113 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(await world.opts.head('/repos/x')).toEqual({ head: '', dirty: false })
   })
 
-  it('snapshots the code graph, indexing a project first when nothing is indexed (through the governor)', async () => {
+  it('snapshots the code graph when it has the project, with no host snapshot and no build', async () => {
     expect(await world.opts.snapshot('/repos/x')).toEqual({ files: ['a.ts'], symbols: [], edges: [] })
     expect(cg.graphSnapshot).toHaveBeenCalledWith('key:/repos/x', '/repos/x', { structureOnly: true }) // the world needs no symbols or call edges
     expect(cg.buildCodeGraph).not.toHaveBeenCalled()
-    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] }).mockReturnValueOnce({ files: ['b.ts'], symbols: [], edges: [] })
-    expect((await world.opts.snapshot('/repos/y')).files).toEqual(['b.ts'])
-    const [deps, key] = cg.buildCodeGraph.mock.calls[0] as unknown as [any, string]
-    expect(key).toBe('key:/repos/y')
-    expect(typeof deps.pause).toBe('function')
-    await deps.pause()
-    await deps.listFiles()
-    await expect(deps.readFile('a.ts')).resolves.toBe('{}')
+    expect(world.client.snapshotFromFiles).not.toHaveBeenCalled()
   })
 
-  it('a folder with no source files even after indexing is an error, so world:compile never saves an empty world', async () => {
-    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] }).mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+  it('an unindexed root compiles from the host snapshot; main buildCodeGraph is not awaited', async () => {
+    let finish!: (v: unknown) => void
+    cg.buildCodeGraph.mockImplementationOnce(() => new Promise((r) => { finish = r }) as any)
+    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+    // The build never settles here, yet the snapshot answers: the hook does not wait on it.
+    expect(await world.opts.snapshot('/repos/y')).toEqual({ root: '/repos/y', files: ['h.ts'], symbols: [], callEdges: [], fileImports: { 'h.ts': [] } })
+    expect(world.client.snapshotFromFiles).toHaveBeenCalledWith('/repos/y')
+    // Main's own index started in the background, through the code-graph:build path (governed, async reads).
+    const [deps, key] = cg.buildCodeGraph.mock.calls[0] as unknown as [any, string]
+    expect(key).toBe('key:/repos/y')
+    await deps.pause()
+    await deps.listFiles()
+    expect(mneme.discoverRepoFiles).toHaveBeenCalledWith('/repos/y')
+    await expect(deps.readFile('a.ts')).resolves.toBe('{}')
+    // A second first-world compile while that index runs starts no second one.
+    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+    await world.opts.snapshot('/repos/y')
+    expect(cg.buildCodeGraph).toHaveBeenCalledTimes(1)
+    finish({ symbols: 1, edges: 0 })
+    await vi.waitFor(async () => {
+      cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+      await world.opts.snapshot('/repos/y')
+      expect(cg.buildCodeGraph).toHaveBeenCalledTimes(2)
+    })
+    // A failed background index is logged, never thrown at the compile.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      cg.buildCodeGraph.mockRejectedValueOnce(new Error('parser exploded'))
+      cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+      await expect(world.opts.snapshot('/repos/z')).resolves.toMatchObject({ files: ['h.ts'] })
+      await vi.waitFor(() => expect(errSpy).toHaveBeenCalledWith('[world] background index failed:', 'parser exploded'))
+      cg.buildCodeGraph.mockRejectedValueOnce('no message')
+      cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+      await world.opts.snapshot('/repos/w')
+      await vi.waitFor(() => expect(errSpy).toHaveBeenCalledWith('[world] background index failed:', 'no message'))
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it('graphSnapshot stays a pure in-memory read (no fs or sqlite import in its call path)', async () => {
+    const { readFile } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    const ts = await vi.importActual<typeof import('typescript')>('typescript')
+    const path = await vi.importActual<typeof import('node:path')>('node:path')
+    const file = path.join(__dirname, '..', '..', 'src', 'main', 'codeGraph.ts')
+    const sf = ts.createSourceFile(file, await readFile(file, 'utf8'), ts.ScriptTarget.Latest, true)
+    const fns = new Map<string, import('typescript').Node>()
+    const visit = (n: import('typescript').Node): void => {
+      if (ts.isFunctionDeclaration(n) && n.name) fns.set(n.name.text, n)
+      else if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer))) fns.set(n.name.text, n.initializer)
+      ts.forEachChild(n, visit)
+    }
+    visit(sf)
+    // Every identifier a function reaches, through the module's own functions.
+    const reachedFrom = (start: string): Set<string> => {
+      const reached = new Set<string>()
+      const seen = new Set<string>()
+      const walk = (name: string): void => {
+        if (seen.has(name)) return
+        seen.add(name)
+        const ids = (n: import('typescript').Node): void => {
+          if (ts.isIdentifier(n)) {
+            reached.add(n.text)
+            if (fns.has(n.text)) walk(n.text)
+          }
+          ts.forEachChild(n, ids)
+        }
+        ids(fns.get(name) as import('typescript').Node)
+      }
+      walk(start)
+      return reached
+    }
+    expect(fns.has('graphSnapshot')).toBe(true)
+    // What the module imports from fs, sqlite or a database layer: none of it is reachable.
+    const ioNames = new Set<string>()
+    for (const st of sf.statements) {
+      if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier)) continue
+      if (!/^(node:)?fs(\/promises)?$|sqlite|database|^\.\/db\b|codeGraphStore/i.test(st.moduleSpecifier.text)) continue
+      const clause = st.importClause
+      if (clause?.name) ioNames.add(clause.name.text)
+      const nb = clause?.namedBindings
+      if (nb && ts.isNamespaceImport(nb)) ioNames.add(nb.name.text)
+      if (nb && ts.isNamedImports(nb)) for (const e of nb.elements) ioNames.add(e.name.text)
+    }
+    const io = (start: string): string[] => [...reachedFrom(start)].filter((n) => ioNames.has(n) || /Sync$|^(readFile|stat|open|prepare|exec)$/.test(n))
+    expect(io('graphSnapshot')).toEqual([])
+    // Control: the loader, which does read disk, is caught by the same check.
+    expect(io('initCodeGraph')).toEqual(expect.arrayContaining(['fs', 'readFileSync']))
+  })
+
+  it('a folder with no source files is an error, so world:compile never saves an empty world; a Build it folder linked to a design may start empty', async () => {
+    const empty = { root: '/mnt/gone', files: [], symbols: [], callEdges: [], fileImports: {} }
+    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+    world.client.snapshotFromFiles.mockResolvedValueOnce(empty)
     await expect(world.opts.snapshot('/mnt/gone')).rejects.toThrow('no source files found')
-    expect(cg.buildCodeGraph).toHaveBeenCalledWith(expect.anything(), 'key:/mnt/gone') // it did try to index first
+    expect(world.client.snapshotFromFiles).toHaveBeenCalledWith('/mnt/gone') // it did look first
     // Through the real ipc handler: a rejected compile is answered err(message), never a saved world.
     world.client.compile.mockImplementationOnce(async (root: string) => world.opts.snapshot(root))
-    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] }).mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+    cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+    world.client.snapshotFromFiles.mockResolvedValueOnce(empty)
     expect(await invoke('world:compile', { root: '/mnt/gone' })).toEqual({ success: false, error: 'no source files found' })
   })
 

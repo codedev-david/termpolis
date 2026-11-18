@@ -1,4 +1,18 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { symlinkSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  captureExec,
+  gitCandidates,
+  gitListFiles,
+  LIST_TIMEOUT_MS,
+  MAX_LIST_BYTES,
+  MAX_SNAPSHOT_FILE_CHARS,
+  snapshotFromFiles,
+  type CaptureFn,
+  type CaptureResult
+} from '../../src/main/world/fileSnapshot'
+import type { StageCache } from '../../src/main/world/stageCache'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,7 +41,7 @@ import {
   type WorldHostRequest,
   type WorldHostResponse
 } from '../../src/main/world/worldHost'
-import { cloneKey } from '../../src/main/world/gitSource'
+import { cloneKey, safetyFlags } from '../../src/main/world/gitSource'
 import type { AnnotationStore } from '../../src/main/world/annotations'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
@@ -1141,5 +1155,213 @@ describe('filterWorld cards and plan', () => {
       { id: 'p2', title: 'Sketch', missing: ['sk1'], changed: [], extra: [], removes: [] }
     ])
     expect(r).not.toHaveProperty('cards')
+  })
+})
+
+// ── Task 14: the host snapshot of an unindexed folder, and the staged compile ─────────────────────
+
+/** A memStore that also keeps stage caches, like the real store. */
+function stagedStore(initial: Record<string, WorldDoc> = {}) {
+  const base = memStore(initial)
+  const stages = new Map<string, StageCache>()
+  return Object.assign(base, {
+    stages,
+    loadStages: async (k: string) => stages.get(k) ?? null,
+    saveStages: async (k: string, c: StageCache) => void stages.set(k, c)
+  })
+}
+
+const until = async (ok: () => boolean): Promise<void> => {
+  for (let i = 0; i < 400 && !ok(); i++) await new Promise((r) => setTimeout(r, 5))
+}
+
+describe('fileSnapshot', () => {
+  it('snapshotFromFiles in the host returns files and imports for a fixture folder', async () => {
+    const repo = join(dir, 'fixture')
+    await mkdir(join(repo, 'src'), { recursive: true })
+    await writeFile(join(repo, 'src', 'a.ts'), "import { b } from './b'\nexport const a = b\n")
+    await writeFile(join(repo, 'src', 'b.ts'), 'export const b = 1\n')
+    await writeFile(join(repo, 'README.md'), '# fixture\n')
+    await writeFile(join(repo, 'package-lock.json'), '{}\n')
+    await writeFile(join(repo, 'src', 'untracked.ts'), 'export const u = 1\n')
+    execFileSync('git', ['init', '-q'], { cwd: repo })
+    execFileSync('git', ['add', 'src/a.ts', 'src/b.ts', 'README.md', 'package-lock.json'], { cwd: repo })
+    const h = harness()
+    await h.send({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: false })
+    await h.send({ kind: 'call', id: 1, fn: 'snapshotFromFiles', args: [repo + '/'] })
+    const r = h.last()
+    expect(r).toMatchObject({ kind: 'result', id: 1, ok: true })
+    expect((r as { result: GraphSnapshot }).result).toEqual({
+      root: repo.replace(/\\/g, '/'),
+      files: ['src/a.ts', 'src/b.ts'],
+      symbols: [],
+      callEdges: [],
+      fileImports: { 'src/a.ts': ['./b'], 'src/b.ts': [] }
+    })
+    // Not a string, or empty: refused.
+    await h.send({ kind: 'call', id: 2, fn: 'snapshotFromFiles', args: [42] })
+    expect(h.last()).toMatchObject({ id: 2, ok: false, error: { message: 'worldHost: root required' } })
+    await h.send({ kind: 'call', id: 3, fn: 'snapshotFromFiles', args: [''] })
+    expect(h.last()).toMatchObject({ id: 3, ok: false })
+  })
+
+  it('a symlink or junction inside a clone that points outside it is not followed; a plain folder follows it', async () => {
+    const outside = join(dir, 'outside')
+    await mkdir(outside, { recursive: true })
+    await writeFile(join(outside, 'evil.ts'), "import { x } from './x'\nexport const evil = x\n")
+    const make = async (root: string): Promise<void> => {
+      await mkdir(join(root, 'src'), { recursive: true })
+      await writeFile(join(root, 'src', 'a.ts'), 'export const a = 1\n')
+      symlinkSync(outside, join(root, 'link'), 'junction')
+    }
+    const clone = join(dir, 'world', 'repos', 'abc')
+    const plain = join(dir, 'plain')
+    await make(clone)
+    await make(plain)
+    const listFiles = vi.fn(async () => ['src/a.ts', 'link/evil.ts'])
+    const h = harness({ listFiles })
+    await h.send({ kind: 'init', userDataPath: dir, labelling: false })
+    await h.send({ kind: 'call', id: 1, fn: 'snapshotFromFiles', args: [clone] })
+    expect((h.last() as { result: GraphSnapshot }).result.files).toEqual(['src/a.ts'])
+    expect(listFiles).toHaveBeenCalledWith(clone)
+    await h.send({ kind: 'call', id: 2, fn: 'snapshotFromFiles', args: [plain] })
+    expect((h.last() as { result: GraphSnapshot }).result.files).toEqual(['link/evil.ts', 'src/a.ts'])
+  })
+
+  it('snapshotFromFiles keeps only safe, indexable, readable source files, once each', async () => {
+    const texts: Record<string, string | null> = {
+      '/r/src/a.ts': "import x from './b'\n",
+      '/r/src/b.ts': 'export const b = 1\n',
+      '/r/src/empty.ts': '',
+      '/r/src/null.ts': null,
+      '/r/src/big.ts': 'x'.repeat(MAX_SNAPSHOT_FILE_CHARS + 1)
+    }
+    const read = vi.fn(async (p: string) => {
+      if (p.endsWith('throws.ts')) throw new Error('unreadable')
+      return texts[p] ?? null
+    })
+    const listed = [
+      'src/a.ts',
+      'src/a.ts',
+      'src\\a.ts',
+      'src/b.ts',
+      '../up.ts',
+      '/abs.ts',
+      'C:/drive.ts',
+      'src//gap.ts',
+      './dot.ts',
+      '',
+      'README.md',
+      '.env',
+      'src/empty.ts',
+      'src/null.ts',
+      'src/big.ts',
+      'src/throws.ts'
+    ]
+    const got = await snapshotFromFiles('\\r\\', { read, listFiles: async () => listed })
+    expect(got).toEqual({ root: '/r', files: ['src/a.ts', 'src/b.ts'], symbols: [], callEdges: [], fileImports: { 'src/a.ts': ['./b'], 'src/b.ts': [] } })
+    expect(read.mock.calls.map((c) => c[0]).sort()).toEqual(['/r/src/a.ts', '/r/src/b.ts', '/r/src/big.ts', '/r/src/empty.ts', '/r/src/null.ts', '/r/src/throws.ts'])
+    // A listing that fails lists nothing.
+    const failing = await snapshotFromFiles('/r', {
+      read,
+      listFiles: async () => {
+        throw new Error('no git')
+      }
+    })
+    expect(failing.files).toEqual([])
+  })
+
+  it('gitListFiles runs git with the clone safety flags, falls back past a missing git, and lists nothing on failure', async () => {
+    const calls: { cmd: string; args: string[]; opts: { timeout: number; maxBytes: number } }[] = []
+    const answers: CaptureResult[] = [
+      { code: 1, stdout: '', missing: true },
+      { code: 0, stdout: 'src/a.ts\0src/b c.ts\0', missing: false }
+    ]
+    const exec: CaptureFn = async (cmd, args, opts) => {
+      calls.push({ cmd, args, opts })
+      return answers.shift() as CaptureResult
+    }
+    expect(await gitListFiles('/r', exec, false)).toEqual(['src/a.ts', 'src/b c.ts'])
+    expect(calls.map((c) => c.cmd)).toEqual(['git', '/usr/bin/git'])
+    expect(calls[0].args).toEqual([...safetyFlags(false), '-c', 'core.fsmonitor=false', '-C', '/r', 'ls-files', '-z'])
+    expect(calls[0].opts).toEqual({ timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
+    expect(await gitListFiles('/r', async () => ({ code: 128, stdout: 'x', missing: false }), true)).toEqual([])
+    expect(await gitListFiles('/r', async () => ({ code: 1, stdout: '', missing: true }), true)).toEqual([])
+    expect(gitCandidates(true)).toEqual(['git', 'C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\cmd\\git.exe', 'C:\\Program Files\\Git\\bin\\git.exe'])
+    expect(gitCandidates(false)).toEqual(['git', '/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git', '/bin/git'])
+    expect(gitCandidates()).toEqual(gitCandidates(process.platform === 'win32'))
+  })
+
+  it('captureExec collects stdout, drops the git path variables, and fails on a timeout, too much output or a missing program', async () => {
+    const node = process.execPath
+    const opts = { timeout: 20_000, maxBytes: 1024 }
+    vi.stubEnv('GIT_DIR', '/somewhere')
+    try {
+      expect(await captureExec(node, ['-e', 'process.stdout.write(String(process.env.GIT_DIR) + "," + process.env.GIT_TERMINAL_PROMPT)'], opts)).toEqual({
+        code: 0,
+        stdout: 'undefined,0',
+        missing: false
+      })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    expect(await captureExec(node, ['-e', 'process.exit(3)'], opts)).toEqual({ code: 3, stdout: '', missing: false })
+    expect(await captureExec(node, ['-e', 'setTimeout(() => {}, 10000)'], { timeout: 50, maxBytes: 1024 })).toEqual({ code: 1, stdout: '', missing: false })
+    expect(await captureExec(node, ['-e', 'process.stdout.write("x".repeat(5000))'], { timeout: 20_000, maxBytes: 10 })).toEqual({ code: 1, stdout: '', missing: false })
+    expect(await captureExec(join(dir, 'no-such-program'), [], opts)).toEqual({ code: 1, stdout: '', missing: true })
+  })
+})
+
+describe('the staged compile in the host', () => {
+  const fixture = async (): Promise<GraphSnapshot> => {
+    const root = join(dir, 'proj')
+    await mkdir(join(root, 'src'), { recursive: true })
+    await writeFile(join(root, 'src', 'a.ts'), "import { b } from './b'\nexport const a = b\n")
+    await writeFile(join(root, 'src', 'b.ts'), 'export const b = 1\n')
+    return { root: root.replace(/\\/g, '/'), files: ['src/a.ts', 'src/b.ts'], symbols: [], callEdges: [], fileImports: {} }
+  }
+  const sourceReads = (spy: { mock: { calls: unknown[][] } }): string[] => spy.mock.calls.map((c) => String(c[0]).replace(/^.*\/src\//, 'src/'))
+
+  it('stores a stage cache; a watcher recompile reads only the changed file', async () => {
+    const s = await fixture()
+    const readSource = vi.fn(async (p: string) => readFile(p, 'utf8').catch(() => null))
+    const store = stagedStore()
+    const h = harness({ readSource, glob: async () => [], debounceMs: 1 }, store)
+    await h.send({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: false })
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', s, HEAD] })
+    expect(h.last()).toMatchObject({ id: 1, ok: true })
+    expect(sourceReads(readSource).sort()).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(Object.keys(store.stages.get('k1')?.files ?? {})).toEqual(['src/a.ts', 'src/b.ts'])
+    const before = store.stages.get('k1')?.files['src/a.ts'].hash
+    readSource.mockClear()
+    await writeFile(join(dir, 'proj', 'src', 'a.ts'), "import { b } from './b'\n\nexport const a = b + 1\n")
+    await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', s, HEAD, ['src/a.ts']] })
+    await until(() => store.saves.length === 2)
+    expect(store.saves).toHaveLength(2)
+    expect(sourceReads(readSource)).toEqual(['src/a.ts'])
+    expect(store.stages.get('k1')?.files['src/a.ts'].hash).not.toBe(before)
+  })
+
+  it('the labelled follow-up reads no source file again: it compiles from the first pass stage cache', async () => {
+    const s = await fixture()
+    const store = stagedStore()
+    const h = harness({ glob: async () => [], llmTimeoutMs: 1, contextTimeoutMs: 1 }, store)
+    await h.send({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: true })
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', s, HEAD] })
+    await until(() => store.saves.length === 2)
+    expect(store.saves).toHaveLength(2)
+    // The boundary stage reports past 5% only while it reads files: the first pass did, the follow-up did not.
+    const scans = h.out.filter((m) => m.kind === 'progress' && m.stage === 'boundaries' && m.pct > 5)
+    expect(scans).toHaveLength(1)
+    expect(h.out.filter((m) => m.kind === 'progress' && m.stage === 'grouping')).toHaveLength(2)
+  })
+
+  it('a store without stage methods still compiles in full', async () => {
+    const s = await fixture()
+    const h = harness({ glob: async () => [] })
+    await h.send({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: false })
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', s, HEAD] })
+    expect(h.last()).toMatchObject({ id: 1, ok: true })
+    expect(h.store.saves).toHaveLength(1)
   })
 })

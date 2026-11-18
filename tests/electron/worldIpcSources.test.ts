@@ -1,8 +1,9 @@
-import { homedir } from 'node:os'
-import { parse } from 'node:path'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { join, parse } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  BUILD_PROMPT, CLONE_FAILED, FOLDER_FAILED, NOT_EMPTY, NOT_PICKED, SOURCES_FAILED, registerWorldIpc,
+  BUILD_PROMPT, CLONE_FAILED, FOLDER_FAILED, NOT_A_PROJECT, NOT_EMPTY, NOT_PICKED, SOURCES_FAILED, registerWorldIpc,
   type WorldDesigner, type WorldIpcClient, type WorldSourcesDeps
 } from '../../src/main/world/ipc'
 import { DESIGN_NOT_FOUND } from '../../src/main/world/designer'
@@ -39,6 +40,7 @@ function setup(over: Partial<WorldSourcesDeps> = {}, designer?: WorldDesigner) {
     cancelClone: vi.fn(async () => true),
     homeDir: 'C:/Users/me',
     userDataDir: 'C:/ud',
+    isProject: vi.fn(async () => true),
     ...over
   }
   registerWorldIpc(ipc, client, () => null, settings, undefined, designer, deps)
@@ -70,6 +72,47 @@ describe('registerWorldIpc sources handlers', () => {
     }
     s.registry.upsert.mockRejectedValueOnce(new Error('disk'))
     expect(await s.invoke('world:map-project', { root: 'C:/repo' })).toEqual({ success: false, error: SOURCES_FAILED })
+  })
+
+  it('world:map-project registers only a folder that looks like a project, or one already in the home', async () => {
+    const s = setup({ isProject: vi.fn(async () => false) })
+    expect(await s.invoke('world:map-project', { root: 'C:/plain' })).toEqual({ success: false, error: NOT_A_PROJECT })
+    expect(s.deps.isProject).toHaveBeenCalledWith('C:/plain')
+    expect(s.registry.upsert).not.toHaveBeenCalled()
+    expect(await s.invoke('world:map-project', { root: 'C:/a' })).toEqual({ success: true, data: entryOf({ kind: 'project', root: 'C:/a' }) })
+    ;(s.deps.isProject as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('disk'))
+    expect(await s.invoke('world:map-project', { root: 'C:/plain' })).toEqual({ success: false, error: SOURCES_FAILED })
+    // Without an isProject dep the real check looks for a project marker in the folder.
+    const tmp = await mkdtemp(join(tmpdir(), 'world-map-'))
+    try {
+      await mkdir(join(tmp, 'proj'))
+      await writeFile(join(tmp, 'proj', 'package.json'), '{}')
+      await mkdir(join(tmp, 'plain'))
+      const real = setup({ isProject: undefined })
+      expect(await real.invoke('world:map-project', { root: join(tmp, 'proj') })).toMatchObject({ success: true })
+      expect(await real.invoke('world:map-project', { root: join(tmp, 'plain') })).toEqual({ success: false, error: NOT_A_PROJECT })
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('world:map-project refuses a drive, the home folder or Termpolis data, and so does every handler for a link to one', async () => {
+    const drive = parse(process.cwd()).root
+    for (const root of [drive, 'C:/Users/me', 'C:/Users', 'C:/ud/world/repos/abc']) {
+      const s = setup()
+      expect(await s.invoke('world:map-project', { root })).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+      expect(s.deps.isProject).not.toHaveBeenCalled()
+      expect(s.registry.upsert).not.toHaveBeenCalled()
+    }
+    const link = 'C:/elsewhere/link'
+    const realpath = vi.fn(async (p: string) => (p === link ? 'C:/Users/me' : p))
+    const s = setup({ realpath, pickFolder: vi.fn(async () => link) })
+    expect(await s.invoke('world:map-project', { root: link })).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+    expect(await s.invoke('world:open-folder')).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+    expect(await s.invoke('world:pick-folder')).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+    expect(await s.invoke('world:build-it', { key: 'design:d1', root: link, agent: 'claude' })).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+    expect(realpath).toHaveBeenCalledWith(link)
+    expect(s.registry.upsert).not.toHaveBeenCalled()
   })
 
   it('world:open-folder asks the native dialog, registers the folder, and answers null on cancel', async () => {

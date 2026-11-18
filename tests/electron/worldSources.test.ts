@@ -162,6 +162,35 @@ describe('source registry', () => {
   })
 })
 
+describe('source registry and git user-info', () => {
+  // Built from parts so no scanner reads a real sign-in in the test source.
+  const userinfo = 'u' + ':' + 'p'
+  const signed = `https://${userinfo}@host.example/team/repo.git`
+
+  it('stores and shows an https clone URL without its user-info', async () => {
+    const r = reg()
+    const e = await r.upsert({ kind: 'git', url: signed, root: '/g' })
+    expect(e.source).toEqual({ kind: 'git', url: 'https://host.example/team/repo.git', root: '/g' })
+    expect(e.title).toBe('repo')
+    expect(await readFile(sourcesFile(), 'utf8')).not.toContain(userinfo)
+    expect((await r.list())[0].source).toEqual(e.source)
+    // A bare user name (no secret part) is user-info too; ssh and git@ forms keep their user, which is no secret.
+    expect((await r.upsert({ kind: 'git', url: 'https://someone@host.example/r', root: '/g' })).source).toMatchObject({ url: 'https://host.example/r' })
+    expect((await r.upsert({ kind: 'git', url: 'ssh://git@host.example/r', root: '/g' })).source).toMatchObject({ url: 'ssh://git@host.example/r' })
+    expect((await r.upsert({ kind: 'git', url: 'git@host.example:r.git', root: '/g' })).source).toMatchObject({ url: 'git@host.example:r.git' })
+  })
+
+  it('an entry stored before the strip is cleaned on every read', async () => {
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const legacy = { key: graphKeyForRoot('/g'), title: 'repo', lastOpened: 5, source: { kind: 'git', url: signed, root: '/g' } }
+    await writeFile(sourcesFile(), JSON.stringify([legacy]))
+    const r = reg()
+    expect((await r.list())[0].source).toEqual({ kind: 'git', url: 'https://host.example/team/repo.git', root: '/g' })
+    expect((await r.get(legacy.key))?.source).toMatchObject({ url: 'https://host.example/team/repo.git' })
+    expect((await r.touch(legacy.key))?.source).toMatchObject({ url: 'https://host.example/team/repo.git' })
+  })
+})
+
 describe('keyForSource', () => {
   it('table', () => {
     const cases: Array<[WorldSource, string]> = [

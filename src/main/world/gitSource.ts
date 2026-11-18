@@ -103,8 +103,18 @@ export interface ExecOpts {
   signal?: AbortSignal
   /** Test hook: the wait after a kill (default KILL_GRACE_MS). */
   killGraceMs?: number
+  /** Collect stdout, up to this many bytes (more fails the run). Without it stdout is ignored. */
+  stdoutMax?: number
 }
-export type ExecFn = (cmd: string, args: string[], opts: ExecOpts) => Promise<{ code: number; stderr: string }>
+export interface ExecResult {
+  code: number
+  stderr: string
+  /** With `stdoutMax`: what the program printed when it exited 0, otherwise ''. */
+  stdout?: string
+  /** With `stdoutMax`: the program could not be found (ENOENT). */
+  missing?: boolean
+}
+export type ExecFn = (cmd: string, args: string[], opts: ExecOpts) => Promise<ExecResult>
 
 export interface CloneDeps {
   execFile: ExecFn
@@ -145,7 +155,8 @@ export const KILL_GRACE_MS = 10_000
  * Runs git without a shell; never rejects: a non-zero exit, a spawn failure, a timeout and an abort all
  * resolve `{code, stderr}`. It resolves only when the child has CLOSED (exited and its stderr ended), so
  * a caller that removes the folder afterwards is not racing git's last writes; `killGraceMs` bounds
- * the wait when a grandchild keeps stderr open after the kill.
+ * the wait when a grandchild keeps stderr open after the kill. With `stdoutMax` it also collects
+ * stdout (the world host's `git ls-files`), and the result says whether the program was missing.
  */
 export const nodeExecFile: ExecFn = (cmd, args, opts) =>
   new Promise((resolve) => {
@@ -153,15 +164,24 @@ export const nodeExecFile: ExecFn = (cmd, args, opts) =>
     let settled = false
     let stopped = false
     let timedOut = false
+    let overflow = false
+    let outBytes = 0
+    const out: Buffer[] = []
+    const capture = opts.stdoutMax !== undefined
     let graceTimer: ReturnType<typeof setTimeout> | undefined
     let child: ChildProcess
-    const finish = (code: number, text: string): void => {
+    const finish = (code: number, text: string, missing = false): void => {
       if (settled) return
       settled = true
       clearTimeout(runTimer)
       clearTimeout(graceTimer)
       opts.signal?.removeEventListener('abort', stop)
-      resolve({ code, stderr: text })
+      const r: ExecResult = { code, stderr: text }
+      if (capture) {
+        r.stdout = code === 0 ? Buffer.concat(out).toString('utf8') : ''
+        r.missing = missing
+      }
+      resolve(r)
     }
     const stop = (): void => {
       if (stopped) return
@@ -174,15 +194,29 @@ export const nodeExecFile: ExecFn = (cmd, args, opts) =>
       stop()
     }, opts.timeout)
     try {
-      child = spawn(cmd, args, { env: opts.env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+      child = spawn(cmd, args, { env: opts.env, windowsHide: true, stdio: ['ignore', capture ? 'pipe' : 'ignore', 'pipe'] })
     } catch (e) {
       return finish(1, (e as Error).message)
     }
     child.stderr?.on('data', (c: Buffer) => {
       if (stderr.length < 65536) stderr += c.toString()
     })
-    child.on('error', (e) => finish(1, e.message))
+    if (capture) {
+      ;(child.stdout as NonNullable<ChildProcess['stdout']>).on('data', (c: Buffer) => {
+        outBytes += c.length
+        if (outBytes > (opts.stdoutMax as number)) {
+          // Once past the cap it stays past it: nothing more is kept, and stop() runs once.
+          overflow = true
+          out.length = 0
+          stop()
+          return
+        }
+        out.push(c)
+      })
+    }
+    child.on('error', (e: NodeJS.ErrnoException) => finish(1, e.message, e.code === 'ENOENT'))
     child.on('close', (code) => {
+      if (overflow) return finish(1, 'too much output')
       if (timedOut) return finish(1, 'it took too long')
       if (code === 0) return finish(0, stderr)
       finish(code ?? 1, stderr || `git exited with code ${code}`)

@@ -7,10 +7,13 @@ import {
   confinedReader,
   folderKey,
   forbiddenFolder,
+  forbiddenFolderReal,
   isCloneRoot,
   isFolderEmpty,
   isInside,
-  type DirLike
+  isProjectFolder,
+  type DirLike,
+  type NamedDirLike
 } from '../../src/main/world/folderSafety'
 
 let dir = ''
@@ -152,5 +155,67 @@ describe('confinedReader', () => {
       linked = false // Windows without developer mode cannot make file links; the injected test covers it
     }
     if (linked) await expect(r(join(root, 'link.ts'))).rejects.toThrow('outside the folder')
+  })
+})
+
+describe('forbiddenFolderReal', () => {
+  it('a junction to the home folder is the home folder', async () => {
+    const home = join(dir, 'home')
+    await mkdir(join(home, 'code'), { recursive: true })
+    const link = join(dir, 'link')
+    await symlink(home, link, 'junction')
+    expect(await forbiddenFolderReal(link, { home })).toBe(FORBIDDEN_FOLDER)
+    // A project inside the home, reached through the link, stays allowed, as it is when named directly.
+    expect(await forbiddenFolderReal(join(link, 'code'), { home })).toBeNull()
+    expect(await forbiddenFolderReal(join(dir, 'nowhere'), { home })).toBeNull() // unresolvable: judged as written
+  })
+
+  it('resolves 8.3 short names, and the home and data folders too', async () => {
+    const names: Record<string, string> = { 'C:/USERS~1/ME': 'C:/Users/me', 'C:/home-link': 'D:/me', 'C:/ud-link': 'D:/ud' }
+    const real = vi.fn(async (p: string) => {
+      if (p in names) return names[p]
+      throw new Error('ENOENT')
+    })
+    expect(await forbiddenFolderReal('C:/USERS~1/ME', { home: 'C:/Users/me', isWindows: true }, real)).toBe(FORBIDDEN_FOLDER)
+    expect(await forbiddenFolderReal('D:/me', { home: 'C:/home-link', isWindows: true }, real)).toBe(FORBIDDEN_FOLDER)
+    expect(await forbiddenFolderReal('D:/ud/world', { home: 'C:/Users/me', userData: 'C:/ud-link', isWindows: true }, real)).toBe(FORBIDDEN_FOLDER)
+    expect(await forbiddenFolderReal('D:/code/shop', { home: 'C:/home-link', userData: 'C:/ud-link', isWindows: true }, real)).toBeNull()
+    // A refusal on the path as written needs no file system at all.
+    real.mockClear()
+    expect(await forbiddenFolderReal('C:/Users/me', { home: 'C:/Users/me', isWindows: true }, real)).toBe(FORBIDDEN_FOLDER)
+    expect(real).not.toHaveBeenCalled()
+  })
+})
+
+describe('isProjectFolder', () => {
+  it('finds a project marker; a plain, empty or missing folder is not a project', async () => {
+    const make = async (name: string, entry?: [string, 'file' | 'dir']): Promise<string> => {
+      const p = join(dir, name)
+      await mkdir(p)
+      if (entry?.[1] === 'file') await writeFile(join(p, entry[0]), '')
+      if (entry?.[1] === 'dir') await mkdir(join(p, entry[0]))
+      return p
+    }
+    expect(await isProjectFolder(await make('node', ['package.json', 'file']))).toBe(true)
+    expect(await isProjectFolder(await make('repo', ['.git', 'dir']))).toBe(true)
+    expect(await isProjectFolder(await make('dotnet', ['Shop.SLN', 'file']))).toBe(true)
+    expect(await isProjectFolder(await make('photos', ['cat.jpg', 'file']))).toBe(false)
+    expect(await isProjectFolder(await make('empty'))).toBe(false)
+    expect(await isProjectFolder(join(dir, 'missing'))).toBe(false)
+  })
+
+  it('reads at most the limit, treats a failed read as no project, and always closes', async () => {
+    type Closable = NamedDirLike & { close: ReturnType<typeof vi.fn> }
+    const dirOf = (names: string[], over: Partial<NamedDirLike> = {}): Closable => {
+      let i = 0
+      return { read: async () => (i < names.length ? { name: names[i++] } : null), close: vi.fn(async () => undefined), ...over } as Closable
+    }
+    const late = dirOf(['a', 'b', 'go.mod'])
+    expect(await isProjectFolder('/x', async () => late, 2)).toBe(false)
+    expect(late.close).toHaveBeenCalledTimes(1)
+    expect(await isProjectFolder('/x', async () => dirOf(['a', 'b', 'go.mod']), 3)).toBe(true)
+    const broken = dirOf([], { read: async () => { throw new Error('EIO') }, close: vi.fn(async () => { throw new Error('gone') }) })
+    expect(await isProjectFolder('/x', async () => broken)).toBe(false)
+    expect(broken.close).toHaveBeenCalledTimes(1)
   })
 })

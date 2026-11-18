@@ -6,6 +6,9 @@
 // Reads: only `snap.files` (joined onto `snap.root`), skipping ignored folders; the test-result
 // reader reads the report files its own glob finds. Each file text feeds the detectors, the
 // OpenTelemetry service-name scan and the relative-import scan (merged into `snap.fileImports`).
+// compileWorldStaged also takes the stage cache a previous compile returned: then only the changed
+// files (and any the cache lacks) are read, and the grouping is reused while the structure it was
+// made from is unchanged.
 import type { GraphSnapshot } from '../codeGraph'
 import type { Building, Claim, District, Evidence, External, Tour, WorldDoc, WorldEdge } from '../../shared/world/types'
 import { detectBoundaries, MAX_DETECT_FILE_CHARS, stripComments, type Boundary } from './detectors'
@@ -19,6 +22,7 @@ import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type La
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
 import { readTestResults, statusFor, TEST_FILE, testClaims, type TestRun } from './testStatus'
+import { isStageCache, type StageCache, type StageFile } from './stageCache'
 
 export type CompileStage = 'structure' | 'boundaries' | 'grouping' | 'status' | 'labelling' | 'layout'
 
@@ -86,8 +90,8 @@ const cmp = (a: string, b: string): number => Number(a > b) - Number(a < b)
 const round2 = (v: number): number => Math.round(v * 100) / 100
 const baseName = (p: string): string => p.slice(p.lastIndexOf('/') + 1)
 
-function hash(s: string): number {
-  let h = 2166136261
+function hash(s: string, seed = 2166136261): number {
+  let h = seed
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i)
     h = Math.imul(h, 16777619)
@@ -346,39 +350,117 @@ export function buildTours(g: Grouping, labels: Labels): Tour[] {
   return tours
 }
 
+export interface StagedInput extends CompileInput {
+  /** The stage cache the previous compile of this project returned; a wrong shape is ignored. */
+  cache?: StageCache | null
+  /** With a cache: the files to read again (default `changed`; absent both, every file is read and checked). */
+  reread?: string[]
+}
+
+/** Content hash of a text: its length and two FNV-1a hashes with different seeds. */
+export function contentHash(text: string): string {
+  return `${text.length.toString(36)}.${hash(text).toString(36)}.${hash(text, 0x5bd1e995).toString(36)}`
+}
+
+const cmpLine = (a: Boundary, z: Boundary): number => a.line - z.line || cmp(a.kind, z.kind) || cmp(a.key, z.key) || cmp(a.side, z.side)
+const cmpBoundary = (a: Boundary, z: Boundary): number => cmp(a.file, z.file) || cmpLine(a, z)
+const signature = (b: Boundary): string => `${b.kind}\u0000${b.key}\u0000${b.side}`
+
+/** What the grouping depends on: the files, their merged imports, and each file's boundary signatures in line order (lines left out). */
+function structureHashOf(snap: GraphSnapshot, files: string[], entries: Map<string, StageFile>): string {
+  const parts = files.map((f) => [f, [...(snap.fileImports[f] ?? [])].sort(), [...(entries.get(f)?.boundaries ?? [])].sort(cmpLine).map(signature)])
+  return contentHash(JSON.stringify(parts))
+}
+
+/**
+ * The previous grouping with every boundary moved to its line in the new scan. The structure hash
+ * matched, so each file has the same signatures in the same line order: the k-th boundary with one
+ * signature in the old scan is the k-th in the new.
+ */
+function regroupLines(g: Grouping, prior: StageCache, entries: Map<string, StageFile>): Grouping {
+  const move = (b: Boundary): Boundary => {
+    const same = (x: Boundary): boolean => signature(x) === signature(b)
+    const old = (prior.files[b.file]?.boundaries ?? []).filter(same).sort(cmpLine)
+    const now = (entries.get(b.file)?.boundaries ?? []).filter(same).sort(cmpLine)
+    return now[old.findIndex((x) => x.line === b.line)] ?? b
+  }
+  const fix = (list: Boundary[]): Boundary[] =>
+    list
+      .map(move)
+      .sort(cmpBoundary)
+      .filter((b, i, a) => i === 0 || cmpBoundary(a[i - 1], b) !== 0)
+  return {
+    districts: g.districts,
+    buildings: g.buildings.map((b) => ({ ...b, boundaries: fix(b.boundaries) })),
+    edges: g.edges.map((e) => ({ ...e, via: fix(e.via) }))
+  }
+}
+
+/** The scan of one file's text, or null when it is unread or too long to scan. */
+function scanFile(f: string, text: string | null): StageFile | null {
+  if (text === null || text.length > MAX_DETECT_FILE_CHARS) return null
+  const found = serviceNames(f, text)
+  return { hash: contentHash(text), boundaries: detectBoundaries(f, text), imports: relativeImports(f, text), ...(found.length > 0 ? { names: found } : {}) }
+}
+
+/** The world, as compileWorldStaged makes it, without the stage cache. */
 export async function compileWorld(input: CompileInput, deps: CompileDeps): Promise<WorldDoc> {
+  return (await compileWorldStaged(input, deps)).doc
+}
+
+/**
+ * Compiles the world and returns the stage cache for the next compile. With a cache, only `reread`
+ * (default `changed`) and the files the cache lacks are read, and every other file's scan comes from
+ * the cache; with neither list every file is read and a file whose text hashes the same keeps its
+ * old scan. Without a cache every file is read and scanned. The grouping is reused (its boundaries
+ * moved to their new lines) while the structure hash matches, and made afresh when it moves.
+ */
+export async function compileWorldStaged(input: StagedInput, deps: CompileDeps): Promise<{ doc: WorldDoc; cache: StageCache }> {
   const { previous } = input
   let { snap } = input
   const progress = (stage: CompileStage, pct: number): void => deps.onProgress?.(stage, pct)
   progress('structure', 0)
+  const prior = isStageCache(input.cache) ? input.cache : null
 
-  // Boundaries and service names, from one read per file.
+  // Boundaries, imports and service names, from one read per file that needs one.
   const root = snap.root.replace(/\/+$/, '')
   const files = [...new Set(snap.files)].filter((f) => !isIgnored(f)).sort()
-  const bounds: Boundary[] = []
-  const names = new Map<string, string[]>()
-  const scanned = new Map<string, string[]>()
+  const again = new Set(input.reread ?? input.changed ?? files)
+  const kept = (f: string): boolean => prior !== null && !again.has(f) && Object.hasOwn(prior.files, f)
+  const entries = new Map<string, StageFile>()
+  for (const f of files) if (kept(f)) entries.set(f, (prior as StageCache).files[f])
+  const toRead = files.filter((f) => !kept(f))
   progress('boundaries', 5)
   const readSource = deps.readSource ?? deps.readFile
-  for (let i = 0; i < files.length; i += READ_CHUNK) {
-    const chunk = files.slice(i, i + READ_CHUNK)
+  for (let i = 0; i < toRead.length; i += READ_CHUNK) {
+    const chunk = toRead.slice(i, i + READ_CHUNK)
     const texts = await Promise.all(chunk.map((f) => safeRead(readSource, `${root}/${f}`)))
     chunk.forEach((f, k) => {
       const text = texts[k]
-      if (text === null || text.length > MAX_DETECT_FILE_CHARS) return
-      for (const b of detectBoundaries(f, text)) bounds.push(b)
-      const specs = relativeImports(f, text)
-      if (specs.length > 0) scanned.set(f, specs)
-      const found = serviceNames(f, text)
-      if (found.length > 0) names.set(f, found)
+      const before = prior && text !== null && Object.hasOwn(prior.files, f) ? prior.files[f] : undefined
+      // The same text as last time: the old scan stands.
+      const entry = before && before.hash === contentHash(text as string) ? before : scanFile(f, text)
+      if (entry) entries.set(f, entry)
     })
-    progress('boundaries', 5 + Math.round((35 * Math.min(files.length, i + READ_CHUNK)) / files.length))
+    progress('boundaries', 5 + Math.round((35 * Math.min(toRead.length, i + READ_CHUNK)) / toRead.length))
+  }
+  const bounds: Boundary[] = []
+  const names = new Map<string, string[]>()
+  const scanned = new Map<string, string[]>()
+  for (const f of files) {
+    const e = entries.get(f)
+    if (!e) continue
+    bounds.push(...e.boundaries)
+    if (e.imports.length > 0) scanned.set(f, e.imports)
+    if (e.names) names.set(f, e.names)
   }
 
   // The graph's tree-sitter path keeps no import specifiers; the text's own fill the gap.
   snap = withImports(snap, scanned)
   progress('grouping', 45)
-  const g = groupProject(snap, bounds)
+  const structureHash = structureHashOf(snap, files, entries)
+  const g = prior?.grouping && prior.structureHash === structureHash ? regroupLines(prior.grouping, prior, entries) : groupProject(snap, bounds)
+  const cache: StageCache = { files: Object.fromEntries(entries), structureHash, grouping: g }
 
   progress('status', 55)
   const runs = await readTestResults(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns })
@@ -477,7 +559,7 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
   // Annotations are merged by item id before the plan is laid over, so a recompile never loses one.
   const merged = deps.annotations ? mergeAnnotations(doc, await deps.annotations()) : doc
   progress('layout', 100)
-  return input.plan ? overlayPlan(merged, input.plan, previous) : merged
+  return { doc: input.plan ? overlayPlan(merged, input.plan, previous) : merged, cache }
 }
 
 // ---------- recompile scheduler ----------

@@ -17,6 +17,15 @@ export function validateGitUrl(url: string): { ok: true } | { ok: false; reason:
   return { ok: true }
 }
 
+// The user-info part of an https URL (https://name:secret@host/...): what a private-repository URL
+// carries to sign in. It reaches git for the clone, and nowhere else.
+const HTTPS_USERINFO_RE = /^(https:\/\/)[^\s/@]*@/i
+
+/** The URL with any https user-info removed, as it may be stored or shown; anything else unchanged. */
+export function stripUrlUserinfo(url: string): string {
+  return url.replace(HTTPS_USERINFO_RE, '$1')
+}
+
 /** A branch, tag or commit name git can take as a value, never as an option (no leading '-', no '..'). */
 export function validGitRef(ref: unknown): ref is string {
   return typeof ref === 'string' && REF_RE.test(ref) && !ref.startsWith('-') && !ref.includes('..')

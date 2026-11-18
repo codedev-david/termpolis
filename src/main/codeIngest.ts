@@ -12,7 +12,7 @@ import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'
 import { normalizeNewlines } from './lineEndings'
 import { join } from 'path'
-import { matchSensitiveFile } from './sensitiveFileWatcher'
+import { isIndexableCodeFile } from './codeFileFilter'
 import { safeGitAsync } from './gitCommand'
 import { knownHashes } from './conversationIngest' // one membership-resolution rule for both ingesters
 
@@ -37,19 +37,9 @@ export interface CodeIngestStats {
 // keep IPC/UI responsive during a bulk repo index instead of freezing the app.
 const yieldToEventLoop = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve))
 
-// Non-text / generated artifacts that pollute a code index.
-const SKIP_EXT =
-  /\.(png|jpe?g|gif|webp|ico|bmp|svg|pdf|zip|gz|tgz|tar|7z|rar|exe|dll|so|dylib|node|wasm|onnx|bin|woff2?|ttf|eot|otf|mp[34]|mov|avi|webm|class|jar|pyc|map)$/i
-const SKIP_NAME = /(\.min\.(js|css)|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/i
 const MAX_FILE_BYTES = 256 * 1024
 
-export function isIndexableCodeFile(filePath: string): boolean {
-  if (!filePath || typeof filePath !== 'string') return false
-  if (matchSensitiveFile(filePath) !== null) return false // secrets — never index
-  if (SKIP_EXT.test(filePath)) return false
-  if (SKIP_NAME.test(filePath)) return false
-  return true
-}
+export { isIndexableCodeFile } from './codeFileFilter'
 
 export interface CodeChunkOptions {
   maxLines?: number

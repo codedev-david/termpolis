@@ -454,6 +454,12 @@ export function createWorldClient(
       call('cloneSource', ref === undefined ? [url] : [url, ref]),
     /** Cancels a running clone of the same url and ref; true when there was one. */
     cancelClone: (url: string, ref?: string): Promise<boolean> => call('cancelClone', ref === undefined ? [url] : [url, ref]),
+    /**
+     * A structure-only snapshot of `root` (its git-listed source files and their imports) made in the world
+     * process, for a folder main has not indexed yet, so reading and parsing a whole repository never runs
+     * on the main thread. A cloned repository is read confined to its folder.
+     */
+    snapshotFromFiles: (root: string): Promise<GraphSnapshot> => call('snapshotFromFiles', [root]),
     /** Stops the host (app quit). Calls after this reject. */
     dispose(): void {
       disposed = true

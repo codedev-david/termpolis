@@ -125,7 +125,7 @@ export function withAnnotations(store: WorldStore, annotations: Pick<AnnotationS
   const merged = async (doc: WorldDoc): Promise<WorldDoc> =>
     doc.projectKey.startsWith('design:') ? mergeAnnotations(doc, await annotations.list(doc.projectKey)) : doc
   return {
-    labelCache: store.labelCache,
+    ...store,
     load: async (key) => {
       const doc = await store.load(key)
       return doc ? merged(doc) : null

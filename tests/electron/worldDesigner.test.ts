@@ -483,5 +483,8 @@ describe('design worlds keep their annotations', () => {
     await store.save({ ...base, projectKey: 'C:/proj' })
     expect(((await inner.load('C:/proj')) as WorldDoc).buildings.every((b) => b.claims.length === 0)).toBe(true)
     expect(store.labelCache).toBe(inner.labelCache)
+    // The stage cache methods pass straight through.
+    expect(store.loadStages).toBe(inner.loadStages)
+    expect(store.saveStages).toBe(inner.saveStages)
   })
 })

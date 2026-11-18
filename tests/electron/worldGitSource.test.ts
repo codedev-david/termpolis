@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { stripUrlUserinfo } from '../../src/shared/world/gitUrl'
 import {
   AUTH_MESSAGE,
   BAD_REF_MESSAGE,
@@ -66,6 +67,17 @@ const FLAGS = [
   '-c', 'credential.interactive=false',
   '-c', 'core.askPass='
 ]
+
+describe('stripUrlUserinfo', () => {
+  it('drops https user-info and leaves every other URL as it was', () => {
+    const userinfo = 'u' + ':' + 'p'
+    expect(stripUrlUserinfo(`https://${userinfo}@h.example/r.git`)).toBe('https://h.example/r.git')
+    expect(stripUrlUserinfo(`HTTPS://${userinfo}@h.example/r`)).toBe('HTTPS://h.example/r')
+    expect(stripUrlUserinfo('https://name@h.example/r')).toBe('https://h.example/r')
+    expect(stripUrlUserinfo('https://h.example/team@x/r')).toBe('https://h.example/team@x/r')
+    for (const u of ['https://h.example/r.git', 'ssh://git@h.example/r', 'git@h.example:r.git', '/']) expect(stripUrlUserinfo(u)).toBe(u)
+  })
+})
 
 describe('validateGitUrl', () => {
   it.each(['--upload-pack=x', 'ext::sh -c touch/tmp/x', 'file:///etc', 'C:\\x', '-oProxyCommand=x', '', 'ssh://-oProxyCommand=x/a', 'ssh://a@-o/x', 'git@-oX:a/b', 'https://-x/a', 'https://u@-x/a', 'https://a b/c', ' https://a/b', 'http://a/b', 'https://a/\nb', 'https://a/\u0000b'])(
@@ -707,6 +719,17 @@ describe('real deps', () => {
     const invalid = await nodeExecFile('bad\u0000cmd', [], { env, timeout: 20_000 })
     expect(invalid.code).toBe(1)
     expect(invalid.stderr).not.toBe('')
+  })
+
+  it('nodeExecFile with stdoutMax collects stdout, fails past the cap, and says when the program is missing', async () => {
+    expect(await node('process.stdout.write("a.ts\\nb.ts\\n")', { stdoutMax: 1000 })).toEqual({ code: 0, stderr: '', stdout: 'a.ts\nb.ts\n', missing: false })
+    // A failed run hands back no partial listing.
+    expect(await node('process.stdout.write("half");process.exit(2)', { stdoutMax: 1000 })).toMatchObject({ code: 2, stdout: '', missing: false })
+    const big = await node('process.stdout.write("x".repeat(5000));setTimeout(()=>{},5000)', { stdoutMax: 100 })
+    expect(big).toMatchObject({ code: 1, stderr: 'too much output', stdout: '', missing: false })
+    expect(await nodeExecFile(join(dir, 'no-such-binary'), [], { env, timeout: 20_000, stdoutMax: 100 })).toMatchObject({ code: 1, stdout: '', missing: true })
+    // Without stdoutMax the result keeps its old shape.
+    expect(await node('process.stdout.write("ignored")')).toEqual({ code: 0, stderr: '' })
   })
 
   it('keeps only the first 64 KB of stderr', async () => {

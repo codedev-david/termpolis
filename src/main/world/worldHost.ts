@@ -20,7 +20,9 @@ import { lowerHostPriority } from '../hostPriority'
 import { cardText } from './cardText'
 import type { Claim, Evidence, Proposal, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotations, type AnnotationStore } from './annotations'
-import { compileWorld, createRecompileScheduler, type CompileDeps } from './compile'
+import { compileWorld, compileWorldStaged, createRecompileScheduler, type CompileDeps, type StagedInput } from './compile'
+import { snapshotFromFiles } from './fileSnapshot'
+import type { StageCache } from './stageCache'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { confinedReader, isCloneRoot } from './folderSafety'
 import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps } from './gitSource'
@@ -299,7 +301,10 @@ function proposalPlan(p: Proposal): NonNullable<WorldReadResult['plan']>['propos
 // ── The host ─────────────────────────────────────────────────────────────────────────────────────
 
 export interface WorldHostDeps {
+  /** A plain compile (tests); without it the host compiles with the stage cache (compileWorldStaged). */
   compile?: typeof compileWorld
+  /** Lists a folder's files for snapshotFromFiles (default: `git ls-files`). */
+  listFiles?: (root: string) => Promise<string[]>
   createStore?: (dir: string) => WorldStore
   /** The annotation store for a userData folder (default: annotations.ts's). */
   createAnnotations?: (dir: string) => AnnotationStore
@@ -349,7 +354,9 @@ interface HostState {
 }
 
 export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: WorldHostDeps = {}): WorldHost {
-  const compile = deps.compile ?? compileWorld
+  const plain = deps.compile
+  const compile = async (input: StagedInput, d: CompileDeps): Promise<{ doc: WorldDoc; cache: StageCache | null }> =>
+    plain ? { doc: await plain(input, d), cache: null } : compileWorldStaged(input, d)
   const createStore = deps.createStore ?? createWorldStore
   const createAnnotations = deps.createAnnotations ?? createAnnotationStore
   const readFile = deps.readFile ?? ((p: string) => readCapped(p))
@@ -416,6 +423,24 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         post({ kind: 'context', id, projectKey, members })
       })
 
+  /** A cloned repository is someone else's content: its reads never follow a link out of the clone. */
+  const confinedTo = (root: string, read: (p: string) => Promise<string | null>): ((p: string) => Promise<string | null>) => {
+    const inside = confinedReader(root, read)
+    return (p) => inside(p).catch(() => null)
+  }
+
+  /** The project's stage cache, or null (none stored, a store without one, or a wrong shape). */
+  const stagesOf = async (st: HostState, key: string): Promise<StageCache | null> => (st.store.loadStages ? st.store.loadStages(key) : null)
+
+  /** The stage cache (and the files to read again) as compile input; nothing at all without a cache. */
+  const stagedArg = (cache: StageCache | null, reread?: string[]): Pick<StagedInput, 'cache' | 'reread'> =>
+    cache ? { cache, ...(reread ? { reread } : {}) } : {}
+
+  /** Keeps the stage cache for the next compile; best effort (the store never rejects). */
+  const keepStages = async (st: HostState, key: string, cache: StageCache | null): Promise<void> => {
+    if (cache && st.store.saveStages) await st.store.saveStages(key, cache)
+  }
+
   /** `llm` defaults to the setting: main's model when labelling is on, none when it is off. */
   const depsFor = (
     st: HostState,
@@ -424,14 +449,9 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     llm: LabelDeps['llm'] = st.labelling ? askMain(projectKey) : null
   ): CompileDeps => {
     const root = String(snap.root).replace(/\/+$/, '')
-    // A cloned repository is someone else's content: its reads never follow a link out of the clone.
-    const confine = (read: (p: string) => Promise<string | null>): ((p: string) => Promise<string | null>) => {
-      const inside = confinedReader(root, read)
-      return (p) => inside(p).catch(() => null)
-    }
     const cloned = isCloneRoot(st.userDataPath, root)
-    const rf = cloned ? confine(readFile) : readFile
-    const rs = cloned ? confine(readSource) : readSource
+    const rf = cloned ? confinedTo(root, readFile) : readFile
+    const rs = cloned ? confinedTo(root, readSource) : readSource
     const label: LabelDeps = {
       llm,
       ...(st.labelling ? { context: askContext(projectKey) } : {}),
@@ -462,9 +482,12 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
             const previous = await st.store.load(key)
             if (!previous) return
             const cur = latest.get(key) as Latest
-            const input = { snap: cur.snap, projectKey: key, head: cur.head, previous, changed, ...planArg(cur.plan) }
-            const doc = await compile(input, depsFor(st, key, cur.snap))
-            await st.store.save(doc)
+            // Only the changed files are read again; the rest of the scan comes from the stage cache.
+            const cache = await stagesOf(st, key)
+            const input = { snap: cur.snap, projectKey: key, head: cur.head, previous, changed, ...stagedArg(cache), ...planArg(cur.plan) }
+            const out = await compile(input, depsFor(st, key, cur.snap))
+            await st.store.save(out.doc)
+            await keepStages(st, key, out.cache)
             post({ kind: 'updated', projectKey: key })
           }),
         deps.debounceMs ?? 1500
@@ -491,24 +514,31 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         missed = true
         return null
       }
+      // The first pass's stage cache: the follow-up reads no file again.
+      let staged: StageCache | null = null
       const first = serial(key, async () => {
         // A re-layout is a compile whose previous world has no positions (so it lays out afresh with
         // the same seed); everything else compile carries from previous still carries.
         const stored = await st.store.load(key)
         const previous =
           stored && opts?.relayout === true ? { ...stored, layout: { seed: stored.layout.seed, positions: {} } } : stored
-        const doc = await compile({ snap, projectKey: key, head, previous, ...plan }, depsFor(st, key, snap, labelled ? cacheOnly : null))
-        await st.store.save(doc)
+        // With a stored stage cache every file is read but only one whose text changed is scanned again.
+        const cache = await stagesOf(st, key)
+        const out = await compile({ snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan }, depsFor(st, key, snap, labelled ? cacheOnly : null))
+        await st.store.save(out.doc)
+        await keepStages(st, key, out.cache)
+        staged = out.cache
         post({ kind: 'updated', projectKey: key })
-        return doc
+        return out.doc
       })
       if (labelled) {
         serial(key, async () => {
           // A failed first pass already answered the RPC; labelling turned off since asks no model.
           const previous = await first.catch(() => null)
           if (!previous || !missed || !st.labelling) return
-          const doc = await compile({ snap, projectKey: key, head, previous, ...plan }, depsFor(st, key, snap))
-          await st.store.save(doc)
+          const out = await compile({ snap, projectKey: key, head, previous, ...stagedArg(staged, []), ...plan }, depsFor(st, key, snap))
+          await st.store.save(out.doc)
+          await keepStages(st, key, out.cache)
           post({ kind: 'updated', projectKey: key })
         }).catch((err: unknown) => console.error('[world host] labelled follow-up failed:', err))
       }
@@ -562,6 +592,13 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         .finally(() => clones.delete(hash))
       clones.set(hash, { ctl, done })
       return done
+    },
+    // The structure of a folder main has not indexed yet, read and parsed here rather than on main's
+    // thread. A clone's reads never follow a link out of it.
+    snapshotFromFiles: async (root: unknown) => {
+      if (!isStr(root) || root === '') throw new Error('worldHost: root required')
+      const read = isCloneRoot(st.userDataPath, root) ? confinedTo(root, readSource) : readSource
+      return snapshotFromFiles(root, { read, ...(deps.listFiles ? { listFiles: deps.listFiles } : {}) })
     },
     cancelClone: async (url: unknown, ref?: unknown) => {
       const running = clones.get(cloneKey(isStr(url) ? url : '', refOf(ref)))
