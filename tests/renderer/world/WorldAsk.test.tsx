@@ -369,8 +369,33 @@ describe('WorldAsk', () => {
         answer: { text: 'First one.\n\nSecond one.', sentences: [{ text: 'First one.', actions: [0], sep: '' }, { text: 'Second one.', actions: [], sep: '\n\n' }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false }
       }))
       await submit(v, 'q')
-      const shown = (): string => screen.getByTestId('world-answer').textContent ?? ''
-      await waitFor(() => expect(shown()).toContain('First one.\n\nSecond one.'), { timeout: 3000 })
+      const paras = (): string[] => [...screen.getByTestId('world-answer-text').querySelectorAll('p')].map((p) => p.textContent ?? '')
+      await waitFor(() => expect(paras()).toEqual(['First one.', 'Second one.']), { timeout: 3000 })
+    })
+
+    it('a markdown list with bold names shows as a list, never as literal stars (film bug 3)', async () => {
+      const v = makeViewer()
+      const text = 'Main parts:\n- **TerminalPane** draws a terminal.\n- *Store* keeps `state`, line one\n\nline two\nline three.'
+      ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, text, {
+        answer: { text, sentences: [{ text, actions: [0], sep: '' }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false }
+      }))
+      await submit(v, 'q')
+      const box = screen.getByTestId('world-answer-text')
+      expect(box.textContent).not.toContain('**')
+      expect([...box.querySelectorAll('ul > li')].map((li) => li.textContent)).toEqual(['TerminalPane draws a terminal.', 'Store keeps state, line one'])
+      expect(box.querySelector('li strong')?.textContent).toBe('TerminalPane')
+      expect(box.querySelector('li em')?.textContent).toBe('Store')
+      expect(box.querySelector('li code')?.textContent).toBe('state')
+      expect(box.querySelector('p br')).not.toBeNull()
+    })
+
+    it('a numbered list keeps its evidence chips', async () => {
+      const v = makeViewer()
+      withCited('1. **First** step [E1].\n2. Second.', { E1: { label: 'E1', kind: 'file', ref: 'src/a.ts', items: [] } })
+      await submit(v, 'q')
+      const box = screen.getByTestId('world-answer-text')
+      expect(box.querySelectorAll('ol > li')).toHaveLength(2)
+      expect(box.querySelector('ol > li button')?.getAttribute('aria-label')).toBe('Evidence E1')
     })
 
     it('an unknown marker stays plain text', async () => {
