@@ -134,7 +134,12 @@ function clearOf(a: LabelBox, b: LabelBox, gap: number): boolean {
  */
 export interface LabelCandidate extends LabelBox {
   tier: number; group?: string; nudge?: boolean | 'vertical'; keepIn?: readonly [number, number, number, number]; always?: boolean
+  /** A smaller form on the same point (a district's name without its subtitle), tried where the whole label finds no room. */
+  compact?: { w: number; h: number }
 }
+
+/** The labels shown in their compact form: last time's (`was`), and this time's, which placeLabels fills (`now`). */
+export interface CompactForms { was: ReadonlySet<string>; now: Set<string> }
 
 /** Room a label needs round it to appear, and the room it needs to stay once shown (LABEL_KEEP_GAP). */
 export const LABEL_GAP = 6
@@ -159,33 +164,56 @@ export const VERTICAL_NUDGES: ReadonlyArray<readonly [number, number]> = NUDGES.
  * `shown` (on screen last time, with its nudge) needs only `keepGap` pixels round it to stay where
  * it was, a new one `gap` to appear: a label at the edge of its room stays put while the camera
  * moves, instead of flickering in and out or hopping. A label marked `always` that finds no clear
- * place still shows, as a last resort, overlapping. Returns each shown label's nudge, in the order
- * they were placed.
+ * place still shows, as a last resort, overlapping. A label with a `compact` form (a district's
+ * name without its subtitle) is placed in that form, so every name of its tier gets its room before
+ * any subtitle; then, before the next tier is placed, each grows whole, in the same order, where the
+ * whole label is clear of every label kept (by the keeping gap if it showed whole last time). One
+ * that cannot stays compact (its id goes in `compact.now`). Returns each shown label's nudge, in the order they were placed.
  */
 export function placeLabels(
   cands: LabelCandidate[], shown: ReadonlyMap<string, Nudge>, caps: Readonly<Record<string, number>> = {}, gap = LABEL_GAP, keepGap = LABEL_KEEP_GAP,
+  compact: CompactForms = { was: new Set(), now: new Set() },
 ): Map<string, Nudge> {
   const order = cands.map((c, i) => ({ c, i })).sort((a, b) => a.c.tier - b.c.tier || a.i - b.i)
-  const kept: LabelBox[] = []
+  const kept: Array<LabelBox & { c: LabelCandidate }> = []
   const out = new Map<string, Nudge>()
   const used = new Map<string, number>()
   const clear = (box: LabelBox, g: number): boolean => kept.every((k) => clearOf(k, box, g))
+  // Each label with a compact form placed since `grown` grows whole where it is clear of every label kept.
+  let grown = 0
+  const grow = (): void => {
+    for (; grown < kept.length; grown++) {
+      const i = grown
+      const { c } = kept[i]
+      if (!c.compact) continue
+      const at = out.get(c.id) as Nudge
+      const whole = { ...c, x: c.x + at[0], y: c.y + at[1] }
+      const g = shown.has(c.id) && !compact.was.has(c.id) ? keepGap : gap
+      if (within(c, at) && kept.every((o, j) => j === i || clearOf(o, whole, g))) kept[i] = { ...whole, c }
+      else compact.now.add(c.id)
+    }
+  }
+  let tier = order.length > 0 ? order[0].c.tier : 0
   for (const { c } of order) {
+    // A tier's names have their room: its subtitles grow before the next tier's labels are placed.
+    if (c.tier !== tier) { grow(); tier = c.tier }
     const n = c.group === undefined ? 0 : used.get(c.group) ?? 0
     if (c.group !== undefined && n >= (caps[c.group] ?? Infinity)) continue
+    const box: LabelCandidate = c.compact ? { ...c, ...c.compact } : c
     const tries: Array<{ d: Nudge; g: number }> = []
     const was = shown.get(c.id)
     if (was) tries.push({ d: was, g: keepGap })
     const steps = c.nudge === 'vertical' ? VERTICAL_NUDGES : c.nudge ? NUDGES : NUDGES.slice(0, 1)
-    for (const [ux, uy] of steps) tries.push({ d: [ux * (c.w + gap), uy * (c.h + gap)], g: gap })
-    const fit = tries.find(({ d, g }) => within(c, d) && clear({ ...c, x: c.x + d[0], y: c.y + d[1] }, g))?.d
+    for (const [ux, uy] of steps) tries.push({ d: [ux * (box.w + gap), uy * (box.h + gap)], g: gap })
+    const fit = tries.find(({ d, g }) => within(box, d) && clear({ ...box, x: box.x + d[0], y: box.y + d[1] }, g))?.d
     // Every place is taken: a label that must show keeps last time's place, or else its own point.
     const at: Nudge | undefined = fit ?? (c.always ? was ?? [0, 0] : undefined)
     if (!at) continue
-    kept.push({ ...c, x: c.x + at[0], y: c.y + at[1] })
+    kept.push({ ...box, x: box.x + at[0], y: box.y + at[1], c })
     out.set(c.id, at)
     if (c.group !== undefined) used.set(c.group, n + 1)
   }
+  grow()
   return out
 }
 

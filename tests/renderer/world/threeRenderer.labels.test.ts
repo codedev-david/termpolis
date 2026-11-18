@@ -8,7 +8,7 @@ import { createThreeRenderer, type ThreeRenderer } from '../../../src/renderer/s
 import type { SceneModel, SceneText } from '../../../src/renderer/src/world/engine/sceneModel'
 import { turnGround } from '../../../src/renderer/src/world/engine/viewMath'
 import {
-  atRatio, bldg, boxCanvas, conduit, DEFAULT_OPTS, district, emptyText, labelsOf, makeHost, sceneOf, smallCity, smallText,
+  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, emptyText, labelsOf, makeHost, sceneOf, smallCity, smallText,
   withHarness, worldOf,
 } from './threeHarness'
 
@@ -204,6 +204,74 @@ describe('threeRenderer labels', () => {
     expect(on.length).toBeLessThan(6)
     r.dispose()
     tiny.remove()
+  })
+
+  /** Sizes from the page: a district name 40 x 18, its subtitle making it `sub` x 36 while it shows; other labels 40 x 18. */
+  function sized(sub: number): void {
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      const span = this.classList.contains('lw-district') ? this.querySelector('span') : null
+      return span ? (span.style.display === 'none' ? 40 : sub) : 40
+    })
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      const span = this.classList.contains('lw-district') ? this.querySelector('span') : null
+      return span && span.style.display !== 'none' ? 36 : 18
+    })
+  }
+  const subtitle = (l: { element: HTMLElement }): HTMLElement => l.element.querySelector('span') as HTMLElement
+  const twoDistricts = (): SceneModel => ({
+    districts: [district('d1', [-60, 0, 0], 12), district('d2', [60, 0, 0], 12)],
+    buildings: [bldg('a', [-60, 0, 0]), bldg('b', [60, 0, 0])],
+    conduits: [],
+    orbs: [],
+  })
+  const withSubtitles = emptyText({ districts: { d1: 'Electron app tests that drive the chooser', d2: 'Build, packaging and verification helpers' } })
+
+  it('neighbouring district names always both show; a subtitle shows only where it overlaps no name or subtitle, the earlier first (film bug 7)', () => {
+    // Two names 40 wide, about 63 pixels apart, in a view too short for either to step a row up or
+    // down. Before, the second name dropped out (or, kept, drew under the first one's subtitle).
+    const short = makeHost(800, 110)
+    const subtitles = (sub: number): string[] => {
+      sized(sub)
+      const r = drawn(twoDistricts(), withSubtitles, false, short)
+      h.frames.step()
+      const names = labelsOf(world(), 'district')
+      expect(names.map((l) => l.visible)).toEqual([true, true])
+      const out = names.map((l) => subtitle(l).style.display)
+      h.frames.step() // and it stays so, frame after frame
+      expect(labelsOf(world(), 'district').map((l) => subtitle(l).style.display)).toEqual(out)
+      r.dispose()
+      return out
+    }
+    expect(subtitles(700)).toEqual(['none', 'none']) // either subtitle would cover the other name
+    expect(subtitles(70)).toEqual(['', 'none']) // the first fits beside the second name; then the second meets it
+    expect(subtitles(50)).toEqual(['', '']) // both fit
+    short.remove()
+  })
+
+  it('a district name with no subtitle has no compact form, and a hidden subtitle is measured whole again', () => {
+    sized(700)
+    const r = drawn(twoDistricts(), emptyText({ districts: { d1: 'Electron app tests that drive the chooser' } }))
+    h.frames.step()
+    const names = labelsOf(world(), 'district')
+    expect(names.map((l) => subtitle(l).textContent)).toEqual(['Electron app tests that drive the chooser', ''])
+    expect(names[0].visible).toBe(true)
+    r.dispose()
+  })
+
+  it('district names stay left of the legend', () => {
+    sized(300)
+    // The district on the right of the city, so its wide name would run under the legend.
+    const one: SceneModel = { districts: [district('d0', [-60, 0, 0], 12), district('d1', [60, 0, 0], 12)], buildings: [bldg('z', [-60, 0, 0]), bldg('a', [60, 0, 0])], conduits: [], orbs: [] }
+    const r = createThreeRenderer(h.host, { ...DEFAULT_OPTS, rightReserve: 244 })
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(one, emptyText({ districts: { d1: 'A subtitle' } }), false)
+    h.frames.run(3)
+    const name = labelsOf(world(), 'district')[1]
+    const at = name.getWorldPosition(new THREE.Vector3()).project(cameraOf())
+    const x = ((at.x + 1) / 2) * 800 + (parseFloat(name.element.style.marginLeft) || 0)
+    expect(name.visible).toBe(true)
+    expect(x + 150).toBeLessThanOrEqual(800 - 244 - 4 + 0.5)
+    r.dispose()
   })
 
   it('a tall view looks from the portrait side, and a city wider than deep turns a quarter: district names move to the camera side', () => {

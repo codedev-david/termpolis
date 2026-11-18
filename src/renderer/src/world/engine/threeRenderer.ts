@@ -16,7 +16,7 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -384,6 +384,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let areaGoal: FreeArea = area
   /** The strip at the bottom out of the picture now: district names stay above it. */
   let below = area.bottom
+  /** The strip on the right out of the picture now (the legend's): district names stay left of it. */
+  let beside = area.right
   /**
    * The camera sees a larger picture than the view, centred on the middle of the free area, and the
    * parts past the view's edges are cut off (viewFrame). The field of view grows with the picture, so
@@ -399,6 +401,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   function project(a: FreeArea): void {
     below = a.bottom
+    beside = a.right
     lens(camera, a)
   }
   /** The panels, the view's size or the camera's place changed: the picture moves to the new free area (`snap`: at once, else it eases). */
@@ -1847,6 +1850,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let placed = new Map<string, Nudge>()
   const pinned = new Map<string, Nudge>()
   const sizes = new WeakMap<HTMLElement, { w: number; h: number }>()
+  /** A district name's size without its subtitle: the form it takes where the whole label finds no room. */
+  const compactSizes = new WeakMap<HTMLElement, { w: number; h: number }>()
+  /** The district names shown without their subtitle last frame (placeLabels keeps them so until there is room). */
+  let compactShown = new Set<string>()
+  const subtitleOf = (el: HTMLElement): HTMLElement | null => (el.classList.contains('lw-district') ? el.querySelector('span') : null)
   function measure(els: HTMLElement[]): void {
     const todo = els.filter((el) => !sizes.has(el))
     if (todo.length === 0) return
@@ -1856,7 +1864,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       el.style.display = ''
       el.style.visibility = 'hidden'
     }
-    for (const el of todo) if (el.offsetWidth > 0) sizes.set(el, { w: el.offsetWidth, h: el.offsetHeight })
+    for (const el of todo) {
+      // A district name is measured whole, then without its subtitle (shown or hidden as it was).
+      const sub = subtitleOf(el)
+      const subWas = sub ? sub.style.display : ''
+      if (sub) sub.style.display = ''
+      if (el.offsetWidth > 0) {
+        sizes.set(el, { w: el.offsetWidth, h: el.offsetHeight })
+        if (sub && sub.textContent !== '') {
+          sub.style.display = 'none'
+          compactSizes.set(el, { w: el.offsetWidth, h: el.offsetHeight })
+        }
+      }
+      if (sub) sub.style.display = subWas
+    }
     todo.forEach((el, i) => { el.style.display = was[i][0]; el.style.visibility = was[i][1] })
   }
   function candidate(o: CSS2DObject, id: string, tier: number, group?: string, nudge?: boolean | 'vertical', pin?: boolean): LabelCandidate | null {
@@ -1867,16 +1888,19 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     let x = ((labelAt.x + 1) / 2) * width
     let y = ((1 - labelAt.y) / 2) * height
     let keepIn: LabelCandidate['keepIn']
+    let compact: LabelCandidate['compact']
     if (pin) {
-      // A district's name stays whole inside the view, above the ask bar, and moves up or down only
-      // within it; the shift is added back to its nudge (layLabels).
-      const [sx, sy] = clampIntoView(x, y, w, h, width, height - below, LABEL_VIEW_INSET)
+      // A district's name stays whole inside the view, above the ask bar and left of the legend, and
+      // moves up or down only within it; the shift is added back to its nudge (layLabels). Where it
+      // finds no room whole, it shows without its subtitle (placeLabels), so neighbours never overlap.
+      const [sx, sy] = clampIntoView(x, y, w, h, width - beside, height - below, LABEL_VIEW_INSET)
       x += sx
       y += sy
       if (sx !== 0 || sy !== 0) pinned.set(id, [sx, sy])
-      keepIn = [LABEL_VIEW_INSET, LABEL_VIEW_INSET, width - LABEL_VIEW_INSET, height - below - LABEL_VIEW_INSET]
+      keepIn = [LABEL_VIEW_INSET, LABEL_VIEW_INSET, width - beside - LABEL_VIEW_INSET, height - below - LABEL_VIEW_INSET]
+      compact = compactSizes.get(o.element)
     } else if (x + w / 2 < 0 || x - w / 2 > width || y + h / 2 < 0 || y - h / 2 > height) return null
-    return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}), ...(keepIn ? { keepIn } : {}) }
+    return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}), ...(keepIn ? { keepIn } : {}), ...(compact ? { compact } : {}) }
   }
   function layLabels(): Map<string, Nudge> {
     camera.updateMatrixWorld()
@@ -1914,7 +1938,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       // With every line labelled, a line's label shows even when every place it could step to is taken.
       if (c) cands.push(allLabels && w.id.startsWith('e:') ? { ...c, always: true } : c)
     }
-    placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS })
+    const compactNow = new Set<string>()
+    placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS }, LABEL_GAP, LABEL_KEEP_GAP, { was: compactShown, now: compactNow })
+    compactShown = compactNow
     if (pinned.size === 0) return placed
     const out = new Map(placed)
     for (const [id, [sx, sy]] of pinned) {
@@ -2250,6 +2276,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const l of labels) {
       l.o.visible = shown.has(l.key)
       if (l.o.visible) nudgeLabel(l.o.element, shown.get(l.key) as Nudge)
+      const sub = l.kind === 'district' ? subtitleOf(l.o.element) : null
+      const subShown = compactShown.has(l.key) ? 'none' : ''
+      if (sub && sub.style.display !== subShown) sub.style.display = subShown
       if (!l.o.visible || l.kind === 'floor' || l.kind === 'proc') continue
       let o = 1
       if (!l.lit && !hoverLabels.includes(l)) {

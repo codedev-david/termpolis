@@ -202,6 +202,45 @@ describe('placeLabels', () => {
     // Its old place is now taken: it moves to the first clear place.
     expect(placeLabels([box('a', 0, 0), box('c', 0, 24), nudged], new Map([['b', [0, 24] as const]])).get('b')).toEqual([0, -(18 + LABEL_GAP)])
   })
+
+  it('a label with a compact form (a district name without its subtitle) gets its room as a name first, then grows whole only where that is clear (film bug 7)', () => {
+    // A district: a 40 x 18 name over a 300-pixel subtitle, 36 high in all. Its neighbour's name sits beside it.
+    const sub: LabelCandidate = { id: 'd', x: 300, y: 100, w: 300, h: 36, tier: 3, compact: { w: 40, h: 18 } }
+    const near = box('n', 400, 100) // clear of the 40-pixel name, not of the 300-pixel subtitle
+    const out = { was: new Set<string>(), now: new Set<string>() }
+    expect(placeLabels([near, sub], none, {}, LABEL_GAP, LABEL_KEEP_GAP, out).get('d')).toEqual([0, 0])
+    expect([...out.now]).toEqual(['d'])
+    // With room for it all, the whole label shows.
+    const roomy = { was: new Set<string>(), now: new Set<string>() }
+    expect(placeLabels([box('n', 700, 100), sub], none, {}, LABEL_GAP, LABEL_KEEP_GAP, roomy).get('d')).toEqual([0, 0])
+    expect(roomy.now.size).toBe(0)
+    // Whole last time, clear by the keeping gap only: it stays whole. Compact last time: it stays compact.
+    const edge = box('n', 450 + 50 + LABEL_KEEP_GAP, 100)
+    const whole = { was: new Set<string>(), now: new Set<string>() }
+    placeLabels([edge, sub], was('d'), {}, LABEL_GAP, LABEL_KEEP_GAP, whole)
+    expect(whole.now.size).toBe(0)
+    const small = { was: new Set(['d']), now: new Set<string>() }
+    placeLabels([edge, sub], was('d'), {}, LABEL_GAP, LABEL_KEEP_GAP, small)
+    expect([...small.now]).toEqual(['d'])
+    // Two districts whose subtitles meet: both names show, the first grows whole, the second stays compact.
+    const sub2: LabelCandidate = { ...sub, id: 'e', x: 500 }
+    const both = { was: new Set<string>(), now: new Set<string>() }
+    expect([...placeLabels([sub, sub2], none, {}, LABEL_GAP, LABEL_KEEP_GAP, both).keys()]).toEqual(['d', 'e'])
+    expect([...both.now]).toEqual(['e'])
+    // A nudged label must stay inside its room to grow; a name with no room drops out.
+    const roomOnly: LabelCandidate = { ...sub, nudge: 'vertical', keepIn: [0, 0, 1000, 200] }
+    const up = { was: new Set<string>(), now: new Set<string>() }
+    expect(placeLabels([box('n', 300, 100), roomOnly], none, {}, LABEL_GAP, LABEL_KEEP_GAP, up).get('d')).toEqual([0, -(18 + LABEL_GAP)])
+    expect([...up.now]).toEqual(['d'])
+    const gone = { was: new Set<string>(), now: new Set<string>() }
+    expect(placeLabels([box('n', 300, 100), sub], none, {}, LABEL_GAP, LABEL_KEEP_GAP, gone).has('d')).toBe(false)
+    expect(gone.now.size).toBe(0)
+    // A subtitle grows before a later tier's labels are placed: a tier-4 name under it gives way.
+    const later = { was: new Set<string>(), now: new Set<string>() }
+    expect([...placeLabels([box('m', 420, 100, 4), sub], none, {}, LABEL_GAP, LABEL_KEEP_GAP, later).keys()]).toEqual(['d'])
+    expect(later.now.size).toBe(0)
+    expect(placeLabels([], none, {}, LABEL_GAP, LABEL_KEEP_GAP, later).size).toBe(0)
+  })
 })
 
 describe('placeLabels with every line labelled', () => {
