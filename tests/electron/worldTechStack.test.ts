@@ -85,10 +85,15 @@ describe('techStack', () => {
 
   it('reads a huge file of type aliases, open braces and braced imports in linear time (round 2 N3)', () => {
     const lines = (line: string): string => Array.from({ length: 20_000 }, () => line).join('\n')
+    // The quadratic version took seconds; the best of three runs keeps a busy machine's one-off stall out of the bound.
     for (const text of [lines('export type A = number'), lines('export type {'), lines('import {'), lines('import type A')]) {
-      const start = performance.now()
-      expect(packageImports('src/gen.ts', text + "\nimport 'zod'")).toEqual(['zod'])
-      expect(performance.now() - start).toBeLessThan(200)
+      let best = Infinity
+      for (let run = 0; run < 3; run++) {
+        const start = performance.now()
+        expect(packageImports('src/gen.ts', text + "\nimport 'zod'")).toEqual(['zod'])
+        best = Math.min(best, performance.now() - start)
+      }
+      expect(best).toBeLessThan(200)
     }
   })
 
