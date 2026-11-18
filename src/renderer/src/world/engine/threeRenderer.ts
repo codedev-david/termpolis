@@ -233,10 +233,6 @@ const HOVER_EDGE_LABELS = 6
 const FOCUS_EDGE_LABELS = 10
 
 type LabelKind = 'district' | 'bldg' | 'floor' | 'proc'
-/**
- * dim: the focus dimming (1 or 0.2); lit: its part is hovered or selected, so the label shows at any
- * distance. key: its name in the label placement (placeLabels).
- */
 /** What motionState reports: read from the objects the renderer already drew, never drawn for it. */
 export interface MotionState {
   ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number
@@ -251,6 +247,10 @@ export interface MotionState {
   flight: FlightState
   lineLabels: number
 }
+/**
+ * dim: the focus dimming (1 or 0.2); lit: its part is hovered or selected, so the label shows at any
+ * distance. key: its name in the label placement (placeLabels).
+ */
 interface LabelRec { o: CSS2DObject; kind: LabelKind; dim: number; lit: boolean; key: string }
 interface NodeRec {
   id: string; group: THREE.Group; floors: THREE.Group[]; floorLabels: (LabelRec | null)[]
@@ -1890,7 +1890,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const cands: LabelCandidate[] = []
     for (const w of want) {
       const c = candidate(w.o, w.id, w.tier, w.group, w.nudge, w.pin)
-      if (c) cands.push(c)
+      // With every line labelled, a line's label shows even when every place it could step to is taken.
+      if (c) cands.push(allLabels && w.id.startsWith('e:') ? { ...c, always: true } : c)
     }
     placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS })
     if (pinned.size === 0) return placed

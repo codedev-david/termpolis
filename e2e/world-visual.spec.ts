@@ -707,7 +707,7 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
         steady = await jitterAim(connected).catch(() => null)
         if (steady) break
       }
-      if (!steady) steady = await jitterAim(connected)
+      if (!steady) throw new Error(`no steady aim on ${connected} at any zoom tried (up to ${further - 4} further)`)
       for (const [dx, dy] of CLICK_JITTER) {
         await toOverview()
         await toBuildingsTier(further)

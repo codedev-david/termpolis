@@ -339,7 +339,7 @@ import { testPickedFolder } from './world/testHooks'
 import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
-import { commandOnPath, createWorldRuns } from './world/worldRuns'
+import { assertRunnable, commandOnPath, createWorldRuns } from './world/worldRuns'
 import { cheapModelFor, makeWorldLlm } from './world/label'
 import { createLabelContext, GIT_TIMEOUT_MS } from './world/labelContext'
 import { ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
@@ -2693,8 +2693,9 @@ const worldRuns = createWorldRuns({
   listTranscripts: (root) => listClaudeSessionFiles(root),
   transcriptsAllowed: () => getLearnFromConversations(),
   ciAllowed: async () => { await worldSettings.ready(); return worldSettings.get().worldCiResults },
-  // Looked for in the PATH folders, never by starting a program: no `gh` means no CI result.
-  ghOnPath: () => commandOnPath('gh', process.env, process.platform, (f) => fsPromises.access(f, fsConstants.X_OK)),
+  // Looked for in the fixed PATH folders (never the current one), never by starting a program: no `gh` means no CI
+  // result, and the one found is started by its full path.
+  ghOnPath: () => commandOnPath('gh', process.env, process.platform, (f) => assertRunnable(f, fsPromises, fsConstants.X_OK), process.cwd()),
   exec: async (bin, args, opts) => {
     try {
       const out = await execCaptureOffThread(bin, args, { cwd: opts.cwd, timeout: opts.timeout, maxBuffer: 4 * 1024 * 1024 })

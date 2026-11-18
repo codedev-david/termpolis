@@ -86,7 +86,6 @@ export interface WorldLoadOptions {
   animateFrom?: WorldDoc
 }
 
-/** The looping motions as they stand now; under reduced motion each holds still (all 0 in 2D). */
 /** The motions and the drawn result as the renderer reports them (MotionState); all empty on the 2D fallback. */
 export type WorldDrawnVisual = MotionState
 const noVisual = (): WorldDrawnVisual => ({
@@ -125,7 +124,8 @@ export interface WorldDrawn {
   fogged: string[]
   /** Ids lit now (the buildings and lines a selection, a tech chip or an action asked for); empty when nothing is. */
   highlighted: string[]
-  /** The looping motions now: the seal rings, the fog drift, the wireframe pulse and the selection ring. */
+  /** The looping motions now (the seal rings, the fog drift, the wireframe pulse and the selection ring; each holds
+   *  still under reduced motion) and the drawn result the renderer reports (all empty in 2D). */
   visual: WorldDrawnVisual
 }
 

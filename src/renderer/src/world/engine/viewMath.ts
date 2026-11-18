@@ -129,9 +129,11 @@ function clearOf(a: LabelBox, b: LabelBox, gap: number): boolean {
  * may `nudge` can move off its point when that point is taken: to any of NUDGES (true), or only a row
  * or two up or down (VERTICAL_NUDGES, 'vertical'). With `keepIn` (left, top, right, bottom, in pixels)
  * a move off its point must keep the whole box inside that rectangle; its own point is always allowed.
+ * One marked `always` is never dropped for want of room: when none of its places is clear it is shown
+ * anyway, where it was last time or else on its own point ("label every line").
  */
 export interface LabelCandidate extends LabelBox {
-  tier: number; group?: string; nudge?: boolean | 'vertical'; keepIn?: readonly [number, number, number, number]
+  tier: number; group?: string; nudge?: boolean | 'vertical'; keepIn?: readonly [number, number, number, number]; always?: boolean
 }
 
 /** Room a label needs round it to appear, and the room it needs to stay once shown (LABEL_KEEP_GAP). */
@@ -156,8 +158,9 @@ export const VERTICAL_NUDGES: ReadonlyArray<readonly [number, number]> = NUDGES.
  * `caps`. A label that may nudge takes the first of its NUDGES places that is clear. A label in
  * `shown` (on screen last time, with its nudge) needs only `keepGap` pixels round it to stay where
  * it was, a new one `gap` to appear: a label at the edge of its room stays put while the camera
- * moves, instead of flickering in and out or hopping. Returns each shown label's nudge, in the
- * order they were placed.
+ * moves, instead of flickering in and out or hopping. A label marked `always` that finds no clear
+ * place still shows, as a last resort, overlapping. Returns each shown label's nudge, in the order
+ * they were placed.
  */
 export function placeLabels(
   cands: LabelCandidate[], shown: ReadonlyMap<string, Nudge>, caps: Readonly<Record<string, number>> = {}, gap = LABEL_GAP, keepGap = LABEL_KEEP_GAP,
@@ -175,10 +178,12 @@ export function placeLabels(
     if (was) tries.push({ d: was, g: keepGap })
     const steps = c.nudge === 'vertical' ? VERTICAL_NUDGES : c.nudge ? NUDGES : NUDGES.slice(0, 1)
     for (const [ux, uy] of steps) tries.push({ d: [ux * (c.w + gap), uy * (c.h + gap)], g: gap })
-    const fit = tries.find(({ d, g }) => within(c, d) && clear({ ...c, x: c.x + d[0], y: c.y + d[1] }, g))
-    if (!fit) continue
-    kept.push({ ...c, x: c.x + fit.d[0], y: c.y + fit.d[1] })
-    out.set(c.id, fit.d)
+    const fit = tries.find(({ d, g }) => within(c, d) && clear({ ...c, x: c.x + d[0], y: c.y + d[1] }, g))?.d
+    // Every place is taken: a label that must show keeps last time's place, or else its own point.
+    const at: Nudge | undefined = fit ?? (c.always ? was ?? [0, 0] : undefined)
+    if (!at) continue
+    kept.push({ ...c, x: c.x + at[0], y: c.y + at[1] })
+    out.set(c.id, at)
     if (c.group !== undefined) used.set(c.group, n + 1)
   }
   return out

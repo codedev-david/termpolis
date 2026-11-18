@@ -35,7 +35,7 @@ describe('Lumopolis facts', () => {
   it('the Lumopolis renderer makes no network calls', () => {
     const files = [join(ROOT, 'src/renderer/src/world'), join(ROOT, 'src/renderer/src/components/World')].flatMap(filesUnder)
     expect(files.length).toBeGreaterThan(10)
-    const offenders = files.filter((f) => /\bfetch\(|XMLHttpRequest|WebSocket|EventSource/.test(readFileSync(f, 'utf8')))
+    const offenders = files.filter((f) => /\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon/.test(readFileSync(f, 'utf8')))
     expect(offenders).toEqual([])
   })
 

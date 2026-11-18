@@ -204,6 +204,27 @@ describe('placeLabels', () => {
   })
 })
 
+describe('placeLabels with every line labelled', () => {
+  const none = new Map<string, readonly [number, number]>()
+  // A dense knot: 40 line labels piled on one point, so every nudge slot of the later ones is taken.
+  const dense = (always: boolean): LabelCandidate[] =>
+    Array.from({ length: 40 }, (_, i) => ({ id: 'e:' + i, x: 200, y: 200, w: 100, h: 18, tier: 5, nudge: true, ...(always ? { always: true } : {}) }))
+  it('places every label marked always, the crowded ones as a last resort on their own point', () => {
+    const shown = placeLabels(dense(true), none)
+    expect(shown.size).toBe(40)
+    // The first 11 take the 11 nudge slots; the rest overlap at their own point.
+    expect(new Set([...shown.values()].slice(0, NUDGES.length).map((d) => d.join())).size).toBe(NUDGES.length)
+    expect([...shown.values()].slice(NUDGES.length).every(([dx, dy]) => dx === 0 && dy === 0)).toBe(true)
+    // Without the mark, the crowded ones drop as before.
+    expect(placeLabels(dense(false), none).size).toBe(NUDGES.length)
+  })
+  it('a crowded label marked always keeps the place it had last time', () => {
+    const cands = dense(true)
+    const last = new Map<string, readonly [number, number]>([['e:39', [7, -3]]])
+    expect(placeLabels(cands, last).get('e:39')).toEqual([7, -3])
+  })
+})
+
 describe('zoomTier', () => {
   test('zoomTier', () => { expect(zoomTier(0.1)).toBe('districts'); expect(zoomTier(0.5)).toBe('buildings'); expect(zoomTier(0.9)).toBe('floors') })
   it('changes tier at ZOOM_FAR and ZOOM_NEAR', () => {
