@@ -104,37 +104,50 @@ function packageOf(spec: string): string {
   return s.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
 }
 
-/** The packages a script's text imports, in order of first appearance; comments and relative imports ignored. */
+// `import type ... from 'x'` and `export type ... from 'x'`: types only, gone once compiled.
+const TYPE_ONLY = /\b(?:import|export)\s+type\s[^'"`;]*?\bfrom\s*['"`][^'"`]*['"`]/g
+// `import { a, type B } from 'x'`: types only when every name it brings in is marked `type`.
+const BRACED = /\bimport\s*\{([^}]*)\}\s*from\s*['"`][^'"`]*['"`]/g
+
+/** The text without its type-only imports and re-exports, which name no technology the code runs. */
+function dropTypeOnly(text: string): string {
+  return text.replace(TYPE_ONLY, '').replace(BRACED, (m, names: string) => {
+    const parts = names.split(',').map((x) => x.trim()).filter((x) => x !== '')
+    return parts.length > 0 && parts.every((x) => /^type\s/.test(x)) ? '' : m
+  })
+}
+
+/** The packages a script's text imports, in order of first appearance; comments, type-only and relative imports ignored. */
 export function packageImports(file: string, text: string): string[] {
   if (!SCRIPT_FILE.test(file)) return []
   const out = new Set<string>()
-  for (const m of stripComments(text).matchAll(PACKAGE_SPEC)) out.add(packageOf(m[1]))
+  for (const m of dropTypeOnly(stripComments(text)).matchAll(PACKAGE_SPEC)) out.add(packageOf(m[1]))
   return [...out]
 }
 
 /**
- * What a package shows: its technology, Node.js for a built-in module of a script (a Python `os` is no
- * Node.js), undefined for anything else.
+ * What a package shows: its technology, Node.js for a built-in module of a script that runs in Node (a
+ * Python `os` is no Node.js, nor is a renderer's `events` or `buffer` polyfill), undefined for anything else.
  */
-function techOfPackage(pkg: string, script: boolean): string | undefined {
+function techOfPackage(pkg: string, node: boolean): string | undefined {
   const p = packageOf(pkg)
   if (Object.hasOwn(PACKAGES, p)) return PACKAGES[p]
-  return script && NODE_BUILTINS.has(p) ? 'Node.js' : undefined
+  return node && NODE_BUILTINS.has(p) ? 'Node.js' : undefined
 }
 
 /**
  * The technologies a building's files show: the languages of their extensions and the technologies of
  * the packages they import (`packagesOf`: the bare specifiers one file imports), in BUILTIN_TECH's order.
  */
-export function detectStack(members: readonly string[], packagesOf: (file: string) => readonly string[]): string[] {
+export function detectStack(members: readonly string[], packagesOf: (file: string) => readonly string[], opts: { browser?: boolean } = {}): string[] {
   const found = new Set<string>()
   for (const f of members) {
     const i = f.lastIndexOf('.')
     const ext = i > f.lastIndexOf('/') ? f.slice(i + 1).toLowerCase() : ''
     if (Object.hasOwn(EXTENSIONS, ext)) found.add(EXTENSIONS[ext])
-    const script = SCRIPT_FILE.test(f)
+    const node = opts.browser !== true && SCRIPT_FILE.test(f)
     for (const p of packagesOf(f)) {
-      const t = techOfPackage(p, script)
+      const t = techOfPackage(p, node)
       if (t) found.add(t)
     }
   }

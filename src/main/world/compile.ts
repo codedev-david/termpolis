@@ -624,7 +624,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
       techLabel: l.techLabel,
       process: b.process,
       floors: l.floors.map((f) => ({ ...f, tech: chips(f.tech) })),
-      stack: chips(l.stack, detectStack(b.members, packagesOf)),
+      stack: chips(l.stack, detectStack(b.members, packagesOf, { browser: b.process === 'renderer' })),
       how: l.how,
       why: l.why,
       status: st.status,

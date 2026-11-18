@@ -444,7 +444,7 @@ describe('compileWorld', () => {
   it("a mapped repo gets technology chips from its code, labelling or not, and the model's stack in any case (film bug 1)", async () => {
     const files = {
       ...FIXTURE,
-      'src/renderer/scene.tsx': "import { useState } from 'react'\nimport * as THREE from 'three'\nimport Database from 'better-sqlite3'\nexport const s = 1\n",
+      'src/renderer/scene.tsx': "import { useState } from 'react'\nimport * as THREE from 'three'\nimport Database from 'better-sqlite3'\nimport { EventEmitter } from 'events'\nimport type { WebContents } from 'electron'\nexport const s = 1\n",
       'src/renderer/index.ts': "import './view'\nimport './scene'\nwindow.api = () => ipcRenderer.invoke('checkout:run')\n"
     }
     const plain = await compileWorld({ snap: snapOf(files), projectKey: 'demo', head: HEAD, previous: null }, mkDeps(files))
@@ -453,6 +453,10 @@ describe('compileWorld', () => {
     expect(stackOf(plain, MAIN)).toEqual(['TypeScript', 'Node.js', 'Electron'])
     const scene = plain.buildings.find((b) => b.members.includes('src/renderer/scene.tsx')) as WorldDoc['buildings'][number]
     expect(scene.stack).toEqual(expect.arrayContaining(['TypeScript', 'React', 'Three.js', 'SQLite']))
+    // The renderer's `events` is a browser polyfill and its Electron import names a type only (fix wave M5).
+    expect(scene.process).toBe('renderer')
+    expect(scene.stack).not.toContain('Node.js')
+    expect(scene.stack).not.toContain('Electron')
     expect(plain.buildings.every((b) => b.stack.every((t) => Object.hasOwn(plain.glossary, t)))).toBe(true)
     expect(plain.glossary.Electron).toBe(BUILTIN_TECH.Electron)
     expect(plain.glossary.Python).toBeUndefined() // only the technologies a chip shows are defined

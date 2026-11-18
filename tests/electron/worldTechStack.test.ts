@@ -53,6 +53,26 @@ describe('techStack', () => {
     expect(detectStack([], of)).toEqual([])
   })
 
+  it('a type-only import names no technology the code runs (fix wave M5)', () => {
+    const text = [
+      "import type { WebContents } from 'electron'",
+      "export type { Mesh } from 'three'",
+      "import { type Database, type Statement as S } from 'better-sqlite3'",
+      "import type * as X from '@xterm/xterm'",
+      "import type Flask from 'flask'",
+      "import { type Root, createRoot } from 'react-dom/client'",
+      "export { pick } from 'lodash'",
+      "import {} from 'zod'"
+    ].join('\n')
+    expect(packageImports('src/a.ts', text)).toEqual(['react-dom', 'lodash', 'zod'])
+  })
+
+  it('a Node built-in imported by code in the renderer is a browser polyfill, not Node.js (fix wave M5)', () => {
+    const of = (): string[] => ['events', 'buffer', 'electron']
+    expect(detectStack(['src/preload/index.ts'], of, { browser: true })).toEqual(['TypeScript', 'Electron'])
+    expect(detectStack(['src/main/index.ts'], of, { browser: false })).toEqual(['TypeScript', 'Node.js', 'Electron'])
+  })
+
   it('techChips puts the detected ones first, names terms by their glossary key and drops terms with no definition', () => {
     const glossary = { ...BUILTIN_TECH, 'Event bus': 'Passes events around' }
     expect(techChips(['TypeScript', 'Electron'], ['typescript', 'react', 'event BUS', 'Hand-rolled', 'Node'], glossary)).toEqual([
