@@ -539,6 +539,90 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(r.setExploded).not.toHaveBeenCalled()
   })
 
+  it('the first double-click on a building not yet selected opens it, though the camera flies off under the pointer (film bug 6)', () => {
+    const { r, aim, at, sels, viewer } = setup3d()
+    const click = (type: string, detail: number, x = 10, y = 10): void => { r.canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, detail, bubbles: true })) }
+    aim({ kind: 'node', id: 'b1' })
+    at('pointerdown'); at('pointerup'); click('click', 1)
+    expect(sels.pop()).toEqual({ kind: 'building', id: 'b1' })
+    // The camera now flies to b1: under the pointer there is bare ground by the second click.
+    aim(null)
+    at('pointerdown'); at('pointerup'); click('click', 2)
+    expect(sels).toEqual([]) // the second click of the pair does not deselect
+    click('dblclick', 2)
+    expect(r.setExploded).toHaveBeenLastCalledWith('b1')
+    expect(viewer.getSelection()).toEqual(['b1'])
+    // A double-click away from the last click picks what is under it now.
+    aim({ kind: 'node', id: 'b2' })
+    click('dblclick', 2, 200, 200)
+    expect(r.setExploded).toHaveBeenLastCalledWith('b2')
+    // A second click far from the first is a click of its own.
+    aim(null)
+    click('click', 2, 400, 400)
+    expect(sels.pop()).toBeNull()
+  })
+
+  it('a newer world of the same project keeps the open building, the selection, its card and the camera (film bug 6)', () => {
+    const { r, aim, at, sels, viewer, lastCard } = setup3d()
+    aim({ kind: 'node', id: 'b1' })
+    at('dblclick')
+    expect(r.setExploded).toHaveBeenLastCalledWith('b1')
+    sels.length = 0
+    r.overview.mockClear()
+    const next = rich()
+    next.generatedAt += 1
+    next.buildings[0].name = 'Desktop app, labelled'
+    viewer.load(next, { animateFrom: rich() })
+    expect(r.setExploded).toHaveBeenLastCalledWith('b1')
+    expect(r.setSelected).toHaveBeenLastCalledWith('b1')
+    expect(viewer.getSelection()).toEqual(['b1'])
+    expect(sels).toEqual([])
+    expect(lastCard()).toContain('Desktop app, labelled')
+    expect(r.overview).not.toHaveBeenCalled()
+    const lit = r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0] as { ids: Set<string> }
+    expect(lit.ids.has('b2')).toBe(true)
+    // The open building and the selection can differ: each is kept on its own.
+    aim({ kind: 'edge', id: 'e1' })
+    at('click')
+    viewer.load(rich())
+    expect(r.setExploded).toHaveBeenLastCalledWith('b1')
+    expect(viewer.getSelection()).toEqual(['e1'])
+  })
+
+  it('a newer world of the same project that drops the open building closes it and clears the selection, keeping the camera', () => {
+    const { r, aim, at, sels, viewer, lastCard } = setup3d()
+    aim({ kind: 'node', id: 'b1' })
+    at('dblclick')
+    sels.length = 0
+    r.overview.mockClear()
+    const next = rich()
+    next.buildings = next.buildings.filter((b) => b.id !== 'b1')
+    next.edges = next.edges.filter((e) => e.from !== 'b1' && e.to !== 'b1')
+    viewer.load(next)
+    expect(r.setExploded).toHaveBeenLastCalledWith(null)
+    expect(viewer.getSelection()).toEqual([])
+    expect(sels).toEqual([null])
+    expect(lastCard()).toBeNull()
+    expect(r.overview).not.toHaveBeenCalled()
+  })
+
+  it('an external stays selected across a newer world, and another project starts afresh', () => {
+    const { r, aim, at, sels, viewer } = setup3d()
+    aim({ kind: 'node', id: 'x1' })
+    at('click')
+    viewer.load(rich())
+    expect(viewer.getSelection()).toEqual(['x1'])
+    aim({ kind: 'node', id: 'b1' })
+    at('dblclick')
+    sels.length = 0
+    r.overview.mockClear()
+    viewer.load({ ...rich(), projectKey: 'another' })
+    expect(r.setExploded).toHaveBeenLastCalledWith(null)
+    expect(viewer.getSelection()).toEqual([])
+    expect(sels).toEqual([null])
+    expect(r.overview).toHaveBeenCalledWith(true)
+  })
+
   it('Esc and resetView fly to the overview and close any open building', () => {
     const { r, aim, at, esc, viewer } = setup3d()
     aim({ kind: 'node', id: 'b1' })

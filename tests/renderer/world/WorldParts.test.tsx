@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
-import { WorldCard } from '../../../src/renderer/src/components/World/WorldCard'
+import { render, screen, fireEvent, act } from '@testing-library/react'
+import { CARD_CLICK_GRACE_MS, WorldCard } from '../../../src/renderer/src/components/World/WorldCard'
 import { EvidenceView } from '../../../src/renderer/src/components/World/EvidenceView'
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
 
@@ -131,6 +131,30 @@ describe('WorldCard', () => {
     expect(css).toMatch(/\.world-card-body\{flex:1 1 auto;min-height:0;overflow-y:auto;[^}]*scrollbar-color:/)
     expect(css).toMatch(/\.world-card-body > h3:first-child\{position:sticky;top:0;/)
     expect(css).toMatch(/\.world-card-close\{position:absolute;/)
+  })
+
+  it('lets clicks through for a double-click time after it opens, so a double-click whose first click opened it reaches the map (film bug 6)', () => {
+    vi.useFakeTimers()
+    try {
+      const { rerender, unmount } = render(<WorldCard html="<h3>A</h3>" onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
+      const card = screen.getByTestId('world-card')
+      expect(CARD_CLICK_GRACE_MS).toBe(500)
+      expect(card.style.pointerEvents).toBe('none')
+      act(() => { vi.advanceTimersByTime(CARD_CLICK_GRACE_MS - 1) })
+      expect(card.style.pointerEvents).toBe('none')
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(card.style.pointerEvents).toBe('')
+      // Another part's card in the open card takes clicks at once: it is no new card over the map.
+      rerender(<WorldCard html="<h3>B</h3>" onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
+      expect(card.style.pointerEvents).toBe('')
+      unmount()
+      // Closed before the time is up: nothing is left running.
+      const third = render(<WorldCard html="<h3>C</h3>" onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
+      third.unmount()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

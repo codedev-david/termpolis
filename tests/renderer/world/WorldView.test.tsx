@@ -716,7 +716,7 @@ describe('WorldView', () => {
     expect(v.load).toHaveBeenCalledTimes(3)
   })
 
-  it('a newer world of the same project keeps the open part; another project does not', async () => {
+  it('a newer world of the same project loads over the one shown and opens nothing itself: the viewer keeps the view (film bug 6)', async () => {
     const b = bridge()
     await mount()
     const v = viewer()
@@ -726,21 +726,23 @@ describe('WorldView', () => {
     await settle()
     expect(v.load).toHaveBeenCalledTimes(2)
     expect(v.apply).not.toHaveBeenCalled()
-    // A part is open: the labelled follow-up's world opens it again after the load.
+    // A part is open: the labelled follow-up's world loads over it, and no card is opened again (that
+    // would fly the camera back to the part).
     v.getSelection.mockReturnValue(['b1'])
+    const before = v.load.mock.calls[1][0]
     b.api.worldGet.mockResolvedValueOnce(ok({ ...minimal(), generatedAt: 3 }))
     await b.updated({ root: '/repo', projectKey: 'k' })
     await settle()
     expect(v.load).toHaveBeenCalledTimes(3)
-    expect(v.apply).toHaveBeenCalledTimes(1)
-    expect(v.apply).toHaveBeenLastCalledWith({ type: 'openCard', id: 'b1' })
-    expect(v.load.mock.invocationCallOrder[2]).toBeLessThan(v.apply.mock.invocationCallOrder[0])
-    // Another project's world starts with nothing open.
+    expect(v.load).toHaveBeenLastCalledWith(expect.objectContaining({ generatedAt: 3 }), { animateFrom: before })
+    expect(v.apply).not.toHaveBeenCalled()
+    // Another project's world loads on its own.
     b.api.worldGet.mockResolvedValueOnce(ok({ ...minimal(), projectKey: 'other', generatedAt: 4 }))
     await b.updated({ root: '/repo', projectKey: 'k' })
     await settle()
     expect(v.load).toHaveBeenCalledTimes(4)
-    expect(v.apply).toHaveBeenCalledTimes(1)
+    expect(v.load).toHaveBeenLastCalledWith(expect.objectContaining({ projectKey: 'other' }))
+    expect(v.apply).not.toHaveBeenCalled()
   })
 
   it('in 2D a newer world rebuilds the open card, closes it when its part is gone, and leaves a closed card closed', async () => {

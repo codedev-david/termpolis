@@ -414,6 +414,14 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let hoverRaf = 0
   let hoverAt: { x: number; y: number } | null = null
   const canvas = r3 ? r3.canvas : null
+  /**
+   * Where the last single click landed and what it picked. A double-click's first click selects, and
+   * the camera flies to that part at once, so by the second click something else (or nothing) is under
+   * the pointer. The second click and the double-click at the same spot act on what the first one picked.
+   */
+  let lastClick: { x: number; y: number; hit: RenderPick | null } | null = null
+  const sameSpot = (at: { x: number; y: number }): boolean =>
+    lastClick !== null && Math.hypot(at.x - lastClick.x, at.y - lastClick.y) <= DRAG_PX
 
   const onPointerDown = (e: PointerEvent): void => {
     down = { x: e.clientX, y: e.clientY }
@@ -428,7 +436,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     down = null
     const at = clickAt(e)
     if (start && Math.hypot(at.x - start.x, at.y - start.y) > DRAG_PX) return
+    // The second click of a double-click: the first one chose already.
+    if (e.detail > 1 && sameSpot(at)) return
     const hit = r3.pick(at.x, at.y)
+    lastClick = { ...at, hit }
     // A district's slab (the districts tier) focuses the district, as choosing it in the tree does.
     if (hit) void select(hit.id, reduced, hit.kind === 'district' ? 'district' : undefined)
     else deselect()
@@ -436,7 +447,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   const onDblClick = (e: MouseEvent): void => {
     if (!r3) return
     const at = clickAt(e)
-    const hit = r3.pick(at.x, at.y)
+    const hit = sameSpot(at) ? (lastClick as { hit: RenderPick | null }).hit : r3.pick(at.x, at.y)
     if (!hit || hit.kind !== 'node') return
     // Only buildings open floor by floor; an external is an orb with nothing inside.
     if (!doc?.externals.some((x) => x.id === hit.id)) {
@@ -630,18 +641,26 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       const motion = r3 !== null && !reduced ? diff : null
       // Removed parts leave the old scene before the redraw clears it, so they can fade out.
       if (motion) r3?.keepGhosts(motion.removed)
+      // A newer world of the same project (a watched change, labels that arrived) keeps the view: the
+      // camera, the open building and the selection with its card, each while its part still exists.
+      // Another project starts afresh from the overview.
+      const same = doc !== null && doc.projectKey === d.projectKey
       doc = d
       revealProposal = undefined
       fogged.clear()
-      exploded = null
-      const hadSelection = selection !== null
-      selection = null
-      if (hadSelection) { renderCard(null); emitSelect() }
+      if (!same || (exploded !== null && !d.buildings.some((b) => b.id === exploded))) exploded = null
+      const kept = same && selection !== null && kindMatches(selection.id, selection.kind) ? selection : null
+      const dropped = selection !== null && kept === null
+      selection = kept
+      if (dropped) emitSelect()
+      // The open card is drawn again from the newer world, so labels that arrived show at once.
+      if (kept || dropped) renderCard(kept ? cardFor(kept) : null)
+      // redraw() lights the kept selection again.
+      if (!kept) baseFocus = null
       redraw()
       if (r3) {
-        r3.setSelected(null)
-        setFocus(null)
-        void r3.overview(true)
+        if (!kept) r3.setSelected(null)
+        if (!same) void r3.overview(true)
         if (motion) r3.animateChanges({ rise: riseIds(motion), pulse: motion.changed })
       }
       toast.show(diff ? diffSummary(diff) : '', THEMES[themeName])

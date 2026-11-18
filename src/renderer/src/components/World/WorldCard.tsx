@@ -93,7 +93,19 @@ const CARD_CSS = `
 .world-card-body .tour-caption{font-size:13px;color:#e2e8f0}
 `
 
+/**
+ * How long a newly opened card lets clicks through to the map. A double-click's first click opens the
+ * card, which can open over the pointer; the second click then has to reach the map, or the building
+ * never explodes. 500 ms is the usual system double-click time.
+ */
+export const CARD_CLICK_GRACE_MS = 500
+
 export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, boxRef, maxHeight = null }: WorldCardProps): JSX.Element {
+  const [opening, setOpening] = useState(true)
+  useEffect(() => {
+    const t = setTimeout(() => setOpening(false), CARD_CLICK_GRACE_MS)
+    return () => clearTimeout(t)
+  }, [])
   // The service-names editor: the part it edits and what is typed. A new card (another part, or the saved one) closes it.
   const [edit, setEdit] = useState<{ id: string; text: string; was: string; error: boolean } | null>(null)
   useEffect(() => setEdit(null), [html])
@@ -146,7 +158,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
       data-testid="world-card"
       className="world-card"
       // Top left over the map, where the prototype's inspector sits (the legend is top right).
-      style={{ position: 'absolute', top: CARD_INSET_PX, left: CARD_INSET_PX, width: CARD_WIDTH_PX, maxHeight: maxHeight === null ? 'calc(100% - 110px)' : `min(${maxHeight}px, calc(100% - 110px))`, boxSizing: 'border-box', zIndex: 3 }}
+      style={{ position: 'absolute', top: CARD_INSET_PX, left: CARD_INSET_PX, width: CARD_WIDTH_PX, maxHeight: maxHeight === null ? 'calc(100% - 110px)' : `min(${maxHeight}px, calc(100% - 110px))`, boxSizing: 'border-box', zIndex: 3, ...(opening ? { pointerEvents: 'none' as const } : {}) }}
     >
       <style>{CARD_CSS}</style>
       <button
