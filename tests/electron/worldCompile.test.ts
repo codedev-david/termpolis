@@ -14,7 +14,7 @@ import {
   type CompileStage,
   type StagedInput
 } from '../../src/main/world/compile'
-import { isStageCache, type StageCache } from '../../src/main/world/stageCache'
+import { isStageCache, STAGE_CACHE_VERSION, type StageCache } from '../../src/main/world/stageCache'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
 import { edgeId, type GroupBuilding, type Grouping } from '../../src/main/world/group'
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
@@ -885,7 +885,7 @@ describe('compileWorldStaged', () => {
       ...first.cache,
       grouping: {
         ...g,
-        buildings: g.buildings.map((b) => (b.id === MAIN ? { ...b, boundaries: [...b.boundaries, b.boundaries[0], lost, stray] } : b)),
+        buildings: g.buildings.map((b) => (b.id === MAIN ? { ...b, boundaries: [...b.boundaries, b.boundaries[0], lost, stray, lost] } : b)),
         edges: g.edges.map((e) => ({ ...e, via: [...e.via, ...e.via] }))
       }
     }
@@ -893,6 +893,102 @@ describe('compileWorldStaged', () => {
     const got = out.cache.grouping?.buildings.find((b) => b.id === MAIN)?.boundaries ?? []
     expect(got).toEqual([...main.boundaries, lost, stray].sort((a, z) => a.file.localeCompare(z.file) || a.line - z.line))
     expect(out.cache.grouping?.edges.map((e) => e.via)).toEqual(g.edges.map((e) => e.via))
+  })
+
+  it('two boundaries with the same signature on one line each move to their own new line', async () => {
+    const twin = { ...FIXTURE, 'src/main/twin.ts': "spawn('git', ['a']); spawn('git', ['b'])\n" }
+    const first = await staged(twin)
+    const own = (c: StageCache): Boundary[] => (c.grouping?.buildings ?? []).flatMap((b) => b.boundaries).filter((b) => b.file === 'src/main/twin.ts')
+    // The detector finds both calls on line 1, with one signature.
+    expect(own(first.cache).map((b) => b.line)).toEqual([1, 1])
+    const moved = { ...twin, 'src/main/twin.ts': '\n\n' + twin['src/main/twin.ts'] }
+    const out = await staged(moved, { cache: first.cache, changed: ['src/main/twin.ts'] })
+    expect(out.cache.grouping?.districts).toBe(first.cache.grouping?.districts)
+    expect(own(out.cache).map((b) => b.line)).toEqual([3, 3])
+    expect(out.cache.grouping).toEqual((await staged(moved)).cache.grouping)
+    expect(out.doc).toEqual((await staged(moved)).doc)
+  })
+
+  it('a cache from an older compiler version is no cache: every file is read and grouped afresh', async () => {
+    const first = await staged(FIXTURE)
+    expect(first.cache.version).toBe(STAGE_CACHE_VERSION)
+    const old = { ...first.cache, version: STAGE_CACHE_VERSION - 1 }
+    const deps = mkDeps()
+    const out = await staged(FIXTURE, { cache: old, changed: ['src/main/index.ts'] }, deps)
+    expect(sources(deps.reads).sort()).toEqual(Object.keys(FIXTURE).sort())
+    expect(out.cache.files['src/main/ipc.ts']).not.toBe(first.cache.files['src/main/ipc.ts'])
+    expect(out.cache.grouping?.districts).not.toBe(first.cache.grouping?.districts)
+    expect(out.cache.version).toBe(STAGE_CACHE_VERSION)
+    expect(out.doc).toEqual(first.doc)
+  })
+
+  it('an edit the changed list never named is still found by a full read, and its building is re-labelled', async () => {
+    const first = await staged(FIXTURE)
+    const edited = { ...FIXTURE, 'src/main/ipc.ts': "export const CHANNEL = 'checkout:run'\nspawn('gemini', [])\n" }
+    const prompts: string[] = []
+    const deps = mkDeps(edited, { label: labelDeps({ llm: async (q) => (prompts.push(q), null) }) })
+    const reread = Object.keys(edited)
+    const out = await staged(edited, { previous: first.doc, cache: first.cache, changed: ['src/renderer/view.ts'], reread }, deps)
+    expect(out.cache.files['src/main/ipc.ts']).not.toBe(first.cache.files['src/main/ipc.ts'])
+    expect(out.cache.files['src/main/ipc.ts'].boundaries.map((b) => b.key)).toContain('gemini')
+    expect(prompts.join(' ')).toContain('src/main/ipc.ts')
+    // The model answered nothing, so only the tokens it was sent differ from a full compile.
+    expect({ ...out.doc, labelTokens: 0 }).toEqual((await staged(edited, { previous: first.doc, changed: Object.keys(edited) })).doc)
+  })
+
+  it('status is worked out again only for touched buildings while the grouping and test results stand', async () => {
+    const first = await staged(FIXTURE)
+    const viewB = (d: WorldDoc) => d.buildings.find((b) => b.members.includes('src/renderer/view.ts')) as WorldDoc['buildings'][number]
+    const mainB = (d: WorldDoc) => d.buildings.find((b) => b.id === MAIN) as WorldDoc['buildings'][number]
+    const fresh = { status: mainB(first.doc).status, claims: mainB(first.doc).claims }
+    const person = { text: 'Ana confirmed it', state: 'verified' as const, evidence: [{ kind: 'person' as const, ref: 'ana' }] }
+    const marked = { text: 'marked', state: 'observed' as const, evidence: [] }
+    // A previous doc whose untouched building carries a status and claims no compile would give it.
+    const previous: WorldDoc = {
+      ...first.doc,
+      buildings: first.doc.buildings.map((b) => (b.id === MAIN ? { ...b, status: 'proposed' as const, claims: [marked, person] } : b))
+    }
+    const scoped = await staged(FIXTURE, { previous, cache: first.cache, changed: ['src/renderer/view.ts'] })
+    // Untouched: kept from the previous doc (a person's claim is dropped here; annotations add it back).
+    expect(mainB(scoped.doc).status).toBe('proposed')
+    expect(mainB(scoped.doc).claims).toEqual([marked])
+    // Touched: worked out again.
+    expect(viewB(scoped.doc).status).toBe(viewB(first.doc).status)
+    expect(scoped.cache.tests).toBe(first.cache.tests)
+
+    // New test results: every building again.
+    const later = JSON.stringify({ startTime: 50, testResults: [{ name: `${ROOT}/src/renderer/view.test.ts`, status: 'failed', endTime: 60 }] })
+    const testsDeps = mkDeps(FIXTURE)
+    const readFile = testsDeps.readFile
+    testsDeps.readFile = async (q) => (q === REPORT ? later : readFile(q))
+    const retested = await staged(FIXTURE, { previous, cache: first.cache, changed: ['src/renderer/view.ts'] }, testsDeps)
+    expect(retested.cache.tests).not.toBe(first.cache.tests)
+    expect({ status: mainB(retested.doc).status, claims: mainB(retested.doc).claims }).toEqual(fresh)
+
+    // No changed list, or a regrouped project: every building again.
+    const full = await staged(FIXTURE, { previous, cache: first.cache })
+    expect({ status: mainB(full.doc).status, claims: mainB(full.doc).claims }).toEqual(fresh)
+    const linked = { ...FIXTURE, 'src/main/ipc.ts': "import './telemetry'\n" + FIXTURE['src/main/ipc.ts'] }
+    const regrouped = await staged(linked, { previous, cache: first.cache, changed: ['src/main/ipc.ts'] }, mkDeps(linked))
+    expect({ status: mainB(regrouped.doc).status, claims: mainB(regrouped.doc).claims }).toEqual(fresh)
+  })
+
+  it('a reused grouping keeps a boundary as it was when the old scan held more copies of it than the new one', async () => {
+    const first = await staged(FIXTURE)
+    const g = first.cache.grouping as Grouping
+    const main = g.buildings.find((b) => b.id === MAIN) as GroupBuilding
+    const b0 = main.boundaries[0]
+    const twin: Boundary = { ...b0 }
+    // An old scan (whose hash no longer matches, so the file is scanned again) that listed b0 twice.
+    const f = first.cache.files[b0.file]
+    const tampered: StageCache = {
+      ...first.cache,
+      files: { ...first.cache.files, [b0.file]: { ...f, hash: 'stale', boundaries: [...f.boundaries, twin] } },
+      grouping: { ...g, buildings: g.buildings.map((b) => (b.id === MAIN ? { ...b, boundaries: [...b.boundaries, twin] } : b)) }
+    }
+    const out = await staged(FIXTURE, { cache: tampered, changed: [b0.file] })
+    const got = out.cache.grouping?.buildings.find((b) => b.id === MAIN)?.boundaries ?? []
+    expect(got.filter((b) => b.file === b0.file && b.line === b0.line && b.key === b0.key && b.kind === b0.kind)).toEqual([b0, twin])
   })
 
   it('contentHash tells texts of the same length apart', () => {
@@ -911,43 +1007,46 @@ describe('isStageCache', () => {
     edges: [{ from: 'b', to: 'b', via: [b] }]
   }
   it('accepts the shape, with and without a grouping or names', () => {
-    expect(isStageCache({ files: { 'a.ts': file }, structureHash: 's' })).toBe(true)
-    expect(isStageCache({ files: { 'a.ts': { ...file, names: ['svc'] } }, structureHash: 's', grouping })).toBe(true)
+    expect(isStageCache({ files: { 'a.ts': file }, version: STAGE_CACHE_VERSION, structureHash: 's' })).toBe(true)
+    expect(isStageCache({ files: { 'a.ts': { ...file, names: ['svc'] } }, version: STAGE_CACHE_VERSION, structureHash: 's', grouping, tests: 't' })).toBe(true)
   })
   it.each([
     ['null', null],
     ['an array', []],
-    ['files not an object', { files: [], structureHash: 's' }],
-    ['no structure hash', { files: {} }],
-    ['a file without a hash', { files: { a: { ...file, hash: 1 } }, structureHash: 's' }],
-    ['imports not strings', { files: { a: { ...file, imports: [1] } }, structureHash: 's' }],
-    ['names not strings', { files: { a: { ...file, names: 'x' } }, structureHash: 's' }],
-    ['an unknown boundary kind', { files: { a: { ...file, boundaries: [{ ...b, kind: 'nope' }] } }, structureHash: 's' }],
-    ['a boundary key not a string', { files: { a: { ...file, boundaries: [{ ...b, key: 1 }] } }, structureHash: 's' }],
-    ['a bad side', { files: { a: { ...file, boundaries: [{ ...b, side: 'both' }] } }, structureHash: 's' }],
-    ['a boundary file not a string', { files: { a: { ...file, boundaries: [{ ...b, file: null }] } }, structureHash: 's' }],
-    ['a line not a number', { files: { a: { ...file, boundaries: [{ ...b, line: '1' }] } }, structureHash: 's' }],
-    ['an infinite line', { files: { a: { ...file, boundaries: [{ ...b, line: Infinity }] } }, structureHash: 's' }],
-    ['boundaries not a list', { files: { a: { ...file, boundaries: {} } }, structureHash: 's' }],
-    ['a grouping not an object', { files: {}, structureHash: 's', grouping: 1 }],
-    ['grouping lists missing', { files: {}, structureHash: 's', grouping: { districts: [], buildings: [] } }],
-    ['grouping districts missing', { files: {}, structureHash: 's', grouping: { buildings: [], edges: [] } }],
-    ['grouping buildings missing', { files: {}, structureHash: 's', grouping: { districts: [], edges: [] } }],
-    ['a bad district', { files: {}, structureHash: 's', grouping: { ...grouping, districts: [{ id: 'd', name: 'd', members: [1] }] } }],
-    ['a district not an object', { files: {}, structureHash: 's', grouping: { ...grouping, districts: [null] } }],
-    ['a district without a name', { files: {}, structureHash: 's', grouping: { ...grouping, districts: [{ id: 'd', members: [] }] } }],
-    ['a district without an id', { files: {}, structureHash: 's', grouping: { ...grouping, districts: [{ name: 'd', members: [] }] } }],
-    ['a building not an object', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [1] } }],
-    ['a building without an id', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], id: 1 }] } }],
-    ['a building without a district', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], districtId: 1 }] } }],
-    ['a building without a name', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], name: 1 }] } }],
-    ['a building with bad members', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], members: 'a' }] } }],
-    ['a building without a process', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], process: 1 }] } }],
-    ['a building with bad boundaries', { files: {}, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], boundaries: [1] }] } }],
-    ['an edge not an object', { files: {}, structureHash: 's', grouping: { ...grouping, edges: ['e'] } }],
-    ['an edge without a source', { files: {}, structureHash: 's', grouping: { ...grouping, edges: [{ to: 'b', via: [] }] } }],
-    ['an edge without a target', { files: {}, structureHash: 's', grouping: { ...grouping, edges: [{ from: 'b', via: [] }] } }],
-    ['an edge with bad via', { files: {}, structureHash: 's', grouping: { ...grouping, edges: [{ from: 'b', to: 'b', via: null }] } }]
+    ['files not an object', { files: [], version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['no structure hash', { version: STAGE_CACHE_VERSION, files: {} }],
+    ['no version (an older layout)', { files: {}, structureHash: 's' }],
+    ['an older version', { version: STAGE_CACHE_VERSION - 1, files: {}, structureHash: 's' }],
+    ['a tests hash not a string', { version: STAGE_CACHE_VERSION, files: {}, structureHash: 's', tests: 1 }],
+    ['a file without a hash', { files: { a: { ...file, hash: 1 } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['imports not strings', { files: { a: { ...file, imports: [1] } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['names not strings', { files: { a: { ...file, names: 'x' } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['an unknown boundary kind', { files: { a: { ...file, boundaries: [{ ...b, kind: 'nope' }] } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['a boundary key not a string', { files: { a: { ...file, boundaries: [{ ...b, key: 1 }] } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['a bad side', { files: { a: { ...file, boundaries: [{ ...b, side: 'both' }] } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['a boundary file not a string', { files: { a: { ...file, boundaries: [{ ...b, file: null }] } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['a line not a number', { files: { a: { ...file, boundaries: [{ ...b, line: '1' }] } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['an infinite line', { files: { a: { ...file, boundaries: [{ ...b, line: Infinity }] } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['boundaries not a list', { files: { a: { ...file, boundaries: {} } }, version: STAGE_CACHE_VERSION, structureHash: 's' }],
+    ['a grouping not an object', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: 1 }],
+    ['grouping lists missing', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { districts: [], buildings: [] } }],
+    ['grouping districts missing', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { buildings: [], edges: [] } }],
+    ['grouping buildings missing', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { districts: [], edges: [] } }],
+    ['a bad district', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, districts: [{ id: 'd', name: 'd', members: [1] }] } }],
+    ['a district not an object', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, districts: [null] } }],
+    ['a district without a name', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, districts: [{ id: 'd', members: [] }] } }],
+    ['a district without an id', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, districts: [{ name: 'd', members: [] }] } }],
+    ['a building not an object', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, buildings: [1] } }],
+    ['a building without an id', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], id: 1 }] } }],
+    ['a building without a district', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], districtId: 1 }] } }],
+    ['a building without a name', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], name: 1 }] } }],
+    ['a building with bad members', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], members: 'a' }] } }],
+    ['a building without a process', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], process: 1 }] } }],
+    ['a building with bad boundaries', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, buildings: [{ ...grouping.buildings[0], boundaries: [1] }] } }],
+    ['an edge not an object', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, edges: ['e'] } }],
+    ['an edge without a source', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, edges: [{ to: 'b', via: [] }] } }],
+    ['an edge without a target', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, edges: [{ from: 'b', via: [] }] } }],
+    ['an edge with bad via', { files: {}, version: STAGE_CACHE_VERSION, structureHash: 's', grouping: { ...grouping, edges: [{ from: 'b', to: 'b', via: null }] } }]
   ])('rejects %s', (_name, v) => {
     expect(isStageCache(v)).toBe(false)
   })

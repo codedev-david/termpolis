@@ -115,6 +115,16 @@ describe('registerWorldIpc sources handlers', () => {
     expect(s.registry.upsert).not.toHaveBeenCalled()
   })
 
+  it('world:map-project refuses a clone root under userData, even one the home lists as a git source: a clone is never re-registered as a project', async () => {
+    const root = 'C:/ud/world/repos/abc'
+    const s = setup()
+    s.registry.list.mockResolvedValue([entryOf({ kind: 'git', url: 'https://example.com/a/shop.git', root })])
+    expect(await s.invoke('world:map-project', { root })).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+    expect(await s.invoke('world:map-project', { root: `${root}/src` })).toEqual({ success: false, error: FORBIDDEN_FOLDER })
+    expect(s.deps.isProject).not.toHaveBeenCalled()
+    expect(s.registry.upsert).not.toHaveBeenCalled()
+  })
+
   it('world:open-folder asks the native dialog, registers the folder, and answers null on cancel', async () => {
     const s = setup()
     expect(await s.invoke('world:open-folder')).toEqual({ success: true, data: entryOf({ kind: 'folder', root: 'C:/picked' }) })

@@ -16,7 +16,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import * as fsp from 'node:fs/promises'
 import { join } from 'node:path'
-import { BAD_REF_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
+import { BAD_REF_MESSAGE, stripUrlUserinfo, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 
 export { BAD_URL_MESSAGE, BAD_REF_MESSAGE, validateGitUrl } from '../../shared/world/gitUrl'
 export const TOO_BIG_MESSAGE = 'That repository is larger than 2 GB, so Lumopolis stopped cloning it.'
@@ -336,12 +336,15 @@ export async function cloneRepo(
 
   const flags = safetyFlags(deps.isWindows)
   const pin = ['--git-dir', join(root, '.git'), '--work-tree', root]
+  // A url with a login in it (https://user:secret@host/...) clones with it, then the clone's origin is
+  // set to the url without it, so the secret is not left in .git/config under userData.
+  const bare = stripUrlUserinfo(url)
   const commands = updating
     ? [
         [...flags, ...pin, 'fetch', '--quiet', '--depth', '1', 'origin', ref ?? 'HEAD'],
         [...flags, ...pin, 'reset', '--hard', 'FETCH_HEAD']
       ]
-    : [cloneArgs(url, work, ref, deps.isWindows)]
+    : [cloneArgs(url, work, ref, deps.isWindows), ...(bare !== url ? [[...flags, '--git-dir', join(work, '.git'), 'remote', 'set-url', 'origin', bare]] : [])]
 
   const ctl = new AbortController()
   const onAbort = (): void => ctl.abort()

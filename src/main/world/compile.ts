@@ -22,7 +22,7 @@ import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type La
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
 import { readTestResults, statusFor, TEST_FILE, testClaims, type TestRun } from './testStatus'
-import { isStageCache, type StageCache, type StageFile } from './stageCache'
+import { isStageCache, STAGE_CACHE_VERSION, type StageCache, type StageFile } from './stageCache'
 
 export type CompileStage = 'structure' | 'boundaries' | 'grouping' | 'status' | 'labelling' | 'layout'
 
@@ -154,8 +154,12 @@ function edgeFromPrevious(e: WorldEdge): EdgeLabel {
  * rides with its to building). Everything else reuses the previous doc's labels by id, falling back
  * to code-derived labels.
  */
-async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[] | undefined, deps: LabelDeps): Promise<Labels> {
-  if (!previous || !changed) return labelWorld(g, deps)
+/**
+ * The buildings a change touches: a member changed, the member set differs from the previous doc's (a
+ * file was deleted or moved), or the building is new. Every other building has a previous twin with
+ * the same members.
+ */
+function touchedBuildings(g: Grouping, previous: WorldDoc, changed: string[]): GroupBuilding[] {
   const touched = new Set(changed)
   const prevB = new Map(previous.buildings.map((b) => [b.id, b]))
   const memberKey = (members: string[]): string => JSON.stringify([...members].sort())
@@ -163,8 +167,13 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
     const p = prevB.get(b.id)
     return p !== undefined && memberKey(p.members) === memberKey(b.members)
   }
-  // Touched: a member changed, the member set changed (a file was deleted or moved), or the building is new.
-  const subB = g.buildings.filter((b) => b.members.some((m) => touched.has(m)) || !sameMembers(b))
+  return g.buildings.filter((b) => b.members.some((m) => touched.has(m)) || !sameMembers(b))
+}
+
+async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[] | undefined, deps: LabelDeps): Promise<Labels> {
+  if (!previous || !changed) return labelWorld(g, deps)
+  const prevB = new Map(previous.buildings.map((b) => [b.id, b]))
+  const subB = touchedBuildings(g, previous, changed)
   const ids = new Set(subB.map((b) => b.id))
   const dName = new Map(g.districts.map((d) => [d.id, d.name]))
   const own = (b: GroupBuilding): string => `${b.districtId}/${b.id}`
@@ -375,20 +384,32 @@ function structureHashOf(snap: GraphSnapshot, files: string[], entries: Map<stri
 /**
  * The previous grouping with every boundary moved to its line in the new scan. The structure hash
  * matched, so each file has the same signatures in the same line order: the k-th boundary with one
- * signature in the old scan is the k-th in the new.
+ * signature in the old scan is the k-th in the new. Each old boundary is matched once per list, so two
+ * with the same signature on one line move to two places; a copy past what the old scan held is
+ * dropped, and a boundary the old scan never had is kept as it is (once).
  */
 function regroupLines(g: Grouping, prior: StageCache, entries: Map<string, StageFile>): Grouping {
-  const move = (b: Boundary): Boundary => {
-    const same = (x: Boundary): boolean => signature(x) === signature(b)
-    const old = (prior.files[b.file]?.boundaries ?? []).filter(same).sort(cmpLine)
-    const now = (entries.get(b.file)?.boundaries ?? []).filter(same).sort(cmpLine)
-    return now[old.findIndex((x) => x.line === b.line)] ?? b
+  const fix = (list: Boundary[]): Boundary[] => {
+    const used = new Set<string>()
+    const out: Boundary[] = []
+    for (const b of list) {
+      const same = (x: Boundary): boolean => signature(x) === signature(b)
+      const old = (prior.files[b.file]?.boundaries ?? []).filter(same).sort(cmpLine)
+      const now = (entries.get(b.file)?.boundaries ?? []).filter(same).sort(cmpLine)
+      const at = (k: number): string => `${b.file}\u0000${signature(b)}\u0000${k}`
+      const lineMatches = old.map((x, k) => (x.line === b.line ? k : -1)).filter((k) => k >= 0)
+      const k = lineMatches.find((i) => !used.has(at(i)))
+      if (k !== undefined) {
+        used.add(at(k))
+        out.push(now[k] ?? b)
+      } else if (lineMatches.length === 0) {
+        const own = `${b.file}\u0000${signature(b)}\u0000@${b.line}`
+        if (!used.has(own)) out.push(b)
+        used.add(own)
+      }
+    }
+    return out.sort(cmpBoundary)
   }
-  const fix = (list: Boundary[]): Boundary[] =>
-    list
-      .map(move)
-      .sort(cmpBoundary)
-      .filter((b, i, a) => i === 0 || cmpBoundary(a[i - 1], b) !== 0)
   return {
     districts: g.districts,
     buildings: g.buildings.map((b) => ({ ...b, boundaries: fix(b.boundaries) })),
@@ -430,6 +451,9 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   const entries = new Map<string, StageFile>()
   for (const f of files) if (kept(f)) entries.set(f, (prior as StageCache).files[f])
   const toRead = files.filter((f) => !kept(f))
+  // Files whose text differs from the cache's (or that the cache lacks): with `changed` they are touched too,
+  // so an edit a watcher never reported (made while the app was closed, or in a failed run) is re-labelled.
+  const differs = new Set<string>()
   progress('boundaries', 5)
   const readSource = deps.readSource ?? deps.readFile
   for (let i = 0; i < toRead.length; i += READ_CHUNK) {
@@ -441,6 +465,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
       // The same text as last time: the old scan stands.
       const entry = before && before.hash === contentHash(text as string) ? before : scanFile(f, text)
       if (entry) entries.set(f, entry)
+      if (prior && entry !== prior.files[f]) differs.add(f)
     })
     progress('boundaries', 5 + Math.round((35 * Math.min(toRead.length, i + READ_CHUNK)) / toRead.length))
   }
@@ -459,15 +484,28 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   snap = withImports(snap, scanned)
   progress('grouping', 45)
   const structureHash = structureHashOf(snap, files, entries)
-  const g = prior?.grouping && prior.structureHash === structureHash ? regroupLines(prior.grouping, prior, entries) : groupProject(snap, bounds)
-  const cache: StageCache = { files: Object.fromEntries(entries), structureHash, grouping: g }
+  const reused = prior?.grouping !== undefined && prior.structureHash === structureHash
+  const g = reused ? regroupLines(prior.grouping as Grouping, prior, entries) : groupProject(snap, bounds)
+  const changed = input.changed ? [...new Set([...input.changed, ...differs])].sort() : undefined
 
   progress('status', 55)
   const runs = await readTestResults(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns })
+  const tests = contentHash(runs.map((r) => JSON.stringify([r.file, r.passed, r.at, r.source])).sort().join('\n'))
+  const cache: StageCache = { version: STAGE_CACHE_VERSION, files: Object.fromEntries(entries), structureHash, grouping: g, tests }
+  // Status for the touched buildings only: with the grouping reused (so the same files, imports and test
+  // links), the same test results and a previous doc, an untouched building keeps its status and claims.
+  const statusScoped = reused && previous !== null && changed !== undefined && (prior as StageCache).tests === tests
+  const restatus = statusScoped ? new Set(touchedBuildings(g, previous as WorldDoc, changed as string[]).map((b) => b.id)) : null
+  const prevStatus = new Map((previous?.buildings ?? []).map((b) => [b.id, b]))
   const testsByMember = linkTests(snap, g)
+  const statusOf = (b: GroupBuilding): Pick<Building, 'status' | 'claims'> => {
+    const p = restatus && !restatus.has(b.id) ? prevStatus.get(b.id) : undefined
+    if (p) return { status: p.status, claims: p.claims.filter((c) => !c.evidence.some((e) => e.kind === 'person')) }
+    return { status: statusFor(b.members, runs, testsByMember), claims: testClaims(b.members, runs, testsByMember) }
+  }
 
   progress('labelling', 65)
-  const labels = await labelAll(g, previous, input.changed, deps.label)
+  const labels = await labelAll(g, previous, changed, deps.label)
 
   progress('layout', 85)
   const glossary: Record<string, string> = { ...labels.glossary, ...BUILTIN_GLOSSARY }
@@ -486,6 +524,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     }))
   const buildings: Building[] = g.buildings.map((b) => {
     const l = labels.buildings[b.id]
+    const st = statusOf(b)
     return {
       id: b.id,
       districtId: b.districtId,
@@ -496,9 +535,9 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
       stack: l.stack.filter(known),
       how: l.how,
       why: l.why,
-      status: statusFor(b.members, runs, testsByMember),
+      status: st.status,
       members: b.members,
-      claims: testClaims(b.members, runs, testsByMember),
+      claims: st.claims,
       nameState: l.nameInferred ? 'inferred' : 'observed'
     }
   })

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { WorldDoc } from '../../src/shared/world/types'
 import { createWorldStore, worldFileName } from '../../src/main/world/worldStore'
+import { STAGE_CACHE_VERSION } from '../../src/main/world/stageCache'
 
 function doc(projectKey = 'demo'): WorldDoc {
   return {
@@ -139,6 +140,7 @@ describe('worldStore', () => {
 
 describe('worldStore stage cache', () => {
   const cache = {
+    version: STAGE_CACHE_VERSION,
     files: { 'src/a.ts': { hash: 'h', boundaries: [{ kind: 'ipc' as const, key: 'k', side: 'provide' as const, file: 'src/a.ts', line: 2 }], imports: ['./b'] } },
     structureHash: 's'
   }
@@ -149,7 +151,7 @@ describe('worldStore stage cache', () => {
     expect(await store.loadStages?.('C:/repos/x')).toEqual(cache)
     const files = await readdir(join(dir, 'world'))
     expect(files).toEqual([`${worldFileName('C:/repos/x')}.stages.json`])
-    await writeFile(join(dir, 'world', files[0]), JSON.stringify({ files: [], structureHash: 's' }))
+    await writeFile(join(dir, 'world', files[0]), JSON.stringify({ version: STAGE_CACHE_VERSION, files: [], structureHash: 's' }))
     expect(await store.loadStages?.('C:/repos/x')).toBeNull()
     await writeFile(join(dir, 'world', files[0]), '{torn')
     expect(await store.loadStages?.('C:/repos/x')).toBeNull()

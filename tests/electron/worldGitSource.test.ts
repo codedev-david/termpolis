@@ -130,6 +130,52 @@ describe('cloneKey', () => {
 })
 
 describe('cloneRepo', () => {
+  it('a url with a login in it: the clone keeps no login in its config (origin is set to the bare url)', async () => {
+    const userinfo = 'u' + ':' + 'p'
+    const withLogin = `https://${userinfo}@h.example/team/r.git`
+    const bare = 'https://h.example/team/r.git'
+    // The argument list: clone with the login, then set-url with the same safety flags.
+    const m = mkDeps()
+    expect(await cloneRepo(withLogin, undefined, m.deps)).toMatchObject({ ok: true })
+    const work = `${join(REPOS, cloneKey(withLogin))}.tmp-r1`
+    expect(m.calls.map((c) => c.args)).toEqual([
+      cloneArgs(withLogin, work, undefined, false),
+      [...FLAGS, '--git-dir', join(work, '.git'), 'remote', 'set-url', 'origin', bare]
+    ])
+    expect(m.calls[1].opts.env).toEqual(m.calls[0].opts.env)
+
+    // A real repository (made locally: no network), so the config git writes is what is read back.
+    const base = await mkdtemp(join(tmpdir(), 'world-clone-login-'))
+    try {
+      const isWindows = process.platform === 'win32'
+      const real = mkDeps({
+        baseDir: base,
+        isWindows,
+        env: process.env,
+        dirSize: async () => 10,
+        rm: removeDir,
+        listDir: listNames,
+        exists: pathExists,
+        mark: undefined,
+        rename: undefined,
+        execFile: async (cmd, args, opts) => {
+          if (!args.includes('clone')) return nodeExecFile(cmd, args, opts)
+          const [from, dir] = args.slice(-2)
+          await nodeExecFile('git', ['init', '-q', dir], opts)
+          return nodeExecFile('git', ['-C', dir, 'remote', 'add', 'origin', from], opts)
+        }
+      })
+      const r = await cloneRepo(withLogin, undefined, real.deps)
+      expect(r).toEqual({ ok: true, root: join(base, 'world', 'repos', cloneKey(withLogin)) })
+      const config = await readFile(join((r as { root: string }).root, '.git', 'config'), 'utf8')
+      expect(config).toContain(bare)
+      expect(config).not.toContain(userinfo)
+      expect(config).not.toContain('@h.example')
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
+  })
+
   it('refuses a hostile url and a bad branch before running anything', async () => {
     const { deps, calls, rm } = mkDeps()
     expect(await cloneRepo('--upload-pack=x', undefined, deps)).toEqual({ ok: false, error: BAD_URL_MESSAGE })

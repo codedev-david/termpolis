@@ -351,6 +351,14 @@ interface HostState {
   annotations: AnnotationStore
   userDataPath: string
   labelling: boolean
+  /**
+   * Projects whose stage cache a compile under this init checked against every file's text. Until then (a
+   * restart: files may have changed while no host ran) and after a failed run (its stages were never
+   * saved), a watcher recompile reads every file, keeping a cached scan only where the hash matches.
+   */
+  checked: Set<string>
+  /** The changed files of a failed watcher run, carried into the next run so their buildings are re-labelled. */
+  carried: Map<string, string[]>
 }
 
 export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: WorldHostDeps = {}): WorldHost {
@@ -476,18 +484,25 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     let s = schedulers.get(key)
     if (!s) {
       s = createRecompileScheduler(
-        (changed) =>
+        (notified) =>
           serial(key, async () => {
             // A watcher never makes the first world: no stored world, nothing to refresh.
             const previous = await st.store.load(key)
             if (!previous) return
             const cur = latest.get(key) as Latest
-            // Only the changed files are read again; the rest of the scan comes from the stage cache.
+            const changed = [...new Set([...(st.carried.get(key) ?? []), ...notified])].sort()
+            st.carried.set(key, changed)
+            // Once this lifetime has checked the cache, only the changed files are read again and the rest of
+            // the scan comes from it; before that, every file is read and hash-checked.
             const cache = await stagesOf(st, key)
-            const input = { snap: cur.snap, projectKey: key, head: cur.head, previous, changed, ...stagedArg(cache), ...planArg(cur.plan) }
+            const reread = st.checked.has(key) ? undefined : [...cur.snap.files]
+            const input = { snap: cur.snap, projectKey: key, head: cur.head, previous, changed, ...stagedArg(cache, reread), ...planArg(cur.plan) }
+            st.checked.delete(key)
             const out = await compile(input, depsFor(st, key, cur.snap))
             await st.store.save(out.doc)
             await keepStages(st, key, out.cache)
+            st.checked.add(key)
+            st.carried.delete(key)
             post({ kind: 'updated', projectKey: key })
           }),
         deps.debounceMs ?? 1500
@@ -524,9 +539,12 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           stored && opts?.relayout === true ? { ...stored, layout: { seed: stored.layout.seed, positions: {} } } : stored
         // With a stored stage cache every file is read but only one whose text changed is scanned again.
         const cache = await stagesOf(st, key)
+        st.checked.delete(key)
         const out = await compile({ snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan }, depsFor(st, key, snap, labelled ? cacheOnly : null))
         await st.store.save(out.doc)
         await keepStages(st, key, out.cache)
+        // Every file was read and checked, and the stages saved: watcher runs may trust them now.
+        st.checked.add(key)
         staged = out.cache
         post({ kind: 'updated', projectKey: key })
         return out.doc
@@ -618,7 +636,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           for (const s of schedulers.values()) s.dispose()
           schedulers.clear()
           const annotations = createAnnotations(msg.userDataPath)
-          state = { store: withAnnotations(createStore(msg.userDataPath), annotations), annotations, userDataPath: msg.userDataPath, labelling: msg.labelling !== false }
+          state = { store: withAnnotations(createStore(msg.userDataPath), annotations), annotations, userDataPath: msg.userDataPath, labelling: msg.labelling !== false, checked: new Set(), carried: new Map() }
           post({ kind: 'ready', pid: process.pid })
         } catch (err) {
           post({ kind: 'init-error', error: serializeError(err) })

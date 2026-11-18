@@ -1342,6 +1342,70 @@ describe('the staged compile in the host', () => {
     expect(store.stages.get('k1')?.files['src/a.ts'].hash).not.toBe(before)
   })
 
+  it('after a restart the first watcher recompile reads every file, so an edit made behind the host is found', async () => {
+    const s = await fixture()
+    const store = stagedStore()
+    const a = harness({ glob: async () => [] }, store)
+    await a.send({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: false })
+    await a.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', s, HEAD] })
+    expect(a.last()).toMatchObject({ id: 1, ok: true })
+    const before = store.stages.get('k1')?.files['src/b.ts'].hash
+    // The app was closed: b.ts changed (a git pull outside Termpolis) and no watcher saw it.
+    await writeFile(join(dir, 'proj', 'src', 'b.ts'), "export const b = 2\nspawn('git', ['pull'])\n")
+    const readSource = vi.fn(async (q: string) => readFile(q, 'utf8').catch(() => null))
+    const b = harness({ readSource, glob: async () => [], debounceMs: 1 }, store)
+    await b.send({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: false })
+    await b.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', s, HEAD, ['src/a.ts']] })
+    await until(() => store.saves.length === 2)
+    expect(sourceReads(readSource).sort()).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(store.stages.get('k1')?.files['src/b.ts'].hash).not.toBe(before)
+    expect(store.stages.get('k1')?.files['src/b.ts'].boundaries.map((x) => x.key)).toEqual(['git'])
+    // Checked now: the next watcher run reads only what it was told about.
+    readSource.mockClear()
+    await b.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', s, HEAD, ['src/a.ts']] })
+    await until(() => store.saves.length === 3)
+    expect(sourceReads(readSource)).toEqual(['src/a.ts'])
+  })
+
+  it('after a failed watcher run the next one reads every file again, the failed run edits included', async () => {
+    const s = await fixture()
+    const store = stagedStore()
+    let failNext = false
+    let attempts = 0
+    const save = store.save
+    store.save = async (d) => {
+      attempts++
+      if (failNext) {
+        failNext = false
+        throw new Error('disk full')
+      }
+      return save(d)
+    }
+    const readSource = vi.fn(async (q: string) => readFile(q, 'utf8').catch(() => null))
+    const h = harness({ readSource, glob: async () => [], debounceMs: 1 }, store)
+    await h.send({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: false })
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', s, HEAD] })
+    const before = store.stages.get('k1')?.files['src/a.ts'].hash
+    // A watcher run for an edit of a.ts fails to save: its stages are never kept.
+    await writeFile(join(dir, 'proj', 'src', 'a.ts'), "import { b } from './b'\nspawn('git', [])\nexport const a = b\n")
+    failNext = true
+    readSource.mockClear()
+    await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', s, HEAD, ['src/a.ts']] })
+    await until(() => attempts === 2)
+    expect(sourceReads(readSource)).toEqual(['src/a.ts'])
+    expect(store.stages.get('k1')?.files['src/a.ts'].hash).toBe(before)
+    // Meanwhile b.ts changes with no watcher event. The next run, told only about a file that is not
+    // there, reads every file, so it keeps both the failed run's a.ts edit and b.ts's.
+    await writeFile(join(dir, 'proj', 'src', 'b.ts'), "export const b = 2\nspawn('npm', [])\n")
+    readSource.mockClear()
+    await h.send({ kind: 'call', id: 3, fn: 'notifyChanged', args: ['k1', s, HEAD, ['src/gone.ts']] })
+    await until(() => attempts === 3)
+    await until(() => store.stages.get('k1')?.files['src/a.ts'].hash !== before)
+    expect(sourceReads(readSource).sort()).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(store.stages.get('k1')?.files['src/a.ts'].boundaries.map((x) => x.key)).toEqual(['git'])
+    expect(store.stages.get('k1')?.files['src/b.ts'].boundaries.map((x) => x.key)).toEqual(['npm'])
+  })
+
   it('the labelled follow-up reads no source file again: it compiles from the first pass stage cache', async () => {
     const s = await fixture()
     const store = stagedStore()

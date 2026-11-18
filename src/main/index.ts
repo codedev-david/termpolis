@@ -2741,6 +2741,10 @@ const worldClient = createWorldClient(undefined, {
     return built
   },
 })
+// The settings load off the main thread: once they land, a host that started on the defaults is told
+// (applySettings never starts one; a host started later reads them in its init).
+const tellWorldHostSettings = (): void => worldClient.applySettings()
+void worldSettings.ready().then(tellWorldHostSettings)
 /** Keeps a folder's code graph fresh and, once the graph has a change, refreshes that project's world, but
  *  only if one is already stored (a watcher never makes the first world). Fire and forget: the watch gate
  *  waits on the re-index alone, and notifyChanged never throws. Used by code ingest and by Build it (a new

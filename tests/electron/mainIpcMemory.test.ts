@@ -285,6 +285,7 @@ const world = vi.hoisted(() => ({
     read: vi.fn(async (_root: string, _q: unknown) => ({ items: [], evidence: [] }) as unknown),
     onProgress: vi.fn(() => () => {}),
     onUpdated: vi.fn(() => () => {}),
+    applySettings: vi.fn(),
     dispose: vi.fn(),
   },
   llm: vi.fn(async (_prompt: string) => 'labels' as string | null),
@@ -499,9 +500,14 @@ let recheckModule: typeof import('../../src/main/mnemeLessonRecheck')
 let auditInit: unknown[] | undefined
 /** The quit handler index.ts registers at startup: it tears the module down, so only the LAST describe of this file fires it. */
 let onBeforeQuit: (() => void) | undefined
+/** How often index.ts told the world host the settings during startup (they load off the main thread). */
+let settingsAppliedAtStart = 0
 
 beforeAll(async () => {
   vi.resetModules()
+  // userData here is the shared temp folder: a world-settings.json left by an earlier run (its last
+  // queued write can land after a test changed the agent) must not seed this one.
+  await require('fs/promises').rm(require('path').join(USER_DATA, 'world-settings.json'), { force: true })
   await import('../../src/main/index')
   auditInit = mneme.initMemoryAudit.mock.calls[0]
   onBeforeQuit = ((await import('electron')) as any).app.on.mock.calls.find((c: unknown[]) => c[0] === 'before-quit')?.[1]
@@ -511,6 +517,7 @@ beforeAll(async () => {
   // The recheck markers remember what the disk said at the first look of a launch; each test here is a new launch.
   recheckModule = await import('../../src/main/mnemeLessonRecheck')
   await new Promise((resolve) => setTimeout(resolve, 50))
+  settingsAppliedAtStart = world.client.applySettings.mock.calls.length
   mcp = mockStartMcpServer.mock.calls[0]?.[0]
   indexer = mockStartIndexer.mock.calls[0]?.[0]
 
@@ -4076,6 +4083,11 @@ describe('router IPC', () => {
 })
 
 describe('Lumopolis world wiring in index.ts', () => {
+  it('once the world settings have loaded at startup, a running world host is told them', () => {
+    // Settings load off the main thread; a host that started on the defaults must not keep labelling on.
+    expect(settingsAppliedAtStart).toBe(1)
+  })
+
   it('registers world:get / world:compile / world:relayout over the world client', async () => {
     expect(await invoke('world:get', { root: '/repos/x' })).toEqual({ success: true, data: null })
     expect(world.client.get).toHaveBeenCalledWith('/repos/x')
@@ -4296,7 +4308,7 @@ describe('Lumopolis world wiring in index.ts', () => {
     const doc = { version: 1, projectKey: 'k', districts: [], buildings: [], edges: [], externals: [], glossary: {}, cargo: {}, processes: {}, tours: [], layout: { seed: 1, positions: {} }, runtimeNames: {}, layers: { plan: [] } }
     try {
       for (const agent of ['codex', 'gemini'] as const) {
-        await invoke('world:settings-set', { worldAgent: agent }) // the mock client has no applySettings; the store still changed
+        await invoke('world:settings-set', { worldAgent: agent })
         expect(await invoke('world:settings-get')).toMatchObject({ data: { worldAgent: agent } })
         world.client.get.mockResolvedValueOnce(doc)
         world.runHeadless.mockResolvedValueOnce({ ok: true, output: 'It is a tool.' })

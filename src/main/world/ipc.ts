@@ -354,6 +354,7 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     try {
       // The renderer names this folder, so it must look like a project (or already be in the home), and
       // never be a refused one under any of its names.
+      // Intended: a clone under userData (world/repos/<hash>) is refused too; it stays a git source, never a project.
       const refused = await forbidden(root)
       if (refused) return err(refused)
       if (!(await knownFolder(root)) && !(await isProject(root))) return err(NOT_A_PROJECT)

@@ -17,13 +17,25 @@ export interface StageFile {
   names?: string[]
 }
 
+/**
+ * The stage cache layout and the meaning of what it holds. BUMP THIS whenever a boundary detector, the
+ * import reader, the service-name reader or the grouping rules (group.ts) change: a cache written by an
+ * older version is then ignored and the next compile reads and groups every file afresh, so a detector
+ * fix reaches worlds that already exist.
+ */
+export const STAGE_CACHE_VERSION = 1
+
 export interface StageCache {
+  /** STAGE_CACHE_VERSION of the compiler that wrote it; any other value is no cache. */
+  version: number
   /** Repository-relative path to what its last read found. A file that could not be read has no entry. */
   files: Record<string, StageFile>
   /** Hash of the files, their imports and their boundary signatures (lines left out). */
   structureHash: string
   /** The grouping made from that structure, reused while the hash is unchanged. */
   grouping?: Grouping
+  /** Hash of the test results the last compile read: while it and the grouping are unchanged, an untouched building keeps its status. */
+  tests?: string
 }
 
 const KINDS = new Set(['ipc', 'port', 'fork', 'worker', 'spawn', 'http-out', 'http-listen', 'env', 'mcp', 'watch'])
@@ -61,13 +73,15 @@ function isGrouping(v: unknown): v is Grouping {
   )
 }
 
-/** Whether `v` has the stage cache's shape. Anything else (an older layout, a hand edit, a torn file) is ignored. */
+/** Whether `v` has the stage cache's shape and version. Anything else (an older layout or compiler, a hand edit, a torn file) is ignored. */
 export function isStageCache(v: unknown): v is StageCache {
   return (
     isObj(v) &&
+    v.version === STAGE_CACHE_VERSION &&
     isObj(v.files) &&
     Object.values(v.files).every(isStageFile) &&
     isStr(v.structureHash) &&
-    (v.grouping === undefined || isGrouping(v.grouping))
+    (v.grouping === undefined || isGrouping(v.grouping)) &&
+    (v.tests === undefined || isStr(v.tests))
   )
 }

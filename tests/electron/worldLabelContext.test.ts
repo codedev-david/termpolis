@@ -189,4 +189,9 @@ describe('the real file readers', () => {
     expect(await fsReadHead(join(dir, 'b.md'), MAX_DOC_BYTES)).toBe('héllo')
     expect(await fsReadHead(join(dir, 'missing.md'), 10)).toBeNull()
   })
+  it('a context built with no readers reads the real folder', async () => {
+    await writeFile(join(dir, 'notes.md'), 'The Scanner walks the tree.')
+    const ctx = createLabelContext({ git: noGit, memory: none })
+    expect((await ctx(dir, ['src/Scanner.ts'])).filter((e) => e.kind === 'file').map((e) => e.ref)).toEqual(['notes.md:1'])
+  })
 })
