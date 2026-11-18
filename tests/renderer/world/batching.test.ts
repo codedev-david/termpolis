@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { batchable, batchCapacity, batchRank, buildingNamesShown, districtAt, districtsOf, endHeight, fillKey, floorLabelsShown, groupBatches, heldTier, packetKey, partDrawn, poolChanges, SLAB_INSET, SLAB_MIN_HEIGHT, slabSeams, slabsFor, tierPick, transparentOrder, type SortItem } from '../../../src/renderer/src/world/engine/batching'
+import { batchable, batchCapacity, batchRank, buildingNamesShown, districtAt, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, packetKey, partDrawn, BACKDROP_ORDER, PLATFORM_ORDER, poolChanges, SLAB_INSET, SLAB_MIN_HEIGHT, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type SortItem } from '../../../src/renderer/src/world/engine/batching'
 
 describe('partDrawn', () => {
   it('draws floors from the floors tier in, and one block further out', () => {
@@ -114,6 +114,32 @@ describe('labels by tier', () => {
   })
 })
 
+describe('focusHolds', () => {
+  const ids = new Set(['b1'])
+  it('holds for a focus on parts, not for none or an empty one', () => {
+    expect(focusHolds(null)).toBe(false)
+    expect(focusHolds({ ids: new Set() })).toBe(false)
+    expect(focusHolds({ ids })).toBe(true)
+  })
+  it('holds for a hover only over a focus that held, and lets go when that focus goes (Esc on a building)', () => {
+    expect(focusHolds({ ids, hover: true })).toBe(false)
+    expect(focusHolds({ ids, hover: true, held: false })).toBe(false)
+    expect(focusHolds({ ids, hover: true, held: true })).toBe(true)
+  })
+})
+
+describe('writesDepth', () => {
+  it('writes depth for a lit, settled building that ever did', () => {
+    expect(writesDepth(true, 1, false)).toBe(true)
+  })
+  it('writes none while dimmed, fading, or for a wireframe: a lit line behind it must show', () => {
+    expect(writesDepth(true, 0.12, false)).toBe(false)
+    expect(writesDepth(true, 0, false)).toBe(false)
+    expect(writesDepth(true, 1, true)).toBe(false)
+    expect(writesDepth(false, 1, false)).toBe(false)
+  })
+})
+
 describe('batch keys', () => {
   const fill = { color: 1, metalness: 0.5, roughness: 0.3, opacity: 0.88, lineOpacity: 1, depthWrite: true, fog: true }
   it('puts parts with the same look in one batch, and parts with another look in another', () => {
@@ -172,5 +198,15 @@ describe('batch draw order', () => {
     expect(transparentOrder(item({ id: 1, rank: 1.9 }), item({ id: 2, rank: 1.1 }))).toBeGreaterThan(0)
     expect(transparentOrder(item({ id: 1, rank: 1.1 }), item({ id: 2, rank: 1.1 }))).toBeLessThan(0)
     expect(transparentOrder(item({ id: 5, rank: 1 }), item({ id: 2 }))).toBeGreaterThan(0)
+  })
+  it('draws the platforms before every batch, even a nearer platform, and the lines after them', () => {
+    const platform = item({ renderOrder: PLATFORM_ORDER, z: 0.1, id: 9 })
+    const batch = item({ z: 0.8, id: 1, rank: 1.88 })
+    expect(transparentOrder(platform, batch)).toBeLessThan(0)
+    expect(transparentOrder(item({ renderOrder: LINE_ORDER }), batch)).toBeGreaterThan(0)
+  })
+  it('draws the backdrop before the platforms, even a nearer star', () => {
+    expect(BACKDROP_ORDER).toBeLessThan(PLATFORM_ORDER)
+    expect(transparentOrder(item({ renderOrder: BACKDROP_ORDER, z: 0.01, id: 1 }), item({ renderOrder: PLATFORM_ORDER, z: 0.9, id: 2 }))).toBeLessThan(0)
   })
 })

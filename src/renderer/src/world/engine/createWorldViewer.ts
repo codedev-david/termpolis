@@ -7,11 +7,13 @@ import { diffSummary, diffWorlds, riseIds } from '../../../../shared/world/diff'
 import { edgeSummary } from '../../../../shared/world/edgeText'
 import type { WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { ACTION_GAP_MS, createActionQueue } from './actionQueue'
+import { focusHolds } from './batching'
 import { createChangeToast } from './changeToast'
 import { buildingCard, edgeCard, escapeHtml, techCard, usesTech } from './cards'
 import { renderFallback } from './fallback2d'
 import { neighbours } from './interaction'
 import { buildSceneModel, DEFAULT_LAYERS, type LayerState } from './sceneModel'
+import type { SlabSignals } from './slabSignals'
 import { createThreeRenderer, type RenderFocus, type RenderPick, type SceneText, type ThreeRenderer } from './threeRenderer'
 import { THEMES, type ThemeName } from './themes'
 import type { ZoomTier } from './viewMath'
@@ -101,6 +103,11 @@ export interface WorldDrawn {
   buildings: number
   districts: number
   slabs: number
+  /**
+   * What each slab drawn now shows of the buildings under it (slabSignals: its hottest one's heat, an
+   * outline for a planned or changed part, fading or fog when all of them are); empty nearer in and in 2D.
+   */
+  slabLooks: SlabSignals[]
   /** Ids of the buildings drawn as wireframes: planned parts not built yet (always empty in 2D). */
   wireframes: string[]
   /** Ids of the solid buildings drawn with an outline: parts the code changed since the last reconcile (always empty in 2D). */
@@ -281,7 +288,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       for (const x of n.edgeIds) f.edgeIds.add(x)
     }
     const passive = new Set([...f.edgeIds].filter((id) => !baseFocus?.edgeIds.has(id)))
-    r3.setFocus({ ...f, hover: true, passive })
+    // Over a focus that holds the buildings tier, the hover keeps that hold; with no such focus (Esc) it holds nothing.
+    r3.setFocus({ ...f, hover: true, passive, held: focusHolds(baseFocus) })
   }
   function setFocus(f: RenderFocus | null): void {
     baseFocus = f
@@ -663,7 +671,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, buildings: 0, districts: 0, slabs: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
     resetView() {
       cancelActions()
       deselect()

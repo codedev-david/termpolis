@@ -92,7 +92,7 @@ const WORLD_B = JSON.parse(fs.readFileSync(path.resolve('tests/shared/fixtures/w
 type Visual = { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
 interface Harness {
   load(doc: unknown, opts?: { animateFrom?: unknown }): void
-  drawn(): { changing: number; visual: Visual; hot: string[] }
+  drawn(): { changing: number; visual: Visual; hot: string[]; tier: string; slabs: number; slabLooks: Array<{ id: string; heat: number; hot: boolean; outline: boolean; fading: boolean; fog: boolean }> }
   project(id: string): Promise<{ x: number; y: number }>
   screenPoint(id: string): { x: number; y: number } | null
 }
@@ -174,6 +174,31 @@ test('a building with live latency is drawn hot, and one without is not', async 
     return t.drawn().hot
   }, WORLD_A)
   expect(hot).toEqual(['b2'])
+})
+
+test('from far away a hot building makes its district slab hot', async () => {
+  // The home view is the districts tier, where the buildings hide under their slabs: the slab must
+  // carry its hottest building's heat (spec 5.11), as it carries planned, changed, fading and fog.
+  await page.goto(page.url().split('?')[0])
+  await page.waitForSelector('body[data-ready="1"]', { timeout: 30_000 })
+  const looks = (): Promise<{ tier: string; slabs: number; slabLooks: Array<{ id: string; heat: number; hot: boolean; outline: boolean; fading: boolean; fog: boolean }> }> => page.evaluate(() => {
+    const d = (window as unknown as HarnessWindow).__worldTest.drawn()
+    return { tier: d.tier, slabs: d.slabs, slabLooks: d.slabLooks }
+  })
+  // Cold first: no live data, no hot slab.
+  await expect.poll(async () => (await looks()).tier, { timeout: 5000 }).toBe('districts')
+  expect((await looks()).slabLooks).toEqual([{ id: 'd1', heat: 0, hot: false, outline: false, fading: false, fog: false }])
+  await page.evaluate((a) => {
+    const doc = JSON.parse(JSON.stringify(a)) as { layers: { live?: unknown } }
+    doc.layers.live = { b2: { latencyMs: 600 } }
+    ;(window as unknown as HarnessWindow).__worldTest.load(doc)
+  }, WORLD_A)
+  await expect.poll(async () => (await looks()).tier, { timeout: 5000 }).toBe('districts')
+  const far = await looks()
+  expect(far.slabs).toBe(1)
+  expect(far.slabLooks).toHaveLength(1)
+  expect(far.slabLooks[0]).toMatchObject({ id: 'd1', hot: true, outline: false, fading: false, fog: false })
+  expect(far.slabLooks[0].heat).toBeGreaterThan(0)
 })
 
 test('logs no console errors', async () => {

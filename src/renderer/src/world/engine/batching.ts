@@ -141,6 +141,25 @@ export function heldTier(tier: ZoomTier, holding: boolean): ZoomTier {
   return holding && tier === 'districts' ? 'buildings' : tier
 }
 
+/**
+ * Whether a focus holds the buildings tier (heldTier): a focus on parts does; a hover does not, but
+ * a hover shown over a focus that does keeps that hold (`held`), and loses it the moment that focus
+ * goes (Esc with the pointer still on a building).
+ */
+export function focusHolds(f: { ids: ReadonlySet<string>; hover?: boolean; held?: boolean } | null): boolean {
+  if (!f) return false
+  return f.hover ? f.held === true : f.ids.size > 0
+}
+
+/**
+ * Whether a building's material writes depth: never while dimmed by a focus (`focus` below 1) or
+ * fading out, nor where it never did (a wireframe). A nearly see-through box that wrote depth would
+ * cut every line drawn after it (LINE_ORDER) in its shape, the lit ones of the focus among them.
+ */
+export function writesDepth(base: boolean, focus: number, fading: boolean): boolean {
+  return base && focus >= 1 && !fading
+}
+
 /** Whether the ranked building names (nameBudget's) may show: at the 'districts' tier only district names do. */
 export function buildingNamesShown(tier: ZoomTier): boolean {
   return tier !== 'districts'
@@ -196,12 +215,28 @@ export function batchRank(kind: 'packet' | 'fill', opacity: number): number {
 }
 
 /**
- * The render order of the conduits' lines: after every batch of boxes. The batches all sort at one
- * point (transparentOrder), so a line sorted among them by its own centre could draw before a
- * building behind it and, writing depth, cut a dark slot through it. Drawn after them, a line
- * blends over whatever stands behind it.
+ * The render order of the conduits' lines and their packets: after every batch of boxes. The
+ * batches all sort at one point (transparentOrder), so a line or packet sorted among them could
+ * draw before a building behind it and, writing depth, cut a dark slot through it. Drawn after
+ * them, it blends over whatever stands behind it.
  */
 export const LINE_ORDER = 1
+
+/**
+ * The render order of the district platforms: before everything else that is see-through but the
+ * backdrop (BACKDROP_ORDER). A platform sorted by its centre could draw after a building on it, and
+ * over a dimmed one (which writes no depth, writesDepth) it would lay its dark top across the
+ * building. Drawn first, every building blends over the platform it stands on.
+ */
+export const PLATFORM_ORDER = -1
+
+/**
+ * The render order of the backdrop (the stars, the dust and the ground grid): before the platforms.
+ * A platform writes depth, so a star or grid line drawn after it, behind or under it, would not show
+ * through it at all; drawn first, each shows through the see-through platform as it did when the
+ * platforms sorted among them.
+ */
+export const BACKDROP_ORDER = PLATFORM_ORDER - 1
 
 /** A transparent render item as three.js sorts it (WebGLRenderList). */
 export interface SortItem { groupOrder: number; renderOrder: number; z: number; id: number; object: { userData: { batchRank?: number } } }

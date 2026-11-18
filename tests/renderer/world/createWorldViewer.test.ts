@@ -353,7 +353,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, buildings: 0, districts: 0, slabs: 0, wireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -440,7 +440,7 @@ function fakeRenderer(host: HTMLElement) {
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
-    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, buildings: 4, districts: 2, slabs: 0 })),
+    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [] })),
     motionState: vi.fn(() => ({ ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 })),
     keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(),
     dispose: vi.fn(() => { canvas.remove() }),
@@ -628,6 +628,21 @@ describe('WebGL path (stand-in renderer)', () => {
     expect([...(lastFocus()?.passive ?? [])]).toEqual(['e2'])
   })
 
+  it('a hover over a selection keeps its tier hold, and Esc with the pointer still on a building lets it go', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
+    const { aim, at, r, viewer } = setup3d()
+    const flush = (): void => { for (const f of frames.splice(0)) f(0) }
+    const lastFocus = () => r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0] as { hover?: boolean; held?: boolean } | null
+    aim({ kind: 'node', id: 'b1' })
+    at('pointermove'); flush()
+    expect(lastFocus()).toMatchObject({ hover: true, held: false }) // a hover alone holds nothing
+    at('pointerdown'); at('click')
+    expect(lastFocus()).toMatchObject({ hover: true, held: true }) // over the selection's focus
+    viewer.resetView() // Esc, the pointer still on b1
+    expect(lastFocus()).toMatchObject({ hover: true, held: false })
+  })
+
   it('keeps the hover while the pointer is on a lit connection label, and ends it when the pointer leaves the label', () => {
     const frames: FrameRequestCallback[] = []
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
@@ -745,7 +760,7 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.pick).toHaveBeenLastCalledWith(3, 4)
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, buildings: 4, districts: 2, slabs: 0, wireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 } })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [], wireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 } })
   })
 
   it('viewer.apply(fog) fogs the ids until the next reset; a highlight keeps the fog; resetView, load and an empty fog lift it', async () => {
