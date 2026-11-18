@@ -219,7 +219,7 @@ async function buildings(root: string): Promise<Array<{ id: string; name: string
   }, root)
 }
 
-interface Drawn { layers: { processes: boolean }; processShells: number; conduits: number; highlighted: string[] }
+interface Drawn { layers: { processes: boolean }; processShells: number; conduits: number; highlighted: string[]; tier: string }
 interface Cam { pos: number[]; target: number[] }
 interface Probe { screenPoint(id: string): { x: number; y: number } | null; drawn(): Drawn; cameraState(): Cam | null }
 const drawn = (): Promise<Drawn | null> =>
@@ -260,6 +260,22 @@ test.describe.serial('Lumopolis in the real app', () => {
     // Let the camera's first framing settle before aiming at it.
     await page.waitForTimeout(1500)
     const box = (await canvas().boundingBox())!
+    // From far out (the overview) a district is one slab and its buildings are not drawn: wheel in
+    // until they are. This window reports a device pixel ratio a hair under 1 (0.99999998), and
+    // OrbitControls (three r160) divides the wheel delta by `devicePixelRatio | 0`: zero, so one notch
+    // would fly straight to the nearest distance. Reported as exactly 1, a notch is the intended 5%.
+    const tier = (): Promise<string> => page.evaluate(() => (window as unknown as { __termpolis_world: Probe }).__termpolis_world.drawn().tier)
+    if ((await tier()) === 'districts') {
+      await page.evaluate(() => { if ((window.devicePixelRatio | 0) === 0) Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true }) })
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      for (let i = 0; i < 40 && (await tier()) === 'districts'; i++) {
+        await page.mouse.wheel(0, -100)
+        await page.waitForTimeout(120)
+      }
+      expect(await tier(), 'wheeling in from the overview never reached the buildings').not.toBe('districts')
+      await page.mouse.move(2, 400)
+      await page.waitForTimeout(1500)
+    }
     // The probe gives a point where the viewer's own pick lands on the building (nothing drawn in
     // front of it); the first such point inside the canvas with the canvas itself under it (no
     // label, legend or other panel on top) is clicked as a person would.

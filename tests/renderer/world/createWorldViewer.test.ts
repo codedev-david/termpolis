@@ -353,7 +353,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, wireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, buildings: 0, districts: 0, slabs: 0, wireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -440,7 +440,7 @@ function fakeRenderer(host: HTMLElement) {
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']),
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
-    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42 })),
+    drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, buildings: 4, districts: 2, slabs: 0 })),
     motionState: vi.fn(() => ({ ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 })),
     keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(),
     dispose: vi.fn(() => { canvas.remove() }),
@@ -479,8 +479,12 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     at('click')
     expect(sels.pop()).toEqual({ kind: 'edge', id: 'e1' })
-    expect(r.setSelected).toHaveBeenLastCalledWith(null)
+    expect(r.setSelected).toHaveBeenLastCalledWith('e1') // a selected line keeps the buildings up from far away
     expect(r.frame).toHaveBeenLastCalledWith(['e1'], true) // a line is framed on its own
+    // From far away a click on a district's slab focuses the district.
+    aim({ kind: 'district', id: 'd1' })
+    at('click')
+    expect(sels.pop()).toEqual({ kind: 'district', id: 'd1' })
     aim(null)
     at('click')
     expect(sels.pop()).toBeNull()
@@ -564,6 +568,30 @@ describe('WebGL path (stand-in renderer)', () => {
     at('pointerleave')
     expect(hovers).toEqual(['b1', 'e1', null])
     expect(r.setHovered).toHaveBeenLastCalledWith(null)
+  })
+
+  it('hovering a district slab (from far away) lights the connections of all its buildings', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
+    const { aim, at, r, viewer } = setup3d()
+    const hovers: (string | null)[] = []
+    viewer.on('hover', (id) => { hovers.push(id) })
+    const flush = (): void => { for (const f of frames.splice(0)) f(0) }
+    const lastFocus = () => r.setFocus.mock.calls[r.setFocus.mock.calls.length - 1][0] as { ids: Set<string>; edgeIds: Set<string>; hover?: boolean } | null
+    aim({ kind: 'district', id: 'd1' })
+    at('pointermove'); flush()
+    expect(hovers).toEqual(['d1'])
+    expect(r.setCursor).toHaveBeenLastCalledWith(true)
+    expect(r.setHovered).toHaveBeenLastCalledWith(null) // no building name: the slab is the district
+    expect(lastFocus()).toMatchObject({ hover: true })
+    expect([...(lastFocus()?.ids ?? [])]).toEqual(expect.arrayContaining(['b1', 'b2', 'b3', 'b4']))
+    aim({ kind: 'district', id: 'd9' }) // a district without buildings lights nothing
+    at('pointermove'); flush()
+    expect(lastFocus()).toBeNull()
+    aim({ kind: 'district', id: 'd1' })
+    at('pointermove'); flush()
+    at('pointerleave')
+    expect(lastFocus()).toBeNull()
   })
 
   it('hovering a building lights its connections and dims the rest; leaving restores the selection', () => {
@@ -717,7 +745,7 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.pick).toHaveBeenLastCalledWith(3, 4)
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, wireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 } })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, buildings: 4, districts: 2, slabs: 0, wireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 } })
   })
 
   it('viewer.apply(fog) fogs the ids until the next reset; a highlight keeps the fog; resetView, load and an empty fog lift it', async () => {
@@ -926,7 +954,7 @@ describe('WebGL path (stand-in renderer)', () => {
     at('click')
     f.r.setSelected.mockClear()
     viewer.setLayers({ allLineLabels: true })
-    expect(f.r.setSelected).toHaveBeenLastCalledWith(null)
+    expect(f.r.setSelected).toHaveBeenLastCalledWith('e1')
     const lit = f.r.setFocus.mock.calls[f.r.setFocus.mock.calls.length - 1][0] as { edgeIds: Set<string> }
     expect([...lit.edgeIds]).toContain('e1')
   })

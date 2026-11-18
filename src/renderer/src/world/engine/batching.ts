@@ -15,12 +15,107 @@ import type { ZoomTier } from './viewMath'
 export type PartKind = 'floor' | 'block'
 
 /**
- * Whether a building's part draws at `tier`. An exploded building always shows its floors; others
- * show their floors from the 'floors' tier in and one block further out.
+ * Whether a building's part draws at `tier`. At the 'districts' tier no building draws: each
+ * district is one slab (slabsFor). Nearer in, an exploded building always shows its floors; others
+ * show their floors from the 'floors' tier in and one block at the 'buildings' tier.
  */
 export function partDrawn(kind: PartKind, tier: ZoomTier, exploded: boolean): boolean {
+  if (tier === 'districts') return false
   const floors = exploded || tier === 'floors'
   return kind === 'floor' ? floors : !floors
+}
+
+/** A district as the slabs need it: its centre (x, y, z) and its platform's radius. */
+export interface SlabDistrict { id: string; pos: readonly number[]; radius: number }
+/** A building as the slabs need it: where it stands and how tall it is. */
+export interface SlabBuilding { id: string; pos: readonly number[]; height: number }
+/** One district drawn from far away: a hexagonal slab on its platform, `height` tall. */
+export interface Slab { id: string; x: number; y: number; z: number; radius: number; height: number }
+
+/** A slab covers this share of its platform's radius, so the platform's rim still shows round it. */
+export const SLAB_INSET = 0.85
+/** The lowest a slab stands (an empty district's, or one of low buildings): one floor. */
+export const SLAB_MIN_HEIGHT = 3
+
+/**
+ * The district a point stands in: the nearest one whose platform contains it (the same rule that
+ * gives a building its district's hue), or null outside every platform.
+ */
+export function districtAt(p: readonly number[], districts: readonly SlabDistrict[]): string | null {
+  let best: string | null = null
+  let bestD = Infinity
+  for (const d of districts) {
+    const dist = Math.hypot(p[0] - d.pos[0], p[2] - d.pos[2])
+    if (dist <= d.radius && dist < bestD) { best = d.id; bestD = dist }
+  }
+  return best
+}
+
+/** Each building's district (districtAt), for the buildings that stand in one. */
+export function districtsOf(buildings: readonly SlabBuilding[], districts: readonly SlabDistrict[]): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const b of buildings) {
+    const d = districtAt(b.pos, districts)
+    if (d !== null) out.set(b.id, d)
+  }
+  return out
+}
+
+/**
+ * One slab per district, in the districts' order: on the district's platform, SLAB_INSET of its
+ * radius, as tall as its buildings are on average (at least SLAB_MIN_HEIGHT).
+ */
+export function slabsFor(districts: readonly SlabDistrict[], buildings: readonly SlabBuilding[]): Slab[] {
+  const of = districtsOf(buildings, districts)
+  const sum = new Map<string, { h: number; n: number }>()
+  for (const b of buildings) {
+    const d = of.get(b.id)
+    if (d === undefined) continue
+    const s = sum.get(d) ?? { h: 0, n: 0 }
+    s.h += b.height
+    s.n++
+    sum.set(d, s)
+  }
+  return districts.map((d) => {
+    const s = sum.get(d.id)
+    const height = Math.max(SLAB_MIN_HEIGHT, s ? s.h / s.n : 0)
+    return { id: d.id, x: d.pos[0], y: d.pos[1], z: d.pos[2], radius: d.radius * SLAB_INSET, height }
+  })
+}
+
+/**
+ * The heights of the seams drawn round a slab, one per SLAB_MIN_HEIGHT (a floor) between its foot
+ * and its top: from far away a district reads as stacked floors, as its buildings do nearer in.
+ */
+export function slabSeams(height: number): number[] {
+  const out: number[] = []
+  for (let y = SLAB_MIN_HEIGHT; y < height - 0.5; y += SLAB_MIN_HEIGHT) out.push(y)
+  return out
+}
+
+/**
+ * How high above its ground a conduit's end sits: on a building's roof, or, at the 'districts'
+ * tier, on the top of its district's slab (an end outside every district keeps `own`).
+ */
+export function endHeight(id: string | undefined, own: number, tier: ZoomTier, districtOf: ReadonlyMap<string, string>, slabHeight: ReadonlyMap<string, number>): number {
+  if (tier !== 'districts' || id === undefined) return own
+  const d = districtOf.get(id)
+  const h = d === undefined ? undefined : slabHeight.get(d)
+  return h === undefined ? own : h
+}
+
+/** What a click or hover picks. */
+export type TierPick = { kind: 'node' | 'edge' | 'district'; id: string }
+
+/**
+ * What a pick means at `tier`: at the 'districts' tier a building stands for its district (the slab
+ * drawn over it), so the pick resolves to the district; lines, externals and every pick nearer in
+ * are left as they are.
+ */
+export function tierPick(hit: TierPick | null, tier: ZoomTier, districtOf: ReadonlyMap<string, string>): TierPick | null {
+  if (!hit || tier !== 'districts' || hit.kind !== 'node') return hit
+  const d = districtOf.get(hit.id)
+  return d === undefined ? hit : { kind: 'district', id: d }
 }
 
 /**
@@ -35,6 +130,15 @@ export function batchable(exploded: boolean, moving: boolean): boolean {
 /** Whether a building's floor labels may show: exploded, or hovered or selected from the 'floors' tier in. */
 export function floorLabelsShown(tier: ZoomTier, exploded: boolean, target: boolean): boolean {
   return exploded || (tier === 'floors' && target)
+}
+
+/**
+ * The tier drawn, given the camera's: a selected building or line, or a focus on parts (search, the
+ * tree, a tour step; not a hover), keeps the buildings up. Those are the parts asked for, and a
+ * small world frames them from about as far out as its overview, where slabs would stand in for them.
+ */
+export function heldTier(tier: ZoomTier, holding: boolean): ZoomTier {
+  return holding && tier === 'districts' ? 'buildings' : tier
 }
 
 /** Whether the ranked building names (nameBudget's) may show: at the 'districts' tier only district names do. */
@@ -90,6 +194,14 @@ export function poolChanges(have: Iterable<string>, want: Iterable<string>): { a
 export function batchRank(kind: 'packet' | 'fill', opacity: number): number {
   return kind === 'packet' ? 0 : 2 - opacity
 }
+
+/**
+ * The render order of the conduits' lines: after every batch of boxes. The batches all sort at one
+ * point (transparentOrder), so a line sorted among them by its own centre could draw before a
+ * building behind it and, writing depth, cut a dark slot through it. Drawn after them, a line
+ * blends over whatever stands behind it.
+ */
+export const LINE_ORDER = 1
 
 /** A transparent render item as three.js sorts it (WebGLRenderList). */
 export interface SortItem { groupOrder: number; renderOrder: number; z: number; id: number; object: { userData: { batchRank?: number } } }

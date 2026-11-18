@@ -183,7 +183,7 @@ const pane = () => page.locator('[data-testid="world-view"]')
 const canvas = () => page.locator('[data-testid="world-canvas-host"] canvas')
 const card = () => page.locator('[data-testid="world-card"]')
 
-interface Drawn { changing: number; conduits: number; tier: string; drawCalls: number }
+interface Drawn { changing: number; conduits: number; tier: string; drawCalls: number; buildings: number; districts: number; slabs: number }
 interface Probe { screenPoint(id: string): { x: number; y: number } | null; linePoints(id: string): Array<{ x: number; y: number }>; pickAt(x: number, y: number): { kind: string; id: string } | null; drawn(): Drawn; apply(a: { type: 'focus'; ids: string[] }): Promise<void> }
 
 /** Adds a terminal whose working folder is `cwd` (the Add Terminal dialog's folder field). */
@@ -354,6 +354,28 @@ async function world(root: string): Promise<World> {
     const edges = res.data.edges.map((e) => ({ id: e.id, from: e.from, to: e.to, label: e.label }))
     return { ids, connected, names: Object.fromEntries(res.data.buildings.map((b) => [b.id, b.name])), districts: res.data.districts.length, edges }
   }, root)
+}
+
+/**
+ * From the overview (the districts tier: one slab per district, no buildings to hover) wheels in
+ * until the buildings show, then takes the pointer off the canvas.
+ */
+async function toBuildingsTier(): Promise<void> {
+  const tier = (): Promise<string> => page.evaluate(() => (window as unknown as { __termpolis_world: Probe }).__termpolis_world.drawn().tier)
+  const box = await page.locator('[data-testid="world-canvas-host"] canvas').boundingBox()
+  // This window reports a device pixel ratio a hair under 1 (0.99999998), and OrbitControls
+  // (three r160) divides the wheel delta by `devicePixelRatio | 0`: zero, so one notch would fly
+  // straight to the nearest distance. Reported as exactly 1, a notch of 100 px is the intended 5%.
+  await page.evaluate(() => { if ((window.devicePixelRatio | 0) === 0) Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true }) })
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2)
+  // OrbitControls scales the distance by 0.95 per 100 px of wheel: about 14 steps from the overview to half its distance.
+  for (let i = 0; i < 40 && (await tier()) === 'districts'; i++) {
+    await page.mouse.wheel(0, -100)
+    await page.waitForTimeout(120)
+  }
+  expect(await tier(), 'wheeling in from the overview never reached the buildings').not.toBe('districts')
+  await page.mouse.move(2, 400)
+  await page.waitForTimeout(1500)
 }
 
 /** The first building whose point on screen has the bare canvas under it, and that point. */
@@ -594,7 +616,9 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
     await page.screenshot({ path: path.join(SHOTS, `${tag}-${theme}-overview.png`) })
 
     // Hover: the building's connections light up with their labels (spec: hover shows how it
-    // connects), a few at most, and no label over another.
+    // connects), a few at most, and no label over another. The overview shows district slabs, so
+    // first closer, where the buildings stand.
+    await toBuildingsTier()
     expect(await shownLineLabels(), `${tag}/${theme}: line labels show before any hover`).toBe(0)
     const over = await aimAtABuilding(connected)
     await page.mouse.move(over.x, over.y)
@@ -655,11 +679,14 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
     if (t === 0) {
       // A real click a few pixels off the aim point opens the same building's card, at a building
       // whose aim point and every point round it the renderer's pick gives to that building (a line
-      // drawn across a building's face rightly takes the click where it runs).
+      // drawn across a building's face rightly takes the click where it runs). From the same
+      // distance in each time: the overview itself shows district slabs, no buildings.
       await toOverview()
+      await toBuildingsTier()
       const steady = await jitterAim(connected)
       for (const [dx, dy] of CLICK_JITTER) {
         await toOverview()
+        await toBuildingsTier()
         // What the page holds at the click point just before the click, so a miss names its cause.
         const at = await page.evaluate(({ id, x, y }) => {
           const probe = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world
@@ -692,6 +719,27 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
         break
       }
       expect(opened, `${tag}: no line of ${w.edges.length} runs over open ground in view`).toBe(true)
+      // From the overview a district is one slab: the pick there gives the district, and a click on
+      // it focuses the district as choosing it in the tree does (no card; the camera frames its buildings).
+      await toOverview()
+      const slab = await page.evaluate(() => {
+        const probe = (window as unknown as { __termpolis_world: Probe }).__termpolis_world
+        const host = document.querySelector('[data-testid="world-canvas-host"] canvas') as HTMLCanvasElement
+        const r = host.getBoundingClientRect()
+        for (let y = r.top + 8; y < r.bottom; y += 8) {
+          for (let x = r.left + 8; x < r.right; x += 8) {
+            const hit = probe.pickAt(x, y)
+            if (hit?.kind === 'district' && document.elementFromPoint(x, y) === host) return { x, y, id: hit.id }
+          }
+        }
+        return null
+      })
+      expect(slab, `${tag}: no district slab has the bare canvas over it at the overview`).not.toBeNull()
+      const target = (): Promise<number[]> => page.evaluate(() => (window as unknown as { __termpolis_world: { cameraState(): { target: number[] } } }).__termpolis_world.cameraState().target)
+      const before = await target()
+      await page.mouse.click(slab!.x, slab!.y)
+      await expect.poll(async () => Math.hypot(...(await target()).map((v, k) => v - before[k])), { message: `${tag}: clicking the slab of ${slab!.id} did not frame the district`, timeout: 5000 }).toBeGreaterThan(0.5)
+      await expect(card(), `${tag}: a district has no card`).toHaveCount(0)
     }
     await toOverview()
   }
@@ -725,7 +773,14 @@ test.describe.serial('Lumopolis can be seen', () => {
     await checkWorld('termpolis', path.resolve('.'), ['neon'])
   })
 
-  test('4. a 600-building world draws in under 150 draw calls and changes tier with distance', async () => {
+  /** The world compiler's building cap (src/main/world/group.ts), read from its source: group.ts imports main-process modules. */
+  function compilerBuildingCap(): number {
+    const m = /export const DEFAULT_MAX_BUILDINGS = (\d+)/.exec(fs.readFileSync(path.resolve('src/main/world/group.ts'), 'utf8'))
+    if (!m) throw new Error('DEFAULT_MAX_BUILDINGS not found in src/main/world/group.ts')
+    return Number(m[1])
+  }
+
+  test('4. a 600-file world draws in under 150 draw calls and changes tier with distance', async () => {
     test.setTimeout(420_000)
     const fx = fixtures.find((f) => f.label === 'huge')!
     if (await pane().count()) {
@@ -741,9 +796,15 @@ test.describe.serial('Lumopolis can be seen', () => {
     await toOverview()
     const drawn = (): Promise<Drawn> => page.evaluate(() => (window as unknown as { __termpolis_world: Probe }).__termpolis_world.drawn())
     const far = await drawn()
-    console.log(`[world-visual] huge: ${ids.length} buildings, ${far.drawCalls} draw calls at the overview (tier ${far.tier}, ${far.conduits} conduits)`)
+    console.log(`[world-visual] huge: ${far.buildings} buildings in ${far.districts} districts (${far.slabs} slabs), ${far.drawCalls} draw calls at the overview (tier ${far.tier}, ${far.conduits} conduits)`)
     await page.screenshot({ path: path.join(SHOTS, 'huge-neon-overview.png') })
     expect(far.tier).toBe('districts')
+    // 600 files group into as many buildings as the compiler allows, and from far away each district is one slab.
+    expect(far.buildings).toBe(compilerBuildingCap())
+    expect(far.districts).toBeGreaterThan(1)
+    expect(far.slabs).toBe(far.districts)
+    // Every conduit is still its own draw call (lines are not batched).
+    expect(far.drawCalls).toBeGreaterThanOrEqual(far.conduits)
     expect(far.drawCalls, `${far.drawCalls} draw calls at the overview`).toBeLessThan(150)
     expect(far.drawCalls).toBeGreaterThan(0)
 
@@ -752,6 +813,7 @@ test.describe.serial('Lumopolis can be seen', () => {
     await page.waitForTimeout(1500)
     const near = await drawn()
     console.log(`[world-visual] huge: ${near.drawCalls} draw calls focused on one building (tier ${near.tier})`)
+    expect(near.slabs).toBe(0)
     await page.screenshot({ path: path.join(SHOTS, 'huge-neon-focused.png') })
     await toOverview()
     await expect.poll(async () => (await drawn()).tier, { timeout: 10_000 }).toBe('districts')

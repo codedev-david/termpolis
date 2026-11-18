@@ -97,6 +97,10 @@ export interface WorldDrawn {
   tier: ZoomTier
   /** GL draw calls of the last frame, every pass (0 in 2D). */
   drawCalls: number
+  /** Buildings in the world (drawn or under their slabs), districts, and slabs drawn now (the districts tier; 0 in 2D). */
+  buildings: number
+  districts: number
+  slabs: number
   /** Ids of the buildings drawn as wireframes: planned parts not built yet (always empty in 2D). */
   wireframes: string[]
   /** Ids of the solid buildings drawn with an outline: parts the code changed since the last reconcile (always empty in 2D). */
@@ -167,6 +171,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let hovered: string | null = null
   /** The hovered building or external (a hovered line lights nothing): its connections light up. */
   let hoverNode: string | null = null
+  /** The district whose slab the pointer is over (the districts tier). */
+  let hoverDistrict: string | null = null
   /** The lit set the selection, a tour or an action asked for; a hovered building overrides it while hovered. */
   let baseFocus: RenderFocus | null = null
   let tourToken = 0
@@ -265,8 +271,15 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     if (!r3) return
     const d = doc
     const opt = revealProposal === undefined ? undefined : { revealProposal }
-    if (hoverNode === null || !d) { r3.setFocus(baseFocus); return }
-    const f = neighbours(d, hoverNode, opt)
+    // From far away a district's slab stands for its buildings: hovering it lights all their connections.
+    const hoverIds = !d ? [] : hoverNode !== null ? [hoverNode] : d.buildings.filter((b) => hoverDistrict !== null && b.districtId === hoverDistrict).map((b) => b.id)
+    if (!d || hoverIds.length === 0) { r3.setFocus(baseFocus); return }
+    const f = { ids: new Set<string>(), edgeIds: new Set<string>() }
+    for (const id of hoverIds) {
+      const n = neighbours(d, id, opt)
+      for (const x of n.ids) f.ids.add(x)
+      for (const x of n.edgeIds) f.edgeIds.add(x)
+    }
     const passive = new Set([...f.edgeIds].filter((id) => !baseFocus?.edgeIds.has(id)))
     r3.setFocus({ ...f, hover: true, passive })
   }
@@ -301,7 +314,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     renderCard(cardFor(selection))
     emitSelect()
     if (!r3) return Promise.resolve()
-    r3.setSelected(kind === 'building' ? id : null)
+    r3.setSelected(kind === 'building' || kind === 'edge' ? id : null)
     setFocus(focus)
     // A building is framed with its neighbours in view, so the click shows where it sits.
     return kind === 'building' ? r3.frame(frameIds, instant, [...focus.ids].filter((x) => x !== id)) : r3.frame(frameIds, instant)
@@ -359,7 +372,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     r3.setExploded(exploded)
     if (selection && kindOf(selection.id)) {
       const { focus } = focusFor(selection)
-      r3.setSelected(selection.kind === 'building' ? selection.id : null)
+      r3.setSelected(selection.kind === 'building' || selection.kind === 'edge' ? selection.id : null)
       baseFocus = focus
     }
     // The hovered building's name and connections stay lit across a redraw, unless it is gone.
@@ -403,7 +416,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     const at = clickAt(e)
     if (start && Math.hypot(at.x - start.x, at.y - start.y) > DRAG_PX) return
     const hit = r3.pick(at.x, at.y)
-    if (hit) void select(hit.id)
+    // A district's slab (the districts tier) focuses the district, as choosing it in the tree does.
+    if (hit) void select(hit.id, reduced, hit.kind === 'district' ? 'district' : undefined)
     else deselect()
   }
   const onDblClick = (e: MouseEvent): void => {
@@ -430,6 +444,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       if (id !== hovered) {
         hovered = id
         hoverNode = hit && hit.kind === 'node' ? hit.id : null
+        hoverDistrict = hit && hit.kind === 'district' ? hit.id : null
         r3.setHovered(hoverNode)
         showFocus()
         for (const cb of hoverCbs) cb(id)
@@ -453,6 +468,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     if (hovered !== null) {
       hovered = null
       hoverNode = null
+      hoverDistrict = null
       r3?.setHovered(null)
       showFocus()
       for (const cb of hoverCbs) cb(null)
@@ -647,7 +663,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, buildings: 0, districts: 0, slabs: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
     resetView() {
       cancelActions()
       deselect()

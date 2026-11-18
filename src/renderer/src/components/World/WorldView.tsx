@@ -83,7 +83,7 @@ export interface WorldAskLink {
 export interface WorldProbe {
   screenPoint(id: string): { x: number; y: number } | null
   linePoints(id: string): Array<{ x: number; y: number }>
-  pickAt(x: number, y: number): { kind: 'node' | 'edge'; id: string } | null
+  pickAt(x: number, y: number): { kind: 'node' | 'edge' | 'district'; id: string } | null
   drawn(): WorldDrawn
   cameraState(): CameraState | null
   /** Runs one world action (focus, tour step...) as the agent would. */
