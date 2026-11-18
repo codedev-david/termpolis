@@ -1,0 +1,126 @@
+import { describe, expect, it } from 'vitest'
+import { cardText } from '../../src/main/world/cardText'
+import { buildingCard, edgeCard } from '../../src/renderer/src/world/engine/cards'
+import { building, claim, edge, minimal, rich } from '../renderer/world/helpers'
+
+/** The claim texts and states an HTML card shows, in order. */
+function htmlClaims(html: string): string[] {
+  return [...html.matchAll(/<li class="claim" data-state="([^"]+)"><span class="ctext">([^<]*)<\/span>/g)].map((m) => `${m[2]} [${m[1]}]`)
+}
+
+describe('cardText', () => {
+  it('states every claim of the HTML card, each followed by its state', () => {
+    const doc = rich()
+    doc.buildings[0].how = [claim('does a thing', 'inferred'), claim('and another', 'verified')]
+    doc.buildings[0].claims = [claim('seen in code', 'observed')]
+    doc.edges[0].claims = [claim('edge fact', 'verified')]
+    for (const id of [...doc.buildings.map((b) => b.id), ...doc.edges.map((e) => e.id), 'pb1', 'pe1']) {
+      const html = buildingCard(doc, id) || edgeCard(doc, id)
+      const text = cardText(doc, id)
+      expect(text).not.toBe('')
+      for (const c of htmlClaims(html)) expect(text).toContain(c)
+    }
+    expect(cardText(doc, 'b1')).toContain('- does a thing [inferred]')
+    expect(cardText(doc, 'b1')).toContain('- and another [verified]')
+    expect(cardText(doc, 'b1')).toContain('What we know:\n- seen in code [observed]\n  evidence: file a/b.ts')
+  })
+
+  it('states the building facts the HTML card shows', () => {
+    const doc = minimal()
+    const text = cardText(doc, 'b1')
+    const html = buildingCard(doc, 'b1')
+    expect(html).toContain('Main process')
+    expect(text).toContain('Runs in: Main process')
+    expect(text).toContain('Status: Built')
+    for (const f of doc.buildings[0].floors) expect(text).toContain(`- ${f.name}`)
+    for (const t of doc.buildings[0].stack) expect(text).toContain(`- ${t}: ${doc.glossary[t]}`)
+    expect(text).toContain('What goes out:')
+    expect(text).not.toContain('What comes in')
+    expect(cardText(doc, 'b2')).toContain('What comes in:')
+  })
+
+  it('covers the optional parts of a building: AI name, no tech label, blank process, not in design, bare floors', () => {
+    const doc = rich()
+    const b = doc.buildings[0]
+    b.nameState = 'inferred'
+    b.techLabel = ''
+    b.process = ' '
+    b.floors = [{ name: 'Bare', tech: [], members: [] }]
+    b.stack = ['unlisted']
+    b.how = []
+    b.claims = []
+    doc.layers.plan.push({ id: 'linked', title: 'Linked design', summary: [], buildings: [], edges: [], reconcile: { matched: {}, missing: [], extra: [b.id], changed: [], planAt: 1 } })
+    const text = cardText(doc, b.id)
+    expect(text.split('\n')[0]).toBe(`${b.name} (name suggested by AI)`)
+    expect(text).toContain('; not in the design')
+    expect(text).not.toContain('Runs in')
+    expect(text).toContain("What's inside:\n- Bare")
+    expect(text).toContain('- unlisted')
+    expect(text).not.toContain('- unlisted:')
+    expect(text).toContain('Not described yet.')
+    expect(text).not.toContain('What we know')
+    b.floors = []
+    b.stack = []
+    const bare = cardText(doc, b.id)
+    expect(bare).not.toContain("What's inside")
+    expect(bare).not.toContain('Technology')
+  })
+
+  it('states outside parts, planned parts and nothing for an unknown id or a district', () => {
+    const doc = rich()
+    expect(cardText(doc, 'x1')).toContain('Outside the project')
+    expect(cardText(doc, 'x1')).not.toContain('not fully known')
+    doc.externals[0].fog = true
+    expect(cardText(doc, 'x1')).toContain('not fully known')
+    expect(cardText(doc, 'b4')).toContain('Planned only')
+    expect(cardText(doc, 'nope')).toBe('')
+    expect(cardText(doc, 'd1')).toBe('')
+  })
+
+  it('names the ends of a line and falls back to the id for a missing end, with evidence-free claims', () => {
+    const doc = rich()
+    doc.edges.push(edge('e9', 'b1', 'ghost', { how: [claim('no evidence', 'observed', false)] }))
+    const text = cardText(doc, 'e9')
+    expect(text).toContain('(b1) -> ghost (ghost)')
+    expect(text).toContain('- no evidence [observed]\n')
+    expect(text).not.toContain('evidence:')
+    expect(cardText(doc, 'b1')).toContain('goes out')
+    expect(cardText(doc, 'b1')).toContain('to ghost (ghost)')
+  })
+
+  it('states a line like the HTML card: summary title, items, long label, cargo, tech, rate and two ways', () => {
+    const doc = minimal()
+    const e = doc.edges[0]
+    e.label = 'env A, env B, ipc <pty:data>'
+    e.twoWay = true
+    e.tech = ['ipc', 'unlisted']
+    const items = cardText(doc, e.id)
+    expect(items.split('\n')[0]).toBe('reads 2 settings +1 more')
+    expect(items).toContain('What it carries:\n- env A\n- env B\n- ipc <pty:data>')
+    expect(items).toContain('(both ways)')
+    expect(items).toContain('- unlisted')
+    expect(items).toContain('How often:\non demand')
+    e.label = 'Sends every keystroke and resize event to the shell host process'
+    const long = cardText(doc, e.id)
+    expect(long).toContain(e.label)
+    expect(long.split('\n')[0]).toBe('Sends every keystroke and…')
+    e.label = 'Memory calls'
+    e.rate = ''
+    e.twoWay = false
+    e.tech = []
+    e.cargo = 'unknown-cargo'
+    const plain = cardText(doc, e.id)
+    expect(plain.match(/Memory calls/g)).toHaveLength(1)
+    expect(plain).toContain('What travels:\nunknown-cargo')
+    expect(plain).not.toContain('How often')
+    expect(plain).not.toContain('Technology')
+    expect(plain).not.toContain('both ways')
+  })
+
+  it('a building built without any edges has no connection sections', () => {
+    const doc = minimal()
+    doc.buildings.push(building('lonely'))
+    expect(cardText(doc, 'lonely')).not.toContain('What comes in')
+    expect(cardText(doc, 'lonely')).not.toContain('What goes out')
+  })
+})

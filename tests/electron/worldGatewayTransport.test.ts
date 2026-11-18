@@ -14,6 +14,12 @@ import {
   WORLD_GATEWAY_ID,
   WORLD_READ_TOOL,
   WORLD_PROPOSE_TOOL,
+  WORLD_ANNOTATE_TOOL,
+  NO_ANNOTATE_ROOT_MESSAGE,
+  NO_PART_MESSAGE,
+  PERSON_EVIDENCE_MESSAGE,
+  ANNOTATE_FAILED_MESSAGE,
+  AGENT_EVIDENCE,
   BAD_DESIGN_KEY_MESSAGE,
   NO_DESIGN_MESSAGE,
   NO_PROPOSE_ROOT_MESSAGE,
@@ -21,7 +27,7 @@ import {
   parseWorldReadArgs,
   type WorldGatewayClient
 } from '../../src/main/world/worldGatewayTransport'
-import type { WorldDoc, WorldQuery, WorldReadResult } from '../../src/shared/world/types'
+import type { Claim, WorldDoc, WorldQuery, WorldReadResult } from '../../src/shared/world/types'
 import { MAX_DESIGN_OPS } from '../../src/shared/world/designPatch'
 import { createDesigner, DESIGN_NOT_FOUND, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_FAILED } from '../../src/main/world/designer'
 import { keyForSource, type SourceRegistry, type WorldEntry, type WorldSource } from '../../src/main/world/sources'
@@ -39,30 +45,31 @@ function setup(opts: { has?: boolean | (() => Promise<boolean>); root?: string |
   const read = vi.fn(async (_root: string, _q: WorldQuery) => RESULT)
   const has = opts.has ?? true
   const hasWorld = vi.fn(typeof has === 'function' ? has : async () => has)
-  const client: WorldGatewayClient = { read, hasWorld }
+  const annotate = vi.fn(async (_key: string, _id: string, _claim: Claim) => ({}) as WorldDoc)
+  const client: WorldGatewayClient = { read, hasWorld, annotate }
   const rootFor = vi.fn((cwd?: string) => (opts.root !== undefined ? opts.root : cwd ? `${cwd}-root` : null))
   // The fake cwds ('/repos/app') do not exist on disk: a stub stands in for the folder check.
   const isDir = vi.fn(async () => true)
   const transport = createWorldGatewayTransport(client, rootFor, isDir)
-  return { transport, read, hasWorld, rootFor, isDir }
+  return { transport, read, hasWorld, rootFor, isDir, annotate }
 }
 
 describe('createWorldGatewayTransport', () => {
-  it('is the trusted built-in "lumopolis", frozen, with one tool', async () => {
+  it('is the trusted built-in "lumopolis", frozen, with its tools', async () => {
     const { transport } = setup()
     expect(transport.id).toBe(WORLD_GATEWAY_ID)
     expect(transport.id).toBe('lumopolis')
     expect(transport.trusted).toBe(true)
     expect(Object.isFrozen(transport)).toBe(true)
     const tools = await transport.listTools()
-    expect(tools.map((t) => t.name)).toEqual([WORLD_READ_TOOL])
+    expect(tools.map((t) => t.name)).toEqual([WORLD_READ_TOOL, WORLD_ANNOTATE_TOOL])
     expect(tools[0].name).toBe('world_read')
     // Short (one or two sentences) and clean: the gateway shows it unaltered.
     expect((tools[0].description as string).split('. ').length).toBeLessThanOrEqual(2)
     expect(sanitizeToolMetadata('lumopolis', 'world_read', tools[0].description, tools[0].inputSchema).level).toBe('green')
     const schema = tools[0].inputSchema as { type: string; properties: Record<string, { type: string }> }
     expect(schema.type).toBe('object')
-    expect(Object.keys(schema.properties)).toEqual(['ids', 'text', 'limit', 'cwd'])
+    expect(Object.keys(schema.properties)).toEqual(['ids', 'text', 'limit', 'cwd', 'cards', 'plan'])
     expect(schema.properties.ids.type).toBe('array')
     expect((tools[0].inputSchema as { required: string[] }).required).toEqual(['cwd'])
     expect(tools[0].description).toContain('"cwd"')
@@ -79,7 +86,7 @@ describe('createWorldGatewayTransport', () => {
 
   it('takes an async rootFor', async () => {
     const read = vi.fn(async () => RESULT)
-    const t = createWorldGatewayTransport({ read, hasWorld: async () => true }, async (cwd) => `${cwd}!`, async () => true)
+    const t = createWorldGatewayTransport({ read, hasWorld: async () => true, annotate: vi.fn() }, async (cwd) => `${cwd}!`, async () => true)
     await t.callTool('world_read', { cwd: '/x' })
     expect(read).toHaveBeenCalledWith('/x!', {})
   })
@@ -110,7 +117,7 @@ describe('createWorldGatewayTransport', () => {
       const read = vi.fn(async () => RESULT)
       const rootFor = vi.fn(async (cwd?: string) => cwd ?? null)
       // No folder check passed in: the real one (an async stat) runs.
-      const t = createWorldGatewayTransport({ read, hasWorld: async () => true }, rootFor)
+      const t = createWorldGatewayTransport({ read, hasWorld: async () => true, annotate: vi.fn() }, rootFor)
       const unc = String.raw`\\server\share\repo`
       const device = String.raw`\\?\C:\repo`
       for (const cwd of [unc, '//server/share/repo', device, 'repos/app', '.', join(dir, 'missing'), file]) {
@@ -132,7 +139,7 @@ describe('createWorldGatewayTransport', () => {
 
   it('a folder check that throws counts as not a folder', async () => {
     const rootFor = vi.fn(async () => '/r')
-    const t = createWorldGatewayTransport({ read: vi.fn(async () => RESULT), hasWorld: async () => true }, rootFor, async () => {
+    const t = createWorldGatewayTransport({ read: vi.fn(async () => RESULT), hasWorld: async () => true, annotate: vi.fn() }, rootFor, async () => {
       throw new Error('EPERM')
     })
     await expect(t.callTool('world_read', { cwd: process.cwd() })).rejects.toThrow(BAD_CWD_MESSAGE)
@@ -201,7 +208,7 @@ describe('world_read through the gateway', () => {
     clearGatewayAudit()
     const { transport } = setup()
     const gw = createGateway({ getPolicy: () => defaultPolicy(), transports: () => [transport], scanSecrets: noSecrets })
-    expect((await gw.listTools()).map((t) => t.name)).toEqual(['lumopolis/world_read'])
+    expect((await gw.listTools()).map((t) => t.name)).toEqual(['lumopolis/world_read', 'lumopolis/world_annotate'])
     const res = await gw.callTool('lumopolis/world_read', { text: 'auth', cwd: '/repos/app' })
     expect(res.ok).toBe(true)
     expect(JSON.parse(res.text as string)).toEqual(RESULT)
@@ -254,7 +261,7 @@ describe('world_propose and design reads', () => {
     const readDesign = vi.fn(async (key: string, _q: WorldQuery) => (saved.has(key) ? RESULT : null))
     const base = setup()
     const transport = createWorldGatewayTransport(
-      { read: base.read, hasWorld: base.hasWorld }, base.rootFor, base.isDir, { designer, registry, readDesign }
+      { read: base.read, hasWorld: base.hasWorld, annotate: base.annotate }, base.rootFor, base.isDir, { designer, registry, readDesign }
     )
     return { transport, saved, reg, registry, readDesign, rootFor: base.rootFor }
   }
@@ -262,15 +269,16 @@ describe('world_propose and design reads', () => {
   it('lists world_propose beside world_read, both short and clean, and world_read takes a designKey', async () => {
     const { transport } = proposeSetup()
     const tools = await transport.listTools()
-    expect(tools.map((t) => t.name)).toEqual([WORLD_READ_TOOL, WORLD_PROPOSE_TOOL])
+    expect(tools.map((t) => t.name)).toEqual([WORLD_READ_TOOL, WORLD_ANNOTATE_TOOL, WORLD_PROPOSE_TOOL])
     for (const t of tools) {
       expect((t.description as string).split('. ').length).toBeLessThanOrEqual(2)
       expect(sanitizeToolMetadata('lumopolis', t.name, t.description, t.inputSchema).level).toBe('green')
     }
-    expect(Object.keys((tools[0].inputSchema as { properties: object }).properties)).toEqual(['ids', 'text', 'limit', 'cwd', 'designKey'])
+    expect(Object.keys((tools[0].inputSchema as { properties: object }).properties)).toEqual(['ids', 'text', 'limit', 'cwd', 'cards', 'plan', 'designKey'])
     expect((tools[0].inputSchema as { required?: string[] }).required).toBeUndefined()
-    expect(Object.keys((tools[1].inputSchema as { properties: object }).properties)).toEqual(['ops', 'cwd', 'designKey'])
-    expect((tools[1].inputSchema as { required: string[] }).required).toEqual(['ops'])
+    expect(Object.keys((tools[1].inputSchema as { properties: object }).properties)).toEqual(['id', 'text', 'evidence', 'cwd', 'designKey'])
+    expect(Object.keys((tools[2].inputSchema as { properties: object }).properties)).toEqual(['ops', 'cwd', 'designKey'])
+    expect((tools[2].inputSchema as { required: string[] }).required).toEqual(['ops'])
   })
 
   it('world_propose creates a linked design and returns counts', async () => {
@@ -391,7 +399,145 @@ describe('world_propose and design reads', () => {
     clearGatewayAudit()
     const { transport } = proposeSetup()
     const gw = createGateway({ getPolicy: () => defaultPolicy(), transports: () => [transport], scanSecrets: noSecrets })
-    expect((await gw.listTools()).map((t) => t.name)).toEqual(['lumopolis/world_read', 'lumopolis/world_propose'])
+    expect((await gw.listTools()).map((t) => t.name)).toEqual(['lumopolis/world_read', 'lumopolis/world_annotate', 'lumopolis/world_propose'])
     expect(await gw.callTool('lumopolis/world_propose', { cwd: '/repos/app', ops: OPS })).toMatchObject({ ok: true })
+  })
+})
+
+describe('world_read cards and plan flags', () => {
+  it('parses them as booleans, and a false or null flag is absent', () => {
+    expect(parseWorldReadArgs({ cards: true, plan: true, cwd: '/a' }).query).toEqual({ cards: true, plan: true })
+    expect(parseWorldReadArgs({ cards: false, plan: null }).query).toEqual({})
+    expect(() => parseWorldReadArgs({ cards: 'yes' })).toThrow('"cards" must be true or false')
+    expect(() => parseWorldReadArgs({ plan: 1 })).toThrow('"plan" must be true or false')
+  })
+
+  it('passes them to the client', async () => {
+    const { transport, read } = setup()
+    await transport.callTool('world_read', { cwd: '/repos/app', cards: true, plan: true })
+    expect(read).toHaveBeenCalledWith('/repos/app-root', { cards: true, plan: true })
+  })
+})
+
+describe('world_annotate', () => {
+  const claimOf = (annotate: { mock: { calls: unknown[][] } }, n = 0): Claim => annotate.mock.calls[n][2] as Claim
+  const ROOT = process.cwd()
+  const here = (...p: string[]): string => join(ROOT, ...p)
+
+  it('stores an observed claim under the project key and says so', async () => {
+    const { transport, annotate, hasWorld } = setup({ root: ROOT })
+    const out = JSON.parse(await transport.callTool('world_annotate', {
+      cwd: '/repos/app', id: 'b:auth', text: '  checks tokens  ', evidence: [{ kind: 'file', ref: 'src/auth.ts', excerpt: 'x' }]
+    }))
+    expect(out).toEqual({ ok: true, id: 'b:auth', state: 'observed', evidence: 1 })
+    expect(hasWorld).toHaveBeenCalledWith(ROOT)
+    expect(annotate).toHaveBeenCalledWith(keyForSource({ kind: 'project', root: ROOT }), 'b:auth', {
+      text: 'checks tokens', state: 'observed', evidence: [{ kind: 'file', ref: 'src/auth.ts', excerpt: 'x' }]
+    })
+  })
+
+  it('forces state observed even when the agent sends verified, and refuses person evidence', async () => {
+    const { transport, annotate } = setup({ root: ROOT })
+    await transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't', state: 'verified', evidence: [{ kind: 'test', ref: 't.spec.ts' }] })
+    expect(claimOf(annotate).state).toBe('observed')
+    await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't', evidence: [{ kind: 'person', ref: 'me' }] })).rejects.toThrow(PERSON_EVIDENCE_MESSAGE)
+    expect(annotate).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the agent evidence when none was given or none survived', async () => {
+    const { transport, annotate } = setup({ root: ROOT })
+    await transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })
+    await transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't', evidence: null })
+    await transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't', evidence: [{ kind: 'file', ref: join(ROOT, '..', 'elsewhere', 'x.ts') }] })
+    for (const n of [0, 1, 2]) expect(claimOf(annotate, n).evidence).toEqual([AGENT_EVIDENCE])
+  })
+
+  it('caps text at 400 chars and evidence at 8, makes inside-root paths relative and drops outside ones', async () => {
+    const { transport, annotate } = setup({ root: ROOT })
+    const evidence = [
+      { kind: 'file', ref: here('src', 'a.ts') },
+      { kind: 'file', ref: join(ROOT, '..', 'outside', 'b.ts') },
+      ...Array.from({ length: 12 }, (_, i) => ({ kind: 'symbol', ref: `sym${i}` }))
+    ]
+    await transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 'x'.repeat(500), evidence })
+    const c = claimOf(annotate)
+    expect(c.text).toHaveLength(400)
+    expect(c.evidence).toHaveLength(8)
+    expect(c.evidence.map((e) => e.ref)).toEqual(['src/a.ts', ...Array.from({ length: 7 }, (_, i) => `sym${i}`)])
+  })
+
+  it('refuses a relative path that climbs out of the root', async () => {
+    const { transport, annotate } = setup({ root: ROOT })
+    await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't', evidence: [{ kind: 'file', ref: '../../etc/x' }] })).rejects.toThrow('inside the project folder')
+    expect(annotate).not.toHaveBeenCalled()
+  })
+
+  it('annotates a design by key, keeping relative paths and dropping absolute ones', async () => {
+    const { transport, annotate, hasWorld } = setup()
+    const out = JSON.parse(await transport.callTool('world_annotate', {
+      designKey: 'design:n1', cwd: null, id: 'auth', text: 'planned', evidence: [{ kind: 'file', ref: 'src/a.ts' }, { kind: 'file', ref: here('x.ts') }]
+    }))
+    expect(out.evidence).toBe(1)
+    expect(annotate).toHaveBeenCalledWith('design:n1', 'auth', { text: 'planned', state: 'observed', evidence: [{ kind: 'file', ref: 'src/a.ts' }] })
+    expect(hasWorld).not.toHaveBeenCalled()
+  })
+
+  it('validates its arguments in the same style as the other tools', async () => {
+    const { transport, annotate } = setup()
+    const call = (a: unknown) => transport.callTool('world_annotate', a as Record<string, unknown>)
+    await expect(call({ cwd: '/a', text: 't' })).rejects.toThrow('"id" must be the id')
+    await expect(call({ cwd: '/a', id: '', text: 't' })).rejects.toThrow('"id" must be the id')
+    await expect(call({ cwd: '/a', id: 'b1', text: '  ' })).rejects.toThrow('"text" must be a non-empty string')
+    await expect(call({ cwd: '/a', id: 'b1', text: 5 })).rejects.toThrow('"text" must be a non-empty string')
+    await expect(call(null)).rejects.toThrow('"id" must be the id')
+    await expect(call([])).rejects.toThrow('"id" must be the id')
+    await expect(call({ cwd: '/a', id: 'b1', text: 't', evidence: 'x' })).rejects.toThrow('"evidence" must be an array')
+    for (const bad of [{ kind: 'nope', ref: 'a' }, { kind: 'file' }, { kind: 'file', ref: ' ' }, null, 'file']) {
+      await expect(call({ cwd: '/a', id: 'b1', text: 't', evidence: [bad] })).rejects.toThrow('evidence needs a kind')
+    }
+    await expect(call({ cwd: 5, id: 'b1', text: 't' })).rejects.toThrow('world_annotate "cwd" must be a string')
+    await expect(call({ designKey: 5, id: 'b1', text: 't' })).rejects.toThrow('world_annotate "designKey" must be a string')
+    await expect(call({ designKey: 'design:../x', id: 'b1', text: 't' })).rejects.toThrow(BAD_DESIGN_KEY_MESSAGE)
+    await expect(call({ id: 'b1', text: 't' })).rejects.toThrow(NO_ANNOTATE_ROOT_MESSAGE)
+    await expect(call({ cwd: '  ', id: 'b1', text: 't' })).rejects.toThrow(NO_ANNOTATE_ROOT_MESSAGE)
+    await expect(call({ cwd: 'relative', id: 'b1', text: 't' })).rejects.toThrow(BAD_CWD_MESSAGE)
+    expect(annotate).not.toHaveBeenCalled()
+  })
+
+  it('answers with the same messages as world_read when there is no root or no world', async () => {
+    await expect(setup({ root: null }).transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(NO_ANNOTATE_ROOT_MESSAGE)
+    await expect(setup({ root: ' ' }).transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(NO_ANNOTATE_ROOT_MESSAGE)
+    await expect(setup({ has: false }).transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(NO_WORLD_MESSAGE)
+  })
+
+  it('refuses an unknown id with "No part with that id."', async () => {
+    const { transport, annotate } = setup({ root: ROOT })
+    annotate.mockRejectedValueOnce(new Error(NO_PART_MESSAGE))
+    await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'zzz', text: 't' })).rejects.toThrow('No part with that id.')
+  })
+
+  it('maps a vanished world and other failures to clean messages', async () => {
+    const { transport, annotate } = setup({ root: ROOT })
+    annotate.mockRejectedValueOnce(new Error('No world with that key.'))
+    await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(NO_WORLD_MESSAGE)
+    annotate.mockRejectedValueOnce(new Error('No world with that key.'))
+    await expect(transport.callTool('world_annotate', { designKey: 'design:n1', id: 'b1', text: 't' })).rejects.toThrow(NO_DESIGN_MESSAGE)
+    annotate.mockRejectedValueOnce(new Error('disk full: C:/some/path'))
+    await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(ANNOTATE_FAILED_MESSAGE)
+    annotate.mockRejectedValueOnce('odd')
+    await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't' })).rejects.toThrow(ANNOTATE_FAILED_MESSAGE)
+  })
+
+  it('the tool description is at most 300 characters and is listed only through the gateway', async () => {
+    const { transport } = setup()
+    const tool = (await transport.listTools()).find((t) => t.name === 'world_annotate')
+    expect((tool?.description as string).length).toBeLessThanOrEqual(300)
+    expect(sanitizeToolMetadata('lumopolis', 'world_annotate', tool?.description, tool?.inputSchema).level).toBe('green')
+    expect((tool?.inputSchema as { required: string[] }).required).toEqual(['id', 'text'])
+    clearGatewayAudit()
+    const gw = createGateway({ getPolicy: () => defaultPolicy(), transports: () => [transport], scanSecrets: noSecrets })
+    expect((await gw.listTools()).map((t) => t.name)).toContain('lumopolis/world_annotate')
+    const res = await gw.callTool('lumopolis/world_annotate', { cwd: '/a', id: 'b:auth', text: 'ok' })
+    expect(res.ok).toBe(true)
   })
 })

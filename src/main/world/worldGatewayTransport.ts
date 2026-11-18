@@ -8,6 +8,9 @@
 // the design deps are given, sketches planned parts into a design world: the one linked to the
 // agent's project (made and linked on first use) or a named design. The only thing it writes is
 // Lumopolis data under userData, and every change goes through applyDesignPatch's checks.
+// world_annotate adds an agent's note to a part or line: always stored as an observed claim (never
+// verified, never person evidence: only a person in the pane confirms), text and evidence capped as the
+// pane's annotations are, evidence paths kept inside the project folder.
 // Arguments arrive from a model, so they are checked here: a wrong type is a clean error result
 // (the gateway turns a thrown Error into { ok: false, error }), the limit is clamped to 1..100 and
 // at most 200 ids are passed on. A project with no world yet gets a helpful message, never an empty
@@ -16,7 +19,9 @@ import { stat } from 'fs/promises'
 import { isAbsolute } from 'path'
 import type { Transport, UpstreamTool } from '../mcpGateway'
 import { MAX_DESIGN_OPS } from '../../shared/world/designPatch'
-import type { WorldQuery, WorldReadResult } from '../../shared/world/types'
+import type { Claim, Evidence, EvidenceKind, WorldQuery, WorldReadResult } from '../../shared/world/types'
+import { EVIDENCE_KINDS, MAX_ANNOTATION_EVIDENCE, MAX_ANNOTATION_TEXT } from './annotations'
+import { evidenceRef } from './evidencePath'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, type Designer } from './designer'
 import { createKeyedLock } from './keyedLock'
 import { keyForSource, type SourceRegistry, type WorldSource } from './sources'
@@ -25,6 +30,7 @@ import type { WorldClient } from './worldClient'
 export const WORLD_GATEWAY_ID = 'lumopolis'
 export const WORLD_READ_TOOL = 'world_read'
 export const WORLD_PROPOSE_TOOL = 'world_propose'
+export const WORLD_ANNOTATE_TOOL = 'world_annotate'
 /** The most items one gateway read may ask for (the host's own ceiling is higher). */
 export const MAX_GATEWAY_LIMIT = 100
 /** The most ids one gateway read passes on; the rest are dropped. */
@@ -35,9 +41,15 @@ export const BAD_CWD_MESSAGE = '"cwd" must be the full path of a project folder 
 export const BAD_DESIGN_KEY_MESSAGE = '"designKey" must be a Lumopolis design key, like "design:abc123".'
 export const NO_DESIGN_MESSAGE = 'No Lumopolis design has that key.'
 export const NO_PROPOSE_ROOT_MESSAGE = 'world_propose needs {"cwd": "<project folder>"} (your working directory) or a "designKey".'
+export const NO_ANNOTATE_ROOT_MESSAGE = 'world_annotate needs {"cwd": "<project folder>"} (your working directory) or a "designKey".'
+export const NO_PART_MESSAGE = 'No part with that id.'
+export const PERSON_EVIDENCE_MESSAGE = 'Evidence of kind "person" is only written when a person confirms in Lumopolis.'
+export const ANNOTATE_FAILED_MESSAGE = 'Could not save the annotation.'
+/** The evidence an annotation carries when the agent gave none that survived. */
+export const AGENT_EVIDENCE: Evidence = { kind: 'transcriptStep', ref: 'noted by an agent through world_annotate' }
 
 /** What the transport needs from the world client: the full client satisfies it. */
-export type WorldGatewayClient = Pick<WorldClient, 'read' | 'hasWorld'>
+export type WorldGatewayClient = Pick<WorldClient, 'read' | 'hasWorld' | 'annotate'>
 /** The project root for an agent's working directory, or null when there is none. */
 export type WorldRootFor = (cwd?: string) => string | null | Promise<string | null>
 /** Whether a path is an existing directory. */
@@ -70,7 +82,9 @@ const READ_PROPERTIES = {
   ids: { type: 'array', items: { type: 'string' }, maxItems: MAX_GATEWAY_IDS, description: 'Part or connection ids to fetch' },
   text: { type: 'string', description: 'Words to match in names, labels and claims (case-insensitive)' },
   limit: { type: 'integer', minimum: 1, maximum: MAX_GATEWAY_LIMIT, description: 'Most items to return (default 20)' },
-  cwd: { type: 'string', description: 'The project folder (your working directory): picks the map' }
+  cwd: { type: 'string', description: 'The project folder (your working directory): picks the map' },
+  cards: { type: 'boolean', description: 'Also return a plain-text card per part and line, each claim with its state' },
+  plan: { type: 'boolean', description: 'Also return each design proposal against the built code: missing, changed, extra, removes' }
 }
 
 const WORLD_READ: UpstreamTool = {
@@ -105,6 +119,35 @@ const WORLD_PROPOSE: UpstreamTool = {
     },
     required: ['ops']
   }
+}
+
+const WORLD_ANNOTATE: UpstreamTool = {
+  name: WORLD_ANNOTATE_TOOL,
+  description:
+    "Add a note to a part or line of a project's Lumopolis map, stored as observed (only a person verifies). Pass \"id\", \"text\", optional \"evidence\" and your \"cwd\" (or a \"designKey\").",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'The building or line id' },
+      text: { type: 'string', maxLength: MAX_ANNOTATION_TEXT, description: 'What you found' },
+      evidence: {
+        type: 'array', maxItems: MAX_ANNOTATION_EVIDENCE,
+        items: { type: 'object', properties: { kind: { type: 'string' }, ref: { type: 'string' }, excerpt: { type: 'string' } }, required: ['kind', 'ref'] },
+        description: 'What backs it, e.g. {"kind":"file","ref":"src/a.ts"}'
+      },
+      cwd: { type: 'string', description: 'The project folder (your working directory)' },
+      designKey: DESIGN_KEY_PROPERTY
+    },
+    required: ['id', 'text']
+  }
+}
+
+interface AnnotateArgs {
+  id: string
+  text: string
+  evidence: { kind: EvidenceKind; ref: string; excerpt?: string }[]
+  cwd?: string
+  designKey?: string
 }
 
 interface ReadArgs {
@@ -149,6 +192,11 @@ export function parseWorldReadArgs(args: unknown): ReadArgs {
     if (typeof a.limit !== 'number' || !Number.isFinite(a.limit)) fail('world_read "limit" must be a number')
     query.limit = Math.min(MAX_GATEWAY_LIMIT, Math.max(1, Math.floor(a.limit)))
   }
+  for (const flag of ['cards', 'plan'] as const) {
+    if (a[flag] === undefined || a[flag] === null) continue
+    if (typeof a[flag] !== 'boolean') fail(`world_read "${flag}" must be true or false`)
+    if (a[flag] === true) query[flag] = true
+  }
   const cwd = optString(a, 'cwd', WORLD_READ_TOOL)
   const designKey = optString(a, 'designKey', WORLD_READ_TOOL)
   return { query, ...(cwd === undefined ? {} : { cwd }), ...(designKey === undefined ? {} : { designKey }) }
@@ -162,6 +210,26 @@ function parseProposeArgs(args: unknown): ProposeArgs {
   const cwd = optString(a, 'cwd', WORLD_PROPOSE_TOOL)
   const designKey = optString(a, 'designKey', WORLD_PROPOSE_TOOL)
   return { ops: a.ops, ...(cwd === undefined ? {} : { cwd }), ...(designKey === undefined ? {} : { designKey }) }
+}
+
+/** Checks a model's world_annotate arguments (the evidence is checked against the root later). */
+function parseAnnotateArgs(args: unknown): AnnotateArgs {
+  const a = (typeof args === 'object' && args !== null && !Array.isArray(args) ? args : {}) as Record<string, unknown>
+  if (typeof a.id !== 'string' || a.id === '') fail('world_annotate "id" must be the id of a part or line')
+  if (typeof a.text !== 'string' || a.text.trim() === '') fail('world_annotate "text" must be a non-empty string')
+  const raw = a.evidence === undefined || a.evidence === null ? [] : a.evidence
+  if (!Array.isArray(raw)) fail('world_annotate "evidence" must be an array')
+  const evidence = raw.map((e: unknown) => {
+    const r = (typeof e === 'object' && e !== null ? e : {}) as Record<string, unknown>
+    if (typeof r.kind !== 'string' || !EVIDENCE_KINDS.has(r.kind) || typeof r.ref !== 'string' || r.ref.trim() === '') {
+      fail('world_annotate evidence needs a kind (file, symbol, test, ...) and a ref')
+    }
+    if (r.kind === 'person') fail(PERSON_EVIDENCE_MESSAGE)
+    return { kind: r.kind as EvidenceKind, ref: r.ref, ...(typeof r.excerpt === 'string' ? { excerpt: r.excerpt } : {}) }
+  })
+  const cwd = optString(a, 'cwd', WORLD_ANNOTATE_TOOL)
+  const designKey = optString(a, 'designKey', WORLD_ANNOTATE_TOOL)
+  return { id: a.id, text: a.text, evidence, ...(cwd === undefined ? {} : { cwd }), ...(designKey === undefined ? {} : { designKey }) }
 }
 
 /** A designKey a model passed: the design pattern (never a path), else a clean error. */
@@ -198,6 +266,40 @@ export function createWorldGatewayTransport(
     if (typeof root !== 'string' || root.trim() === '') fail(NO_ROOT_MESSAGE)
     if (!(await client.hasWorld(root))) fail(NO_WORLD_MESSAGE)
     return JSON.stringify(await client.read(root, parsed.query))
+  }
+
+  const annotate = async (args: unknown): Promise<string> => {
+    const p = parseAnnotateArgs(args)
+    let key: string
+    let root: string | null = null
+    if (p.designKey !== undefined) {
+      checkDesignKey(p.designKey)
+      key = p.designKey
+    } else {
+      const cwd = await usableCwd(p.cwd)
+      if (cwd === undefined) fail(NO_ANNOTATE_ROOT_MESSAGE)
+      const found = await rootFor(cwd)
+      if (typeof found !== 'string' || found.trim() === '') fail(NO_ANNOTATE_ROOT_MESSAGE)
+      if (!(await client.hasWorld(found))) fail(NO_WORLD_MESSAGE)
+      root = found
+      key = keyForSource({ kind: 'project', root })
+    }
+    // Paths in the evidence: inside the root they become relative, outside ones are dropped.
+    const evidence: Evidence[] = []
+    for (const e of p.evidence) {
+      if (evidence.length === MAX_ANNOTATION_EVIDENCE) break
+      const ref = await evidenceRef(e.ref, root)
+      if (ref !== null) evidence.push({ ...e, ref })
+    }
+    const claim: Claim = { text: p.text.trim().slice(0, MAX_ANNOTATION_TEXT), state: 'observed', evidence: evidence.length > 0 ? evidence : [AGENT_EVIDENCE] }
+    try {
+      await client.annotate(key, p.id, claim)
+    } catch (e) {
+      const m = e instanceof Error ? e.message : ''
+      if (m === NO_PART_MESSAGE) fail(NO_PART_MESSAGE)
+      fail(m === 'No world with that key.' ? (p.designKey === undefined ? NO_WORLD_MESSAGE : NO_DESIGN_MESSAGE) : ANNOTATE_FAILED_MESSAGE)
+    }
+    return JSON.stringify({ ok: true, id: p.id, state: claim.state, evidence: claim.evidence.length })
   }
 
   const propose = async (deps: WorldDesignDeps, args: unknown): Promise<string> => {
@@ -238,9 +340,10 @@ export function createWorldGatewayTransport(
   return Object.freeze({
     id: WORLD_GATEWAY_ID,
     trusted: true as const,
-    listTools: async (): Promise<UpstreamTool[]> => (design ? [WORLD_READ_WITH_DESIGN, WORLD_PROPOSE] : [WORLD_READ]),
+    listTools: async (): Promise<UpstreamTool[]> => (design ? [WORLD_READ_WITH_DESIGN, WORLD_ANNOTATE, WORLD_PROPOSE] : [WORLD_READ, WORLD_ANNOTATE]),
     async callTool(tool: string, args: unknown): Promise<string> {
       if (tool === WORLD_READ_TOOL) return read(args)
+      if (tool === WORLD_ANNOTATE_TOOL) return annotate(args)
       if (tool === WORLD_PROPOSE_TOOL && design) return propose(design, args)
       fail(`unknown Lumopolis tool "${tool}"`)
     }

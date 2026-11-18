@@ -63,9 +63,15 @@ export type WorldAction =
 
 // ---- world host wire shapes (main <-> renderer, main <-> the Lumopolis utility process) ----
 /** A filter over a stored world: by ids, by case-insensitive text, or both; `limit` defaults to 20. */
-export interface WorldQuery { ids?: string[]; text?: string; limit?: number }
+export interface WorldQuery { ids?: string[]; text?: string; limit?: number; /** A plain-text card per building and line returned. */ cards?: boolean; /** Each proposal's plan versus built. */ plan?: boolean }
 /** The matching districts, buildings and edges, plus the evidence their claims cite (deduplicated). */
-export interface WorldReadResult { items: (Building | WorldEdge | District)[]; evidence: Evidence[] }
+export interface WorldReadResult {
+  items: (Building | WorldEdge | District)[]; evidence: Evidence[]
+  /** Item id to plain-text card (with `cards`). */
+  cards?: Record<string, string>
+  /** Each proposal against the built code (with `plan`). */
+  plan?: { proposals: { id: string; title: string; missing: string[]; changed: string[]; extra: string[]; removes: string[] }[] }
+}
 /** A compile stage's progress, pushed while a world compiles. `root` is the folder the renderer asked about. */
 export interface WorldProgressEvent { root: string; projectKey: string; stage: string; pct: number }
 /** A stored world changed after files changed (the watcher's recompile finished). */

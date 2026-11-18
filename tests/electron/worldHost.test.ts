@@ -1109,3 +1109,37 @@ describe('annotate', () => {
     expect(await (deps.annotations as () => Promise<unknown>)()).toEqual({ 'b-api': [person('Kept across compiles')] })
   })
 })
+
+describe('filterWorld cards and plan', () => {
+  const linked = (): WorldDoc => {
+    const d = doc()
+    d.layers.plan = [
+      { id: 'design:n1', title: 'Linked design', summary: [], buildings: [], edges: [], removes: ['b-db'], reconcile: { matched: { auth: 'b-api' }, missing: ['mail'], extra: ['b-db'], changed: ['b-api'], planAt: 5 } },
+      { id: 'p2', title: 'Sketch', summary: [], buildings: [{ ...d.buildings[0], id: 'sk1' }], edges: [] }
+    ]
+    return d
+  }
+
+  it('returns nothing extra unless asked, and empty results for no world', () => {
+    expect(filterWorld(doc(), {})).not.toHaveProperty('cards')
+    expect(filterWorld(doc(), {})).not.toHaveProperty('plan')
+    expect(filterWorld(doc(), { cards: false, plan: false })).not.toHaveProperty('plan')
+    expect(filterWorld(null, { cards: true, plan: true })).toEqual({ items: [], evidence: [], cards: {}, plan: { proposals: [] } })
+  })
+
+  it('cards: a plain-text card per building and line, none for a district', () => {
+    const r = filterWorld(doc(), { cards: true })
+    expect(Object.keys(r.cards as object).sort()).toEqual(['b-api', 'b-db', 'e-1'])
+    expect(r.cards?.['b-api']).toContain('[')
+    expect(filterWorld(doc(), { cards: true, ids: ['d-core'] }).cards).toEqual({})
+  })
+
+  it('plan: each proposal with missing, changed, extra and removes', () => {
+    const r = filterWorld(linked(), { plan: true })
+    expect(r.plan?.proposals).toEqual([
+      { id: 'design:n1', title: 'Linked design', missing: ['mail'], changed: ['b-api'], extra: ['b-db'], removes: ['b-db'] },
+      { id: 'p2', title: 'Sketch', missing: ['sk1'], changed: [], extra: [], removes: [] }
+    ])
+    expect(r).not.toHaveProperty('cards')
+  })
+})

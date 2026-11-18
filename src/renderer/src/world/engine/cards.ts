@@ -1,17 +1,11 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
-import type { Building, Claim, WorldDoc, WorldEdge } from '../../../../shared/world/types'
+import type { Claim, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
+import { BUILD_STATUS_TEXT as STATUS, allBuildings, allEdges, nodeName, notInDesign, runsIn as runsInOf } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
 export { escapeHtml } from './html'
-
-const STATUS: Record<Building['status'], string> = {
-  verified: 'Built · tests pass', built: 'Built · not yet checked', gap: 'Built · no test results yet', proposed: 'Planned only',
-}
-
-const allBuildings = (doc: WorldDoc): Building[] => [...doc.buildings, ...doc.layers.plan.flatMap((p) => p.buildings)]
-const allEdges = (doc: WorldDoc): WorldEdge[] => [...doc.edges, ...doc.layers.plan.flatMap((p) => p.edges)]
 
 const section = (title: string, body: string): string => `<h4>${esc(title)}</h4>${body}`
 
@@ -39,8 +33,6 @@ function chips(doc: WorldDoc, techs: string[]): string {
   return techs.map((t) => `<span class="chip" data-tech="${esc(t)}" title="${esc(doc.glossary[t] ?? '')}">${esc(t)}</span>`).join('')
 }
 
-const nodeName = (doc: WorldDoc, id: string): string =>
-  allBuildings(doc).find((b) => b.id === id)?.name ?? doc.externals.find((x) => x.id === id)?.name ?? id
 const nodeLink = (doc: WorldDoc, id: string): string => `<a class="lnk link-node" data-node="${esc(id)}">${esc(nodeName(doc, id))}</a>`
 const edgeLink = (e: WorldEdge): string => `<a class="lnk link-edge" data-edge="${esc(e.id)}">${esc(edgeSummary(e.label))}</a>`
 /** The small colour square of a line's cargo, as in the legend. */
@@ -63,15 +55,13 @@ export function buildingCard(doc: WorldDoc, id: string): string {
   const edges = allEdges(doc)
   const ins = edges.filter((e) => e.to === id)
   const outs = edges.filter((e) => e.from === id)
-  const proc = doc.processes[b.process]
   // A part with no technology of its own is just its name: no dangling separator.
   const parts = b.floors.map((f) => `<li><b>${esc(f.name)}</b>${f.tech.length ? ` <span class="muted">· ${esc(f.tech.join(', '))}</span>` : ''}</li>`).join('')
   // A built building the project's linked design does not have.
-  const unplanned = doc.layers.plan.some((p) => p.reconcile !== undefined && p.reconcile.extra.indexOf(id) >= 0)
-  const tag = unplanned ? ` <span class="tag">${esc(NOT_IN_DESIGN)}</span>` : ''
+  const tag = notInDesign(doc, id) ? ` <span class="tag">${esc(NOT_IN_DESIGN)}</span>` : ''
   // As the prototype's inspector: the name, its technology, a status pill, then the process box
   // (left out when the code shows no process for this part, rather than an empty "Runs in:").
-  const runsIn = proc ? proc.label : b.process
+  const runsIn = runsInOf(doc, b)
   const aiName = b.nameState === 'inferred' ? ' <span class="muted">(name suggested by AI)</span>' : ''
   return `<h3>${esc(b.name)}${aiName}</h3>${b.techLabel ? `<p class="muted">${esc(b.techLabel)}</p>` : ''}`
     + `<p class="status"><span class="tag status-${esc(b.status)}">${esc(STATUS[b.status])}</span>${tag}</p>`

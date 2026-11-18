@@ -889,3 +889,14 @@ describe('createWorldClient', () => {
     })
   })
 })
+
+describe('read with cards and plan', () => {
+  it('passes the flags to the host and returns what it answers', async () => {
+    const answer = { items: [], evidence: [], cards: { b1: 'B1 card' }, plan: { proposals: [] } }
+    const { client, spawned } = setup({}, (t) => {
+      t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: answer })
+    })
+    expect(await client.read(ROOT, { cards: true, plan: true })).toEqual(answer)
+    expect(spawned[0].calls()[0].args).toEqual([KEY, { cards: true, plan: true }])
+  })
+})

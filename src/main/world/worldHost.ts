@@ -17,7 +17,8 @@ import * as fsp from 'node:fs/promises'
 import { join } from 'node:path'
 import type { GraphSnapshot } from '../codeGraph'
 import { lowerHostPriority } from '../hostPriority'
-import type { Claim, Evidence, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
+import { cardText } from './cardText'
+import type { Claim, Evidence, Proposal, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotations, type AnnotationStore } from './annotations'
 import { compileWorld, createRecompileScheduler, type CompileDeps } from './compile'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
@@ -239,8 +240,10 @@ function wordsOf(item: Item): string {
 
 /** Districts, buildings and edges matching every given filter (ids, then text), and their claims' evidence. */
 export function filterWorld(doc: WorldDoc | null, query: WorldQuery | null | undefined): WorldReadResult {
-  if (!doc) return { items: [], evidence: [] }
   const q = query ?? {}
+  if (!doc) {
+    return { items: [], evidence: [], ...(q.cards === true ? { cards: {} } : {}), ...(q.plan === true ? { plan: { proposals: [] } } : {}) }
+  }
   const limit =
     typeof q.limit === 'number' && Number.isFinite(q.limit)
       ? Math.min(MAX_READ_LIMIT, Math.max(1, Math.floor(q.limit)))
@@ -261,7 +264,35 @@ export function filterWorld(doc: WorldDoc | null, query: WorldQuery | null | und
       }
     }
   }
-  return { items, evidence }
+  return {
+    items, evidence,
+    ...(q.cards === true ? { cards: cardsOf(doc, items) } : {}),
+    ...(q.plan === true ? { plan: { proposals: doc.layers.plan.map(proposalPlan) } } : {})
+  }
+}
+
+/** A plain-text card for each building and line among the items (a district has none). */
+function cardsOf(doc: WorldDoc, items: Item[]): Record<string, string> {
+  const out: Record<string, string> = Object.create(null)
+  for (const it of items) {
+    const text = cardText(doc, it.id)
+    if (text !== '') out[it.id] = text
+  }
+  return out
+}
+
+/**
+ * One proposal against the built code. The linked design carries what reconcilePlan found when the world
+ * compiled (missing, changed while the build still falls short of the plan, extra); a hand-sketched one has
+ * nothing built to compare with, so all its buildings are missing.
+ */
+function proposalPlan(p: Proposal): NonNullable<WorldReadResult['plan']>['proposals'][number] {
+  const r = p.reconcile
+  return {
+    id: p.id, title: p.title,
+    missing: r ? [...r.missing] : p.buildings.map((b) => b.id),
+    changed: r ? [...r.changed] : [], extra: r ? [...r.extra] : [], removes: [...(p.removes ?? [])]
+  }
 }
 
 // ── The host ─────────────────────────────────────────────────────────────────────────────────────

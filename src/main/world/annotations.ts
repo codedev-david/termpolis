@@ -23,7 +23,7 @@ export interface AnnotationStore {
 }
 
 const STATES = new Set<string>(['proposed', 'observed', 'inferred', 'verified'])
-const KINDS = new Set<string>(['file', 'symbol', 'test', 'transcriptStep', 'memory', 'commit', 'trace', 'metric', 'log', 'deploy', 'person'])
+export const EVIDENCE_KINDS = new Set<string>(['file', 'symbol', 'test', 'transcriptStep', 'memory', 'commit', 'trace', 'metric', 'log', 'deploy', 'person'])
 const isRec = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /** A well-formed, capped claim from whatever was given (or read back from disk), else null. */
@@ -32,7 +32,7 @@ function cleanClaim(v: unknown): Claim | null {
   const evidence: Evidence[] = []
   for (const e of v.evidence) {
     if (evidence.length === MAX_ANNOTATION_EVIDENCE) break
-    if (isRec(e) && KINDS.has(e.kind as string) && typeof e.ref === 'string') {
+    if (isRec(e) && EVIDENCE_KINDS.has(e.kind as string) && typeof e.ref === 'string') {
       evidence.push(typeof e.excerpt === 'string' ? { kind: e.kind as EvidenceKind, ref: e.ref, excerpt: e.excerpt } : { kind: e.kind as EvidenceKind, ref: e.ref })
     }
   }
