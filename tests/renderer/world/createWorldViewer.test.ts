@@ -609,6 +609,46 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(viewer.getSelection()).toEqual(['e1'])
   })
 
+  /** The same world after a Re-layout: every part at a new spot. */
+  const relaidOut = (): WorldDoc => {
+    const d = rich()
+    d.generatedAt += 1
+    for (const [id, [x, y, z]] of Object.entries(d.layout.positions)) d.layout.positions[id] = [x + 40, y, z - 40]
+    return d
+  }
+
+  it('a re-layout of the same project closes the open building and flies to the kept selection at its new spot (fix wave I3)', () => {
+    const { r, aim, at, sels, viewer, lastCard } = setup3d()
+    aim({ kind: 'node', id: 'b1' })
+    at('dblclick')
+    expect(r.setExploded).toHaveBeenLastCalledWith('b1')
+    sels.length = 0
+    r.overview.mockClear()
+    r.frame.mockClear()
+    viewer.load(relaidOut())
+    expect(r.setExploded).toHaveBeenLastCalledWith(null)
+    expect(viewer.getSelection()).toEqual(['b1'])
+    expect(sels).toEqual([])
+    expect(lastCard()).not.toBeNull()
+    expect(r.frame).toHaveBeenCalledTimes(1)
+    expect(r.frame.mock.calls[0][0]).toContain('b1')
+    expect(r.overview).not.toHaveBeenCalled()
+  })
+
+  it('a re-layout with nothing selected refits the overview; a part that stays put keeps the camera (fix wave I3)', () => {
+    const { r, viewer } = setup3d()
+    r.overview.mockClear()
+    r.frame.mockClear()
+    // A newer world with one new part, the rest where they were: the camera stays.
+    const grown = rich()
+    grown.layout.positions.fresh = [90, 0, 90]
+    viewer.load(grown)
+    expect(r.overview).not.toHaveBeenCalled()
+    viewer.load(relaidOut())
+    expect(r.overview).toHaveBeenCalledTimes(1)
+    expect(r.frame).not.toHaveBeenCalled()
+  })
+
   it('a newer world of the same project that drops the open building closes it and clears the selection, keeping the camera', () => {
     const { r, aim, at, sels, viewer, lastCard } = setup3d()
     aim({ kind: 'node', id: 'b1' })

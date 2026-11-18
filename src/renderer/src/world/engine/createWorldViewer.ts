@@ -333,8 +333,20 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     if (!r3) return Promise.resolve()
     r3.setSelected(kind === 'building' || kind === 'edge' ? id : null)
     setFocus(focus)
-    // A building is framed with its neighbours in view, so the click shows where it sits.
-    return kind === 'building' ? r3.frame(frameIds, instant, [...focus.ids].filter((x) => x !== id)) : r3.frame(frameIds, instant)
+    return frameOn(r3, selection, focus.ids, frameIds, instant)
+  }
+
+  /** Flies to a selection. A building is framed with its neighbours in view, so the click shows where it sits. */
+  function frameOn(r: ThreeRenderer, sel: WorldSelection, lit: Set<string>, frameIds: string[], instant: boolean): Promise<void> {
+    return sel.kind === 'building' ? r.frame(frameIds, instant, [...lit].filter((x) => x !== sel.id)) : r.frame(frameIds, instant)
+  }
+
+  /** True when a part both worlds place stands somewhere else in `next`: a Re-layout moved it. */
+  function moved(prev: WorldDoc, next: WorldDoc): boolean {
+    return Object.entries(prev.layout.positions).some(([id, p]) => {
+      const q = next.layout.positions[id]
+      return q !== undefined && (q[0] !== p[0] || q[1] !== p[1] || q[2] !== p[2])
+    })
   }
 
   function deselect(): void {
@@ -653,12 +665,14 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       if (motion) r3?.keepGhosts(motion.removed)
       // A newer world of the same project (a watched change, labels that arrived) keeps the view: the
       // camera, the open building and the selection with its card, each while its part still exists.
-      // Another project starts afresh from the overview.
+      // Another project starts afresh from the overview. A Re-layout moves the kept parts: the open
+      // building closes, and the camera flies to the kept selection at its new spot, or to the overview.
       const same = doc !== null && doc.projectKey === d.projectKey
+      const relaid = same && moved(doc as WorldDoc, d)
       doc = d
       revealProposal = undefined
       fogged.clear()
-      if (!same || (exploded !== null && !d.buildings.some((b) => b.id === exploded))) exploded = null
+      if (!same || relaid || (exploded !== null && !d.buildings.some((b) => b.id === exploded))) exploded = null
       const kept = same && selection !== null && kindMatches(selection.id, selection.kind) ? selection : null
       const dropped = selection !== null && kept === null
       selection = kept
@@ -671,6 +685,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       if (r3) {
         if (!kept) r3.setSelected(null)
         if (!same) void r3.overview(true)
+        else if (relaid) {
+          if (kept) {
+            const { focus, frameIds } = focusFor(kept)
+            void frameOn(r3, kept, focus.ids, frameIds, reduced)
+          } else void r3.overview(reduced)
+        }
         if (motion) r3.animateChanges({ rise: riseIds(motion), pulse: motion.changed })
       }
       toast.show(diff ? diffSummary(diff) : '', THEMES[themeName])

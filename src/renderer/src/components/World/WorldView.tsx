@@ -401,7 +401,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     loadedRef.current = doc
     // The same project grows from the world it showed: new parts rise, changed ones pulse. The viewer
     // keeps the camera, the open building and the selection across it (a labelled follow-up, a
-    // watched change), so nothing is opened again here.
+    // watched change), so nothing is opened again here; a Re-layout, which moves the parts, closes the
+    // open building and flies to the selection's new spot or the overview.
     if (held !== null && held.projectKey === doc.projectKey) viewer.load(doc, { animateFrom: held })
     else viewer.load(doc)
   }, [viewer, doc])
