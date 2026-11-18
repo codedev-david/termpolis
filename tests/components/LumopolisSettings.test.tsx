@@ -148,12 +148,22 @@ describe('LumopolisSettings', () => {
   describe('read CI results with GitHub CLI', () => {
     const ciToggle = () => screen.getByTestId('settings-world-ci-toggle')
 
-    it('is labelled, says it runs the gh command, and is off until main says otherwise', async () => {
-      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, worldCiResults: true } })) })
+    it('is labelled, says it runs the gh command, and is on until main says otherwise', async () => {
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true, worldCiResults: false } })) })
       render(<LumopolisSettings />)
       expect(screen.getByText('Read CI results with GitHub CLI')).toBeInTheDocument()
-      expect(screen.getByTestId('lumopolis-ci-settings').textContent).toContain('runs the gh command')
+      const copy = screen.getByTestId('lumopolis-ci-settings').textContent
+      expect(copy).toContain('runs the gh command')
+      expect(copy).toContain('On by default')
+      expect(copy).toContain('never runs gh')
+      expect(ciToggle()).toHaveAttribute('aria-checked', 'true')
+      await settle()
       expect(ciToggle()).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('stays on when main sends no CI field', async () => {
+      api({ worldSettingsGet: vi.fn(async () => ({ success: true, data: { worldLabelling: true } })) })
+      render(<LumopolisSettings />)
       await settle()
       expect(ciToggle()).toHaveAttribute('aria-checked', 'true')
     })
@@ -182,7 +192,7 @@ describe('LumopolisSettings', () => {
       api({})
       render(<LumopolisSettings />)
       fireEvent.click(ciToggle())
-      expect(ciToggle()).toHaveAttribute('aria-checked', 'true')
+      expect(ciToggle()).toHaveAttribute('aria-checked', 'false')
     })
   })
 

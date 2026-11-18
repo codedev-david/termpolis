@@ -16,14 +16,15 @@ export function LumopolisSettings(): JSX.Element {
   const [labelling, setLabelling] = useState(true)
   // OFF by default, as in main: only a stored `true` turns it on.
   const [speak, setSpeak] = useState(false)
-  // OFF by default, as in main: reading CI runs the `gh` command, which uses its stored GitHub login.
-  const [ci, setCi] = useState(false)
+  // ON by default, as in main: only a stored `false` turns it off. Reading CI runs the `gh` command,
+  // which uses its stored GitHub login.
+  const [ci, setCi] = useState(true)
   const [agent, setAgent] = useState<WorldAgent>('claude')
 
   useEffect(() => {
     let live = true
     window.termpolis.worldSettingsGet?.()
-      ?.then((res) => { if (live && res.success) { setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true); setCi(res.data.worldCiResults === true); if (isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent) } })
+      ?.then((res) => { if (live && res.success) { setLabelling(res.data.worldLabelling); setSpeak(res.data.worldSpeakAnswers === true); setCi(res.data.worldCiResults !== false); if (isWorldAgent(res.data.worldAgent)) setAgent(res.data.worldAgent) } })
       ?.catch(() => undefined)
     return () => { live = false }
   }, [])
@@ -54,7 +55,7 @@ export function LumopolisSettings(): JSX.Element {
     setCi(next)
     const revert = (): void => setCi(prev)
     window.termpolis.worldSettingsSet?.({ worldCiResults: next })
-      ?.then((res) => { if (res.success) setCi(res.data.worldCiResults === true); else revert() })
+      ?.then((res) => { if (res.success) setCi(res.data.worldCiResults !== false); else revert() })
       ?.catch(revert)
   }
 
@@ -169,7 +170,8 @@ export function LumopolisSettings(): JSX.Element {
           </span>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             Lumopolis runs the <code>gh</code> command to read your project&apos;s latest CI result, so a part whose tests
-            passed there shows as verified. <code>gh</code> uses the GitHub login it already has. Off by default.
+            passed there shows as verified. <code>gh</code> uses the GitHub login it already has. It runs only for a project with a
+            GitHub remote, when <code>gh</code> is installed. On by default; turn it off and Lumopolis never runs <code>gh</code>.
           </span>
         </div>
       </div>

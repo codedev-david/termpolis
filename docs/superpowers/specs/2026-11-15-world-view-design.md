@@ -61,7 +61,7 @@ David's framing: "almost a world model for humans to understand", a bridge betwe
 - **Agent tool budget:** the agent-facing MCP tool descriptions are nearly full. World tools are exposed through the existing gateway route (`gateway_list_tools` / `gateway_call`, `src/main/mcpGateway`), not as new top-level MCP tools.
 - **Renderer target ES2020** (no `.at()`), Electron 43.
 - **New dependency:** Three.js (`three`) is not yet a dependency. David's rule is never to run `npm install` on this laptop. The plan must add it in a way consistent with that rule, for example in CI or another machine, with the lockfile committed.
-- **Providers:** US-based only (Claude Code, Codex, Gemini CLI). AI requests go through the existing token proxy (Headroom).
+- **Providers:** US-based only (Claude Code, Codex, Gemini CLI). AI requests go through the existing token proxy (Headroom). Gemini CLI has no proxy route, so a Lumopolis run on Gemini goes straight to its provider, uncompressed, and Settings ▸ Lumopolis says so when Gemini is picked.
 - **Privacy:** rendering is fully local. The only data that leaves the machine is what an agent sends to its provider, the same as any agent session: selected evidence for a question, and module summaries for labelling. A setting turns AI labelling off; the world then shows unlabelled structure.
 - **Quality gates:** Windows CI coverage of lines 97 / functions 96 / branches 95 / statements 96. The `e2e/` suite is blocking and sharded.
 - **Releases:** commit directly to `main` and tag releases (David's workflow).
@@ -116,6 +116,8 @@ World {
 Claim    { text, state: proposed | observed | inferred | verified, evidence: Evidence[] }
 Evidence { kind: file | symbol | test | transcriptStep | memory | commit, ref, excerpt? }
 ```
+
+How the code stores this: an edge's direction is `twoWay: boolean` (true is two way). There is no `layers.built` key: the top-level `buildings`, `edges` and `districts` are the built layer. A building's `status` (`BuildStatus`: verified, built, gap, proposed) keeps `built` for a solid part whose tests fail or only partly pass, while claims use the `observed` state. A design world (5.12) stores its planned parts as top-level buildings with status `proposed`; on a project, a plan shows through `layers.plan`, and a linked design carries `reconcile`, so both draw the same wireframes on screen.
 
 Every sentence on a card is a `Claim`. The UI marks `inferred` claims as such, and items whose claims are mostly inferred get fog. "Verified" means a linked test passed or a person confirmed it.
 
@@ -174,7 +176,7 @@ The interactions match the v2 prototype (decided by David's approval of that ver
   - `openCard(id)`
   - `draftProposal(…)`
 
-  The pane carries them out as the text appears, so the camera moves and parts light up while the answer is read. Each claim in an answer links to evidence and to world items.
+  The pane carries them out as the text appears, so the camera moves and parts light up while the answer is read. The headless run returns the whole answer at once, so the pane reveals it one sentence at a time at reading pace and plays each sentence's actions as it appears (with reduced motion, all at once). Each claim in an answer links to evidence and to world items.
 - **Honesty rule:** when the evidence doesn't support an answer (for example, nothing recorded why something was designed a certain way), the agent says so explicitly, and the related items stay fogged.
 - **Changes from conversation:** "make this faster" or "add team sharing" produces `draftProposal`, which shows up as wireframes. Follow-up messages edit the proposal. Saying or clicking "approve" moves it to Build (5.4). The conversation never edits code itself.
 - **Spoken answers (optional, off by default):** Termpolis can listen but not speak today (verified: there is no speech output in `src/`). Answers can be read aloud through Chromium's `speechSynthesis`, which uses the operating system's voices locally at no cost. Text is always shown.
@@ -304,9 +306,9 @@ David (2026-11-15): the tool should also look into a **live running application,
   Agents learn about them from **one line in the project primer** ("this project has a World; use `gateway_call` world_* to read it or draw a plan"), not from new tool descriptions.
 - **Conversation sessions.** Phase 2 uses a **fresh, primed, read-only one-shot run per question** through `headlessExec`, with a compact summary of the conversation so far plus the selection's evidence. That works the same for Claude Code, Codex and Gemini CLI. Keeping a session warm (for example `--resume` on Claude) is a later speed and token optimisation, not a 2.0 requirement.
 - **Labelling providers.** Labelling uses the **default headless agent's cheapest model** through the same headless path. Termpolis's default headless agent is Claude Code (the same default `agent_exec` uses), so that is Haiku; the labelling code can also run the matching small model on Codex or Gemini if a per-user default-agent setting is added later. With no agent installed, or labelling turned off, the world is unlabelled: names from the code, structure and connections, with no prose.
-- **Where "verified" comes from.** The compiler **only reads test results that already exist**: Vitest/Jest JSON or JUnit XML in the repository, test runs found in agent transcripts, and CI results through `gh` when available. It **never runs tests itself**, which keeps it light and EDR-quiet. A project with no results shows amber ("no test results yet"), never green.
+- **Where "verified" comes from.** The compiler **only reads test results that already exist**: Vitest/Jest JSON or JUnit XML in the repository, test runs found in agent transcripts, and CI results through `gh`, which is on by default and can be turned off in Settings ▸ Lumopolis (it runs only for a project with a GitHub remote, when `gh` is installed). It **never runs tests itself**, which keeps it light and EDR-quiet. A project with no results shows amber ("no test results yet"), never green.
 - **A world for an idea with no code yet.** World documents can also be keyed by a named workspace, not only a repository. A plan-only world is a world with an empty built layer. Its scope is in the 2.0 question below.
-- **Testing the 3D code.** All logic (layout, data, actions, card content, protocol parsing) lives in plain, tested modules. Only the thin Three.js drawing wrapper is excluded from unit coverage, the same way `embedWorker.ts` / `rerankWorker.ts` are excluded today, and it is covered by e2e screenshots and interaction tests instead. The coverage gate itself is unchanged.
+- **Testing the 3D code.** All logic (layout, data, actions, card content, protocol parsing) lives in plain, tested modules. `createWorldViewer.ts`, the logic around the drawing, is under the 100% engine gate with a stand-in renderer; only the thin Three.js drawing wrapper, `threeRenderer.ts`, is for now excluded from unit coverage, the same way `embedWorker.ts` / `rerankWorker.ts` are excluded today, and it is covered by e2e screenshots and interaction tests instead. The coverage gate itself is unchanged.
 
 ## 11. Answered by David (2026-11-15)
 

@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CI_CACHE_MS, CI_RUNS_FETCHED, GH_TIMEOUT_MS, createWorldRuns, type RunsDeps } from '../../src/main/world/worldRuns'
+import { CI_CACHE_MS, CI_RUNS_FETCHED, GH_TIMEOUT_MS, commandOnPath, createWorldRuns, type RunsDeps } from '../../src/main/world/worldRuns'
 import { MAX_TRANSCRIPTS, TRANSCRIPT_CACHE_MS } from '../../src/main/world/transcriptRuns'
 
 const ROOT = '/repo'
 const HEAD = 'a'.repeat(40)
 const OLD = 'b'.repeat(40)
 const GH_ARGS = ['run', 'list', '--branch', 'feature/x', '--limit', String(CI_RUNS_FETCHED), '--json', 'conclusion,headSha,createdAt,databaseId,workflowName']
+const REMOTES = 'origin\tgit@github.com:o/r.git (fetch)\norigin\tgit@github.com:o/r.git (push)\n'
+/** Git's answers for the CI tests: HEAD, the branch and a GitHub remote. */
+const gitAnswer = (args: string[], head = HEAD): { stdout: string } =>
+  ({ stdout: args[0] === 'remote' ? REMOTES : args[1] === 'HEAD' ? head : 'feature/x' })
 const row = (over: object = {}): object => ({ conclusion: 'success', headSha: HEAD, createdAt: '2026-11-02T10:00:00Z', databaseId: 1, workflowName: 'Tests', ...over })
 
 interface Setup {
@@ -13,16 +17,18 @@ interface Setup {
   branch?: string
   rows?: unknown
   changed?: string
+  remotes?: string
 }
 function make(over: Partial<RunsDeps> = {}, o: Setup = {}): { d: RunsDeps; exec: ReturnType<typeof vi.fn>; clock: { t: number } } {
   const clock = { t: Date.parse('2026-11-03T00:00:00Z') }
   const exec = vi.fn(async (bin: string, args: string[]) => {
     if (bin === 'gh') return { stdout: JSON.stringify(o.rows ?? [row()]) }
+    if (args[0] === 'remote') return { stdout: o.remotes ?? REMOTES }
     if (args[0] === 'rev-parse' && args[1] === 'HEAD') return { stdout: (o.head ?? HEAD) + '\n' }
     if (args[0] === 'rev-parse') return { stdout: (o.branch ?? 'feature/x') + '\n' }
     return { stdout: o.changed ?? 'src/a.ts\n\n src/b.ts \n' }
   })
-  const d: RunsDeps = { listTranscripts: async () => [], transcriptsAllowed: () => true, ciAllowed: async () => true, exec, now: () => clock.t, ...over }
+  const d: RunsDeps = { listTranscripts: async () => [], transcriptsAllowed: () => true, ciAllowed: async () => true, ghOnPath: async () => true, exec, now: () => clock.t, ...over }
   return { d, exec, clock }
 }
 const ciOf = async (o: Setup = {}, over: Partial<RunsDeps> = {}) => createWorldRuns(make(over, o).d).ciRuns(ROOT)
@@ -39,6 +45,7 @@ describe('ciRuns', () => {
     ])
     expect(exec).toHaveBeenCalledWith('gh', GH_ARGS, { cwd: ROOT, timeout: GH_TIMEOUT_MS })
     expect(exec).toHaveBeenCalledWith('git', ['rev-parse', 'HEAD'], expect.objectContaining({ cwd: ROOT }))
+    expect(exec).toHaveBeenCalledWith('git', ['remote', '-v'], expect.objectContaining({ cwd: ROOT }))
     expect(exec).toHaveBeenCalledWith('git', ['rev-parse', '--abbrev-ref', 'HEAD'], expect.objectContaining({ cwd: ROOT }))
     expect(exec).toHaveBeenCalledWith('git', ['diff-tree', '--no-commit-id', '--name-only', '-r', '--root', HEAD], expect.objectContaining({ cwd: ROOT }))
     expect(GH_TIMEOUT_MS).toBe(5000)
@@ -89,13 +96,38 @@ describe('ciRuns', () => {
   })
 
   it('never starts gh or git unless the setting is on', async () => {
-    const { d, exec } = make({ ciAllowed: async () => false })
+    const ghOnPath = vi.fn(async () => true)
+    const { d, exec } = make({ ciAllowed: async () => false, ghOnPath })
+    expect(await createWorldRuns(d).ciRuns(ROOT)).toEqual([])
+    expect(exec).not.toHaveBeenCalled()
+    expect(ghOnPath).not.toHaveBeenCalled()
+  })
+
+  it('with no gh on PATH, gives no result quietly and starts neither gh nor git', async () => {
+    const { d, exec } = make({ ghOnPath: async () => false })
     expect(await createWorldRuns(d).ciRuns(ROOT)).toEqual([])
     expect(exec).not.toHaveBeenCalled()
   })
 
+  it('a repository with no GitHub remote, or remotes git cannot list, gives no result and no gh call', async () => {
+    const others = ['', 'origin\thttps://gitlab.com/o/r.git (fetch)\n', 'origin\thttps://notgithub.com/o/r (fetch)\n', 'origin\n', 'github.com:o/r (fetch)\n']
+    for (const remotes of others) {
+      const m = make({}, { remotes })
+      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual([])
+      expect(ghCalls(m.exec)).toBe(0)
+    }
+    const failing = vi.fn(async (bin: string, args: string[]) => (args[0] === 'remote' ? { stdout: '', error: new Error('git') } : gitAnswer(args)))
+    expect(await createWorldRuns(make({ exec: failing }).d).ciRuns(ROOT)).toEqual([])
+    expect(ghCalls(failing)).toBe(0)
+    // Every GitHub URL shape counts, on any remote line.
+    for (const url of ['https://github.com/o/r.git', 'ssh://git@github.com/o/r', 'git@GitHub.com:o/r.git']) {
+      const m = make({}, { remotes: `upstream\thttps://gitlab.com/x (fetch)\norigin\t${url} (fetch)\n`, changed: 'x.ts' })
+      expect(await createWorldRuns(m.d).ciRuns(ROOT)).toHaveLength(1)
+    }
+  })
+
   it('gh missing, failing or unparsable, or a failing diff, gives []', async () => {
-    const git = (args: string[]): { stdout: string } => ({ stdout: args[1] === 'HEAD' ? HEAD : 'feature/x' })
+    const git = (args: string[]): { stdout: string } => gitAnswer(args)
     const cases: RunsDeps['exec'][] = [
       async (bin, args) => (bin === 'gh' ? { stdout: '', error: Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }) } : git(args)),
       async (bin, args) => (bin === 'gh' ? { stdout: 'not json' } : git(args)),
@@ -118,9 +150,30 @@ describe('ciRuns', () => {
     const moved = make({}, { rows: [] })
     const m = createWorldRuns(moved.d)
     await m.ciRuns(ROOT)
-    moved.exec.mockImplementation(async (bin: string, args: string[]) => (bin === 'gh' ? { stdout: '[]' } : { stdout: args[1] === 'HEAD' ? OLD : 'feature/x' }))
+    moved.exec.mockImplementation(async (bin: string, args: string[]) => (bin === 'gh' ? { stdout: '[]' } : gitAnswer(args, OLD)))
     await m.ciRuns(ROOT)
     expect(ghCalls(moved.exec)).toBe(2)
+  })
+})
+
+describe('commandOnPath', () => {
+  const found = (files: string[]) => vi.fn(async (f: string) => {
+    if (!files.includes(f)) throw new Error('ENOENT')
+  })
+
+  it('finds gh.exe or gh.com in a Windows PATH folder, skipping relative, empty and quoted-empty entries', async () => {
+    const access = found(['C:\\Tools\\gh.com'])
+    expect(await commandOnPath('gh', { Path: '"";rel\\bin;;C:\\Windows;"C:\\Tools"' }, 'win32', access)).toBe(true)
+    expect(access.mock.calls.map((c) => c[0])).toEqual(['C:\\Windows\\gh.exe', 'C:\\Windows\\gh.com', 'C:\\Tools\\gh.exe', 'C:\\Tools\\gh.com'])
+    expect(await commandOnPath('gh', { PATH: 'C:\\Tools' }, 'win32', found(['C:\\Tools\\gh.cmd']))).toBe(false)
+  })
+
+  it('finds gh in a POSIX PATH folder and says no when it is nowhere or PATH is unset', async () => {
+    const access = found(['/usr/local/bin/gh'])
+    expect(await commandOnPath('gh', { PATH: '/usr/bin:./bin:/usr/local/bin' }, 'linux', access)).toBe(true)
+    expect(access.mock.calls.map((c) => c[0])).toEqual(['/usr/bin/gh', '/usr/local/bin/gh'])
+    expect(await commandOnPath('gh', { PATH: '/usr/bin' }, 'darwin', found([]))).toBe(false)
+    expect(await commandOnPath('gh', {}, 'linux', found(['/gh']))).toBe(false)
   })
 })
 

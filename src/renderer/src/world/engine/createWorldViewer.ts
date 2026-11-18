@@ -14,7 +14,7 @@ import { renderFallback } from './fallback2d'
 import { neighbours } from './interaction'
 import { buildSceneModel, DEFAULT_LAYERS, type LayerState } from './sceneModel'
 import type { SlabSignals } from './slabSignals'
-import { createThreeRenderer, type RenderFocus, type RenderPick, type SceneText, type ThreeRenderer } from './threeRenderer'
+import { createThreeRenderer, type MotionState, type RenderFocus, type RenderPick, type SceneText, type ThreeRenderer } from './threeRenderer'
 import { THEMES, type ThemeName } from './themes'
 import type { ZoomTier } from './viewMath'
 
@@ -87,7 +87,12 @@ export interface WorldLoadOptions {
 }
 
 /** The looping motions as they stand now; under reduced motion each holds still (all 0 in 2D). */
-export interface WorldDrawnVisual { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
+/** The motions and the drawn result as the renderer reports them (MotionState); all empty on the 2D fallback. */
+export type WorldDrawnVisual = MotionState
+const noVisual = (): WorldDrawnVisual => ({
+  ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0,
+  floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0,
+})
 
 export interface WorldDrawn {
   layers: LayerState
@@ -671,7 +676,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [] }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : noVisual() }),
     resetView() {
       cancelActions()
       deselect()

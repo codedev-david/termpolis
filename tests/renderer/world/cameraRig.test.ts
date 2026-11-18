@@ -356,6 +356,34 @@ describe('createCameraRig', () => {
     expect(w.cam).toEqual(deps.shot('routes'))
   })
 
+  it('flight() reports time and eased progress while flying, rising slow-fast-slow, and zeros when none', () => {
+    const { w, rig, run } = rigWith()
+    expect(rig.flight()).toEqual({ active: false, t: 0, eased: 0 })
+    void rig.frame('routes', false)
+    expect(rig.flight()).toEqual({ active: true, t: 0, eased: 0 })
+    const dur = FRAME_FLIGHT_S * 1000
+    const samples: number[] = []
+    for (let i = 1; i <= 5; i++) {
+      w.t = (dur * i) / 6
+      const s = rig.flight()
+      expect(s.active).toBe(true)
+      expect(s.t).toBeCloseTo(i / 6)
+      expect(s.eased).toBeCloseTo(easeInOut(i / 6))
+      samples.push(s.eased)
+    }
+    const steps = samples.slice(1).map((v, i) => v - samples[i])
+    expect(steps.every((d) => d > 0)).toBe(true)
+    expect(steps[0]).toBeLessThan(steps[2])
+    // A clock past the end reads 1 until the next frame lands the flight; one before its start reads 0.
+    w.t = dur * 2
+    expect(rig.flight()).toEqual({ active: true, t: 1, eased: 1 })
+    w.t = -1
+    expect(rig.flight().t).toBe(0)
+    w.t = dur * 2
+    run(16)
+    expect(rig.flight()).toEqual({ active: false, t: 0, eased: 0 })
+  })
+
   it('stop ends a flight where the camera is and settles it; step without a flight does nothing', async () => {
     const { w, rig, run } = rigWith()
     rig.step()

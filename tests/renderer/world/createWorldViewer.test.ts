@@ -353,7 +353,7 @@ describe('2D fallback: Esc, resetView, layers, theme', () => {
     expect(viewer.screenPoint('b1')).toBeNull()
     expect(viewer.linePoints('e1')).toEqual([])
     expect(viewer.pickAt(1, 2)).toBeNull()
-    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } })
+    expect(viewer.drawn()).toEqual({ layers: { ...DEFAULT_LAYERS, processes: true }, processShells: 0, conduits: 0, changing: 0, tier: 'districts', drawCalls: 0, buildings: 0, districts: 0, slabs: 0, slabLooks: [], wireframes: [], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0, bloom: false, stars: 0, dust: 0, platformSides: {}, platformLights: 0, floorOrder: {}, orbs: [], exploded: null, explodeGap: 0, flight: { active: false, t: 0, eased: 0 }, lineLabels: 0 } })
   })
 
   it('keeps an existing tabindex and positioning', () => {
@@ -428,6 +428,12 @@ describe('2D fallback: dispose', () => {
 // ---------------------------------------------------------------------------------------------
 // WebGL wiring, against a stand-in renderer.
 
+/** What the stand-in reports as its motions and drawn result. */
+const MOTION = {
+  ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4, bloom: true, stars: 3500, dust: 600, platformSides: { d1: 6 }, platformLights: 1,
+  floorOrder: { b1: ['ui', 'logic'] }, orbs: ['x-api'], exploded: 'b1', explodeGap: 2.5, flight: { active: true, t: 0.5, eased: 0.5 }, lineLabels: 3,
+}
+
 function fakeRenderer(host: HTMLElement) {
   const canvas = document.createElement('canvas')
   host.appendChild(canvas)
@@ -441,7 +447,7 @@ function fakeRenderer(host: HTMLElement) {
     screenPoint: vi.fn((id: string) => (id === 'b1' ? { x: 5, y: 6 } : null)),
     linePoints: vi.fn((id: string) => (id === 'e1' ? [{ x: 7, y: 8 }] : [])),
     drawnCounts: vi.fn(() => ({ processShells: 2, conduits: 3, changing: 1, tier: 'floors' as const, drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [] })),
-    motionState: vi.fn(() => ({ ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 })),
+    motionState: vi.fn(() => ({ ...MOTION })),
     keepGhosts: vi.fn(), animateChanges: vi.fn(), stopChanges: vi.fn(), setPaused: vi.fn(),
     dispose: vi.fn(() => { canvas.remove() }),
   } satisfies ThreeRenderer
@@ -760,7 +766,7 @@ describe('WebGL path (stand-in renderer)', () => {
     aim({ kind: 'edge', id: 'e1' })
     expect(viewer.pickAt(3, 4)).toEqual({ kind: 'edge', id: 'e1' })
     expect(r.pick).toHaveBeenLastCalledWith(3, 4)
-    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [], wireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: { ringAngle: 1, fogDrift: 2, wirePulse: 3, selectionRingAngle: 4 } })
+    expect(viewer.drawn()).toEqual({ layers: DEFAULT_LAYERS, processShells: 2, conduits: 3, changing: 1, tier: 'floors', drawCalls: 42, buildings: 4, districts: 2, slabs: 0, slabLooks: [], wireframes: ['b4'], outlined: [], fading: [], hot: [], fogged: [], highlighted: [], visual: MOTION })
   })
 
   it('viewer.apply(fog) fogs the ids until the next reset; a highlight keeps the fog; resetView, load and an empty fog lift it', async () => {
@@ -972,6 +978,50 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(f.r.setSelected).toHaveBeenLastCalledWith('e1')
     const lit = f.r.setFocus.mock.calls[f.r.setFocus.mock.calls.length - 1][0] as { edgeIds: Set<string> }
     expect([...lit.edgeIds]).toContain('e1')
+  })
+
+  it('a hover before a world is loaded lights nothing, and a redraw with a district selected selects no building or line', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { frames.push(cb); return frames.length })
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const viewer = createWorldViewer(host, { reducedMotion: true })
+    const f = fake as unknown as ReturnType<typeof fakeRenderer>
+    const at = (type: string): void => { f.r.canvas.dispatchEvent(new MouseEvent(type, { clientX: 3, clientY: 3, bubbles: true })) }
+    f.aim({ kind: 'node', id: 'b1' })
+    at('pointermove')
+    frames.splice(0).forEach((cb) => cb(0))
+    expect(f.r.setHovered).toHaveBeenLastCalledWith('b1')
+    expect(f.r.setFocus).toHaveBeenLastCalledWith(null) // no world: the hover lights nothing
+    at('pointerleave')
+    viewer.load(rich())
+    f.aim({ kind: 'district', id: 'd1' })
+    at('pointerdown'); at('click')
+    f.r.setSelected.mockClear()
+    viewer.setLayers({ allLineLabels: true })
+    expect(f.r.setSelected).toHaveBeenLastCalledWith(null)
+    viewer.dispose()
+    vi.unstubAllGlobals()
+  })
+
+  it('drawn lists the outlined, fading and hot buildings of the drawn model', () => {
+    const { viewer } = setup3d()
+    const d = rich()
+    d.layout.positions.pm = [30, 0, 30]
+    d.layers.plan.push({
+      id: 'design:p', title: 'Linked design', summary: [],
+      buildings: [building('pm', { status: 'proposed', districtId: 'd1' })], edges: [],
+      reconcile: { matched: { auth: 'b1' }, missing: ['mailer'], extra: [], changed: ['b1'], planAt: 1 },
+      removes: ['b2']
+    })
+    d.layers.live = { b4: { latencyMs: 400 } }
+    viewer.load(d)
+    expect(viewer.drawn()).toMatchObject({ outlined: [], fading: [], hot: ['b4'] })
+    viewer.setLayers({ proposal: 'design:p' })
+    expect(viewer.drawn()).toMatchObject({ outlined: ['b1'], fading: ['b2'], hot: ['b4'] })
   })
 
   it('names buildings by their technology with the tech layer, and a planned part or line never overrides a built one', () => {

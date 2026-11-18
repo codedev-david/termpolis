@@ -3,7 +3,10 @@
 // host reads and parses them, never main), and the CI conclusion of the commit that is checked out. Nothing
 // here touches the main thread's disk or process table: the two commands go through the off-thread exec
 // helper. Dependencies are injected so the logic is tested without a disk, a git repository or the GitHub CLI.
+// CI is read by default (David, 2026-11-18) and only where it can work: `gh` must be on PATH (found by looking at
+// the PATH folders, never by starting anything) and the repository must have a GitHub remote.
 
+import { posix, win32 } from 'path'
 import type { TestRun } from './testStatus'
 import { MAX_TRANSCRIPTS, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 
@@ -19,6 +22,35 @@ export const CI_RUNS_FETCHED = 20
 const TEST_WORKFLOW = /^tests?$/i
 const BRANCH = /^\w[\w./-]{0,199}$/
 const FULL_SHA = /^[0-9a-f]{40,64}$/
+/** A remote URL on GitHub: https://github.com/o/r, git@github.com:o/r or ssh://git@github.com/o/r. */
+const GITHUB_REMOTE = /(^|[@/])github\.com[:/]/i
+
+/** Whether `name` is a program on PATH, found the way a process start finds it (on Windows `.exe` or `.com`; the
+ *  exec helper starts `gh` without a shell, so a `.cmd` shim would not run). Only `access` touches the disk, and
+ *  nothing is started. */
+export async function commandOnPath(
+  name: string,
+  env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform,
+  access: (file: string) => Promise<unknown>
+): Promise<boolean> {
+  const win = platform === 'win32'
+  const p = win ? win32 : posix
+  const exts = win ? ['.exe', '.com'] : ['']
+  const dirs = (env.PATH ?? env.Path ?? '').replace(/"/g, '').split(win ? ';' : ':')
+  for (const dir of dirs) {
+    if (!dir || !p.isAbsolute(dir)) continue
+    for (const ext of exts) {
+      try {
+        await access(p.join(dir, name + ext))
+        return true
+      } catch {
+        // not in this folder
+      }
+    }
+  }
+  return false
+}
 
 export interface ExecOutcome {
   stdout: string
@@ -29,8 +61,10 @@ export interface RunsDeps {
   listTranscripts: (root: string) => Promise<string[]>
   /** Whether Termpolis may read agent transcripts (the memory setting "learn from conversations"). */
   transcriptsAllowed: () => boolean
-  /** Whether the person turned on "Read CI results with GitHub CLI". Nothing runs `gh` or git for CI unless this is true. */
+  /** Whether "Read CI results with GitHub CLI" is on (it is by default). Nothing runs `gh` or git for CI unless this is true. */
   ciAllowed: () => Promise<boolean>
+  /** Whether `gh` is on PATH, found without starting anything (see commandOnPath). No git or `gh` runs for CI without it. */
+  ghOnPath: () => Promise<boolean>
   /** Runs a command off the main thread, never throwing. */
   exec: (bin: string, args: string[], opts: { cwd: string; timeout: number }) => Promise<ExecOutcome>
   now: () => number
@@ -83,6 +117,9 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
   }
 
   const lookUp = async (root: string, head: string): Promise<TestRun[]> => {
+    // `gh` reads GitHub only: a repository with no GitHub remote has no run to find.
+    const remotes = await git(root, ['remote', '-v'])
+    if (remotes === null || !remotes.split('\n').some((line) => GITHUB_REMOTE.test(line.split(/\s+/)[1] ?? ''))) return []
     const branch = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
     // A detached HEAD names no branch, so no run can be tied to it.
     if (branch === null || branch === 'HEAD' || !BRANCH.test(branch)) return []
@@ -119,6 +156,8 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
   const ciRuns = async (root: string): Promise<TestRun[]> => {
     // The consent first: `gh` reads its own stored login, so without the setting nothing for CI is started.
     if (!(await d.ciAllowed())) return []
+    // No `gh` on PATH: no CI result, quietly, and no git started for it.
+    if (!(await d.ghOnPath())) return []
     let runs: TestRun[] = []
     try {
       const head = ((await git(root, ['rev-parse', 'HEAD'])) ?? '').toLowerCase()

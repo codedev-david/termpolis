@@ -4129,7 +4129,7 @@ describe('Lumopolis world wiring in index.ts', () => {
   })
 
   it('registers the Lumopolis settings pair over the world settings store', async () => {
-    expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: false, worldAgent: 'claude' } })
+    expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude' } })
     expect(await invoke('world:settings-set', 'nope')).toEqual({ success: false, error: 'settings patch required' })
   })
 

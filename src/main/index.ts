@@ -339,11 +339,11 @@ import { testPickedFolder } from './world/testHooks'
 import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
-import { createWorldRuns } from './world/worldRuns'
+import { commandOnPath, createWorldRuns } from './world/worldRuns'
 import { cheapModelFor, makeWorldLlm } from './world/label'
 import { createLabelContext, GIT_TIMEOUT_MS } from './world/labelContext'
 import { ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
-import { watch as fsWatch, promises as fsPromises } from 'fs'
+import { watch as fsWatch, promises as fsPromises, constants as fsConstants } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer, nudgeIndexer } from './memoryIndexer'
 import { runWeave, WEAVE_NEIGHBOUR_K, type WeaveStats } from './mnemeWeave'
@@ -2686,12 +2686,15 @@ const worldLabelContext = createLabelContext({
     return rows.map((r) => ({ id: r.id, text: r.content }))
   },
 })
-// Test runs for the world: what the agents' transcripts ran, and (only when the person turned on "Read CI results
-// with GitHub CLI") the newest CI conclusion. Reads are async and the commands go to the proc host.
+// Test runs for the world: what the agents' transcripts ran, and (while "Read CI results with GitHub CLI" is on, as it
+// is by default) the newest CI conclusion, only when `gh` is on PATH and the repository has a GitHub remote. Reads are
+// async and the commands go to the proc host.
 const worldRuns = createWorldRuns({
   listTranscripts: (root) => listClaudeSessionFiles(root),
   transcriptsAllowed: () => getLearnFromConversations(),
-  ciAllowed: async () => { await worldSettings.ready(); return worldSettings.get().worldCiResults === true },
+  ciAllowed: async () => { await worldSettings.ready(); return worldSettings.get().worldCiResults },
+  // Looked for in the PATH folders, never by starting a program: no `gh` means no CI result.
+  ghOnPath: () => commandOnPath('gh', process.env, process.platform, (f) => fsPromises.access(f, fsConstants.X_OK)),
   exec: async (bin, args, opts) => {
     try {
       const out = await execCaptureOffThread(bin, args, { cwd: opts.cwd, timeout: opts.timeout, maxBuffer: 4 * 1024 * 1024 })

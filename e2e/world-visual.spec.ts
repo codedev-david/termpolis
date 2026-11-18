@@ -108,6 +108,17 @@ const SMALL_FILES: Record<string, string> = {
   'src/ui/List.ts': "import { app } from './App'\nexport const list = (): number => app()\n",
 }
 
+/**
+ * The small app plus a passing Vitest report for a test of the store's db (so the store's building is
+ * verified and carries the rotating ring) and a call to an outside web service (an external, drawn as an orb).
+ */
+const MOTION_FILES = (): Record<string, string> => ({
+  ...SMALL_FILES,
+  'src/store/db.test.ts': "import { db } from './db'\nexport const seen = db.all().length === 0\n",
+  'src/api/remote.ts': "export async function remoteItems(): Promise<unknown> {\n  return (await fetch('https://api.example.com/items')).json()\n}\n",
+  'vitest-report.json': JSON.stringify({ testResults: [{ name: 'src/store/db.test.ts', status: 'passed', endTime: Date.now() }] }),
+})
+
 /** `perArea` files in each of 12 folders (14: 168 files): each file imports two in its folder, the last also the first file of the next folder. */
 const BIG_AREAS = ['api', 'core', 'jobs', 'ui', 'data', 'auth', 'mail', 'billing', 'search', 'audit', 'files', 'admin']
 function bigFiles(perArea: number): Record<string, string> {
@@ -127,7 +138,7 @@ function bigFiles(perArea: number): Record<string, string> {
 test.beforeAll(async () => {
   ensureE2eBuild()
   fs.mkdirSync(SHOTS, { recursive: true })
-  fixtures.push({ label: 'small', dir: makeRepo('small', SMALL_FILES) }, { label: 'big', dir: makeRepo('big', bigFiles(14)) }, { label: 'huge', dir: makeRepo('huge', bigFiles(50)) })
+  fixtures.push({ label: 'small', dir: makeRepo('small', SMALL_FILES) }, { label: 'big', dir: makeRepo('big', bigFiles(14)) }, { label: 'huge', dir: makeRepo('huge', bigFiles(50)) }, { label: 'motion', dir: makeRepo('motion', MOTION_FILES()) })
 
   userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-visual-ud-'))
   fs.writeFileSync(
@@ -360,7 +371,7 @@ async function world(root: string): Promise<World> {
  * From the overview (the districts tier: one slab per district, no buildings to hover) wheels in
  * until the buildings show, then takes the pointer off the canvas.
  */
-async function toBuildingsTier(): Promise<void> {
+async function toBuildingsTier(further = 0): Promise<void> {
   const tier = (): Promise<string> => page.evaluate(() => (window as unknown as { __termpolis_world: Probe }).__termpolis_world.drawn().tier)
   const box = await page.locator('[data-testid="world-canvas-host"] canvas').boundingBox()
   // This window reports a device pixel ratio a hair under 1 (0.99999998), and OrbitControls
@@ -374,6 +385,11 @@ async function toBuildingsTier(): Promise<void> {
     await page.waitForTimeout(120)
   }
   expect(await tier(), 'wheeling in from the overview never reached the buildings').not.toBe('districts')
+  // `further` notches more, past the first one that shows buildings.
+  for (let i = 0; i < further; i++) {
+    await page.mouse.wheel(0, -100)
+    await page.waitForTimeout(120)
+  }
   await page.mouse.move(2, 400)
   await page.waitForTimeout(1500)
 }
@@ -681,12 +697,20 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
       // whose aim point and every point round it the renderer's pick gives to that building (a line
       // drawn across a building's face rightly takes the click where it runs). From the same
       // distance in each time: the overview itself shows district slabs, no buildings.
-      await toOverview()
-      await toBuildingsTier()
-      const steady = await jitterAim(connected)
+      // A big world's buildings can be too small at the first buildings notch for any to fill the
+      // jitter round its aim point, so the camera goes a few notches nearer until one does.
+      let further = 0
+      let steady: { id: string; x: number; y: number } | null = null
+      for (; further <= 12; further += 4) {
+        await toOverview()
+        await toBuildingsTier(further)
+        steady = await jitterAim(connected).catch(() => null)
+        if (steady) break
+      }
+      if (!steady) steady = await jitterAim(connected)
       for (const [dx, dy] of CLICK_JITTER) {
         await toOverview()
-        await toBuildingsTier()
+        await toBuildingsTier(further)
         // What the page holds at the click point just before the click, so a miss names its cause.
         const at = await page.evaluate(({ id, x, y }) => {
           const probe = (window as unknown as { __termpolis_world?: Probe }).__termpolis_world
@@ -817,5 +841,227 @@ test.describe.serial('Lumopolis can be seen', () => {
     await page.screenshot({ path: path.join(SHOTS, 'huge-neon-focused.png') })
     await toOverview()
     await expect.poll(async () => (await drawn()).tier, { timeout: 10_000 }).toBe('districts')
+  })
+})
+
+/**
+ * What is drawn, read off the renderer's own objects (drawn().visual), on the small app with a
+ * verified store and an outside service, in the neon theme at high quality (the default), with
+ * motion on: the exploded building, the orbit and the flying keys, the ring, the bloom, the stars
+ * and dust, the hexagonal platforms and their lights, the floors, the orbs, the eased flights and
+ * the line labels.
+ */
+interface Visual {
+  ringAngle: number; bloom: boolean; stars: number; dust: number
+  platformSides: Record<string, number>; platformLights: number
+  floorOrder: Record<string, string[]>; orbs: string[]; exploded: string | null; explodeGap: number
+  flight: { active: boolean; t: number; eased: number }; lineLabels: number
+}
+interface MotionDoc { buildings: { id: string; floors: { name: string }[] }[]; externals: { id: string }[]; edges: { id: string }[]; districts: { id: string }[] }
+type Cam = { pos: number[]; target: number[] }
+
+test.describe.serial('Lumopolis draws what the spec describes', () => {
+  let motionDoc: MotionDoc
+  const visual = (): Promise<Visual> => page.evaluate(() => (window as unknown as { __termpolis_world: { drawn(): { visual: Visual } } }).__termpolis_world.drawn().visual)
+  const cam = (): Promise<Cam> => page.evaluate(() => (window as unknown as { __termpolis_world: { cameraState(): Cam } }).__termpolis_world.cameraState())
+  const dist = (c: Cam): number => Math.hypot(...c.pos.map((v, k) => v - c.target[k]))
+  /** A point on the bare canvas, away from every part, near the canvas's middle. */
+  const bareSpot = (): Promise<{ x: number; y: number }> =>
+    page.evaluate(() => {
+      const probe = (window as unknown as { __termpolis_world: Probe }).__termpolis_world
+      const host = document.querySelector('[data-testid="world-canvas-host"] canvas') as HTMLCanvasElement
+      const r = host.getBoundingClientRect()
+      const cx = r.left + r.width / 2
+      const cy = r.top + r.height / 2
+      let best: { x: number; y: number; d: number } | null = null
+      for (let y = r.top + 40; y < r.bottom - 40; y += 12) {
+        for (let x = r.left + 40; x < r.right - 40; x += 12) {
+          if (probe.pickAt(x, y) !== null || document.elementFromPoint(x, y) !== host) continue
+          const d = Math.hypot(x - cx, y - cy)
+          if (!best || d < best.d) best = { x, y, d }
+        }
+      }
+      if (!best) throw new Error('no bare spot on the canvas')
+      return { x: best.x, y: best.y }
+    })
+
+  test.beforeAll(async () => {
+    test.setTimeout(420_000)
+    // Motion on, whatever this machine's setting: the rings, flights and keys stand still with reduced motion.
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    if (await pane().count()) {
+      await page.locator('[data-testid="world-close"]').click()
+      await expect(pane()).toHaveCount(0)
+    }
+    const fx = fixtures.find((f) => f.label === 'motion')!
+    await createTerminal('Visual motion', fx.dir)
+    await openPane()
+    await settled(240_000)
+    await page.getByRole('combobox', { name: 'Theme' }).selectOption('neon')
+    // OrbitControls (three r160) divides the wheel delta by `devicePixelRatio | 0` (see toBuildingsTier).
+    await page.evaluate(() => { if ((window.devicePixelRatio | 0) === 0) Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true }) })
+    motionDoc = await page.evaluate(async (r) => {
+      const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: MotionDoc | null }> } }).termpolis
+      const top = await api.gitFindRoot(r)
+      const res = await api.worldGet(top.success && top.data ? top.data : r)
+      return res.data as MotionDoc
+    }, fx.dir)
+    expect(motionDoc.buildings.length).toBeGreaterThan(1)
+    await toOverview()
+  })
+
+  test('double-click explodes a building floor by floor', async () => {
+    await toOverview()
+    await toBuildingsTier()
+    const ids = motionDoc.buildings.map((b) => b.id)
+    // The first click of a double-click opens the card, which can open over the building and take the
+    // second click. So a card is opened first, and the double-click goes to a building beside it.
+    const first = await aimAtABuilding(ids)
+    await page.mouse.click(first.x, first.y)
+    await expect(card()).toBeVisible()
+    await expect.poll(async () => (await visual()).flight.active, { timeout: 10_000 }).toBe(false)
+    await page.waitForTimeout(500)
+    const at = await jitterAim(ids)
+    await page.mouse.dblclick(at.x, at.y)
+    await expect.poll(async () => (await visual()).exploded, { timeout: 5000 }).toBe(at.id)
+    await expect.poll(async () => (await visual()).explodeGap, { timeout: 5000 }).toBeGreaterThan(0)
+    await toOverview()
+  })
+
+  test('orbit drags and wheel zooms the camera', async () => {
+    await toOverview()
+    const spot = await bareSpot()
+    const before = await cam()
+    await page.mouse.move(spot.x, spot.y)
+    await page.mouse.down()
+    for (let i = 1; i <= 10; i++) await page.mouse.move(spot.x + i * 15, spot.y + i * 3)
+    await page.mouse.up()
+    await page.waitForTimeout(800)
+    const dragged = await cam()
+    expect(Math.hypot(...dragged.pos.map((v, k) => v - before.pos[k])), 'a drag did not orbit the camera').toBeGreaterThan(0.5)
+    await page.mouse.wheel(0, -400)
+    await expect.poll(async () => dist(await cam()), { timeout: 5000, message: 'the wheel did not zoom in' }).toBeLessThan(dist(dragged) - 0.5)
+    await toOverview()
+  })
+
+  test('W and Q fly the camera', async () => {
+    await toOverview()
+    // W flies forward. The overview looks along +z, so the camera is first orbited round (dragged
+    // across bare canvas) until it looks along -z.
+    const facing = (c: Cam): number => (c.target[2] - c.pos[2]) / Math.hypot(c.target[0] - c.pos[0], c.target[2] - c.pos[2])
+    for (let i = 0; i < 40 && facing(await cam()) > -0.9; i++) {
+      const spot = await bareSpot()
+      await page.mouse.move(spot.x, spot.y)
+      await page.mouse.down()
+      for (let k = 1; k <= 4; k++) await page.mouse.move(spot.x + k * 10, spot.y)
+      await page.mouse.up()
+      await page.waitForTimeout(150)
+    }
+    await page.waitForTimeout(800)
+    expect(facing(await cam()), 'the camera never came round to look along -z').toBeLessThan(-0.85)
+    await page.mouse.move(2, 400)
+    await page.locator('[data-testid="world-canvas-host"]').focus()
+    const start = await cam()
+    await page.keyboard.down('w')
+    await page.waitForTimeout(500)
+    await page.keyboard.up('w')
+    await page.waitForTimeout(200)
+    const afterW = await cam()
+    expect(afterW.target[2], 'W did not move the target along -z').toBeLessThan(start.target[2] - 0.5)
+    // Q and E move straight down and up (threeRenderer's WASD/QE keys).
+    await page.keyboard.down('q')
+    await page.waitForTimeout(500)
+    await page.keyboard.up('q')
+    await page.waitForTimeout(200)
+    const afterQ = await cam()
+    expect(afterQ.target[1], 'Q did not move the target down').toBeLessThan(afterW.target[1] - 0.5)
+    await page.keyboard.down('e')
+    await page.waitForTimeout(500)
+    await page.keyboard.up('e')
+    await page.waitForTimeout(200)
+    expect((await cam()).target[1], 'E did not move the target up').toBeGreaterThan(afterQ.target[1] + 0.5)
+    await toOverview()
+  })
+
+  test('verified buildings carry a rotating ring', async () => {
+    // Test reports are found with node's fs.promises.glob (Node 22+, Electron 32+). An older Electron,
+    // such as a local node_modules that predates the pinned one, finds none, so nothing is verified.
+    const node = Number((await app.evaluate(() => process.versions.node)).split('.')[0])
+    test.skip(node < 22, `this Electron runs Node ${node}, which has no fs.promises.glob to find the test report`)
+    const a = (await visual()).ringAngle
+    await page.waitForTimeout(500)
+    const statuses = await page.evaluate(async (r) => {
+      const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: { buildings: { id: string; status: string; members: string[]; claims?: unknown }[] } | null }> } }).termpolis
+      const top = await api.gitFindRoot(r)
+      const res = await api.worldGet(top.success && top.data ? top.data : r)
+      return JSON.stringify(res.data?.buildings.map((b) => [b.id, b.status, b.members]))
+    }, fixtures.find((f) => f.label === 'motion')!.dir)
+    expect((await visual()).ringAngle, `no ring turns: ${statuses}`).toBeGreaterThan(a)
+  })
+
+  test('bloom, starfield and dust are on', async () => {
+    const v = await visual()
+    expect(v.bloom).toBe(true)
+    expect(v.stars).toBeGreaterThanOrEqual(1000)
+    expect(v.dust).toBeGreaterThan(0)
+  })
+
+  test('district platforms are hexagons with pooled light', async () => {
+    const v = await visual()
+    const sides = Object.values(v.platformSides)
+    expect(sides.length).toBe(motionDoc.districts.length)
+    expect(sides.every((n) => n === 6), `platform sides ${JSON.stringify(v.platformSides)}`).toBe(true)
+    expect(v.platformLights).toBeGreaterThanOrEqual(motionDoc.districts.length)
+  })
+
+  test('floors stack in pipeline order', async () => {
+    const v = await visual()
+    for (const b of motionDoc.buildings) expect(v.floorOrder[b.id], `floors of ${b.id}`).toEqual(b.floors.map((f) => f.name))
+  })
+
+  test('externals float as orbs', async () => {
+    const v = await visual()
+    expect(motionDoc.externals.length).toBeGreaterThan(0)
+    expect([...v.orbs].sort()).toEqual(motionDoc.externals.map((x) => x.id).sort())
+  })
+
+  test('camera flights ease', async () => {
+    await toOverview()
+    const samples = await page.evaluate(async (id) => {
+      const probe = (window as unknown as { __termpolis_world: { drawn(): { visual: Visual }; apply(a: { type: 'focus'; ids: string[] }): Promise<void> } }).__termpolis_world
+      void probe.apply({ type: 'focus', ids: [id] })
+      const out: Array<{ t: number; eased: number }> = []
+      const t0 = performance.now()
+      await new Promise<void>((done) => {
+        const tick = (): void => {
+          const f = probe.drawn().visual.flight
+          if (f.active) out.push({ t: f.t, eased: f.eased })
+          if ((out.length > 0 && !f.active) || performance.now() - t0 > 8000) done()
+          else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      })
+      return out
+    }, motionDoc.buildings[0].id)
+    // Distinct points of the flight, in time order.
+    const pts = samples.filter((s, i) => i === 0 || s.t > samples[i - 1].t)
+    expect(pts.length, `flight samples ${JSON.stringify(samples)}`).toBeGreaterThanOrEqual(4)
+    for (let i = 1; i < pts.length; i++) expect(pts[i].eased, `eased falls at sample ${i}`).toBeGreaterThanOrEqual(pts[i - 1].eased)
+    // Eased: slow off the mark, fastest mid-flight (the rise per unit of time, so uneven frames do not count).
+    const rate = (i: number): number => (pts[i + 1].eased - pts[i].eased) / (pts[i + 1].t - pts[i].t)
+    const mid = pts.findIndex((p) => p.t >= 0.5)
+    const m = Math.max(1, Math.min(pts.length - 2, mid > 0 ? mid - 1 : Math.floor(pts.length / 2)))
+    expect(rate(0), `first step ${rate(0)} vs middle step ${rate(m)}: ${JSON.stringify(pts)}`).toBeLessThan(rate(m))
+    await toOverview()
+  })
+
+  test('label every line shows one label per edge', async () => {
+    await toOverview()
+    const toggle = page.locator('[data-testid="world-layer-allLineLabels"]')
+    if ((await toggle.getAttribute('aria-pressed')) !== 'true') await toggle.click()
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    await expect.poll(async () => (await visual()).lineLabels, { timeout: 5000 }).toBe(motionDoc.edges.length)
+    await toggle.click()
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false')
   })
 })

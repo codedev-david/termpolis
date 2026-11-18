@@ -4,7 +4,8 @@
 // owns, and fans the host's `progress` / `updated` pushes out to subscribers.
 //
 // A host that exits rejects every call still waiting, and the next call starts a fresh one.
-// The transport factory at the bottom is the only Electron-aware code and is excluded from coverage.
+// The transport factory at the bottom is the only Electron-aware code; worldHostTransport.test.ts covers it
+// against a stand-in utilityProcess.
 import { access } from 'fs/promises'
 import { join } from 'path'
 import { fileURLToPath } from 'url'
@@ -514,14 +515,13 @@ export function createWorldClient(
 
 export type WorldClient = ReturnType<typeof createWorldClient>
 
-/* c8 ignore start */
 /** The bundled host entry, emitted next to the main `index.js` (an electron-vite input). ESM, so `import.meta.url`. */
 export function resolveWorldHostPath(): string {
   return fileURLToPath(new URL('./worldHost.js', import.meta.url))
 }
 
 /**
- * Forks the real utilityProcess; never used in tests.
+ * Forks the real utilityProcess (a stand-in in tests).
  * GOTCHA (asymmetric): the CHILD reads `e.data`; here, in the PARENT, `child.on('message', m => …)`
  * receives the payload DIRECTLY.
  */
@@ -541,4 +541,3 @@ export function createWorldHostTransport(hostPath: string = resolveWorldHostPath
     }
   }
 }
-/* c8 ignore stop */

@@ -17,15 +17,16 @@ export interface WorldSettings {
   /** "Read Lumopolis answers aloud": OFF by default; only a literal `true` turns it on. */
   worldSpeakAnswers: boolean
   /**
-   * "Read CI results with GitHub CLI": OFF by default; only a literal `true` turns it on. On, Lumopolis runs the `gh`
-   * command (which uses its own stored GitHub login) to read the newest CI result. Off, the compile never starts `gh`.
+   * "Read CI results with GitHub CLI": ON by default (David, 2026-11-18); only a literal `false` turns it off. On,
+   * Lumopolis runs the `gh` command (which uses its own stored GitHub login) to read the newest CI result, and only
+   * for a repository with a GitHub remote when `gh` is on PATH. Off, the compile never starts `gh`, nor git for CI.
    */
   worldCiResults: boolean
   /** The agent that answers questions, drafts designs and (cheapest model) describes parts. Claude by default; an unknown value reads as claude. */
   worldAgent: ExecAgent
 }
 
-export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: false, worldAgent: 'claude' }
+export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude' }
 
 /** The file name under userData. */
 export const WORLD_SETTINGS_FILE = 'world-settings.json'
@@ -45,7 +46,7 @@ function parse(text: string): WorldSettings | null {
   const parsed: unknown = JSON.parse(text)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
   const rec = parsed as Record<string, unknown>
-  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldCiResults: rec.worldCiResults === true, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude' }
+  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldCiResults: rec.worldCiResults !== false, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude' }
 }
 
 let tmpCounter = 0

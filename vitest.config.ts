@@ -121,9 +121,10 @@ export default defineConfig({
         // leaving it in only drags the gate down with a number no test can ever move.
         'src/main/workflow/contracts.ts',
         'src/shared/world/types.ts', // Lumopolis WorldDoc contract: types only, no emitted JS (see contracts.ts above)
-        // Lumopolis WebGL layer: needs a real GPU context, which jsdom cannot give. e2e/world-engine.spec.ts covers it.
+        // Lumopolis drawing: needs a real GPU context, which jsdom cannot give. e2e/world-engine.spec.ts and
+        // e2e/world-visual.spec.ts cover it. createWorldViewer is under the 100% engine gate (its tests use a
+        // stand-in renderer); threeRenderer.ts is, for now, the one drawing file left out.
         'src/renderer/src/world/engine/threeRenderer.ts',
-        'src/renderer/src/world/engine/createWorldViewer.ts',
       ],
       thresholds: {
         // Gates apply to Windows CI only (see .github/workflows/test.yml).

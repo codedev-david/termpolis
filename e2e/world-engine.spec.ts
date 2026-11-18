@@ -146,7 +146,11 @@ async function motionTwice(): Promise<[Visual, Visual]> {
   }, WORLD_A)
   await page.mouse.click(point.x, point.y)
   await expect(page.locator('#card')).toBeVisible()
-  const read = (): Promise<Visual> => page.evaluate(() => (window as unknown as HarnessWindow).__worldTest.drawn().visual)
+  // Only the four motions: the rest of `visual` (which line labels show, say) is layout, not motion.
+  const read = (): Promise<Visual> => page.evaluate(() => {
+    const { ringAngle, fogDrift, wirePulse, selectionRingAngle } = (window as unknown as HarnessWindow).__worldTest.drawn().visual
+    return { ringAngle, fogDrift, wirePulse, selectionRingAngle }
+  })
   const first = await read()
   await page.waitForTimeout(800)
   return [first, await read()]

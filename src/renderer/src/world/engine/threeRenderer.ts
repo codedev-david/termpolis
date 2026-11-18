@@ -12,7 +12,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { BACKDROP_ORDER, batchable, batchCapacity, batchRank, buildingNamesShown, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, packetKey, PLATFORM_ORDER, partDrawn, poolChanges, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type PartKind, type Slab } from './batching'
 import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSignals'
-import { createCameraRig, type Vec3 as RigVec } from './cameraRig'
+import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
 import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
@@ -112,8 +112,11 @@ export interface ThreeRenderer {
   linePoints(id: string): Array<{ x: number; y: number }>
   /** How many process shells and conduits the last draw put up, and how many changes are still animating. */
   drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[] }
-  /** The four looping motions as they stand now (radians, or the pulse's level); all four hold still under reduced motion. */
-  motionState(): { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
+  /** The four looping motions as they stand now (radians, or the pulse's level; all four hold still under reduced
+   *  motion), and what the last draw put up: bloom, the star and dust points, the platforms and their lamps, each
+   *  building's floor captions bottom to top, the orbs, the opened building and its gap, the camera flight, and how
+   *  many line labels show. */
+  motionState(): MotionState
   /** Takes these buildings out of the current scene to fade out (call before draw() clears it). */
   keepGhosts(ids: string[]): void
   /** After a draw: these buildings rise from the ground, these flash their glow. */
@@ -234,6 +237,20 @@ type LabelKind = 'district' | 'bldg' | 'floor' | 'proc'
  * dim: the focus dimming (1 or 0.2); lit: its part is hovered or selected, so the label shows at any
  * distance. key: its name in the label placement (placeLabels).
  */
+/** What motionState reports: read from the objects the renderer already drew, never drawn for it. */
+export interface MotionState {
+  ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number
+  bloom: boolean; stars: number; dust: number
+  /** Each district platform's number of sides, and how many district lamps pool light. */
+  platformSides: Record<string, number>; platformLights: number
+  /** Each building's floor captions, bottom to top. */
+  floorOrder: Record<string, string[]>
+  orbs: string[]
+  /** The opened building, and how far its top floor has lifted off its closed place. */
+  exploded: string | null; explodeGap: number
+  flight: FlightState
+  lineLabels: number
+}
 interface LabelRec { o: CSS2DObject; kind: LabelKind; dim: number; lit: boolean; key: string }
 interface NodeRec {
   id: string; group: THREE.Group; floors: THREE.Group[]; floorLabels: (LabelRec | null)[]
@@ -599,6 +616,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let busy = 1
 
   const districtRecs = new Map<string, LabelRec>()
+  /** Each drawn platform's number of sides, and the district lamps (motionState). */
+  const platformSides = new Map<string, number>()
+  let platformLights = 0
   function addLabel(parent: THREE.Object3D, kind: LabelKind, pos: [number, number, number], build: (el: HTMLDivElement) => void): LabelRec {
     const el = document.createElement('div')
     el.className = 'lw-' + kind
@@ -634,6 +654,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     nodes = new Map(); edges = new Map(); pickables = []; boxFrame = -1; labels = []; districtRecs.clear(); ghostMats = []; fadeMats = []; seals = []; fogSprites = []; pulseBalls = []
     shellCount = 0
     selRing = null
+    platformSides.clear()
+    platformLights = 0
   }
 
   /** A building takes the hue of the district platform it stands on (nearest district containing it). */
@@ -661,6 +683,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     plat.position.y = -0.6
     plat.renderOrder = PLATFORM_ORDER // under its buildings, dimmed ones too
     g.add(plat)
+    platformSides.set(d.id, pg.parameters.radialSegments)
     const rim = new THREE.LineSegments(new THREE.EdgesGeometry(pg), new THREE.LineBasicMaterial({ color: col }))
     rim.position.y = -0.6
     g.add(rim)
@@ -668,6 +691,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const light = new THREE.PointLight(col, 40, Math.max(40, d.radius * 2.4))
     light.position.set(0, 8, 0)
     g.add(light)
+    platformLights++
     const [nx, nz] = turnGround(0, d.radius + 2, turned)
     districtRecs.set(d.id, addLabel(g, 'district', [nx, 0.4, nz], (el) => {
       el.style.color = hex(col.getHex())
@@ -1860,7 +1884,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (l.kind === 'district') want.push({ o: l.o, id: l.key, tier: 3, nudge: 'vertical', pin: true })
       else if (l.kind === 'proc' && l.o.parent?.visible !== false) want.push({ o: l.o, id: l.key, tier: 3 })
     }
-    if (allLabels) for (const e of edges.values()) if (!e.focus) want.push({ o: e.label, id: 'e:' + e.id, tier: 5 })
+    // Label every line: each line's label may step aside, as a lit line's does, rather than drop on an overlap.
+    if (allLabels) for (const e of edges.values()) if (!e.focus) want.push({ o: e.label, id: 'e:' + e.id, tier: 5, nudge: true })
     measure(want.map((w) => w.o.element))
     const cands: LabelCandidate[] = []
     for (const w of want) {
@@ -2297,12 +2322,40 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       slabs: slabMeshes.reduce((n, im) => n + (im.visible ? im.count : 0), 0),
       slabLooks: tier === 'districts' ? slabLooks.map((sg) => ({ ...sg })) : [],
     }),
-    motionState: () => ({
-      ringAngle: seals[0]?.rotation.z ?? 0,
-      fogDrift: fogSprites[0]?.userData.a ?? 0,
-      wirePulse,
-      selectionRingAngle: selRing?.rotation.z ?? 0,
-    }),
+    motionState: () => {
+      const floorOrder: Record<string, string[]> = {}
+      const orbs: string[] = []
+      for (const n of nodes.values()) {
+        if (n.orb) { orbs.push(n.id); continue }
+        const names = n.floors
+          .map((fl, k) => ({ y: fl.userData.baseY as number, label: n.floorLabels[k] }))
+          .sort((a, b) => a.y - b.y)
+          .map((f) => f.label?.o.element.textContent ?? null)
+          .filter((t): t is string => t !== null)
+        floorOrder[n.id] = names
+      }
+      const open = explodedId === null ? undefined : nodes.get(explodedId)
+      const top = open?.floors[open.floors.length - 1]
+      let lineLabels = 0
+      for (const e of edges.values()) if (e.label.visible) lineLabels++
+      return {
+        ringAngle: seals[0]?.rotation.z ?? 0,
+        fogDrift: fogSprites[0]?.userData.a ?? 0,
+        wirePulse,
+        selectionRingAngle: selRing?.rotation.z ?? 0,
+        bloom: bloom !== null,
+        stars: starGeo.getAttribute('position').count,
+        dust: dustGeo ? dustGeo.getAttribute('position').count : 0,
+        platformSides: Object.fromEntries(platformSides),
+        platformLights,
+        floorOrder,
+        orbs,
+        exploded: explodedId,
+        explodeGap: top ? top.position.y - (top.userData.baseY as number) : 0,
+        flight: rig.flight(),
+        lineLabels,
+      }
+    },
     keepGhosts(ids) {
       const groups: THREE.Object3D[] = []
       for (const id of ids) {

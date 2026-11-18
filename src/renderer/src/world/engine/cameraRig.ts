@@ -43,6 +43,8 @@ export interface CameraRig<F> {
   withCard(): boolean
   /** Whether a flight or glide is under way. */
   flying(): boolean
+  /** The flight under way: how far along it is in time (`t`, 0 to 1) and in distance (`eased`); all zero when none. */
+  flight(): FlightState
   /** Flies to the overview (`instant`: lands at once). Settles when it lands or is cut short. */
   overview(instant: boolean): Promise<void>
   /** Flies to framing `f` and keeps it. Nothing to frame: nothing changes. */
@@ -88,6 +90,9 @@ export function poseAlong(from: Pose, to: Pose, k: number): Pose {
   const e = easeInOut(Math.max(0, k))
   return { pos: mix(from.pos, to.pos, e), target: mix(from.target, to.target, e) }
 }
+
+/** What a flight looks like from outside: whether one is under way, its time `t` and its eased progress. */
+export interface FlightState { active: boolean; t: number; eased: number }
 
 interface Flight { from: Pose; to: Pose; start: number; dur: number; done: () => void }
 
@@ -151,6 +156,12 @@ export function createCameraRig<F>(deps: CameraRigDeps<F>): CameraRig<F> {
     framing: () => framing,
     withCard: () => mode === 'framing' || (mode === 'free' && handCard),
     flying: () => flight !== null,
+    flight() {
+      const f = flight
+      if (!f) return { active: false, t: 0, eased: 0 }
+      const t = Math.max(0, Math.min(1, (deps.now() - f.start) / f.dur))
+      return { active: true, t, eased: easeInOut(t) }
+    },
     overview(instant) {
       setMode('overview', null)
       return fly(deps.home(), instant, OVERVIEW_FLIGHT_S)
