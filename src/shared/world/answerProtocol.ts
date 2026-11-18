@@ -57,6 +57,27 @@ const MAX_TOUR_STEPS = 12
 const BLOCK_RE = /```world-actions[ \t]*\r?\n([\s\S]*?)```/g
 const DANGLING_RE = /```world-actions[\s\S]*$/
 const MARKER_RE = /\[E(\d+)\]/g
+/** A bracket of several markers: "[E20, E21]", "[E20,E21]", "[E3–E5]" (also steps, "[A1, A2]"). */
+const GROUP_RE = /\[\s*([AE]\d+(?:\s*(?:,|[-–—])\s*[AE]\d+)+)\s*\]/g
+/** The most labels a range like "[E3–E5]" stands for; a longer one is left as written. */
+const MAX_RANGE = 12
+
+/** One "[E<n>]" per label a grouped citation names, so each becomes a chip; a mixed, reversed or too long group stays as written. */
+export function splitGroups(text: string): string {
+  return text.replace(GROUP_RE, (whole, inner: string) => {
+    const letter = inner[0]
+    const out: number[] = []
+    for (const piece of inner.split(',')) {
+      const m = /^\s*([AE])(\d+)\s*(?:[-–—]\s*([AE])(\d+)\s*)?$/.exec(piece)
+      if (!m || m[1] !== letter || (m[3] !== undefined && m[3] !== letter)) return whole
+      const lo = Number(m[2])
+      const hi = m[4] === undefined ? lo : Number(m[4])
+      if (hi < lo || hi - lo >= MAX_RANGE) return whole
+      for (let n = lo; n <= hi; n++) out.push(n)
+    }
+    return out.map((n) => `[${letter}${n}]`).join(' ')
+  })
+}
 const STEP_RE = /\[A(\d+)\]/g
 // A sentence ends at . ! or ? before a space or the end; markers right after the end belong to it.
 const SENTENCE_RE = /[\s\S]+?(?:[.!?]+(?:\s*\[[AE]\d+\])*(?=\s|$)|$)/g
@@ -185,7 +206,7 @@ const isUncited = (text: string): boolean => text !== '' && !new RegExp(MARKER_R
 
 /** Splits an agent answer into prose, validated world actions and the evidence it cites. Never throws. */
 export function parseAnswer(raw: string, doc: WorldDoc, labels: Record<string, Evidence> = {}): WorldAnswer {
-  const input = typeof raw === 'string' ? raw : ''
+  const input = typeof raw === 'string' ? splitGroups(raw) : ''
   const marked = input.replace(BLOCK_RE, '').replace(DANGLING_RE, '').trim() // closed blocks, then a truncated opener
   const text = marked.replace(/\s*\[A\d+\]/g, '').trim()
   try {

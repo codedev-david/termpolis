@@ -105,6 +105,22 @@ describe('parseAnswer', () => {
     expect(r.text).toBe('See [E2] and [E1], again [E2], missing [E9].')
   })
 
+  it('a grouped citation splits into one marker per label, so each becomes a chip (round 3 B)', () => {
+    const ev = (n: number): Evidence => ({ kind: 'file', ref: `f${n}.ts` })
+    const table = Object.fromEntries([3, 4, 5, 20, 21, 30].map((n) => [`E${n}`, ev(n)]))
+    const r = parseAnswer('Orders go out [E20, E21]. Then [E20,E21] and [E3–E5], or [E3-E4]; also [E30 , E21].', doc, table)
+    expect(r.text).toBe('Orders go out [E20] [E21]. Then [E20] [E21] and [E3] [E4] [E5], or [E3] [E4]; also [E30] [E21].')
+    expect(r.evidence).toEqual([ev(20), ev(21), ev(3), ev(4), ev(5), ev(30)])
+    expect(r.uncited).toBe(false)
+    expect(r.sentences.map((x) => x.text)).toEqual(['Orders go out [E20] [E21].', 'Then [E20] [E21] and [E3] [E4] [E5], or [E3] [E4]; also [E30] [E21].'])
+    // A range runs low to high, at most 12 labels: anything else is left as the model wrote it
+    expect(parseAnswer('x [E5–E3] y [E1-E40]', doc, table).text).toBe('x [E5–E3] y [E1-E40]')
+    // ...and so is a group that mixes evidence and steps, or chains two dashes
+    expect(parseAnswer('m [E1, A2] n [E1-A3] o [E1-E2-E3]', doc, table).text).toBe('m [E1, A2] n [E1-A3] o [E1-E2-E3]')
+    // Not a citation: other bracketed text stays
+    expect(parseAnswer('a [E1, x] b [A1, A2]', doc, table).text).toBe('a [E1, x] b')
+  })
+
   it('accepts bare numeric label keys too', () => {
     const e: Evidence = { kind: 'commit', ref: 'abc' }
     expect(parseAnswer('x [E3]', doc, { '3': e }).evidence).toEqual([e])
