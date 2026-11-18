@@ -13,17 +13,19 @@ export interface StageFile {
   boundaries: Boundary[]
   /** Relative import specifiers found in the text. */
   imports: string[]
+  /** The packages the text imports (bare specifiers, no subpath), for the technology chips; absent when none. */
+  packages?: string[]
   /** OpenTelemetry service names declared in the file, when any. */
   names?: string[]
 }
 
 /**
  * The stage cache layout and the meaning of what it holds. BUMP THIS whenever a boundary detector, the
- * import reader, the service-name reader or the grouping rules (group.ts) change: a cache written by an
+ * import reader, the package reader, the service-name reader or the grouping rules (group.ts) change: a cache written by an
  * older version is then ignored and the next compile reads and groups every file afresh, so a detector
  * fix reaches worlds that already exist.
  */
-export const STAGE_CACHE_VERSION = 2
+export const STAGE_CACHE_VERSION = 3
 
 export interface StageCache {
   /** STAGE_CACHE_VERSION of the compiler that wrote it; any other value is no cache. */
@@ -59,7 +61,7 @@ function isBoundary(v: unknown): v is Boundary {
 const boundaries = (v: unknown): v is Boundary[] => Array.isArray(v) && v.every(isBoundary)
 
 function isStageFile(v: unknown): v is StageFile {
-  return isObj(v) && isStr(v.hash) && boundaries(v.boundaries) && strings(v.imports) && (v.names === undefined || strings(v.names))
+  return isObj(v) && isStr(v.hash) && boundaries(v.boundaries) && strings(v.imports) && (v.packages === undefined || strings(v.packages)) && (v.names === undefined || strings(v.names))
 }
 
 function isGrouping(v: unknown): v is Grouping {

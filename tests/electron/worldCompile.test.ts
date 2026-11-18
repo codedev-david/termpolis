@@ -16,6 +16,7 @@ import {
   type StagedInput
 } from '../../src/main/world/compile'
 import { isStageCache, STAGE_CACHE_VERSION, type StageCache } from '../../src/main/world/stageCache'
+import { BUILTIN_TECH } from '../../src/main/world/techStack'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
 import { edgeId, type GroupBuilding, type Grouping } from '../../src/main/world/group'
 import { labelWorld, type LabelDeps } from '../../src/main/world/label'
@@ -315,7 +316,8 @@ describe('compileWorld', () => {
     expect(edges.get(ipcId)?.label).toBe('Kept IPC label')
     expect(edges.get(ipcId)?.tech).toEqual(['IPC'])
     expect(edges.get(importEdge)?.label).toBe('Hands the view its data')
-    expect(doc.glossary.TypeScript).toBe('Typed JavaScript')
+    // A builtin technology keeps its own definition, as the builtin glossary does.
+    expect(doc.glossary.TypeScript).toBe(BUILTIN_TECH.TypeScript)
     expect(doc.glossary.IPC).toBe(BUILTIN_GLOSSARY.IPC)
     expect(doc.glossary.Legacy).toBe('kept from before')
   })
@@ -434,9 +436,36 @@ describe('compileWorld', () => {
     expectValid(doc)
     const main = doc.buildings.find((b) => b.id === MAIN) as WorldDoc['buildings'][number]
     expect(main.floors[0].tech).toEqual(['Electron', 'IPC'])
-    expect(main.stack).toEqual(['Electron'])
+    expect(main.stack).toEqual(['TypeScript', 'Node.js', 'Electron'])
     expect(doc.districts[1]).toMatchObject({ id: 'd-src-main', name: 'Main side', subtitle: 'the Electron main process' })
     expect(doc.tours[0].steps[1].caption).toBe('the Electron main process')
+  })
+
+  it("a mapped repo gets technology chips from its code, labelling or not, and the model's stack in any case (film bug 1)", async () => {
+    const files = {
+      ...FIXTURE,
+      'src/renderer/scene.tsx': "import { useState } from 'react'\nimport * as THREE from 'three'\nimport Database from 'better-sqlite3'\nexport const s = 1\n",
+      'src/renderer/index.ts': "import './view'\nimport './scene'\nwindow.api = () => ipcRenderer.invoke('checkout:run')\n"
+    }
+    const plain = await compileWorld({ snap: snapOf(files), projectKey: 'demo', head: HEAD, previous: null }, mkDeps(files))
+    expectValid(plain)
+    const stackOf = (d: WorldDoc, id: string): string[] => (d.buildings.find((b) => b.id === id) as WorldDoc['buildings'][number]).stack
+    expect(stackOf(plain, MAIN)).toEqual(['TypeScript', 'Node.js', 'Electron'])
+    const scene = plain.buildings.find((b) => b.members.includes('src/renderer/scene.tsx')) as WorldDoc['buildings'][number]
+    expect(scene.stack).toEqual(expect.arrayContaining(['TypeScript', 'React', 'Three.js', 'SQLite']))
+    expect(plain.buildings.every((b) => b.stack.every((t) => Object.hasOwn(plain.glossary, t)))).toBe(true)
+    expect(plain.glossary.Electron).toBe(BUILTIN_TECH.Electron)
+    expect(plain.glossary.Python).toBeUndefined() // only the technologies a chip shows are defined
+    // The model's stack in lower case, an alias and a term of its own glossary are named by their keys.
+    const llm = vi.fn(async (prompt: string) => {
+      if (!prompt.includes('DISTRICT "d-src-main"')) return null
+      return JSON.stringify({
+        buildings: { [MAIN]: { stack: F(['electron', 'node', 'Event BUS', 'Mystery']) } },
+        glossary: { 'Event bus': F('Passes events between parts') }
+      })
+    })
+    const labelled = await compileWorld({ snap: snapOf(files), projectKey: 'demo', head: HEAD, previous: null }, mkDeps(files, { label: labelDeps({ llm }) }))
+    expect(stackOf(labelled, MAIN)).toEqual(['TypeScript', 'Node.js', 'Electron', 'Event bus'])
   })
 
   it('onProgress stages emitted in order', async () => {

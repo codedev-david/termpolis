@@ -18,6 +18,7 @@ import { edgeSummary } from '../../shared/world/edgeText'
 import { edgeId, groupProject, isIgnored, resolveImport, slug, type GroupBuilding, type Grouping } from './group'
 import { mergeAnnotations } from './annotations'
 import { relativeImports, withImports } from './imports'
+import { BUILTIN_TECH, detectStack, packageImports, techChips } from './techStack'
 import { labelWorld, type BuildingLabel, type EdgeLabel, type LabelDeps, type Labels } from './label'
 import { layoutWorld } from './layout'
 import { overlayPlan } from './planOverlay'
@@ -499,7 +500,14 @@ function regroupLines(g: Grouping, prior: StageCache, entries: Map<string, Stage
 function scanFile(f: string, text: string | null): StageFile | null {
   if (text === null || text.length > MAX_DETECT_FILE_CHARS) return null
   const found = serviceNames(f, text)
-  return { hash: contentHash(text), boundaries: detectBoundaries(f, text), imports: relativeImports(f, text), ...(found.length > 0 ? { names: found } : {}) }
+  const packages = packageImports(f, text)
+  return {
+    hash: contentHash(text),
+    boundaries: detectBoundaries(f, text),
+    imports: relativeImports(f, text),
+    ...(packages.length > 0 ? { packages } : {}),
+    ...(found.length > 0 ? { names: found } : {})
+  }
 }
 
 /** The world, as compileWorldStaged makes it, without the stage cache. */
@@ -587,7 +595,13 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
 
   progress('layout', 85)
   const glossary: Record<string, string> = { ...labels.glossary, ...BUILTIN_GLOSSARY }
-  const known = (t: string): boolean => Object.prototype.hasOwnProperty.call(glossary, t)
+  // Technology chips: what the code shows (extensions, imported packages) first, then the model's
+  // stack, each named by its glossary key whatever its case or spelling; a term with no definition is dropped.
+  const packagesOf = (f: string): string[] => [
+    ...(entries.get(f)?.packages ?? []),
+    ...(snap.fileImports[f] ?? []).filter((s) => !s.startsWith('.') && !s.startsWith('/'))
+  ]
+  const chips = (terms: string[], first: string[] = []): string[] => techChips(first, terms, glossary)
 
   const districts: District[] = [...g.districts]
     .sort((a, z) => cmp(a.id, z.id))
@@ -609,8 +623,8 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
       name: l.name,
       techLabel: l.techLabel,
       process: b.process,
-      floors: l.floors.map((f) => ({ ...f, tech: f.tech.filter(known) })),
-      stack: l.stack.filter(known),
+      floors: l.floors.map((f) => ({ ...f, tech: chips(f.tech) })),
+      stack: chips(l.stack, detectStack(b.members, packagesOf)),
       how: l.how,
       why: l.why,
       status: st.status,
@@ -624,10 +638,15 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     ...g.edges.map((e): WorldEdge => {
       const id = edgeId(e)
       const l = labels.edges[id]
-      return { id, from: e.from, to: e.to, cargo: l.cargo, label: l.label, how: l.how, tech: l.tech.filter(known), why: l.why, rate: l.rate, twoWay: false, claims: seenInCode(e, g, snap) }
+      return { id, from: e.from, to: e.to, cargo: l.cargo, label: l.label, how: l.how, tech: chips(l.tech), why: l.why, rate: l.rate, twoWay: false, claims: seenInCode(e, g, snap) }
     }),
     ...ext.edges
   ].sort((a, z) => cmp(a.id, z.id))
+
+  // The builtin definition of every technology a chip shows (it wins over a model's).
+  for (const t of [...buildings.flatMap((b) => [...b.stack, ...b.floors.flatMap((f) => f.tech)]), ...edges.flatMap((e) => e.tech)]) {
+    if (Object.hasOwn(BUILTIN_TECH, t)) glossary[t] = BUILTIN_TECH[t]
+  }
 
   const cargoKeys = [...new Set(edges.map((e) => e.cargo).filter(Boolean))].sort()
   const cargoColor = cargoColors(cargoKeys)
