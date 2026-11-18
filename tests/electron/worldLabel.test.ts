@@ -6,6 +6,9 @@ import type { Boundary } from '../../src/main/world/detectors'
 import { edgeId, type GroupBuilding, type Grouping } from '../../src/main/world/group'
 import {
   BATCH_EXCERPT_BUDGET,
+  BUILDINGS_PER_BATCH,
+  EDGES_PER_BUILDING,
+  LABEL_CONCURRENCY,
   cheapModelFor,
   labelWorld,
   makeWorldLlm,
@@ -76,12 +79,12 @@ describe('edgeId', () => {
 })
 
 describe('labelWorld', () => {
-  it('makes one llm call per district batch', async () => {
-    const llm = vi.fn(async () => '{}')
+  it('makes one llm call per batch of a district', async () => {
+    const llm = vi.fn(async (_p: string) => '{}')
     await labelWorld(twoDistricts(), mkDeps({ llm }))
     expect(llm).toHaveBeenCalledTimes(2)
-    expect(llm.mock.calls[0][0]).toContain('DISTRICT "d1"')
-    expect(llm.mock.calls[0][0]).not.toContain('src/c/y.ts')
+    const d1 = llm.mock.calls.map((c) => c[0]).find((p) => p.includes('DISTRICT "d1"')) as string
+    expect(d1).not.toContain('src/c/y.ts')
   })
 
   it('cache hit skips llm', async () => {
@@ -429,22 +432,13 @@ describe('labelWorld', () => {
   })
 
   it('drops excerpts that do not fit the 24,000 char batch budget, deterministically', async () => {
-    const files = Array.from({ length: 30 }, (_, i) => `f${String(i).padStart(2, '0')}.ts`)
-    const g: Grouping = {
-      districts: [{ id: 'd', name: 'D', members: [] }],
-      buildings: files.map((f) => bld(`b-${f}`, 'd', [f])),
-      edges: []
-    }
-    const llm = vi.fn(async () => '{}')
-    await labelWorld(g, mkDeps({ llm, excerpt: async () => 'x'.repeat(1000), maxExcerptChars: 1000 }))
-    const p = llm.mock.calls[0][0] as string
+    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings: [bld('p', 'd', ['a.ts', 'b.ts', 'c.ts'])], edges: [] }
+    const llm = vi.fn(async (_p: string) => '{}')
+    await labelWorld(g, mkDeps({ llm, excerpt: async () => 'x'.repeat(9_000), maxExcerptChars: 9_000 }))
+    const p = llm.mock.calls[0][0]
     expect(BATCH_EXCERPT_BUDGET).toBe(24_000)
-    expect(p).toContain('[E24] "f23.ts"')
-    expect(p).not.toContain('[E25]')
-    const llm2 = vi.fn(async () => '{}')
-    await labelWorld(g, mkDeps({ llm: llm2, excerpt: async () => 'y'.repeat(5000) }))
-    expect(llm2.mock.calls[0][0]).toContain('[E20] "f19.ts"')
-    expect(llm2.mock.calls[0][0]).not.toContain('[E21]')
+    expect(p).toContain('[E2] "b.ts"')
+    expect(p).not.toContain('[E3]')
   })
 
   it('a later smaller excerpt can still fit after a big one is dropped', async () => {
@@ -526,13 +520,13 @@ describe('cheapModelFor', () => {
 describe('makeWorldLlm', () => {
   const res = (over: Partial<ExecResult>): ExecResult => ({ ok: true, agent: 'codex', output: '', code: 0, durationMs: 1, primerChars: 0, ...over })
 
-  it('claude goes through the headless distiller with haiku by default and a 60s timeout', async () => {
+  it('claude goes through the headless distiller with haiku by default and a 120s timeout', async () => {
     const exec = vi.fn(async () => ({ stdout: ' answer \n', code: 0 }))
     expect(await makeWorldLlm('claude', undefined, { claudeExec: exec })('p')).toBe('answer')
     const [cmd, args, opts] = exec.mock.calls[0] as unknown as [string, string[], { timeoutMs: number }]
     expect(cmd).toBe('claude')
     expect(args).toContain('haiku')
-    expect(opts.timeoutMs).toBe(60_000)
+    expect(opts.timeoutMs).toBe(120_000)
     await makeWorldLlm('claude', 'sonnet', { claudeExec: exec })('p')
     // The prompt (repository excerpts) goes on stdin, never into argv.
     const third = vi.fn(async () => ({ stdout: 'ok', code: 0 }))
@@ -540,14 +534,14 @@ describe('makeWorldLlm', () => {
     const [, a3, o3] = third.mock.calls[0] as unknown as [string, string[], { timeoutMs: number; input?: string }]
     expect(a3).toEqual(['-p', '--model', 'haiku', '--tools', '', '--strict-mcp-config'])
     expect(a3.join(' ')).not.toContain('REGION PROMPT TEXT')
-    expect(o3).toEqual({ timeoutMs: 60_000, input: 'REGION PROMPT TEXT' })
+    expect(o3).toEqual({ timeoutMs: 120_000, input: 'REGION PROMPT TEXT' })
     expect((exec.mock.calls[1] as unknown as [string, string[]])[1]).toContain('sonnet')
   })
 
   it('codex/gemini call run read-only with no primer and no remember, returning trimmed output', async () => {
     const run = vi.fn(async () => res({ output: '  hi  ' }))
     expect(await makeWorldLlm('gemini', 'flash', { run })('prompt')).toBe('hi')
-    expect(run).toHaveBeenCalledWith({ task: 'prompt', agent: 'gemini', model: 'flash', write: false, timeoutMs: 60_000, noPrimer: true, noRemember: true })
+    expect(run).toHaveBeenCalledWith({ task: 'prompt', agent: 'gemini', model: 'flash', write: false, timeoutMs: 120_000, noPrimer: true, noRemember: true })
   })
 
   it('returns null on failure, empty output, a throw, or no run', async () => {
@@ -708,54 +702,29 @@ describe('fix round 1', () => {
 
   it('the prompt is capped at 28,000 chars: last excerpts drop, E labels still map', async () => {
     expect(MAX_PROMPT_CHARS).toBe(28_000)
-    const buildings = Array.from({ length: 40 }, (_, i) =>
-      bld(`b${String(i).padStart(2, '0')}`, 'd', mem(30).map((m) => m.replace('/m/', `/m${i}/`)))
+    // Three buildings with long paths and many boundaries: their listed files and boundaries plus a full
+    // excerpt share each do not fit one prompt.
+    const long = (i: number, k: number): string => `src/${'deep/'.repeat(36)}m${i}/file${String(k).padStart(2, '0')}.ts`
+    const buildings = Array.from({ length: 3 }, (_, i) =>
+      bld(`b${String(i).padStart(2, '0')}`, 'd', Array.from({ length: 30 }, (_, k) => long(i, k)), Array.from({ length: 14 }, (_, k) => B('env', `${'K'.repeat(150)}${k}`, long(i, 0), k + 1)))
     )
     const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings, edges: [] }
     const reply = JSON.stringify({
-      buildings: { b00: { how: [{ text: 'ok', evidence: ['E1'] }], why: [{ text: 'late', evidence: ['E120'] }] } }
+      buildings: { b00: { how: [{ text: 'ok', evidence: ['E1'] }], why: [{ text: 'late', evidence: ['E9'] }] } }
     })
-    const llm = vi.fn(async () => reply)
-    const l = await labelWorld(g, mkDeps({ llm, excerpt: async () => 'x'.repeat(1200) }))
-    const p = llm.mock.calls[0][0] as string
+    const llm = vi.fn(async (_p: string) => reply)
+    const l = await labelWorld(g, mkDeps({ llm, excerpt: async () => 'x'.repeat(2600), maxExcerptChars: 2600 }))
+    const p = llm.mock.calls[0][0]
     expect(p.length).toBeLessThanOrEqual(28_000)
     expect(p).toContain('(+18 more)')
-    expect(p).not.toContain('[E120]')
+    expect(p).toContain('(+2 more)')
+    expect(p).not.toContain('[E9]')
     const nums = [...p.matchAll(/\[E(\d+)\] /g)].map((m) => Number(m[1]))
     expect(nums).toEqual(Array.from({ length: nums.length }, (_, i) => i + 1))
-    expect(nums.length).toBeLessThan(40 * 3)
-    expect(l.buildings.b00.how[0].evidence[0].ref).toBe('src/m0/file00.ts')
+    expect(nums.length).toBeLessThan(9)
+    expect(nums.length).toBeGreaterThan(0)
+    expect(l.buildings.b00.how[0].evidence[0].ref).toBe(long(0, 0))
     expect(l.buildings.b00.why).toEqual([])
-  })
-
-  it('a prompt that cannot fit even without excerpts is never sent: that batch keeps its fallback labels', async () => {
-    const buildings = Array.from({ length: 150 }, (_, i) =>
-      bld(`b${i}`, 'd', Array.from({ length: 12 }, (_, k) => `${'p'.repeat(190)}${i}-${k}.ts`))
-    )
-    const g: Grouping = {
-      districts: [{ id: 'd', name: 'D', members: [] }, { id: 'small', name: 'Small', members: ['s'] }],
-      buildings: [...buildings, bld('s', 'small', ['src/s.ts'])],
-      edges: []
-    }
-    // Sanity: even with every excerpt dropped, the big district's prompt is over the cap.
-    const bare = buildLabelPrompt({
-      district: { id: 'd', name: 'D' },
-      buildings: buildings.map((b) => ({ id: b.id, name: b.name, members: b.members, boundaries: [] })),
-      edges: [],
-      excerpts: []
-    })
-    expect(bare.length).toBeGreaterThan(MAX_PROMPT_CHARS)
-    const cacheGet = vi.fn(async () => null)
-    const llm = vi.fn(async () => JSON.stringify({ district: { name: F('Named') }, buildings: { b0: { name: F('Model name') } } }))
-    const l = await labelWorld(g, mkDeps({ llm, cache: { get: cacheGet, set: async () => undefined } }))
-    // Only the small district asked; every prompt that left was within the cap.
-    expect(llm).toHaveBeenCalledTimes(1)
-    expect(llm.mock.calls[0][0]).toContain('DISTRICT "small"')
-    for (const [p] of llm.mock.calls) expect((p as string).length).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
-    expect(cacheGet).toHaveBeenCalledTimes(1)
-    expect(l.districts.d).toEqual({ name: 'D', subtitle: '' })
-    expect(l.buildings.b0.name).toBe('b0-name')
-    expect(l.buildings.b0.how).toEqual([])
   })
 
   it('keys from the model like __proto__ and constructor never reach a prototype or the glossary', async () => {
@@ -860,7 +829,7 @@ describe('citations on every field (task 6)', () => {
     const llm = vi.fn(async (_p: string) => '{}')
     await labelWorld(twoDistricts(), mkDeps({ llm }))
     expect(llm.mock.calls[0][0]).toContain('where F is { "value": string, "evidence": ["E1"] }')
-    expect(LABEL_PROMPT_VERSION).toBe('world-label-v3')
+    expect(LABEL_PROMPT_VERSION).toBe('world-label-v4')
   })
 })
 
@@ -885,7 +854,7 @@ describe('context evidence (task 6)', () => {
       JSON.stringify({ buildings: { a: { name: F('Alpha Hub', 'E4'), techLabel: F('IPC', 'E5') }, b: { name: F('Nope', 'E9') } } })
     )
     const l = await labelWorld(twoDistricts(), mkDeps({ llm, context, maxExcerptChars: 100 }))
-    const p = llm.mock.calls[0][0]
+    const p = llm.mock.calls.map((c) => c[0]).find((x) => x.includes('DISTRICT "d1"')) as string
     expect(p).toContain('commit "abc1234"')
     expect(p).toContain('wire the channel')
     expect(p).toContain('[E5] "docs/a.md:3"')
@@ -936,5 +905,111 @@ describe('context evidence (task 6)', () => {
     })
     expect(p).toContain('[E1] commit "abc1234"')
     expect(p).toContain('[E2] "a.ts"')
+  })
+})
+
+describe('every building is described (film bug 2)', () => {
+  /** n buildings in district `d`, each with `files` long-pathed members. */
+  const many = (n: number, files = 1, pad = 0): GroupBuilding[] =>
+    Array.from({ length: n }, (_, i) => bld(`b${String(i).padStart(3, '0')}`, 'd', Array.from({ length: files }, (_, k) => `${'p'.repeat(pad)}src/b${i}/f${k}.ts`)))
+
+  it('a district too big for one prompt is asked in batches of BUILDINGS_PER_BATCH: every building is asked, every prompt fits', async () => {
+    expect(BUILDINGS_PER_BATCH).toBe(3)
+    const buildings = many(150, 12, 190)
+    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings, edges: [] }
+    const llm = vi.fn(async (p: string) => {
+      const ids = [...p.matchAll(/^- "(b\d+)": /gm)].map((m) => m[1])
+      return JSON.stringify({ buildings: Object.fromEntries(ids.map((id) => [id, { how: [{ text: `${id} works`, evidence: ['E1'] }] }])) })
+    })
+    const l = await labelWorld(g, mkDeps({ llm, excerpt: async () => 'x'.repeat(1200) }))
+    expect(llm).toHaveBeenCalledTimes(50)
+    for (const [p] of llm.mock.calls) expect(p.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
+    for (const b of buildings) expect(l.buildings[b.id].how.map((c) => c.text)).toEqual([`${b.id} works`])
+  })
+
+  it('every building of a batch gets its own excerpts, even when the first building has big files', async () => {
+    const buildings = many(3, 3)
+    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings, edges: [] }
+    const llm = vi.fn(async (_p: string) => '{}')
+    await labelWorld(g, mkDeps({ llm, excerpt: async (f) => `${f} `.padEnd(5_000, 'x'), maxExcerptChars: 5_000 }))
+    const p = llm.mock.calls[0][0]
+    // A third of the batch budget each: one 5,000 char excerpt per building, never three for the first.
+    expect([...p.matchAll(/^\[E\d+\] "([^"]+)"/gm)].map((m) => m[1])).toEqual(['src/b0/f0.ts', 'src/b1/f0.ts', 'src/b2/f0.ts'])
+  })
+
+  it('each batch lists at most EDGES_PER_BUILDING lines per building: boundary lines, then lines to other districts, then by id', async () => {
+    expect(EDGES_PER_BUILDING).toBe(4)
+    const g: Grouping = {
+      districts: [
+        { id: 'd', name: 'D', members: [] },
+        { id: 'o', name: 'O', members: [] }
+      ],
+      buildings: [bld('a', 'd', ['src/a.ts']), ...['b', 'c', 'd', 'e', 'f'].map((x) => bld(x, 'd', [`src/${x}.ts`])), bld('z', 'o', ['src/z.ts'])],
+      edges: [
+        { from: 'a', to: 'b', via: [] },
+        { from: 'a', to: 'c', via: [] },
+        { from: 'a', to: 'd', via: [] },
+        { from: 'a', to: 'e', via: [] },
+        { from: 'a', to: 'f', via: [B('ipc', 'k', 'src/a.ts', 2)] },
+        { from: 'a', to: 'z', via: [] }
+      ]
+    }
+    const llm = vi.fn(async (p: string) => {
+      const ids = [...p.matchAll(/^- "(e-[^"]+)": /gm)].map((m) => m[1])
+      return JSON.stringify({ edges: Object.fromEntries(ids.map((id) => [id, { how: [{ text: 'carries', evidence: ['E1'] }] }])) })
+    })
+    const l = await labelWorld(g, mkDeps({ llm }))
+    const first = llm.mock.calls.find(([p]) => p.includes('- "a": '))?.[0] as string
+    const listed = [...first.matchAll(/^- "(e-[^"]+)": /gm)].map((m) => m[1])
+    expect(listed).toEqual(['e-a--f', 'e-a--z', 'e-a--b', 'e-a--c'])
+    expect(l.edges['e-a--f'].how).toHaveLength(1)
+    expect(l.edges['e-a--d'].how).toEqual([])
+    expect(l.edges['e-a--d'].label).toBe('imports')
+  })
+
+  it('asks up to LABEL_CONCURRENCY batches at once and applies replies in batch order', async () => {
+    expect(LABEL_CONCURRENCY).toBe(4)
+    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings: many(18), edges: [] }
+    let inFlight = 0
+    let peak = 0
+    let n = 0
+    const llm = vi.fn(async (_p: string) => {
+      const mine = n++
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      // The first batch answers last: its glossary entry must still win.
+      await new Promise((r) => setTimeout(r, mine === 0 ? 30 : 1))
+      inFlight--
+      return JSON.stringify({ district: { name: F(`Named ${mine}`) }, glossary: { Term: F(`from ${mine}`) } })
+    })
+    const l = await labelWorld(g, mkDeps({ llm }))
+    expect(llm).toHaveBeenCalledTimes(6)
+    expect(peak).toBe(4)
+    expect(l.glossary.Term).toBe('from 0')
+    expect(l.districts.d.name).toBe('Named 0')
+  })
+
+  it('two terms of one reply that trim to the same glossary key: the first wins', async () => {
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => JSON.stringify({ glossary: { X: F('first'), ' X ': F('second') } }) }))
+    expect(l.glossary).toEqual({ X: 'first' })
+  })
+
+  it('a district with no buildings is still asked for its name', async () => {
+    const llm = vi.fn(async (_p: string) => JSON.stringify({ district: { name: F('Empty', []) } }))
+    await labelWorld({ districts: [{ id: 'd', name: 'D', members: [] }], buildings: [], edges: [] }, mkDeps({ llm }))
+    expect(llm).toHaveBeenCalledTimes(1)
+  })
+
+  it('the prompt asks for every building and every line listed, and lists at most 12 boundaries', () => {
+    const p = buildLabelPrompt({
+      district: { id: 'd', name: 'D' },
+      buildings: [{ id: 'a', name: 'A', members: ['a.ts'], boundaries: Array.from({ length: 15 }, (_, i) => `ipc k${i} (provide)`) }],
+      edges: [],
+      excerpts: []
+    })
+    expect(p).toContain('Describe every building and every edge listed above')
+    expect(p).toContain('"ipc k11 (provide)" (+3 more)')
+    expect(p).not.toContain('k12')
+    expect(LABEL_PROMPT_VERSION).toBe('world-label-v4')
   })
 })

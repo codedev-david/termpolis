@@ -3,11 +3,12 @@
 // Pure: no fs, no Electron.
 
 /** Bump to invalidate every cached label reply (the prompt text itself is hashed too). */
-export const LABEL_PROMPT_VERSION = 'world-label-v3'
+export const LABEL_PROMPT_VERSION = 'world-label-v4'
 
-/** The whole prompt travels on a command line; Windows caps that near 32k chars. */
+/** Bounds one batch's input (it reaches the model on stdin, or a command line for agents that take one). */
 export const MAX_PROMPT_CHARS = 28_000
 const MAX_LISTED_MEMBERS = 12
+const MAX_LISTED_BOUNDARIES = 12
 const MAX_META_CHARS = 200
 
 /** A repo-derived metadata string as one JSON-quoted line: control chars stripped, whitespace collapsed, capped. */
@@ -74,7 +75,10 @@ export function buildLabelPrompt(batch: LabelBatch): string {
       `- ${meta(b.id)}: ${meta(b.name)}`,
       `  files: ${b.members.slice(0, MAX_LISTED_MEMBERS).map(meta).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`
     )
-    if (b.boundaries.length > 0) lines.push(`  boundaries: ${b.boundaries.map(meta).join(', ')}`)
+    const moreB = b.boundaries.length - MAX_LISTED_BOUNDARIES
+    if (b.boundaries.length > 0) {
+      lines.push(`  boundaries: ${b.boundaries.slice(0, MAX_LISTED_BOUNDARIES).map(meta).join(', ')}${moreB > 0 ? ` (+${moreB} more)` : ''}`)
+    }
   }
   lines.push('', 'EDGES (from -> to)')
   for (const e of batch.edges) {
@@ -82,7 +86,9 @@ export function buildLabelPrompt(batch: LabelBatch): string {
   }
   lines.push(
     '',
-    'Answer with JSON only (no prose; a ```json fence is tolerated) in exactly this shape. Omit any field you cannot support.',
+    'Describe every building and every edge listed above: give each building a name, a techLabel, its stack, at least one how claim (what it does) and one why claim (why it is built this way), and give each edge a label, its cargo (at most four words) and at least one how and one why claim. Leave out only a field that no excerpt supports. An edge is usually shown by the import or call in the excerpts of its from building: cite that.',
+    '',
+    'Answer with JSON only (no prose; a ```json fence is tolerated) in exactly this shape.',
     '{',
     '  "district": { "name": F, "subtitle": F },',
     '  "buildings": { "<building id>": { "name": F, "techLabel": F, "stack": { "value": string[], "evidence": ["E1"] },',

@@ -52,7 +52,17 @@ export interface LabelDeps {
 }
 
 export const DEFAULT_MAX_EXCERPT_CHARS = 1200
+/** Excerpt chars one batch may carry; each building of the batch gets an equal share of it. */
 export const BATCH_EXCERPT_BUDGET = 24_000
+/** Buildings per model call. A whole district in one call left most buildings undescribed: a big
+ *  district's prompt did not fit at all, and a model asked about seven parts answered for two. */
+export const BUILDINGS_PER_BATCH = 3
+/** Lines described per building: its boundary lines first, then lines to other districts, then by id. */
+export const EDGES_PER_BUILDING = 4
+/** Model calls in flight at once. */
+export const LABEL_CONCURRENCY = 4
+/** One model call's limit. A batch reply takes 30 to 60 s through the Claude Code CLI. */
+export const LABEL_CALL_TIMEOUT_MS = 120_000
 const MAX_EXCERPTS_PER_BUILDING = 3
 const MAX_FILE_EXCERPTS = 2
 const MAX_FLOORS = 12
@@ -103,13 +113,13 @@ export function makeWorldLlm(
   if (agent === 'claude') {
     // The prompt carries repository excerpts, so it goes on stdin, never on the command line
     // (endpoint scanners read command lines; source trips their credential-signature rules).
-    return makeHeadlessDistiller({ model: model ?? 'haiku', exec: deps.claudeExec, timeoutMs: 60_000, promptVia: 'stdin' })
+    return makeHeadlessDistiller({ model: model ?? 'haiku', exec: deps.claudeExec, timeoutMs: LABEL_CALL_TIMEOUT_MS, promptVia: 'stdin' })
   }
   const run = deps.run
   if (!run) return async () => null
   return async (prompt) => {
     try {
-      const res = await run({ task: prompt, agent, model, write: false, timeoutMs: 60_000, noPrimer: true, noRemember: true })
+      const res = await run({ task: prompt, agent, model, write: false, timeoutMs: LABEL_CALL_TIMEOUT_MS, noPrimer: true, noRemember: true })
       const out = res.ok ? res.output.trim() : ''
       return out === '' ? null : out
     } catch {
@@ -343,8 +353,10 @@ async function collectExcerpts(
   const max = deps.maxExcerptChars ?? DEFAULT_MAX_EXCERPT_CHARS
   const excerpts: BatchExcerpt[] = []
   const evidence = new Map<string, Evidence>()
-  let used = 0
+  // An equal share per building, so the last building of a batch has evidence to cite too.
+  const share = Math.floor(BATCH_EXCERPT_BUDGET / Math.max(1, buildings.length))
   for (const b of buildings) {
+    let used = 0
     const sorted = [...b.members].sort()
     const candidates: { file: string; line?: number }[] = [
       ...sorted.slice(0, MAX_FILE_EXCERPTS).map((file) => ({ file })),
@@ -360,7 +372,7 @@ async function collectExcerpts(
       } catch {
         continue
       }
-      if (text.trim() === '' || used + text.length > BATCH_EXCERPT_BUDGET) continue
+      if (text.trim() === '' || used + text.length > share) continue
       used += text.length
       taken++
       const label = `E${excerpts.length + 1}`
@@ -374,7 +386,7 @@ async function collectExcerpts(
       try {
         for (const e of await deps.context(b.members)) {
           const text = (e.excerpt ?? '').slice(0, max)
-          if (text.trim() === '' || used + text.length > BATCH_EXCERPT_BUDGET) continue
+          if (text.trim() === '' || used + text.length > share) continue
           used += text.length
           const label = `E${excerpts.length + 1}`
           excerpts.push({ label, ref: e.ref, text, ...(e.kind === 'file' ? {} : { kind: e.kind }) })
@@ -401,6 +413,108 @@ const dict = <T>(): Record<string, T> => Object.create(null) as Record<string, T
 /** Glossary terms that would be dangerous or confusing as keys anywhere downstream: skipped. */
 const RESERVED_TERMS = new Set(['__proto__', 'constructor', 'prototype'])
 
+/** One model call: a slice of one district's buildings and the lines they own. */
+interface Planned {
+  district: Grouping['districts'][number]
+  buildings: GroupBuilding[]
+  edges: GroupEdge[]
+  /** The district's first batch: the only one whose district name counts. */
+  first: boolean
+}
+
+/** Splits every district into batches of BUILDINGS_PER_BATCH, each with its buildings' best lines. */
+function planBatches(g: Grouping): Planned[] {
+  const districtOf = new Map(g.buildings.map((b) => [b.id, b.districtId]))
+  // A line rides with its from building; when from is outside this grouping (an incremental
+  // re-label), with its to building. Both ends outside: not batched, the fallback is kept.
+  const owned = new Map<string, GroupEdge[]>()
+  for (const e of g.edges) {
+    const owner = districtOf.has(e.from) ? e.from : e.to
+    if (!districtOf.has(owner)) continue
+    owned.set(owner, [...(owned.get(owner) ?? []), e])
+  }
+  const rank = (e: GroupEdge): number => (e.via.length > 0 ? 0 : districtOf.get(e.from) !== districtOf.get(e.to) ? 1 : 2)
+  const best = (id: string): GroupEdge[] =>
+    [...(owned.get(id) ?? [])].sort((a, z) => rank(a) - rank(z) || edgeId(a).localeCompare(edgeId(z))).slice(0, EDGES_PER_BUILDING)
+  const plan: Planned[] = []
+  for (const d of g.districts) {
+    const buildings = g.buildings.filter((b) => b.districtId === d.id)
+    // A district with no buildings is still asked once, for its name.
+    for (let i = 0; i === 0 || i < buildings.length; i += BUILDINGS_PER_BATCH) {
+      const slice = buildings.slice(i, i + BUILDINGS_PER_BATCH)
+      plan.push({ district: d, buildings: slice, edges: slice.flatMap((b) => best(b.id)), first: i === 0 })
+    }
+  }
+  return plan
+}
+
+/** Runs `fn` over `items` with at most `n` in flight; results keep the items' order. `fn` never rejects. */
+async function pool<T, R>(items: T[], n: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = []
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker))
+  return out
+}
+
+/** One batch's own labels (only what its reply set) and the tokens its call cost. */
+async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<Labels> {
+  const out: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
+  const { buildings } = p
+  const { excerpts, evidence } = await collectExcerpts(buildings, deps)
+  const mk = (): LabelBatch => ({
+    district: { id: p.district.id, name: p.district.name },
+    buildings: buildings.map((b) => ({
+      id: b.id,
+      name: b.name,
+      members: b.members,
+      boundaries: b.boundaries.map((x) => `${x.kind} ${x.key} (${x.side})`)
+    })),
+    edges: p.edges.map((e) => ({ id: edgeId(e), from: e.from, to: e.to, via: e.via.map((v) => `${v.kind} ${v.key}`) })),
+    excerpts
+  })
+  let batch = mk()
+  let prompt = buildLabelPrompt(batch)
+  // A batch's listed files, boundaries and lines are capped, so dropping excerpts from the end
+  // always brings it under the cap.
+  while (prompt.length > MAX_PROMPT_CHARS && excerpts.length > 0) {
+    evidence.delete((excerpts.pop() as BatchExcerpt).label)
+    batch = mk()
+    prompt = buildLabelPrompt(batch)
+  }
+  const key = sha(`${LABEL_PROMPT_VERSION}\n${prompt}`)
+
+  try {
+    const hit = await deps.cache.get(key)
+    const cached = hit === null ? null : parseReply(hit)
+    if (cached && applyReply(out, cached, batch, buildings, evidence) > 0) return out
+  } catch {
+    // a broken cache is a miss
+  }
+  let raw: string | null = null
+  try {
+    raw = await llm(prompt)
+  } catch {
+    raw = null
+  }
+  // The call was made, so its prompt counts even when nothing came back.
+  out.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
+  const reply = raw === null ? null : parseReply(raw)
+  // Only a reply that yielded at least one accepted field is worth caching.
+  if (!reply || applyReply(out, reply, batch, buildings, evidence) === 0) return out
+  try {
+    await deps.cache.set(key, raw as string)
+  } catch {
+    // an unwritable cache only costs a repeat call next time
+  }
+  return out
+}
+
 export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> {
   const labels: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
   for (const d of g.districts) labels.districts[d.id] = { name: d.name, subtitle: '' }
@@ -409,66 +523,18 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   const llm = deps.llm
   if (!llm) return labels
 
-  const districtOf = new Map(g.buildings.map((b) => [b.id, b.districtId]))
-  for (const d of g.districts) {
-    const buildings = g.buildings.filter((b) => b.districtId === d.id)
-    // An edge rides with its from building's district; when from is outside this grouping (an
-    // incremental re-label), with its to building's. Both ends outside: not batched, fallback kept.
-    const edges = g.edges.filter((e) => (districtOf.get(e.from) ?? districtOf.get(e.to)) === d.id)
-    const { excerpts, evidence } = await collectExcerpts(buildings, deps)
-    const mk = (): LabelBatch => ({
-      district: { id: d.id, name: d.name },
-      buildings: buildings.map((b) => ({
-        id: b.id,
-        name: b.name,
-        members: b.members,
-        boundaries: b.boundaries.map((x) => `${x.kind} ${x.key} (${x.side})`)
-      })),
-      edges: edges.map((e) => ({ id: edgeId(e), from: e.from, to: e.to, via: e.via.map((v) => `${v.kind} ${v.key}`) })),
-      excerpts
-    })
-    let batch = mk()
-    let prompt = buildLabelPrompt(batch)
-    // The prompt travels on a command line (Windows limits it): drop excerpts from the end until it fits.
-    while (prompt.length > MAX_PROMPT_CHARS && excerpts.length > 0) {
-      evidence.delete((excerpts.pop() as BatchExcerpt).label)
-      batch = mk()
-      prompt = buildLabelPrompt(batch)
-    }
-    // Still over the cap with every excerpt gone (a district too big to describe in one prompt):
-    // never send it. The batch keeps its code-derived labels.
-    if (prompt.length > MAX_PROMPT_CHARS) continue
-    const key = sha(`${LABEL_PROMPT_VERSION}\n${prompt}`)
-
-    let accepted = 0
-    try {
-      const hit = await deps.cache.get(key)
-      const cached = hit === null ? null : parseReply(hit)
-      if (cached) accepted = applyReply(labels, cached, batch, buildings, evidence)
-    } catch {
-      accepted = 0
-    }
-    if (accepted > 0) continue
-    let raw: string | null = null
-    try {
-      raw = await llm(prompt)
-    } catch {
-      raw = null
-    }
-    // The call was made, so its prompt counts even when nothing came back.
-    labels.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
-    if (raw === null) continue
-    const reply = parseReply(raw)
-    if (!reply) continue
-    accepted = applyReply(labels, reply, batch, buildings, evidence)
-    // Only a reply that yielded at least one accepted field is worth caching.
-    if (accepted === 0) continue
-    try {
-      await deps.cache.set(key, raw)
-    } catch {
-      // an unwritable cache only costs a repeat call next time
-    }
-  }
+  const plan = planBatches(g)
+  const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelBatch(p, deps, llm))
+  // Merged in batch order whatever order the calls finished in, so the world is the same every run:
+  // a district takes its first batch's name, and the first batch to define a glossary term wins.
+  results.forEach((r, i) => {
+    const d = plan[i].district.id
+    if (plan[i].first && Object.hasOwn(r.districts, d)) labels.districts[d] = { ...labels.districts[d], ...r.districts[d] }
+    for (const [id, v] of Object.entries(r.buildings)) labels.buildings[id] = { ...labels.buildings[id], ...v }
+    for (const [id, v] of Object.entries(r.edges)) labels.edges[id] = { ...labels.edges[id], ...v }
+    for (const [term, def] of Object.entries(r.glossary)) if (!Object.hasOwn(labels.glossary, term)) labels.glossary[term] = def
+    labels.tokens += r.tokens
+  })
   return labels
 }
 
