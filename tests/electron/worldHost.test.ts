@@ -819,16 +819,85 @@ describe('createWorldHost', () => {
       await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1))
       // A second change while the first change's model call is open: saved and pushed without waiting for it.
       await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', snap('/new'), HEAD, ['src/b.ts']] })
-      await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2))
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
       expect(h.store.saves.map((d) => d.generatedAt)).toEqual([1, 3])
       const [ask1] = h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
       await h.send({ kind: 'llm-result', id: ask1.id, text: 'late' })
       // The first model reply came back after a newer world was saved: that world is compiled again from the
       // label cache (no model asked) for the first change's files, and its result saved, not the stale one.
       await vi.waitFor(() => expect(h.store.saves).toHaveLength(3))
-      expect(inputs[4]).toEqual({ snap: snap('/new'), projectKey: 'k1', head: HEAD, previous: doc('k1', { generatedAt: 3, glossary: {} }), changed: ['src/a.ts'] })
-      expect(h.store.saves[2]).toEqual(doc('k1', { generatedAt: 5, glossary: {} }))
-      expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2)
+      expect(inputs[3]).toEqual({ snap: snap('/new'), projectKey: 'k1', head: HEAD, previous: doc('k1', { generatedAt: 3, glossary: {} }), changed: ['src/a.ts'] })
+      expect(h.store.saves[2]).toEqual(doc('k1', { generatedAt: 4, glossary: {} }))
+      // Then the second change's labelling, which waited for the first run: one more run, for its files.
+      await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2))
+      expect(inputs[4]).toEqual({ snap: snap('/new'), projectKey: 'k1', head: HEAD, previous: doc('k1', { generatedAt: 4, glossary: {} }), changed: ['src/b.ts'] })
+    })
+
+    it('one labelling run per project at a time: triggers while it runs coalesce into one more run after it (fix wave I1)', async () => {
+      const inputs: CompileInput[] = []
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        inputs.push(input)
+        const text = await (deps.label.llm as Llm)('describe')
+        return doc(input.projectKey, { generatedAt: inputs.length, glossary: text ? { Label: text } : {} })
+      })
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
+      await h.init(true)
+      const asks = (): Extract<WorldHostResponse, { kind: 'llm' }>[] => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
+      await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+      await vi.waitFor(() => expect(asks()).toHaveLength(1))
+      // Two more changes while the first run asks the model: each saved at once, neither starts a run.
+      await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/c.ts']] })
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+      await h.send({ kind: 'call', id: 3, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/b.ts']] })
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(3))
+      await tick()
+      expect(asks()).toHaveLength(1)
+      await h.send({ kind: 'llm-result', id: asks()[0].id, text: 'one' })
+      // The first run merges, then exactly one more run covers both later changes' files.
+      await vi.waitFor(() => expect(asks()).toHaveLength(2))
+      expect(inputs.at(-1)?.changed).toEqual(['src/b.ts', 'src/c.ts'])
+      await h.send({ kind: 'llm-result', id: asks()[1].id, text: 'two' })
+      await vi.waitFor(() => expect(h.store.saves.at(-1)?.glossary).toEqual({ Label: 'two' }))
+      await tick()
+      expect(asks()).toHaveLength(2)
+
+      // A full compile while a run asks: the one rerun is a full pass (no `changed`), not two runs.
+      await h.send({ kind: 'call', id: 4, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/d.ts']] })
+      await vi.waitFor(() => expect(asks()).toHaveLength(3))
+      await h.send({ kind: 'call', id: 5, fn: 'compile', args: ['k1', snap(), HEAD] })
+      await h.send({ kind: 'call', id: 6, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/e.ts']] })
+      await vi.waitFor(() => expect(h.results().some((r) => r.id === 5)).toBe(true))
+      await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(inputs.length))
+      await tick()
+      expect(asks()).toHaveLength(3)
+      await h.send({ kind: 'llm-result', id: asks()[2].id, text: 'three' })
+      await vi.waitFor(() => expect(asks()).toHaveLength(4))
+      expect(inputs.at(-1)?.changed).toBeUndefined()
+      await h.send({ kind: 'llm-result', id: asks()[3].id, text: 'four' })
+      await vi.waitFor(() => expect(h.store.saves.at(-1)?.glossary).toEqual({ Label: 'four' }))
+      await tick()
+      expect(asks()).toHaveLength(4)
+    })
+
+    it('labelling turned off while a run asks the model saves nothing more and runs no more (fix wave M3)', async () => {
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        const text = await (deps.label.llm as Llm)('describe')
+        return doc(input.projectKey, { glossary: text ? { Label: text } : {} })
+      })
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc() }))
+      await h.init(true)
+      const asks = (): Extract<WorldHostResponse, { kind: 'llm' }>[] => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
+      await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+      await vi.waitFor(() => expect(asks()).toHaveLength(1))
+      await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/b.ts']] })
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+      await h.send({ kind: 'settings', labelling: false })
+      await h.send({ kind: 'llm-result', id: asks()[0].id, text: 'late' })
+      await tick()
+      await tick()
+      expect(h.store.saves).toHaveLength(2)
+      expect(h.out.filter((m) => m.kind === 'updated')).toHaveLength(2)
+      expect(asks()).toHaveLength(1)
     })
 
     it('late labels for a world deleted meanwhile are dropped', async () => {
@@ -841,13 +910,15 @@ describe('createWorldHost', () => {
       await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
       await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1))
       await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/b.ts']] })
-      await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2))
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
       h.store.docs.delete('k1')
       const [ask1] = h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
       await h.send({ kind: 'llm-result', id: ask1.id, text: 'late' })
       await tick()
       await tick()
-      expect(compile).toHaveBeenCalledTimes(4)
+      // Neither the late merge nor the second change's waiting run compiles a deleted world.
+      expect(compile).toHaveBeenCalledTimes(3)
+      expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1)
       expect(h.store.saves).toHaveLength(2)
       expect(h.store.docs.has('k1')).toBe(false)
     })

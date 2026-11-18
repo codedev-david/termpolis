@@ -529,34 +529,74 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     post({ kind: 'updated', projectKey: key })
   }
 
+  /** One labelled run in flight. `again` asks for one more after it, for `changed` files (null: every file). */
+  interface LabelRun { again: boolean; changed: string[] | null }
+  /** Per project: the labelling run in flight; at most one per project at a time (fix wave I1). */
+  const labelRuns = new Map<string, LabelRun>()
+  interface RunInput { base: WorldDoc; from: Latest; cache: StageCache | null; changed: string[] | undefined; generation: number | undefined }
+
   /**
-   * Labels with the model after a pass that labelled from the label cache only (film bug 8). The model is
-   * asked outside the project's queue, so a file change meanwhile still saves and draws at once; every
-   * accepted reply also lands in the label cache. Then, in the queue: when no newer world was saved since
-   * `base`, the labelled world is saved as it is; when one was, that newer world is compiled again from the
-   * label cache (which now holds the replies) for the same files, so the labels merge into it.
+   * One labelled pass: the model is asked outside the project's queue, so a file change meanwhile still saves
+   * and draws at once; every accepted reply also lands in the label cache. Then, in the queue: labelling
+   * turned off meanwhile saves nothing; when no newer world was saved since `base`, the labelled world is
+   * saved as it is; when one was, that newer world is compiled again from the label cache (which now holds
+   * the replies) for the same files, so the labels merge into it.
+   */
+  const labelOnce = async (st: HostState, key: string, r: RunInput): Promise<void> => {
+    const only = r.changed ? { changed: r.changed } : {}
+    const out = await compile(
+      { snap: r.from.snap, projectKey: key, head: r.from.head, previous: r.base, ...only, ...stagedArg(r.cache, []), ...planArg(r.from.plan) },
+      depsFor(st, key, r.from.snap, askMain(key))
+    )
+    await serial(key, async () => {
+      if (!st.labelling) return
+      if (generations.get(key) === r.generation) return saveCompiled(st, key, out, r.from)
+      const now = compiledFrom.get(key) as Latest
+      const previous = await st.store.load(key)
+      if (!previous) return
+      const fromCache = async (): Promise<null> => null
+      const again = await compile(
+        { snap: now.snap, projectKey: key, head: now.head, previous, ...only, ...stagedArg(await stagesOf(st, key), []), ...planArg(now.plan) },
+        depsFor(st, key, now.snap, fromCache)
+      )
+      await saveCompiled(st, key, again, now)
+    })
+  }
+
+  /**
+   * Labels with the model after a pass that labelled from the label cache only (film bug 8). One run per
+   * project at a time: a trigger while one runs only marks it to run once more after, for the union of the
+   * changed files (a full pass when any trigger was one). That run starts from the stored world, so the label
+   * cache answers whatever is already labelled and the model is asked only for what is still missing.
    */
   const labelLater = (st: HostState, key: string, base: WorldDoc, from: Latest, cache: StageCache | null, changed?: string[]): void => {
     // Labelling turned off since the cache-only pass started asks no model.
     if (!st.labelling) return
-    const generation = generations.get(key)
-    const only = changed ? { changed } : {}
-    const run = async (): Promise<void> => {
-      const out = await compile({ snap: from.snap, projectKey: key, head: from.head, previous: base, ...only, ...stagedArg(cache, []), ...planArg(from.plan) }, depsFor(st, key, from.snap, askMain(key)))
-      await serial(key, async () => {
-        if (generations.get(key) === generation) return saveCompiled(st, key, out, from)
-        const now = compiledFrom.get(key) as Latest
-        const previous = await st.store.load(key)
-        if (!previous) return
-        const fromCache = async (): Promise<null> => null
-        const again = await compile(
-          { snap: now.snap, projectKey: key, head: now.head, previous, ...only, ...stagedArg(await stagesOf(st, key), []), ...planArg(now.plan) },
-          depsFor(st, key, now.snap, fromCache)
-        )
-        await saveCompiled(st, key, again, now)
-      })
+    const running = labelRuns.get(key)
+    if (running) {
+      running.changed = !running.again ? (changed ?? null) : running.changed && changed ? [...new Set([...running.changed, ...changed])].sort() : null
+      running.again = true
+      return
     }
-    run().catch((err: unknown) => console.error('[world host] labelled follow-up failed:', err))
+    const run: LabelRun = { again: false, changed: null }
+    labelRuns.set(key, run)
+    const loop = async (): Promise<void> => {
+      let next: RunInput | null = { base, from, cache, changed, generation: generations.get(key) }
+      while (next) {
+        await labelOnce(st, key, next).catch((err: unknown) => console.error('[world host] labelled follow-up failed:', err))
+        if (!run.again || !st.labelling) break
+        const files = run.changed ?? undefined
+        run.again = false
+        run.changed = null
+        next = await serial(key, async () => {
+          const stored = await st.store.load(key)
+          if (!stored) return null
+          return { base: stored, from: compiledFrom.get(key) as Latest, cache: await stagesOf(st, key), changed: files, generation: generations.get(key) }
+        })
+      }
+      labelRuns.delete(key)
+    }
+    void loop()
   }
 
   /** `llm` is main's model, the label cache only, or none (labelling off). */
