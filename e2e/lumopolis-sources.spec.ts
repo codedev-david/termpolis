@@ -151,6 +151,14 @@ async function wireframes(): Promise<string[] | null> {
   })
 }
 
+/** The wireframes on screen at the tier drawn (drawn themselves, or under a district slab that stands for them). */
+async function shownWireframes(): Promise<string[]> {
+  return await page.evaluate(() => {
+    const probe = (window as unknown as { __termpolis_world?: { drawn(): { shownWireframes: string[] } } }).__termpolis_world
+    return probe ? [...probe.drawn().shownWireframes].sort() : []
+  })
+}
+
 /** The probe's drawn lists: ids outlined (changed parts) and fading (parts the design removes). */
 async function drawnLists(): Promise<{ outlined: string[]; fading: string[] }> {
   return await page.evaluate(() => {
@@ -236,6 +244,8 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await expect(projectName()).toHaveText(path.basename(buildDir), { timeout: 30_000 })
     await expect(page.locator('[data-testid="world-layer-planned"]')).toHaveAttribute('aria-pressed', 'true')
     await expect.poll(wireframes, { timeout: 60_000 }).toEqual(['catalog', 'orders', 'payments', 'storefront'])
+    // ...and every one of them is on screen: planned parts stand in no code district, so no slab may hide them.
+    await expect.poll(shownWireframes, { timeout: 10_000 }).toEqual(['catalog', 'orders', 'payments', 'storefront'])
 
     // The agent terminal opened with the build prompt (typed on its launch line).
     // Nothing in it is dropped by the launcher's shell-safety pass: the gateway call arrives whole.
@@ -247,6 +257,7 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     fs.writeFileSync(path.join(buildDir, 'src', 'payments', 'index.ts'), 'export function charge(cents: number): boolean {\n  return cents > 0\n}\n')
     await expect(canvasHost().locator('.lw-toast')).toHaveText(/\+1 part/, { timeout: 60_000 })
     await expect.poll(wireframes, { timeout: 30_000 }).toEqual(['catalog', 'orders', 'storefront'])
+    await expect.poll(shownWireframes, { timeout: 10_000 }).toEqual(['catalog', 'orders', 'storefront'])
     // The design asks for Stripe in Payments and the first file does not name it: the part is outlined.
     await expect.poll(async () => (await drawnLists()).outlined.length, { timeout: 30_000 }).toBe(1)
     expect((await drawnLists()).outlined).toHaveLength(1)

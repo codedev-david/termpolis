@@ -11,7 +11,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
-import { BACKDROP_ORDER, batchable, batchCapacity, batchRank, buildingNamesShown, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, packetKey, PLATFORM_ORDER, partDrawn, poolChanges, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type PartKind, type Slab } from './batching'
+import { BACKDROP_ORDER, batchable, batchCapacity, batchRank, buildingNamesShown, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, PLATFORM_ORDER, partDrawn, poolChanges, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type PartKind, type Slab } from './batching'
 import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSignals'
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
@@ -101,6 +101,8 @@ export interface ThreeRenderer {
   setHovered(id: string | null): void
   /** Node and edge ids whose anchor is inside the camera frustum. */
   visibleIds(): string[]
+  /** Whether building or orb `id` shows at the tier drawn: drawn itself, or under its district's slab, which stands for it from far away. */
+  isShown(id: string): boolean
   /**
    * A point on screen, in client pixels, where a click picks the node: its top floor's centre (an
    * orb's centre) when nothing stands in front of it, else the first of its other floors' centres
@@ -1093,8 +1095,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const b of model.buildings) { heightAt.set(posKey(b.pos), b.height); idAt.set(posKey(b.pos), b.id) }
     for (const o of model.orbs) heightAt.set(posKey(o.pos), ORB_R * 2)
     for (const c of model.conduits) buildConduit(c, heightAt, idAt, text)
-    // At the districts tier a pick sees the slabs, not the buildings hidden under them.
-    farPickables = pickables.filter((o) => typeof o.userData.nodeId !== 'string' || nodes.get(o.userData.nodeId as string)?.orb === true)
+    // At the districts tier a pick sees the slabs, not the buildings hidden under them: only the orbs and
+    // the buildings on no district (ownTier) stand on their own.
+    farPickables = pickables.filter((o) => {
+      const id = o.userData.nodeId
+      return typeof id !== 'string' || nodes.get(id)?.orb === true || !districtOf.has(id)
+    })
     farPickables.push(...slabMeshes)
     const lines = (n: NodeRec): number => text.importance[n.id] ?? 0
     ranked = [...nodes.values()].sort((a, b) => lines(b) - lines(a) || b.height - a.height || (a.id < b.id ? -1 : 1))
@@ -1242,7 +1248,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (tier === appliedTier) return
     appliedTier = tier
     const far = tier === 'districts'
-    for (const n of nodes.values()) if (!n.orb) n.group.visible = !far
+    for (const n of nodes.values()) if (!n.orb) n.group.visible = ownTier(n.id, tier, districtOf) !== 'districts'
     for (const o of [...slabMeshes, ...slabLines]) o.visible = far
     for (const e of edges.values()) {
       const sh = far ? e.low : e.tall
@@ -2084,7 +2090,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const moving = new Set<THREE.Material>([...ghostMats, ...fadeMats])
     const boxes: Array<{ key: string; depth: number; part: BatchPart }> = []
     for (const p of parts) {
-      if (!partDrawn(p.kind, tier, p.node.exploded)) { p.mesh.visible = p.line.visible = false; continue }
+      if (!partDrawn(p.kind, ownTier(p.node.id, tier, districtOf), p.node.exploded)) { p.mesh.visible = p.line.visible = false; continue }
       const f = p.mesh.material as THREE.MeshStandardMaterial
       const l = p.line.material as THREE.LineBasicMaterial
       if (!batchable(p.node.exploded, moving.has(f) || moving.has(l))) { p.mesh.visible = p.line.visible = true; continue }
@@ -2364,6 +2370,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     setCursor(pointer) { renderer.domElement.style.cursor = pointer ? 'pointer' : 'default' },
     setHovered(id) { hoveredId = id; hoverLabels = id === null ? [] : nodes.get(id)?.labels ?? [] },
     visibleIds,
+    isShown: (id) => { const n = nodes.get(id); return n !== undefined && (n.group.visible || districtOf.has(id)) },
     screenPoint,
     linePoints,
     drawnCounts: () => ({

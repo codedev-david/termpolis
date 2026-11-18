@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { batchable, batchCapacity, batchRank, buildingNamesShown, districtAt, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, packetKey, partDrawn, BACKDROP_ORDER, PLATFORM_ORDER, poolChanges, SLAB_INSET, SLAB_MIN_HEIGHT, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type SortItem } from '../../../src/renderer/src/world/engine/batching'
+import { batchable, batchCapacity, batchRank, buildingNamesShown, districtAt, districtsOf, endHeight, fillKey, floorLabelsShown, focusHolds, groupBatches, heldTier, LINE_ORDER, ownTier, packetKey, partDrawn, BACKDROP_ORDER, PLATFORM_ORDER, poolChanges, SLAB_INSET, SLAB_MIN_HEIGHT, slabSeams, slabsFor, tierPick, transparentOrder, writesDepth, type SortItem } from '../../../src/renderer/src/world/engine/batching'
 
 describe('partDrawn', () => {
   it('draws floors from the floors tier in, and one block further out', () => {
@@ -17,6 +17,16 @@ describe('partDrawn', () => {
       expect(partDrawn('floor', 'districts', exploded)).toBe(false)
       expect(partDrawn('block', 'districts', exploded)).toBe(false)
     }
+  })
+})
+
+describe('ownTier', () => {
+  it('a building on no district keeps the buildings tier from far away: no slab stands for it (round 3 A)', () => {
+    const of = new Map([['in', 'd']])
+    expect(ownTier('in', 'districts', of)).toBe('districts')
+    expect(ownTier('lone', 'districts', of)).toBe('buildings')
+    expect(ownTier('lone', 'floors', of)).toBe('floors')
+    expect(ownTier('in', 'buildings', of)).toBe('buildings')
   })
 })
 

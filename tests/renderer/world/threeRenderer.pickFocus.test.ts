@@ -117,6 +117,34 @@ describe('threeRenderer pick', () => {
     r.dispose()
   })
 
+  it('a planned part on no district stays drawn and pickable from far away: a linked build world (round 3 A)', () => {
+    // Drawn: its group is shown and a mesh in it (its block, or its floors nearer in) is too.
+    const shown = (world: THREE.Object3D, id: string): boolean => {
+      const g = floorsOf(world, id)[0].parent!.parent!
+      let drawnMesh = false
+      g.traverseVisible((o) => { if ((o as THREE.Mesh).isMesh) drawnMesh = true })
+      return g.visible && drawnMesh
+    }
+    const planned = (id: string, pos: V): ReturnType<typeof bldg> => bldg(id, pos, { floors: 2, height: 6, look: 'wire' })
+    // One built part in its district, and two planned parts on the ring outside every district
+    const r = drawn({ districts: [district('d1', [0, 0, 0], 12)], buildings: [bldg('a', [0, 0, 0]), planned('w1', [40, 0, 0]), planned('w2', [-40, 0, 0])], conduits: [], orbs: [] })
+    expect(r.drawnCounts().tier).toBe('districts')
+    const world = worldOf(sceneOf())
+    expect(shown(world, 'a')).toBe(false) // under its district's slab
+    expect(shown(world, 'w1')).toBe(true)
+    expect(shown(world, 'w2')).toBe(true)
+    expect(pickAt(r, topFloor('w1'))).toEqual({ kind: 'node', id: 'w1' })
+    // isShown: drawn itself, or stood for by its district's slab
+    expect(['a', 'w1', 'w2', 'nope'].map((id) => r.isShown(id))).toEqual([true, true, true, false])
+    r.dispose()
+    // An empty build folder: nothing built yet, so every part is planned and none has a district
+    const empty = drawn({ districts: [], buildings: [planned('p1', [20, 0, 0]), planned('p2', [-20, 0, 0])], conduits: [], orbs: [] })
+    expect(empty.drawnCounts().tier).toBe('districts')
+    expect(shown(worldOf(sceneOf()), 'p1')).toBe(true)
+    expect(shown(worldOf(sceneOf()), 'p2')).toBe(true)
+    empty.dispose()
+  })
+
   it('a click a few pixels beside a building far away still picks it (the screen boxes)', () => {
     const r = drawn()
     atRatio(r, h.frames, 0.6)

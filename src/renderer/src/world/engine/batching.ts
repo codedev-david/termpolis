@@ -25,6 +25,15 @@ export function partDrawn(kind: PartKind, tier: ZoomTier, exploded: boolean): bo
   return kind === 'floor' ? floors : !floors
 }
 
+/**
+ * The tier a building is drawn at. From far away its district's slab stands for it, so one standing
+ * in no district (a planned part on the ring outside every district, as a linked build world has)
+ * keeps the buildings tier, as an external's orb does: otherwise nothing would show it there.
+ */
+export function ownTier(id: string, tier: ZoomTier, districtOf: ReadonlyMap<string, string>): ZoomTier {
+  return tier === 'districts' && !districtOf.has(id) ? 'buildings' : tier
+}
+
 /** A district as the slabs need it: its centre (x, y, z) and its platform's radius. */
 export interface SlabDistrict { id: string; pos: readonly number[]; radius: number }
 /** A building as the slabs need it: where it stands and how tall it is. */
