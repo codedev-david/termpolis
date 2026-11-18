@@ -928,6 +928,17 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     const exploded = (await visual()).exploded
     expect(exploded).not.toBeNull()
     const dir = fixtures.find((f) => f.label === 'motion')!.dir
+    test.setTimeout(420_000)
+    // Main watches a folder once it has indexed its code. The terminal's own index of this folder can
+    // still be waiting behind an earlier, bigger repository's (test 3 maps this one), so it is asked for
+    // here and awaited: the watcher is on before the change.
+    const indexed = await page.evaluate(async (r) => {
+      const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; memoryIngestCode: (root: string) => Promise<{ success: boolean; error?: string }> } }).termpolis
+      const top = await api.gitFindRoot(r)
+      const res = await api.memoryIngestCode(top.success && top.data ? top.data : r)
+      return res.success ? '' : String(res.error)
+    }, dir)
+    expect(indexed).toBe('')
     const sizes: Array<[number, number]> = [[1920, 1080], [900, 600]]
     for (const [i, [width, height]] of sizes.entries()) {
       await page.setViewportSize({ width, height })
@@ -968,6 +979,7 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
       // The watcher recompiles and the pane loads the new world over the old one.
       fs.writeFileSync(path.join(dir, `src/ui/More${i}.ts`), `import { list } from './List'\nexport const more${i} = (): number => list() + ${i}\n`)
       const toast = await shown
+      await page.screenshot({ path: path.join(SHOTS, `live-change-toast-${width}x${height}.png`) })
       expect(toast.text.length).toBeGreaterThan(0)
       expect(toast.hits, `toast "${toast.text}" at ${width}x${height}: centre, left, right, top, bottom on top`).toEqual([true, true, true, true, true])
       expect(toast.inHost).toBe(true)
@@ -975,7 +987,6 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
       expect(toast.overLegend).toBe(false)
       // Film bug 6: the reload kept the exploded building.
       expect((await visual()).exploded).toBe(exploded)
-      await page.screenshot({ path: path.join(SHOTS, `live-change-toast-${width}x${height}.png`) })
     }
     // The later tests compare against motionDoc: the added files go, and the world is back as it was.
     for (const i of sizes.keys()) fs.rmSync(path.join(dir, `src/ui/More${i}.ts`))
