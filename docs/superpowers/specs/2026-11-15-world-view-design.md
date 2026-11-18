@@ -140,7 +140,7 @@ The compiler runs off the main thread (my call: a new utility process, `termpoli
 4. **Labelling.** The default headless agent's cheapest model (Claude Code's Haiku; see section 10), through the proxy, writes `how`, `why`, the cargo and edge descriptions, technology chips and glossary lines from bounded excerpts: signatures, comments, docs, commit messages and memory decisions. **Every output must cite evidence ids**; uncited sentences are dropped. Results are cached by a content hash of their inputs, so only changed parts are re-labelled.
 5. **Status.** Tie tests to buildings through the code graph and the existing coverage tooling, and set verified, observed or gap.
 6. **Layout.** Seeded, stable positions. New items take free slots next to their neighbours; existing items don't move unless a person asks for a re-layout.
-7. **Incremental updates.** The file watcher already feeds the code graph. The compiler subscribes and recompiles only the affected buildings, debounced.
+7. **Incremental updates.** The file watcher already feeds the code graph. The compiler subscribes and recompiles only the affected buildings, debounced. The structural change is saved and drawn at once, with labels from the label cache; the model is asked afterwards, and its labels merge into whatever world is current when it answers.
 
 **Quality bar for stage 1 to 6:** run on the Termpolis repository, the compiled world should recover roughly the buildings and connections of the hand-made v2 prototype: the screen, gatekeeper, terminal host, memory host, proxy, gateway, code graph, swarm and remote bridge, and the main connections between them. That prototype is the test case.
 

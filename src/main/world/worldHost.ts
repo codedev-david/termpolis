@@ -127,7 +127,7 @@ export const MAX_GLOB_RESULTS = 2000
 /** Lines an excerpt spans: centred on the line when one is given, else the file's start. */
 export const EXCERPT_LINES = 40
 /** How long a compile waits for main to answer one labelling request before labelling from code. */
-export const LLM_TIMEOUT_MS = 120_000
+export const LLM_TIMEOUT_MS = 150_000
 /** How long a compile waits for main's commit, docs and memory evidence for one building. */
 export const CONTEXT_WAIT_MS = 10_000
 /** How long a compile waits for main's test runs (CI asks `gh` for up to 5 s, then git). */
@@ -514,13 +514,53 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     if (cache && st.store.saveStages) await st.store.saveStages(key, cache)
   }
 
-  /** `llm` defaults to the setting: main's model when labelling is on, none when it is off. */
-  const depsFor = (
-    st: HostState,
-    projectKey: string,
-    snap: GraphSnapshot,
-    llm: LabelDeps['llm'] = st.labelling ? askMain(projectKey) : null
-  ): CompileDeps => {
+  /** Per project: bumped on every save, so a label follow-up can tell that a newer world landed meanwhile. */
+  const generations = new Map<string, number>()
+  /** Per project: what the stored world was compiled from, for a follow-up that must compile it again. */
+  const compiledFrom = new Map<string, Latest>()
+  const bump = (key: string): void => void generations.set(key, (generations.get(key) ?? 0) + 1)
+
+  /** Saves a compiled world and its stage cache, records what it came from, and pushes `updated`. */
+  const saveCompiled = async (st: HostState, key: string, out: { doc: WorldDoc; cache: StageCache | null }, from: Latest): Promise<void> => {
+    await st.store.save(out.doc)
+    await keepStages(st, key, out.cache)
+    bump(key)
+    compiledFrom.set(key, from)
+    post({ kind: 'updated', projectKey: key })
+  }
+
+  /**
+   * Labels with the model after a pass that labelled from the label cache only (film bug 8). The model is
+   * asked outside the project's queue, so a file change meanwhile still saves and draws at once; every
+   * accepted reply also lands in the label cache. Then, in the queue: when no newer world was saved since
+   * `base`, the labelled world is saved as it is; when one was, that newer world is compiled again from the
+   * label cache (which now holds the replies) for the same files, so the labels merge into it.
+   */
+  const labelLater = (st: HostState, key: string, base: WorldDoc, from: Latest, cache: StageCache | null, changed?: string[]): void => {
+    // Labelling turned off since the cache-only pass started asks no model.
+    if (!st.labelling) return
+    const generation = generations.get(key)
+    const only = changed ? { changed } : {}
+    const run = async (): Promise<void> => {
+      const out = await compile({ snap: from.snap, projectKey: key, head: from.head, previous: base, ...only, ...stagedArg(cache, []), ...planArg(from.plan) }, depsFor(st, key, from.snap, askMain(key)))
+      await serial(key, async () => {
+        if (generations.get(key) === generation) return saveCompiled(st, key, out, from)
+        const now = compiledFrom.get(key) as Latest
+        const previous = await st.store.load(key)
+        if (!previous) return
+        const fromCache = async (): Promise<null> => null
+        const again = await compile(
+          { snap: now.snap, projectKey: key, head: now.head, previous, ...only, ...stagedArg(await stagesOf(st, key), []), ...planArg(now.plan) },
+          depsFor(st, key, now.snap, fromCache)
+        )
+        await saveCompiled(st, key, again, now)
+      })
+    }
+    run().catch((err: unknown) => console.error('[world host] labelled follow-up failed:', err))
+  }
+
+  /** `llm` is main's model, the label cache only, or none (labelling off). */
+  const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot, llm: LabelDeps['llm']): CompileDeps => {
     const root = String(snap.root).replace(/\/+$/, '')
     const cloned = isCloneRoot(st.userDataPath, root)
     const rf = cloned ? confinedTo(root, readFile) : readFile
@@ -565,12 +605,20 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
             const reread = st.checked.has(key) ? undefined : [...cur.snap.files]
             const input = { snap: cur.snap, projectKey: key, head: cur.head, previous, changed, ...stagedArg(cache, reread), ...planArg(cur.plan) }
             st.checked.delete(key)
-            const out = await compile(input, depsFor(st, key, cur.snap))
-            await st.store.save(out.doc)
-            await keepStages(st, key, out.cache)
+            // Labelling on: this pass labels from the label cache only, so the change is saved and drawn
+            // at once; when anything missed, the model labels it afterwards, outside this queue.
+            const labelled = st.labelling
+            let missed = false
+            const cacheOnly = async (): Promise<null> => {
+              missed = true
+              return null
+            }
+            const out = await compile(input, depsFor(st, key, cur.snap, labelled ? cacheOnly : null))
+            const from = { snap: cur.snap, head: cur.head, ...planArg(cur.plan) }
+            await saveCompiled(st, key, out, from)
             st.checked.add(key)
             st.carried.delete(key)
-            post({ kind: 'updated', projectKey: key })
+            if (missed) labelLater(st, key, out.doc, from, out.cache, changed)
           }),
         deps.debounceMs ?? 1500
       )
@@ -584,21 +632,17 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     compile: (projectKey: unknown, snap: GraphSnapshot, head: WorldHead, opts?: { relayout?: boolean; plan?: unknown }) => {
       const key = needKey(projectKey)
       const plan = planArg(opts?.plan)
-      // Labelling on: the model asks one question per district, in series, which on a big repository
-      // can outlast the RPC's timeout while the user sees nothing. So the first pass labels from the
-      // label cache only (a miss keeps the code-derived label and asks no model); it is saved,
-      // pushed and returned at once. When anything missed, a follow-up job right behind it in the same
-      // queue (which the RPC does not wait for) compiles again with the model, building on the world
-      // just saved so its positions carry, then saves and pushes `updated` again.
+      // Labelling on: the model's questions can outlast the RPC's timeout while the user sees nothing. So
+      // this pass labels from the label cache only (a miss keeps the code-derived label and asks no model);
+      // it is saved, pushed and returned at once. When anything missed, labelLater asks the model outside
+      // the queue, building on the world just saved so its positions carry, then saves and pushes again.
       const labelled = st.labelling
       let missed = false
       const cacheOnly = async (): Promise<null> => {
         missed = true
         return null
       }
-      // The first pass's stage cache: the follow-up reads no file again.
-      let staged: StageCache | null = null
-      const first = serial(key, async () => {
+      return serial(key, async () => {
         // A re-layout is a compile whose previous world has no positions (so it lays out afresh with
         // the same seed); everything else compile carries from previous still carries.
         const stored = await st.store.load(key)
@@ -608,26 +652,12 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         const cache = await stagesOf(st, key)
         st.checked.delete(key)
         const out = await compile({ snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan }, depsFor(st, key, snap, labelled ? cacheOnly : null))
-        await st.store.save(out.doc)
-        await keepStages(st, key, out.cache)
+        await saveCompiled(st, key, out, { snap, head, ...plan })
         // Every file was read and checked, and the stages saved: watcher runs may trust them now.
         st.checked.add(key)
-        staged = out.cache
-        post({ kind: 'updated', projectKey: key })
+        if (missed) labelLater(st, key, out.doc, { snap, head, ...plan }, out.cache)
         return out.doc
       })
-      if (labelled) {
-        serial(key, async () => {
-          // A failed first pass already answered the RPC; labelling turned off since asks no model.
-          const previous = await first.catch(() => null)
-          if (!previous || !missed || !st.labelling) return
-          const out = await compile({ snap, projectKey: key, head, previous, ...stagedArg(staged, []), ...plan }, depsFor(st, key, snap))
-          await st.store.save(out.doc)
-          await keepStages(st, key, out.cache)
-          post({ kind: 'updated', projectKey: key })
-        }).catch((err: unknown) => console.error('[world host] labelled follow-up failed:', err))
-      }
-      return first
     },
     get: async (projectKey: unknown) => st.store.load(needKey(projectKey)),
     // A person's confirmation: stored apart from the world (a recompile keeps it) and merged into the saved
@@ -642,6 +672,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         // A new generation, so a pane holding the old one reloads (it skips a doc whose generatedAt it already shows).
         const merged = { ...mergeAnnotations(doc, await st.annotations.list(key)), generatedAt: Math.max(now(), doc.generatedAt + 1) }
         await st.store.save(merged)
+        bump(key)
         return merged
       })
     },

@@ -780,7 +780,96 @@ describe('createWorldHost', () => {
       expect(h.store.docs.get('k1')?.generatedAt).toBe(2)
       // The follow-up builds on the world it just saved, with the same snapshot and head.
       expect(inputs[1]).toEqual({ snap: snap(), projectKey: 'k1', head: HEAD, previous: doc('k1', { generatedAt: 1 }) })
-      expect(h.out.map((m) => m.kind).filter((k) => k !== 'ready')).toEqual(['updated', 'result', 'llm', 'updated'])
+      expect(h.out.map((m) => m.kind).filter((k) => k !== 'ready')).toEqual(['updated', 'llm', 'result', 'updated'])
+    })
+
+    it('a watcher recompile saves and posts updated before the model answers; the labels follow (film bug 8)', async () => {
+      const inputs: CompileInput[] = []
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        inputs.push(input)
+        const text = await (deps.label.llm as Llm)('describe')
+        return doc(input.projectKey, { generatedAt: inputs.length, glossary: text ? { Label: text } : {} })
+      })
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
+      await h.init(true)
+      await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+      // The structural update is saved and pushed while the model question is still open.
+      await vi.waitFor(() => expect(h.out.some((m) => m.kind === 'llm')).toBe(true))
+      expect(h.store.saves).toEqual([doc('k1', { generatedAt: 1, glossary: {} })])
+      expect(h.out.filter((m) => m.kind === 'updated')).toHaveLength(1)
+      const ask = h.out.find((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>
+      await h.send({ kind: 'llm-result', id: ask.id, text: 'labelled' })
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+      expect(h.store.saves[1].glossary).toEqual({ Label: 'labelled' })
+      expect(h.out.filter((m) => m.kind === 'updated')).toHaveLength(2)
+      // The labelled pass re-labels the changed files' buildings on top of the world just saved.
+      expect(inputs[1]).toEqual({ snap: snap(), projectKey: 'k1', head: HEAD, previous: doc('k1', { generatedAt: 1, glossary: {} }), changed: ['src/a.ts'] })
+    })
+
+    it('a change while the model answers still saves at once; the late labels merge into the newer world', async () => {
+      const inputs: CompileInput[] = []
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        inputs.push(input)
+        const text = await (deps.label.llm as Llm)('describe')
+        return doc(input.projectKey, { generatedAt: inputs.length, glossary: text ? { Label: text } : {} })
+      })
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
+      await h.init(true)
+      await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+      await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1))
+      // A second change while the first change's model call is open: saved and pushed without waiting for it.
+      await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', snap('/new'), HEAD, ['src/b.ts']] })
+      await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2))
+      expect(h.store.saves.map((d) => d.generatedAt)).toEqual([1, 3])
+      const [ask1] = h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
+      await h.send({ kind: 'llm-result', id: ask1.id, text: 'late' })
+      // The first model reply came back after a newer world was saved: that world is compiled again from the
+      // label cache (no model asked) for the first change's files, and its result saved, not the stale one.
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(3))
+      expect(inputs[4]).toEqual({ snap: snap('/new'), projectKey: 'k1', head: HEAD, previous: doc('k1', { generatedAt: 3, glossary: {} }), changed: ['src/a.ts'] })
+      expect(h.store.saves[2]).toEqual(doc('k1', { generatedAt: 5, glossary: {} }))
+      expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2)
+    })
+
+    it('late labels for a world deleted meanwhile are dropped', async () => {
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        await (deps.label.llm as Llm)('describe')
+        return doc(input.projectKey)
+      })
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc() }))
+      await h.init(true)
+      await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+      await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1))
+      await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/b.ts']] })
+      await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(2))
+      h.store.docs.delete('k1')
+      const [ask1] = h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
+      await h.send({ kind: 'llm-result', id: ask1.id, text: 'late' })
+      await tick()
+      await tick()
+      expect(compile).toHaveBeenCalledTimes(4)
+      expect(h.store.saves).toHaveLength(2)
+      expect(h.store.docs.has('k1')).toBe(false)
+    })
+
+    it('labelling turned off while the cache-only pass runs asks no model afterwards', async () => {
+      let release = (): void => undefined
+      const gate = new Promise<void>((r) => (release = r))
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        await (deps.label.llm as Llm)('describe')
+        await gate
+        return doc(input.projectKey)
+      })
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc() }))
+      await h.init(true)
+      await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+      await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(1))
+      await h.send({ kind: 'settings', labelling: false })
+      release()
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(1))
+      await tick()
+      expect(compile).toHaveBeenCalledTimes(1)
+      expect(h.out.some((m) => m.kind === 'llm')).toBe(false)
     })
 
     it('with labelling off, compile runs once and asks no model', async () => {
@@ -918,12 +1007,12 @@ describe('createWorldHost', () => {
     await vi.waitFor(() => expect(h.store.saves).toHaveLength(4))
     expect(inputs.slice(2).map((i) => 'plan' in i)).toEqual([false, false])
     await h.send({ kind: 'call', id: 3, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts'], plan] })
-    await vi.waitFor(() => expect(inputs).toHaveLength(5))
-    expect(inputs[4].plan).toEqual(plan)
-    await vi.waitFor(() => expect(h.store.saves).toHaveLength(5))
+    // The watcher pass and its labelled follow-up both carry the design.
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(6))
+    expect(inputs.slice(4).map((i) => i.plan)).toEqual([plan, plan])
     await h.send({ kind: 'call', id: 4, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
-    await vi.waitFor(() => expect(inputs).toHaveLength(6))
-    expect('plan' in inputs[5]).toBe(false)
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(8))
+    expect('plan' in inputs[6]).toBe(false)
   })
 
   it('a second init cancels pending watcher recompiles (default debounce)', async () => {
