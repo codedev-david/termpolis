@@ -873,6 +873,8 @@ describe('WorldView', () => {
       expect(probe().pickAt(1, 2)).toEqual({ kind: 'node', id: 'b1' })
       expect(probe().pickAt(9, 9)).toBeNull()
       expect(probe().cameraState()).toEqual({ pos: [1, 2, 3], target: [4, 5, 6] })
+      await probe().apply({ type: 'focus', ids: ['a'] })
+      expect(viewer().apply).toHaveBeenCalledWith({ type: 'focus', ids: ['a'] })
       expect(probe().drawn()).toEqual({ layers: expect.objectContaining({ processes: false }), processShells: 0, conduits: 4 })
       unmount()
       expect(probe()).toBeUndefined()

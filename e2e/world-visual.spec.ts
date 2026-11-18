@@ -108,16 +108,16 @@ const SMALL_FILES: Record<string, string> = {
   'src/ui/List.ts': "import { app } from './App'\nexport const list = (): number => app()\n",
 }
 
-/** 168 files in 12 folders: each file imports two in its folder and the first file of the next folder. */
+/** `perArea` files in each of 12 folders (14: 168 files): each file imports two in its folder, the last also the first file of the next folder. */
 const BIG_AREAS = ['api', 'core', 'jobs', 'ui', 'data', 'auth', 'mail', 'billing', 'search', 'audit', 'files', 'admin']
-function bigFiles(): Record<string, string> {
+function bigFiles(perArea: number): Record<string, string> {
   const files: Record<string, string> = { 'package.json': JSON.stringify({ name: 'big', version: '1.0.0' }) }
   BIG_AREAS.forEach((area, a) => {
     const next = BIG_AREAS[(a + 1) % BIG_AREAS.length]
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < perArea; i++) {
       const imports = [1, 2].map((k) => (i - k >= 0 ? `import { f${i - k} } from './m${i - k}'\n` : '')).join('')
-      const cross = i === 13 ? `import { f0 as n0 } from '../${next}/m0'\n` : ''
-      const call = i === 13 ? ' + n0(x)' : ''
+      const cross = i === perArea - 1 ? `import { f0 as n0 } from '../${next}/m0'\n` : ''
+      const call = i === perArea - 1 ? ' + n0(x)' : ''
       files[`src/${area}/m${i}.ts`] = `${imports}${cross}export function f${i}(x: number): number {\n  return x + ${i}${call}\n}\n`
     }
   })
@@ -127,7 +127,7 @@ function bigFiles(): Record<string, string> {
 test.beforeAll(async () => {
   ensureE2eBuild()
   fs.mkdirSync(SHOTS, { recursive: true })
-  fixtures.push({ label: 'small', dir: makeRepo('small', SMALL_FILES) }, { label: 'big', dir: makeRepo('big', bigFiles()) })
+  fixtures.push({ label: 'small', dir: makeRepo('small', SMALL_FILES) }, { label: 'big', dir: makeRepo('big', bigFiles(14)) }, { label: 'huge', dir: makeRepo('huge', bigFiles(50)) })
 
   userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-visual-ud-'))
   fs.writeFileSync(
@@ -183,8 +183,8 @@ const pane = () => page.locator('[data-testid="world-view"]')
 const canvas = () => page.locator('[data-testid="world-canvas-host"] canvas')
 const card = () => page.locator('[data-testid="world-card"]')
 
-interface Drawn { changing: number }
-interface Probe { screenPoint(id: string): { x: number; y: number } | null; linePoints(id: string): Array<{ x: number; y: number }>; pickAt(x: number, y: number): { kind: string; id: string } | null; drawn(): Drawn }
+interface Drawn { changing: number; conduits: number; tier: string; drawCalls: number }
+interface Probe { screenPoint(id: string): { x: number; y: number } | null; linePoints(id: string): Array<{ x: number; y: number }>; pickAt(x: number, y: number): { kind: string; id: string } | null; drawn(): Drawn; apply(a: { type: 'focus'; ids: string[] }): Promise<void> }
 
 /** Adds a terminal whose working folder is `cwd` (the Add Terminal dialog's folder field). */
 async function createTerminal(name: string, cwd: string): Promise<void> {
@@ -723,5 +723,37 @@ test.describe.serial('Lumopolis can be seen', () => {
   test('3. this repository (Termpolis) keeps its labels apart and its clicks true', async () => {
     test.setTimeout(420_000)
     await checkWorld('termpolis', path.resolve('.'), ['neon'])
+  })
+
+  test('4. a 600-building world draws in under 150 draw calls and changes tier with distance', async () => {
+    test.setTimeout(420_000)
+    const fx = fixtures.find((f) => f.label === 'huge')!
+    if (await pane().count()) {
+      await page.locator('[data-testid="world-close"]').click()
+      await expect(pane()).toHaveCount(0)
+    }
+    await createTerminal('Visual huge', fx.dir)
+    await openPane()
+    await settled(240_000)
+    const { ids } = await world(fx.dir)
+    expect(ids.length).toBeGreaterThan(1)
+    await page.getByRole('combobox', { name: 'Theme' }).selectOption('neon')
+    await toOverview()
+    const drawn = (): Promise<Drawn> => page.evaluate(() => (window as unknown as { __termpolis_world: Probe }).__termpolis_world.drawn())
+    const far = await drawn()
+    console.log(`[world-visual] huge: ${ids.length} buildings, ${far.drawCalls} draw calls at the overview (tier ${far.tier}, ${far.conduits} conduits)`)
+    await page.screenshot({ path: path.join(SHOTS, 'huge-neon-overview.png') })
+    expect(far.tier).toBe('districts')
+    expect(far.drawCalls, `${far.drawCalls} draw calls at the overview`).toBeLessThan(150)
+    expect(far.drawCalls).toBeGreaterThan(0)
+
+    await page.evaluate((id) => (window as unknown as { __termpolis_world: Probe }).__termpolis_world.apply({ type: 'focus', ids: [id] }), ids[0])
+    await expect.poll(async () => (await drawn()).tier, { timeout: 10_000 }).toBe('floors')
+    await page.waitForTimeout(1500)
+    const near = await drawn()
+    console.log(`[world-visual] huge: ${near.drawCalls} draw calls focused on one building (tier ${near.tier})`)
+    await page.screenshot({ path: path.join(SHOTS, 'huge-neon-focused.png') })
+    await toOverview()
+    await expect.poll(async () => (await drawn()).tier, { timeout: 10_000 }).toBe('districts')
   })
 })

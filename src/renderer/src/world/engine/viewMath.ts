@@ -196,6 +196,25 @@ function within(c: LabelCandidate, d: Nudge): boolean {
 /** From this zoom in (camera distance over the overview's), every building's name may show. */
 export const ZOOM_ALL_NAMES = 0.3
 
+/** Closeness (0 far, 1 near) under which only districts read: buildings draw as plain blocks, only district names show. */
+export const ZOOM_FAR = 0.25
+/** Closeness from which a building's floors, floor labels and seams draw. */
+export const ZOOM_NEAR = 0.7
+export type ZoomTier = 'districts' | 'buildings' | 'floors'
+
+/** Semantic zoom tier for a closeness `zoom` (0 at the overview and beyond, toward 1 as the camera nears). */
+export function zoomTier(zoom: number): ZoomTier {
+  return zoom < ZOOM_FAR ? 'districts' : zoom < ZOOM_NEAR ? 'buildings' : 'floors'
+}
+
+/**
+ * The tier for the camera's distance over the overview's (the scale nameBudget reads: 1 at the
+ * overview, smaller as the camera nears), turned into closeness: 1 - ratio.
+ */
+export function zoomTierAt(ratio: number): ZoomTier {
+  return zoomTier(1 - ratio)
+}
+
 /**
  * Semantic zoom: how many building names, the most important first, may show among `n` at `zoom`
  * (the camera's distance over the overview's). At the overview and further out, a few: the square

@@ -14,6 +14,7 @@ import { neighbours } from './interaction'
 import { buildSceneModel, DEFAULT_LAYERS, type LayerState } from './sceneModel'
 import { createThreeRenderer, type RenderFocus, type RenderPick, type SceneText, type ThreeRenderer } from './threeRenderer'
 import { THEMES, type ThemeName } from './themes'
+import type { ZoomTier } from './viewMath'
 
 export type SelectionKind = 'building' | 'edge' | 'district' | 'tech'
 export interface WorldSelection { kind: SelectionKind; id: string }
@@ -92,6 +93,10 @@ export interface WorldDrawn {
   conduits: number
   /** Rises, pulses and fades still running (always 0 in 2D). */
   changing: number
+  /** Semantic zoom tier the camera's distance gives ('districts' in 2D). */
+  tier: ZoomTier
+  /** GL draw calls of the last frame, every pass (0 in 2D). */
+  drawCalls: number
   /** Ids of the buildings drawn as wireframes: planned parts not built yet (always empty in 2D). */
   wireframes: string[]
   /** Ids of the solid buildings drawn with an outline: parts the code changed since the last reconcile (always empty in 2D). */
@@ -642,7 +647,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     pickAt: (x, y) => (r3 ? r3.pick(x, y) : null),
     cameraState: () => (r3 ? r3.getCamera() : null),
     setCamera: (s, instant) => (r3 && !disposed ? r3.flyTo(s, instant || reduced) : Promise.resolve()),
-    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
+    drawn: () => ({ layers: { ...layers }, ...(r3 ? r3.drawnCounts() : { processShells: 0, conduits: 0, changing: 0, tier: 'districts' as const, drawCalls: 0 }), wireframes: r3 ? [...wireframes] : [], outlined: r3 ? [...outlined] : [], fading: r3 ? [...fading] : [], hot: r3 ? [...hot] : [], fogged: [...fogged], highlighted: baseFocus ? [...baseFocus.ids, ...baseFocus.edgeIds] : [], visual: r3 ? r3.motionState() : { ringAngle: 0, fogDrift: 0, wirePulse: 0, selectionRingAngle: 0 } }),
     resetView() {
       cancelActions()
       deselect()

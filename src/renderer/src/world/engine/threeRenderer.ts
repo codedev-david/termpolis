@@ -10,10 +10,11 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
+import { batchable, batchCapacity, batchRank, buildingNamesShown, fillKey, floorLabelsShown, groupBatches, packetKey, partDrawn, poolChanges, transparentOrder, type PartKind } from './batching'
 import { createCameraRig, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 
@@ -106,7 +107,7 @@ export interface ThreeRenderer {
   /** Points of line `id` (client pixels) that are on screen with no building in front of them: where it can be seen. */
   linePoints(id: string): Array<{ x: number; y: number }>
   /** How many process shells and conduits the last draw put up, and how many changes are still animating. */
-  drawnCounts(): { processShells: number; conduits: number; changing: number }
+  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number }
   /** The four looping motions as they stand now (radians, or the pulse's level); all four hold still under reduced motion. */
   motionState(): { ringAngle: number; fogDrift: number; wirePulse: number; selectionRingAngle: number }
   /** Takes these buildings out of the current scene to fade out (call before draw() clears it). */
@@ -237,6 +238,8 @@ interface NodeRec {
   flow?: { line: THREE.Line; y0: number; y1: number; dots: THREE.Mesh[] }
 }
 interface Packet { s: THREE.Mesh; t: number; sp: number }
+/** A part of a building that may be drawn in a batch: a floor's box and seams, or its block's box and outline. */
+interface BatchPart { mesh: THREE.Mesh; line: THREE.LineSegments; node: NodeRec; kind: PartKind }
 interface EdgeRec {
   id: string; curve: THREE.QuadraticBezierCurve3; tubeMats: THREE.Material[]; packetMats: THREE.Material[]
   packets: Packet[]; pick: THREE.Mesh; label: CSS2DObject; focus: boolean
@@ -293,6 +296,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   renderer.setSize(width, height)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.domElement.style.display = 'block'
+  renderer.info.autoReset = false // a frame's draw calls add up across the composer's passes; reset once a frame
   undo.push(() => { renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove() })
   host.appendChild(renderer.domElement)
   const labelRenderer = new CSS2DRenderer()
@@ -485,7 +489,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     tetra: new THREE.TetrahedronGeometry(0.8),
     sphere: new THREE.SphereGeometry(0.6, 12, 8),
   }
-  const shared = new Set<THREE.BufferGeometry>(Object.values(GEO))
+  // A building drawn as one block (the tiers further out), and every batched box: a unit box, scaled.
+  const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1)
+  const UNIT_EDGES = new THREE.EdgesGeometry(UNIT_BOX)
+  const shared = new Set<THREE.BufferGeometry>([...Object.values(GEO), UNIT_BOX, UNIT_EDGES])
 
   // ---------------- state ----------------
   const world = new THREE.Group()
@@ -523,6 +530,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const boxRect = [NaN, NaN, NaN, NaN]
   const corner = new THREE.Vector3()
   let frameNo = 0
+  let drawCalls = 0 // the last frame's GL draw calls, every pass
+  let tier: ZoomTier = 'districts'
+  /** Every building's floors and block, with the batches' bookkeeping (batchFrame). */
+  let parts: BatchPart[] = []
   let labels: LabelRec[] = []
   let ghostMats: THREE.Material[] = []
   /** Materials of buildings drawn fading: pulsed in animate, emptied with the scene. */
@@ -559,6 +570,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
 
   function clearWorld(): void {
+    unbatch(parts)
+    parts = []
     world.traverse((o) => {
       const mesh = o as THREE.Mesh
       if (mesh.geometry && !shared.has(mesh.geometry)) mesh.geometry.dispose()
@@ -674,13 +687,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       n.mats.push(mat)
       const mesh = new THREE.Mesh(geo, mat)
       mesh.userData.nodeId = b.id
+      mesh.userData.size = [FLOOR_W, fh * 0.85, FLOOR_W]
       pickables.push(mesh)
       const fl = new THREE.Group()
       fl.add(mesh)
       const em = trackBase(new THREE.LineBasicMaterial({ color: lineColor, transparent: true, opacity: ghost ? 0.6 : 1 }))
       n.mats.push(em)
       if (ghost) ghostMats.push(em)
-      fl.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), em))
+      const seam = new THREE.LineSegments(new THREE.EdgesGeometry(geo), em)
+      fl.add(seam)
+      parts.push({ mesh, line: seam, node: n, kind: 'floor' })
       const baseY = fh * k + fh / 2
       fl.position.y = baseY
       fl.userData = { baseY, explodedY: fh * k * 2.4 + fh / 2 + 0.8 }
@@ -734,6 +750,22 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const label = addLabel(g, 'bldg', [0, b.height + 3, 0], (el) => { el.textContent = text.labels[b.id] ?? b.id })
     n.labels.push(label)
     if (b.look === 'fading') fadeMats.push(...n.mats)
+    if (n.mats.length >= 2) {
+      // The whole building as one block, for the tiers further out (semantic zoom): one box and one
+      // outline, no floor seams. It shares the first floor's materials, so focus, heat and change
+      // pulses reach it with them. The floors stay the pick targets.
+      const block = new THREE.Mesh(UNIT_BOX, n.mats[0])
+      block.scale.set(FLOOR_W, Math.max(0.01, b.height - fh * 0.15), FLOOR_W)
+      block.position.y = b.height / 2
+      block.userData.size = [1, 1, 1]
+      block.visible = false
+      const outline = new THREE.LineSegments(UNIT_EDGES, n.mats[1])
+      outline.scale.copy(block.scale)
+      outline.position.copy(block.position)
+      outline.visible = false
+      g.add(block, outline)
+      parts.push({ mesh: block, line: outline, node: n, kind: 'block' })
+    }
     nodes.set(b.id, n)
   }
 
@@ -1566,19 +1598,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     pinned.clear()
     const targets = new Set([hoveredId, selectedId])
     for (const n of nodes.values()) {
-      if (n.exploded) n.floorLabels.forEach((l) => { if (l) want.push({ o: l.o, id: l.key, tier: 0 }) })
+      if (floorLabelsShown(tier, n.exploded, targets.has(n.id))) n.floorLabels.forEach((l) => { if (l) want.push({ o: l.o, id: l.key, tier: 0 }) })
       if (targets.has(n.id)) for (const l of n.labels) want.push({ o: l.o, id: l.key, tier: 0 })
     }
     const lit = [...edges.values()].filter((e) => e.focus)
     const near = (e: EdgeRec): number => e.label.getWorldPosition(labelAt).distanceTo(camera.position)
     for (const e of lit.sort((a, b) => near(a) - near(b))) want.push({ o: e.label, id: 'e:' + e.id, tier: 1, group: 'line', nudge: true })
-    const budget = nameBudget(ranked.length, camera.position.distanceTo(controls.target) / overviewDist)
+    // At the districts tier only district names show (and the hovered or selected part's, and its neighbours').
+    const budget = buildingNamesShown(tier) ? nameBudget(ranked.length, camera.position.distanceTo(controls.target) / overviewDist) : 0
     ranked.forEach((n, rank) => {
       if (targets.has(n.id)) return
       for (const l of n.labels) {
         if (l.lit) want.push({ o: l.o, id: l.key, tier: 2, nudge: true })
         // A name already on show keeps its place a little past the budget, so a zoom does not flicker it.
-        else if (rank < budget || (placed.has(l.key) && rank < budget * 1.25 + 1)) want.push({ o: l.o, id: l.key, tier: 4 })
+        else if (budget > 0 && (rank < budget || (placed.has(l.key) && rank < budget * 1.25 + 1))) want.push({ o: l.o, id: l.key, tier: 4 })
       }
     })
     // A district's name moves a row up or down before it is dropped (another name sits on its point).
@@ -1609,6 +1642,155 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const top = dy ? `${dy}px` : ''
     if (el.style.marginLeft !== left) el.style.marginLeft = left
     if (el.style.marginTop !== top) el.style.marginTop = top
+  }
+
+  // ---------------- batches (semantic zoom, instancing) ----------------
+  // Every building part keeps its own meshes: the pick target (every raycast, from pick and hover to
+  // lineShot and screenPoint, still hits the floor meshes, drawn or not) and the holder of its look
+  // (focus, heat and change pulses write to its materials). A part that may be batched is not drawn
+  // itself: each frame, one InstancedMesh per look draws the boxes with their outlines (the glow,
+  // district hue times heat, and the outline's colour go per instance; the outline is drawn on the
+  // box's own faces, so a box and its edges keep the order they had as separate objects), and one
+  // InstancedMesh per packet shape and opacity draws the conduits' moving packets.
+  const batchLayer = new THREE.Group()
+  scene.add(batchLayer)
+  renderer.setTransparentSort(transparentOrder as unknown as (a: unknown, b: unknown) => number)
+  const instPool = new Map<string, THREE.InstancedMesh>()
+  const bm = new THREE.Matrix4()
+  const bs = new THREE.Matrix4()
+  const bc = new THREE.Color()
+  const bv = new THREE.Vector3()
+
+  /** Parts leaving the batches draw themselves again, as they did before semantic zoom: floors on, blocks off. */
+  function unbatch(ps: readonly BatchPart[]): void {
+    for (const p of ps) p.mesh.visible = p.line.visible = p.kind === 'floor'
+  }
+
+  /**
+   * A box batch's material: the source fill's look, with the per-instance colour lighting the
+   * emissive (the glow) instead of tinting the fill, and the outline drawn where a face meets its
+   * box's edge (about one pixel wide, as a GL line is), in the instance's `lineColor`.
+   */
+  function boxMaterial(src: THREE.MeshStandardMaterial, lineOpacity: number): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({
+      color: src.color, emissive: 0xffffff, emissiveIntensity: 1, metalness: src.metalness, roughness: src.roughness,
+      transparent: src.transparent, opacity: src.opacity, depthWrite: src.depthWrite, fog: src.fog,
+    })
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.lineOpacity = { value: lineOpacity }
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec3 lineColor;\nvarying vec3 vLineColor;\nvarying vec3 vBoxPos;\nvarying vec3 vBoxNormal;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLineColor = lineColor;\nvBoxPos = position;\nvBoxNormal = normal;')
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform float lineOpacity;\nvarying vec3 vLineColor;\nvarying vec3 vBoxPos;\nvarying vec3 vBoxNormal;')
+        .replace('#include <color_fragment>', '')
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n#ifdef USE_COLOR\n\ttotalEmissiveRadiance *= vColor;\n#endif')
+        .replace('#include <opaque_fragment>', [
+          'vec3 boxAxis = abs( vBoxNormal );',
+          'vec3 boxPx = ( 0.5 - abs( vBoxPos ) ) / max( fwidth( vBoxPos ), vec3( 1e-6 ) );',
+          'float edgePx = 1e6;',
+          'if ( boxAxis.x < 0.5 ) edgePx = min( edgePx, boxPx.x );',
+          'if ( boxAxis.y < 0.5 ) edgePx = min( edgePx, boxPx.y );',
+          'if ( boxAxis.z < 0.5 ) edgePx = min( edgePx, boxPx.z );',
+          'float edge = 1.0 - smoothstep( 0.35, 1.0, edgePx );',
+          'outgoingLight = mix( outgoingLight, vLineColor, edge );',
+          'diffuseColor.a = mix( diffuseColor.a, lineOpacity, edge );',
+          '#include <opaque_fragment>',
+        ].join('\n'))
+    }
+    m.customProgramCacheKey = () => 'lw-box-batch'
+    return m
+  }
+
+  function instanced(key: string, geo: () => THREE.BufferGeometry, make: () => THREE.Material, n: number, rank: number): THREE.InstancedMesh {
+    let im = instPool.get(key)
+    const have = im ? im.instanceMatrix.count : 0
+    const cap = batchCapacity(n, have)
+    if (!im || cap !== have) {
+      if (im) dropBatch(im)
+      const g = geo()
+      im = new THREE.InstancedMesh(g, make(), cap)
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      im.frustumCulled = false // its instances move every frame: it is never culled as a whole
+      // three.js sorts see-through objects by their bounding sphere's centre, which an InstancedMesh
+      // computes once from wherever its instances first stood. Pinned at one point, every batch ties
+      // and transparentOrder draws them by rank instead.
+      im.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity)
+      im.setColorAt(0, bc)
+      if (g !== UNIT_BOX && !shared.has(g)) g.setAttribute('lineColor', new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3).setUsage(THREE.DynamicDrawUsage))
+      instPool.set(key, im)
+      batchLayer.add(im)
+    }
+    im.userData.batchRank = rank
+    im.count = n
+    return im
+  }
+
+  function dropBatch(im: THREE.InstancedMesh): void {
+    batchLayer.remove(im)
+    ;(im.material as THREE.Material).dispose()
+    if (!shared.has(im.geometry)) im.geometry.dispose()
+    im.dispose()
+  }
+
+  /** Sorts this frame's parts into the batches and fills them (before every render). */
+  function batchFrame(): void {
+    world.updateMatrixWorld()
+    const moving = new Set<THREE.Material>([...ghostMats, ...fadeMats])
+    const boxes: { key: string; depth: number; part: BatchPart }[] = []
+    for (const p of parts) {
+      if (!partDrawn(p.kind, tier, p.node.exploded)) { p.mesh.visible = p.line.visible = false; continue }
+      const f = p.mesh.material as THREE.MeshStandardMaterial
+      const l = p.line.material as THREE.LineBasicMaterial
+      if (!batchable(p.node.exploded, moving.has(f) || moving.has(l))) { p.mesh.visible = p.line.visible = true; continue }
+      p.mesh.visible = p.line.visible = false
+      const depth = bv.setFromMatrixPosition(p.mesh.matrixWorld).distanceToSquared(camera.position)
+      boxes.push({ key: fillKey({ color: f.color.getHex(), metalness: f.metalness, roughness: f.roughness, opacity: f.opacity, lineOpacity: l.opacity, depthWrite: f.depthWrite, fog: f.fog }), depth, part: p })
+    }
+    const packets: { key: string; depth: number; obj: THREE.Mesh }[] = []
+    for (const e of edges.values()) {
+      for (const pk of e.packets) {
+        const m = pk.s.material as THREE.MeshBasicMaterial
+        pk.s.visible = false
+        packets.push({ key: packetKey(pk.s.geometry.uuid, m.opacity, m.fog), depth: 0, obj: pk.s })
+      }
+    }
+    const boxGroups = groupBatches(boxes)
+    const packetGroups = groupBatches(packets)
+    for (const k of poolChanges(instPool.keys(), [...boxGroups.keys(), ...packetGroups.keys()]).drop) {
+      dropBatch(instPool.get(k) as THREE.InstancedMesh)
+      instPool.delete(k)
+    }
+    for (const [key, idx] of boxGroups) {
+      const src = boxes[idx[0]].part
+      const f0 = src.mesh.material as THREE.MeshStandardMaterial
+      const im = instanced(key, () => UNIT_BOX.clone(), () => boxMaterial(f0, (src.line.material as THREE.Material).opacity), idx.length, batchRank('fill', f0.opacity))
+      const lc = im.geometry.attributes.lineColor as THREE.InstancedBufferAttribute
+      idx.forEach((i, k) => {
+        const p = boxes[i].part
+        const [w, h, d] = p.mesh.userData.size as number[]
+        im.setMatrixAt(k, bm.multiplyMatrices(p.mesh.matrixWorld, bs.makeScale(w, h, d)))
+        const f = p.mesh.material as THREE.MeshStandardMaterial
+        im.setColorAt(k, bc.copy(f.emissive).multiplyScalar(f.emissiveIntensity))
+        const c = (p.line.material as THREE.LineBasicMaterial).color
+        lc.setXYZ(k, c.r, c.g, c.b)
+      })
+      im.instanceMatrix.needsUpdate = true
+      ;(im.instanceColor as THREE.InstancedBufferAttribute).needsUpdate = true
+      lc.needsUpdate = true
+    }
+    for (const [key, idx] of packetGroups) {
+      const src = packets[idx[0]].obj
+      const sm = src.material as THREE.MeshBasicMaterial
+      const im = instanced(key, () => src.geometry, () => new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: sm.transparent, opacity: sm.opacity, depthWrite: sm.depthWrite, fog: sm.fog }), idx.length, batchRank('packet', sm.opacity))
+      idx.forEach((i, k) => {
+        const o = packets[i].obj
+        im.setMatrixAt(k, o.matrixWorld)
+        im.setColorAt(k, (o.material as THREE.MeshBasicMaterial).color)
+      })
+      im.instanceMatrix.needsUpdate = true
+      ;(im.instanceColor as THREE.InstancedBufferAttribute).needsUpdate = true
+    }
   }
 
   // ---------------- loop ----------------
@@ -1656,7 +1838,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         const tr = n.exploded ? (k % 2 ? 0.12 : -0.12) : 0
         fl.rotation.y += (tr - fl.rotation.y) * Math.min(1, dt * 4)
         const fLabel = n.floorLabels[k]
-        if (fLabel) fLabel.o.element.style.opacity = n.exploded ? '1' : '0'
+        if (fLabel) fLabel.o.element.style.opacity = floorLabelsShown(tier, n.exploded, n.id === hoveredId || n.id === selectedId) ? '1' : '0'
       })
       if (n.flow) {
         const on = n.exploded
@@ -1719,6 +1901,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       dustGeo.attributes.position.needsUpdate = true
     }
     controls.update()
+    // Semantic zoom: districts (blocks, district names), buildings (blocks, building names), floors (floors, seams, floor labels).
+    tier = zoomTierAt(camera.position.distanceTo(controls.target) / overviewDist)
     // Semantic zoom and no overlaps (layLabels); then how strongly each shown label reads. District
     // names read from the overview of any size of world (their fade starts past it); building names
     // read at the overview and fade a little with distance; the hovered or selected part's and its
@@ -1741,8 +1925,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (e.label.visible) nudgeLabel(e.label.element, shown.get('e:' + e.id) as Nudge)
       if (e.label.visible) e.label.element.style.opacity = String(Math.max(0.35, Math.min(1, 1.8 - e.label.getWorldPosition(wp).distanceTo(camera.position) / 110)))
     }
+    batchFrame()
+    renderer.info.reset()
     if (composer) composer.render()
     else renderer.render(scene, camera)
+    drawCalls = renderer.info.render.calls
     labelRenderer.render(scene, camera)
   }
   raf = requestAnimationFrame(animate)
@@ -1806,7 +1993,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     visibleIds,
     screenPoint,
     linePoints,
-    drawnCounts: () => ({ processShells: shellCount, conduits: edges.size, changing: changes.active() }),
+    drawnCounts: () => ({ processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls }),
     motionState: () => ({
       ringAngle: seals[0]?.rotation.z ?? 0,
       fogDrift: fogSprites[0]?.userData.a ?? 0,
@@ -1819,6 +2006,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         const n = nodes.get(id)
         if (n) groups.push(n.group)
       }
+      // A kept building fades out on its own meshes: it leaves the batches.
+      const kept = new Set(groups)
+      unbatch(parts.filter((p) => kept.has(p.node.group)))
+      parts = parts.filter((p) => !kept.has(p.node.group))
       changes.keep(groups, performance.now())
     },
     animateChanges({ rise, pulse }) {

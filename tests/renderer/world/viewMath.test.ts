@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { describe, expect, it, test } from 'vitest'
+import { zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -201,6 +201,21 @@ describe('placeLabels', () => {
     expect(placeLabels([box('a', 0, 0), nudged], new Map([['b', [0, 24] as const]])).get('b')).toEqual([0, 24])
     // Its old place is now taken: it moves to the first clear place.
     expect(placeLabels([box('a', 0, 0), box('c', 0, 24), nudged], new Map([['b', [0, 24] as const]])).get('b')).toEqual([0, -(18 + LABEL_GAP)])
+  })
+})
+
+describe('zoomTier', () => {
+  test('zoomTier', () => { expect(zoomTier(0.1)).toBe('districts'); expect(zoomTier(0.5)).toBe('buildings'); expect(zoomTier(0.9)).toBe('floors') })
+  it('changes tier at ZOOM_FAR and ZOOM_NEAR', () => {
+    expect(zoomTier(ZOOM_FAR - 0.001)).toBe('districts')
+    expect(zoomTier(ZOOM_FAR)).toBe('buildings')
+    expect(zoomTier(ZOOM_NEAR)).toBe('floors')
+  })
+  it('reads the camera distance over the overview distance as closeness', () => {
+    expect(zoomTierAt(1)).toBe('districts')
+    expect(zoomTierAt(1.4)).toBe('districts')
+    expect(zoomTierAt(0.5)).toBe('buildings')
+    expect(zoomTierAt(0.2)).toBe('floors')
   })
 })
 

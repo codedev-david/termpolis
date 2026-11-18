@@ -27,7 +27,7 @@
 // without guessing at the 3D scene. Off in every normal run.
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
-import type { BuildItResult, Evidence, Tour, WorldDoc } from '../../../../shared/world/types'
+import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
 import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
@@ -86,6 +86,8 @@ export interface WorldProbe {
   pickAt(x: number, y: number): { kind: 'node' | 'edge'; id: string } | null
   drawn(): WorldDrawn
   cameraState(): CameraState | null
+  /** Runs one world action (focus, tour step...) as the agent would. */
+  apply(a: WorldAction): Promise<void>
 }
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
@@ -381,7 +383,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   useEffect(() => {
     if (!viewer || !exposesWorldProbe()) return
     const w = window as unknown as { __termpolis_world?: WorldProbe }
-    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), linePoints: (id) => viewer.linePoints(id), pickAt: (x, y) => viewer.pickAt(x, y), drawn: () => viewer.drawn(), cameraState: () => viewer.cameraState() }
+    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), linePoints: (id) => viewer.linePoints(id), pickAt: (x, y) => viewer.pickAt(x, y), drawn: () => viewer.drawn(), cameraState: () => viewer.cameraState(), apply: (a) => viewer.apply(a) }
     w.__termpolis_world = probe
     return () => { if (w.__termpolis_world === probe) delete w.__termpolis_world }
   }, [viewer])
