@@ -879,6 +879,36 @@ describe('createWorldHost', () => {
       expect(asks()).toHaveLength(4)
     })
 
+    it('a failure while the rerun is set up is logged and frees the project: the next trigger labels again (round 2 N1)', async () => {
+      const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+        const text = await (deps.label.llm as Llm)('describe')
+        return doc(input.projectKey, { glossary: text ? { Label: text } : {} })
+      })
+      const store = memStore({ k1: doc() })
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, store)
+      await h.init(true)
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      const asks = (): Extract<WorldHostResponse, { kind: 'llm' }>[] => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
+      await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
+      await vi.waitFor(() => expect(asks()).toHaveLength(1))
+      await h.send({ kind: 'call', id: 2, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/b.ts']] })
+      await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+      // The stored world cannot be read when the rerun starts.
+      const load = store.load
+      store.load = async () => { throw new Error('disk gone') }
+      await h.send({ kind: 'llm-result', id: asks()[0].id, text: 'one' })
+      await vi.waitFor(() => expect(errors).toHaveBeenCalledWith('[world host] labelling rerun failed:', expect.any(Error)))
+      store.load = load
+      await tick()
+      expect(asks()).toHaveLength(1)
+      // The project is free again: a later change starts a run that asks the model.
+      await h.send({ kind: 'call', id: 3, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/c.ts']] })
+      await vi.waitFor(() => expect(asks()).toHaveLength(2))
+      await h.send({ kind: 'llm-result', id: asks()[1].id, text: 'two' })
+      await vi.waitFor(() => expect(h.store.saves.at(-1)?.glossary).toEqual({ Label: 'two' }))
+      errors.mockRestore()
+    })
+
     it('labelling turned off while a run asks the model saves nothing more and runs no more (fix wave M3)', async () => {
       const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
         const text = await (deps.label.llm as Llm)('describe')

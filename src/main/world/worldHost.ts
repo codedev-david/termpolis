@@ -594,9 +594,11 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           return { base: stored, from: compiledFrom.get(key) as Latest, cache: await stagesOf(st, key), changed: files, generation: generations.get(key) }
         })
       }
-      labelRuns.delete(key)
     }
+    // Whatever happens, the project is freed, so a failed run never stops the next trigger from labelling.
     void loop()
+      .catch((err: unknown) => console.error('[world host] labelling rerun failed:', err))
+      .finally(() => labelRuns.delete(key))
   }
 
   /** `llm` is main's model, the label cache only, or none (labelling off). */
