@@ -41,6 +41,7 @@ export const BAD_CWD_MESSAGE = '"cwd" must be the full path of a project folder 
 export const BAD_DESIGN_KEY_MESSAGE = '"designKey" must be a Lumopolis design key, like "design:abc123".'
 export const NO_DESIGN_MESSAGE = 'No Lumopolis design has that key.'
 export const NO_PROPOSE_ROOT_MESSAGE = 'world_propose needs {"cwd": "<project folder>"} (your working directory) or a "designKey".'
+export const DESIGN_PLAN_MESSAGE = 'world_read "plan" compares a project world with its design: pass the project "cwd", not a designKey.'
 export const NO_ANNOTATE_ROOT_MESSAGE = 'world_annotate needs {"cwd": "<project folder>"} (your working directory) or a "designKey".'
 export const NO_PART_MESSAGE = 'No part with that id.'
 export const PERSON_EVIDENCE_MESSAGE = 'Evidence of kind "person" is only written when a person confirms in Lumopolis.'
@@ -257,6 +258,7 @@ export function createWorldGatewayTransport(
     const parsed = parseWorldReadArgs(args)
     if (parsed.designKey !== undefined) {
       checkDesignKey(parsed.designKey)
+      if (parsed.query.plan === true) fail(DESIGN_PLAN_MESSAGE)
       const found = design ? await design.readDesign(parsed.designKey, parsed.query) : null
       if (!found) fail(NO_DESIGN_MESSAGE)
       return JSON.stringify(found)
@@ -286,10 +288,12 @@ export function createWorldGatewayTransport(
     }
     // Paths in the evidence: inside the root they become relative, outside ones are dropped.
     const evidence: Evidence[] = []
+    let dropped = 0
     for (const e of p.evidence) {
       if (evidence.length === MAX_ANNOTATION_EVIDENCE) break
       const ref = await evidenceRef(e.ref, root)
-      if (ref !== null) evidence.push({ ...e, ref })
+      if (ref === null) dropped++
+      else evidence.push({ ...e, ref })
     }
     const claim: Claim = { text: p.text.trim().slice(0, MAX_ANNOTATION_TEXT), state: 'observed', evidence: evidence.length > 0 ? evidence : [AGENT_EVIDENCE] }
     try {
@@ -299,7 +303,7 @@ export function createWorldGatewayTransport(
       if (m === NO_PART_MESSAGE) fail(NO_PART_MESSAGE)
       fail(m === 'No world with that key.' ? (p.designKey === undefined ? NO_WORLD_MESSAGE : NO_DESIGN_MESSAGE) : ANNOTATE_FAILED_MESSAGE)
     }
-    return JSON.stringify({ ok: true, id: p.id, state: claim.state, evidence: claim.evidence.length })
+    return JSON.stringify({ ok: true, id: p.id, state: claim.state, evidence: claim.evidence.length, dropped })
   }
 
   const propose = async (deps: WorldDesignDeps, args: unknown): Promise<string> => {

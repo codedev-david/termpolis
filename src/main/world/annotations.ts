@@ -12,6 +12,10 @@ import type { WorldStore } from './worldStore'
 export const MAX_ANNOTATION_TEXT = 400
 export const MAX_ANNOTATION_EVIDENCE = 8
 export const MAX_ANNOTATIONS_PER_ITEM = 20
+/** The longest evidence ref and excerpt kept; a longer one is cut and ends in an ellipsis. */
+export const MAX_EVIDENCE_REF = 512
+export const MAX_EVIDENCE_EXCERPT = 400
+const capped = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s)
 /** What annotating an id that is not a building or line of the world answers. */
 export const NO_PART = 'No part with that id.'
 
@@ -33,7 +37,7 @@ function cleanClaim(v: unknown): Claim | null {
   for (const e of v.evidence) {
     if (evidence.length === MAX_ANNOTATION_EVIDENCE) break
     if (isRec(e) && EVIDENCE_KINDS.has(e.kind as string) && typeof e.ref === 'string') {
-      evidence.push(typeof e.excerpt === 'string' ? { kind: e.kind as EvidenceKind, ref: e.ref, excerpt: e.excerpt } : { kind: e.kind as EvidenceKind, ref: e.ref })
+      evidence.push(typeof e.excerpt === 'string' ? { kind: e.kind as EvidenceKind, ref: capped(e.ref, MAX_EVIDENCE_REF), excerpt: capped(e.excerpt, MAX_EVIDENCE_EXCERPT) } : { kind: e.kind as EvidenceKind, ref: capped(e.ref, MAX_EVIDENCE_REF) })
     }
   }
   if (evidence.length === 0) return null

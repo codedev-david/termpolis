@@ -70,7 +70,7 @@ export interface WorldReadResult {
   /** Item id to plain-text card (with `cards`). */
   cards?: Record<string, string>
   /** Each proposal against the built code (with `plan`). */
-  plan?: { proposals: { id: string; title: string; missing: string[]; changed: string[]; extra: string[]; removes: string[] }[] }
+  plan?: { proposals: { id: string; title: string; missing: string[]; changed: string[]; extra: string[]; removes: string[]; /** When the design was last compiled into the world: the plan may be older than the design. */ planAt?: number }[] }
 }
 /** A compile stage's progress, pushed while a world compiles. `root` is the folder the renderer asked about. */
 export interface WorldProgressEvent { root: string; projectKey: string; stage: string; pct: number }

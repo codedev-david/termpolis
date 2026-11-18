@@ -20,6 +20,7 @@ import {
   PERSON_EVIDENCE_MESSAGE,
   ANNOTATE_FAILED_MESSAGE,
   AGENT_EVIDENCE,
+  DESIGN_PLAN_MESSAGE,
   BAD_DESIGN_KEY_MESSAGE,
   NO_DESIGN_MESSAGE,
   NO_PROPOSE_ROOT_MESSAGE,
@@ -419,6 +420,14 @@ describe('world_read cards and plan flags', () => {
   })
 })
 
+describe('world_read plan on a design', () => {
+  it('refuses plan with a designKey, saying it is for a project world', async () => {
+    const { transport } = setup()
+    await expect(transport.callTool('world_read', { designKey: 'design:n1', plan: true })).rejects.toThrow(DESIGN_PLAN_MESSAGE)
+    expect(DESIGN_PLAN_MESSAGE).toContain('project')
+  })
+})
+
 describe('world_annotate', () => {
   const claimOf = (annotate: { mock: { calls: unknown[][] } }, n = 0): Claim => annotate.mock.calls[n][2] as Claim
   const ROOT = process.cwd()
@@ -429,7 +438,7 @@ describe('world_annotate', () => {
     const out = JSON.parse(await transport.callTool('world_annotate', {
       cwd: '/repos/app', id: 'b:auth', text: '  checks tokens  ', evidence: [{ kind: 'file', ref: 'src/auth.ts', excerpt: 'x' }]
     }))
-    expect(out).toEqual({ ok: true, id: 'b:auth', state: 'observed', evidence: 1 })
+    expect(out).toEqual({ ok: true, id: 'b:auth', state: 'observed', evidence: 1, dropped: 0 })
     expect(hasWorld).toHaveBeenCalledWith(ROOT)
     expect(annotate).toHaveBeenCalledWith(keyForSource({ kind: 'project', root: ROOT }), 'b:auth', {
       text: 'checks tokens', state: 'observed', evidence: [{ kind: 'file', ref: 'src/auth.ts', excerpt: 'x' }]
@@ -442,6 +451,15 @@ describe('world_annotate', () => {
     expect(claimOf(annotate).state).toBe('observed')
     await expect(transport.callTool('world_annotate', { cwd: '/a', id: 'b1', text: 't', evidence: [{ kind: 'person', ref: 'me' }] })).rejects.toThrow(PERSON_EVIDENCE_MESSAGE)
     expect(annotate).toHaveBeenCalledTimes(1)
+  })
+
+  it('says how many evidence items were dropped as outside the root', async () => {
+    const { transport } = setup({ root: ROOT })
+    const out = JSON.parse(await transport.callTool('world_annotate', {
+      cwd: '/a', id: 'b1', text: 't',
+      evidence: [{ kind: 'file', ref: join(ROOT, '..', 'x', 'a.ts') }, { kind: 'file', ref: join(ROOT, '..', 'x', 'b.ts') }, { kind: 'symbol', ref: 'ok' }]
+    }))
+    expect(out).toMatchObject({ evidence: 1, dropped: 2 })
   })
 
   it('uses the agent evidence when none was given or none survived', async () => {

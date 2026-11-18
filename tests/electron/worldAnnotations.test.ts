@@ -3,11 +3,16 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { cardText } from '../../src/main/world/cardText'
+import { filterWorld } from '../../src/main/world/worldHost'
+import { minimal } from '../renderer/world/helpers'
 import {
   createAnnotationStore,
   hasPart,
   MAX_ANNOTATION_EVIDENCE,
   MAX_ANNOTATION_TEXT,
+  MAX_EVIDENCE_EXCERPT,
+  MAX_EVIDENCE_REF,
   MAX_ANNOTATIONS_PER_ITEM,
   mergeAnnotations
 } from '../../src/main/world/annotations'
@@ -51,6 +56,39 @@ describe('annotation store', () => {
     expect(c.text).toHaveLength(400)
     expect(c.evidence).toHaveLength(8)
     expect(c.evidence[0]).toEqual({ kind: 'file', ref: 'f0.ts:1', excerpt: 'x' })
+  })
+
+  it('caps an evidence ref at 512 and an excerpt at 400, ending in an ellipsis, and leaves shorter ones alone', async () => {
+    const store = createAnnotationStore(dir)
+    expect([MAX_EVIDENCE_REF, MAX_EVIDENCE_EXCERPT]).toEqual([512, 400])
+    await store.add('k', 'b1', {
+      text: 't', state: 'observed',
+      evidence: [
+        { kind: 'file', ref: 'r'.repeat(900), excerpt: 'e'.repeat(900) },
+        { kind: 'file', ref: 'r'.repeat(512), excerpt: 'e'.repeat(400) },
+        { kind: 'file', ref: 'r'.repeat(900) }
+      ]
+    })
+    const ev = (await store.list('k')).b1[0].evidence
+    expect(ev[0].ref).toBe(`${'r'.repeat(511)}…`)
+    expect(ev[0].excerpt).toBe(`${'e'.repeat(399)}…`)
+    expect(ev[1]).toEqual({ kind: 'file', ref: 'r'.repeat(512), excerpt: 'e'.repeat(400) })
+    expect(ev[2]).toEqual({ kind: 'file', ref: `${'r'.repeat(511)}…` })
+  })
+
+  it('cardText and world_read echo only the capped evidence', async () => {
+    const store = createAnnotationStore(dir)
+    await store.add('k', 'b1', { text: 'noted', state: 'observed', evidence: [{ kind: 'file', ref: 'r'.repeat(900), excerpt: 'e'.repeat(900) }] })
+    const world = minimal()
+    world.buildings[0].how = (await store.list('k')).b1
+    const id = world.buildings[0].id
+    const text = cardText(world, id)
+    expect(text).toContain('r'.repeat(511) + '…')
+    expect(text).not.toContain('r'.repeat(512))
+    const read = filterWorld(world, { ids: [id] })
+    const echoed = read.evidence.find((e) => e.ref.startsWith('rrrr'))
+    expect(echoed?.ref).toHaveLength(512)
+    expect(echoed?.excerpt).toHaveLength(400)
   })
 
   it('keeps 20 per item, dropping the oldest', async () => {

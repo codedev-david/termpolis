@@ -1137,7 +1137,7 @@ describe('filterWorld cards and plan', () => {
   it('plan: each proposal with missing, changed, extra and removes', () => {
     const r = filterWorld(linked(), { plan: true })
     expect(r.plan?.proposals).toEqual([
-      { id: 'design:n1', title: 'Linked design', missing: ['mail'], changed: ['b-api'], extra: ['b-db'], removes: ['b-db'] },
+      { id: 'design:n1', title: 'Linked design', missing: ['mail'], changed: ['b-api'], extra: ['b-db'], removes: ['b-db'], planAt: 5 },
       { id: 'p2', title: 'Sketch', missing: ['sk1'], changed: [], extra: [], removes: [] }
     ])
     expect(r).not.toHaveProperty('cards')

@@ -291,7 +291,8 @@ function proposalPlan(p: Proposal): NonNullable<WorldReadResult['plan']>['propos
   return {
     id: p.id, title: p.title,
     missing: r ? [...r.missing] : p.buildings.map((b) => b.id),
-    changed: r ? [...r.changed] : [], extra: r ? [...r.extra] : [], removes: [...(p.removes ?? [])]
+    changed: r ? [...r.changed] : [], extra: r ? [...r.extra] : [], removes: [...(p.removes ?? [])],
+    ...(r ? { planAt: r.planAt } : {})
   }
 }
 
