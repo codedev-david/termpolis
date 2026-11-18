@@ -2,7 +2,8 @@
 // plus the label strings the viewer hands it, and knows nothing about WorldDocs. Ported from the
 // brainstorm prototype (world-relationships.html): bloom, fog, starfield and dust, CSS2D labels,
 // OrbitControls plus WASD/QE, double-click explode, flow pulses, fat invisible picking tubes and
-// focus dimming. Excluded from the coverage gate (WebGL cannot run under jsdom); e2e covers it.
+// focus dimming. Unit-tested with only the GPU boundary faked (WebGLRenderer and the composer's
+// passes: tests/renderer/world/threeHarness.ts) under the 100% coverage gate; e2e checks the pixels.
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
@@ -329,7 +330,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.domElement.style.display = 'block'
   renderer.info.autoReset = false // a frame's draw calls add up across the composer's passes; reset once a frame
-  undo.push(() => { renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove() })
+  undo.push(() => { renderer.domElement.remove(); renderer.dispose(); renderer.forceContextLoss() }) // off the page first, whatever freeing it does
   host.appendChild(renderer.domElement)
   const labelRenderer = new CSS2DRenderer()
   labelRenderer.setSize(width, height)
@@ -423,12 +424,35 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   controls.autoRotateSpeed = 0.3
   // A press only stops the turning; the hand takes the camera over once it really moves it (a plain
   // click leaves the camera, its flight and the picture as they are).
-  const onControlStart = (): void => { controls.autoRotate = false; rig.press() }
+  /** Between the controls' start and end: a hand is on them (a drag), and a wheel then does nothing, as OrbitControls has it. */
+  let handHeld = false
+  const onControlStart = (): void => { handHeld = true; controls.autoRotate = false; rig.press() }
   const onControlChange = (): void => { rig.move() }
-  const onControlEnd = (): void => { rig.release() }
+  const onControlEnd = (): void => { handHeld = false; rig.release() }
   controls.addEventListener('start', onControlStart)
   controls.addEventListener('change', onControlChange)
   controls.addEventListener('end', onControlEnd)
+  /**
+   * The wheel below a device pixel ratio of 1 (a zoomed-out page). OrbitControls divides a wheel step
+   * by 100 * (devicePixelRatio | 0), which is 0 there: one notch slams the camera to its nearest or
+   * furthest distance. Caught before the controls see it (capture, on the host) and done as they do
+   * it at a ratio of 1: a notch of 100 moves the camera 0.95 of the way, within the distance limits.
+   */
+  const onWheel = (e: WheelEvent): void => {
+    if ((window.devicePixelRatio | 0) !== 0 || handHeld) return // the controls are never disabled here
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    if (e.deltaY === 0) return
+    const s = Math.pow(0.95, (controls.zoomSpeed * Math.abs(e.deltaY)) / 100)
+    controls.dispatchEvent({ type: 'start' })
+    const off = camera.position.clone().sub(controls.target)
+    const d = clamp(off.length() * (e.deltaY < 0 ? s : 1 / s), controls.minDistance, controls.maxDistance)
+    camera.position.copy(controls.target).addScaledVector(off.normalize(), d)
+    controls.update()
+    controls.dispatchEvent({ type: 'end' })
+  }
+  host.addEventListener('wheel', onWheel, { capture: true, passive: false })
+  undo.push(() => { host.removeEventListener('wheel', onWheel, { capture: true }) })
 
   let composer: EffectComposer | null = null
   let renderPass: RenderPass | null = null
@@ -722,16 +746,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
   }
 
-  function processShell(n: NodeRec, procId: string, text: SceneText, orb: boolean): void {
+  /** A building's process shell: a wireframe dome over it, captioned with the process (only buildings carry one). */
+  function processShell(n: NodeRec, procId: string, text: SceneText): void {
     const pc = text.processes[procId]
     const color = pc ? pc.color : theme.text
-    const shellR = orb ? 3.6 : Math.max(4.4, n.height * 0.62)
-    const geo = orb ? new THREE.SphereGeometry(shellR, 24, 14) : new THREE.SphereGeometry(shellR, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2)
+    const shellR = Math.max(4.4, n.height * 0.62)
+    const geo = new THREE.SphereGeometry(shellR, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2)
     const shell = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.22 }))
-    if (orb) shell.position.y = ORB_R
     n.group.add(shell)
     shellCount++
-    addLabel(n.group, 'proc', [0, (orb ? ORB_R + shellR : shellR) + 0.6, 0], (el) => {
+    addLabel(n.group, 'proc', [0, shellR + 0.6, 0], (el) => {
       el.textContent = '⬡ ' + (pc ? pc.label : procId)
       el.style.color = color
       el.style.borderColor = color
@@ -822,29 +846,27 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       seals.push(ring)
     }
     if (b.look === 'fog') fogCloud(n, b.height, false)
-    if (b.processShell !== undefined) processShell(n, b.processShell, text, false)
+    if (b.processShell !== undefined) processShell(n, b.processShell, text)
     const label = addLabel(g, 'bldg', [0, b.height + 3, 0], (el) => { el.textContent = text.labels[b.id] ?? b.id })
     n.labels.push(label)
     if (b.look === 'fading') {
       fadeMats.push(...n.mats)
       for (const m of n.mats) m.userData.fading = true // writes no depth (applyFocus)
     }
-    if (n.mats.length >= 2) {
-      // The whole building as one block, for the tiers further out (semantic zoom): one box and one
-      // outline, no floor seams. It shares the first floor's materials, so focus, heat and change
-      // pulses reach it with them. The floors stay the pick targets.
-      const block = new THREE.Mesh(UNIT_BOX, n.mats[0])
-      block.scale.set(FLOOR_W, Math.max(0.01, b.height - fh * 0.15), FLOOR_W)
-      block.position.y = b.height / 2
-      block.userData.size = [1, 1, 1]
-      block.visible = false
-      const outline = new THREE.LineSegments(UNIT_EDGES, n.mats[1])
-      outline.scale.copy(block.scale)
-      outline.position.copy(block.position)
-      outline.visible = false
-      g.add(block, outline)
-      parts.push({ mesh: block, line: outline, node: n, kind: 'block', depth: 0 })
-    }
+    // The whole building as one block, for the tiers further out (semantic zoom): one box and one
+    // outline, no floor seams. It shares the first floor's materials (every building has a floor:
+    // sceneModel), so focus, heat and change pulses reach it with them. The floors stay the pick targets.
+    const block = new THREE.Mesh(UNIT_BOX, n.mats[0])
+    block.scale.set(FLOOR_W, Math.max(0.01, b.height - fh * 0.15), FLOOR_W)
+    block.position.y = b.height / 2
+    block.userData.size = [1, 1, 1]
+    block.visible = false
+    const outline = new THREE.LineSegments(UNIT_EDGES, n.mats[1])
+    outline.scale.copy(block.scale)
+    outline.position.copy(block.position)
+    outline.visible = false
+    g.add(block, outline)
+    parts.push({ mesh: block, line: outline, node: n, kind: 'block', depth: 0 })
     nodes.set(b.id, n)
   }
 
@@ -1137,7 +1159,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         const sl = slabs[i]
         bm.compose(bv.set(sl.x, sl.y, sl.z), bq, bsc.set(sl.radius, sl.height, sl.radius))
         im.setMatrixAt(j, bm)
-        const col = hueColor(hue.get(sl.id) ?? null)
+        const col = hueColor(hue.get(sl.id) as number) // a slab is a district's (slabsFor): it has a hue
         // The glow a building of this district would have at the slab's heat (buildBuilding's).
         const heat = heatMix(slabLooks[i].heat)
         im.setColorAt(j, bc.copy(col).lerp(heatColor, heat.toward).multiplyScalar(extras.fillGlow * heat.glow))
@@ -1235,6 +1257,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
 
   function applyFocus(): void {
     const f = focus
+    const passive = f?.passive
     for (const n of nodes.values()) {
       const on = !f || f.ids.has(n.id)
       const k = on ? 1 : 0.12
@@ -1249,11 +1272,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const on = !f || f.edgeIds.has(e.id)
       e.focus = !!f && on
       // A hovered building's labels gather over it: they must not catch the click meant for it.
-      e.label.element.style.pointerEvents = e.focus && f?.passive?.has(e.id) ? 'none' : ''
+      e.label.element.style.pointerEvents = e.focus && passive?.has(e.id) ? 'none' : ''
       for (const m of e.tubeMats) {
         const base = m.userData.base as number
         const o = f ? focusOpacity(base, on) : base
-        m.userData.f = base > 0 ? o / base : 1
+        m.userData.f = o / base // a line's base is never 0 (MIN_TUBE_OPACITY, a dashed line's 0.85)
         if (!ghostMats.includes(m)) m.opacity = o
         m.depthWrite = writesDepth(m.userData.depth !== false, f && !on ? 0 : 1, false)
       }
@@ -1481,8 +1504,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const seen = (eye: THREE.Vector3): THREE.Vector3[] => [...mids, ...ends.map((m) => {
       if (m.orb) return m.anchor.clone().setY(m.anchor.y + 0.5)
       const c = m.group.position
-      const toward = eye.clone().sub(c).setY(0)
-      if (toward.lengthSq() > 1e-9) toward.normalize()
+      const toward = eye.clone().sub(c).setY(0).normalize() // (a zero vector stays zero)
       return c.clone().addScaledVector(toward, FLOOR_W * 0.5 + 0.3).setY(c.y + m.height * 0.6)
     })]
     // From the camera's side of the line first, then from the other side, before climbing out of
@@ -1506,7 +1528,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // and higher, and as far out as it takes for both ends to show beside the card (and the arch's
     // middle in sight). Failing that, the view that shows the most of them, never one that hides
     // them all: then the overhead view below.
-    let best: { shot: Shot; score: number } | null = null
+    // The best view so far, by how many ends it hides (0.5: none, but the arch's middle is out of sight).
+    let bestShot: Shot | null = null
+    let bestScore = Infinity
     rays.left = LINE_RAY_BUDGET
     wide: for (const [x, z] of turnAcross([h.x, h.z], LINE_TURNS)) {
       for (const lift of LINE_WIDE_LIFTS) {
@@ -1521,12 +1545,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
           const midSeen = hidden === 0 && mids.some((p) => inSight(eye, p))
           if (midSeen) return { pos: eye, target }
           const score = hidden === 0 ? 0.5 : hidden
-          if (!best || score < best.score) best = { shot: { pos: eye, target }, score }
+          if (score < bestScore) { bestShot = { pos: eye, target }; bestScore = score }
           if (rays.left <= 0) break wide
         }
       }
     }
-    if (best && best.score < ends.length) return best.shot
+    if (bestScore < ends.length) return bestShot as Shot // a finite score was set with its shot
     // Nothing shows an end: from high above, as far back as it takes to clear the roofs.
     const dir = new THREE.Vector3(h.x, LINE_LIFTS[2], h.z).normalize()
     const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
@@ -1556,7 +1580,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (mine !== pulseToken) return
       const e = edges.get(id)
       if (!e) continue
-      const color = (e.packetMats[0] as THREE.MeshBasicMaterial | undefined)?.color.clone() ?? new THREE.Color(0xffffff)
+      const color = (e.packetMats[0] as THREE.MeshBasicMaterial).color.clone() // every line carries packets (buildConduit)
       await new Promise<void>((resolve) => { pulseAnim = { curve: e.curve, t: 0, color, done: resolve } })
     }
   }
@@ -1599,8 +1623,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const edge = hits.find((h) => {
       if (typeof h.object.userData.edgeId !== 'string') return false
       if (!node || node.distance <= h.distance) return true
-      const rec = edges.get(h.object.userData.edgeId as string)
-      return !rec || touches(rec)
+      return touches(edges.get(h.object.userData.edgeId as string) as EdgeRec) // a pick tube is always its line's (both are rebuilt together)
     })
     if (node && (!edge || node.distance <= edge.distance + PICK_NODE_EPS)) {
       const ids = node.object.userData.slabIds as string[] | undefined
@@ -1608,14 +1631,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     if (!edge) return null
     const id = edge.object.userData.edgeId as string
-    const rec = edges.get(id)
-    if (rec) {
-      const at = world.worldToLocal(edge.point.clone())
-      const snap = Math.min(LINE_END_SNAP, rec.curve.v0.distanceTo(rec.curve.v2) * 0.2)
-      for (const end of [rec.curve.v0, rec.curve.v2]) {
-        const m = at.distanceTo(end) < snap ? nodeAt(end) : null
-        if (m) return { kind: 'node', id: m.id }
-      }
+    const rec = edges.get(id) as EdgeRec
+    const at = world.worldToLocal(edge.point.clone())
+    const snap = Math.min(LINE_END_SNAP, rec.curve.v0.distanceTo(rec.curve.v2) * 0.2)
+    for (const end of [rec.curve.v0, rec.curve.v2]) {
+      const m = at.distanceTo(end) < snap ? nodeAt(end) : null
+      if (m) return { kind: 'node', id: m.id }
     }
     return { kind: 'edge', id }
   }
@@ -1842,7 +1863,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     o.getWorldPosition(labelAt)
     labelAt.project(camera)
     if (labelAt.z < -1 || labelAt.z > 1) return null
-    const { w, h } = sizes.get(o.element) ?? edgeLabelSize((o.element.textContent ?? '').length)
+    const { w, h } = sizes.get(o.element) ?? edgeLabelSize((o.element.textContent as string).length) // an element's text is never null
     let x = ((labelAt.x + 1) / 2) * width
     let y = ((1 - labelAt.y) / 2) * height
     let keepIn: LabelCandidate['keepIn']
@@ -2120,8 +2141,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let disposed = false
   let paused = false
   let wirePulse = 0.55 + 0.45 * Math.sin(0) // the ghost pulse's level, as the last frame set it
+  // dispose() and setPaused(true) cancel the queued frame, so a frame never runs after either.
   function animate(): void {
-    if (disposed || paused) return
     raf = requestAnimationFrame(animate)
     frameNo++
     const dt = Math.min(clock.getDelta(), 0.05)
@@ -2189,10 +2210,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     const gp = 0.55 + 0.45 * Math.sin(t * 2.2)
     wirePulse = gp
-    for (const m of ghostMats) m.opacity = Math.min(1, m.userData.base * gp * (m.userData.f ?? 1))
+    for (const m of ghostMats) m.opacity = Math.min(1, m.userData.base * gp * m.userData.f) // every one went through trackBase
     // A part the proposal takes away pulses between FADE_MIN and FADE_MAX at 0.5 Hz; reduced motion holds it at the middle.
     const fade = reduced ? FADE_MID : FADE_MID + FADE_AMP * Math.sin(t * Math.PI)
-    for (const m of fadeMats) m.opacity = fade * (m.userData.f ?? 1)
+    for (const m of fadeMats) m.opacity = fade * m.userData.f
     if (selRing && selRing.visible) selRing.rotation.z += mdt * 0.5
     if (pulseAnim) {
       const pa = pulseAnim
@@ -2398,6 +2419,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       host.removeEventListener('keydown', onKeyDown)
       host.removeEventListener('keyup', onKeyUp)
       host.removeEventListener('blur', onBlur, true)
+      host.removeEventListener('wheel', onWheel, { capture: true })
       controls.removeEventListener('start', onControlStart)
       controls.removeEventListener('change', onControlChange)
       controls.removeEventListener('end', onControlEnd)
@@ -2405,6 +2427,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       rig.stop()
       stopPulses()
       clearWorld()
+      // The batches' materials and their own geometries (a box batch's unit box with its outline colours).
+      for (const im of instPool.values()) dropBatch(im)
+      instPool.clear()
       if (grid) { grid.geometry.dispose(); ([] as THREE.Material[]).concat(grid.material).forEach((m) => m.dispose()) }
       starGeo.dispose(); starMat.dispose()
       dustGeo?.dispose(); dustMat?.dispose()
