@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: November 9, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the memory hook also runs on a session's first prompt, around a compaction and before a whole-file read, and sends what it reads only to Termpolis on this computer; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it; per-message model routing decides on this computer and keeps only vectors of your corrections, never their text; November 10, 2026: Codex terminals Termpolis launches send their requests through the same local proxy so each message's reasoning effort can be picked, and config.toml in Codex's home is read to see whether you chose your own endpoint; November 12, 2026: Linked machines recognises a private key by its decoded bytes, takes credentials out of a refused prompt's first line, and refuses a URL given as a folder)
+Last updated: November 9, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the memory hook also runs on a session's first prompt, around a compaction and before a whole-file read, and sends what it reads only to Termpolis on this computer; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers; a terminal opened on an account reads that account's profile for its context window and its own routing; once your agents are connected, Termpolis copies Claude Code's saved notes into memory, and the memory brain's record of its own work is described, with a way to clear it; per-message model routing decides on this computer and keeps only vectors of your corrections, never their text; November 10, 2026: Codex terminals Termpolis launches send their requests through the same local proxy so each message's reasoning effort can be picked, and config.toml in Codex's home is read to see whether you chose your own endpoint; November 12, 2026: Linked machines recognises a private key by its decoded bytes, takes credentials out of a refused prompt's first line, and refuses a URL given as a folder; November 18, 2026: a Lumopolis section says what it reads with your GitHub CLI, what it sends to your AI provider, and what it keeps on this computer)
 
 ## Overview
 
@@ -226,6 +226,10 @@ Termpolis itself only makes network requests for:
    (an API key), the endpoints Codex itself uses, and nowhere else. See
    [Codex through the local proxy](#codex-through-the-local-proxy).
 
+7. **Lumopolis** (the 3D map of a project) — reading CI results with your own
+   GitHub CLI, and cloning a repository only when you ask. See
+   [Lumopolis](#lumopolis).
+
 Tools and AI agents you launch inside Termpolis (Claude Code, Codex, Gemini
 CLI, your own shells) make their own network requests according
 to their own privacy policies. Termpolis does not intercept that traffic, with
@@ -308,6 +312,41 @@ the session.
 - **Turn it off** with Settings → General → Default Models → Model per message
   → **Off**, or the compression proxy switch in Settings → Token Savings. New
   Codex terminals then talk to OpenAI directly.
+
+## Lumopolis
+
+Lumopolis draws a project as a 3D map you can explore and ask questions about.
+What it reads, runs and sends:
+
+- **CI results, with your own GitHub CLI (on by default).** To show which parts
+  passed their tests in CI, Lumopolis runs the `gh` command already installed
+  on your computer to read the CI result for the commit you have checked out.
+  `gh` signs in to GitHub with the login it has stored for itself; Termpolis
+  never reads that login. It runs only for a project with a GitHub remote, and
+  only when `gh` is installed. Turn it off with Settings → Lumopolis → **Read
+  CI results with GitHub CLI**, and Lumopolis never runs `gh`.
+- **Describing parts and answering questions send project text to your AI
+  provider.** When Lumopolis describes the parts of the map (Settings →
+  Lumopolis → **Describe parts with AI**, on by default) or answers a question
+  you ask, it sends excerpts of your code, recent commit subjects, lines of
+  the project's documentation and decisions saved in Termpolis memory to the
+  agent you chose in Settings → Lumopolis (Claude Code, Codex or Gemini CLI).
+  That agent sends them to its AI provider on your own account, as it does in
+  a terminal. A design you ask Lumopolis to draft sends your description the
+  same way. Turn describing off and the map still draws, with names taken from
+  the code.
+- **Cloning only when you ask.** Lumopolis contacts a git server only when you
+  give it a repository address to open. It clones that repository into
+  Termpolis's own folder (`userData/world/repos`), with git's hooks and login
+  helpers turned off.
+- **Kept on this computer.** Maps, notes and design drafts are stored in
+  `userData/world`, and saved views (bookmarks) in the app's own local
+  storage. None of them is uploaded.
+
+Git and `gh` are started by their full paths, found in your PATH folders or
+git's usual install locations, and never by name alone, so a program planted
+inside a repository is never what runs.
+
 ## Signing in to an account
 
 When you sign an account in from Termpolis (its card in Settings → Accounts,
