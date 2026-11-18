@@ -624,13 +624,37 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(viewer.getSelection()).toEqual(['e1'])
   })
 
-  /** The same world after a Re-layout: every part at a new spot. */
-  const relaidOut = (): WorldDoc => {
+  /** The same world after a Re-layout: every part at a new spot, in the layout's next round. */
+  const relaidOut = (round = 1): WorldDoc => {
     const d = rich()
     d.generatedAt += 1
     for (const [id, [x, y, z]] of Object.entries(d.layout.positions)) d.layout.positions[id] = [x + 40, y, z - 40]
+    d.layout.round = round
     return d
   }
+
+  it('a watched change that re-places parts in a shrunken district is no Re-layout: the camera and the open building stay (round 2 N4)', () => {
+    const { r, aim, at, viewer } = setup3d()
+    aim({ kind: 'node', id: 'b1' })
+    at('dblclick')
+    r.overview.mockClear()
+    r.frame.mockClear()
+    r.setExploded.mockClear()
+    const shifted = rich()
+    shifted.generatedAt += 1
+    for (const [id, [x, y, z]] of Object.entries(shifted.layout.positions)) shifted.layout.positions[id] = [x - 3, y, z + 3]
+    viewer.load(shifted, { animateFrom: rich() })
+    expect(r.setExploded).not.toHaveBeenCalledWith(null)
+    expect(r.overview).not.toHaveBeenCalled()
+    expect(r.frame).not.toHaveBeenCalled()
+    // A second Re-layout is a new round too, and a world that keeps its round keeps the camera.
+    viewer.load(relaidOut(1))
+    expect(r.frame).toHaveBeenCalledTimes(1)
+    viewer.load(relaidOut(1))
+    expect(r.frame).toHaveBeenCalledTimes(1)
+    viewer.load(relaidOut(2))
+    expect(r.frame).toHaveBeenCalledTimes(2)
+  })
 
   it('a re-layout of the same project closes the open building and flies to the kept selection at its new spot (fix wave I3)', () => {
     const { r, aim, at, sels, viewer, lastCard } = setup3d()

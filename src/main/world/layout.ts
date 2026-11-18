@@ -162,5 +162,5 @@ export function layoutWorld(g: Grouping, previous: Layout | null, seed?: number)
       positions[id] = [p[0], 0, p[1]]
     }
   }
-  return { seed: used, positions }
+  return { seed: used, positions, ...(previous?.round !== undefined ? { round: previous.round } : {}) }
 }

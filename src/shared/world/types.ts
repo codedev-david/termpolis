@@ -47,7 +47,11 @@ export interface WorldDoc {
   glossary: Record<string, string>; cargo: Record<string, { shape: 'cube' | 'sphere' | 'octa' | 'tetra'; color: string; label: string }>
   processes: Record<string, { label: string; color: string }>
   tours: Tour[]
-  layout: { seed: number; positions: Record<string, [number, number, number]> }
+  /**
+   * Where every part stands. `round` counts the Re-layouts the person asked for (absent before the first):
+   * a plain compile carries it, so a newer world tells a Re-layout from a watched change by it alone.
+   */
+  layout: { seed: number; positions: Record<string, [number, number, number]>; round?: number }
   runtimeNames: Record<string, string[]>             // §5.11 hook
   /** Ids of the parts whose service names a person set by hand (they replace the detected ones). Absent when none. */
   runtimeHandSet?: string[]

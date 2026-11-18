@@ -686,10 +686,13 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       }
       return serial(key, async () => {
         // A re-layout is a compile whose previous world has no positions (so it lays out afresh with
-        // the same seed); everything else compile carries from previous still carries.
+        // the same seed) and the next layout round (so the window knows the parts moved on purpose);
+        // everything else compile carries from previous still carries.
         const stored = await st.store.load(key)
         const previous =
-          stored && opts?.relayout === true ? { ...stored, layout: { seed: stored.layout.seed, positions: {} } } : stored
+          stored && opts?.relayout === true
+            ? { ...stored, layout: { seed: stored.layout.seed, positions: {}, round: (stored.layout.round ?? 0) + 1 } }
+            : stored
         // With a stored stage cache every file is read but only one whose text changed is scanned again.
         const cache = await stagesOf(st, key)
         st.checked.delete(key)

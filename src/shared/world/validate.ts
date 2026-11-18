@@ -309,6 +309,7 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
   else {
     if (!isNum(layout.seed)) e.push('layout.seed must be a number')
     if (!isRecord(layout.positions)) e.push('layout.positions must be an object')
+    if (layout.round !== undefined && !(Number.isInteger(layout.round) && (layout.round as number) >= 0)) e.push('layout.round must be a whole number of zero or more')
   }
   checkMaps(ctx, doc)
 

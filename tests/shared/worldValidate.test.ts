@@ -331,6 +331,18 @@ describe('validateWorld', () => {
     expect(e).toContain('building b2: no layout position')
   })
 
+  it('a layout round, when present, is a whole number of zero or more (round 2 N4)', () => {
+    const d = fresh()
+    d.layout.round = 2
+    expect(validateWorld(d).ok).toBe(true)
+    d.layout.round = 0
+    expect(validateWorld(d).ok).toBe(true)
+    for (const bad of ['1', -1, 1.5]) {
+      d.layout.round = bad
+      expect(errorsOf(d)).toContain('layout.round must be a whole number of zero or more')
+    }
+  })
+
   it('flags tour steps that point at unknown ids', () => {
     const d = fresh()
     d.tours = [{ id: 't1', title: 't', steps: [{ ids: ['b1', 'x1', 'd1', 'e1', 'zz'], caption: 'c' }] }]

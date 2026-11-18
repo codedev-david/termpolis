@@ -30,6 +30,15 @@ const SPEC = {
 }
 
 describe('layoutWorld', () => {
+  it('carries the layout round of the world before it, and a first layout has none (round 2 N4)', () => {
+    const g = grouping(SPEC)
+    const first = layoutWorld(g, null)
+    expect(first.round).toBeUndefined()
+    expect(layoutWorld(g, first).round).toBeUndefined()
+    expect(layoutWorld(g, { ...first, round: 3 }).round).toBe(3)
+    expect(layoutWorld(g, { seed: first.seed, positions: {}, round: 2 }).round).toBe(2)
+  })
+
   it('first layout places districts on a hex ring and buildings inside their district radius', () => {
     const g = grouping(SPEC)
     const l = layoutWorld(g, null)

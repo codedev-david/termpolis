@@ -446,7 +446,8 @@ describe('createWorldHost', () => {
     const h = harness({ compile }, memStore({ k1: stored }))
     await h.init()
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD, { relayout: true }] })
-    expect(seen[0].previous).toEqual({ ...stored, layout: { seed: 77, positions: {} } })
+    // The next layout round tells the window this is a Re-layout, not a watched change (round 2 N4).
+    expect(seen[0].previous).toEqual({ ...stored, layout: { seed: 77, positions: {}, round: 1 } })
     expect(seen[0].previous?.glossary).toEqual({ Store: 'where rows live' }) // a non-layout field still carries
     expect(seen[0].previous?.buildings).toEqual(stored.buildings)
     expect(stored.layout.positions).toEqual({ 'd-core': [1, 0, 2], 'b-api': [3, 0, 4] }) // the stored doc is not mutated
@@ -482,9 +483,15 @@ describe('createWorldHost', () => {
     const res = h.last() as { ok: boolean; result: WorldDoc }
     expect(res.ok).toBe(true)
     expect(seen[2].previous?.glossary).toEqual({ Marker: 'kept' }) // a non-layout field still reaches compile
-    expect(seen[2].previous?.layout).toEqual({ seed: 7, positions: {} })
+    expect(seen[2].previous?.layout).toEqual({ seed: 7, positions: {}, round: 1 })
     expect(Object.values(res.result.layout.positions).some((p) => p[0] === 999)).toBe(false)
     expect(res.result.layout.seed).toBe(7)
+    expect(res.result.layout.round).toBe(1)
+    // A plain compile carries the round; the next Re-layout is round 2.
+    await h.send({ kind: 'call', id: 4, fn: 'compile', args: ['k1', snap(), HEAD] })
+    expect(store.docs.get('k1')?.layout.round).toBe(1)
+    await h.send({ kind: 'call', id: 5, fn: 'compile', args: ['k1', snap(), HEAD, { relayout: true }] })
+    expect(store.docs.get('k1')?.layout.round).toBe(2)
   })
 
   it('a failed compile pushes no updated', async () => {

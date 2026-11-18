@@ -344,12 +344,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     return sel.kind === 'building' ? r.frame(frameIds, instant, [...lit].filter((x) => x !== sel.id)) : r.frame(frameIds, instant)
   }
 
-  /** True when a part both worlds place stands somewhere else in `next`: a Re-layout moved it. */
-  function moved(prev: WorldDoc, next: WorldDoc): boolean {
-    return Object.entries(prev.layout.positions).some(([id, p]) => {
-      const q = next.layout.positions[id]
-      return q !== undefined && (q[0] !== p[0] || q[1] !== p[1] || q[2] !== p[2])
-    })
+  /**
+   * True when `next` comes from a Re-layout the person asked for: its layout round differs. Positions alone
+   * cannot tell, since a watched change that shrinks a district re-places its outer parts (round 2 N4).
+   */
+  function relaidSince(prev: WorldDoc, next: WorldDoc): boolean {
+    return (next.layout.round ?? 0) !== (prev.layout.round ?? 0)
   }
 
   function deselect(): void {
@@ -671,7 +671,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       // Another project starts afresh from the overview. A Re-layout moves the kept parts: the open
       // building closes, and the camera flies to the kept selection at its new spot, or to the overview.
       const same = doc !== null && doc.projectKey === d.projectKey
-      const relaid = same && moved(doc as WorldDoc, d)
+      const relaid = same && relaidSince(doc as WorldDoc, d)
       doc = d
       revealProposal = undefined
       fogged.clear()
