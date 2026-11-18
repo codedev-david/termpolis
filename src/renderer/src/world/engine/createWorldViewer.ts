@@ -190,6 +190,10 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   let tourToken = 0
   let disposed = false
   const toast = createChangeToast(container)
+  /** The ask bar's and the legend's strips: the toast keeps out of both (the fit gets them too, in 3D). */
+  let lowReserve = opts.bottomReserve ?? 0
+  let sideReserve = opts.rightReserve ?? 0
+  toast.place(lowReserve, sideReserve)
 
   const pos = getComputedStyle(container).position
   if (pos === '' || pos === 'static') container.style.position = 'relative' // '' = not laid out yet
@@ -671,10 +675,16 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       redraw()
     },
     setRightReserve(px) {
-      if (!disposed) r3?.setRightReserve(px)
+      if (disposed) return
+      sideReserve = px
+      toast.place(lowReserve, sideReserve)
+      r3?.setRightReserve(px)
     },
     setBottomReserve(px) {
-      if (!disposed) r3?.setBottomReserve(px)
+      if (disposed) return
+      lowReserve = px
+      toast.place(lowReserve, sideReserve)
+      r3?.setBottomReserve(px)
     },
     setCardReserve(w, h) {
       if (!disposed) r3?.setCardReserve(w, h)

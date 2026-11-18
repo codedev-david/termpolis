@@ -1020,6 +1020,35 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(() => createWorldViewer(document.createElement('div')).setBottomReserve(1)).not.toThrow()
   })
 
+  it('the change toast follows the ask bar and the legend strips, in 3D and in 2D (film bug 9)', () => {
+    withWebGL()
+    createThreeRenderer.mockImplementation((h: HTMLElement) => fakeRenderer(h).r)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const v = createWorldViewer(host, { bottomReserve: 72, rightReserve: 244 })
+    v.load(rich())
+    v.load({ ...rich(), buildings: rich().buildings.slice(1) }, { animateFrom: rich() })
+    const el = host.querySelector('.lw-toast') as HTMLElement
+    expect(el.style.bottom).toBe('72px')
+    expect(el.style.left).toBe('calc(50% - 122px)')
+    v.setBottomReserve(150)
+    v.setRightReserve(108)
+    expect(el.style.bottom).toBe('150px')
+    expect(el.style.left).toBe('calc(50% - 54px)')
+    createThreeRenderer.mockReset()
+    getContext.mockReturnValue(null)
+    const flatHost = document.createElement('div')
+    document.body.appendChild(flatHost)
+    const flat = createWorldViewer(flatHost)
+    flat.load(rich())
+    flat.setBottomReserve(90)
+    flat.setRightReserve(40)
+    flat.load({ ...rich(), buildings: rich().buildings.slice(1) }, { animateFrom: rich() })
+    const flatEl = flatHost.querySelector('.lw-toast') as HTMLElement
+    expect(flatEl.style.bottom).toBe('90px')
+    expect(flatEl.style.left).toBe('calc(50% - 20px)')
+  })
+
   it('passes the open card box on to the renderer, and not after dispose', () => {
     withWebGL()
     let fake: ReturnType<typeof fakeRenderer> | null = null

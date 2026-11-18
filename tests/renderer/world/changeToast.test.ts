@@ -64,6 +64,24 @@ describe('createChangeToast', () => {
     expect(toastEl()?.textContent).toBe('1 removed')
   })
 
+  it('sits above the ask bar and centred in what the legend leaves free, before and after it first shows (film bug 9)', () => {
+    const toast = createChangeToast(host)
+    toast.place(80, 244) // before the first show: kept for when the region is made
+    toast.show('+1 part', THEMES.neon)
+    const el = toastEl() as HTMLElement
+    expect(el.style.bottom).toBe('80px')
+    expect(el.style.left).toBe('calc(50% - 122px)')
+    expect(el.style.maxWidth).toBe('calc(100% - 268px)')
+    // Above every panel of the view, so nothing drawn later covers it.
+    expect(Number(el.style.zIndex)).toBeGreaterThan(5)
+    toast.place(0, 0) // no ask bar, no legend: 16 px off the bottom edge, centred
+    expect(el.style.bottom).toBe('16px')
+    expect(el.style.left).toBe('calc(50% - 0px)')
+    expect(el.style.maxWidth).toBe('calc(100% - 24px)')
+    expect(el.style.overflow).toBe('hidden')
+    expect(el.style.textOverflow).toBe('ellipsis')
+  })
+
   it('dispose removes it and stops its timer', () => {
     const toast = createChangeToast(host)
     toast.dispose() // nothing shown yet: still fine
