@@ -910,21 +910,84 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     await toOverview()
   })
 
-  test('double-click explodes a building floor by floor', async () => {
+  test('the first double-click on a building explodes it floor by floor, and selects no page text', async () => {
     await toOverview()
     await toBuildingsTier()
-    const ids = motionDoc.buildings.map((b) => b.id)
-    // The first click of a double-click opens the card, which can open over the building and take the
-    // second click. So a card is opened first, and the double-click goes to a building beside it.
-    const first = await aimAtABuilding(ids)
-    await page.mouse.click(first.x, first.y)
-    await expect(card()).toBeVisible()
-    await expect.poll(async () => (await visual()).flight.active, { timeout: 10_000 }).toBe(false)
-    await page.waitForTimeout(500)
-    const at = await jitterAim(ids)
+    await expect(card()).toHaveCount(0)
+    await page.evaluate(() => getSelection()?.removeAllRanges())
+    // Film bugs 5 and 6: nothing selected or open yet, the first double-click explodes the building
+    // (its first click no longer opens a card over it), and selects none of the page's text.
+    const at = await jitterAim(motionDoc.buildings.map((b) => b.id))
     await page.mouse.dblclick(at.x, at.y)
     await expect.poll(async () => (await visual()).exploded, { timeout: 5000 }).toBe(at.id)
     await expect.poll(async () => (await visual()).explodeGap, { timeout: 5000 }).toBeGreaterThan(0)
+    expect(await page.evaluate(() => getSelection()?.toString() ?? '')).toBe('')
+  })
+
+  test('an exploded building stays exploded through a live change, and the change toast is in plain view at 1920x1080 and in a small window', async () => {
+    const exploded = (await visual()).exploded
+    expect(exploded).not.toBeNull()
+    const dir = fixtures.find((f) => f.label === 'motion')!.dir
+    const sizes: Array<[number, number]> = [[1920, 1080], [900, 600]]
+    for (const [i, [width, height]] of sizes.entries()) {
+      await page.setViewportSize({ width, height })
+      await page.waitForTimeout(3500) // any toast still up has gone
+      // Waits in the page for the toast and measures it the moment it shows (it stays up 3 s).
+      const shown = page.evaluate(() => new Promise<{ text: string; hits: boolean[]; inHost: boolean; overAsk: boolean; overLegend: boolean }>((resolve, reject) => {
+        const t0 = performance.now()
+        const tick = (): void => {
+          const el = document.querySelector<HTMLElement>('.lw-toast')
+          if (el && !el.hidden && el.textContent) {
+            const r = el.getBoundingClientRect()
+            // The toast lets clicks through (pointer-events none), so hit-testing finds what is
+            // painted over it only while it takes them.
+            const was = el.style.pointerEvents
+            el.style.pointerEvents = 'auto'
+            const cx = (r.left + r.right) / 2
+            const cy = (r.top + r.bottom) / 2
+            const points: Array<[number, number]> = [[cx, cy], [r.left + 4, cy], [r.right - 4, cy], [cx, r.top + 2], [cx, r.bottom - 2]]
+            const hits = points.map(([x, y]) => { const at = document.elementFromPoint(x, y); return at !== null && (at === el || el.contains(at)) })
+            el.style.pointerEvents = was
+            const meets = (sel: string): boolean => {
+              const n = document.querySelector(sel)
+              if (!n) return false
+              const b = n.getBoundingClientRect()
+              return b.width > 0 && b.height > 0 && r.left < b.right && b.left < r.right && r.top < b.bottom && b.top < r.bottom
+            }
+            const host = document.querySelector('[data-testid="world-canvas-host"]')!.getBoundingClientRect()
+            const inHost = r.left >= host.left && r.right <= host.right && r.top >= host.top && r.bottom <= host.bottom
+            resolve({ text: el.textContent, hits, inHost, overAsk: meets('[data-testid="world-ask"]'), overLegend: meets('[data-testid="world-legend"]') })
+            return
+          }
+          if (performance.now() - t0 > 90_000) { reject(new Error('no change toast within 90 s')); return }
+          setTimeout(tick, 40)
+        }
+        tick()
+      }))
+      // A live change: a new file in the ui part (its members change, so the toast says "1 changed").
+      // The watcher recompiles and the pane loads the new world over the old one.
+      fs.writeFileSync(path.join(dir, `src/ui/More${i}.ts`), `import { list } from './List'\nexport const more${i} = (): number => list() + ${i}\n`)
+      const toast = await shown
+      expect(toast.text.length).toBeGreaterThan(0)
+      expect(toast.hits, `toast "${toast.text}" at ${width}x${height}: centre, left, right, top, bottom on top`).toEqual([true, true, true, true, true])
+      expect(toast.inHost).toBe(true)
+      expect(toast.overAsk).toBe(false)
+      expect(toast.overLegend).toBe(false)
+      // Film bug 6: the reload kept the exploded building.
+      expect((await visual()).exploded).toBe(exploded)
+      await page.screenshot({ path: path.join(SHOTS, `live-change-toast-${width}x${height}.png`) })
+    }
+    // The later tests compare against motionDoc: the added files go, and the world is back as it was.
+    for (const i of sizes.keys()) fs.rmSync(path.join(dir, `src/ui/More${i}.ts`))
+    const members = async (): Promise<string> => page.evaluate(async (r) => {
+      const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: { buildings: { members: string[] }[] } | null }> } }).termpolis
+      const top = await api.gitFindRoot(r)
+      const res = await api.worldGet(top.success && top.data ? top.data : r)
+      return JSON.stringify((res.data?.buildings ?? []).map((b) => b.members))
+    }, dir)
+    await expect.poll(async () => (await members()).includes('More'), { timeout: 90_000 }).toBe(false)
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.waitForTimeout(1000)
     await toOverview()
   })
 
