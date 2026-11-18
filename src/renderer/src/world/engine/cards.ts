@@ -40,7 +40,8 @@ function serviceNames(doc: WorldDoc, id: string): string {
   if (names.length === 0 && !editable) return ''
   const list = names.length ? `<span class="rtnames">${esc(names.join(', '))}</span>` : '<span class="muted">None yet</span>'
   const edit = editable ? ` <button class="edit-names" data-runtime-edit="${esc(id)}" data-names="${esc(names.join(', '))}">Edit</button>` : ''
-  return section('Service names', `<p>${list}${edit}</p>`)
+  const by = (doc.runtimeHandSet ?? []).includes(id) ? ' <span class="muted">edited by you</span>' : ''
+  return section('Service names', `<p>${list}${by}${edit}</p>`)
 }
 
 function chips(doc: WorldDoc, techs: string[]): string {

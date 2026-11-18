@@ -29,7 +29,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
-import { runtimeText } from '../../../../shared/world/runtimeNames'
+import { isRuntimeText, runtimeText } from '../../../../shared/world/runtimeNames'
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
 import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
@@ -484,6 +484,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   }
   /** Confirm on an inferred claim: a person's verified copy is stored and the pane shows the doc that comes back. */
   const confirmClaim = (itemId: string, text: string): void => {
+    // A claim that reads as service names is changed with the Edit button, never confirmed into a hidden note.
+    if (isRuntimeText(text)) { setNotice('Use Edit on the Service names line to change them.'); return }
     const d = docRef.current as WorldDoc
     window.termpolis.worldAnnotate(d.projectKey, itemId, text)
       .then((res) => {

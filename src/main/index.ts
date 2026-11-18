@@ -339,7 +339,7 @@ import { testPickedFolder } from './world/testHooks'
 import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
-import { createWorldRuns, tailOfFile } from './world/worldRuns'
+import { createWorldRuns } from './world/worldRuns'
 import { cheapModelFor, makeWorldLlm } from './world/label'
 import { createLabelContext, GIT_TIMEOUT_MS } from './world/labelContext'
 import { ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
@@ -2690,7 +2690,6 @@ const worldLabelContext = createLabelContext({
 // with GitHub CLI") the newest CI conclusion. Reads are async and the commands go to the proc host.
 const worldRuns = createWorldRuns({
   listTranscripts: (root) => listClaudeSessionFiles(root),
-  readTail: tailOfFile,
   transcriptsAllowed: () => getLearnFromConversations(),
   ciAllowed: async () => { await worldSettings.ready(); return worldSettings.get().worldCiResults === true },
   exec: async (bin, args, opts) => {
@@ -2704,7 +2703,7 @@ const worldRuns = createWorldRuns({
   now: () => Date.now(),
 })
 const worldClient = createWorldClient(undefined, {
-  transcriptRuns: worldRuns.transcriptRuns,
+  transcriptFiles: worldRuns.transcriptFiles,
   ciRuns: worldRuns.ciRuns,
   userDataPath: () => app.getPath('userData'),
   // A project's linked design (plan versus built): registry entry -> linkedDesign -> the stored design.

@@ -622,7 +622,15 @@ describe('createWorldHost', () => {
     expect(cleanRuns(Array.from({ length: 6000 }, () => good), 'transcript')).toHaveLength(5000)
   })
 
-  it('a compile asks main for transcript and CI runs through runs / runs-result; no answer in time is none', async () => {
+  it('a compile asks main for transcript FILES and reads them itself, and for CI runs; no answer in time is none', async () => {
+    const file = join(dir, 'session.jsonl')
+    await writeFile(
+      file,
+      JSON.stringify({
+        timestamp: '2026-11-02T10:00:00.000Z',
+        message: { content: [{ type: 'tool_result', content: ' FAIL t.test.ts\n Tests  1 failed (1)' }] }
+      })
+    )
     const got: unknown[] = []
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
       got.push(await deps.transcriptRuns?.(), await deps.ciRuns?.())
@@ -635,10 +643,11 @@ describe('createWorldHost', () => {
     const ask = h.out.find((m) => m.kind === 'runs') as Extract<WorldHostResponse, { kind: 'runs' }>
     expect(ask).toMatchObject({ kind: 'runs', projectKey: 'k1', source: 'transcript' })
     await h.send({ kind: 'runs-result', id: 999, runs: [] }) // unknown id: ignored
-    await h.send({ kind: 'runs-result', id: ask.id, runs: [{ file: 't.test.ts', passed: false, at: 4, source: 'ci' }] })
+    // main sends file names (and a hostile non-jsonl path, which the host drops); the host reads and parses them
+    await h.send({ kind: 'runs-result', id: ask.id, runs: [], files: [file, '/etc/hosts'] })
     // the CI request is never answered: it times out as no runs
     await call
-    expect(got).toEqual([[{ file: 't.test.ts', passed: false, at: 4, source: 'transcript' }], []])
+    expect(got).toEqual([[{ file: 't.test.ts', passed: false, at: Date.parse('2026-11-02T10:00:00.000Z'), source: 'transcript' }], []])
     expect(h.out.filter((m) => m.kind === 'runs').map((m) => (m as { source: string }).source)).toEqual(['transcript', 'ci'])
   })
 

@@ -24,6 +24,7 @@ import { compileWorld, compileWorldStaged, createRecompileScheduler, type Compil
 import { snapshotFromFiles } from './fileSnapshot'
 import type { StageCache } from './stageCache'
 import type { TestRun } from './testStatus'
+import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { confinedReader, isCloneRoot } from './folderSafety'
 import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps } from './gitSource'
@@ -72,11 +73,15 @@ export interface WorldContextResultMsg {
   id: number
   evidence: Evidence[]
 }
-/** Main's answer to a `runs` request: test runs from agent transcripts or CI (empty when there are none). */
+/**
+ * Main's answer to a `runs` request: for `ci`, the test runs; for `transcript`, only the FILES to read (the host
+ * reads and parses them, so main never does). Empty when there are none.
+ */
 export interface WorldRunsResultMsg {
   kind: 'runs-result'
   id: number
   runs: TestRun[]
+  files?: string[]
 }
 export type WorldHostRequest = WorldInitMsg | WorldCallMsg | WorldLlmResultMsg | WorldContextResultMsg | WorldRunsResultMsg | WorldSettingsMsg
 
@@ -412,7 +417,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const llmWaiting = new Map<number, (text: string | null) => void>()
   let llmSeq = 0
   const contextWaiting = new Map<number, (evidence: Evidence[]) => void>()
-  const runsWaiting = new Map<number, (runs: unknown) => void>()
+  const runsWaiting = new Map<number, (msg: { runs?: unknown; files?: unknown }) => void>()
   /** cloneKey → the running clone and its abort controller: a repeat call joins it, cancel aborts it. */
   const clones = new Map<string, { ctl: AbortController; done: Promise<unknown> }>()
 
@@ -461,23 +466,32 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         post({ kind: 'context', id, projectKey, members })
       })
 
-  /** Asks main for test runs from `source`; no answer in time is no runs. */
-  const askRuns =
-    (projectKey: string, source: 'transcript' | 'ci') =>
-    (): Promise<TestRun[]> =>
-      new Promise((resolve) => {
-        const id = ++llmSeq
-        const timer = setTimeout(() => {
-          runsWaiting.delete(id)
-          resolve([])
-        }, runsTimeoutMs)
-        runsWaiting.set(id, (runs) => {
-          clearTimeout(timer)
-          runsWaiting.delete(id)
-          resolve(cleanRuns(runs, source))
-        })
-        post({ kind: 'runs', id, projectKey, source })
+  /** Asks main about test runs from `source`; no answer in time is an empty answer. */
+  const askRunsMain = (projectKey: string, source: 'transcript' | 'ci'): Promise<{ runs?: unknown; files?: unknown }> =>
+    new Promise((resolve) => {
+      const id = ++llmSeq
+      const timer = setTimeout(() => {
+        runsWaiting.delete(id)
+        resolve({})
+      }, runsTimeoutMs)
+      runsWaiting.set(id, (msg) => {
+        clearTimeout(timer)
+        runsWaiting.delete(id)
+        resolve(msg)
       })
+      post({ kind: 'runs', id, projectKey, source })
+    })
+  const askCi = (projectKey: string) => async (): Promise<TestRun[]> => cleanRuns((await askRunsMain(projectKey, 'ci')).runs, 'ci')
+  /** Main names the transcript files; this host reads the tail of each, parses it and yields between files. */
+  const transcriptCache = new Map<string, { at: number; runs: TestRun[] }>()
+  const askTranscripts = (projectKey: string, root: string) => async (): Promise<TestRun[]> => {
+    const hit = transcriptCache.get(projectKey)
+    if (hit && now() - hit.at < TRANSCRIPT_CACHE_MS) return hit.runs
+    const files = cleanTranscriptFiles((await askRunsMain(projectKey, 'transcript')).files)
+    const runs = await readTranscriptRuns(files, root, { now })
+    transcriptCache.set(projectKey, { at: now(), runs })
+    return runs
+  }
 
   /** A cloned repository is someone else's content: its reads never follow a link out of the clone. */
   const confinedTo = (root: string, read: (p: string) => Promise<string | null>): ((p: string) => Promise<string | null>) => {
@@ -524,7 +538,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       label,
       now,
       // A cloned repository's own transcripts and CI are not this machine's: no runs from main for it.
-      ...(cloned ? {} : { transcriptRuns: askRuns(projectKey, 'transcript'), ciRuns: askRuns(projectKey, 'ci') }),
+      ...(cloned ? {} : { transcriptRuns: askTranscripts(projectKey, root), ciRuns: askCi(projectKey) }),
       annotations: () => st.annotations.list(projectKey),
       onProgress: (stage, pct) => post({ kind: 'progress', projectKey, stage, pct })
     }
@@ -703,7 +717,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         return
       }
       if (msg.kind === 'runs-result') {
-        runsWaiting.get(msg.id)?.(msg.runs)
+        runsWaiting.get(msg.id)?.({ runs: msg.runs, files: msg.files })
         return
       }
       if (msg.kind === 'llm-result') {

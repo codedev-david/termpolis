@@ -18,6 +18,17 @@ describe('validateWorld', () => {
     if (r.ok) expect(r.doc.buildings).toHaveLength(2)
   })
 
+  it('runtimeHandSet is kept only as a list of strings', () => {
+    const kept = validateWorld({ ...fresh(), runtimeHandSet: ['b1'] })
+    expect(kept.ok && kept.doc.runtimeHandSet).toEqual(['b1'])
+    for (const junk of [5, 'b1', [1], {}]) {
+      const r = validateWorld({ ...fresh(), runtimeHandSet: junk })
+      expect(r.ok && 'runtimeHandSet' in r.doc).toBe(false)
+    }
+    const both = validateWorld({ ...fresh(), runtimeHandSet: 7, labelTokens: 'x' })
+    expect(both.ok && ('runtimeHandSet' in both.doc || 'labelTokens' in both.doc)).toBe(false)
+  })
+
   it('labelTokens is optional: absent loads, a number is kept, junk is dropped', () => {
     const none = validateWorld(fresh())
     expect(none.ok && 'labelTokens' in none.doc).toBe(false)

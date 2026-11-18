@@ -116,11 +116,13 @@ const isPerson = (c: Claim): boolean => c.evidence.some((e) => e.kind === 'perso
  */
 export function mergeAnnotations(doc: WorldDoc, byItem: Record<string, Claim[]>): WorldDoc {
   const runtimeNames: Record<string, string[]> = { ...doc.runtimeNames }
+  const handSet = new Set<string>()
   const merge = <T extends { id: string; claims: Claim[] }>(item: T): T => {
     const own = Object.prototype.hasOwnProperty.call(byItem, item.id) ? byItem[item.id] : []
     // A hand-edited runtime-names claim is the part's service names (an empty one clears them), never a note on its card.
     const edited = own.filter(isRuntime).slice(-1)[0]
     if (edited) {
+      handSet.add(item.id)
       const names = namesOfRuntimeText(edited.text)
       if (names.length > 0) runtimeNames[item.id] = names
       else delete runtimeNames[item.id]
@@ -129,7 +131,9 @@ export function mergeAnnotations(doc: WorldDoc, byItem: Record<string, Claim[]>)
   }
   const buildings = doc.buildings.map(merge)
   const edges = doc.edges.map(merge)
-  return { ...doc, buildings, edges, runtimeNames }
+  const base: WorldDoc = { ...doc }
+  delete base.runtimeHandSet
+  return { ...base, buildings, edges, runtimeNames, ...(handSet.size > 0 ? { runtimeHandSet: [...handSet].sort() } : {}) }
 }
 
 /** Whether `id` names a building or an edge of the doc (the parts a person can annotate). */

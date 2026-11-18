@@ -50,6 +50,21 @@ describe('WorldCard', () => {
     expect(screen.queryByTestId('world-card-names')).toBeNull()
   })
 
+  it('saving the names exactly as shown stores nothing; the help text says an empty save clears them', () => {
+    const onRuntimeNames = vi.fn()
+    const html = '<button data-runtime-edit="b1" data-names="a, b">Edit</button>'
+    render(<WorldCard html={html} onOpen={vi.fn()} onClose={vi.fn()} {...noop} onRuntimeNames={onRuntimeNames} />)
+    fireEvent.click(screen.getByText('Edit'))
+    expect(screen.getByTestId('world-card-names')).toHaveTextContent(/Leave it empty and save to clear/)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onRuntimeNames).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('world-card-names')).toBeNull()
+    fireEvent.click(screen.getByText('Edit'))
+    fireEvent.change(screen.getByLabelText(/Service names/), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(onRuntimeNames).toHaveBeenCalledWith('b1', [])
+  })
+
   it('without a save handler the Edit button does nothing', () => {
     render(<WorldCard html={'<button data-runtime-edit="b1">Edit</button>'} onOpen={vi.fn()} onClose={vi.fn()} {...noop} />)
     fireEvent.click(screen.getByText('Edit'))

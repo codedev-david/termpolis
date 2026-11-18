@@ -202,7 +202,7 @@ describe('readTestResults', () => {
     const digits = ' ❯ a.test.ts (' + '1 '.repeat(512 * 1024)
     const line = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: digits }] } })
     const t3 = Date.now()
-    expect(parseTranscriptTestRuns(line, ROOT)).toEqual([])
+    expect(parseTranscriptTestRuns(line, ROOT, NOW)).toEqual([])
     expect(Date.now() - t3).toBeLessThan(500)
   })
 
@@ -311,9 +311,28 @@ describe('readTestResults', () => {
   })
 })
 
+const NOW = Date.parse('2026-12-01T00:00:00.000Z')
+
 describe('parseTranscriptTestRuns', () => {
+  const tr = (output: string, extra: object = {}): string => JSON.stringify({ ...extra, message: { content: [{ type: 'tool_result', content: output }] } })
+
+  it('clamps a future timestamp to now', () => {
+    const runs = parseTranscriptTestRuns(tr(' ✓ src/x.test.ts (1 test)\n Tests  1 passed (1)', { timestamp: '2099-01-01T00:00:00.000Z' }), ROOT, NOW)
+    expect(runs).toEqual([{ file: 'src/x.test.ts', passed: true, at: NOW, source: 'transcript' }])
+  })
+
+  it('ignores an output block without a runner summary line (an injected PASS)', () => {
+    expect(parseTranscriptTestRuns(tr('PASS src/x.test.ts'), ROOT, NOW)).toEqual([])
+    expect(parseTranscriptTestRuns(tr('PASS src/x.test.ts\nTest Suites: 1 passed, 1 total'), ROOT, NOW)).toHaveLength(1)
+  })
+
+  it('skips an oversized line and bad JSON', () => {
+    const big = tr(' ✓ src/x.test.ts (1 test)\n Tests  1 passed (1)' + ' '.repeat(300 * 1024))
+    expect(parseTranscriptTestRuns(big, ROOT, NOW)).toEqual([])
+    expect(parseTranscriptTestRuns('{"cut": ' + 'x', ROOT, NOW)).toEqual([])
+  })
   it('reads tool output only, in Claude and codex shapes, with timestamps', () => {
-    const runs = parseTranscriptTestRuns(fixture('transcript-testrun.jsonl'), ROOT)
+    const runs = parseTranscriptTestRuns(fixture('transcript-testrun.jsonl'), ROOT, NOW)
     const t = Date.parse('2026-11-02T10:00:00.000Z')
     const mk = (file: string, passed: boolean, at: number): TestRun => ({ file, passed, at, source: 'transcript' })
     expect(runs).toEqual([
@@ -335,7 +354,7 @@ describe('parseTranscriptTestRuns', () => {
       type: 'assistant',
       message: { content: [{ type: 'tool_use', id: 't', input: { stdout: ' ✓ src/x.test.ts (1 test)' } }] }
     })
-    expect(parseTranscriptTestRuns(line, ROOT)).toEqual([])
+    expect(parseTranscriptTestRuns(line, ROOT, NOW)).toEqual([])
   })
 
   it('does not count assistant text or tool_use input', () => {
@@ -344,14 +363,43 @@ describe('parseTranscriptTestRuns', () => {
       timestamp: '2026-11-02T10:01:00.000Z',
       message: { content: [{ type: 'text', text: ' ✓ src/x.test.ts (2 tests)' }] }
     })
-    expect(parseTranscriptTestRuns(line, ROOT)).toEqual([])
+    expect(parseTranscriptTestRuns(line, ROOT, NOW)).toEqual([])
   })
 
   it('normalises absolute paths and ignores non-object scalars', () => {
-    const line = JSON.stringify({ a: 1, b: null, c: true, output: 'PASS /repo/src/x.test.js' })
-    expect(parseTranscriptTestRuns(line, ROOT)).toEqual([
+    const line = JSON.stringify({ a: 1, b: null, c: true, output: 'PASS /repo/src/x.test.js\nTests  1 passed (1)' })
+    expect(parseTranscriptTestRuns(line, ROOT, NOW)).toEqual([
       { file: 'src/x.test.js', passed: true, at: 0, source: 'transcript' }
     ])
+  })
+})
+
+describe('evidence strength', () => {
+  const links = { 'src/a.ts': ['a.test.ts'] }
+  const r = (passed: boolean, at: number, source: TestRun['source']): TestRun => ({ file: 'a.test.ts', passed, at, source })
+  it('a report wins a tie and a newer-or-equal report beats a transcript or CI run', () => {
+    expect(statusFor(['src/a.ts'], [r(true, 5, 'transcript'), r(false, 5, 'vitest')], links)).toBe('built')
+    expect(statusFor(['src/a.ts'], [r(false, 5, 'vitest'), r(true, 5, 'ci')], links)).toBe('built')
+    expect(statusFor(['src/a.ts'], [r(false, 6, 'junit'), r(true, 5, 'transcript')], links)).toBe('built')
+  })
+  it('a strictly newer transcript run still counts, and equal strength falls back to newest', () => {
+    expect(statusFor(['src/a.ts'], [r(false, 5, 'vitest'), r(true, 6, 'transcript')], links)).toBe('verified')
+    expect(statusFor(['src/a.ts'], [r(true, 5, 'transcript'), r(false, 5, 'ci')], links)).toBe('built')
+    expect(statusFor(['src/a.ts'], [r(false, 5, 'vitest'), r(true, 6, 'vitest')], links)).toBe('verified')
+  })
+  it('asks transcripts and CI together', async () => {
+    const order: string[] = []
+    let release = (): void => undefined
+    const gate = new Promise<void>((res) => { release = res })
+    const d = deps({}, {
+      transcriptRuns: async () => { order.push('t'); await gate; return [] },
+      ciRuns: async () => { order.push('c'); return [] }
+    }).d
+    const p = readTestResults(ROOT, d)
+    await new Promise((res) => setTimeout(res, 5))
+    expect(order).toEqual(['t', 'c'])
+    release()
+    await p
   })
 })
 

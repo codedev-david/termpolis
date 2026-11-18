@@ -92,14 +92,16 @@ const CARD_CSS = `
 
 export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence, onRuntimeNames, boxRef, maxHeight = null }: WorldCardProps): JSX.Element {
   // The service-names editor: the part it edits and what is typed. A new card (another part, or the saved one) closes it.
-  const [edit, setEdit] = useState<{ id: string; text: string; error: boolean } | null>(null)
+  const [edit, setEdit] = useState<{ id: string; text: string; was: string; error: boolean } | null>(null)
   useEffect(() => setEdit(null), [html])
   const save = (e: FormEvent): void => {
     e.preventDefault()
-    const typed = (edit as { id: string; text: string }).text.split(',').map((n) => n.trim()).filter((n) => n !== '')
+    const typed = (edit as { id: string; text: string; was: string }).text.split(',').map((n) => n.trim()).filter((n) => n !== '')
     const names = cleanRuntimeNames(typed)
-    if (names.length !== typed.length) { setEdit({ ...(edit as { id: string; text: string }), error: true }); return }
-    onRuntimeNames?.((edit as { id: string }).id, names)
+    if (names.length !== typed.length) { setEdit({ ...(edit as { id: string; text: string; was: string }), error: true }); return }
+    // Saving the names as they were shown would freeze today's detected names as hand-set ones: nothing is stored.
+    const before = cleanRuntimeNames((edit as { was: string }).was.split(',').map((n) => n.trim()).filter((n) => n !== ''))
+    if (names.join(',') !== before.join(',')) onRuntimeNames?.((edit as { id: string }).id, names)
     setEdit(null)
   }
   const onClick = (e: MouseEvent<HTMLDivElement>): void => {
@@ -109,7 +111,10 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
     const rename = target.closest('[data-runtime-edit]')
     if (rename) {
       e.preventDefault()
-      if (onRuntimeNames) setEdit({ id: rename.getAttribute('data-runtime-edit') as string, text: rename.getAttribute('data-names') ?? '', error: false })
+      if (onRuntimeNames) {
+        const shown = rename.getAttribute('data-names') ?? ''
+        setEdit({ id: rename.getAttribute('data-runtime-edit') as string, text: shown, was: shown, error: false })
+      }
       return
     }
     const confirm = target.closest('[data-confirm]')
@@ -162,6 +167,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
         <form className="world-card-names" data-testid="world-card-names" onSubmit={save}>
           <label htmlFor="world-card-names-input">Service names (up to {MAX_RUNTIME_NAMES}, separated by commas)</label>
           <input id="world-card-names-input" autoFocus value={edit.text} onChange={(e) => setEdit({ ...edit, text: e.target.value, error: false })} />
+          <p className="world-card-names-help">Leave it empty and save to clear this part's service names, including the ones Lumopolis found in the code. Names you save replace the detected ones.</p>
           {edit.error && <p role="alert">Use only letters, digits, dots, dashes and underscores, up to {MAX_RUNTIME_NAMES} names.</p>}
           <button type="submit">Save</button>
           <button type="button" onClick={() => setEdit(null)}>Cancel</button>

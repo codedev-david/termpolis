@@ -219,5 +219,10 @@ describe('runtime-names claims', () => {
     expect(mergeAnnotations(m, { b1: [person('n'), rt('hand-1,hand-2')], b2: [rt('')], e1: [rt('edge-x')] })).toEqual(m)
     expect(d.runtimeNames.b1).toEqual(['from-otel'])
     expect(mergeAnnotations(doc(), {}).runtimeNames).toEqual({})
+    // hand-set parts are marked (sorted), an unedited doc has no marker, and a stale marker is dropped
+    expect(m.runtimeHandSet).toEqual([...(m.runtimeHandSet ?? [])].sort())
+    expect(m.runtimeHandSet?.length).toBeGreaterThan(0)
+    expect('runtimeHandSet' in mergeAnnotations(doc(), {})).toBe(false)
+    expect('runtimeHandSet' in mergeAnnotations({ ...doc(), runtimeHandSet: ['old'] }, {})).toBe(false)
   })
 })

@@ -1,8 +1,8 @@
-{"type": "user", "timestamp": "2026-11-02T10:00:00.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "\u001b[32m ✓ \u001b[39m src/main/a.test.ts (4 tests) 12ms\n ❯ src/main/b.test.ts (3 tests | 1 failed) 9ms\n × src/main/c.test.ts\nPASS src/main/d.test.ts (2 s)\nFAIL src/main/e.test.ts\n ✓ src/main/notatest.ts (1 test)\n × just a name\n ✓ |unit| src/main/h.test.mts (2 tests) 3ms"}]}}
-{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": [{"type": "text", "text": "PASS src/main/g.spec.tsx"}]}]}}
+{"type": "user", "timestamp": "2026-11-02T10:00:00.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "\u001b[32m ✓ \u001b[39m src/main/a.test.ts (4 tests) 12ms\n ❯ src/main/b.test.ts (3 tests | 1 failed) 9ms\n × src/main/c.test.ts\nPASS src/main/d.test.ts (2 s)\nFAIL src/main/e.test.ts\n ✓ src/main/notatest.ts (1 test)\n × just a name\n ✓ |unit| src/main/h.test.mts (2 tests) 3ms\n Test Files  1 passed (1)"}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": [{"type": "text", "text": "PASS src/main/g.spec.tsx\n Test Files  1 passed (1)"}]}]}}
 {"type": "assistant", "timestamp": "2026-11-02T10:01:00.000Z", "message": {"content": [{"type": "text", "text": " ✓ src/main/x.test.ts (2 tests)"}, {"type": "tool_use", "id": "t3", "input": {"command": "echo ' ✓ src/main/y.test.ts (1 test)'"}}]}}
-{"type": "item.completed", "item": {"aggregated_output": " ✓ src/main/f.test.mjs (1 test)", "exit_code": 0, "n": 5, "ok": null}}
-{"stdout": "FAIL src/main/i.test.cts", "output": " ✗ src/main/j.test.js"}
+{"type": "item.completed", "item": {"aggregated_output": " ✓ src/main/f.test.mjs (1 test)\n Test Files  1 passed (1)", "exit_code": 0, "n": 5, "ok": null}}
+{"stdout": "FAIL src/main/i.test.cts\n Test Files  1 passed (1)", "output": " ✗ src/main/j.test.js\n Test Files  1 passed (1)"}
 this is not json
 
 "a bare string line"

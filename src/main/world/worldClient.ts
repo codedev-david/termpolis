@@ -36,8 +36,8 @@ export interface WorldClientOptions {
   /** Evidence about a building's files (commit subjects, docs lines, memory decisions) for labelling, for the project at
    *  `root`. Absent, or throwing: labelling uses file excerpts alone. */
   context?: (root: string, members: string[]) => Promise<Evidence[]>
-  /** Test runs from the agent transcripts of the project at `root`. Absent, or throwing: none. */
-  transcriptRuns?: (root: string) => Promise<TestRun[]>
+  /** The agent transcript files of the project at `root` (at most the 20 newest). The world host reads and parses them, never main. Absent, or throwing: none. */
+  transcriptFiles?: (root: string) => Promise<string[]>
   /** The newest CI conclusion of the project at `root`, as runs of the files the commit changed. Absent, or throwing: none. */
   ciRuns?: (root: string) => Promise<TestRun[]>
   /** The repository revision stamped on a world. Default: `{ head: '', dirty: false }`. */
@@ -188,18 +188,24 @@ export function createWorldClient(
 
   const answerRuns = async (tr: WorldHostTransport, id: number, projectKey: string, source: unknown): Promise<void> => {
     let runs: TestRun[] = []
+    let files: string[] = []
     const root = roots.get(projectKey)
-    const ask = source === 'ci' ? opts.ciRuns : source === 'transcript' ? opts.transcriptRuns : undefined
-    if (ask && root !== undefined) {
+    if (root !== undefined) {
       try {
-        const r = await ask(root)
-        runs = Array.isArray(r) ? r : []
+        if (source === 'ci' && opts.ciRuns) {
+          const r = await opts.ciRuns(root)
+          runs = Array.isArray(r) ? r : []
+        } else if (source === 'transcript' && opts.transcriptFiles) {
+          const f = await opts.transcriptFiles(root)
+          files = Array.isArray(f) ? f : []
+        }
       } catch {
         runs = []
+        files = []
       }
     }
     try {
-      tr.postMessage({ kind: 'runs-result', id, runs })
+      tr.postMessage({ kind: 'runs-result', id, runs, files })
     } catch {
       // the host went away while main looked; its exit already failed the compile
     }

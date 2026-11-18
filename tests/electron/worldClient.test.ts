@@ -359,13 +359,13 @@ describe('createWorldClient', () => {
   })
 
   it('worldClient answers runs requests from the transcript and CI hooks, and an absent or failing hook gives none', async () => {
-    const run = { file: 'a.test.ts', passed: true, at: 1, source: 'transcript' as const }
-    const transcriptRuns = vi.fn(async (_root: string) => [run])
+    const run = { file: 'a.test.ts', passed: true, at: 1, source: 'ci' as const }
+    const transcriptFiles = vi.fn(async (_root: string) => ['a.jsonl'])
     const ciRuns = vi.fn(async (root: string): Promise<(typeof run)[]> => {
       if (ciRuns.mock.calls.length === 1) throw new Error('gh down')
       return 5 as never
     })
-    const { client, spawned } = setup({ transcriptRuns, ciRuns })
+    const { client, spawned } = setup({ transcriptFiles, ciRuns })
     await client.compile(ROOT)
     const t = spawned[0]
     t.emit({ kind: 'runs', id: 1, projectKey: KEY, source: 'transcript' })
@@ -377,19 +377,33 @@ describe('createWorldClient', () => {
     await vi.waitFor(() => expect(t.posted.filter((m) => m.kind === 'runs-result')).toHaveLength(5))
     expect(t.posted.filter((m) => m.kind === 'runs-result')).toEqual(
       expect.arrayContaining([
-        { kind: 'runs-result', id: 1, runs: [run] },
-        { kind: 'runs-result', id: 2, runs: [] },
-        { kind: 'runs-result', id: 3, runs: [] },
-        { kind: 'runs-result', id: 4, runs: [] },
-        { kind: 'runs-result', id: 5, runs: [] }
+        { kind: 'runs-result', id: 1, runs: [], files: ['a.jsonl'] },
+        { kind: 'runs-result', id: 2, runs: [], files: [] },
+        { kind: 'runs-result', id: 3, runs: [], files: [] },
+        { kind: 'runs-result', id: 4, runs: [], files: [] },
+        { kind: 'runs-result', id: 5, runs: [], files: [] }
       ])
     )
-    expect(transcriptRuns).toHaveBeenCalledWith(ROOT)
+    expect(transcriptFiles).toHaveBeenCalledWith(ROOT)
+    // a CI answer that is a list is passed on
+    const ok = setup({ ciRuns: async () => [run] })
+    await ok.client.compile(ROOT)
+    ok.spawned[0].emit({ kind: 'runs', id: 6, projectKey: KEY, source: 'ci' })
+    await vi.waitFor(() => expect(ok.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 6, runs: [run], files: [] }))
+    // a transcript hook that fails, or answers with a non-list, names no files
+    const bad = setup({ transcriptFiles: async () => 5 as never })
+    await bad.client.compile(ROOT)
+    bad.spawned[0].emit({ kind: 'runs', id: 9, projectKey: KEY, source: 'transcript' })
+    await vi.waitFor(() => expect(bad.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 9, runs: [], files: [] }))
+    const thrown = setup({ transcriptFiles: async () => { throw new Error('x') } })
+    await thrown.client.compile(ROOT)
+    thrown.spawned[0].emit({ kind: 'runs', id: 10, projectKey: KEY, source: 'transcript' })
+    await vi.waitFor(() => expect(thrown.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 10, runs: [], files: [] }))
 
     const plain = setup()
     await plain.client.compile(ROOT)
     plain.spawned[0].emit({ kind: 'runs', id: 7, projectKey: KEY, source: 'ci' })
-    await vi.waitFor(() => expect(plain.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 7, runs: [] }))
+    await vi.waitFor(() => expect(plain.spawned[0].posted).toContainEqual({ kind: 'runs-result', id: 7, runs: [], files: [] }))
 
     // a host that died while main looked: the answer is dropped quietly
     t.throwOnPost = true

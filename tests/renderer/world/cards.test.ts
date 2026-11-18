@@ -37,6 +37,9 @@ describe('cards', () => {
     expect(html).toContain('Service names')
     expect(html).toContain('<span class="rtnames">orders-api, db</span>')
     expect(html).toContain('data-names="orders-api, db"')
+    expect(html).not.toContain('edited by you')
+    doc.runtimeHandSet = ['b1']
+    expect(buildingCard(doc, 'b1')).toContain('edited by you')
     const planned = { ...doc.buildings[0], id: 'p1' }
     doc.layers.plan = [{ id: 'x', title: 'X', summary: [], buildings: [planned], edges: [] }]
     expect(buildingCard(doc, 'p1')).not.toContain('Service names')

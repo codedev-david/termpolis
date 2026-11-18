@@ -49,6 +49,8 @@ export interface WorldDoc {
   tours: Tour[]
   layout: { seed: number; positions: Record<string, [number, number, number]> }
   runtimeNames: Record<string, string[]>             // §5.11 hook
+  /** Ids of the parts whose service names a person set by hand (they replace the detected ones). Absent when none. */
+  runtimeHandSet?: string[]
   layers: { plan: Proposal[]; live?: unknown }       // plan authoring arrives in 2.x; live in §5.11
   /** Estimated tokens the last labelling run spent on model calls (cached replies cost none). Absent on older worlds. */
   labelTokens?: number

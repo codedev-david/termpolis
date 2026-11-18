@@ -1189,6 +1189,17 @@ describe('WorldView card actions', () => {
     expect(screen.getByRole('status')).toHaveTextContent("Couldn't save the service names: boom")
   })
 
+  it('Confirm on an inferred claim that reads as service names saves nothing and points to Edit', async () => {
+    const doc = infer()
+    doc.buildings[0].how[0].text = 'runtime:a,b'
+    const worldAnnotate = vi.fn()
+    await open(doc, { worldAnnotate })
+    fireEvent.click(screen.getByTestId('world-card').querySelector('[data-confirm="b1|0"]') as Element)
+    await settle()
+    expect(worldAnnotate).not.toHaveBeenCalled()
+    expect(screen.getByRole('status')).toHaveTextContent('Use Edit on the Service names line')
+  })
+
   it('service names saved after the pane closed change nothing and do not throw', async () => {
     const late = deferred<Res<WorldDoc>>()
     const late2 = deferred<Res<WorldDoc>>()
@@ -1196,6 +1207,7 @@ describe('WorldView card actions', () => {
     await open(infer(), { worldAnnotate })
     for (let i = 0; i < 2; i++) {
       fireEvent.click(screen.getByTestId('world-card').querySelector('[data-runtime-edit="b1"]') as Element)
+      fireEvent.change(screen.getByLabelText(/Service names/), { target: { value: `late${i}` } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     }
     cleanup()

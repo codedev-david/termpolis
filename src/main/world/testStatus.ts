@@ -214,9 +214,16 @@ const LINE_RULES: Array<[RegExp, boolean]> = [
   [/^\s*FAIL\s+(\S+)/, false]
 ]
 const MAX_LINE = 2000
+/** A transcript line longer than this is skipped unparsed (the tail read is capped, so a longer one is cut or hostile). */
+const MAX_JSON_LINE = 256 * 1024
+/** A vitest or jest summary line: the proof that a block of output is a test run's report, not text that mimics one. */
+const SUMMARY = /^\s*(?:Test Files\s+\d|Tests\s+\d|Test Suites:\s+\d|Tests:\s+\d)/m
 const OUTPUT_KEYS = new Set(['output', 'stdout', 'aggregated_output'])
 
 function scanText(text: string, at: number, root: string, out: TestRun[]): void {
+  // Transcript output is whatever a command printed (a cat, a fetch, an echo): only a block that also carries a
+  // test runner's summary line counts, so a lone `PASS x.test.ts` someone typed proves nothing.
+  if (!SUMMARY.test(text.replace(ANSI, ''))) return
   for (const raw of text.split('\n')) {
     const line = raw.slice(0, MAX_LINE).replace(ANSI, '')
     for (const [re, passed] of LINE_RULES) {
@@ -246,9 +253,11 @@ function walk(v: unknown, at: number, root: string, out: TestRun[], on: boolean)
   }
 }
 
-export function parseTranscriptTestRuns(jsonl: string, root: string): TestRun[] {
+/** `now` caps every timestamp: a transcript that claims the future does not outrank a real run. */
+export function parseTranscriptTestRuns(jsonl: string, root: string, now: number): TestRun[] {
   const out: TestRun[] = []
   for (const line of jsonl.split('\n')) {
+    if (line.length > MAX_JSON_LINE) continue
     let obj: unknown
     try {
       obj = JSON.parse(line)
@@ -257,7 +266,7 @@ export function parseTranscriptTestRuns(jsonl: string, root: string): TestRun[] 
     }
     const stamp = (obj as { timestamp?: unknown } | null)?.timestamp
     const parsed = typeof stamp === 'string' ? Date.parse(stamp) : NaN
-    walk(obj, Number.isNaN(parsed) ? 0 : parsed, root, out, false)
+    walk(obj, Number.isNaN(parsed) ? 0 : Math.min(parsed, now), root, out, false)
   }
   return out
 }
@@ -285,22 +294,29 @@ export async function readTestResults(root: string, deps: TestResultDeps): Promi
       // unreadable or malformed: skipped silently
     }
   }
-  try {
-    runs.push(...((await deps.transcriptRuns?.()) ?? []))
-  } catch {
-    // transcripts unavailable: no runs
-  }
-  try {
-    runs.push(...((await deps.ciRuns?.()) ?? []))
-  } catch {
-    // CI unavailable: no runs
-  }
+  // Both ask main, so they are asked together: a slow answer costs its own wait, not the sum.
+  const [transcript, ci] = await Promise.all([
+    Promise.resolve().then(() => deps.transcriptRuns?.() ?? []).catch((): TestRun[] => []),
+    Promise.resolve().then(() => deps.ciRuns?.() ?? []).catch((): TestRun[] => [])
+  ])
+  runs.push(...transcript, ...ci)
   return runs
 }
 
 // ---- status ---------------------------------------------------------------
 
-/** The newest run of each test file linked to the members (a tie goes to the failing one), by file. */
+/** Transcripts and CI are weaker evidence than a report on disk: a report as new as them wins. */
+const weak = (r: TestRun): boolean => r.source === 'transcript' || r.source === 'ci'
+
+/** True when `r` replaces `cur`: newer wins; a tie goes to a report over a transcript or CI run, then to the failing one. */
+function replaces(r: TestRun, cur: TestRun): boolean {
+  const rw = weak(r)
+  const cw = weak(cur)
+  if (rw !== cw) return rw ? r.at > cur.at : r.at >= cur.at
+  return r.at > cur.at || (r.at === cur.at && !r.passed)
+}
+
+/** The newest run of each test file linked to the members, by file (see `replaces`). */
 function latestRuns(members: string[], runs: TestRun[], testsByMember: Record<string, string[]>): Map<string, TestRun> {
   const linked = new Set<string>()
   for (const m of members) for (const t of testsByMember[m] ?? []) linked.add(t)
@@ -308,7 +324,7 @@ function latestRuns(members: string[], runs: TestRun[], testsByMember: Record<st
   for (const r of runs) {
     if (!linked.has(r.file)) continue
     const cur = latest.get(r.file)
-    if (!cur || r.at > cur.at || (r.at === cur.at && !r.passed)) latest.set(r.file, r)
+    if (!cur || replaces(r, cur)) latest.set(r.file, r)
   }
   return latest
 }
