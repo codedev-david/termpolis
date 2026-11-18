@@ -511,6 +511,11 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     const hint = kind === 'building' || kind === 'edge' || kind === 'district' || kind === 'tech' ? kind : undefined
     if (id) void select(id, reduced, hint)
   }
+  // The second press of a double-click would select the nearest page text (the legend's heading): the
+  // 3D view, and the names drawn over it, have no text to select. A first press keeps its default.
+  const onMouseDown = (e: MouseEvent): void => {
+    if (e.detail > 1) e.preventDefault()
+  }
   const onKeyDown = (e: KeyboardEvent): void => {
     if (e.key !== 'Escape') return
     cancelActions()
@@ -528,6 +533,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     canvas.addEventListener('dblclick', onDblClick)
     canvas.addEventListener('pointermove', onPointerMove)
     canvas.addEventListener('pointerleave', onPointerLeave)
+    container.addEventListener('mousedown', onMouseDown)
   }
   container.addEventListener('click', onFallbackClick)
   container.addEventListener('keydown', onKeyDown)
@@ -731,6 +737,7 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
         canvas.removeEventListener('dblclick', onDblClick)
         canvas.removeEventListener('pointermove', onPointerMove)
         canvas.removeEventListener('pointerleave', onPointerLeave)
+        container.removeEventListener('mousedown', onMouseDown)
       }
       container.removeEventListener('click', onFallbackClick)
       container.removeEventListener('keydown', onKeyDown)

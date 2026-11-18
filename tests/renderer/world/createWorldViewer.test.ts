@@ -497,6 +497,26 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(lastCard()).toBeNull()
   })
 
+  it('a double-click on the 3D view, or on a name drawn over it, never selects page text; a first press and the 2D list keep the default (film bug 5)', () => {
+    const { r, host, viewer } = setup3d()
+    const press = (target: EventTarget, detail: number): boolean =>
+      target.dispatchEvent(new MouseEvent('mousedown', { detail, bubbles: true, cancelable: true }))
+    expect(press(r.canvas, 1)).toBe(true) // a first press: focus and dragging work as ever
+    expect(press(r.canvas, 2)).toBe(false) // the second press of a double-click selects no words
+    const label = document.createElement('div')
+    host.appendChild(label)
+    expect(press(label, 3)).toBe(false)
+    viewer.dispose()
+    expect(press(r.canvas, 2)).toBe(true)
+    // The 2D list is text: a double-click there may select a word.
+    getContext.mockReturnValue(null)
+    const flatHost = document.createElement('div')
+    document.body.appendChild(flatHost)
+    const flat = createWorldViewer(flatHost)
+    flat.load(rich())
+    expect(press(flatHost.querySelector('section.world-fallback') as Element, 2)).toBe(true)
+  })
+
   it('ignores a click that ends a drag', () => {
     const { aim, at, sels } = setup3d()
     aim({ kind: 'node', id: 'b1' })
