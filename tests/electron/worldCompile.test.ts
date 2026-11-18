@@ -731,7 +731,7 @@ describe('claims, name states and annotations', () => {
     const doc = await compileFixture()
     const byId = new Map(doc.buildings.map((b) => [b.id, b]))
     expect(byId.get(VIEW)?.claims).toEqual([
-      { text: 'Its 1 linked tests passed', state: 'verified', evidence: [{ kind: 'test', ref: 'src/renderer/view.test.ts' }] }
+      { text: 'Its 1 linked tests passed', state: 'verified', evidence: [{ kind: 'test', ref: 'src/renderer/view.test.ts', excerpt: 'from a test report' }] }
     ])
     expect(byId.get(MAIN)?.claims).toEqual([])
   })

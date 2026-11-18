@@ -2,7 +2,7 @@
 // cards.ts), gathered by the same helpers (shared/world/cardFacts.ts, edgeText.ts), with each claim
 // followed by its state in brackets and the evidence behind it on the next line.
 import { NOT_IN_DESIGN } from '../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT, allBuildings, allEdges, nodeName, notInDesign, runsIn } from '../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT, allBuildings, allEdges, evidenceText, nodeName, notInDesign, runsIn } from '../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../shared/world/edgeText'
 import type { Claim, WorldDoc, WorldEdge } from '../../shared/world/types'
 
@@ -12,7 +12,7 @@ const section = (title: string, lines: string[]): string[] => ['', `${title}:`, 
 function claimLines(list: Claim[]): string[] {
   if (list.length === 0) return ['Not described yet.']
   return list.flatMap((c) => {
-    const ev = c.evidence.map((e) => `${e.kind} ${e.ref}`).join('; ')
+    const ev = c.evidence.map(evidenceText).join('; ')
     return [`- ${c.text} [${c.state}]`, ...(ev ? [`  evidence: ${ev}`] : [])]
   })
 }

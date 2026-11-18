@@ -8,11 +8,14 @@ import { CARD_INSET_PX, CARD_WIDTH_PX } from './worldPane'
 
 const EVIDENCE_KINDS = ['file', 'symbol', 'test', 'transcriptStep', 'memory', 'commit', 'trace', 'metric', 'log', 'deploy', 'person']
 
-/** The evidence a button carries, or null when its value does not parse or is not {kind, ref}. */
+/** The evidence a button carries, or null when its value does not parse or is not {kind, ref}. A string excerpt (a
+ *  test's source) is kept; anything else in it is dropped. */
 function readEvidence(raw: string | null): Evidence | null {
   try {
-    const v = JSON.parse(raw as string) as { kind?: unknown; ref?: unknown } | null
-    return v && EVIDENCE_KINDS.includes(v.kind as string) && typeof v.ref === 'string' ? (v as Evidence) : null
+    const v = JSON.parse(raw as string) as { kind?: unknown; ref?: unknown; excerpt?: unknown } | null
+    if (!v || !EVIDENCE_KINDS.includes(v.kind as string) || typeof v.ref !== 'string') return null
+    const e: Evidence = { kind: v.kind as Evidence['kind'], ref: v.ref }
+    return typeof v.excerpt === 'string' ? { ...e, excerpt: v.excerpt } : e
   } catch {
     return null
   }

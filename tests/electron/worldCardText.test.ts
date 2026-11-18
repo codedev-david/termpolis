@@ -25,6 +25,26 @@ describe('cardText', () => {
     expect(cardText(doc, 'b1')).toContain('What we know:\n- seen in code [observed]\n  evidence: file a/b.ts')
   })
 
+  it('says where a test result came from, in the text and the HTML card alike; other evidence shows no excerpt', () => {
+    const doc = rich()
+    doc.buildings[0].claims = [
+      {
+        text: 'Its 2 linked tests passed (agent transcript)',
+        state: 'verified',
+        evidence: [
+          { kind: 'test', ref: 't/a.test.ts', excerpt: 'from an agent transcript' },
+          { kind: 'commit', ref: 'abc123', excerpt: 'a long commit subject' }
+        ]
+      }
+    ]
+    const text = cardText(doc, 'b1')
+    expect(text).toContain('- Its 2 linked tests passed (agent transcript) [verified]\n  evidence: test t/a.test.ts (from an agent transcript); commit abc123')
+    expect(text).not.toContain('a long commit subject')
+    const html = buildingCard(doc, 'b1')
+    expect(html).toContain('data-evidence="{&quot;kind&quot;:&quot;test&quot;,&quot;ref&quot;:&quot;t/a.test.ts&quot;,&quot;excerpt&quot;:&quot;from an agent transcript&quot;}"')
+    expect(html).toContain('data-evidence="{&quot;kind&quot;:&quot;commit&quot;,&quot;ref&quot;:&quot;abc123&quot;}"')
+  })
+
   it('states the building facts the HTML card shows', () => {
     const doc = minimal()
     const text = cardText(doc, 'b1')

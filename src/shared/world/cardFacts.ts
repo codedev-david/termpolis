@@ -1,12 +1,17 @@
 // The facts both Lumopolis cards state, gathered once: the HTML card (renderer engine cards.ts) and the
 // plain-text card an agent reads (main cardText.ts) import these, so the two cannot say different things.
 // Pure and ES2020.
-import type { Building, WorldDoc, WorldEdge } from './types'
+import type { Building, Evidence, WorldDoc, WorldEdge } from './types'
 
 /** The status pill of a building, in words. */
 export const BUILD_STATUS_TEXT: Record<Building['status'], string> = {
   verified: 'Built · tests pass', built: 'Built · not yet checked', gap: 'Built · no test results yet', proposed: 'Planned only',
 }
+
+/** One piece of evidence in words: its kind and where it points, and for a test where its result came from (a test
+ *  report, an agent transcript or CI), so a pass read off a transcript never looks like one from a report. */
+export const evidenceText = (e: Evidence): string =>
+  e.kind === 'test' && typeof e.excerpt === 'string' && e.excerpt !== '' ? `${e.kind} ${e.ref} (${e.excerpt})` : `${e.kind} ${e.ref}`
 
 /** The built buildings and those of every proposal. */
 export const allBuildings = (doc: WorldDoc): Building[] => [...doc.buildings, ...doc.layers.plan.flatMap((p) => p.buildings)]

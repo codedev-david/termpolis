@@ -27,6 +27,18 @@ describe('WorldCard', () => {
     expect(onEvidence).toHaveBeenCalledWith({ kind: 'file', ref: 'a.ts:3' })
   })
 
+  it("an evidence button keeps a test's source, and drops anything else it carries", () => {
+    const onEvidence = vi.fn()
+    const html =
+      '<button data-evidence="{&quot;kind&quot;:&quot;test&quot;,&quot;ref&quot;:&quot;t.test.ts&quot;,&quot;excerpt&quot;:&quot;from CI (gh)&quot;,&quot;x&quot;:1}">one</button>' +
+      '<button data-evidence="{&quot;kind&quot;:&quot;test&quot;,&quot;ref&quot;:&quot;u.test.ts&quot;,&quot;excerpt&quot;:5}">two</button>'
+    render(<WorldCard html={html} onOpen={vi.fn()} onClose={vi.fn()} onTech={vi.fn()} onConfirm={vi.fn()} onEvidence={onEvidence} />)
+    fireEvent.click(screen.getByText('one'))
+    expect(onEvidence).toHaveBeenLastCalledWith({ kind: 'test', ref: 't.test.ts', excerpt: 'from CI (gh)' })
+    fireEvent.click(screen.getByText('two'))
+    expect(onEvidence).toHaveBeenLastCalledWith({ kind: 'test', ref: 'u.test.ts' })
+  })
+
   it('the card Edit button saves service names; bad names say why and save nothing', () => {
     const onRuntimeNames = vi.fn()
     const html = '<h3>T</h3><button data-runtime-edit="b1" data-names="a, b">Edit</button><button data-runtime-edit="b2">Edit</button>'
@@ -147,5 +159,14 @@ describe('EvidenceView', () => {
     expect(screen.getByTestId('evidence-view').className).toBe('x')
     fireEvent.click(screen.getByRole('button', { name: 'Close evidence' }))
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it('a test says where its result came from; other kinds and an empty excerpt show kind and ref only', () => {
+    const { rerender } = render(<EvidenceView evidence={{ kind: 'test', ref: 't/a.test.ts', excerpt: 'from CI (gh)' }} />)
+    expect(screen.getByTestId('evidence-view').textContent).toBe('test t/a.test.ts (from CI (gh))')
+    rerender(<EvidenceView evidence={{ kind: 'test', ref: 't/a.test.ts', excerpt: '' }} />)
+    expect(screen.getByTestId('evidence-view').textContent).toBe('test t/a.test.ts')
+    rerender(<EvidenceView evidence={{ kind: 'commit', ref: 'abc', excerpt: 'subject' }} />)
+    expect(screen.getByTestId('evidence-view').textContent).toBe('commit abc')
   })
 })

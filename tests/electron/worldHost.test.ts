@@ -1178,6 +1178,19 @@ describe('annotate', () => {
   })
 })
 
+describe('filterWorld: where a test result came from', () => {
+  it('world_read keeps where each test result came from in the claim, the evidence list and the plain-text card', () => {
+    const d = doc()
+    d.buildings[0].claims = [
+      { text: 'Its 1 linked tests passed (CI)', state: 'verified', evidence: [{ kind: 'test', ref: 't/api.test.ts', excerpt: 'from CI (gh)' }] }
+    ]
+    const r = filterWorld(d, { ids: [d.buildings[0].id], cards: true })
+    expect(r.evidence).toContainEqual({ kind: 'test', ref: 't/api.test.ts', excerpt: 'from CI (gh)' })
+    expect((r.items[0] as WorldDoc['buildings'][number]).claims[0].text).toBe('Its 1 linked tests passed (CI)')
+    expect(r.cards?.[d.buildings[0].id]).toContain('evidence: test t/api.test.ts (from CI (gh))')
+  })
+})
+
 describe('filterWorld cards and plan', () => {
   const linked = (): WorldDoc => {
     const d = doc()

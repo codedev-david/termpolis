@@ -1,5 +1,5 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
-import type { Claim, WorldDoc, WorldEdge } from '../../../../shared/world/types'
+import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
 import { BUILD_STATUS_TEXT as STATUS, allBuildings, allEdges, nodeName, notInDesign, runsIn as runsInOf } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
@@ -15,10 +15,14 @@ const section = (title: string, body: string): string => `<h4>${esc(title)}</h4>
  * `start` numbers the claims of a part across its lists. None yet (the model has not described this part)
  * reads as such, not as a blank.
  */
+/** What an evidence button carries: kind and ref, and a test's source (where its result came from). */
+const evidenceOf = (e: Evidence): Evidence =>
+  e.kind === 'test' && typeof e.excerpt === 'string' ? { kind: e.kind, ref: e.ref, excerpt: e.excerpt } : { kind: e.kind, ref: e.ref }
+
 function claims(list: Claim[], itemId: string, start: number, empty = '<p class="muted">Not described yet.</p>'): string {
   if (list.length === 0) return empty
   const rows = list.map((c, i) => {
-    const ev = c.evidence.map((e) => `<button class="ev" data-evidence="${esc(JSON.stringify({ kind: e.kind, ref: e.ref }))}">evidence</button>`).join(' ')
+    const ev = c.evidence.map((e) => `<button class="ev" data-evidence="${esc(JSON.stringify(evidenceOf(e)))}">evidence</button>`).join(' ')
     const confirm = c.state === 'inferred' ? ` <button class="confirm" data-confirm="${esc(itemId)}|${start + i}">Confirm</button>` : ''
     return `<li class="claim" data-state="${esc(c.state)}"><span class="ctext">${esc(c.text)}</span> <span class="state">${esc(c.state)}</span>${ev ? ` ${ev}` : ''}${confirm}</li>`
   })

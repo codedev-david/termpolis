@@ -343,16 +343,34 @@ export function statusFor(
 /** Most test files one claim cites. */
 const MAX_TEST_REFS = 8
 
+/** Where a run's result came from, as each test evidence says it (a transcript line or CI is weaker than a report). */
+export function testSourceExcerpt(source: TestRun['source']): string {
+  return source === 'transcript' ? 'from an agent transcript' : source === 'ci' ? 'from CI (gh)' : 'from a test report'
+}
+
+/** The claim's suffix when no linked result came from a report on disk: which weaker source(s) it rests on. */
+function weakSuffix(list: TestRun[]): string {
+  if (list.some((r) => !weak(r))) return ''
+  const t = list.some((r) => r.source === 'transcript')
+  const c = list.some((r) => r.source === 'ci')
+  return t && c ? ' (agent transcript and CI)' : t ? ' (agent transcript)' : ' (CI)'
+}
+
 /**
  * What the test results say about a building, as claims: every linked test passing is a verified claim
  * citing them; any failing is an observed claim saying how many, citing the failing ones; no results, none.
+ * Each cited test says where its result came from, and a claim resting only on agent transcripts or CI says so in
+ * its text, so a card and world_read never pass those off as a test report.
  */
 export function testClaims(members: string[], runs: TestRun[], testsByMember: Record<string, string[]>): Claim[] {
   const latest = latestRuns(members, runs, testsByMember)
   if (latest.size === 0) return []
-  const refs = (list: TestRun[]): Claim['evidence'] => list.map((r) => r.file).sort().slice(0, MAX_TEST_REFS).map((ref) => ({ kind: 'test' as const, ref }))
+  const refs = (list: TestRun[]): Claim['evidence'] => {
+    const source = new Map(list.map((r) => [r.file, r.source]))
+    return [...source.keys()].sort().slice(0, MAX_TEST_REFS).map((ref) => ({ kind: 'test' as const, ref, excerpt: testSourceExcerpt(source.get(ref) as TestRun['source']) }))
+  }
   const all = [...latest.values()]
   const failed = all.filter((r) => !r.passed)
-  if (failed.length === 0) return [{ text: `Its ${all.length} linked tests passed`, state: 'verified', evidence: refs(all) }]
-  return [{ text: `${failed.length} of ${all.length} linked tests failed`, state: 'observed', evidence: refs(failed) }]
+  if (failed.length === 0) return [{ text: `Its ${all.length} linked tests passed${weakSuffix(all)}`, state: 'verified', evidence: refs(all) }]
+  return [{ text: `${failed.length} of ${all.length} linked tests failed${weakSuffix(failed)}`, state: 'observed', evidence: refs(failed) }]
 }

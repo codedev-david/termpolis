@@ -6,6 +6,7 @@ import {
   readTestResults,
   statusFor,
   testClaims,
+  testSourceExcerpt,
   type TestRun
 } from '../../src/main/world/testStatus'
 
@@ -444,16 +445,17 @@ describe('never spawns', () => {
 describe('testClaims', () => {
   const run = (file: string, passed: boolean, at = 1): TestRun => ({ file, passed, at, source: 'vitest' })
   const linked = { 'src/a.ts': ['t/a.test.ts', 't/b.test.ts'] }
+  const REPORT = 'from a test report'
 
   it('every linked test passing is one verified claim citing them', () => {
     expect(testClaims(['src/a.ts'], [run('t/a.test.ts', true), run('t/b.test.ts', true), run('t/other.test.ts', false)], linked)).toEqual([
-      { text: 'Its 2 linked tests passed', state: 'verified', evidence: [{ kind: 'test', ref: 't/a.test.ts' }, { kind: 'test', ref: 't/b.test.ts' }] }
+      { text: 'Its 2 linked tests passed', state: 'verified', evidence: [{ kind: 'test', ref: 't/a.test.ts', excerpt: REPORT }, { kind: 'test', ref: 't/b.test.ts', excerpt: REPORT }] }
     ])
   })
 
   it('a failing one is an observed claim saying how many, citing the failing', () => {
     expect(testClaims(['src/a.ts'], [run('t/a.test.ts', true), run('t/b.test.ts', false)], linked)).toEqual([
-      { text: '1 of 2 linked tests failed', state: 'observed', evidence: [{ kind: 'test', ref: 't/b.test.ts' }] }
+      { text: '1 of 2 linked tests failed', state: 'observed', evidence: [{ kind: 'test', ref: 't/b.test.ts', excerpt: REPORT }] }
     ])
   })
 
@@ -461,6 +463,36 @@ describe('testClaims', () => {
     expect(testClaims(['src/a.ts'], [run('t/a.test.ts', false, 1), run('t/a.test.ts', true, 2)], linked)[0].text).toBe('Its 1 linked tests passed')
     expect(testClaims(['src/a.ts'], [], linked)).toEqual([])
     expect(testClaims(['src/zzz.ts'], [run('t/a.test.ts', true)], linked)).toEqual([])
+  })
+
+  it('says where each result came from, and a claim resting only on transcripts or CI says so in its text', () => {
+    const from = (file: string, passed: boolean, source: TestRun['source']): TestRun => ({ file, passed, at: 1, source })
+    const transcript = testClaims(['src/a.ts'], [from('t/a.test.ts', true, 'transcript'), from('t/b.test.ts', true, 'transcript')], linked)
+    expect(transcript).toEqual([
+      {
+        text: 'Its 2 linked tests passed (agent transcript)',
+        state: 'verified',
+        evidence: [
+          { kind: 'test', ref: 't/a.test.ts', excerpt: 'from an agent transcript' },
+          { kind: 'test', ref: 't/b.test.ts', excerpt: 'from an agent transcript' }
+        ]
+      }
+    ])
+    expect(testClaims(['src/a.ts'], [from('t/a.test.ts', true, 'ci')], linked)[0]).toEqual({
+      text: 'Its 1 linked tests passed (CI)',
+      state: 'verified',
+      evidence: [{ kind: 'test', ref: 't/a.test.ts', excerpt: 'from CI (gh)' }]
+    })
+    expect(testClaims(['src/a.ts'], [from('t/a.test.ts', true, 'ci'), from('t/b.test.ts', true, 'transcript')], linked)[0].text).toBe(
+      'Its 2 linked tests passed (agent transcript and CI)'
+    )
+    // One report among them: the claim rests on a report, and each test still names its own source.
+    const mixed = testClaims(['src/a.ts'], [from('t/a.test.ts', true, 'junit'), from('t/b.test.ts', true, 'transcript')], linked)[0]
+    expect(mixed.text).toBe('Its 2 linked tests passed')
+    expect(mixed.evidence.map((e) => e.excerpt)).toEqual(['from a test report', 'from an agent transcript'])
+    // A failure seen only in CI says so too.
+    expect(testClaims(['src/a.ts'], [from('t/a.test.ts', false, 'ci')], linked)[0].text).toBe('1 of 1 linked tests failed (CI)')
+    expect(testSourceExcerpt('jest')).toBe('from a test report')
   })
 
   it('cites at most eight tests', () => {

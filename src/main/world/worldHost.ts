@@ -255,7 +255,9 @@ function claimsOf(item: Item): Claim[] {
   const rec = item as unknown as Record<string, unknown>
   const how = Array.isArray(rec.how) ? (rec.how as Claim[]) : []
   const why = Array.isArray(rec.why) ? (rec.why as Claim[]) : []
-  return [...how, ...why]
+  // The facts beyond how and why (tests, code, a person) cite evidence too: a test's source rides on it.
+  const known = Array.isArray(rec.claims) ? (rec.claims as Claim[]) : []
+  return [...how, ...why, ...known]
 }
 
 /** Every text field an item is searched by: id, names, labels, members, tech words and claim text. */
