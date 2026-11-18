@@ -195,6 +195,20 @@ const isArr = (v: unknown): v is unknown[] => Array.isArray(v)
 const isStrArr = (v: unknown): v is string[] => Array.isArray(v) && v.every(isStr)
 const cap = (s: string, n: number): string => s.trim().slice(0, n)
 
+/**
+ * At most `n` characters, cut at the last word boundary with an ellipsis, so a legend line never ends
+ * mid-word; one word longer than the limit is cut at it. Text that fits is kept whole.
+ */
+function capWords(s: string, n: number): string {
+  const t = s.trim()
+  if (t.length <= n) return t
+  // The ellipsis takes one character; a word that ends exactly at the room's end is whole.
+  const room = t.slice(0, n - 1)
+  const cut = /\s/.test(t[n - 1]) ? n - 1 : room.lastIndexOf(' ')
+  const head = cut > 0 ? room.slice(0, cut) : room
+  return `${head.replace(/[\s,;:.\-–—]+$/, '') || room}…`
+}
+
 /** Thrown inside one entity's validation: that entity's model output is dropped wholesale. */
 class Reject extends Error {}
 
@@ -249,14 +263,14 @@ function citations(raw: unknown, evidenceOf: ReadonlyMap<string, Evidence>): str
 
 /** A cited text field: `{ value: string, evidence: ["E1"] }`. A bare string, a wrong type, or no valid citation: undefined
  *  (the caller keeps the code-derived value). */
-function citedText(o: Json, key: string, max: number, ev: ReadonlyMap<string, Evidence>): string | undefined {
-  return citedOf(own(o, key), max, ev)
+function citedText(o: Json, key: string, max: number, ev: ReadonlyMap<string, Evidence>, fit: (s: string, n: number) => string = cap): string | undefined {
+  return citedOf(own(o, key), max, ev, fit)
 }
 
-function citedOf(raw: unknown, max: number, ev: ReadonlyMap<string, Evidence>): string | undefined {
+function citedOf(raw: unknown, max: number, ev: ReadonlyMap<string, Evidence>, fit: (s: string, n: number) => string = cap): string | undefined {
   const v = own(raw, 'value')
   if (!isStr(v) || v.trim() === '' || citations(raw, ev).length === 0) return undefined
-  return cap(v, max)
+  return fit(v, max)
 }
 
 function citedList(o: Json, key: string, ev: ReadonlyMap<string, Evidence>): string[] | undefined {
@@ -313,7 +327,8 @@ function validEdge(raw: unknown, ev: ReadonlyMap<string, Evidence>): Partial<Edg
     // identifiers the code found stay.
     const label = citedText(raw, 'label', MAX_LABEL, ev)
     if (label !== undefined) out.label = label
-    const cargo = citedText(raw, 'cargo', MAX_CARGO, ev)
+    // The cargo names a line in the legend: cut at a word, never mid-word.
+    const cargo = citedText(raw, 'cargo', MAX_CARGO, ev, capWords)
     if (cargo !== undefined) out.cargo = cargo
     const rate = citedText(raw, 'rate', MAX_LABEL, ev)
     if (rate !== undefined) out.rate = rate

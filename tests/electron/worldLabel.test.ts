@@ -647,7 +647,7 @@ describe('fix round 1', () => {
     expect(l.buildings.a.stack).toEqual(items.slice(0, 8))
     expect(l.buildings.a.floors[0].tech).toEqual(items.slice(0, 8))
     expect(l.edges[e].tech).toEqual(items.slice(0, 8))
-    expect(l.edges[e].cargo).toHaveLength(40)
+    expect(l.edges[e].cargo).toBe(`${'c'.repeat(39)}…`)
     const g: Grouping = {
       districts: [{ id: 'd', name: 'D', members: [] }],
       buildings: [bld('p', 'd', ['p.ts']), bld('q', 'd', ['q.ts'])],
@@ -656,6 +656,30 @@ describe('fix round 1', () => {
     const f = await labelWorld(g, mkDeps({ llm: null }))
     // Without a model the cargo is the boundary's human type, never the 90-char key.
     expect(f.edges[edgeId(g.edges[0])].cargo).toBe('messages')
+  })
+
+  it('a long cargo is cut at a word boundary with an ellipsis, never mid-word (film bug 4)', async () => {
+    const e = edgeId({ from: 'a', to: 'b' })
+    const cargoOf = async (cargo: string): Promise<string> => {
+      const reply = JSON.stringify({ edges: { [e]: { cargo: F(cargo) } } })
+      return (await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))).edges[e].cargo
+    }
+    const long = 'Terminal session state, scrollback and resize events'
+    const cut = await cargoOf(long)
+    expect(cut).toBe('Terminal session state, scrollback and…')
+    expect(cut.length).toBeLessThanOrEqual(40)
+    expect(long.startsWith(cut.slice(0, -1))).toBe(true)
+    // A word ending right at the limit leaves no room for the ellipsis, so it goes; so does a trailing comma.
+    expect(await cargoOf('Settings, theme, layout, fonts, keybinds go')).toBe('Settings, theme, layout, fonts…')
+    // A word ending one short of the limit is whole.
+    expect(await cargoOf(`${'a'.repeat(39)} more`)).toBe(`${'a'.repeat(39)}…`)
+    // Nothing but punctuation before the boundary: cut at the limit instead.
+    expect(await cargoOf(`,,,, ${'x'.repeat(50)}`)).toBe(`,,,, ${'x'.repeat(34)}…`)
+    // One long word has no boundary: it is cut at the limit, with the ellipsis.
+    expect(await cargoOf('x'.repeat(60))).toBe(`${'x'.repeat(39)}…`)
+    // Exactly the limit, or less, is kept whole.
+    expect(await cargoOf('y'.repeat(40))).toBe('y'.repeat(40))
+    expect(await cargoOf('  Small cargo  ')).toBe('Small cargo')
   })
 
   it('repo-derived metadata is JSON-quoted on one line, so a newline in a key cannot inject', async () => {
