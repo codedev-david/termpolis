@@ -102,6 +102,15 @@ describe('threeRenderer dispose', () => {
     h.host.dispatchEvent(new KeyboardEvent('keydown', { key: 'w' }))
   })
 
+  it('a GPU step that throws during dispose still leaves no canvas or label layer on the page', () => {
+    const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+    r.draw(everything(), textOf(), false)
+    gpu.failDispose = new Error('context already lost')
+    expect(() => r.dispose()).toThrow('context already lost')
+    expect(h.host.querySelector('canvas')).toBeNull()
+    expect(h.host.querySelector('.lw-labels')).toBeNull()
+  })
+
   it('a second dispose does nothing', () => {
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     r.draw(everything(), textOf(), false)

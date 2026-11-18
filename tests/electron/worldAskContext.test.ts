@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ASK_TOKEN_BUDGET, MAX_SUMMARY_TOKENS, buildAskPrompt, ROLE, summarize } from '../../src/main/world/askContext'
+import { ASK_TOKEN_BUDGET, MAX_PROMPT_CHARS, MAX_SUMMARY_TOKENS, buildAskPrompt, ROLE, summarize } from '../../src/main/world/askContext'
 import { estimateTokens } from '../../src/shared/world/tokens'
 import { ANSWER_PROTOCOL } from '../../src/shared/world/answerProtocol'
 import type { Building, Claim, Proposal, WorldDoc, WorldEdge } from '../../src/shared/world/types'
@@ -38,13 +38,13 @@ describe('buildAskPrompt', () => {
     expect(prompt).toContain('(none)')
   })
 
-  it('stays under 12000 chars on 60 buildings, demoting by priority', () => {
+  it('stays within the prompt budget (MAX_PROMPT_CHARS) on 60 buildings, demoting by priority', () => {
     const d = doc(60)
     d.buildings.forEach((b) => { b.how = [claim('x'.repeat(380), [`${b.id}.ts`])]; b.why = [claim('y'.repeat(380))] })
     const ids = d.buildings.map((b) => b.id)
     const matches = { items: d.buildings.slice(3, 30), evidence: [] }
     const { prompt } = buildAskPrompt(base(d, { selection: ids.slice(0, 3), matches, cameraRegion: ids.slice(30), question: 'Q?' }))
-    expect(prompt.length).toBeLessThanOrEqual(12000)
+    expect(prompt.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
     expect(prompt).toContain('building b1:')
     expect(prompt).toContain('building b3:')
     expect(prompt).not.toContain('building b60:')
@@ -60,7 +60,7 @@ describe('buildAskPrompt', () => {
 
   it('cuts the name-only list as a last resort, and never the question', () => {
     const { prompt } = buildAskPrompt(base(doc(1500), { question: 'Keep me?', selection: ['b1500'] }))
-    expect(prompt.length).toBeLessThan(12000)
+    expect(prompt.length).toBeLessThan(MAX_PROMPT_CHARS)
     expect(prompt).toContain('b1: Building 1')
     expect(prompt).not.toContain('b1499: Building 1499')
     expect(prompt).not.toContain('\nb1500: Building 1500')
@@ -97,7 +97,7 @@ describe('buildAskPrompt', () => {
     const d = doc(3)
     d.districts = Array.from({ length: 500 }, (_, i) => ({ id: `d${i}`, name: `District ${'n'.repeat(40)} ${i}`, subtitle: '', hue: 0, members: [] }))
     const { prompt } = buildAskPrompt(base(d, { question: 'q'.repeat(50_000), selection: ['b1'] }))
-    expect(prompt.length).toBeLessThan(12000)
+    expect(prompt.length).toBeLessThan(MAX_PROMPT_CHARS)
     expect(prompt).toContain('q'.repeat(1999) + '…')
     expect(prompt).not.toContain('q'.repeat(2000))
     expect(prompt.endsWith(ANSWER_PROTOCOL)).toBe(true)
@@ -110,11 +110,11 @@ describe('buildAskPrompt', () => {
       return buildAskPrompt(base(d)).prompt
     }
     const ids = mk(900, 60)
-    expect(ids.length).toBeLessThan(12000)
+    expect(ids.length).toBeLessThan(MAX_PROMPT_CHARS)
     expect(ids).toContain('DISTRICTS\nd0\nd1')
     expect(ids).not.toContain('d0: ')
     const none = mk(5000, 60)
-    expect(none.length).toBeLessThan(12000)
+    expect(none.length).toBeLessThan(MAX_PROMPT_CHARS)
     expect(none).not.toContain('DISTRICTS')
   })
 

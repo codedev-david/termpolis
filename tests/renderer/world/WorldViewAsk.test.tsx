@@ -38,7 +38,7 @@ import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
 type Res<T> = { success: true; data: T } | { success: false; error: string }
 const ok = <T,>(data: T): Res<T> => ({ success: true, data })
 const answered = (askId: string): Res<AskResult> => ok({
-  askId, ok: true, answer: { text: 'It is the app [E1].', sentences: [{ text: 'It is the app [E1].', actions: [0] }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false }, summary: 's', cited: {},
+  askId, ok: true, answer: { text: 'It is the app [E1].', sentences: [{ text: 'It is the app [E1].', actions: [0], sep: '' }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false }, summary: 's', cited: {},
 } as AskResult)
 
 function deferred<T>() {

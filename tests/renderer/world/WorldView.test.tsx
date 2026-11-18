@@ -1376,6 +1376,7 @@ describe('WorldView 2D map switch and bookmarks', () => {
     ]))
     bridge()
     await mount()
+    viewer().getSelection.mockReturnValue(['b1'])
     openMenu()
     fireEvent.click(screen.getByRole('button', { name: 'Open b1' }))
     await settle()
@@ -1388,6 +1389,48 @@ describe('WorldView 2D map switch and bookmarks', () => {
     expect(viewer().apply).toHaveBeenCalledTimes(1)
     expect(viewer().resetView).toHaveBeenCalledTimes(1)
     expect(viewer().setCamera).toHaveBeenLastCalledWith(cam, false)
+  })
+
+  it('a drag, a click, the wheel, Esc or another selection during the flight leaves the camera where it is', async () => {
+    localStorage.setItem(keyOf(), JSON.stringify([{ name: 'Open b1', camera: cam, selection: ['b1'] }]))
+    bridge()
+    await mount()
+    const host = screen.getByTestId('world-canvas-host')
+    const cut: Array<[string, () => void]> = [
+      ['pointerdown', () => fireEvent.pointerDown(host)],
+      ['wheel', () => fireEvent.wheel(host)],
+      ['Esc', () => esc()],
+      ['another pick', () => viewer().getSelection.mockReturnValue(['b2'])],
+    ]
+    for (const [, interrupt] of cut) {
+      viewer().getSelection.mockReturnValue(['b1'])
+      const flight = deferred<undefined>()
+      viewer().apply.mockReturnValueOnce(flight.promise)
+      viewer().setCamera.mockClear()
+      openMenu()
+      fireEvent.click(screen.getByRole('button', { name: 'Open b1' }))
+      interrupt()
+      await act(async () => { flight.resolve(undefined) })
+      await settle()
+      expect(viewer().setCamera).not.toHaveBeenCalled()
+    }
+  })
+
+  it('a switch to another world during the flight leaves the camera alone', async () => {
+    localStorage.setItem(keyOf(), JSON.stringify([{ name: 'Open b1', camera: cam, selection: ['b1'] }]))
+    const b = bridge()
+    const { rerender, onClose } = await mount()
+    viewer().getSelection.mockReturnValue(['b1'])
+    const flight = deferred<undefined>()
+    viewer().apply.mockReturnValueOnce(flight.promise)
+    openMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Open b1' }))
+    b.api.worldGet.mockResolvedValue(ok({ ...minimal(), projectKey: 'another-world' }))
+    rerender(<WorldView root="/next" onClose={onClose} />)
+    await settle()
+    await act(async () => { flight.resolve(undefined) })
+    await settle()
+    expect(viewer().setCamera).not.toHaveBeenCalled()
   })
 
   it('finds a line, a district and an outside part in the world', async () => {

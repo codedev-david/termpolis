@@ -295,7 +295,7 @@ describe('compileWorld', () => {
       return JSON.stringify({
         buildings: { [VIEW]: { name: F('View Layer'), stack: F(['TypeScript', 'Mystery']), how: [{ text: 'Renders.', evidence: ['E1'] }] } },
         // The incoming edge (its from building is untouched) is batched with the changed building.
-        edges: { [importEdge]: { label: 'Hands the view its data' } },
+        edges: { [importEdge]: { label: F('Hands the view its data') } },
         glossary: { TypeScript: F('Typed JavaScript'), IPC: F('model says otherwise') }
       })
     })
@@ -426,7 +426,7 @@ describe('compileWorld', () => {
             stack: F(['Electron'])
           }
         },
-        edges: { [edgeId({ from: MAIN, to: MAIN })]: { label: 'never used' } },
+        edges: { [edgeId({ from: MAIN, to: MAIN })]: { label: F('never used') } },
         glossary: { Electron: F('Desktop app framework') }
       })
     })

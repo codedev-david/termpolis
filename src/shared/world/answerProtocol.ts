@@ -23,8 +23,24 @@ export const MIN_SENTENCE_MS = 600
 export const revealMs = (text: string, reducedMotion: boolean): number =>
   reducedMotion ? 0 : Math.max(MIN_SENTENCE_MS, text.split(/\s+/).filter(Boolean).length * REVEAL_MS_PER_WORD)
 
-/** One sentence of the answer and the indexes (into `actions`) of the steps that play as it appears. */
-export interface AnswerSentence { text: string; actions: number[] }
+/** What stands between a sentence and the one before it: nothing (the first), a space, a line break or a blank line
+ *  (a new paragraph), so an answer shown sentence by sentence keeps its paragraphs. */
+export type SentenceSep = '' | ' ' | '\n' | '\n\n'
+
+/** One sentence of the answer, the break in front of it, and the indexes (into `actions`) of the steps that play as
+ *  it appears. */
+export interface AnswerSentence { text: string; actions: number[]; sep: SentenceSep }
+
+/** The break the whitespace in front of a sentence stands for (`first`: nothing goes before the first sentence). */
+export function sepOf(lead: string, first: boolean): SentenceSep {
+  if (first) return ''
+  const breaks = (lead.match(/\n/g) ?? []).length
+  return breaks >= 2 ? '\n\n' : breaks === 1 ? '\n' : ' '
+}
+
+/** The first `count` sentences, each after its own break (the first has none), so paragraphs survive. */
+export const answerText = (sentences: AnswerSentence[], count: number): string =>
+  sentences.slice(0, count).map((s) => s.sep + s.text).join('')
 
 export interface WorldAnswer {
   text: string
@@ -133,11 +149,11 @@ function sentencesOf(text: string, parsed: Parsed, tally: { dropped: number }): 
       else if (!placed.has(slot)) { placed.add(slot); actions.push(slot) }
     }
     const clean = raw.replace(/\s*\[A\d+\]/g, '').trim()
-    if (clean !== '' || actions.length > 0) out.push({ text: clean, actions })
+    if (clean !== '' || actions.length > 0) out.push({ text: clean, actions, sep: sepOf((/^\s*/.exec(raw) as RegExpExecArray)[0], out.length === 0) })
   }
   const rest = parsed.actions.map((_, i) => i).filter((i) => !placed.has(i))
   if (rest.length > 0) {
-    if (out.length === 0) out.push({ text: '', actions: [] })
+    if (out.length === 0) out.push({ text: '', actions: [], sep: '' })
     out[out.length - 1].actions.push(...rest)
   }
   return out
@@ -171,6 +187,6 @@ export function parseAnswer(raw: string, doc: WorldDoc, labels: Record<string, E
     const unsupported = actions.flatMap((a) => (a.type === 'fog' ? a.ids : []))
     return { text, sentences, actions, evidence: collectEvidence(text, labels), dropped: tally.dropped, unsupported, uncited: isUncited(text) }
   } catch {
-    return { text, sentences: text === '' ? [] : [{ text, actions: [] }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: isUncited(text) }
+    return { text, sentences: text === '' ? [] : [{ text, actions: [], sep: '' }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: isUncited(text) }
   }
 }

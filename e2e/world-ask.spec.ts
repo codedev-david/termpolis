@@ -15,13 +15,14 @@
  *   5. An unsupported answer says so and leaves its building fogged.
  *   6. The camera moves while the answer is still being revealed: the answer appears one sentence
  *      at a time and the mock's [A1] and [A2] markers play its steps as their sentences appear.
+ *   (unnumbered) The evidence chip, below.
  *   7. The renderer logged no console error and threw no page error (last, so it covers every test).
  *
- * Labelling is off for those, so the world has no claims (the labelling run is spawned
- * without a shell and cannot launch a Windows shim). A fifth test, skipped on Windows, restarts the
- * app with labelling on (the mock answers the labelling prompt with one claim per building citing
- * an excerpt), waits until the labelled world (saved after the code-labelled one) holds a claim,
- * and checks the [E1] chip and its evidence line.
+ * Labelling is off for 1 to 6, so the world has no claims (the labelling run is spawned without a
+ * shell and cannot launch a Windows shim). The unnumbered evidence-chip test, skipped on Windows,
+ * restarts the app with labelling on (the mock answers the labelling prompt with one claim per
+ * building citing an excerpt), waits until the labelled world (saved after the code-labelled one)
+ * holds a claim, and checks the [E1] chip and its evidence line. It runs before 7.
  * The launch adds the software GL switches, as world-view.spec.ts does.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'

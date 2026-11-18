@@ -3,7 +3,7 @@
 // Pure: no fs, no Electron.
 
 /** Bump to invalidate every cached label reply (the prompt text itself is hashed too). */
-export const LABEL_PROMPT_VERSION = 'world-label-v2'
+export const LABEL_PROMPT_VERSION = 'world-label-v3'
 
 /** The whole prompt travels on a command line; Windows caps that near 32k chars. */
 export const MAX_PROMPT_CHARS = 28_000
@@ -88,7 +88,7 @@ export function buildLabelPrompt(batch: LabelBatch): string {
     '  "buildings": { "<building id>": { "name": F, "techLabel": F, "stack": { "value": string[], "evidence": ["E1"] },',
     '    "how": [{ "text": string, "evidence": ["E1"] }], "why": [{ "text": string, "evidence": ["E2"] }],',
     '    "floors": [{ "name": string, "tech": string[], "members": string[] }] } },',
-    '  "edges": { "<edge id>": { "label": string, "tech": string[], "cargo": F, "rate": F,',
+    '  "edges": { "<edge id>": { "label": F, "tech": { "value": string[], "evidence": ["E1"] }, "cargo": F, "rate": F,',
     '    "how": [{ "text": string, "evidence": ["E1"] }], "why": [{ "text": string, "evidence": ["E1"] }] } },',
     '  "glossary": { "<term>": F }',
     '}',

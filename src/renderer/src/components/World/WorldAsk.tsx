@@ -86,6 +86,15 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
     pressAt.current = null
     if (tapOrHoldKeyupAction({ pressActive: true, heldMs }) === 'stop') (stopMic as () => void)()
   }
+  /** A press that cannot end with a release (the gesture was taken, or the button went off): the mic stops,
+   *  however short the press, so it never stays live hands-free. */
+  const endPress = (): void => {
+    if (pressAt.current === null) return
+    pressAt.current = null
+    ;(stopMic as () => void)()
+  }
+  const endPressRef = useRef(endPress)
+  endPressRef.current = endPress
   const transcribing = !voiceOverride && mic.status === 'transcribing'
   const [speak, setSpeak] = useState(false)
 
@@ -144,6 +153,8 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
   }
 
   const disabled = root === '' || (viewer === null && !design)
+  // A disabled button gets no release, so a press in progress ends here rather than firing late.
+  useEffect(() => { if (disabled) endPressRef.current() }, [disabled])
 
   return (
     <div className="flex flex-col items-center gap-2 w-full" data-testid="world-ask">
@@ -206,7 +217,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
             aria-label={voice.listening ? 'Stop listening' : 'Ask by voice'}
             onPointerDown={onMicDown}
             onPointerUp={onMicUp}
-            onPointerCancel={onMicUp}
+            onPointerCancel={endPress}
             // A mouse or touch press is handled above; a click with no pointer (Enter or Space) still toggles.
             onClick={(e) => { if (!hold || e.detail === 0) voice.toggle() }}
             disabled={disabled}

@@ -2413,6 +2413,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     dispose() {
       if (disposed) return
       disposed = true
+      // Off the page first, as the undo path does: a later step that throws leaves no dead canvas or label layer.
+      renderer.domElement.remove()
+      labelRenderer.domElement.remove()
       changes.stop()
       cancelAnimationFrame(raf)
       ro?.disconnect()
@@ -2442,8 +2445,6 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       composer?.dispose()
       renderer.dispose()
       renderer.forceContextLoss()
-      renderer.domElement.remove()
-      labelRenderer.domElement.remove()
     },
   }
 }

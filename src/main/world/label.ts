@@ -255,21 +255,11 @@ function citedList(o: Json, key: string, ev: ReadonlyMap<string, Evidence>): str
   return isStrArr(v) && citations(raw, ev).length > 0 ? shortList(v) : undefined
 }
 
-function textField(o: Json, key: string, max: number, into: Record<string, unknown>): void {
-  const v = field(o, key, isStr)
-  if (v !== undefined && v.trim() !== '') into[key] = cap(v, max)
-}
-
 function shortList(v: string[]): string[] {
   return v
     .map((x) => x.trim())
     .filter((x) => x !== '' && x.length <= MAX_ITEM)
     .slice(0, MAX_LIST)
-}
-
-function strList(o: Json, key: string, into: Record<string, unknown>): void {
-  const v = field(o, key, isStrArr)
-  if (v) into[key] = shortList(v)
 }
 
 function validBuilding(raw: unknown, b: GroupBuilding, ev: ReadonlyMap<string, Evidence>): Partial<BuildingLabel> | null {
@@ -309,12 +299,16 @@ function validEdge(raw: unknown, ev: ReadonlyMap<string, Evidence>): Partial<Edg
   try {
     if (!isObj(raw)) throw new Reject()
     const out: Record<string, unknown> = {}
-    textField(raw, 'label', MAX_LABEL, out)
+    // The line's description and its technology chips cite an excerpt like every other field; uncited, the
+    // identifiers the code found stay.
+    const label = citedText(raw, 'label', MAX_LABEL, ev)
+    if (label !== undefined) out.label = label
     const cargo = citedText(raw, 'cargo', MAX_CARGO, ev)
     if (cargo !== undefined) out.cargo = cargo
     const rate = citedText(raw, 'rate', MAX_LABEL, ev)
     if (rate !== undefined) out.rate = rate
-    strList(raw, 'tech', out)
+    const tech = citedList(raw, 'tech', ev)
+    if (tech) out.tech = tech
     const how = claimsFrom(raw, 'how', ev)
     if (how) out.how = how
     const why = claimsFrom(raw, 'why', ev)

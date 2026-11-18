@@ -151,7 +151,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
           summary.current = res.data.summary
           spend(res.data.tokens)
           onDesignRef.current?.(res.data.doc)
-          setAnswer({ text: res.data.text, sentences: [{ text: res.data.text, actions: [] }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
+          setAnswer({ text: res.data.text, sentences: [{ text: res.data.text, actions: [], sep: '' }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
           setCited({})
           setRevealed(1)
           setState('answered')

@@ -329,7 +329,7 @@ describe('useWorldAsk on a design', () => {
     expect(refine).toHaveBeenCalledWith('design:d1', 'add Payments', '', undefined)
     expect(onDesign).toHaveBeenCalledWith({ projectKey: 'design:d1' })
     expect(result.current.state).toBe('answered')
-    expect(result.current.answer).toEqual({ text: 'Added Payments.', sentences: [{ text: 'Added Payments.', actions: [] }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
+    expect(result.current.answer).toEqual({ text: 'Added Payments.', sentences: [{ text: 'Added Payments.', actions: [], sep: '' }], actions: [], evidence: [], dropped: 0, unsupported: [], uncited: false })
     expect(result.current.cited).toEqual({})
     await act(async () => { result.current.ask('rename it') })
     expect(refine).toHaveBeenLastCalledWith('design:d1', 'rename it', 'sum:1', undefined)
@@ -382,7 +382,7 @@ describe('useWorldAsk on a design', () => {
 })
 
 describe('useWorldAsk reveal', () => {
-  const sentences = [{ text: 'One two.', actions: [0] }, { text: 'Three four five six seven eight nine ten.', actions: [1] }, { text: 'Last.', actions: [] }]
+  const sentences = [{ text: 'One two.', actions: [0], sep: '' }, { text: 'Three four five six seven eight nine ten.', actions: [1], sep: ' ' }, { text: 'Last.', actions: [], sep: ' ' }]
   const actions = [{ type: 'focus', ids: ['b1'] }, { type: 'flow', edgeIds: ['e1'] }]
   const revealing = (askId: string, over: Record<string, unknown> = {}): Res => ({
     success: true,

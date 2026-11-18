@@ -415,6 +415,17 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // Saved views of this world.
   const projectKey = doc ? doc.projectKey : null
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
+  // A bookmark's restore flies to its part's card first, then takes the saved pose. Anything the user does in
+  // between (a drag, a click, the wheel, Esc) or a switch to another world moves this on, and a restore whose number
+  // is no longer the latest leaves the camera where it is: the cut-short flight still resolves.
+  const bookmarkSeqRef = useRef(0)
+  const cancelBookmark = (): void => { bookmarkSeqRef.current++ }
+  // Moved on as the new world renders (like docRef), so no restore lands between this render and its effects.
+  const bookmarkWorldRef = useRef(projectKey)
+  if (bookmarkWorldRef.current !== projectKey) {
+    bookmarkWorldRef.current = projectKey
+    cancelBookmark()
+  }
   useEffect(() => { setBookmarks(projectKey === null ? [] : loadBookmarks(projectKey)) }, [projectKey])
   const onSaveBookmark = (name: string): void => {
     const v = viewer as WorldViewer // the save button is off without a viewer
@@ -428,8 +439,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     // A part the world no longer has is skipped.
     const ids = b.selection.filter((id) => hasPart(d, id))
     armedRef.current = false
-    // The card's own framing flight lands first, then the saved pose takes the camera from it.
-    if (ids.length > 0) void viewer.apply({ type: 'openCard', id: ids[0] }).then(() => viewer.setCamera(b.camera, false))
+    const seq = ++bookmarkSeqRef.current
+    // The card's own framing flight lands first, then the saved pose takes the camera from it, unless the user moved,
+    // picked something else or switched worlds meanwhile.
+    const still = (): boolean => seq === bookmarkSeqRef.current && viewer.getSelection()[0] === ids[0]
+    if (ids.length > 0) void viewer.apply({ type: 'openCard', id: ids[0] }).then(() => { if (still()) void viewer.setCamera(b.camera, false) })
     else {
       viewer.resetView()
       void viewer.setCamera(b.camera, false)
@@ -555,6 +569,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   })
 
   escRef.current = () => {
+    cancelBookmark()
     if (confirmRelayout) { setConfirmRelayout(false); return }
     if (building) { setBuilding(false); return }
     // The ask box first: an Esc that stops its speech or its question leaves the camera alone.
@@ -632,7 +647,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             // Its own stacking context beneath the panels: the label layer numbers each label's
             // z-index up from zero, which would otherwise draw names over the card and legend.
             style={{ position: 'absolute', inset: 0, zIndex: 0, isolation: 'isolate', visibility: doc && !map2d ? 'visible' : 'hidden' }}
-            onPointerDown={() => { armedRef.current = false }}
+            onPointerDown={() => { armedRef.current = false; cancelBookmark() }}
+            onWheel={cancelBookmark}
           />
         )}
         {flat && doc && (

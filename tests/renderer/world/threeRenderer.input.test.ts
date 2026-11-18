@@ -159,6 +159,22 @@ describe('threeRenderer wheel and orbit limits', () => {
     r.dispose()
   })
 
+  it.each([
+    [2, -100, 0.5],
+    [2.5, -75, 75 / 200], // OrbitControls takes the whole ratio (2), and a trackpad delta stays proportional
+    [3, 60, -60 / 300]
+  ])('above a ratio of 1 (%s) the fix stands aside and OrbitControls scales the notch by the whole ratio', async (dpr, delta, power) => {
+    vi.stubGlobal('devicePixelRatio', dpr)
+    const r = createThreeRenderer(h.host, { quality: 'high', reducedMotion: true })
+    readyCanvas(r)
+    await r.overview(true)
+    const d0 = distOf(r)
+    const e = wheel(r, delta)
+    expect(e.defaultPrevented).toBe(true)
+    expect(distOf(r)).toBeCloseTo(d0 * Math.pow(0.95, power), 4)
+    r.dispose()
+  })
+
   it('a wheel during a drag does nothing, as OrbitControls has it, at any ratio', async () => {
     vi.stubGlobal('devicePixelRatio', 0.5)
     const r = createThreeRenderer(h.host, { quality: 'high', reducedMotion: true })

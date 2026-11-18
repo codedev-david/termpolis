@@ -1,7 +1,7 @@
 // The Lumopolis answer panel. The agent's text is only ever rendered as React text nodes: [E<n>]
 // markers are split out of it and become evidence chips, nothing is parsed as HTML.
 import { useState } from 'react'
-import type { WorldAnswer as Answer } from '../../../../shared/world/answerProtocol'
+import { answerText, type WorldAnswer as Answer } from '../../../../shared/world/answerProtocol'
 import type { CitedEvidence } from '../../../../shared/world/types'
 import { EvidenceView } from './EvidenceView'
 
@@ -25,7 +25,7 @@ const LABEL = /^\[(E\d+)\]$/
 
 export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, onOpenPart, partName, isPart }: WorldAnswerPanelProps): JSX.Element {
   const [open, setOpen] = useState<Record<string, boolean>>({})
-  const parts = answer.sentences.slice(0, revealed).map((x) => x.text).join(' ').split(MARKER)
+  const parts = answerText(answer.sentences, revealed).split(MARKER)
   const shown = Object.keys(open).filter((k) => open[k])
 
   const click = (label: string): void => {

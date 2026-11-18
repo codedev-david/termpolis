@@ -34,6 +34,7 @@ import { createDesigner, DESIGN_NOT_FOUND, DESIGN_NOTHING_APPLIED, DESIGN_SAVE_F
 import { keyForSource, type SourceRegistry, type WorldEntry, type WorldSource } from '../../src/main/world/sources'
 import type { WorldStore } from '../../src/main/world/worldStore'
 import type { ExecDeps } from '../../src/main/headlessExec'
+import { MAX_EVIDENCE_EXCERPT, MAX_EVIDENCE_REF } from '../../src/main/world/annotations'
 
 const RESULT = {
   items: [{ id: 'b:auth', kind: 'building', name: 'auth', how: [{ text: 'checks tokens', evidence: [{ kind: 'file', ref: 'src/auth.ts' }] }] }],
@@ -460,6 +461,21 @@ describe('world_annotate', () => {
       evidence: [{ kind: 'file', ref: join(ROOT, '..', 'x', 'a.ts') }, { kind: 'file', ref: join(ROOT, '..', 'x', 'b.ts') }, { kind: 'symbol', ref: 'ok' }]
     }))
     expect(out).toMatchObject({ evidence: 1, dropped: 2 })
+  })
+
+  it('drops an overlong ref unread and cuts an overlong excerpt at the boundary', async () => {
+    const { transport, annotate } = setup({ root: ROOT })
+    const out = JSON.parse(await transport.callTool('world_annotate', {
+      cwd: '/a', id: 'b1', text: 't',
+      evidence: [
+        { kind: 'file', ref: 'a/'.repeat(MAX_EVIDENCE_REF) + 'x.ts' },
+        { kind: 'symbol', ref: 's'.repeat(MAX_EVIDENCE_REF), excerpt: 'e'.repeat(MAX_EVIDENCE_EXCERPT * 50) }
+      ]
+    }))
+    expect(out).toMatchObject({ evidence: 1, dropped: 1 })
+    const [kept] = claimOf(annotate).evidence
+    expect(kept.ref).toHaveLength(MAX_EVIDENCE_REF)
+    expect(kept.excerpt).toHaveLength(MAX_EVIDENCE_EXCERPT)
   })
 
   it('uses the agent evidence when none was given or none survived', async () => {

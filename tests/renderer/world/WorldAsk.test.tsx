@@ -26,7 +26,7 @@ type Res = { success: true; data: AskResult } | { success: false; error: string 
 const okRes = (askId: string, text: string, over: Record<string, unknown> = {}): Res => ({
   success: true,
   data: {
-    askId, ok: true, answer: { text, sentences: [{ text, actions: [0] }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false },
+    askId, ok: true, answer: { text, sentences: [{ text, actions: [0], sep: '' }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false },
     summary: 's', cited: {}, ...over
   } as AskResult
 })
@@ -147,7 +147,7 @@ describe('WorldAsk', () => {
   it('says so when the evidence does not support the answer, and when it cites none', async () => {
     const v = makeViewer()
     ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'Nothing records why.', {
-      answer: { text: 'Nothing records why.', sentences: [{ text: 'Nothing records why.', actions: [0] }], actions: [{ type: 'fog', ids: ['b1'] }], evidence: [], dropped: 0, unsupported: ['b1'], uncited: true }
+      answer: { text: 'Nothing records why.', sentences: [{ text: 'Nothing records why.', actions: [0], sep: '' }], actions: [{ type: 'fog', ids: ['b1'] }], evidence: [], dropped: 0, unsupported: ['b1'], uncited: true }
     }))
     await submit(v, 'why?')
     const note = screen.getByRole('note')
@@ -354,13 +354,23 @@ describe('WorldAsk', () => {
     it('the answer text appears one sentence at a time', async () => {
       const v = makeViewer()
       ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'First one. Second one.', {
-        answer: { text: 'First one. Second one.', sentences: [{ text: 'First one.', actions: [0] }, { text: 'Second one.', actions: [] }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false }
+        answer: { text: 'First one. Second one.', sentences: [{ text: 'First one.', actions: [0], sep: '' }, { text: 'Second one.', actions: [], sep: ' ' }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false }
       }))
       await submit(v, 'q')
       const shown = (): string => screen.getByTestId('world-answer').textContent ?? ''
       expect(shown()).toContain('First one.')
       expect(shown()).not.toContain('Second one.')
       await waitFor(() => expect(shown()).toContain('Second one.'), { timeout: 3000 })
+    })
+
+    it('a blank line between paragraphs survives into the shown answer', async () => {
+      const v = makeViewer()
+      ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'First one.\n\nSecond one.', {
+        answer: { text: 'First one.\n\nSecond one.', sentences: [{ text: 'First one.', actions: [0], sep: '' }, { text: 'Second one.', actions: [], sep: '\n\n' }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: false }
+      }))
+      await submit(v, 'q')
+      const shown = (): string => screen.getByTestId('world-answer').textContent ?? ''
+      await waitFor(() => expect(shown()).toContain('First one.\n\nSecond one.'), { timeout: 3000 })
     })
 
     it('an unknown marker stays plain text', async () => {
@@ -483,7 +493,7 @@ describe('WorldAsk', () => {
         expect(voice.start).toHaveBeenCalledTimes(1)
       })
 
-      it('a pointercancel stops a hold and leaves a tap running', () => {
+      it('a pointercancel stops the mic, a hold or a press as short as a tap; with no press it does nothing', () => {
         const a = mount()
         fireEvent.pointerDown(a.btn, { button: 0 })
         vi.advanceTimersByTime(500)
@@ -494,7 +504,29 @@ describe('WorldAsk', () => {
         fireEvent.pointerDown(b.btn, { button: 0 })
         vi.advanceTimersByTime(50)
         fireEvent.pointerCancel(b.btn)
-        expect(b.voice.stop).not.toHaveBeenCalled()
+        expect(b.voice.stop).toHaveBeenCalledTimes(1)
+        fireEvent.pointerCancel(b.btn)
+        expect(b.voice.stop).toHaveBeenCalledTimes(1)
+      })
+
+      it('the button going off mid-press ends the press: the mic stops and no stale hold fires later', () => {
+        const voice = { supported: true, listening: false, toggle: vi.fn(), start: vi.fn(), stop: vi.fn() }
+        const v = makeViewer()
+        const { rerender } = render(<WorldAsk viewer={v as never} root="r" voice={voice} />)
+        fireEvent.pointerDown(screen.getByLabelText('Ask by voice'), { button: 0 })
+        expect(voice.start).toHaveBeenCalledTimes(1)
+        rerender(<WorldAsk viewer={v as never} root="" voice={voice} />)
+        expect(voice.stop).toHaveBeenCalledTimes(1)
+        // Back on: the next press starts afresh rather than reading as the second of a stale one.
+        rerender(<WorldAsk viewer={v as never} root="r" voice={voice} />)
+        expect(voice.stop).toHaveBeenCalledTimes(1)
+        vi.advanceTimersByTime(5000)
+        fireEvent.pointerDown(screen.getByLabelText('Ask by voice'), { button: 0 })
+        expect(voice.start).toHaveBeenCalledTimes(2)
+        // Disabled with no press in progress stops nothing.
+        fireEvent.pointerUp(screen.getByLabelText('Ask by voice'), { button: 0 })
+        rerender(<WorldAsk viewer={v as never} root="" voice={voice} />)
+        expect(voice.stop).toHaveBeenCalledTimes(1)
       })
 
       it('keyboard activation (a click with no pointer) still toggles', () => {

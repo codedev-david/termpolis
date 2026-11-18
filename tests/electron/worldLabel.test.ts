@@ -64,7 +64,7 @@ const GOOD = JSON.stringify({
       why: [{ text: 'Keeps the UI thin.', evidence: ['E2'], state: 'verified' }]
     }
   },
-  edges: { [edgeId({ from: 'a', to: 'b' })]: { label: 'chan', cargo: F('msg'), how: [{ text: 'x', evidence: ['E1'] }] } },
+  edges: { [edgeId({ from: 'a', to: 'b' })]: { label: F('chan'), cargo: F('msg'), how: [{ text: 'x', evidence: ['E1'] }] } },
   glossary: { IPC: F('inter-process call') }
 })
 
@@ -227,7 +227,7 @@ describe('labelWorld', () => {
       buildings: {
         a: { name: F(' '), techLabel: F(''), stack: F(['x', ' ']), floors: [{ name: 'Core', tech: ['ts'], members: ['src/a/one.ts'] }] }
       },
-      edges: { [e]: { cargo: F('c'), rate: F('2/s'), tech: ['http', ' '], why: [{ text: 'y', evidence: ['E2'] }], label: ' ' } },
+      edges: { [e]: { cargo: F('c'), rate: F('2/s'), tech: F(['http', ' ']), why: [{ text: 'y', evidence: ['E2'] }], label: F(' ') } },
       glossary: { '': F('x'), t: F(''), u: 5 }
     })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
@@ -647,7 +647,7 @@ describe('fix round 1', () => {
     const items = [...Array.from({ length: 12 }, (_, i) => `i${i}`), 'z'.repeat(41)]
     const reply = JSON.stringify({
       buildings: { a: { stack: F(items), floors: [{ name: 'f', tech: items, members: ['src/a/one.ts'] }] } },
-      edges: { [e]: { tech: ['y'.repeat(41), ...items], cargo: F('c'.repeat(90)) } }
+      edges: { [e]: { tech: F(['y'.repeat(41), ...items]), cargo: F('c'.repeat(90)) } }
     })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
     expect(l.buildings.a.stack).toEqual(items.slice(0, 8))
@@ -807,7 +807,7 @@ describe('task 8 fix round 1', () => {
     }
     const inId = edgeId({ from: 'outside', to: 'a' })
     const ghostId = edgeId({ from: 'ghost1', to: 'ghost2' })
-    const llm = vi.fn(async () => JSON.stringify({ edges: { [inId]: { label: 'Feeds a' }, [ghostId]: { label: 'Ghost' } } }))
+    const llm = vi.fn(async () => JSON.stringify({ edges: { [inId]: { label: F('Feeds a') }, [ghostId]: { label: F('Ghost') } } }))
     const l = await labelWorld(g, mkDeps({ llm }))
     expect(llm).toHaveBeenCalledTimes(1)
     const p = llm.mock.calls[0][0] as string
@@ -821,24 +821,24 @@ describe('task 8 fix round 1', () => {
 describe('citations on every field (task 6)', () => {
   const e = edgeId({ from: 'a', to: 'b' })
 
-  it('an uncited name, subtitle, techLabel, rate, cargo, stack or glossary line is dropped for the code-derived value', async () => {
+  it('an uncited name, subtitle, techLabel, rate, cargo, stack, edge label, edge tech or glossary line is dropped for the code-derived value', async () => {
     const bare = JSON.stringify({
       district: { name: 'Plain', subtitle: 'plain' },
       buildings: { a: { name: 'Plain', techLabel: 'Plain', stack: ['x'] } },
-      edges: { [e]: { cargo: 'plain', rate: 'plain' } },
+      edges: { [e]: { cargo: 'plain', rate: 'plain', label: 'plain', tech: ['Plain'] } },
       glossary: { T: 'plain' }
     })
     const noIds = JSON.stringify({
       district: { name: F('N', []), subtitle: F('S', ['E99']) },
       buildings: { a: { name: F('N', []), techLabel: F('T', ['E99']), stack: F(['x'], []) } },
-      edges: { [e]: { cargo: F('c', ['E99']), rate: F('r', []) } },
+      edges: { [e]: { cargo: F('c', ['E99']), rate: F('r', []), label: F('l', ['E99']), tech: F(['Plain'], []) } },
       glossary: { T: F('t', ['E99']), U: { value: 5, evidence: ['E1'] }, V: { value: 'v', evidence: 'E1' } }
     })
     for (const reply of [bare, noIds]) {
       const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => reply }))
       expect(l.districts.d1).toEqual({ name: 'Alpha', subtitle: '' })
       expect(l.buildings.a).toMatchObject({ name: 'a-name', nameInferred: false, techLabel: 'IPC', stack: [] })
-      expect(l.edges[e]).toMatchObject({ cargo: 'messages', rate: '' })
+      expect(l.edges[e]).toMatchObject({ cargo: 'messages', rate: '', label: 'ipc chan:x', tech: ['IPC'] })
       expect(l.glossary).toEqual({})
     }
   })
@@ -860,7 +860,7 @@ describe('citations on every field (task 6)', () => {
     const llm = vi.fn(async (_p: string) => '{}')
     await labelWorld(twoDistricts(), mkDeps({ llm }))
     expect(llm.mock.calls[0][0]).toContain('where F is { "value": string, "evidence": ["E1"] }')
-    expect(LABEL_PROMPT_VERSION).toBe('world-label-v2')
+    expect(LABEL_PROMPT_VERSION).toBe('world-label-v3')
   })
 })
 

@@ -20,7 +20,7 @@ import { isAbsolute } from 'path'
 import type { Transport, UpstreamTool } from '../mcpGateway'
 import { MAX_DESIGN_OPS } from '../../shared/world/designPatch'
 import type { Claim, Evidence, EvidenceKind, WorldQuery, WorldReadResult } from '../../shared/world/types'
-import { EVIDENCE_KINDS, MAX_ANNOTATION_EVIDENCE, MAX_ANNOTATION_TEXT } from './annotations'
+import { EVIDENCE_KINDS, MAX_ANNOTATION_EVIDENCE, MAX_ANNOTATION_TEXT, MAX_EVIDENCE_EXCERPT, MAX_EVIDENCE_REF } from './annotations'
 import { evidenceRef } from './evidencePath'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DESIGN_SAVE_FAILED, type Designer } from './designer'
 import { createKeyedLock } from './keyedLock'
@@ -226,7 +226,8 @@ function parseAnnotateArgs(args: unknown): AnnotateArgs {
       fail('world_annotate evidence needs a kind (file, symbol, test, ...) and a ref')
     }
     if (r.kind === 'person') fail(PERSON_EVIDENCE_MESSAGE)
-    return { kind: r.kind as EvidenceKind, ref: r.ref, ...(typeof r.excerpt === 'string' ? { excerpt: r.excerpt } : {}) }
+    // The excerpt is cut here, at the boundary, so nothing longer travels further (the store caps it again).
+    return { kind: r.kind as EvidenceKind, ref: r.ref, ...(typeof r.excerpt === 'string' ? { excerpt: r.excerpt.slice(0, MAX_EVIDENCE_EXCERPT) } : {}) }
   })
   const cwd = optString(a, 'cwd', WORLD_ANNOTATE_TOOL)
   const designKey = optString(a, 'designKey', WORLD_ANNOTATE_TOOL)
@@ -291,7 +292,8 @@ export function createWorldGatewayTransport(
     let dropped = 0
     for (const e of p.evidence) {
       if (evidence.length === MAX_ANNOTATION_EVIDENCE) break
-      const ref = await evidenceRef(e.ref, root)
+      // A ref longer than any kept one is dropped unread: cut short, a path could name another file.
+      const ref = e.ref.length > MAX_EVIDENCE_REF ? null : await evidenceRef(e.ref, root)
       if (ref === null) dropped++
       else evidence.push({ ...e, ref })
     }
