@@ -14,7 +14,7 @@ After your answer, add one fenced block tagged world-actions containing a JSON a
 that show your answer in the World. Allowed steps:
 {"type":"focus","ids":[...]} {"type":"highlight","ids":[...]} {"type":"flow","edgeIds":[...]}
 {"type":"openCard","id":"..."} {"type":"tour","steps":[{"ids":[...],"caption":"..."}]} {"type":"reset"}
-Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the labels in the WORLD DATA.
+Use only ids from the WORLD DATA. Cite evidence inline as [E<n>] using the labels in the WORLD DATA, one marker per bracket.
 Put [A<n>] in your text where step n (1-based) should play.
 ${HONESTY_RULE}`
 
@@ -209,8 +209,9 @@ const isUncited = (text: string): boolean => text !== '' && !new RegExp(MARKER_R
 
 /** Splits an agent answer into prose, validated world actions and the evidence it cites. Never throws. */
 export function parseAnswer(raw: string, doc: WorldDoc, labels: Record<string, Evidence> = {}): WorldAnswer {
-  const input = typeof raw === 'string' ? splitGroups(raw) : ''
-  const marked = input.replace(BLOCK_RE, '').replace(DANGLING_RE, '').trim() // closed blocks, then a truncated opener
+  const input = typeof raw === 'string' ? raw : ''
+  // Closed blocks, then a truncated opener; grouped citations are split in the prose alone, never in the block's JSON.
+  const marked = splitGroups(input.replace(BLOCK_RE, '').replace(DANGLING_RE, '').trim())
   const text = marked.replace(/\s*\[A\d+\]/g, '').trim()
   try {
     const blocks = [...input.matchAll(BLOCK_RE)]

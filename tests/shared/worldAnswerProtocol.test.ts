@@ -127,6 +127,14 @@ describe('parseAnswer', () => {
     expect(parseAnswer('a [E1, x] b [A1, A2]', doc, table).text).toBe('a [E1, x] b')
   })
 
+  it('a grouped citation is split in the prose only, never inside the world-actions block, and the prompt asks for one marker per bracket (round 5 M4)', () => {
+    expect(ANSWER_PROTOCOL).toContain('one marker per bracket')
+    const raw = 'See it [E1, E2] [A1].\n' + block(JSON.stringify([{ type: 'tour', steps: [{ ids: [bId], caption: 'see [E3-E5]' }] }]))
+    const r = parseAnswer(raw, doc, {})
+    expect(r.text).toBe('See it [E1] [E2].')
+    expect(r.actions).toEqual([{ type: 'tour', steps: [{ ids: [bId], caption: 'see [E3-E5]' }] }])
+  })
+
   it('accepts bare numeric label keys too', () => {
     const e: Evidence = { kind: 'commit', ref: 'abc' }
     expect(parseAnswer('x [E3]', doc, { '3': e }).evidence).toEqual([e])
