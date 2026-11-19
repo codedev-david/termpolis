@@ -1248,7 +1248,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (tier === appliedTier) return
     appliedTier = tier
     const far = tier === 'districts'
-    for (const n of nodes.values()) if (!n.orb) n.group.visible = ownTier(n.id, tier, districtOf) !== 'districts'
+    for (const n of nodes.values()) {
+      if (n.orb) continue
+      n.group.visible = ownTier(n.id, tier, districtOf) !== 'districts'
+    }
     for (const o of [...slabMeshes, ...slabLines]) o.visible = far
     for (const e of edges.values()) {
       const sh = far ? e.low : e.tall
