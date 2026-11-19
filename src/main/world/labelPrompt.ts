@@ -8,15 +8,38 @@ export const LABEL_PROMPT_VERSION = 'world-label-v4'
 /** Bounds one batch's input as promptCommandChars measures it (it reaches the model on stdin, or a
  *  command line for agents that take one, and a Windows command line holds 32,767 characters in all). */
 export const MAX_PROMPT_CHARS = 28_000
-const MAX_LISTED_MEMBERS = 12
-const MAX_LISTED_BOUNDARIES = 12
 /** Identifiers listed per edge: enough to name its cargo. The code-written edge label keeps them all. */
 export const MAX_LISTED_VIA = 8
 const MAX_META_CHARS = 200
 
+/**
+ * How much of a batch the prompt lists: files and boundaries per building (`list`), identifiers per line
+ * (`via`), files per end of a line in a line-only batch (`ends`), and the characters of each name, path,
+ * identifier or excerpt reference (`chars`). Ids are never shortened: the reply is matched by them.
+ */
+export interface PromptFit {
+  list: number
+  via: number
+  ends: number
+  chars: number
+}
+
+/** The listing every batch gets. */
+export const FULL_FIT: PromptFit = { list: 12, via: MAX_LISTED_VIA, ends: 4, chars: MAX_META_CHARS }
+/** The listing of one building that does not fit even with no excerpts (long or quote-heavy names): it fits any
+ *  one building with its lines with room to spare (worldLabel.test.ts proves it with every field at its longest
+ *  and all quotes), so no building goes unasked. */
+export const SHORT_FIT: PromptFit = { list: 3, via: 2, ends: 1, chars: 80 }
+
 /** A repo-derived metadata string as one JSON-quoted line: control chars stripped, whitespace collapsed, capped. */
-export function meta(s: string): string {
-  return JSON.stringify(s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_META_CHARS))
+export function meta(s: string, max = MAX_META_CHARS): string {
+  return JSON.stringify(s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max))
+}
+
+/** The first `n` items as metadata strings, then how many more there are. */
+function listed(items: string[], n: number, chars: number): string {
+  const more = items.length - n
+  return `${items.slice(0, n).map((x) => meta(x, chars)).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`
 }
 
 /** A prompt's length once passed as one Windows command-line argument: every quote and backslash may be
@@ -43,11 +66,19 @@ export interface BatchBuilding {
   boundaries: string[]
 }
 
+/** One end of a line in a line-only batch: its part's name and files. */
+export interface BatchEnd {
+  name: string
+  members: string[]
+}
+
 export interface BatchEdge {
   id: string
   from: string
   to: string
   via: string[]
+  /** Set in a line-only batch, which lists no buildings: what each end of the line is. */
+  ends?: { from: BatchEnd; to: BatchEnd }
 }
 
 export interface LabelBatch {
@@ -64,7 +95,7 @@ export function fenceFor(text: string): string {
   return '`'.repeat(Math.max(3, longest + 1))
 }
 
-export function buildLabelPrompt(batch: LabelBatch): string {
+export function buildLabelPrompt(batch: LabelBatch, fit: PromptFit = FULL_FIT): string {
   const lines: string[] = [
     'You are labelling one district of a software repository for a 3D map. Name things plainly and explain how and why they work.',
     '',
@@ -74,26 +105,21 @@ export function buildLabelPrompt(batch: LabelBatch): string {
   ]
   for (const e of batch.excerpts) {
     const fence = fenceFor(e.text)
-    lines.push(`[${e.label}] ${e.kind ? `${e.kind} ` : ''}${meta(e.ref)}`, fence, e.text, fence)
+    lines.push(`[${e.label}] ${e.kind ? `${e.kind} ` : ''}${meta(e.ref, fit.chars)}`, fence, e.text, fence)
   }
   if (batch.excerpts.length === 0) lines.push('(none)')
-  lines.push('', `DISTRICT ${meta(batch.district.id)}: ${meta(batch.district.name)}`, '', 'BUILDINGS')
+  lines.push('', `DISTRICT ${meta(batch.district.id)}: ${meta(batch.district.name, fit.chars)}`, '', 'BUILDINGS')
   for (const b of batch.buildings) {
-    const more = b.members.length - MAX_LISTED_MEMBERS
-    lines.push(
-      `- ${meta(b.id)}: ${meta(b.name)}`,
-      `  files: ${b.members.slice(0, MAX_LISTED_MEMBERS).map(meta).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`
-    )
-    const moreB = b.boundaries.length - MAX_LISTED_BOUNDARIES
-    if (b.boundaries.length > 0) {
-      lines.push(`  boundaries: ${b.boundaries.slice(0, MAX_LISTED_BOUNDARIES).map(meta).join(', ')}${moreB > 0 ? ` (+${moreB} more)` : ''}`)
-    }
+    lines.push(`- ${meta(b.id)}: ${meta(b.name, fit.chars)}`, `  files: ${listed(b.members, fit.list, fit.chars)}`)
+    if (b.boundaries.length > 0) lines.push(`  boundaries: ${listed(b.boundaries, fit.list, fit.chars)}`)
   }
+  if (batch.buildings.length === 0 && batch.edges.length > 0) lines.push('(none: this batch describes only the edges below; each lists what its two ends are)')
   lines.push('', 'EDGES (from -> to)')
+  const end = (side: string, x: BatchEnd): string => `  ${side} ${meta(x.name, fit.chars)}${x.members.length > 0 ? ` files: ${listed(x.members, fit.ends, fit.chars)}` : ''}`
   for (const e of batch.edges) {
-    const moreV = e.via.length - MAX_LISTED_VIA
-    const via = e.via.length > 0 ? ` via ${e.via.slice(0, MAX_LISTED_VIA).map(meta).join(', ')}${moreV > 0 ? ` (+${moreV} more)` : ''}` : ''
+    const via = e.via.length > 0 ? ` via ${listed(e.via, fit.via, fit.chars)}` : ''
     lines.push(`- ${meta(e.id)}: ${meta(e.from)} -> ${meta(e.to)}${via}`)
+    if (e.ends) lines.push(end('from', e.ends.from), end('to', e.ends.to))
   }
   lines.push(
     '',
