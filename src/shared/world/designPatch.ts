@@ -307,7 +307,8 @@ export function applyDesignPatch(doc: WorldDoc, ops: DesignOp[], place: DesignPl
   const live = allIds(work)
   const keep: Record<string, Pos> = {}
   for (const [id, p] of Object.entries(work.layout.positions)) if (live.has(id) && !moved.has(id)) keep[id] = p
-  work.layout = { seed: work.layout.seed, positions: keep }
+  // The round is kept: a design change is no Re-layout, and the viewer must not read one into it.
+  work.layout = { ...work.layout, positions: keep }
   work.layout.positions = { ...place(work), ...keep }
   if (!validateWorld(work).ok) return { doc, applied: 0, skipped: ops.map((op) => ({ op, reason: 'the design would not be valid' })) }
   return { doc: work, applied, skipped }

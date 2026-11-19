@@ -351,7 +351,9 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
    * cannot tell, since a watched change that shrinks a district re-places its outer parts (round 2 N4).
    */
   function relaidSince(prev: WorldDoc, next: WorldDoc): boolean {
-    return (next.layout.round ?? 0) !== (prev.layout.round ?? 0)
+    // A world with no round (one compiled with no stored world to carry it) is not known to be a Re-layout: the view stays.
+    const round = next.layout.round
+    return round !== undefined && round !== (prev.layout.round ?? 0)
   }
 
   function deselect(): void {

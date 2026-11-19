@@ -654,6 +654,11 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(r.frame).toHaveBeenCalledTimes(1)
     viewer.load(relaidOut(2))
     expect(r.frame).toHaveBeenCalledTimes(2)
+    // A world that lost its round (a compile with no stored world, say) is not known to be a Re-layout: the view stays.
+    const unknown = relaidOut(2)
+    delete unknown.layout.round
+    viewer.load(unknown)
+    expect(r.frame).toHaveBeenCalledTimes(2)
   })
 
   it('a re-layout of the same project closes the open building and flies to the kept selection at its new spot (fix wave I3)', () => {

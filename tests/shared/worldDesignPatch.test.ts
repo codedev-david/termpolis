@@ -73,6 +73,15 @@ describe('applyDesignPatch', () => {
     expect(Object.keys(doc.cargo)).toEqual(['orders'])
   })
 
+  it('a change keeps the layout round, so the viewer reads no Re-layout into it (round 5 M3)', () => {
+    const doc = base()
+    doc.layout.round = 3
+    const r = applyDesignPatch(doc, [{ op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }])
+    expect(r.applied).toBe(1)
+    expect(r.doc.layout.round).toBe(3)
+    expect(applyDesignPatch(base(), [{ op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }]).doc.layout).not.toHaveProperty('round')
+  })
+
   it('cites design:<key> evidence when the doc key has no design: prefix', () => {
     const r = applyDesignPatch(emptyDesignDoc('plain', 1), [
       { op: 'addDistrict', id: 'd', name: 'D' },
