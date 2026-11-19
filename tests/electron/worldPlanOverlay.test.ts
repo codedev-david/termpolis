@@ -272,6 +272,53 @@ describe('overlayPlan', () => {
     noStacking(later)
   })
 
+  /** The world with a new district `id` (no previous compile had it) at `at`, holding the given buildings. */
+  function withDistrict(doc: WorldDoc, id: string, at: [number, number, number]): WorldDoc {
+    doc.districts.push({ id, name: id, subtitle: '', hue: 2, members: [] })
+    doc.layout.positions[id] = at
+    return doc
+  }
+
+  it('a part built from a ring wireframe whose district is new and holds only it: the district moves under the wireframe (round 7)', () => {
+    const plan = design(ROUND4)
+    const first = overlayPlan(built(), plan, null)
+    const cronAt = first.layout.positions.cron
+    expect(cronAt).toEqual([-70, 0, 0])
+    // The code's new "jobs" folder becomes district d3, which the layout put on a free slot at [70, 0, 0].
+    const fresh = withBuilt(withDistrict(built(), 'd3', [70, 0, 0]), 'jobs-cron', 'Cron', 'd3', [72, 0, 1])
+    const second = overlayPlan(fresh, plan, first)
+    expect(second.layers.plan[0].reconcile?.matched).toEqual({ cron: 'jobs-cron' })
+    // The building rises where the wireframe stood, and its slab moves with it, so it stands on its own slab.
+    expect(second.layout.positions['jobs-cron']).toEqual(cronAt)
+    expect(second.layout.positions.d3).toEqual([-72, 0, -1])
+    expect(second.layers.plan[0].buildings.map((b) => b.id)).toEqual(['mail'])
+    expect(validateWorld(second).ok).toBe(true)
+    // The next compile keeps the district where it now is (layoutWorld keeps a district's place): nothing moves.
+    const kept = withBuilt(withDistrict(built(), 'd3', [-72, 0, -1]), 'jobs-cron', 'Cron', 'd3', [-70, 0, 0])
+    const third = overlayPlan(kept, plan, second)
+    expect(third.layout.positions.d3).toEqual([-72, 0, -1])
+    expect(third.layout.positions['jobs-cron']).toEqual(cronAt)
+  })
+
+  it('a new district is moved only when it holds just the part and its slab would clear every other district (round 7)', () => {
+    const plan = design(ROUND4)
+    const first = overlayPlan(built(), plan, null)
+    // A second building in the new district: the district stays where the layout put it.
+    const two = withBuilt(withBuilt(withDistrict(built(), 'd3', [70, 0, 0]), 'jobs-cron', 'Cron', 'd3', [72, 0, 1]), 'jobs-q', 'Queue', 'd3', [66, 0, -3])
+    const a = overlayPlan(two, plan, first)
+    expect(a.layout.positions.d3).toEqual([70, 0, 0])
+    expect(a.layout.positions['jobs-cron']).toEqual([72, 0, 1])
+    // Another district near the wireframe's spot: the slab would crowd it, so it stays put too.
+    const near = withDistrict(withBuilt(withDistrict(built(), 'd3', [70, 0, 0]), 'jobs-cron', 'Cron', 'd3', [72, 0, 1]), 'd4', [-80, 0, 10])
+    const b = overlayPlan(near, plan, first)
+    expect(b.layout.positions.d3).toEqual([70, 0, 0])
+    expect(b.layout.positions['jobs-cron']).toEqual([72, 0, 1])
+    // A district that stood before (d2, empty until now) never moves: other compiles placed it.
+    const old = overlayPlan(withBuilt(built(), 'jobs-cron', 'Cron', 'd2', [33, 0, 41]), plan, first)
+    expect(old.layout.positions.d2).toEqual([30, 0, 40])
+    expect(old.layout.positions['jobs-cron']).toEqual([33, 0, 41])
+  })
+
   it('spots come only from the same design: a project linked to another design holds none (round 6 M3)', () => {
     const plan = design(ROUND4)
     const first = overlayPlan(built(), plan, null)

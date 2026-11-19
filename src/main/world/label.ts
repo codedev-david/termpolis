@@ -70,8 +70,10 @@ export const LABEL_CALL_TIMEOUT_MS = 120_000
  *  the model is slow or overloaded, so it is not asked again at once. A failure that came back sooner is. */
 export const LABEL_SLOW_FAIL_MS = 30_000
 /** A call that brought nothing back within this long reached no model (no agent, consent off, a refusal before
- *  any spawn): it costs no tokens. One that took longer reached a model process, and its prompt counts. */
-export const LABEL_NO_MODEL_MS = 10
+ *  any spawn): it costs no tokens. One that took longer reached a model process, and its prompt counts. Starting
+ *  an agent CLI takes seconds, while a refusal is one IPC round trip to main: a second leaves room for a busy main
+ *  (typing lag, a slow CI runner) without counting a refusal as spend. */
+export const LABEL_NO_MODEL_MS = 1000
 const MAX_EXCERPTS_PER_BUILDING = 3
 const MAX_FILE_EXCERPTS = 2
 const MAX_FLOORS = 12

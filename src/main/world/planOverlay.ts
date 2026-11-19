@@ -8,7 +8,7 @@
 import type { Building, PlanReconcile, Proposal, WorldDoc, WorldEdge } from '../../shared/world/types'
 import { normalizePartName, reconcilePlan } from '../../shared/world/reconcile'
 import { validateWorld } from '../../shared/world/validate'
-import { MOVED_TOLERANCE, clear, districtRadius, placeBuilding } from './layout'
+import { MIN_SIBLING_GAP, MOVED_TOLERANCE, SLOT_CLEARANCE, clear, districtRadius, placeBuilding } from './layout'
 
 export const LINKED_DESIGN_TITLE = 'Linked design'
 /** How far outside the farthest district centre a planned part with no district sits. */
@@ -38,6 +38,11 @@ function plannedBefore(previous: WorldDoc | null): Set<string> {
  * otherwise the layout's spot stands. A wireframe on the ring, or in another district, so never pulls a
  * building off its slab, and a sibling the layout put on the spot never shares it. Only the previous
  * proposal of the same design (`key`) lends spots.
+ * A part whose wireframe stood on the ring usually lands in a district new this compile (its folder had none),
+ * which the layout put on a free slot elsewhere. When that district holds only the part, the district moves so
+ * the part stands on the wireframe's spot, its slab under it, provided the slab stays clear of every other
+ * district (SLOT_CLEARANCE, and the two radii plus MIN_SIBLING_GAP). Later compiles keep it there: the layout
+ * keeps a district's place. A district that stood before never moves.
  */
 function holdPlannedSpots(doc: WorldDoc, key: string, matched: Record<string, string>, previous: WorldDoc | null, positions: Record<string, Pos>): void {
   const link = previous?.layers.plan.find((p) => p.reconcile !== undefined && p.id === key)
@@ -47,14 +52,28 @@ function holdPlannedSpots(doc: WorldDoc, key: string, matched: Record<string, st
   const wireAt = new Map<string, Pos | undefined>()
   link?.buildings.forEach((b, i) => wireAt.set((was as PlanReconcile).missing[i], prevPos[b.id]))
   const prevDistrict = new Map((previous ? previous.buildings : []).map((b) => [b.id, b.districtId]))
+  const stoodBefore = new Set((previous ? previous.districts : []).map((d) => d.id))
   const districtOf = new Map(doc.buildings.map((b) => [b.id, b.districtId]))
   const fits = (bid: string, p: Pos): boolean => {
     const d = districtOf.get(bid) as string
     const c = positions[d]
     if (c === undefined) return false
+    // The layout places every building of a placed district, so each member has a position.
     const members = doc.buildings.filter((b) => b.districtId === d)
-    const others = members.filter((b) => b.id !== bid && positions[b.id]).map((b): [number, number] => [positions[b.id][0], positions[b.id][2]])
+    const others = members.filter((b) => b.id !== bid).map((b): [number, number] => [positions[b.id][0], positions[b.id][2]])
     return Math.hypot(p[0] - c[0], p[2] - c[2]) <= districtRadius(members.length) + MOVED_TOLERANCE && clear([p[0], p[2]], others)
+  }
+  const size = (d: string): number => doc.buildings.filter((b) => b.districtId === d).length
+  const moveDistrict = (bid: string, at: Pos): void => {
+    const d = districtOf.get(bid) as string
+    const c = positions[d]
+    if (c === undefined || stoodBefore.has(d) || size(d) !== 1) return
+    const b = positions[bid]
+    const to: Pos = [round2(c[0] + at[0] - b[0]), 0, round2(c[2] + at[2] - b[2])]
+    const room = (o: string): number => Math.max(SLOT_CLEARANCE, districtRadius(size(o)) + districtRadius(1) + MIN_SIBLING_GAP)
+    if (!doc.districts.every((o) => o.id === d || Math.hypot(positions[o.id][0] - to[0], positions[o.id][2] - to[2]) >= room(o.id))) return
+    positions[d] = to
+    positions[bid] = at
   }
   for (const [pid, bid] of Object.entries(matched)) {
     const at = wireAt.get(pid)
@@ -62,10 +81,10 @@ function holdPlannedSpots(doc: WorldDoc, key: string, matched: Record<string, st
     // (its old id is gone from the code). Never one that still stands, or the two would share a spot.
     const before = was?.matched[pid] ?? bid
     const held = prevPos[before]
-    const spot = !prevDistrict.has(bid) && at
-      ? at
-      : (before === bid || !districtOf.has(before)) && prevDistrict.get(before) === districtOf.get(bid) ? held : undefined
+    const fresh = prevDistrict.has(bid) ? undefined : at
+    const spot = fresh ?? ((before === bid || !districtOf.has(before)) && prevDistrict.get(before) === districtOf.get(bid) ? held : undefined)
     if (spot && fits(bid, spot)) positions[bid] = spot
+    else if (fresh) moveDistrict(bid, fresh)
   }
 }
 

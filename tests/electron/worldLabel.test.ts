@@ -52,6 +52,8 @@ function mkDeps(over: Partial<LabelDeps> = {}): LabelDeps & { store: Map<string,
   return {
     store,
     llm: async () => '{}',
+    // A fixed clock: no test depends on real elapsed time. Tests of timing pass their own.
+    now: () => 0,
     cache: { get: async (h) => store.get(h) ?? null, set: async (h, v) => void store.set(h, v) },
     excerpt: async (f, l) => `code of ${f}${l === undefined ? '' : `:${l}`}`,
     ...over
@@ -401,16 +403,34 @@ describe('labelWorld', () => {
     }
   })
 
+  it('a refusal slowed to half a second by a busy main still reached no model: it costs nothing (round 7 N1)', async () => {
+    expect(LABEL_NO_MODEL_MS).toBeGreaterThanOrEqual(500)
+    let clock = 0
+    const llm = vi.fn(async (_p: string): Promise<string | null> => {
+      clock += 500
+      return null
+    })
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm, now: () => clock }))
+    expect(llm).toHaveBeenCalledTimes(4)
+    expect(l.tokens).toBe(0)
+  })
+
   it('a call is timed with a monotonic clock by default: a wall clock jump does not make a quick failure a timeout (round 6 M1)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     let wall = Date.now()
     const jump = vi.spyOn(Date, 'now').mockImplementation(() => (wall += LABEL_SLOW_FAIL_MS))
+    // The monotonic clock stands still, so the test does not depend on real elapsed time either.
+    const mono = vi.spyOn(performance, 'now').mockReturnValue(5)
     try {
       const llm = vi.fn(async (_p: string): Promise<string | null> => null)
-      const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
+      const deps = mkDeps({ llm })
+      delete deps.now
+      const l = await labelWorld(twoDistricts(), deps)
       expect(llm).toHaveBeenCalledTimes(4)
       expect(l.tokens).toBe(0)
+      expect(mono).toHaveBeenCalled()
     } finally {
+      mono.mockRestore()
       jump.mockRestore()
       warn.mockRestore()
     }
