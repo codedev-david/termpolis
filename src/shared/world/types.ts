@@ -13,11 +13,28 @@ export interface Floor { name: string; tech: string[]; members: string[] }
 /** Whether a name came from the code ('observed') or was suggested by the model ('inferred'). */
 export type NameState = 'observed' | 'inferred'
 export interface District { id: string; name: string; subtitle: string; hue: number; members: string[]; nameState: NameState }
+/**
+ * How the grouping (main/world/group.ts) made a building, as plain facts it recorded: what it started as, how many
+ * clusters joined that start because their files import each other densely, and how many smaller buildings the
+ * building cap folded into it. `seed` is the process key (process), the file (service, file), the folder (folder) or
+ * the leading name word (family, whose folder is `folder`).
+ */
+export interface BuildingGrowth {
+  start: 'process' | 'service' | 'folder' | 'family' | 'file'
+  seed: string
+  folder?: string
+  merged: number
+  folded: number
+  /** The most buildings a project shows (the cap in force when it was grouped). */
+  cap: number
+}
 export interface Building {
   id: string; districtId: string; name: string; techLabel: string; process: string
   floors: Floor[]; stack: string[]; how: Claim[]; why: Claim[]; status: BuildStatus; members: string[]
   /** Facts beyond how and why: observed in code, verified by tests, or confirmed by a person. */
   claims: Claim[]; nameState: NameState
+  /** How the grouping made it. Only compiled buildings carry it, and worlds stored before it have none. */
+  growth?: BuildingGrowth
 }
 export interface WorldEdge {
   id: string; from: string; to: string; cargo: string; label: string

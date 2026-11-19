@@ -29,6 +29,28 @@ describe('validateWorld', () => {
     expect(both.ok && ('runtimeHandSet' in both.doc || 'labelTokens' in both.doc)).toBe(false)
   })
 
+  it("a building's growth is optional: absent loads, a whole one is kept, a malformed one is dropped", () => {
+    const none = validateWorld(fresh())
+    expect(none.ok && 'growth' in none.doc.buildings[0]).toBe(false)
+    const growth = { start: 'family', seed: 'terminal', folder: 'src/main', merged: 5, folded: 14, cap: 60 }
+    const doc = fresh()
+    doc.buildings[0].growth = growth
+    doc.buildings[1].growth = { start: 'process', seed: 'main', merged: 0, folded: 0, cap: 60 }
+    const kept = validateWorld(doc)
+    expect(kept.ok && kept.doc.buildings.map((b) => b.growth)).toEqual([growth, doc.buildings[1].growth])
+    const junk: unknown[] = [
+      'big', null, [], { ...growth, start: 'magic' }, { ...growth, seed: 3 }, { ...growth, folder: 7 },
+      { ...growth, merged: -1 }, { ...growth, folded: 1.5 }, { ...growth, cap: '60' }
+    ]
+    for (const g of junk) {
+      const bad = fresh()
+      bad.buildings[0].growth = g
+      const r = validateWorld(bad)
+      expect(r.ok).toBe(true)
+      expect(r.ok && 'growth' in r.doc.buildings[0]).toBe(false)
+    }
+  })
+
   it('labelTokens is optional: absent loads, a number is kept, junk is dropped', () => {
     const none = validateWorld(fresh())
     expect(none.ok && 'labelTokens' in none.doc).toBe(false)

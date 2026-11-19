@@ -269,3 +269,17 @@ describe('claim states, evidence and confirm', () => {
     expect(JSON.parse(ev.getAttribute('data-evidence') as string)).toEqual({ kind: 'file', ref: evil })
   })
 })
+
+describe('why a building is this big', () => {
+  it("a big building's card says why after what is inside, escaped, and a small one says nothing", () => {
+    const doc = minimal()
+    const files = Array.from({ length: 30 }, (_, i) => `src/a/f${i}.ts`)
+    const big = building('big', { members: files, growth: { start: 'family', seed: '<t>', folder: 'src/a', merged: 2, folded: 0, cap: 60 } })
+    doc.buildings.push(big)
+    const html = buildingCard(doc, 'big')
+    expect(html).toContain('<h4>Why it is this big</h4><p>30 files. It started as the src/a folder&#39;s name family &quot;&lt;t&gt;&quot;, and 2 dense clusters merged into it.</p>')
+    expect(html.indexOf('Why it is this big')).toBeGreaterThan(html.indexOf('What&#39;s inside'))
+    expect(html.indexOf('Why it is this big')).toBeLessThan(html.indexOf('Technology'))
+    expect(buildingCard(doc, 'b1')).not.toContain('Why it is this big')
+  })
+})

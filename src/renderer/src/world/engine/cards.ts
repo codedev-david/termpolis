@@ -1,7 +1,7 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT as STATUS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf } from '../../../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT as STATUS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf, sizeNote } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
@@ -82,11 +82,13 @@ export function buildingCard(doc: WorldDoc, id: string): string {
   // (left out when the code shows no process for this part, rather than an empty "Runs in:").
   const runsIn = runsInOf(doc, b)
   const aiName = b.nameState === 'inferred' ? ' <span class="muted">(name suggested by AI)</span>' : ''
+  const big = sizeNote(doc, b)
   return `<h3>${esc(b.name)}${aiName}</h3>${b.techLabel ? `<p class="muted">${esc(b.techLabel)}</p>` : ''}`
     + `<p class="status"><span class="tag status-${esc(b.status)}">${esc(STATUS[b.status])}</span>${tag}</p>`
     + (runsIn.trim() ? `<div class="proc">Runs in: <b>${esc(runsIn)}</b></div>` : '')
     + section('What it does', claims(b.how, b.id, 0))
     + (parts ? section('What\'s inside', `<ul>${parts}</ul>`) : '')
+    + (big ? section('Why it is this big', `<p>${esc(big)}</p>`) : '')
     + (b.stack.length ? section('Technology', `<div>${chips(doc, b.stack)}</div>`) : '')
     + section('Why it\'s built this way', claims(b.why, b.id, b.how.length))
     + serviceNames(doc, id)

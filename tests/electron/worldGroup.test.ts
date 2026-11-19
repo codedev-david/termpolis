@@ -977,3 +977,67 @@ describe('groupProject', () => {
     expect(after.districts.map((d) => d.id)).toEqual(before.districts.map((d) => d.id))
   })
 })
+
+describe('how a building grew', () => {
+  const s = snap({
+    'src/m/a1.ts': [],
+    'src/m/a2.ts': [],
+    'src/m/b.ts': ['./c1', './d1'],
+    'src/m/c0.ts': [],
+    'src/m/c1.ts': ['./c2'],
+    'src/m/c2.ts': ['./c1'],
+    'src/m/d0.ts': [],
+    'src/m/d1.ts': ['./d2'],
+    'src/m/d2.ts': ['./d1'],
+    'src/m/pa.ts': [],
+    'src/m/pb.ts': [],
+    'src/m/zz/q.ts': [],
+    'src/solo/only.ts': ['../m/a1']
+  })
+  const bounds = [B('worker', 'pa', 'consume', 'src/solo/only.ts', 1), B('worker', 'pb', 'consume', 'src/solo/only.ts', 2)]
+
+  it('a plain building records what it started as, and that nothing joined it', () => {
+    const g = groupProject(s, bounds)
+    expect(home(g, 'src/solo/only.ts').growth).toEqual({ start: 'family', seed: 'only', folder: 'src/solo', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+    expect(home(g, 'src/m/zz/q.ts').growth).toEqual({ start: 'folder', seed: 'src/m/zz', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+    expect(home(g, 'src/m/pa.ts').growth).toEqual({ start: 'process', seed: 'pa', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+    expect(home(g, 'src/m/a1.ts').growth).toEqual({ start: 'file', seed: 'src/m/a1.ts', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+  })
+
+  it('a density-merged building counts the clusters that joined it', () => {
+    const d = snap({
+      'src/core/terminalHost.ts': ['./terminalView', './ptyBridge', './shellRunner'],
+      'src/core/terminalView.ts': ['./terminalHost', './ptyQueue'],
+      'src/core/ptyBridge.ts': ['./terminalHost', './ptyQueue'],
+      'src/core/ptyQueue.ts': ['./ptyBridge', './terminalView'],
+      'src/core/shellRunner.ts': ['./terminalHost', './terminalView', './ptyBridge', './ptyQueue'],
+      'src/core/loneHelper.ts': []
+    })
+    const g = groupProject(d, [])
+    checkInvariants(g, d.files)
+    const big = home(g, 'src/core/terminalHost.ts')
+    expect(big.members).toEqual(['src/core/ptyBridge.ts', 'src/core/ptyQueue.ts', 'src/core/shellRunner.ts', 'src/core/terminalHost.ts', 'src/core/terminalView.ts'])
+    // shellRunner joins the terminal family first (the densest pair), then the pty family joins the larger side.
+    expect(big.growth).toEqual({ start: 'family', seed: 'terminal', folder: 'src/core', merged: 2, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+    expect(home(g, 'src/core/loneHelper.ts').growth).toMatchObject({ merged: 0, folded: 0 })
+  })
+
+  it('a cap-folded building counts the buildings folded into it, and the cap', () => {
+    const g = groupProject(s, bounds, { maxBuildings: 9 })
+    // a1 has no same-district neighbour and joins a2, the next building in path order.
+    expect(home(g, 'src/m/a2.ts').growth).toEqual({ start: 'file', seed: 'src/m/a2.ts', merged: 0, folded: 1, cap: 9 })
+    const g2 = groupProject(s, bounds, { maxBuildings: 2 })
+    // Everything in src/m ends in pa's building at the last.
+    expect(home(g2, 'src/m/a1.ts').growth).toEqual({ start: 'process', seed: 'pa', merged: 0, folded: 9, cap: 2 })
+    // The same project grouped twice records the same facts.
+    expect(groupProject(s, bounds, { maxBuildings: 2 })).toEqual(g2)
+  })
+
+  it('a channel service records the file it started as', () => {
+    const g = groupProject(
+      snap({ 'src/main/index.ts': ['./swarmManager'], 'src/main/swarmManager.ts': [], 'src/main/swarmMemory.ts': [] }),
+      [B('ipc', 'swarm:tasks', 'provide', 'src/main/index.ts', 1)]
+    )
+    expect(home(g, 'src/main/swarmManager.ts').growth).toEqual({ start: 'service', seed: 'src/main/swarmManager.ts', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+  })
+})

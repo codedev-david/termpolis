@@ -2,7 +2,7 @@
 // cards.ts), gathered by the same helpers (shared/world/cardFacts.ts, edgeText.ts), with each claim
 // followed by its state in brackets and the evidence behind it on the next line.
 import { NOT_IN_DESIGN } from '../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn } from '../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn, sizeNote } from '../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../shared/world/edgeText'
 import type { Claim, WorldDoc, WorldEdge } from '../../shared/world/types'
 
@@ -37,6 +37,7 @@ function buildingText(doc: WorldDoc, id: string): string {
   const ins = edges.filter((e) => e.to === id)
   const outs = edges.filter((e) => e.from === id)
   const run = runsIn(doc, b)
+  const big = sizeNote(doc, b)
   const floors = b.floors.map((f) => `- ${f.name}${f.tech.length ? ` · ${f.tech.join(', ')}` : ''}`)
   const lines = [
     `${b.name}${b.nameState === 'inferred' ? ' (name suggested by AI)' : ''}`,
@@ -45,6 +46,7 @@ function buildingText(doc: WorldDoc, id: string): string {
     ...(run.trim() ? [`Runs in: ${run}`] : []),
     ...section('What it does', claimLines(b.how)),
     ...(floors.length ? section("What's inside", floors) : []),
+    ...(big ? section('Why it is this big', [big]) : []),
     ...(b.stack.length ? section('Technology', techLine(doc, b.stack)) : []),
     ...section("Why it's built this way", claimLines(b.why)),
     ...known(b.claims),

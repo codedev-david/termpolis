@@ -126,6 +126,18 @@ const fillNameState = (ctx: Ctx, p: string, rec: Rec): void => {
   else if (!NAME_STATES.has(rec.nameState as string)) ctx.errors.push(`${p}: nameState "${String(rec.nameState)}" is invalid`)
 }
 
+const GROWTH_STARTS = new Set(['process', 'service', 'folder', 'family', 'file'])
+const isCount = (v: unknown): boolean => Number.isInteger(v) && (v as number) >= 0
+/** A building's growth is optional (worlds stored before it have none) and only feeds a card note: a malformed one
+ *  is dropped, so the world still loads. */
+const fillGrowth = (rec: Rec): void => {
+  if (rec.growth === undefined) return
+  const g = rec.growth
+  const whole = isRecord(g) && GROWTH_STARTS.has(g.start as string) && isStr(g.seed) && (g.folder === undefined || isStr(g.folder)) &&
+    isCount(g.merged) && isCount(g.folded) && isCount(g.cap)
+  if (!whole) delete rec.growth
+}
+
 const checkFloors = (ctx: Ctx, p: string, floors: unknown): void => {
   if (!Array.isArray(floors)) {
     ctx.errors.push(`${p}: floors must be an array`)
@@ -161,6 +173,7 @@ const checkBuilding = (ctx: Ctx, prefix: string, b: unknown, i: number, proposed
   checkClaims(ctx, p, 'why', rec.why)
   fillClaims(ctx, p, rec)
   fillNameState(ctx, p, rec)
+  fillGrowth(rec)
   if (id !== null && ctx.positions) {
     if (!has(ctx.positions, id)) ctx.errors.push(`${p}: no layout position`)
     else {

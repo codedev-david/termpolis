@@ -1,7 +1,7 @@
 // The facts both Lumopolis cards state, gathered once: the HTML card (renderer engine cards.ts) and the
 // plain-text card an agent reads (main cardText.ts) import these, so the two cannot say different things.
 // Pure and ES2020.
-import type { Building, Evidence, WorldDoc, WorldEdge } from './types'
+import type { Building, BuildingGrowth, Evidence, WorldDoc, WorldEdge } from './types'
 import { edgeActions, edgeItems } from './edgeText'
 
 /** The status pill of a building, in words. */
@@ -102,4 +102,49 @@ export function direction(doc: WorldDoc, e: WorldEdge): Direction {
   if (planned) return sentence(`One way (planned): ${from} reaches ${to}.`)
   if (withReplies(doc, e)) return sentence(`One way, with replies: ${from} asks and ${to} answers.`)
   return sentence(`One way: only ${from} starts it; ${to} never reaches back.`)
+}
+
+/** A building is big from this many files, when it also holds at least twice the project's median. */
+export const BIG_MIN_FILES = 20
+/** The most floors a building's card lists (main/world/label.ts MAX_FLOORS): past it the rest share one "other" floor. */
+export const FLOOR_CAP = 12
+
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
+const folderName = (dir: string): string => (dir ? `the ${dir} folder` : 'the top-level folder')
+const STARTS: Record<BuildingGrowth['start'], (g: BuildingGrowth) => string> = {
+  process: (g) => `the entry of the "${g.seed}" process`,
+  service: (g) => `the channel service ${g.seed}`,
+  folder: (g) => folderName(g.seed),
+  family: (g) => `${folderName(g.folder ?? '')}'s name family "${g.seed}"`,
+  file: (g) => `the single file ${g.seed}`
+}
+
+function median(sizes: number[]): number {
+  const s = [...sizes].sort((a, b) => a - b)
+  const mid = s.length >> 1
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+}
+
+/**
+ * "Why it is this big": the note both cards show on a big building, in facts the grouping recorded (`growth`) and
+ * nothing else. Big means at least BIG_MIN_FILES files and twice the median of the world's buildings, or anything
+ * the building cap folded in. Empty for any other building, and for one without growth (a planned one, or a world
+ * stored before growth was recorded).
+ */
+export function sizeNote(doc: WorldDoc, b: Building): string {
+  const g = b.growth
+  if (!g) return ''
+  const n = b.members.length
+  const big = n >= BIG_MIN_FILES && n >= 2 * median(doc.buildings.map((x) => x.members.length))
+  if (!big && g.folded === 0) return ''
+  const parts = [STARTS[g.start](g)]
+  if (g.merged > 0) parts.push(`${plural(g.merged, 'dense cluster', 'dense clusters')} merged into it`)
+  if (g.folded > 0) {
+    parts.push(`${plural(g.folded, 'smaller group was', 'smaller groups were')} folded in because Lumopolis shows at most ${g.cap} buildings per project`)
+  }
+  const reasons = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}`
+  const last = b.floors[b.floors.length - 1]
+  const other = b.floors.length >= FLOOR_CAP && last.name === 'other' ? ` Its "other" floor holds ${plural(last.members.length, 'file', 'files')}.` : ''
+  const view = b.floors.length > 1 ? ' Double-click to see its floors.' : ''
+  return `${plural(n, 'file', 'files')}. It started as ${reasons}.${other}${view}`
 }

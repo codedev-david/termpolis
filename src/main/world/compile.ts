@@ -631,7 +631,8 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
       status: st.status,
       members: b.members,
       claims: st.claims,
-      nameState: l.nameInferred ? 'inferred' : 'observed'
+      nameState: l.nameInferred ? 'inferred' : 'observed',
+      growth: b.growth
     }
   })
   const ext = externalsOf(g)

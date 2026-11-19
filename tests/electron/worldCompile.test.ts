@@ -209,6 +209,12 @@ describe('compileWorld', () => {
     expect(plain.edges.every((e) => !e.twoWay)).toBe(true)
   })
 
+  it('every built building carries how the grouping made it', async () => {
+    const doc = await compileFixture()
+    expect(doc.buildings.every((b) => b.growth !== undefined && b.growth.cap === 60)).toBe(true)
+    expect(doc.buildings.find((b) => b.id === MAIN)?.growth).toEqual({ start: 'process', seed: 'main', merged: 0, folded: 0, cap: 60 })
+  })
+
   it('reads relative imports from the file text when the graph has none', async () => {
     const doc = await compileWorld({ snap: snapOf(FIXTURE, {}), projectKey: 'demo', head: HEAD, previous: null }, mkDeps())
     expectValid(doc)

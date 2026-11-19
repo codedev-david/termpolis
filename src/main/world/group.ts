@@ -24,7 +24,7 @@
 //    bases get '--' plus the first member's basename, and -2, -3 (path order) only if that collides.
 // 7. Edges come from resolved imports, fork/worker targets and provide/consume boundary pairs.
 import type { GraphSnapshot } from '../codeGraph'
-import type { District } from '../../shared/world/types'
+import type { BuildingGrowth, District } from '../../shared/world/types'
 import { baseKey, type Boundary } from './detectors/common'
 import { BRIDGE_PREFIX } from './detectors/ipc'
 
@@ -39,6 +39,9 @@ export interface GroupBuilding {
    *  when the district is a main/renderer/preload folder, else ''. */
   process: string
   boundaries: Boundary[]
+  /** How it grew: what it started as, the clusters merged into that start, and the buildings the cap folded in.
+   *  groupProject always sets it; a building made any other way may have none. */
+  growth?: BuildingGrowth
 }
 
 /** Directed dependency: importer -> imported, consumer -> provider, forker -> forked. */
@@ -590,7 +593,10 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     for (const list of named.values()) if (list.length === 1) services.add(list[0])
   }
   const pinned = new Set<number>()
+  // What each building before the cap started as (index = building), and how many clusters merged into that start.
+  const bStart: Omit<BuildingGrowth, 'folded' | 'cap'>[] = entries.map((e) => ({ start: 'process', seed: proc.get(e) as string, merged: 0 }))
   for (const g of [...services].sort((a, b) => a - b)) {
+    bStart.push({ start: 'service', seed: files[g], merged: 0 })
     owner[g] = bFiles.length
     pinned.add(bFiles.length)
     bFiles.push([g])
@@ -602,6 +608,8 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
   //    leading word (memoryClient.ts, memoryGraph.ts) are one module by naming convention.
   const family = Int32Array.from({ length: n }, (_, i) => i)
   const firstOf = new Map<string, number>()
+  /** A family's root file -> its stem ('/' for a whole small folder); a file in no family has none. */
+  const stemOf = new Map<number, string>()
   const inDir = new Map<string, number>()
   for (const f of files) inDir.set(dirOf(f), (inDir.get(dirOf(f)) ?? 0) + 1)
   files.forEach((f, i) => {
@@ -611,8 +619,10 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     if (stem === '') return
     const k = `${district[i]}\0${dirOf(f)}\0${stem}`
     const r = firstOf.get(k)
-    if (r === undefined) firstOf.set(k, i)
-    else family[i] = r
+    if (r === undefined) {
+      firstOf.set(k, i)
+      stemOf.set(i, stem)
+    } else family[i] = r
   })
   const fileUf = clusterFree(imports, district, owner, family)
   const rootB = new Map<number, number>()
@@ -626,10 +636,19 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       bFiles.push([])
       bProc.push('')
       bEntry.push(-1)
+      // The cluster is named for its root's family: the family it grew from (the larger side of every merge).
+      const stem = stemOf.get(r)
+      const dir = dirOf(files[r])
+      bStart.push(stem === undefined ? { start: 'file', seed: files[r], merged: 0 } : stem === '/' ? { start: 'folder', seed: dir, merged: 0 } : { start: 'family', seed: stem, folder: dir, merged: 0 })
     }
     owner[i] = b
     bFiles[b].push(i)
   }
+  // Clusters merged for density: the families in a building, less the one it started as.
+  const familiesIn = new Map<number, Set<number>>()
+  for (const b of rootB.values()) familiesIn.set(b, new Set())
+  for (let i = 0; i < n; i++) familiesIn.get(owner[i])?.add(family[i])
+  for (const [b, fams] of familiesIn) bStart[b].merged = fams.size - 1
 
   // 4. Cap buildings. Heap key orders (process?, size, first path); adjacency is same-district only.
   const nb = bFiles.length
@@ -743,6 +762,9 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     else members.set(b, [files[i]])
   }
   const liveB = [...members.keys()].sort((x, y) => x - y)
+  // Buildings the cap folded into each live one.
+  const folded = new Map<number, number>()
+  for (let b = 0; b < nb; b++) folded.set(bUf.find(b), (folded.get(bUf.find(b)) ?? -1) + 1)
   const districtRoots = [...new Set(district)].sort((x, y) => x - y)
   const dIds = uniqueIds(districtRoots.map((d) => ({ base: `d-${slug(dirs[d]) || 'root'}`, tag: '', order: dirs[d] })))
   const dIdOf = new Map(districtRoots.map((d, i) => [d, dIds[i]]))
@@ -801,7 +823,8 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       name: bEntry[b] >= 0 ? bProc[b] : frontDoor(b, lastSeg(dirs[bDist[b]]) || 'root') || lastSeg(anchors[i]) || 'root',
       members: m,
       process: bEntry[b] >= 0 ? runsIn(bProc[b]) : ENTRY_PROCESSES.has(dName) ? runsIn(dName) : '',
-      boundaries: boundariesOf.get(b) as Boundary[]
+      boundaries: boundariesOf.get(b) as Boundary[],
+      growth: { ...bStart[b], folded: folded.get(b) as number, cap: maxBuildings }
     }
   })
   buildings.sort((x, y) => cmp(x.id, y.id))

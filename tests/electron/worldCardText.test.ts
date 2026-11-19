@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { cardText } from '../../src/main/world/cardText'
+import { labelWorld } from '../../src/main/world/label'
 import { buildingCard, edgeCard } from '../../src/renderer/src/world/engine/cards'
 import { building, claim, edge, minimal, rich } from '../renderer/world/helpers'
 
@@ -196,6 +197,30 @@ describe('cardText', () => {
     doc.edges.push(edge('e5', 'b1', 'x1', { label: 'http-out api.example.com' }))
     expect(cardText(doc, 'e5')).toContain('Direction:\nOne way, with replies: Desktop app asks and Claude Code answers.')
     expect(cardText(doc, 'pe1')).toContain('Direction:\nOne way (planned): Desktop app reaches pb1.')
+  })
+
+  it('states why a big building is this big, in the same words as the HTML card', () => {
+    const doc = minimal()
+    const files = Array.from({ length: 30 }, (_, i) => `src/a/f${i}.ts`)
+    doc.buildings.push(building('big', { members: files, growth: { start: 'process', seed: 'ptyHost', merged: 0, folded: 3, cap: 60 } }))
+    const note = '30 files. It started as the entry of the "ptyHost" process, and 3 smaller groups were folded in because Lumopolis shows at most 60 buildings per project.'
+    expect(cardText(doc, 'big')).toContain(`Why it is this big:\n${note}`)
+    expect(buildingCard(doc, 'big')).toContain('ptyHost')
+    expect(cardText(doc, 'b1')).not.toContain('Why it is this big')
+  })
+
+  it('a building of thousands of files stops at 12 floors, and both cards say how many files share its "other" floor (G05)', async () => {
+    const files = Array.from({ length: 2000 }, (_, i) => `src/huge/f${String(i).padStart(4, '0')}.ts`)
+    const g = { districts: [{ id: 'd1', name: 'D', members: [] }], buildings: [{ id: 'huge', districtId: 'd1', name: 'huge', members: files, process: '', boundaries: [] }], edges: [] }
+    const l = await labelWorld(g, { llm: null, cache: { get: async () => null, set: async () => undefined }, excerpt: async () => '' })
+    const floors = l.buildings.huge.floors
+    expect(floors).toHaveLength(12)
+    expect(floors[11]).toMatchObject({ name: 'other', members: files.slice(11) })
+    const doc = minimal()
+    doc.buildings.push(building('huge', { members: files, floors, growth: { start: 'folder', seed: 'src/huge', merged: 0, folded: 0, cap: 60 } }))
+    const note = '2000 files. It started as the src/huge folder. Its "other" floor holds 1989 files. Double-click to see its floors.'
+    expect(cardText(doc, 'huge')).toContain(`Why it is this big:\n${note}`)
+    expect(buildingCard(doc, 'huge')).toContain(`<p>${note.replace(/"/g, '&quot;')}</p>`)
   })
 
   it('a building built without any edges has no connection sections', () => {
