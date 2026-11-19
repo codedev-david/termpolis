@@ -91,13 +91,31 @@ const plain = (xs: Inline[]): string => xs.map((x) => (x.t === 'marker' ? '' : x
 /** A list item ends in a stop, so a voice pauses between steps. */
 const paused = (s: string): string => (/[.!?:;,]$/.test(s) ? s : `${s}.`)
 
+/** A line of bold alone (a heading, or a "**Steps**" line), markers and spaces aside: a title. */
+const boldOnly = (xs: Inline[]): boolean => {
+  const words = xs.filter((x) => x.t !== 'marker' && !(x.t === 'text' && x.v.trim() === ''))
+  return words.length > 0 && words.every((x) => x.t === 'b')
+}
+
+/** A paragraph line's words; a title ends in a pause, so it is not run into what follows. */
+function spokenLine(xs: Inline[]): string {
+  const s = plain(xs).trim()
+  return boldOnly(xs) && s !== '' ? paused(s) : plain(xs)
+}
+
 /**
  * The answer as a voice should read it (spoken answers): the words of every block without the
- * markers or the marks, a numbered list's items after their numbers, each item ending in a pause.
+ * markers or the marks, a numbered list's items after their numbers, each item and each title line
+ * ending in a pause. An item with no words (only a marker) is not read.
  */
 export function spokenText(text: string): string {
   const lines = parseAnswerMarkdown(text).flatMap((b) =>
-    b.type === 'p' ? b.lines.map(plain) : b.items.map((item, i) => (b.type === 'ol' ? `${i + 1}. ` : '') + paused(plain(item).trim()))
+    b.type === 'p'
+      ? b.lines.map(spokenLine)
+      : b.items.map((item, i) => {
+          const s = plain(item).trim()
+          return s === '' ? '' : (b.type === 'ol' ? `${i + 1}. ` : '') + paused(s)
+        })
   )
   return lines.join(' ').replace(/\s+/g, ' ').replace(/ ([.!?:;,])/g, '$1').trim()
 }

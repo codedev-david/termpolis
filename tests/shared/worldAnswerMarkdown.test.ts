@@ -75,7 +75,7 @@ describe('spokenText (round 3 C)', () => {
   it('reads the answer without its marks: no evidence markers, bold, italic, code ticks or bullets', () => {
     expect(spokenText('Memory lives in **SQLite** [E1] always.')).toBe('Memory lives in SQLite always.')
     expect(spokenText('A *small* `cache` [E2] [E3].')).toBe('A small cache.')
-    expect(spokenText('## Where it goes\nThe __store__ keeps it.')).toBe('Where it goes The store keeps it.')
+    expect(spokenText('## Where it goes\nThe __store__ keeps it.')).toBe('Where it goes. The store keeps it.')
   })
 
   it('a numbered list keeps its numbers, and each item ends in a pause so the voice stops between steps', () => {
@@ -83,5 +83,13 @@ describe('spokenText (round 3 C)', () => {
       'A prompt goes through three parts: 1. Terminal takes it. 2. Router picks a model, 3. Proxy sends it. one more. last!'
     )
     expect(spokenText('')).toBe('')
+  })
+
+  it('a heading or a bold-only line ends in a pause, and an empty list item is not read (round 5 M7)', () => {
+    expect(spokenText('**Steps**\n1. Terminal\n2. [E1]\n3. Proxy')).toBe('Steps. 1. Terminal. 3. Proxy.')
+    expect(spokenText('### Summary [E2]\nAll good.')).toBe('Summary. All good.')
+    expect(spokenText('**Where:** in __main__\n- **A** _b_\n- [E3]')).toBe('Where: in main A b.')
+    // A line that only holds markers inside bold is read as nothing, not as a lone stop
+    expect(spokenText('**[E1]**\nDone.')).toBe('Done.')
   })
 })
