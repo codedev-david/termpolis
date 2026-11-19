@@ -26,9 +26,10 @@ export interface PromptFit {
 
 /** The listing every batch gets. */
 export const FULL_FIT: PromptFit = { list: 12, via: MAX_LISTED_VIA, ends: 4, chars: MAX_META_CHARS }
-/** The listing of one building that does not fit even with no excerpts (long or quote-heavy names): it fits any
- *  one building with its lines with room to spare (worldLabel.test.ts proves it with every field at its longest
- *  and all quotes), so no building goes unasked. */
+/** The listing of one building, or one line, that does not fit even with no excerpts (long or quote-heavy names,
+ *  a long file list). It fits any one building with its lines, and any one line, at the true worst: every field at
+ *  its longest and of the costliest character, a lone surrogate (worldLabel.test.ts). labelBatch still checks the
+ *  size after shortening and does not send a part that is over. */
 export const SHORT_FIT: PromptFit = { list: 3, via: 2, ends: 1, chars: 80 }
 
 /** A repo-derived metadata string as one JSON-quoted line: control chars stripped, whitespace collapsed, capped. */

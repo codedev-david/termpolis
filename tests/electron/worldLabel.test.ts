@@ -11,7 +11,10 @@ import {
   LABEL_CONCURRENCY,
   LABEL_NO_MODEL_MS,
   LABEL_SLOW_FAIL_MS,
+  LINE_BATCH_EXCERPT_BUDGET,
+  LINE_EXCERPT_CHARS,
   LINES_PER_BATCH,
+  NO_MODEL_STRIKES,
   cheapModelFor,
   labelWorld,
   makeWorldLlm,
@@ -76,6 +79,23 @@ const GOOD = JSON.stringify({
   glossary: { IPC: F('inter-process call') }
 })
 
+const buildingsIn = (p: string): string[] => [...p.matchAll(/^- "([a-z]\w*)": /gm)].map((m) => m[1])
+const edgesIn = (p: string): string[] => [...p.matchAll(/^- "(e-[^"]+)": /gm)].map((m) => m[1])
+/** Describes every building and every line a prompt lists, citing E1: a reply that leaves nothing out. */
+const describeEvery = (p: string): string =>
+  JSON.stringify({
+    district: { name: F('Named') },
+    buildings: Object.fromEntries(buildingsIn(p).map((id) => [id, { how: [{ text: `${id} works`, evidence: ['E1'] }] }])),
+    edges: Object.fromEntries(edgesIn(p).map((id) => [id, { how: [{ text: `${id} carries`, evidence: ['E1'] }] }]))
+  })
+/** GOOD, plus a `how` for every other building and line the prompt lists, so no part is left for the second chance. */
+const goodFor = (p: string): string => {
+  const g = JSON.parse(GOOD) as { buildings: Record<string, unknown>; edges: Record<string, unknown> }
+  for (const id of buildingsIn(p)) if (!(id in g.buildings)) g.buildings[id] = { how: [{ text: `${id} works`, evidence: ['E1'] }] }
+  for (const id of edgesIn(p)) if (!(id in g.edges)) g.edges[id] = { how: [{ text: `${id} carries`, evidence: ['E1'] }] }
+  return JSON.stringify(g)
+}
+
 describe('edgeId', () => {
   it('is stable and directional', () => {
     expect(edgeId({ from: 'a', to: 'b' })).toBe('e-a--b')
@@ -85,7 +105,7 @@ describe('edgeId', () => {
 
 describe('labelWorld', () => {
   it('makes one llm call per batch of a district', async () => {
-    const llm = vi.fn(async (_p: string) => '{}')
+    const llm = vi.fn(async (p: string) => describeEvery(p))
     await labelWorld(twoDistricts(), mkDeps({ llm }))
     expect(llm).toHaveBeenCalledTimes(2)
     const d1 = llm.mock.calls.map((c) => c[0]).find((p) => p.includes('DISTRICT "d1"')) as string
@@ -93,7 +113,7 @@ describe('labelWorld', () => {
   })
 
   it('cache hit skips llm', async () => {
-    const deps = mkDeps({ llm: vi.fn(async () => GOOD) })
+    const deps = mkDeps({ llm: vi.fn(async (p: string) => goodFor(p)) })
     const first = await labelWorld(twoDistricts(), deps)
     expect(deps.llm).toHaveBeenCalledTimes(2)
     const again = await labelWorld(twoDistricts(), deps)
@@ -346,7 +366,7 @@ describe('labelWorld', () => {
       const llm = vi.fn(async (p: string): Promise<string | null> => {
         const k = p.includes('DISTRICT "d1"') ? 'd1' : 'd2'
         seen.set(k, (seen.get(k) ?? 0) + 1)
-        return k === 'd1' && seen.get(k) === 1 ? fail() : GOOD
+        return k === 'd1' && seen.get(k) === 1 ? fail() : goodFor(p)
       })
       const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
       expect(seen).toEqual(new Map([['d1', 2], ['d2', 1]]))
@@ -361,29 +381,36 @@ describe('labelWorld', () => {
     expect(llm).toHaveBeenCalledTimes(6)
     expect(l.buildings.a.name).toBe('a-name')
     expect(l.tokens).toBe(llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p) + estimateTokens('sorry, no'), 0))
-    // An answer that parsed but described nothing is the model's answer: it is not asked again.
+    // An answer that parsed but described nothing leaves every part undescribed (I2): a and b are asked alone once
+    // each; c is alone already, so its second chance would be the same prompt, and it is not sent again (M1).
     const empty = vi.fn(async (_p: string) => '{}')
     await labelWorld(twoDistricts(), mkDeps({ llm: empty }))
-    expect(empty).toHaveBeenCalledTimes(2)
+    expect(empty.mock.calls.map(([p]) => buildingsIn(p).join(' ')).sort()).toEqual(['a', 'a b', 'b', 'c'])
   })
 
-  it('a call that came back with nothing at once reached no model: it is retried, and costs no tokens (round 5 I1)', async () => {
+  it('a call that came back with nothing at once reached no model: it costs no tokens, and it is retried once another call reached a model (round 5 I1, M2)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
       for (const fail of [async () => null, () => Promise.reject(new Error('no agent'))]) {
-        // "At once" is up to LABEL_NO_MODEL_MS, the same threshold the token count uses.
+        // "At once" is up to LABEL_NO_MODEL_MS, the same threshold the token count uses. d2 answers (a model is
+        // reachable), so d1's quick failure is a blip, not a missing agent: it is asked again.
         let clock = 0
-        const llm = vi.fn(() => {
+        let d1Tries = 0
+        const llm = vi.fn((p: string): Promise<string | null> => {
+          if (!p.includes('DISTRICT "d1"')) return Promise.resolve(describeEvery(p))
           clock += LABEL_NO_MODEL_MS
-          return fail()
+          return ++d1Tries === 1 ? fail() : Promise.resolve(describeEvery(p))
         })
         const l = await labelWorld(twoDistricts(), mkDeps({ llm, now: () => clock }))
-        // Each batch twice, then d1's two buildings alone (caveat 1's second chance): six calls.
-        expect(llm).toHaveBeenCalledTimes(6)
-        expect(l.tokens).toBe(0)
+        expect(llm.mock.calls.map(([p]) => buildingsIn(p).join(' ')).sort()).toEqual(['a b', 'a b', 'c'])
+        // The failed call costs nothing; the two answered calls count their prompt and reply.
+        const d1 = llm.mock.calls[0][0].includes('DISTRICT "d1"') ? llm.mock.calls[0][0] : llm.mock.calls[1][0]
+        const all = llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p) + estimateTokens(describeEvery(p)), 0)
+        expect(l.tokens).toBe(all - estimateTokens(d1) - estimateTokens(describeEvery(d1)))
+        expect(l.buildings.a.how).toHaveLength(1)
       }
       // One line per retry names the district, so a log shows whether retries happen at all.
-      expect(warn.mock.calls.map((c) => c[0]).sort()).toEqual(['[world label] batch retried: Alpha', '[world label] batch retried: Alpha', '[world label] batch retried: Beta', '[world label] batch retried: Beta'])
+      expect(warn.mock.calls.map((c) => c[0])).toEqual(['[world label] batch retried: Alpha', '[world label] batch retried: Alpha'])
     } finally {
       warn.mockRestore()
     }
@@ -415,8 +442,9 @@ describe('labelWorld', () => {
       return null
     })
     const l = await labelWorld(twoDistricts(), mkDeps({ llm, now: () => clock }))
-    // Each batch twice, then d1's two buildings alone (caveat 1's second chance): six calls.
-    expect(llm).toHaveBeenCalledTimes(6)
+    // Both first calls are quick refusals and nothing answered: no model is reachable, so the pass stops asking
+    // (M2). The two calls cost nothing.
+    expect(llm).toHaveBeenCalledTimes(2)
     expect(l.tokens).toBe(0)
   })
 
@@ -431,8 +459,9 @@ describe('labelWorld', () => {
       const deps = mkDeps({ llm })
       delete deps.now
       const l = await labelWorld(twoDistricts(), deps)
-      // Each batch twice, then d1's two buildings alone (caveat 1's second chance): six calls.
-      expect(llm).toHaveBeenCalledTimes(6)
+      // Both first calls failed at once on the monotonic clock: no model is reachable and the pass stops (M2).
+      // Had the wall clock been used, each would look like a timeout that reached a model and costs its prompt.
+      expect(llm).toHaveBeenCalledTimes(2)
       expect(l.tokens).toBe(0)
       expect(mono).toHaveBeenCalled()
     } finally {
@@ -459,10 +488,10 @@ describe('labelWorld', () => {
       // A garbled reply is retried however long it took: the model answered, just not in the format.
       clock = 0
       let calls = 0
-      const slowProse = vi.fn(async (_p: string): Promise<string | null> => {
+      const slowProse = vi.fn(async (p: string): Promise<string | null> => {
         clock += LABEL_SLOW_FAIL_MS
         calls++
-        return calls === 1 ? 'sorry, no' : GOOD
+        return calls === 1 ? 'sorry, no' : goodFor(p)
       })
       const one: Grouping = { districts: [twoDistricts().districts[0]], buildings: twoDistricts().buildings.filter((b) => b.districtId === 'd1'), edges: [] }
       expect((await labelWorld(one, mkDeps({ llm: slowProse, now: () => clock }))).buildings.a.name).toBe('Alpha Hub')
@@ -482,16 +511,17 @@ describe('labelWorld', () => {
   })
 
   it('tolerates a json fence and caches the raw reply', async () => {
-    const raw = TICK.repeat(3) + 'json\n' + GOOD + '\n' + TICK.repeat(3)
-    const deps = mkDeps({ llm: async () => raw })
+    const fenced = (p: string): string => TICK.repeat(3) + 'json\n' + goodFor(p) + '\n' + TICK.repeat(3)
+    const deps = mkDeps({ llm: async (p: string) => fenced(p) })
     const l = await labelWorld(twoDistricts(), deps)
     expect(l.buildings.a.name).toBe('Alpha Hub')
-    expect([...deps.store.values()]).toContain(raw)
+    expect([...deps.store.values()].every((v) => v.startsWith(TICK.repeat(3) + 'json\n'))).toBe(true)
+    expect(deps.store.size).toBe(2)
     expect(await labelWorld(twoDistricts(), { ...deps, llm: async () => '{}' })).toEqual({ ...l, tokens: 0 })
   })
 
   it('a bad cached value is a miss; a throwing cache get/set is tolerated', async () => {
-    const llm = vi.fn(async () => GOOD)
+    const llm = vi.fn(async (p: string) => goodFor(p))
     const deps = mkDeps({ llm })
     await labelWorld(twoDistricts(), deps)
     for (const k of deps.store.keys()) deps.store.set(k, 'garbage')
@@ -525,8 +555,9 @@ describe('labelWorld', () => {
       },
       set: async () => undefined
     }
-    await labelWorld(twoDistricts(), mkDeps({ cache }))
-    await labelWorld(twoDistricts(), mkDeps({ cache, excerpt: async () => 'different' }))
+    const llm = async (p: string): Promise<string> => describeEvery(p)
+    await labelWorld(twoDistricts(), mkDeps({ cache, llm }))
+    await labelWorld(twoDistricts(), mkDeps({ cache, llm, excerpt: async () => 'different' }))
     expect(new Set(seen).size).toBe(4)
     expect(seen.every((h) => /^[0-9a-f]{64}$/.test(h))).toBe(true)
     expect(LABEL_PROMPT_VERSION).toMatch(/\S/)
@@ -714,12 +745,19 @@ describe('fix round 1', () => {
       const deps = mkDeps({ llm: vi.fn(async () => out) })
       await labelWorld(twoDistricts(), deps)
       expect(deps.store.size).toBe(0)
-      await labelWorld(twoDistricts(), deps)
+      // Each pass: d1 [a b] and d2 [c], then a and b alone (nothing was described); c alone would be d2's prompt
+      // again, so it is not sent (M1). Nothing was cached, so the next pass asks the same four.
       expect(deps.llm).toHaveBeenCalledTimes(4)
+      await labelWorld(twoDistricts(), deps)
+      expect(deps.llm).toHaveBeenCalledTimes(8)
     }
+    // A reply is cached raw when it described at least one part it was asked about, even if it left others out
+    // (I2): GOOD describes a and its line, so d1's reply is cached. d2's names the district but describes neither c
+    // nor its line, and b's (asked alone, as GOOD left it out) describes nothing of b: neither is cached, so both
+    // are asked again next pass instead of being hidden by the cache.
     const deps = mkDeps({ llm: async () => GOOD })
     await labelWorld(twoDistricts(), deps)
-    expect([...deps.store.values()]).toEqual([GOOD, GOOD])
+    expect([...deps.store.values()]).toEqual([GOOD])
   })
 
   it('a reply whose claims are all dropped yields no accepted field', async () => {
@@ -730,7 +768,7 @@ describe('fix round 1', () => {
   })
 
   it('a cached reply with nothing accepted is a miss', async () => {
-    const llm = vi.fn(async () => GOOD)
+    const llm = vi.fn(async (p: string) => goodFor(p))
     const deps = mkDeps({ llm })
     await labelWorld(twoDistricts(), deps)
     for (const k of deps.store.keys()) deps.store.set(k, '{}')
@@ -942,7 +980,9 @@ describe('task 8 fix round 1', () => {
     }
     const inId = edgeId({ from: 'outside', to: 'a' })
     const ghostId = edgeId({ from: 'ghost1', to: 'ghost2' })
-    const llm = vi.fn(async () => JSON.stringify({ edges: { [inId]: { label: F('Feeds a') }, [ghostId]: { label: F('Ghost') } } }))
+    const llm = vi.fn(async () =>
+      JSON.stringify({ buildings: { a: { how: [{ text: 'a works', evidence: ['E1'] }] } }, edges: { [inId]: { label: F('Feeds a') }, [ghostId]: { label: F('Ghost') } } })
+    )
     const l = await labelWorld(g, mkDeps({ llm }))
     expect(llm).toHaveBeenCalledTimes(1)
     const p = llm.mock.calls[0][0] as string
@@ -1029,7 +1069,8 @@ describe('context evidence (task 6)', () => {
     expect(p).not.toContain('"none"')
     expect(l.buildings.a).toMatchObject({ name: 'Alpha Hub', nameInferred: true })
     expect(l.buildings.b.name).toBe('b-name')
-    expect(context).toHaveBeenCalledTimes(3)
+    // d1, d2, then b alone: its name cited E9, which does not exist, so b is still undescribed (caveat 1 I2).
+    expect(context).toHaveBeenCalledTimes(4)
   })
 
   it('the batch excerpt budget bounds context evidence', async () => {
@@ -1052,7 +1093,7 @@ describe('context evidence (task 6)', () => {
   })
 
   it('a new commit changes the cache key of the buildings it touches only', async () => {
-    const deps = mkDeps({ llm: vi.fn(async () => GOOD) })
+    const deps = mkDeps({ llm: vi.fn(async (p: string) => goodFor(p)) })
     await labelWorld(twoDistricts(), { ...deps, context: async (m) => (m[0] === 'src/a/one.ts' ? ev(1) : []) })
     expect(deps.llm).toHaveBeenCalledTimes(2)
     await labelWorld(twoDistricts(), { ...deps, context: async (m) => (m[0] === 'src/a/one.ts' ? ev(1) : []) })
@@ -1095,10 +1136,7 @@ describe('every building is described (film bug 2)', () => {
 
   /** A path or key that is all quotes: each one costs two characters in the JSON and two more on a Windows command line. */
   const quoted = (tail: string): string => `${'"'.repeat(185)}${tail}`
-  const describeAll = vi.fn(async (p: string) => {
-    const ids = [...p.matchAll(/^- "([a-z]\w*)": /gm)].map((m) => m[1])
-    return JSON.stringify({ district: { name: F('Named') }, buildings: Object.fromEntries(ids.map((id) => [id, { how: [{ text: `${id} works`, evidence: ['E1'] }] }])) })
-  })
+  const describeAll = vi.fn(async (p: string) => describeEvery(p))
 
   it('an edge with hundreds of identifiers lists the first few and a count, so the prompt still fits (fix wave I2)', async () => {
     const via = Array.from({ length: 500 }, (_, i) => B('ipc', `channel:${String(i).padStart(3, '0')}`, 'src/a.ts', i + 1))
@@ -1249,14 +1287,14 @@ describe('every building is described (film bug 2)', () => {
     let inFlight = 0
     let peak = 0
     let n = 0
-    const llm = vi.fn(async (_p: string) => {
+    const llm = vi.fn(async (p: string) => {
       const mine = n++
       inFlight++
       peak = Math.max(peak, inFlight)
       // The first batch answers last: its glossary entry must still win.
       await new Promise((r) => setTimeout(r, mine === 0 ? 30 : 1))
       inFlight--
-      return JSON.stringify({ district: { name: F(`Named ${mine}`) }, glossary: { Term: F(`from ${mine}`) } })
+      return JSON.stringify({ ...JSON.parse(describeEvery(p)), district: { name: F(`Named ${mine}`) }, glossary: { Term: F(`from ${mine}`) } })
     })
     const l = await labelWorld(g, mkDeps({ llm }))
     expect(llm).toHaveBeenCalledTimes(6)
@@ -1291,15 +1329,6 @@ describe('every building is described (film bug 2)', () => {
 })
 
 describe('every building and every line is described (caveat 1)', () => {
-  const buildingsIn = (p: string): string[] => [...p.matchAll(/^- "([a-z]\w*)": /gm)].map((m) => m[1])
-  const edgesIn = (p: string): string[] => [...p.matchAll(/^- "(e-[^"]+)": /gm)].map((m) => m[1])
-  /** Describes every building and every line a prompt lists, citing E1. */
-  const describeEvery = (p: string): string =>
-    JSON.stringify({
-      district: { name: F('Named') },
-      buildings: Object.fromEntries(buildingsIn(p).map((id) => [id, { how: [{ text: `${id} works`, evidence: ['E1'] }] }])),
-      edges: Object.fromEntries(edgesIn(p).map((id) => [id, { how: [{ text: `${id} carries`, evidence: ['E1'] }] }]))
-    })
   const lineOnly = (p: string): boolean => buildingsIn(p).length === 0 && edgesIn(p).length > 0
   /** Building a with `n` import lines out to parts t00, t01, ... of its own district. */
   const fan = (n: number): Grouping => {
@@ -1525,12 +1554,13 @@ describe('every building and every line is described (caveat 1)', () => {
     const info = quiet()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
+      // Three buildings too big for one prompt: halves [a b] and [c]. [a b] fails twice; its buildings are then
+      // asked alone, and the half that worked, [c], comes from the cache and is not asked again.
       const buildings = ['a', 'b', 'c'].map((id) => bld(id, 'd', Array.from({ length: 12 }, (_, k) => q(185, `/${id}/f${k}.ts`))))
       const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings, edges: [{ from: 'c', to: 'a', via: [] }] }
-      let cTries = 0
-      const llm = vi.fn(async (p: string): Promise<string | null> => (buildingsIn(p).includes('c') && ++cTries < 3 ? 'sorry, no' : describeEvery(p)))
+      const llm = vi.fn(async (p: string): Promise<string | null> => (buildingsIn(p).join(' ') === 'a b' ? 'sorry, no' : describeEvery(p)))
       const l = await labelWorld(g, mkDeps({ llm }))
-      expect(llm.mock.calls.map(([p]) => buildingsIn(p).join(' '))).toEqual(['a b', 'c', 'c', 'c'])
+      expect(llm.mock.calls.map(([p]) => buildingsIn(p).join(' '))).toEqual(['a b', 'c', 'a b', 'a', 'b'])
       for (const id of ['a', 'b', 'c']) expect(l.buildings[id].how.map((c) => c.text)).toEqual([`${id} works`])
       expect(l.edges['e-c--a'].how).toHaveLength(1)
     } finally {
@@ -1584,6 +1614,329 @@ describe('every building and every line is described (caveat 1)', () => {
       expect(lines.flatMap(edgesIn)).toEqual(g.edges.slice(4).map(edgeId))
       for (const p of lines) expect(promptCommandChars(p)).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
       for (const e of g.edges) expect(l.edges[edgeId(e)].how).toHaveLength(1)
+    } finally {
+      info.mockRestore()
+    }
+  })
+})
+
+describe('caveat 1 fix round 1', () => {
+  const quiet = (): ReturnType<typeof vi.spyOn> => vi.spyOn(console, 'info').mockImplementation(() => undefined)
+  const lineOnly = (p: string): boolean => buildingsIn(p).length === 0 && edgesIn(p).length > 0
+  const refsIn = (p: string): string[] => [...p.matchAll(/^\[E\d+\] (?:\w+ )?"([^"]+)"/gm)].map((m) => m[1])
+  /** Real-looking source text with its quotes, `n` chars long. */
+  const code = (seed: string, n: number): string => {
+    const unit = `export async function handle${seed}(msg: Message): Promise<void> {\n  ipcMain.handle("chan:${seed}", async (_e, arg) => {\n    log.info('got', arg)\n  })\n}\n`
+    return unit.repeat(Math.ceil(n / unit.length)).slice(0, n)
+  }
+  /**
+   * Building a with 14 lines, each through two boundaries in files of its own: a's batch lists 4, so the other 10
+   * make one full line-only batch (LINES_PER_BATCH) with two excerpts per line.
+   */
+  const boundaryFan = (): Grouping => {
+    const targets = Array.from({ length: 14 }, (_, i) => bld(`t${String(i).padStart(2, '0')}`, 'd', [`src/t${i}/index.ts`]))
+    return {
+      districts: [{ id: 'd', name: 'D', members: [] }],
+      buildings: [bld('a', 'd', ['src/a/main.ts', 'src/a/ipc.ts', 'src/a/store.ts', 'src/a/view.ts']), ...targets],
+      edges: targets.map((t, i) => ({ from: 'a', to: t.id, via: [B('ipc', `chan:${i}:in`, `src/a/in${i}.ts`, 10), B('ipc', `chan:${i}:out`, `src/a/out${i}.ts`, 20)] }))
+    }
+  }
+
+  it('I1: a full line batch with realistic 1200-char excerpts keeps every line its own excerpts and stays well under the cap', async () => {
+    expect(LINE_BATCH_EXCERPT_BUDGET).toBe(14_000)
+    expect(LINE_EXCERPT_CHARS).toBe(700)
+    const info = quiet()
+    try {
+      const llm = vi.fn(async (p: string) => describeEvery(p))
+      const l = await labelWorld(boundaryFan(), mkDeps({ llm, excerpt: async (f, n) => code(`${f}:${n}`, 1200) }))
+      const p = llm.mock.calls.map(([x]) => x).find(lineOnly) as string
+      expect(edgesIn(p)).toHaveLength(LINES_PER_BATCH)
+      // Each line's two boundaries are both excerpted, each cut to LINE_EXCERPT_CHARS: nothing had to be dropped.
+      const refs = refsIn(p)
+      for (let i = 4; i < 14; i++) expect(refs).toEqual(expect.arrayContaining([`src/a/in${i}.ts:10`, `src/a/out${i}.ts:20`]))
+      expect(refs).toHaveLength(20)
+      // Measured at 19,145 command chars: well under the cap, with room for longer names (label.ts LINES_PER_BATCH).
+      expect(promptCommandChars(p)).toBe(19_145)
+      for (let i = 4; i < 14; i++) expect(l.edges[`e-a--t${String(i).padStart(2, '0')}`].how).toHaveLength(1)
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it('I1: excerpts all of quotes still leave every line one excerpt of its own; the second ones drop first', async () => {
+    const info = quiet()
+    try {
+      const llm = vi.fn(async (p: string) => describeEvery(p))
+      await labelWorld(boundaryFan(), mkDeps({ llm, excerpt: async () => '"'.repeat(1200) }))
+      const p = llm.mock.calls.map(([x]) => x).find(lineOnly) as string
+      expect(promptCommandChars(p)).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
+      const refs = refsIn(p)
+      for (let i = 4; i < 14; i++) expect(refs).toContain(`src/a/in${i}.ts:10`)
+      expect(refs.length).toBeLessThan(20)
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it("I1: a line batch whose lines' first excerpts do not fit together is asked in halves, each line with its own", async () => {
+    const info = quiet()
+    try {
+      const llm = vi.fn(async (p: string) => describeEvery(p))
+      const deps = mkDeps({ llm, excerpt: async (f, n) => code(`${f}:${n}`, 1200), maxPromptChars: 9_000 })
+      const l = await labelWorld(boundaryFan(), deps)
+      const lines = llm.mock.calls.map(([x]) => x).filter(lineOnly)
+      expect(lines.map((p) => edgesIn(p).length)).toEqual([5, 5])
+      for (const p of lines) {
+        expect(promptCommandChars(p)).toBeLessThanOrEqual(9_000)
+        for (const id of edgesIn(p)) expect(refsIn(p)).toContain(`src/a/in${Number(id.slice(-2))}.ts:10`)
+      }
+      for (let i = 4; i < 14; i++) expect(l.edges[`e-a--t${String(i).padStart(2, '0')}`].how).toHaveLength(1)
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it('I1: a file head shared by lines of one batch is read once; a read that throws or comes back blank is skipped', async () => {
+    const info = quiet()
+    try {
+      // Import lines from a to t04..t13: every importer scan reads a's files; t7's first file cannot be read and t9's is blank.
+      const g = boundaryFan()
+      g.edges = g.edges.map((e) => ({ ...e, via: [] }))
+      const reads = new Map<string, number>()
+      const excerpt = async (f: string): Promise<string> => {
+        reads.set(f, (reads.get(f) ?? 0) + 1)
+        if (f === 'src/t7/index.ts') throw new Error('gone')
+        if (f === 'src/t9/index.ts') return '  \n'
+        return f === 'src/a/ipc.ts' ? "import { x } from '../t13'" : `code of ${f}`
+      }
+      const llm = vi.fn(async (p: string) => describeEvery(p))
+      await labelWorld(g, mkDeps({ llm, excerpt }))
+      const p = llm.mock.calls.map(([x]) => x).find(lineOnly) as string
+      // The line batch reads each of a's files once, not once per line: view.ts only there, store.ts there and in
+      // a's own building batch (which takes three excerpts).
+      expect(reads.get('src/a/view.ts')).toBe(1)
+      expect(reads.get('src/a/store.ts')).toBe(2)
+      expect(refsIn(p)).toContain('src/a/ipc.ts')
+      expect(refsIn(p)).not.toContain('src/t7/index.ts')
+      expect(refsIn(p)).not.toContain('src/t9/index.ts')
+      expect(refsIn(p)).toContain('src/t8/index.ts')
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it('I2: a reply that leaves parts out is cached; the parts it left out are asked again, smaller, and the next pass is all cache', async () => {
+    const info = quiet()
+    try {
+      const g: Grouping = {
+        districts: [{ id: 'd', name: 'D', members: [] }],
+        buildings: ['a', 'b', 'c'].map((id) => bld(id, 'd', [`src/${id}.ts`])),
+        edges: [
+          { from: 'a', to: 'b', via: [] },
+          { from: 'b', to: 'c', via: [] },
+          { from: 'c', to: 'a', via: [] }
+        ]
+      }
+      // The first reply describes a and b but none of the lines; every later one describes all it is asked.
+      let n = 0
+      const llm = vi.fn(async (p: string) => {
+        if (n++ > 0) return describeEvery(p)
+        return JSON.stringify({ district: { name: F('Named') }, buildings: { a: { how: [{ text: 'a works', evidence: ['E1'] }] }, b: { how: [{ text: 'b works', evidence: ['E1'] }] } } })
+      })
+      const deps = mkDeps({ llm })
+      const l = await labelWorld(g, deps)
+      // c alone, with its own line; then the lines of a and b, which were described, in one line-only batch.
+      expect(llm.mock.calls.map(([p]) => `${buildingsIn(p).join(' ')}|${edgesIn(p).join(' ')}`)).toEqual([
+        'a b c|e-a--b e-b--c e-c--a',
+        'c|e-c--a',
+        '|e-a--b e-b--c'
+      ])
+      for (const id of ['a', 'b', 'c']) expect(l.buildings[id].how).toHaveLength(1)
+      for (const e of g.edges) expect(l.edges[edgeId(e)].how).toHaveLength(1)
+      expect(deps.store.size).toBe(3)
+      // The next pass: the first batch comes from the cache, its left-out parts are worked out again, and their
+      // batches come from the cache too. No call, and the same labels.
+      const next = vi.fn(async (_p: string) => null)
+      expect(await labelWorld(g, { ...deps, llm: next })).toEqual({ ...l, tokens: 0 })
+      expect(next).not.toHaveBeenCalled()
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it('I2: a line batch reply that leaves lines out has them asked again in halves of the batch', async () => {
+    const info = quiet()
+    try {
+      const g = boundaryFan()
+      let lineCalls = 0
+      const llm = vi.fn(async (p: string) => {
+        if (!lineOnly(p) || lineCalls++ > 0) return describeEvery(p)
+        // The first line batch describes only its first line.
+        const first = edgesIn(p)[0]
+        return JSON.stringify({ edges: { [first]: { how: [{ text: 'x', evidence: ['E1'] }] } } })
+      })
+      const l = await labelWorld(g, mkDeps({ llm }))
+      expect(llm.mock.calls.map(([p]) => p).filter(lineOnly).map((p) => edgesIn(p).length).sort((x, z) => z - x)).toEqual([10, 5, 4])
+      for (const e of g.edges) expect(l.edges[edgeId(e)].how).toHaveLength(1)
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it('I2 and M1: a model that answers but never describes is asked a bounded number of times, and never the same prompt twice', async () => {
+    const info = quiet()
+    try {
+      const g = boundaryFan()
+      const llm = vi.fn(async (_p: string) => JSON.stringify({ district: { name: F('Named') } }))
+      await labelWorld(g, mkDeps({ llm }))
+      const prompts = llm.mock.calls.map(([p]) => p)
+      expect(new Set(prompts).size).toBe(prompts.length)
+      // 5 building batches and 1 line batch; then each of the 15 buildings alone (those of a single building
+      // would repeat a prompt and are not sent), and the line batch's 10 lines in two halves.
+      expect(prompts.length).toBeLessThanOrEqual(6 + 15 + 2)
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it('M1: a second chance that would repeat a prompt already sent is not sent, and the log does not count it', async () => {
+    const info = quiet()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const llm = vi.fn(async (_p: string): Promise<string | null> => 'sorry, no')
+      await labelWorld(twoDistricts(), mkDeps({ llm }))
+      // d1 [a b] twice, then a and b alone; d2 [c] twice, and c alone would be d2's prompt a third time (M3).
+      expect(llm.mock.calls.map(([p]) => buildingsIn(p).join(' ')).sort()).toEqual(['a', 'a b', 'a b', 'b', 'c', 'c'])
+      expect(info.mock.calls.map((c) => c[0])).toEqual(['[world label] left undescribed: 3 of 3 buildings, 2 of 2 lines (2 batches asked a second time)'])
+    } finally {
+      warn.mockRestore()
+      info.mockRestore()
+    }
+  })
+
+  it('M2: with no model reachable the pass stops after NO_MODEL_STRIKES quick refusals, second chance included', async () => {
+    expect(NO_MODEL_STRIKES).toBe(2)
+    const info = quiet()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const g = boundaryFan()
+      const llm = vi.fn(async (_p: string): Promise<string | null> => null)
+      const l = await labelWorld(g, mkDeps({ llm }))
+      // Up to LABEL_CONCURRENCY calls are already on their way when the strikes land; nothing after them.
+      expect(llm.mock.calls.length).toBeLessThanOrEqual(LABEL_CONCURRENCY)
+      expect(llm.mock.calls.length).toBeGreaterThanOrEqual(NO_MODEL_STRIKES)
+      expect(l.tokens).toBe(0)
+      expect(info.mock.calls[0][0]).toContain('; no model reachable, the rest was not asked)')
+      expect(warn).not.toHaveBeenCalled()
+      // Batches already in the cache are still served when no model is.
+      const cached = mkDeps({ llm: async (p: string) => describeEvery(p) })
+      await labelWorld(twoDistricts(), cached)
+      const more: Grouping = { ...twoDistricts(), districts: [...twoDistricts().districts, { id: 'd3', name: 'Gamma', members: ['x'] }], buildings: [...twoDistricts().buildings, bld('x', 'd3', ['src/x.ts'])] }
+      const none = vi.fn(async (_p: string): Promise<string | null> => null)
+      const m = await labelWorld(more, { ...cached, llm: none })
+      expect(none.mock.calls.map(([p]) => buildingsIn(p).join(' '))).toEqual(['x', 'x'])
+      expect(m.buildings.a.how).toHaveLength(1)
+      expect(m.buildings.c.how).toHaveLength(1)
+      expect(m.buildings.x.how).toHaveLength(0)
+    } finally {
+      warn.mockRestore()
+      info.mockRestore()
+    }
+  })
+
+  it("M5: on an incremental re-label a line's untouched end is named, and its files listed and read, through deps.part", async () => {
+    const info = quiet()
+    try {
+      // The re-labelled grouping holds a alone; its five lines run to untouched parts u0..u4. a lists four, so the
+      // fifth (to u4) goes out in a line-only batch.
+      const g: Grouping = {
+        districts: [{ id: 'd', name: 'D', members: ['a'] }],
+        buildings: [bld('a', 'd', ['src/a/a1.ts', 'src/a/a2.ts'])],
+        edges: [0, 1, 2, 3, 4].map((k) => ({ from: 'a', to: `u${k}`, via: [] }))
+      }
+      const part = (id: string): { name: string; members: string[] } | undefined => (id === 'u4' ? { name: 'Untouched Four', members: ['src/u4/index.ts', 'src/u4/zz.ts'] } : undefined)
+      const excerpt = async (f: string): Promise<string> => (f === 'src/a/a2.ts' ? "import { u } from '../u4'" : `code of ${f}`)
+      const llm = vi.fn(async (p: string) => describeEvery(p))
+      const l = await labelWorld(g, mkDeps({ llm, excerpt, part }))
+      const p = llm.mock.calls.map(([x]) => x).find(lineOnly) as string
+      expect(p).toContain('- "e-a--u4": "a" -> "u4"\n  from "a-name" files: "src/a/a1.ts", "src/a/a2.ts"\n  to "Untouched Four" files: "src/u4/index.ts", "src/u4/zz.ts"\n')
+      // The a file that imports u4, then u4's first file.
+      expect(refsIn(p)).toEqual(['src/a/a2.ts', 'src/u4/index.ts'])
+      expect(l.edges['e-a--u4'].how).toHaveLength(1)
+      // An end deps.part does not know keeps its id.
+      const first = llm.mock.calls.map(([x]) => x).find((x) => buildingsIn(x).includes('a')) as string
+      expect(first).toContain('"e-a--u0": "a" -> "u0"')
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it('M6: a part still over the cap once listed short is not sent, and the warning names it', async () => {
+    const info = quiet()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const llm = vi.fn(async (p: string) => describeEvery(p))
+      const one: Grouping = { districts: [{ id: 'd', name: 'D', members: ['a'] }], buildings: [bld('a', 'd', ['src/a.ts'])], edges: [] }
+      const l = await labelWorld(one, mkDeps({ llm, maxPromptChars: 500 }))
+      expect(llm).not.toHaveBeenCalled()
+      expect(warn).toHaveBeenCalledWith('[world label] too big to ask even listed short: a')
+      expect(l.buildings.a.name).toBe('a-name')
+    } finally {
+      warn.mockRestore()
+      info.mockRestore()
+    }
+  })
+
+  it('M6: a single line over the cap with its first excerpt is listed short and still asked, within the cap', async () => {
+    const info = quiet()
+    try {
+      const g = boundaryFan()
+      g.edges = [...g.edges.slice(0, 4), { ...g.edges[4], via: Array.from({ length: 8 }, (_, k) => B('ipc', `${'"'.repeat(190)}${k}`, `src/a/in4.ts`, 10 + k)) }]
+      g.buildings = g.buildings.slice(0, 6)
+      const llm = vi.fn(async (p: string) => describeEvery(p))
+      const l = await labelWorld(g, mkDeps({ llm, maxPromptChars: 6_000 }))
+      const p = llm.mock.calls.map(([x]) => x).find(lineOnly) as string
+      expect(promptCommandChars(p)).toBeLessThanOrEqual(6_000)
+      // SHORT_FIT: two of the eight identifiers.
+      expect(p).toContain('(+6 more)')
+      expect(l.edges['e-a--t04'].how).toHaveLength(1)
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it('M6: the true worst case fits once listed short: every name, path, key and id at its longest, of the costliest character', async () => {
+    const info = quiet()
+    try {
+      // A lone surrogate is the costliest character: meta writes it as \ud800, six chars and a backslash counted
+      // twice on a Windows command line, 7 in all (a quote is 4). Ids are slugs, so [a-z0-9-], cut at 200.
+      expect(promptCommandChars(JSON.stringify('\uD800'))).toBe(4 + 7)
+      expect(promptCommandChars(JSON.stringify('"'))).toBe(4 + 4)
+      const s = (n: number, tail = ''): string => `${'\uD800'.repeat(n)}${tail}`
+      const id = (x: string): string => `${x}${'x'.repeat(250)}`
+      const bounds = (): Boundary[] => Array.from({ length: 60 }, (_, k) => ({ kind: 'ipc' as const, key: s(500, String(k)), side: 'provide' as const, file: s(500, 'f'), line: k + 1 }))
+      const heavy: GroupBuilding = { id: id('a'), districtId: id('d'), name: s(500), members: Array.from({ length: 3000 }, (_, k) => s(500, String(k))), process: 'main', boundaries: bounds() }
+      const ends = [1, 2, 3, 4, 5].map((i): GroupBuilding => ({ ...heavy, id: id(`z${i}`), districtId: id('o'), boundaries: [] }))
+      const g: Grouping = {
+        districts: [
+          { id: id('d'), name: s(500), members: [] },
+          { id: id('o'), name: s(500), members: [] }
+        ],
+        buildings: [heavy, ...ends],
+        // Five lines: a's batch lists four, the fifth goes out alone in a line-only batch.
+        edges: ends.map((o) => ({ from: heavy.id, to: o.id, via: bounds() }))
+      }
+      const llm = vi.fn(async (_p: string) => '{}')
+      const big = '"'.repeat(1200)
+      await labelWorld(g, mkDeps({ llm, excerpt: async () => big, context: async () => [{ kind: 'memory', ref: s(500), excerpt: big }] }))
+      const prompts = llm.mock.calls.map(([p]) => p)
+      for (const p of prompts) expect(promptCommandChars(p)).toBeLessThanOrEqual(MAX_PROMPT_CHARS)
+      const own = prompts.find((p) => p.includes(`- "${heavy.id.slice(0, 200)}": `)) as string
+      expect(own).toContain('(+2997 more)')
+      expect(own).toContain('[E1] ')
+      const line = prompts.find(lineOnly) as string
+      expect(edgesIn(line)).toHaveLength(1)
+      expect(line).toContain('[E1] ')
     } finally {
       info.mockRestore()
     }

@@ -408,19 +408,21 @@ describe('compileWorld', () => {
   it('changed without a previous doc labels everything; no changed labels everything', async () => {
     const llm = vi.fn(async () => '{}')
     await compileFixture({ label: labelDeps({ llm }) }, null, ['src/renderer/view.ts'])
-    expect(llm).toHaveBeenCalledTimes(3) // one batch per district
+    // One batch per district, then the second chance for every part a '{}' reply left out (5 smaller batches).
+    expect(llm).toHaveBeenCalledTimes(8)
     const prev = await compileFixture()
     llm.mockClear()
     await compileFixture({ label: labelDeps({ llm }) }, prev)
-    expect(llm).toHaveBeenCalledTimes(3)
+    expect(llm).toHaveBeenCalledTimes(8)
     llm.mockClear()
     await compileFixture({ label: labelDeps({ llm }) }, prev, [])
     expect(llm).not.toHaveBeenCalled()
   })
 
   it('model labels, glossary and floor tech are filtered against the glossary', async () => {
+    // Other districts get a reply that describes nothing: a quick null reads as no model reachable and stops the pass.
     const llm = vi.fn(async (prompt: string) => {
-      if (!prompt.includes('DISTRICT "d-src-main"')) return null
+      if (!prompt.includes('DISTRICT "d-src-main"')) return '{}'
       return JSON.stringify({
         district: { name: F('Main side'), subtitle: F('the Electron main process') },
         buildings: {
@@ -463,7 +465,7 @@ describe('compileWorld', () => {
     expect(plain.glossary.Python).toBeUndefined() // only the technologies a chip shows are defined
     // The model's stack in lower case, an alias and a term of its own glossary are named by their keys.
     const llm = vi.fn(async (prompt: string) => {
-      if (!prompt.includes('DISTRICT "d-src-main"')) return null
+      if (!prompt.includes('DISTRICT "d-src-main"')) return '{}'
       return JSON.stringify({
         buildings: { [MAIN]: { stack: F(['electron', 'node', 'Event BUS', 'Mystery']) } },
         glossary: { 'Event bus': F('Passes events between parts') }

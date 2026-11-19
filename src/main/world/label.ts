@@ -60,6 +60,11 @@ export interface LabelDeps {
   context?: (members: string[]) => Promise<Evidence[]>
   /** Per-excerpt cap, default 1200. */
   maxExcerptChars?: number
+  /** The most command chars one prompt may take, default MAX_PROMPT_CHARS. */
+  maxPromptChars?: number
+  /** A part outside the grouping being labelled (an incremental re-label's untouched end of a line): its name and
+   *  files, so a line-only batch can say what that end is. Optional; without it the end is named by its id. */
+  part?: (id: string) => BatchEnd | undefined
   /** The clock a model call is timed with, in ms (default performance.now: monotonic, so a laptop that
    *  sleeps or a clock that is set mid-call does not make a quick failure look like a timeout). */
   now?: () => number
@@ -73,9 +78,18 @@ export const BATCH_EXCERPT_BUDGET = 24_000
 export const BUILDINGS_PER_BATCH = 3
 /** Lines described per building: its boundary lines first, then lines to other districts, then by id. */
 export const EDGES_PER_BUILDING = 4
-/** Lines per line-only batch: every line no building batch carried. Ten lines with their ends, identifiers and
- *  two excerpts each stay well under MAX_PROMPT_CHARS; a batch that does not fit is asked in halves. */
+/** Lines per line-only batch: every line no building batch carried. Ten lines through two boundaries each, with
+ *  real code excerpts in full (LINE_BATCH_EXCERPT_BUDGET), measure 19,145 command chars (worldLabel.test.ts),
+ *  well under MAX_PROMPT_CHARS. Quote-heavy excerpts or long names drop second excerpts first; a batch that does
+ *  not fit with each line's first excerpt is asked in halves. */
 export const LINES_PER_BATCH = 10
+/** Excerpts per line of a line-only batch: its boundaries, or for an import the importing file and the imported part's first file. */
+const MAX_EXCERPTS_PER_LINE = 2
+/** Excerpt chars a full line-only batch carries at most: every line's excerpts at LINE_EXCERPT_CHARS. */
+export const LINE_BATCH_EXCERPT_BUDGET = 14_000
+/** Per-excerpt cap in a line-only batch (the lines around a boundary, or the head of a file with its imports): an
+ *  equal share of LINE_BATCH_EXCERPT_BUDGET per excerpt of a full batch. */
+export const LINE_EXCERPT_CHARS = LINE_BATCH_EXCERPT_BUDGET / (LINES_PER_BATCH * MAX_EXCERPTS_PER_LINE)
 /** Model calls in flight at once. */
 export const LABEL_CONCURRENCY = 4
 /** One model call's limit. A batch reply takes 30 to 60 s through the Claude Code CLI. */
@@ -88,9 +102,10 @@ export const LABEL_SLOW_FAIL_MS = 30_000
  *  an agent CLI takes seconds, while a refusal is one IPC round trip to main: a second leaves room for a busy main
  *  (typing lag, a slow CI runner) without counting a refusal as spend. */
 export const LABEL_NO_MODEL_MS = 1000
+/** Calls that reached no model, with none reaching one, after which a pass stops asking: no agent is installed or
+ *  consent is off, and every further call would be one more spawn or refusal for nothing. */
+export const NO_MODEL_STRIKES = 2
 const MAX_EXCERPTS_PER_BUILDING = 3
-/** Excerpts per line of a line-only batch: its boundaries, or for an import the importing file and the imported part's first file. */
-const MAX_EXCERPTS_PER_LINE = 2
 /** Files of a line's from part read to find the one that imports its to part. */
 const MAX_IMPORTER_SCAN = 12
 const MAX_FILE_EXCERPTS = 2
@@ -397,24 +412,14 @@ interface Candidate {
 
 /**
  * Reads candidates in order into `excerpts` (E-labelled in order) until `limit` are taken, skipping a read that
- * throws, an empty one, and one past `share` chars in all; returns the chars taken. With `seen`, a ref already
- * excerpted in the batch is skipped (a line-only batch, whose lines often share a file).
+ * throws, an empty one, and one past `share` chars in all; returns the chars taken.
  */
-async function takeExcerpts(
-  candidates: Candidate[],
-  limit: number,
-  share: number,
-  deps: LabelDeps,
-  excerpts: BatchExcerpt[],
-  seen?: Set<string>
-): Promise<number> {
+async function takeExcerpts(candidates: Candidate[], limit: number, share: number, deps: LabelDeps, excerpts: BatchExcerpt[]): Promise<number> {
   const max = deps.maxExcerptChars ?? DEFAULT_MAX_EXCERPT_CHARS
   let used = 0
   let taken = 0
   for (const c of candidates) {
     if (taken === limit) break
-    const ref = c.line === undefined ? c.file : boundaryRef(c.file, c.line)
-    if (seen?.has(ref)) continue
     let text: string
     try {
       text = (c.line === undefined ? await deps.excerpt(c.file) : await deps.excerpt(c.file, c.line)).slice(0, max)
@@ -424,8 +429,7 @@ async function takeExcerpts(
     if (text.trim() === '' || used + text.length > share) continue
     used += text.length
     taken++
-    seen?.add(ref)
-    excerpts.push({ label: `E${excerpts.length + 1}`, ref, text })
+    excerpts.push({ label: `E${excerpts.length + 1}`, ref: c.line === undefined ? c.file : boundaryRef(c.file, c.line), text })
   }
   return used
 }
@@ -474,13 +478,13 @@ function stemOf(file: string): string {
  * names a to file's stem as the last segment of a path. None found: the from part's first file, which an
  * import line's card would cite anyway. Undefined only for an end outside the grouping (no files).
  */
-async function importerOf(from: string[], to: string[], deps: LabelDeps): Promise<string | undefined> {
+async function importerOf(from: string[], to: string[], read: Read): Promise<string | undefined> {
   const stems = [...new Set(to.map(stemOf))].filter((s) => s !== '')
   if (stems.length > 0) {
     for (const file of from.slice(0, MAX_IMPORTER_SCAN)) {
       let text: string
       try {
-        text = await deps.excerpt(file)
+        text = await read(file)
       } catch {
         continue
       }
@@ -490,27 +494,71 @@ async function importerOf(from: string[], to: string[], deps: LabelDeps): Promis
   return from[0]
 }
 
+/** An excerpt read; a line-only batch reads each file's head once (its lines' importer scans share files). */
+type Read = (file: string, line?: number) => Promise<string>
+
 /** What shows a line: the boundaries it runs through; an import line, the file that imports and the to part's first file. */
-async function lineCandidates(e: GroupEdge, parts: ReadonlyMap<string, GroupBuilding>, deps: LabelDeps): Promise<Candidate[]> {
+async function lineCandidates(e: GroupEdge, partOf: (id: string) => BatchEnd | undefined, read: Read): Promise<Candidate[]> {
   if (e.via.length > 0) return e.via.map((v) => ({ file: v.file, line: v.line }))
-  const from = [...(parts.get(e.from)?.members ?? [])].sort()
-  const to = [...(parts.get(e.to)?.members ?? [])].sort()
-  const importer = await importerOf(from, to, deps)
+  const from = [...(partOf(e.from)?.members ?? [])].sort()
+  const to = [...(partOf(e.to)?.members ?? [])].sort()
+  const importer = await importerOf(from, to, read)
   return [...(importer === undefined ? [] : [{ file: importer }]), ...to.slice(0, 1).map((file) => ({ file }))]
 }
 
-/** Up to MAX_EXCERPTS_PER_LINE excerpts per line of a line-only batch, each ref once, an equal share per line. */
-async function collectLineExcerpts(edges: GroupEdge[], parts: ReadonlyMap<string, GroupBuilding>, deps: LabelDeps): Promise<BatchExcerpt[]> {
+/**
+ * Up to MAX_EXCERPTS_PER_LINE excerpts per line of a line-only batch, each at most LINE_EXCERPT_CHARS, each ref once,
+ * so at most LINE_BATCH_EXCERPT_BUDGET in all. Taken in rounds: every line's first excerpt, then every
+ * line's second. The first `core` excerpts are the first round: trimming to fit drops second excerpts only, so every
+ * line that has an excerpt keeps one of its own.
+ */
+async function collectLineExcerpts(
+  edges: GroupEdge[],
+  partOf: (id: string) => BatchEnd | undefined,
+  deps: LabelDeps
+): Promise<{ excerpts: BatchExcerpt[]; core: number }> {
+  const max = Math.min(deps.maxExcerptChars ?? DEFAULT_MAX_EXCERPT_CHARS, LINE_EXCERPT_CHARS)
+  const heads = new Map<string, Promise<string>>()
+  const read: Read = (file, line) => {
+    if (line !== undefined) return deps.excerpt(file, line)
+    const known = heads.get(file)
+    if (known) return known
+    const text = deps.excerpt(file)
+    heads.set(file, text)
+    return text
+  }
+  const queues: Candidate[][] = []
+  for (const e of edges) queues.push(await lineCandidates(e, partOf, read))
   const excerpts: BatchExcerpt[] = []
   const seen = new Set<string>()
-  const share = Math.floor(BATCH_EXCERPT_BUDGET / edges.length)
-  for (const e of edges) await takeExcerpts(await lineCandidates(e, parts, deps), MAX_EXCERPTS_PER_LINE, share, deps, excerpts, seen)
-  return excerpts
+  const at = edges.map(() => 0)
+  let core = 0
+  for (let round = 0; round < MAX_EXCERPTS_PER_LINE; round++) {
+    for (let i = 0; i < queues.length; i++) {
+      while (at[i] < queues[i].length) {
+        const c = queues[i][at[i]++]
+        const ref = c.line === undefined ? c.file : boundaryRef(c.file, c.line)
+        if (seen.has(ref)) continue
+        let text: string
+        try {
+          text = (await read(c.file, c.line)).slice(0, max)
+        } catch {
+          continue
+        }
+        if (text.trim() === '') continue
+        seen.add(ref)
+        excerpts.push({ label: `E${excerpts.length + 1}`, ref, text })
+        break
+      }
+    }
+    if (round === 0) core = excerpts.length
+  }
+  return { excerpts, core }
 }
 
-/** One end of a line in a line-only batch; an end outside an incremental grouping is named by its id alone. */
-function endOf(parts: ReadonlyMap<string, GroupBuilding>, id: string): BatchEnd {
-  const b = parts.get(id)
+/** One end of a line in a line-only batch; an end nothing knows is named by its id alone. */
+function endOf(partOf: (id: string) => BatchEnd | undefined, id: string): BatchEnd {
+  const b = partOf(id)
   return b ? { name: b.name, members: b.members } : { name: id, members: [] }
 }
 
@@ -588,15 +636,34 @@ async function pool<T, R>(items: T[], n: number, fn: (item: T) => Promise<R>): P
 }
 
 /** One batch's labels; `failed`: a call brought back no reply it could read. 'retry': it threw or returned
- *  nothing in under LABEL_SLOW_FAIL_MS, or its reply was not JSON, so the batch is worth asking again; 'timeout': it ran until it
- *  timed out, so it is not. */
-interface BatchResult extends Labels { failed?: 'retry' | 'timeout' }
+ *  nothing in under LABEL_SLOW_FAIL_MS, or its reply was not JSON, so the batch is worth asking again; 'later': it
+ *  ran until it timed out, or no model is reachable this pass (it was not sent), so it is not asked again this pass. */
+interface BatchResult extends Labels { failed?: 'retry' | 'later' }
 
-/** One batch's own labels (only what its reply set) and the tokens its call cost. */
-async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<BatchResult> {
+/** One labelling pass: the model call, and what its calls so far showed. */
+interface Pass {
+  llm: (prompt: string) => Promise<string | null>
+  /** Cache keys of every prompt sent to the model this pass. The second chance never sends one again: a batch of
+   *  one building or one line, or a half already asked twice, cannot get smaller. */
+  sent: Set<string>
+  /** Calls that came back with nothing within LABEL_NO_MODEL_MS (they reached no model). */
+  quick: number
+  /** Some call reached a model: it answered, or took longer than LABEL_NO_MODEL_MS. */
+  reached: boolean
+  /** Second-chance batches not sent because their prompt was already sent this pass. */
+  repeats: number
+}
+
+/** No model is reachable: NO_MODEL_STRIKES calls reached none, and none reached one. The pass stops asking. */
+const noModel = (pass: Pass): boolean => !pass.reached && pass.quick >= NO_MODEL_STRIKES
+
+/** One batch's own labels (only what its reply set) and the tokens its call cost. `second`: a second-chance batch,
+ *  not sent when the same prompt was already sent this pass. */
+async function labelBatch(p: Planned, deps: LabelDeps, pass: Pass, second = false): Promise<BatchResult> {
   const out = emptyLabels()
   const { buildings, parts } = p
-  const all = parts ? await collectLineExcerpts(p.edges, parts, deps) : await collectExcerpts(buildings, deps)
+  const partOf = (id: string): BatchEnd | undefined => parts?.get(id) ?? deps.part?.(id)
+  const { excerpts: all, core } = parts ? await collectLineExcerpts(p.edges, partOf, deps) : { excerpts: await collectExcerpts(buildings, deps), core: 0 }
   const mk = (excerpts: BatchExcerpt[]): LabelBatch => ({
     district: { id: p.district.id, name: p.district.name },
     buildings: buildings.map((b) => ({
@@ -610,47 +677,68 @@ async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => 
       from: e.from,
       to: e.to,
       via: e.via.map((v) => `${v.kind} ${v.key}`),
-      ...(parts ? { ends: { from: endOf(parts, e.from), to: endOf(parts, e.to) } } : {})
+      ...(parts ? { ends: { from: endOf(partOf, e.from), to: endOf(partOf, e.to) } } : {})
     })),
     excerpts
   })
-  // Excerpts are dropped from the end until the prompt fits.
-  const fitWith = (fit: PromptFit): { batch: LabelBatch; prompt: string; over: boolean } => {
+  const cap = deps.maxPromptChars ?? MAX_PROMPT_CHARS
+  // Excerpts are dropped from the end until the prompt fits, down to the first `keep`.
+  const fitWith = (fit: PromptFit, keep: number): { batch: LabelBatch; prompt: string; over: boolean } => {
     const excerpts = [...all]
     for (;;) {
       const batch = mk(excerpts)
       const prompt = buildLabelPrompt(batch, fit)
-      const over = promptCommandChars(prompt) > MAX_PROMPT_CHARS
-      if (!over || excerpts.length === 0) return { batch, prompt, over }
+      const over = promptCommandChars(prompt) > cap
+      if (!over || excerpts.length <= keep) return { batch, prompt, over }
       excerpts.pop()
     }
   }
-  let fitted = fitWith(FULL_FIT)
-  // Still too big with no excerpts (long or quote-heavy names, a long file list): its halves are asked instead,
-  // down to one building or one line, which is listed short (SHORT_FIT) with its excerpts back. One building
-  // with its lines always fits that way (worldLabel.test.ts proves it at its worst), so every part is asked.
+  // A line-only batch keeps each line's first excerpt (`core`): a line with none of its own could not be described.
+  let fitted = fitWith(FULL_FIT, core)
+  // Still too big (long or quote-heavy names, a long file list, or a line batch's first excerpts): its halves are
+  // asked instead, down to one building or one line, which is listed short (SHORT_FIT) with its excerpts back. One
+  // building or one line fits that way even at the true worst (worldLabel.test.ts, M6); the size is checked again
+  // after shortening, and a part still over (a lower maxPromptChars, or a later change) is not sent: the warning
+  // names it.
   if (fitted.over) {
-    if ((parts ? p.edges.length : buildings.length) > 1) return labelHalves(p, deps, llm)
-    fitted = fitWith(SHORT_FIT)
+    if ((parts ? p.edges.length : buildings.length) > 1) return labelHalves(p, deps, pass, second)
+    fitted = fitWith(SHORT_FIT, 0)
+    if (fitted.over) {
+      console.warn(`[world label] too big to ask even listed short: ${[...buildings.map((b) => b.id), ...p.edges.map(edgeId)].join(', ')}`)
+      return out
+    }
   }
   const { batch, prompt } = fitted
   const evidence = new Map<string, Evidence>(batch.excerpts.map((x) => [x.label, { kind: (x.kind ?? 'file') as EvidenceKind, ref: x.ref, excerpt: x.text }]))
   const key = sha(`${LABEL_PROMPT_VERSION}\n${prompt}`)
   // A line-only batch lists no buildings, so the district it is filed under is not its to name.
   const named = !parts
+  // A reply counts when it described at least one part the batch asked about (a building or a line); a batch that
+  // asks about none (a district with no buildings) counts any accepted field. One that described none of its parts
+  // is not cached, and a cached one like it is a miss: its parts are asked again rather than hidden by the cache.
+  const counts = (into: BatchResult, reply: Json): boolean =>
+    applyReply(into, reply, batch, buildings, evidence, named) > 0 &&
+    (buildings.length + p.edges.length === 0 || Object.keys(into.buildings).length + Object.keys(into.edges).length > 0)
 
   try {
     const hit = await deps.cache.get(key)
     const cached = hit === null ? null : parseReply(hit)
-    if (cached && applyReply(out, cached, batch, buildings, evidence, named) > 0) return out
+    const fromCache = emptyLabels()
+    if (cached && counts(fromCache, cached)) return fromCache
   } catch {
     // a broken cache is a miss
   }
+  if (second && pass.sent.has(key)) {
+    pass.repeats++
+    return out
+  }
+  if (noModel(pass)) return { ...out, failed: 'later' }
+  pass.sent.add(key)
   const clock = deps.now ?? (() => performance.now())
   const started = clock()
   let raw: string | null = null
   try {
-    raw = await llm(prompt)
+    raw = await pass.llm(prompt)
   } catch {
     raw = null
   }
@@ -658,12 +746,17 @@ async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => 
   const timedOut = raw === null && took >= LABEL_SLOW_FAIL_MS
   // Tokens count for a call that reached a model: one that answered, or one that took longer than
   // LABEL_NO_MODEL_MS (the prompt alone). Nothing back at once (no agent, consent off) reached no model and costs nothing.
-  if (raw !== null || took > LABEL_NO_MODEL_MS) out.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
+  if (raw !== null || took > LABEL_NO_MODEL_MS) {
+    pass.reached = true
+    out.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
+  } else pass.quick++
   const reply = raw === null ? null : parseReply(raw)
-  if (!reply) return { ...out, failed: timedOut ? 'timeout' : 'retry' }
-  // Only a reply that yielded at least one accepted field is worth caching. One that parsed but described
-  // nothing is the model's answer, and is not asked again.
-  if (applyReply(out, reply, batch, buildings, evidence, named) === 0) return out
+  if (!reply) return { ...out, failed: timedOut ? 'later' : 'retry' }
+  // A reply that counts is cached even if it left parts out: those get the second chance in smaller batches,
+  // whose prompts differ and are cached on their own. The second chance is worked out from the reply whether it
+  // came from the model or the cache, so every pass asks a left-out part again until it is described. A reply
+  // that described none of its parts is not cached; its parts get the second chance too.
+  if (!counts(out, reply)) return out
   try {
     await deps.cache.set(key, raw as string)
   } catch {
@@ -682,60 +775,62 @@ function subPlan(p: Planned, buildings: GroupBuilding[], first: boolean): Planne
 
 /** Labels a batch too big for one prompt as two smaller ones (its buildings, or a line-only batch's lines, cut in
  *  two), one after the other. */
-async function labelHalves(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<BatchResult> {
+async function labelHalves(p: Planned, deps: LabelDeps, pass: Pass, second: boolean): Promise<BatchResult> {
   const cut = Math.ceil((p.parts ? p.edges : p.buildings).length / 2)
-  const [first, second]: Planned[] = p.parts
+  const [first, last]: Planned[] = p.parts
     ? [{ ...p, edges: p.edges.slice(0, cut) }, { ...p, edges: p.edges.slice(cut) }]
     : [subPlan(p, p.buildings.slice(0, cut), p.first), subPlan(p, p.buildings.slice(cut), false)]
   const out = emptyLabels()
-  const a = await labelBatch(first, deps, llm)
+  const a = await labelBatch(first, deps, pass, second)
   merge(out, a, p.district.id)
-  // The model is slow: the second half would only wait as long again. Its buildings wait for the next compile.
-  if (a.failed === 'timeout') return { ...out, failed: 'timeout' }
-  const b = await labelBatch(second, deps, llm)
+  // The model is slow, or none is reachable: the second half would only wait as long again, or not be sent. Its
+  // buildings wait for the next compile.
+  if (a.failed === 'later') return { ...out, failed: 'later' }
+  const b = await labelBatch(last, deps, pass, second)
   merge(out, b, null)
   // Asked again whole: the half that worked is in the cache, so only the failed half calls the model.
   // A half that timed out stops the retry: the other half's quick failure is not worth a slow call.
-  const failed = b.failed === 'timeout' ? 'timeout' : (a.failed ?? b.failed)
+  const failed = b.failed === 'later' ? 'later' : (a.failed ?? b.failed)
   return failed ? { ...out, failed } : out
 }
 
 /** A batch whose call failed quickly, or whose reply was not the JSON asked for, is asked once more, straight
  *  away, in the same pass: that is usually a one-off, and otherwise its buildings keep the code's names until
- *  the next compile. One that timed out is not: its buildings wait for the next compile. Both calls' tokens
- *  count. */
-async function labelWithRetry(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<BatchResult> {
-  const first = await labelBatch(p, deps, llm)
-  if (first.failed !== 'retry') return first
+ *  the next compile. One that timed out is not: its buildings wait for the next compile; nor is one when no model
+ *  is reachable. Both calls' tokens count. */
+async function labelWithRetry(p: Planned, deps: LabelDeps, pass: Pass): Promise<BatchResult> {
+  const first = await labelBatch(p, deps, pass)
+  if (first.failed !== 'retry' || noModel(pass)) return first
   console.warn(`[world label] batch retried: ${p.district.name}`)
-  const again = await labelBatch(p, deps, llm)
+  const again = await labelBatch(p, deps, pass)
   return { ...again, tokens: again.tokens + first.tokens }
 }
 
 /**
- * The second chance of a batch that failed twice with 'retry' (a timeout waits for the next compile): its parts
- * still undescribed, in smaller batches. A building batch: one batch per building its reply did not describe,
- * with the lines it owns that are not described either. A line-only batch: its undescribed lines, half the batch
- * at a time. A batch of one building or one line cannot get smaller, so it is not asked a third time.
+ * The second chance, once per pass, for a batch that did not time out: its parts its reply left out (or every
+ * part, when it failed twice), in smaller batches. A building batch: one batch per building left out, with the
+ * lines it owns that are left out too; the lines of buildings that were described, in one line-only batch. A
+ * line-only batch: its lines left out, half the batch at a time. A batch whose prompt was already sent this pass
+ * (one building or one line, or a half asked twice) is not sent again (labelBatch's `second`).
  */
-function secondChance(p: Planned, r: BatchResult): Planned[] {
-  if (r.failed !== 'retry') return []
-  const fresh = (edges: GroupEdge[]): GroupEdge[] => edges.filter((e) => !Object.hasOwn(r.edges, edgeId(e)))
-  if (p.parts) {
-    if (p.edges.length < 2) return []
-    const left = fresh(p.edges)
-    const size = Math.ceil(p.edges.length / 2)
+function secondChance(p: Planned, r: BatchResult, parts: ReadonlyMap<string, GroupBuilding>): Planned[] {
+  if (r.failed === 'later') return []
+  const left = p.edges.filter((e) => !Object.hasOwn(r.edges, edgeId(e)))
+  const chunks = (edges: GroupEdge[], size: number): Planned[] => {
     const out: Planned[] = []
-    for (let i = 0; i < left.length; i += size) out.push({ ...p, edges: left.slice(i, i + size) })
+    for (let i = 0; i < edges.length; i += size) out.push({ district: p.district, buildings: [], edges: edges.slice(i, i + size), first: false, parts })
     return out
   }
-  if (p.buildings.length < 2) return []
-  return p.buildings
-    .filter((b) => !Object.hasOwn(r.buildings, b.id))
-    .map((b) => {
-      const s = subPlan(p, [b], p.first && b === p.buildings[0])
-      return { ...s, edges: fresh(s.edges) }
-    })
+  if (p.parts) return chunks(left, Math.ceil(p.edges.length / 2))
+  const missing = p.buildings.filter((b) => !Object.hasOwn(r.buildings, b.id))
+  const asked = new Set<GroupEdge>()
+  const own = missing.map((b) => {
+    const s = subPlan(p, [b], p.first && b === p.buildings[0])
+    const edges = s.edges.filter((e) => left.includes(e))
+    for (const e of edges) asked.add(e)
+    return { ...s, edges }
+  })
+  return [...own, ...chunks(left.filter((e) => !asked.has(e)), LINES_PER_BATCH)]
 }
 
 /** Merges one batch's labels into `into`; `district` names the district whose name it may set, if any. The
@@ -760,18 +855,21 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   if (!llm) return labels
 
   const plan = planBatches(g)
-  const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelWithRetry(p, deps, llm))
+  const pass: Pass = { llm, sent: new Set(), quick: 0, reached: false, repeats: 0 }
+  const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelWithRetry(p, deps, pass))
   // Merged in batch order whatever order the calls finished in, so the world is the same every run:
   // a district takes its first batch's name, and the first batch to define a glossary term wins.
   results.forEach((r, i) => merge(labels, r, plan[i].first ? plan[i].district.id : null))
-  const again = plan.flatMap((p, i) => secondChance(p, results[i]))
-  const second = await pool(again, LABEL_CONCURRENCY, (p) => labelBatch(p, deps, llm))
+  const parts = new Map(g.buildings.map((b) => [b.id, b]))
+  const again = noModel(pass) ? [] : plan.flatMap((p, i) => secondChance(p, results[i], parts))
+  const second = await pool(again, LABEL_CONCURRENCY, (p) => labelBatch(p, deps, pass, true))
   second.forEach((r, i) => merge(labels, r, again[i].first ? again[i].district.id : null))
   // One line per pass, so a run can show how much of the map is described.
   const left = g.buildings.filter((b) => bare(labels.buildings[b.id])).length
   const leftLines = g.edges.filter((e) => bare(labels.edges[edgeId(e)])).length
+  const stopped = noModel(pass) ? '; no model reachable, the rest was not asked' : ''
   console.info(
-    `[world label] left undescribed: ${left} of ${g.buildings.length} buildings, ${leftLines} of ${g.edges.length} lines (${again.length} batches asked a second time)`
+    `[world label] left undescribed: ${left} of ${g.buildings.length} buildings, ${leftLines} of ${g.edges.length} lines (${again.length - pass.repeats} batches asked a second time${stopped})`
   )
   return labels
 }
