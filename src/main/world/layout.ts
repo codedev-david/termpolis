@@ -94,7 +94,8 @@ export function spiralSpot(id: string, seed: number, cx: number, cz: number, i: 
   return [round2(cx + rad * Math.cos(ang)), round2(cz + rad * Math.sin(ang))]
 }
 
-const clear = (p: [number, number], taken: readonly [number, number][]): boolean =>
+/** True when spot p is at least MIN_SIBLING_GAP from every taken spot. */
+export const clear = (p: [number, number], taken: readonly [number, number][]): boolean =>
   taken.every((t) => Math.hypot(p[0] - t[0], p[1] - t[1]) >= MIN_SIBLING_GAP)
 
 /** Position for a new building: first clear spiral spot inside the radius, else the first clear ring spot. */

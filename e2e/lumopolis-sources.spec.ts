@@ -170,8 +170,10 @@ async function position(id: string): Promise<number[] | null> {
 /** Ground distance between two laid-out spots; Infinity when either is missing. */
 const groundGap = (a: number[] | null, b: number[] | null): number => (a && b ? Math.hypot(a[0] - b[0], a[2] - b[2]) : Infinity)
 
-/** About one building's footprint, in world units: a part built from the design stands within this of its wireframe's spot. */
+/** About one building's footprint, in world units: a recompile keeps a built part within this of where it stood. */
 const FOOTPRINT = 3
+/** How far from its district's centre a building of a one-building district may stand: districtRadius(1) + MOVED_TOLERANCE. */
+const SLAB_REACH = 5 + 6 + 6
 
 /** The probe's drawn lists: ids outlined (changed parts) and fading (parts the design removes). */
 async function drawnLists(): Promise<{ outlined: string[]; fading: string[] }> {
@@ -278,8 +280,12 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     // The design asks for Stripe in Payments and the first file does not name it: the part is outlined.
     await expect.poll(async () => (await drawnLists()).outlined.length, { timeout: 30_000 }).toBe(1)
     expect((await drawnLists()).outlined).toHaveLength(1)
-    // The built Payments rose where its wireframe stood (spec 5.12), and no wireframe is left for it.
-    expect(groundGap(await position((await drawnLists()).outlined[0]), wireAt)).toBeLessThan(FOOTPRINT)
+    // The wireframe stood on the ring outside every district (the folder had none yet), so the built Payments
+    // does not take its spot: it stands on its own district's slab, where the layout put it (round 6 I1).
+    const builtAt = await position((await drawnLists()).outlined[0])
+    const districtAt = await position('d-src-payments')
+    expect(groundGap(builtAt, districtAt)).toBeLessThan(SLAB_REACH)
+    expect(groundGap(wireAt, districtAt)).toBeGreaterThan(SLAB_REACH)
 
     // The agent adds a test beside it. The world recompiles, and the outline stays: the build still falls short of the plan.
     fs.writeFileSync(path.join(buildDir, 'src', 'payments', 'index.test.ts'), "import { charge } from './index'\nconsole.assert(charge(5))\n")
@@ -290,7 +296,7 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     expect(outlined).toHaveLength(1)
     const part = outlined[0]
     // ...and the new id keeps the spot: a recompile does not move the part away from where it rose.
-    expect(groundGap(await position(part), wireAt)).toBeLessThan(FOOTPRINT)
+    expect(groundGap(await position(part), builtAt)).toBeLessThan(FOOTPRINT)
 
     // The design takes Payments away: back in the folder's world the built part fades.
     await page.getByRole('combobox', { name: 'Worlds' }).selectOption({ label: DESCRIPTION })

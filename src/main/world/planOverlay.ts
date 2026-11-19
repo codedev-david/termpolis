@@ -8,7 +8,7 @@
 import type { Building, PlanReconcile, Proposal, WorldDoc, WorldEdge } from '../../shared/world/types'
 import { normalizePartName, reconcilePlan } from '../../shared/world/reconcile'
 import { validateWorld } from '../../shared/world/validate'
-import { districtRadius, placeBuilding } from './layout'
+import { MOVED_TOLERANCE, clear, districtRadius, placeBuilding } from './layout'
 
 export const LINKED_DESIGN_TITLE = 'Linked design'
 /** How far outside the farthest district centre a planned part with no district sits. */
@@ -33,9 +33,14 @@ function plannedBefore(previous: WorldDoc | null): Set<string> {
  * district (the layout alone would move one that stands off its district's platform), and when its
  * id changes with its files. A building that already stood when it matched keeps its own spot. Re-layout clears the previous positions,
  * so it lays matched parts out like any other.
+ * A spot is taken only when it lies on the building's own district slab, by the test the layout keeps a
+ * position with (districtRadius + MOVED_TOLERANCE), and is clear of every sibling (MIN_SIBLING_GAP);
+ * otherwise the layout's spot stands. A wireframe on the ring, or in another district, so never pulls a
+ * building off its slab, and a sibling the layout put on the spot never shares it. Only the previous
+ * proposal of the same design (`key`) lends spots.
  */
-function holdPlannedSpots(doc: WorldDoc, matched: Record<string, string>, previous: WorldDoc | null, positions: Record<string, Pos>): void {
-  const link = previous?.layers.plan.find((p) => p.reconcile !== undefined)
+function holdPlannedSpots(doc: WorldDoc, key: string, matched: Record<string, string>, previous: WorldDoc | null, positions: Record<string, Pos>): void {
+  const link = previous?.layers.plan.find((p) => p.reconcile !== undefined && p.id === key)
   const was = link?.reconcile
   const prevPos = previous ? previous.layout.positions : {}
   // A linked proposal's buildings are its missing plan parts, in order (see overlayPlan).
@@ -43,14 +48,24 @@ function holdPlannedSpots(doc: WorldDoc, matched: Record<string, string>, previo
   link?.buildings.forEach((b, i) => wireAt.set((was as PlanReconcile).missing[i], prevPos[b.id]))
   const prevDistrict = new Map((previous ? previous.buildings : []).map((b) => [b.id, b.districtId]))
   const districtOf = new Map(doc.buildings.map((b) => [b.id, b.districtId]))
+  const fits = (bid: string, p: Pos): boolean => {
+    const d = districtOf.get(bid) as string
+    const c = positions[d]
+    if (c === undefined) return false
+    const members = doc.buildings.filter((b) => b.districtId === d)
+    const others = members.filter((b) => b.id !== bid && positions[b.id]).map((b): [number, number] => [positions[b.id][0], positions[b.id][2]])
+    return Math.hypot(p[0] - c[0], p[2] - c[2]) <= districtRadius(members.length) + MOVED_TOLERANCE && clear([p[0], p[2]], others)
+  }
   for (const [pid, bid] of Object.entries(matched)) {
     const at = wireAt.get(pid)
     // The building that stood for this part last time: the same one, or one whose id changed with its files
     // (its old id is gone from the code). Never one that still stands, or the two would share a spot.
     const before = was?.matched[pid] ?? bid
     const held = prevPos[before]
-    if (!prevDistrict.has(bid) && at) positions[bid] = at
-    else if ((before === bid || !districtOf.has(before)) && prevDistrict.get(before) === districtOf.get(bid) && held) positions[bid] = held
+    const spot = !prevDistrict.has(bid) && at
+      ? at
+      : (before === bid || !districtOf.has(before)) && prevDistrict.get(before) === districtOf.get(bid) ? held : undefined
+    if (spot && fits(bid, spot)) positions[bid] = spot
   }
 }
 
@@ -76,7 +91,7 @@ export function overlayPlan(doc: WorldDoc, plan: WorldDoc, previous: WorldDoc | 
   }
 
   const positions: Record<string, Pos> = { ...doc.layout.positions }
-  holdPlannedSpots(doc, rec.matched, previous, positions)
+  holdPlannedSpots(doc, plan.projectKey, rec.matched, previous, positions)
   const glossary = { ...doc.glossary }
   const cargo = { ...doc.cargo }
   const kept = plannedBefore(previous)
