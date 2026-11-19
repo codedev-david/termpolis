@@ -125,6 +125,17 @@ describe('cardText', () => {
     }
   })
 
+  it('a design world\'s own line no model described claims nothing from the code either (round 6 M5)', () => {
+    const doc = minimal()
+    doc.projectKey = 'design:p'
+    const e = doc.edges[0]
+    Object.assign(e, { how: [], why: [], label: 'ipc world:get', tech: ['ipc'] })
+    for (const card of [cardText(doc, e.id), edgeCard(doc, e.id)]) {
+      expect(card).not.toContain('From the code')
+      expect(card).toContain('Not described yet.')
+    }
+  })
+
   it('states outside parts, planned parts and nothing for an unknown id or a district', () => {
     const doc = rich()
     expect(cardText(doc, 'x1')).toContain('Outside the project')

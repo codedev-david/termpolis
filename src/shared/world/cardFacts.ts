@@ -38,9 +38,9 @@ export const NOT_DESCRIBED = 'Not described yet.'
 
 /** What a line no model has described says under "How it travels": for a built line, what the code alone shows, who
  *  reaches whom and through what (the identifiers themselves are listed under "What it carries"); a planned line
- *  (a proposal's) has no code, so it says only that it is not described. */
+ *  (a proposal's, or any line of a design world, keyed `design:`) has no code, so it says only that it is not described. */
 export function edgeFromCode(doc: WorldDoc, e: WorldEdge): string {
-  if (!doc.edges.some((x) => x.id === e.id)) return NOT_DESCRIBED
+  if (doc.projectKey.startsWith('design:') || !doc.edges.some((x) => x.id === e.id)) return NOT_DESCRIBED
   const from = nodeName(doc, e.from)
   const to = nodeName(doc, e.to)
   const items = edgeItems(e.label)
