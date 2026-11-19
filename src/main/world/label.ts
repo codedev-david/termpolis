@@ -49,6 +49,8 @@ export interface LabelDeps {
   context?: (members: string[]) => Promise<Evidence[]>
   /** Per-excerpt cap, default 1200. */
   maxExcerptChars?: number
+  /** The clock a model call is timed with (default Date.now). */
+  now?: () => number
 }
 
 export const DEFAULT_MAX_EXCERPT_CHARS = 1200
@@ -63,6 +65,9 @@ export const EDGES_PER_BUILDING = 4
 export const LABEL_CONCURRENCY = 4
 /** One model call's limit. A batch reply takes 30 to 60 s through the Claude Code CLI. */
 export const LABEL_CALL_TIMEOUT_MS = 120_000
+/** A call that brought nothing back after this long ran until it timed out (main's limit, or the host's):
+ *  the model is slow or overloaded, so it is not asked again at once. A failure that came back sooner is. */
+export const LABEL_SLOW_FAIL_MS = 30_000
 const MAX_EXCERPTS_PER_BUILDING = 3
 const MAX_FILE_EXCERPTS = 2
 const MAX_FLOORS = 12
@@ -477,9 +482,10 @@ async function pool<T, R>(items: T[], n: number, fn: (item: T) => Promise<R>): P
   return out
 }
 
-/** One batch's labels; `failed`: a call brought back no reply it could read (it timed out, threw, returned
- *  nothing or no JSON), so the batch is worth asking again. */
-interface BatchResult extends Labels { failed?: true }
+/** One batch's labels; `failed`: a call brought back no reply it could read. 'retry': it threw or returned
+ *  nothing quickly, or its reply was not JSON, so the batch is worth asking again; 'timeout': it ran until it
+ *  timed out, so it is not. */
+interface BatchResult extends Labels { failed?: 'retry' | 'timeout' }
 
 /** One batch's own labels (only what its reply set) and the tokens its call cost. */
 async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<BatchResult> {
@@ -518,16 +524,20 @@ async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => 
   } catch {
     // a broken cache is a miss
   }
+  const clock = deps.now ?? Date.now
+  const started = clock()
   let raw: string | null = null
   try {
     raw = await llm(prompt)
   } catch {
     raw = null
   }
-  // The call was made, so its prompt counts even when nothing came back.
-  out.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
+  const timedOut = raw === null && clock() - started >= LABEL_SLOW_FAIL_MS
+  // Tokens count for a call that reached a model: one that answered, or one that ran until it timed out.
+  // Nothing back at once (no agent, consent off, a quota) reached no model and costs nothing.
+  if (raw !== null || timedOut) out.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
   const reply = raw === null ? null : parseReply(raw)
-  if (!reply) return { ...out, failed: true }
+  if (!reply) return { ...out, failed: timedOut ? 'timeout' : 'retry' }
   // Only a reply that yielded at least one accepted field is worth caching. One that parsed but described
   // nothing is the model's answer, and is not asked again.
   if (applyReply(out, reply, batch, buildings, evidence) === 0) return out
@@ -554,15 +564,19 @@ async function labelHalves(p: Planned, deps: LabelDeps, llm: (prompt: string) =>
   merge(out, a, p.district.id)
   merge(out, b, null)
   // Asked again whole: the half that worked is in the cache, so only the failed half calls the model.
-  return a.failed || b.failed ? { ...out, failed: true } : out
+  // A half that timed out stops the retry: the other half's quick failure is not worth a slow call.
+  const failed = a.failed === 'timeout' || b.failed === 'timeout' ? 'timeout' : (a.failed ?? b.failed)
+  return failed ? { ...out, failed } : out
 }
 
-/** A batch whose call failed is asked once more, straight away, in the same pass: a timed-out or garbled reply
- *  is usually a one-off, and otherwise its buildings keep the code's names until the next compile. Both
- *  calls' tokens count. */
+/** A batch whose call failed quickly, or whose reply was not the JSON asked for, is asked once more, straight
+ *  away, in the same pass: that is usually a one-off, and otherwise its buildings keep the code's names until
+ *  the next compile. One that timed out is not: its buildings wait for the next compile. Both calls' tokens
+ *  count. */
 async function labelWithRetry(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<Labels> {
   const first = await labelBatch(p, deps, llm)
-  if (!first.failed) return first
+  if (first.failed !== 'retry') return first
+  console.warn(`[world label] batch retried: ${p.district.name}`)
   const again = await labelBatch(p, deps, llm)
   return { ...again, tokens: again.tokens + first.tokens }
 }

@@ -9,6 +9,7 @@ import {
   BUILDINGS_PER_BATCH,
   EDGES_PER_BUILDING,
   LABEL_CONCURRENCY,
+  LABEL_SLOW_FAIL_MS,
   cheapModelFor,
   labelWorld,
   makeWorldLlm,
@@ -99,13 +100,17 @@ describe('labelWorld', () => {
     expect(deps.store.size).toBe(2)
   })
 
-  it('counts the prompt and reply of every uncached call, and the prompt alone when nothing came back', async () => {
+  it('counts the prompt and reply of every uncached call, and the prompt alone when a call timed out', async () => {
     const llm = vi.fn(async (_prompt: string): Promise<string | null> => GOOD)
     const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
     const expected = llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p) + estimateTokens(GOOD), 0)
     expect(l.tokens).toBe(expected)
-    const nothing = vi.fn(async (_prompt: string): Promise<string | null> => null)
-    const none = await labelWorld(twoDistricts(), mkDeps({ llm: nothing }))
+    let clock = 0
+    const nothing = vi.fn(async (_prompt: string): Promise<string | null> => {
+      clock += LABEL_SLOW_FAIL_MS
+      return null
+    })
+    const none = await labelWorld(twoDistricts(), mkDeps({ llm: nothing, now: () => clock }))
     expect(none.tokens).toBeGreaterThan(0)
     expect(none.tokens).toBe(nothing.mock.calls.reduce((n, [p]) => n + estimateTokens(p), 0))
     expect((await labelWorld(twoDistricts(), mkDeps({ llm: null }))).tokens).toBe(0)
@@ -346,15 +351,61 @@ describe('labelWorld', () => {
   })
 
   it('the retry is once: a batch failing twice keeps the code names, and both calls count (round 3 E)', async () => {
-    const llm = vi.fn(async (_p: string): Promise<string | null> => null)
+    const llm = vi.fn(async (_p: string): Promise<string | null> => 'sorry, no')
     const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
     expect(llm).toHaveBeenCalledTimes(4)
     expect(l.buildings.a.name).toBe('a-name')
-    expect(l.tokens).toBe(llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p), 0))
+    expect(l.tokens).toBe(llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p) + estimateTokens('sorry, no'), 0))
     // An answer that parsed but described nothing is the model's answer: it is not asked again.
     const empty = vi.fn(async (_p: string) => '{}')
     await labelWorld(twoDistricts(), mkDeps({ llm: empty }))
     expect(empty).toHaveBeenCalledTimes(2)
+  })
+
+  it('a call that came back with nothing at once reached no model: it is retried, and costs no tokens (round 5 I1)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      for (const fail of [async () => null, () => Promise.reject(new Error('no agent'))]) {
+        const llm = vi.fn(fail)
+        const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
+        expect(llm).toHaveBeenCalledTimes(4)
+        expect(l.tokens).toBe(0)
+      }
+      // One line per retry names the district, so a log shows whether retries happen at all.
+      expect(warn.mock.calls.map((c) => c[0]).sort()).toEqual(['[world label] batch retried: Alpha', '[world label] batch retried: Alpha', '[world label] batch retried: Beta', '[world label] batch retried: Beta'])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a call that ran until it timed out is not asked again, and its prompt counts (round 5 I1)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      let clock = 0
+      const llm = vi.fn(async (p: string): Promise<string | null> => {
+        if (!p.includes('DISTRICT "d1"')) return GOOD
+        clock += LABEL_SLOW_FAIL_MS
+        return null
+      })
+      const l = await labelWorld(twoDistricts(), mkDeps({ llm, now: () => clock }))
+      expect(llm.mock.calls.filter(([p]) => p.includes('DISTRICT "d1"'))).toHaveLength(1)
+      expect(l.buildings.a.name).toBe('a-name')
+      expect(l.tokens).toBe(llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p) + (p.includes('DISTRICT "d1"') ? 0 : estimateTokens(GOOD)), 0))
+      expect(warn).not.toHaveBeenCalled()
+      // A garbled reply is retried however long it took: the model answered, just not in the format.
+      clock = 0
+      let calls = 0
+      const slowProse = vi.fn(async (_p: string): Promise<string | null> => {
+        clock += LABEL_SLOW_FAIL_MS
+        calls++
+        return calls === 1 ? 'sorry, no' : GOOD
+      })
+      const one: Grouping = { districts: [twoDistricts().districts[0]], buildings: twoDistricts().buildings.filter((b) => b.districtId === 'd1'), edges: [] }
+      expect((await labelWorld(one, mkDeps({ llm: slowProse, now: () => clock }))).buildings.a.name).toBe('Alpha Hub')
+      expect(slowProse).toHaveBeenCalledTimes(2)
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('a null reply, a non-JSON reply and a non-object reply are not cached', async () => {
@@ -1025,6 +1076,22 @@ describe('every building is described (film bug 2)', () => {
     const listed = flaky.mock.calls.map(([p]) => [...p.matchAll(/^- "([a-z]\w*)": /gm)].map((m) => m[1]).join(' '))
     expect(listed).toEqual(['a b', 'c', 'c'])
     for (const id of ['a', 'b', 'c']) expect(l.buildings[id].how.map((c) => c.text)).toEqual([`${id} works`])
+  })
+
+  it('a split batch with a half that timed out is not asked again, whatever the other half did (round 5 I1)', async () => {
+    const buildings = ['a', 'b', 'c'].map((id) => bld(id, 'd', Array.from({ length: 12 }, (_, k) => quoted(`/${id}/f${k}.ts`))))
+    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings, edges: [] }
+    for (const firstHalf of [async (p: string) => describeAll(p), async () => null]) {
+      let clock = 0
+      let calls = 0
+      const llm = vi.fn(async (p: string): Promise<string | null> => {
+        if (++calls === 1) return firstHalf(p)
+        clock += LABEL_SLOW_FAIL_MS
+        return null
+      })
+      await labelWorld(g, mkDeps({ llm, now: () => clock }))
+      expect(llm).toHaveBeenCalledTimes(2)
+    }
   })
 
   it('one building too large to describe is never sent, keeps the names from the code, and asks no model again (fix wave I2)', async () => {
