@@ -83,6 +83,19 @@ describe('techStack', () => {
     expect(packageImports('src/a.ts', text)).toEqual(['electron', 'react', 'ws'])
   })
 
+  it('a type-only import with a long list, and a bare type-only re-export, are still types only (round 5 M1, M2)', () => {
+    const names = Array.from({ length: 300 }, (_, i) => `  ModelType${i}`).join(',\n')
+    expect(names.length).toBeGreaterThan(3000)
+    const text = [
+      `import type {\n${names}\n} from '@azure/arm-compute'`,
+      `import {\n${names.replace(/ {2}/g, '  type ')}\n} from 'three'`,
+      "export type * from 'electron'",
+      "export type * as Wire from 'ws'",
+      "import zod from 'zod'"
+    ].join('\n')
+    expect(packageImports('src/a.ts', text)).toEqual(['zod'])
+  })
+
   it('reads a huge file of type aliases, open braces and braced imports in linear time (round 2 N3)', () => {
     const lines = (line: string): string => Array.from({ length: 20_000 }, () => line).join('\n')
     // The quadratic version took seconds; the best of three runs keeps a busy machine's one-off stall out of the bound.
