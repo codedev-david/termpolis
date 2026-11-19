@@ -93,9 +93,8 @@ describe('cardText', () => {
     const from = doc.buildings.find((b) => b.id === e.from)?.name as string
     const to = doc.buildings.find((b) => b.id === e.to)?.name as string
     const how = `From the code: ${from} reaches ${to} this way: it uses 2 message channels and reads 1 setting.`
-    const why = 'Nothing in the code records why yet.'
+    const why = 'Not described yet; the code alone does not say why.'
     for (const card of [cardText(doc, e.id), edgeCard(doc, e.id)]) {
-      expect(card).not.toContain('Not described yet')
       expect(card).toContain(how)
       expect(card).toContain(why)
     }
@@ -113,6 +112,17 @@ describe('cardText', () => {
     // A described line keeps its own words.
     e.how = [claim('Sends it over IPC', 'inferred')]
     expect(edgeCard(doc, e.id)).not.toContain('From the code')
+  })
+
+  it('a planned line no model described claims nothing from the code, which it has none of (round 5 M8)', () => {
+    const doc = rich()
+    const planned = doc.layers.plan[0].edges[0]
+    Object.assign(planned, { how: [], why: [], label: 'ipc world:get', tech: ['ipc'] })
+    for (const card of [cardText(doc, planned.id), edgeCard(doc, planned.id)]) {
+      expect(card).not.toContain('From the code')
+      expect(card).toContain('Not described yet.')
+      expect(card).toContain('Not described yet; the code alone does not say why.')
+    }
   })
 
   it('states outside parts, planned parts and nothing for an unknown id or a district', () => {

@@ -33,9 +33,14 @@ export const runsIn = (doc: WorldDoc, b: Building): string => {
   return proc ? proc.label : b.process
 }
 
-/** What a line no model has described says under "How it travels": what the code alone shows, who reaches whom and
- *  through what (the identifiers themselves are listed under "What it carries"). */
+/** What a planned line no model has described says under "How it travels": it has no code to read. */
+export const NOT_DESCRIBED = 'Not described yet.'
+
+/** What a line no model has described says under "How it travels": for a built line, what the code alone shows, who
+ *  reaches whom and through what (the identifiers themselves are listed under "What it carries"); a planned line
+ *  (a proposal's) has no code, so it says only that it is not described. */
 export function edgeFromCode(doc: WorldDoc, e: WorldEdge): string {
+  if (!doc.edges.some((x) => x.id === e.id)) return NOT_DESCRIBED
   const from = nodeName(doc, e.from)
   const to = nodeName(doc, e.to)
   const items = edgeItems(e.label)
@@ -48,5 +53,6 @@ export function edgeFromCode(doc: WorldDoc, e: WorldEdge): string {
   return `From the code: ${from} reaches ${to}${e.tech.length ? ` through ${e.tech.join(', ')}` : ''}.`
 }
 
-/** What a line no model has described says under "Why": the code records how, not why. */
-export const NO_WHY_YET = 'Nothing in the code records why yet.'
+/** What a line no model has described says under "Why". Nobody read the code for a reason (the line may be past the
+ *  labelling cap, or not reached yet), so it claims nothing about the code beyond what code can show. */
+export const NO_WHY_YET = 'Not described yet; the code alone does not say why.'
