@@ -9,6 +9,7 @@ import {
   BUILDINGS_PER_BATCH,
   EDGES_PER_BUILDING,
   LABEL_CONCURRENCY,
+  LABEL_NO_MODEL_MS,
   LABEL_SLOW_FAIL_MS,
   cheapModelFor,
   labelWorld,
@@ -366,14 +367,51 @@ describe('labelWorld', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
       for (const fail of [async () => null, () => Promise.reject(new Error('no agent'))]) {
-        const llm = vi.fn(fail)
-        const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
+        // "At once" is up to LABEL_NO_MODEL_MS, the same threshold the token count uses.
+        let clock = 0
+        const llm = vi.fn(() => {
+          clock += LABEL_NO_MODEL_MS
+          return fail()
+        })
+        const l = await labelWorld(twoDistricts(), mkDeps({ llm, now: () => clock }))
         expect(llm).toHaveBeenCalledTimes(4)
         expect(l.tokens).toBe(0)
       }
       // One line per retry names the district, so a log shows whether retries happen at all.
       expect(warn.mock.calls.map((c) => c[0]).sort()).toEqual(['[world label] batch retried: Alpha', '[world label] batch retried: Alpha', '[world label] batch retried: Beta', '[world label] batch retried: Beta'])
     } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a call that failed after more than a few ms reached a model: its prompt counts, and it is still retried (round 6 M2)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      let clock = 0
+      const llm = vi.fn(async (_p: string): Promise<string | null> => {
+        clock += LABEL_NO_MODEL_MS + 1
+        return null
+      })
+      const l = await labelWorld(twoDistricts(), mkDeps({ llm, now: () => clock }))
+      expect(llm).toHaveBeenCalledTimes(4)
+      expect(l.tokens).toBeGreaterThan(0)
+      expect(l.tokens).toBe(llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p), 0))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a call is timed with a monotonic clock by default: a wall clock jump does not make a quick failure a timeout (round 6 M1)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let wall = Date.now()
+    const jump = vi.spyOn(Date, 'now').mockImplementation(() => (wall += LABEL_SLOW_FAIL_MS))
+    try {
+      const llm = vi.fn(async (_p: string): Promise<string | null> => null)
+      const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
+      expect(llm).toHaveBeenCalledTimes(4)
+      expect(l.tokens).toBe(0)
+    } finally {
+      jump.mockRestore()
       warn.mockRestore()
     }
   })
@@ -1092,6 +1130,19 @@ describe('every building is described (film bug 2)', () => {
       await labelWorld(g, mkDeps({ llm, now: () => clock }))
       expect(llm).toHaveBeenCalledTimes(2)
     }
+  })
+
+  it('a split batch whose first half timed out does not ask the second half (round 6 M4)', async () => {
+    const buildings = ['a', 'b', 'c'].map((id) => bld(id, 'd', Array.from({ length: 12 }, (_, k) => quoted(`/${id}/f${k}.ts`))))
+    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings, edges: [] }
+    let clock = 0
+    const llm = vi.fn(async (_p: string): Promise<string | null> => {
+      clock += LABEL_SLOW_FAIL_MS
+      return null
+    })
+    const l = await labelWorld(g, mkDeps({ llm, now: () => clock }))
+    expect(llm).toHaveBeenCalledTimes(1)
+    expect(l.buildings.c.name).toBe('c-name')
   })
 
   it('one building too large to describe is never sent, keeps the names from the code, and asks no model again (fix wave I2)', async () => {

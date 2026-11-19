@@ -615,7 +615,6 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     const rs = cloned ? confinedTo(root, readSource) : readSource
     const label: LabelDeps = {
       llm,
-      now,
       ...(st.labelling ? { context: askContext(projectKey) } : {}),
       cache: st.store.labelCache,
       excerpt: async (file, line) => {

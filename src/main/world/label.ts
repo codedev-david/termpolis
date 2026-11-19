@@ -49,7 +49,8 @@ export interface LabelDeps {
   context?: (members: string[]) => Promise<Evidence[]>
   /** Per-excerpt cap, default 1200. */
   maxExcerptChars?: number
-  /** The clock a model call is timed with (default Date.now). */
+  /** The clock a model call is timed with, in ms (default performance.now: monotonic, so a laptop that
+   *  sleeps or a clock that is set mid-call does not make a quick failure look like a timeout). */
   now?: () => number
 }
 
@@ -68,6 +69,9 @@ export const LABEL_CALL_TIMEOUT_MS = 120_000
 /** A call that brought nothing back after this long ran until it timed out (main's limit, or the host's):
  *  the model is slow or overloaded, so it is not asked again at once. A failure that came back sooner is. */
 export const LABEL_SLOW_FAIL_MS = 30_000
+/** A call that brought nothing back within this long reached no model (no agent, consent off, a refusal before
+ *  any spawn): it costs no tokens. One that took longer reached a model process, and its prompt counts. */
+export const LABEL_NO_MODEL_MS = 10
 const MAX_EXCERPTS_PER_BUILDING = 3
 const MAX_FILE_EXCERPTS = 2
 const MAX_FLOORS = 12
@@ -483,7 +487,7 @@ async function pool<T, R>(items: T[], n: number, fn: (item: T) => Promise<R>): P
 }
 
 /** One batch's labels; `failed`: a call brought back no reply it could read. 'retry': it threw or returned
- *  nothing quickly, or its reply was not JSON, so the batch is worth asking again; 'timeout': it ran until it
+ *  nothing in under LABEL_SLOW_FAIL_MS, or its reply was not JSON, so the batch is worth asking again; 'timeout': it ran until it
  *  timed out, so it is not. */
 interface BatchResult extends Labels { failed?: 'retry' | 'timeout' }
 
@@ -524,7 +528,7 @@ async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => 
   } catch {
     // a broken cache is a miss
   }
-  const clock = deps.now ?? Date.now
+  const clock = deps.now ?? (() => performance.now())
   const started = clock()
   let raw: string | null = null
   try {
@@ -532,10 +536,11 @@ async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => 
   } catch {
     raw = null
   }
-  const timedOut = raw === null && clock() - started >= LABEL_SLOW_FAIL_MS
-  // Tokens count for a call that reached a model: one that answered, or one that ran until it timed out.
-  // Nothing back at once (no agent, consent off, a quota) reached no model and costs nothing.
-  if (raw !== null || timedOut) out.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
+  const took = clock() - started
+  const timedOut = raw === null && took >= LABEL_SLOW_FAIL_MS
+  // Tokens count for a call that reached a model: one that answered, or one that took longer than
+  // LABEL_NO_MODEL_MS (the prompt alone). Nothing back at once (no agent, consent off) reached no model and costs nothing.
+  if (raw !== null || took > LABEL_NO_MODEL_MS) out.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
   const reply = raw === null ? null : parseReply(raw)
   if (!reply) return { ...out, failed: timedOut ? 'timeout' : 'retry' }
   // Only a reply that yielded at least one accepted field is worth caching. One that parsed but described
@@ -560,12 +565,14 @@ async function labelHalves(p: Planned, deps: LabelDeps, llm: (prompt: string) =>
   const cut = Math.ceil(p.buildings.length / 2)
   const out: BatchResult = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
   const a = await labelBatch(half(p.buildings.slice(0, cut), p.first), deps, llm)
-  const b = await labelBatch(half(p.buildings.slice(cut), false), deps, llm)
   merge(out, a, p.district.id)
+  // The model is slow: the second half would only wait as long again. Its buildings wait for the next compile.
+  if (a.failed === 'timeout') return { ...out, failed: 'timeout' }
+  const b = await labelBatch(half(p.buildings.slice(cut), false), deps, llm)
   merge(out, b, null)
   // Asked again whole: the half that worked is in the cache, so only the failed half calls the model.
   // A half that timed out stops the retry: the other half's quick failure is not worth a slow call.
-  const failed = a.failed === 'timeout' || b.failed === 'timeout' ? 'timeout' : (a.failed ?? b.failed)
+  const failed = b.failed === 'timeout' ? 'timeout' : (a.failed ?? b.failed)
   return failed ? { ...out, failed } : out
 }
 
