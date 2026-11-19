@@ -104,9 +104,10 @@ describe('labelWorld', () => {
     const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
     const expected = llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p) + estimateTokens(GOOD), 0)
     expect(l.tokens).toBe(expected)
-    const none = await labelWorld(twoDistricts(), mkDeps({ llm: vi.fn(async () => null) }))
+    const nothing = vi.fn(async (_prompt: string): Promise<string | null> => null)
+    const none = await labelWorld(twoDistricts(), mkDeps({ llm: nothing }))
     expect(none.tokens).toBeGreaterThan(0)
-    expect(none.tokens).toBeLessThan(expected)
+    expect(none.tokens).toBe(nothing.mock.calls.reduce((n, [p]) => n + estimateTokens(p), 0))
     expect((await labelWorld(twoDistricts(), mkDeps({ llm: null }))).tokens).toBe(0)
   })
 
@@ -328,6 +329,32 @@ describe('labelWorld', () => {
     expect(l.districts.d1.name).toBe('Alpha')
     expect(l.buildings.a.name).toBe('a-name')
     expect(l.districts.d2.name).toBe('Beta Zone')
+  })
+
+  it('a batch whose call failed (timed out, threw, no reply or no JSON) is asked once more in the same pass (round 3 E)', async () => {
+    for (const fail of [() => Promise.reject(new Error('timed out')), async () => null, async () => 'sorry, no']) {
+      const seen = new Map<string, number>()
+      const llm = vi.fn(async (p: string): Promise<string | null> => {
+        const k = p.includes('DISTRICT "d1"') ? 'd1' : 'd2'
+        seen.set(k, (seen.get(k) ?? 0) + 1)
+        return k === 'd1' && seen.get(k) === 1 ? fail() : GOOD
+      })
+      const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
+      expect(seen).toEqual(new Map([['d1', 2], ['d2', 1]]))
+      expect(l.buildings.a.name).toBe('Alpha Hub')
+    }
+  })
+
+  it('the retry is once: a batch failing twice keeps the code names, and both calls count (round 3 E)', async () => {
+    const llm = vi.fn(async (_p: string): Promise<string | null> => null)
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm }))
+    expect(llm).toHaveBeenCalledTimes(4)
+    expect(l.buildings.a.name).toBe('a-name')
+    expect(l.tokens).toBe(llm.mock.calls.reduce((n, [p]) => n + estimateTokens(p), 0))
+    // An answer that parsed but described nothing is the model's answer: it is not asked again.
+    const empty = vi.fn(async (_p: string) => '{}')
+    await labelWorld(twoDistricts(), mkDeps({ llm: empty }))
+    expect(empty).toHaveBeenCalledTimes(2)
   })
 
   it('a null reply, a non-JSON reply and a non-object reply are not cached', async () => {
@@ -987,6 +1014,17 @@ describe('every building is described (film bug 2)', () => {
     expect(first).not.toContain('"e-gone--c"')
     for (const id of ['a', 'b', 'c']) expect(l.buildings[id].how.map((c) => c.text)).toEqual([`${id} works`])
     expect(l.districts.d.name).toBe('Named')
+  })
+
+  it('a split batch whose second half failed is asked again: the first half comes from the cache and only the failed half calls the model (round 3 E)', async () => {
+    const buildings = ['a', 'b', 'c'].map((id) => bld(id, 'd', Array.from({ length: 12 }, (_, k) => quoted(`/${id}/f${k}.ts`))))
+    const g: Grouping = { districts: [{ id: 'd', name: 'D', members: [] }], buildings, edges: [] }
+    let calls = 0
+    const flaky = vi.fn(async (p: string): Promise<string | null> => (++calls === 2 ? null : describeAll(p)))
+    const l = await labelWorld(g, mkDeps({ llm: flaky }))
+    const listed = flaky.mock.calls.map(([p]) => [...p.matchAll(/^- "([a-z]\w*)": /gm)].map((m) => m[1]).join(' '))
+    expect(listed).toEqual(['a b', 'c', 'c'])
+    for (const id of ['a', 'b', 'c']) expect(l.buildings[id].how.map((c) => c.text)).toEqual([`${id} works`])
   })
 
   it('one building too large to describe is never sent, keeps the names from the code, and asks no model again (fix wave I2)', async () => {

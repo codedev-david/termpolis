@@ -329,7 +329,8 @@ describe('compileWorld', () => {
     for (const d of prev.districts) d.name = `old ${d.id}`
     prev.districts = prev.districts.filter((d) => d.id !== 'd-src-main')
     prev.edges = prev.edges.filter((e) => e.id !== ipcId)
-    const llm = vi.fn(async () => null)
+    // An answer describing nothing: the code-derived labels stay, and a batch is asked once (a failed call is retried).
+    const llm = vi.fn(async () => '{}')
     const doc = await compileFixture({ label: labelDeps({ llm }) }, prev, ['.env.production'])
     expectValid(doc)
     expect(llm).toHaveBeenCalledTimes(1)
@@ -405,7 +406,7 @@ describe('compileWorld', () => {
   })
 
   it('changed without a previous doc labels everything; no changed labels everything', async () => {
-    const llm = vi.fn(async () => null)
+    const llm = vi.fn(async () => '{}')
     await compileFixture({ label: labelDeps({ llm }) }, null, ['src/renderer/view.ts'])
     expect(llm).toHaveBeenCalledTimes(3) // one batch per district
     const prev = await compileFixture()

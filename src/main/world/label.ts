@@ -477,9 +477,13 @@ async function pool<T, R>(items: T[], n: number, fn: (item: T) => Promise<R>): P
   return out
 }
 
+/** One batch's labels; `failed`: a call brought back no reply it could read (it timed out, threw, returned
+ *  nothing or no JSON), so the batch is worth asking again. */
+interface BatchResult extends Labels { failed?: true }
+
 /** One batch's own labels (only what its reply set) and the tokens its call cost. */
-async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<Labels> {
-  const out: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
+async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<BatchResult> {
+  const out: BatchResult = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
   const { buildings } = p
   const { excerpts, evidence } = await collectExcerpts(buildings, deps)
   const mk = (): LabelBatch => ({
@@ -523,8 +527,10 @@ async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => 
   // The call was made, so its prompt counts even when nothing came back.
   out.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
   const reply = raw === null ? null : parseReply(raw)
-  // Only a reply that yielded at least one accepted field is worth caching.
-  if (!reply || applyReply(out, reply, batch, buildings, evidence) === 0) return out
+  if (!reply) return { ...out, failed: true }
+  // Only a reply that yielded at least one accepted field is worth caching. One that parsed but described
+  // nothing is the model's answer, and is not asked again.
+  if (applyReply(out, reply, batch, buildings, evidence) === 0) return out
   try {
     await deps.cache.set(key, raw as string)
   } catch {
@@ -534,7 +540,7 @@ async function labelBatch(p: Planned, deps: LabelDeps, llm: (prompt: string) => 
 }
 
 /** Labels a batch too big for one prompt as two smaller ones, one after the other. */
-async function labelHalves(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<Labels> {
+async function labelHalves(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<BatchResult> {
   const all = new Set(p.buildings.map((b) => b.id))
   const half = (buildings: GroupBuilding[], first: boolean): Planned => {
     const ids = new Set(buildings.map((b) => b.id))
@@ -542,10 +548,23 @@ async function labelHalves(p: Planned, deps: LabelDeps, llm: (prompt: string) =>
     return { district: p.district, buildings, edges: p.edges.filter((e) => ids.has(e.from) || (!all.has(e.from) && ids.has(e.to))), first }
   }
   const cut = Math.ceil(p.buildings.length / 2)
-  const out: Labels = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
-  merge(out, await labelBatch(half(p.buildings.slice(0, cut), p.first), deps, llm), p.district.id)
-  merge(out, await labelBatch(half(p.buildings.slice(cut), false), deps, llm), null)
-  return out
+  const out: BatchResult = { districts: dict(), buildings: dict(), edges: dict(), glossary: dict(), tokens: 0 }
+  const a = await labelBatch(half(p.buildings.slice(0, cut), p.first), deps, llm)
+  const b = await labelBatch(half(p.buildings.slice(cut), false), deps, llm)
+  merge(out, a, p.district.id)
+  merge(out, b, null)
+  // Asked again whole: the half that worked is in the cache, so only the failed half calls the model.
+  return a.failed || b.failed ? { ...out, failed: true } : out
+}
+
+/** A batch whose call failed is asked once more, straight away, in the same pass: a timed-out or garbled reply
+ *  is usually a one-off, and otherwise its buildings keep the code's names until the next compile. Both
+ *  calls' tokens count. */
+async function labelWithRetry(p: Planned, deps: LabelDeps, llm: (prompt: string) => Promise<string | null>): Promise<Labels> {
+  const first = await labelBatch(p, deps, llm)
+  if (!first.failed) return first
+  const again = await labelBatch(p, deps, llm)
+  return { ...again, tokens: again.tokens + first.tokens }
 }
 
 /** Merges one batch's labels into `into`; `district` names the district whose name it may set, if any. The
@@ -567,7 +586,7 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   if (!llm) return labels
 
   const plan = planBatches(g)
-  const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelBatch(p, deps, llm))
+  const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelWithRetry(p, deps, llm))
   // Merged in batch order whatever order the calls finished in, so the world is the same every run:
   // a district takes its first batch's name, and the first batch to define a glossary term wins.
   results.forEach((r, i) => merge(labels, r, plan[i].first ? plan[i].district.id : null))
