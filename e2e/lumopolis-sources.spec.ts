@@ -159,6 +159,20 @@ async function shownWireframes(): Promise<string[]> {
   })
 }
 
+/** Where the loaded world lays out building `id` (x, y, z), or null. */
+async function position(id: string): Promise<number[] | null> {
+  return await page.evaluate((want) => {
+    const probe = (window as unknown as { __termpolis_world?: { position(id: string): number[] | null } }).__termpolis_world
+    return probe ? probe.position(want) : null
+  }, id)
+}
+
+/** Ground distance between two laid-out spots; Infinity when either is missing. */
+const groundGap = (a: number[] | null, b: number[] | null): number => (a && b ? Math.hypot(a[0] - b[0], a[2] - b[2]) : Infinity)
+
+/** About one building's footprint, in world units: a part built from the design stands within this of its wireframe's spot. */
+const FOOTPRINT = 3
+
 /** The probe's drawn lists: ids outlined (changed parts) and fading (parts the design removes). */
 async function drawnLists(): Promise<{ outlined: string[]; fading: string[] }> {
   return await page.evaluate(() => {
@@ -252,6 +266,9 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await expect.poll(terminalText, { timeout: 60_000 }).toContain('ReadtheLumopolisdesignfirst')
     expect(await terminalText()).toMatch(/callgateway_callwithtoollumopolis\/world_readandarguments\{designKey:design:[A-Za-z0-9._-]+\}/)
 
+    const wireAt = await position('payments')
+    expect(wireAt).not.toBeNull()
+
     // The agent's first file: the Payments part now exists in code.
     fs.mkdirSync(path.join(buildDir, 'src', 'payments'), { recursive: true })
     fs.writeFileSync(path.join(buildDir, 'src', 'payments', 'index.ts'), 'export function charge(cents: number): boolean {\n  return cents > 0\n}\n')
@@ -261,6 +278,8 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     // The design asks for Stripe in Payments and the first file does not name it: the part is outlined.
     await expect.poll(async () => (await drawnLists()).outlined.length, { timeout: 30_000 }).toBe(1)
     expect((await drawnLists()).outlined).toHaveLength(1)
+    // The built Payments rose where its wireframe stood (spec 5.12), and no wireframe is left for it.
+    expect(groundGap(await position((await drawnLists()).outlined[0]), wireAt)).toBeLessThan(FOOTPRINT)
 
     // The agent adds a test beside it. The world recompiles, and the outline stays: the build still falls short of the plan.
     fs.writeFileSync(path.join(buildDir, 'src', 'payments', 'index.test.ts'), "import { charge } from './index'\nconsole.assert(charge(5))\n")
@@ -270,6 +289,8 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     const outlined = (await drawnLists()).outlined
     expect(outlined).toHaveLength(1)
     const part = outlined[0]
+    // ...and the new id keeps the spot: a recompile does not move the part away from where it rose.
+    expect(groundGap(await position(part), wireAt)).toBeLessThan(FOOTPRINT)
 
     // The design takes Payments away: back in the folder's world the built part fades.
     await page.getByRole('combobox', { name: 'Worlds' }).selectOption({ label: DESCRIPTION })

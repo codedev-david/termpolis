@@ -166,4 +166,75 @@ describe('overlayPlan', () => {
     const out = overlayPlan(doc, design([{ op: 'addDistrict', id: 'x', name: 'X' }, { op: 'addBuilding', id: 'n1', districtId: 'x', name: 'New' }]), null)
     expect(out.layout.positions.n1).toEqual([-PLAN_RING_GAP, 0, 0])
   })
+
+  /** The built world after a part was written: a copy of b2 under a new id and name, laid out at `pos`. */
+  function withBuilt(doc: WorldDoc, id: string, name: string, districtId: string, pos: [number, number, number]): WorldDoc {
+    const b = JSON.parse(JSON.stringify(doc.buildings[1])) as Building
+    doc.buildings.push({ ...b, id, name, districtId, members: [`src/${id}.ts`], floors: [] })
+    doc.layout.positions[id] = pos
+    return doc
+  }
+  const ROUND4: DesignOp[] = [
+    { op: 'addDistrict', id: 'core', name: 'Core' },
+    { op: 'addDistrict', id: 'ops', name: 'Operations' },
+    { op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' },
+    { op: 'addBuilding', id: 'cron', districtId: 'ops', name: 'Cron' }
+  ]
+
+  it('a part built from the design takes its wireframe\'s place, keeps it on later compiles, and leaves no wireframe behind', () => {
+    const plan = design(ROUND4)
+    const first = overlayPlan(built(), plan, null)
+    const mailAt = first.layout.positions.mail
+    const cronAt = first.layout.positions.cron
+    expect(first.layers.plan[0].buildings.map((b) => b.id)).toEqual(['cron', 'mail'])
+    // The code now has a Mailer, laid out somewhere else in Core: it stands where the wireframe stood.
+    const second = overlayPlan(withBuilt(built(), 'src-mail', 'Mailer', 'd1', [-9, 0, 9]), plan, first)
+    expect(second.layers.plan[0].reconcile?.matched).toEqual({ mail: 'src-mail' })
+    expect(second.layout.positions['src-mail']).toEqual(mailAt)
+    expect(second.layers.plan[0].buildings.map((b) => b.id)).toEqual(['cron'])
+    // The ring wireframe too, though its spot lies outside every district.
+    const third = overlayPlan(withBuilt(withBuilt(built(), 'src-mail', 'Mailer', 'd1', [-9, 0, 9]), 'jobs-cron', 'Cron', 'd2', [33, 0, 41]), plan, second)
+    expect(third.layout.positions['jobs-cron']).toEqual(cronAt)
+    expect(third.layers.plan[0].buildings).toEqual([])
+    // A later recompile, whose layout put both elsewhere, does not move them.
+    const fourth = overlayPlan(withBuilt(withBuilt(built(), 'src-mail', 'Mailer', 'd1', [4, 0, 4]), 'jobs-cron', 'Cron', 'd2', [31, 0, 39]), plan, third)
+    expect(fourth.layout.positions['src-mail']).toEqual(mailAt)
+    expect(fourth.layout.positions['jobs-cron']).toEqual(cronAt)
+    expect(validateWorld(fourth).ok).toBe(true)
+    // A test joins the Mailer and its id changes with its files: the part still stands at the wireframe's spot.
+    const renamed = overlayPlan(withBuilt(withBuilt(built(), 'src-mail-2', 'Mailer', 'd1', [4, 0, 4]), 'jobs-cron', 'Cron', 'd2', [31, 0, 39]), plan, fourth)
+    expect(renamed.layers.plan[0].reconcile?.matched).toEqual({ cron: 'jobs-cron', mail: 'src-mail-2' })
+    expect(renamed.layout.positions['src-mail-2']).toEqual(mailAt)
+    // The part now matches a new building by id while the old one still stands: the new one takes its own spot.
+    const both = withBuilt(withBuilt(withBuilt(built(), 'src-mail', 'Mailer', 'd1', [4, 0, 4]), 'jobs-cron', 'Cron', 'd2', [31, 0, 39]), 'mail', 'Post', 'd1', [-4, 0, -4])
+    const byId = overlayPlan(both, plan, fourth)
+    expect(byId.layers.plan[0].reconcile?.matched).toEqual({ cron: 'jobs-cron', mail: 'mail' })
+    expect(byId.layout.positions.mail).toEqual([-4, 0, -4])
+    expect(byId.layout.positions['src-mail']).toEqual([4, 0, 4])
+    // A part that moved to another district takes its new district's spot.
+    const moved = overlayPlan(withBuilt(withBuilt(built(), 'src-mail', 'Mailer', 'd2', [28, 0, 38]), 'jobs-cron', 'Cron', 'd2', [31, 0, 39]), plan, fourth)
+    expect(moved.layout.positions['src-mail']).toEqual([28, 0, 38])
+    expect(moved.layout.positions['jobs-cron']).toEqual(cronAt)
+    // Re-layout (a previous layout with no positions) lays matched parts out like any other.
+    const relaid: WorldDoc = JSON.parse(JSON.stringify(fourth))
+    relaid.layout.positions = {}
+    const fifth = overlayPlan(withBuilt(withBuilt(built(), 'src-mail', 'Mailer', 'd1', [4, 0, 4]), 'jobs-cron', 'Cron', 'd2', [31, 0, 39]), plan, relaid)
+    expect(fifth.layout.positions['src-mail']).toEqual([4, 0, 4])
+    expect(fifth.layout.positions['jobs-cron']).toEqual([31, 0, 39])
+  })
+
+  it('a planned part that matches a building already standing leaves that building where it is', () => {
+    const first = overlayPlan(built(), design([{ op: 'addDistrict', id: 'core', name: 'Core' }, { op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Mailer' }]), null)
+    expect(first.layout.positions.mail).toBeDefined()
+    // The design is edited so its part names the built Memory host: b2 stays put, the wireframe goes.
+    const renamed = design([{ op: 'addDistrict', id: 'core', name: 'Core' }, { op: 'addBuilding', id: 'mail', districtId: 'core', name: 'Memory host' }])
+    const next = overlayPlan(built(), renamed, first)
+    expect(next.layers.plan[0].reconcile?.matched).toEqual({ mail: 'b2' })
+    expect(next.layout.positions.b2).toEqual([6, 0, 0])
+    expect(next.layers.plan[0].buildings).toEqual([])
+    // A previous world whose design was not linked carries no spots either.
+    const unlinked: WorldDoc = JSON.parse(JSON.stringify(first))
+    unlinked.layers.plan[0].reconcile = undefined
+    expect(overlayPlan(withBuilt(built(), 'src-mail', 'Mailer', 'd1', [-9, 0, 9]), design(ROUND4), unlinked).layout.positions['src-mail']).toEqual([-9, 0, 9])
+  })
 })

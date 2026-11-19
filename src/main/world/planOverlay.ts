@@ -1,10 +1,11 @@
 // Lumopolis linked design overlay: compile lays a project's linked design (a design world, the plan)
 // over the freshly compiled code world as one Proposal in layers.plan. Plan buildings the code already
-// has (reconcilePlan) are not drawn again: the built building stands for them. The missing ones
+// has (reconcilePlan) are not drawn again: the built building stands for them, in its wireframe's
+// place when it was built from the design (holdPlannedSpots). The missing ones
 // become proposed buildings, placed inside the code district of the same name when there is one,
 // else on a ring just outside the districts. The result is validated; an overlay that would not
 // validate is dropped (the plain world is saved instead), so a bad plan never costs the stored world.
-import type { Building, Proposal, WorldDoc, WorldEdge } from '../../shared/world/types'
+import type { Building, PlanReconcile, Proposal, WorldDoc, WorldEdge } from '../../shared/world/types'
 import { normalizePartName, reconcilePlan } from '../../shared/world/reconcile'
 import { validateWorld } from '../../shared/world/validate'
 import { districtRadius, placeBuilding } from './layout'
@@ -24,6 +25,33 @@ function plannedBefore(previous: WorldDoc | null): Set<string> {
     if (p.reconcile) for (const b of p.buildings) out.add(b.id)
   }
   return out
+}
+
+/**
+ * A part built from the design takes the place its wireframe held, so the wireframe at P rises into
+ * the building at P (spec 5.12), and keeps that place on later compiles while it stays in the same
+ * district (the layout alone would move one that stands off its district's platform), and when its
+ * id changes with its files. A building that already stood when it matched keeps its own spot. Re-layout clears the previous positions,
+ * so it lays matched parts out like any other.
+ */
+function holdPlannedSpots(doc: WorldDoc, matched: Record<string, string>, previous: WorldDoc | null, positions: Record<string, Pos>): void {
+  const link = previous?.layers.plan.find((p) => p.reconcile !== undefined)
+  const was = link?.reconcile
+  const prevPos = previous ? previous.layout.positions : {}
+  // A linked proposal's buildings are its missing plan parts, in order (see overlayPlan).
+  const wireAt = new Map<string, Pos | undefined>()
+  link?.buildings.forEach((b, i) => wireAt.set((was as PlanReconcile).missing[i], prevPos[b.id]))
+  const prevDistrict = new Map((previous ? previous.buildings : []).map((b) => [b.id, b.districtId]))
+  const districtOf = new Map(doc.buildings.map((b) => [b.id, b.districtId]))
+  for (const [pid, bid] of Object.entries(matched)) {
+    const at = wireAt.get(pid)
+    // The building that stood for this part last time: the same one, or one whose id changed with its files
+    // (its old id is gone from the code). Never one that still stands, or the two would share a spot.
+    const before = was?.matched[pid] ?? bid
+    const held = prevPos[before]
+    if (!prevDistrict.has(bid) && at) positions[bid] = at
+    else if ((before === bid || !districtOf.has(before)) && prevDistrict.get(before) === districtOf.get(bid) && held) positions[bid] = held
+  }
 }
 
 export function overlayPlan(doc: WorldDoc, plan: WorldDoc, previous: WorldDoc | null): WorldDoc {
@@ -48,6 +76,7 @@ export function overlayPlan(doc: WorldDoc, plan: WorldDoc, previous: WorldDoc | 
   }
 
   const positions: Record<string, Pos> = { ...doc.layout.positions }
+  holdPlannedSpots(doc, rec.matched, previous, positions)
   const glossary = { ...doc.glossary }
   const cargo = { ...doc.cargo }
   const kept = plannedBefore(previous)

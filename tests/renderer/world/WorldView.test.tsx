@@ -882,6 +882,8 @@ describe('WorldView', () => {
       expect(probe().pickAt(1, 2)).toEqual({ kind: 'node', id: 'b1' })
       expect(probe().pickAt(9, 9)).toBeNull()
       expect(probe().cameraState()).toEqual({ pos: [1, 2, 3], target: [4, 5, 6] })
+      expect(probe().position('b1')).toEqual(minimal().layout.positions.b1)
+      expect(probe().position('zz')).toBeNull()
       await probe().apply({ type: 'focus', ids: ['a'] })
       expect(viewer().apply).toHaveBeenCalledWith({ type: 'focus', ids: ['a'] })
       expect(probe().drawn()).toEqual({ layers: expect.objectContaining({ processes: false }), processShells: 0, conduits: 4 })
@@ -897,6 +899,17 @@ describe('WorldView', () => {
       ;(window as any).__termpolis_world = other
       unmount()
       expect(probe()).toBe(other)
+    })
+
+    it('has no positions before the world arrives', async () => {
+      ;(window as any).termpolisTestFlags = { worldProbe: true }
+      const get = deferred<Res<WorldDoc | null>>()
+      bridge({ worldGet: vi.fn(() => get.promise) })
+      await mount()
+      expect(probe().position('b1')).toBeNull()
+      await act(async () => { get.resolve(ok(minimal())) })
+      await settle()
+      expect(probe().position('b1')).toEqual(minimal().layout.positions.b1)
     })
 
     it('is not there without WebGL (no viewer)', async () => {

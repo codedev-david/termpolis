@@ -87,6 +87,8 @@ export interface WorldProbe {
   pickAt(x: number, y: number): { kind: 'node' | 'edge' | 'district'; id: string } | null
   drawn(): WorldDrawn
   cameraState(): CameraState | null
+  /** Where the loaded world lays out building `id` (x, y, z), or null. */
+  position(id: string): number[] | null
   /** Runs one world action (focus, tour step...) as the agent would. */
   apply(a: WorldAction): Promise<void>
 }
@@ -393,7 +395,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   useEffect(() => {
     if (!viewer || !exposesWorldProbe()) return
     const w = window as unknown as { __termpolis_world?: WorldProbe }
-    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), linePoints: (id) => viewer.linePoints(id), pickAt: (x, y) => viewer.pickAt(x, y), drawn: () => viewer.drawn(), cameraState: () => viewer.cameraState(), apply: (a) => viewer.apply(a) }
+    const probe: WorldProbe = { screenPoint: (id) => viewer.screenPoint(id), linePoints: (id) => viewer.linePoints(id), pickAt: (x, y) => viewer.pickAt(x, y), drawn: () => viewer.drawn(), cameraState: () => viewer.cameraState(), position: (id) => docRef.current?.layout.positions[id] ?? null, apply: (a) => viewer.apply(a) }
     w.__termpolis_world = probe
     return () => { if (w.__termpolis_world === probe) delete w.__termpolis_world }
   }, [viewer])
