@@ -283,20 +283,89 @@ describe('overlayPlan', () => {
     const plan = design(ROUND4)
     const first = overlayPlan(built(), plan, null)
     const cronAt = first.layout.positions.cron
-    expect(cronAt).toEqual([-70, 0, 0])
+    // The ring lies a slab's room (SLOT_CLEARANCE, 35) past the farthest district (d2, 50 out).
+    expect(cronAt).toEqual([-85, 0, 0])
     // The code's new "jobs" folder becomes district d3, which the layout put on a free slot at [70, 0, 0].
     const fresh = withBuilt(withDistrict(built(), 'd3', [70, 0, 0]), 'jobs-cron', 'Cron', 'd3', [72, 0, 1])
     const second = overlayPlan(fresh, plan, first)
     expect(second.layers.plan[0].reconcile?.matched).toEqual({ cron: 'jobs-cron' })
-    // The building rises where the wireframe stood, and its slab moves with it, so it stands on its own slab.
+    // The building rises where the wireframe stood, and its slab moves there, centred under it.
     expect(second.layout.positions['jobs-cron']).toEqual(cronAt)
-    expect(second.layout.positions.d3).toEqual([-72, 0, -1])
+    expect(second.layout.positions.d3).toEqual(cronAt)
     expect(second.layers.plan[0].buildings.map((b) => b.id)).toEqual(['mail'])
     expect(validateWorld(second).ok).toBe(true)
     // The next compile keeps the district where it now is (layoutWorld keeps a district's place): nothing moves.
-    const kept = withBuilt(withDistrict(built(), 'd3', [-72, 0, -1]), 'jobs-cron', 'Cron', 'd3', [-70, 0, 0])
+    const kept = withBuilt(withDistrict(built(), 'd3', [-85, 0, 0]), 'jobs-cron', 'Cron', 'd3', [-85, 0, 0])
     const third = overlayPlan(kept, plan, second)
-    expect(third.layout.positions.d3).toEqual([-72, 0, -1])
+    expect(third.layout.positions.d3).toEqual(cronAt)
+    expect(third.layout.positions['jobs-cron']).toEqual(cronAt)
+  })
+
+  it('a district at the outer edge right beside the wireframe does not stop the part rising in place (round 6b I1)', () => {
+    const plan = design(ROUND4)
+    // d5, nine buildings, stands at the outer edge (50 out, like d2) at the very angle the Cron wireframe takes.
+    const edge = (): WorldDoc => {
+      const doc = withDistrict(built(), 'd5', [-50, 0, 0])
+      for (let k = 0; k < 9; k++) withBuilt(doc, `big-${k}`, `Big ${k}`, 'd5', [-50 + 6 * (k % 3) - 6, 0, 6 * Math.floor(k / 3) - 6])
+      return doc
+    }
+    const first = overlayPlan(edge(), plan, null)
+    const cronAt = first.layout.positions.cron
+    // The ring sits d5's room out: its slab (5 * 3 + 6), a one-building slab (11) and the sibling gap (6), 38 in all.
+    expect(cronAt).toEqual([-88, 0, 0])
+    const second = overlayPlan(withBuilt(withDistrict(edge(), 'd3', [70, 0, 0]), 'jobs-cron', 'Cron', 'd3', [72, 0, 1]), plan, first)
+    expect(second.layout.positions['jobs-cron']).toEqual(cronAt)
+    expect(second.layout.positions.d3).toEqual(cronAt)
+    noStacking(second)
+    expect(validateWorld(second).ok).toBe(true)
+  })
+
+  it('a moved district keeps off a wireframe still waiting, and the ring stays where it was before any move (round 6b M1, M2)', () => {
+    const plan = design([...ROUND4, { op: 'addBuilding', id: 'alerts', districtId: 'ops', name: 'Alerts' }])
+    const first = overlayPlan(built(), plan, null)
+    const cronAt = first.layout.positions.cron
+    const fresh = (): WorldDoc => withBuilt(withDistrict(built(), 'd3', [70, 0, 0]), 'jobs-cron', 'Cron', 'd3', [72, 0, 1])
+    // The Alerts wireframe, still unbuilt, stands 10 from the Cron one (set by hand): a slab there would cover it.
+    const crowded: WorldDoc = JSON.parse(JSON.stringify(first))
+    crowded.layout.positions.alerts = [cronAt[0], 0, cronAt[2] + 10]
+    const held = overlayPlan(fresh(), plan, crowded)
+    expect(held.layers.plan[0].buildings.map((b) => b.id)).toEqual(['alerts', 'mail'])
+    expect(held.layout.positions.alerts).toEqual([cronAt[0], 0, cronAt[2] + 10])
+    expect(held.layout.positions.d3).toEqual([70, 0, 0])
+    expect(held.layout.positions['jobs-cron']).toEqual([72, 0, 1])
+    // The design gains a part with no district as Cron is built: it joins the ring as it stood before the move,
+    // 35 past the farthest district (d3's layout slot, 70 out), not past d3's new spot.
+    const grown = design([...ROUND4, { op: 'addBuilding', id: 'queue', districtId: 'ops', name: 'Queue' }])
+    const second = overlayPlan(fresh(), grown, first)
+    expect(second.layout.positions.d3).toEqual(cronAt)
+    expect(second.layout.positions.queue).toEqual([-105, 0, 0])
+  })
+
+  it('two ring wireframes built in one compile both rise in place, each checked against the other\'s new spot (round 6b M3)', () => {
+    const TWO: DesignOp[] = [...ROUND4, { op: 'addBuilding', id: 'alerts', districtId: 'ops', name: 'Alerts' }]
+    const plan = design(TWO)
+    const first = overlayPlan(built(), plan, null)
+    const [alertsAt, cronAt] = [first.layout.positions.alerts, first.layout.positions.cron]
+    // The layout put each new district right beside the OTHER part's wireframe: checked against the other's old
+    // slot, neither could move; checked against its new spot, both do.
+    const code = (a: [number, number, number], c: [number, number, number]): WorldDoc => withBuilt(withBuilt(
+      withDistrict(withDistrict(built(), 'd3', c), 'd4', a), 'jobs-cron', 'Cron', 'd3', c), 'jobs-alerts', 'Alerts', 'd4', a)
+    const beside = code([cronAt[0], 0, cronAt[2] - 10], [alertsAt[0], 0, alertsAt[2] + 10])
+    const second = overlayPlan(beside, plan, first)
+    expect(second.layers.plan[0].reconcile?.matched).toEqual({ alerts: 'jobs-alerts', cron: 'jobs-cron' })
+    expect(second.layout.positions.d3).toEqual(cronAt)
+    expect(second.layout.positions['jobs-cron']).toEqual(cronAt)
+    expect(second.layout.positions.d4).toEqual(alertsAt)
+    expect(second.layout.positions['jobs-alerts']).toEqual(alertsAt)
+    expect(overlayPlan(beside, plan, first)).toEqual(second)
+    // Two wireframes 20 apart (set by hand) cannot both hold a slab: the first in the design's order (Alerts)
+    // stays on its layout slot, and Cron, checked again against that slot, rises in place.
+    const close: WorldDoc = JSON.parse(JSON.stringify(first))
+    close.layout.positions.alerts = [cronAt[0] + 20, 0, cronAt[2]]
+    const third = overlayPlan(code([0, 0, 70], [70, 0, 0]), plan, close)
+    expect(third.layout.positions.d4).toEqual([0, 0, 70])
+    expect(third.layout.positions['jobs-alerts']).toEqual([0, 0, 70])
+    expect(third.layout.positions.d3).toEqual(cronAt)
     expect(third.layout.positions['jobs-cron']).toEqual(cronAt)
   })
 
@@ -309,7 +378,8 @@ describe('overlayPlan', () => {
     expect(a.layout.positions.d3).toEqual([70, 0, 0])
     expect(a.layout.positions['jobs-cron']).toEqual([72, 0, 1])
     // Another district near the wireframe's spot: the slab would crowd it, so it stays put too.
-    const near = withDistrict(withBuilt(withDistrict(built(), 'd3', [70, 0, 0]), 'jobs-cron', 'Cron', 'd3', [72, 0, 1]), 'd4', [-80, 0, 10])
+    // (A district new this compile; one that stood before lies inside the ring, a slab's room in.)
+    const near = withDistrict(withBuilt(withDistrict(built(), 'd3', [70, 0, 0]), 'jobs-cron', 'Cron', 'd3', [72, 0, 1]), 'd4', [-95, 0, 10])
     const b = overlayPlan(near, plan, first)
     expect(b.layout.positions.d3).toEqual([70, 0, 0])
     expect(b.layout.positions['jobs-cron']).toEqual([72, 0, 1])
