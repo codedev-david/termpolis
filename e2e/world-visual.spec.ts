@@ -572,7 +572,7 @@ async function lineInSight(id: string): Promise<boolean> {
 function cardLine(w: World, at: string, title: string, route: string): Line | undefined {
   // The route reads "from -> to" (an arrow between the two names): each named end must be one of
   // the two names exactly, so "main" does not match a route through "mainAgentIntegrationIpc.test".
-  const ends = route.replace(/ \(both ways\)$/, '').split('→').map((s) => s.trim())
+  const ends = route.split('→').map((s) => s.trim())
   return w.edges.find((e) => edgeSummary(e.label) === title && (e.from === at || e.to === at) && [e.from, e.to].every((x) => !w.names[x] || ends.includes(w.names[x])))
 }
 

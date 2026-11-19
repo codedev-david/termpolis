@@ -113,6 +113,14 @@ describe('overlayPlan', () => {
     expect(overlayPlan(built(), plan, previous).layout.positions.mail).toEqual(a)
   })
 
+  it('a planned line whose reverse is in the design runs both ways, even when the reverse is built and not drawn', () => {
+    const plan = design(OPS)
+    // As a design stored before lines were marked.
+    for (const e of plan.edges) e.twoWay = false
+    const out = overlayPlan(built(), plan, null)
+    expect(out.layers.plan[0].edges.map((e) => [e.label, e.twoWay])).toEqual([['reverse is new', true], ['asks to send', false]])
+  })
+
   it('skips plan edges to unknown parts and keeps cargo and glossary the world already has', () => {
     const plan = design([
       { op: 'addDistrict', id: 'x', name: '---' },

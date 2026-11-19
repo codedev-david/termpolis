@@ -56,3 +56,50 @@ export function edgeFromCode(doc: WorldDoc, e: WorldEdge): string {
 /** What a line no model has described says under "Why". Nobody read the code for a reason (the line may be past the
  *  labelling cap, or not reached yet), so it claims nothing about the code beyond what code can show. */
 export const NO_WHY_YET = 'Not described yet; the code alone does not say why.'
+
+/** `edges` with twoWay set on every line whose reverse (to back to from) is among them, and kept on one already
+ *  marked (an agent may write it on a single line). New objects; ids and order stay, so labels and layout hold. */
+export function markTwoWay(edges: WorldEdge[]): WorldEdge[] {
+  const links = new Set(edges.map((e) => `${e.from}\n${e.to}`))
+  return edges.map((e) => ({ ...e, twoWay: e.twoWay || links.has(`${e.to}\n${e.from}`) }))
+}
+
+/** The list a line belongs to: the built lines, else the proposal holding it (a plan's lines pair only with each other). */
+const linesOf = (doc: WorldDoc, e: WorldEdge): WorldEdge[] =>
+  doc.edges.some((x) => x.id === e.id) ? doc.edges : doc.layers.plan.find((p) => p.edges.some((x) => x.id === e.id))?.edges ?? []
+
+/** The line back (to back to from) in the same list as `e`, if there is one. */
+export const reverseOf = (doc: WorldDoc, e: WorldEdge): WorldEdge | undefined =>
+  linesOf(doc, e).find((x) => x.from === e.to && x.to === e.from)
+
+/** Which way a line runs, as one sentence (`text`), cut where the HTML card links the line back: `before`, then
+ *  `link` (a link to line `reverseId` when there is one), then `after`. */
+export interface Direction { text: string; before: string; link: string; after: string; reverseId?: string }
+
+const sentence = (before: string, link = '', after = '', reverseId?: string): Direction =>
+  ({ text: before + link + after, before, link, after, ...(reverseId !== undefined ? { reverseId } : {}) })
+
+/** Whether the code shows the line's start getting an answer back: only a call to an outside web address (the
+ *  http-out boundary: fetch, axios, http.get or request, each of which returns the response). Compile alone writes an
+ *  outside line's label, so a model's words cannot fake one. IPC does not count (the detector records invoke and send
+ *  alike as one consume side), nor MCP (it records the config entry, not the calls), nor programs, ports or settings. */
+const withReplies = (doc: WorldDoc, e: WorldEdge): boolean =>
+  doc.externals.some((x) => x.id === e.to) && (edgeItems(e.label) ?? []).some((i) => i.startsWith('http-out '))
+
+/**
+ * Which way a line runs, the sentence both cards show under "Direction". Both ways when the line back exists in the
+ * same list (or the line is marked twoWay); one way with replies when the code records a call that returns an answer;
+ * else one way. A planned line (a proposal's, or any line of a design world) has no code, so it says only what the
+ * plan says.
+ */
+export function direction(doc: WorldDoc, e: WorldEdge): Direction {
+  const from = nodeName(doc, e.from)
+  const to = nodeName(doc, e.to)
+  const planned = doc.projectKey.startsWith('design:') || !doc.edges.some((x) => x.id === e.id)
+  const back = reverseOf(doc, e)
+  const tag = planned ? ' (planned)' : ''
+  if (back || e.twoWay) return sentence(`Both ways${tag}: ${from} reaches ${to}, and `, `${to} reaches ${from}`, '.', back?.id)
+  if (planned) return sentence(`One way (planned): ${from} reaches ${to}.`)
+  if (withReplies(doc, e)) return sentence(`One way, with replies: ${from} asks and ${to} answers.`)
+  return sentence(`One way: only ${from} starts it; ${to} never reaches back.`)
+}

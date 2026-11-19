@@ -91,16 +91,31 @@ describe('cards', () => {
     for (const s of ['What travels', 'How it travels', 'Technology', 'Why it', 'How often']) expect(html).toContain(s)
     expect(html).toContain('Memory')
     expect(html).toContain('Desktop app')
-    expect(html).toContain('(both ways)')
+    expect(html).toContain('<h4>Direction</h4><p>Both ways: Desktop app reaches Memory host, and Memory host reaches Desktop app.</p>')
+    expect(html).not.toContain('(both ways)')
     expect(html).toContain('on demand')
     expect(edgeCard(minimal(), 'zz')).toBe('')
     const doc = rich()
     const e3 = edgeCard(doc, 'e3')
     expect(e3).toContain('nope')
-    expect(e3).not.toContain('both ways')
+    expect(e3).toContain('<h4>Direction</h4><p>One way: only b3 starts it; Claude Code never reaches back.</p>')
     expect(e3).toContain('>Claude Code<')
     doc.edges.push(edge('e9', 'b1', 'ghost'))
     expect(edgeCard(doc, 'e9')).toContain('>ghost<')
+  })
+
+  it('edgeCard states the direction right under the ends, and links the line back when there is one', () => {
+    const doc = minimal()
+    doc.edges[0].twoWay = false
+    doc.edges.push(edge('e<2>', 'b2', 'b1', { label: 'Replies' }))
+    const html = edgeCard(doc, 'e1')
+    expect(html).toContain('</p><h4>Direction</h4><p>Both ways: Desktop app reaches Memory host, and <a class="lnk link-edge" data-edge="e&lt;2&gt;">Memory host reaches Desktop app</a>.</p>')
+    expect(html.indexOf('Direction')).toBeLessThan(html.indexOf('What travels'))
+    doc.buildings[1].name = 'A <b>'
+    expect(edgeCard(doc, 'e<2>')).toContain('<p>Both ways: A &lt;b&gt; reaches Desktop app, and <a class="lnk link-edge" data-edge="e1">Desktop app reaches A &lt;b&gt;</a>.</p>')
+    doc.edges.push(edge('e5', 'b1', 'x1', { label: 'http-out api.example.com' }))
+    expect(edgeCard(doc, 'e5')).toContain('<p>One way, with replies: Desktop app asks and Claude Code answers.</p>')
+    expect(edgeCard(rich(), 'pe1')).toContain('<p>One way (planned): Desktop app reaches pb1.</p>')
   })
 
   it('edgeCard titles a line with its short summary and lists what it carries in full', () => {

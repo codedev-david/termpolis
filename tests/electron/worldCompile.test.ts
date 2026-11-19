@@ -192,6 +192,23 @@ describe('compileWorld', () => {
     expect(deps.reads).toContain(`${ROOT}/src/main/index.ts`)
   })
 
+  it('a line whose reverse the code also makes is twoWay on both, each keeping its id; a lone line stays one way', async () => {
+    const files = {
+      ...FIXTURE,
+      'src/main/index.ts': `${FIXTURE['src/main/index.ts']}\nipcRenderer.send('view:ready')`,
+      'src/renderer/index.ts': `${FIXTURE['src/renderer/index.ts']}ipcMain.on('view:ready', () => 1)\n`
+    }
+    const doc = await compileWorld({ snap: snapOf(files), projectKey: 'demo', head: HEAD, previous: null }, mkDeps(files))
+    expectValid(doc)
+    const there = doc.edges.find((e) => e.id === edgeId({ from: RENDERER, to: MAIN }))
+    const back = doc.edges.find((e) => e.id === edgeId({ from: MAIN, to: RENDERER }))
+    expect(there?.twoWay).toBe(true)
+    expect(back?.twoWay).toBe(true)
+    expect(doc.edges.filter((e) => e.id !== there?.id && e.id !== back?.id).every((e) => !e.twoWay)).toBe(true)
+    const plain = await compileFixture()
+    expect(plain.edges.every((e) => !e.twoWay)).toBe(true)
+  })
+
   it('reads relative imports from the file text when the graph has none', async () => {
     const doc = await compileWorld({ snap: snapOf(FIXTURE, {}), projectKey: 'demo', head: HEAD, previous: null }, mkDeps())
     expectValid(doc)

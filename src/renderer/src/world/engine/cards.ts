@@ -1,7 +1,7 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT as STATUS, NO_WHY_YET, allBuildings, allEdges, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf } from '../../../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT as STATUS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
@@ -105,7 +105,11 @@ export function edgeCard(doc: WorldDoc, id: string): string {
   const carries = items
     ? section('What it carries', `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`)
     : title !== e.label.trim() ? `<p>${esc(e.label)}</p>` : ''
-  return `<h3>${esc(title)}</h3><p class="muted">${nodeLink(doc, e.from)} → ${nodeLink(doc, e.to)}${e.twoWay ? ' (both ways)' : ''}</p>`
+  // Which way it runs, right under its ends; the half of the sentence about the line back opens that line.
+  const d = direction(doc, e)
+  const back = d.reverseId !== undefined ? `<a class="lnk link-edge" data-edge="${esc(d.reverseId)}">${esc(d.link)}</a>` : esc(d.link)
+  return `<h3>${esc(title)}</h3><p class="muted">${nodeLink(doc, e.from)} → ${nodeLink(doc, e.to)}</p>`
+    + section('Direction', `<p>${esc(d.before)}${back}${esc(d.after)}</p>`)
     + carries
     + section('What travels', `<p>${swatch(doc, e)}${esc(cargo ? cargo.label : e.cargo)}</p>`)
     // A line no model described still says what the code shows.

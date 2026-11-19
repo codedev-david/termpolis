@@ -15,6 +15,7 @@ import { detectBoundaries, MAX_DETECT_FILE_CHARS, stripComments, type Boundary }
 import { baseKey } from './detectors/common'
 import { cargoColors, cargoLabel, cargoOf } from './cargoTypes'
 import { edgeSummary } from '../../shared/world/edgeText'
+import { markTwoWay } from '../../shared/world/cardFacts'
 import { edgeId, groupProject, isIgnored, resolveImport, slug, type GroupBuilding, type Grouping } from './group'
 import { mergeAnnotations } from './annotations'
 import { relativeImports, withImports } from './imports'
@@ -634,14 +635,15 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     }
   })
   const ext = externalsOf(g)
-  const edges: WorldEdge[] = [
+  // A line whose reverse the code also makes runs both ways: both lines say so and keep their ids.
+  const edges: WorldEdge[] = markTwoWay([
     ...g.edges.map((e): WorldEdge => {
       const id = edgeId(e)
       const l = labels.edges[id]
       return { id, from: e.from, to: e.to, cargo: l.cargo, label: l.label, how: l.how, tech: chips(l.tech), why: l.why, rate: l.rate, twoWay: false, claims: seenInCode(e, g, snap) }
     }),
     ...ext.edges
-  ].sort((a, z) => cmp(a.id, z.id))
+  ]).sort((a, z) => cmp(a.id, z.id))
 
   // The builtin definition of every technology a chip shows (it wins over a model's).
   for (const t of [...buildings.flatMap((b) => [...b.stack, ...b.floors.flatMap((f) => f.tech)]), ...edges.flatMap((e) => e.tech)]) {

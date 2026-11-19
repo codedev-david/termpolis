@@ -388,3 +388,34 @@ describe('setRuntimeNames', () => {
     expect(DESIGN_PROTOCOL).toContain('setRuntimeNames')
   })
 })
+
+describe('which way a design line runs', () => {
+  const twoWay = (doc: WorldDoc): Record<string, boolean> => Object.fromEntries(doc.edges.map((e) => [e.id, e.twoWay]))
+
+  it('a line added back the other way makes both lines twoWay; a lone line stays one way', () => {
+    const r = applyDesignPatch(base(), [{ op: 'addEdge', from: 'api', to: 'ui', label: 'sends receipts' }])
+    expect(twoWay(r.doc)).toEqual({ 'e-ui--api': true, 'e-api--db': false, 'e-api--ui': true })
+    valid(r.doc)
+  })
+
+  it('keeps an explicit twoWay true the agent wrote, and the parser takes only true', () => {
+    const r = applyDesignPatch(base(), [{ op: 'addEdge', from: 'db', to: 'ui', label: 'pushes changes', twoWay: true }])
+    expect(r.doc.edges.find((e) => e.id === 'e-db--ui')?.twoWay).toBe(true)
+    const ops = parseDesignReply('```design-patch\n[{"op":"addEdge","from":"a","to":"b","label":"x","twoWay":true},{"op":"addEdge","from":"a","to":"b","label":"x","twoWay":"yes"},{"op":"addEdge","from":"a","to":"b","label":"x","twoWay":false}]\n```').ops
+    expect(ops).toEqual([
+      { op: 'addEdge', from: 'a', to: 'b', label: 'x', twoWay: true },
+      { op: 'addEdge', from: 'a', to: 'b', label: 'x' },
+      { op: 'addEdge', from: 'a', to: 'b', label: 'x' }
+    ])
+    expect(DESIGN_PROTOCOL).toContain('"twoWay":true')
+  })
+
+  it('removing one line of a pair leaves the other one way', () => {
+    const pair = applyDesignPatch(base(), [{ op: 'addEdge', from: 'api', to: 'ui', label: 'sends receipts' }]).doc
+    const r = applyDesignPatch(pair, [{ op: 'remove', id: 'e-api--ui' }])
+    expect(twoWay(r.doc)).toEqual({ 'e-ui--api': false, 'e-api--db': false })
+    // Removing a lone line touches no other.
+    const lone = applyDesignPatch(base(), [{ op: 'remove', id: 'e-api--db' }])
+    expect(twoWay(lone.doc)).toEqual({ 'e-ui--api': false })
+  })
+})

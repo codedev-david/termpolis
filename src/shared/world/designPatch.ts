@@ -6,13 +6,14 @@
 // would break it applies nothing). Positions come from an injected placer (main passes one built on
 // layout.ts; shared-only callers get defaultPlacer), and a position once given is always kept.
 import type { Claim, WorldDoc } from './types'
+import { markTwoWay } from './cardFacts'
 import { cleanRuntimeNames } from './runtimeNames'
 import { validateWorld } from './validate'
 
 export type DesignOp =
   | { op: 'addDistrict'; id: string; name: string; subtitle?: string }
   | { op: 'addBuilding'; id: string; districtId: string; name: string; techLabel?: string; stack?: string[]; does?: string }
-  | { op: 'addEdge'; from: string; to: string; label: string; cargo?: string }
+  | { op: 'addEdge'; from: string; to: string; label: string; cargo?: string; /** Set only as true: the line runs both ways. */ twoWay?: true }
   | { op: 'rename'; id: string; name: string }
   | { op: 'remove'; id: string }
   | { op: 'move'; id: string; districtId: string }
@@ -31,7 +32,7 @@ export const DESIGN_PROTOCOL = `Reply in plain language for someone who does not
 After your reply, add one fenced block tagged design-patch containing a JSON array of changes. Allowed changes:
 {"op":"addDistrict","id":"...","name":"...","subtitle":"..."}
 {"op":"addBuilding","id":"...","districtId":"...","name":"...","techLabel":"...","stack":["..."],"does":"..."}
-{"op":"addEdge","from":"<building id>","to":"<building id>","label":"...","cargo":"..."}
+{"op":"addEdge","from":"<building id>","to":"<building id>","label":"...","cargo":"..."} add "twoWay":true only when both parts start exchanges with each other.
 {"op":"rename","id":"...","name":"..."} {"op":"remove","id":"..."}
 {"op":"move","id":"<building id>","districtId":"..."} {"op":"describe","id":"...","does":"..."}
 {"op":"setRuntimeNames","id":"<building id>","names":["..."]} sets the names the part goes by while it runs (at most 10, letters, digits, dots, dashes and underscores).
@@ -79,7 +80,7 @@ function normalizeOp(raw: unknown): DesignOp | null {
   if (!isRec(raw)) return null
   if (raw.op === 'addEdge') {
     if (!str(raw.from) || !str(raw.to) || !str(raw.label)) return null
-    return compact<DesignOp>({ op: 'addEdge', from: raw.from.trim(), to: raw.to.trim(), label: clip(raw.label, MAX_NAME), cargo: optText(raw.cargo, MAX_TECH) })
+    return compact<DesignOp>({ op: 'addEdge', from: raw.from.trim(), to: raw.to.trim(), label: clip(raw.label, MAX_NAME), cargo: optText(raw.cargo, MAX_TECH), twoWay: raw.twoWay === true ? true : undefined })
   }
   if (!str(raw.id)) return null
   const id = clip(raw.id, MAX_NAME)
@@ -193,6 +194,9 @@ function removeItem(doc: WorldDoc, id: string): string | null {
   }
   doc.districts = doc.districts.filter((d) => !gone.has(d.id))
   doc.buildings = doc.buildings.filter((b) => !gone.has(b.id))
+  // A line taken away breaks its pair: the line back now runs one way (marked again below if the pair returns).
+  const cut = doc.edges.find((e) => e.id === id)
+  for (const e of doc.edges) if (cut && e.from === cut.to && e.to === cut.from) e.twoWay = false
   doc.edges = doc.edges.filter((e) => !gone.has(e.id) && !gone.has(e.from) && !gone.has(e.to))
   for (const g of gone) delete doc.runtimeNames[g]
   for (const p of doc.layers.plan) if (p.removes) p.removes = p.removes.filter((x) => !gone.has(x))
@@ -241,7 +245,7 @@ function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>):
         const h = hashOf(cargo)
         doc.cargo[cargo] = { shape: SHAPES[h % SHAPES.length], color: PALETTE[h % PALETTE.length], label: cargo }
       }
-      doc.edges.push({ id, from: op.from, to: op.to, cargo, label: op.label, how: [claim(op.label)], tech: [], why: [], rate: '', twoWay: false, claims: [] })
+      doc.edges.push({ id, from: op.from, to: op.to, cargo, label: op.label, how: [claim(op.label)], tech: [], why: [], rate: '', twoWay: op.twoWay === true, claims: [] })
       return null
     }
     case 'rename':
@@ -303,6 +307,8 @@ export function applyDesignPatch(doc: WorldDoc, ops: DesignOp[], place: DesignPl
     else skipped.push({ op: raw, reason })
   }
   if (applied === 0) return { doc, applied, skipped }
+  // A line whose reverse is in the design runs both ways; an explicit true an agent wrote is kept.
+  work.edges = markTwoWay(work.edges)
 
   const live = allIds(work)
   const keep: Record<string, Pos> = {}

@@ -167,7 +167,8 @@ describe('cardText', () => {
     const items = cardText(doc, e.id)
     expect(items.split('\n')[0]).toBe('reads 2 settings +1 more')
     expect(items).toContain('What it carries:\n- env A\n- env B\n- ipc <pty:data>')
-    expect(items).toContain('(both ways)')
+    expect(items).toContain('Desktop app (b1) -> Memory host (b2)\n\nDirection:\nBoth ways: Desktop app reaches Memory host, and Memory host reaches Desktop app.\n')
+    expect(items).not.toContain('(both ways)')
     expect(items).toContain('- unlisted')
     expect(items).toContain('How often:\non demand')
     e.label = 'Sends every keystroke and resize event to the shell host process'
@@ -184,7 +185,17 @@ describe('cardText', () => {
     expect(plain).toContain('What travels:\nunknown-cargo')
     expect(plain).not.toContain('How often')
     expect(plain).not.toContain('Technology')
-    expect(plain).not.toContain('both ways')
+    expect(plain).toContain('Direction:\nOne way: only Desktop app starts it; Memory host never reaches back.')
+  })
+
+  it('states the same direction sentence as the HTML card: both ways, with replies and planned', () => {
+    const doc = rich()
+    doc.edges[0].twoWay = false
+    doc.edges.push(edge('e8', 'b2', 'b1', { label: 'Replies' }))
+    expect(cardText(doc, 'e1')).toContain('Direction:\nBoth ways: Desktop app reaches Memory host, and Memory host reaches Desktop app.')
+    doc.edges.push(edge('e5', 'b1', 'x1', { label: 'http-out api.example.com' }))
+    expect(cardText(doc, 'e5')).toContain('Direction:\nOne way, with replies: Desktop app asks and Claude Code answers.')
+    expect(cardText(doc, 'pe1')).toContain('Direction:\nOne way (planned): Desktop app reaches pb1.')
   })
 
   it('a building built without any edges has no connection sections', () => {

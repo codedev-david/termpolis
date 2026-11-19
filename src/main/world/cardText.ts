@@ -2,7 +2,7 @@
 // cards.ts), gathered by the same helpers (shared/world/cardFacts.ts, edgeText.ts), with each claim
 // followed by its state in brackets and the evidence behind it on the next line.
 import { NOT_IN_DESIGN } from '../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT, NO_WHY_YET, allBuildings, allEdges, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn } from '../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn } from '../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../shared/world/edgeText'
 import type { Claim, WorldDoc, WorldEdge } from '../../shared/world/types'
 
@@ -62,7 +62,8 @@ function edgeText(doc: WorldDoc, id: string): string {
   const items = edgeItems(e.label)
   const lines = [
     title,
-    `${nodeName(doc, e.from)} (${e.from}) -> ${nodeName(doc, e.to)} (${e.to})${e.twoWay ? ' (both ways)' : ''}`,
+    `${nodeName(doc, e.from)} (${e.from}) -> ${nodeName(doc, e.to)} (${e.to})`,
+    ...section('Direction', [direction(doc, e).text]),
     ...(items ? section('What it carries', items.map((i) => `- ${i}`)) : title !== e.label.trim() ? [e.label] : []),
     ...section('What travels', [cargo ? cargo.label : e.cargo]),
     // A line no model described still says what the code shows.

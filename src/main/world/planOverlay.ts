@@ -6,6 +6,7 @@
 // else on a ring just outside the districts. The result is validated; an overlay that would not
 // validate is dropped (the plain world is saved instead), so a bad plan never costs the stored world.
 import type { Building, PlanReconcile, Proposal, WorldDoc, WorldEdge } from '../../shared/world/types'
+import { markTwoWay } from '../../shared/world/cardFacts'
 import { normalizePartName, reconcilePlan } from '../../shared/world/reconcile'
 import { validateWorld } from '../../shared/world/validate'
 import { MIN_SIBLING_GAP, MOVED_TOLERANCE, SLOT_CLEARANCE, clear, districtRadius, placeBuilding } from './layout'
@@ -172,7 +173,9 @@ export function overlayPlan(doc: WorldDoc, plan: WorldDoc, previous: WorldDoc | 
 
   const builtLinks = new Set(doc.edges.map((e) => `${e.from}\n${e.to}`))
   const edges: WorldEdge[] = []
-  for (const e of plan.edges) {
+  // Marked on the whole plan first (a design stored before lines were marked), so a line whose reverse the code
+  // already makes, and is not drawn again, still runs both ways.
+  for (const e of markTwoWay(plan.edges)) {
     const from = idFor.get(e.from)
     const to = idFor.get(e.to)
     if (!from || !to) continue
