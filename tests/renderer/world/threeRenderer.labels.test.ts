@@ -187,6 +187,20 @@ describe('threeRenderer labels', () => {
     r.dispose()
   })
 
+  it('from far away a planned part on no district shows its name, and a part in a district does not (round 5 M5)', () => {
+    const planned = (id: string, pos: V): ReturnType<typeof bldg> => bldg(id, pos, { floors: 2, height: 6, look: 'wire' })
+    const model: SceneModel = {
+      districts: [district('d1', [0, 0, 0], 12)],
+      buildings: [bldg('a', [0, 0, 0]), planned('w1', [40, 0, 0]), planned('w2', [-40, 0, 0])],
+      conduits: [],
+      orbs: [],
+    }
+    const r = drawn(model, emptyText({ labels: { a: 'Built', w1: 'Planned one', w2: 'Planned two' }, importance: { a: 9, w1: 1, w2: 1 } }))
+    expect(r.drawnCounts().tier).toBe('districts')
+    expect(shown('bldg').sort()).toEqual(['Planned one', 'Planned two'])
+    r.dispose()
+  })
+
   it('district names are kept inside a small view; those with no room left drop out', () => {
     const tiny = makeHost(140, 90)
     const model: SceneModel = {

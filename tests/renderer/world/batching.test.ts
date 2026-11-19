@@ -112,9 +112,12 @@ describe('labels by tier', () => {
     expect(floorLabelsShown('buildings', false, true)).toBe(false)
   })
   it('shows only district names at the districts tier', () => {
-    expect(buildingNamesShown('districts')).toBe(false)
-    expect(buildingNamesShown('buildings')).toBe(true)
-    expect(buildingNamesShown('floors')).toBe(true)
+    const districtOf = new Map([['a', 'd1']])
+    expect(buildingNamesShown('a', 'districts', districtOf)).toBe(false)
+    expect(buildingNamesShown('a', 'buildings', districtOf)).toBe(true)
+    expect(buildingNamesShown('a', 'floors', districtOf)).toBe(true)
+    // A part on no district is drawn from far away, so its name may show there (round 5 M5)
+    expect(buildingNamesShown('ring', 'districts', districtOf)).toBe(true)
   })
   it('keeps the buildings up while a building or line is selected, however far out', () => {
     expect(heldTier('districts', true)).toBe('buildings')

@@ -169,9 +169,12 @@ export function writesDepth(base: boolean, focus: number, fading: boolean): bool
   return base && focus >= 1 && !fading
 }
 
-/** Whether the ranked building names (nameBudget's) may show: at the 'districts' tier only district names do. */
-export function buildingNamesShown(tier: ZoomTier): boolean {
-  return tier !== 'districts'
+/**
+ * Whether a building's name may show among the ranked ones (nameBudget's): at the 'districts' tier only
+ * district names do, and the names of parts on no district, which are drawn from far away (ownTier).
+ */
+export function buildingNamesShown(id: string, tier: ZoomTier, districtOf: ReadonlyMap<string, string>): boolean {
+  return ownTier(id, tier, districtOf) !== 'districts'
 }
 
 /** What a box with its outline looks like, apart from its glow and its outline's colour (those go per instance). */

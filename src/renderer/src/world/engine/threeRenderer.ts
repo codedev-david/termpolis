@@ -1923,9 +1923,11 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const lit = [...edges.values()].filter((e) => e.focus)
     const near = (e: EdgeRec): number => e.label.getWorldPosition(labelAt).distanceTo(camera.position)
     for (const e of lit.sort((a, b) => near(a) - near(b))) want.push({ o: e.label, id: 'e:' + e.id, tier: 1, group: 'line', nudge: true })
-    // At the districts tier only district names show (and the hovered or selected part's, and its neighbours').
-    const budget = buildingNamesShown(tier) ? nameBudget(ranked.length, camera.position.distanceTo(controls.target) / overviewDist) : 0
-    ranked.forEach((n, rank) => {
+    // At the districts tier only district names show (and the hovered or selected part's, and its neighbours'),
+    // with those of the parts on no district, drawn from far away: they are ranked among themselves.
+    const named = ranked.filter((n) => buildingNamesShown(n.id, tier, districtOf))
+    const budget = nameBudget(named.length, camera.position.distanceTo(controls.target) / overviewDist)
+    named.forEach((n, rank) => {
       if (targets.has(n.id) || !n.group.visible) return
       for (const l of n.labels) {
         if (l.lit) want.push({ o: l.o, id: l.key, tier: 2, nudge: true })
