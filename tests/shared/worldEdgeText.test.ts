@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { capText, edgeItems, edgeSummary, MAX_EDGE_TEXT } from '../../src/shared/world/edgeText'
+import { capText, edgeActions, edgeItems, edgeSummary, MAX_EDGE_TEXT } from '../../src/shared/world/edgeText'
 
 describe('edgeItems', () => {
   it('lists the identifiers of a code-written label', () => {
@@ -65,5 +65,12 @@ describe('edgeSummary', () => {
     const s = edgeSummary(many)
     expect(s).toBe('uses 120 message channels +30…')
     expect(s.length).toBeLessThanOrEqual(MAX_EDGE_TEXT)
+  })
+})
+
+describe('edgeActions (round 3 E)', () => {
+  it('says what every kind of crossing does, busiest first, uncut', () => {
+    expect(edgeActions(['ipc a', 'env A', 'ipc b', 'ipc c', 'env B', 'port 80'])).toEqual(['uses 3 message channels', 'reads 2 settings', 'connects on 1 port'])
+    expect(edgeActions(['mcp memory_search'])).toEqual(['uses 1 tool'])
   })
 })

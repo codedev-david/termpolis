@@ -1,7 +1,7 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT as STATUS, allBuildings, allEdges, nodeName, notInDesign, runsIn as runsInOf } from '../../../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT as STATUS, NO_WHY_YET, allBuildings, allEdges, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
@@ -108,9 +108,10 @@ export function edgeCard(doc: WorldDoc, id: string): string {
   return `<h3>${esc(title)}</h3><p class="muted">${nodeLink(doc, e.from)} → ${nodeLink(doc, e.to)}${e.twoWay ? ' (both ways)' : ''}</p>`
     + carries
     + section('What travels', `<p>${swatch(doc, e)}${esc(cargo ? cargo.label : e.cargo)}</p>`)
-    + section('How it travels', claims(e.how, e.id, 0))
+    // A line no model described still says what the code shows.
+    + section('How it travels', claims(e.how, e.id, 0, `<p>${esc(edgeFromCode(doc, e))}</p>`))
     + (e.tech.length ? section('Technology', `<div>${chips(doc, e.tech)}</div>`) : '')
-    + section('Why it\'s done this way', claims(e.why, e.id, e.how.length))
+    + section('Why it\'s done this way', claims(e.why, e.id, e.how.length, `<p class="muted">${NO_WHY_YET}</p>`))
     + known(e)
     + (e.rate ? section('How often', `<p>${esc(e.rate)}</p>`) : '')
 }

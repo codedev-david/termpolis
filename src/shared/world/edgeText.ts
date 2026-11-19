@@ -53,14 +53,25 @@ export function capText(text: string, max = MAX_EDGE_TEXT): string {
 export function edgeSummary(label: string): string {
   const items = edgeItems(label)
   if (!items) return capText(label)
+  const [[p, n], ...rest] = countKinds(items)
+  const others = rest.reduce((s, [, k]) => s + k, 0)
+  const head = phrase(p, n)
+  return capText(others > 0 ? `${head} +${others} more` : head)
+}
+
+/** How many of a code-written label's identifiers each kind of crossing has, busiest first; a tie keeps the order the
+ *  label lists them in (the sort is stable). */
+function countKinds(items: string[]): [Phrase, number][] {
   const count = new Map<Phrase, number>()
   for (const i of items) {
     const p = phraseOf(i) as Phrase
     count.set(p, (count.get(p) ?? 0) + 1)
   }
-  // Busiest first; a tie keeps the order the label lists them in (the sort is stable).
-  const [[p, n], ...rest] = [...count].sort((a, b) => b[1] - a[1])
-  const others = rest.reduce((s, [, k]) => s + k, 0)
-  const head = `${p[0]} ${n} ${n === 1 ? p[1] : p[2]}`
-  return capText(others > 0 ? `${head} +${others} more` : head)
+  return [...count].sort((a, b) => b[1] - a[1])
 }
+
+const phrase = (p: Phrase, n: number): string => `${p[0]} ${n} ${n === 1 ? p[1] : p[2]}`
+
+/** What every kind of crossing among `items` (from edgeItems) does, busiest first and uncut: ["uses 3 message
+ *  channels", "reads 2 settings"]. */
+export const edgeActions = (items: string[]): string[] => countKinds(items).map(([p, n]) => phrase(p, n))

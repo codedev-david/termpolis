@@ -2,15 +2,15 @@
 // cards.ts), gathered by the same helpers (shared/world/cardFacts.ts, edgeText.ts), with each claim
 // followed by its state in brackets and the evidence behind it on the next line.
 import { NOT_IN_DESIGN } from '../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT, allBuildings, allEdges, evidenceText, nodeName, notInDesign, runsIn } from '../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT, NO_WHY_YET, allBuildings, allEdges, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn } from '../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../shared/world/edgeText'
 import type { Claim, WorldDoc, WorldEdge } from '../../shared/world/types'
 
 const section = (title: string, lines: string[]): string[] => ['', `${title}:`, ...lines]
 
-/** One line per claim, "text [state]", then its evidence. None reads as "Not described yet.". */
-function claimLines(list: Claim[]): string[] {
-  if (list.length === 0) return ['Not described yet.']
+/** One line per claim, "text [state]", then its evidence. None reads as `empty`. */
+function claimLines(list: Claim[], empty = 'Not described yet.'): string[] {
+  if (list.length === 0) return [empty]
   return list.flatMap((c) => {
     const ev = c.evidence.map(evidenceText).join('; ')
     return [`- ${c.text} [${c.state}]`, ...(ev ? [`  evidence: ${ev}`] : [])]
@@ -65,9 +65,10 @@ function edgeText(doc: WorldDoc, id: string): string {
     `${nodeName(doc, e.from)} (${e.from}) -> ${nodeName(doc, e.to)} (${e.to})${e.twoWay ? ' (both ways)' : ''}`,
     ...(items ? section('What it carries', items.map((i) => `- ${i}`)) : title !== e.label.trim() ? [e.label] : []),
     ...section('What travels', [cargo ? cargo.label : e.cargo]),
-    ...section('How it travels', claimLines(e.how)),
+    // A line no model described still says what the code shows.
+    ...section('How it travels', claimLines(e.how, edgeFromCode(doc, e))),
     ...(e.tech.length ? section('Technology', techLine(doc, e.tech)) : []),
-    ...section('Why it is done this way', claimLines(e.why)),
+    ...section('Why it is done this way', claimLines(e.why, NO_WHY_YET)),
     ...known(e.claims),
     ...(e.rate ? section('How often', [e.rate]) : [])
   ]

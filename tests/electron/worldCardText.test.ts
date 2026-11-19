@@ -86,6 +86,35 @@ describe('cardText', () => {
     expect(bare).not.toContain('Technology')
   })
 
+  it('a line no model described says, from the code, who reaches whom and through what, in the text and the HTML card alike (round 3 E)', () => {
+    const doc = minimal()
+    const e = doc.edges[0]
+    Object.assign(e, { how: [], why: [], label: 'ipc world:get, env A, ipc world:ask', tech: ['ipc', 'env'] })
+    const from = doc.buildings.find((b) => b.id === e.from)?.name as string
+    const to = doc.buildings.find((b) => b.id === e.to)?.name as string
+    const how = `From the code: ${from} reaches ${to} this way: it uses 2 message channels and reads 1 setting.`
+    const why = 'Nothing in the code records why yet.'
+    for (const card of [cardText(doc, e.id), edgeCard(doc, e.id)]) {
+      expect(card).not.toContain('Not described yet')
+      expect(card).toContain(how)
+      expect(card).toContain(why)
+    }
+    e.label = 'port 5173'
+    expect(cardText(doc, e.id)).toContain(`From the code: ${from} reaches ${to} this way: it connects on 1 port.`)
+    e.label = 'env A, ipc b, port 1'
+    expect(cardText(doc, e.id)).toContain('it reads 1 setting, uses 1 message channel and connects on 1 port.')
+    // A line of imports alone, and one with a model's name but no description.
+    Object.assign(e, { label: 'imports', tech: [] })
+    expect(cardText(doc, e.id)).toContain(`From the code: ${from} imports code from ${to}.`)
+    Object.assign(e, { label: 'Asks for the world', tech: ['ipc'] })
+    expect(edgeCard(doc, e.id)).toContain(`From the code: ${from} reaches ${to} through ipc.`)
+    Object.assign(e, { tech: [] })
+    expect(cardText(doc, e.id)).toContain(`From the code: ${from} reaches ${to}.`)
+    // A described line keeps its own words.
+    e.how = [claim('Sends it over IPC', 'inferred')]
+    expect(edgeCard(doc, e.id)).not.toContain('From the code')
+  })
+
   it('states outside parts, planned parts and nothing for an unknown id or a district', () => {
     const doc = rich()
     expect(cardText(doc, 'x1')).toContain('Outside the project')

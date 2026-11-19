@@ -2,6 +2,7 @@
 // plain-text card an agent reads (main cardText.ts) import these, so the two cannot say different things.
 // Pure and ES2020.
 import type { Building, Evidence, WorldDoc, WorldEdge } from './types'
+import { edgeActions, edgeItems } from './edgeText'
 
 /** The status pill of a building, in words. */
 export const BUILD_STATUS_TEXT: Record<Building['status'], string> = {
@@ -31,3 +32,21 @@ export const runsIn = (doc: WorldDoc, b: Building): string => {
   const proc = doc.processes[b.process]
   return proc ? proc.label : b.process
 }
+
+/** What a line no model has described says under "How it travels": what the code alone shows, who reaches whom and
+ *  through what (the identifiers themselves are listed under "What it carries"). */
+export function edgeFromCode(doc: WorldDoc, e: WorldEdge): string {
+  const from = nodeName(doc, e.from)
+  const to = nodeName(doc, e.to)
+  const items = edgeItems(e.label)
+  if (items) {
+    const acts = edgeActions(items)
+    const said = acts.length === 1 ? acts[0] : `${acts.slice(0, -1).join(', ')} and ${acts[acts.length - 1]}`
+    return `From the code: ${from} reaches ${to} this way: it ${said}.`
+  }
+  if (e.label.trim() === 'imports') return `From the code: ${from} imports code from ${to}.`
+  return `From the code: ${from} reaches ${to}${e.tech.length ? ` through ${e.tech.join(', ')}` : ''}.`
+}
+
+/** What a line no model has described says under "Why": the code records how, not why. */
+export const NO_WHY_YET = 'Nothing in the code records why yet.'
