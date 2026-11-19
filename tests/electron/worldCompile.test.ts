@@ -345,6 +345,26 @@ describe('compileWorld', () => {
     expect(doc.glossary.Legacy).toBe('kept from before')
   })
 
+  it("an incremental re-label names a line's untouched end, with its files, in a line-only batch", async () => {
+    const previous = await compileFixture()
+    const importEdge = edgeId({ from: RENDERER, to: VIEW })
+    const prompts: string[] = []
+    // The building batch describes the view but leaves its incoming line out, so the line is asked again alone.
+    const llm = vi.fn(async (prompt: string) => {
+      prompts.push(prompt)
+      if (prompt.includes('this batch describes only the edges')) return JSON.stringify({ edges: { [importEdge]: { label: F('Hands the view its data') } } })
+      return JSON.stringify({ buildings: { [VIEW]: { name: F('View Layer') } } })
+    })
+    const doc = await compileFixture({ label: labelDeps({ llm }) }, previous, ['src/renderer/view.ts'])
+    expectValid(doc)
+    const lineOnly = prompts.filter((p) => p.includes('this batch describes only the edges'))
+    expect(lineOnly).toHaveLength(1)
+    // RENDERER is untouched, so it is not in the re-labelled grouping: the line's from end still has its name and files.
+    expect(lineOnly[0]).toMatch(/^ {2}from "renderer" files: "src\/renderer\/index\.ts"/m)
+    expect(lineOnly[0]).not.toContain(`from "${RENDERER}"`)
+    expect(doc.edges.find((e) => e.id === importEdge)?.label).toBe('Hands the view its data')
+  })
+
   it('changed: a district or edge the previous doc lacks gets the code-derived label', async () => {
     const fresh = await compileFixture()
     const prev: WorldDoc = JSON.parse(JSON.stringify(fresh))

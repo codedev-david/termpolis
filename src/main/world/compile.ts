@@ -263,7 +263,7 @@ async function labelAll(g: Grouping, previous: WorldDoc | null, changed: string[
     buildings: subB.map((b) => ({ ...b, districtId: own(b) })),
     edges: g.edges.filter(touches)
   }
-  const fresh = await labelWorld(sub, deps)
+  const fresh = await labelWorld(sub, { ...deps, part: (id) => g.buildings.find((b) => b.id === id) })
   const labels = await labelWorld(g, { ...deps, llm: null })
   const prevD = new Map(previous.districts.map((d) => [d.id, d]))
   const prevE = new Map(previous.edges.map((e) => [e.id, e]))
