@@ -134,7 +134,8 @@ const fillGrowth = (rec: Rec): void => {
   if (rec.growth === undefined) return
   const g = rec.growth
   const whole = isRecord(g) && GROWTH_STARTS.has(g.start as string) && isStr(g.seed) && (g.folder === undefined || isStr(g.folder)) &&
-    isCount(g.merged) && isCount(g.folded) && isCount(g.cap)
+    isCount(g.merged) && isCount(g.mergedFiles) && isCount(g.folded) && isCount(g.cap) &&
+    (g.reached === undefined || isCount(g.reached)) && (g.inFolder === undefined || isCount(g.inFolder))
   if (!whole) delete rec.growth
 }
 
@@ -191,6 +192,8 @@ const checkEdge = (ctx: Ctx, prefix: string, e: unknown, i: number, nodes: Set<s
   if (!nodes.has(rec.to as string)) ctx.errors.push(`${p}: unknown to "${String(rec.to)}"`)
   for (const f of ['cargo', 'label', 'rate']) checkStr(ctx, p, rec, f)
   if (typeof rec.twoWay !== 'boolean') ctx.errors.push(`${p}: twoWay must be a boolean`)
+  // Optional, and only ever true: anything else is dropped rather than failing the world.
+  if (rec.twoWayStated !== undefined && rec.twoWayStated !== true) delete rec.twoWayStated
   if (isStr(rec.cargo) && rec.cargo !== '' && !has(ctx.cargo, rec.cargo)) ctx.errors.push(`${p}: unknown cargo "${rec.cargo}"`)
   checkTech(ctx, p, 'tech', rec.tech)
   checkClaims(ctx, p, 'how', rec.how)

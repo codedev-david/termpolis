@@ -37,7 +37,8 @@ function buildingText(doc: WorldDoc, id: string): string {
   const ins = edges.filter((e) => e.to === id)
   const outs = edges.filter((e) => e.from === id)
   const run = runsIn(doc, b)
-  const big = sizeNote(doc, b)
+  // An agent reads the floors in this text, so the note points there rather than at a double-click.
+  const big = sizeNote(doc, b, 'listed')
   const floors = b.floors.map((f) => `- ${f.name}${f.tech.length ? ` · ${f.tech.join(', ')}` : ''}`)
   const lines = [
     `${b.name}${b.nameState === 'inferred' ? ' (name suggested by AI)' : ''}`,

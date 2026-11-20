@@ -194,9 +194,10 @@ function removeItem(doc: WorldDoc, id: string): string | null {
   }
   doc.districts = doc.districts.filter((d) => !gone.has(d.id))
   doc.buildings = doc.buildings.filter((b) => !gone.has(b.id))
-  // A line taken away breaks its pair: the line back now runs one way (marked again below if the pair returns).
+  // A line taken away breaks its pair: the line back now runs one way (marked again below if the pair returns),
+  // unless the agent itself marked that line twoWay.
   const cut = doc.edges.find((e) => e.id === id)
-  for (const e of doc.edges) if (cut && e.from === cut.to && e.to === cut.from) e.twoWay = false
+  for (const e of doc.edges) if (cut && e.from === cut.to && e.to === cut.from) e.twoWay = e.twoWayStated === true
   doc.edges = doc.edges.filter((e) => !gone.has(e.id) && !gone.has(e.from) && !gone.has(e.to))
   for (const g of gone) delete doc.runtimeNames[g]
   for (const p of doc.layers.plan) if (p.removes) p.removes = p.removes.filter((x) => !gone.has(x))
@@ -245,7 +246,7 @@ function applyOne(doc: WorldDoc, op: DesignOp, ref: string, moved: Set<string>):
         const h = hashOf(cargo)
         doc.cargo[cargo] = { shape: SHAPES[h % SHAPES.length], color: PALETTE[h % PALETTE.length], label: cargo }
       }
-      doc.edges.push({ id, from: op.from, to: op.to, cargo, label: op.label, how: [claim(op.label)], tech: [], why: [], rate: '', twoWay: op.twoWay === true, claims: [] })
+      doc.edges.push({ id, from: op.from, to: op.to, cargo, label: op.label, how: [claim(op.label)], tech: [], why: [], rate: '', twoWay: op.twoWay === true, ...(op.twoWay ? { twoWayStated: true as const } : {}), claims: [] })
       return null
     }
     case 'rename':

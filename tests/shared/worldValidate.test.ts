@@ -32,15 +32,16 @@ describe('validateWorld', () => {
   it("a building's growth is optional: absent loads, a whole one is kept, a malformed one is dropped", () => {
     const none = validateWorld(fresh())
     expect(none.ok && 'growth' in none.doc.buildings[0]).toBe(false)
-    const growth = { start: 'family', seed: 'terminal', folder: 'src/main', merged: 5, folded: 14, cap: 60 }
+    const growth = { start: 'family', seed: 'terminal', folder: 'src/main', merged: 5, mergedFiles: 2, folded: 14, cap: 60 }
     const doc = fresh()
     doc.buildings[0].growth = growth
-    doc.buildings[1].growth = { start: 'process', seed: 'main', merged: 0, folded: 0, cap: 60 }
+    doc.buildings[1].growth = { start: 'process', seed: 'main', folder: 'src/tool', merged: 0, mergedFiles: 0, reached: 260, inFolder: 4, folded: 0, cap: 60 }
     const kept = validateWorld(doc)
     expect(kept.ok && kept.doc.buildings.map((b) => b.growth)).toEqual([growth, doc.buildings[1].growth])
     const junk: unknown[] = [
       'big', null, [], { ...growth, start: 'magic' }, { ...growth, seed: 3 }, { ...growth, folder: 7 },
-      { ...growth, merged: -1 }, { ...growth, folded: 1.5 }, { ...growth, cap: '60' }
+      { ...growth, merged: -1 }, { ...growth, folded: 1.5 }, { ...growth, cap: '60' }, { ...growth, mergedFiles: undefined },
+      { ...growth, mergedFiles: -2 }, { ...growth, reached: 'many' }, { ...growth, inFolder: 0.5 }
     ]
     for (const g of junk) {
       const bad = fresh()
@@ -48,6 +49,22 @@ describe('validateWorld', () => {
       const r = validateWorld(bad)
       expect(r.ok).toBe(true)
       expect(r.ok && 'growth' in r.doc.buildings[0]).toBe(false)
+    }
+  })
+
+  it("a line's twoWayStated is optional: absent loads, true is kept, anything else is dropped", () => {
+    const doc = fresh()
+    doc.edges[0].twoWayStated = true
+    const kept = validateWorld(doc)
+    expect(kept.ok && kept.doc.edges[0].twoWayStated).toBe(true)
+    const none = validateWorld(fresh())
+    expect(none.ok && 'twoWayStated' in none.doc.edges[0]).toBe(false)
+    for (const junk of [false, 'yes', 1]) {
+      const bad = fresh()
+      bad.edges[0].twoWayStated = junk
+      const r = validateWorld(bad)
+      expect(r.ok).toBe(true)
+      expect(r.ok && 'twoWayStated' in r.doc.edges[0]).toBe(false)
     }
   })
 

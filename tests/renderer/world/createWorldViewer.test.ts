@@ -532,6 +532,25 @@ describe('WebGL path (stand-in renderer)', () => {
     expect(fromClicks.pop()).toBe(false) // the card closes: nothing to let clicks through
   })
 
+  it("a big building's card names the double-click only in the 3D city, where a double-click opens its floors", async () => {
+    const big = (): WorldDoc => {
+      const d = rich()
+      const floors = [{ name: 'a', tech: [], members: [] }, { name: 'b', tech: [], members: [] }]
+      const members = Array.from({ length: 40 }, (_, i) => `src/big/f${i}.ts`)
+      d.buildings.push(building('big', { members, floors, growth: { start: 'folder', seed: 'src/big', merged: 0, mergedFiles: 0, folded: 0, cap: 60 } }))
+      return d
+    }
+    const { viewer, lastCard } = setup3d()
+    viewer.load(big())
+    await viewer.apply({ type: 'openCard', id: 'big' })
+    expect(lastCard()).toContain('40 files. It started as the src/big folder. Double-click it to see its floors.')
+    getContext.mockReturnValue(null)
+    const flat = setup({ reducedMotion: true, doc: big() })
+    await flat.viewer.apply({ type: 'openCard', id: 'big' })
+    expect(flat.lastCard()).toContain('40 files. It started as the src/big folder.')
+    expect(flat.lastCard()).not.toContain('Double-click')
+  })
+
   it('ignores a click that ends a drag', () => {
     const { aim, at, sels } = setup3d()
     aim({ kind: 'node', id: 'b1' })

@@ -212,7 +212,7 @@ describe('compileWorld', () => {
   it('every built building carries how the grouping made it', async () => {
     const doc = await compileFixture()
     expect(doc.buildings.every((b) => b.growth !== undefined && b.growth.cap === 60)).toBe(true)
-    expect(doc.buildings.find((b) => b.id === MAIN)?.growth).toEqual({ start: 'process', seed: 'main', merged: 0, folded: 0, cap: 60 })
+    expect(doc.buildings.find((b) => b.id === MAIN)?.growth).toEqual({ start: 'process', seed: 'main', merged: 0, mergedFiles: 0, reached: 0, inFolder: 0, folded: 0, cap: 60 })
   })
 
   it('reads relative imports from the file text when the graph has none', async () => {

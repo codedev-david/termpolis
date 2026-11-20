@@ -22,8 +22,17 @@ export interface District { id: string; name: string; subtitle: string; hue: num
 export interface BuildingGrowth {
   start: 'process' | 'service' | 'folder' | 'family' | 'file'
   seed: string
+  /** The folder of a family start, or of a process built from a folder. */
   folder?: string
+  /** Name families of two or more files merged into the start because their files import each other densely. */
   merged: number
+  /** Single files (in no name family of their own) merged in the same way. */
+  mergedFiles: number
+  /** A process building: files imported only from inside it, which joined it. */
+  reached?: number
+  /** A process built from a folder: the other files of that folder, which it took. */
+  inFolder?: number
+  /** Buildings the cap folded into it. */
   folded: number
   /** The most buildings a project shows (the cap in force when it was grouped). */
   cap: number
@@ -39,6 +48,8 @@ export interface Building {
 export interface WorldEdge {
   id: string; from: string; to: string; cargo: string; label: string
   how: Claim[]; tech: string[]; why: Claim[]; rate: string; twoWay: boolean
+  /** Set only as true, on a design line an agent itself marked twoWay: that stays when the line back is removed. */
+  twoWayStated?: true
   /** Facts beyond how and why (Seen in code, a person's confirmation). */
   claims: Claim[]
 }

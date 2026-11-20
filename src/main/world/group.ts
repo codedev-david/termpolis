@@ -548,6 +548,9 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     }
   }
 
+  // Files each process building reached from its entry (none for main, renderer and preload).
+  const bReached = entries.map((_, b) => bFiles[b].length - 1)
+
   // A process built from a folder (its key names the folder) owns the rest of that folder too.
   for (const e of entries) {
     if (!folderProc.has(e)) continue
@@ -593,10 +596,19 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     for (const list of named.values()) if (list.length === 1) services.add(list[0])
   }
   const pinned = new Set<number>()
-  // What each building before the cap started as (index = building), and how many clusters merged into that start.
-  const bStart: Omit<BuildingGrowth, 'folded' | 'cap'>[] = entries.map((e) => ({ start: 'process', seed: proc.get(e) as string, merged: 0 }))
+  // What each building before the cap started as (index = building), and what joined that start: for a process,
+  // the files reached only from its entry and the rest of the folder it is named for.
+  const bStart: Omit<BuildingGrowth, 'folded' | 'cap'>[] = entries.map((e, b) => ({
+    start: 'process',
+    seed: proc.get(e) as string,
+    ...(folderProc.has(e) ? { folder: dirOf(files[e]) } : {}),
+    merged: 0,
+    mergedFiles: 0,
+    reached: bReached[b],
+    inFolder: bFiles[b].length - 1 - bReached[b]
+  }))
   for (const g of [...services].sort((a, b) => a - b)) {
-    bStart.push({ start: 'service', seed: files[g], merged: 0 })
+    bStart.push({ start: 'service', seed: files[g], merged: 0, mergedFiles: 0 })
     owner[g] = bFiles.length
     pinned.add(bFiles.length)
     bFiles.push([g])
@@ -625,6 +637,9 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
     } else family[i] = r
   })
   const fileUf = clusterFree(imports, district, owner, family)
+  // Files in each family (keyed by its root): a family of one file is just that file.
+  const famSize = new Map<number, number>()
+  for (let i = 0; i < n; i++) if (owner[i] < 0) famSize.set(family[i], (famSize.get(family[i]) ?? 0) + 1)
   const rootB = new Map<number, number>()
   for (let i = 0; i < n; i++) {
     if (owner[i] >= 0) continue
@@ -637,18 +652,27 @@ export function groupProject(snap: GraphSnapshot, bounds: Boundary[], opts: Grou
       bProc.push('')
       bEntry.push(-1)
       // The cluster is named for its root's family: the family it grew from (the larger side of every merge).
-      const stem = stemOf.get(r)
+      // A family of one file (a one-file folder too) started as that file.
+      const stem = (famSize.get(r) as number) > 1 ? stemOf.get(r) : undefined
       const dir = dirOf(files[r])
-      bStart.push(stem === undefined ? { start: 'file', seed: files[r], merged: 0 } : stem === '/' ? { start: 'folder', seed: dir, merged: 0 } : { start: 'family', seed: stem, folder: dir, merged: 0 })
+      const none = { merged: 0, mergedFiles: 0 }
+      bStart.push(stem === undefined ? { start: 'file', seed: files[r], ...none } : stem === '/' ? { start: 'folder', seed: dir, ...none } : { start: 'family', seed: stem, folder: dir, ...none })
     }
     owner[i] = b
     bFiles[b].push(i)
   }
-  // Clusters merged for density: the families in a building, less the one it started as.
+  // Merged for density: the families in a building less the one it started as, told apart into name families of
+  // two or more files and single files.
   const familiesIn = new Map<number, Set<number>>()
   for (const b of rootB.values()) familiesIn.set(b, new Set())
   for (let i = 0; i < n; i++) familiesIn.get(owner[i])?.add(family[i])
-  for (const [b, fams] of familiesIn) bStart[b].merged = fams.size - 1
+  for (const [r, b] of rootB) {
+    for (const f of familiesIn.get(b) as Set<number>) {
+      if (f === family[r]) continue
+      if ((famSize.get(f) as number) > 1) bStart[b].merged++
+      else bStart[b].mergedFiles++
+    }
+  }
 
   // 4. Cap buildings. Heap key orders (process?, size, first path); adjacency is same-district only.
   const nb = bFiles.length

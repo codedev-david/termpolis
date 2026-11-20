@@ -98,7 +98,7 @@ describe('cards', () => {
     const doc = rich()
     const e3 = edgeCard(doc, 'e3')
     expect(e3).toContain('nope')
-    expect(e3).toContain('<h4>Direction</h4><p>One way: only b3 starts it; Claude Code never reaches back.</p>')
+    expect(e3).toContain('<h4>Direction</h4><p>One way: b3 reaches Claude Code; the code shows no line from Claude Code back to b3.</p>')
     expect(e3).toContain('>Claude Code<')
     doc.edges.push(edge('e9', 'b1', 'ghost'))
     expect(edgeCard(doc, 'e9')).toContain('>ghost<')
@@ -274,12 +274,21 @@ describe('why a building is this big', () => {
   it("a big building's card says why after what is inside, escaped, and a small one says nothing", () => {
     const doc = minimal()
     const files = Array.from({ length: 30 }, (_, i) => `src/a/f${i}.ts`)
-    const big = building('big', { members: files, growth: { start: 'family', seed: '<t>', folder: 'src/a', merged: 2, folded: 0, cap: 60 } })
+    const big = building('big', { members: files, growth: { start: 'family', seed: '<t>', folder: 'src/a', merged: 2, mergedFiles: 1, folded: 0, cap: 60 } })
     doc.buildings.push(big)
     const html = buildingCard(doc, 'big')
-    expect(html).toContain('<h4>Why it is this big</h4><p>30 files. It started as the src/a folder&#39;s name family &quot;&lt;t&gt;&quot;, and 2 dense clusters merged into it.</p>')
+    expect(html).toContain('<h4>Why it is this big</h4><p>30 files. It started as the src/a folder&#39;s name family &quot;&lt;t&gt;&quot;. 2 name families and 1 single file were merged in because of dense imports.</p>')
     expect(html.indexOf('Why it is this big')).toBeGreaterThan(html.indexOf('What&#39;s inside'))
     expect(html.indexOf('Why it is this big')).toBeLessThan(html.indexOf('Technology'))
     expect(buildingCard(doc, 'b1')).not.toContain('Why it is this big')
+  })
+
+  it('names the double-click only where the card says it can open floors', () => {
+    const doc = minimal()
+    const files = Array.from({ length: 30 }, (_, i) => `src/a/f${i}.ts`)
+    const floors = [{ name: 'a', tech: [], members: [] }, { name: 'b', tech: [], members: [] }]
+    doc.buildings.push(building('big', { members: files, floors, growth: { start: 'folder', seed: 'src/a', merged: 0, mergedFiles: 0, folded: 0, cap: 60 } }))
+    expect(buildingCard(doc, 'big', 'open3d')).toContain('<p>30 files. It started as the src/a folder. Double-click it to see its floors.</p>')
+    expect(buildingCard(doc, 'big')).toContain('<p>30 files. It started as the src/a folder.</p>')
   })
 })

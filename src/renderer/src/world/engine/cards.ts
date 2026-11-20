@@ -1,7 +1,7 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT as STATUS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf, sizeNote } from '../../../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT as STATUS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
@@ -65,7 +65,8 @@ function edgeList(doc: WorldDoc, edges: WorldEdge[], dir: 'from' | 'to'): string
   return `<ul>${rows.join('')}</ul>`
 }
 
-export function buildingCard(doc: WorldDoc, id: string): string {
+/** `floors` is how the reader can open the floors: only the 3D city opens them on a double-click. */
+export function buildingCard(doc: WorldDoc, id: string, floors: FloorsView = 'none'): string {
   const b = allBuildings(doc).find((x) => x.id === id)
   if (!b) {
     const x = doc.externals.find((e) => e.id === id)
@@ -82,7 +83,7 @@ export function buildingCard(doc: WorldDoc, id: string): string {
   // (left out when the code shows no process for this part, rather than an empty "Runs in:").
   const runsIn = runsInOf(doc, b)
   const aiName = b.nameState === 'inferred' ? ' <span class="muted">(name suggested by AI)</span>' : ''
-  const big = sizeNote(doc, b)
+  const big = sizeNote(doc, b, floors)
   return `<h3>${esc(b.name)}${aiName}</h3>${b.techLabel ? `<p class="muted">${esc(b.techLabel)}</p>` : ''}`
     + `<p class="status"><span class="tag status-${esc(b.status)}">${esc(STATUS[b.status])}</span>${tag}</p>`
     + (runsIn.trim() ? `<div class="proc">Runs in: <b>${esc(runsIn)}</b></div>` : '')

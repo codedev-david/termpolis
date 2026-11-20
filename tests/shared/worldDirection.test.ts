@@ -68,15 +68,15 @@ describe('direction', () => {
 
   it('one way: no line back and no recorded reply; channels, programs and model words do not count as replies', () => {
     const doc = world()
-    expect(direction(doc, doc.edges[0]).text).toBe('One way: only Renderer starts it; Main never reaches back.')
+    expect(direction(doc, doc.edges[0]).text).toBe('One way: Renderer reaches Main; the code shows no line from Main back to Renderer.')
     // A line between two parts of the project whose words a model wrote is not the code's http call.
     doc.edges.push(edge('rm2', 'r', 'm', { label: 'http-out api.example.com' }))
-    expect(direction(doc, doc.edges[1]).text).toBe('One way: only Renderer starts it; Main never reaches back.')
+    expect(direction(doc, doc.edges[1]).text).toBe('One way: Renderer reaches Main; the code shows no line from Main back to Renderer.')
     for (const label of ['spawn claude', 'mcp termpolis', 'Calls the API']) {
       doc.edges.push(edge(`x-${label}`, 'r', 'x-api', { label }))
-      expect(direction(doc, doc.edges[doc.edges.length - 1]).text).toBe('One way: only Renderer starts it; api.example.com never reaches back.')
+      expect(direction(doc, doc.edges[doc.edges.length - 1]).text).toBe('One way: Renderer reaches api.example.com; the code shows no line from api.example.com back to Renderer.')
     }
-    expect(direction(doc, doc.edges[0])).toMatchObject({ before: 'One way: only Renderer starts it; Main never reaches back.', link: '', after: '' })
+    expect(direction(doc, doc.edges[0])).toMatchObject({ before: 'One way: Renderer reaches Main; the code shows no line from Main back to Renderer.', link: '', after: '' })
   })
 
   it('a planned line says only what the plan says, a proposal\'s or a design world\'s', () => {

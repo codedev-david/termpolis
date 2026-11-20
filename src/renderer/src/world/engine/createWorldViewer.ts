@@ -312,7 +312,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
 
   function cardFor(sel: WorldSelection): string | null {
     const d = doc as WorldDoc
-    if (sel.kind === 'building') return buildingCard(d, sel.id)
+    // A double-click opens floors only in the 3D city; the 2D list has no such gesture.
+    if (sel.kind === 'building') return buildingCard(d, sel.id, r3 ? 'open3d' : 'none')
     if (sel.kind === 'edge') return edgeCard(d, sel.id)
     if (sel.kind === 'tech') return techCard(d, sel.id)
     return null

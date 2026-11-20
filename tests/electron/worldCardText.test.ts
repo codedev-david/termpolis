@@ -186,7 +186,7 @@ describe('cardText', () => {
     expect(plain).toContain('What travels:\nunknown-cargo')
     expect(plain).not.toContain('How often')
     expect(plain).not.toContain('Technology')
-    expect(plain).toContain('Direction:\nOne way: only Desktop app starts it; Memory host never reaches back.')
+    expect(plain).toContain('Direction:\nOne way: Desktop app reaches Memory host; the code shows no line from Memory host back to Desktop app.')
   })
 
   it('states the same direction sentence as the HTML card: both ways, with replies and planned', () => {
@@ -202,8 +202,8 @@ describe('cardText', () => {
   it('states why a big building is this big, in the same words as the HTML card', () => {
     const doc = minimal()
     const files = Array.from({ length: 30 }, (_, i) => `src/a/f${i}.ts`)
-    doc.buildings.push(building('big', { members: files, growth: { start: 'process', seed: 'ptyHost', merged: 0, folded: 3, cap: 60 } }))
-    const note = '30 files. It started as the entry of the "ptyHost" process, and 3 smaller groups were folded in because Lumopolis shows at most 60 buildings per project.'
+    doc.buildings.push(building('big', { members: files, growth: { start: 'process', seed: 'ptyHost', merged: 0, mergedFiles: 0, reached: 26, inFolder: 0, folded: 3, cap: 60 } }))
+    const note = '30 files. It started as the entry of the "ptyHost" process. 26 files imported only from inside it joined it. 3 other groups were folded in because Lumopolis shows at most 60 buildings per project.'
     expect(cardText(doc, 'big')).toContain(`Why it is this big:\n${note}`)
     expect(buildingCard(doc, 'big')).toContain('ptyHost')
     expect(cardText(doc, 'b1')).not.toContain('Why it is this big')
@@ -217,10 +217,11 @@ describe('cardText', () => {
     expect(floors).toHaveLength(12)
     expect(floors[11]).toMatchObject({ name: 'other', members: files.slice(11) })
     const doc = minimal()
-    doc.buildings.push(building('huge', { members: files, floors, growth: { start: 'folder', seed: 'src/huge', merged: 0, folded: 0, cap: 60 } }))
-    const note = '2000 files. It started as the src/huge folder. Its "other" floor holds 1989 files. Double-click to see its floors.'
-    expect(cardText(doc, 'huge')).toContain(`Why it is this big:\n${note}`)
-    expect(buildingCard(doc, 'huge')).toContain(`<p>${note.replace(/"/g, '&quot;')}</p>`)
+    doc.buildings.push(building('huge', { members: files, floors, growth: { start: 'folder', seed: 'src/huge', merged: 0, mergedFiles: 0, folded: 0, cap: 60 } }))
+    const note = '2000 files. It started as the src/huge folder. Its "other" floor holds 1989 files.'
+    // An agent reads the floors in its own text; the 3D city opens them on a double-click.
+    expect(cardText(doc, 'huge')).toContain(`Why it is this big:\n${note} Its floors are listed under What's inside.`)
+    expect(buildingCard(doc, 'huge', 'open3d')).toContain(`<p>${note.replace(/"/g, '&quot;')} Double-click it to see its floors.</p>`)
   })
 
   it('a building built without any edges has no connection sections', () => {

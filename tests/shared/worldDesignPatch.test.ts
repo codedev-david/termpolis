@@ -418,4 +418,18 @@ describe('which way a design line runs', () => {
     const lone = applyDesignPatch(base(), [{ op: 'remove', id: 'e-api--db' }])
     expect(twoWay(lone.doc)).toEqual({ 'e-ui--api': false })
   })
+
+  it("removing one line of a pair keeps an agent's own twoWay true on the other line", () => {
+    const stated = applyDesignPatch(base(), [{ op: 'addEdge', from: 'db', to: 'ui', label: 'pushes changes', twoWay: true }]).doc
+    expect(stated.edges.find((e) => e.id === 'e-db--ui')?.twoWayStated).toBe(true)
+    const pair = applyDesignPatch(stated, [{ op: 'addEdge', from: 'ui', to: 'db', label: 'asks for changes' }]).doc
+    expect(pair.edges.find((e) => e.id === 'e-ui--db')).toMatchObject({ twoWay: true })
+    expect(pair.edges.find((e) => e.id === 'e-ui--db')?.twoWayStated).toBeUndefined()
+    const r = applyDesignPatch(pair, [{ op: 'remove', id: 'e-ui--db' }])
+    // The agent said db and ui exchange both ways: that stays. Only a twoWay the pair made goes with the pair.
+    expect(r.doc.edges.find((e) => e.id === 'e-db--ui')).toMatchObject({ twoWay: true, twoWayStated: true })
+    valid(r.doc)
+    const back = applyDesignPatch(pair, [{ op: 'remove', id: 'e-db--ui' }])
+    expect(back.doc.edges.find((e) => e.id === 'e-ui--db')?.twoWay).toBe(false)
+  })
 })

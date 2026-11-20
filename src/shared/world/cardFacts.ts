@@ -101,13 +101,18 @@ export function direction(doc: WorldDoc, e: WorldEdge): Direction {
   if (back || e.twoWay) return sentence(`Both ways${tag}: ${from} reaches ${to}, and `, `${to} reaches ${from}`, '.', back?.id)
   if (planned) return sentence(`One way (planned): ${from} reaches ${to}.`)
   if (withReplies(doc, e)) return sentence(`One way, with replies: ${from} asks and ${to} answers.`)
-  return sentence(`One way: only ${from} starts it; ${to} never reaches back.`)
+  // Only what the scan shows: several kinds cannot see a way back at all (a main process pushing to a page, a
+  // worker posting results), so the sentence never says the target does not reach back.
+  return sentence(`One way: ${from} reaches ${to}; the code shows no line from ${to} back to ${from}.`)
 }
 
-/** A building is big from this many files, when it also holds at least twice the project's median. */
+/** A building is big from this many files, when it also holds at least twice the median of the other buildings. */
 export const BIG_MIN_FILES = 20
 /** The most floors a building's card lists (main/world/label.ts MAX_FLOORS): past it the rest share one "other" floor. */
 export const FLOOR_CAP = 12
+
+/** How a card can show a building's floors: a double-click in the 3D city, listed in the agent's text, or not at all. */
+export type FloorsView = 'open3d' | 'listed' | 'none'
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 const folderName = (dir: string): string => (dir ? `the ${dir} folder` : 'the top-level folder')
@@ -127,24 +132,33 @@ function median(sizes: number[]): number {
 
 /**
  * "Why it is this big": the note both cards show on a big building, in facts the grouping recorded (`growth`) and
- * nothing else. Big means at least BIG_MIN_FILES files and twice the median of the world's buildings, or anything
- * the building cap folded in. Empty for any other building, and for one without growth (a planned one, or a world
- * stored before growth was recorded).
+ * nothing else, one fact a sentence. Big means at least BIG_MIN_FILES files and twice the median of the other
+ * buildings (BIG_MIN_FILES alone in a project of one building), or anything the building cap folded in. Empty for
+ * any other building, and for one without growth (a planned one, or a world stored before growth was recorded).
+ * `floors` says how this card's reader can see the floors; only that way is named.
  */
-export function sizeNote(doc: WorldDoc, b: Building): string {
+export function sizeNote(doc: WorldDoc, b: Building, floors: FloorsView = 'none'): string {
   const g = b.growth
   if (!g) return ''
   const n = b.members.length
-  const big = n >= BIG_MIN_FILES && n >= 2 * median(doc.buildings.map((x) => x.members.length))
+  const others = doc.buildings.filter((x) => x.id !== b.id).map((x) => x.members.length)
+  const big = n >= BIG_MIN_FILES && (others.length === 0 || n >= 2 * median(others))
   if (!big && g.folded === 0) return ''
-  const parts = [STARTS[g.start](g)]
-  if (g.merged > 0) parts.push(`${plural(g.merged, 'dense cluster', 'dense clusters')} merged into it`)
-  if (g.folded > 0) {
-    parts.push(`${plural(g.folded, 'smaller group was', 'smaller groups were')} folded in because Lumopolis shows at most ${g.cap} buildings per project`)
+  const facts = [`${plural(n, 'file', 'files')}.`, `It started as ${STARTS[g.start](g)}.`]
+  const merges = [
+    ...(g.merged > 0 ? [plural(g.merged, 'name family', 'name families')] : []),
+    ...(g.mergedFiles > 0 ? [plural(g.mergedFiles, 'single file', 'single files')] : [])
+  ]
+  if (merges.length) facts.push(`${merges.join(' and ')} ${g.merged + g.mergedFiles === 1 ? 'was' : 'were'} merged in because of dense imports.`)
+  if (g.reached) facts.push(`${plural(g.reached, 'file', 'files')} imported only from inside it joined it.`)
+  if (g.inFolder) {
+    facts.push(`${plural(g.inFolder, 'other file', 'other files')} of ${folderName(g.folder ?? '')} joined it because its process is named for that folder.`)
   }
-  const reasons = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}`
+  if (g.folded > 0) {
+    facts.push(`${plural(g.folded, 'other group was', 'other groups were')} folded in because Lumopolis shows at most ${g.cap} buildings per project.`)
+  }
   const last = b.floors[b.floors.length - 1]
-  const other = b.floors.length >= FLOOR_CAP && last.name === 'other' ? ` Its "other" floor holds ${plural(last.members.length, 'file', 'files')}.` : ''
-  const view = b.floors.length > 1 ? ' Double-click to see its floors.' : ''
-  return `${plural(n, 'file', 'files')}. It started as ${reasons}.${other}${view}`
+  if (b.floors.length >= FLOOR_CAP && last.name === 'other') facts.push(`Its "other" floor holds ${plural(last.members.length, 'file', 'files')}.`)
+  if (b.floors.length > 1 && floors !== 'none') facts.push(floors === 'open3d' ? 'Double-click it to see its floors.' : "Its floors are listed under What's inside.")
+  return facts.join(' ')
 }

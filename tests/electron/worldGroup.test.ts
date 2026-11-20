@@ -992,19 +992,27 @@ describe('how a building grew', () => {
     'src/m/pa.ts': [],
     'src/m/pb.ts': [],
     'src/m/zz/q.ts': [],
+    'src/m/zz/r.ts': [],
     'src/solo/only.ts': ['../m/a1']
   })
   const bounds = [B('worker', 'pa', 'consume', 'src/solo/only.ts', 1), B('worker', 'pb', 'consume', 'src/solo/only.ts', 2)]
 
   it('a plain building records what it started as, and that nothing joined it', () => {
     const g = groupProject(s, bounds)
-    expect(home(g, 'src/solo/only.ts').growth).toEqual({ start: 'family', seed: 'only', folder: 'src/solo', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
-    expect(home(g, 'src/m/zz/q.ts').growth).toEqual({ start: 'folder', seed: 'src/m/zz', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
-    expect(home(g, 'src/m/pa.ts').growth).toEqual({ start: 'process', seed: 'pa', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
-    expect(home(g, 'src/m/a1.ts').growth).toEqual({ start: 'file', seed: 'src/m/a1.ts', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+    const none = { merged: 0, mergedFiles: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS }
+    // A name family of one file is that file, not a family.
+    expect(home(g, 'src/solo/only.ts').growth).toEqual({ start: 'file', seed: 'src/solo/only.ts', ...none })
+    expect(home(g, 'src/m/zz/q.ts').growth).toEqual({ start: 'folder', seed: 'src/m/zz', ...none })
+    expect(home(g, 'src/m/pa.ts').growth).toEqual({ start: 'process', seed: 'pa', reached: 0, inFolder: 0, ...none })
+    expect(home(g, 'src/m/a1.ts').growth).toEqual({ start: 'file', seed: 'src/m/a1.ts', ...none })
   })
 
-  it('a density-merged building counts the clusters that joined it', () => {
+  it('a small folder of one file is that file, not a folder', () => {
+    const g = groupProject(snap({ 'src/m/one/only.ts': [], 'src/m/x.ts': [], 'src/m/y.ts': [] }), [])
+    expect(home(g, 'src/m/one/only.ts').growth).toMatchObject({ start: 'file', seed: 'src/m/one/only.ts' })
+  })
+
+  it('a density-merged building counts the name families and the single files that joined it', () => {
     const d = snap({
       'src/core/terminalHost.ts': ['./terminalView', './ptyBridge', './shellRunner'],
       'src/core/terminalView.ts': ['./terminalHost', './ptyQueue'],
@@ -1018,17 +1026,18 @@ describe('how a building grew', () => {
     const big = home(g, 'src/core/terminalHost.ts')
     expect(big.members).toEqual(['src/core/ptyBridge.ts', 'src/core/ptyQueue.ts', 'src/core/shellRunner.ts', 'src/core/terminalHost.ts', 'src/core/terminalView.ts'])
     // shellRunner joins the terminal family first (the densest pair), then the pty family joins the larger side.
-    expect(big.growth).toEqual({ start: 'family', seed: 'terminal', folder: 'src/core', merged: 2, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
-    expect(home(g, 'src/core/loneHelper.ts').growth).toMatchObject({ merged: 0, folded: 0 })
+    // The pty family is two files; shellRunner is a file of its own.
+    expect(big.growth).toEqual({ start: 'family', seed: 'terminal', folder: 'src/core', merged: 1, mergedFiles: 1, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+    expect(home(g, 'src/core/loneHelper.ts').growth).toMatchObject({ merged: 0, mergedFiles: 0, folded: 0 })
   })
 
   it('a cap-folded building counts the buildings folded into it, and the cap', () => {
     const g = groupProject(s, bounds, { maxBuildings: 9 })
     // a1 has no same-district neighbour and joins a2, the next building in path order.
-    expect(home(g, 'src/m/a2.ts').growth).toEqual({ start: 'file', seed: 'src/m/a2.ts', merged: 0, folded: 1, cap: 9 })
+    expect(home(g, 'src/m/a2.ts').growth).toEqual({ start: 'file', seed: 'src/m/a2.ts', merged: 0, mergedFiles: 0, folded: 1, cap: 9 })
     const g2 = groupProject(s, bounds, { maxBuildings: 2 })
     // Everything in src/m ends in pa's building at the last.
-    expect(home(g2, 'src/m/a1.ts').growth).toEqual({ start: 'process', seed: 'pa', merged: 0, folded: 9, cap: 2 })
+    expect(home(g2, 'src/m/a1.ts').growth).toEqual({ start: 'process', seed: 'pa', merged: 0, mergedFiles: 0, reached: 0, inFolder: 0, folded: 9, cap: 2 })
     // The same project grouped twice records the same facts.
     expect(groupProject(s, bounds, { maxBuildings: 2 })).toEqual(g2)
   })
@@ -1038,6 +1047,30 @@ describe('how a building grew', () => {
       snap({ 'src/main/index.ts': ['./swarmManager'], 'src/main/swarmManager.ts': [], 'src/main/swarmMemory.ts': [] }),
       [B('ipc', 'swarm:tasks', 'provide', 'src/main/index.ts', 1)]
     )
-    expect(home(g, 'src/main/swarmManager.ts').growth).toEqual({ start: 'service', seed: 'src/main/swarmManager.ts', merged: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+    expect(home(g, 'src/main/swarmManager.ts').growth).toEqual({ start: 'service', seed: 'src/main/swarmManager.ts', merged: 0, mergedFiles: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+  })
+
+  it('a process building records the files reached only from its entry, and the rest of its folder', () => {
+    const g = groupProject(
+      snap({
+        'src/w/job.ts': ['./jobA', './jobB'],
+        'src/w/jobA.ts': ['./jobC'],
+        'src/w/jobB.ts': [],
+        'src/w/jobC.ts': [],
+        'src/w/shared.ts': [],
+        'src/w/other.ts': ['./shared'],
+        'src/tool/main.ts': ['./x'],
+        'src/tool/x.ts': [],
+        'src/tool/spare.ts': [],
+        'src/tool/stray.ts': []
+      }),
+      [B('worker', 'job', 'consume', 'src/w/other.ts', 1), B('fork', 'tool', 'consume', 'src/w/other.ts', 2)]
+    )
+    // jobA, jobB and jobC are imported only from inside job's building.
+    expect(home(g, 'src/w/job.ts').growth).toEqual({ start: 'process', seed: 'job', merged: 0, mergedFiles: 0, reached: 3, inFolder: 0, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
+    // tool names a folder: its root main.ts reaches x, then takes spare and stray, the rest of src/tool.
+    const tool = home(g, 'src/tool/main.ts')
+    expect(tool.members).toEqual(['src/tool/main.ts', 'src/tool/spare.ts', 'src/tool/stray.ts', 'src/tool/x.ts'])
+    expect(tool.growth).toEqual({ start: 'process', seed: 'tool', folder: 'src/tool', merged: 0, mergedFiles: 0, reached: 1, inFolder: 2, folded: 0, cap: DEFAULT_MAX_BUILDINGS })
   })
 })
