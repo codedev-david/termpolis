@@ -457,8 +457,8 @@ export interface SwitchProgress {
   step: 'exiting' | 'confirming' | 'carrying' | 'typing' | 'waiting'
 }
 
-/** The prompt reports Termpolis's shells write (shellIntegration.ts): OSC 7 from bash, OSC 9;9 from
- *  PowerShell and cmd. zsh and fish write none. */
+/** The prompt reports Termpolis's shells write (shellIntegration.ts): OSC 7 from bash, zsh and fish,
+ *  OSC 9;9 from PowerShell and cmd. */
 const POSIX_REPORT = /\x1b\]7;/
 const WINDOWS_REPORT = /\x1b\]9;9;/
 

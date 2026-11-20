@@ -31,7 +31,11 @@
  *    spawn, because an escape hatch you can describe over the phone is worth more than
  *    any amount of confidence in the happy path.
  *
- * The same integration also gives bash, PowerShell and cmd a `lumopolis` command: it prints one
+ * zsh and fish cannot take a prompt hook from the environment, so theirs comes from files in Termpolis's
+ * own data folder (never the user's): a ZDOTDIR of four start-up files for zsh that run the user's own
+ * files first, and one file fish sources with --init-command after config.fish.
+ *
+ * The same integration also gives every one of these shells a `lumopolis` command: it prints one
  * private OSC 7377 sequence (src/shared/world/lumopolisCommand.ts) that opens the Lumopolis pane on a
  * folder. Each version checks the folder exists with the shell's own built-ins, prints
  * `lumopolis: no such folder: <path>` when it does not, and starts no process and touches no network.
@@ -48,6 +52,9 @@ export const INTEGRATION_MARKER = 'TERMPOLIS_SHELL_INTEGRATION'
 
 /** The user's escape hatch. Any truthy value restores the pre-integration spawn. */
 export const DISABLE_FLAG = 'TERMPOLIS_DISABLE_SHELL_INTEGRATION'
+
+/** What `lumopolis -h` prints, in every shell. No parentheses or apostrophes: cmd and the quoting stay simple. */
+export const LUMOPOLIS_USAGE = 'usage: lumopolis [folder] - maps a folder in Lumopolis, this one by default'
 
 /**
  * Which shell is this executable? Matched on the basename so it works for
@@ -102,7 +109,8 @@ if (-not $global:__termpolis_wrapped) {
   # person's own, from their profile, is left alone.
   if (-not (Test-Path Function:\\lumopolis)) {
     function global:lumopolis {
-      param([string]$Path = '.')
+      param([string]$Path = '.', [Alias('h')][switch]$Help)
+      if ($Help -or $Path -eq '--help') { Write-Host '${LUMOPOLIS_USAGE}'; return }
       $full = $null
       try { $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path) } catch { }
       if (-not $full -or -not [System.IO.Directory]::Exists($full)) {
@@ -116,47 +124,172 @@ if (-not $global:__termpolis_wrapped) {
 `
 
 /**
+ * The body of `lumopolis` for bash and zsh, which share it. Built-ins only: local, [, case, [[, printf.
+ * `-h` prints the usage. A relative folder is made absolute against $PWD; a drive with a separator after it
+ * (C:\x, C:/x) counts as absolute under Git Bash, while C:foo (relative to the drive) does not. A folder whose
+ * name holds a BEL would end the sequence early, so it is refused like a missing one.
+ */
+const POSIX_LUMOPOLIS_BODY =
+  `local p="\${1:-.}"; ` +
+  `if [ "$p" = -h ] || [ "$p" = --help ]; then printf '%s\\n' '${LUMOPOLIS_USAGE}'; return 0; fi; ` +
+  `case "$p" in /*|[A-Za-z]:[\\\\/]*) ;; *) p="$PWD/$p" ;; esac; ` +
+  `if [[ "$p" == *$'\\a'* || ! -d "$p" ]]; then printf 'lumopolis: no such folder: %s\\n' "\${1:-.}" >&2; return 1; fi; ` +
+  `printf '\\033]7377;lumopolis;%s;%s\\007' "$${LUMOPOLIS_NONCE_ENV}" "$p"; `
+
+/**
  * bash's `lumopolis`, handed over as an exported function: bash defines every `BASH_FUNC_<name>%%`
  * variable whose value starts with `() {` before it reads any startup file. Not PROMPT_COMMAND, which a
- * .bashrc commonly sets outright; a lumopolis the person defines in their own files simply replaces this
- * one. Built-ins only: local, case, [, printf. A relative folder is made absolute against $PWD; Windows
- * drive paths (C:\x, C:/x) count as absolute under Git Bash.
+ * .bashrc commonly sets outright; a lumopolis the person defines in their own files simply replaces this one.
  */
 export const BASH_FUNCTION_ENV = 'BASH_FUNC_lumopolis%%'
-export const BASH_LUMOPOLIS_FUNCTION =
-  `() { local p="\${1:-.}"; ` +
-  `case "$p" in /*|[A-Za-z]:*) ;; *) p="$PWD/$p" ;; esac; ` +
-  `if [ ! -d "$p" ]; then printf 'lumopolis: no such folder: %s\\n' "\${1:-.}" >&2; return 1; fi; ` +
-  `printf '\\033]7377;lumopolis;%s;%s\\007' "$${LUMOPOLIS_NONCE_ENV}" "$p"; }`
+export const BASH_LUMOPOLIS_FUNCTION = `() { ${POSIX_LUMOPOLIS_BODY}}`
+
+/** zsh's `lumopolis`: the same body, defined by name in Termpolis's .zshrc. */
+export const ZSH_LUMOPOLIS_FUNCTION = `function lumopolis { ${POSIX_LUMOPOLIS_BODY}}`
 
 /** Where cmd finds its doskey macro file: a quoted path, so a profile folder with spaces or & in it is safe. */
 export const CMD_MACROS_ENV = 'TERMPOLIS_LUMOPOLIS_MACROS'
 
+const CMD_PRINT = `<nul set /p "=\x1b]7377;lumopolis;%${LUMOPOLIS_NONCE_ENV}%;`
+const CMD_NO_SUCH = 'echo lumopolis: no such folder: %~I'
+
 /**
- * cmd's `lumopolis`, a doskey macro (cmd has no functions). `for` with `%~f` makes the last argument (or `.`)
- * a full path, `if exist "<folder>\"` is true only for a folder, and `set /p` with no input prints the
- * sequence with no newline. All built-ins. $T separates the commands; @ keeps cmd from echoing them. cmd
- * draws one more prompt for each command after the first, so there are two and __termpolis_lumo stays set.
+ * cmd's `lumopolis`, a doskey macro (cmd has no functions). Two commands, $T between them:
+ *  1. keep the raw arguments, quotes and all, in __termpolis_lumo (the leading space keeps it set when there are none);
+ *  2. clear it and, in the same line (cmd expands %...% before running any of it), read it with its quotes stripped.
+ * `for /f` over a quoted string takes the whole text as one folder, with no wildcard expansion, and `tokens=*` drops
+ * the leading space. Its %I expands after cmd has parsed the line, so a folder named "x (86)" or "a & b" cannot break
+ * the if/else. The inner `for /f "delims=*?"` finds a wildcard: its first piece is then not the whole. No argument
+ * means the current folder (%CD%). `if exist "<folder>\"` is true only for a folder, and `set /p` with no input prints
+ * the sequence with no newline. All built-ins; @ keeps cmd from echoing them. cmd draws one more prompt for the
+ * second command; nothing is left set afterwards.
  */
 export const CMD_LUMOPOLIS_MACROS =
-  `lumopolis=for %I in (. $*) do @set "__termpolis_lumo=%~fI"` +
-  `$T@if exist "%__termpolis_lumo%\\" (<nul set /p "=\x1b]7377;lumopolis;%${LUMOPOLIS_NONCE_ENV}%;%__termpolis_lumo%\x07")` +
-  ` else (echo lumopolis: no such folder: $*)\r\n`
+  `lumopolis=@set __termpolis_lumo= $*$T@set __termpolis_lumo=& ` +
+  `for /f "tokens=*" %I in ("%__termpolis_lumo:"=%") do @for /f "delims=*?" %J in ("x%~I") do ` +
+  `@if "%~I"=="" (${CMD_PRINT}%CD%\x07") ` +
+  `else if "%~I"=="-h" (echo ${LUMOPOLIS_USAGE}) ` +
+  `else if "%~I"=="--help" (echo ${LUMOPOLIS_USAGE}) ` +
+  `else if not "%J"=="x%~I" (${CMD_NO_SUCH}) ` +
+  `else if exist "%~fI\\" (${CMD_PRINT}%~fI\x07") ` +
+  `else ${CMD_NO_SUCH}\r\n`
 
-/** A file a shell's integration reads at start-up, kept in Termpolis's own data folder. */
-export interface IntegrationFile { name: string; content: string }
+/** Where Termpolis passes a ZDOTDIR of the person's own to its zsh start-up files. */
+export const ZSH_USER_ZDOTDIR_ENV = 'TERMPOLIS_USER_ZDOTDIR'
+
+// The pieces of Termpolis's zsh start-up files. zsh reads $ZDOTDIR/.zshenv, then .zprofile (login shells), .zshrc
+// (interactive) and .zlogin (login), and looks ZDOTDIR up again before each. Each file of ours puts the person's
+// ZDOTDIR back (or none: $HOME), runs their file of the same name at the top level, as zsh would, then, when zsh will
+// read another file, points ZDOTDIR at ours again. `builtin` everywhere, so a function or alias of the person's named
+// source, unset or printf changes nothing.
+const ZSH_RESTORE = 'if [[ -n "${__termpolis_user_zdotdir-}" ]]; then ZDOTDIR="$__termpolis_user_zdotdir"; else builtin unset ZDOTDIR; fi'
+const zshSource = (file: string): string => `if [[ -r "\${ZDOTDIR:-$HOME}/${file}" ]]; then builtin source "\${ZDOTDIR:-$HOME}/${file}"; fi`
+const ZSH_HANDBACK = '__termpolis_user_zdotdir="${ZDOTDIR-}"; ZDOTDIR="$__termpolis_zdotdir"'
+const ZSH_DONE = 'builtin unset __termpolis_zdotdir __termpolis_user_zdotdir'
+const ZSH_HEADER = '# Termpolis shell integration for zsh, written by Termpolis on each run. It runs your own file first.\n'
+
+export const ZSH_ZSHENV = ZSH_HEADER +
+  '__termpolis_zdotdir="$ZDOTDIR"\n' +
+  `__termpolis_user_zdotdir="\${${ZSH_USER_ZDOTDIR_ENV}-}"\n` +
+  `builtin unset ${ZSH_USER_ZDOTDIR_ENV}\n` +
+  `${ZSH_RESTORE}\n` +
+  `${zshSource('.zshenv')}\n` +
+  // A shell that reads nothing more (a script; start-up files switched off) keeps the person's ZDOTDIR.
+  `if [[ -o rcs ]] && [[ -o interactive || -o login ]]; then ${ZSH_HANDBACK}; else ${ZSH_DONE}; fi\n` +
+  'true\n'
+
+export const ZSH_ZPROFILE = ZSH_HEADER + `${ZSH_RESTORE}\n${zshSource('.zprofile')}\n${ZSH_HANDBACK}\ntrue\n`
+
+/**
+ * After the person's .zshrc: a precmd hook that reports the folder with the same OSC 7 as bash, added with
+ * add-zsh-hook (or appended to precmd_functions where that is missing) so oh-my-zsh, powerlevel10k and starship keep
+ * their own; and `lumopolis`, unless the person has one.
+ */
+export const ZSH_ZSHRC = ZSH_HEADER +
+  `${ZSH_RESTORE}\n` +
+  // macOS's /etc/zshrc runs just before this file and sets HISTFILE from ZDOTDIR, which is still ours then.
+  'if [[ "${HISTFILE-}" == "$__termpolis_zdotdir/.zsh_history" ]]; then HISTFILE="${ZDOTDIR:-$HOME}/.zsh_history"; fi\n' +
+  `${zshSource('.zshrc')}\n` +
+  `if [[ -o login ]]; then ${ZSH_HANDBACK}; else ${ZSH_DONE}; fi\n` +
+  `function __termpolis_report_cwd { builtin printf '\\033]7;file://%s%s\\007' "\${HOST-}" "$PWD"; }\n` +
+  'builtin autoload -Uz add-zsh-hook\n' +
+  'if ! add-zsh-hook precmd __termpolis_report_cwd 2>/dev/null; then precmd_functions+=(__termpolis_report_cwd); fi\n' +
+  `if ! builtin typeset -f lumopolis >/dev/null 2>&1; then ${ZSH_LUMOPOLIS_FUNCTION}; fi\n` +
+  'true\n'
+
+export const ZSH_ZLOGIN = ZSH_HEADER + `${ZSH_RESTORE}\n${zshSource('.zlogin')}\n${ZSH_DONE}\ntrue\n`
+
+/**
+ * fish's integration, sourced with --init-command, which fish runs after config.fish and before the first prompt. The
+ * fish_prompt event reports the folder with the same OSC 7 as bash (\e and \a are ESC and BEL to fish's printf).
+ * `lumopolis` is defined unless the person has one, with the same checks as bash's: `string`, `contains`, `test` and
+ * `printf` are fish built-ins.
+ */
+export const FISH_INTEGRATION_SCRIPT = `# Termpolis shell integration for fish, written by Termpolis on each run.
+if not set -q __termpolis_wrapped
+    set -g __termpolis_wrapped 1
+    function __termpolis_report_cwd --on-event fish_prompt
+        builtin printf '\\e]7;file://%s%s\\a' "$hostname" "$PWD"
+    end
+    if not functions -q lumopolis
+        function lumopolis --description 'Map a folder in Lumopolis'
+            set -l arg .
+            if set -q argv[1]; and test -n "$argv[1]"
+                set arg $argv[1]
+            end
+            if contains -- $arg -h --help
+                builtin printf '%s\\n' '${LUMOPOLIS_USAGE}'
+                return 0
+            end
+            set -l p $arg
+            if not string match -qr -- '^(/|[A-Za-z]:[/\\x5c])' $p
+                set p "$PWD/$p"
+            end
+            if string match -q -- '*'\\a'*' $p; or not test -d $p
+                builtin printf 'lumopolis: no such folder: %s\\n' $arg >&2
+                return 1
+            end
+            builtin printf '\\e]7377;lumopolis;%s;%s\\a' "$${LUMOPOLIS_NONCE_ENV}" $p
+        end
+    end
+end
+`
+
+/** A file a shell's integration reads at start-up, kept in Termpolis's own data folder; siblings go beside it. */
+export interface IntegrationFile { name: string; content: string; siblings?: IntegrationFile[] }
 
 export const INTEGRATION_FILES = {
   powershell: { name: 'termpolis-shell-integration.ps1', content: POWERSHELL_INTEGRATION_SCRIPT },
   cmd: { name: 'termpolis-lumopolis.doskey', content: CMD_LUMOPOLIS_MACROS },
+  zsh: {
+    name: 'termpolis-zsh/.zshenv',
+    content: ZSH_ZSHENV,
+    siblings: [
+      { name: '.zprofile', content: ZSH_ZPROFILE },
+      { name: '.zshrc', content: ZSH_ZSHRC },
+      { name: '.zlogin', content: ZSH_ZLOGIN },
+    ],
+  },
+  fish: { name: 'termpolis-integration.fish', content: FISH_INTEGRATION_SCRIPT },
 } satisfies Record<string, IntegrationFile>
+
+/** Every file to put on disk for `file` once its own path is known: itself, then each sibling in the same folder. */
+export function integrationFileSet(file: IntegrationFile, path: string): Array<{ path: string; content: string }> {
+  const dir = path.slice(0, Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
+  return [{ path, content: file.content }, ...(file.siblings ?? []).map((s) => ({ path: dir + s.name, content: s.content }))]
+}
 
 /** The file this shell's integration needs on disk, or null when it travels in argv and env alone. */
 export function integrationFile(kind: ShellKind): IntegrationFile | null {
   if (kind === 'powershell' || kind === 'pwsh') return INTEGRATION_FILES.powershell
   if (kind === 'cmd') return INTEGRATION_FILES.cmd
+  if (kind === 'zsh') return INTEGRATION_FILES.zsh
+  if (kind === 'fish') return INTEGRATION_FILES.fish
   return null
 }
+
+/** A Windows path (zsh or fish under MSYS2 or Cygwin) with forward slashes, which those shells read; others as given. */
+const unixish = (p: string): string => (/^[A-Za-z]:\\/.test(p) ? p.replace(/\\/g, '/') : p)
 
 /**
  * Extra argv for shells whose integration cannot be delivered through the environment.
@@ -170,11 +303,20 @@ export function integrationFile(kind: ShellKind): IntegrationFile | null {
  * The path travels in CMD_MACROS_ENV, which cmd expands itself: node-pty would escape the
  * quotes a path with spaces needs if they were in argv.
  *
+ * fish sources its file with --init-command, which fish runs after config.fish, so the person's own setup
+ * comes first. (A vendor_conf.d folder on XDG_DATA_DIRS would also work, but that variable would then reach
+ * every program the terminal runs and change where each looks for its data.)
+ *
  * Returns [] for every other shell, so the caller can concatenate unconditionally.
  */
 export function integrationArgs(kind: ShellKind, scriptPath: string | null): string[] {
   if (!scriptPath) return []
   if (kind === 'cmd') return ['/k', 'doskey', `/macrofile=%${CMD_MACROS_ENV}%`]
+  if (kind === 'fish') {
+    // A fish single-quoted string: backslash and quote are the only escapes.
+    const quoted = unixish(scriptPath).replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    return ['--init-command', `builtin source '${quoted}'`]
+  }
   if (kind !== 'powershell' && kind !== 'pwsh') return []
   // Single quotes are PowerShell's literal string; a quote inside a path is escaped by
   // doubling it. Paths under a user profile can contain almost anything.
@@ -225,12 +367,19 @@ export function integrationEnv(
       if (scriptPath) out[CMD_MACROS_ENV] = `"${scriptPath}"`
       break
     }
-    // zsh and fish are deliberately absent (so they have no `lumopolis` command either). Neither honours an environment-supplied
-    // prompt hook, so integrating them means writing a ZDOTDIR or a vendor conf dir —
-    // real files, in the user's world, that outlive a crash. Both shells are POSIX-only
-    // in practice, and on POSIX terminalManager can already read the live cwd straight
-    // from /proc or lsof, which needs no cooperation from the shell at all. The cost is
-    // not worth paying for a capability we already have there.
+    case 'zsh': {
+      // zsh reads its start-up files from $ZDOTDIR: point it at Termpolis's folder of four files (INTEGRATION_FILES.zsh),
+      // which run the person's own files first. A ZDOTDIR of their own travels beside it and is put back before their
+      // .zshrc runs. Nothing is added when the files could not be written: zsh then starts as it always did.
+      if (!scriptPath) break
+      const file = unixish(scriptPath)
+      const dir = file.slice(0, Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')))
+      out.ZDOTDIR = dir
+      const theirs = existing.ZDOTDIR
+      if (theirs && theirs !== dir) out[ZSH_USER_ZDOTDIR_ENV] = theirs
+      break
+    }
+    // fish's file travels in argv (integrationArgs), so it needs nothing here.
     default:
       break
   }
@@ -247,7 +396,8 @@ export function integrationDisabled(env: Record<string, string | undefined> = pr
 
 /**
  * Does this shell need a file on disk before it can be integrated?
- * The PowerShell family (its prompt wrapper) and cmd (its doskey macro); everything else is env-only.
+ * The PowerShell family (its prompt wrapper), cmd (its doskey macro), zsh (its ZDOTDIR) and fish (its sourced file);
+ * bash and unknown shells are env-only.
  */
 export function needsScriptFile(kind: ShellKind): boolean {
   return integrationFile(kind) !== null

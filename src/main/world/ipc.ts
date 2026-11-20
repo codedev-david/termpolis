@@ -198,7 +198,7 @@ export function registerWorldIpc(
   ipc: WorldIpcMain,
   client: WorldIpcClient,
   win: () => WorldIpcWindow | null | undefined,
-  settings: Pick<WorldSettingsStore, 'get' | 'set'>,
+  settings: Pick<WorldSettingsStore, 'get' | 'set'> & Partial<Pick<WorldSettingsStore, 'ready'>>,
   asker?: WorldAsker,
   designer?: WorldDesigner,
   sources?: WorldSourcesDeps
@@ -235,8 +235,10 @@ export function registerWorldIpc(
   })
 
   // The Settings toggle "Describe parts with AI" (worldLabelling).
-  ipc.handle('world:settings-get', () => {
+  ipc.handle('world:settings-get', async () => {
     try {
+      // Answer what the file says, never the defaults a get before the load would see (the sidebar's New badge).
+      await settings.ready?.()
       return ok(settings.get())
     } catch (e) {
       return err(e instanceof Error ? e.message : String(e))

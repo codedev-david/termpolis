@@ -44,6 +44,7 @@ afterAll(() => { uninstall(); rmSync(H.root, { recursive: true, force: true }) }
 beforeEach(() => { H.spawned.length = 0; for (const k of Object.keys(state)) delete state[k]; delete process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION })
 
 const scriptFile = (): string => join(H.userData, 'termpolis-shell-integration.ps1')
+const zshFile = (name: string): string => join(H.userData, 'termpolis-zsh', name)
 
 describe('prepareSpawn', () => {
   it('keeps a folder that exists, and falls back to the home folder when it is gone', async () => {
@@ -72,8 +73,55 @@ describe('prepareSpawn', () => {
     const macros = join(H.userData, 'termpolis-lumopolis.doskey')
     rmSync(macros, { force: true })
     expect((await prepareSpawn(process.cwd(), 'C:/Windows/System32/cmd.exe')).integrationScript).toBe(macros)
-    expect(readFileSync(macros, 'utf8')).toContain('lumopolis=for %I in')
+    expect(readFileSync(macros, 'utf8')).toContain('lumopolis=@set __termpolis_lumo= $*')
     expect((await prepareSpawn(process.cwd(), PS)).integrationScript).toBe(scriptFile()) // the two never collide
+  })
+
+  it("writes zsh's four start-up files into their own folder, and writes them again when one goes missing", async () => {
+    const dir = join(H.userData, 'termpolis-zsh')
+    rmSync(dir, { recursive: true, force: true })
+    expect((await prepareSpawn(process.cwd(), '/bin/zsh')).integrationScript).toBe(zshFile('.zshenv'))
+    for (const f of ['.zshenv', '.zprofile', '.zshrc', '.zlogin']) expect(existsSync(zshFile(f)), f).toBe(true)
+    expect(readFileSync(zshFile('.zshrc'), 'utf8')).toContain('add-zsh-hook precmd __termpolis_report_cwd')
+    writeFileSync(zshFile('.zshenv'), 'edited by hand')
+    rmSync(zshFile('.zlogin')) // one sibling cleaned up mid-session
+    expect((await prepareSpawn(process.cwd(), '/usr/bin/zsh')).integrationScript).toBe(zshFile('.zshenv'))
+    expect(existsSync(zshFile('.zlogin'))).toBe(true)
+    expect(readFileSync(zshFile('.zshenv'), 'utf8')).toContain('__termpolis_zdotdir') // the set is written whole
+  })
+
+  it("writes fish's file beside the others, under its own name", async () => {
+    const fish = join(H.userData, 'termpolis-integration.fish')
+    rmSync(fish, { force: true })
+    expect((await prepareSpawn(process.cwd(), '/usr/bin/fish')).integrationScript).toBe(fish)
+    expect(readFileSync(fish, 'utf8')).toContain('function __termpolis_report_cwd --on-event fish_prompt')
+  })
+
+  it('zsh and fish start plainly when their files cannot be written: no script, so no ZDOTDIR and no --init-command', async () => {
+    const blocker = join(H.root, 'blocker-zf')
+    writeFileSync(blocker, 'a file where the folder should be')
+    state['termpolis-zsh/.zshenv'] = join(blocker, 'termpolis-zsh', '.zshenv')
+    state['termpolis-integration.fish'] = join(blocker, 'sub', 'termpolis-integration.fish')
+    const z = await prepareSpawn(process.cwd(), '/bin/zsh')
+    const f = await prepareSpawn(process.cwd(), '/usr/bin/fish')
+    expect(z.integrationScript).toBeNull()
+    expect(f.integrationScript).toBeNull()
+    spawnTerminal('tz', '/bin/zsh', process.cwd(), () => {}, [], undefined, undefined, z)
+    spawnTerminal('tf', '/usr/bin/fish', process.cwd(), () => {}, [], undefined, undefined, f)
+    expect(H.spawned[0].args).toEqual(['--login'])
+    expect(H.spawned[0].opts.env.ZDOTDIR).toBe(process.env.ZDOTDIR) // untouched: whatever it was
+    expect(H.spawned[1].args).toEqual([])
+    delete state['termpolis-zsh/.zshenv']
+    delete state['termpolis-integration.fish']
+  })
+
+  it('writes nothing for zsh or fish when integration is turned off', async () => {
+    process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION = '1'
+    expect((await prepareSpawn(process.cwd(), '/bin/zsh')).integrationScript).toBeNull()
+    expect((await prepareSpawn(process.cwd(), '/usr/bin/fish')).integrationScript).toBeNull()
+    spawnTerminal('td', '/bin/zsh', process.cwd(), () => {}, [], undefined, undefined, await prepareSpawn(process.cwd(), '/bin/zsh'))
+    expect(H.spawned[0].opts.env.ZDOTDIR).toBe(process.env.ZDOTDIR)
+    expect(H.spawned[0].opts.env.TERMPOLIS_LUMOPOLIS_NONCE).toBeUndefined()
   })
 
   it('has no script for a shell that needs none, or when integration is turned off', async () => {
@@ -109,6 +157,23 @@ describe('spawnTerminal', () => {
     expect(H.spawned).toHaveLength(1)
     expect(H.spawned[0].opts.cwd).toBe(prep.cwd) // the prepared folder, not the one passed in
     expect(H.spawned[0].args.join(' ')).toContain('termpolis-shell-integration.ps1')
+  })
+
+  it("without a preparation, zsh's four files are written synchronously, and a missing one again; ZDOTDIR points at them", () => {
+    rmSync(join(H.userData, 'termpolis-zsh'), { recursive: true, force: true })
+    spawnTerminal('tz1', '/bin/zsh', process.cwd(), () => {})
+    for (const f of ['.zshenv', '.zprofile', '.zshrc', '.zlogin']) expect(existsSync(zshFile(f)), f).toBe(true)
+    rmSync(zshFile('.zprofile'))
+    spawnTerminal('tz2', '/bin/zsh', process.cwd(), () => {})
+    expect(existsSync(zshFile('.zprofile'))).toBe(true)
+    expect(H.spawned[1].args).toEqual(['--login'])
+    expect(H.spawned[1].opts.env.ZDOTDIR).toBe(join(H.userData, 'termpolis-zsh').replace(/\\/g, '/'))
+  })
+
+  it('without a preparation, fish gets its file and --init-command', () => {
+    spawnTerminal('tf1', '/usr/bin/fish', process.cwd(), () => {})
+    expect(H.spawned[0].args[0]).toBe('--init-command')
+    expect(H.spawned[0].args[1]).toContain('termpolis-integration.fish')
   })
 
   it('without a preparation it still looks synchronously (a workflow step, a test): the control that the counters see it', () => {

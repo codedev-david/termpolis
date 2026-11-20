@@ -16,7 +16,8 @@ export function LumopolisSidebarEntry(): JSX.Element {
     let live = true
     // Through a promise, so a build without these settings (or a test's partial bridge) only shows nothing.
     Promise.resolve().then(() => window.termpolis.worldSettingsGet()).then(
-      (res) => { if (live && res.success) setFlags({ opened: res.data.worldOpened, dismissed: res.data.worldHintDismissed }) },
+      // Merged, not replaced: an open that lands before this answer stays an open (the answer was read before it).
+      (res) => { if (live && res.success) setFlags((f) => ({ opened: res.data.worldOpened || !!f?.opened, dismissed: res.data.worldHintDismissed })) },
       () => undefined,
     )
     // The pane saves "opened" itself; this only hides the badge and the hint at once.

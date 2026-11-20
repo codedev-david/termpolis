@@ -23,6 +23,7 @@ import {
   integrationEnv,
   integrationDisabled,
   integrationFile,
+  integrationFileSet,
   type IntegrationFile,
 } from './shellIntegration'
 
@@ -595,7 +596,8 @@ export async function getTerminalCwdAsync(id: string): Promise<string | null> {
  *
  * PowerShell's integration cannot travel in the environment — it has no PROMPT_COMMAND
  * equivalent — so the wrapper needs a real file to dot-source; cmd's `lumopolis` is a
- * doskey macro, which doskey reads from a file.
+ * doskey macro, which doskey reads from a file; zsh reads start-up files from ZDOTDIR
+ * and fish sources one, so each of those needs files too.
  * It goes in Termpolis's own data folder, never anywhere the user owns, and is rewritten
  * if something cleaned it up mid-session. Not the temp dir: PowerShell running a script
  * from %TEMP% is a pattern endpoint security flags (malware stages scripts there).
@@ -606,9 +608,10 @@ function ensureIntegrationScript(file: IntegrationFile): string | null {
   try {
     const known = integrationScriptState[file.name]
     const p = known ?? join(app.getPath('userData'), file.name)
-    if (known === undefined || !existsSync(p)) {
+    const set = integrationFileSet(file, p)
+    if (known === undefined || !set.every((f) => existsSync(f.path))) {
       mkdirSync(dirname(p), { recursive: true })
-      writeFileSync(p, file.content, 'utf8')
+      for (const f of set) writeFileSync(f.path, f.content, 'utf8')
     }
     integrationScriptState[file.name] = p
     return p

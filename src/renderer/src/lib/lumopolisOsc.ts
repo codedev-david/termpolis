@@ -7,12 +7,23 @@
 // the terminal, this run's nonce and that the folder is a folder (src/main/world/lumopolisOpen.ts), and
 // answers the folder to open. History being replayed into a pane (a remount, a restored session) asks
 // nothing: a lumopolis typed an hour ago must not open the pane again.
+//
+// Main's answer is acted on in one of three ways. A folder from the active terminal opens the pane. A folder
+// from any other terminal (a program left running there, which can read the nonce) does not take the screen:
+// a notice offers the open instead. A refusal main marks `show` (no such folder, a Git Bash-only folder, too
+// many requests) becomes a notice; a quiet one (a forged request, the same folder asked again) says nothing.
+// A notice rather than a line written into the terminal: text written into xterm from here lands after the
+// prompt the shell has already drawn, so the line editor's idea of the cursor goes wrong, and it is missing
+// from main's copy of the output, so a reload or the phone never shows it.
 import { LUMOPOLIS_MAX_PAYLOAD } from '../../../shared/world/lumopolisCommand'
+import { folderName, showLumopolisNotice } from '../components/World/worldOpen'
 
 export interface LumopolisOscDeps {
   terminalId: string
   /** True while the pane is replaying history into xterm. */
   replaying(): boolean
+  /** True while this is the active terminal (the one the person is typing in). */
+  active(): boolean
   /** The terminal's last known folder, which a relative path is resolved against. */
   cwd(): string | undefined
   /** Opens the Lumopolis pane on the folder main answered. */
@@ -26,7 +37,11 @@ export function lumopolisOscHandler(deps: LumopolisOscDeps): (payload: string) =
     const api = window.termpolis
     const cwd = deps.cwd()
     api.worldTerminalOpen({ terminalId: deps.terminalId, payload, ...(cwd ? { cwd } : {}) }).then(
-      (res) => { if (res.success) deps.open(res.data) },
+      (res) => {
+        if (!res.success) { if (res.show) showLumopolisNotice({ message: res.error }) }
+        else if (deps.active()) deps.open(res.data)
+        else showLumopolisNotice({ message: `Another terminal asked to map ${folderName(res.data)} in Lumopolis.`, folder: res.data })
+      },
       () => undefined,
     )
     return true // consumed: the sequence never reaches the screen, whatever main answers

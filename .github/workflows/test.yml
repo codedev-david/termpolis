@@ -140,6 +140,19 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: |
           find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
+      # shellIntegrationSpawn.test.ts starts zsh and fish for real with Termpolis's integration, and FAILS on these
+      # runners when either is missing (never a silent skip). macOS ships zsh; fish comes from Homebrew.
+      - name: Install zsh and fish (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q zsh fish
+          zsh --version && fish --version
+      - name: Install fish (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install fish
+          zsh --version && fish --version
       # Coverage gates run on Windows only. src/main has ~19
       # `process.platform === 'win32'` checks whose win32 side never
       # executes on Linux/macOS, so each platform lands at a slightly

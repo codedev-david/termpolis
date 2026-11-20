@@ -1158,6 +1158,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     term.parser.registerOscHandler(LUMOPOLIS_OSC, lumopolisOscHandler({
       terminalId,
       replaying: () => historyParses.count > 0,
+      active: () => useTerminalStore.getState().activeTerminalId === terminalId,
       cwd: () => useTerminalStore.getState().terminals.find((t) => t.id === terminalId)?.cwd,
       open: (folder) => { if (!disposed) openLumopolis(folder) },
     }))

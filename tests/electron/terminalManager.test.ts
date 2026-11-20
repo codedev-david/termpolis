@@ -134,8 +134,15 @@ describe('terminalManager', () => {
   })
 
   it('spawnTerminal passes empty args for other shells', () => {
-    spawnTerminal('t3c', '/usr/bin/fish', '/tmp', vi.fn())
-    expect(pty.spawn).toHaveBeenCalledWith('/usr/bin/fish', [], expect.any(Object))
+    spawnTerminal('t3c', '/bin/tcsh', '/tmp', vi.fn())
+    expect(pty.spawn).toHaveBeenCalledWith('/bin/tcsh', [], expect.any(Object))
+  })
+
+  it('spawnTerminal hands fish its integration file with --init-command', () => {
+    spawnTerminal('t3d', '/usr/bin/fish', '/tmp', vi.fn())
+    const [, args] = vi.mocked(pty.spawn).mock.calls[vi.mocked(pty.spawn).mock.calls.length - 1]
+    expect(args[0]).toBe('--init-command')
+    expect(args[1]).toMatch(/^builtin source '.*termpolis-integration\.fish'$/)
   })
 
   // --- Shell integration: making the working directory observable ---

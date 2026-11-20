@@ -66,6 +66,26 @@ describe('registerWorldIpc', () => {
     expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true } })
   })
 
+  it('world:settings-get answers only once the settings file has loaded, never the defaults before it', async () => {
+    const settings = fakeSettings()
+    let loaded!: () => void
+    let fromFile = false
+    settings.get.mockImplementation(() => ({ worldLabelling: true, worldOpened: fromFile }))
+    const ready = vi.fn(() => new Promise<void>((r) => { loaded = () => { fromFile = true; r() } }))
+    const { invoke } = setup(() => null, Object.assign(settings, { ready }))
+    const answer = invoke('world:settings-get')
+    await Promise.resolve()
+    expect(settings.get).not.toHaveBeenCalled()
+    loaded()
+    expect(await answer).toEqual({ success: true, data: { worldLabelling: true, worldOpened: true } })
+    expect(ready).toHaveBeenCalledTimes(1)
+  })
+
+  it('world:settings-get answers an error when loading the settings fails', async () => {
+    const settings = Object.assign(fakeSettings(), { ready: vi.fn(async () => { throw new Error('disk gone') }) })
+    expect(await setup(() => null, settings).invoke('world:settings-get')).toEqual({ success: false, error: 'disk gone' })
+  })
+
   it('world:settings-set applies only the allowlisted field and answers the new settings', async () => {
     const { invoke, settings } = setup()
     expect(await invoke('world:settings-set', { worldLabelling: false, evil: 'x' })).toEqual({ success: true, data: { worldLabelling: false } })

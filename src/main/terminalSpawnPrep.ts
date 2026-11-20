@@ -11,12 +11,12 @@ import { promises as fsp } from 'fs'
 import { homedir } from 'os'
 import { dirname, join } from 'path'
 import { app } from 'electron'
-import { detectShellKind, integrationDisabled, integrationFile, INTEGRATION_FILES, type IntegrationFile } from './shellIntegration'
+import { detectShellKind, integrationDisabled, integrationFile, integrationFileSet, INTEGRATION_FILES, type IntegrationFile } from './shellIntegration'
 
 export interface SpawnPrep {
   /** The folder the shell starts in: the one asked for when it exists, else the home folder. */
   cwd: string
-  /** The shell's integration file (PowerShell's script, cmd's doskey macros), or null for a shell that has none
+  /** The shell's integration file (PowerShell's script, cmd's doskey macros, zsh's .zshenv, fish's file), or null for a shell that has none
    *  or where it could not be written. */
   integrationScript: string | null
 }
@@ -37,13 +37,14 @@ export async function ensureIntegrationScriptAsync(file: IntegrationFile = INTEG
   try {
     const known = integrationScriptState[file.name]
     const p = known ?? join(app.getPath('userData'), file.name)
+    const set = integrationFileSet(file, p) // zsh's .zshenv brings three siblings; every other shell one file
     let present = false
     if (known !== undefined) {
-      try { await fsp.access(p); present = true } catch { /* cleaned up mid-session: written again below */ }
+      try { await Promise.all(set.map((f) => fsp.access(f.path))); present = true } catch { /* cleaned up mid-session: written again below */ }
     }
     if (!present) {
       await fsp.mkdir(dirname(p), { recursive: true })
-      await fsp.writeFile(p, file.content, 'utf8')
+      for (const f of set) await fsp.writeFile(f.path, f.content, 'utf8')
     }
     integrationScriptState[file.name] = p
     return p

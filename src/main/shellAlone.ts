@@ -12,7 +12,7 @@ import { consoleListInProc, forkConsoleList } from './consoleListInProc'
  * when only the shell seems to run) ask it before typing into an agent, since the screen can't
  * always tell an agent that exited from one at its input:
  *
- * - zsh and fish report no prompts (shellIntegration.ts), nor does a bash whose own PROMPT_COMMAND
+ * - a shell started with integration turned off reports no prompts, nor does a bash whose own PROMPT_COMMAND
  *   replaced Termpolis's;
  * - an agent a person started leaves no run_command mark;
  * - Claude Code and Antigravity leave their last frame, input box and all, on the screen when they

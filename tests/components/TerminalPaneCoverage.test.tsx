@@ -1969,8 +1969,28 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(H.updateTerminal).not.toHaveBeenCalled()
     })
 
+    it('OSC 7377 from a terminal that is not the active one takes no screen: a notice offers the open', async () => {
+      H.state.current = { ...H.state.current, activeTerminalId: 'term-2', terminals: [{ id: 'term-1', isSwarm: false, cwd: 'C:/repo' }] }
+      ;(window as any).termpolis.worldTerminalOpen = vi.fn(async () => ({ success: true, data: 'C:/repo/app' }))
+      const opened = vi.fn()
+      const noticed = vi.fn()
+      window.addEventListener('termpolis:openWorld', opened)
+      window.addEventListener('termpolis:lumopolisNotice', noticed)
+      try {
+        render(<TerminalPane {...defaultProps} />)
+        expect(oscHandler(7377)('lumopolis;n;app')).toBe(true)
+        await waitFor(() => expect(noticed).toHaveBeenCalledTimes(1))
+        expect((noticed.mock.calls[0][0] as CustomEvent).detail).toEqual({ message: 'Another terminal asked to map app in Lumopolis.', folder: 'C:/repo/app' })
+        expect(opened).not.toHaveBeenCalled()
+      } finally {
+        window.removeEventListener('termpolis:openWorld', opened)
+        window.removeEventListener('termpolis:lumopolisNotice', noticed)
+        delete (window as any).termpolis.worldTerminalOpen
+      }
+    })
+
     it('OSC 7377 (the lumopolis command) is always swallowed, asks main with the terminal and its folder, and opens what main answers', async () => {
-      H.state.current = { ...H.state.current, terminals: [{ id: 'term-1', isSwarm: false, cwd: 'C:/repo' }] }
+      H.state.current = { ...H.state.current, activeTerminalId: 'term-1', terminals: [{ id: 'term-1', isSwarm: false, cwd: 'C:/repo' }] }
       const worldTerminalOpen = vi.fn(async () => ({ success: true, data: 'C:/repo/app' }))
       ;(window as any).termpolis.worldTerminalOpen = worldTerminalOpen
       const opened = vi.fn()

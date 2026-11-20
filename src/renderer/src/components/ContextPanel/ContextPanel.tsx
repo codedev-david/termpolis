@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
 import { childFolder, openLumopolis } from '../World/worldOpen'
 
@@ -6,6 +6,9 @@ interface Props {
   cwd: string
   onClose: () => void
 }
+
+/** Space kept between the folder menu and the window's edges. */
+const MENU_MARGIN = 8
 
 interface FileEntry {
   name: string
@@ -39,6 +42,19 @@ export function ContextPanel({ cwd, onClose }: Props) {
       window.removeEventListener('blur', close)
       window.removeEventListener('scroll', close, true)
     }
+  }, [menu])
+
+  // Kept inside the window: a right-click near the right or bottom edge would otherwise put the item off-screen.
+  // Measured before paint, so it never shows where it was clicked and then jumps.
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null)
+  useLayoutEffect(() => {
+    if (!menu) return
+    const box = (menuRef.current as HTMLDivElement).getBoundingClientRect()
+    setMenuPos({
+      left: Math.max(MENU_MARGIN, Math.min(menu.x, window.innerWidth - box.width - MENU_MARGIN)),
+      top: Math.max(MENU_MARGIN, Math.min(menu.y, window.innerHeight - box.height - MENU_MARGIN)),
+    })
   }, [menu])
 
   const mapFolder = (name: string): void => {
@@ -231,8 +247,9 @@ export function ContextPanel({ cwd, onClose }: Props) {
           role="menu"
           aria-label={`${menu.name} folder`}
           data-testid="context-folder-menu"
+          ref={menuRef}
           className="fixed z-50 min-w-[160px] rounded border border-[#454545] bg-[#252526] py-1 shadow-lg"
-          style={{ left: menu.x, top: menu.y }}
+          style={menuPos ?? { left: menu.x, top: menu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
           <button

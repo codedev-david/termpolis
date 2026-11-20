@@ -111,6 +111,16 @@ describe('App Lumopolis wiring', () => {
     expect(screen.getByRole('separator').nextElementSibling).toBe(pane)
   })
 
+  it("a lumopolis notice shows in the app, and its Open opens the pane on that folder", async () => {
+    render(<App />)
+    await settle()
+    act(() => { window.dispatchEvent(new CustomEvent('termpolis:lumopolisNotice', { detail: { message: 'Another terminal asked to map app in Lumopolis.', folder: 'C:/repo/app' } })) })
+    expect(screen.getByTestId('lumopolis-notice')).toHaveTextContent('Another terminal asked to map app in Lumopolis.')
+    fireEvent.click(screen.getByTestId('lumopolis-notice-open'))
+    expect(await screen.findByTestId('world-view')).toBeTruthy()
+    expect(screen.queryByTestId('lumopolis-notice')).toBeNull()
+  })
+
   it('the divider resizes the pane, and the width is remembered', async () => {
     localStorage.setItem('termpolis.world.paneWidth', '400')
     // jsdom has no layout: say the terminals' column is 1200 px wide.

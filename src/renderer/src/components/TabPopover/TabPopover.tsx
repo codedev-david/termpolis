@@ -34,15 +34,21 @@ export function TabPopover({ name, color, fontSize, theme, fontFamily, anchorEl,
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ top: 0, left: 0 })
 
-  // Beside the anchor, but kept inside the window: a tab low in the sidebar would otherwise open the
-  // popover with its Save button below the bottom edge. Measured before paint, so it never jumps.
+  // Beside the anchor, but kept inside the window on both axes: a tab low in the sidebar would otherwise open the
+  // popover with its Save button below the bottom edge, and a narrow window would cut off its right side.
+  // Measured before paint, so it never jumps, and again whenever the window is resized while it is open.
   useLayoutEffect(() => {
-    if (anchorEl) {
+    if (!anchorEl) return
+    const place = (): void => {
       const rect = anchorEl.getBoundingClientRect()
-      const height = (ref.current as HTMLDivElement).getBoundingClientRect().height
-      const top = Math.max(POPOVER_MARGIN, Math.min(rect.top, window.innerHeight - height - POPOVER_MARGIN))
-      setPos({ top, left: rect.right + 4 })
+      const box = (ref.current as HTMLDivElement).getBoundingClientRect()
+      const top = Math.max(POPOVER_MARGIN, Math.min(rect.top, window.innerHeight - box.height - POPOVER_MARGIN))
+      const left = Math.max(POPOVER_MARGIN, Math.min(rect.right + 4, window.innerWidth - box.width - POPOVER_MARGIN))
+      setPos({ top, left })
     }
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
   }, [anchorEl])
 
   useEffect(() => {

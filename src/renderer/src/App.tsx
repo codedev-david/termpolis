@@ -32,6 +32,7 @@ import { TitleBar } from './components/TitleBar/TitleBar'
 import { useWorldPaneWidth, WorldPaneOpening } from './components/World/worldPane'
 import { WorldPaneDivider } from './components/World/WorldPaneDivider'
 import { useWorldPane } from './components/World/worldOpen'
+import { LumopolisNotice } from './components/World/LumopolisNotice'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
 import { SecretSentBanner } from './components/SecretSentBanner/SecretSentBanner'
@@ -1257,6 +1258,7 @@ export default function App() {
       </div>
       <UpdateBanner />
       <SecretSentBanner />
+      <LumopolisNotice />
       <SensitiveFileReadBanner />
       <ShieldScanFailedBanner />
       <StatusBar onSwarmClick={() => setShowSwarmDashboard(true)} />

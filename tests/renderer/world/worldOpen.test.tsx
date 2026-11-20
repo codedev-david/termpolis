@@ -1,7 +1,7 @@
 // How everything outside the pane opens Lumopolis: one window event, with an optional folder.
 import { describe, it, expect, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { childFolder, folderName, folderOfEvent, openLumopolis, OPEN_WORLD_EVENT, useWorldPane } from '../../../src/renderer/src/components/World/worldOpen'
+import { childFolder, folderName, folderOfEvent, LUMOPOLIS_NOTICE_EVENT, openLumopolis, OPEN_WORLD_EVENT, showLumopolisNotice, useWorldPane } from '../../../src/renderer/src/components/World/worldOpen'
 
 describe('openLumopolis', () => {
   it('dispatches the open event, carrying the folder only when one is given', () => {
@@ -12,6 +12,18 @@ describe('openLumopolis', () => {
     openLumopolis('/repo/app')
     window.removeEventListener(OPEN_WORLD_EVENT, on)
     expect(seen).toEqual([null, { folder: '/repo/app' }])
+  })
+})
+
+describe('showLumopolisNotice', () => {
+  it('dispatches the notice event with its message, and the folder an Open button would map', () => {
+    const seen: Array<unknown> = []
+    const on = (e: Event): void => { seen.push((e as CustomEvent).detail) }
+    window.addEventListener(LUMOPOLIS_NOTICE_EVENT, on)
+    showLumopolisNotice({ message: 'lumopolis: no such folder: x' })
+    showLumopolisNotice({ message: 'Another terminal asked to map app in Lumopolis.', folder: '/repo/app' })
+    window.removeEventListener(LUMOPOLIS_NOTICE_EVENT, on)
+    expect(seen).toEqual([{ message: 'lumopolis: no such folder: x' }, { message: 'Another terminal asked to map app in Lumopolis.', folder: '/repo/app' }])
   })
 })
 

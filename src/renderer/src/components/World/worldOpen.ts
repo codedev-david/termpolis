@@ -12,6 +12,20 @@ export const OPEN_WORLD_EVENT = 'termpolis:openWorld'
 /** Dispatched when the pane opens, so the sidebar's New badge and first-run hint go at once. */
 export const WORLD_OPENED_EVENT = 'termpolis:worldOpened'
 
+/** Dispatched for LumopolisNotice (App): one short line about a `lumopolis` request, with an Open button when it names a folder. */
+export const LUMOPOLIS_NOTICE_EVENT = 'termpolis:lumopolisNotice'
+
+export interface LumopolisNotice {
+  message: string
+  /** The folder the notice's Open button maps; none: the notice only tells. */
+  folder?: string
+}
+
+/** Shows a notice: main's refusal of a `lumopolis` request, or a request from a terminal that is not the active one. */
+export function showLumopolisNotice(notice: LumopolisNotice): void {
+  window.dispatchEvent(new CustomEvent(LUMOPOLIS_NOTICE_EVENT, { detail: notice }))
+}
+
 /** Opens the pane: on `folder`'s project when one is given, else following the active terminal. */
 export function openLumopolis(folder?: string): void {
   window.dispatchEvent(new CustomEvent(OPEN_WORLD_EVENT, folder ? { detail: { folder } } : undefined))
@@ -54,12 +68,9 @@ export function useWorldPane(): WorldPane {
   const [request, setRequest] = useState<WorldRequest | undefined>(undefined)
   const close = useCallback(() => { setShow(false); setRequest(undefined) }, [])
   const open = useCallback(() => setShow(true), [])
-  const toggle = useCallback(() => {
-    setShow((v) => {
-      if (v) setRequest(undefined)
-      return !v
-    })
-  }, [])
+  const toggle = useCallback(() => setShow((v) => !v), [])
+  // A closed pane forgets its request, however it closed (kept out of the setShow updater, which must stay pure).
+  useEffect(() => { if (!show) setRequest(undefined) }, [show])
   useEffect(() => {
     const onOpen = (e: Event): void => {
       const folder = folderOfEvent(e)

@@ -90,6 +90,16 @@ describe('LumopolisSidebarEntry', () => {
     await act(async () => { answer({ success: true, data: settings() }) }) // too late: unmounted, ignored
   })
 
+  it('an open before the settings answer stays opened when the (stale) answer lands while mounted', async () => {
+    let answer: (v: unknown) => void = () => undefined
+    get.mockReturnValueOnce(new Promise((r) => { answer = r }))
+    render(<LumopolisSidebarEntry />)
+    act(() => { window.dispatchEvent(new Event(WORLD_OPENED_EVENT)) })
+    await act(async () => { answer({ success: true, data: settings() }) }) // says never opened: read before the open
+    expect(screen.queryByTestId('sidebar-lumopolis-new')).toBeNull()
+    expect(screen.queryByTestId('sidebar-lumopolis-hint')).toBeNull()
+  })
+
   it('a dismissal that cannot be saved still hides the hint', async () => {
     set.mockRejectedValueOnce(new Error('disk'))
     await mount()

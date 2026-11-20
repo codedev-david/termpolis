@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { TabPopover } from '../../src/renderer/src/components/TabPopover/TabPopover'
 
@@ -130,6 +130,38 @@ describe('TabPopover', () => {
     const popover = container.firstChild as HTMLElement
     expect(popover.style.top).toBe('100px')
     expect(popover.style.left).toBe('204px')
+  })
+
+  it('stays inside a narrow window on the right, and is put back inside when the window is resized', () => {
+    const el = document.createElement('div')
+    el.getBoundingClientRect = vi.fn(() => ({ top: 100, left: 50, right: 200, bottom: 120, width: 150, height: 20, x: 50, y: 100, toJSON: () => {} }))
+    const box = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ top: 0, left: 0, right: 288, bottom: 300, width: 288, height: 300, x: 0, y: 0, toJSON: () => {} })
+    const w = window.innerWidth
+    const h = window.innerHeight
+    try {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+      const view = render(<TabPopover {...props} anchorEl={el} />)
+      const popover = view.container.firstChild as HTMLElement
+      expect(popover.style.left).toBe('204px')
+      expect(popover.style.top).toBe('100px')
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 400 })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 350 })
+      act(() => { window.dispatchEvent(new Event('resize')) })
+      expect(popover.style.left).toBe('104px') // 400 - 288 - 8
+      expect(popover.style.top).toBe('42px') // 350 - 300 - 8
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 200 }) // narrower than the popover
+      act(() => { window.dispatchEvent(new Event('resize')) })
+      expect(popover.style.left).toBe('8px')
+      const remove = vi.spyOn(window, 'removeEventListener')
+      view.unmount()
+      expect(remove).toHaveBeenCalledWith('resize', expect.any(Function))
+      remove.mockRestore()
+    } finally {
+      box.mockRestore()
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: w })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: h })
+    }
   })
 
   it('stays inside the window: a low anchor lifts it, a short window pins it to the top margin and it scrolls', () => {

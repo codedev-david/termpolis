@@ -33,8 +33,8 @@ export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, ag
         //
         // main resolves it from the shell's own process (/proc/<pid>/cwd, or lsof on
         // macOS), so it needs no cooperation from the shell — which makes it the one
-        // mechanism that survives the shells we cannot inject into. zsh and fish get no
-        // OSC 7 from us, and on any shell a user's own PROMPT_COMMAND/PROMPT can replace
+        // mechanism that survives a shell we did not inject into. Integration can be
+        // turned off, and on any shell a user's own PROMPT_COMMAND/PROMPT can replace
         // ours. This value was being fetched every 5s and dropped on the floor, which is
         // why a `cd` never reached the git mark on POSIX.
         //

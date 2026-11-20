@@ -276,6 +276,34 @@ describe('ContextPanel Map in Lumopolis', () => {
     expect(screen.queryByRole('menu')).toBeNull()
   })
 
+  it('the menu stays inside the window near the right or bottom edge, and where it was put elsewhere', async () => {
+    mockFiles = [{ name: 'lib', isDir: true }]
+    const box = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ top: 0, left: 0, right: 160, bottom: 30, width: 160, height: 30, x: 0, y: 0, toJSON: () => {} })
+    const w = window.innerWidth
+    const h = window.innerHeight
+    try {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 400 })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 300 })
+      render(<ContextPanel cwd="/r" onClose={vi.fn()} />)
+      const row = await screen.findByText('lib/')
+      fireEvent.contextMenu(row, { clientX: 390, clientY: 290 })
+      expect(screen.getByRole('menu')).toHaveStyle({ left: '232px', top: '262px' }) // 400-160-8, 300-30-8
+      fireEvent.keyDown(window, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+      fireEvent.contextMenu(row, { clientX: 20, clientY: 30 })
+      expect(screen.getByRole('menu')).toHaveStyle({ left: '20px', top: '30px' })
+      fireEvent.keyDown(window, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 100 }) // narrower than the menu
+      fireEvent.contextMenu(row, { clientX: 50, clientY: 30 })
+      expect(screen.getByRole('menu')).toHaveStyle({ left: '8px' })
+    } finally {
+      box.mockRestore()
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: w })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: h })
+    }
+  })
+
   it('the menu goes on a click elsewhere, Esc, a scroll or the window losing focus', async () => {
     mockFiles = [{ name: 'lib', isDir: true }]
     render(<ContextPanel cwd="/r" onClose={vi.fn()} />)

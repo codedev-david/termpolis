@@ -8,6 +8,11 @@
 //   - it carries this run's nonce (a file printed to the screen cannot know it),
 //   - its folder is absolute, or relative with the terminal's own folder to resolve it against,
 //   - and that folder exists and is a directory.
+// A refusal the person should read (a folder that is not there, a Git Bash-only folder) carries `show: true`, and
+// the renderer shows it as a notice; one that only a forged request gets (no terminal, no nonce) stays silent.
+// Any program running in the terminal can read the nonce from its environment, so a limiter per terminal drops
+// the same folder asked again within a few seconds and more than a handful of opens a minute: a looping program
+// cannot keep opening Lumopolis, mapping and labelling folders on the person's tokens.
 // `ipc` and the checks are parameters, so this module never imports Electron and tests pass fakes.
 import { randomBytes } from 'crypto'
 import { posix, win32 } from 'path'
@@ -20,7 +25,40 @@ export const TERMINAL_OPEN_CHANNEL = 'world:terminal-open'
 export const NOT_A_TERMINAL = 'That is not a Termpolis terminal.'
 export const NOT_A_REQUEST = 'That was not a lumopolis request from this Termpolis.'
 export const NEEDS_FULL_PATH = 'lumopolis needs a full path here.'
+export const TOO_MANY = 'lumopolis: too many requests from this terminal. Try again in a minute.'
 export const noSuchFolder = (p: string): string => `lumopolis: no such folder: ${p}`
+/** Git Bash's own folders (/tmp, /usr) have no Windows path Lumopolis could open. */
+export const gitBashOnly = (p: string): string =>
+  `lumopolis: ${p} exists only inside Git Bash, so it cannot be mapped. Use a folder on a drive, such as /c/Users.`
+
+/** The same folder again from the same terminal within this long is dropped. */
+export const REPEAT_MS = 3000
+/** At most this many opens a minute from one terminal. */
+export const OPEN_LIMIT = 5
+const LIMIT_WINDOW_MS = 60_000
+
+export type OpenVerdict = 'ok' | 'repeat' | 'busy'
+export type OpenLimiter = (terminalId: string, folder: string) => OpenVerdict
+
+/** Counts the opens each terminal was answered; only an `ok` is counted. */
+export function createOpenLimiter(now: () => number = Date.now): OpenLimiter {
+  const seen = new Map<string, { folder: string; times: number[] }>()
+  return (terminalId, folder) => {
+    const t = now()
+    const s = seen.get(terminalId) ?? { folder: '', times: [] }
+    s.times = s.times.filter((at) => t - at < LIMIT_WINDOW_MS)
+    const last = s.times[s.times.length - 1]
+    if (s.folder === folder && last !== undefined && t - last < REPEAT_MS) return 'repeat'
+    if (s.times.length >= OPEN_LIMIT) return 'busy'
+    s.folder = folder
+    s.times.push(t)
+    seen.set(terminalId, s)
+    return 'ok'
+  }
+}
+
+/** A refusal the renderer shows to the person. */
+const shown = (message: string) => ({ ...err(message), show: true as const })
 
 export interface LumopolisOpenDeps {
   /** This run's nonce (lumopolisNonce()). */
@@ -31,6 +69,8 @@ export interface LumopolisOpenDeps {
   isDirectory(p: string): Promise<boolean>
   platform: NodeJS.Platform
   homedir: string
+  /** The limiter's clock; Date.now by default. */
+  now?(): number
 }
 
 export interface LumopolisOpenIpc {
@@ -70,18 +110,22 @@ export function folderOf(raw: string, cwd: string | null, platform: NodeJS.Platf
 }
 
 /** Checks one request (see the header); answers the folder to open or the reason it is refused. */
-export async function resolveLumopolisOpen(args: unknown, deps: LumopolisOpenDeps) {
+export async function resolveLumopolisOpen(args: unknown, deps: LumopolisOpenDeps, limit?: OpenLimiter) {
   const a = args && typeof args === 'object' ? (args as Record<string, unknown>) : {}
   const terminalId = str(a.terminalId)
   if (terminalId === null || !deps.hasTerminal(terminalId)) return err(NOT_A_TERMINAL)
   const req = parseLumopolisPayload(a.payload)
   if (req === null || req.nonce !== deps.nonce) return err(NOT_A_REQUEST)
   const folder = folderOf(req.path, str(a.cwd), deps.platform, deps.homedir)
-  if (folder === null) return err(NEEDS_FULL_PATH)
-  if (!(await deps.isDirectory(folder))) return err(noSuchFolder(req.path))
+  if (folder === null) return shown(/^[\\/]/.test(req.path.trim()) ? gitBashOnly(req.path) : NEEDS_FULL_PATH)
+  if (!(await deps.isDirectory(folder))) return shown(noSuchFolder(req.path))
+  const verdict = limit ? limit(terminalId, folder) : 'ok'
+  if (verdict === 'repeat') return err('repeat') // the person has just been shown it: say nothing
+  if (verdict === 'busy') return shown(TOO_MANY)
   return ok(folder)
 }
 
 export function registerLumopolisIpc(ipc: LumopolisOpenIpc, deps: LumopolisOpenDeps): void {
-  ipc.handle(TERMINAL_OPEN_CHANNEL, (_event: unknown, args?: unknown) => resolveLumopolisOpen(args, deps))
+  const limit = createOpenLimiter(deps.now)
+  ipc.handle(TERMINAL_OPEN_CHANNEL, (_event: unknown, args?: unknown) => resolveLumopolisOpen(args, deps, limit))
 }

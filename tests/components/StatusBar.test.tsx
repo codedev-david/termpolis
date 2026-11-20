@@ -153,7 +153,7 @@ describe('StatusBar', () => {
     fireEvent.click(screen.getByText('Help / Support'))
     const line = screen.getByTestId('help-lumopolis-command')
     expect(line).toHaveTextContent('lumopolis typed in a terminal maps the folder you are in')
-    expect(line).toHaveTextContent('bash, Git Bash, PowerShell and cmd')
+    expect(line).toHaveTextContent('bash, zsh, fish, Git Bash, PowerShell and cmd')
     expect(line.previousElementSibling).toHaveTextContent('Ctrl+Shift+R Lumopolis')
   })
 
