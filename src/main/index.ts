@@ -142,7 +142,7 @@ import {
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { registerTerminalDataRouting, sendTerminalData } from './terminalDataRouting'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground, gateTerminal } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, hasTerminal, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground, gateTerminal } from './terminalManager'
 import { primeShellAlone, consoleListCounters } from './shellAlone'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
@@ -331,6 +331,7 @@ import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
 import { confinedReader, isCloneRoot, isFolderEmpty } from './world/folderSafety'
 import { registerWorldIpc } from './world/ipc'
+import { lumopolisNonce, registerLumopolisIpc } from './world/lumopolisOpen'
 import { createAskRunner } from './world/askRunner'
 import { createDesigner } from './world/designer'
 import { createAnnotationStore, withAnnotations } from './world/annotations'
@@ -2822,6 +2823,15 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAs
   unwatch: (root) => void stopRepoWatch(root),
   homeDir: homedir(),
   userDataDir: worldUserData,
+})
+// The `lumopolis` shell command: a terminal's own output asks to open the Lumopolis pane on a folder. Checked
+// (an open terminal, this run's nonce, a folder that exists) and stat'ed, never run (world/lumopolisOpen.ts).
+registerLumopolisIpc(ipcMain, {
+  nonce: lumopolisNonce(),
+  hasTerminal: (id) => hasTerminal(id),
+  isDirectory: (p) => fsPromises.stat(p).then((s) => s.isDirectory(), () => false),
+  platform: process.platform,
+  homedir: homedir(),
 })
 /** An agent's working directory → the project root Lumopolis keys its world by: the git root of the
  *  folder, or the folder itself outside a repository. The same rule the Lumopolis pane applies

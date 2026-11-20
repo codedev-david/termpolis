@@ -31,6 +31,7 @@ const AppLogModal = lazy(() => import('./components/AppLogModal/AppLogModal').th
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { useWorldPaneWidth, WorldPaneOpening } from './components/World/worldPane'
 import { WorldPaneDivider } from './components/World/WorldPaneDivider'
+import { useWorldPane } from './components/World/worldOpen'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
 import { SecretSentBanner } from './components/SecretSentBanner/SecretSentBanner'
@@ -138,7 +139,10 @@ export default function App() {
   const [showConversationSearch, setShowConversationSearch] = useState(false)
   const [showSwarmDashboard, setShowSwarmDashboard] = useState(false)
   const [showMemory, setShowMemory] = useState(false)
-  const [showWorld, setShowWorld] = useState(false)
+  // The Lumopolis pane: shown or not, and the folder last asked for (worldOpen.ts listens for termpolis:openWorld).
+  const worldPane = useWorldPane()
+  const showWorld = worldPane.show
+  const toggleWorld = worldPane.toggle
   const mainRef = useRef<HTMLElement>(null)
   const { width: worldWidth, min: worldMin, max: worldMax, onDrag: onWorldDrag } = useWorldPaneWidth(mainRef, showWorld)
   // Bumped to open the Memory panel on its This week tab.
@@ -555,7 +559,7 @@ export default function App() {
       // Ctrl+Shift+R to toggle Lumopolis. Not W: Ctrl+Shift+W is the default closeTerminal binding.
       if (primaryMod && e.shiftKey && e.key === 'R') {
         e.preventDefault()
-        setShowWorld(v => !v)
+        toggleWorld()
         return
       }
 
@@ -651,9 +655,8 @@ export default function App() {
     }
     window.addEventListener('termpolis:openMemory', onOpenMemory)
 
-    // The Sidebar globe (and anything else) opens Lumopolis through the same kind of bridge.
-    const onOpenWorld = () => setShowWorld(true)
-    window.addEventListener('termpolis:openWorld', onOpenWorld)
+    // The sidebar, a terminal's globe, the `lumopolis` command and the file tree open Lumopolis through the
+    // same kind of bridge, termpolis:openWorld: useWorldPane (worldOpen.ts) listens for it.
 
     // Same bridge for the app log, so the Help modal / command palette can open it
     // without threading a prop through every panel.
@@ -667,13 +670,12 @@ export default function App() {
       window.removeEventListener('termpolis:openChanges', onOpenChanges)
       window.removeEventListener('termpolis:reopenOnboarding', onReopenOnboarding)
       window.removeEventListener('termpolis:openMemory', onOpenMemory)
-      window.removeEventListener('termpolis:openWorld', onOpenWorld)
       window.removeEventListener('termpolis:openAppLog', onOpenAppLog)
       unsubGlobal?.()
       unsubSwarm?.()
       unsubClose?.()
     }
-  }, [removeTerminal, setActiveTerminal, setSidebarCollapsed, toggleViewMode, setShowSettings])
+  }, [removeTerminal, setActiveTerminal, setSidebarCollapsed, toggleViewMode, setShowSettings, toggleWorld])
 
   // Listen for MCP server events (AI agent created/closed terminals)
   useEffect(() => {
@@ -1026,7 +1028,7 @@ export default function App() {
         setShowMemory(v => !v)
         break
       case 'show_world':
-        setShowWorld(true)
+        worldPane.open()
         break
       case 'memory_tour':
         setShowMemoryTour(true)
@@ -1242,8 +1244,9 @@ export default function App() {
               <Suspense fallback={<WorldPaneOpening width={worldWidth} />}>
                 <WorldView
                   root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
+                  request={worldPane.request}
                   width={worldWidth}
-                  onClose={() => setShowWorld(false)}
+                  onClose={worldPane.close}
                   askSlot={(v, d, r, link, proposal) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} proposal={proposal} />}
                   buildIt={worldBuildIt}
                 />

@@ -235,3 +235,95 @@ describe('ContextPanel', () => {
     })
   })
 })
+
+// Map in Lumopolis, on the folders of the file tree: a hover button and a right-click menu.
+describe('ContextPanel Map in Lumopolis', () => {
+  const opened = (): { calls: unknown[]; stop: () => void } => {
+    const calls: unknown[] = []
+    const on = (e: Event): void => { calls.push((e as CustomEvent).detail) }
+    window.addEventListener('termpolis:openWorld', on)
+    return { calls, stop: () => window.removeEventListener('termpolis:openWorld', on) }
+  }
+
+  it('a folder\'s globe maps that folder; a file has none', async () => {
+    mockFiles = [{ name: 'src', isDir: true }, { name: 'README.md', isDir: false }]
+    render(<ContextPanel cwd="C:\repo" onClose={vi.fn()} />)
+    const globe = await screen.findByTestId('context-map-world-src')
+    expect(globe).toHaveAttribute('title', 'Map src in Lumopolis')
+    expect(screen.queryByTestId('context-map-world-README.md')).toBeNull()
+    const o = opened()
+    fireEvent.click(globe)
+    o.stop()
+    expect(o.calls).toEqual([{ folder: 'C:\\repo\\src' }])
+  })
+
+  it('right-clicking a folder offers Map in Lumopolis, which maps it and closes the menu', async () => {
+    mockFiles = [{ name: 'lib', isDir: true }, { name: 'a.txt', isDir: false }]
+    render(<ContextPanel cwd="/home/me/app/" onClose={vi.fn()} />)
+    await screen.findByText('lib/')
+    fireEvent.contextMenu(screen.getByText('a.txt'))
+    expect(screen.queryByTestId('context-folder-menu')).toBeNull()
+    fireEvent.contextMenu(screen.getByText('lib/'), { clientX: 30, clientY: 40 })
+    const menu = screen.getByRole('menu', { name: 'lib folder' })
+    expect(menu).toHaveStyle({ left: '30px', top: '40px' })
+    fireEvent.mouseDown(menu) // a press inside the menu keeps it
+    const item = screen.getByRole('menuitem', { name: 'Map in Lumopolis' })
+    expect(document.activeElement).toBe(item)
+    const o = opened()
+    fireEvent.click(item)
+    o.stop()
+    expect(o.calls).toEqual([{ folder: '/home/me/app/lib' }])
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('the menu goes on a click elsewhere, Esc, a scroll or the window losing focus', async () => {
+    mockFiles = [{ name: 'lib', isDir: true }]
+    render(<ContextPanel cwd="/r" onClose={vi.fn()} />)
+    const row = await screen.findByText('lib/')
+    const close = async (act: () => void): Promise<void> => {
+      fireEvent.contextMenu(row)
+      expect(screen.getByRole('menu')).toBeInTheDocument()
+      act()
+      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    }
+    await close(() => fireEvent.mouseDown(document.body))
+    fireEvent.contextMenu(row)
+    fireEvent.keyDown(window, { key: 'a' })
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    await close(() => fireEvent.scroll(document.body))
+    await close(() => fireEvent.blur(window))
+  })
+})
+
+describe('ContextPanel edges', () => {
+  it('a git lookup that throws reads as no repository', async () => {
+    ;(window as any).termpolis.getGitInfo = vi.fn().mockRejectedValue(new Error('ipc'))
+    render(<ContextPanel cwd="/r" onClose={vi.fn()} />)
+    expect(await screen.findByText('Not a git repo')).toBeInTheDocument()
+  })
+
+  it('colours untracked, renamed and unknown status lines, and folds the commits away', async () => {
+    mockGitInfo = { status: '?? n.txt\nR a -> b\nU  c', recentCommits: 'abc1234 one\nnospace' }
+    render(<ContextPanel cwd="/r" onClose={vi.fn()} />)
+    expect(await screen.findByText('?? n.txt')).toHaveStyle({ color: '#61afef' })
+    expect(screen.getByText('R a -> b')).toHaveStyle({ color: '#c678dd' })
+    expect(screen.getByText('U c')).toHaveStyle({ color: '#abb2bf' })
+    expect(await screen.findByText('abc1234')).toBeInTheDocument()
+    expect(screen.getByText('nospace')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Recent Commits'))
+    expect(screen.queryByText('abc1234')).toBeNull()
+  })
+
+  it('lists nothing without a folder, or when the listing fails or throws', async () => {
+    render(<ContextPanel cwd="" onClose={vi.fn()} />)
+    expect((window as any).termpolis.completionPathEntries).not.toHaveBeenCalled()
+    ;(window as any).termpolis.completionPathEntries = vi.fn().mockResolvedValue({ success: false })
+    render(<ContextPanel cwd="/a" onClose={vi.fn()} />)
+    ;(window as any).termpolis.completionPathEntries = vi.fn().mockRejectedValue(new Error('ipc'))
+    render(<ContextPanel cwd="/b" onClose={vi.fn()} />)
+    await waitFor(() => expect((window as any).termpolis.completionPathEntries).toHaveBeenCalled())
+    expect(screen.getAllByText('No files').length).toBeGreaterThan(0)
+  })
+})

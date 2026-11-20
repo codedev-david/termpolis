@@ -50,7 +50,7 @@ const {
     watch: vi.fn(() => ({ close: vi.fn() })),
     // The code-graph sweep MUST read through this, not readFileSync — see the reader tests below.
     // The saved-notes record is read and written through these too (claudeNotesIngest.ts fileManifest), off the main thread.
-    promises: { readFile: vi.fn(async () => '{}'), writeFile: vi.fn(async () => {}), rename: vi.fn(async () => {}), unlink: vi.fn(async () => {}), readdir: vi.fn(async () => []) },
+    promises: { readFile: vi.fn(async () => '{}'), writeFile: vi.fn(async () => {}), rename: vi.fn(async () => {}), unlink: vi.fn(async () => {}), readdir: vi.fn(async () => []), stat: vi.fn(async () => ({ isDirectory: () => false })) },
   }
   return {
     mockShowOpenDialog: vi.fn(),
@@ -110,6 +110,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   spawnTerminal: vi.fn(), killTerminal: vi.fn(), writeToTerminal: vi.fn(),
   resizeTerminal: vi.fn(), killAll: vi.fn(), whenTerminalsExit: vi.fn(() => Promise.resolve()), runningShellCount: vi.fn(() => 0), getTerminalCwd: vi.fn(), getTerminalCwdAsync: vi.fn(async () => ''), getTerminalPid: vi.fn(),
   computeWindowsPty: vi.fn(() => ({})),
+  hasTerminal: vi.fn((id: string) => id === 'pty-1'),
 }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn() }))
 vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
@@ -4129,8 +4130,25 @@ describe('Lumopolis world wiring in index.ts', () => {
   })
 
   it('registers the Lumopolis settings pair over the world settings store', async () => {
-    expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude' } })
+    expect(await invoke('world:settings-get')).toEqual({ success: true, data: { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false } })
     expect(await invoke('world:settings-set', 'nope')).toEqual({ success: false, error: 'settings patch required' })
+  })
+
+  it('registers the lumopolis command check: one of its own terminals, the nonce of this run, a folder that exists', async () => {
+    const nonce = (await import('../../src/main/world/lumopolisOpen')).lumopolisNonce()
+    const folder = require('path').resolve(USER_DATA, 'lumo-wiring')
+    const payload = (p: string): string => `lumopolis;${nonce};${p}`
+    fsMock.promises.stat.mockResolvedValueOnce({ isDirectory: () => true })
+    expect(await invoke('world:terminal-open', { terminalId: 'pty-1', payload: payload(folder), cwd: null })).toEqual({ success: true, data: folder })
+    expect(fsMock.promises.stat).toHaveBeenLastCalledWith(folder)
+    // A file, and a path that is gone (stat rejects): refused.
+    expect(await invoke('world:terminal-open', { terminalId: 'pty-1', payload: payload(folder), cwd: null })).toMatchObject({ success: false })
+    fsMock.promises.stat.mockRejectedValueOnce(new Error('ENOENT'))
+    expect(await invoke('world:terminal-open', { terminalId: 'pty-1', payload: payload(folder), cwd: null })).toMatchObject({ success: false })
+    // Not one of its own terminals: refused before anything is looked at.
+    const looks = fsMock.promises.stat.mock.calls.length
+    expect(await invoke('world:terminal-open', { terminalId: 'pty-9', payload: payload(folder), cwd: null })).toMatchObject({ success: false })
+    expect(fsMock.promises.stat.mock.calls.length).toBe(looks)
   })
 
   it('a watched change refreshes the world after the re-index, and the gate still waits on the re-index alone', async () => {

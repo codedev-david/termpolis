@@ -288,7 +288,7 @@ const api: TermpolisAPI = {
   worldCompile: (root: string) => ipcRenderer.invoke('world:compile', { root }),
   worldRelayout: (root: string) => ipcRenderer.invoke('world:relayout', { root }),
   worldSettingsGet: () => ipcRenderer.invoke('world:settings-get'),
-  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini' }) => ipcRenderer.invoke('world:settings-set', patch),
+  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini'; worldOpened?: boolean; worldHintDismissed?: boolean }) => ipcRenderer.invoke('world:settings-set', patch),
   worldAsk: (req) => ipcRenderer.invoke('world:ask', req),
   worldAskCancel: (askId: string) => ipcRenderer.invoke('world:ask-cancel', { askId }),
   worldDesignDraft: (description: string, cancelKey?: string, model?: string) => ipcRenderer.invoke('world:design-draft', { description, ...(cancelKey === undefined ? {} : { cancelKey }), ...(model === undefined ? {} : { model }) }),
@@ -297,6 +297,8 @@ const api: TermpolisAPI = {
   worldDesignGet: (key: string) => ipcRenderer.invoke('world:design-get', { key }),
   worldSourcesList: () => ipcRenderer.invoke('world:sources-list'),
   worldMapProject: (root: string) => ipcRenderer.invoke('world:map-project', { root }),
+  // The `lumopolis` shell command's OSC 7377 payload, from terminal terminalId's own output: main checks it and answers the folder.
+  worldTerminalOpen: (args: { terminalId: string; payload: string; cwd?: string }) => ipcRenderer.invoke('world:terminal-open', args),
   worldOpenFolder: () => ipcRenderer.invoke('world:open-folder'),
   worldPickFolder: () => ipcRenderer.invoke('world:pick-folder'),
   worldClone: (url: string, ref?: string) => ipcRenderer.invoke('world:clone', ref === undefined ? { url } : { url, ref }),

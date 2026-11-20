@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
+import { childFolder, openLumopolis } from '../World/worldOpen'
 
 interface Props {
   cwd: string
@@ -20,6 +21,30 @@ export function ContextPanel({ cwd, onClose }: Props) {
   const [files, setFiles] = useState<FileEntry[]>([])
   const [gitInfo, setGitInfo] = useState<GitInfo | null>(null)
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
+  /** A folder's right-click menu: which folder, and where. */
+  const [menu, setMenu] = useState<{ name: string; x: number; y: number } | null>(null)
+
+  // The menu goes on any click elsewhere, Esc, a scroll or the window losing focus.
+  useEffect(() => {
+    if (!menu) return
+    const close = (): void => setMenu(null)
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') close() }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('blur', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('blur', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [menu])
+
+  const mapFolder = (name: string): void => {
+    setMenu(null)
+    openLumopolis(childFolder(cwd, name))
+  }
 
   const toggleSection = useCallback((section: string) => {
     setCollapsedSections(prev => ({ ...prev, [section]: !prev[section] }))
@@ -110,11 +135,26 @@ export function ContextPanel({ cwd, onClose }: Props) {
                 <div className="px-5 py-1 text-[#999] italic text-[11px]">No files</div>
               )}
               {files.map(f => (
-                <div key={f.name} className="flex items-center gap-1.5 px-5 py-0.5 hover:bg-[#2a2d2e] truncate">
+                <div
+                  key={f.name}
+                  className="group flex items-center gap-1.5 px-5 py-0.5 hover:bg-[#2a2d2e] truncate"
+                  onContextMenu={f.isDir ? (e) => { e.preventDefault(); setMenu({ name: f.name, x: e.clientX, y: e.clientY }) } : undefined}
+                >
                   <i className={`fa-solid ${f.isDir ? 'fa-folder text-[#dcb67a]' : 'fa-file text-[#888]'} text-[10px] w-3 text-center`}></i>
                   <span className={`truncate ${f.isDir ? 'text-[#dcb67a]' : 'text-[#ccc]'}`}>
                     {f.name}{f.isDir ? '/' : ''}
                   </span>
+                  {f.isDir && (
+                    // The same as the right-click menu, for a mouse that hovers and a keyboard that tabs.
+                    <button
+                      type="button"
+                      onClick={() => mapFolder(f.name)}
+                      title={`Map ${f.name} in Lumopolis`}
+                      aria-label={`Map ${f.name} in Lumopolis`}
+                      data-testid={`context-map-world-${f.name}`}
+                      className="ml-auto shrink-0 rounded px-1 text-[#888] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-white hover:bg-[#37373d]"
+                    ><i className="fa-solid fa-earth-americas text-[10px]"></i></button>
+                  )}
                 </div>
               ))}
             </div>
@@ -185,6 +225,28 @@ export function ContextPanel({ cwd, onClose }: Props) {
           )}
         </div>
       </div>
+
+      {menu && (
+        <div
+          role="menu"
+          aria-label={`${menu.name} folder`}
+          data-testid="context-folder-menu"
+          className="fixed z-50 min-w-[160px] rounded border border-[#454545] bg-[#252526] py-1 shadow-lg"
+          style={{ left: menu.x, top: menu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            autoFocus
+            onClick={() => mapFolder(menu.name)}
+            className="flex w-full items-center gap-2 px-3 py-1 text-left text-[12px] text-[#d4d4d4] hover:bg-[#04395e] focus:bg-[#04395e] focus:outline-none"
+          >
+            <i className="fa-solid fa-earth-americas text-[10px] text-[#4fc1ff]"></i>
+            Map in Lumopolis
+          </button>
+        </div>
+      )}
 
       {/* Footer with cwd */}
       <div className="px-3 py-1.5 border-t border-[#3c3c3c] text-[10px] text-[#999] truncate" title={cwd}>

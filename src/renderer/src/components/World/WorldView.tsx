@@ -39,7 +39,7 @@ import { EvidenceView } from './EvidenceView'
 import { WorldEmptyState } from './WorldEmptyState'
 import { focusTerminal } from '../../lib/accountMenu'
 import { useTerminalStore } from '../../store/terminalStore'
-import { useOpenWorld } from './useOpenWorld'
+import { useOpenWorld, type WorldRequest } from './useOpenWorld'
 import { WorldHome } from './WorldHome'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
@@ -48,6 +48,7 @@ import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardReserve, 
 import { rightInset } from '../../world/engine/viewMath'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
+import { WORLD_OPENED_EVENT } from './worldOpen'
 
 export interface WorldViewProps {
   /** A folder inside the project (the active terminal's cwd). Empty when there is none. */
@@ -65,6 +66,9 @@ export interface WorldViewProps {
   buildIt?: { agents: BuildAgent[]; defaultAgent?: string; launch: (res: BuildItResult, agentId: string) => void }
   /** The pane's width in px (App owns it: the divider and the window size change it). */
   width?: number
+  /** A folder someone asked for (a terminal's globe, the `lumopolis` command, the file tree): its project
+   *  opens, and the pane comes forward. Undefined: the pane follows the active terminal (`root`). */
+  request?: WorldRequest
 }
 
 /** The width a pane gets from no one (a test, a stand-alone mount). */
@@ -110,8 +114,8 @@ const hasPart = (d: WorldDoc, id: string): boolean =>
 
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
-export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH }: WorldViewProps): JSX.Element {
-  const { world, open, goHome, entries, refresh } = useOpenWorld(root)
+export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, request }: WorldViewProps): JSX.Element {
+  const { world, open, goHome, entries, refresh } = useOpenWorld(root, request)
   const [webgl] = useState(() => hasWebGL())
   const [map2d, setMap2d] = useState(readMap2d)
   /** The flat map shows: no WebGL, or the switch is on. */
@@ -158,6 +162,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // The open world: a folder (its key is the resolved root) or a design.
   const target = world.kind === 'root' ? world.root : ''
   const follow = world.kind === 'root' && world.follow
+  /** The folder opens as its project (its git root): the active terminal's folder, or one asked for. */
+  const asProject = follow || (world.kind === 'root' && world.project === true)
   const designKey = world.kind === 'design' ? world.key : null
   // A root resolved for an earlier folder is never used for a design or the home.
   const worldRoot = world.kind === 'root' ? resolvedRoot : null
@@ -172,8 +178,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   rootRef.current = worldRoot
   const docRef = useRef<WorldDoc | null>(null)
   docRef.current = doc
-  const followRef = useRef(follow)
-  followRef.current = follow
+  const asProjectRef = useRef(asProject)
+  asProjectRef.current = asProject
   /** True after an Esc reset with nothing done since: the next Esc closes. */
   const armedRef = useRef(false)
   const escRef = useRef<() => void>(onClose) // replaced on every render, below
@@ -226,22 +232,35 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     }
   }, [])
 
+  // Asked again while open (a globe, the command): the pane comes forward, the same world staying as it is.
+  const seq = request ? request.seq : 0
+  const firstSeq = useRef(seq)
+  useEffect(() => {
+    if (seq !== firstSeq.current) (dialogRef.current as HTMLDivElement).focus()
+  }, [seq])
+
+  // Lumopolis has been opened: the sidebar's New badge and the first-run hint go, for good (Settings store).
+  useEffect(() => {
+    window.termpolis.worldSettingsSet?.({ worldOpened: true })?.catch(() => undefined)
+    window.dispatchEvent(new Event(WORLD_OPENED_EVENT))
+  }, [])
+
   // A terminal still dictating behind the pane would also type what is said to the Ask mic: stop it.
   useEffect(() => { window.dispatchEvent(new Event('termpolis:stopDictation')) }, [])
 
-  // The project root: for the active terminal's folder, its git root (or the folder itself outside a
-  // repository; a cd inside the same repository resolves to the same root, so nothing below runs
-  // again). A folder the user chose is used as it is: that is the world they asked for.
+  // The project root: for the active terminal's folder or a folder asked for, its git root (or the folder
+  // itself outside a repository; a cd inside the same repository resolves to the same root, so nothing
+  // below runs again). A folder the user chose in a dialog is used as it is: that is the world they asked for.
   useEffect(() => {
     if (!target) { setResolvedRoot(null); return }
-    if (!follow) { setResolvedRoot(target); return }
+    if (!asProject) { setResolvedRoot(target); return }
     let live = true
     window.termpolis.gitFindRoot(target).then(
       (r) => { if (live) setResolvedRoot(r.success && r.data ? r.data : target) },
       () => { if (live) setResolvedRoot(target) },
     )
     return () => { live = false }
-  }, [target, follow])
+  }, [target, asProject])
 
   // The world: a design from the design store; for a folder the stored one, or a fresh compile when
   // none was saved yet. The home: nothing (the viewer is hidden while there is no doc, so no stale
@@ -282,7 +301,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           setDoc(c.data)
           // The terminal's project was just mapped: it joins the recent worlds now, not only when it is
           // mapped from the home. A folder main refuses (not a project) stays off the list, silently.
-          if (followRef.current) api.worldMapProject(at).then((r) => { if (r.success) refresh() }, () => undefined)
+          if (asProjectRef.current) api.worldMapProject(at).then((r) => { if (r.success) refresh() }, () => undefined)
         })
       })
       .catch((e: unknown) => {

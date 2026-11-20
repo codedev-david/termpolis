@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { TerminalStatusBar } from '../../src/renderer/src/components/StatusBar/TerminalStatusBar'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -248,4 +248,30 @@ describe('TerminalStatusBar — publishing the live cwd', () => {
         expect(useTerminalStore.getState().terminals[0].cwd).toBe('/home/dev/repos/x')
       })
     }))
+})
+
+// The globe on every terminal: maps THIS terminal's folder in Lumopolis, whichever terminal is active.
+describe('TerminalStatusBar Lumopolis globe', () => {
+  it('opens Lumopolis on this terminal\'s folder, not the active one\'s, and names the folder', () => {
+    useTerminalStore.setState({ activeTerminalId: 'active' } as never)
+    const onOpen = vi.fn()
+    const onParent = vi.fn()
+    window.addEventListener('termpolis:openWorld', onOpen)
+    render(<div onClick={onParent} onMouseDown={onParent}><TerminalStatusBar terminalId="t2" shellType="powershell" cwd="C:/repos/termpolis/src" /></div>)
+    const globe = screen.getByTestId('terminal-open-world-t2')
+    expect(globe).toHaveAttribute('title', 'Map src in Lumopolis')
+    expect(globe).toHaveAttribute('aria-label', 'Map src in Lumopolis')
+    fireEvent.mouseDown(globe)
+    fireEvent.click(globe)
+    window.removeEventListener('termpolis:openWorld', onOpen)
+    expect(onOpen).toHaveBeenCalledTimes(1)
+    expect((onOpen.mock.calls[0][0] as CustomEvent).detail).toEqual({ folder: 'C:/repos/termpolis/src' })
+    expect(onParent).not.toHaveBeenCalled() // the click stays on the button: this pane is not made active
+    expect(useTerminalStore.getState().activeTerminalId).toBe('active')
+  })
+
+  it('has no globe while the terminal has no folder yet', () => {
+    render(<TerminalStatusBar terminalId="t3" shellType="bash" cwd="" />)
+    expect(screen.queryByTestId('terminal-open-world-t3')).toBeNull()
+  })
 })

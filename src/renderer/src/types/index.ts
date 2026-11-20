@@ -713,6 +713,7 @@ export interface TermpolisAPI {
   worldSourcesList: () => Promise<IpcResponse<WorldEntry[]>>
   /** Lumopolis home: remember the active terminal's project as a world. */
   worldMapProject: (root: string) => Promise<IpcResponse<WorldEntry>>
+  worldTerminalOpen: (args: { terminalId: string; payload: string; cwd?: string }) => Promise<IpcResponse<string>>
   /** Lumopolis home: the native folder dialog; the folder becomes a world (null when cancelled). */
   worldOpenFolder: () => Promise<IpcResponse<WorldEntry | null>>
   /** Lumopolis Build it: the native folder dialog only, and whether the folder is empty (null when cancelled). */
@@ -729,9 +730,9 @@ export interface TermpolisAPI {
   worldAnnotate: (key: string, itemId: string, text: string) => Promise<IpcResponse<WorldDoc>>
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => Promise<IpcResponse<BuildItResult>>
   /** Lumopolis settings: whether the world compiler may ask the Lumopolis agent's cheapest model to describe parts. */
-  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini' }>>
+  worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini'; worldOpened: boolean; worldHintDismissed: boolean }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */
-  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini' }) => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini' }>>
+  worldSettingsSet: (patch: { worldLabelling?: boolean; worldSpeakAnswers?: boolean; worldCiResults?: boolean; worldAgent?: 'claude' | 'codex' | 'gemini'; worldOpened?: boolean; worldHintDismissed?: boolean }) => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini'; worldOpened: boolean; worldHintDismissed: boolean }>>
   onWorldProgress: (cb: (e: WorldProgressEvent) => void) => () => void
   onWorldUpdated: (cb: (e: WorldUpdatedEvent) => void) => () => void
   /** Export the full brain (memories + graph + learning stores + code graph) to a chosen .zip. */

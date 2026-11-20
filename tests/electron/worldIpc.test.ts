@@ -101,6 +101,14 @@ describe('registerWorldIpc', () => {
     expect(settings.set).toHaveBeenLastCalledWith({})
   })
 
+  it('world:settings-set allowlists the Lumopolis UI flags worldOpened and worldHintDismissed', async () => {
+    const { invoke, settings } = setup()
+    await invoke('world:settings-set', { worldOpened: true, worldHintDismissed: false })
+    expect(settings.set).toHaveBeenLastCalledWith({ worldOpened: true, worldHintDismissed: false })
+    await invoke('world:settings-set', { worldOpened: 'yes', worldHintDismissed: 1 })
+    expect(settings.set).toHaveBeenLastCalledWith({})
+  })
+
   it('world:settings-set hands the new setting to the live world host after storing it', async () => {
     const { invoke, settings, client } = setup()
     await invoke('world:settings-set', { worldLabelling: false })

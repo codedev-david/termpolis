@@ -33,6 +33,9 @@ import { createTrailingThrottle } from '../../lib/trailingThrottle'
 import { tracesPromptParses } from '../../lib/testAgents'
 import { decodeOsc7, normalizeShellPath, osc7PathPart, samePath } from '../../../../shared/cwdPath'
 import { hostHomedir } from '../../lib/platform'
+import { lumopolisOscHandler } from '../../lib/lumopolisOsc'
+import { LUMOPOLIS_OSC } from '../../../../shared/world/lumopolisCommand'
+import { openLumopolis } from '../World/worldOpen'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { AccountChip } from '../Accounts/AccountChip'
@@ -1151,6 +1154,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       reportCwd(normalizeShellPath(raw, { homedir: hostHomedir() }) ?? raw)
       return true
     })
+    // The `lumopolis` command: always stripped, never acted on while history replays; main checks it.
+    term.parser.registerOscHandler(LUMOPOLIS_OSC, lumopolisOscHandler({
+      terminalId,
+      replaying: () => historyParses.count > 0,
+      cwd: () => useTerminalStore.getState().terminals.find((t) => t.id === terminalId)?.cwd,
+      open: (folder) => { if (!disposed) openLumopolis(folder) },
+    }))
     // Wheel forwarding. When we swallowed the app's mouse tracking, xterm no longer
     // delivers wheel events to the app — so synthesize wheel reports to the pty here so
     // the app can scroll its own content (Claude Code's transcript, vim, lazygit, htop).

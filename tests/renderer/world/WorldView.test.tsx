@@ -1529,3 +1529,58 @@ describe('WorldView 2D map switch and bookmarks', () => {
     expect(screen.getByText('No saved views yet')).toBeInTheDocument()
   })
 })
+
+// A folder asked for from outside the pane: a terminal's globe, the `lumopolis` command, the file tree.
+describe('WorldView asked for a folder', () => {
+  it('opens the asked folder\'s project, not the active terminal\'s, registers it, and stays on it through a cd', async () => {
+    const b = bridge({ gitFindRoot: vi.fn(async (cwd: string) => ok(cwd.startsWith('/other') ? '/other' : '/repo')), worldGet: vi.fn(async () => ok(null)) })
+    const onClose = vi.fn()
+    const utils = render(<WorldView root="/repo/src" onClose={onClose} request={{ folder: '/other/pkg', seq: 1 }} />)
+    await settle()
+    expect(b.api.gitFindRoot).toHaveBeenCalledWith('/other/pkg')
+    expect(b.api.worldCompile).toHaveBeenCalledWith('/other')
+    expect(b.api.worldMapProject).toHaveBeenCalledWith('/other')
+    utils.rerender(<WorldView root="/repo/lib" onClose={onClose} request={{ folder: '/other/pkg', seq: 1 }} />)
+    await settle()
+    expect(b.api.gitFindRoot).not.toHaveBeenCalledWith('/repo/lib')
+  })
+
+  it('a request while open moves the pane to that project and brings the pane forward', async () => {
+    const b = bridge({ gitFindRoot: vi.fn(async (cwd: string) => ok(cwd.startsWith('/other') ? '/other' : '/repo')) })
+    const onClose = vi.fn()
+    const utils = render(<WorldView root="/repo" onClose={onClose} />)
+    await settle()
+    expect(b.api.worldGet).toHaveBeenLastCalledWith('/repo')
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    outside.focus()
+    utils.rerender(<WorldView root="/repo" onClose={onClose} request={{ folder: '/other/a', seq: 1 }} />)
+    await settle()
+    expect(b.api.worldGet).toHaveBeenLastCalledWith('/other')
+    expect(document.activeElement).toBe(dialog())
+    outside.focus()
+    utils.rerender(<WorldView root="/repo" onClose={onClose} request={{ folder: '/other/a', seq: 2 }} />)
+    await settle()
+    expect(document.activeElement).toBe(dialog()) // the same folder again: forward, nothing reloaded
+    expect(b.api.worldGet).toHaveBeenCalledTimes(2)
+    utils.rerender(<WorldView root="/repo" onClose={onClose} />) // the request dropped: the pane stays where it is
+    await settle()
+    expect(b.api.worldGet).toHaveBeenCalledTimes(2)
+    outside.remove()
+  })
+
+  it('opening the pane saves that Lumopolis has been opened and tells the sidebar', async () => {
+    const set = vi.fn(async () => ok({}))
+    bridge({ worldSettingsSet: set })
+    const onOpened = vi.fn()
+    window.addEventListener('termpolis:worldOpened', onOpened)
+    await mount()
+    window.removeEventListener('termpolis:worldOpened', onOpened)
+    expect(set).toHaveBeenCalledWith({ worldOpened: true })
+    expect(onOpened).toHaveBeenCalledTimes(1)
+    cleanup()
+    bridge({ worldSettingsSet: vi.fn(async () => { throw new Error('disk') }) })
+    await mount() // a save that fails is not the user's problem: the pane opens all the same
+    expect(dialog()).toBeInTheDocument()
+  })
+})

@@ -5,6 +5,7 @@ import { subscribe, unsubscribe } from '../../lib/pollingService'
 import { useTerminalStore } from '../../store/terminalStore'
 import { normalizeShellPath, samePath } from '../../../../shared/cwdPath'
 import { hostHomedir } from '../../lib/platform'
+import { folderName, openLumopolis } from '../World/worldOpen'
 
 interface Props {
   terminalId: string
@@ -98,6 +99,21 @@ export function TerminalStatusBar({ terminalId, shellType, cwd, parsedBranch, ag
           <i className="fa-brands fa-git-alt text-[10px]"></i>
           {gitBranch}
         </span>
+      )}
+      {cwd && (
+        // This terminal's folder in Lumopolis, whichever terminal is active: the folder travels in the
+        // event, and the click stays here (it neither focuses nor activates this pane).
+        <button
+          type="button"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); openLumopolis(cwd) }}
+          title={`Map ${folderName(cwd)} in Lumopolis`}
+          aria-label={`Map ${folderName(cwd)} in Lumopolis`}
+          data-testid={`terminal-open-world-${terminalId}`}
+          className="ml-auto flex items-center shrink-0 rounded px-1 text-white/80 hover:text-white hover:bg-white/15 focus-visible:outline focus-visible:outline-1 focus-visible:outline-white"
+        >
+          <i className="fa-solid fa-earth-americas text-[10px]"></i>
+        </button>
       )}
     </div>
   )

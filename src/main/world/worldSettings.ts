@@ -24,9 +24,13 @@ export interface WorldSettings {
   worldCiResults: boolean
   /** The agent that answers questions, drafts designs and (cheapest model) describes parts. Claude by default; an unknown value reads as claude. */
   worldAgent: ExecAgent
+  /** Lumopolis has been opened at least once: the sidebar's "New" badge and the 2.0 hint stop showing. Only a literal `true` counts. */
+  worldOpened: boolean
+  /** The "New in 2.0" hint was dismissed: it never shows again. Only a literal `true` counts. */
+  worldHintDismissed: boolean
 }
 
-export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude' }
+export const DEFAULT_WORLD_SETTINGS: Readonly<WorldSettings> = { worldLabelling: true, worldSpeakAnswers: false, worldCiResults: true, worldAgent: 'claude', worldOpened: false, worldHintDismissed: false }
 
 /** The file name under userData. */
 export const WORLD_SETTINGS_FILE = 'world-settings.json'
@@ -46,7 +50,7 @@ function parse(text: string): WorldSettings | null {
   const parsed: unknown = JSON.parse(text)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
   const rec = parsed as Record<string, unknown>
-  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldCiResults: rec.worldCiResults !== false, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude' }
+  return { worldLabelling: rec.worldLabelling !== false, worldSpeakAnswers: rec.worldSpeakAnswers === true, worldCiResults: rec.worldCiResults !== false, worldAgent: isExecAgent(rec.worldAgent) ? rec.worldAgent : 'claude', worldOpened: rec.worldOpened === true, worldHintDismissed: rec.worldHintDismissed === true }
 }
 
 let tmpCounter = 0
@@ -115,6 +119,8 @@ export function createWorldSettings(file: string | (() => string)): WorldSetting
       if (typeof patch?.worldSpeakAnswers === 'boolean') next.worldSpeakAnswers = patch.worldSpeakAnswers
       if (typeof patch?.worldCiResults === 'boolean') next.worldCiResults = patch.worldCiResults
       if (isExecAgent(patch?.worldAgent)) next.worldAgent = patch.worldAgent
+      if (typeof patch?.worldOpened === 'boolean') next.worldOpened = patch.worldOpened
+      if (typeof patch?.worldHintDismissed === 'boolean') next.worldHintDismissed = patch.worldHintDismissed
       settings = { ...settings, ...next }
       if (!loaded) early = { ...early, ...next }
       queueWrite()

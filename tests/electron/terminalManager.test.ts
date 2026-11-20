@@ -240,9 +240,16 @@ describe('terminalManager', () => {
       const call = vi.mocked(pty.spawn).mock.calls[0]
       expect(call[1]).toEqual(['--login'])
       expect((call[2]?.env as Record<string, string>).PROMPT_COMMAND).toBeUndefined()
+      // No lumopolis either: no exported function, no nonce.
+      expect(call[2]?.env as Record<string, string>).not.toHaveProperty('BASH_FUNC_lumopolis%%')
+      expect(call[2]?.env as Record<string, string>).not.toHaveProperty('TERMPOLIS_LUMOPOLIS_NONCE')
 
       vi.mocked(pty.spawn).mockClear()
       spawnTerminal('si6', 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', '/tmp', vi.fn())
+      expect(vi.mocked(pty.spawn).mock.calls[0][1]).toEqual([])
+
+      vi.mocked(pty.spawn).mockClear()
+      spawnTerminal('si5-cmd', 'C:\\Windows\\System32\\cmd.exe', '/tmp', vi.fn())
       expect(vi.mocked(pty.spawn).mock.calls[0][1]).toEqual([])
     } finally {
       delete process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION
@@ -693,13 +700,15 @@ describe('terminalManager', () => {
       return calls[calls.length - 1]
     }
 
-    it('cmd.exe launches with no args and System32 on PATH', () => {
+    it('cmd.exe launches loading its lumopolis macro (doskey, file named in the env) with System32 on PATH', () => {
       spawnTerminal('sv-cmd', 'C:\\Windows\\System32\\cmd.exe', 'C:\\tmp', vi.fn())
       const call = lastCall()
       expect(call[0]).toBe('C:\\Windows\\System32\\cmd.exe')
-      expect(call[1]).toEqual([])
+      expect(call[1]).toEqual(['/k', 'doskey', '/macrofile=%TERMPOLIS_LUMOPOLIS_MACROS%'])
       const env = (call[2]?.env as Record<string, string>)
       expect(env.PATH).toContain('C:\\Windows\\System32')
+      expect(env.TERMPOLIS_LUMOPOLIS_MACROS).toMatch(/^".*termpolis-lumopolis\.doskey"$/)
+      expect(env.TERMPOLIS_LUMOPOLIS_NONCE).toMatch(/^[0-9a-f]{32}$/)
     })
 
     it('PowerShell 5 (powershell.exe) launches with shell integration and PS1.0 dir on PATH', () => {

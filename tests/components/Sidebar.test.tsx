@@ -233,6 +233,9 @@ describe('Sidebar', () => {
       expect(globe).toHaveAttribute('aria-label', 'Open Lumopolis')
       fireEvent.click(globe)
       expect(onOpen).toHaveBeenCalledTimes(1)
+      // The labelled entry in the sidebar body opens it the same way.
+      fireEvent.click(screen.getByTestId('sidebar-lumopolis-entry'))
+      expect(onOpen).toHaveBeenCalledTimes(2)
     } finally {
       window.removeEventListener('termpolis:openWorld', onOpen)
     }

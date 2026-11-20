@@ -1969,6 +1969,42 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(H.updateTerminal).not.toHaveBeenCalled()
     })
 
+    it('OSC 7377 (the lumopolis command) is always swallowed, asks main with the terminal and its folder, and opens what main answers', async () => {
+      H.state.current = { ...H.state.current, terminals: [{ id: 'term-1', isSwarm: false, cwd: 'C:/repo' }] }
+      const worldTerminalOpen = vi.fn(async () => ({ success: true, data: 'C:/repo/app' }))
+      ;(window as any).termpolis.worldTerminalOpen = worldTerminalOpen
+      const opened = vi.fn()
+      window.addEventListener('termpolis:openWorld', opened)
+      try {
+        render(<TerminalPane {...defaultProps} />)
+        expect(oscHandler(7377)('lumopolis;n;app')).toBe(true)
+        expect(worldTerminalOpen).toHaveBeenCalledWith({ terminalId: 'term-1', payload: 'lumopolis;n;app', cwd: 'C:/repo' })
+        await waitFor(() => expect(opened).toHaveBeenCalledTimes(1))
+        expect((opened.mock.calls[0][0] as CustomEvent).detail).toEqual({ folder: 'C:/repo/app' })
+      } finally {
+        window.removeEventListener('termpolis:openWorld', opened)
+        delete (window as any).termpolis.worldTerminalOpen
+      }
+    })
+
+    it('OSC 7377 opens nothing once the pane is gone', async () => {
+      let answer: (v: unknown) => void = () => undefined
+      ;(window as any).termpolis.worldTerminalOpen = vi.fn(() => new Promise((r) => { answer = r }))
+      const opened = vi.fn()
+      window.addEventListener('termpolis:openWorld', opened)
+      try {
+        const { unmount } = render(<TerminalPane {...defaultProps} />)
+        expect(oscHandler(7377)('lumopolis;n;C:/x')).toBe(true)
+        unmount()
+        answer({ success: true, data: 'C:/x' })
+        await new Promise((r) => setTimeout(r, 0))
+        expect(opened).not.toHaveBeenCalled()
+      } finally {
+        window.removeEventListener('termpolis:openWorld', opened)
+        delete (window as any).termpolis.worldTerminalOpen
+      }
+    })
+
     it('does NOT write to the store when the reported cwd is the current one', () => {
       // Same perf guard as the prompt path: a shell re-reports its directory on every
       // prompt, and each write replaces the whole terminals array.

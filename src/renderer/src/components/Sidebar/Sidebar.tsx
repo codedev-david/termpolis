@@ -9,6 +9,8 @@ import { SwarmDashboard } from '../SwarmDashboard/SwarmDashboard'
 import { GitPanel } from '../GitPanel/GitPanel'
 import { WorkflowSidebarSection } from '../Workflow/WorkflowSidebarSection'
 import { WorkflowOverlayBody, type WorkflowOverlayView } from '../Workflow/WorkflowOverlayBody'
+import { LumopolisSidebarEntry } from '../World/LumopolisSidebarEntry'
+import { openLumopolis } from '../World/worldOpen'
 import { getHomedir } from '../../lib/homedir'
 import { resolveNewTerminalCwd } from '../../lib/newTerminalCwd'
 import { v4 as uuid } from 'uuid'
@@ -199,7 +201,7 @@ export function Sidebar() {
           {swarmActive && <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse"></span>}
         </button>
         <button
-          onClick={() => window.dispatchEvent(new CustomEvent('termpolis:openWorld'))}
+          onClick={() => openLumopolis()}
           title="Lumopolis: Where AI Worlds Become Human Understanding (Ctrl+Shift+R)"
           aria-label="Open Lumopolis"
           data-testid="sidebar-open-world"
@@ -212,6 +214,8 @@ export function Sidebar() {
           className="px-2.5 py-2 rounded text-base text-[#999] hover:text-white hover:bg-[#37373d]"
         ><i className="fa-solid fa-chevron-left"></i></button>
       </div>
+      <LumopolisSidebarEntry />
+      <div className="border-t border-[#3c3c3c]"></div>
       <AIProfiles availableShells={availableShells} />
       <div className="border-t border-[#3c3c3c]"></div>
       <WorkspaceList />

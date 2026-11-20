@@ -148,6 +148,15 @@ describe('StatusBar', () => {
     expect(screen.getByText('Help / Support')).toBeInTheDocument()
   })
 
+  it('the help documents the lumopolis command next to Ctrl+Shift+R', () => {
+    render(<StatusBar />)
+    fireEvent.click(screen.getByText('Help / Support'))
+    const line = screen.getByTestId('help-lumopolis-command')
+    expect(line).toHaveTextContent('lumopolis typed in a terminal maps the folder you are in')
+    expect(line).toHaveTextContent('bash, Git Bash, PowerShell and cmd')
+    expect(line.previousElementSibling).toHaveTextContent('Ctrl+Shift+R Lumopolis')
+  })
+
   // -- Swarm indicator --
 
   it('does not show swarm indicator when swarm is inactive', () => {

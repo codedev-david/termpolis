@@ -41,7 +41,7 @@ beforeAll(async () => {
   await primeBundledToolsCheck()
 })
 afterAll(() => { uninstall(); rmSync(H.root, { recursive: true, force: true }) })
-beforeEach(() => { H.spawned.length = 0; state.path = null; delete process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION })
+beforeEach(() => { H.spawned.length = 0; for (const k of Object.keys(state)) delete state[k]; delete process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION })
 
 const scriptFile = (): string => join(H.userData, 'termpolis-shell-integration.ps1')
 
@@ -68,6 +68,14 @@ describe('prepareSpawn', () => {
     expect(readFileSync(scriptFile(), 'utf8')).toBe(first) // cleaned up mid-session: written again
   })
 
+  it("writes cmd's lumopolis macro file beside it, under its own name", async () => {
+    const macros = join(H.userData, 'termpolis-lumopolis.doskey')
+    rmSync(macros, { force: true })
+    expect((await prepareSpawn(process.cwd(), 'C:/Windows/System32/cmd.exe')).integrationScript).toBe(macros)
+    expect(readFileSync(macros, 'utf8')).toContain('lumopolis=for %I in')
+    expect((await prepareSpawn(process.cwd(), PS)).integrationScript).toBe(scriptFile()) // the two never collide
+  })
+
   it('has no script for a shell that needs none, or when integration is turned off', async () => {
     expect((await prepareSpawn(process.cwd(), '/bin/bash')).integrationScript).toBeNull()
     process.env.TERMPOLIS_DISABLE_SHELL_INTEGRATION = '1'
@@ -77,10 +85,9 @@ describe('prepareSpawn', () => {
   it('answers null for the script when the data folder cannot be written (the terminal then opens as before)', async () => {
     const blocker = join(H.root, 'blocker')
     writeFileSync(blocker, 'a file where the folder should be')
-    const saved = state.path
-    state.path = join(blocker, 'sub', 'termpolis-shell-integration.ps1') // its folder is under a file: mkdir fails
+    state['termpolis-shell-integration.ps1'] = join(blocker, 'sub', 'termpolis-shell-integration.ps1') // its folder is under a file: mkdir fails
     expect((await prepareSpawn(process.cwd(), PS)).integrationScript).toBeNull()
-    state.path = saved
+    delete state['termpolis-shell-integration.ps1']
   })
 
   it('makes no synchronous file call and no spawn (counted), however often it is asked', async () => {

@@ -9,7 +9,9 @@ import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { flushBeforeResize } from './ptyResizeFlush'
 import { sudoAskpassEnv } from './sudoAskpass'
-import { integrationScriptState, INTEGRATION_SCRIPT_NAME, type SpawnPrep } from './terminalSpawnPrep'
+import { integrationScriptState, type SpawnPrep } from './terminalSpawnPrep'
+import { lumopolisNonce } from './world/lumopolisOpen'
+import { LUMOPOLIS_NONCE_ENV } from '../shared/world/lumopolisCommand'
 import { hasJobControl, shellAlone, readConsoleProcessList } from './shellAlone'
 import { consoleListInProc } from './consoleListInProc'
 import { gateHostPty, isHostPty, ptyHostReady, spawnInPtyHost, type HostPty } from './ptyHostClient'
@@ -20,8 +22,8 @@ import {
   integrationArgs,
   integrationEnv,
   integrationDisabled,
-  needsScriptFile,
-  POWERSHELL_INTEGRATION_SCRIPT,
+  integrationFile,
+  type IntegrationFile,
 } from './shellIntegration'
 
 /** What a terminal's pty is to this module: node-pty's own (in this process), or one in the pty host (ptyHostClient.ts). */
@@ -270,10 +272,12 @@ export function spawnTerminal(
   // does not update is a small loss, a terminal that does not open is a broken app.
   const shellKind = detectShellKind(executable)
   const integrate = !integrationDisabled()
-  const scriptPath = integrate && needsScriptFile(shellKind) ? (prep ? prep.integrationScript : ensureIntegrationScript()) : null
+  const file = integrate ? integrationFile(shellKind) : null
+  const scriptPath = file ? (prep ? prep.integrationScript : ensureIntegrationScript(file)) : null
+  // The run's nonce, which the `lumopolis` command repeats back (src/main/world/lumopolisOpen.ts).
   const env = {
     ...baseEnv,
-    ...(integrate ? integrationEnv(shellKind, baseEnv) : {}),
+    ...(integrate ? { ...integrationEnv(shellKind, baseEnv, scriptPath), [LUMOPOLIS_NONCE_ENV]: lumopolisNonce() } : {}),
   } as Record<string, string>
   const args = [
     ...getShellArgs(executable),
@@ -546,6 +550,11 @@ export function _resetTerminalExitsForTests(): void {
   exitWaiters.splice(0)
 }
 
+/** Whether a terminal with this id is open (started by this app, and not yet exited). */
+export function hasTerminal(id: string): boolean {
+  return processes.has(id)
+}
+
 export function getTerminalPid(id: string): number | null {
   const proc = processes.get(id)
   // 0 is a shell the pty host is still starting: no pid yet.
@@ -582,24 +591,26 @@ export async function getTerminalCwdAsync(id: string): Promise<string | null> {
 }
 
 /**
- * Put the PowerShell integration script on disk, once per app run.
+ * Put a shell's integration file on disk, once per app run.
  *
- * PowerShell is the only shell whose integration cannot travel in the environment — it
- * has no PROMPT_COMMAND equivalent — so the wrapper needs a real file to dot-source.
+ * PowerShell's integration cannot travel in the environment — it has no PROMPT_COMMAND
+ * equivalent — so the wrapper needs a real file to dot-source; cmd's `lumopolis` is a
+ * doskey macro, which doskey reads from a file.
  * It goes in Termpolis's own data folder, never anywhere the user owns, and is rewritten
  * if something cleaned it up mid-session. Not the temp dir: PowerShell running a script
  * from %TEMP% is a pattern endpoint security flags (malware stages scripts there).
  *
  * Returns null on any failure, which the caller reads as "spawn exactly as before".
  */
-function ensureIntegrationScript(): string | null {
+function ensureIntegrationScript(file: IntegrationFile): string | null {
   try {
-    const p = integrationScriptState.path ?? join(app.getPath('userData'), INTEGRATION_SCRIPT_NAME)
-    if (integrationScriptState.path === null || !existsSync(p)) {
+    const known = integrationScriptState[file.name]
+    const p = known ?? join(app.getPath('userData'), file.name)
+    if (known === undefined || !existsSync(p)) {
       mkdirSync(dirname(p), { recursive: true })
-      writeFileSync(p, POWERSHELL_INTEGRATION_SCRIPT, 'utf8')
+      writeFileSync(p, file.content, 'utf8')
     }
-    integrationScriptState.path = p
+    integrationScriptState[file.name] = p
     return p
   } catch {
     return null
