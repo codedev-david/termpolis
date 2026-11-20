@@ -132,6 +132,31 @@ describe('TabPopover', () => {
     expect(popover.style.left).toBe('204px')
   })
 
+  it('stays inside the window: a low anchor lifts it, a short window pins it to the top margin and it scrolls', () => {
+    const anchorAt = (top: number): HTMLElement => {
+      const el = document.createElement('div')
+      el.getBoundingClientRect = vi.fn(() => ({ top, left: 50, right: 200, bottom: top + 20, width: 150, height: 20, x: 50, y: top, toJSON: () => {} }))
+      return el
+    }
+    const height = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ top: 0, left: 0, right: 0, bottom: 300, width: 288, height: 300, x: 0, y: 0, toJSON: () => {} })
+    const innerHeight = window.innerHeight
+    try {
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+      const low = render(<TabPopover {...props} anchorEl={anchorAt(700)} />)
+      const popover = low.container.firstChild as HTMLElement
+      expect(popover.style.top).toBe('460px') // 768 - 300 - 8
+      expect(popover.style.maxHeight).toBe('calc(100vh - 16px)')
+      expect(popover.style.overflowY).toBe('auto')
+      low.unmount()
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 200 })
+      const short = render(<TabPopover {...props} anchorEl={anchorAt(150)} />)
+      expect((short.container.firstChild as HTMLElement).style.top).toBe('8px')
+    } finally {
+      height.mockRestore()
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: innerHeight })
+    }
+  })
+
   it('clicking outside closes popover', () => {
     const onClose = vi.fn()
     render(<TabPopover {...props} onClose={onClose} />)

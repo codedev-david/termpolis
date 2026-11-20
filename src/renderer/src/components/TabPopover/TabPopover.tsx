@@ -1,10 +1,13 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { TERMINAL_THEMES, THEME_IDS, getTheme } from '../../themes/terminalThemes'
 
 const COLOR_SWATCHES = [
   '#22D3EE','#A5D6A7','#CE93D8','#EF9A9A','#FFE082',
   '#80CBC4','#FFCC80','#9FA8DA','#F48FB1','#C5E1A5','#80DEEA','#B0BEC5',
 ]
+
+/** Space kept between the popover and the window's edges. */
+const POPOVER_MARGIN = 8
 
 const FONT_FAMILY_OPTIONS = [
   { label: 'Consolas', value: 'Consolas, "Courier New", monospace' },
@@ -31,10 +34,14 @@ export function TabPopover({ name, color, fontSize, theme, fontFamily, anchorEl,
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ top: 0, left: 0 })
 
-  useEffect(() => {
+  // Beside the anchor, but kept inside the window: a tab low in the sidebar would otherwise open the
+  // popover with its Save button below the bottom edge. Measured before paint, so it never jumps.
+  useLayoutEffect(() => {
     if (anchorEl) {
       const rect = anchorEl.getBoundingClientRect()
-      setPos({ top: rect.top, left: rect.right + 4 })
+      const height = (ref.current as HTMLDivElement).getBoundingClientRect().height
+      const top = Math.max(POPOVER_MARGIN, Math.min(rect.top, window.innerHeight - height - POPOVER_MARGIN))
+      setPos({ top, left: rect.right + 4 })
     }
   }, [anchorEl])
 
@@ -53,7 +60,7 @@ export function TabPopover({ name, color, fontSize, theme, fontFamily, anchorEl,
   return (
     <div
       ref={ref}
-      style={{ position: 'fixed', top: pos.top, left: pos.left }}
+      style={{ position: 'fixed', top: pos.top, left: pos.left, maxHeight: `calc(100vh - ${2 * POPOVER_MARGIN}px)`, overflowY: 'auto' }}
       className="z-50 bg-[#252526] border border-[#3c3c3c] rounded-lg shadow-xl p-4 w-72 flex flex-col gap-3"
     >
       {/* Name */}
