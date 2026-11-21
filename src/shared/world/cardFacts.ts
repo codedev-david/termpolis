@@ -162,3 +162,34 @@ export function sizeNote(doc: WorldDoc, b: Building, floors: FloorsView = 'none'
   if (b.floors.length > 1 && floors !== 'none') facts.push(floors === 'open3d' ? 'Double-click it to see its floors.' : "Its floors are listed under What's inside.")
   return facts.join(' ')
 }
+
+/** Every heading either card prints, in one place: the HTML card (renderer engine cards.ts), the plain-text card
+ *  (main cardText.ts) and the documentation all read these, so one wording cannot drift from another. */
+export const CARD_HEADINGS = {
+  whatItIs: 'What it is',
+  whatItDoes: 'What it does',
+  inside: "What's inside",
+  whyBig: 'Why it is this big',
+  technology: 'Technology',
+  whyBuilt: "Why it's built this way",
+  know: 'What we know',
+  serviceNames: 'Service names',
+  comesIn: 'What comes in',
+  goesOut: 'What goes out',
+  carries: 'What it carries',
+  direction: 'Direction',
+  travels: 'What travels',
+  howTravels: 'How it travels',
+  whyDone: "Why it's done this way",
+  howOften: 'How often',
+  usedInside: 'Used inside',
+  carriesConnections: 'Carries these connections'
+} as const
+
+/** The service names a part goes by while it runs, as the card words them (with "(edited by you)" when a person set
+ *  them), or null when there are none. */
+export function serviceNamesLine(doc: WorldDoc, id: string): string | null {
+  const names = doc.runtimeNames[id] ?? []
+  if (names.length === 0) return null
+  return names.join(', ') + ((doc.runtimeHandSet ?? []).includes(id) ? ' (edited by you)' : '')
+}

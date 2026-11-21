@@ -1,7 +1,7 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT as STATUS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT as STATUS, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
@@ -31,7 +31,7 @@ function claims(list: Claim[], itemId: string, start: number, empty = '<p class=
 
 /** "What we know": the facts found beyond the descriptions (tests, code, a person's confirmation), only when there are some. */
 const known = (b: { id: string; how: Claim[]; why: Claim[]; claims: Claim[] }): string =>
-  b.claims.length ? section('What we know', claims(b.claims, b.id, b.how.length + b.why.length)) : ''
+  b.claims.length ? section(CARD_HEADINGS.know, claims(b.claims, b.id, b.how.length + b.why.length)) : ''
 
 /**
  * "Service names": what a part goes by while it runs. A building of the world has an Edit button (the
@@ -45,7 +45,7 @@ function serviceNames(doc: WorldDoc, id: string): string {
   const list = names.length ? `<span class="rtnames">${esc(names.join(', '))}</span>` : '<span class="muted">None yet</span>'
   const edit = editable ? ` <button class="edit-names" data-runtime-edit="${esc(id)}" data-names="${esc(names.join(', '))}">Edit</button>` : ''
   const by = (doc.runtimeHandSet ?? []).includes(id) ? ' <span class="muted">edited by you</span>' : ''
-  return section('Service names', `<p>${list}${by}${edit}</p>`)
+  return section(CARD_HEADINGS.serviceNames, `<p>${list}${by}${edit}</p>`)
 }
 
 function chips(doc: WorldDoc, techs: string[]): string {
@@ -70,7 +70,7 @@ export function buildingCard(doc: WorldDoc, id: string, floors: FloorsView = 'no
   const b = allBuildings(doc).find((x) => x.id === id)
   if (!b) {
     const x = doc.externals.find((e) => e.id === id)
-    return x ? `<h3>${esc(x.name)}</h3><span class="tag status-external">Outside the project</span>${section('What it is', `<p>${esc(x.kind)}${x.fog ? ' · not fully known' : ''}</p>`)}` : ''
+    return x ? `<h3>${esc(x.name)}</h3><span class="tag status-external">Outside the project</span>${section(CARD_HEADINGS.whatItIs, `<p>${esc(x.kind)}${x.fog ? ' · not fully known' : ''}</p>`)}` : ''
   }
   const edges = allEdges(doc)
   const ins = edges.filter((e) => e.to === id)
@@ -87,15 +87,15 @@ export function buildingCard(doc: WorldDoc, id: string, floors: FloorsView = 'no
   return `<h3>${esc(b.name)}${aiName}</h3>${b.techLabel ? `<p class="muted">${esc(b.techLabel)}</p>` : ''}`
     + `<p class="status"><span class="tag status-${esc(b.status)}">${esc(STATUS[b.status])}</span>${tag}</p>`
     + (runsIn.trim() ? `<div class="proc">Runs in: <b>${esc(runsIn)}</b></div>` : '')
-    + section('What it does', claims(b.how, b.id, 0))
-    + (parts ? section('What\'s inside', `<ul>${parts}</ul>`) : '')
-    + (big ? section('Why it is this big', `<p>${esc(big)}</p>`) : '')
-    + (b.stack.length ? section('Technology', `<div>${chips(doc, b.stack)}</div>`) : '')
-    + section('Why it\'s built this way', claims(b.why, b.id, b.how.length))
+    + section(CARD_HEADINGS.whatItDoes, claims(b.how, b.id, 0))
+    + (parts ? section(CARD_HEADINGS.inside, `<ul>${parts}</ul>`) : '')
+    + (big ? section(CARD_HEADINGS.whyBig, `<p>${esc(big)}</p>`) : '')
+    + (b.stack.length ? section(CARD_HEADINGS.technology, `<div>${chips(doc, b.stack)}</div>`) : '')
+    + section(CARD_HEADINGS.whyBuilt, claims(b.why, b.id, b.how.length))
     + serviceNames(doc, id)
     + known(b)
-    + (ins.length ? section('What comes in', edgeList(doc, ins, 'from')) : '')
-    + (outs.length ? section('What goes out', edgeList(doc, outs, 'to')) : '')
+    + (ins.length ? section(CARD_HEADINGS.comesIn, edgeList(doc, ins, 'from')) : '')
+    + (outs.length ? section(CARD_HEADINGS.goesOut, edgeList(doc, outs, 'to')) : '')
 }
 
 export function edgeCard(doc: WorldDoc, id: string): string {
@@ -106,21 +106,21 @@ export function edgeCard(doc: WorldDoc, id: string): string {
   const title = edgeSummary(e.label)
   const items = edgeItems(e.label)
   const carries = items
-    ? section('What it carries', `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`)
+    ? section(CARD_HEADINGS.carries, `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`)
     : title !== e.label.trim() ? `<p>${esc(e.label)}</p>` : ''
   // Which way it runs, right under its ends; the half of the sentence about the line back opens that line.
   const d = direction(doc, e)
   const back = d.reverseId !== undefined ? `<a class="lnk link-edge" data-edge="${esc(d.reverseId)}">${esc(d.link)}</a>` : esc(d.link)
   return `<h3>${esc(title)}</h3><p class="muted">${nodeLink(doc, e.from)} → ${nodeLink(doc, e.to)}</p>`
-    + section('Direction', `<p>${esc(d.before)}${back}${esc(d.after)}</p>`)
+    + section(CARD_HEADINGS.direction, `<p>${esc(d.before)}${back}${esc(d.after)}</p>`)
     + carries
-    + section('What travels', `<p>${swatch(doc, e)}${esc(cargo ? cargo.label : e.cargo)}</p>`)
+    + section(CARD_HEADINGS.travels, `<p>${swatch(doc, e)}${esc(cargo ? cargo.label : e.cargo)}</p>`)
     // A line no model described still says what the code shows.
-    + section('How it travels', claims(e.how, e.id, 0, `<p>${esc(edgeFromCode(doc, e))}</p>`))
-    + (e.tech.length ? section('Technology', `<div>${chips(doc, e.tech)}</div>`) : '')
-    + section('Why it\'s done this way', claims(e.why, e.id, e.how.length, `<p class="muted">${NO_WHY_YET}</p>`))
+    + section(CARD_HEADINGS.howTravels, claims(e.how, e.id, 0, `<p>${esc(edgeFromCode(doc, e))}</p>`))
+    + (e.tech.length ? section(CARD_HEADINGS.technology, `<div>${chips(doc, e.tech)}</div>`) : '')
+    + section(CARD_HEADINGS.whyDone, claims(e.why, e.id, e.how.length, `<p class="muted">${NO_WHY_YET}</p>`))
     + known(e)
-    + (e.rate ? section('How often', `<p>${esc(e.rate)}</p>`) : '')
+    + (e.rate ? section(CARD_HEADINGS.howOften, `<p>${esc(e.rate)}</p>`) : '')
 }
 
 /** Ids of the buildings and edges that use a technology (a building's stack or floors, or an edge's tech list). */
@@ -140,6 +140,6 @@ export function techCard(doc: WorldDoc, techId: string): string {
   const nodeRows = nodes.map((b) => `<li>${nodeLink(doc, b.id)}</li>`).join('')
   const edgeRows = edges.map((e) => `<li>${edgeLink(e)} <span class="muted">${esc(nodeName(doc, e.from))} → ${esc(nodeName(doc, e.to))}</span></li>`).join('')
   return `<h3>${esc(techId)}</h3><p>${esc(doc.glossary[techId] ?? '')}</p>`
-    + (nodes.length ? section('Used inside', `<ul>${nodeRows}</ul>`) : '')
-    + (edges.length ? section('Carries these connections', `<ul>${edgeRows}</ul>`) : '')
+    + (nodes.length ? section(CARD_HEADINGS.usedInside, `<ul>${nodeRows}</ul>`) : '')
+    + (edges.length ? section(CARD_HEADINGS.carriesConnections, `<ul>${edgeRows}</ul>`) : '')
 }

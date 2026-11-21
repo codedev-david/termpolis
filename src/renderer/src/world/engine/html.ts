@@ -1,8 +1,2 @@
-// Shared HTML escaping for every engine module that builds markup (cards, 2D fallback).
-
-const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
-
-/** Escapes `& < > " '`. Every interpolated value, attributes included, must go through this. A runtime non-string is coerced; null and undefined become ''. */
-export function escapeHtml(value: unknown): string {
-  return String(value ?? '').replace(/[&<>"']/g, (c) => ESCAPES[c])
-}
+// Shared HTML escaping for every engine module that builds markup (cards, 2D fallback): the one copy lives in shared/world/html.ts.
+export { escapeHtml } from '../../../../shared/world/html'

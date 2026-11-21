@@ -2,7 +2,7 @@
 // cards.ts), gathered by the same helpers (shared/world/cardFacts.ts, edgeText.ts), with each claim
 // followed by its state in brackets and the evidence behind it on the next line.
 import { NOT_IN_DESIGN } from '../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn, sizeNote } from '../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT, CARD_HEADINGS, serviceNamesLine, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn, sizeNote } from '../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../shared/world/edgeText'
 import type { Claim, WorldDoc, WorldEdge } from '../../shared/world/types'
 
@@ -18,7 +18,7 @@ function claimLines(list: Claim[], empty = 'Not described yet.'): string[] {
 }
 
 /** Facts found beyond the descriptions, only when there are some. */
-const known = (claims: Claim[]): string[] => (claims.length ? section('What we know', claimLines(claims)) : [])
+const known = (claims: Claim[]): string[] => (claims.length ? section(CARD_HEADINGS.know, claimLines(claims)) : [])
 
 const techLine = (doc: WorldDoc, techs: string[]): string[] =>
   techs.map((t) => (doc.glossary[t] ? `- ${t}: ${doc.glossary[t]}` : `- ${t}`))
@@ -31,7 +31,7 @@ function buildingText(doc: WorldDoc, id: string): string {
   const b = allBuildings(doc).find((x) => x.id === id)
   if (!b) {
     const x = doc.externals.find((e) => e.id === id)
-    return x ? [x.name, 'Outside the project', `What it is: ${x.kind}${x.fog ? ' · not fully known' : ''}`].join('\n') : ''
+    return x ? [x.name, 'Outside the project', `${CARD_HEADINGS.whatItIs}: ${x.kind}${x.fog ? ' · not fully known' : ''}`].join('\n') : ''
   }
   const edges = allEdges(doc)
   const ins = edges.filter((e) => e.to === id)
@@ -39,20 +39,22 @@ function buildingText(doc: WorldDoc, id: string): string {
   const run = runsIn(doc, b)
   // An agent reads the floors in this text, so the note points there rather than at a double-click.
   const big = sizeNote(doc, b, 'listed')
+  const names = serviceNamesLine(doc, id)
   const floors = b.floors.map((f) => `- ${f.name}${f.tech.length ? ` · ${f.tech.join(', ')}` : ''}`)
   const lines = [
     `${b.name}${b.nameState === 'inferred' ? ' (name suggested by AI)' : ''}`,
     ...(b.techLabel ? [b.techLabel] : []),
     `Status: ${BUILD_STATUS_TEXT[b.status]}${notInDesign(doc, id) ? `; ${NOT_IN_DESIGN}` : ''}`,
     ...(run.trim() ? [`Runs in: ${run}`] : []),
-    ...section('What it does', claimLines(b.how)),
-    ...(floors.length ? section("What's inside", floors) : []),
-    ...(big ? section('Why it is this big', [big]) : []),
-    ...(b.stack.length ? section('Technology', techLine(doc, b.stack)) : []),
-    ...section("Why it's built this way", claimLines(b.why)),
+    ...section(CARD_HEADINGS.whatItDoes, claimLines(b.how)),
+    ...(floors.length ? section(CARD_HEADINGS.inside, floors) : []),
+    ...(big ? section(CARD_HEADINGS.whyBig, [big]) : []),
+    ...(b.stack.length ? section(CARD_HEADINGS.technology, techLine(doc, b.stack)) : []),
+    ...section(CARD_HEADINGS.whyBuilt, claimLines(b.why)),
     ...known(b.claims),
-    ...(ins.length ? section('What comes in', edgeLines(doc, ins, 'from')) : []),
-    ...(outs.length ? section('What goes out', edgeLines(doc, outs, 'to')) : [])
+    ...(names ? section(CARD_HEADINGS.serviceNames, [names]) : []),
+    ...(ins.length ? section(CARD_HEADINGS.comesIn, edgeLines(doc, ins, 'from')) : []),
+    ...(outs.length ? section(CARD_HEADINGS.goesOut, edgeLines(doc, outs, 'to')) : [])
   ]
   return lines.join('\n')
 }
@@ -66,15 +68,15 @@ function edgeText(doc: WorldDoc, id: string): string {
   const lines = [
     title,
     `${nodeName(doc, e.from)} (${e.from}) -> ${nodeName(doc, e.to)} (${e.to})`,
-    ...section('Direction', [direction(doc, e).text]),
-    ...(items ? section('What it carries', items.map((i) => `- ${i}`)) : title !== e.label.trim() ? [e.label] : []),
-    ...section('What travels', [cargo ? cargo.label : e.cargo]),
+    ...section(CARD_HEADINGS.direction, [direction(doc, e).text]),
+    ...(items ? section(CARD_HEADINGS.carries, items.map((i) => `- ${i}`)) : title !== e.label.trim() ? [e.label] : []),
+    ...section(CARD_HEADINGS.travels, [cargo ? cargo.label : e.cargo]),
     // A line no model described still says what the code shows.
-    ...section('How it travels', claimLines(e.how, edgeFromCode(doc, e))),
-    ...(e.tech.length ? section('Technology', techLine(doc, e.tech)) : []),
-    ...section('Why it is done this way', claimLines(e.why, NO_WHY_YET)),
+    ...section(CARD_HEADINGS.howTravels, claimLines(e.how, edgeFromCode(doc, e))),
+    ...(e.tech.length ? section(CARD_HEADINGS.technology, techLine(doc, e.tech)) : []),
+    ...section(CARD_HEADINGS.whyDone, claimLines(e.why, NO_WHY_YET)),
     ...known(e.claims),
-    ...(e.rate ? section('How often', [e.rate]) : [])
+    ...(e.rate ? section(CARD_HEADINGS.howOften, [e.rate]) : [])
   ]
   return lines.join('\n')
 }

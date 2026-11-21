@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildingCard, edgeCard, escapeHtml, techCard, usesTech } from '../../../src/renderer/src/world/engine/cards'
+import { CARD_HEADINGS } from '../../../src/shared/world/cardFacts'
 import { building, claim, edge, minimal, rich } from './helpers'
 
 describe('escapeHtml', () => {
@@ -290,5 +291,27 @@ describe('why a building is this big', () => {
     doc.buildings.push(building('big', { members: files, floors, growth: { start: 'folder', seed: 'src/a', merged: 0, mergedFiles: 0, folded: 0, cap: 60 } }))
     expect(buildingCard(doc, 'big', 'open3d')).toContain('<p>30 files. It started as the src/a folder. Double-click it to see its floors.</p>')
     expect(buildingCard(doc, 'big')).toContain('<p>30 files. It started as the src/a folder.</p>')
+  })
+})
+
+describe('card headings', () => {
+  it('every heading the HTML card prints is a CARD_HEADINGS value', () => {
+    const doc = rich()
+    doc.runtimeNames.b1 = ['svc']
+    doc.buildings[0].claims = [claim('seen', 'observed')]
+    doc.edges[0].claims = [claim('seen', 'observed')]
+    doc.edges[0].rate = 'often'
+    const known = Object.values(CARD_HEADINGS) as string[]
+    const seen = new Set<string>()
+    for (const id of [...doc.buildings.map((b) => b.id), ...doc.edges.map((e) => e.id), 'x1', 'pb1', 'pe1']) {
+      const html = buildingCard(doc, id) || edgeCard(doc, id)
+      for (const m of html.matchAll(/<h4>([^<]*)<\/h4>/g)) {
+        const t = m[1].replace(/&#39;/g, "'")
+        expect(known).toContain(t)
+        seen.add(t)
+      }
+    }
+    expect(seen.has(CARD_HEADINGS.serviceNames)).toBe(true)
+    expect(seen.has(CARD_HEADINGS.whatItIs)).toBe(true)
   })
 })

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { cardText } from '../../src/main/world/cardText'
 import { labelWorld } from '../../src/main/world/label'
 import { buildingCard, edgeCard } from '../../src/renderer/src/world/engine/cards'
+import { CARD_HEADINGS } from '../../src/shared/world/cardFacts'
 import { building, claim, edge, minimal, rich } from '../renderer/world/helpers'
 
 /** The claim texts and states an HTML card shows, in order. */
@@ -229,5 +230,22 @@ describe('cardText', () => {
     doc.buildings.push(building('lonely'))
     expect(cardText(doc, 'lonely')).not.toContain('What comes in')
     expect(cardText(doc, 'lonely')).not.toContain('What goes out')
+  })
+
+  it('cardText uses the HTML card headings', () => {
+    const doc = rich()
+    const text = cardText(doc, 'e1')
+    expect(text).toContain(`${CARD_HEADINGS.whyDone}:`)
+    expect(text).not.toContain('Why it is done this way')
+  })
+
+  it('cardText lists service names like the card', () => {
+    const doc = rich()
+    doc.runtimeNames.b1 = ['svc-a', 'svc-b']
+    expect(cardText(doc, 'b1')).toContain(`${CARD_HEADINGS.serviceNames}:
+svc-a, svc-b`)
+    doc.runtimeHandSet = ['b1']
+    expect(cardText(doc, 'b1')).toContain('svc-a, svc-b (edited by you)')
+    expect(cardText(doc, 'b3')).not.toContain(CARD_HEADINGS.serviceNames)
   })
 })
