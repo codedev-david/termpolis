@@ -1724,7 +1724,7 @@ describe('WorldView export', () => {
     expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('repo')
     expect(pictureBox().disabled).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Save…' }))
-    expect(b.api.worldDocument).toHaveBeenCalledWith({ root: '/repo', designKey: undefined, title: 'repo', picturePng: PNG })
+    expect(b.api.worldDocument).toHaveBeenCalledWith({ root: '/repo', designKey: undefined, title: 'repo', picturePng: PNG, documentId: expect.any(String) })
     await settle()
     expect(screen.queryByTestId('world-document-dialog')).toBeNull()
     expect(screen.getByTestId('world-notice')).toHaveTextContent('Exported repo documentation.html (0.1 MB)')

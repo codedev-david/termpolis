@@ -1345,6 +1345,8 @@ describe('preload — workflow orchestrator bridge', () => {
       [() => api.worldExport({ exportId: 'x1', designKey: 'design:d1', smart: true, proposalId: 'p1' }), 'world:export', { exportId: 'x1', designKey: 'design:d1', smart: true, proposalId: 'p1' }],
       [() => api.worldExportCancel('x1'), 'world:export-cancel', { exportId: 'x1' }],
       [() => api.worldDocument({ root: 'C:/r', title: 'Shop', picturePng: 'data:image/png;base64,AA==' }), 'world:document', { root: 'C:/r', title: 'Shop', picturePng: 'data:image/png;base64,AA==' }],
+      [() => api.worldDocument({ documentId: 'd1', designKey: 'design:a', title: 'Shop' }), 'world:document', { documentId: 'd1', designKey: 'design:a', title: 'Shop' }],
+      [() => api.worldDocumentCancel('d1'), 'world:document-cancel', { documentId: 'd1' }],
       [() => api.worldShowFile('C:/x/a.html'), 'world:show-file', { path: 'C:/x/a.html' }],
       [() => api.worldOpenFile('C:/x/a.html'), 'world:open-file', { path: 'C:/x/a.html' }],
     ]

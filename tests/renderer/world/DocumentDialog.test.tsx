@@ -22,6 +22,7 @@ type DocRes = Res<{ path: string; bytes: number } | { cancelled: true }>
 function bridge(over: Record<string, unknown> = {}) {
   const api = {
     worldDocument: vi.fn(async (_req: unknown): Promise<DocRes> => ok({ path: 'C:/Users/me/Documents/termpolis documentation.html', bytes: 90_000 })),
+    worldDocumentCancel: vi.fn(async (_id: string) => ok(true)),
     ...over,
   }
   ;(window as any).termpolis = api
@@ -46,7 +47,10 @@ const title = () => screen.getByLabelText('Title') as HTMLInputElement
 const pictureBox = () => screen.getByLabelText('Include the city picture') as HTMLInputElement
 const save = () => screen.getByRole('button', { name: /^Save…$|^Saving…$/ })
 
-beforeEach(() => { vi.clearAllMocks() })
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue('id-1' as ReturnType<typeof crypto.randomUUID>)
+})
 afterEach(() => { cleanup() })
 
 describe('DocumentDialog', () => {
@@ -65,7 +69,7 @@ describe('DocumentDialog', () => {
     fireEvent.click(save())
     expect(save()).toHaveTextContent('Saving…')
     expect(save()).toBeDisabled()
-    expect(api.worldDocument).toHaveBeenCalledWith({ root: '/repo', designKey: undefined, title: 'Termpolis guide', picturePng: PNG })
+    expect(api.worldDocument).toHaveBeenCalledWith({ documentId: 'id-1', root: '/repo', designKey: undefined, title: 'Termpolis guide', picturePng: PNG })
     await settle()
     expect(m.onSaved).toHaveBeenCalledWith({ path: 'C:/Users/me/Documents/termpolis documentation.html', bytes: 90_000 })
     expect(m.onClose).toHaveBeenCalledTimes(1)
@@ -76,7 +80,7 @@ describe('DocumentDialog', () => {
     mount({ designKey: 'design:d1' })
     fireEvent.click(pictureBox())
     fireEvent.click(save())
-    expect(api.worldDocument).toHaveBeenCalledWith({ root: undefined, designKey: 'design:d1', title: 'termpolis', picturePng: undefined })
+    expect(api.worldDocument).toHaveBeenCalledWith({ documentId: 'id-1', root: undefined, designKey: 'design:d1', title: 'termpolis', picturePng: undefined })
   })
 
   it('with no picture to take the checkbox is off and disabled, and says why', () => {
@@ -94,6 +98,18 @@ describe('DocumentDialog', () => {
     mount()
     fireEvent.change(title(), { target: { value: '   ' } })
     expect(save()).toBeDisabled()
+  })
+
+  it("the title takes up to 200 characters, main's limit, so main's argument error never shows", () => {
+    bridge()
+    mount()
+    expect(title()).toHaveAttribute('maxLength', '200')
+  })
+
+  it('a project name longer than that starts cut to 200 characters', () => {
+    bridge()
+    render(<DocumentDialog root="/repo" projectName={'n'.repeat(250)} picture={() => null} onSaved={vi.fn()} onClose={vi.fn()} />)
+    expect((title() as HTMLInputElement).value).toBe('n'.repeat(200))
   })
 
   it('a closed save dialog returns to the dialog; an error shows its sentence; a thrown call says Lumopolis could not', async () => {
@@ -122,10 +138,70 @@ describe('DocumentDialog', () => {
     expect(m.onClose).not.toHaveBeenCalled()
   })
 
-  it('Cancel closes', () => {
-    bridge()
+  it('Cancel closes; with no save running there is nothing to stop', () => {
+    const api = bridge()
     const m = mount()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(m.onClose).toHaveBeenCalledTimes(1)
+    expect(api.worldDocumentCancel).not.toHaveBeenCalled()
+  })
+
+  it('Cancel while saving stops that save in main, closes, and the cancelled answer shows nothing', async () => {
+    const pending = deferred<DocRes>()
+    const api = bridge({ worldDocument: vi.fn(() => pending.promise) })
+    const m = mount()
+    fireEvent.click(save())
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(api.worldDocumentCancel).toHaveBeenCalledWith('id-1')
+    expect(m.onClose).toHaveBeenCalledTimes(1)
+    await act(async () => { pending.resolve(ok({ cancelled: true as const })) })
+    await settle()
+    expect(m.onSaved).not.toHaveBeenCalled()
+    expect(m.onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('a save that failed after a cancel shows no error, and a stop that throws is ignored', async () => {
+    const pending = deferred<DocRes>()
+    const api = bridge({ worldDocument: vi.fn(() => pending.promise), worldDocumentCancel: vi.fn(async () => { throw new Error('gone') }) })
+    const m = mount()
+    fireEvent.click(save())
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await act(async () => { pending.resolve(fail('Termpolis could not')) })
+    await settle()
+    expect(api.worldDocumentCancel).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(m.onSaved).not.toHaveBeenCalled()
+  })
+
+  it('a thrown save after a cancel shows nothing either', async () => {
+    let reject!: (e: unknown) => void
+    bridge({ worldDocument: vi.fn(() => new Promise((_res, rej) => { reject = rej })) })
+    const m = mount()
+    fireEvent.click(save())
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await act(async () => { reject(new Error('x')) })
+    await settle()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(m.onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('closing the pane while saving stops the save too', async () => {
+    const api = bridge({ worldDocument: vi.fn(() => new Promise(() => undefined)) })
+    const m = mount()
+    fireEvent.click(save())
+    m.unmount()
+    expect(api.worldDocumentCancel).toHaveBeenCalledWith('id-1')
+  })
+
+  it('a cancel that lost the race (the file was already saved) still reports the file, closing only once', async () => {
+    const pending = deferred<DocRes>()
+    bridge({ worldDocument: vi.fn(() => pending.promise) })
+    const m = mount()
+    fireEvent.click(save())
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await act(async () => { pending.resolve(ok({ path: 'C:/d.html', bytes: 9 })) })
+    await settle()
+    expect(m.onSaved).toHaveBeenCalledWith({ path: 'C:/d.html', bytes: 9 })
     expect(m.onClose).toHaveBeenCalledTimes(1)
   })
 })

@@ -13,11 +13,15 @@
 //   world:export-cancel { exportId }                                  -> ok(true) when that export was running, else ok(false)
 //       A cancel that loses the race (the file was already renamed into place) still answers ok(true); the
 //       export's own answer, ok({ path }), is the truth, so the renderer trusts that and the file stays.
-//   world:document      { root? | designKey?, title, picturePng? }    -> ok({ path, bytes }) | ok({ cancelled: true })
+//   world:document      { documentId?, root? | designKey?, title, picturePng? } -> ok({ path, bytes }) | ok({ cancelled: true })
+//   world:document-cancel { documentId }                              -> ok(true) when that save was running, else ok(false)
+//       As with an export, a cancel that loses the race (the file already renamed into place) leaves the file and
+//       the save's own answer, ok({ path }), stands.
 //   world:show-file     { path }  shell.showItemInFolder, for an exported file only
 //   world:open-file     { path }  shell.openPath, for an exported file only
 // and pushes world:export-progress { exportId, step, done, total } while an export runs. A smart export that can't
 // use the model answers err(...) with `keywordOnly: true`: the renderer can offer the same export with keyword Ask.
+// A world that fails its checks answers the plain sentence; the validator's text goes to the app log only.
 import { join, posix, win32 } from 'node:path'
 import { err, ok } from '../ipcResult'
 import type { SanitizeContext } from '../../shared/world/exportSanitize'
@@ -25,9 +29,11 @@ import type { WorldDoc, WorldEntry } from '../../shared/world/types'
 import { worldTitle } from '../../shared/world/worldTitle'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND } from './designer'
 import {
-  describedShare, estimateExportBytes, exportWorld, NO_MODEL, NO_RUNTIME, writeDocument,
-  type ExportAssets, type ExportFs, type ExportProgress,
+  describedShare, estimateExportBytes, exportWorld, NO_MODEL, NO_RUNTIME, NOT_EXPORTABLE, writeDocument,
+  type ExportAssets, type ExportFs, type ExportProgress, type ExportResult,
 } from './export'
+
+export { NOT_EXPORTABLE }
 import type { WorldIpcMain } from './ipc'
 
 export interface WorldExportDeps {
@@ -60,15 +66,17 @@ export interface WorldExportDeps {
   platform?: NodeJS.Platform
   /** Default the clock: the page's "exported on" and the documentation's "generated on" day. */
   now?: () => Date
+  /** Writes a line to the app log. Default console.warn, which main mirrors into the app log. */
+  log?: (message: string) => void
 }
 
 export const WORLD_REQUIRED = 'Choose a folder or a design to export.'
 export const NO_SAVED_WORLD = "There's no saved map for that folder yet."
 export const READ_FAILED = "Lumopolis couldn't read that world. Try again."
-export const NOT_EXPORTABLE = "This world didn't pass its checks, so it can't be exported."
 export const EXPORT_FAILED = "Lumopolis couldn't export that world. Try again."
 export const DOCUMENT_FAILED = "Lumopolis couldn't write that documentation. Try again."
 export const ALREADY_RUNNING = 'That export is already running.'
+export const DOCUMENT_RUNNING = 'That documentation is already being written.'
 export const WHOLE_DESIGN = 'A design exports whole, so it takes no proposal.'
 export const NOT_EXPORTED = 'That file was not exported here.'
 export const OPEN_FAILED = "Termpolis couldn't open that file."
@@ -76,6 +84,8 @@ export const OPEN_FAILED = "Termpolis couldn't open that file."
 export const KEYWORD_ONLY = "Smart Ask couldn't index this world, so this export can use keyword Ask only."
 
 const ID_REQUIRED = 'exportId required'
+const DOCUMENT_ID_REQUIRED = 'documentId required'
+const DOCUMENT_ID_SHORT = 'documentId must be a short string'
 const SMART_REQUIRED = 'smart must be true or false'
 const PROPOSAL_REQUIRED = 'proposalId must be a short string'
 const TITLE_REQUIRED = 'title must be a string (up to 200 characters)'
@@ -130,11 +140,13 @@ interface Resolved { doc: WorldDoc; ctx: SanitizeContext; title: string; design:
 export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps): void {
   const platform = deps.platform ?? process.platform
   const now = deps.now ?? (() => new Date())
+  const log = deps.log ?? ((message: string) => console.warn(message))
   const paths = platform === 'win32' ? win32 : posix
   /** An exported path's key: normalised and absolute, in any letter case on Windows only. */
   const keyOf = (p: string): string => (platform === 'win32' ? win32.resolve(p).toLowerCase() : posix.resolve(p))
   const exported = new Map<string, string>()
   const running = new Map<string, AbortController>()
+  const documents = new Map<string, AbortController>()
 
   const ctxOf = (root: string | null): SanitizeContext => ({ root, home: deps.homeDir, userData: deps.userDataDir })
   const titleOf = async (at: { root: string | null; designKey: string | null }): Promise<string> =>
@@ -183,6 +195,12 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
     } catch {
       // The window is gone: the export still finishes and its file is still written.
     }
+  }
+
+  /** A failure's sentence for the renderer; its detail (the validator's text) goes to the app log only. */
+  const failed = (what: string, result: Extract<ExportResult, { ok: false }>) => {
+    if (result.detail !== undefined) log(`Lumopolis ${what}: the world failed its checks: ${result.detail}`)
+    return err(result.error)
   }
 
   const saved = (path: string, bytes: number) => {
@@ -247,7 +265,7 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
       if (result.ok) return saved(result.path, result.bytes)
       if (result.cancelled) return ok({ cancelled: true })
       // The assets said the model is here, yet it couldn't index this world: never "isn't installed".
-      return result.keywordOnly ? keywordOnly(KEYWORD_ONLY) : err(result.error)
+      return result.keywordOnly ? keywordOnly(KEYWORD_ONLY) : failed('export', result)
     } catch {
       return err(EXPORT_FAILED)
     } finally {
@@ -264,25 +282,44 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
   })
 
   ipc.handle('world:document', async (_event: unknown, args?: unknown) => {
+    const documentId = field(args, 'documentId')
     const title = field(args, 'title')
     const picturePng = field(args, 'picturePng')
+    if (documentId !== undefined && !shortString(documentId, MAX_ID)) return err(DOCUMENT_ID_SHORT)
     if (typeof title !== 'string' || title.length > MAX_TITLE) return err(TITLE_REQUIRED)
     if (picturePng !== undefined && !isPngUrl(picturePng)) return err(PICTURE_REQUIRED)
+    if (documentId !== undefined && documents.has(documentId)) return err(DOCUMENT_RUNNING)
+    // Reserved before the first await, so a cancel sent right after the request finds it.
+    const controller = new AbortController()
+    if (documentId !== undefined) documents.set(documentId, controller)
     try {
       const world = await resolveWorld(args)
       if (typeof world === 'string') return err(world)
+      if (controller.signal.aborted) return ok({ cancelled: true })
       // The person's title, else the world's own; writeDocument sanitises it either way.
       const name = title.trim() || world.title
       const target = await pickTarget(defaultSaveName(name, 'document'))
-      if (target === null) return ok({ cancelled: true })
+      if (target === null || controller.signal.aborted) return ok({ cancelled: true })
       const result = await writeDocument(
         { doc: world.doc, ctx: world.ctx, title: name, ...(typeof picturePng === 'string' ? { picturePng } : {}), target, generatedOn: localDay(now()) },
         deps.fs,
+        controller.signal,
       )
-      return result.ok ? saved(result.path, result.bytes) : err(result.error)
+      if (result.ok) return saved(result.path, result.bytes)
+      return result.cancelled ? ok({ cancelled: true }) : failed('documentation', result)
     } catch {
       return err(DOCUMENT_FAILED)
+    } finally {
+      if (documentId !== undefined) documents.delete(documentId)
     }
+  })
+
+  ipc.handle('world:document-cancel', (_event: unknown, args?: unknown) => {
+    const documentId = field(args, 'documentId')
+    if (!shortString(documentId, MAX_ID)) return err(DOCUMENT_ID_REQUIRED)
+    const controller = documents.get(documentId)
+    controller?.abort()
+    return ok(controller !== undefined)
   })
 
   /** The exported file a request names, as it was saved; undefined when this session didn't export it. */

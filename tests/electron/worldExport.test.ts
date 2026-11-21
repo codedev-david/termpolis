@@ -16,7 +16,7 @@ import type { WorldDoc } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import {
   CANCELLED, DEFAULT_EXPORT_SIZES, describedShare, EMBED_CHUNK, estimateExportBytes, EXPORT_CSP, exportPageHtml, exportWorld,
-  devRoots, FILE_IN_USE, NO_ACCESS, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, resolveExportAssets, SMART_DEFAULT_SHARE, writeDocument,
+  devRoots, FILE_IN_USE, NO_ACCESS, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, NOT_DOCUMENTABLE, NOT_EXPORTABLE, resolveExportAssets, SMART_DEFAULT_SHARE, writeDocument,
   type ExportAssets, type ExportDeps, type ExportFs, type ExportProgress, type ExportRequest, type ExportSizes,
 } from '../../src/main/world/export'
 import { embedBatch } from '../../src/main/localEmbedder'
@@ -324,8 +324,9 @@ describe('exportWorld: the page', () => {
     for (const doc of [{ ...labelledWorld(), buildings: 'none' }, { ...labelledWorld(), layers: null }, null]) {
       const { d, mem } = deps()
       const r = await exportWorld(request({ doc: doc as unknown as WorldDoc }), d)
-      expect(r.ok).toBe(false)
-      expect(!r.ok && r.error).toMatch(/^This world didn't pass its checks, so it can't be exported \(.+\)\.$/)
+      // The person reads a plain sentence; the validator's text goes to the app log (exportIpc), never the dialog.
+      expect(r).toEqual({ ok: false, error: NOT_EXPORTABLE, detail: expect.any(String) })
+      expect(!r.ok && r.detail).not.toBe('')
       expect(mem.fs.writeFile).not.toHaveBeenCalled()
     }
   })
@@ -337,8 +338,7 @@ describe('exportWorld: the page', () => {
     doc.edges[0].from = 'nowhere'
     const b = deps()
     const r = await exportWorld(request({ doc }), b.d)
-    expect(r.ok).toBe(false)
-    expect(!r.ok && r.error).toMatch(/^This world didn't pass its checks, so it can't be exported \(.+\)\.$/)
+    expect(r).toEqual({ ok: false, error: NOT_EXPORTABLE, detail: expect.stringContaining('nowhere') })
     expect(a.mem.fs.writeFile).not.toHaveBeenCalled()
     expect(b.mem.fs.writeFile).not.toHaveBeenCalled()
   })
@@ -349,7 +349,7 @@ describe('exportWorld: the page', () => {
     expect(validateWorld(doc).ok).toBe(true)
     const { d, mem } = deps()
     const r = await exportWorld(request({ doc }), d)
-    expect(!r.ok && r.error).toMatch(/^This world didn't pass its checks, so it can't be exported \(.*claim without evidence\)\.$/)
+    expect(r).toEqual({ ok: false, error: NOT_EXPORTABLE, detail: expect.stringMatching(/claim without evidence$/) })
     expect(mem.fs.writeFile).not.toHaveBeenCalled()
   })
 })
@@ -518,6 +518,67 @@ describe('exportWorld: writing the file', () => {
     expect(three.mem.written.size).toBe(0)
   })
 
+  it('a cancel while the runtime is read stops before the model files are read, and writes nothing', async () => {
+    const ac = new AbortController()
+    const mem = memFs()
+    const read = mem.fs.readFile
+    mem.fs.readFile = vi.fn(async (p: string) => { const f = await read(p); if (p === ASSETS.runtimeJs) ac.abort(); return f })
+    const r = await exportWorld(request(), deps({ mem, signal: ac.signal }).d)
+    expect(r).toEqual({ ok: false, error: CANCELLED, cancelled: true })
+    expect(vi.mocked(mem.fs.readFile).mock.calls.map((c) => c[0])).toEqual([ASSETS.runtimeJs])
+    expect(mem.fs.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('a cancel while the model files are read stops before they are parsed or compressed, and before anything is embedded', async () => {
+    const ac = new AbortController()
+    const mem = memFs()
+    const read = mem.fs.readFile
+    // The tokenizer read back is not JSON: parsing it would answer keyword-only, so a cancelled answer proves the
+    // export stopped right after the reads, before parsing and compressing.
+    mem.fs.readFile = vi.fn(async (p: string) => {
+      const f = await read(p)
+      if (p === ASSETS.modelFile) ac.abort()
+      return p.endsWith('tokenizer.json') ? Buffer.from('not json') : f
+    })
+    const embed = vi.fn(embedAll)
+    const r = await exportWorld(request(), deps({ mem, embed, signal: ac.signal }).d)
+    expect(r).toEqual({ ok: false, error: CANCELLED, cancelled: true })
+    expect(embed).not.toHaveBeenCalled()
+    expect(mem.fs.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('a cancel while the model files are compressed stops before anything is embedded', async () => {
+    const ac = new AbortController()
+    // The cancel lands as the tokenizer is parsed, after the reads: the compression that follows runs, and the
+    // export stops when it ends.
+    const parse = JSON.parse
+    const spy = vi.spyOn(JSON, 'parse').mockImplementation((text: string, reviver?: (this: unknown, key: string, value: unknown) => unknown) => {
+      ac.abort()
+      return parse(text, reviver)
+    })
+    const embed = vi.fn(embedAll)
+    const progress = vi.fn()
+    try {
+      const { d, mem } = deps({ embed, progress, signal: ac.signal })
+      expect(await exportWorld(request(), d)).toEqual({ ok: false, error: CANCELLED, cancelled: true })
+      expect(spy).toHaveBeenCalled()
+      expect(embed).not.toHaveBeenCalled()
+      expect(progress.mock.calls).toEqual([[{ step: 'prepare', done: 0, total: 1 }]]) // the reads never finished
+      expect(mem.fs.writeFile).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('a cancel while the page blocks are compressed writes nothing', async () => {
+    const ac = new AbortController()
+    let n = 0
+    const progress = (p: ExportProgress): void => { if (p.step === 'write' && p.done === 0 && n++ === 0) queueMicrotask(() => ac.abort()) }
+    const { d, mem } = deps({ signal: ac.signal, progress })
+    expect(await exportWorld(request({ smart: false }), d)).toEqual({ ok: false, error: CANCELLED, cancelled: true })
+    expect(mem.fs.writeFile).not.toHaveBeenCalled()
+  })
+
   it.each([['ENOSPC', NO_SPACE], ['EACCES', NO_ACCESS], ['EPERM', NO_ACCESS], ['EROFS', NO_ACCESS]])('a write failing with %s says so and removes the .part', async (code, sentence) => {
     const mem = memFs({ write: () => coded(code) })
     expect(await exportWorld(request({ smart: false }), deps({ mem }).d)).toEqual({ ok: false, error: sentence })
@@ -580,12 +641,30 @@ describe('writeDocument', () => {
   })
 })
 
+describe('writeDocument: a cancel', () => {
+  const docReq = (target: string) => ({ doc: labelledWorld(), ctx: CTX, title: 'Shop', target, generatedOn: '2026-11-21' })
+
+  it('a cancel before the write writes nothing; one during the write removes the .part and never renames', async () => {
+    const before = new AbortController()
+    before.abort()
+    const one = memFs()
+    expect(await writeDocument(docReq('D:/d.html'), one.fs, before.signal)).toEqual({ ok: false, error: CANCELLED, cancelled: true })
+    expect(one.fs.writeFile).not.toHaveBeenCalled()
+
+    const during = new AbortController()
+    const two = memFs({ onWrite: () => during.abort() })
+    expect(await writeDocument(docReq('D:/d.html'), two.fs, during.signal)).toEqual({ ok: false, error: CANCELLED, cancelled: true })
+    expect(two.fs.rename).not.toHaveBeenCalled()
+    expect(two.written.size).toBe(0)
+  })
+})
+
 describe('writeDocument: a malformed world', () => {
   it('is refused with a sentence, never thrown, and nothing is written', async () => {
     const mem = memFs()
     const r = await writeDocument({ doc: { ...labelledWorld(), edges: 7 } as unknown as WorldDoc, ctx: CTX, title: 'Shop', target: 'D:/d.html', generatedOn: '2026-11-21' }, mem.fs)
-    expect(r.ok).toBe(false)
-    expect(!r.ok && r.error).toMatch(/^This world didn't pass its checks, so its documentation can't be written \(.+\)\.$/)
+    expect(r).toEqual({ ok: false, error: NOT_DOCUMENTABLE, detail: expect.any(String) })
+    expect(NOT_DOCUMENTABLE).toBe("This world didn't pass its checks, so its documentation can't be written.")
     expect(mem.fs.writeFile).not.toHaveBeenCalled()
   })
 

@@ -10,7 +10,7 @@ import {
   ALREADY_RUNNING, DOCUMENT_FAILED, EXPORT_FAILED, KEYWORD_ONLY, NO_SAVED_WORLD, NOT_EXPORTABLE, NOT_EXPORTED, OPEN_FAILED, WHOLE_DESIGN, WORLD_REQUIRED,
   defaultSaveName, registerWorldExportIpc, type WorldExportDeps,
 } from '../../src/main/world/exportIpc'
-import { describedShare, estimateExportBytes, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, type ExportAssets, type ExportFs } from '../../src/main/world/export'
+import { describedShare, estimateExportBytes, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, NOT_DOCUMENTABLE, type ExportAssets, type ExportFs } from '../../src/main/world/export'
 import { DESIGN_NOT_FOUND } from '../../src/main/world/designer'
 import { ok, err } from '../../src/main/ipcResult'
 import type { WorldDoc, WorldEntry } from '../../src/shared/world/types'
@@ -146,7 +146,7 @@ describe('defaultSaveName', () => {
 describe('registerWorldExportIpc', () => {
   it('registers the export, cancel, document, show and open channels', () => {
     const { handlers } = setup()
-    expect([...handlers.keys()].sort()).toEqual(['world:document', 'world:export', 'world:export-cancel', 'world:export-info', 'world:open-file', 'world:show-file'])
+    expect([...handlers.keys()].sort()).toEqual(['world:document', 'world:document-cancel', 'world:export', 'world:export-cancel', 'world:export-info', 'world:open-file', 'world:show-file'])
   })
 })
 
@@ -440,6 +440,29 @@ describe('world:export', () => {
   })
 })
 
+describe('a world that fails its checks', () => {
+  it('answers the plain sentence and writes the validator text to the app log only', async () => {
+    const log = vi.fn()
+    const { call } = setup({ log })
+    const exp = await call('world:export', { exportId: 'x1', root: BROKEN, smart: false })
+    expect(exp).toEqual(err(NOT_EXPORTABLE))
+    expect(log).toHaveBeenCalledWith('Lumopolis export: the world failed its checks: edges must be an array')
+    const doc = await call('world:document', { root: BROKEN, title: 'Shop' })
+    expect(doc).toEqual(err(NOT_DOCUMENTABLE))
+    expect(log).toHaveBeenLastCalledWith('Lumopolis documentation: the world failed its checks: edges must be an array')
+  })
+
+  it('logs through the console (which main mirrors into the app log) when no log is given', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await setup().call('world:export', { exportId: 'x1', root: BROKEN, smart: false })
+      expect(warn).toHaveBeenCalledWith('Lumopolis export: the world failed its checks: edges must be an array')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
 describe('world:export-cancel', () => {
   it('answers false for an export that is not running, and refuses a bad id', async () => {
     const { call } = setup()
@@ -478,6 +501,49 @@ describe('world:document', () => {
     const full = setup({ mem: memFs({ write: Object.assign(new Error('full'), { code: 'ENOSPC' }) }) })
     expect(await full.call('world:document', { root: ROOT, title: 'Shop' })).toEqual(err(NO_SPACE))
     expect(await full.call('world:show-file', { path: join(DOCS, 'Shop - Lumopolis documentation.html') })).toEqual(err(NOT_EXPORTED))
+  })
+
+  it('world:document-cancel stops that save: while the dialog is open nothing is written, and the answer is cancelled', async () => {
+    let cancel: () => Promise<unknown> = async () => undefined
+    const saveDialog = vi.fn(async (defaultPath: string) => { await cancel(); return defaultPath })
+    const { call, mem } = setup({ saveDialog })
+    cancel = () => call('world:document-cancel', { documentId: 'd1' })
+    expect(await call('world:document', { documentId: 'd1', root: ROOT, title: 'Shop' })).toEqual(ok({ cancelled: true }))
+    expect(mem.fs.writeFile).not.toHaveBeenCalled()
+    expect(mem.written.size).toBe(0)
+  })
+
+  it('a cancel while the world loads never opens the dialog; one during the write leaves no file', async () => {
+    let release: () => void = () => undefined
+    const loading = setup({ getWorld: vi.fn(() => new Promise<WorldDoc>((r) => { release = () => r(shopWorld()) })) })
+    const pending = loading.call('world:document', { documentId: 'd1', root: ROOT, title: 'Shop' })
+    expect(await loading.call('world:document-cancel', { documentId: 'd1' })).toEqual(ok(true))
+    release()
+    expect(await pending).toEqual(ok({ cancelled: true }))
+    expect(loading.deps.saveDialog).not.toHaveBeenCalled()
+
+    const mem = memFs()
+    const writing = setup({ mem })
+    const write = mem.fs.writeFile
+    mem.fs.writeFile = vi.fn(async (p: string, d: string | Uint8Array) => { await writing.call('world:document-cancel', { documentId: 'd2' }); return write(p, d) })
+    expect(await writing.call('world:document', { documentId: 'd2', root: ROOT, title: 'Shop' })).toEqual(ok({ cancelled: true }))
+    expect(mem.written.size).toBe(0)
+    expect(mem.fs.rename).not.toHaveBeenCalled()
+  })
+
+  it('world:document-cancel answers false when that save is not running, and refuses a bad id; a save runs once per id', async () => {
+    const { call } = setup()
+    expect(await call('world:document-cancel', { documentId: 'none' })).toEqual(ok(false))
+    expect(await call('world:document-cancel', { documentId: 3 })).toEqual(err('documentId required'))
+    expect(await call('world:document', { documentId: 7, root: ROOT, title: 'Shop' })).toEqual(err('documentId must be a short string'))
+    let release: () => void = () => undefined
+    const slow = setup({ getWorld: vi.fn(() => new Promise<WorldDoc>((r) => { release = () => r(shopWorld()) })) })
+    const first = slow.call('world:document', { documentId: 'd1', root: ROOT, title: 'Shop' })
+    expect(await slow.call('world:document', { documentId: 'd1', root: ROOT, title: 'Shop' })).toEqual(err('That documentation is already being written.'))
+    release()
+    expect((await first).success).toBe(true)
+    // Finished: the id is free again, and a cancel finds nothing.
+    expect(await slow.call('world:document-cancel', { documentId: 'd1' })).toEqual(ok(false))
   })
 
   it("takes the test run's save path", async () => {

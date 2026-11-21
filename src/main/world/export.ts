@@ -114,7 +114,13 @@ export interface ExportDeps {
   progress(p: ExportProgress): void
 }
 
-export type ExportResult = { ok: true; path: string; bytes: number } | { ok: false; error: string; cancelled?: boolean; keywordOnly?: boolean }
+/** A failure's `error` is the sentence the person reads; `detail`, when there is one, is the validator's text, for
+ *  the app log only (exportIpc logs it), never shown. */
+export type ExportResult = { ok: true; path: string; bytes: number } | { ok: false; error: string; detail?: string; cancelled?: boolean; keywordOnly?: boolean }
+
+/** A world that fails its checks: the sentence the person reads (the validator's text goes to the app log). */
+export const NOT_EXPORTABLE = "This world didn't pass its checks, so it can't be exported."
+export const NOT_DOCUMENTABLE = "This world didn't pass its checks, so its documentation can't be written."
 
 export const NO_SPACE = "There isn't enough space on that drive to save the file."
 export const NO_ACCESS = "Termpolis can't write to that folder. Choose another one."
@@ -205,9 +211,10 @@ const b64Length = (n: number): number => Math.ceil(n / 3) * 4
 const withPlan = (doc: WorldDoc, plan: WorldDoc['layers']['plan']): WorldDoc => ({ ...doc, layers: { ...doc.layers, plan } })
 
 /** What a request exports: the world as the page shows it, its sanitised title, or why it can't be exported. */
-type Prepared = { ok: true; doc: WorldDoc; title: string; proposalId?: string } | { ok: false; error: string }
+type Prepared = { ok: true; doc: WorldDoc; title: string; proposalId?: string } | { ok: false; error: string; detail?: string }
 
-const failedChecks = (what: string, error: string): string => `This world didn't pass its checks, so ${what} (${error}).`
+/** A failed check: the plain sentence, with the validator's first error as the detail for the app log. */
+const failedChecks = (error: string, detail: string): { ok: false; error: string; detail: string } => ({ ok: false, error, detail })
 
 /**
  * The world as the page shows it (spec 5.2). It is checked before the sanitiser reads it (a malformed world is
@@ -218,7 +225,7 @@ const failedChecks = (what: string, error: string): string => `This world didn't
  */
 function prepareWorld(req: Pick<ExportRequest, 'doc' | 'ctx' | 'title' | 'proposalId'>): Prepared {
   const first = validateWorld(req.doc)
-  if (!first.ok) return { ok: false, error: failedChecks("it can't be exported", first.errors[0]) }
+  if (!first.ok) return failedChecks(NOT_EXPORTABLE, first.errors[0])
   const clean = sanitizeWorld(first.doc, req.ctx)
   let plan: WorldDoc['layers']['plan'] = []
   if (req.proposalId !== undefined) {
@@ -229,7 +236,7 @@ function prepareWorld(req: Pick<ExportRequest, 'doc' | 'ctx' | 'title' | 'propos
     plan = clean.layers.plan
   }
   const checked = validateWorld(withPlan(clean, plan))
-  if (!checked.ok) return { ok: false, error: failedChecks("it can't be exported", checked.errors[0]) }
+  if (!checked.ok) return failedChecks(NOT_EXPORTABLE, checked.errors[0])
   return { ok: true, doc: checked.doc, title: sanitizeText(req.title, req.ctx), ...(req.proposalId !== undefined ? { proposalId: req.proposalId } : {}) }
 }
 
@@ -283,6 +290,7 @@ const removeQuietly = (fs: ExportFs, path: string): Promise<void> => fs.rm(path,
  * removed and `target` is left as it was. The size is the written file's, or the data's when it cannot be read.
  */
 async function writeAtomically(fs: ExportFs, part: string, target: string, data: string, signal?: AbortSignal): Promise<ExportResult> {
+  if (signal?.aborted) return { ok: false, error: CANCELLED, cancelled: true }
   let phase: 'write' | 'rename' = 'write'
   try {
     await fs.writeFile(part, data)
@@ -310,8 +318,9 @@ const readOr = (fs: ExportFs, path: string, onFail: ExportResult): Promise<Uint8
 
 const keywordOnly: ExportResult = { ok: false, error: NO_MODEL, keywordOnly: true }
 
-/** The smart Ask blocks besides the index: the tokenizer (both files, as JSON), the ORT wasm and the model. */
-async function smartFiles(fs: ExportFs, assets: ExportAssets): Promise<{ id: string; gz64: string }[]> {
+/** The smart Ask blocks besides the index: the tokenizer (both files, as JSON), the ORT wasm and the model. Null
+ *  when a cancel came while they were read: the 37 MB are then never parsed or compressed. */
+async function smartFiles(fs: ExportFs, assets: ExportAssets, signal: AbortSignal): Promise<{ id: string; gz64: string }[] | null> {
   const dir = assets.modelDir
   const [tokenizer, tokenizerConfig, wasm, model] = await Promise.all([
     readOr(fs, dir === '' ? '' : join(dir, 'tokenizer.json'), keywordOnly),
@@ -319,6 +328,7 @@ async function smartFiles(fs: ExportFs, assets: ExportAssets): Promise<{ id: str
     readOr(fs, assets.ortWasm, keywordOnly),
     readOr(fs, assets.modelFile, keywordOnly),
   ])
+  if (signal.aborted) return null
   const text = (b: Uint8Array): unknown => JSON.parse(Buffer.from(b).toString('utf8'))
   let vocab: string
   try {
@@ -351,14 +361,20 @@ export async function exportWorld(req: ExportRequest, deps: ExportDeps): Promise
   const entries = askEntries(doc)
   let runtimeJs: string
   let extra: { id: string; gz64: string }[] = []
+  // The cancel is checked after each read and after the compression (the model alone is 37 MB).
   try {
     runtimeJs = Buffer.from(await readOr(fs, deps.assets.runtimeJs, { ok: false, error: NO_RUNTIME })).toString('utf8')
-    if (req.smart) extra = await smartFiles(fs, deps.assets)
+    if (signal.aborted) return cancelled()
+    if (req.smart) {
+      const files = await smartFiles(fs, deps.assets, signal)
+      if (files === null) return cancelled()
+      extra = files
+    }
   } catch (e) {
     return (e as AssetError).result
   }
-  progress({ step: 'prepare', done: 1, total: 1 })
   if (signal.aborted) return cancelled()
+  progress({ step: 'prepare', done: 1, total: 1 })
 
   let ask = askBlock(entries, 0, [])
   if (req.smart) {
@@ -382,6 +398,7 @@ export async function exportWorld(req: ExportRequest, deps: ExportDeps): Promise
 
   progress({ step: 'write', done: 0, total: 1 })
   const [world, metaGz, askGz] = await Promise.all([gz64(safeJson(doc)), gz64(safeJson(meta)), gz64(ask)])
+  if (signal.aborted) return cancelled()
   let html: string
   try {
     html = exportPageHtml({
@@ -400,16 +417,18 @@ export async function exportWorld(req: ExportRequest, deps: ExportDeps): Promise
 /**
  * Writes the world's documentation (spec 5.4) to `req.target` as one HTML file, through the same .part-then-rename
  * as the page. The world is checked before the sanitiser reads it (a malformed one is refused, never thrown on),
- * then sanitised, title included; `picturePng` (a PNG data URL of the city) is optional.
+ * then sanitised, title included; `picturePng` (a PNG data URL of the city) is optional. A cancel (`signal`) before
+ * the rename leaves no file.
  */
 export async function writeDocument(
   req: { doc: WorldDoc; ctx: SanitizeContext; title: string; picturePng?: string; target: string; generatedOn: string },
   fs: ExportFs,
+  signal?: AbortSignal,
 ): Promise<ExportResult> {
   const checked = validateWorld(req.doc)
-  if (!checked.ok) return { ok: false, error: failedChecks("its documentation can't be written", checked.errors[0]) }
+  if (!checked.ok) return failedChecks(NOT_DOCUMENTABLE, checked.errors[0])
   const doc = sanitizeWorld(checked.doc, req.ctx)
   const title = sanitizeText(req.title, req.ctx)
   const model = buildDocumentation(doc, { title, picture: req.picturePng !== undefined, generatedOn: req.generatedOn })
-  return writeAtomically(fs, partName(req.target), req.target, renderDocumentation(model, doc, req.picturePng))
+  return writeAtomically(fs, partName(req.target), req.target, renderDocumentation(model, doc, req.picturePng), signal)
 }

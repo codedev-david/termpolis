@@ -744,7 +744,10 @@ export interface TermpolisAPI {
   /** Lumopolis: cancel a running export by its id; true when one was running. */
   worldExportCancel: (exportId: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis: write the world's documentation (one HTML file, `picturePng` the city as a PNG data URL) where the person chooses. */
-  worldDocument: (req: { root?: string; designKey?: string; title: string; picturePng?: string }) => Promise<IpcResponse<WorldSavedFile | WorldSaveCancelled>>
+  /** `documentId` names the save so worldDocumentCancel can stop it. */
+  worldDocument: (req: { documentId?: string; root?: string; designKey?: string; title: string; picturePng?: string }) => Promise<IpcResponse<WorldSavedFile | WorldSaveCancelled>>
+  /** Stops that documentation save: ok(true) when it was running. A cancel that loses the race leaves the file. */
+  worldDocumentCancel: (documentId: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis: show an exported file in its folder (only a file this session exported or documented). */
   worldShowFile: (path: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis: open an exported file with its default app (only a file this session exported or documented). */
