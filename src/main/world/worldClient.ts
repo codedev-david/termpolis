@@ -19,7 +19,7 @@ import { hideValue, type RepoAccess, type RepoLogin } from '../../shared/world/r
 import type { TestRun } from './testStatus'
 import { worldFileName } from './worldStore'
 import { createLlmGate, GATE_SETTLE_GRACE_MS, type LlmGate } from './llmGate'
-import { LABEL_CALL_TIMEOUT_MS } from './label'
+import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS } from './label'
 import { linkedPlanStamp, planStamp } from '../../shared/world/reconcile'
 
 export interface WorldHostTransport {
@@ -225,10 +225,11 @@ export function createWorldClient(
     if (llm && root !== undefined && labelling() !== false && !removed.has(projectKey)) {
       const entry = { tr, id, projectKey, ctl: new AbortController() }
       llmCalls.add(entry)
-      // The wait for a slot is not the call's time: the host starts its limit on `llm-started`.
+      // The wait for a slot is not the call's time: the host starts its limit on `llm-started`. Its limit is the
+      // host's, the CLI's own plus what main does before the CLI starts, so neither side drops a reply the CLI gave in time.
       text = await gate.run((signal) => (labelling() !== false ? llm(root, prompt, signal) : Promise.resolve(null)), {
         signal: entry.ctl.signal,
-        timeoutMs: LABEL_CALL_TIMEOUT_MS,
+        timeoutMs: LABEL_ANSWER_LIMIT_MS,
         onStart: () => tr.postMessage({ kind: 'llm-started', id }),
       })
       llmCalls.delete(entry)

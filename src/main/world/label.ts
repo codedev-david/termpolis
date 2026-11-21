@@ -100,6 +100,12 @@ export const LINE_EXCERPT_CHARS = LINE_BATCH_EXCERPT_BUDGET / (LINES_PER_BATCH *
 export const LABEL_CONCURRENCY = 4
 /** One model call's limit. A batch reply takes 30 to 60 s through the Claude Code CLI. */
 export const LABEL_CALL_TIMEOUT_MS = 120_000
+/** What main may spend on a labelling call before its CLI starts (the saved settings, the launch environment, the
+ *  token proxy), on top of the CLI's own LABEL_CALL_TIMEOUT_MS. */
+export const LABEL_PREP_ALLOWANCE_MS = 30_000
+/** How long main's gate and the host each wait for one labelling call, both counted from the moment main starts it
+ *  (llm-started): one figure, so a reply the CLI gives within its own limit is dropped by neither. */
+export const LABEL_ANSWER_LIMIT_MS = LABEL_CALL_TIMEOUT_MS + LABEL_PREP_ALLOWANCE_MS
 /** A call that brought nothing back after this long ran until it timed out (main's limit, or the host's):
  *  the model is slow or overloaded, so it is not asked again at once. A failure that came back sooner is. */
 export const LABEL_SLOW_FAIL_MS = 30_000

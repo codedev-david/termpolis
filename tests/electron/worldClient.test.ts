@@ -16,7 +16,8 @@ import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { _resetCodeGraphForTests, graphKeyForRoot, indexFileContent } from '../../src/main/codeGraph'
 import { createWorldClient, type WorldClientOptions, type WorldHostTransport } from '../../src/main/world/worldClient'
 import { GATE_SETTLE_GRACE_MS } from '../../src/main/world/llmGate'
-import { LABEL_CALL_TIMEOUT_MS } from '../../src/main/world/label'
+import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS, LABEL_PREP_ALLOWANCE_MS } from '../../src/main/world/label'
+import { LLM_TIMEOUT_MS } from '../../src/main/world/worldHost'
 import type { WorldHostRequest, WorldHostResponse } from '../../src/main/world/worldHost'
 import { worldFileName } from '../../src/main/world/worldStore'
 import { captureConsole, clearAppLog, readAppLog, type ConsoleLike } from '../../src/main/appLog'
@@ -521,6 +522,43 @@ describe('createWorldClient', () => {
     await flush()
     expect(running.has('p5')).toBe(true)
     expect(llm).toHaveBeenCalledTimes(5)
+  })
+
+  it("main's limit on a started call is the host's, the CLI's own limit plus the time main takes to start it, so a reply the CLI gives in time is never dropped (caveat 4, round 1)", async () => {
+    expect(LABEL_CALL_TIMEOUT_MS).toBe(120_000)
+    expect(LABEL_PREP_ALLOWANCE_MS).toBe(30_000)
+    expect(LABEL_ANSWER_LIMIT_MS).toBe(LABEL_CALL_TIMEOUT_MS + LABEL_PREP_ALLOWANCE_MS)
+    // The host times the same call from the same moment (llm-started) with the same figure.
+    expect(LLM_TIMEOUT_MS).toBe(LABEL_ANSWER_LIMIT_MS)
+    vi.useFakeTimers()
+    try {
+      const signals: AbortSignal[] = []
+      // Main spends most of its allowance before the CLI starts (settings, launch env, proxy), and the CLI then answers
+      // a moment before its own 120 s.
+      const llm = vi.fn((_root: string, prompt: string, signal: AbortSignal) => {
+        signals.push(signal)
+        return new Promise<string | null>((resolve) => setTimeout(() => resolve(`late ${prompt}`), prompt === 'in time' ? LABEL_PREP_ALLOWANCE_MS - 1000 + LABEL_CALL_TIMEOUT_MS - 1 : 10 * LABEL_ANSWER_LIMIT_MS))
+      })
+      const { client, spawned } = setup({ llm })
+      const compiled = client.compile(ROOT)
+      await vi.advanceTimersByTimeAsync(0)
+      await compiled
+      const t = spawned[0]
+      const result = (id: number) => t.posted.find((m) => m.kind === 'llm-result' && m.id === id)
+      t.emit({ kind: 'llm', id: 1, projectKey: KEY, prompt: 'in time' })
+      t.emit({ kind: 'llm', id: 2, projectKey: KEY, prompt: 'never' })
+      await vi.advanceTimersByTimeAsync(LABEL_PREP_ALLOWANCE_MS - 1000 + LABEL_CALL_TIMEOUT_MS - 1)
+      expect(result(1)).toEqual({ kind: 'llm-result', id: 1, text: 'late in time' })
+      // The other is answered null at exactly the limit, and its CLI told to stop.
+      await vi.advanceTimersByTimeAsync(LABEL_ANSWER_LIMIT_MS - (LABEL_PREP_ALLOWANCE_MS - 1000 + LABEL_CALL_TIMEOUT_MS - 1) - 1)
+      expect(result(2)).toBeUndefined()
+      expect(signals[1].aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(result(2)).toEqual({ kind: 'llm-result', id: 2, text: null })
+      expect(signals[1].aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('a stopped CLI that never exits holds its slot for at most its own limit and the grace after it', async () => {

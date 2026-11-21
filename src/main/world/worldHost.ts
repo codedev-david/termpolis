@@ -44,7 +44,7 @@ import {
 } from './gitSource'
 import { normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
 import { resolveGitBin } from '../binPath'
-import type { LabelDeps } from './label'
+import { LABEL_ANSWER_LIMIT_MS, type LabelDeps } from './label'
 import { createWorldStore, type WorldStore } from './worldStore'
 import { validateWorld } from '../../shared/world/validate'
 
@@ -164,8 +164,9 @@ export const MAX_SOURCE_READ_BYTES = MAX_DETECT_FILE_CHARS + 64 * 1024
 export const MAX_GLOB_RESULTS = 2000
 /** Lines an excerpt spans: centred on the line when one is given, else the file's start. */
 export const EXCERPT_LINES = 40
-/** How long a compile waits for main to answer one labelling request before labelling from code. */
-export const LLM_TIMEOUT_MS = 150_000
+/** How long a compile waits for main to answer one labelling request once main starts it, before labelling from
+ *  code: main's gate uses the same figure (label.ts). */
+export const LLM_TIMEOUT_MS = LABEL_ANSWER_LIMIT_MS
 /** How long a labelling request may wait in main for a slot (behind other worlds' calls) before the host stops waiting.
  *  The wait is not the call's time: LLM_TIMEOUT_MS starts when main says the call started. */
 export const LLM_QUEUE_TIMEOUT_MS = 30 * 60_000
