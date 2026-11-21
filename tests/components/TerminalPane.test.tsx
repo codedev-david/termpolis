@@ -588,6 +588,33 @@ describe('TerminalPane', () => {
         expect(cursorLine('no-such-terminal')).toBe('')
       })
     })
+
+    describe('__termpolis_terminal_lines', () => {
+      const terminalLines = (id?: string): string[] | string =>
+        (window as unknown as { __termpolis_terminal_lines?: (id?: string) => string[] }).__termpolis_terminal_lines?.(id) ?? 'HOOK-MISSING'
+      /** Rows as [text, isWrapped]; translateToString(true) trims, (false) keeps the row as is. */
+      const rows = (r: Array<[string, boolean] | null>): void => {
+        mocks.mockTerminal.buffer.active.length = r.length
+        mocks.mockTerminal.buffer.active.getLine.mockImplementation((i: number) => {
+          const row = r[i]
+          return row ? { translateToString: (trim?: boolean) => (trim ? row[0].trimEnd() : row[0]), isWrapped: row[1] } : null
+        })
+      }
+
+      it('joins the rows a long line wrapped onto, keeping the space at the wrap, and drops trailing blanks', () => {
+        rows([['user@host:~/a/long/path$ ', false], ['echo intro-ok  ', true], ['intro-ok  ', false], ['', false], ['  ', false]])
+        mountPane()
+        expect(terminalLines('term-1')).toEqual(['user@host:~/a/long/path$ echo intro-ok', 'intro-ok'])
+        expect(terminalLines()).toEqual(['user@host:~/a/long/path$ echo intro-ok', 'intro-ok'])
+      })
+
+      it('reads a missing row as empty, keeps a first row marked wrapped as its own line, and is empty with no terminal', () => {
+        rows([['cont', true], null, ['last', false]])
+        mountPane()
+        expect(terminalLines('term-1')).toEqual(['cont', '', 'last'])
+        expect(terminalLines('no-such-terminal')).toEqual([])
+      })
+    })
   })
 
   // Regression for Sentry issue #16: xterm's WebGL addon throws

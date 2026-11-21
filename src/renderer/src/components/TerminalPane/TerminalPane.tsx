@@ -316,7 +316,26 @@ function readCursorLine(terminalId?: string): string {
   return text
 }
 
+/** A terminal's logical lines from xterm's buffer: each row a long line wrapped onto is joined to the
+ *  row it continues (that row kept untrimmed, so a space at the wrap survives), trailing blank lines
+ *  dropped. What an e2e spec reads when a long prompt plus command may span rows. */
+function readTerminalLines(terminalId?: string): string[] {
+  const term = (terminalId ? liveTerminals.get(terminalId) : activeTerminal())?.term
+  if (!term) return []
+  const buf = term.buffer.active
+  const lines: string[] = []
+  for (let i = 0; i < buf.length; i++) {
+    const row = buf.getLine(i)
+    const text = row?.translateToString(!buf.getLine(i + 1)?.isWrapped) ?? ''
+    if (row?.isWrapped && lines.length > 0) lines[lines.length - 1] += text
+    else lines.push(text)
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return lines
+}
+
 if (typeof window !== 'undefined') {
+  ;(window as unknown as { __termpolis_terminal_lines?: typeof readTerminalLines }).__termpolis_terminal_lines = readTerminalLines
   ;(window as unknown as { __termpolis_terminal_size?: typeof readTerminalSize }).__termpolis_terminal_size = readTerminalSize
   ;(window as unknown as { __termpolis_cursor_line?: typeof readCursorLine }).__termpolis_cursor_line = readCursorLine
   // Read-only test inspection hook — used by e2e terminal tests.
