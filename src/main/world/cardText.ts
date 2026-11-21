@@ -2,7 +2,7 @@
 // cards.ts), gathered by the same helpers (shared/world/cardFacts.ts, edgeText.ts), with each claim
 // followed by its state in brackets and the evidence behind it on the next line.
 import { NOT_IN_DESIGN } from '../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn, serviceNamesLine, sizeNote } from '../../shared/world/cardFacts'
+import { AI_NAME, BUILD_STATUS_TEXT, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn, serviceNamesLine, sizeNote } from '../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../shared/world/edgeText'
 import type { Claim, WorldDoc, WorldEdge } from '../../shared/world/types'
 
@@ -42,7 +42,7 @@ function buildingText(doc: WorldDoc, id: string): string {
   const names = serviceNamesLine(doc, id)
   const floors = b.floors.map((f) => `- ${f.name}${f.tech.length ? ` · ${f.tech.join(', ')}` : ''}`)
   const lines = [
-    `${b.name}${b.nameState === 'inferred' ? ' (name suggested by AI)' : ''}`,
+    `${b.name}${b.nameState === 'inferred' ? ` ${AI_NAME}` : ''}`,
     ...(b.techLabel ? [b.techLabel] : []),
     `Status: ${BUILD_STATUS_TEXT[b.status]}${notInDesign(doc, id) ? `; ${NOT_IN_DESIGN}` : ''}`,
     ...(run.trim() ? [`Runs in: ${run}`] : []),

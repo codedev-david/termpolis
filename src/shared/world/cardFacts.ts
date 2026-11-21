@@ -9,6 +9,9 @@ export const BUILD_STATUS_TEXT: Record<Building['status'], string> = {
   verified: 'Built · tests pass', built: 'Built · not yet checked', gap: 'Built · no test results yet', proposed: 'Planned only',
 }
 
+/** What follows a part's name when a model, not the code or a person, named it. */
+export const AI_NAME = '(name suggested by AI)'
+
 /** One piece of evidence in words: its kind and where it points, and for a test where its result came from (a test
  *  report, an agent transcript or CI), so a pass read off a transcript never looks like one from a report. */
 export const evidenceText = (e: Evidence): string =>

@@ -1,7 +1,7 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT as STATUS, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, evidenceText, serviceNames as serviceNamesOf, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
+import { AI_NAME, BUILD_STATUS_TEXT as STATUS, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, evidenceText, serviceNames as serviceNamesOf, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
@@ -88,7 +88,7 @@ export function buildingCard(doc: WorldDoc, id: string, floors: FloorsView = 'no
   // As the prototype's inspector: the name, its technology, a status pill, then the process box
   // (left out when the code shows no process for this part, rather than an empty "Runs in:").
   const runsIn = runsInOf(doc, b)
-  const aiName = b.nameState === 'inferred' ? ' <span class="muted">(name suggested by AI)</span>' : ''
+  const aiName = b.nameState === 'inferred' ? ` <span class="muted">${AI_NAME}</span>` : ''
   const big = sizeNote(doc, b, floors)
   return `<h3>${esc(b.name)}${aiName}</h3>${b.techLabel ? `<p class="muted">${esc(b.techLabel)}</p>` : ''}`
     + `<p class="status"><span class="tag status-${esc(b.status)}">${esc(STATUS[b.status])}</span>${tag}</p>`
