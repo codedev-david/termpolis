@@ -315,3 +315,50 @@ describe('card headings', () => {
     expect(seen.has(CARD_HEADINGS.whatItIs)).toBe(true)
   })
 })
+
+describe('read-only cards', () => {
+  const RO = { readOnly: true }
+  it('a read-only card has no Confirm or Edit and shows evidence as text', () => {
+    const doc = minimal()
+    const b = doc.buildings[0]
+    b.how = [{ text: 'does it', state: 'inferred', evidence: [{ kind: 'file', ref: 'src/main/foo.ts' }] }]
+    b.why = [claim('plain', 'observed', false)]
+    b.claims = [claim('c', 'inferred')]
+    doc.runtimeNames[b.id] = ['orders-api']
+    const html = buildingCard(doc, b.id, 'none', RO)
+    expect(html).not.toContain('data-confirm')
+    expect(html).not.toContain('data-runtime-edit')
+    expect(html).not.toContain('data-evidence')
+    expect(html).toContain('<span class="ev-ref">file src/main/foo.ts</span>')
+    expect(html).toContain('orders-api')
+    expect(html).toContain('data-node=')
+  })
+
+  it('a read-only claim without evidence has no evidence text; service names are omitted when there are none', () => {
+    const doc = minimal()
+    const b = doc.buildings[0]
+    b.how = [claim('plain', 'observed', false)]
+    b.why = []
+    delete doc.runtimeNames[b.id]
+    const html = buildingCard(doc, b.id, 'none', RO)
+    expect(html).not.toContain('ev-ref')
+    expect(html).not.toContain('Service names')
+    expect(buildingCard(doc, b.id)).toContain('None yet')
+  })
+
+  it('a test result keeps its source in the evidence button and in the read-only text', () => {
+    const doc = minimal()
+    doc.edges[0].claims = [{ text: 'Passed', state: 'observed', evidence: [{ kind: 'test', ref: 'a.test.ts', excerpt: 'CI' }] }]
+    expect(edgeCard(doc, doc.edges[0].id)).toContain('&quot;excerpt&quot;:&quot;CI&quot;')
+    expect(edgeCard(doc, doc.edges[0].id, RO)).toContain('<span class="ev-ref">test a.test.ts (CI)</span>')
+  })
+
+  it('a read-only line has no Confirm or evidence buttons', () => {
+    const doc = minimal()
+    doc.edges[0].claims = [{ text: 'Seen', state: 'inferred', evidence: [{ kind: 'file', ref: 'src/a.ts:3' }] }]
+    const html = edgeCard(doc, doc.edges[0].id, RO)
+    expect(html).not.toContain('data-confirm')
+    expect(html).not.toContain('data-evidence')
+    expect(html).toContain('<span class="ev-ref">file src/a.ts:3</span>')
+  })
+})

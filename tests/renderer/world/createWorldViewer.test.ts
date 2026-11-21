@@ -1479,3 +1479,18 @@ describe('load with animateFrom', () => {
     return { ...s, ...(fake as unknown as ReturnType<typeof fakeRenderer>) }
   }
 })
+
+describe('read-only viewer', () => {
+  it('createWorldViewer passes readOnly to every card it renders', () => {
+    const host = document.createElement('div')
+    const cards: (string | null)[] = []
+    const doc = rich()
+    doc.buildings[0].how = [{ text: 'x', state: 'inferred', evidence: [] }]
+    const viewer = createWorldViewer(host, { reducedMotion: true, readOnly: true, renderCard: (h) => { cards.push(h) } })
+    viewer.load(doc)
+    host.querySelector<HTMLElement>(`li[data-kind="building"][data-id="${doc.buildings[0].id}"]`)?.click()
+    const html = cards[cards.length - 1]
+    expect(html).toContain('<h3>')
+    expect(html).not.toContain('data-confirm')
+  })
+})

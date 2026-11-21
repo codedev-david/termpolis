@@ -145,6 +145,8 @@ export interface WorldViewerOptions {
   rightReserve?: number
   /** Pixels at the bottom that a panel covers (the ask bar); the city is framed above them. */
   bottomReserve?: number
+  /** The exported page: cards have no Confirm or Edit control and show evidence as text, not as buttons. */
+  readOnly?: boolean
 }
 
 /** True when this browser can create a WebGL context. */
@@ -173,6 +175,7 @@ function prefersReducedMotion(): boolean {
 
 export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptions = {}): WorldViewer {
   const reduced = opts.reducedMotion ?? prefersReducedMotion()
+  const cardOpts = { readOnly: opts.readOnly === true }
   const renderCard = opts.renderCard ?? ((): void => undefined)
   const selectCbs = new Set<(sel: WorldSelection | null) => void>()
   const hoverCbs = new Set<(id: string | null) => void>()
@@ -313,8 +316,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   function cardFor(sel: WorldSelection): string | null {
     const d = doc as WorldDoc
     // A double-click opens floors only in the 3D city; the 2D list has no such gesture.
-    if (sel.kind === 'building') return buildingCard(d, sel.id, r3 ? 'open3d' : 'none')
-    if (sel.kind === 'edge') return edgeCard(d, sel.id)
+    if (sel.kind === 'building') return buildingCard(d, sel.id, r3 ? 'open3d' : 'none', cardOpts)
+    if (sel.kind === 'edge') return edgeCard(d, sel.id, cardOpts)
     if (sel.kind === 'tech') return techCard(d, sel.id)
     return null
   }
