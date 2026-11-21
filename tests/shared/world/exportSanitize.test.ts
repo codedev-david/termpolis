@@ -537,3 +537,62 @@ describe('fix round 4: Windows folders written the Git Bash or Cygwin way', () =
     expect(json).not.toContain('users\\dev')
   })
 })
+
+describe('sanitizeWorld: external ids', () => {
+  /** A world with one external `id` named `name`, a line to it, a tour step and a map position naming it. */
+  function withExternal(id: string, name: string): WorldDoc {
+    const doc = minimal()
+    doc.externals = [{ id, name, kind: 'files', fog: false }, { id: 'x-files', name: 'files', kind: 'files', fog: false }]
+    const e = doc.edges[0]
+    doc.edges = [{ ...e, id: `e-b1--${id}`, from: 'b1', to: id }]
+    doc.tours = [{ id: 't1', title: 'Tour', steps: [{ ids: ['b1', id, `e-b1--${id}`], caption: 'Out' }] }]
+    doc.layout = { seed: 1, positions: { b1: [0, 0, 0], [id]: [1, 2, 3] } }
+    return doc
+  }
+
+  it('keeps an ordinary id as it is', () => {
+    const out = sanitizeWorld(withExternal('x-api-example-com', 'api.example.com'), win)
+    expect(out.externals[0].id).toBe('x-api-example-com')
+    expect(out.edges[0]).toMatchObject({ id: 'e-b1--x-api-example-com', to: 'x-api-example-com' })
+  })
+
+  it.each([
+    ['an id slugged from a path name', 'x-c-users-dev-documents-plans', 'C:\\Users\\dev\\Documents\\plans'],
+    ['an id slugged from a POSIX path name', 'x-tmp-build-cache', '/tmp/build/cache'],
+    ['an id holding the home folder', 'x-c-users-dev-notes', 'notes'],
+    ['an id holding markup', 'x-"><img src=x onerror=alert(1)>', 'evil'],
+    ['an id closing the script', 'x-</script><script>alert(1)</script>', 'evil'],
+    ['an id holding a path', 'C:\\Users\\dev\\x', 'evil'],
+  ])('gives %s a safe id, and every reference to it follows', (_what, id, name) => {
+    const out = sanitizeWorld(withExternal(id, name), win)
+    const safe = out.externals[0].id
+    expect(safe).toMatch(/^x-[a-z0-9-]+$/)
+    expect(safe).not.toContain('users')
+    expect(safe).not.toBe('x-files') // never another part's id
+    expect(out.edges[0]).toMatchObject({ id: `e-b1--${safe}`, from: 'b1', to: safe })
+    expect(out.tours[0].steps[0].ids).toEqual(['b1', safe, `e-b1--${safe}`])
+    expect(out.layout.positions[safe]).toEqual([1, 2, 3])
+    const json = JSON.stringify(out)
+    expect(json).not.toContain(id)
+    expect(json.toLowerCase()).not.toContain('users')
+    expect(json.split(OUTSIDE).join('')).not.toContain('<') // only the sanitiser's own marker
+  })
+
+  it('two unsafe ids that would come out the same stay apart', () => {
+    const doc = withExternal('x-<a>', 'evil')
+    doc.externals.push({ id: 'x-<b>', name: 'evil', kind: 'files', fog: false })
+    const out = sanitizeWorld(doc, win)
+    const ids = out.externals.map((x) => x.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids).toEqual(['x-evil', 'x-files', 'x-evil-2'])
+  })
+
+  it('names an unsafe external whose name has no letters or digits "x-external"', () => {
+    expect(sanitizeWorld(withExternal('x-<>', '<>'), win).externals[0].id).toBe('x-external')
+  })
+
+  it('a design world (no project folder) is checked against the home folder too', () => {
+    const out = sanitizeWorld(withExternal('x-home-dev-notes', 'notes'), design)
+    expect(out.externals[0].id).toBe('x-notes')
+  })
+})

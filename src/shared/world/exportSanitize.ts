@@ -210,9 +210,54 @@ export function sanitizeText(text: string, ctx: SanitizeContext): string {
   return textCleaner(ctx)(text)
 }
 
+/** The characters an exported external id may hold (compile builds them as `x-<slug of the name>`). */
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+/** compile's slug (main/world/group.ts): lower case, every run of other characters one dash. */
+const slugOf = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+
+/**
+ * The exported id of each external whose own id could carry something out, by its old id. Ids are not free text and
+ * are kept as they are, except an external's: compile slugs it from the external's name, so a name that held a path
+ * would carry the path in the id. An external id is replaced when it holds a character outside SAFE_ID (markup, a
+ * slash), holds the slug of the project, home or userData folder as whole words, or is the slug of a name the
+ * sanitiser rewrites. The new id is `x-<slug of the sanitised name>`, numbered when another part already has it.
+ */
+function externalIds(doc: WorldDoc, ctx: SanitizeContext, text: (s: string) => string): Map<string, string> {
+  const folders = [ctx.root ?? '', ctx.home, ctx.userData].map((f) => slugOf(norm(f))).filter((f) => f !== '')
+  const unsafe = (x: External): boolean => {
+    if (!SAFE_ID.test(x.id)) return true
+    const words = `-${x.id.toLowerCase()}-`
+    if (folders.some((f) => words.includes(`-${f}-`))) return true
+    return text(x.name) !== x.name && x.id.toLowerCase() === `x-${slugOf(x.name)}`
+  }
+  const taken = new Set([...doc.districts, ...doc.buildings, ...doc.externals].map((p) => p.id))
+  const out = new Map<string, string>()
+  for (const x of doc.externals) {
+    if (!unsafe(x)) continue
+    const base = `x-${slugOf(text(x.name)) || 'external'}`
+    let id = base
+    for (let n = 2; taken.has(id); n++) id = `${base}-${n}`
+    taken.add(id)
+    out.set(x.id, id)
+  }
+  return out
+}
+
 /** Rebuilds a WorldDoc from its known fields only, with every path relative and no private evidence. */
 export function sanitizeWorld(doc: WorldDoc, ctx: SanitizeContext): WorldDoc {
   const text = textCleaner(ctx)
+  // An external given a new id (externalIds) is renamed wherever an id names it: a line's ends and its id (built
+  // from its ends), a tour step, a map position and a proposal's removals.
+  const renamed = externalIds(doc, ctx, text)
+  const ref = (id: string): string => {
+    if (renamed.size === 0) return id
+    const exact = renamed.get(id)
+    if (exact !== undefined) return exact
+    if (!id.startsWith('e-')) return id
+    let out = id
+    for (const [from, to] of renamed) out = out.split(from).join(to)
+    return out
+  }
   // A path field is relativised, then scanned as text: a URL, a quoted or padded path, or a note after it.
   const path = (s: string): string => text(relativePath(s, ctx))
   const evidence = (e: Evidence): Evidence => ({ kind: e.kind, ref: PATH_KINDS.has(e.kind) ? path(e.ref) : text(e.ref) })
@@ -231,20 +276,20 @@ export function sanitizeWorld(doc: WorldDoc, ctx: SanitizeContext): WorldDoc {
     ...(b.growth ? { growth: growth(b.growth) } : {}),
   })
   const edge = (e: WorldEdge): WorldEdge => ({
-    id: e.id, from: e.from, to: e.to, cargo: e.cargo, label: text(e.label), how: claims(e.how), tech: e.tech.map(text),
+    id: ref(e.id), from: ref(e.from), to: ref(e.to), cargo: e.cargo, label: text(e.label), how: claims(e.how), tech: e.tech.map(text),
     why: claims(e.why), rate: text(e.rate), twoWay: e.twoWay, ...(e.twoWayStated ? { twoWayStated: true as const } : {}),
     claims: claims(e.claims),
   })
   const district = (d: District): District =>
     ({ id: d.id, name: text(d.name), subtitle: text(d.subtitle), hue: d.hue, members: d.members.map(path), nameState: d.nameState })
-  const external = (x: External): External => ({ id: x.id, name: text(x.name), kind: x.kind, fog: x.fog })
+  const external = (x: External): External => ({ id: ref(x.id), name: text(x.name), kind: x.kind, fog: x.fog })
   const tour = (t: Tour): Tour =>
-    ({ id: t.id, title: text(t.title), steps: t.steps.map((s) => ({ ids: [...s.ids], caption: text(s.caption) })) })
+    ({ id: t.id, title: text(t.title), steps: t.steps.map((s) => ({ ids: s.ids.map(ref), caption: text(s.caption) })) })
   const reconcile = (r: PlanReconcile & { planAt: number }): PlanReconcile & { planAt: number } =>
     ({ matched: { ...r.matched }, missing: [...r.missing], extra: [...r.extra], changed: [...r.changed], planAt: r.planAt })
   const proposal = (p: Proposal): Proposal => ({
     id: p.id, title: text(p.title), summary: claims(p.summary), buildings: p.buildings.map(building), edges: p.edges.map(edge),
-    ...(p.reconcile ? { reconcile: reconcile(p.reconcile) } : {}), ...(p.removes ? { removes: [...p.removes] } : {}),
+    ...(p.reconcile ? { reconcile: reconcile(p.reconcile) } : {}), ...(p.removes ? { removes: p.removes.map(ref) } : {}),
   })
   const record = <T, U>(r: Record<string, T>, value: (v: T) => U): Record<string, U> =>
     Object.fromEntries(Object.entries(r).map(([k, v]) => [k, value(v)]))
@@ -267,7 +312,8 @@ export function sanitizeWorld(doc: WorldDoc, ctx: SanitizeContext): WorldDoc {
     processes: record(doc.processes, (p) => ({ label: text(p.label), color: p.color })),
     tours: doc.tours.map(tour),
     layout: {
-      seed: doc.layout.seed, positions: record(doc.layout.positions, (v) => [v[0], v[1], v[2]] as [number, number, number]),
+      seed: doc.layout.seed,
+      positions: Object.fromEntries(Object.entries(doc.layout.positions).map(([id, v]) => [ref(id), [v[0], v[1], v[2]] as [number, number, number]])),
       ...(doc.layout.round !== undefined ? { round: doc.layout.round } : {}),
     },
     runtimeNames: record(doc.runtimeNames, (names) => names.map(text)),
