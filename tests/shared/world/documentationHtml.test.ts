@@ -64,6 +64,28 @@ describe('renderDocumentation: the page', () => {
     expect(css(html)).toMatch(/\.map\{[^}]*overflow-x: auto/)
     expect(atRule(css(html), '@media print')).toMatch(/ \.lm-map\{min-width: 0 !important\}/)
   })
+  it('shows a shadow at an edge of the map only while more of it is hidden that way, in either scheme', () => {
+    const style = css(html)
+    const rule = (/\.map\{([^}]*)\}/.exec(style) as RegExpExecArray)[1]
+    // Two covers in the surface colour scroll with the map (local) over two edge shadows fixed to the frame (scroll):
+    // at an end of the map its cover sits on that edge's shadow and hides it.
+    expect(rule).toContain('background-color: var(--surface)')
+    expect(rule).toContain('background-image: linear-gradient(to right, var(--surface) 50%, transparent), '
+      + 'linear-gradient(to left, var(--surface) 50%, transparent), '
+      + 'linear-gradient(to right, var(--map-scroll-shadow), transparent), '
+      + 'linear-gradient(to left, var(--map-scroll-shadow), transparent)')
+    expect(rule).toContain('background-position: left center, right center, left center, right center')
+    expect(rule).toContain('background-size: 48px 100%, 48px 100%, 16px 100%, 16px 100%')
+    expect(rule).toContain('background-repeat: no-repeat')
+    expect(rule).toContain('background-attachment: local, local, scroll, scroll')
+    expect((/:root\{color-scheme: light dark; ([^}]*)\}/.exec(style) as RegExpExecArray)[1]).toMatch(/--map-scroll-shadow: rgba\(/)
+    expect(atRule(style, '@media (prefers-color-scheme: dark)')).toMatch(/--map-scroll-shadow: rgba\(/)
+    // Print is left alone: on paper the map is not clipped.
+    expect(atRule(style, '@media print')).not.toMatch(/background-(image|attachment)/)
+    // A map that already fits gains no words: the caption is the one it always had.
+    expect(count(html, '<figcaption>Each box is an area with its parts inside. An arrow between two areas counts the connections '
+      + 'running that way.</figcaption>')).toBe(1)
+  })
   it('has a sticky contents column naming every section and every area', () => {
     expect(html).toMatch(/<nav class="toc" aria-label="Contents">/)
     expect(css(html)).toMatch(/\.toc\{[^}]*position: sticky/)
@@ -136,6 +158,13 @@ describe('renderDocumentation: every fixture world', () => {
       for (const m of out.matchAll(/ href="([^"]*)"/g)) expect(m[1]).toMatch(/^(#[A-Za-z0-9-]+|https:\/\/termpolis\.com)$/)
     }
   })
+  it.each(FIXTURES)('%s carries exactly one stylesheet, in the head', (_, make) => {
+    for (const png of [undefined, PNG]) {
+      const out = render(make(), { picture: true }, png)
+      expect(count(out, '<style')).toBe(1)
+      expect(out.indexOf('<style')).toBeLessThan(out.indexOf('</head>'))
+    }
+  })
   it.each(FIXTURES)('%s has no script and no external address but termpolis.com', (_, make) => {
     for (const png of [undefined, PNG]) {
       const out = render(make(), { picture: true }, png)
@@ -200,6 +229,12 @@ describe('renderDocumentation: the city picture', () => {
 })
 
 describe('docMapSvg', () => {
+  it('carries its own stylesheet on its own, and none inside the page, whose stylesheet holds the map’s rules', () => {
+    expect(count(docMapSvg(labelledWorld()), '<style>')).toBe(1)
+    expect(docMapSvg(labelledWorld(), false)).not.toContain('<style')
+    expect(docMapSvg(emptyWorld(), false)).not.toContain('<style')
+    expect(css(render(labelledWorld()))).toContain('.lm-box{fill:var(--map-box,#f3f5f9);stroke:var(--map-box-line,#cbd3e0)}')
+  })
   it('is deterministic', () => {
     for (const [, make] of FIXTURES) expect(docMapSvg(make())).toBe(docMapSvg(make()))
   })

@@ -117,12 +117,13 @@ const MAP_STYLE = [
  * its parts inside, and the lines between districts aggregated into one curve per direction, each with its count and
  * an arrow. Lines inside a district are counted in its box; lines to outside systems are left to the Outside systems
  * table. Ids never reach an SVG `id` or `url(#…)`: the one reference is the fixed arrow marker. No xmlns: the map is
- * inline in the page, and the page names no address but termpolis.com.
+ * inline in the page, and the page names no address but termpolis.com. On its own it carries its stylesheet; the
+ * documentation page passes `ownStyle` false and holds the map's rules in its one stylesheet instead.
  */
-export function docMapSvg(doc: WorldDoc): string {
+export function docMapSvg(doc: WorldDoc, ownStyle = true): string {
   const open = (w: number, h: number, minX: number, minY: number, label: string): string =>
     `<svg class="lm-map" viewBox="${n1(minX)} ${n1(minY)} ${n1(w)} ${n1(h)}" width="${n1(w)}" height="${n1(h)}" role="img" aria-label="${esc(label)}"`
-    + ` style="min-width: ${Math.ceil((Number(n1(w)) * LABEL_MIN_PX) / LABEL_PX)}px"><style>${MAP_STYLE}</style>`
+    + ` style="min-width: ${Math.ceil((Number(n1(w)) * LABEL_MIN_PX) / LABEL_PX)}px">${ownStyle ? `<style>${MAP_STYLE}</style>` : ''}`
   if (doc.districts.length === 0) {
     return `${open(320, 80, 0, 0, 'Map of the areas')}<text class="lm-empty" x="160" y="44" text-anchor="middle">No areas yet</text></svg>`
   }
@@ -208,7 +209,8 @@ const LIGHT = [
   '--b-inferred: #8a5300; --b-inferred-bg: #fff1d4; --b-verified: #17663a; --b-verified-bg: #ddf4e6;',
   '--b-observed: #1c4d9e; --b-observed-bg: #e2ecff; --b-proposed: #6430b5; --b-proposed-bg: #efe7ff;',
   '--map-box: #f3f5f9; --map-box-line: #cbd3e0; --map-part: #ffffff; --map-part-line: #b7c2d4; --map-text: #1b2230;',
-  '--map-muted: #566073; --map-line: #4d63cf; --map-line-text: #2c41a8; --map-count-bg: #ffffff;'
+  '--map-muted: #566073; --map-line: #4d63cf; --map-line-text: #2c41a8; --map-count-bg: #ffffff;',
+  '--map-scroll-shadow: rgba(16, 24, 40, .2);'
 ].join(' ')
 const DARK = [
   '--bg: #0f131a; --surface: #161b24; --text: #e6e9ef; --muted: #9ba5b6; --line: #262d3a; --strong-line: #3a4457;',
@@ -216,7 +218,8 @@ const DARK = [
   '--b-inferred: #f5c26b; --b-inferred-bg: #3a2a0c; --b-verified: #7fdca3; --b-verified-bg: #10301f;',
   '--b-observed: #8fb8ff; --b-observed-bg: #132542; --b-proposed: #c9a9ff; --b-proposed-bg: #2a1a48;',
   '--map-box: #1a202b; --map-box-line: #36415a; --map-part: #232b39; --map-part-line: #44516b; --map-text: #e6e9ef;',
-  '--map-muted: #9ba5b6; --map-line: #8fa2ff; --map-line-text: #c3cdff; --map-count-bg: #161b24;'
+  '--map-muted: #9ba5b6; --map-line: #8fa2ff; --map-line-text: #c3cdff; --map-count-bg: #161b24;',
+  '--map-scroll-shadow: rgba(0, 0, 0, .6);'
 ].join(' ')
 
 const CSS = [
@@ -276,7 +279,16 @@ const CSS = [
   'tbody tr:last-child td{border-bottom: 0}',
   '.empty{color: var(--muted); font-style: italic}',
   'figure{margin: 0 0 20px}',
-  '.map{padding: 18px; overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px}',
+  // A wide map scrolls sideways, and an edge shows a shadow only while more of the map is hidden past it: two covers in
+  // the surface colour scroll with the map (local) over two shadows fixed to the frame (scroll), and at an end of the
+  // map its cover sits on that edge's shadow. A map that fits covers both. No script.
+  '.map{padding: 18px; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background-color: var(--surface);'
+    + ' background-image: linear-gradient(to right, var(--surface) 50%, transparent), linear-gradient(to left, var(--surface) 50%, transparent),'
+    + ' linear-gradient(to right, var(--map-scroll-shadow), transparent), linear-gradient(to left, var(--map-scroll-shadow), transparent);'
+    + ' background-position: left center, right center, left center, right center;'
+    + ' background-size: 48px 100%, 48px 100%, 16px 100%, 16px 100%; background-repeat: no-repeat;'
+    + ' background-attachment: local, local, scroll, scroll}',
+  MAP_STYLE,
   '.picture img{display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px}',
   'figcaption{margin-top: 10px; color: var(--muted); font-size: .85rem; text-align: left}',
   '.colophon{margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem}',
@@ -343,7 +355,7 @@ export function renderDocumentation(model: DocModel, doc: WorldDoc, picturePng?:
         const rows = b.rows.map((r) => `<tr>${r.map((t) => `<td>${esc(t)}</td>`).join('')}</tr>`).join('')
         return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`
       }
-      case 'map': return `<figure class="map">${docMapSvg(doc)}<figcaption>Each box is an area with its parts inside. `
+      case 'map': return `<figure class="map">${docMapSvg(doc, false)}<figcaption>Each box is an area with its parts inside. `
         + 'An arrow between two areas counts the connections running that way.</figcaption></figure>'
       case 'picture': return png ? `<figure class="picture"><img src="${esc(png)}" alt="The city as the 3D view showed it">`
         + '<figcaption>The city in Lumopolis when this document was generated.</figcaption></figure>' : ''
