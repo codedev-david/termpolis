@@ -212,6 +212,36 @@ describe('source registry', () => {
     expect((await readdir(join(dir, 'world'))).filter((n) => n.endsWith('.tmp'))).toEqual([])
     await expect(r.upsert({ kind: 'project', root: '/a' })).resolves.toBeTruthy()
   })
+
+  // On Windows a rename onto sources.json fails with EPERM while anything reads it (the recent list
+  // reloads exactly when a world opens); a refused touch kept a remembered repository from updating.
+  const busy = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`${code}: busy`), { code })
+
+  it('a touch whose rename is refused for a moment by a reader is tried again and lands', async () => {
+    const r = reg()
+    const a = await r.upsert({ kind: 'git', url: 'https://h/x/y.git', root: '/g' })
+    vi.mocked(fsp.rename).mockRejectedValueOnce(busy('EPERM')).mockRejectedValueOnce(busy('EBUSY'))
+    const touched = await r.touch(a.key)
+    expect(touched?.lastOpened).toBeGreaterThan(a.lastOpened)
+    expect((await r.get(a.key))?.lastOpened).toBe(touched?.lastOpened)
+    expect((await readdir(join(dir, 'world'))).filter((n) => n.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('a rename refused on every try gives up after the last one and leaves no temp file', async () => {
+    const waits: number[] = []
+    const r = createSourceRegistry(dir, { ...deps(), sleep: async (ms: number) => { waits.push(ms) } })
+    const a = await r.upsert({ kind: 'project', root: '/a' })
+    vi.mocked(fsp.rename).mockRejectedValue(busy('EACCES'))
+    try {
+      await expect(r.touch(a.key)).rejects.toThrow('EACCES')
+    } finally {
+      vi.mocked(fsp.rename).mockReset()
+      vi.mocked(fsp.rename).mockImplementation((await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).rename)
+    }
+    expect(waits).toEqual([100, 200, 300, 400])
+    expect((await readdir(join(dir, 'world'))).filter((n) => n.endsWith('.tmp'))).toEqual([])
+    expect((await r.get(a.key))?.lastOpened).toBe(a.lastOpened)
+  })
 })
 
 describe('source registry and git user-info', () => {

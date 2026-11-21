@@ -1,11 +1,13 @@
 // Lumopolis world sources registry: the list of worlds the user can open (a project, a folder, a
 // cloned git repository or an agent-drafted design). One JSON file at `<dir>/world/sources.json`,
-// written atomically (unique temp file, then rename). A file that fails to parse or validate is
+// written atomically (unique temp file, then rename; a rename Windows refuses for a moment because the
+// file is being read is tried again). A file that fails to parse or validate is
 // moved aside to `.bad` and read as an empty list. `missing` is computed on every read, never stored.
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { graphKeyForRoot } from '../codeGraph'
 import { worldFileName } from './worldStore'
+import { renameWithRetry } from './gitSource'
 import { stripUrlUserinfo } from '../../shared/world/gitUrl'
 import type { WorldEntry, WorldSource } from '../../shared/world/types'
 import type { RepoLogin } from '../../shared/world/repoAccess'
@@ -15,6 +17,8 @@ export type { WorldEntry, WorldSource }
 export interface SourceRegistryDeps {
   exists(p: string): Promise<boolean>
   now(): number
+  /** Waits between rename tries; a timer when not given. */
+  sleep?: (ms: number) => Promise<void>
 }
 
 export interface SourceRegistry {
@@ -83,11 +87,15 @@ function defaultTitle(s: WorldSource): string {
 
 const tmpFor = (target: string): string => `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
 
-async function writeAtomic(target: string, text: string): Promise<void> {
+const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+// On Windows a rename onto a file someone is reading (the recent list reloads as a world opens) fails
+// with EPERM for a moment, so a transient refusal is tried again before the write counts as failed.
+async function writeAtomic(target: string, text: string, sleep: (ms: number) => Promise<void>): Promise<void> {
   const tmp = tmpFor(target)
   try {
     await writeFile(tmp, text, 'utf8')
-    await rename(tmp, target)
+    await renameWithRetry(rename, sleep, tmp, target)
   } catch (err) {
     await rm(tmp, { force: true })
     throw err
@@ -127,7 +135,7 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
 
   async function save(entries: WorldEntry[]): Promise<void> {
     await mkdir(folder, { recursive: true })
-    await writeAtomic(file, JSON.stringify(entries))
+    await writeAtomic(file, JSON.stringify(entries), deps.sleep ?? sleepMs)
   }
 
   async function decorate(e: WorldEntry): Promise<WorldEntry> {
