@@ -534,6 +534,8 @@ jobs:
         run: npx playwright test e2e/linked-machines.spec.ts
       - name: Launch intro and its reference frames (macOS)
         run: npx playwright test e2e/launch-intro.spec.ts
+      - name: Private repositories against a local signed-in git server (macOS)
+        run: npx playwright test e2e/lumopolis-private-repos.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4

@@ -81,8 +81,10 @@ const SMALL_OUTPUT_MAX = 4096
 /** What a host says when the account a run signed in with has no access: GitHub answers 404 rather than
  *  401, so as not to reveal that a private repository exists. */
 const NOT_FOUND_RE = /repository not found|repository '[^']*' not found|returned error: 404\b/i
-/** What git's own messages say when a host wanted a login it was not given. */
-const AUTH_RE = /terminal prompts disabled|could not read (username|password)|authentication failed|permission denied \(publickey|access denied|host key verification failed|invalid username or/i
+/** What git's own messages say when a host wanted a login it was not given. Git 2.46 and newer, told
+ *  credential.interactive=false (a no-login or background run), skip the prompt and say "unable to get
+ *  password from user" instead of "terminal prompts disabled". */
+const AUTH_RE = /terminal prompts disabled|could not read (username|password)|unable to get password from user|authentication failed|permission denied \(publickey|access denied|host key verification failed|invalid username or/i
 
 export function cloneArgs(url: string, dir: string, ref?: string, isWindows: boolean = process.platform === 'win32'): string[] {
   return [

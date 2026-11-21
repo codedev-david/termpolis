@@ -221,6 +221,17 @@ describe('cloneRepo login modes', () => {
     expect(AUTH_MESSAGE).toBe('That repository needs you to sign in. Sign in with the login this computer already uses for git, or use a token.')
   })
 
+  // Found by the real-git fixture (worldGitHttps.test.ts): git 2.46 and newer, told credential.interactive=false
+  // (the no-login run and a background machine run), skip the prompt and die with this line instead of
+  // "terminal prompts disabled". It is a sign-in failure like the others.
+  it("git's no-prompt line under credential.interactive=false also returns needsLogin", async () => {
+    const stderr = "Cloning into 'x'...\nfatal: unable to get password from user"
+    for (const run of [{ mode: 'none' }, { mode: 'machine', interactive: false }] as LoginRun[]) {
+      const { deps } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
+      expect(await cloneRepo(HTTPS, undefined, deps, run)).toEqual({ ok: false, error: AUTH_MESSAGE, needsLogin: { host: 'github.com', helper: true } })
+    }
+  })
+
   it('a failed update of an https clone also says it needs a sign-in', async () => {
     const { deps } = fakeDeps(
       { step: (args) => (args.includes('fetch') ? { code: 128, stderr: "fatal: Authentication failed for 'https://github.com/o/r.git/'" } : {}) },
