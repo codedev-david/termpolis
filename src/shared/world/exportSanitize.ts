@@ -246,17 +246,27 @@ function externalIds(doc: WorldDoc, ctx: SanitizeContext, text: (s: string) => s
 /** Rebuilds a WorldDoc from its known fields only, with every path relative and no private evidence. */
 export function sanitizeWorld(doc: WorldDoc, ctx: SanitizeContext): WorldDoc {
   const text = textCleaner(ctx)
-  // An external given a new id (externalIds) is renamed wherever an id names it: a line's ends and its id (built
-  // from its ends), a tour step, a map position and a proposal's removals.
+  // An external given a new id (externalIds) is renamed wherever an id names it: a line's ends and its id, a tour
+  // step, a map position and a proposal's removals.
   const renamed = externalIds(doc, ctx, text)
+  // In any other id holding an old id, the longest old id is replaced first, so one old id inside another can't
+  // break it.
+  const longestFirst = [...renamed].sort((a, b) => b[0].length - a[0].length)
+  const swap = (id: string): string => longestFirst.reduce((out, [from, to]) => out.split(from).join(to), id)
+  // A line's new id, which every step naming it uses too: one built from its ends ('e-<from>--<to>', group.ts and
+  // designPatch.ts) is built again from the new ends.
+  const lineIds = new Map<string, string>()
+  if (renamed.size > 0) {
+    const end = (id: string): string => renamed.get(id) ?? id
+    for (const e of [...doc.edges, ...doc.layers.plan.flatMap((p) => p.edges)]) {
+      lineIds.set(e.id, e.id === `e-${e.from}--${e.to}` ? `e-${end(e.from)}--${end(e.to)}` : swap(e.id))
+    }
+  }
   const ref = (id: string): string => {
     if (renamed.size === 0) return id
-    const exact = renamed.get(id)
+    const exact = renamed.get(id) ?? lineIds.get(id)
     if (exact !== undefined) return exact
-    if (!id.startsWith('e-')) return id
-    let out = id
-    for (const [from, to] of renamed) out = out.split(from).join(to)
-    return out
+    return id.startsWith('e-') ? swap(id) : id
   }
   // A path field is relativised, then scanned as text: a URL, a quoted or padded path, or a note after it.
   const path = (s: string): string => text(relativePath(s, ctx))

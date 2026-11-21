@@ -587,6 +587,33 @@ describe('sanitizeWorld: external ids', () => {
     expect(ids).toEqual(['x-evil', 'x-files', 'x-evil-2'])
   })
 
+  it('two unsafe ids where one holds the other: each line and tour step names the right new id', () => {
+    // 'x-c-users-dev-a' is inside 'x-c-users-dev-a-b'. Renamed by substring in the order found, the second's line
+    // would come out 'e-b1--x-a-b', naming neither part.
+    const doc = withExternal('x-c-users-dev-a', 'alpha')
+    doc.externals.push({ id: 'x-c-users-dev-a-b', name: 'beta', kind: 'files', fog: false })
+    const e = doc.edges[0]
+    doc.edges.push(
+      { ...e, id: 'e-b1--x-c-users-dev-a-b', from: 'b1', to: 'x-c-users-dev-a-b' },
+      // A line whose id isn't built from its ends: the longer old id is replaced first.
+      { ...e, id: 'e-x-c-users-dev-a-b-extra', from: 'x-c-users-dev-a-b', to: 'b1' },
+    )
+    doc.tours[0].steps.push({ ids: ['e-b1--x-c-users-dev-a-b', 'e-x-c-users-dev-a-b-extra', 'e-x-c-users-dev-a-b-gone'], caption: 'Both' })
+    // A proposal's line is renamed the same way.
+    doc.layers.plan = [{ id: 'p1', title: 'Plan', summary: [], buildings: [], edges: [{ ...e, id: 'e-x-c-users-dev-a-b--b1', from: 'x-c-users-dev-a-b', to: 'b1' }] }]
+    const out = sanitizeWorld(doc, win)
+    expect(out.layers.plan[0].edges[0]).toMatchObject({ id: 'e-x-beta--b1', from: 'x-beta', to: 'b1' })
+    expect(out.externals.map((x) => x.id)).toEqual(['x-alpha', 'x-files', 'x-beta'])
+    expect(out.edges.map((x) => [x.id, x.from, x.to])).toEqual([
+      ['e-b1--x-alpha', 'b1', 'x-alpha'],
+      ['e-b1--x-beta', 'b1', 'x-beta'],
+      ['e-x-beta-extra', 'x-beta', 'b1'],
+    ])
+    // A step names a line by the same new id, and a step naming no line still loses the longer old id first.
+    expect(out.tours[0].steps[1].ids).toEqual(['e-b1--x-beta', 'e-x-beta-extra', 'e-x-beta-gone'])
+    expect(JSON.stringify(out)).not.toContain('users')
+  })
+
   it('names an unsafe external whose name has no letters or digits "x-external"', () => {
     expect(sanitizeWorld(withExternal('x-<>', '<>'), win).externals[0].id).toBe('x-external')
   })
