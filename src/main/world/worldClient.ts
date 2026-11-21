@@ -1,7 +1,8 @@
 // Lumopolis world client: the MAIN half of the world compiler. worldHost.ts runs in a utilityProcess
 // (serviceName `termpolis-lumopolis`); this file spawns it on the first call (never at app start),
 // correlates request ids, answers the host's labelling requests (`llm`) with the model runner main
-// owns, and fans the host's `progress` / `updated` pushes out to subscribers.
+// owns, and fans the host's `progress` / `updated` pushes out to subscribers. Every world's labelling
+// calls pass one gate (llmGate.ts): at most WORLD_LLM_HOST_LIMIT model calls run at once on this computer.
 //
 // A host that exits rejects every call still waiting, and the next call starts a fresh one.
 // The transport factory at the bottom is the only Electron-aware code; worldHostTransport.test.ts covers it
@@ -17,6 +18,8 @@ import type { CloneSourceResult, SerializedError, UpdateSourceResult, WorldHead,
 import { hideValue, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
 import type { TestRun } from './testStatus'
 import { worldFileName } from './worldStore'
+import { createLlmGate, GATE_SETTLE_GRACE_MS, type LlmGate } from './llmGate'
+import { LABEL_CALL_TIMEOUT_MS } from './label'
 import { linkedPlanStamp, planStamp } from '../../shared/world/reconcile'
 
 export interface WorldHostTransport {
@@ -35,8 +38,12 @@ export interface WorldClientOptions {
   /** The `worldLabelling` setting, read when a host starts, when `applySettings` runs, and again on every
    *  labelling request (off: the request is answered null without asking the model). Default: on. */
   labelling?: () => boolean
-  /** Runs one labelling prompt for the project at `root`. Absent, or throwing, the host labels from code. */
-  llm?: (root: string, prompt: string) => Promise<string | null>
+  /** Runs one labelling prompt for the project at `root`. Absent, or throwing, the host labels from code. `signal` is
+   *  aborted when nobody waits for the answer any more (its limit passed, its compile ended, its world was removed). */
+  llm?: (root: string, prompt: string, signal: AbortSignal) => Promise<string | null>
+  /** The limit every world's labelling calls share. Default: WORLD_LLM_HOST_LIMIT calls at once, a stopped call's slot
+   *  held until its CLI exits. */
+  llmGate?: LlmGate
   /** Evidence about a building's files (commit subjects, docs lines, memory decisions) for labelling, for the project at
    *  `root`. Absent, or throwing: labelling uses file excerpts alone. */
   context?: (root: string, members: string[]) => Promise<Evidence[]>
@@ -142,6 +149,9 @@ export function createWorldClient(
       }
     })
   const callTimeoutMs = opts.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
+  // A labelling CLI told to stop may not end at once (`claude -p` runs on the proc host, which ends it only at its own
+  // LABEL_CALL_TIMEOUT_MS), so its slot is held until it really exits, and no more than its own limit after that.
+  const gate = opts.llmGate ?? createLlmGate({ graceMs: LABEL_CALL_TIMEOUT_MS + GATE_SETTLE_GRACE_MS })
   const initTimeoutMs = opts.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS
 
   let current: WorldHostTransport | null = null
@@ -158,6 +168,16 @@ export function createWorldClient(
   const refreshing = new Set<string>()
   /** projectKey → the HEAD and linked plan stamp whose background refresh last failed, and when (REFRESH_BACKOFF_MS). */
   const refreshFailed = new Map<string, { head: string; at: number }>()
+  /** Labelling requests waiting for a slot or running, each with the abort that takes it out (llmGate.ts). */
+  const llmCalls = new Set<{ tr: WorldHostTransport; id: number; projectKey: string; ctl: AbortController }>()
+  /** Stops the labelling requests `which` picks: a waiting one never starts, a running one is answered null. */
+  const cancelLlm = (which: (c: { tr: WorldHostTransport; id: number; projectKey: string }) => boolean): void => {
+    for (const c of llmCalls) {
+      if (!which(c)) continue
+      llmCalls.delete(c)
+      c.ctl.abort()
+    }
+  }
   const progressSubs = new Set<(e: WorldProgressEvent) => void>()
   const updatedSubs = new Set<(e: WorldUpdatedEvent) => void>()
 
@@ -175,6 +195,8 @@ export function createWorldClient(
     if (current !== tr) return
     current = null
     live = null
+    // The host is gone, and with it every compile that asked: none of its waiting calls may start a CLI.
+    cancelLlm((c) => c.tr === tr)
     initWaiter?.reject(why)
     initWaiter = null
     for (const [id, w] of pending) {
@@ -187,15 +209,19 @@ export function createWorldClient(
   const answerLlm = async (tr: WorldHostTransport, id: number, projectKey: string, prompt: string): Promise<void> => {
     let text: string | null = null
     const root = roots.get(projectKey)
-    // Consent is checked at the moment of asking, not only when the host started: turning
+    const llm = opts.llm
+    // Consent is checked at the moment of asking, and again when the call gets its slot: turning
     // "Describe parts with AI" off stops model calls at once, even mid-compile.
-    if (opts.llm && root !== undefined && labelling() !== false) {
-      try {
-        const r = await opts.llm(root, prompt)
-        text = typeof r === 'string' ? r : null
-      } catch {
-        text = null
-      }
+    if (llm && root !== undefined && labelling() !== false) {
+      const entry = { tr, id, projectKey, ctl: new AbortController() }
+      llmCalls.add(entry)
+      // The wait for a slot is not the call's time: the host starts its limit on `llm-started`.
+      text = await gate.run((signal) => (labelling() !== false ? llm(root, prompt, signal) : Promise.resolve(null)), {
+        signal: entry.ctl.signal,
+        timeoutMs: LABEL_CALL_TIMEOUT_MS,
+        onStart: () => tr.postMessage({ kind: 'llm-started', id }),
+      })
+      llmCalls.delete(entry)
     }
     try {
       tr.postMessage({ kind: 'llm-result', id, text })
@@ -281,6 +307,9 @@ export function createWorldClient(
         return
       case 'llm':
         void answerLlm(tr, m.id, m.projectKey, m.prompt)
+        return
+      case 'llm-cancel':
+        cancelLlm((c) => c.tr === tr && c.id === m.id)
         return
       case 'context':
         void answerContext(tr, m.id, m.projectKey, m.members)
@@ -510,6 +539,8 @@ export function createWorldClient(
      * honours them. Never starts a host (one that starts later reads the settings in its init).
      */
     applySettings(): void {
+      // Labelling turned off: no waiting call may start, and a running one is answered null now.
+      if (labelling() === false) cancelLlm(() => true)
       const tr = current
       if (!tr) return
       try {
@@ -538,6 +569,11 @@ export function createWorldClient(
      * on the main thread. A cloned repository is read confined to its folder.
      */
     snapshotFromFiles: (root: string): Promise<GraphSnapshot> => call('snapshotFromFiles', [root]),
+    /** The world with this key (graphKeyForRoot, the registry key) was removed: its labelling calls still waiting for a
+     *  slot never start, running ones are answered null. */
+    cancelLabelling(projectKey: string): void {
+      cancelLlm((c) => c.projectKey === projectKey)
+    },
     /** Stops the host (app quit). Calls after this reject. */
     dispose(): void {
       disposed = true

@@ -15,6 +15,8 @@ vi.mock('electron', () => ({
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { _resetCodeGraphForTests, graphKeyForRoot, indexFileContent } from '../../src/main/codeGraph'
 import { createWorldClient, type WorldClientOptions, type WorldHostTransport } from '../../src/main/world/worldClient'
+import { GATE_SETTLE_GRACE_MS } from '../../src/main/world/llmGate'
+import { LABEL_CALL_TIMEOUT_MS } from '../../src/main/world/label'
 import type { WorldHostRequest, WorldHostResponse } from '../../src/main/world/worldHost'
 import { worldFileName } from '../../src/main/world/worldStore'
 import { captureConsole, clearAppLog, readAppLog, type ConsoleLike } from '../../src/main/appLog'
@@ -345,7 +347,9 @@ describe('createWorldClient', () => {
         { kind: 'llm-result', id: 4, text: null }
       ])
     )
-    expect(llm).toHaveBeenCalledWith(ROOT, 'hi')
+    expect(llm).toHaveBeenCalledWith(ROOT, 'hi', expect.any(AbortSignal))
+    // Each call that ran was told to the host as it started, so its limit counts the call and never a wait for a slot.
+    expect(t.posted.filter((m) => m.kind === 'llm-started')).toEqual([1, 2, 3].map((id) => ({ kind: 'llm-started', id })))
     expect(llm).toHaveBeenCalledTimes(3)
 
     const plain = setup()
@@ -357,6 +361,178 @@ describe('createWorldClient', () => {
     t.throwOnPost = true
     t.emit({ kind: 'llm', id: 8, projectKey: KEY, prompt: 'late' })
     await flush()
+  })
+
+  it('every world shares one labelling gate: two projects asking 4 calls each run at most 4 at once (caveat 4)', async () => {
+    const ROOT2 = 'C:/repos/other'
+    const KEY2 = graphKeyForRoot(ROOT2)
+    const running = new Map<string, (t: string) => void>()
+    let most = 0
+    const llm = vi.fn(
+      (_root: string, prompt: string) =>
+        new Promise<string | null>((resolve) => {
+          running.set(prompt, resolve)
+          most = Math.max(most, running.size)
+        })
+    )
+    const { client, spawned } = setup({ llm })
+    await client.compile(ROOT)
+    await client.compile(ROOT2)
+    const t = spawned[0]
+    for (let i = 1; i <= 4; i++) t.emit({ kind: 'llm', id: i, projectKey: KEY, prompt: `a${i}` })
+    for (let i = 5; i <= 8; i++) t.emit({ kind: 'llm', id: i, projectKey: KEY2, prompt: `b${i}` })
+    await flush()
+    expect(llm).toHaveBeenCalledTimes(4)
+    expect([...running.keys()]).toEqual(['a1', 'a2', 'a3', 'a4'])
+    // The four that started were told so (the host starts their limits); the waiting four were not.
+    expect(t.posted.filter((m) => m.kind === 'llm-started')).toEqual([1, 2, 3, 4].map((id) => ({ kind: 'llm-started', id })))
+    // In order of asking, the next starts as each one ends.
+    const end = async (prompt: string): Promise<void> => {
+      running.get(prompt)?.(`done ${prompt}`)
+      running.delete(prompt)
+      await flush()
+    }
+    await end('a1')
+    expect([...running.keys()]).toEqual(['a2', 'a3', 'a4', 'b5'])
+    for (const p of ['a2', 'a3', 'a4', 'b5', 'b6', 'b7', 'b8']) await end(p)
+    expect(most).toBe(4)
+    expect(t.posted.filter((m) => m.kind === 'llm-result')).toHaveLength(8)
+    expect(t.posted).toContainEqual({ kind: 'llm-result', id: 8, text: 'done b8' })
+  })
+
+  it('a waiting labelling call never starts its CLI once the host cancels it, its world is removed or labelling goes off (caveat 4)', async () => {
+    const ROOT2 = 'C:/repos/other'
+    const KEY2 = graphKeyForRoot(ROOT2)
+    const running = new Map<string, { resolve(t: string): void; signal: AbortSignal }>()
+    let on = true
+    const llm = vi.fn(
+      (_root: string, prompt: string, signal: AbortSignal) =>
+        new Promise<string | null>((resolve) => {
+          running.set(prompt, { resolve, signal })
+        })
+    )
+    const { client, spawned } = setup({ llm, labelling: () => on })
+    await client.compile(ROOT)
+    await client.compile(ROOT2)
+    const t = spawned[0]
+    const result = (id: number) => t.posted.find((m) => m.kind === 'llm-result' && m.id === id)
+    for (let i = 1; i <= 4; i++) t.emit({ kind: 'llm', id: i, projectKey: KEY, prompt: `busy${i}` })
+    t.emit({ kind: 'llm', id: 5, projectKey: KEY, prompt: 'cancelled by the host' })
+    t.emit({ kind: 'llm', id: 6, projectKey: KEY2, prompt: 'world removed' })
+    t.emit({ kind: 'llm', id: 7, projectKey: KEY, prompt: 'kept' })
+    await flush()
+    expect(llm).toHaveBeenCalledTimes(4)
+
+    // The host stopped waiting for 5; an llm-cancel for an id nobody waits on changes nothing.
+    t.emit({ kind: 'llm-cancel', id: 5 })
+    t.emit({ kind: 'llm-cancel', id: 99 })
+    // The other project's world is removed from the home.
+    client.cancelLabelling(KEY2)
+    await flush()
+    expect(result(5)).toEqual({ kind: 'llm-result', id: 5, text: null })
+    expect(result(6)).toEqual({ kind: 'llm-result', id: 6, text: null })
+    expect(result(7)).toBeUndefined()
+
+    // A slot frees: 7 starts, never 5 or 6.
+    running.get('busy1')?.resolve('one')
+    await flush()
+    expect(running.has('kept')).toBe(true)
+    expect(running.has('cancelled by the host')).toBe(false)
+    expect(running.has('world removed')).toBe(false)
+    expect(t.posted).toContainEqual({ kind: 'llm-started', id: 7 })
+    expect(t.posted).not.toContainEqual({ kind: 'llm-started', id: 5 })
+    expect(t.posted).not.toContainEqual({ kind: 'llm-started', id: 6 })
+
+    // Settings applied with labelling still on change nothing; turned off, every call is answered null and running CLIs are told to stop.
+    client.applySettings()
+    expect(running.get('kept')?.signal.aborted).toBe(false)
+    t.emit({ kind: 'llm', id: 8, projectKey: KEY, prompt: 'behind' })
+    await flush()
+    on = false
+    client.applySettings()
+    await flush()
+    expect(running.get('kept')?.signal.aborted).toBe(true)
+    expect(running.get('busy2')?.signal.aborted).toBe(true)
+    expect(result(7)).toEqual({ kind: 'llm-result', id: 7, text: null })
+    expect(result(8)).toEqual({ kind: 'llm-result', id: 8, text: null })
+    expect(running.has('behind')).toBe(false)
+  })
+
+  it('a running call the host gives up on is answered null at once and its CLI told to stop, but its slot waits until that CLI exits (caveat 4)', async () => {
+    const running = new Map<string, { resolve(t: string | null): void; signal: AbortSignal }>()
+    const llm = vi.fn((_root: string, prompt: string, signal: AbortSignal) => new Promise<string | null>((resolve) => running.set(prompt, { resolve, signal })))
+    const { client, spawned } = setup({ llm })
+    await client.compile(ROOT)
+    const t = spawned[0]
+    for (let i = 1; i <= 5; i++) t.emit({ kind: 'llm', id: i, projectKey: KEY, prompt: `p${i}` })
+    await flush()
+    t.emit({ kind: 'llm-cancel', id: 1 })
+    await flush()
+    expect(t.posted).toContainEqual({ kind: 'llm-result', id: 1, text: null })
+    expect(running.get('p1')?.signal.aborted).toBe(true)
+    // The stopped CLI still runs: a fifth would make five processes, so the waiting call stays waiting.
+    expect(running.has('p5')).toBe(false)
+    running.get('p1')?.resolve(null)
+    await flush()
+    expect(running.has('p5')).toBe(true)
+    expect(llm).toHaveBeenCalledTimes(5)
+  })
+
+  it('a stopped CLI that never exits holds its slot for at most its own limit and the grace after it', async () => {
+    vi.useFakeTimers()
+    try {
+      const started: string[] = []
+      const llm = vi.fn((_root: string, prompt: string) => new Promise<string | null>(() => { started.push(prompt) }))
+      const { client, spawned } = setup({ llm })
+      const compiled = client.compile(ROOT)
+      await vi.advanceTimersByTimeAsync(0)
+      await compiled
+      const t = spawned[0]
+      for (let i = 1; i <= 5; i++) t.emit({ kind: 'llm', id: i, projectKey: KEY, prompt: `p${i}` })
+      await vi.advanceTimersByTimeAsync(0)
+      t.emit({ kind: 'llm-cancel', id: 1 })
+      await vi.advanceTimersByTimeAsync(LABEL_CALL_TIMEOUT_MS + GATE_SETTLE_GRACE_MS - 1)
+      expect(started).toEqual(['p1', 'p2', 'p3', 'p4'])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(started).toContain('p5')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a call that gets its slot after labelling went off (no settings message yet) is answered null without a CLI; a host exit drops its waiting calls', async () => {
+    const running = new Map<string, (t: string) => void>()
+    let on = true
+    const llm = vi.fn((_root: string, prompt: string) => new Promise<string | null>((resolve) => running.set(prompt, resolve)))
+    const { client, spawned } = setup({ llm, labelling: () => on })
+    await client.compile(ROOT)
+    const t = spawned[0]
+    for (let i = 1; i <= 5; i++) t.emit({ kind: 'llm', id: i, projectKey: KEY, prompt: `p${i}` })
+    await flush()
+    on = false
+    running.get('p1')?.('one')
+    await flush()
+    expect(llm).toHaveBeenCalledTimes(4)
+    expect(t.posted).toContainEqual({ kind: 'llm-started', id: 5 })
+    expect(t.posted).toContainEqual({ kind: 'llm-result', id: 5, text: null })
+
+    // Another client's host: a fifth call waits, the host exits, and it never starts.
+    const llm2 = vi.fn((_r: string, p: string) => new Promise<string | null>((resolve) => running.set(`second ${p}`, resolve)))
+    const second = setup({ llm: llm2 })
+    await second.client.compile(ROOT)
+    const t2 = second.spawned[0]
+    for (let i = 1; i <= 5; i++) t2.emit({ kind: 'llm', id: i, projectKey: KEY, prompt: `q${i}` })
+    await flush()
+    t2.exit(1)
+    running.get('second q1')?.('late')
+    await flush()
+    expect(llm2).toHaveBeenCalledTimes(4)
+    expect(running.has('second q5')).toBe(false)
+    expect(t2.posted).not.toContainEqual({ kind: 'llm-started', id: 5 })
+    // With no host running, turning labelling off cancels nothing and starts no host.
+    const idle = setup({ labelling: () => false })
+    idle.client.applySettings()
+    expect(idle.spawned).toHaveLength(0)
   })
 
   it('worldClient answers runs requests from the transcript and CI hooks, and an absent or failing hook gives none', async () => {

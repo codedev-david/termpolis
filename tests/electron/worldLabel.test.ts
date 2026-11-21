@@ -140,6 +140,20 @@ describe('labelWorld', () => {
     expect((await labelWorld(twoDistricts(), mkDeps({ llm: null }))).tokens).toBe(0)
   })
 
+  it('a call that waited for a slot in main is timed from its start: a long wait then an empty answer reached no model (caveat 4)', async () => {
+    let clock = 0
+    // Each call waits a whole LABEL_SLOW_FAIL_MS behind other worlds' calls, then starts and comes back empty at once.
+    const queued = vi.fn(async (_prompt: string, started?: () => void): Promise<string | null> => {
+      clock += LABEL_SLOW_FAIL_MS
+      started?.()
+      return null
+    })
+    const l = await labelWorld(twoDistricts(), mkDeps({ llm: queued, now: () => clock }))
+    expect(queued).toHaveBeenCalled()
+    // Not one of them counts as a slow failure: no prompt reached a model, so none costs anything.
+    expect(l.tokens).toBe(0)
+  })
+
   it('maps E labels to evidence, forces inferred, and applies valid model fields', async () => {
     const l = await labelWorld(twoDistricts(), mkDeps({ llm: async () => GOOD }))
     expect(l.districts.d1).toEqual({ name: 'Alpha Zone', subtitle: 'the a side' })

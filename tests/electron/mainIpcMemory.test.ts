@@ -4331,6 +4331,31 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(world.runHeadless).toHaveBeenCalledWith({ task: 'json please', agent: 'codex', write: false, cwd: '/repos/x', env: {} }, { deliver: expect.any(Function) })
   })
 
+  it('a labelling call cancelled before its CLI starts runs nothing, and runHeadless gets its signal (caveat 4)', async () => {
+    // Cancelled while it waited (its world removed, labelling turned off): no model call is even built.
+    const gone = new AbortController()
+    gone.abort()
+    world.makeWorldLlm.mockClear()
+    expect(await world.opts.llm('/repos/x', 'name these', gone.signal)).toBeNull()
+    expect(world.makeWorldLlm).not.toHaveBeenCalled()
+
+    // Cancelled while claude's launch env was being built: claude -p never starts.
+    const late = new AbortController()
+    await world.opts.llm('/repos/x', 'name these', late.signal)
+    const deps = (world.makeWorldLlm.mock.calls.at(-1) as [string, string, any])[2]
+    world.execCapture.mockClear()
+    late.abort()
+    expect(await deps.claudeExec('claude', ['-p'], { timeoutMs: 5000 })).toEqual({ stdout: '', code: 1 })
+    expect(world.execCapture).not.toHaveBeenCalled()
+
+    // Codex and Gemini run through runHeadless, which stops the CLI when the signal aborts.
+    const live = new AbortController()
+    await world.opts.llm('/repos/x', 'name these', live.signal)
+    const runDeps = (world.makeWorldLlm.mock.calls.at(-1) as [string, string, any])[2]
+    await runDeps.run({ task: 't', agent: 'codex', write: false })
+    expect(world.runHeadless).toHaveBeenLastCalledWith(expect.objectContaining({ cwd: '/repos/x', signal: live.signal }), { deliver: expect.any(Function) })
+  })
+
   it('runs the Lumopolis agent from the settings: Codex and Gemini ask and label direct or by proxy URL, and a broken proxy still runs', async () => {
     const doc = { version: 1, projectKey: 'k', districts: [], buildings: [], edges: [], externals: [], glossary: {}, cargo: {}, processes: {}, tours: [], layout: { seed: 1, positions: {} }, runtimeNames: {}, layers: { plan: [] } }
     try {

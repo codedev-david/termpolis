@@ -5,7 +5,8 @@
 // Same shape as memoryHost.ts: an `init` message, then `call` messages answered with `result`, all
 // discriminated on `kind`. Three extras:
 //   - pushes: `progress` while a world compiles, and `updated` after every save (compile, relayout, watcher recompile);
-//   - a reverse RPC for labelling: the host posts `llm` and main answers `llm-result`. The model call
+//   - a reverse RPC for labelling: the host posts `llm`, main posts `llm-started` once the call has one of the
+//     computer's labelling slots (llmGate.ts) and answers `llm-result`; a host that stops waiting posts `llm-cancel`. The model call
 //     runs in MAIN because it needs the token-proxy environment main owns (claudeLaunchEnv), and
 //     because spawning an agent CLI from here would put a second spawner beside procHost;
 //   - per-project serialisation, so a compile and a watcher recompile never race to save.
@@ -79,6 +80,11 @@ export interface WorldLlmResultMsg {
   id: number
   text: string | null
 }
+/** Main gave a labelling request a slot and started its model call: the host's limit for the call starts now. */
+export interface WorldLlmStartedMsg {
+  kind: 'llm-started'
+  id: number
+}
 /** The `worldLabelling` setting changed: the next compile or watcher recompile honours it, no restart. */
 export interface WorldSettingsMsg {
   kind: 'settings'
@@ -100,7 +106,14 @@ export interface WorldRunsResultMsg {
   runs: TestRun[]
   files?: string[]
 }
-export type WorldHostRequest = WorldInitMsg | WorldCallMsg | WorldLlmResultMsg | WorldContextResultMsg | WorldRunsResultMsg | WorldSettingsMsg
+export type WorldHostRequest =
+  | WorldInitMsg
+  | WorldCallMsg
+  | WorldLlmResultMsg
+  | WorldLlmStartedMsg
+  | WorldContextResultMsg
+  | WorldRunsResultMsg
+  | WorldSettingsMsg
 
 export interface WorldReadyMsg { kind: 'ready'; pid: number }
 export interface WorldInitErrorMsg { kind: 'init-error'; error: SerializedError }
@@ -109,6 +122,8 @@ export interface WorldErrMsg { kind: 'result'; id: number; ok: false; error: Ser
 export interface WorldProgressMsg { kind: 'progress'; projectKey: string; stage: string; pct: number }
 export interface WorldUpdatedMsg { kind: 'updated'; projectKey: string }
 export interface WorldLlmMsg { kind: 'llm'; id: number; projectKey: string; prompt: string }
+/** The host stopped waiting for a labelling request (its limit passed): main drops it, and never starts it if it still waits. */
+export interface WorldLlmCancelMsg { kind: 'llm-cancel'; id: number }
 /** The host asks main for commit, docs and memory evidence about a building's files. */
 export interface WorldContextMsg { kind: 'context'; id: number; projectKey: string; members: string[] }
 /** The host asks main for test runs: the agent transcripts' (`transcript`) or the newest CI conclusion's (`ci`). */
@@ -121,6 +136,7 @@ export type WorldHostResponse =
   | WorldProgressMsg
   | WorldUpdatedMsg
   | WorldLlmMsg
+  | WorldLlmCancelMsg
   | WorldContextMsg
   | WorldRunsMsg
 
@@ -144,6 +160,9 @@ export const MAX_GLOB_RESULTS = 2000
 export const EXCERPT_LINES = 40
 /** How long a compile waits for main to answer one labelling request before labelling from code. */
 export const LLM_TIMEOUT_MS = 150_000
+/** How long a labelling request may wait in main for a slot (behind other worlds' calls) before the host stops waiting.
+ *  The wait is not the call's time: LLM_TIMEOUT_MS starts when main says the call started. */
+export const LLM_QUEUE_TIMEOUT_MS = 30 * 60_000
 /** How long a compile waits for main's commit, docs and memory evidence for one building. */
 export const CONTEXT_WAIT_MS = 10_000
 /** How long a compile waits for main's test runs (CI asks `gh` for up to 5 s, then git). */
@@ -372,7 +391,10 @@ export interface WorldHostDeps {
   now?: () => number
   /** The watcher recompile's debounce (default WATCH_RECOMPILE_MS). */
   debounceMs?: number
+  /** How long one labelling call may run once main has started it (default LLM_TIMEOUT_MS). */
   llmTimeoutMs?: number
+  /** How long a labelling request may wait for main to start it (default LLM_QUEUE_TIMEOUT_MS). */
+  llmQueueTimeoutMs?: number
   /** How long to wait for main's evidence for one building (default CONTEXT_WAIT_MS). */
   contextTimeoutMs?: number
   /** How long to wait for main's test runs (default RUNS_WAIT_MS). */
@@ -468,6 +490,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const glob = deps.glob ?? ((root: string, patterns: string[]) => globFiles(root, patterns))
   const now = deps.now ?? Date.now
   const llmTimeoutMs = deps.llmTimeoutMs ?? LLM_TIMEOUT_MS
+  const llmQueueTimeoutMs = deps.llmQueueTimeoutMs ?? LLM_QUEUE_TIMEOUT_MS
   const contextTimeoutMs = deps.contextTimeoutMs ?? CONTEXT_WAIT_MS
   const runsTimeoutMs = deps.runsTimeoutMs ?? RUNS_WAIT_MS
   const clone = deps.cloneRepo ?? cloneRepo
@@ -478,6 +501,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const latest = new Map<string, Latest>()
   const schedulers = new Map<string, ReturnType<typeof createRecompileScheduler>>()
   const llmWaiting = new Map<number, (text: string | null) => void>()
+  /** Requests main has not started yet, by id: called when main says it started one. */
+  const llmStarting = new Map<number, () => void>()
   let llmSeq = 0
   const contextWaiting = new Map<number, (evidence: Evidence[]) => void>()
   const runsWaiting = new Map<number, (msg: { runs?: unknown; files?: unknown }) => void>()
@@ -498,20 +523,41 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     return next
   }
 
+  // A labelling request waits, first for main to give it a slot (llmGate.ts: other worlds' calls may hold them all),
+  // then for its answer. Only the call itself is timed: llmTimeoutMs starts when main says it started, and the
+  // label run's own clock starts then too (`started`). A request answered without ever starting (no consent, no
+  // agent, cancelled while it waited) is marked started as it is answered, so it counts as reaching no model.
   const askMain =
     (projectKey: string) =>
-    (prompt: string): Promise<string | null> =>
+    (prompt: string, started?: () => void): Promise<string | null> =>
       new Promise((resolve) => {
         const id = ++llmSeq
-        const timer = setTimeout(() => {
-          llmWaiting.delete(id)
-          resolve(null)
-        }, llmTimeoutMs)
-        llmWaiting.set(id, (text) => {
+        let begun = false
+        const begin = (): void => {
+          if (begun) return
+          begun = true
+          started?.()
+        }
+        const finish = (text: string | null): void => {
           clearTimeout(timer)
           llmWaiting.delete(id)
+          llmStarting.delete(id)
+          begin()
           resolve(text)
+        }
+        // Main is told, so a request still waiting there leaves its line and never starts a CLI.
+        const giveUp = (): void => {
+          post({ kind: 'llm-cancel', id })
+          finish(null)
+        }
+        let timer = setTimeout(giveUp, llmQueueTimeoutMs)
+        llmStarting.set(id, () => {
+          llmStarting.delete(id)
+          begin()
+          clearTimeout(timer)
+          timer = setTimeout(giveUp, llmTimeoutMs)
         })
+        llmWaiting.set(id, finish)
         post({ kind: 'llm', id, projectKey, prompt })
       })
 
@@ -974,6 +1020,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       }
       if (msg.kind === 'llm-result') {
         llmWaiting.get(msg.id)?.(isStr(msg.text) ? msg.text : null)
+        return
+      }
+      if (msg.kind === 'llm-started') {
+        llmStarting.get(msg.id)?.()
         return
       }
       if (msg.kind !== 'call') return

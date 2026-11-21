@@ -686,13 +686,13 @@ describe('createWorldHost', () => {
     expect((seen as CompileDeps['label'] | null)?.context).toBeUndefined()
   })
 
-  it('an unanswered labelling request times out as null', async () => {
+  it('an unanswered labelling request times out as null (the queue limit, when main never starts it)', async () => {
     const answers: (string | null)[] = []
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
       answers.push(await (deps.label.llm as (p: string) => Promise<string | null>)('p'))
       return doc(input.projectKey)
     })
-    const h = harness({ compile, llmTimeoutMs: 5 })
+    const h = harness({ compile, llmTimeoutMs: 5, llmQueueTimeoutMs: 5 })
     await h.init()
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
     expect(h.last()).toMatchObject({ id: 1, ok: true })
@@ -700,6 +700,88 @@ describe('createWorldHost', () => {
     await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
     expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1)
     expect(answers).toEqual([null, null])
+  })
+
+  it('a labelling request waiting for a slot in main is not timed: its limit starts on llm-started, and the label run is told then (caveat 4)', async () => {
+    vi.useFakeTimers()
+    const marks: string[] = []
+    let answer: Promise<string | null> = Promise.resolve(null)
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      if (deps.label.llm) answer = deps.label.llm('p', () => marks.push(`started ${Date.now()}`))
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile, llmTimeoutMs: 1000, llmQueueTimeoutMs: 60_000 })
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    const asks = (): Extract<WorldHostResponse, { kind: 'llm' }>[] => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
+    await vi.waitFor(() => expect(asks()).toHaveLength(1))
+    const t0 = Date.now()
+    let text: string | null | undefined
+    void answer.then((t) => { text = t })
+    // Five call limits pass while main has it waiting behind other worlds' calls: nothing times it out.
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(text).toBeUndefined()
+    expect(marks).toEqual([])
+    await h.send({ kind: 'llm-started', id: 4242 }) // unknown id: ignored
+    await h.send({ kind: 'llm-started', id: asks()[0].id })
+    await h.send({ kind: 'llm-started', id: asks()[0].id }) // told twice: still one start
+    expect(marks).toEqual([`started ${t0 + 5000}`])
+    await vi.advanceTimersByTimeAsync(999)
+    expect(text).toBeUndefined()
+    // Its own limit, counted from the start: answered null, and main is told to drop it.
+    await vi.advanceTimersByTimeAsync(1)
+    expect(text).toBeNull()
+    expect(h.out).toContainEqual({ kind: 'llm-cancel', id: asks()[0].id })
+    expect(marks).toHaveLength(1)
+  })
+
+  it('a labelling request main never starts gives up after the queue limit, tells main, and counts as starting as it is answered (caveat 4)', async () => {
+    vi.useFakeTimers()
+    const marks: number[] = []
+    let askedAt = 0
+    let answer: Promise<string | null> = Promise.resolve(null)
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      askedAt = Date.now()
+      if (deps.label.llm) answer = deps.label.llm('p', () => marks.push(Date.now()))
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile, llmTimeoutMs: 1000, llmQueueTimeoutMs: 60_000 })
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(h.out.some((m) => m.kind === 'llm')).toBe(true))
+    const ask = h.out.find((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>
+    let text: string | null | undefined
+    void answer.then((t) => { text = t })
+    // (waiting for the ask moved the fake clock: the limit counts from when it was asked)
+    await vi.advanceTimersByTimeAsync(askedAt + 59_999 - Date.now())
+    expect(text).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(text).toBeNull()
+    expect(h.out).toContainEqual({ kind: 'llm-cancel', id: ask.id })
+    // It reached no model: its start is the moment it was answered, so the label run times it as nothing.
+    expect(marks).toEqual([askedAt + 60_000])
+    // A late answer for it is dropped.
+    await h.send({ kind: 'llm-result', id: ask.id, text: 'late' })
+    expect(text).toBeNull()
+  })
+
+  it('a request answered without llm-started (refused in main) counts as starting as it is answered', async () => {
+    const marks: string[] = []
+    let answer: Promise<string | null> = Promise.resolve(null)
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      if (deps.label.llm) answer = deps.label.llm('p', () => marks.push('started'))
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile })
+    await h.init()
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(h.out.some((m) => m.kind === 'llm')).toBe(true))
+    const ask = h.out.find((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>
+    expect(marks).toEqual([])
+    await h.send({ kind: 'llm-result', id: ask.id, text: null })
+    expect(await answer).toBeNull()
+    expect(marks).toEqual(['started'])
+    expect(h.out.some((m) => m.kind === 'llm-cancel')).toBe(false)
   })
 
   it('labelling off gives the compiler no model', async () => {
@@ -734,7 +816,7 @@ describe('createWorldHost', () => {
       }
       return doc(input.projectKey)
     })
-    const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 5 }, memStore({ k1: doc() }))
+    const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 5, llmQueueTimeoutMs: 5 }, memStore({ k1: doc() }))
     await h.send({ kind: 'settings', labelling: false }) // before init: ignored, nothing to switch
     await h.init(true)
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
@@ -767,7 +849,7 @@ describe('createWorldHost', () => {
         const text = await (deps.label.llm as Llm)(`describe ${n}`)
         return doc(input.projectKey, { generatedAt: n, glossary: text ? { Label: text } : {} })
       })
-      const h = harness({ compile, llmTimeoutMs: 60_000 })
+      const h = harness({ compile, llmTimeoutMs: 60_000, llmQueueTimeoutMs: 60_000 })
       await h.init(true)
       await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
       expect(h.results()).toEqual([{ kind: 'result', id: 1, ok: true, result: doc('k1', { generatedAt: 1, glossary: {} }) }])
@@ -789,7 +871,7 @@ describe('createWorldHost', () => {
         await (deps.label.llm as Llm)('describe')
         return doc(input.projectKey, { generatedAt: inputs.length })
       })
-      const h = harness({ compile, llmTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
+      const h = harness({ compile, llmTimeoutMs: 60_000, llmQueueTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
       await h.init(true)
       await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
       await vi.waitFor(() => expect(h.out.some((m) => m.kind === 'llm')).toBe(true))
@@ -810,7 +892,7 @@ describe('createWorldHost', () => {
         const text = await (deps.label.llm as Llm)('describe')
         return doc(input.projectKey, { generatedAt: inputs.length, glossary: text ? { Label: text } : {} })
       })
-      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000, llmQueueTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
       await h.init(true)
       await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
       // The structural update is saved and pushed while the model question is still open.
@@ -833,7 +915,7 @@ describe('createWorldHost', () => {
         const text = await (deps.label.llm as Llm)('describe')
         return doc(input.projectKey, { generatedAt: inputs.length, glossary: text ? { Label: text } : {} })
       })
-      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000, llmQueueTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
       await h.init(true)
       await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
       await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1))
@@ -860,7 +942,7 @@ describe('createWorldHost', () => {
         const text = await (deps.label.llm as Llm)('describe')
         return doc(input.projectKey, { generatedAt: inputs.length, glossary: text ? { Label: text } : {} })
       })
-      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000, llmQueueTimeoutMs: 60_000 }, memStore({ k1: doc('k1', { generatedAt: 0 }) }))
       await h.init(true)
       const asks = (): Extract<WorldHostResponse, { kind: 'llm' }>[] => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
       await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
@@ -905,7 +987,7 @@ describe('createWorldHost', () => {
         return doc(input.projectKey, { glossary: text ? { Label: text } : {} })
       })
       const store = memStore({ k1: doc() })
-      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, store)
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000, llmQueueTimeoutMs: 60_000 }, store)
       await h.init(true)
       const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
       const asks = (): Extract<WorldHostResponse, { kind: 'llm' }>[] => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
@@ -934,7 +1016,7 @@ describe('createWorldHost', () => {
         const text = await (deps.label.llm as Llm)('describe')
         return doc(input.projectKey, { glossary: text ? { Label: text } : {} })
       })
-      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc() }))
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000, llmQueueTimeoutMs: 60_000 }, memStore({ k1: doc() }))
       await h.init(true)
       const asks = (): Extract<WorldHostResponse, { kind: 'llm' }>[] => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
       await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
@@ -955,7 +1037,7 @@ describe('createWorldHost', () => {
         await (deps.label.llm as Llm)('describe')
         return doc(input.projectKey)
       })
-      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc() }))
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000, llmQueueTimeoutMs: 60_000 }, memStore({ k1: doc() }))
       await h.init(true)
       await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
       await vi.waitFor(() => expect(h.out.filter((m) => m.kind === 'llm')).toHaveLength(1))
@@ -981,7 +1063,7 @@ describe('createWorldHost', () => {
         await gate
         return doc(input.projectKey)
       })
-      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000 }, memStore({ k1: doc() }))
+      const h = harness({ compile, debounceMs: 1, llmTimeoutMs: 60_000, llmQueueTimeoutMs: 60_000 }, memStore({ k1: doc() }))
       await h.init(true)
       await h.send({ kind: 'call', id: 1, fn: 'notifyChanged', args: ['k1', snap(), HEAD, ['src/a.ts']] })
       await vi.waitFor(() => expect(compile).toHaveBeenCalledTimes(1))
@@ -1016,7 +1098,7 @@ describe('createWorldHost', () => {
         if (++pass === 2) throw new Error('model reply broke the compile')
         return doc(input.projectKey)
       })
-      const h = harness({ compile, llmTimeoutMs: 5 })
+      const h = harness({ compile, llmTimeoutMs: 5, llmQueueTimeoutMs: 5 })
       await h.init(true)
       await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
       expect(h.last()).toEqual({ kind: 'result', id: 1, ok: true, result: doc('k1') })
@@ -1042,7 +1124,7 @@ describe('createWorldHost', () => {
         const pinned = Object.fromEntries(Object.keys(world.layout.positions).map((id) => [id, [999, 0, 999] as [number, number, number]]))
         return { ...world, layout: { ...world.layout, positions: pinned } }
       })
-      const h = harness({ compile, llmTimeoutMs: 5, contextTimeoutMs: 5 }, store)
+      const h = harness({ compile, llmTimeoutMs: 5, llmQueueTimeoutMs: 5, contextTimeoutMs: 5 }, store)
       await h.init(true)
       await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
       await vi.waitFor(() => expect(store.saves).toHaveLength(2))
@@ -1061,7 +1143,7 @@ describe('createWorldHost', () => {
         if (input.head.head === 'slow') await gate
         return doc(input.projectKey)
       })
-      const h = harness({ compile, llmTimeoutMs: 5 })
+      const h = harness({ compile, llmTimeoutMs: 5, llmQueueTimeoutMs: 5 })
       await h.init(true)
       // Every part came from the cache (the first pass asked nothing): one compile is enough.
       await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
@@ -1119,7 +1201,7 @@ describe('createWorldHost', () => {
       if (deps.label.llm) await deps.label.llm('describe')
       return doc(input.projectKey, { generatedAt: inputs.length })
     })
-    const h = harness({ compile, debounceMs: 5, llmTimeoutMs: 1 }, memStore({ k1: doc() }))
+    const h = harness({ compile, debounceMs: 5, llmTimeoutMs: 1, llmQueueTimeoutMs: 1 }, memStore({ k1: doc() }))
     await h.init(true)
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD, { plan }] })
     await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
@@ -2258,7 +2340,7 @@ describe('the staged compile in the host', () => {
   it('the labelled follow-up reads no source file again: it compiles from the first pass stage cache', async () => {
     const s = await fixture()
     const store = stagedStore()
-    const h = harness({ glob: async () => [], llmTimeoutMs: 1, contextTimeoutMs: 1 }, store)
+    const h = harness({ glob: async () => [], llmTimeoutMs: 1, llmQueueTimeoutMs: 1, contextTimeoutMs: 1 }, store)
     await h.send({ kind: 'init', userDataPath: join(dir, 'ud'), labelling: true })
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', s, HEAD] })
     await until(() => store.saves.length === 2)

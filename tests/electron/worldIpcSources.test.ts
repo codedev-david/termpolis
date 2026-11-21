@@ -19,12 +19,12 @@ import type { WorldSettingsStore } from '../../src/main/world/worldSettings'
 const DOC = { projectKey: 'design:d1', version: 1 } as unknown as WorldDoc
 const entryOf = (source: WorldSource, title = 't'): WorldEntry => ({ key: source.kind === 'design' ? `design:${source.id}` : `k-${source.root}`, source, title, lastOpened: 1 })
 
-function setup(over: Partial<WorldSourcesDeps> = {}, designer?: WorldDesigner) {
+function setup(over: Partial<WorldSourcesDeps> = {}, designer?: WorldDesigner, clientOver: Partial<WorldIpcClient> = {}) {
   const handlers = new Map<string, (e: unknown, args?: unknown) => unknown>()
   const ipc = { handle: vi.fn((ch: string, fn: (e: unknown, args?: unknown) => unknown) => { handlers.set(ch, fn) }) }
   const client = {
     get: vi.fn(), compile: vi.fn(), relayout: vi.fn(), applySettings: vi.fn(),
-    onProgress: () => () => undefined, onUpdated: () => () => undefined
+    onProgress: () => () => undefined, onUpdated: () => () => undefined, ...clientOver
   } as unknown as WorldIpcClient
   const settings = { get: vi.fn(), set: vi.fn() } as unknown as WorldSettingsStore
   const registry = {
@@ -200,6 +200,17 @@ describe('registerWorldIpc sources handlers', () => {
     }
     s.registry.remove.mockRejectedValueOnce(new Error('disk'))
     expect(await s.invoke('world:remove-source', { key: 'k' })).toEqual({ success: false, error: SOURCES_FAILED })
+  })
+
+  it('world:remove-source also cancels the labelling calls still waiting for a slot (caveat 4)', async () => {
+    const cancelLabelling = vi.fn()
+    const s = setup({}, undefined, { cancelLabelling })
+    expect(await s.invoke('world:remove-source', { key: 'k-C:/a' })).toEqual({ success: true, data: true })
+    expect(cancelLabelling).toHaveBeenCalledWith('k-C:/a')
+    // A remove that failed keeps the world, and its labelling.
+    s.registry.remove.mockRejectedValueOnce(new Error('disk'))
+    expect(await s.invoke('world:remove-source', { key: 'k2' })).toEqual({ success: false, error: SOURCES_FAILED })
+    expect(cancelLabelling).toHaveBeenCalledTimes(1)
   })
 
   it('world:touch-source marks a world opened now and answers it (null for an unknown key)', async () => {

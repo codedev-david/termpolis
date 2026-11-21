@@ -53,7 +53,10 @@ export interface Labels {
 }
 
 export interface LabelDeps {
-  llm: ((prompt: string) => Promise<string | null>) | null
+  /** One model call. `started`, when the runner calls it, marks the moment the call really began: a call that waits for
+   *  a slot behind other worlds' calls (main's llmGate) is timed from then, never through its wait. A runner that never
+   *  calls it is timed from the ask. */
+  llm: ((prompt: string, started?: () => void) => Promise<string | null>) | null
   cache: { get(h: string): Promise<string | null>; set(h: string, v: string): Promise<void> }
   excerpt: (file: string, line?: number) => Promise<string>
   /** Extra evidence for a building (commit subjects, docs lines, memory decisions), from main. Optional; a throw is ignored. */
@@ -642,7 +645,7 @@ interface BatchResult extends Labels { failed?: 'retry' | 'later' }
 
 /** One labelling pass: the model call, and what its calls so far showed. */
 interface Pass {
-  llm: (prompt: string) => Promise<string | null>
+  llm: (prompt: string, started?: () => void) => Promise<string | null>
   /** Cache keys of every prompt sent to the model this pass. The second chance never sends one again: a batch of
    *  one building or one line, or a half already asked twice, cannot get smaller. */
   sent: Set<string>
@@ -735,10 +738,13 @@ async function labelBatch(p: Planned, deps: LabelDeps, pass: Pass, second = fals
   if (noModel(pass)) return { ...out, failed: 'later' }
   pass.sent.add(key)
   const clock = deps.now ?? (() => performance.now())
-  const started = clock()
+  // Timed from when the call began (LABEL_SLOW_FAIL_MS, LABEL_NO_MODEL_MS), never through a wait for a slot.
+  let started = clock()
   let raw: string | null = null
   try {
-    raw = await pass.llm(prompt)
+    raw = await pass.llm(prompt, () => {
+      started = clock()
+    })
   } catch {
     raw = null
   }

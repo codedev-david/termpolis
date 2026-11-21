@@ -58,7 +58,8 @@ export interface WorldIpcWindow {
 
 const ANNOTATE_FAILED = "Couldn't save that confirmation."
 
-export type WorldIpcClient = Pick<WorldClient, 'get' | 'compile' | 'relayout' | 'applySettings' | 'annotate' | 'onProgress' | 'onUpdated'>
+export type WorldIpcClient = Pick<WorldClient, 'get' | 'compile' | 'relayout' | 'applySettings' | 'annotate' | 'onProgress' | 'onUpdated'> &
+  Partial<Pick<WorldClient, 'cancelLabelling'>>
 
 const rootOf = (args: unknown): string | null => {
   const root = args && typeof args === 'object' ? (args as { root?: unknown }).root : undefined
@@ -340,7 +341,7 @@ export function registerWorldIpc(
     })
   }
 
-  if (sources) registerSourceHandlers(ipc, sources)
+  if (sources) registerSourceHandlers(ipc, sources, client)
 
   // A closed or reloading window must never break the host's event stream.
   const offProgress = client.onProgress((e) => {
@@ -364,7 +365,7 @@ export function registerWorldIpc(
 }
 
 /** The Lumopolis home's handlers. Every failure is a fixed friendly string; nothing raw reaches the renderer. */
-function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void {
+function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, client: WorldIpcClient): void {
   const { registry } = deps
   const home = deps.homeDir
   const forbidden = (root: string): Promise<string | null> => forbiddenFolderReal(root, { home, userData: deps.userDataDir }, deps.realpath)
@@ -474,6 +475,8 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     if (!nonEmpty(key) || key.length > MAX_KEY) return err('key required')
     try {
       await registry.remove(key)
+      // Its labelling calls still waiting for a slot never start a CLI (the registry key is the world's project key).
+      client.cancelLabelling?.(key)
       const root = watched.get(key)
       if (root !== undefined) {
         watched.delete(key)

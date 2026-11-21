@@ -2664,11 +2664,12 @@ const worldSettings = createWorldSettings(() => join(app.getPath('userData'), WO
 void worldSettings.ready()
 /** `claude -p` for labelling, with the same launch environment (token proxy included) an agent gets in
  *  `root`. Spawned by the proc host, never on the main thread: a watcher-driven recompile can label. */
-const worldClaudeExec = (root: string): ExecFn => async (cmd, args, opts) => {
+const worldClaudeExec = (root: string, signal?: AbortSignal): ExecFn => async (cmd, args, opts) => {
   try {
     const env = { ...process.env, PATH: getExtendedPath(), ...((await claudeLaunchEnv(root)) ?? {}) }
-    // Consent again at the last moment: labelling may have been turned off while the env was built.
-    if (worldSettings.get().worldLabelling === false) return { stdout: '', code: 1 }
+    // Consent again at the last moment: labelling may have been turned off, or the call cancelled (its world
+    // removed, its compile ended), while the env was built.
+    if (worldSettings.get().worldLabelling === false || signal?.aborted) return { stdout: '', code: 1 }
     const out = await execCaptureOffThread(cmd, args, { cwd: root, timeout: opts.timeoutMs, maxBuffer: 8 * 1024 * 1024, env, ...(opts.input !== undefined ? { input: opts.input } : {}) })
     const code = out.error ? (typeof out.error.code === 'number' ? out.error.code : 1) : 0
     return { stdout: String(out.stdout ?? ''), code }
@@ -2753,16 +2754,18 @@ const worldClient = createWorldClient(undefined, {
   // The cheapest model of the Lumopolis agent (worldAgent): Haiku for Claude, a mini or flash model for the
   // others. Claude goes through worldClaudeExec; Codex and Gemini through runHeadless, read-only, with the
   // same run environment (Codex's proxy URL) a question gets.
-  llm: async (root, prompt) => {
+  llm: async (root, prompt, signal) => {
     // The saved agent and consent, never the defaults, decide a model call.
     await worldSettings.ready()
+    // Cancelled while the settings loaded: no CLI starts (caveat 4).
+    if (signal?.aborted) return null
     const agent = worldSettings.get().worldAgent
     return makeWorldLlm(agent, cheapModelFor(agent, modelCatalog), {
-      claudeExec: worldClaudeExec(root),
+      claudeExec: worldClaudeExec(root, signal),
       run: async (req) => {
         let route: { env: Record<string, string>; baseUrl?: string } = { env: {} }
         try { route = await worldRunEnv(agent, root) } catch { /* a broken proxy must not stop labelling: it runs direct */ }
-        return runHeadless({ ...req, cwd: root, env: route.env, ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}) }, { deliver: deliverSecondOpinion })
+        return runHeadless({ ...req, cwd: root, env: route.env, ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}), ...(signal ? { signal } : {}) }, { deliver: deliverSecondOpinion })
       },
     })(prompt)
   },
