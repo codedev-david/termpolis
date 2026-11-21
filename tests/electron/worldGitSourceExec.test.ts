@@ -176,7 +176,7 @@ describe('cloneRepo login modes', () => {
     }
     // Every other safety setting is the same in every mode: identical argv, and the env differs only in the login keys.
     const strip = (env: Record<string, string>): Record<string, string> =>
-      Object.fromEntries(Object.entries(env).filter(([k]) => !/^GIT_CONFIG_(COUNT|KEY_|VALUE_)|^GCM_INTERACTIVE$|^GIT_ASKPASS$|^TERMPOLIS_GIT_ASKPASS_/.test(k)))
+      Object.fromEntries(Object.entries(env).filter(([k]) => !/^GIT_CONFIG_(COUNT|KEY_|VALUE_)|^GCM_INTERACTIVE$|^GIT_ASKPASS$|^TERMPOLIS_GIT_ASKPASS_|^GIT_TRACE_REDACT$/.test(k)))
     for (const c of seen) {
       expect(c.args).toEqual(seen[0].args)
       expect(strip(c.opts.env)).toEqual(strip(seen[0].opts.env))
@@ -269,19 +269,19 @@ describe('cloneRepo login modes', () => {
 
   it('a repository the signed-in account cannot see comes back as needing a sign-in, for machine and token runs', async () => {
     for (const run of SIGNED_IN) {
+      // A token that cannot see the repository is a token that did not open it.
+      const error = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : notFoundMessage('github.com')
       for (const stderr of NOT_FOUND) {
         const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
-        expect(await cloneRepo(HTTPS, undefined, deps, run)).toEqual({
-          ok: false,
-          error: notFoundMessage('github.com'),
-          needsLogin: { host: 'github.com', helper: true }
-        })
+        expect(await cloneRepo(HTTPS, undefined, deps, run)).toEqual({ ok: false, error, needsLogin: { host: 'github.com', helper: true } })
         expect(of('clone')).toHaveLength(1)
       }
     }
     // An update whose fetch is refused that way says the same.
     const upd = fakeDeps({ step: (args) => (args.includes('fetch') ? { code: 128, stderr: NOT_FOUND[0] } : {}) }, { exists: async () => true })
-    expect(await cloneRepo(HTTPS, undefined, upd.deps, TOKEN_RUN)).toEqual({
+    expect(await cloneRepo(HTTPS, undefined, upd.deps, TOKEN_RUN)).toEqual({ ok: false, error: TOKEN_REJECTED_MESSAGE, needsLogin: { host: 'github.com', helper: false } })
+    const updMachine = fakeDeps({ step: (args) => (args.includes('fetch') ? { code: 128, stderr: NOT_FOUND[0] } : {}) }, { exists: async () => true })
+    expect(await cloneRepo(HTTPS, undefined, updMachine.deps, { mode: 'machine', interactive: true })).toEqual({
       ok: false,
       error: notFoundMessage('github.com'),
       needsLogin: { host: 'github.com', helper: false }
@@ -439,6 +439,9 @@ describe('cloneRepo token runs', () => {
     expect(env.TERMPOLIS_GIT_ASKPASS_REPLY).toBe(TOKEN)
     expect(env.TERMPOLIS_GIT_ASKPASS_USER).toBe('x-access-token')
     expect(env.GIT_ASKPASS).toBe(ASKPASS)
+    // The askpass answers only prompts for this host.
+    expect(env.TERMPOLIS_GIT_ASKPASS_HOST).toBe('github.com')
+    expect(env.GIT_TRACE_REDACT).toBe('1')
     expect(env.GIT_TERMINAL_PROMPT).toBe('0')
     // No login helper may answer in the token's place.
     expect(configValue(env, 'credential.helper')).toBe('')
@@ -537,7 +540,14 @@ describe('cloneRepo token runs', () => {
   })
 
   it('inherited askpass variables are dropped', async () => {
-    const env = { PATH: 'p', GIT_ASKPASS: '/evil', TERMPOLIS_GIT_ASKPASS_USER: 'someone', TERMPOLIS_GIT_ASKPASS_REPLY: 'leaked', termpolis_git_askpass_reply: 'leaked2' }
+    const env = {
+      PATH: 'p',
+      GIT_ASKPASS: '/evil',
+      TERMPOLIS_GIT_ASKPASS_USER: 'someone',
+      TERMPOLIS_GIT_ASKPASS_REPLY: 'leaked',
+      termpolis_git_askpass_reply: 'leaked2',
+      TERMPOLIS_GIT_ASKPASS_HOST: 'proxy.example'
+    }
     const none = fakeDeps({}, { env })
     await cloneRepo(HTTPS, undefined, none.deps)
     expect(Object.keys(none.of('clone')[0].opts.env).filter((k) => ASKPASS_VARS.test(k))).toEqual([])
@@ -545,8 +555,8 @@ describe('cloneRepo token runs', () => {
     const token = fakeDeps({}, { env })
     await cloneRepo(HTTPS, undefined, token.deps, TOKEN_RUN)
     const e = token.of('clone')[0].opts.env
-    expect(Object.keys(e).filter((k) => ASKPASS_VARS.test(k)).sort()).toEqual(['GIT_ASKPASS', 'TERMPOLIS_GIT_ASKPASS_REPLY', 'TERMPOLIS_GIT_ASKPASS_USER'])
-    expect(e).toMatchObject({ GIT_ASKPASS: ASKPASS, TERMPOLIS_GIT_ASKPASS_USER: 'x-access-token', TERMPOLIS_GIT_ASKPASS_REPLY: TOKEN })
+    expect(Object.keys(e).filter((k) => ASKPASS_VARS.test(k)).sort()).toEqual(['GIT_ASKPASS', 'TERMPOLIS_GIT_ASKPASS_HOST', 'TERMPOLIS_GIT_ASKPASS_REPLY', 'TERMPOLIS_GIT_ASKPASS_USER'])
+    expect(e).toMatchObject({ GIT_ASKPASS: ASKPASS, TERMPOLIS_GIT_ASKPASS_USER: 'x-access-token', TERMPOLIS_GIT_ASKPASS_REPLY: TOKEN, TERMPOLIS_GIT_ASKPASS_HOST: 'github.com' })
   })
 
   it('a URL that names a user still clones by token, and no message shows the user', async () => {
@@ -555,6 +565,8 @@ describe('cloneRepo token runs', () => {
     expect(await cloneRepo(url, undefined, ok.deps, TOKEN_RUN)).toMatchObject({ ok: true })
     // git takes the user from the URL and asks the askpass only for the second answer; the token still rides the env.
     expect(ok.of('clone')[0].opts.env.TERMPOLIS_GIT_ASKPASS_REPLY).toBe(TOKEN)
+    // The host the askpass answers for is the forge's, without the user.
+    expect(ok.of('clone')[0].opts.env.TERMPOLIS_GIT_ASKPASS_HOST).toBe('github.com')
     const [setUrl] = ok.of('set-url')
     expect(setUrl.args.slice(-3)).toEqual(['set-url', 'origin', 'https://github.com/o/r.git'])
     for (const stderr of [
@@ -566,5 +578,87 @@ describe('cloneRepo token runs', () => {
       expect(r.ok).toBe(false)
       expect(JSON.stringify(r)).not.toContain('me@')
     }
+  })
+})
+
+describe('cloneRepo token runs: fix round 1', () => {
+  /** Whether an exec carries anything of the askpass, or the value itself. */
+  const carriesLogin = (env: Record<string, string>): boolean => Object.keys(env).some((k) => ASKPASS_VARS.test(k)) || JSON.stringify(env).includes(TOKEN)
+
+  it('the askpass and the value ride only the network steps: clone and fetch', async () => {
+    // A clone of a URL that names a user also runs remote set-url afterwards.
+    const clone = fakeDeps()
+    expect(await cloneRepo('https://me@github.com/o/r.git', undefined, clone.deps, TOKEN_RUN)).toMatchObject({ ok: true })
+    const update = fakeDeps({}, { exists: async () => true })
+    expect(await cloneRepo(HTTPS, undefined, update.deps, TOKEN_RUN)).toMatchObject({ ok: true })
+    const network = (args: string[]): boolean => args.includes('clone') || args.includes('fetch')
+    for (const f of [clone, update]) {
+      const net = f.calls.filter((c) => network(c.args))
+      const local = f.calls.filter((c) => !network(c.args))
+      expect(net).toHaveLength(1)
+      expect(net[0].opts.env.TERMPOLIS_GIT_ASKPASS_REPLY).toBe(TOKEN)
+      expect(local.length).toBeGreaterThan(0)
+      for (const c of local) {
+        expect(carriesLogin(c.opts.env)).toBe(false)
+        if (c.args.includes('--version')) continue
+        // Login-free, yet still no prompt and a redacted trace.
+        expect(c.opts.env.GIT_TERMINAL_PROMPT).toBe('0')
+        expect(c.opts.env.GIT_TRACE_REDACT).toBe('1')
+      }
+    }
+    expect(clone.of('set-url')).toHaveLength(1)
+    expect(update.of('rev-parse')).toHaveLength(2)
+    expect(update.of('reset')).toHaveLength(1)
+    // A local step's env is its own object, never the network step's.
+    expect(update.of('reset')[0].opts.env).not.toBe(update.of('fetch')[0].opts.env)
+  })
+
+  it('a token run never inherits a git trace, and always redacts one', async () => {
+    const env = {
+      PATH: 'p',
+      GIT_TRACE_CURL: '/some/path',
+      GIT_TRACE_REDACT: '0',
+      GIT_TRACE: '1',
+      GIT_TRACE_PACKET: '/p',
+      GIT_TRACE2_EVENT: '/e',
+      git_trace2_perf: '/f',
+      Git_Trace_Setup: '1',
+      GIT_CURL_VERBOSE: '1',
+      git_curl_verbose: '1',
+      git_trace_redact: '0'
+    }
+    const update = fakeDeps({}, { env, exists: async () => true })
+    await cloneRepo(HTTPS, undefined, update.deps, TOKEN_RUN)
+    const clone = fakeDeps({}, { env })
+    await cloneRepo(HTTPS, undefined, clone.deps, TOKEN_RUN)
+    for (const f of [update, clone]) {
+      for (const c of f.calls.filter((x) => !x.args.includes('--version'))) {
+        const traced = Object.keys(c.opts.env).filter((k) => /^GIT_(TRACE|CURL_VERBOSE)/i.test(k))
+        expect(traced).toEqual(['GIT_TRACE_REDACT'])
+        expect(c.opts.env.GIT_TRACE_REDACT).toBe('1')
+        expect(c.opts.env.PATH).toBe('p')
+      }
+    }
+    // Only a token run is changed: a run without one keeps the person's own trace settings.
+    const none = fakeDeps({}, { env })
+    await cloneRepo(HTTPS, undefined, none.deps)
+    expect(none.of('clone')[0].opts.env).toMatchObject({ GIT_TRACE_CURL: '/some/path', GIT_TRACE_REDACT: '0' })
+  })
+
+  it('a token is only ever sent over https: any other address is refused before git runs', async () => {
+    for (const url of ['ssh://git@github.com/o/r.git', 'git@github.com:o/r.git', 'file:///c/repos/r', 'http://github.com/o/r.git']) {
+      const { deps, calls } = fakeDeps()
+      expect(await cloneRepo(url, undefined, deps, TOKEN_RUN)).toEqual({ ok: false, error: TOKEN_REJECTED_MESSAGE })
+      expect(calls).toHaveLength(0)
+    }
+  })
+
+  it('the askpass host keeps the port and the case git will put in its prompt', async () => {
+    const port = fakeDeps()
+    await cloneRepo('https://git.example.test:8443/o/r.git', undefined, port.deps, TOKEN_RUN)
+    expect(port.of('clone')[0].opts.env.TERMPOLIS_GIT_ASKPASS_HOST).toBe('git.example.test:8443')
+    const cased = fakeDeps()
+    await cloneRepo('https://GitHub.com/o/r.git', undefined, cased.deps, TOKEN_RUN)
+    expect(cased.of('clone')[0].opts.env.TERMPOLIS_GIT_ASKPASS_HOST).toBe('GitHub.com')
   })
 })

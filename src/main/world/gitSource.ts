@@ -24,7 +24,19 @@ import { join } from 'node:path'
 import { BAD_REF_MESSAGE, stripUrlUserinfo, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { hideValue, normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
 import { binInside } from '../binPath'
-import { configEnv, gitNewEnough, hasLoginHelper, inheritedEnv, loginConfig, loginEnv, OLD_GIT_MESSAGE, parseGitVersion, safetyFlags, type LoginRun } from './gitLogin'
+import {
+  configEnv,
+  gitNewEnough,
+  hasLoginHelper,
+  inheritedEnv,
+  loginConfig,
+  loginEnv,
+  OLD_GIT_MESSAGE,
+  parseGitVersion,
+  safetyFlags,
+  withoutTrace,
+  type LoginRun
+} from './gitLogin'
 
 export { BAD_URL_MESSAGE, BAD_REF_MESSAGE, validateGitUrl } from '../../shared/world/gitUrl'
 export { DROPPED_ENV, OLD_GIT_MESSAGE, safetyFlags, type LoginRun } from './gitLogin'
@@ -293,10 +305,17 @@ export interface NeedsLogin {
   helper: boolean
 }
 
+/** The host (with any port) of an https URL as written, without a login; '' for ssh and anything else.
+ *  This is the form git puts in its prompts, which the askpass matches. */
+function rawHttpsHost(url: string): string {
+  const m = /^https:\/\/(?:[^@/]*@)?([^/?#]+)/i.exec(url)
+  return m ? m[1] : ''
+}
+
 /** The host (with any port) of an https URL, lower case and without a login; null for ssh and anything else. */
 function httpsHost(url: string): string | null {
-  const m = /^https:\/\/(?:[^@/]*@)?([^/?#]+)/i.exec(url)
-  return m ? m[1].toLowerCase() : null
+  const host = rawHttpsHost(url)
+  return host ? host.toLowerCase() : null
 }
 
 /** Each CloneDeps object asks git its version once: 'ok', 'missing' (git could not be started) or 'old'. */
@@ -321,12 +340,13 @@ export type CloneResult = { ok: true; root: string; changed: boolean } | { ok: f
  * log in (default `none`). `changed` says whether the files may differ from before: always for a new
  * clone, and for an update only when HEAD moved (or could not be read).
  *
- * A token run is refused before git starts when the askpass is not shipped or the token cannot be one.
- * Its returned error, and anything it throws, has every copy of the token hidden.
+ * A token run is refused before git starts when the askpass is not shipped, the URL is not https (a token
+ * is only ever sent over https) or the token cannot be one. Its returned error, and anything it throws,
+ * has every copy of the token hidden.
  */
 export async function cloneRepo(url: string, ref: string | undefined, deps: CloneDeps, run: LoginRun = { mode: 'none' }): Promise<CloneResult> {
   if (run.mode !== 'token') return cloneOnce(url, ref, deps, run)
-  if (!deps.askpassPath) return { ok: false, error: TOKEN_REJECTED_MESSAGE }
+  if (!deps.askpassPath || !rawHttpsHost(url)) return { ok: false, error: TOKEN_REJECTED_MESSAGE }
   const token = normalizeToken(run.value)
   if (!token.ok) return { ok: false, error: token.error }
   const value = token.value
@@ -375,9 +395,13 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   if (ext?.aborted) return { ok: false, error: CANCELLED_MESSAGE }
   if (version === 'missing') return { ok: false, error: NO_GIT_MESSAGE }
   if (version === 'old') return { ok: false, error: OLD_GIT_MESSAGE }
-  // The login settings for this run (and whether git may prompt) go over the inherited environment.
-  // The env is built afresh for every run and dropped when it ends: nothing here keeps or returns it.
-  Object.assign(env, configEnv(loginConfig(run)), loginEnv(run, deps.askpassPath))
+  // The login settings for this run (and whether git may prompt) go over the inherited environment, which
+  // for a token run first loses any git trace. The local steps (rev-parse, remote set-url, reset) get that
+  // login-free env; only the network steps (clone, fetch) of a token run also get the askpass, the token
+  // and the host it answers for. Both are built afresh for every run and dropped when it ends: nothing here
+  // keeps or returns them.
+  const localEnv = { ...(run.mode === 'token' ? withoutTrace(env) : env), ...configEnv(loginConfig(run)), ...loginEnv(run) }
+  const netEnv = run.mode === 'token' ? { ...localEnv, ...loginEnv(run, deps.askpassPath, rawHttpsHost(url)) } : localEnv
 
   // Only a clone that finished (marker inside .git) is updated in place. Anything else is not trusted.
   const updating = await exists(join(root, '.git', CLONE_MARKER))
@@ -395,12 +419,15 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   // A url with a login in it (https://user:secret@host/...) clones with it, then the clone's origin is
   // set to the url without it, so the secret is not left in .git/config under userData.
   const bare = stripUrlUserinfo(url)
-  const commands = updating
+  const commands: Array<{ args: string[]; env: Record<string, string> }> = updating
     ? [
-        [...flags, ...pin, 'fetch', '--quiet', '--depth', '1', 'origin', ref ?? 'HEAD'],
-        [...flags, ...pin, 'reset', '--hard', 'FETCH_HEAD']
+        { args: [...flags, ...pin, 'fetch', '--quiet', '--depth', '1', 'origin', ref ?? 'HEAD'], env: netEnv },
+        { args: [...flags, ...pin, 'reset', '--hard', 'FETCH_HEAD'], env: localEnv }
       ]
-    : [cloneArgs(url, work, ref, deps.isWindows), ...(bare !== url ? [[...flags, '--git-dir', join(work, '.git'), 'remote', 'set-url', 'origin', bare]] : [])]
+    : [
+        { args: cloneArgs(url, work, ref, deps.isWindows), env: netEnv },
+        ...(bare !== url ? [{ args: [...flags, '--git-dir', join(work, '.git'), 'remote', 'set-url', 'origin', bare], env: localEnv }] : [])
+      ]
 
   const ctl = new AbortController()
   const onAbort = (): void => ctl.abort()
@@ -438,7 +465,7 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
     const left = deadline - now()
     if (left <= 0) return null
     const r = await deps
-      .execFile(gitBin, [...flags, ...pin, 'rev-parse', 'HEAD'], { env, timeout: left, signal: ctl.signal, stdoutMax: SMALL_OUTPUT_MAX })
+      .execFile(gitBin, [...flags, ...pin, 'rev-parse', 'HEAD'], { env: localEnv, timeout: left, signal: ctl.signal, stdoutMax: SMALL_OUTPUT_MAX })
       .catch(() => null)
     const head = r !== null && r.code === 0 ? (r.stdout ?? '').trim() : ''
     return head === '' ? null : head
@@ -446,7 +473,7 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   let headBefore: string | null = null
   try {
     if (updating) headBefore = await readHead()
-    for (const [step, args] of commands.entries()) {
+    for (const [step, { args, env: stepEnv }] of commands.entries()) {
       const left = deadline - now()
       if (left <= 0) {
         timedOut = true
@@ -454,7 +481,7 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
         break
       }
       const r = await deps
-        .execFile(gitBin, args, { env, timeout: left, signal: ctl.signal })
+        .execFile(gitBin, args, { env: stepEnv, timeout: left, signal: ctl.signal })
         .catch((e: unknown) => ({ code: 1, stderr: e instanceof Error ? e.message : String(e) }))
       if (r.code !== 0) {
         failedStep = step
@@ -495,8 +522,9 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
     if (!auth && !unseen) return { ok: false, error: `Couldn't reach that repository: ${failure}` }
     // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.
     if (host === null) return { ok: false, error: SSH_AUTH_MESSAGE }
-    const authError = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE
-    return { ok: false, error: auth ? authError : notFoundMessage(host), needsLogin: { host, helper: await hasLoginHelper(deps, host) } }
+    // A token that git refused, or that cannot see the repository, is one that did not open it.
+    const error = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : auth ? AUTH_MESSAGE : notFoundMessage(host)
+    return { ok: false, error, needsLogin: { host, helper: await hasLoginHelper(deps, host) } }
   }
   if (!updating) {
     try {

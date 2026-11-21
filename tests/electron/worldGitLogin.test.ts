@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -15,6 +15,7 @@ import {
   loginEnv,
   parseGitVersion,
   safetyFlags,
+  withoutTrace,
   type LoginRun
 } from '../../src/main/world/gitLogin'
 import type { ExecFn, ExecOpts, ExecResult } from '../../src/main/world/gitSource'
@@ -93,26 +94,64 @@ describe('login modes', () => {
     expect(loginEnv(TOKEN, ASKPASS)).not.toHaveProperty('GCM_INTERACTIVE')
   })
 
-  it('a token run hands git the shipped askpass and the value, in the environment only', () => {
-    expect(loginEnv(TOKEN, ASKPASS)).toEqual({
+  it('a token run hands git the shipped askpass, the value and the one host it answers for, in the environment only', () => {
+    expect(loginEnv(TOKEN, ASKPASS, 'example.test')).toEqual({
       GIT_TERMINAL_PROMPT: '0',
+      GIT_TRACE_REDACT: '1',
       GIT_ASKPASS: ASKPASS,
       TERMPOLIS_GIT_ASKPASS_USER: 'x-access-token',
-      TERMPOLIS_GIT_ASKPASS_REPLY: VALUE
+      TERMPOLIS_GIT_ASKPASS_REPLY: VALUE,
+      TERMPOLIS_GIT_ASKPASS_HOST: 'example.test'
     })
-    // With no askpass to read it, the value is not put anywhere.
-    expect(loginEnv(TOKEN)).toEqual({ GIT_TERMINAL_PROMPT: '0' })
-    // Only a token run ever names an askpass.
+    // The local steps of a token run: no askpass, no value, and any trace stays redacted.
+    expect(loginEnv(TOKEN)).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_TRACE_REDACT: '1' })
+    // With no askpass to read it, or no host to bind it to, the value is not put anywhere.
+    expect(loginEnv(TOKEN, ASKPASS)).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_TRACE_REDACT: '1' })
+    expect(loginEnv(TOKEN, undefined, 'example.test')).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_TRACE_REDACT: '1' })
+    expect(loginEnv(TOKEN, ASKPASS, '')).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_TRACE_REDACT: '1' })
+    // Only a token run ever names an askpass, or changes git's trace.
     for (const run of [NONE, BACKGROUND, INTERACTIVE]) {
-      const env = loginEnv(run, ASKPASS)
+      const env = loginEnv(run, ASKPASS, 'example.test')
       expect(env).not.toHaveProperty('GIT_ASKPASS')
+      expect(env).not.toHaveProperty('GIT_TRACE_REDACT')
       expect(Object.keys(env).some((k) => k.startsWith('TERMPOLIS_GIT_ASKPASS_'))).toBe(false)
     }
   })
 
   it('inherited askpass answers are dropped, in any case', () => {
-    expect(DROPPED_ENV).toEqual(expect.arrayContaining(['GIT_ASKPASS', 'SSH_ASKPASS', 'TERMPOLIS_GIT_ASKPASS_USER', 'TERMPOLIS_GIT_ASKPASS_REPLY']))
-    expect(inheritedEnv({ PATH: 'p', termpolis_git_askpass_reply: 'x', Termpolis_Git_Askpass_User: 'u', git_askpass: '/evil' })).toEqual({ PATH: 'p' })
+    expect(DROPPED_ENV).toEqual(
+      expect.arrayContaining(['GIT_ASKPASS', 'SSH_ASKPASS', 'TERMPOLIS_GIT_ASKPASS_USER', 'TERMPOLIS_GIT_ASKPASS_REPLY', 'TERMPOLIS_GIT_ASKPASS_HOST'])
+    )
+    expect(
+      inheritedEnv({ PATH: 'p', termpolis_git_askpass_reply: 'x', Termpolis_Git_Askpass_User: 'u', git_askpass: '/evil', termpolis_git_askpass_host: 'proxy.example' })
+    ).toEqual({ PATH: 'p' })
+  })
+
+  it('withoutTrace drops every inherited git trace and curl verbosity, in any case, and nothing else', () => {
+    const env: Record<string, string> = {
+      PATH: 'p',
+      GIT_TRACE: '1',
+      GIT_TRACE_CURL: '/some/path',
+      GIT_TRACE_CURL_NO_DATA: '1',
+      GIT_TRACE_PACKET: '/p',
+      GIT_TRACE_PACK_ACCESS: '/a',
+      GIT_TRACE2: '/t',
+      GIT_TRACE2_EVENT: '/e',
+      git_trace2_perf: '/f',
+      Git_Trace_Setup: '1',
+      GIT_TRACE_REDACT: '0',
+      git_trace_redact: '0',
+      GIT_CURL_VERBOSE: '1',
+      git_curl_verbose: '1',
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_CURL_VERBOSE_X: 'kept',
+      MY_GIT_TRACE: 'kept'
+    }
+    const out = withoutTrace(env)
+    expect(out).toEqual({ PATH: 'p', GIT_TERMINAL_PROMPT: '0', GIT_CURL_VERBOSE_X: 'kept', MY_GIT_TRACE: 'kept' })
+    // A new object: the env it was given is left as it was.
+    expect(out).not.toBe(env)
+    expect(env.GIT_TRACE_CURL).toBe('/some/path')
   })
 
   it('inheritedEnv drops git path variables and any inherited numbered config, in any case', () => {
@@ -216,30 +255,75 @@ describe('hasLoginHelper', () => {
 })
 
 // The script Termpolis ships, run for real through the sh git itself brings. git is not involved: on this
-// machine no git run may hand a prompt to it, so the prompts here are neutral stand-ins for git's.
+// machine no git run may hand a prompt to it, so the prompts here are neutral stand-ins for git's, which
+// git writes as "<what> for '<scheme>://[<user>@]<host>[:<port>][/<path>]': ".
 describe('the shipped askpass script', () => {
   const script = resolve(__dirname, '..', '..', 'resources', 'git-askpass', 'askpass.sh')
   const sh = process.platform === 'win32' ? 'C:\\Program Files\\Git\\usr\\bin\\sh.exe' : '/bin/sh'
-  const env: Record<string, string> = { TERMPOLIS_GIT_ASKPASS_USER: 'x-access-token', TERMPOLIS_GIT_ASKPASS_REPLY: VALUE }
-  for (const k of ['PATH', 'SYSTEMROOT']) if (process.env[k]) env[k] = process.env[k] as string
-  const ask = (prompt: string): string => {
+  const base: Record<string, string> = { TERMPOLIS_GIT_ASKPASS_USER: 'x-access-token', TERMPOLIS_GIT_ASKPASS_REPLY: VALUE }
+  for (const k of ['PATH', 'SYSTEMROOT']) if (process.env[k]) base[k] = process.env[k] as string
+  const ask = (prompt: string, host: string | null = 'example.test'): { out: string; status: number | null } => {
     const args = [script, prompt]
     expect(args.join(' ')).not.toMatch(LOGIN_WORDS)
     expect(args.join(' ')).not.toContain(VALUE)
-    return execFileSync(sh, args, { env, encoding: 'utf8', windowsHide: true })
+    const env = host === null ? base : { ...base, TERMPOLIS_GIT_ASKPASS_HOST: host }
+    const r = spawnSync(sh, args, { env, encoding: 'utf8', windowsHide: true })
+    return { out: r.stdout, status: r.status }
   }
+  const answered = (out: string): { out: string; status: number } => ({ out, status: 0 })
+  const refused = { out: '', status: 1 }
 
-  it('is exactly the one-shot script, with plain line endings, and never names what it answers', () => {
+  it('is exactly the host-bound script, with plain line endings, and never names what it answers', () => {
     const text = readFileSync(script, 'utf8')
     expect(text).toBe(
-      '#!/bin/sh\ncase "$1" in\n  Username*) printf \'%s\\n\' "$TERMPOLIS_GIT_ASKPASS_USER" ;;\n  *) printf \'%s\\n\' "$TERMPOLIS_GIT_ASKPASS_REPLY" ;;\nesac\n'
+      [
+        '#!/bin/sh',
+        '# Answers git for one run, and only for prompts that name the forge host Termpolis set.',
+        'host=$TERMPOLIS_GIT_ASKPASS_HOST',
+        '[ -n "$host" ] || exit 1',
+        'case "$1" in',
+        `  *//"$host'"*|*//"$host/"*|*@"$host'"*|*@"$host/"*) ;;`,
+        '  *) exit 1 ;;',
+        'esac',
+        'case "$1" in',
+        `  Username*) printf '%s\\n' "$TERMPOLIS_GIT_ASKPASS_USER" ;;`,
+        `  *) printf '%s\\n' "$TERMPOLIS_GIT_ASKPASS_REPLY" ;;`,
+        'esac',
+        ''
+      ].join('\n')
     )
     expect(text).not.toContain('\r')
     expect(text).not.toMatch(LOGIN_WORDS)
   })
 
-  it('answers the user prompt with the user, and any other prompt with the value from its environment', () => {
-    expect(ask("Username for 'https://example.test': ")).toBe('x-access-token\n')
-    expect(ask("Enter value for 'https://example.test': ")).toBe(`${VALUE}\n`)
+  it('answers the forge host: the user prompt with the user, the other prompt with the value', () => {
+    expect(ask("Username for 'https://example.test': ")).toEqual(answered('x-access-token\n'))
+    expect(ask("Enter value for 'https://example.test': ")).toEqual(answered(`${VALUE}\n`))
+    // The same host with the user git already knows, or with the path git adds when told to.
+    expect(ask("Enter value for 'https://someone@example.test': ")).toEqual(answered(`${VALUE}\n`))
+    expect(ask("Enter value for 'https://example.test/o/r.git': ")).toEqual(answered(`${VALUE}\n`))
+    expect(ask("Enter value for 'https://someone@example.test/o/r.git': ")).toEqual(answered(`${VALUE}\n`))
+    // A forge on its own port is named with it.
+    expect(ask("Enter value for 'https://git.example.test:8443': ", 'git.example.test:8443')).toEqual(answered(`${VALUE}\n`))
+  })
+
+  it('a prompt for any other host, a proxy among them, gets nothing and a failure', () => {
+    expect(ask("Enter value for 'http://proxy.example:3128': ")).toEqual(refused)
+    expect(ask("Enter value for 'http://someone@proxy.example:3128': ")).toEqual(refused)
+    expect(ask("Username for 'http://proxy.example:3128': ")).toEqual(refused)
+    // A host that only looks like the forge's is another host.
+    expect(ask("Enter value for 'https://example.test.evil': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://notexample.test': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://example.test@evil.example': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://example.test:8443': ")).toEqual(refused)
+    // A prompt that names no host at all, as a local file's passphrase prompt does.
+    expect(ask("Enter value for 'cert.pem': ")).toEqual(refused)
+    expect(ask('')).toEqual(refused)
+  })
+
+  it('with no host set it answers nothing, not even the user', () => {
+    expect(ask("Username for 'https://example.test': ", null)).toEqual(refused)
+    expect(ask("Enter value for 'https://example.test': ", null)).toEqual(refused)
+    expect(ask("Enter value for 'https://example.test': ", '')).toEqual(refused)
   })
 })

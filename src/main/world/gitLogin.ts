@@ -53,7 +53,8 @@ export const DROPPED_ENV = [
   'GIT_ASKPASS',
   'SSH_ASKPASS',
   'TERMPOLIS_GIT_ASKPASS_USER',
-  'TERMPOLIS_GIT_ASKPASS_REPLY'
+  'TERMPOLIS_GIT_ASKPASS_REPLY',
+  'TERMPOLIS_GIT_ASKPASS_HOST'
 ]
 
 /** Inherited numbered config entries: a run sets its own, so none of the parent's may leak in beside them. */
@@ -98,18 +99,32 @@ export function configEnv(pairs: Array<[string, string]>): Record<string, string
 export const TOKEN_USER = 'x-access-token'
 
 /** The variables that keep a run from prompting: never a terminal prompt, and Git Credential Manager's
- *  window only on an interactive `machine` run. A token run with the shipped askpass also gets the askpass
- *  and the two answers it prints; without the askpass it gets nothing that could answer (the caller
- *  refuses such a run before git starts). */
-export function loginEnv(run: LoginRun, askpassPath?: string): Record<string, string> {
+ *  window only on an interactive `machine` run. A token run always redacts any git trace. Given the shipped
+ *  askpass and the forge host, it also gets the askpass, the two answers it prints and the one host it
+ *  prints them for: that form belongs on the network steps (clone, fetch) only, and the plain form on the
+ *  local ones. Without both it gets nothing that could answer. */
+export function loginEnv(run: LoginRun, askpassPath?: string, host?: string): Record<string, string> {
   const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' }
   if (run.mode === 'none' || (run.mode === 'machine' && !run.interactive)) env.GCM_INTERACTIVE = 'never'
-  if (run.mode === 'token' && askpassPath) {
-    env.GIT_ASKPASS = askpassPath
-    env.TERMPOLIS_GIT_ASKPASS_USER = TOKEN_USER
-    env.TERMPOLIS_GIT_ASKPASS_REPLY = run.value
+  if (run.mode === 'token') {
+    env.GIT_TRACE_REDACT = '1'
+    if (askpassPath && host) {
+      env.GIT_ASKPASS = askpassPath
+      env.TERMPOLIS_GIT_ASKPASS_USER = TOKEN_USER
+      env.TERMPOLIS_GIT_ASKPASS_REPLY = run.value
+      env.TERMPOLIS_GIT_ASKPASS_HOST = host
+    }
   }
   return env
+}
+
+/** A copy of env without any git trace or curl verbosity, in any case: GIT_TRACE and everything that starts
+ *  with it (GIT_TRACE_CURL, GIT_TRACE_PACKET, GIT_TRACE2*, GIT_TRACE_REDACT, ...) and GIT_CURL_VERBOSE. A
+ *  token run starts from this, so no inherited setting can write its headers anywhere. */
+export function withoutTrace(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(env)) if (!/^GIT_TRACE/i.test(k) && !/^GIT_CURL_VERBOSE$/i.test(k)) out[k] = v
+  return out
 }
 
 /** The first git that reads GIT_CONFIG_COUNT. */
