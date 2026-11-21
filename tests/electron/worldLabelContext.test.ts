@@ -10,6 +10,7 @@ import {
   MAX_DOC_BYTES,
   MAX_DOC_FILES,
   MAX_SCAN_DIRS,
+  memoryForLabels,
   type DirEntry,
   type LabelContextDeps
 } from '../../src/main/world/labelContext'
@@ -68,7 +69,7 @@ describe('createLabelContext', () => {
     const ctx = createLabelContext({ git, memory, ...tree })
     const ev = await ctx('/r', ['src/a/worker.ts', 'src/a/b.ts', 'src/a/c.ts', 'src/a/d.ts'])
     expect(git).toHaveBeenCalledWith(['log', '-n', '5', '--format=%h%x09%s', '--', 'src/a/worker.ts', 'src/a/b.ts', 'src/a/c.ts'], '/r')
-    expect(memory).toHaveBeenCalledWith('a')
+    expect(memory).toHaveBeenCalledWith('a', '/r')
     expect(ev.filter((e) => e.kind === 'commit')).toEqual([
       { kind: 'commit', ref: 'abcdef1', excerpt: 'first subject' },
       { kind: 'commit', ref: '1234567', excerpt: 'second' }
@@ -193,5 +194,19 @@ describe('the real file readers', () => {
     await writeFile(join(dir, 'notes.md'), 'The Scanner walks the tree.')
     const ctx = createLabelContext({ git: noGit, memory: none })
     expect((await ctx(dir, ['src/Scanner.ts'])).filter((e) => e.kind === 'file').map((e) => e.ref)).toEqual(['notes.md:1'])
+  })
+})
+
+describe('memory scoped to the project', () => {
+  it('asks memory for decisions scoped to the world root', async () => {
+    const memory = vi.fn(async (_q: string, _r: string) => [{ id: 'm1', text: 'Use SQLite' }])
+    await createLabelContext({ git: noGit, memory, ...fakeTree({}) })('C:/repos/demo', ['src/db/store.ts'])
+    expect(memory).toHaveBeenCalledWith(expect.any(String), 'C:/repos/demo')
+  })
+
+  it('memoryForLabels searches decisions in the given project only', async () => {
+    const search = vi.fn(async (_o: { query: string; limit: number; kind: 'decision'; project: string }) => [{ id: 'd1', content: 'x' }])
+    expect(await memoryForLabels(search)('store', 'C:/repos/demo')).toEqual([{ id: 'd1', text: 'x' }])
+    expect(search).toHaveBeenCalledWith({ query: 'store', limit: 3, kind: 'decision', project: 'C:/repos/demo' })
   })
 })

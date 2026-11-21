@@ -344,7 +344,7 @@ import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
 import { createWorldRuns } from './world/worldRuns'
 import { assertRunnableFile, commandOnPath, resolveGitBin } from './binPath'
 import { cheapModelFor, makeWorldLlm } from './world/label'
-import { createLabelContext, GIT_TIMEOUT_MS } from './world/labelContext'
+import { createLabelContext, GIT_TIMEOUT_MS, memoryForLabels } from './world/labelContext'
 import { ensureRepoWatch, stopRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
@@ -2708,10 +2708,8 @@ const worldDesigner = createDesigner({
 const worldLabelContext = createLabelContext({
   git: (args, cwd) => safeGitAsync(args, { cwd, timeout: GIT_TIMEOUT_MS }),
   // The brain's decisions that name the building; none while it is unavailable or locked (the context hook treats a throw as none).
-  memory: async (query) => {
-    const rows = await correctedSearch({ query, limit: 3, kind: 'decision' })
-    return rows.map((r) => ({ id: r.id, text: r.content }))
-  },
+  // Lazy: correctedSearch is declared further down this file.
+  memory: memoryForLabels((o) => correctedSearch(o)),
 })
 // Test runs for the world: what the agents' transcripts ran, and (while "Read CI results with GitHub CLI" is on, as it
 // is by default) the newest CI conclusion, only when `gh` is on PATH and the repository has a GitHub remote. Reads are

@@ -31,14 +31,24 @@ interface Doc { path: string; lines: string[] }
 export interface LabelContextDeps {
   /** Runs git with these arguments in `cwd` (main's safeGitAsync, a short timeout). */
   git: (args: string[], cwd: string) => Promise<string>
-  /** The memory brain's top decisions for a query; none when the brain is unavailable. */
-  memory: (query: string) => Promise<MemoryHit[]>
+  /** The memory brain's top decisions for a query in the project at `root`; none when the brain is unavailable. */
+  memory: (query: string, root: string) => Promise<MemoryHit[]>
   /** Real directory entries only (a link is neither a file nor a directory). Default: fs.promises. */
   readDir?: (dir: string) => Promise<DirEntry[]>
   /** The first `maxBytes` of a file, or null. Default: fs.promises. */
   readHead?: (file: string, maxBytes: number) => Promise<string | null>
   now?: () => number
   timeoutMs?: number
+}
+
+/** Adapts the brain's search to the label context: top decisions of one project only (never another project's notes). */
+export function memoryForLabels(
+  search: (opts: { query: string; limit: number; kind: 'decision'; project: string }) => Promise<{ id: string; content: string }[]>
+): LabelContextDeps['memory'] {
+  return async (query, root) => {
+    const rows = await search({ query, limit: 3, kind: 'decision', project: root })
+    return rows.map((r) => ({ id: r.id, text: r.content }))
+  }
 }
 
 export async function fsReadDir(dir: string): Promise<DirEntry[]> {
@@ -155,9 +165,9 @@ export function createLabelContext(deps: LabelContextDeps): (root: string, membe
     }
   }
 
-  async function decisions(members: string[]): Promise<Evidence[]> {
+  async function decisions(root: string, members: string[]): Promise<Evidence[]> {
     try {
-      const hits = await deps.memory(codeNameOf(members))
+      const hits = await deps.memory(codeNameOf(members), root)
       return hits
         .slice(0, MAX_MEMORIES)
         .map((h): Evidence => ({ kind: 'memory', ref: h.id, excerpt: h.text.trim().slice(0, MAX_MEMORY_CHARS) }))
@@ -170,7 +180,7 @@ export function createLabelContext(deps: LabelContextDeps): (root: string, membe
   return async (root, members) => {
     if (members.length === 0) return []
     let timer: ReturnType<typeof setTimeout> | undefined
-    const gather = Promise.all([commits(root, members), docLines(root, members), decisions(members)]).then((p) => p.flat())
+    const gather = Promise.all([commits(root, members), docLines(root, members), decisions(root, members)]).then((p) => p.flat())
     const limit = new Promise<Evidence[]>((resolve) => {
       timer = setTimeout(() => resolve([]), timeoutMs)
     })
