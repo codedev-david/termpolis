@@ -4,7 +4,7 @@
 // IMPORT ORDER: the counters first (they patch fs and child_process before the modules under test load).
 import { arm, disarm, describeCounts, uninstall } from '../helpers/mainThreadCounters'
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync, renameSync, utimesSync } from 'fs'
 import { dirname, join, sep } from 'path'
 import type { IntegrationFile } from '../../src/main/shellIntegration'
 import { readAppLog } from '../../src/main/appLog'
@@ -15,7 +15,10 @@ const H = vi.hoisted(() => {
   const fs = require('fs') as typeof import('fs')
   const path = require('path') as typeof import('path')
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-prep-'))
-  return { root, userData: path.join(root, 'userData'), spawned: [] as Array<{ file: string; args: string[]; opts: any }> }
+  const userData = path.join(root, 'userData')
+  // A temp file a held write left in an earlier run: the first prepare's sweep removes it (see "leftover temp files").
+  const plantedTemp = path.join(userData, 'termpolis-shell-integration.ps1.4242.1.abc123.tmp')
+  return { root, userData, plantedTemp, spawned: [] as Array<{ file: string; args: string[]; opts: any }> }
 })
 
 vi.mock('electron', () => ({ app: { getPath: () => H.userData, isPackaged: false } }))
@@ -41,6 +44,9 @@ let ensureIntegrationScript: typeof import('../../src/main/terminalManager').ens
 
 beforeAll(async () => {
   mkdirSync(H.userData, { recursive: true })
+  writeFileSync(H.plantedTemp, 'left by a refused write')
+  const longAgo = new Date(Date.now() - 10 * 60_000)
+  utimesSync(H.plantedTemp, longAgo, longAgo)
   ;({ prepareSpawn, integrationScriptState: state, writeWholeFile, ensureIntegrationScriptAsync } = await import('../../src/main/terminalSpawnPrep'))
   ;({ spawnTerminal, primeBundledToolsCheck, writeWholeFileSync, ensureIntegrationScript } = await import('../../src/main/terminalManager'))
   // Start-up does this (index.ts), on the thread pool; without it spawnTerminal would probe for jq/yq/nano with execSync.
@@ -266,12 +272,52 @@ describe('the integration files are written whole', () => {
       expect(tmpsIn(dir)).toEqual([])
     })
 
-    it(`${name}: a refused rename with no old file to keep (a fresh install) writes the file directly, leaving no temp file`, async () => {
+    it(`${name}: a refused rename with no old file to keep (a fresh install) tries a second temp file, then writes the file directly, leaving no temp file`, async () => {
       const dir = mkdtempSync(join(H.root, 'none-'))
-      await expect(write(join(dir, 'f.ps1'), 'new', { rename: () => { throw refused('EPERM') }, sleep: () => {} })).resolves.toBe('written')
-      expect(readFileSync(join(dir, 'f.ps1'), 'utf8')).toBe('new')
+      const target = join(dir, 'f.ps1')
+      const sources: string[] = []
+      const sleeps: number[] = []
+      await expect(write(target, 'new', { rename: (a) => { sources.push(a); throw refused('EPERM') }, sleep: (ms) => { sleeps.push(ms) } })).resolves.toBe('written')
+      expect(readFileSync(target, 'utf8')).toBe('new')
       expect(readdirSync(dir)).toEqual(['f.ps1'])
+      expect(sources).toHaveLength(6) // the first temp file 5 times, the second once
+      expect(new Set(sources).size).toBe(2)
+      expect(sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(200) // the sync path blocks no longer than before
     })
+
+    it(`${name}: on a fresh install the second temp file's rename goes through, so the file is never written directly`, async () => {
+      const dir = mkdtempSync(join(H.root, 'second-'))
+      const target = join(dir, 'f.ps1')
+      const writes: string[] = []
+      const sources: string[] = []
+      let refusals = 5 // every try on the first temp file: the scanner holds that one
+      const io = {
+        writeFile: (p: string, c: string) => { writes.push(p); writeFileSync(p, c) },
+        rename: (a: string, b: string) => { sources.push(a); if (refusals-- > 0) throw refused('EBUSY'); renameSync(a, b) },
+        sleep: () => {},
+      }
+      await expect(write(target, 'whole', io)).resolves.toBe('written')
+      expect(readFileSync(target, 'utf8')).toBe('whole')
+      expect(writes).not.toContain(target)
+      expect(writes).toHaveLength(2)
+      expect(sources).toEqual([...Array(5).fill(writes[0]), writes[1]])
+      expect(tmpsIn(dir)).toEqual([])
+    })
+
+    for (const code of ['EPERM', 'EACCES']) {
+      it(`${name}: a temp file that cannot be written (${code}) is that failure, not a refused rename: no rename, no keep, no direct write`, async () => {
+        const dir = mkdtempSync(join(H.root, 'tmpfail-'))
+        const target = join(dir, 'f.ps1')
+        writeFileSync(target, 'old')
+        let renames = 0
+        const io = { writeFile: () => { throw Object.assign(new Error(`${code}: open`), { code }) }, rename: () => { renames++ }, sleep: () => {} }
+        await expect(write(target, 'new', io)).rejects.toThrow(code)
+        await expect(write(join(dir, 'fresh.ps1'), 'new', io)).rejects.toThrow(code) // nothing there: still no direct write
+        expect(renames).toBe(0)
+        expect(readFileSync(target, 'utf8')).toBe('old')
+        expect(readdirSync(dir)).toEqual(['f.ps1'])
+      })
+    }
 
     it(`${name}: the temp file itself held (its rename refused, its removal refused too): the old file stays, or with none the file is written directly; the original error is not lost`, async () => {
       const dir = mkdtempSync(join(H.root, 'held-'))
@@ -284,7 +330,7 @@ describe('the integration files are written whole', () => {
       expect(readFileSync(join(dir, 'fresh.ps1'), 'utf8')).toBe('first run')
       // Another failure with the temp file held is still that failure, not the removal's.
       await expect(write(target, 'new', { ...held, rename: () => { throw refused('EIO') } })).rejects.toThrow('EIO')
-      expect(tmpsIn(dir)).toHaveLength(3) // what the held temp files leave; the scanner lets go later
+      expect(tmpsIn(dir)).toHaveLength(4) // what the held temp files leave (two for the fresh one); the sweep removes them later
     })
 
     it(`${name}: a temp file cut short (a full disk) is removed and the failure reported`, async () => {
@@ -338,6 +384,7 @@ describe('the integration files are written whole', () => {
   })
 
   it('many terminals preparing at once, for every shell with files: each answers its file, every file whole, no temp file left', async () => {
+    await (await import('../../src/main/terminalSpawnPrep')).integrationTempSweep() // the planted leftover is gone
     rmSync(join(H.userData, 'termpolis-zsh'), { recursive: true, force: true })
     rmSync(scriptFile(), { force: true })
     const shells = [PS, 'C:/Windows/System32/cmd.exe', '/bin/zsh', '/usr/bin/fish']
@@ -360,5 +407,194 @@ describe('the integration files are written whole', () => {
     spawnTerminal('tw', '/bin/zsh', process.cwd(), () => {})
     expect(existsSync(zshFile('.zshrc'))).toBe(true)
     expect(tmpsIn(join(H.userData, 'termpolis-zsh'))).toEqual([])
+  })
+})
+
+// Fix round 4 (I1). The direct write on a fresh install truncates and then writes, so it is only safe if nothing reads
+// or writes that file meanwhile. Every spawn takes the file's integration lock: one arriving mid-write waits for it and
+// counts the file present only once the write has finished, and the synchronous fallback, which cannot wait, opens
+// without integration while the lock is held. Interleavings are forced with deferred promises, never with sleeps.
+describe('no spawn reads an integration file mid-write', () => {
+  const refused = (code: string) => Object.assign(new Error(`${code}: operation not permitted, rename`), { code })
+  const deferred = () => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } }
+  /** Lets the event loop (and the thread pool) turn up to `turns` times; true once `p` has settled. Not a timer. */
+  const settlesWithin = async (p: Promise<unknown>, turns = 400): Promise<boolean> => {
+    let settled = false
+    void p.then(() => { settled = true }, () => { settled = true })
+    for (let i = 0; i < turns && !settled; i++) await new Promise((r) => setImmediate(r))
+    return settled
+  }
+  const ps = async () => (await import('../../src/main/shellIntegration')).INTEGRATION_FILES.powershell
+
+  /** A scanner that refuses every rename, and a direct write of the target that stops halfway until `gate` opens. */
+  const slowFreshInstall = (target: string, gate: Promise<void>, onDirect: () => void, done: () => void = () => {}) => ({
+    rename: () => { throw refused('EPERM') },
+    sleep: () => {},
+    writeFile: async (p: string, c: string) => {
+      if (p !== target) { writeFileSync(p, c); return }
+      writeFileSync(p, c.slice(0, 10)) // truncated, then a first part: what a reader mid-write would see
+      onDirect()
+      await gate
+      writeFileSync(p, c)
+      done()
+    },
+  })
+
+  it('a spawn arriving during a slow direct write waits for it, never sees the half-written file and never counts it present early', async () => {
+    const file = await ps()
+    const target = scriptFile()
+    rmSync(target, { force: true })
+    const gate = deferred()
+    const direct = deferred()
+    const a = ensureIntegrationScriptAsync(file, slowFreshInstall(target, gate.promise, direct.resolve))
+    await direct.promise
+    expect(readFileSync(target, 'utf8')).toBe(file.content.slice(0, 10)) // A is mid-write now
+    const bCalls: string[] = []
+    const b = ensureIntegrationScriptAsync(file, {
+      rename: (x) => { bCalls.push(`rename ${x}`); throw refused('EPERM') },
+      writeFile: (x, c) => { bCalls.push(`write ${x}`); writeFileSync(x, c) },
+      sleep: () => {},
+    }).then((r) => ({ r, seen: readFileSync(target, 'utf8') }))
+    expect(await settlesWithin(b)).toBe(false)
+    expect(state[file.name]).toBeUndefined() // not present until the write has finished
+    expect(bCalls).toEqual([])
+    gate.resolve()
+    expect(await a).toBe(target)
+    expect(await b).toEqual({ r: target, seen: file.content })
+    expect(bCalls).toEqual([]) // it found A's finished file and wrote nothing
+    expect(state[file.name]).toBe(target)
+  })
+
+  it('two concurrent fallbacks on a fresh install never write the file at the same time: the second finds the first one finished', async () => {
+    const file = await ps()
+    const target = scriptFile()
+    rmSync(target, { force: true })
+    let active = 0
+    let maxActive = 0
+    let directs = 0
+    const gate = deferred()
+    const firstDirect = deferred()
+    const io = () => slowFreshInstall(target, gate.promise, () => { directs++; active++; maxActive = Math.max(maxActive, active); firstDirect.resolve() }, () => { active-- })
+    const seen = (p: Promise<string | null>) => p.then((r) => ({ r, seen: readFileSync(target, 'utf8') }))
+    const a = seen(ensureIntegrationScriptAsync(file, io()))
+    const b = seen(ensureIntegrationScriptAsync(file, io()))
+    await firstDirect.promise
+    expect(await settlesWithin(b)).toBe(false)
+    expect(directs).toBe(1)
+    gate.resolve()
+    expect(await a).toEqual({ r: target, seen: file.content })
+    expect(await b).toEqual({ r: target, seen: file.content })
+    expect(maxActive).toBe(1)
+    expect(directs).toBe(1)
+    expect(readdirSync(H.userData).filter((n) => n.startsWith(`${file.name}.`))).toEqual([])
+  })
+
+  it('a rename cannot land during a direct write: the other spawn renames nothing until it is done, and then needs nothing', async () => {
+    const file = await ps()
+    const target = scriptFile()
+    rmSync(target, { force: true })
+    const gate = deferred()
+    const direct = deferred()
+    const a = ensureIntegrationScriptAsync(file, slowFreshInstall(target, gate.promise, direct.resolve))
+    await direct.promise
+    const renames: string[] = []
+    const b = ensureIntegrationScriptAsync(file, { rename: (x, y) => { renames.push(x); renameSync(x, y) } })
+    expect(await settlesWithin(b)).toBe(false)
+    expect(renames).toEqual([])
+    gate.resolve()
+    expect(await a).toBe(target)
+    expect(await b).toBe(target)
+    expect(renames).toEqual([])
+    expect(readFileSync(target, 'utf8')).toBe(file.content)
+  })
+
+  it('the synchronous fallback never runs while a prepare holds the file: it opens that terminal without integration, and touches nothing', async () => {
+    const file = await ps()
+    const target = scriptFile()
+    rmSync(target, { force: true })
+    const gate = deferred()
+    const writing = deferred()
+    const a = ensureIntegrationScriptAsync(file, { writeFile: async (p, c) => { writing.resolve(); await gate.promise; writeFileSync(p, c) } })
+    await writing.promise // A's temp file is being written on the thread pool
+    const calls: string[] = []
+    const record = { writeFile: (p: string) => { calls.push(p) }, rename: (p: string) => { calls.push(p) }, rm: (p: string) => { calls.push(p) }, exists: () => { calls.push('exists'); return false }, sleep: () => {} }
+    expect(ensureIntegrationScript(file, record)).toBeNull()
+    expect(calls).toEqual([])
+    expect(state[file.name]).toBeUndefined()
+    gate.resolve()
+    expect(await a).toBe(target)
+    expect(ensureIntegrationScript(file, record)).toBe(target) // free again, and present: nothing written
+    expect(calls).toEqual([])
+    expect(readFileSync(target, 'utf8')).toBe(file.content)
+  })
+
+  for (const [name, ensure] of [
+    ['async (prepareSpawn)', (f: IntegrationFile, io: object) => ensureIntegrationScriptAsync(f, io)],
+    ['sync (the fallback)', async (f: IntegrationFile, io: object) => ensureIntegrationScript(f, io)],
+  ] as const) {
+    it(`${name}: a temp write refused with EPERM over an old file is not logged as a refused rename and is not a keep: no script for this spawn`, async () => {
+      const { INTEGRATION_FILES } = await import('../../src/main/shellIntegration')
+      const file = INTEGRATION_FILES.cmd
+      const target = join(H.userData, file.name)
+      writeFileSync(target, 'an old release')
+      let renames = 0
+      const io = { writeFile: () => { throw Object.assign(new Error('EPERM: open'), { code: 'EPERM' }) }, rename: () => { renames++ }, sleep: () => {} }
+      expect(await ensure(file, io)).toBeNull()
+      expect(renames).toBe(0)
+      expect(state[file.name]).toBeUndefined()
+      expect(readFileSync(target, 'utf8')).toBe('an old release')
+      expect(readAppLog(5000).filter((e) => e.msg.includes(target) && e.msg.includes('could not be replaced'))).toEqual([])
+    })
+  }
+})
+
+// M3. A temp file the scanner still held could not be removed when its write gave up; the first prepare of a run sweeps
+// such leftovers, and only those: our own temp names beside an integration file, older than a minute.
+describe('leftover temp files are swept', () => {
+  it('removes only our stale temp names, in the integration folders, and leaves fresh ones, other files and what it cannot remove', async () => {
+    const { sweepStaleIntegrationTemps, STALE_TEMP_MS } = await import('../../src/main/terminalSpawnPrep')
+    const root = mkdtempSync(join(H.root, 'sweep-'))
+    mkdirSync(join(root, 'termpolis-zsh'))
+    const now = Date.now()
+    const put = (rel: string, ageMs: number, dir = false): string => {
+      const p = join(root, rel)
+      if (dir) mkdirSync(p); else writeFileSync(p, 'x')
+      const t = new Date(now - ageMs)
+      utimesSync(p, t, t)
+      return p
+    }
+    const old = STALE_TEMP_MS + 60_000
+    const gone = [
+      put('termpolis-shell-integration.ps1.1234.7.k3j9zq.tmp', old),
+      put('termpolis-lumopolis.doskey.99.1.a.tmp', old),
+      put('termpolis-integration.fish.5.12.abc123.tmp', old),
+      put(join('termpolis-zsh', '.zshenv.42.3.x1y2z3.tmp'), old),
+      put(join('termpolis-zsh', '.zlogin.42.4..tmp'), old),
+    ]
+    const kept = [
+      put('termpolis-shell-integration.ps1', old), // the file itself
+      put('termpolis-shell-integration.ps1.1234.8.fresh1.tmp', STALE_TEMP_MS - 5_000), // a write in flight
+      put('termpolis-shell-integration.ps1.tmp', old), // not our pattern
+      put('termpolis-shell-integration.ps1.12x4.1.abc.tmp', old),
+      put('termpolis-shell-integration.ps1.1.2.toolongname.tmp', old),
+      put('someone-else.ps1.1234.7.k3j9zq.tmp', old), // not an integration file
+      put('.zshenv.42.3.x1y2z3.tmp', old), // a zsh name, but outside the zsh folder
+      put(join('termpolis-zsh', 'termpolis-integration.fish.1.1.a.tmp'), old), // a fish name, but in the zsh folder
+      put('termpolis-integration.fish.7.7.held.tmp', old, true), // cannot be removed: left for the next run
+    ]
+    expect((await sweepStaleIntegrationTemps(root, now)).sort()).toEqual([...gone].sort())
+    for (const p of gone) expect(existsSync(p), p).toBe(false)
+    for (const p of kept) expect(existsSync(p), p).toBe(true)
+    expect(await sweepStaleIntegrationTemps(join(root, 'not made yet'), now)).toEqual([]) // no folders: nothing, no throw
+  })
+
+  it('the first prepare of the run starts the sweep of the data folder, once', async () => {
+    const { integrationTempSweep } = await import('../../src/main/terminalSpawnPrep')
+    const sweep = integrationTempSweep()
+    expect(sweep).toBeDefined() // started by the first prepare in this file, before this test
+    expect(await sweep).toContain(H.plantedTemp)
+    expect(existsSync(H.plantedTemp)).toBe(false)
+    await prepareSpawn(process.cwd(), PS)
+    expect(integrationTempSweep()).toBe(sweep)
   })
 })

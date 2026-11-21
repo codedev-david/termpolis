@@ -10,7 +10,7 @@ import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { flushBeforeResize } from './ptyResizeFlush'
 import { sudoAskpassEnv } from './sudoAskpass'
 import {
-  integrationScriptState, isRenameRefused, logRenameRefusal, RENAME_RETRIES, RENAME_RETRY_MS, wholeFileTempName,
+  integrationFileBusy, integrationScriptState, isRenameRefused, logRenameRefusal, RENAME_RETRIES, RENAME_RETRY_MS, wholeFileTempName,
   type SpawnPrep, type WholeFileResult,
 } from './terminalSpawnPrep'
 
@@ -608,32 +608,49 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
-/** writeWholeFile (terminalSpawnPrep.ts) for the fallback that cannot wait: same temp-and-rename, same retries, same refusals. */
-export function writeWholeFileSync(path: string, content: string, io: Partial<SyncWholeFileIo> = {}): WholeFileResult {
-  const writeFile = io.writeFile ?? writeFileSync
-  const rename = io.rename ?? renameSync
-  const rm = io.rm ?? rmSync
-  const exists = io.exists ?? existsSync
-  const sleep = io.sleep ?? sleepSync
+/** throughFreshTemp (terminalSpawnPrep.ts) for the fallback that cannot wait: true once renamed into place, false when
+ *  every rename was refused; a failed temp write is thrown, never read as a refused rename. */
+function throughFreshTempSync(path: string, content: string, retries: number, io: SyncWholeFileIo): boolean {
   const tmp = wholeFileTempName(path)
+  let renamed = false
   try {
-    writeFile(tmp, content)
+    io.writeFile(tmp, content)
     for (let attempt = 0; ; attempt++) {
       try {
-        rename(tmp, path)
-        return 'written'
+        io.rename(tmp, path)
+        renamed = true
+        return true
       } catch (e) {
-        if (!isRenameRefused(e) || attempt >= RENAME_RETRIES) throw e
-        sleep(RENAME_RETRY_MS)
+        if (!isRenameRefused(e)) throw e
+        if (attempt >= retries) return false
+        io.sleep(RENAME_RETRY_MS)
       }
     }
-  } catch (e) {
-    try { rm(tmp, { force: true }) } catch { /* the temp file is still held: it is left, and `e` is what went wrong */ }
-    if (!isRenameRefused(e)) throw e
-    if (exists(path)) return 'kept'
-    writeFile(path, content)
-    return 'written'
+  } finally {
+    if (!renamed) {
+      try { io.rm(tmp, { force: true }) } catch { /* the temp file is still held: it is left, and the outcome above stands */ }
+    }
   }
+}
+
+/**
+ * writeWholeFile (terminalSpawnPrep.ts) for the fallback that cannot wait: same temp-and-rename, same retries, same
+ * second temp file and direct write on a fresh install. Nothing else runs on the main thread meanwhile, and
+ * ensureIntegrationScript calls it only when no prepare holds the file, so that direct write is never read half done.
+ */
+export function writeWholeFileSync(path: string, content: string, io: Partial<SyncWholeFileIo> = {}): WholeFileResult {
+  const all: SyncWholeFileIo = {
+    writeFile: io.writeFile ?? writeFileSync,
+    rename: io.rename ?? renameSync,
+    rm: io.rm ?? rmSync,
+    exists: io.exists ?? existsSync,
+    sleep: io.sleep ?? sleepSync,
+  }
+  if (throughFreshTempSync(path, content, RENAME_RETRIES, all)) return 'written'
+  if (all.exists(path)) return 'kept'
+  if (throughFreshTempSync(path, content, 0, all)) return 'written'
+  all.writeFile(path, content)
+  return 'written'
 }
 
 /**
@@ -650,6 +667,9 @@ export function writeWholeFileSync(path: string, content: string, io: Partial<Sy
  * Returns null on any failure, which the caller reads as "spawn exactly as before".
  */
 export function ensureIntegrationScript(file: IntegrationFile, io: Partial<SyncWholeFileIo> = {}): string | null {
+  // A prepareSpawn holds this file (checking it, or writing it on the thread pool). This path cannot wait for it and
+  // must not read or write the file mid-write, so this terminal opens without integration, as on any other failure.
+  if (integrationFileBusy(file.name)) return null
   try {
     const known = integrationScriptState[file.name]
     const p = known ?? join(app.getPath('userData'), file.name)
