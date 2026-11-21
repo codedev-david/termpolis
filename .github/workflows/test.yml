@@ -472,6 +472,22 @@ jobs:
             npm cache clean --force || true
             sleep 10
           done
+      # e2e/world-export.spec.ts exports a world with the bundled embedding model on disk, as a shipped app has it:
+      # an unlabelled world's export dialog then shows the low-coverage note (without the model it shows the
+      # "no model" line instead). Restored by prefix from package-verify's cache (this run's may not be saved yet),
+      # else downloaded.
+      - name: Restore the embedding model
+        id: model
+        uses: actions/cache/restore@v4
+        with:
+          path: resources/models
+          key: bge-small-e2e-${{ github.run_id }}
+          restore-keys: bge-small-
+          enableCrossOsArchive: true
+      - name: Download the embedding model
+        if: steps.model.outputs.cache-matched-key == ''
+        shell: bash
+        run: bash scripts/download-embedding-model.sh
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       # quitApp() (e2e/helpers/launch.ts) attaches gdb to a main process that won't quit, so the
@@ -546,6 +562,22 @@ jobs:
             npm cache clean --force || true
             sleep 10
           done
+      # e2e/world-export.spec.ts exports a world with the bundled embedding model on disk, as a shipped app has it:
+      # an unlabelled world's export dialog then shows the low-coverage note (without the model it shows the
+      # "no model" line instead). Restored by prefix from package-verify's cache (this run's may not be saved yet),
+      # else downloaded.
+      - name: Restore the embedding model
+        id: model
+        uses: actions/cache/restore@v4
+        with:
+          path: resources/models
+          key: bge-small-e2e-${{ github.run_id }}
+          restore-keys: bge-small-
+          enableCrossOsArchive: true
+      - name: Download the embedding model
+        if: steps.model.outputs.cache-matched-key == ''
+        shell: bash
+        run: bash scripts/download-embedding-model.sh
       - name: Build
         run: npm run build
       # bash, as in e2e-soak, where these specs were stabilized on Windows: the shells the specs
@@ -579,6 +611,8 @@ jobs:
   #   - linked-machines: Settings ▸ Linked machines through the forked
   #     bridge child (code minted, own code refused, switched off), so a
   #     Mac can be the computer a delegated job runs on.
+  #   - world-export: Lumopolis exports a world and its documentation,
+  #     and the exported file opens offline in a new window and answers Ask.
   #
   # Required on main as of v1.11.15 — first green seen on 0342333.
   # If macOS starts flaking after a runner-image bump or similar, flip
@@ -607,6 +641,22 @@ jobs:
             npm cache clean --force || true
             sleep 10
           done
+      # e2e/world-export.spec.ts exports a world with the bundled embedding model on disk, as a shipped app has it:
+      # an unlabelled world's export dialog then shows the low-coverage note (without the model it shows the
+      # "no model" line instead). Restored by prefix from package-verify's cache (this run's may not be saved yet),
+      # else downloaded.
+      - name: Restore the embedding model
+        id: model
+        uses: actions/cache/restore@v4
+        with:
+          path: resources/models
+          key: bge-small-e2e-${{ github.run_id }}
+          restore-keys: bge-small-
+          enableCrossOsArchive: true
+      - name: Download the embedding model
+        if: steps.model.outputs.cache-matched-key == ''
+        shell: bash
+        run: bash scripts/download-embedding-model.sh
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       - name: Build
@@ -636,6 +686,8 @@ jobs:
         run: npx playwright test e2e/launch-intro.spec.ts
       - name: Private repositories against a local signed-in git server (macOS)
         run: npx playwright test e2e/lumopolis-private-repos.spec.ts
+      - name: Lumopolis export and documentation in the real app (macOS)
+        run: npx playwright test e2e/world-export.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4

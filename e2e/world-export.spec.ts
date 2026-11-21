@@ -1,0 +1,229 @@
+/**
+ * Lumopolis export in the real app (export plan, Task 13): what only the real Electron app can prove. The unit
+ * suites prove the builder, the dialog and the IPC against fakes; e2e/export-page proves an exported file in five
+ * browsers. This spec drives the whole path on a real project folder:
+ *
+ *   1. On an unlabelled world, the command palette's "export lumopolis world" opens the export dialog, which shows
+ *      the low-coverage note with the smart Ask switch off (the bundled model is there, so the note, not the
+ *      "no model" line, is what turns it off).
+ *   2. Export ▸ Interactive world ▸ Export… writes the file (the save dialog answered through
+ *      TERMPOLIS_TEST_WORLD_SAVE_FILE), and the file opened in a new window of the app, with every request but its
+ *      own file refused, gets ready and answers a keyword Ask.
+ *   3. Export ▸ Documentation ▸ Save… writes a page titled "How <project> works" with the cards' "What it does"
+ *      heading and the sentence a connection's card says from the code.
+ *
+ * PROOF=1 records a video of every window under test-results/world-export-proof/ (kept local, never committed): the
+ * export, the documentation, both files opened offline and three questions asked of the exported world.
+ */
+import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
+import path from 'path'
+import fs from 'fs'
+import os from 'os'
+import { pathToFileURL } from 'url'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
+import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal, paletteType, removeDirs } from './helpers/world'
+import { ask, askReady } from './export-page/helpers'
+import { CARD_HEADINGS, edgeFromCode } from '../src/shared/world/cardFacts'
+import { escapeHtml } from '../src/shared/world/html'
+import type { WorldDoc } from '../src/shared/world/types'
+
+const PROOF = process.env.PROOF === '1'
+const PROOF_DIR = path.resolve('test-results', 'world-export-proof')
+
+let app: ElectronApplication
+let page: Page
+let userDataDir: string
+let project: string
+/** Where the exported files go, and the file whose text answers the app's save dialog. */
+let outDir: string
+let saveAnswer: string
+const consoleErrors: string[] = []
+
+/** In the proof video, a pause long enough to see what just happened; nothing otherwise. */
+const beat = (ms = 1500): Promise<void> => (PROOF ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve())
+
+test.beforeAll(async () => {
+  ensureE2eBuild()
+  project = makeRepo('notes', PROJECT_FILES)
+  outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-export-'))
+  saveAnswer = path.join(outDir, 'save-answer.txt')
+  fs.writeFileSync(saveAnswer, '')
+  if (PROOF) fs.rmSync(PROOF_DIR, { recursive: true, force: true })
+  const launched = await launchWorldApp({
+    env: { TERMPOLIS_TEST_WORLD_SAVE_FILE: saveAnswer },
+    ...(PROOF ? { videoDir: PROOF_DIR } : {}),
+    onPage: (p) => {
+      p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
+      p.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`))
+    },
+  })
+  app = launched.app
+  page = launched.page
+  userDataDir = launched.userDataDir
+})
+
+test.afterAll(async () => {
+  // Closing the app also finishes the proof video files.
+  await quitApp(app)
+  removeDirs([userDataDir, project, outDir])
+})
+
+const pane = () => page.locator('[data-testid="world-view"]')
+const exportDialog = () => page.locator('[data-testid="world-export-dialog"]')
+const documentDialog = () => page.locator('[data-testid="world-document-dialog"]')
+const toast = () => page.locator('[data-testid="world-export-toast"]')
+
+/** The world main stored for the project, read the way the pane reads it. */
+async function worldDoc(): Promise<WorldDoc> {
+  const doc = await page.evaluate(async (r) => {
+    type Res<T> = { success: boolean; data?: T }
+    const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<Res<string>>; worldGet: (c: string) => Promise<Res<unknown>> } }).termpolis
+    const top = await api.gitFindRoot(r)
+    const res = await api.worldGet(top.success && top.data ? top.data : r)
+    return res.success ? res.data ?? null : null
+  }, project)
+  expect(doc, 'the world main stored for the project').not.toBeNull()
+  return doc as WorldDoc
+}
+
+/** Opens `file` in a new window of the app, with every request but the file itself (and data:/blob:) refused. */
+async function openOffline(file: string): Promise<{ win: Page; foreign: string[]; close(): Promise<void> }> {
+  const own = pathToFileURL(file).href
+  const [win, id] = await Promise.all([
+    app.waitForEvent('window'),
+    app.evaluate(async ({ BrowserWindow }) => {
+      const w = new BrowserWindow({ width: 1280, height: 800, webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false } })
+      await w.loadURL('about:blank')
+      return w.id
+    }),
+  ])
+  const foreign: string[] = []
+  await win.route('**/*', (route) => {
+    const url = route.request().url()
+    if (url === own || url.startsWith('data:') || url.startsWith('blob:')) return route.continue()
+    foreign.push(url)
+    return route.abort()
+  })
+  const errors: string[] = []
+  win.on('pageerror', (e) => errors.push(String(e)))
+  await win.goto(own, { waitUntil: 'load', timeout: 60_000 })
+  return {
+    win,
+    foreign,
+    close: async () => {
+      expect(errors, 'errors thrown in the opened file').toEqual([])
+      await app.evaluate(({ BrowserWindow }, wid) => { BrowserWindow.fromId(wid)?.close() }, id)
+    },
+  }
+}
+
+test.describe.serial('Lumopolis export in the real app', () => {
+  test.setTimeout(PROOF ? 240_000 : 90_000)
+
+  test('0. Lumopolis opens on the project and draws its world', async () => {
+    await createTerminal(page, 'Notes', project)
+    await paletteType(page, 'Open Lumopolis')
+    await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()
+    await expect(pane()).toBeVisible()
+    await expect(page.locator('[data-testid="world-project"]')).toHaveText(path.basename(project), { timeout: 30_000 })
+    // The first map of a launch can sit on one stage for half a minute on a busy machine (seen once locally at 55%).
+    await expect(page.locator('[data-testid="world-canvas-host"] canvas')).toBeVisible({ timeout: 60_000 })
+    await expect(page.locator('[data-testid="world-export"]')).toBeEnabled({ timeout: 30_000 })
+    expect((await worldDoc()).buildings.length).toBeGreaterThan(1)
+    await beat()
+  })
+
+  test('1. the palette opens the export dialog, and an unlabelled world shows the note with smart Ask off', async () => {
+    await paletteType(page, 'export lumopolis world')
+    await page.getByRole('button', { name: /^Export Lumopolis world\s*Save the world as one page/ }).click()
+    await expect(exportDialog()).toBeVisible()
+    await expect(page.locator('[data-testid="world-export-size"]')).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('[data-testid="world-export-note"]')).toHaveText(
+      "Most parts aren't described yet, so smart Ask would mostly match file names. Re-label the world first, or export with keyword Ask.",
+    )
+    // The model is there: the switch is off because of the note, not for want of a model.
+    await expect(page.locator('[data-testid="world-export-keyword"]')).toHaveCount(0)
+    const smart = exportDialog().getByRole('checkbox', { name: /Include smart Ask/ })
+    await expect(smart).not.toBeChecked()
+    await expect(smart).toBeEnabled()
+    await beat()
+    await exportDialog().getByRole('button', { name: 'Cancel' }).click()
+    await expect(exportDialog()).toHaveCount(0)
+  })
+
+  test('2. Export ▸ Interactive world writes the file, and it opens offline in a new window and answers Ask', async () => {
+    const file = path.join(outDir, 'notes world.html')
+    fs.writeFileSync(saveAnswer, file)
+    await page.locator('[data-testid="world-export"]').click()
+    await expect(page.locator('[data-testid="world-export-menu"]')).toBeVisible()
+    await beat(800)
+    await page.locator('[data-testid="world-export-world"]').click()
+    await expect(exportDialog()).toBeVisible()
+    await expect(page.locator('[data-testid="world-export-size"]')).toBeVisible({ timeout: 30_000 })
+    await beat()
+    await exportDialog().getByRole('button', { name: 'Export…' }).click()
+    await expect(toast()).toContainText(`Exported ${path.basename(file)}`, { timeout: 60_000 })
+    await expect(exportDialog()).toHaveCount(0)
+    expect(fs.statSync(file).size).toBeGreaterThan(100_000)
+    await beat()
+
+    const doc = await worldDoc()
+    const opened = await openOffline(file)
+    try {
+      // Unlabelled, so the export was keyword-only: ready settles to keyword search.
+      expect((await askReady(opened.win)).state).toBe('keyword')
+      const named = doc.buildings.slice(0, PROOF ? 3 : 1)
+      for (const b of named) {
+        const ids = await ask(opened.win, b.name)
+        expect(ids, `Ask "${b.name}" found that part`).toContain(b.id)
+        await beat(2500)
+      }
+      expect(opened.foreign, 'requests the opened file made beyond itself').toEqual([])
+    } finally {
+      await opened.close()
+    }
+  })
+
+  test('3. Export ▸ Documentation writes the project\'s documentation page', async () => {
+    const file = path.join(outDir, 'notes documentation.html')
+    fs.writeFileSync(saveAnswer, file)
+    await page.locator('[data-testid="world-export"]').click()
+    await page.locator('[data-testid="world-export-document"]').click()
+    await expect(documentDialog()).toBeVisible()
+    const name = path.basename(project)
+    await expect(documentDialog().getByRole('textbox', { name: 'Title' })).toHaveValue(name)
+    await beat()
+    await documentDialog().getByRole('button', { name: 'Save…' }).click()
+    await expect(toast()).toContainText(`Exported ${path.basename(file)}`, { timeout: 60_000 })
+    await expect(documentDialog()).toHaveCount(0)
+
+    const html = fs.readFileSync(file, 'utf8')
+    expect(html).toContain(`How ${escapeHtml(name)}`)
+    expect(html).toContain(`>${escapeHtml(CARD_HEADINGS.whatItDoes)}<`)
+    // A line no model described says, under "How it travels", what the code alone shows: the same sentence its card says.
+    const doc = await worldDoc()
+    const line = doc.edges.find((e) => e.how.length === 0)
+    expect(line, 'a connection no model described').toBeDefined()
+    const sentence = edgeFromCode(doc, line!)
+    expect(sentence).toMatch(/^From the code: /)
+    expect(html).toContain(escapeHtml(sentence))
+
+    if (PROOF) {
+      const opened = await openOffline(file)
+      try {
+        await opened.win.evaluate(() => window.scrollTo({ top: 0 }))
+        for (let y = 0; y < 6; y++) {
+          await opened.win.mouse.wheel(0, 600)
+          await beat(900)
+        }
+        expect(opened.foreign).toEqual([])
+      } finally {
+        await opened.close()
+      }
+    }
+  })
+
+  test('4. the renderer logged no error and threw nothing', () => {
+    expect(consoleErrors).toEqual([])
+  })
+})

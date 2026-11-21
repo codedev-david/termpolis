@@ -23,18 +23,12 @@
  * only under TERMPOLIS_TEST_WORLD_PROBE=1 (a building's place on screen, what is drawn), so the
  * spec clicks a known building instead of scanning the canvas.
  *
- * The fixture projects are temp git repositories (the code graph lists a project's files with
- * `git ls-files`). Labelling is switched off in the temp profile (world-settings.json), so the world
- * is named from the code alone and no model is called. The launch adds Chromium's software GL
- * switches, as the world-engine harness does, so a runner with no GPU still gets WebGL.
+ * The fixture projects, the launch (labelling off, software GL) and the Add Terminal dialog come from
+ * e2e/helpers/world.ts, which e2e/world-export.spec.ts shares.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
-import { _electron as electron } from 'playwright'
-import { execFileSync } from 'child_process'
-import path from 'path'
-import fs from 'fs'
-import os from 'os'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
+import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteType, removeDirs } from './helpers/world'
 
 let app: ElectronApplication
 let page: Page
@@ -61,63 +55,6 @@ const LINE_KEYS = 20
  *  (a CI prompt is 56 to 58 columns, user@host:/tmp/termpolis-world-notes-XXXXXX$). */
 const MARGIN_COLS = 10
 
-/** Writes `files` under a new temp folder and makes it a git repository with every file staged. */
-function makeRepo(label: string, files: Record<string, string>): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `termpolis-world-${label}-`))
-  for (const [rel, text] of Object.entries(files)) {
-    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
-    fs.writeFileSync(path.join(dir, rel), text)
-  }
-  execFileSync('git', ['init', '-q'], { cwd: dir })
-  execFileSync('git', ['add', '-A'], { cwd: dir })
-  return dir
-}
-
-/** A small Electron-shaped project: main, a forked host, a preload bridge and a renderer that uses it. */
-const PROJECT_FILES: Record<string, string> = {
-  'package.json': JSON.stringify({ name: 'notes-app', version: '1.0.0', main: 'out/main/index.js' }),
-  'src/main/index.ts': [
-    "import { app, ipcMain, utilityProcess } from 'electron'",
-    "import { join } from 'path'",
-    "import { listNotes } from './store'",
-    '',
-    'app.whenReady().then(() => {',
-    "  const host = utilityProcess.fork(join(__dirname, 'notesHost.js'))",
-    "  ipcMain.handle('notes:list', async () => listNotes())",
-    "  ipcMain.handle('notes:index', async () => host.postMessage({ type: 'index' }))",
-    '})',
-    '',
-  ].join('\n'),
-  'src/main/store.ts': "export function listNotes(): string[] {\n  return ['one', 'two']\n}\n",
-  'src/main/notesHost.ts': [
-    "import { buildIndex } from './indexer'",
-    '',
-    "process.parentPort.on('message', () => buildIndex())",
-    '',
-  ].join('\n'),
-  'src/main/indexer.ts': 'export function buildIndex(): number {\n  return 1\n}\n',
-  'src/preload/index.ts': [
-    "import { contextBridge, ipcRenderer } from 'electron'",
-    '',
-    "contextBridge.exposeInMainWorld('notes', {",
-    "  list: () => ipcRenderer.invoke('notes:list'),",
-    "  index: () => ipcRenderer.invoke('notes:index'),",
-    '})',
-    '',
-  ].join('\n'),
-  'src/renderer/main.ts': "import { render } from './App'\n\nrender(document.body)\n",
-  'src/renderer/App.ts': [
-    "import { row } from './NoteRow'",
-    '',
-    'export async function render(el: HTMLElement): Promise<void> {',
-    '  const notes = await (window as any).notes.list()',
-    "  el.innerHTML = notes.map(row).join('')",
-    '}',
-    '',
-  ].join('\n'),
-  'src/renderer/NoteRow.ts': 'export const row = (n: string): string => `<li>${n}</li>`\n',
-}
-
 /** A bigger project for the typing measurement: 2,040 files, about 3 s for the first compile on a
  *  CI runner (2,400 took 3.5 to 4 s there, and 21 to 28 s on a slow laptop). The keys come from
  *  several compiles in a row, so the fixture need not outlast the typing on its own; but a forced
@@ -142,67 +79,24 @@ test.beforeAll(async () => {
   project = makeRepo('notes', PROJECT_FILES)
   loadProject = makeRepo('load', loadFiles())
 
-  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-ud-'))
-  fs.writeFileSync(
-    path.join(userDataDir, 'session.json'),
-    JSON.stringify({ terminals: [], workspaces: [], defaultShell: process.platform === 'win32' ? 'powershell' : 'bash', viewMode: 'tabs' }),
-  )
-  // Names from the code alone: no model is asked to describe the parts.
-  fs.writeFileSync(path.join(userDataDir, 'world-settings.json'), JSON.stringify({ worldLabelling: false }))
-
-  app = await electron.launch({
-    args: [
-      path.resolve('out/main/index.js'),
-      `--user-data-dir=${userDataDir}`,
-      // Software GL (SwiftShader), so a runner with no GPU still gets a WebGL context.
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
-      '--ignore-gpu-blocklist',
-      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
-    ],
-    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_SMOKE_SKIP_PICKERS: '1', TERMPOLIS_TEST_WORLD_PROBE: '1' },
+  const launched = await launchWorldApp({
+    onPage: (p) => {
+      p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
+      p.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`))
+    },
   })
-  page = await app.firstWindow()
-  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
-  page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`))
-  await page.waitForLoadState('domcontentloaded')
-  await page.waitForTimeout(1500)
-  await page.evaluate(() => {
-    try {
-      localStorage.setItem('termpolis.onboarding.seen.v1', '1')
-      localStorage.setItem('termpolis.telemetry.optIn', '0')
-    } catch {
-      /* ignore */
-    }
-  })
-  const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
-  if (await onboardDialog.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
-    await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
-  }
+  app = launched.app
+  page = launched.page
+  userDataDir = launched.userDataDir
 })
 
 test.afterAll(async () => {
   await quitApp(app)
-  for (const d of [userDataDir, project, loadProject]) {
-    try {
-      if (d) fs.rmSync(d, { recursive: true, force: true })
-    } catch {
-      /* temp dir */
-    }
-  }
+  removeDirs([userDataDir, project, loadProject])
 })
 
 /** Adds a terminal whose working folder is `cwd` (the Add Terminal dialog's folder field). */
-async function createTerminal(name: string, cwd: string): Promise<void> {
-  await page.locator('button:has-text("+ Add Terminal")').first().click()
-  const dialog = page.locator('h2:has-text("New Terminal")').locator('..')
-  await expect(dialog).toBeVisible()
-  await dialog.locator('input').first().fill(name)
-  await dialog.locator('input[placeholder="Home directory"]').fill(cwd)
-  await page.getByRole('button', { name: 'Create', exact: true }).click()
-  await page.waitForTimeout(1500)
-}
+const createTerminal = (name: string, cwd: string): Promise<void> => addTerminal(page, name, cwd)
 
 const pane = () => page.locator('[data-testid="world-view"]')
 const canvas = () => page.locator('[data-testid="world-canvas-host"] canvas')
@@ -234,13 +128,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     // Its own budget: the two 30 s waits below must fail with their own message, not the test's.
     test.setTimeout(75_000)
     await createTerminal('Notes', project)
-    // A focused terminal takes Ctrl+K as a key for the shell: the palette shortcut is the app's
-    // only when the focus is outside it, as after clicking away.
-    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
-    await page.keyboard.press('ControlOrMeta+k')
-    const input = page.getByPlaceholder('Type a command...')
-    await expect(input).toBeVisible()
-    await input.fill('Open Lumopolis')
+    await paletteType(page, 'Open Lumopolis')
     // The palette's result, by its label and description (the sidebar has an 'Open Lumopolis' button too).
     const result = page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ })
     await expect(result).toBeVisible()
@@ -563,11 +451,7 @@ test.describe.serial('Lumopolis in the real app', () => {
   test('6. the terminal stays visible and takes typing while Lumopolis is open', async () => {
     // Test 5 closed the pane: open it again the way a person does, from the command palette.
     if (await pane().count() === 0) {
-      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
-      await page.keyboard.press('ControlOrMeta+k')
-      const input = page.getByPlaceholder('Type a command...')
-      await expect(input).toBeVisible()
-      await input.fill('Open Lumopolis')
+      await paletteType(page, 'Open Lumopolis')
       await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()
     }
     await expect(pane()).toBeVisible()

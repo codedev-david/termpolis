@@ -6,15 +6,19 @@ name: Defender scan
 #
 # A GitHub Windows runner ships with Defender switched off. This turns it back on the way a stock
 # Windows install has it (real-time and cloud protection, block at first sight, no exclusions) and
-# scans three kinds of file:
+# scans four kinds of file:
 #   - controls, which say whether this runner's Defender can tell at all: the EICAR test file
 #     (which it must catch), Electron's own unsigned electron.exe (43 and 30), and the latest
 #     release's inner Termpolis.exe with its signature stripped (what v1.49.1 shipped as);
 #   - the baseline: the latest published release's signed installer and inner exe;
 #   - the subject, when a tag is given (a draft release works): its installer and inner exe, and
-#     then the installed app, installed and run with real-time protection on, as a user would.
-# Defender flagging any part of the subject fails the job, and so does Defender missing EICAR: a
-# clean result from a Defender that isn't working would prove nothing.
+#     then the installed app, installed and run with real-time protection on, as a user would;
+#   - what Lumopolis exports, built from this checkout: one smart page (world, model, tokenizer and
+#     ORT wasm in one ~37 MB HTML file) and one documentation page, written by the export-page
+#     suite's globalSetup (e2e/export-page/globalSetup.ts) through the app's own export code. A
+#     person shares these files by mail or Teams, where Defender judges them on arrival.
+# Defender flagging any part of the subject, or either exported file, fails the job, and so does
+# Defender missing EICAR: a clean result from a Defender that isn't working would prove nothing.
 on:
   workflow_dispatch:
     inputs:
@@ -42,17 +46,40 @@ permissions:
 jobs:
   scan:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       SUBJECT_TAG: ${{ inputs.tag }}
       CLOUD_BLOCK_LEVEL: ${{ inputs.cloud_block_level }}
     steps:
-      # Only for scripts/test-installer-update.ps1, which the update step below runs.
+      # The whole tree: the exported files are built from it, and the update step below runs
+      # scripts/test-installer-update.ps1.
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          sparse-checkout: scripts
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
+      - name: Download the embedding model
+        shell: bash
+        run: bash scripts/download-embedding-model.sh
+      - name: Build the world viewer and the export runtime
+        run: npm run build:world-viewer
+      # --list runs the export-page config's globalSetup, which writes test-results/export-fixture/
+      # {smart,keyword,document}.html, and then only lists the specs: no browser is started. Still
+      # before Defender is on, like every other file this job gathers.
+      - name: Export a Lumopolis world and its documentation
+        shell: bash
+        run: npx playwright test -c playwright.export.config.ts --list
       # Defender is still off here, so nothing is quarantined on the way in, and each file is
       # judged by the explicit scan below.
       - name: Gather the files
@@ -99,6 +126,16 @@ jobs:
           Copy-Item $binner $unsigned
           & $signtool.FullName remove /s $unsigned | Out-Null
           $samples["control: $baseline inner Termpolis.exe, signature stripped"] = $unsigned
+
+          # The exported files, copied out of the workspace so the scan reads exactly these bytes.
+          $edir = Join-Path $env:SCAN 'export'
+          New-Item -ItemType Directory -Force $edir | Out-Null
+          foreach ($e in @(@('smart page', 'smart.html'), @('documentation', 'document.html'))) {
+            $src = Join-Path $env:GITHUB_WORKSPACE "test-results/export-fixture/$($e[1])"
+            if (-not (Test-Path $src)) { throw "the export step wrote no $($e[1])" }
+            Copy-Item $src $edir
+            $samples["export: $($e[0]) ($([math]::Round((Get-Item $src).Length / 1MB, 1)) MB)"] = Join-Path $edir $e[1]
+          }
 
           if ($env:SUBJECT_TAG) {
             $sdir = Join-Path $env:SCAN "subject-$env:SUBJECT_TAG"
@@ -279,6 +316,9 @@ jobs:
             $summary += '', '> Note: no unsigned control was flagged. This runner''s Defender may not reproduce reputation-based cloud verdicts, so a clean subject proves less than it looks.'
           }
           foreach ($r in ($results | Where-Object { $_.name -like 'subject:*' -and $_.verdict -ne 'clean' })) { $failures += "$($r.name): $($r.verdict) $($r.threats)" }
+          $exports = @($results | Where-Object { $_.name -like 'export:*' })
+          if ($exports.Count -ne 2) { $failures += "expected 2 exported files in the scan, found $($exports.Count)" }
+          foreach ($r in ($exports | Where-Object verdict -ne 'clean')) { $failures += "$($r.name): $($r.verdict) $($r.threats)" }
           if ($env:SUBJECT_INSTALLER -and -not $install) { $failures += 'the install step reported nothing (it timed out or crashed)' }
           if ($install -and $null -eq $install.installerExit) { $failures += 'the installer never finished: ' + (@($install.timeouts) -join '; ') }
           elseif ($install -and $install.installerExit -ne 0) { $failures += "the installer exited $($install.installerExit)" }

@@ -39,6 +39,7 @@ This document covers installation, the AI Security Center, the share-to-Slack/Te
 28. [Troubleshooting](#28-troubleshooting)
 29. [Termpolis Remote (phone app)](#29-termpolis-remote-phone-app)
 30. [Linked machines](#30-linked-machines)
+- [Lumopolis export](#lumopolis-export)
 31. [Architecture](#31-architecture)
 32. [Keyboard Shortcut Reference](#32-keyboard-shortcut-reference)
 
@@ -1886,6 +1887,59 @@ still had running on the other is stopped. If the other computer is offline at t
 time, it keeps showing this one as offline until you unlink it there as well.
 
 The wire format is in [`docs/remote-wire-format.md` §13](remote-wire-format.md#13-linked-machines).
+
+---
+
+## Lumopolis export
+
+Lumopolis can save a world as files you can hand to someone who doesn't have Termpolis. Each one is a single `.html` file that opens in any desktop browser, with no install and no network.
+
+**Where to find it.** In the Lumopolis toolbar, **Export** opens a menu with two items:
+
+- **Interactive world (HTML)…** saves the 3D city as one page.
+- **Documentation (HTML)…** saves a written explanation of the project.
+
+The Command Palette has the same two actions: **Export Lumopolis world** and **Generate Lumopolis documentation**. Both work once the world has finished its first map. While a map or labelling run is still going, they use the world as it was last saved, and the export dialog says so.
+
+### The interactive world
+
+The page shows the city as the Lumopolis pane does: cards, tours, layers, themes, the 2D view and the legend. It is read-only, so there is no editing, annotating, Build it or conversation. For a code world you can export the whole world, or the world with one proposal drawn over it.
+
+**Ask in the page.** The exported page has an Ask box. It searches by keyword straight away. With **Include smart Ask (works offline, adds ~35 MB)** switched on, it also finds parts by meaning, using a small model packed into the file.
+
+- The switch is on by default when at least 80% of the parts and connections have a description from labelling.
+- Below that it starts off, with the note: "Most parts aren't described yet, so smart Ask would mostly match file names. Re-label the world first, or export with keyword Ask." You can still switch it on.
+
+**What is in the file, and what isn't.**
+
+- Included: cards, tours, layers and themes.
+- Not included: your conversation with the agent, voice transcripts, and file paths outside the project. Paths are written relative to the project.
+- Code excerpts and notes from memory are removed from the evidence. A card keeps its references (for example `src/main/foo.ts`) as plain text.
+- Claim texts, commit subjects and captions go through the same secret scanner as memory, and anything it finds becomes `[redacted]`.
+- The page carries a strict Content Security Policy that blocks every network request, so the browser itself keeps it offline. The one link, "Made with Termpolis", is followed only if you click it.
+
+Export opens your system's save dialog. When it finishes, a message gives the file name and size, with **Show in folder** and **Open**. **Cancel** stops the export and leaves no partial file.
+
+### The documentation page
+
+**Documentation (HTML)…** asks for a title (the project name to start with) and whether to include a picture of the city, which needs the 3D map on screen. **Save…** writes one page titled "How <project> works". It has:
+
+- coverage figures and an overview;
+- a map of the areas;
+- each part with the same headings and sentences as its card;
+- a table of every connection;
+- the tours as numbered steps;
+- outside systems, planned changes and the glossary;
+- a closing list of what the document doesn't cover yet.
+
+It needs no script, prints cleanly to PDF, and leaves out the same things as the interactive world.
+
+### Limits
+
+- A smart export is about 37 MB, which is too large for most email attachments. Share it through OneDrive, Teams or a shared drive, or export with keyword Ask instead (about 1–3 MB).
+- Ask in an exported page finds the parts that match a question. It doesn't write new answers. Ask inside Termpolis, with an agent, can.
+- A browser tab holding a smart export uses more memory than an ordinary page, roughly 150–250 MB. That figure is an estimate, not a precise measurement.
+- Phones are not a target. Open exported pages in a desktop browser.
 
 ---
 
