@@ -53,11 +53,18 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve() })
 }
 
-async function mount(props: Partial<{ root: string; designKey: string; labelling: boolean }> = {}) {
+async function mount(props: Partial<{ root: string; designKey: string; mapRun: 'describing' | 'updating' | null; describeOn: boolean }> = {}) {
   const onClose = vi.fn()
   const onSaved = vi.fn()
   const utils = render(
-    <ExportDialog root={'designKey' in props ? undefined : props.root ?? '/repo'} designKey={props.designKey} labelling={props.labelling ?? false} onClose={onClose} onSaved={onSaved} />,
+    <ExportDialog
+      root={'designKey' in props ? undefined : props.root ?? '/repo'}
+      designKey={props.designKey}
+      mapRun={props.mapRun ?? null}
+      describeOn={props.describeOn ?? true}
+      onClose={onClose}
+      onSaved={onSaved}
+    />,
   )
   await settle()
   return { ...utils, onClose, onSaved }
@@ -140,7 +147,7 @@ describe('ExportDialog', () => {
     await mount()
     expect(smart().checked).toBe(false)
     expect(screen.getByTestId('world-export-note')).toHaveTextContent(
-      "Most parts aren't described yet, so smart Ask would mostly match file names. Re-label the world first, or export with keyword Ask.",
+      "Most parts aren't described yet, so smart Ask would mostly match file names. Press Re-layout to have Lumopolis describe them, or export with keyword Ask.",
     )
     expect(screen.getByTestId('world-export-size')).toHaveTextContent('About 1.1 MB')
     fireEvent.click(smart())
@@ -151,11 +158,26 @@ describe('ExportDialog', () => {
     expect(screen.getByTestId('world-export-size')).toHaveTextContent('About 1.1 MB')
   })
 
-  it('while a compile or labelling runs it says which saved map it uses', async () => {
+  it.each([
+    ['still describing its parts', 'describing', 'Lumopolis is still describing its parts.'],
+    ['updating the map in any other way', 'updating', 'Lumopolis is still updating it.'],
+  ] as const)('while Lumopolis is %s it says which saved map it uses, and what is still going', async (_what, mapRun, tail) => {
     bridge()
-    await mount({ labelling: true })
-    expect(screen.getByTestId('world-export-saved-at')).toHaveTextContent(
-      `Uses the map as it was saved at ${savedAtText(info().savedAt)}; labelling is still running.`,
+    await mount({ mapRun })
+    expect(screen.getByTestId('world-export-saved-at')).toHaveTextContent(`Uses the map as it was saved at ${savedAtText(info().savedAt)}; ${tail}`)
+  })
+
+  it.each([
+    ['a run is going', { mapRun: 'describing' as const }, 'Wait for Lumopolis to finish updating the map, or export with keyword Ask.'],
+    ['a compile with no describing is going', { mapRun: 'updating' as const }, 'Wait for Lumopolis to finish updating the map, or export with keyword Ask.'],
+    ['describing parts with AI is off', { describeOn: false }, 'Turn on Describe parts with AI in Settings, then press Re-layout, or export with keyword Ask.'],
+    ['describing is off, even while a run is going', { describeOn: false, mapRun: 'updating' as const }, 'Turn on Describe parts with AI in Settings, then press Re-layout, or export with keyword Ask.'],
+    ['the world is a design', { designKey: 'design:d1', describeOn: false }, 'Ask Lumopolis to say what each part does, or export with keyword Ask.'],
+  ])('the low-description note says what to do when %s', async (_what, props, tail) => {
+    bridge({ worldExportInfo: vi.fn(async () => ok(info({ smartDefault: false }))) })
+    await mount(props)
+    expect(screen.getByTestId('world-export-note')).toHaveTextContent(
+      `Most parts aren't described yet, so smart Ask would mostly match file names. ${tail}`,
     )
   })
 
@@ -187,6 +209,9 @@ describe('ExportDialog', () => {
     const b = bridge({ worldExportInfo: vi.fn(async () => ok(info({ proposals: [{ id: 'p1', title: 'Plan one' }, { id: 'p2', title: 'Plan two' }] }))) })
     await mount()
     const whole = screen.getByLabelText('Whole world') as HTMLInputElement
+    // The choice is labelled What (spec 5.2), and read out as one group.
+    const what = screen.getByRole('radiogroup', { name: 'What' })
+    expect(what).toHaveTextContent(/^What/)
     const one = screen.getByLabelText('Proposal:') as HTMLInputElement
     const pick = screen.getByLabelText('Proposal to export') as HTMLSelectElement
     expect(whole.checked).toBe(true)

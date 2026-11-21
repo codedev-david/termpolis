@@ -1656,7 +1656,13 @@ describe('WorldView export', () => {
     b.progress({ root: '/repo', projectKey: 'k', stage: 'labelling', pct: 65 })
     openMenu('world')
     await settle()
-    expect(screen.getByTestId('world-export-saved-at')).toBeInTheDocument()
+    expect(screen.getByTestId('world-export-saved-at')).toHaveTextContent(/; Lumopolis is still describing its parts\.$/)
+    esc()
+    // Any other stage is an update of the map, not a description of its parts.
+    b.progress({ root: '/repo', projectKey: 'k', stage: 'layout', pct: 80 })
+    openMenu('world')
+    await settle()
+    expect(screen.getByTestId('world-export-saved-at')).toHaveTextContent(/; Lumopolis is still updating it\.$/)
     esc()
     b.progress({ root: '/repo', projectKey: 'k', stage: 'layout', pct: 100 })
     openMenu('world')
@@ -1920,6 +1926,42 @@ describe('WorldView export', () => {
     expect(screen.queryByTestId('world-document-dialog')).toBeNull()
   })
 
+  it('a palette ask made while one world loads is dropped when another world is opened before it is there', async () => {
+    const slow = deferred<Res<WorldDoc | null>>()
+    const b = bridge(exportApi({ worldGet: vi.fn((root: string) => (root === '/a' ? slow.promise : Promise.resolve(ok(minimal())))) }))
+    const m = await mountWith({ root: '/a', exportRequest: { kind: 'world', seq: 1 } })
+    await m.again({ root: '/b', exportRequest: { kind: 'world', seq: 1 } })
+    await act(async () => { slow.resolve(ok(minimal())) })
+    await settle()
+    expect(screen.getByTestId('world-export')).toBeInTheDocument() // B is there
+    expect(screen.queryByTestId('world-export-dialog')).toBeNull()
+    expect(b.api.worldExportInfo).not.toHaveBeenCalled()
+    // A new ask on B opens B's dialog.
+    await m.again({ root: '/b', exportRequest: { kind: 'world', seq: 2 } })
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+  })
+
+  it('a palette ask made before the folder resolves is dropped when another world is opened, and kept through its own load', async () => {
+    const find = deferred<Res<string | null>>()
+    const b = bridge(exportApi({ gitFindRoot: vi.fn((cwd: string) => (cwd === '/a/sub' ? find.promise : Promise.resolve(ok<string | null>(cwd)))) }))
+    const m = render(<WorldView root="/a/sub" onClose={vi.fn()} exportRequest={{ kind: 'world', seq: 1 }} />)
+    await settle()
+    m.rerender(<WorldView root="/b" onClose={vi.fn()} exportRequest={{ kind: 'world', seq: 1 }} />)
+    await settle()
+    expect(screen.getByTestId('world-export')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-export-dialog')).toBeNull()
+    expect(b.api.worldExportInfo).not.toHaveBeenCalled()
+    m.unmount()
+    // The same ask with no switch: the root resolves, the world loads, the dialog opens.
+    const find2 = deferred<Res<string | null>>()
+    bridge(exportApi({ gitFindRoot: vi.fn(() => find2.promise) }))
+    render(<WorldView root="/a/sub" onClose={vi.fn()} exportRequest={{ kind: 'world', seq: 1 }} />)
+    await settle()
+    await act(async () => { find2.resolve(ok('/a')) })
+    await settle()
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+  })
+
   it('a first compile that throws or fails leaves no run going: a world that loads after says nothing of one', async () => {
     for (const end of ['throw', 'fail'] as const) {
       const compile = deferred<Res<WorldDoc>>()
@@ -1936,6 +1978,18 @@ describe('WorldView export', () => {
       await settle()
       expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
       expect(screen.queryByTestId('world-export-saved-at')).toBeNull()
+      m.unmount()
+    }
+  })
+
+  it("the export dialog's low-description note follows Describe parts with AI", async () => {
+    const info = vi.fn(async () => ok({ title: 'repo', savedAt: 1, smartDefault: false, buildings: 0.1, lines: 0.1, smartBytes: 37 * MB, keywordBytes: MB, smartAvailable: true, proposals: [] }))
+    for (const on of [true, false]) {
+      bridge(exportApi({ worldExportInfo: info, worldSettingsGet: vi.fn(async () => ok({ worldLabelling: on, worldSpeakAnswers: false })) }))
+      const m = await mountWith()
+      openMenu('world')
+      await settle()
+      expect(screen.getByTestId('world-export-note')).toHaveTextContent(on ? /Press Re-layout to have Lumopolis describe them/ : /Turn on Describe parts with AI in Settings/)
       m.unmount()
     }
   })

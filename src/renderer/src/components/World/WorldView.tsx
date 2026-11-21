@@ -172,9 +172,12 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** An export the palette asked for, waiting for the world to load. */
   const [pendingExport, setPendingExport] = useState<ExportKind | null>(null)
   const handledExport = useRef(0)
+  /** The world the waiting ask was made on (see the effect that opens it); null until that effect first sees it. */
+  const askedOn = useRef<{ world: string; key: string | null } | null>(null)
   useEffect(() => {
     if (exportRequest === undefined || exportRequest.seq === handledExport.current) return
     handledExport.current = exportRequest.seq
+    askedOn.current = null
     setPendingExport(exportRequest.kind)
   }, [exportRequest])
   // Describing parts with AI (Settings): while it is off there is nothing to show the cost of.
@@ -672,6 +675,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const home = world.kind === 'home'
   const projectName = worldTitle(entries, { root: worldRoot, designKey })
   const worldKey = worldRoot ?? designKey
+  /** The world as opened, before its folder resolves: a followed folder changes it on every cd. */
+  const openedAs = designKey !== null ? `design ${designKey}` : `root ${target}`
   let empty: 'loading' | 'mapping' | 'error' | null = null
   if (home) empty = null
   else if (error !== null) empty = 'error'
@@ -721,11 +726,18 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     if (home) { setPendingExport(null); setNotice('Open a world to export it.'); return }
     // The world failed to load: the ask goes with it, so a world that loads later never pops a dialog unasked.
     if (error !== null) { setPendingExport(null); return }
+    // The ask is for the world open when it was made: another world opened before it loaded drops it. Its key is
+    // known once its folder resolves; until then it is told by the world as opened.
+    const asked = askedOn.current ?? (askedOn.current = { world: openedAs, key: worldKey })
+    if (asked.key === null) {
+      if (openedAs !== asked.world) { setPendingExport(null); return }
+      asked.key = worldKey
+    } else if (worldKey !== null && worldKey !== asked.key) { setPendingExport(null); return }
     if (!doc || worldKey === null) return
     setPendingExport(null)
     // The palette has closed: take the focus, so Esc reaches the dialog. A dropped ask leaves the focus alone.
     if (openExportRef.current(pendingExport)) (dialogRef.current as HTMLDivElement).focus()
-  }, [pendingExport, home, doc, worldKey, error])
+  }, [pendingExport, home, doc, worldKey, error, openedAs])
   // Build it takes over from a documentation dialog still waiting for its picture frame.
   const openBuildIt = (): void => {
     cancelAnimationFrame(pictureFrame.current)
@@ -735,8 +747,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     setNotice(null)
     setSaved(file)
   }
-  /** A compile or labelling run is going: an export uses the map as it was last saved. */
-  const compiling = progress !== null && progress.pct < 100
+  /**
+   * A compile or labelling run is going (an export uses the map as it was last saved), and what it is doing:
+   * describing the parts (the labelling stage), or any other update.
+   */
+  const mapRun = progress !== null && progress.pct < 100 ? (progress.stage === 'labelling' ? 'describing' : 'updating') : null
 
   return (
     <div
@@ -884,7 +899,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         />
       )}
       {exporting === 'world' && (
-        <ExportDialog root={worldRoot ?? undefined} designKey={designKey ?? undefined} labelling={compiling} onSaved={onSaved} onClose={() => setExporting(null)} />
+        <ExportDialog root={worldRoot ?? undefined} designKey={designKey ?? undefined} mapRun={mapRun} describeOn={labelling} onSaved={onSaved} onClose={() => setExporting(null)} />
       )}
       {exporting === 'document' && (
         <DocumentDialog

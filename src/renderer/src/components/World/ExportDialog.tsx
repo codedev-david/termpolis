@@ -23,14 +23,29 @@ function stopRun(run: MutableRefObject<string | null>): void {
 export interface ExportDialogProps {
   root?: string
   designKey?: string
-  /** A compile or labelling run is going: the export uses the map as it was last saved. */
-  labelling: boolean
+  /**
+   * A run is going, so the export uses the map as it was last saved: 'describing' while Lumopolis describes the parts
+   * (the labelling stage), 'updating' in any other stage; null: none.
+   */
+  mapRun: 'describing' | 'updating' | null
+  /** Describe parts with AI (Settings ▸ Lumopolis) is on. */
+  describeOn: boolean
   /** A file was written. Called even after the dialog closed, when a cancel lost the race. */
   onSaved: (file: WorldSavedFile) => void
   onClose: () => void
 }
 
-export function ExportDialog({ root, designKey, labelling, onSaved, onClose }: ExportDialogProps): JSX.Element {
+/** What the low-description note tells the person to do, so that most parts get described (spec 5.2). */
+function describeHint(design: boolean, describeOn: boolean, mapRun: ExportDialogProps['mapRun']): string {
+  // A design's parts are described in the design conversation; a code world's by labelling, which a compile runs
+  // when Describe parts with AI is on. Re-layout runs a full compile.
+  if (design) return 'Ask Lumopolis to say what each part does'
+  if (!describeOn) return 'Turn on Describe parts with AI in Settings, then press Re-layout'
+  if (mapRun !== null) return 'Wait for Lumopolis to finish updating the map'
+  return 'Press Re-layout to have Lumopolis describe them'
+}
+
+export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onClose }: ExportDialogProps): JSX.Element {
   const [info, setInfo] = useState<WorldExportInfo | null>(null)
   const [smart, setSmart] = useState(false)
   const [keywordOnly, setKeywordOnly] = useState<string | null>(null)
@@ -128,25 +143,28 @@ export function ExportDialog({ root, designKey, labelling, onSaved, onClose }: E
       {info !== null && (
         <>
           {info.proposals.length > 0 && (
-            <div className="flex flex-col gap-1.5 text-xs">
-              <label className="inline-flex items-center gap-1.5">
-                <input type="radio" name="world-export-scope" checked={scope === 'whole'} disabled={running} onChange={() => setScope('whole')} />
-                Whole world
-              </label>
-              <div className="flex items-center gap-1.5">
-                <label className="inline-flex items-center gap-1.5 shrink-0">
-                  <input type="radio" name="world-export-scope" checked={scope === 'proposal'} disabled={running} onChange={() => setScope('proposal')} />
-                  Proposal:
+            <div role="radiogroup" aria-labelledby="world-export-what" className="flex gap-3 text-xs">
+              <span id="world-export-what" className="text-[#9ca3af] pt-0.5">What</span>
+              <div className="flex flex-col gap-1.5 min-w-0">
+                <label className="inline-flex items-center gap-1.5">
+                  <input type="radio" name="world-export-scope" checked={scope === 'whole'} disabled={running} onChange={() => setScope('whole')} />
+                  Whole world
                 </label>
-                <select
-                  aria-label="Proposal to export"
-                  value={pick}
-                  onChange={(e) => setPick(e.target.value)}
-                  disabled={running || scope !== 'proposal'}
-                  className={`${fieldCls} min-w-0`}
-                >
-                  {info.proposals.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
-                </select>
+                <div className="flex items-center gap-1.5">
+                  <label className="inline-flex items-center gap-1.5 shrink-0">
+                    <input type="radio" name="world-export-scope" checked={scope === 'proposal'} disabled={running} onChange={() => setScope('proposal')} />
+                    Proposal:
+                  </label>
+                  <select
+                    aria-label="Proposal to export"
+                    value={pick}
+                    onChange={(e) => setPick(e.target.value)}
+                    disabled={running || scope !== 'proposal'}
+                    className={`${fieldCls} min-w-0`}
+                  >
+                    {info.proposals.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
+                  </select>
+                </div>
               </div>
             </div>
           )}
@@ -159,14 +177,14 @@ export function ExportDialog({ root, designKey, labelling, onSaved, onClose }: E
             {keywordWhy !== null && <p data-testid="world-export-keyword" className="text-xs text-[#f0b429] pl-5">{keywordWhy}</p>}
             {keywordWhy === null && !info.smartDefault && (
               <p data-testid="world-export-note" className="text-xs text-[#f0b429] pl-5">
-                Most parts aren&apos;t described yet, so smart Ask would mostly match file names. Re-label the world first, or export with keyword Ask.
+                Most parts aren&apos;t described yet, so smart Ask would mostly match file names. {describeHint(designKey !== undefined, describeOn, mapRun)}, or export with keyword Ask.
               </p>
             )}
           </div>
           <p className="text-xs text-[#9ca3af]">Includes cards, tours, layers and themes. Not included: your conversation, and file paths outside the project.</p>
-          {labelling && (
+          {mapRun !== null && (
             <p data-testid="world-export-saved-at" className="text-xs text-[#9ca3af]">
-              Uses the map as it was saved at {savedAtText(info.savedAt)}; labelling is still running.
+              Uses the map as it was saved at {savedAtText(info.savedAt)}; {mapRun === 'describing' ? 'Lumopolis is still describing its parts.' : 'Lumopolis is still updating it.'}
             </p>
           )}
           <p data-testid="world-export-size" className="text-xs text-[#d4d4d4]">About {formatMb(smart ? info.smartBytes : info.keywordBytes)} MB</p>
