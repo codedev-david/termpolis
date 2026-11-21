@@ -9,7 +9,19 @@ import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { flushBeforeResize } from './ptyResizeFlush'
 import { sudoAskpassEnv } from './sudoAskpass'
-import { integrationScriptState, RENAME_REFUSED, wholeFileTempName, type SpawnPrep } from './terminalSpawnPrep'
+import {
+  integrationScriptState, isRenameRefused, logRenameRefusal, RENAME_RETRIES, RENAME_RETRY_MS, wholeFileTempName,
+  type SpawnPrep, type WholeFileResult,
+} from './terminalSpawnPrep'
+
+/** WholeFileIo (terminalSpawnPrep.ts) for the synchronous fallback: the same calls, none returning a promise. */
+export interface SyncWholeFileIo {
+  writeFile: (path: string, content: string) => void
+  rename: (from: string, to: string) => void
+  rm: (path: string, opts: { force: true }) => void
+  exists: (path: string) => boolean
+  sleep: (ms: number) => void
+}
 import { lumopolisNonce } from './world/lumopolisOpen'
 import { LUMOPOLIS_NONCE_ENV } from '../shared/world/lumopolisCommand'
 import { hasJobControl, shellAlone, readConsoleProcessList } from './shellAlone'
@@ -591,6 +603,39 @@ export async function getTerminalCwdAsync(id: string): Promise<string | null> {
   return r.stdout.trim() || null
 }
 
+/** The pause between refused renames on the path that cannot await: RENAME_RETRIES of them block for at most 200 ms. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/** writeWholeFile (terminalSpawnPrep.ts) for the fallback that cannot wait: same temp-and-rename, same retries, same refusals. */
+export function writeWholeFileSync(path: string, content: string, io: Partial<SyncWholeFileIo> = {}): WholeFileResult {
+  const writeFile = io.writeFile ?? writeFileSync
+  const rename = io.rename ?? renameSync
+  const rm = io.rm ?? rmSync
+  const exists = io.exists ?? existsSync
+  const sleep = io.sleep ?? sleepSync
+  const tmp = wholeFileTempName(path)
+  try {
+    writeFile(tmp, content)
+    for (let attempt = 0; ; attempt++) {
+      try {
+        rename(tmp, path)
+        return 'written'
+      } catch (e) {
+        if (!isRenameRefused(e) || attempt >= RENAME_RETRIES) throw e
+        sleep(RENAME_RETRY_MS)
+      }
+    }
+  } catch (e) {
+    try { rm(tmp, { force: true }) } catch { /* the temp file is still held: it is left, and `e` is what went wrong */ }
+    if (!isRenameRefused(e)) throw e
+    if (exists(path)) return 'kept'
+    writeFile(path, content)
+    return 'written'
+  }
+}
+
 /**
  * Put a shell's integration file on disk, once per app run.
  *
@@ -604,29 +649,21 @@ export async function getTerminalCwdAsync(id: string): Promise<string | null> {
  *
  * Returns null on any failure, which the caller reads as "spawn exactly as before".
  */
-/** writeWholeFile (terminalSpawnPrep.ts) for the fallback that cannot wait: same temp-and-rename, same refusals. */
-export function writeWholeFileSync(path: string, content: string, rename: (from: string, to: string) => unknown = renameSync): void {
-  const tmp = wholeFileTempName(path)
-  writeFileSync(tmp, content, 'utf8')
-  try {
-    rename(tmp, path)
-  } catch (e) {
-    rmSync(tmp, { force: true })
-    if (RENAME_REFUSED.has(String((e as NodeJS.ErrnoException).code)) && existsSync(path)) return
-    throw e
-  }
-}
-
-function ensureIntegrationScript(file: IntegrationFile): string | null {
+export function ensureIntegrationScript(file: IntegrationFile, io: Partial<SyncWholeFileIo> = {}): string | null {
   try {
     const known = integrationScriptState[file.name]
     const p = known ?? join(app.getPath('userData'), file.name)
     const set = integrationFileSet(file, p)
+    let kept = false
     if (known === undefined || !set.every((f) => existsSync(f.path))) {
       mkdirSync(dirname(p), { recursive: true })
-      for (const f of set) writeWholeFileSync(f.path, f.content)
+      for (const f of set) {
+        if (writeWholeFileSync(f.path, f.content, io) === 'kept') { kept = true; logRenameRefusal(f.path) }
+      }
     }
-    integrationScriptState[file.name] = p
+    // As ensureIntegrationScriptAsync: a kept old copy is used but not recorded, so the next spawn tries again.
+    if (kept) delete integrationScriptState[file.name]
+    else integrationScriptState[file.name] = p
     return p
   } catch {
     return null
