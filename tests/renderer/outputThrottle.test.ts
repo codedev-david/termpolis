@@ -5,7 +5,11 @@ import { createChunkQueue, createStringQueue } from '../../src/renderer/src/lib/
 describe('createOutputThrottle', () => {
   let rafCallbacks: (() => void)[] = []
 
+  // Fake timers: a burst also arms the 100 ms watchdog, and a real one outlived the test. When the
+  // file finished inside those 100 ms it fired after jsdom was torn down, where cancelAnimationFrame
+  // no longer exists (an uncaught ReferenceError on macOS CI). useRealTimers drops it with the test.
   beforeEach(() => {
+    vi.useFakeTimers()
     rafCallbacks = []
     vi.stubGlobal('requestAnimationFrame', (cb: () => void) => {
       rafCallbacks.push(cb)
@@ -13,7 +17,7 @@ describe('createOutputThrottle', () => {
     })
   })
 
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
   function drainOne() {
     const cbs = [...rafCallbacks]
@@ -226,12 +230,14 @@ describe('createOutputThrottle — environments with no animation frames at all'
 // the throttle does.
 describe('createOutputThrottle: pending()', () => {
   let frames: Array<() => void> = []
+  // Fake timers for the same reason as the first block: a backlog left armed must not leave a real watchdog behind.
   beforeEach(() => {
+    vi.useFakeTimers()
     frames = []
     vi.stubGlobal('requestAnimationFrame', (cb: () => void) => { frames.push(cb); return frames.length })
     vi.stubGlobal('cancelAnimationFrame', () => undefined)
   })
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
   it('is 0 when idle, equals the buffered chars during a burst, and is 0 again once flushed', () => {
     const out: string[] = []
