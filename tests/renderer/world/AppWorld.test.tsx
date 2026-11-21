@@ -47,8 +47,8 @@ type BuildItProp = { agents: { id: string; name: string }[]; defaultAgent?: stri
 const BUILT = { root: '/build/pets', key: 'design:d1', title: 'Pets', prompt: 'Build the app.' }
 vi.mock('../../../src/renderer/src/components/World', () => ({
   // The real pane resolves `root` to its git root; this stand-in says the cwd's root is /repos/app.
-  WorldView: ({ root, width, onClose, askSlot, buildIt }: { root: string; width?: number; onClose: () => void; askSlot?: (...a: unknown[]) => React.ReactNode; buildIt?: BuildItProp }) => (
-    <div role="region" aria-label="Lumopolis" data-testid="world-view" style={{ width }} data-root={root} data-agents={buildIt?.agents.map((a) => a.id).join(',')} data-default={buildIt?.defaultAgent}>
+  WorldView: ({ root, width, onClose, askSlot, buildIt, exportRequest }: { root: string; width?: number; onClose: () => void; askSlot?: (...a: unknown[]) => React.ReactNode; buildIt?: BuildItProp; exportRequest?: { kind: string; seq: number } }) => (
+    <div role="region" aria-label="Lumopolis" data-testid="world-view" style={{ width }} data-root={root} data-agents={buildIt?.agents.map((a) => a.id).join(',')} data-default={buildIt?.defaultAgent} data-export={exportRequest ? `${exportRequest.kind}:${exportRequest.seq}` : ''}>
       <button onClick={onClose}>Close Lumopolis</button>
       <button onClick={() => buildIt?.launch(BUILT, 'claude')}>Build with claude</button>
       <button onClick={() => buildIt?.launch(BUILT, 'nobody')}>Build with nobody</button>
@@ -64,7 +64,11 @@ vi.mock('../../../src/renderer/src/components/World/WorldAsk', () => ({
 
 vi.mock('../../../src/renderer/src/components/CommandPalette/CommandPalette', () => ({
   CommandPalette: ({ onAction }: { onAction: (a: string) => void }) => (
-    <button onClick={() => onAction('show_world')}>Palette: Open Lumopolis</button>
+    <>
+      <button onClick={() => onAction('show_world')}>Palette: Open Lumopolis</button>
+      <button onClick={() => onAction('world_export')}>Palette: Export Lumopolis world</button>
+      <button onClick={() => onAction('world_document')}>Palette: Generate Lumopolis documentation</button>
+    </>
   ),
 }))
 
@@ -145,6 +149,25 @@ describe('App Lumopolis wiring', () => {
     expect(await screen.findByRole('region', { name: 'Lumopolis' })).toHaveAttribute('data-root', '')
     fireEvent.click(screen.getByRole('button', { name: 'Close Lumopolis' }))
     expect(world()).toBeNull()
+  })
+
+  it('palette world_export and world_document open the pane with an export request; each ask counts up, and a closed pane forgets it', async () => {
+    render(<App />)
+    await settle()
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    fireEvent.click(await screen.findByRole('button', { name: 'Palette: Export Lumopolis world' }))
+    // The palette stub stays open after an action (the real one closes itself), so the next ask is one click.
+    expect(await screen.findByRole('region', { name: 'Lumopolis' })).toHaveAttribute('data-export', 'world:1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Palette: Generate Lumopolis documentation' }))
+    expect(world()).toHaveAttribute('data-export', 'document:2')
+    fireEvent.click(screen.getByRole('button', { name: 'Close Lumopolis' }))
+    expect(world()).toBeNull()
+    await settle()
+    // Opened again without an export: no stale request comes back.
+    fireEvent.click(await screen.findByRole('button', { name: 'Palette: Open Lumopolis' }))
+    expect(await screen.findByRole('region', { name: 'Lumopolis' })).toHaveAttribute('data-export', '')
+    fireEvent.click(await screen.findByRole('button', { name: 'Palette: Export Lumopolis world' }))
+    expect(world()).toHaveAttribute('data-export', 'world:1')
   })
 
   it('Ctrl+Shift+R toggles the overlay; Ctrl+Shift+W does not open it', async () => {

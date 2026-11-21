@@ -1584,3 +1584,256 @@ describe('WorldView asked for a folder', () => {
     expect(dialog()).toBeInTheDocument()
   })
 })
+
+describe('WorldView export', () => {
+  const MB = 1024 * 1024
+  const PNG = 'data:image/png;base64,iVBORw0KGgo='
+  const exportApi = (over: Record<string, unknown> = {}) => ({
+    worldExportInfo: vi.fn(async () => ok({
+      title: 'repo', savedAt: 1, smartDefault: true, buildings: 1, lines: 1, smartBytes: 37 * MB, keywordBytes: MB, smartAvailable: true, proposals: [],
+    })),
+    worldExport: vi.fn(async () => ok({ path: 'C:\\Users\\me\\Documents\\repo.html', bytes: 37 * MB })),
+    worldExportCancel: vi.fn(async () => ok(true)),
+    onWorldExportProgress: vi.fn(() => () => undefined),
+    worldDocument: vi.fn(async () => ok({ path: '/home/me/repo documentation.html', bytes: 90_000 })),
+    worldShowFile: vi.fn(async () => ok(true)),
+    worldOpenFile: vi.fn(async () => ok(true)),
+    ...over,
+  })
+  type ExportReq = { kind: 'world' | 'document'; seq: number }
+  async function mountWith(props: { root?: string; exportRequest?: ExportReq } = {}) {
+    const utils = render(<WorldView root={props.root ?? '/repo'} onClose={vi.fn()} exportRequest={props.exportRequest} />)
+    await settle()
+    return {
+      ...utils,
+      again: async (p: { root?: string; exportRequest?: ExportReq }) => {
+        utils.rerender(<WorldView root={p.root ?? '/repo'} onClose={vi.fn()} exportRequest={p.exportRequest} />)
+        await settle()
+      },
+    }
+  }
+  const openMenu = (item: 'world' | 'document') => {
+    fireEvent.click(screen.getByTestId('world-export'))
+    fireEvent.click(screen.getByTestId(`world-export-${item}`))
+  }
+  /** The viewer's canvas, as the real engine puts it in the host. */
+  const canvas = (toDataURL: () => string) => {
+    const c = document.createElement('canvas')
+    c.toDataURL = vi.fn(toDataURL) as never
+    screen.getByTestId('world-canvas-host').appendChild(c)
+    return c
+  }
+  const pictureBox = () => screen.getByLabelText('Include the city picture') as HTMLInputElement
+  /** One animation frame: the pane reads the canvas inside the frame after the click, then opens the dialog. */
+  const nextFrame = () => act(() => new Promise<void>((r) => { requestAnimationFrame(() => r()) }))
+
+  it('the home has no Export button', async () => {
+    bridge(exportApi())
+    await mountWith({ root: '' })
+    expect(screen.getByTestId('world-home')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-export')).toBeNull()
+  })
+
+  it('Export waits for the world; its menu opens the export dialog for this world, and Esc closes the dialog before anything else', async () => {
+    const get = deferred<Res<WorldDoc | null>>()
+    const b = bridge(exportApi({ worldGet: vi.fn(() => get.promise) }))
+    await mountWith()
+    expect(screen.queryByTestId('world-export')).toBeNull()
+    await act(async () => { get.resolve(ok(minimal())) })
+    await settle()
+    openMenu('world')
+    await settle()
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+    expect(b.api.worldExportInfo).toHaveBeenCalledWith({ root: '/repo', designKey: undefined })
+    esc()
+    expect(screen.queryByTestId('world-export-dialog')).toBeNull()
+    expect(viewer().resetView).not.toHaveBeenCalled()
+  })
+
+  it('the export dialog says which saved map it uses while a compile runs', async () => {
+    const b = bridge(exportApi())
+    await mountWith()
+    b.progress({ root: '/repo', projectKey: 'k', stage: 'labelling', pct: 65 })
+    openMenu('world')
+    await settle()
+    expect(screen.getByTestId('world-export-saved-at')).toBeInTheDocument()
+    esc()
+    b.progress({ root: '/repo', projectKey: 'k', stage: 'layout', pct: 100 })
+    openMenu('world')
+    await settle()
+    expect(screen.queryByTestId('world-export-saved-at')).toBeNull()
+  })
+
+  it('a finished export raises the toast in the notice slot; its buttons show and open the file, and Dismiss clears it', async () => {
+    const b = bridge(exportApi())
+    await mountWith()
+    openMenu('world')
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Export…' }))
+    await settle()
+    expect(screen.queryByTestId('world-export-dialog')).toBeNull()
+    const notice = screen.getByTestId('world-notice')
+    expect(notice).toHaveTextContent('Exported repo.html (37 MB)')
+    fireEvent.click(screen.getByRole('button', { name: 'Show in folder' }))
+    expect(b.api.worldShowFile).toHaveBeenCalledWith('C:\\Users\\me\\Documents\\repo.html')
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }))
+    expect(b.api.worldOpenFile).toHaveBeenCalledWith('C:\\Users\\me\\Documents\\repo.html')
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('world-notice')).toBeNull()
+  })
+
+  it('a later notice takes the slot from the toast', async () => {
+    bridge(exportApi({ worldRelayout: vi.fn(async () => fail('disk full')) }))
+    await mountWith()
+    openMenu('world')
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Export…' }))
+    await settle()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Exported repo.html')
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-go'))
+    await settle()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('disk full')
+    expect(screen.queryByTestId('world-export-toast')).toBeNull()
+  })
+
+  it('closing the pane mid-export cancels it, and the late file raises nothing', async () => {
+    const run = deferred<Res<{ path: string; bytes: number }>>()
+    const b = bridge(exportApi({ worldExport: vi.fn(() => run.promise) }))
+    const m = await mountWith()
+    openMenu('world')
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Export…' }))
+    m.unmount()
+    expect(b.api.worldExportCancel).toHaveBeenCalledTimes(1)
+    await act(async () => { run.resolve(ok({ path: '/x/repo.html', bytes: MB })) })
+    expect(screen.queryByTestId('world-notice')).toBeNull()
+  })
+
+  it('the documentation dialog takes the city picture from the viewer canvas, titled with the project name', async () => {
+    const b = bridge(exportApi())
+    await mountWith()
+    const c = canvas(() => PNG)
+    openMenu('document')
+    // WebGL clears the canvas once a frame is shown: nothing is read, and no dialog opens, until the next frame.
+    expect(c.toDataURL).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    await nextFrame()
+    expect(c.toDataURL).toHaveBeenCalledWith('image/png')
+    expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('repo')
+    expect(pictureBox().disabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Save…' }))
+    expect(b.api.worldDocument).toHaveBeenCalledWith({ root: '/repo', designKey: undefined, title: 'repo', picturePng: PNG })
+    await settle()
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Exported repo documentation.html (0.1 MB)')
+  })
+
+  it('Esc closes the documentation dialog', async () => {
+    bridge(exportApi())
+    await mountWith()
+    openMenu('document')
+    esc()
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    expect(viewer().resetView).not.toHaveBeenCalled()
+  })
+
+  it('no canvas, a canvas that refuses, or the 2D map: no picture, and the checkbox says why', async () => {
+    bridge(exportApi())
+    await mountWith()
+    openMenu('document')
+    expect(pictureBox().disabled).toBe(true)
+    esc()
+    const c = canvas(() => { throw new Error('tainted') })
+    openMenu('document')
+    await nextFrame()
+    expect(c.toDataURL).toHaveBeenCalled()
+    expect(pictureBox().disabled).toBe(true)
+    esc()
+    const fine = vi.fn(() => PNG)
+    c.toDataURL = fine as never
+    fireEvent.click(screen.getByTestId('world-map2d'))
+    openMenu('document')
+    expect(fine).not.toHaveBeenCalled()
+    expect(pictureBox().disabled).toBe(true)
+  })
+
+  it('without WebGL there is no picture', async () => {
+    h.webgl = false
+    bridge(exportApi())
+    await mountWith()
+    openMenu('document')
+    expect(pictureBox().disabled).toBe(true)
+    expect(screen.getByTestId('world-document-no-picture')).toBeInTheDocument()
+  })
+
+  it('an export request opens its dialog once the world is there, even when the pane mounts with it; each new seq opens again', async () => {
+    const get = deferred<Res<WorldDoc | null>>()
+    const b = bridge(exportApi({ worldGet: vi.fn(() => get.promise) }))
+    const m = await mountWith({ exportRequest: { kind: 'document', seq: 1 } })
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    await act(async () => { get.resolve(ok(minimal())) })
+    await settle()
+    expect(screen.getByTestId('world-document-dialog')).toBeInTheDocument()
+    // The same request again (a re-render) opens nothing new.
+    esc()
+    await m.again({ exportRequest: { kind: 'document', seq: 1 } })
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    await m.again({ exportRequest: { kind: 'world', seq: 2 } })
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+    expect(b.api.worldExportInfo).toHaveBeenCalledTimes(1)
+    // A request with nothing in it changes nothing.
+    await m.again({})
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+  })
+
+  it('an export request on the home says to open a world first', async () => {
+    bridge(exportApi())
+    await mountWith({ root: '', exportRequest: { kind: 'world', seq: 1 } })
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Open a world to export it.')
+    expect(screen.queryByTestId('world-export-dialog')).toBeNull()
+  })
+
+  it('a picture frame still to come is dropped when the pane closes or the world changes', async () => {
+    bridge(exportApi())
+    const m = await mountWith()
+    const c = canvas(() => PNG)
+    openMenu('document')
+    await m.again({ root: '/other' })
+    await nextFrame()
+    expect(c.toDataURL).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    const c2 = canvas(() => PNG)
+    openMenu('document')
+    m.unmount()
+    await new Promise<void>((r) => { requestAnimationFrame(() => r()) })
+    expect(c2.toDataURL).not.toHaveBeenCalled()
+  })
+
+  it('asking twice before the frame takes one picture and opens one dialog', async () => {
+    bridge(exportApi())
+    await mountWith()
+    const c = canvas(() => PNG)
+    openMenu('document')
+    openMenu('document')
+    await nextFrame()
+    expect(c.toDataURL).toHaveBeenCalledTimes(1)
+    expect(screen.getAllByTestId('world-document-dialog')).toHaveLength(1)
+  })
+
+  it('moving to another world closes an open dialog and the toast', async () => {
+    bridge(exportApi())
+    const m = await mountWith()
+    openMenu('world')
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Export…' }))
+    await settle()
+    expect(screen.getByTestId('world-export-toast')).toBeInTheDocument()
+    openMenu('document')
+    expect(screen.getByTestId('world-document-dialog')).toBeInTheDocument()
+    await m.again({ root: '/other' })
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    expect(screen.queryByTestId('world-export-toast')).toBeNull()
+  })
+})

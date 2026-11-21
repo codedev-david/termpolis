@@ -4,7 +4,9 @@
 // shows the engine's 2D list instead. With no folder it shows the home (WorldHome); the toolbar's
 // switcher opens any recent world or the home (useOpenWorld). A design world (design:<id>) loads
 // through world:design-get and is drawn with the planned layer on; Build it (design worlds only)
-// links the design to a folder, opens the agent there and switches to that folder's world.
+// links the design to a folder, opens the agent there and switches to that folder's world. Export (any
+// open world) saves it as one offline page (ExportDialog) or as its documentation (DocumentDialog); the
+// saved file's toast takes the notice slot. The command palette asks for either through exportRequest.
 //
 // Esc: one window listener in the capture phase, so it runs before the viewer's own container
 // handler and before App's shortcuts. It only acts when the key comes from inside the pane (or
@@ -27,7 +29,7 @@
 // without guessing at the 3D scene. Off in every normal run.
 import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
-import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc } from '../../../../shared/world/types'
+import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc, WorldSavedFile } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
 import { worldTitle } from '../../../../shared/world/worldTitle'
 import { isRuntimeText, runtimeText } from '../../../../shared/world/runtimeNames'
@@ -46,6 +48,9 @@ import { SignInNeededNotice } from './SignInNeededNotice'
 import { RepoAccessDialog } from './RepoAccessDialog'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
+import { ExportDialog, ExportToast } from './ExportDialog'
+import { DocumentDialog } from './DocumentDialog'
+import type { ExportKind } from './ExportMenu'
 import { legendDefaultOpen, legendReserve, WorldLegend } from './WorldLegend'
 import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardReserve, worldPaneStyle } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
@@ -72,6 +77,8 @@ export interface WorldViewProps {
   /** A folder someone asked for (a terminal's globe, the `lumopolis` command, the file tree): its project
    *  opens, and the pane comes forward. Undefined: the pane follows the active terminal (`root`). */
   request?: WorldRequest
+  /** The command palette asked for an export: each new seq opens that dialog once the world is there. */
+  exportRequest?: { kind: ExportKind; seq: number }
 }
 
 /** The width a pane gets from no one (a test, a stand-alone mount). */
@@ -116,7 +123,7 @@ const hasPart = (d: WorldDoc, id: string): boolean =>
 
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
-export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, request }: WorldViewProps): JSX.Element {
+export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, request, exportRequest }: WorldViewProps): JSX.Element {
   const { world, open, goHome, entries, refresh, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
   const [tokenOpen, setTokenOpen] = useState(false)
   useEffect(() => { if (!repoUpdate) setTokenOpen(false) }, [repoUpdate])
@@ -154,6 +161,20 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [building, setBuilding] = useState(false)
+  /** The export dialog open on top of the map; null: none. */
+  const [exporting, setExporting] = useState<ExportKind | null>(null)
+  /** The file the last export saved: its toast shows in the notice slot until dismissed or replaced. */
+  const [saved, setSaved] = useState<WorldSavedFile | null>(null)
+  // A notice or a re-layout takes the slot: the toast it replaces is not brought back.
+  useEffect(() => { if (busy || notice !== null) setSaved(null) }, [busy, notice])
+  /** An export the palette asked for, waiting for the world to load. */
+  const [pendingExport, setPendingExport] = useState<ExportKind | null>(null)
+  const handledExport = useRef(0)
+  useEffect(() => {
+    if (exportRequest === undefined || exportRequest.seq === handledExport.current) return
+    handledExport.current = exportRequest.seq
+    setPendingExport(exportRequest.kind)
+  }, [exportRequest])
   // Describing parts with AI (Settings): while it is off there is nothing to show the cost of.
   const [labelling, setLabelling] = useState(true)
   useEffect(() => {
@@ -613,6 +634,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     cancelBookmark()
     if (confirmRelayout) { setConfirmRelayout(false); return }
     if (building) { setBuilding(false); return }
+    if (exporting !== null) { setExporting(null); return }
     // The ask box first: an Esc that stops its speech or its question leaves the camera alone.
     if (askEscRef.current?.()) { armedRef.current = false; return }
     if (armedRef.current && card === null) { onClose(); return }
@@ -644,6 +666,55 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   else if (error !== null) empty = 'error'
   else if (!doc) empty = mapping ? 'mapping' : 'loading'
 
+  /** The documentation's city picture, taken when its dialog was asked for; and the frame that will take it. */
+  const pictureRef = useRef<string | null>(null)
+  const pictureFrame = useRef(0)
+  useEffect(() => () => cancelAnimationFrame(pictureFrame.current), [])
+  // Another world (or the home): an open export dialog and the last toast belonged to the one before.
+  useEffect(() => {
+    cancelAnimationFrame(pictureFrame.current)
+    setExporting(null)
+    setSaved(null)
+  }, [worldKey])
+  /**
+   * Opens an export dialog. The documentation's picture is the city as drawn: WebGL clears the canvas once a frame
+   * is on screen, so it is read inside the next frame, after the viewer's own draw (the viewer queues each frame at
+   * the start of the one before, so its draw runs first). Without the 3D map (no WebGL, the 2D map, no canvas yet)
+   * there is no picture.
+   */
+  const openExport = (kind: ExportKind): void => {
+    cancelAnimationFrame(pictureFrame.current)
+    pictureRef.current = null
+    const canvas = flat ? null : hostRef.current?.querySelector('canvas') ?? null
+    if (kind === 'world' || canvas === null) { setExporting(kind); return }
+    pictureFrame.current = requestAnimationFrame(() => {
+      try {
+        pictureRef.current = canvas.toDataURL('image/png')
+      } catch {
+        pictureRef.current = null
+      }
+      setExporting('document')
+    })
+  }
+  // The palette's ask below runs it from an effect: through a ref, so the effect runs on the world's state only.
+  const openExportRef = useRef(openExport)
+  openExportRef.current = openExport
+  useEffect(() => {
+    if (pendingExport === null) return
+    if (home) { setPendingExport(null); setNotice('Open a world to export it.'); return }
+    if (!doc || worldKey === null) return
+    setPendingExport(null)
+    openExportRef.current(pendingExport)
+    // The palette has closed: take the focus, so Esc reaches the dialog.
+    ;(dialogRef.current as HTMLDivElement).focus()
+  }, [pendingExport, home, doc, worldKey])
+  const onSaved = (file: WorldSavedFile): void => {
+    setNotice(null)
+    setSaved(file)
+  }
+  /** A compile or labelling run is going: an export uses the map as it was last saved. */
+  const compiling = progress !== null && progress.pct < 100
+
   return (
     <div
       ref={dialogRef}
@@ -670,6 +741,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         relayoutDisabled={worldRoot === null || !doc || busy}
         onClose={onClose}
         switcher={<WorldSwitcher entries={entries} onOpen={(t) => openWorld(t)} onHome={goHome} />}
+        onExport={doc && worldKey !== null ? openExport : undefined}
         onBuildIt={designKey !== null && buildIt && doc ? () => setBuilding(true) : undefined}
         bookmarks={bookmarks}
         onSaveBookmark={onSaveBookmark}
@@ -737,7 +809,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             </div>
           </div>
         )}
-        {(repoUpdate || busy || notice) && (
+        {(repoUpdate || busy || notice || saved) && (
           <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
             {repoUpdate && (
               <SignInNeededNotice
@@ -750,14 +822,14 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
                 onDismiss={dismissRepoUpdate}
               />
             )}
-            {(busy || notice) && (
+            {(busy || notice || saved) && (
               <div
                 role="status"
                 data-testid="world-notice"
                 className="text-xs px-2 py-1 rounded border border-[#3c3c3c]"
                 style={{ background: '#252526' }}
               >
-                {busy ? 'Re-laying out…' : notice}
+                {busy ? 'Re-laying out…' : notice ?? <ExportToast file={saved as WorldSavedFile} onDismiss={() => setSaved(null)} />}
               </div>
             )}
           </div>
@@ -785,6 +857,19 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           defaultAgent={buildIt.defaultAgent}
           onBuilt={onBuilt}
           onClose={() => setBuilding(false)}
+        />
+      )}
+      {exporting === 'world' && (
+        <ExportDialog root={worldRoot ?? undefined} designKey={designKey ?? undefined} labelling={compiling} onSaved={onSaved} onClose={() => setExporting(null)} />
+      )}
+      {exporting === 'document' && (
+        <DocumentDialog
+          root={worldRoot ?? undefined}
+          designKey={designKey ?? undefined}
+          projectName={projectName}
+          picture={() => pictureRef.current}
+          onSaved={onSaved}
+          onClose={() => setExporting(null)}
         />
       )}
     </div>

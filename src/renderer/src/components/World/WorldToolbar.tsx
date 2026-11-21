@@ -1,10 +1,12 @@
-// The Lumopolis toolbar: the world switcher, layer toggles, theme, tours, reset, re-layout, Build it
-// (design worlds) and close.
+// The Lumopolis toolbar: the world switcher, layer toggles, theme, tours, Export, Build it (design worlds),
+// reset, re-layout and close.
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Tour } from '../../../../shared/world/types'
 import { THEMES } from '../../world/engine'
 import type { Bookmark, LayerState, ThemeName } from '../../world/engine'
+import { ExportMenu } from './ExportMenu'
+import type { ExportKind } from './ExportMenu'
 
 export interface WorldToolbarProps {
   projectName: string
@@ -23,6 +25,8 @@ export interface WorldToolbarProps {
   onClose: () => void
   /** The world switcher (WorldSwitcher), first after the name. */
   switcher?: ReactNode
+  /** Set while a world is open: the Export button, whose menu saves it as a page or as documentation. */
+  onExport?: (kind: ExportKind) => void
   /** Set on a design world: the Build it button. */
   onBuildIt?: () => void
   /** The last labelling run's cost line, shown small and muted under the controls; absent: nothing. */
@@ -195,6 +199,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         )}
       </div>
       <div className="flex-1" />
+      {props.onExport && <ExportMenu btnClass={`${btn} text-[#cccccc]`} onExport={props.onExport} />}
       {props.onBuildIt && (
         <button
           type="button"

@@ -2,6 +2,10 @@
 // read by the page's runtime (src/world-export/boot.ts). One type and one check for both sides, browser-safe.
 import type { WorldDoc } from './types'
 
+/** A smart export with the model missing from this copy of Termpolis: main answers with it, and the export dialog shows the
+ *  same words when the export info says smart Ask isn't available, so the two never differ. */
+export const NO_MODEL = "The smart Ask model isn't installed with this copy of Termpolis, so this export can use keyword Ask only."
+
 /**
  * The page's `meta` block. `head7` is the first seven characters of the commit, or '' when the world has none
  * (a design, or a folder without git). `proposalId` is present only on a page that exports one proposal.

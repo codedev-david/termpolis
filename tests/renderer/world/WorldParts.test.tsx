@@ -3,6 +3,8 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { CARD_CLICK_GRACE_MS, WorldCard } from '../../../src/renderer/src/components/World/WorldCard'
 import { EvidenceView } from '../../../src/renderer/src/components/World/EvidenceView'
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
+import { WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
+import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
 
 const noop = { onTech: vi.fn(), onConfirm: vi.fn(), onEvidence: vi.fn() }
 
@@ -197,5 +199,47 @@ describe('EvidenceView', () => {
     expect(screen.getByTestId('evidence-view').textContent).toBe('test t/a.test.ts')
     rerender(<EvidenceView evidence={{ kind: 'commit', ref: 'abc', excerpt: 'subject' }} />)
     expect(screen.getByTestId('evidence-view').textContent).toBe('commit abc')
+  })
+})
+
+describe('WorldToolbar Export', () => {
+  const props = (over: Partial<WorldToolbarProps> = {}): WorldToolbarProps => ({
+    projectName: 'termpolis', layers: DEFAULT_LAYERS, onLayers: vi.fn(), proposals: [], onProposal: vi.fn(), theme: 'neon', onTheme: vi.fn(),
+    tours: [], onTour: vi.fn(), onResetView: vi.fn(), onRelayout: vi.fn(), relayoutDisabled: false, onClose: vi.fn(),
+    bookmarks: [], onSaveBookmark: vi.fn(), onBookmark: vi.fn(), onRemoveBookmark: vi.fn(), map2d: false, onMap2d: vi.fn(), ...over,
+  })
+
+  it('shows no Export button without onExport', () => {
+    render(<WorldToolbar {...props()} />)
+    expect(screen.queryByTestId('world-export')).toBeNull()
+  })
+
+  it('Export opens its menu; each item calls onExport with its kind and closes the menu', () => {
+    const onExport = vi.fn()
+    render(<WorldToolbar {...props({ onExport, onBuildIt: vi.fn() })} />)
+    const button = screen.getByTestId('world-export')
+    expect(button).toHaveTextContent('Export')
+    expect(button.querySelector('i.fa-solid.fa-file-export')).not.toBeNull()
+    // Before Build it, in the right-hand group.
+    expect(button.closest('.relative')?.nextElementSibling).toBe(screen.getByTestId('world-build-it-open'))
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    fireEvent.click(button)
+    expect(button).toHaveAttribute('aria-expanded', 'true')
+    const menu = screen.getByTestId('world-export-menu')
+    expect(menu).toHaveStyle({ background: '#252526' })
+    fireEvent.click(screen.getByTestId('world-export-world'))
+    expect(onExport).toHaveBeenLastCalledWith('world')
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    fireEvent.click(button)
+    expect(screen.getByTestId('world-export-world')).toHaveTextContent('Interactive world (HTML)…')
+    expect(screen.getByTestId('world-export-document')).toHaveTextContent('Documentation (HTML)…')
+    fireEvent.click(screen.getByTestId('world-export-document'))
+    expect(onExport).toHaveBeenLastCalledWith('document')
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    // The button toggles the menu shut too.
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
   })
 })

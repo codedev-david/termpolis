@@ -145,6 +145,9 @@ export default function App() {
   const worldPane = useWorldPane()
   const showWorld = worldPane.show
   const toggleWorld = worldPane.toggle
+  // The palette's export asks: each one counts up, so the pane opens its dialog once per ask; a closed pane forgets it.
+  const [worldExportRequest, setWorldExportRequest] = useState<{ kind: 'world' | 'document'; seq: number } | undefined>(undefined)
+  useEffect(() => { if (!showWorld) setWorldExportRequest(undefined) }, [showWorld])
   const mainRef = useRef<HTMLElement>(null)
   const { width: worldWidth, min: worldMin, max: worldMax, onDrag: onWorldDrag } = useWorldPaneWidth(mainRef, showWorld)
   // Bumped to open the Memory panel on its This week tab.
@@ -1032,6 +1035,13 @@ export default function App() {
       case 'show_world':
         worldPane.open()
         break
+      case 'world_export':
+      case 'world_document': {
+        const kind = action === 'world_export' ? 'world' : 'document'
+        worldPane.open()
+        setWorldExportRequest((r) => ({ kind, seq: (r?.seq ?? 0) + 1 }))
+        break
+      }
       case 'memory_tour':
         setShowMemoryTour(true)
         break
@@ -1251,6 +1261,7 @@ export default function App() {
                   onClose={worldPane.close}
                   askSlot={(v, d, r, link, proposal) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} proposal={proposal} />}
                   buildIt={worldBuildIt}
+                  exportRequest={worldExportRequest}
                 />
               </Suspense>
             </>

@@ -22,7 +22,7 @@ import { gzip } from 'node:zlib'
 import { askEntries, ASK_INDEX_VERSION, packInt8, type AskEntry } from '../../shared/world/askIndex'
 import { buildDocumentation } from '../../shared/world/documentation'
 import { renderDocumentation } from '../../shared/world/documentationHtml'
-import { pageMeta } from '../../shared/world/exportMeta'
+import { NO_MODEL, pageMeta } from '../../shared/world/exportMeta'
 import { sanitizeText, sanitizeWorld, type SanitizeContext } from '../../shared/world/exportSanitize'
 import { escapeHtml } from '../../shared/world/html'
 import type { WorldDoc } from '../../shared/world/types'
@@ -99,7 +99,7 @@ export type ExportResult = { ok: true; path: string; bytes: number } | { ok: fal
 export const NO_SPACE = "There isn't enough space on that drive to save the file."
 export const NO_ACCESS = "Termpolis can't write to that folder. Choose another one."
 export const FILE_IN_USE = 'That file is open in another program. Close it and try again.'
-export const NO_MODEL = "The smart Ask model isn't installed with this copy of Termpolis, so this export can use keyword Ask only."
+export { NO_MODEL }
 export const NO_RUNTIME = "This copy of Termpolis is missing the page runtime, so it can't export a world."
 export const NO_PROPOSAL = "That proposal isn't in this world any more."
 export const CANCELLED = 'The export was cancelled.'

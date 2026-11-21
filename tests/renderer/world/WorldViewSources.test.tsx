@@ -253,6 +253,28 @@ describe('WorldView sources', () => {
     expect(screen.getByTestId('world-project')).toHaveTextContent('pets')
   })
 
+  it('a design exports by its key, not by a folder', async () => {
+    const MB = 1024 * 1024
+    const api = bridge({
+      worldExportInfo: vi.fn(async () => ({ success: true, data: { title: 'Pet shop', savedAt: 1, smartDefault: false, buildings: 1, lines: 1, smartBytes: 37 * MB, keywordBytes: MB, smartAvailable: true, proposals: [] } })),
+      onWorldExportProgress: vi.fn(() => () => undefined),
+      worldDocument: vi.fn(async () => ({ success: true, data: { cancelled: true } })),
+    })
+    await mount('/repo')
+    switchTo('design:d1')
+    await settle()
+    fireEvent.click(screen.getByTestId('world-export'))
+    fireEvent.click(screen.getByTestId('world-export-world'))
+    await settle()
+    expect(api.worldExportInfo).toHaveBeenCalledWith({ root: undefined, designKey: 'design:d1' })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByTestId('world-export'))
+    fireEvent.click(screen.getByTestId('world-export-document'))
+    expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Pet shop')
+    fireEvent.click(screen.getByRole('button', { name: 'Save…' }))
+    expect(api.worldDocument).toHaveBeenCalledWith(expect.objectContaining({ root: undefined, designKey: 'design:d1', title: 'Pet shop' }))
+  })
+
   it('Esc closes the Build it dialog first, and Cancel closes it too', async () => {
     bridge()
     await mount('/repo')

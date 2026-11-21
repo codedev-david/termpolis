@@ -93,6 +93,52 @@ describe('CommandPalette', () => {
     expect(onAction).toHaveBeenCalledWith('show_world', undefined)
   })
 
+  it.each(['export lumopolis world', 'Export the world', '  export Lumopolis'])('"%s" exports the Lumopolis world on Enter', (q) => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const box = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(box, { target: { value: q } })
+    expect(screen.getByText('Export Lumopolis world')).toBeInTheDocument()
+    expect(screen.queryByText('Open Lumopolis')).toBeNull()
+    expect(screen.queryByText('Export Terminal Output')).toBeNull()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onAction).toHaveBeenCalledWith('world_export', undefined)
+  })
+
+  it.each(['generate documentation', 'documentation', 'Generate Lumopolis documentation'])('"%s" generates the Lumopolis documentation on Enter', (q) => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const box = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(box, { target: { value: q } })
+    expect(screen.queryByText('Open Lumopolis')).toBeNull()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onAction).toHaveBeenCalledWith('world_document', undefined)
+  })
+
+  it('"lumopolis documentation" lists the documentation entry too, after Open Lumopolis', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'lumopolis documentation' } })
+    expect(screen.getByText('Open Lumopolis')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Generate Lumopolis documentation'))
+    expect(onAction).toHaveBeenCalledWith('world_document', undefined)
+  })
+
+  it('the export entries leave "lumopolis" and "export output" where they were', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const box = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(box, { target: { value: 'lumopolis' } })
+    expect(screen.queryByText('Export Lumopolis world')).toBeNull()
+    expect(screen.queryByText('Generate Lumopolis documentation')).toBeNull()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onAction).toHaveBeenLastCalledWith('show_world', undefined)
+    fireEvent.change(box, { target: { value: 'export output' } })
+    expect(screen.queryByText('Export Lumopolis world')).toBeNull()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onAction).toHaveBeenLastCalledWith('export_output', undefined)
+  })
+
   it.each([
     ['run npm run sitemap', 'npm run sitemap'],
     ['run ./hello-world.sh', './hello-world.sh'],
