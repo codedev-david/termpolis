@@ -12,7 +12,8 @@ import {
   TERMINAL_OPEN_CHANNEL,
   createLumopolisNonce,
   createOpenLimiter,
-  gitBashOnly,
+  askedAgain,
+  shellOnly,
   folderOf,
   lumopolisNonce,
   noSuchFolder,
@@ -98,10 +99,10 @@ describe('resolveLumopolisOpen', () => {
     expect(noSuchFolder('/x')).toBe('lumopolis: no such folder: /x')
   })
 
-  it("refuses a Git Bash-only folder on Windows with its own line, which says what to type instead (show)", async () => {
+  it("refuses a folder of the shell's own on Windows (Git Bash, MSYS2 zsh or fish) with its own line, which says what to type instead (show)", async () => {
     const win = deps({ platform: 'win32', homedir: 'C:\\Users\\me' })
-    expect(await resolveLumopolisOpen({ terminalId: 't1', payload: payload('/tmp'), cwd: '/c/Users/me' }, win)).toEqual({ success: false, error: gitBashOnly('/tmp'), show: true })
-    expect(gitBashOnly('/usr')).toBe('lumopolis: /usr exists only inside Git Bash, so it cannot be mapped. Use a folder on a drive, such as /c/Users.')
+    expect(await resolveLumopolisOpen({ terminalId: 't1', payload: payload('/tmp'), cwd: '/c/Users/me' }, win)).toEqual({ success: false, error: shellOnly('/tmp'), show: true })
+    expect(shellOnly('/usr')).toBe('lumopolis: /usr exists only inside this shell and has no Windows path, so it cannot be mapped. Use a folder on a drive, such as /c/Users.')
     // A rooted path elsewhere is a plain no-such-folder, and the forged-request refusals stay silent (no show).
     expect(await resolveLumopolisOpen({ terminalId: 't1', payload: payload('/nope') }, deps())).toMatchObject({ error: noSuchFolder('/nope') })
     expect(await resolveLumopolisOpen({ terminalId: 'x', payload: payload('/home/me/repo') }, deps())).not.toHaveProperty('show')
@@ -110,7 +111,7 @@ describe('resolveLumopolisOpen', () => {
 })
 
 describe('the open limiter (a program in the terminal knows the nonce, so it could ask over and over)', () => {
-  it('drops the same folder from the same terminal within a few seconds, silently', () => {
+  it('calls the same folder from the same terminal within a few seconds a repeat, which opens nothing', () => {
     let t = 1000
     const limit = createOpenLimiter(() => t)
     expect(limit('t1', '/a')).toBe('ok')
@@ -141,12 +142,15 @@ describe('the open limiter (a program in the terminal knows the nonce, so it cou
     expect(limit('t1', '/a')).toBe('repeat')
   })
 
-  it('resolveLumopolisOpen applies it after the checks: a repeat is dropped silently, too many is said (show)', async () => {
+  it('resolveLumopolisOpen applies it after the checks: a repeat and too many are both said (show), a repeat with the folder to open', async () => {
     let t = 0
     const limit = createOpenLimiter(() => t)
     const ask = (p: string) => resolveLumopolisOpen({ terminalId: 't1', payload: payload(p) }, deps(), limit)
     expect(await ask('/home/me/repo')).toEqual({ success: true, data: '/home/me/repo' })
-    expect(await ask('/home/me/repo')).toEqual({ success: false, error: 'repeat' })
+    // Not silent: someone who closed the pane and typed it again at once gets a line with an Open button for the
+    // folder, which opens only when they click it, so a program asking in a loop cannot keep reopening the pane.
+    expect(await ask('/home/me/repo')).toEqual({ success: false, error: askedAgain('/home/me/repo'), show: true, folder: '/home/me/repo' })
+    expect(askedAgain('/x')).toBe('lumopolis: /x was asked for a moment ago. Open shows it again.')
     expect(await ask('/home/me/gone')).toMatchObject({ error: noSuchFolder('/home/me/gone') }) // refused: not counted
     for (let i = 1; i < OPEN_LIMIT; i++) { t += REPEAT_MS; expect(await ask(i % 2 ? '/home/me/repo/sub' : '/home/me/repo')).toMatchObject({ success: true }) }
     t += REPEAT_MS
@@ -171,7 +175,7 @@ describe('registerLumopolisIpc on a real file system', () => {
     const h = handlers.get(TERMINAL_OPEN_CHANNEL) as (e: unknown, a?: unknown) => Promise<unknown>
     expect(await h(null, { terminalId: 't1', payload: payload(join(root, 'repo')) })).toEqual({ success: true, data: join(root, 'repo') })
     expect(await h(null, { terminalId: 't1', payload: payload(join(root, 'file.txt')) })).toEqual({ success: false, error: noSuchFolder(join(root, 'file.txt')), show: true })
-    expect(await h(null, { terminalId: 't1', payload: payload('repo'), cwd: root })).toEqual({ success: false, error: 'repeat' }) // the same folder again at once
+    expect(await h(null, { terminalId: 't1', payload: payload('repo'), cwd: root })).toEqual({ success: false, error: askedAgain(join(root, 'repo')), show: true, folder: join(root, 'repo') }) // the same folder again at once
   })
 
   it('keeps one limiter for the run, on the clock it is given', async () => {
@@ -180,7 +184,7 @@ describe('registerLumopolisIpc on a real file system', () => {
     registerLumopolisIpc({ handle: (c, l) => handlers.set(c, l) }, deps({ now: () => t }))
     const h = handlers.get(TERMINAL_OPEN_CHANNEL) as (e: unknown, a?: unknown) => Promise<unknown>
     expect(await h(null, { terminalId: 't1', payload: payload('/home/me/repo') })).toMatchObject({ success: true })
-    expect(await h(null, { terminalId: 't1', payload: payload('/home/me/repo') })).toMatchObject({ error: 'repeat' })
+    expect(await h(null, { terminalId: 't1', payload: payload('/home/me/repo') })).toMatchObject({ error: askedAgain('/home/me/repo'), folder: '/home/me/repo' })
     t += REPEAT_MS
     expect(await h(null, { terminalId: 't1', payload: payload('/home/me/repo') })).toMatchObject({ success: true })
   })

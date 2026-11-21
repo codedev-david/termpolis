@@ -715,7 +715,7 @@ export interface TermpolisAPI {
   /** Lumopolis home: remember the active terminal's project as a world. */
   worldMapProject: (root: string) => Promise<IpcResponse<WorldEntry>>
   /** `show`: a refusal the person should read (world/lumopolisOpen.ts); without it the refusal stays quiet. */
-  worldTerminalOpen: (args: { terminalId: string; payload: string; cwd?: string }) => Promise<IpcResponse<string> & { show?: boolean }>
+  worldTerminalOpen: (args: { terminalId: string; payload: string; cwd?: string }) => Promise<IpcResponse<string> & { show?: boolean; folder?: string }>
   /** Lumopolis home: the native folder dialog; the folder becomes a world (null when cancelled). */
   worldOpenFolder: () => Promise<IpcResponse<WorldEntry | null>>
   /** Lumopolis Build it: the native folder dialog only, and whether the folder is empty (null when cancelled). */

@@ -10,8 +10,10 @@
 //
 // Main's answer is acted on in one of three ways. A folder from the active terminal opens the pane. A folder
 // from any other terminal (a program left running there, which can read the nonce) does not take the screen:
-// a notice offers the open instead. A refusal main marks `show` (no such folder, a Git Bash-only folder, too
-// many requests) becomes a notice; a quiet one (a forged request, the same folder asked again) says nothing.
+// a notice offers the open instead. A refusal main marks `show` (no such folder, a folder of the shell's own,
+// too many requests, the same folder asked again) becomes a notice, with an Open button when main names the
+// folder (a repeat opens nothing by itself, so a loop cannot reopen a pane the person closed); a quiet one (a
+// forged request) says nothing.
 // A notice rather than a line written into the terminal: text written into xterm from here lands after the
 // prompt the shell has already drawn, so the line editor's idea of the cursor goes wrong, and it is missing
 // from main's copy of the output, so a reload or the phone never shows it.
@@ -38,7 +40,7 @@ export function lumopolisOscHandler(deps: LumopolisOscDeps): (payload: string) =
     const cwd = deps.cwd()
     api.worldTerminalOpen({ terminalId: deps.terminalId, payload, ...(cwd ? { cwd } : {}) }).then(
       (res) => {
-        if (!res.success) { if (res.show) showLumopolisNotice({ message: res.error }) }
+        if (!res.success) { if (res.show) showLumopolisNotice({ message: res.error, ...(res.folder ? { folder: res.folder } : {}) }) }
         else if (deps.active()) deps.open(res.data)
         else showLumopolisNotice({ message: `Another terminal asked to map ${folderName(res.data)} in Lumopolis.`, folder: res.data })
       },

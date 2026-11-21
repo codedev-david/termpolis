@@ -8,11 +8,13 @@
 //   - it carries this run's nonce (a file printed to the screen cannot know it),
 //   - its folder is absolute, or relative with the terminal's own folder to resolve it against,
 //   - and that folder exists and is a directory.
-// A refusal the person should read (a folder that is not there, a Git Bash-only folder) carries `show: true`, and
-// the renderer shows it as a notice; one that only a forged request gets (no terminal, no nonce) stays silent.
-// Any program running in the terminal can read the nonce from its environment, so a limiter per terminal drops
-// the same folder asked again within a few seconds and more than a handful of opens a minute: a looping program
-// cannot keep opening Lumopolis, mapping and labelling folders on the person's tokens.
+// A refusal the person should read (a folder that is not there, a folder of the shell's own) carries `show: true`,
+// and the renderer shows it as a notice; one that only a forged request gets (no terminal, no nonce) stays silent.
+// Any program running in the terminal can read the nonce from its environment, so a limiter per terminal opens
+// nothing for the same folder asked again within a few seconds, nor past a handful of opens a minute: a looping
+// program cannot keep opening Lumopolis, mapping and labelling folders on the person's tokens. A repeat is still
+// said, with the folder, so the notice can offer an Open button: the person who closed the pane and typed the
+// command again at once gets it back with one click, and a loop cannot reopen a pane they closed.
 // `ipc` and the checks are parameters, so this module never imports Electron and tests pass fakes.
 import { randomBytes } from 'crypto'
 import { posix, win32 } from 'path'
@@ -27,11 +29,13 @@ export const NOT_A_REQUEST = 'That was not a lumopolis request from this Termpol
 export const NEEDS_FULL_PATH = 'lumopolis needs a full path here.'
 export const TOO_MANY = 'lumopolis: too many requests from this terminal. Try again in a minute.'
 export const noSuchFolder = (p: string): string => `lumopolis: no such folder: ${p}`
-/** Git Bash's own folders (/tmp, /usr) have no Windows path Lumopolis could open. */
-export const gitBashOnly = (p: string): string =>
-  `lumopolis: ${p} exists only inside Git Bash, so it cannot be mapped. Use a folder on a drive, such as /c/Users.`
+/** The shell's own folders on Windows (/tmp, /usr of Git Bash, MSYS2 zsh or fish) have no Windows path to open. */
+export const shellOnly = (p: string): string =>
+  `lumopolis: ${p} exists only inside this shell and has no Windows path, so it cannot be mapped. Use a folder on a drive, such as /c/Users.`
+/** The same folder asked again at once: opened nothing, said with the folder for the notice's Open button. */
+export const askedAgain = (folder: string): string => `lumopolis: ${folder} was asked for a moment ago. Open shows it again.`
 
-/** The same folder again from the same terminal within this long is dropped. */
+/** The same folder again from the same terminal within this long opens nothing (a repeat). */
 export const REPEAT_MS = 3000
 /** At most this many opens a minute from one terminal. */
 export const OPEN_LIMIT = 5
@@ -117,10 +121,10 @@ export async function resolveLumopolisOpen(args: unknown, deps: LumopolisOpenDep
   const req = parseLumopolisPayload(a.payload)
   if (req === null || req.nonce !== deps.nonce) return err(NOT_A_REQUEST)
   const folder = folderOf(req.path, str(a.cwd), deps.platform, deps.homedir)
-  if (folder === null) return shown(/^[\\/]/.test(req.path.trim()) ? gitBashOnly(req.path) : NEEDS_FULL_PATH)
+  if (folder === null) return shown(/^[\\/]/.test(req.path.trim()) ? shellOnly(req.path) : NEEDS_FULL_PATH)
   if (!(await deps.isDirectory(folder))) return shown(noSuchFolder(req.path))
   const verdict = limit ? limit(terminalId, folder) : 'ok'
-  if (verdict === 'repeat') return err('repeat') // the person has just been shown it: say nothing
+  if (verdict === 'repeat') return { ...shown(askedAgain(folder)), folder }
   if (verdict === 'busy') return shown(TOO_MANY)
   return ok(folder)
 }

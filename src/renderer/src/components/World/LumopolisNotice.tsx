@@ -1,6 +1,7 @@
 // One short line about a `lumopolis` request that did not simply open the pane (lib/lumopolisOsc.ts sends it):
-// main's refusal ("no such folder", a Git Bash-only folder, too many requests), or a request from a terminal that
-// is not the active one, which gets an Open button instead of taking the screen. Bottom right, above the status
+// main's refusal ("no such folder", a folder of the shell's own, too many requests), the same folder asked again at
+// once, or a request from a terminal that is not the active one; the last two get an Open button instead of taking
+// the screen. Bottom right, above the status
 // bar; it hides itself, and a newer notice replaces it. Small and engine-free: it is in App's main chunk.
 import { useEffect, useState } from 'react'
 import { LUMOPOLIS_NOTICE_EVENT, openLumopolis, type LumopolisNotice as Notice } from './worldOpen'
