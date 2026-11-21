@@ -11,6 +11,9 @@ export const BUILD_STATUS_TEXT: Record<Building['status'], string> = {
 
 /** What follows a part's name when a model, not the code or a person, named it. */
 export const AI_NAME = '(name suggested by AI)'
+/** The labels before a part's status and before the process it runs in. */
+export const STATUS_LABEL = 'Status:'
+export const RUNS_IN_LABEL = 'Runs in:'
 
 /** One piece of evidence in words: its kind and where it points, and for a test where its result came from (a test
  *  report, an agent transcript or CI), so a pass read off a transcript never looks like one from a report. */
@@ -35,6 +38,9 @@ export const runsIn = (doc: WorldDoc, b: Building): string => {
   const proc = doc.processes[b.process]
   return proc ? proc.label : b.process
 }
+
+/** A technology as listed under "Technology": the term, then its glossary meaning when the glossary has one. */
+export const techText = (doc: WorldDoc, t: string): string => (doc.glossary[t] ? `${t}: ${doc.glossary[t]}` : t)
 
 /** What a planned line no model has described says under "How it travels": it has no code to read. */
 export const NOT_DESCRIBED = 'Not described yet.'

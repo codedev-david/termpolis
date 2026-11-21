@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  NOT_SEEN, SECTION_IDS, buildDocumentation,
+  NOT_SEEN, NOT_SEEN_DESIGN, SECTION_IDS, buildDocumentation,
   type DocBlock, type DocModel, type DocOptions, type DocSection
 } from '../../../src/shared/world/documentation'
 import { BUILD_STATUS_TEXT, CARD_HEADINGS, NOT_DESCRIBED, NO_WHY_YET, direction, edgeFromCode, runsIn, serviceNamesLine, sizeNote } from '../../../src/shared/world/cardFacts'
@@ -321,13 +321,15 @@ describe('connections', () => {
     expect(t.rows).toHaveLength(doc.edges.length)
     expect(t.rows[0]).toEqual([
       'Desktop app', 'Memory host', 'Memory: Memory calls',
-      'The app calls the memory host over a local socket. [observed] Technology: ipc What we know: Each call is answered within a second. [verified]',
+      'The app calls the memory host over a local socket. [observed]; Technology: ipc; What we know: Each call is answered within a second. [verified]',
       'Both ways: Desktop app reaches Memory host, and Memory host reaches Desktop app.',
       'Keeps the database out of the UI process. [inferred]', 'on demand'
     ])
     expect(t.rows[2]).toEqual([
       'Desktop app', 'Agent runner', 'env AGENT_HOME, ipc agent:start', edgeFromCode(doc, doc.edges[2]), direction(doc, doc.edges[2]).text, NO_WHY_YET, ''
     ])
+    doc.edges[2].tech = ['ipc']
+    expect(tableOf(sectionOf(build(doc), 'connections')).rows[2][3]).toBe(`${edgeFromCode(doc, doc.edges[2])}; Technology: ipc`)
     expect(t.rows[3][1]).toBe('Model API')
     expect(t.rows[3][4]).toBe('One way, with replies: Agent runner asks and Model API answers.')
   })
@@ -364,6 +366,18 @@ describe('outside systems', () => {
     const t = tableOf(sectionOf(build(labelledWorld()), 'outside'))
     expect(t.head).toEqual(['Name', 'What it is', 'Reached by'])
     expect(t.rows).toEqual([['Model API (not seen in code)', 'provider', 'Agent runner'], ['Shared drive', 'files', '']])
+  })
+  it('a design world marks a fog one as not detailed in the design, not as unseen in code', () => {
+    const doc = designWorld()
+    doc.externals = [{ id: 'x1', name: 'Payments', kind: 'service', fog: true }]
+    const t = tableOf(sectionOf(build(doc), 'outside'))
+    expect(t.rows).toEqual([['Payments (not detailed in the design)', 'service', '']])
+    expect(allText(build(doc))).not.toContain('not seen in code')
+  })
+  it('counts only built lines as reaching it: a proposed line does not', () => {
+    const doc = labelledWorld()
+    doc.layers.plan = [{ id: 'p1', title: 'Back up', summary: [], buildings: [], edges: [{ ...doc.edges[3], id: 'pe1', from: 'b2', to: 'x2', label: 'Writes backups' }] }]
+    expect(tableOf(sectionOf(build(doc), 'outside')).rows[1]).toEqual(['Shared drive', 'files', ''])
   })
   it('names a part once however many lines it sends', () => {
     const doc = labelledWorld()
@@ -421,7 +435,7 @@ describe('glossary', () => {
     expect(t.rows).toEqual([['electron', 'A framework for desktop apps.'], ['ipc', 'How two programs talk.'], ['sqlite', 'A small database in one file.']])
   })
   it('says so when there is none', () => {
-    expect(paragraphs(sectionOf(build(emptyWorld()), 'glossary'))).toEqual(['The world has no glossary yet.'])
+    expect(paragraphs(sectionOf(build(emptyWorld()), 'glossary'))).toEqual(['This project has no glossary yet.'])
   })
 })
 
@@ -439,6 +453,13 @@ describe("what this document doesn't cover yet", () => {
     expect(NOT_SEEN).toContain('runtime behaviour')
     expect(NOT_SEEN).toContain('data contents')
   })
+  it('a design world closes with what a design does not show, not with what the code reading misses', () => {
+    const s = sectionOf(build(designWorld()), 'notCovered')
+    expect(paragraphs(s)).toEqual(['Every part and connection is described.', NOT_SEEN_DESIGN])
+    expect(NOT_SEEN_DESIGN).toBe('A design records what is planned, not a running app: it does not show runtime behaviour or data contents.')
+    expect(NOT_SEEN).toBe('Lumopolis reads the code, not the running app: it does not see runtime behaviour or data contents.')
+    expect(allText(build(designWorld()))).not.toContain('reads the code')
+  })
   it('lists only the lines when every part is described, and says so when everything is', () => {
     const lines = sectionOf(build(labelledWorld()), 'notCovered')
     expect(paragraphs(lines)[0]).toBe('These connections are not described yet:')
@@ -454,7 +475,7 @@ describe('the empty world', () => {
     const m = build(emptyWorld())
     expect(m.title).toBe('How Termpolis works')
     expect(paragraphs(sectionOf(m, 'coverage'))[0]).toBe('0 of 0 parts and 0 of 0 connections are described.')
-    expect(paragraphs(sectionOf(m, 'notCovered'))).toEqual(['The world has no parts or connections yet.', NOT_SEEN])
+    expect(paragraphs(sectionOf(m, 'notCovered'))).toEqual(['This project has no parts or connections yet.', NOT_SEEN])
     expect(sectionOf(m, 'connections').blocks).toEqual([{ kind: 'table', head: ['From', 'To', 'What travels', 'How', 'Direction', 'Why', 'How often'], rows: [] }])
   })
 })

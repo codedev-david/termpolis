@@ -2,7 +2,7 @@
 // cards.ts), gathered by the same helpers (shared/world/cardFacts.ts, edgeText.ts), with each claim
 // followed by its state in brackets and the evidence behind it on the next line.
 import { NOT_IN_DESIGN } from '../../shared/world/reconcile'
-import { AI_NAME, BUILD_STATUS_TEXT, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn, serviceNamesLine, sizeNote } from '../../shared/world/cardFacts'
+import { AI_NAME, BUILD_STATUS_TEXT, RUNS_IN_LABEL, STATUS_LABEL, techText, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, evidenceText, nodeName, notInDesign, runsIn, serviceNamesLine, sizeNote } from '../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../shared/world/edgeText'
 import type { Claim, WorldDoc, WorldEdge } from '../../shared/world/types'
 
@@ -21,7 +21,7 @@ function claimLines(list: Claim[], empty = 'Not described yet.'): string[] {
 const known = (claims: Claim[]): string[] => (claims.length ? section(CARD_HEADINGS.know, claimLines(claims)) : [])
 
 const techLine = (doc: WorldDoc, techs: string[]): string[] =>
-  techs.map((t) => (doc.glossary[t] ? `- ${t}: ${doc.glossary[t]}` : `- ${t}`))
+  techs.map((t) => `- ${techText(doc, t)}`)
 
 function edgeLines(doc: WorldDoc, edges: WorldEdge[], dir: 'from' | 'to'): string[] {
   return edges.map((e) => `- ${edgeSummary(e.label)} (${e.id}) ${dir} ${nodeName(doc, e[dir])} (${e[dir]})`)
@@ -44,8 +44,8 @@ function buildingText(doc: WorldDoc, id: string): string {
   const lines = [
     `${b.name}${b.nameState === 'inferred' ? ` ${AI_NAME}` : ''}`,
     ...(b.techLabel ? [b.techLabel] : []),
-    `Status: ${BUILD_STATUS_TEXT[b.status]}${notInDesign(doc, id) ? `; ${NOT_IN_DESIGN}` : ''}`,
-    ...(run.trim() ? [`Runs in: ${run}`] : []),
+    `${STATUS_LABEL} ${BUILD_STATUS_TEXT[b.status]}${notInDesign(doc, id) ? `; ${NOT_IN_DESIGN}` : ''}`,
+    ...(run.trim() ? [`${RUNS_IN_LABEL} ${run}`] : []),
     ...section(CARD_HEADINGS.whatItDoes, claimLines(b.how)),
     ...(floors.length ? section(CARD_HEADINGS.inside, floors) : []),
     ...(big ? section(CARD_HEADINGS.whyBig, [big]) : []),

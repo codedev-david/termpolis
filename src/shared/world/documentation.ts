@@ -3,8 +3,8 @@
 // card also shows comes from the same cardFacts helper, so the document and the cards cannot disagree. The model
 // holds plain text: escaping is the renderer's job. Pure, ES2020, and deterministic (the date is passed in).
 import {
-  AI_NAME, BUILD_STATUS_TEXT, CARD_HEADINGS, FLOOR_CAP, NOT_DESCRIBED, NO_WHY_YET, allEdges, direction, edgeFromCode,
-  evidenceText, nodeName, notInDesign, runsIn, serviceNamesLine, sizeNote
+  AI_NAME, BUILD_STATUS_TEXT, CARD_HEADINGS, FLOOR_CAP, NOT_DESCRIBED, NO_WHY_YET, RUNS_IN_LABEL, STATUS_LABEL, allEdges, direction,
+  edgeFromCode, evidenceText, nodeName, notInDesign, runsIn, serviceNamesLine, sizeNote, techText
 } from './cardFacts'
 import { edgeItems, edgeSummary } from './edgeText'
 import { NOT_IN_DESIGN } from './reconcile'
@@ -30,10 +30,13 @@ export const FROM_DESIGN = 'Generated from the design'
 /** What each claim state means, after the coverage sentence; a design world adds PROPOSED_MEANS. */
 export const STATES_MEAN = 'Statements marked *inferred* come from reading the code, *verified* from tests or a person, *observed* from the code itself.'
 export const PROPOSED_MEANS = 'Statements marked *proposed* come from the design.'
-/** The mark on an outside system the code does not show directly (it is in fog). */
+/** The mark on an outside system in fog: the code does not show it directly; in a design world, the design leaves it
+ *  undetailed. */
 export const NOT_SEEN_IN_CODE = 'not seen in code'
-/** What no Lumopolis world records, closing the "doesn't cover yet" section. */
+export const NOT_DETAILED_IN_DESIGN = 'not detailed in the design'
+/** What no Lumopolis world records, closing the "doesn't cover yet" section: a code world's, then a design world's. */
 export const NOT_SEEN = 'Lumopolis reads the code, not the running app: it does not see runtime behaviour or data contents.'
+export const NOT_SEEN_DESIGN = 'A design records what is planned, not a running app: it does not show runtime behaviour or data contents.'
 /** The Connections table's columns: every field of the line card. */
 export const CONNECTION_HEAD = ['From', 'To', CARD_HEADINGS.travels, 'How', CARD_HEADINGS.direction, 'Why', CARD_HEADINGS.howOften]
 
@@ -122,7 +125,7 @@ function part(c: Ctx, b: Building): DocSection {
   }
   const big = sizeNote(doc, b, 'listed')
   if (big) add('whyBig', [p(big)])
-  if (b.stack.length) add('technology', [list(b.stack.map((t) => (doc.glossary[t] ? `${t}: ${doc.glossary[t]}` : t)))])
+  if (b.stack.length) add('technology', [list(b.stack.map((t) => techText(doc, t)))])
   add('whyBuilt', described(b.why))
   const names = serviceNamesLine(doc, b.id)
   if (names !== null) add('serviceNames', [p(names)])
@@ -134,8 +137,8 @@ function part(c: Ctx, b: Building): DocSection {
   const run = runsIn(doc, b)
   const head = [
     ...(b.techLabel ? [p(b.techLabel)] : []),
-    p(`Status: ${BUILD_STATUS_TEXT[b.status]}${notInDesign(doc, b.id) ? `; ${NOT_IN_DESIGN}` : ''}`),
-    ...(run.trim() ? [p(`Runs in: ${run}`)] : [])
+    p(`${STATUS_LABEL} ${BUILD_STATUS_TEXT[b.status]}${notInDesign(doc, b.id) ? `; ${NOT_IN_DESIGN}` : ''}`),
+    ...(run.trim() ? [p(`${RUNS_IN_LABEL} ${run}`)] : [])
   ]
   return section(`part:${b.id}`, b.nameState === 'inferred' ? `${b.name} ${AI_NAME}` : b.name, head, heads)
 }
@@ -157,7 +160,7 @@ function connection(c: Ctx, e: WorldEdge): string[] {
     e.how.length ? claimText(e.how) : edgeFromCode(doc, e),
     ...(e.tech.length ? [`${CARD_HEADINGS.technology}: ${e.tech.join(', ')}`] : []),
     ...(e.claims.length ? [`${CARD_HEADINGS.know}: ${claimText(e.claims)}`] : [])
-  ].join(' ')
+  ].join('; ')
   return [nodeName(doc, e.from), nodeName(doc, e.to), travels, how, direction(doc, e).text, e.why.length ? claimText(e.why) : NO_WHY_YET, e.rate]
 }
 
@@ -180,8 +183,9 @@ function flows(c: Ctx): DocSection {
 function outside(c: Ctx): DocSection {
   if (c.doc.externals.length === 0) return section('outside', 'Outside systems', [p('No outside systems are recorded.')])
   const rows = c.doc.externals.map((x) => {
-    const by = Array.from(new Set(c.edges.filter((e) => e.to === x.id).map((e) => nodeName(c.doc, e.from))))
-    return [x.fog ? `${x.name} (${NOT_SEEN_IN_CODE})` : x.name, x.kind, by.join(', ')]
+    // Only built lines: a proposal's line to it is a plan, not a part that reaches it yet.
+    const by = Array.from(new Set(c.doc.edges.filter((e) => e.to === x.id).map((e) => nodeName(c.doc, e.from))))
+    return [x.fog ? `${x.name} (${c.design ? NOT_DETAILED_IN_DESIGN : NOT_SEEN_IN_CODE})` : x.name, x.kind, by.join(', ')]
   })
   return section('outside', 'Outside systems', [{ kind: 'table', head: ['Name', CARD_HEADINGS.whatItIs, 'Reached by'], rows }])
 }
@@ -215,7 +219,7 @@ function planned(c: Ctx): DocSection {
 
 function glossary(c: Ctx): DocSection {
   const terms = Object.keys(c.doc.glossary).sort()
-  if (terms.length === 0) return section('glossary', 'Glossary', [p('The world has no glossary yet.')])
+  if (terms.length === 0) return section('glossary', 'Glossary', [p('This project has no glossary yet.')])
   return section('glossary', 'Glossary', [{ kind: 'table', head: ['Term', 'Meaning'], rows: terms.map((t) => [t, c.doc.glossary[t]]) }])
 }
 
@@ -230,9 +234,9 @@ function notCovered(c: Ctx): DocSection {
       list(lines.map((e) => `${edgeSummary(e.label)} (${nodeName(doc, e.from)} → ${nodeName(doc, e.to)})`)))
   }
   if (blocks.length === 0) {
-    blocks.push(p(doc.buildings.length + doc.edges.length ? 'Every part and connection is described.' : 'The world has no parts or connections yet.'))
+    blocks.push(p(doc.buildings.length + doc.edges.length ? 'Every part and connection is described.' : 'This project has no parts or connections yet.'))
   }
-  blocks.push(p(NOT_SEEN))
+  blocks.push(p(c.design ? NOT_SEEN_DESIGN : NOT_SEEN))
   return section('notCovered', "What this document doesn't cover yet", blocks)
 }
 

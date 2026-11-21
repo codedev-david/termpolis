@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CARD_HEADINGS, serviceNames, serviceNamesLine } from '../../../src/shared/world/cardFacts'
+import { CARD_HEADINGS, RUNS_IN_LABEL, STATUS_LABEL, serviceNames, serviceNamesLine, techText } from '../../../src/shared/world/cardFacts'
 import { escapeHtml } from '../../../src/shared/world/html'
 import { escapeHtml as engineEscape } from '../../../src/renderer/src/world/engine/html'
 import { minimal } from '../../renderer/world/helpers'
@@ -38,5 +38,18 @@ describe('CARD_HEADINGS and escapeHtml', () => {
     expect(engineEscape).toBe(escapeHtml)
     expect(escapeHtml(`&<>"'`)).toBe('&amp;&lt;&gt;&quot;&#39;')
     expect(escapeHtml(null)).toBe('')
+  })
+})
+
+describe('card labels and technology lines', () => {
+  it('words the status and process labels once for every output', () => {
+    expect([STATUS_LABEL, RUNS_IN_LABEL]).toEqual(['Status:', 'Runs in:'])
+  })
+  it('gives a technology with its glossary meaning, or alone when the glossary has none', () => {
+    const doc = minimal()
+    doc.glossary = { ipc: 'How two programs talk.', blank: '' }
+    expect(techText(doc, 'ipc')).toBe('ipc: How two programs talk.')
+    expect(techText(doc, 'blank')).toBe('blank')
+    expect(techText(doc, 'unknown')).toBe('unknown')
   })
 })

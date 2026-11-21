@@ -1,7 +1,7 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
-import { AI_NAME, BUILD_STATUS_TEXT as STATUS, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, evidenceText, serviceNames as serviceNamesOf, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
+import { AI_NAME, BUILD_STATUS_TEXT as STATUS, RUNS_IN_LABEL, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, evidenceText, serviceNames as serviceNamesOf, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
@@ -92,7 +92,7 @@ export function buildingCard(doc: WorldDoc, id: string, floors: FloorsView = 'no
   const big = sizeNote(doc, b, floors)
   return `<h3>${esc(b.name)}${aiName}</h3>${b.techLabel ? `<p class="muted">${esc(b.techLabel)}</p>` : ''}`
     + `<p class="status"><span class="tag status-${esc(b.status)}">${esc(STATUS[b.status])}</span>${tag}</p>`
-    + (runsIn.trim() ? `<div class="proc">Runs in: <b>${esc(runsIn)}</b></div>` : '')
+    + (runsIn.trim() ? `<div class="proc">${esc(RUNS_IN_LABEL)} <b>${esc(runsIn)}</b></div>` : '')
     + section(CARD_HEADINGS.whatItDoes, claims(b.how, b.id, 0, readOnly))
     + (parts ? section(CARD_HEADINGS.inside, `<ul>${parts}</ul>`) : '')
     + (big ? section(CARD_HEADINGS.whyBig, `<p>${esc(big)}</p>`) : '')
