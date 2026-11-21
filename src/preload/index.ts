@@ -392,6 +392,10 @@ const api: TermpolisAPI = {
   platformInfo: (ipcRenderer.sendSync?.('app:platform-info-sync') as PlatformInfo | undefined)
     ?? { platform: process.platform, windowsPty: null, homedir: '' },
 
+  // Whether the launch intro may play this time. Main decides once per process (first start, not an
+  // update restart); read once here, so a stubbed bridge with no sendSync reads as "off".
+  launchIntro: ipcRenderer.sendSync?.('launch-intro:should-play') === true,
+
   listAISessions: () => ipcRenderer.invoke('aiSessions:list'),
   digestAISession: (filePath: string) => ipcRenderer.invoke('aiSessions:digest', filePath),
   readActiveConversation: (cwd: string, agentType: string) =>

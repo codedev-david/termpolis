@@ -65,6 +65,42 @@ describe('preload: termpolis API', () => {
     }
   })
 
+  it('launchIntro is true only when main answers exactly true on launch-intro:should-play', async () => {
+    const first = { ...exposed }
+    const load = async (answer: unknown) => {
+      mockIpcRenderer.sendSync.mockReturnValueOnce(answer as never) // platformInfo reads first
+      mockIpcRenderer.sendSync.mockReturnValueOnce(answer as never)
+      vi.resetModules()
+      await import('../../src/preload/index')
+      return exposed.termpolis.launchIntro
+    }
+    try {
+      expect(await load(true)).toBe(true)
+      expect(await load(false)).toBe(false)
+      expect(await load('true')).toBe(false)
+      expect(await load(undefined)).toBe(false)
+    } finally {
+      Object.assign(exposed, first)
+    }
+  })
+
+  it('launchIntro is false when the bridge has no sendSync at all', async () => {
+    const first = { ...exposed }
+    try {
+      vi.resetModules()
+      vi.doMock('electron', () => ({
+        webUtils: { getPathForFile: vi.fn() },
+        contextBridge: { exposeInMainWorld: (key: string, api: unknown) => { exposed[key] = api } },
+        ipcRenderer: { invoke: vi.fn(), send: vi.fn(), on: vi.fn(), removeListener: vi.fn() },
+      }))
+      await import('../../src/preload/index')
+      expect(exposed.termpolis.launchIntro).toBe(false)
+    } finally {
+      vi.doUnmock('electron')
+      Object.assign(exposed, first)
+    }
+  })
+
   it('createTerminal invokes terminal:create', async () => {
     await exposed.termpolis.createTerminal('id1', 'bash', '/tmp', [])
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('terminal:create', {

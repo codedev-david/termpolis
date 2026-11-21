@@ -321,6 +321,11 @@ vi.mock('fs', () => {
 
 vi.mock('uuid', () => ({ v4: vi.fn(() => 'mock-uuid') }))
 
+const { mockClaim, introGateDeps } = vi.hoisted(() => ({ mockClaim: vi.fn(() => true), introGateDeps: [] as any[] }))
+vi.mock('../../src/main/launchIntro', () => ({
+  createIntroGate: (deps: unknown) => { introGateDeps.push(deps); return { claim: mockClaim } },
+}))
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1505,6 +1510,24 @@ describe('fs + app info IPC', () => {
       vi.mocked(mcp.awaitMcpPortBound).mockReturnValueOnce(Promise.reject('boom'))
       expect(await invoke('mcp:get-port')).toEqual({ success: false, error: 'boom' })
     })
+  })
+
+  it('launch-intro:should-play answers synchronously with what the intro gate claims', () => {
+    mockClaim.mockReturnValueOnce(true).mockReturnValueOnce(false)
+    const first: { returnValue?: unknown } = {}
+    const second: { returnValue?: unknown } = {}
+    ipcOnHandlers.get('launch-intro:should-play')!.at(-1)!(first)
+    ipcOnHandlers.get('launch-intro:should-play')!.at(-1)!(second)
+    expect(first.returnValue).toBe(true)
+    expect(second.returnValue).toBe(false)
+  })
+
+  it('the intro gate reads and writes last-run-version through fs, for this app version', () => {
+    const deps = introGateDeps[0]
+    expect(deps.version).toBe('9.9.9')
+    expect(deps.readFile('/x/last-run-version')).toBe('{}')
+    deps.writeFile('/x/last-run-version', '9.9.9')
+    expect(mockWriteFileSync).toHaveBeenCalledWith('/x/last-run-version', '9.9.9', 'utf8')
   })
 
   it('app:platform-info-sync answers SYNCHRONOUSLY — xterm needs windowsPty at construction time', async () => {

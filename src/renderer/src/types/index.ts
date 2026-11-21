@@ -870,6 +870,8 @@ export interface TermpolisAPI {
    *  xterm.js how the Windows ConPTY wraps/scrolls so a TUI's redraws don't
    *  overlap the prompt (null off Windows). */
   platformInfo: PlatformInfo
+  /** True when main decided the launch intro may play on this load (first start of the process). */
+  readonly launchIntro: boolean
   getAppVersion: () => Promise<IpcResponse<{ version: string }>>
   /** The port the MCP server actually bound; null when it has not bound in time. */
   getMcpPort?: () => Promise<IpcResponse<{ port: number | null }>>

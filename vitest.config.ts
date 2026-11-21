@@ -161,6 +161,7 @@ export default defineConfig({
         // Lumopolis (world view): every line of its code is gated at 100%.
         'src/shared/world/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/main/world/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
+        'src/main/launchIntro.ts': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/world/engine/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/components/World/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
       },

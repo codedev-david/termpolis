@@ -199,6 +199,7 @@ import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync, primeHistory } from './historyStore'
 import { offMainFiles } from './offMainFiles'
 import { nodeAsyncFs } from './gitRefs'
+import { createIntroGate } from './launchIntro'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, type McpToolHandlers } from './mcpServer'
@@ -1516,6 +1517,17 @@ ipcMain.handle('telemetry:set-consent', async (_, choice?: { crash?: unknown; us
 })
 
 ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
+
+// Whether the launch intro may play: decided once per process, here, so a renderer reload or a second
+// window can never replay it. Synchronous because the preload reads it before the renderer loads.
+const introGate = createIntroGate({
+  userData: app.getPath('userData'),
+  version: app.getVersion(),
+  env: process.env,
+  readFile: (p) => readFileSync(p, 'utf8'),
+  writeFile: (p, text) => writeFileSync(p, text, 'utf8'),
+})
+ipcMain.on('launch-intro:should-play', (e) => { e.returnValue = introGate.claim() })
 
 /** How long the status bar waits for the MCP server to bind before it stops saying "starting". */
 const MCP_PORT_IPC_WAIT_MS = 10_000
