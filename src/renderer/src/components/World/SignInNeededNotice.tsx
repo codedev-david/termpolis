@@ -3,7 +3,6 @@
 // or Dismiss. It sits in the same top-of-world slot as WorldView's other notice.
 import { btnCls, signInLabel } from './worldTargets'
 
-
 export interface SignInNeededNoticeProps {
   host: string
   helper: boolean

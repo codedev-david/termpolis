@@ -46,7 +46,7 @@ export function RepoAccessDialog({ host, busy, error, onSubmit, onCancel }: Repo
     <div role="dialog" aria-label="Use a token" data-testid="world-repo-access" className={dialogCls}>
       <h2 className="text-base font-semibold text-white">Use a token</h2>
       <p className="text-xs text-[#9ca3af]">
-        A token is a key you make on GitHub that lets Lumopolis read this one repository. Lumopolis uses it once and doesn't keep it.
+        A token is a key you make on {host === 'github.com' ? 'GitHub' : host} that lets Lumopolis read this one repository. Lumopolis uses it once and doesn't keep it.
       </p>
       {host === 'github.com' && (
         <button type="button" className={`${btnCls} self-start`} onClick={() => { void window.termpolis.openExternal(TOKEN_PAGE_URL) }}>

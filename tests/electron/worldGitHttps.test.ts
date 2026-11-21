@@ -178,6 +178,25 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
     expect(await cloneRepo(server.url, undefined, deps, background)).toMatchObject({ ok: true, changed: true })
   }, 60_000)
 
+  // The update's reset downloads the new files of this partial clone through a git fetch child: without the
+  // askpass on the reset too, a token update of a pushed commit would fail to check them out.
+  it.runIf(inCi)('a token update of a pushed commit reports changed and checks the new files out', async () => {
+    const deps = await depsFor(gitEnvFor(emptyConfig))
+    const token: LoginRun = { mode: 'token', value: reply }
+    const first = await cloneRepo(server.url, undefined, deps, token)
+    expect(first).toMatchObject({ ok: true, changed: true })
+    if (!first.ok) return
+    const before = new Set(fs.readdirSync(join(first.root, 'src')))
+    await server.pushCommit('A commit for the token update')
+    const r = await cloneRepo(server.url, undefined, deps, token)
+    expect(r).toMatchObject({ ok: true, root: first.root, changed: true })
+    const added = fs.readdirSync(join(first.root, 'src')).filter((f) => !before.has(f))
+    expect(added).toHaveLength(1)
+    expect(fs.readFileSync(join(first.root, 'src', added[0]), 'utf8')).toMatch(/^export const change\d+ = \d+\n$/)
+    const needle = Buffer.from(reply)
+    expect([...filesUnder(first.root), ...filesUnder(deps.baseDir)].filter((f) => fs.readFileSync(f).includes(needle))).toEqual([])
+  }, 60_000)
+
   it('the fake helper is the shipped LF shell script the config names', () => {
     expect(fs.readFileSync(FAKE_HELPER_PATH, 'utf8').includes('\r')).toBe(false)
     expect(fakeHelperConfig()).toContain(FAKE_HELPER_PATH.replace(/\\/g, '/'))

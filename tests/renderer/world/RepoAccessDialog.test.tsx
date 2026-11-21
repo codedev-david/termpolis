@@ -105,4 +105,11 @@ describe('RepoAccessDialog', () => {
     mount({ host: 'gitlab.example.com' })
     expect(screen.queryByRole('button', { name: 'Make a token on GitHub' })).toBeNull()
   })
+
+  it('names the host the token is made on when it is not GitHub', () => {
+    mount({ host: 'gitlab.example.com' })
+    const dialog = screen.getByTestId('world-repo-access')
+    expect(dialog).toHaveTextContent("A token is a key you make on gitlab.example.com that lets Lumopolis read this one repository. Lumopolis uses it once and doesn't keep it.")
+    expect(dialog).not.toHaveTextContent('GitHub')
+  })
 })

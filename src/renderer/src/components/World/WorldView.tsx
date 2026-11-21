@@ -634,10 +634,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
 
   // The folder's name, never doc.projectKey: that is a sha1 slice of the path, not a name. A doc only
   // loads for a resolved root, and WorldDoc carries no root of its own to fall back on. A design is
-  // named by its title in the recent worlds.
+  // named by its title in the recent worlds, and so is a cloned repository: its folder is named by a hash.
   const home = world.kind === 'home'
   const designTitle = designKey === null ? '' : entries.find((e) => e.key === designKey)?.title ?? 'Design'
-  const projectName = designKey !== null ? designTitle : worldRoot ? baseName(worldRoot) : ''
+  const gitTitle = worldRoot ? entries.find((e) => e.source.kind === 'git' && e.source.root === worldRoot)?.title : undefined
+  const projectName = designKey !== null ? designTitle : gitTitle ?? (worldRoot ? baseName(worldRoot) : '')
   const worldKey = worldRoot ?? designKey
   let empty: 'loading' | 'mapping' | 'error' | null = null
   if (home) empty = null

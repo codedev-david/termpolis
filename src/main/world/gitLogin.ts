@@ -100,12 +100,14 @@ export function configEnv(pairs: Array<[string, string]>): Record<string, string
 export const TOKEN_USER = 'x-access-token'
 
 /** The variables that keep a run from prompting: never a terminal prompt, and Git Credential Manager's
- *  window only on an interactive `machine` run. A token run always redacts any git trace. Given the shipped
+ *  window only on an interactive `machine` run. LANGUAGE=C keeps git's messages in English for every run, so
+ *  a translated git's sign-in and not-found errors still match AUTH_RE and NOT_FOUND_RE (LC_ALL is left alone:
+ *  it would also change how git reads file names). A token run always redacts any git trace. Given the shipped
  *  askpass and the forge host, it also gets the askpass, the two answers it prints and the one host it
- *  prints them for: that form belongs on the network steps (clone, fetch) only, and the plain form on the
+ *  prints them for: that form belongs on the network steps (clone, fetch, an update's reset) only, and the plain form on the
  *  local ones. Without both it gets nothing that could answer. */
 export function loginEnv(run: LoginRun, askpassPath?: string, host?: string): Record<string, string> {
-  const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' }
+  const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0', LANGUAGE: 'C' }
   if (run.mode === 'none' || (run.mode === 'machine' && !run.interactive)) env.GCM_INTERACTIVE = 'never'
   if (run.mode === 'token') {
     env.GIT_TRACE_REDACT = '1'
@@ -161,14 +163,14 @@ function urlHost(url: string): string | null {
  * never a login store, and its output is neither logged nor returned. As in git, an empty value clears the
  * helpers listed before it. No git, a failed run or too much output all mean no.
  */
-export async function hasLoginHelper(deps: Pick<CloneDeps, 'execFile' | 'gitBin' | 'baseDir' | 'env'>, host: string): Promise<boolean> {
+export async function hasLoginHelper(deps: Pick<CloneDeps, 'execFile' | 'gitBin' | 'baseDir' | 'env' | 'isWindows'>, host: string): Promise<boolean> {
   const bin = await deps.gitBin()
   if (bin === null) return false
   const env = inheritedEnv(deps.env ?? process.env)
   env.GIT_CEILING_DIRECTORIES = deps.baseDir
   env.GIT_TERMINAL_PROMPT = '0'
   const r = await deps
-    .execFile(bin, [...safetyFlags(process.platform === 'win32'), 'config', '--list', '-z'], {
+    .execFile(bin, [...safetyFlags(deps.isWindows), 'config', '--list', '-z'], {
       env,
       cwd: deps.baseDir,
       timeout: HELPER_CHECK_TIMEOUT_MS,

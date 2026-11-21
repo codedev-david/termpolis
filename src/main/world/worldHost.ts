@@ -795,7 +795,6 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     cloneSource: async (url: unknown, ref?: unknown, access?: unknown): Promise<CloneSourceResult> => {
       const asked = accessRun(access)
       if ('error' in asked) return { ok: false, error: asked.error }
-      if (!(await askpassReady(st, asked.run))) return { ok: false, error: TOKEN_REJECTED_MESSAGE }
       const res = await runClone(st, url, ref, asked.run, true)
       return res.ok ? { ok: true, root: res.root } : res
     },
@@ -806,7 +805,6 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       if (login === 'token' && !isTokenAccess(access)) throw new Error('token update needs a token')
       const asked = access === undefined ? { run: backgroundRun(login) } : accessRun(access)
       if ('error' in asked) return { ok: false, error: asked.error }
-      if (!(await askpassReady(st, asked.run))) return { ok: false, error: TOKEN_REJECTED_MESSAGE }
       const res = await runClone(st, url, ref, asked.run, false)
       return res.ok ? { ok: true, changed: res.changed } : res
     },
@@ -830,7 +828,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
 
   /**
    * A token run needs the askpass Termpolis ships to exist: without it git would ask a terminal nobody
-   * sees, so the run is refused before git starts and one plain line (never the value) is logged.
+   * sees, so the run is refused before git starts and one plain line (never the value) is logged. It is
+   * checked inside the registered run, so a cancel that lands while it is looked for still finds the run.
    */
   const askpassReady = async (st: HostState, run: LoginRun): Promise<boolean> => {
     if (run.mode !== 'token') return true
@@ -845,10 +844,11 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
    * asks for the same run (an open joining a silent run turns its progress on); a different run waits for
    * the running one to settle, then starts its own, unless cancelClone came meanwhile or the wait alone
    * used up a run's whole time (then it answers that copy and git never sees it).
+   *
+   * `since` is when the caller first asked and `cancelsAtQueue` the cancel count when it first queued; a call
+   * that waits behind one run and then another keeps both, so every wait counts against one CLONE_TIMEOUT_MS
+   * and a cancel during any of its waits still stops it.
    */
-  /** `since` is when the caller first asked and `cancelsAtQueue` the cancel count when it first queued; a call
-   *  that waits behind one run and then another keeps both, so every wait counts against one CLONE_TIMEOUT_MS
-   *  and a cancel during any of its waits still stops it. */
   const runClone = (
     st: HostState,
     url: unknown,
@@ -898,23 +898,31 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     const ctl = new AbortController()
     if (progress) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 0 })
     const entry = { ctl, run, progress } as { ctl: AbortController; done: Promise<CloneResult>; run: LoginRun; progress: boolean }
-    const done = clone(
-      u,
-      r,
-      {
-        execFile: nodeExecFile,
-        gitBin: resolveGitBin,
-        baseDir: st.userDataPath,
-        dirSize: dirSizeOf,
-        rm: removeDir,
-        isWindows: process.platform === 'win32',
-        ...(st.askpassPath ? { askpassPath: st.askpassPath } : {}),
-        ...deps.cloneDeps,
-        timeoutMs: left,
-        signal: ctl.signal
-      },
-      run
-    )
+    // The askpass check runs inside the registered entry: a cancel during it aborts ctl, and the clone then
+    // answers Cancelled before it looks for git.
+    const done = askpassReady(st, run)
+      .then(
+        (ready): Promise<CloneResult> =>
+          ready
+            ? clone(
+                u,
+                r,
+                {
+                  execFile: nodeExecFile,
+                  gitBin: resolveGitBin,
+                  baseDir: st.userDataPath,
+                  dirSize: dirSizeOf,
+                  rm: removeDir,
+                  isWindows: process.platform === 'win32',
+                  ...(st.askpassPath ? { askpassPath: st.askpassPath } : {}),
+                  ...deps.cloneDeps,
+                  timeoutMs: left,
+                  signal: ctl.signal
+                },
+                run
+              )
+            : Promise.resolve({ ok: false, error: TOKEN_REJECTED_MESSAGE })
+      )
       .then((res) => {
         if (res.ok && entry.progress) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 100 })
         return res

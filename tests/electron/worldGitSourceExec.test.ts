@@ -2,15 +2,16 @@ import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loginConfig, OLD_GIT_MESSAGE, type LoginRun } from '../../src/main/world/gitLogin'
+import * as gitSourceModule from '../../src/main/world/gitSource'
 import {
   AUTH_MESSAGE,
   CANCELLED_MESSAGE,
   NO_GIT_MESSAGE,
   SSH_AUTH_MESSAGE,
+  VERSION_FAILED_MESSAGE,
   cloneArgs,
   cloneKey,
   cloneRepo,
-  notFoundMessage,
   type CloneDeps,
   type ExecOpts,
   type ExecResult
@@ -278,10 +279,13 @@ describe('cloneRepo login modes', () => {
   ]
   const SIGNED_IN: LoginRun[] = [{ mode: 'machine', interactive: true }, { mode: 'machine', interactive: false }, TOKEN_RUN]
 
+  // The spec gives a sign-in failure one message (design spec, Flow 1 and Copy): a signed-in account that
+  // cannot see the repository gets the same sign-in message, and the renderer shows ipc's copy of it.
   it('a repository the signed-in account cannot see comes back as needing a sign-in, for machine and token runs', async () => {
+    expect('notFoundMessage' in gitSourceModule).toBe(false)
     for (const run of SIGNED_IN) {
       // A token that cannot see the repository is a token that did not open it.
-      const error = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : notFoundMessage('github.com')
+      const error = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE
       for (const stderr of NOT_FOUND) {
         const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
         expect(await cloneRepo(HTTPS, undefined, deps, run)).toEqual({ ok: false, error, needsLogin: { host: 'github.com', helper: true } })
@@ -294,12 +298,9 @@ describe('cloneRepo login modes', () => {
     const updMachine = fakeDeps({ step: (args) => (args.includes('fetch') ? { code: 128, stderr: NOT_FOUND[0] } : {}) }, { exists: async () => true })
     expect(await cloneRepo(HTTPS, undefined, updMachine.deps, { mode: 'machine', interactive: true })).toEqual({
       ok: false,
-      error: notFoundMessage('github.com'),
+      error: AUTH_MESSAGE,
       needsLogin: { host: 'github.com', helper: false }
     })
-    expect(notFoundMessage('github.com')).toBe(
-      "The account you signed in to github.com with can't see that repository. Use a token from an account that can see it."
-    )
   })
 
   it('with no login a missing repository stays a plain failure: a typo never asks for a sign-in', async () => {
@@ -321,7 +322,7 @@ describe('cloneRepo login modes', () => {
     const stderr = "remote: Repository not found.\nfatal: repository 'https://me:hunter2@GitHub.com/o/r.git/' not found"
     const { deps } = fakeDeps({ step: () => ({ code: 128, stderr }) })
     const r = await cloneRepo('https://me:hunter2@GitHub.com/o/r.git', undefined, deps, { mode: 'machine', interactive: false })
-    expect(r).toEqual({ ok: false, error: notFoundMessage('github.com'), needsLogin: { host: 'github.com', helper: false } })
+    expect(r).toEqual({ ok: false, error: AUTH_MESSAGE, needsLogin: { host: 'github.com', helper: false } })
     expect(JSON.stringify(r)).not.toMatch(/me:|hunter2|@/)
   })
 
@@ -335,16 +336,27 @@ describe('cloneRepo login modes', () => {
     expect(v.args).toEqual(['--version'])
     expect(v.opts.stdoutMax).toBeGreaterThan(0)
     expect(v.opts.env.PATH).toBe('p')
-    // A version git does not print, or a failed run, is not trusted to read the login settings either.
-    for (const version of [{ stdout: 'what' }, { code: 1, stdout: '' }, {}]) {
+    // A version git does not print is not trusted to read the login settings either.
+    for (const version of [{ stdout: 'what' }, {}]) {
       const f = fakeDeps({ version })
       expect(await cloneRepo(HTTPS, undefined, f.deps)).toEqual({ ok: false, error: OLD_GIT_MESSAGE })
+      expect(f.of('clone')).toHaveLength(0)
+    }
+  })
+
+  it('a version check that fails or runs out of time says git could not be checked, not that it is old', async () => {
+    expect(VERSION_FAILED_MESSAGE).toBe("Lumopolis couldn't run git to check its version. Try again in a moment.")
+    // a non-zero exit, and the timeout (nodeExecFile answers it as a non-zero exit)
+    for (const version of [{ code: 1, stdout: '' }, { code: 1, stderr: 'it took too long', stdout: '' }, { code: 128, stdout: 'git version 2.47.1' }]) {
+      const f = fakeDeps({ version })
+      expect(await cloneRepo(HTTPS, undefined, f.deps)).toEqual({ ok: false, error: VERSION_FAILED_MESSAGE })
       expect(f.of('clone')).toHaveLength(0)
     }
     const rejects = fakeDeps()
     const inner = rejects.deps.execFile
     rejects.deps.execFile = async (c, args, o) => (args.includes('--version') ? Promise.reject(new Error('spawn failed')) : inner(c, args, o))
-    expect(await cloneRepo(HTTPS, undefined, rejects.deps)).toEqual({ ok: false, error: OLD_GIT_MESSAGE })
+    expect(await cloneRepo(HTTPS, undefined, rejects.deps)).toEqual({ ok: false, error: VERSION_FAILED_MESSAGE })
+    expect(rejects.of('clone')).toHaveLength(0)
     // A git that cannot be started says git was not found.
     const missing = fakeDeps({ version: { code: 1, stdout: '', missing: true } })
     expect(await cloneRepo(HTTPS, undefined, missing.deps)).toEqual({ ok: false, error: NO_GIT_MESSAGE })
@@ -594,22 +606,55 @@ describe('cloneRepo token runs', () => {
   })
 })
 
+describe('the clone folder of a URL that names a user', () => {
+  // The sources registry saves the URL without the user, and an update passes that saved URL: both must
+  // land in the one clone folder.
+  it('cloneKey is the same with and without the user in the URL', () => {
+    for (const ref of [undefined, 'main']) {
+      expect(cloneKey('https://me@github.com/o/r.git', ref)).toBe(cloneKey(HTTPS, ref))
+      expect(cloneKey('https://me:hunter2@github.com/o/r.git', ref)).toBe(cloneKey(HTTPS, ref))
+    }
+    // ssh keeps its user: it is part of the address
+    expect(cloneKey('ssh://git@github.com/o/r.git')).not.toBe(cloneKey('ssh://github.com/o/r.git'))
+    expect(cloneKey(7 as unknown as string)).toBe(cloneKey('7'))
+  })
+
+  it('an update of the saved URL reaches the folder the URL with the user was cloned into', async () => {
+    const renamed: string[] = []
+    const first = fakeDeps({}, { rename: async (_from, to) => void renamed.push(to) })
+    const cloned = await cloneRepo('https://me@github.com/o/r.git', undefined, first.deps, TOKEN_RUN)
+    expect(cloned).toMatchObject({ ok: true })
+    const root = (cloned as { root: string }).root
+    expect(renamed).toEqual([root])
+    const later = fakeDeps({}, { exists: async (p) => p === join(root, '.git', 'lumopolis-complete') })
+    expect(await cloneRepo(HTTPS, undefined, later.deps, TOKEN_RUN)).toMatchObject({ ok: true, root })
+    expect(later.of('fetch')[0].args).toEqual(expect.arrayContaining(['--git-dir', join(root, '.git'), '--work-tree', root]))
+    expect(later.of('clone')).toHaveLength(0)
+  })
+})
+
 describe('cloneRepo token runs: fix round 1', () => {
   /** Whether an exec carries anything of the askpass, or the value itself. */
   const carriesLogin = (env: Record<string, string>): boolean => Object.keys(env).some((k) => ASKPASS_VARS.test(k)) || JSON.stringify(env).includes(TOKEN)
 
-  it('the askpass and the value ride only the network steps: clone and fetch', async () => {
+  // The reset of an update is a network step too: in a --filter=blob:none clone it downloads the files it
+  // checks out through a git fetch child, which needs the askpass like the fetch before it.
+  it('the askpass and the value ride only the network steps: clone, fetch and the update reset', async () => {
     // A clone of a URL that names a user also runs remote set-url afterwards.
     const clone = fakeDeps()
     expect(await cloneRepo('https://me@github.com/o/r.git', undefined, clone.deps, TOKEN_RUN)).toMatchObject({ ok: true })
     const update = fakeDeps({}, { exists: async () => true })
     expect(await cloneRepo(HTTPS, undefined, update.deps, TOKEN_RUN)).toMatchObject({ ok: true })
-    const network = (args: string[]): boolean => args.includes('clone') || args.includes('fetch')
-    for (const f of [clone, update]) {
+    const network = (args: string[]): boolean => args.includes('clone') || args.includes('fetch') || args.includes('reset')
+    for (const [f, steps] of [[clone, 1], [update, 2]] as const) {
       const net = f.calls.filter((c) => network(c.args))
       const local = f.calls.filter((c) => !network(c.args))
-      expect(net).toHaveLength(1)
-      expect(net[0].opts.env.TERMPOLIS_GIT_ASKPASS_REPLY).toBe(TOKEN)
+      expect(net).toHaveLength(steps)
+      for (const c of net) {
+        expect(c.opts.env.TERMPOLIS_GIT_ASKPASS_REPLY).toBe(TOKEN)
+        expect(c.opts.env.GIT_ASKPASS).toBe(ASKPASS)
+        expect(c.opts.env.TERMPOLIS_GIT_ASKPASS_HOST).toBe('github.com')
+      }
       expect(local.length).toBeGreaterThan(0)
       for (const c of local) {
         expect(carriesLogin(c.opts.env)).toBe(false)
@@ -622,8 +667,13 @@ describe('cloneRepo token runs: fix round 1', () => {
     expect(clone.of('set-url')).toHaveLength(1)
     expect(update.of('rev-parse')).toHaveLength(2)
     expect(update.of('reset')).toHaveLength(1)
-    // A local step's env is its own object, never the network step's.
-    expect(update.of('reset')[0].opts.env).not.toBe(update.of('fetch')[0].opts.env)
+    // A local step's env is its own object, never a network step's.
+    expect(update.of('rev-parse')[0].opts.env).not.toBe(update.of('fetch')[0].opts.env)
+    expect(update.of('reset')[0].opts.env).toBe(update.of('fetch')[0].opts.env)
+    // A run without a token gives its reset the same env as every other step.
+    const plain = fakeDeps({}, { exists: async () => true })
+    await cloneRepo(HTTPS, undefined, plain.deps, { mode: 'machine', interactive: false })
+    expect(plain.of('reset')[0].opts.env).toBe(plain.of('rev-parse')[0].opts.env)
   })
 
   it('a token run never inherits a git trace, and always redacts one', async () => {

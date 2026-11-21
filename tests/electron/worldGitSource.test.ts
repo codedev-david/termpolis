@@ -248,6 +248,7 @@ describe('cloneRepo', () => {
       GIT_CONFIG_KEY_2: 'core.askPass',
       GIT_CONFIG_VALUE_2: '',
       GIT_TERMINAL_PROMPT: '0',
+      LANGUAGE: 'C',
       GCM_INTERACTIVE: 'never'
     })
     expect(calls[0].opts.timeout).toBe(300_000)
@@ -274,7 +275,7 @@ describe('cloneRepo', () => {
     const { deps, calls } = mkDeps({ env })
     await cloneRepo(URL1, undefined, deps)
     expect(Object.keys(calls[0].opts.env).filter((k) => !/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(k)).sort()).toEqual(
-      ['GCM_INTERACTIVE', 'GIT_ALLOW_PROTOCOL', 'GIT_CEILING_DIRECTORIES', 'GIT_TERMINAL_PROMPT', 'PATH', 'SSH_ASKPASS_REQUIRE'].sort()
+      ['GCM_INTERACTIVE', 'GIT_ALLOW_PROTOCOL', 'GIT_CEILING_DIRECTORIES', 'GIT_TERMINAL_PROMPT', 'LANGUAGE', 'PATH', 'SSH_ASKPASS_REQUIRE'].sort()
     )
     // the numbered config git reads is this run's own, never the inherited one
     expect(calls[0].opts.env.GIT_CONFIG_COUNT).toBe('3')

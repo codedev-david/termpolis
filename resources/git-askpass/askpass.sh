@@ -8,18 +8,21 @@ case "$1" in
   *) exit 1 ;;
 esac
 rest=${1#*"'"}
-case "$rest" in
-  https://*"'"*) ;;
+url=${rest%"'"*}
+# The URL is the text between the first and the last quote, and holds no quote of its own.
+case "$url" in
+  *"'"*) exit 1 ;;
+  https://*) ;;
   *) exit 1 ;;
 esac
-rest=${rest#https://}
-addr=${rest%%"'"*}
-# A user goes before the host, never after a slash.
+addr=${url#https://}
+# A user goes before the host, never after a slash, a question mark or a hash.
 case "$addr" in
-  */*@*) exit 1 ;;
+  *[/?#]*@*) exit 1 ;;
 esac
+addr=${addr%%[/?#]*}
+# The host is what follows the last @ of the address.
 addr=${addr##*@}
-addr=${addr%%/*}
 [ "$addr" = "$host" ] || exit 1
 case "$1" in
   Username*) printf '%s\n' "$TERMPOLIS_GIT_ASKPASS_USER" ;;

@@ -42,7 +42,7 @@ import {
   type WorldHostRequest,
   type WorldHostResponse
 } from '../../src/main/world/worldHost'
-import { CANCELLED_MESSAGE, CLONE_TIMEOUT_MS, cloneKey, safetyFlags, TIMEOUT_MESSAGE, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
+import { CANCELLED_MESSAGE, CLONE_MARKER, CLONE_TIMEOUT_MS, cloneKey, safetyFlags, TIMEOUT_MESSAGE, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
 import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import type { AnnotationStore } from '../../src/main/world/annotations'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
@@ -1271,7 +1271,7 @@ describe('createWorldHost cloneSource / cancelClone', () => {
 
   describe('access, sign-in and background updates', () => {
     const VALUE = 'neutral-value-1'
-    // A token run stats the askpass file before it reaches the queue, on the libuv pool, so one timer turn is
+    // A token run stats the askpass file at the start of its run, on the libuv pool, so one timer turn is
     // not always enough under load: each tick here also lets two stats of that file go through.
     const tick = async (): Promise<void> => {
       for (let i = 0; i < 2; i++) {
@@ -1506,6 +1506,91 @@ describe('createWorldHost cloneSource / cancelClone', () => {
         expect(resultOf(h, 4)).toMatchObject({ ok: true, result: false })
       })
     }
+
+    // The askpass check is part of the registered run: a cancel that lands while it is still being looked
+    // for finds the run, and the clone then stops before git is even looked up.
+    for (const fn of ['cloneSource', 'updateSource'] as const) {
+      it(`a cancel while a token ${fn} checks for the askpass returns Cancelled, and git never starts`, async () => {
+        const execFile = vi.fn(async () => ({ code: 0, stderr: '', stdout: 'git version 2.47.1' }))
+        const gitBin = vi.fn(async () => '/usr/bin/git')
+        const h = harness({ cloneDeps: { execFile, gitBin } })
+        await initWithAskpass(h)
+        const access = { mode: 'token', value: VALUE }
+        const a = call(h.send, 1, fn, fn === 'cloneSource' ? [URL1, undefined, access] : [URL1, undefined, 'token', access])
+        // no await between the two: the cancel lands while the askpass file is still being looked at
+        await call(h.send, 2, 'cancelClone', [URL1])
+        expect(resultOf(h, 2)).toMatchObject({ ok: true, result: true })
+        await a
+        expect(resultOf(h, 1)).toMatchObject({ ok: true, result: { ok: false, error: CANCELLED_MESSAGE } })
+        expect(gitBin).not.toHaveBeenCalled()
+        expect(execFile).not.toHaveBeenCalled()
+        // nothing is left running
+        await call(h.send, 3, 'cancelClone', [URL1])
+        expect(resultOf(h, 3)).toMatchObject({ ok: true, result: false })
+      })
+    }
+
+    it('a token run whose askpass is missing is still refused inside the run, so it waits its turn like any other', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      const { h, runs, releases } = pending()
+      await h.init()
+      const a = call(h.send, 1, 'updateSource', [URL1, undefined, 'machine'])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      // the refused token run is queued behind the machine run, where a cancel can reach it
+      await call(h.send, 3, 'cancelClone', [URL1])
+      expect(resultOf(h, 3)).toMatchObject({ ok: true, result: true })
+      releases[0]({ ok: true, root: '/r', changed: false })
+      await Promise.all([a, b])
+      expect(runs).toEqual([{ mode: 'machine', interactive: false }])
+      expect(resultOf(h, 2)).toMatchObject({ ok: true, result: { ok: false, error: CANCELLED_MESSAGE } })
+    })
+
+    it('an update of the saved URL, without the user, reaches the folder the URL with the user was cloned into', async () => {
+      let root = ''
+      const fetchDirs: string[] = []
+      const execFile = vi.fn(async (_c: string, args: string[]) => {
+        if (args.includes('fetch')) fetchDirs.push(args[args.indexOf('--git-dir') + 1])
+        return { code: 0, stderr: '', stdout: args.includes('--version') ? 'git version 2.47.1' : '' }
+      })
+      const h = harness({
+        cloneDeps: {
+          execFile,
+          gitBin: async () => '/usr/bin/git',
+          realpath: async (p) => p,
+          dirSize: async () => 1,
+          rm: async () => undefined,
+          exists: async (p) => root !== '' && p === join(root, '.git', CLONE_MARKER),
+          listDir: async () => [],
+          mark: async () => undefined,
+          rename: async (_from, to) => void (root = to)
+        }
+      })
+      await h.init()
+      await call(h.send, 1, 'cloneSource', ['https://me@github.com/a/b.git', undefined, { mode: 'machine' }])
+      expect(root).not.toBe('')
+      expect(resultOf(h, 1)).toMatchObject({ ok: true, result: { ok: true, root } })
+      // the sources registry saved the URL without the user, and the update passes that
+      await call(h.send, 2, 'updateSource', [URL1, undefined, 'machine'])
+      expect(resultOf(h, 2)).toMatchObject({ ok: true, result: { ok: true, changed: true } })
+      expect(fetchDirs).toEqual([join(root, '.git')])
+      expect(execFile.mock.calls.filter((c) => c[1].includes('clone'))).toHaveLength(1)
+    })
+
+    it('a cancel of the saved URL reaches the running clone of the URL with the user', async () => {
+      const { h, runs, releases } = pending()
+      await h.init()
+      const a = call(h.send, 1, 'cloneSource', ['https://me@github.com/a/b.git', undefined, { mode: 'machine' }])
+      await tick()
+      expect(runs).toHaveLength(1)
+      await call(h.send, 2, 'cancelClone', [URL1])
+      expect(resultOf(h, 2)).toMatchObject({ ok: true, result: true })
+      releases[0]({ ok: false, error: CANCELLED_MESSAGE })
+      await a
+      // and its progress is posted under the folder's one key
+      expect(progress(h.out)[0]).toMatchObject({ projectKey: `clone:${cloneKey(URL1)}` })
+    })
 
     it('a request queued after a cancel still runs normally', async () => {
       const { h, runs, releases } = pending()

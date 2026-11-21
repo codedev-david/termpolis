@@ -148,12 +148,13 @@ async function startClone(page: Page): Promise<void> {
 }
 
 /** The world of the fixture repository is open and drawn: the switcher lists it by its title ("private",
- *  from the URL), and the toolbar names the folder of its saved copy, which this returns. */
+ *  from the URL), and the toolbar names it by that title too, never by the hashed folder of its saved
+ *  copy. Returns the toolbar's name. */
 async function expectWorldOpen(page: Page): Promise<string> {
   await expect(home(page)).toHaveCount(0, { timeout: 60_000 })
   await expect(page.getByRole('combobox', { name: 'Worlds' }).locator('option', { hasText: /^private$/ })).toHaveCount(1, { timeout: 60_000 })
   const project = page.locator('[data-testid="world-project"]')
-  await expect(project).toHaveText(/\S/, { timeout: 60_000 })
+  await expect(project).toHaveText('private', { timeout: 60_000 })
   const canvasHost = page.locator('[data-testid="world-canvas-host"]')
   await expect(canvasHost.locator('canvas')).toBeVisible({ timeout: 120_000 })
   await expect(canvasHost).toHaveCSS('visibility', 'visible', { timeout: 30_000 })

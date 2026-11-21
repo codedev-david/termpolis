@@ -34,7 +34,7 @@ const LOGIN_WORDS = /credential|password|oauth|secret|token/i
 /** A `git config --list -z` listing: each entry is `key\nvalue`, entries end with NUL. */
 const listing = (...entries: string[]): string => entries.map((e) => `${e}\0`).join('')
 
-function helperDeps(result: Partial<ExecResult> | (() => Promise<ExecResult>), env: NodeJS.ProcessEnv = { PATH: 'p' }) {
+function helperDeps(result: Partial<ExecResult> | (() => Promise<ExecResult>), env: NodeJS.ProcessEnv = { PATH: 'p' }, isWindows = false) {
   const calls: { cmd: string; args: string[]; opts: ExecOpts }[] = []
   const execFile: ExecFn = async (cmd, args, opts) => {
     // No login word and no pasted value ever reaches a command line.
@@ -44,7 +44,7 @@ function helperDeps(result: Partial<ExecResult> | (() => Promise<ExecResult>), e
     if (typeof result === 'function') return result()
     return { code: 0, stderr: '', stdout: '', missing: false, ...result }
   }
-  return { deps: { execFile, gitBin: async () => GIT as string | null, baseDir: BASE, env }, calls }
+  return { deps: { execFile, gitBin: async () => GIT as string | null, baseDir: BASE, env, isWindows }, calls }
 }
 
 describe('login modes', () => {
@@ -86,11 +86,21 @@ describe('login modes', () => {
     expect(configEnv([])).toEqual({ GIT_CONFIG_COUNT: '0' })
   })
 
+  it("every mode's git speaks English, so its sign-in and not-found messages are read right", () => {
+    for (const run of [NONE, BACKGROUND, INTERACTIVE, TOKEN]) {
+      for (const env of [loginEnv(run), loginEnv(run, ASKPASS, 'example.test')]) {
+        expect(env.LANGUAGE).toBe('C')
+        // LC_ALL would also change how git reads file names: it is left as it is.
+        expect(env).not.toHaveProperty('LC_ALL')
+      }
+    }
+  })
+
   it('a background machine run can never prompt', () => {
-    expect(loginEnv(BACKGROUND)).toEqual({ GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' })
-    expect(loginEnv(NONE)).toEqual({ GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' })
+    expect(loginEnv(BACKGROUND)).toEqual({ GIT_TERMINAL_PROMPT: '0', LANGUAGE: 'C', GCM_INTERACTIVE: 'never' })
+    expect(loginEnv(NONE)).toEqual({ GIT_TERMINAL_PROMPT: '0', LANGUAGE: 'C', GCM_INTERACTIVE: 'never' })
     // Only a run the person asked for may show the login helper's own window.
-    expect(loginEnv(INTERACTIVE)).toEqual({ GIT_TERMINAL_PROMPT: '0' })
+    expect(loginEnv(INTERACTIVE)).toEqual({ GIT_TERMINAL_PROMPT: '0', LANGUAGE: 'C' })
     expect(loginEnv(INTERACTIVE)).not.toHaveProperty('GCM_INTERACTIVE')
     expect(loginEnv(TOKEN, ASKPASS)).not.toHaveProperty('GCM_INTERACTIVE')
   })
@@ -98,6 +108,7 @@ describe('login modes', () => {
   it('a token run hands git the shipped askpass, the value and the one host it answers for, in the environment only', () => {
     expect(loginEnv(TOKEN, ASKPASS, 'example.test')).toEqual({
       GIT_TERMINAL_PROMPT: '0',
+      LANGUAGE: 'C',
       GIT_TRACE_REDACT: '1',
       GIT_ASKPASS: ASKPASS,
       TERMPOLIS_GIT_ASKPASS_USER: 'x-access-token',
@@ -105,11 +116,12 @@ describe('login modes', () => {
       TERMPOLIS_GIT_ASKPASS_HOST: 'example.test'
     })
     // The local steps of a token run: no askpass, no value, and any trace stays redacted.
-    expect(loginEnv(TOKEN)).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_TRACE_REDACT: '1' })
+    const plain = { GIT_TERMINAL_PROMPT: '0', LANGUAGE: 'C', GIT_TRACE_REDACT: '1' }
+    expect(loginEnv(TOKEN)).toEqual(plain)
     // With no askpass to read it, or no host to bind it to, the value is not put anywhere.
-    expect(loginEnv(TOKEN, ASKPASS)).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_TRACE_REDACT: '1' })
-    expect(loginEnv(TOKEN, undefined, 'example.test')).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_TRACE_REDACT: '1' })
-    expect(loginEnv(TOKEN, ASKPASS, '')).toEqual({ GIT_TERMINAL_PROMPT: '0', GIT_TRACE_REDACT: '1' })
+    expect(loginEnv(TOKEN, ASKPASS)).toEqual(plain)
+    expect(loginEnv(TOKEN, undefined, 'example.test')).toEqual(plain)
+    expect(loginEnv(TOKEN, ASKPASS, '')).toEqual(plain)
     // Only a token run ever names an askpass, or changes git's trace.
     for (const run of [NONE, BACKGROUND, INTERACTIVE]) {
       const env = loginEnv(run, ASKPASS, 'example.test')
@@ -237,7 +249,7 @@ describe('hasLoginHelper', () => {
     expect(calls).toHaveLength(1)
     const [c] = calls
     expect(c.cmd).toBe(GIT)
-    const flags = safetyFlags(process.platform === 'win32')
+    const flags = safetyFlags(false)
     expect(c.args.slice(0, flags.length)).toEqual(flags)
     expect(c.args.slice(flags.length)).toEqual(['config', '--list', '-z'])
     expect(c.args.join(' ')).not.toMatch(/credential|password|oauth|secret|token/i)
@@ -246,6 +258,15 @@ describe('hasLoginHelper', () => {
     expect(HELPER_LIST_MAX).toBe(1_048_576)
     expect(c.opts.timeout).toBeGreaterThan(0)
     expect(c.opts.env).toEqual({ PATH: 'p', GIT_CEILING_DIRECTORIES: BASE, GIT_TERMINAL_PROMPT: '0' })
+  })
+
+  it('takes the safety flags for the platform it is told, not the one it runs on', async () => {
+    for (const isWindows of [true, false]) {
+      const { deps, calls } = helperDeps({ stdout: '' }, { PATH: 'p' }, isWindows)
+      await hasLoginHelper(deps, 'github.com')
+      const flags = safetyFlags(isWindows)
+      expect(calls[0].args).toEqual([...flags, 'config', '--list', '-z'])
+    }
   })
 
   it('defaults the environment to process.env', async () => {
@@ -288,18 +309,21 @@ describe('the shipped askpass script', () => {
         '  *) exit 1 ;;',
         'esac',
         `rest=\${1#*"'"}`,
-        'case "$rest" in',
-        `  https://*"'"*) ;;`,
+        `url=\${rest%"'"*}`,
+        '# The URL is the text between the first and the last quote, and holds no quote of its own.',
+        'case "$url" in',
+        `  *"'"*) exit 1 ;;`,
+        '  https://*) ;;',
         '  *) exit 1 ;;',
         'esac',
-        'rest=${rest#https://}',
-        `addr=\${rest%%"'"*}`,
-        '# A user goes before the host, never after a slash.',
+        'addr=${url#https://}',
+        '# A user goes before the host, never after a slash, a question mark or a hash.',
         'case "$addr" in',
-        '  */*@*) exit 1 ;;',
+        '  *[/?#]*@*) exit 1 ;;',
         'esac',
+        'addr=${addr%%[/?#]*}',
+        '# The host is what follows the last @ of the address.',
         'addr=${addr##*@}',
-        'addr=${addr%%/*}',
         '[ "$addr" = "$host" ] || exit 1',
         'case "$1" in',
         `  Username*) printf '%s\\n' "$TERMPOLIS_GIT_ASKPASS_USER" ;;`,
@@ -352,6 +376,32 @@ describe('the shipped askpass script', () => {
     expect(ask("Enter value for 'cert.pem': ")).toEqual(refused)
     expect(ask("Enter value for 'https://': ")).toEqual(refused)
     expect(ask('')).toEqual(refused)
+  })
+
+  it('a quote, a question mark or a hash before the @ never makes another host look like the forge', () => {
+    // A quote closing the URL early: the text before it names the forge, the address after it does not.
+    expect(ask("Enter value for 'https://example.test'@evil.example': ")).toEqual(refused)
+    expect(ask("Username for 'https://example.test'@evil.example/o/r.git': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://me'x@example.test': ")).toEqual(refused)
+    // A query or a fragment ends the host: the forge's name after them is not the host.
+    expect(ask("Enter value for 'https://evil.example#@example.test': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://evil.example?@example.test': ")).toEqual(refused)
+    expect(ask("Username for 'https://evil.example?x=1@example.test/o/r.git': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://example.test?@evil.example': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://example.test#@evil.example': ")).toEqual(refused)
+    // The host is what follows the last @, so a user name holding an @ still reaches the forge, and a
+    // forge name in the user part does not.
+    expect(ask("Enter value for 'https://a@b@example.test/o/r.git': ")).toEqual(answered(`${VALUE}\n`))
+    expect(ask("Enter value for 'https://example.test@b@evil.example': ")).toEqual(refused)
+    // A plain address with a query or a fragment after the host is still the forge's.
+    expect(ask("Enter value for 'https://example.test?x=1': ")).toEqual(answered(`${VALUE}\n`))
+    expect(ask("Enter value for 'https://example.test#top': ")).toEqual(answered(`${VALUE}\n`))
+  })
+
+  it('a normal prompt with the user git knows still gets its answers', () => {
+    expect(ask("Username for 'https://me@github.com/o/r.git': ", 'github.com')).toEqual(answered('x-access-token\n'))
+    expect(ask("Enter value for 'https://me@github.com/o/r.git': ", 'github.com')).toEqual(answered(`${VALUE}\n`))
+    expect(ask("Enter value for 'https://me@github.com': ", 'github.com')).toEqual(answered(`${VALUE}\n`))
   })
 
   it('with no host set it answers nothing, not even the user', () => {

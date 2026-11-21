@@ -10,7 +10,7 @@ import { DESIGN_NOT_FOUND } from '../../src/main/world/designer'
 import { FORBIDDEN_FOLDER } from '../../src/main/world/folderSafety'
 import { taskPromptArg } from '../../src/shared/taskRouter'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE } from '../../src/shared/world/gitUrl'
-import { AUTH_MESSAGE } from '../../src/main/world/gitSource'
+import { AUTH_MESSAGE, cloneKey } from '../../src/main/world/gitSource'
 import { TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import { createSourceRegistry } from '../../src/main/world/sources'
 import type { WorldDoc, WorldEntry, WorldSource } from '../../src/shared/world/types'
@@ -265,6 +265,34 @@ describe('registerWorldIpc sources handlers', () => {
       expect(JSON.stringify(file)).not.toContain(v)
       expect(file).not.toContain(v)
       expect(JSON.stringify(t)).not.toContain(v)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('an update of a repository opened from a URL with a user reaches the folder it was cloned into', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'world-ipc-user-'))
+    try {
+      const registry = createSourceRegistry(dir, { exists: async () => true, now: () => 1 })
+      const folderOf = (url: string, ref?: string): string => `C:/ud/world/repos/${cloneKey(url, ref)}`
+      const updated: string[] = []
+      const s = setup({
+        registry,
+        clone: vi.fn(async (url: string, ref?: string) => ({ ok: true as const, root: folderOf(url, ref) })),
+        updateSource: vi.fn(async (url: string, ref?: string) => {
+          updated.push(folderOf(url, ref))
+          return { ok: true as const, changed: true }
+        })
+      })
+      for (const ref of [undefined, 'main']) {
+        const opened = (await s.invoke('world:clone', { url: 'https://me@github.com/a/b.git', ...(ref ? { ref } : {}), access: { mode: 'machine' } })) as { data: WorldEntry }
+        const source = opened.data.source as Extract<WorldSource, { kind: 'git' }>
+        // the saved URL has no user in it, and still names the folder the clone went to
+        expect(source.url).toBe('https://github.com/a/b.git')
+        expect(await s.invoke('world:update-source', { key: opened.data.key })).toEqual({ success: true, data: { changed: true } })
+        expect(updated[updated.length - 1]).toBe(source.root)
+      }
+      expect(updated).toHaveLength(2)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

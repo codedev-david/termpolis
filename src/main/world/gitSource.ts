@@ -47,10 +47,8 @@ export const FINISH_MESSAGE = "Lumopolis couldn't save that repository. Try agai
 export const NO_GIT_MESSAGE = 'Lumopolis needs git to open a repository, and git was not found on this computer.'
 export const TIMEOUT_MESSAGE = 'That repository took longer than 5 minutes to download, so Lumopolis stopped.'
 export const AUTH_MESSAGE = 'That repository needs you to sign in. Sign in with the login this computer already uses for git, or use a token.'
-/** A signed-in https run that the host answers with "not found": the account it used cannot see the repository. */
-export function notFoundMessage(host: string): string {
-  return `The account you signed in to ${host} with can't see that repository. Use a token from an account that can see it.`
-}
+/** `git --version` failed, or ran out of time: git may be fine, so this is not called an old git. */
+export const VERSION_FAILED_MESSAGE = "Lumopolis couldn't run git to check its version. Try again in a moment."
 export const SSH_AUTH_MESSAGE =
   "That repository needs you to sign in, and your ssh agent couldn't open it. Check that your ssh key is added, or clone it yourself and choose Open a folder."
 /** Written inside `.git` once a clone is complete; only a marked clone is updated in place. */
@@ -65,10 +63,11 @@ export const CLONE_TIMEOUT_MS = 5 * 60_000
 export const SIZE_POLL_MS = 2000
 
 /** The folder name for a clone: the first 16 hex digits of sha1(url + NUL + ref). The separator keeps
- *  `a.gitx` with no ref apart from `a.git` with ref `x`. */
+ *  `a.gitx` with no ref apart from `a.git` with ref `x`. An https URL is hashed without any user in it: the
+ *  sources registry saves it that way, so an update of the saved URL reaches the folder it was cloned into. */
 export function cloneKey(url: string, ref?: string): string {
   return createHash('sha1')
-    .update(`${String(url)}\0${typeof ref === 'string' ? ref : ''}`)
+    .update(`${stripUrlUserinfo(String(url))}\0${typeof ref === 'string' ? ref : ''}`)
     .digest('hex')
     .slice(0, 16)
 }
@@ -319,15 +318,18 @@ function httpsHost(url: string): string | null {
   return host ? host.toLowerCase() : null
 }
 
-/** Each CloneDeps object asks git its version once: 'ok', 'missing' (git could not be started) or 'old'. */
-const versionChecks = new WeakMap<CloneDeps, Promise<'ok' | 'missing' | 'old'>>()
+type GitVersion = 'ok' | 'missing' | 'failed' | 'old'
 
-function checkGitVersion(deps: CloneDeps, gitBin: string, env: Record<string, string>): Promise<'ok' | 'missing' | 'old'> {
+/** Each CloneDeps object asks git its version once: 'ok', 'missing' (git could not be started), 'failed' (the
+ *  run failed, timed out or was stopped) or 'old' (below MIN_GIT, or a version git did not print plainly). */
+const versionChecks = new WeakMap<CloneDeps, Promise<GitVersion>>()
+
+function checkGitVersion(deps: CloneDeps, gitBin: string, env: Record<string, string>): Promise<GitVersion> {
   let check = versionChecks.get(deps)
   if (!check) {
     check = deps.execFile(gitBin, ['--version'], { env, timeout: VERSION_TIMEOUT_MS, signal: deps.signal, stdoutMax: SMALL_OUTPUT_MAX }).then(
-      (r) => (r.missing ? 'missing' : gitNewEnough(parseGitVersion(r.code === 0 ? (r.stdout ?? '') : '')) ? 'ok' : 'old'),
-      () => 'old' as const
+      (r): GitVersion => (r.missing ? 'missing' : r.code !== 0 ? 'failed' : gitNewEnough(parseGitVersion(r.stdout ?? '')) ? 'ok' : 'old'),
+      (): GitVersion => 'failed'
     )
     versionChecks.set(deps, check)
   }
@@ -395,11 +397,12 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   const version = await checkGitVersion(deps, gitBin, { ...env })
   if (ext?.aborted) return { ok: false, error: CANCELLED_MESSAGE }
   if (version === 'missing') return { ok: false, error: NO_GIT_MESSAGE }
+  if (version === 'failed') return { ok: false, error: VERSION_FAILED_MESSAGE }
   if (version === 'old') return { ok: false, error: OLD_GIT_MESSAGE }
   // The login settings for this run (and whether git may prompt) go over the inherited environment, which
-  // for a token run first loses any git trace. The local steps (rev-parse, remote set-url, reset) get that
-  // login-free env; only the network steps (clone, fetch) of a token run also get the askpass, the token
-  // and the host it answers for. Both are built afresh for every run and dropped when it ends: nothing here
+  // for a token run first loses any git trace. The local steps (rev-parse, remote set-url) get that
+  // login-free env; only the network steps (clone, fetch, and an update's reset) of a token run also get the
+  // askpass, the token and the host it answers for. Both are built afresh for every run and dropped when it ends: nothing here
   // keeps or returns them.
   const localEnv = { ...(run.mode === 'token' ? withoutTrace(env) : env), ...configEnv(loginConfig(run)), ...loginEnv(run) }
   const netEnv = run.mode === 'token' ? { ...localEnv, ...loginEnv(run, deps.askpassPath, rawHttpsHost(url)) } : localEnv
@@ -423,7 +426,9 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
   const commands: Array<{ args: string[]; env: Record<string, string> }> = updating
     ? [
         { args: [...flags, ...pin, 'fetch', '--quiet', '--depth', '1', 'origin', ref ?? 'HEAD'], env: netEnv },
-        { args: [...flags, ...pin, 'reset', '--hard', 'FETCH_HEAD'], env: localEnv }
+        // A network step too: in this --filter=blob:none clone the reset downloads the files it checks out
+        // through a git fetch child, which needs the askpass like the fetch before it.
+        { args: [...flags, ...pin, 'reset', '--hard', 'FETCH_HEAD'], env: netEnv }
       ]
     : [
         { args: cloneArgs(url, work, ref, deps.isWindows), env: netEnv },
@@ -523,8 +528,9 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
     if (!auth && !unseen) return { ok: false, error: `Couldn't reach that repository: ${failure}` }
     // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.
     if (host === null) return { ok: false, error: SSH_AUTH_MESSAGE }
-    // A token that git refused, or that cannot see the repository, is one that did not open it.
-    const error = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : auth ? AUTH_MESSAGE : notFoundMessage(host)
+    // A token that git refused, or that cannot see the repository, is one that did not open it. A signed-in
+    // account that cannot see it gets the one sign-in message the spec gives (Flow 1 and Copy).
+    const error = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE
     return { ok: false, error, needsLogin: { host, helper: await hasLoginHelper(deps, host) } }
   }
   if (!updating) {

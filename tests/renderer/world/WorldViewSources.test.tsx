@@ -117,6 +117,39 @@ describe('WorldView sources', () => {
     expect(screen.getByTestId('world-relayout')).toBeDisabled()
   })
 
+  // A clone lives in a folder named by a hash: the toolbar and the flat map name it by its saved title.
+  it('a cloned repository is named by its title, in the toolbar and in the flat map', async () => {
+    const CLONE: WorldEntry = { key: 'kc', source: { kind: 'git', url: 'https://github.com/o/shop.git', root: 'C:/ud/world/repos/0123456789abcdef', login: 'machine' }, title: 'o/shop', lastOpened: 4 }
+    for (const webgl of [true, false]) {
+      h.webgl = webgl
+      bridge({
+        worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([CLONE])),
+        worldTouchSource: vi.fn(async () => ok<WorldEntry | null>(CLONE)),
+        worldUpdateSource: vi.fn(async () => ok({ changed: false })),
+      })
+      const m = await mount('')
+      fireEvent.click(screen.getByRole('button', { name: 'Open o/shop' }))
+      await settle()
+      expect(screen.getByTestId('world-project')).toHaveTextContent('o/shop')
+      expect(screen.getByTestId('world-project')).not.toHaveTextContent('0123456789abcdef')
+      if (!webgl) {
+        expect(screen.getByTestId('world-fallback')).toHaveTextContent('o/shop')
+        expect(screen.getByTestId('world-fallback')).not.toHaveTextContent('0123456789abcdef')
+      }
+      m.unmount()
+    }
+  })
+
+  it('a folder that is no repository in the list keeps its folder name', async () => {
+    const OTHER: WorldEntry = { key: 'ko', source: { kind: 'git', url: 'https://github.com/o/x.git', root: 'C:/ud/world/repos/ffff', login: 'machine' }, title: 'o/x', lastOpened: 4 }
+    bridge({ worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([OTHER, FOLDER])) })
+    await mount('')
+    fireEvent.click(screen.getByRole('button', { name: 'Open shop' }))
+    await settle()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('shop')
+    expect(screen.getByTestId('world-project')).not.toHaveTextContent('o/x')
+  })
+
   it('Map this project follows the active terminal again', async () => {
     const api = bridge({ worldMapProject: vi.fn(async () => ok(FOLDER)) })
     const m = await mount('/repo')
