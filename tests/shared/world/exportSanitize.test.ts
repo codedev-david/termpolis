@@ -490,3 +490,50 @@ describe('fix round 2: a drive letter glued to a word', () => {
     expect(sanitizeText('xC:/Users/dev/a.ts', win)).toBe(`x${OUTSIDE}/a.ts`)
   })
 })
+
+describe('fix round 4: Windows folders written the Git Bash or Cygwin way', () => {
+  const cases: [string, string][] = [
+    ['see /c/Users/dev/repo/src/a.ts', 'see src/a.ts'],
+    ['see /c/Users/dev/AppData/Roaming/termpolis/x', `see ${OUTSIDE}/x`],
+    ['(/c/Users/dev/x)', `(${OUTSIDE}/x)`],
+    ['/cygdrive/c/Users/dev/x', `${OUTSIDE}/x`],
+    ['at /C/USERS/DEV/repo/b.ts.', 'at b.ts.'],
+    ['at \\cygdrive\\c\\Users\\dev', `at ${OUTSIDE}`],
+  ]
+  for (const [t, want] of cases) {
+    it(`rewrites ${t}`, () => {
+      expect(sanitizeText(t, win)).toBe(want)
+    })
+  }
+
+  it('maps a Git Bash path into the project as a path field too', () => {
+    expect(relativePath('/c/Users/dev/repo/src/a.ts', win)).toBe('src/a.ts')
+    expect(relativePath('/cygdrive/c/Users/dev/repo/src/a.ts', win)).toBe('src/a.ts')
+    expect(relativePath('/c/Users/dev', win)).toBe(OUTSIDE)
+    expect(relativePath('/d/other/x.ts', win)).toBe(`${OUTSIDE}/x.ts`)
+  })
+
+  it('keeps a POSIX machine reading /c as a plain folder', () => {
+    expect(relativePath('/c/home/dev/repo/a.ts', posix)).toBe(`${OUTSIDE}/a.ts`)
+    expect(sanitizeText('src/c/d and /c/x', posix)).toBe('src/c/d and /c/x')
+  })
+
+  it('leaves a short path alone for a drive-root project', () => {
+    const ctx = { ...win, root: 'C:\\' }
+    expect(sanitizeText('src/c/d', ctx)).toBe('src/c/d')
+  })
+
+  it('keeps the account folder out of a whole sanitised world', () => {
+    const doc = minimal()
+    const all = cases.map(([t]) => t)
+    doc.buildings[0].name = all.join(' and ')
+    doc.buildings[0].members = ['/c/Users/dev/repo/src/a.ts', '/cygdrive/c/Users/dev/x']
+    doc.buildings[0].how = [claimOf(all.join(', '), ...all.map((ref): Claim['evidence'][number] => ({ kind: 'file', ref })))]
+    const out = sanitizeWorld(doc, win)
+    expect(out.buildings[0].members).toEqual(['src/a.ts', `${OUTSIDE}/x`])
+    const json = JSON.stringify(out).toLowerCase()
+    expect(json).not.toContain('users/dev')
+    expect(json).not.toContain('users\\\\dev')
+    expect(json).not.toContain('users\\dev')
+  })
+})

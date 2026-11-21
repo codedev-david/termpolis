@@ -20,7 +20,13 @@
 //     (`api:/users/123` is rewritten too: it cannot be told apart from `api:/users/ann`.)
 // Other absolute POSIX text (`/api/users`, `/etc/hosts`) is left alone. Beyond that definition, the project root,
 // the home folder and the userData folder are found wherever they appear (any case, either slash, doubled
-// backslashes, the long and admin-share forms), so a folder name holding a space never splits.
+// backslashes, the long and admin-share forms, and a drive written the Git Bash or Cygwin way, `/c/...` or
+// `/cygdrive/c/...`), so a folder name holding a space never splits.
+//
+// Known limits (ruled acceptable): a percent-encoded path outside a file URL; a path split by a line break; a
+// path right after `<`, `|`, `+`, `@`, `&` or `*`; a forward-slash UNC path (`//host/share`); another scheme's
+// URL holding a path (`vscode://file/home/<other>`); and a space in another account's folder name (only this
+// machine's own folders are matched whole, so `/home/Ann Lee/x` ends at the space).
 
 import { redactSecrets } from '../appLog'
 import type { Building, BuildingGrowth, Claim, District, Evidence, EvidenceKind, External, Floor, PlanReconcile, Proposal, Tour, WorldDoc, WorldEdge } from './types'
@@ -134,6 +140,9 @@ export function relativePath(p: string, ctx: SanitizeContext): string {
   let n = plainPath(p)
   if (n === '~' || n.startsWith('~/')) n = norm(ctx.home) + n.slice(1)
   else if (n.startsWith('~')) return outside(n.split('/').slice(1))
+  // On Windows (a drive home folder) `/c/x` and `/cygdrive/c/x` are Git Bash and Cygwin for `C:/x`.
+  const bash = /^\/(?:cygdrive\/)?([A-Za-z])(?=\/|$)/i.exec(n)
+  if (bash && /^[A-Za-z]:/.test(ctx.home)) n = `${bash[1]}:${n.slice(bash[0].length)}`
   if (!isAbsolute(n)) return n ? resolveRelative(n.split('/')) : ''
   const n2 = norm(n)
   const inRoot = ctx.root === null ? null : under(n2, norm(ctx.root))
@@ -154,8 +163,11 @@ function baseSource(base: string): string {
   const parts = n.split('/')
   const drive = /^([A-Za-z]):$/.exec(parts[0])
   if (drive) {
-    const head = `(?:[\\\\/]{2}[?.]${SEP})?(?:${drive[1]}:|[\\\\/]{2}[^\\s\\\\/"'<>|]+${SEP}${drive[1]}\\$)`
-    return head + parts.slice(1).map((s) => SEP + escapeRe(s)).join('')
+    const rest = parts.slice(1).map((s) => SEP + escapeRe(s)).join('')
+    // Git Bash and Cygwin write the drive as a folder (`/c/...`, `/cygdrive/c/...`). Only below the drive itself:
+    // a drive-root project would otherwise claim any `/c/` in the text.
+    const bash = rest ? `|[\\\\/]+(?:cygdrive${SEP})?${drive[1]}` : ''
+    return `(?:(?:[\\\\/]{2}[?.]${SEP})?(?:${drive[1]}:|[\\\\/]{2}[^\\s\\\\/"'<>|]+${SEP}${drive[1]}\\$)${bash})${rest}`
   }
   if (n.startsWith('//')) return `(?:[\\\\/]{2}[?.]${SEP}unc${SEP}|[\\\\/]{2})` + parts.slice(2).map(escapeRe).join(SEP)
   return parts.map(escapeRe).join(SEP)
