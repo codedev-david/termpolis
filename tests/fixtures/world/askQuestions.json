@@ -1,0 +1,106 @@
+[
+  {
+    "q": "how does the phone connect to my desktop",
+    "labelled": [
+      "b-remote",
+      "x-phone",
+      "x-relay"
+    ]
+  },
+  {
+    "q": "where are passwords and API keys kept safe",
+    "labelled": [
+      "b-memhost",
+      "tech:OS keystore"
+    ]
+  },
+  {
+    "q": "what handles typing lag",
+    "labelled": [
+      "b-terminals",
+      "e-keys",
+      "b-pty"
+    ]
+  },
+  {
+    "q": "how does it remember things between sessions",
+    "labelled": [
+      "b-memhost",
+      "b-distiller"
+    ]
+  },
+  {
+    "q": "which part turns text into numbers so it can search by meaning",
+    "labelled": [
+      "b-embed",
+      "tech:bge-small",
+      "tech:ONNX Runtime"
+    ]
+  },
+  {
+    "q": "what shrinks the requests sent to Claude to save tokens",
+    "labelled": [
+      "b-proxy"
+    ]
+  },
+  {
+    "q": "how do several AI agents split up one big job",
+    "labelled": [
+      "b-swarm"
+    ]
+  },
+  {
+    "q": "can an agent hand work to another computer I own",
+    "labelled": [
+      "b-linked",
+      "x-linked"
+    ]
+  },
+  {
+    "q": "what draws the 3D city",
+    "labelled": [
+      "b-lumo-pane",
+      "tech:three.js"
+    ]
+  },
+  {
+    "q": "how do agents call the app's own tools",
+    "labelled": [
+      "b-mcp",
+      "b-stdio",
+      "b-gateway",
+      "tech:MCP"
+    ]
+  },
+  {
+    "q": "how does it know which functions call which",
+    "labelled": [
+      "b-codegraph"
+    ]
+  },
+  {
+    "q": "what runs git and other helper programs without freezing the window",
+    "labelled": [
+      "b-proc"
+    ]
+  },
+  {
+    "q": "how are search results put in a better order",
+    "labelled": [
+      "b-rerank",
+      "tech:cross-encoder"
+    ]
+  },
+  {
+    "q": "where do the terminal shells actually run",
+    "labelled": [
+      "b-pty"
+    ]
+  },
+  {
+    "q": "how does it see what an agent did from its own session logs",
+    "labelled": [
+      "b-watchers"
+    ]
+  }
+]

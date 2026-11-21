@@ -1,0 +1,3887 @@
+{
+ "version": 1,
+ "projectKey": "termpolis-website-demo",
+ "generatedAt": 1795014078000,
+ "sourceRevision": {
+  "head": "3bda338dfb2767f2b279c067ca7e3a4397c1b07c",
+  "dirty": false
+ },
+ "districts": [
+  {
+   "id": "d-screen",
+   "name": "Screen",
+   "subtitle": "The window you see and click",
+   "hue": 200,
+   "members": [
+    "src/renderer/src"
+   ],
+   "nameState": "observed"
+  },
+  {
+   "id": "d-core",
+   "name": "Core",
+   "subtitle": "The main process and the helpers it starts",
+   "hue": 28,
+   "members": [
+    "src/main"
+   ],
+   "nameState": "observed"
+  },
+  {
+   "id": "d-memory",
+   "name": "Memory",
+   "subtitle": "What the AI remembers, kept on this computer",
+   "hue": 320,
+   "members": [
+    "src/main/memoryHost.ts",
+    "src/main/swarmMemory.ts"
+   ],
+   "nameState": "observed"
+  },
+  {
+   "id": "d-proxy",
+   "name": "Token proxy",
+   "subtitle": "Shrinks what Claude sends, on this computer",
+   "hue": 270,
+   "members": [
+    "src/main/headroomProxy"
+   ],
+   "nameState": "observed"
+  },
+  {
+   "id": "d-gateway",
+   "name": "Agent gateway",
+   "subtitle": "The tools agents can call",
+   "hue": 160,
+   "members": [
+    "src/main/mcpServer.ts",
+    "src/main/mcpGateway",
+    "src/mcp-adapter"
+   ],
+   "nameState": "observed"
+  },
+  {
+   "id": "d-remote",
+   "name": "Remote & linked",
+   "subtitle": "Your phone and your other computers",
+   "hue": 100,
+   "members": [
+    "src/main/remoteBridge",
+    "src/main/linkedHost.ts",
+    "relay"
+   ],
+   "nameState": "observed"
+  },
+  {
+   "id": "d-lumo",
+   "name": "Lumopolis",
+   "subtitle": "This view: the map of your software",
+   "hue": 48,
+   "members": [
+    "src/main/world",
+    "src/renderer/src/world"
+   ],
+   "nameState": "observed"
+  }
+ ],
+ "buildings": [
+  {
+   "floors": [
+    {
+     "name": "Terminal pane",
+     "tech": [
+      "xterm.js"
+     ],
+     "members": [
+      "src/renderer/src/components/TerminalPane/TerminalPane.tsx"
+     ]
+    },
+    {
+     "name": "Direct line for typing",
+     "tech": [
+      "MessagePort"
+     ],
+     "members": [
+      "src/preload/directLine.ts"
+     ]
+    },
+    {
+     "name": "Agent launcher",
+     "tech": [],
+     "members": [
+      "src/renderer/src/lib/conductorLaunch.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "React",
+    "xterm.js",
+    "MessagePort"
+   ],
+   "how": [
+    {
+     "text": "Draws every terminal with xterm.js inside the app window.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/renderer/src/components/TerminalPane/TerminalPane.tsx:2"
+      }
+     ]
+    },
+    {
+     "text": "On Windows, your keystrokes go straight to the terminal host over a private message port, not through the main process.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/directTyping.ts:69"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/directTyping.ts:109"
+      }
+     ]
+    }
+   ],
+   "why": [
+    {
+     "text": "Typing used to wait behind work on the main thread; on Windows the direct line keeps every keystroke off it.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/index.ts:4252"
+      }
+     ]
+    }
+   ],
+   "claims": [
+    {
+     "text": "Its 3 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/components/TerminalPane.test.tsx",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/renderer/preloadDirectLine.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/directTyping.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/renderer/src/components/TerminalPane",
+    "src/preload/directLine.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-terminals",
+   "districtId": "d-screen",
+   "name": "Terminal panes",
+   "techLabel": "React · xterm.js",
+   "process": "renderer"
+  },
+  {
+   "floors": [
+    {
+     "name": "Processes",
+     "tech": [],
+     "members": [
+      "src/renderer/src/components/SettingsPane/ProcessesSettings.tsx"
+     ]
+    },
+    {
+     "name": "Remote and linked machines",
+     "tech": [],
+     "members": [
+      "src/renderer/src/components/SettingsPane/RemoteSettings.tsx",
+      "src/renderer/src/components/SettingsPane/LinkedMachinesSettings.tsx"
+     ]
+    },
+    {
+     "name": "Default models",
+     "tech": [],
+     "members": [
+      "src/renderer/src/components/SettingsPane/DefaultModelsSettings.tsx"
+     ]
+    },
+    {
+     "name": "Lumopolis",
+     "tech": [],
+     "members": [
+      "src/renderer/src/components/SettingsPane/LumopolisSettings.tsx"
+     ]
+    }
+   ],
+   "stack": [
+    "React",
+    "Monaco"
+   ],
+   "how": [
+    {
+     "text": "One pane for every switch the app has, from privacy and models to Remote and Lumopolis; shell config files open in the Monaco editor.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/renderer/src/components/SettingsPane/SettingsPane.tsx:2"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/components/SettingsPane.test.tsx",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/renderer/processesSettings.test.tsx",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/renderer/src/components/SettingsPane"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-settings",
+   "districtId": "d-screen",
+   "name": "Settings",
+   "techLabel": "React · Monaco",
+   "process": "renderer"
+  },
+  {
+   "floors": [
+    {
+     "name": "Designer canvas",
+     "tech": [],
+     "members": [
+      "src/renderer/src/components/Workflow/WorkflowDesigner.tsx"
+     ]
+    },
+    {
+     "name": "Runner",
+     "tech": [],
+     "members": [
+      "src/renderer/src/components/Workflow/WorkflowRunner.tsx"
+     ]
+    }
+   ],
+   "stack": [
+    "React"
+   ],
+   "how": [
+    {
+     "text": "Lets you draw a workflow of commands, agent steps, skills and branches, and watch it run.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/workflow/workflowEngine.ts:4"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "src/renderer/src/components/Workflow/WorkflowDesigner.test.tsx",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "src/renderer/src/components/Workflow/WorkflowRunner.test.tsx",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/renderer/src/components/Workflow"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-workflow-canvas",
+   "districtId": "d-screen",
+   "name": "Workflow designer",
+   "techLabel": "React canvas",
+   "process": "renderer"
+  },
+  {
+   "floors": [
+    {
+     "name": "3D city",
+     "tech": [
+      "three.js",
+      "WebGL"
+     ],
+     "members": [
+      "src/renderer/src/world/engine/threeRenderer.ts"
+     ]
+    },
+    {
+     "name": "Cards and tours",
+     "tech": [],
+     "members": [
+      "src/renderer/src/world/engine/cards.ts"
+     ]
+    },
+    {
+     "name": "2D map without WebGL",
+     "tech": [],
+     "members": [
+      "src/renderer/src/world/engine/fallback2d.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "three.js",
+    "WebGL",
+    "React"
+   ],
+   "how": [
+    {
+     "text": "Draws the world as a 3D city with three.js: districts, buildings by floor, lines for what flows between them.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/renderer/src/world/engine/threeRenderer.ts:7"
+      }
+     ]
+    },
+    {
+     "text": "Without WebGL it shows a flat map and a list a screen reader can walk.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/renderer/src/world/engine/fallback2d.ts:1"
+      }
+     ]
+    }
+   ],
+   "why": [
+    {
+     "text": "The same engine runs in the app and in this web demo, so what you see here is the real viewer.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/shared/world/types.ts:2"
+      }
+     ]
+    }
+   ],
+   "claims": [
+    {
+     "text": "Its 3 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/renderer/world/createWorldViewer.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/renderer/world/threeRenderer.input.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/renderer/world/WorldAsk.test.tsx",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/renderer/src/world"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-lumo-pane",
+   "districtId": "d-screen",
+   "name": "Lumopolis view",
+   "techLabel": "three.js · WebGL",
+   "process": "renderer"
+  },
+  {
+   "floors": [
+    {
+     "name": "App start and windows",
+     "tech": [],
+     "members": [
+      "src/main/index.ts"
+     ]
+    },
+    {
+     "name": "Auto-update",
+     "tech": [],
+     "members": [
+      "src/main/autoUpdater.ts"
+     ]
+    },
+    {
+     "name": "Crash reports (opt-in)",
+     "tech": [],
+     "members": [
+      "src/main/sentry.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "Electron",
+    "IPC"
+   ],
+   "how": [
+    {
+     "text": "Starts the window and every helper program, and answers the window's requests over IPC.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/index.ts:2626"
+      }
+     ]
+    },
+    {
+     "text": "Checks GitHub Releases for an update a few seconds after launch and every 4 hours.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/autoUpdater.ts:486"
+      }
+     ]
+    },
+    {
+     "text": "Crash reports go to Sentry only after you agree to them.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/sentry.ts:115"
+      }
+     ]
+    }
+   ],
+   "why": [
+    {
+     "text": "Heavy work is moved out of this process into helpers, because anything slow here makes typing lag.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/procHost.ts:3"
+      }
+     ]
+    }
+   ],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/autoUpdater.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/mainSentry.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/index.ts",
+    "src/main/autoUpdater.ts",
+    "src/main/sentry.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-main",
+   "districtId": "d-core",
+   "name": "Main process",
+   "techLabel": "Electron",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "Shells and agents",
+     "tech": [
+      "node-pty"
+     ],
+     "members": [
+      "src/main/ptyHost.ts"
+     ]
+    },
+    {
+     "name": "Transport",
+     "tech": [],
+     "members": [
+      "src/main/ptyHostTransport.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "node-pty",
+    "utilityProcess"
+   ],
+   "how": [
+    {
+     "text": "Runs your shells and AI agents with node-pty, in its own process.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/ptyHost.ts:1"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/ptyHostTransport.ts:20"
+      }
+     ]
+    }
+   ],
+   "why": [
+    {
+     "text": "Starting a terminal is a blocking call on Windows; doing it here keeps the window responsive.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/ptyHost.ts:3"
+      }
+     ]
+    }
+   ],
+   "claims": [
+    {
+     "text": "Its 3 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/ptyHost.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/ptyHostDirect.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/ptyHostClient.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/ptyHost.ts",
+    "src/main/ptyHostTransport.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-pty",
+   "districtId": "d-core",
+   "name": "Terminal host",
+   "techLabel": "node-pty · utility process",
+   "process": "ptyHost"
+  },
+  {
+   "floors": [
+    {
+     "name": "Child programs",
+     "tech": [],
+     "members": [
+      "src/main/procHost.ts"
+     ]
+    },
+    {
+     "name": "Transport",
+     "tech": [],
+     "members": [
+      "src/main/procHostTransport.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "utilityProcess"
+   ],
+   "how": [
+    {
+     "text": "Starts every other program the app needs (git, gh, helpers) in its own process.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/procHost.ts:1"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/procHostTransport.ts:34"
+      }
+     ]
+    }
+   ],
+   "why": [
+    {
+     "text": "Even an \"async\" program start blocks the calling thread while the program is created.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/procHost.ts:4"
+      }
+     ]
+    }
+   ],
+   "claims": [
+    {
+     "text": "Its 1 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/procHost.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/procHost.ts",
+    "src/main/procHostTransport.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-proc",
+   "districtId": "d-core",
+   "name": "Process host",
+   "techLabel": "utility process",
+   "process": "procHost"
+  },
+  {
+   "floors": [
+    {
+     "name": "Engine",
+     "tech": [],
+     "members": [
+      "src/main/workflow/workflowEngine.ts"
+     ]
+    },
+    {
+     "name": "Step runners",
+     "tech": [],
+     "members": [
+      "src/main/workflow/executors.ts"
+     ]
+    }
+   ],
+   "stack": [],
+   "how": [
+    {
+     "text": "Runs a workflow step by step: commands and agent steps go to terminals, branches decide what runs next.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/workflow/workflowEngine.ts:45"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/workflow/executors.ts:79"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 1 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/workflowEngine.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/workflow"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-workflow-engine",
+   "districtId": "d-core",
+   "name": "Workflow engine",
+   "techLabel": "TypeScript",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "Tasks and messages",
+     "tech": [],
+     "members": [
+      "src/main/swarmManager.ts"
+     ]
+    },
+    {
+     "name": "Conductor launch",
+     "tech": [],
+     "members": [
+      "src/renderer/src/lib/conductorLaunch.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "headless agent"
+   ],
+   "how": [
+    {
+     "text": "A conductor agent (`claude -p`) runs in a hidden terminal and hands tasks to worker agents.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/renderer/src/lib/conductorLaunch.ts:5"
+      }
+     ]
+    },
+    {
+     "text": "Keeps the swarm's tasks and messages so agents can coordinate.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/swarmManager.ts:3"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/swarmManager.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/renderer/conductorLaunch.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/swarmManager.ts",
+    "src/renderer/src/lib/conductorLaunch.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-swarm",
+   "districtId": "d-core",
+   "name": "Swarm conductor",
+   "techLabel": "Claude Code · tasks",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "Claude Code",
+     "tech": [],
+     "members": [
+      "src/main/transcriptWatchers/claudeCodeWatcher.ts"
+     ]
+    },
+    {
+     "name": "Codex",
+     "tech": [],
+     "members": [
+      "src/main/transcriptWatchers/codexWatcher.ts"
+     ]
+    },
+    {
+     "name": "Gemini CLI",
+     "tech": [],
+     "members": [
+      "src/main/transcriptWatchers/geminiWatcher.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "JSONL"
+   ],
+   "how": [
+    {
+     "text": "Reads the session logs each agent already writes on your computer, to see what it did; it never changes them.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/transcriptWatchers/claudeCodeWatcher.ts:14"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/transcriptWatchers/codexWatcher.ts:12"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/transcriptWatchers/geminiWatcher.ts:11"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/claudeCodeWatcher.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/transcriptWatchers.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/transcriptWatchers"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-watchers",
+   "districtId": "d-core",
+   "name": "Session watchers",
+   "techLabel": "JSONL readers",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "Symbol store",
+     "tech": [],
+     "members": [
+      "src/main/codeGraph.ts"
+     ]
+    },
+    {
+     "name": "Parser",
+     "tech": [
+      "tree-sitter"
+     ],
+     "members": [
+      "src/main/codeGraphTreeSitter.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "tree-sitter"
+   ],
+   "how": [
+    {
+     "text": "Indexes your repository's functions and who calls them, so agents can ask \"what calls this?\"",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/codeGraph.ts:1"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/mcpServer.ts:553"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/codeGraph.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/codeGraphTreeSitter.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/codeGraph.ts",
+    "src/main/codeGraphTreeSitter.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-codegraph",
+   "districtId": "d-core",
+   "name": "Code graph",
+   "techLabel": "tree-sitter",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "Memory store",
+     "tech": [],
+     "members": [
+      "src/main/swarmMemory.ts"
+     ]
+    },
+    {
+     "name": "Vector index",
+     "tech": [
+      "HNSW"
+     ],
+     "members": [
+      "src/main/hnswIndex.ts"
+     ]
+    },
+    {
+     "name": "Encryption at rest",
+     "tech": [
+      "AES-256-GCM",
+      "OS keystore"
+     ],
+     "members": [
+      "src/main/memoryCrypto.ts",
+      "src/main/secureKeyStore.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "HNSW",
+    "AES-256-GCM",
+    "OS keystore",
+    "utilityProcess"
+   ],
+   "how": [
+    {
+     "text": "Keeps every memory on this computer, in its own process, and finds related ones with a vector index.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/memoryHost.ts:1"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/hnswIndex.ts:113"
+      }
+     ]
+    },
+    {
+     "text": "Memories are encrypted with AES-256-GCM using a random key the OS keystore protects.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/memoryCrypto.ts:38"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/swarmMemory.ts:3354"
+      }
+     ]
+    },
+    {
+     "text": "If the computer has no keystore, memory stays unencrypted and the app says so, rather than writing the key in plain text.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/swarmMemory.ts:3352"
+      }
+     ]
+    }
+   ],
+   "why": [
+    {
+     "text": "Loading a large memory store took seconds; in its own process that cost never touches typing.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/memoryHost.ts:6"
+      }
+     ]
+    },
+    {
+     "text": "Secrets are scrubbed in the main process before a memory is sent here, so they never enter this process.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/memoryHost.ts:22"
+      }
+     ]
+    }
+   ],
+   "claims": [
+    {
+     "text": "Its 4 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/memoryHost.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/memoryCrypto.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/hnswIndex.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/secureKeyStore.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/memoryHost.ts",
+    "src/main/memoryClient.ts",
+    "src/main/swarmMemory.ts",
+    "src/main/hnswIndex.ts",
+    "src/main/memoryCrypto.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-memhost",
+   "districtId": "d-memory",
+   "name": "Memory host",
+   "techLabel": "HNSW · AES-256-GCM",
+   "process": "memoryHost"
+  },
+  {
+   "floors": [
+    {
+     "name": "Local model",
+     "tech": [
+      "ONNX Runtime",
+      "bge-small"
+     ],
+     "members": [
+      "src/main/localEmbedder.ts"
+     ]
+    },
+    {
+     "name": "Worker thread",
+     "tech": [
+      "worker thread"
+     ],
+     "members": [
+      "src/main/embedWorker.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "ONNX Runtime",
+    "bge-small",
+    "worker thread"
+   ],
+   "how": [
+    {
+     "text": "Turns text into 384 numbers with a small model running on your computer, so memories can be found by meaning.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/localEmbedder.ts:9"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/localEmbedder.ts:26"
+      }
+     ]
+    }
+   ],
+   "why": [
+    {
+     "text": "When it runs in the main process it moves to a worker thread, so typing never waits behind it.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/index.ts:4252"
+      }
+     ]
+    }
+   ],
+   "claims": [
+    {
+     "text": "Its 1 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/localEmbedder.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/localEmbedder.ts",
+    "src/main/embedWorker.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-embed",
+   "districtId": "d-memory",
+   "name": "Embedder",
+   "techLabel": "ONNX Runtime · bge-small",
+   "process": "memoryHost"
+  },
+  {
+   "floors": [
+    {
+     "name": "Cross-encoder",
+     "tech": [
+      "cross-encoder"
+     ],
+     "members": [
+      "src/main/crossEncoderRerank.ts"
+     ]
+    },
+    {
+     "name": "Worker",
+     "tech": [
+      "worker thread"
+     ],
+     "members": [
+      "src/main/rerankWorker.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "cross-encoder",
+    "worker thread"
+   ],
+   "how": [
+    {
+     "text": "Re-orders search results with a second local model, on a worker thread the memory host starts.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/memoryHost.ts:56"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/crossEncoderRerank.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/crossEncoderRerankWorker.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/crossEncoderRerank.ts",
+    "src/main/rerankWorker.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-rerank",
+   "districtId": "d-memory",
+   "name": "Reranker",
+   "techLabel": "cross-encoder · worker thread",
+   "process": "rerankWorker"
+  },
+  {
+   "floors": [
+    {
+     "name": "Distiller",
+     "tech": [
+      "headless agent"
+     ],
+     "members": [
+      "src/main/mnemeDistiller.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "headless agent"
+   ],
+   "how": [
+    {
+     "text": "Asks your own Claude Code, on Haiku with no tools, to turn a session into short lessons worth remembering.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/mnemeDistiller.ts:8"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 1 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/mnemeDistiller.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/mnemeDistiller.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-distiller",
+   "districtId": "d-memory",
+   "name": "Lesson distiller",
+   "techLabel": "Claude Haiku · headless",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "Tool-result shrinking",
+     "tech": [],
+     "members": [
+      "src/main/headroomProxy/wireCompress.ts"
+     ]
+    },
+    {
+     "name": "Image shrinking",
+     "tech": [],
+     "members": [
+      "src/main/headroomProxy/imageCodec.ts"
+     ]
+    },
+    {
+     "name": "Per-message model routing",
+     "tech": [],
+     "members": [
+      "src/main/headroomProxy/modelRoute.ts"
+     ]
+    },
+    {
+     "name": "Codex effort route",
+     "tech": [],
+     "members": [
+      "src/main/headroomProxy/codexRoute.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "HTTP",
+    "TLS",
+    "utilityProcess"
+   ],
+   "how": [
+    {
+     "text": "Listens only on this computer and forwards Claude Code's requests to api.anthropic.com, with large tool results and pasted images shrunk.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/proxyMain.ts:376"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/proxyMain.ts:347"
+      }
+     ]
+    },
+    {
+     "text": "If you already route Claude somewhere yourself (a base URL or a proxy), it steps aside.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/proxySupervisor.ts:205"
+      }
+     ]
+    },
+    {
+     "text": "Codex goes through it only to set effort per message, to chatgpt.com or api.openai.com.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/codexRoute.ts:60"
+      }
+     ]
+    }
+   ],
+   "why": [
+    {
+     "text": "It runs in its own process, so shrinking requests and images stays off the main thread of the app.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/proxyMain.ts:102"
+      }
+     ]
+    },
+    {
+     "text": "Every live Claude session depends on it, so it stays up through a bad request, and the app restarts it if it crashes.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/proxyMain.ts:322"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/proxySupervisor.ts:96"
+      }
+     ]
+    },
+    {
+     "text": "Any failure forwards the original request untouched.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "tests/electron/headroomProxyFailOpen.test.ts:5"
+      }
+     ]
+    }
+   ],
+   "claims": [
+    {
+     "text": "Its 3 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/headroomProxyFailOpen.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/headroomProxySupervisor.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/codexRoute.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/headroomProxy"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-proxy",
+   "districtId": "d-proxy",
+   "name": "Token proxy",
+   "techLabel": "HTTP · utility process",
+   "process": "headroomProxy"
+  },
+  {
+   "floors": [
+    {
+     "name": "Terminal tools",
+     "tech": [],
+     "members": [
+      "src/main/mcpServer.ts"
+     ]
+    },
+    {
+     "name": "Memory tools",
+     "tech": [],
+     "members": [
+      "src/main/mcpServer.ts"
+     ]
+    },
+    {
+     "name": "Swarm tools",
+     "tech": [],
+     "members": [
+      "src/main/mcpServer.ts"
+     ]
+    },
+    {
+     "name": "Code tools",
+     "tech": [],
+     "members": [
+      "src/main/mcpServer.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "MCP",
+    "HTTP"
+   ],
+   "how": [
+    {
+     "text": "Gives agents Termpolis's tools (terminals, memory, swarm, code graph) on port 9315, reachable only from this computer.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/mcpServer.ts:17"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/mcpServer.ts:2010"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 1 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/mcpServer.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/mcpServer.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-mcp",
+   "districtId": "d-gateway",
+   "name": "MCP server",
+   "techLabel": "MCP · localhost:9315",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "Gateway",
+     "tech": [],
+     "members": [
+      "src/main/mcpGateway/index.ts"
+     ]
+    },
+    {
+     "name": "Audit log",
+     "tech": [],
+     "members": [
+      "src/main/mcpGateway/audit.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "MCP"
+   ],
+   "how": [
+    {
+     "text": "One governed path from an agent to other MCP servers: each call is checked and written to an audit log.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/mcpGateway/index.ts:3"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/mcpGateway/audit.ts:3"
+      }
+     ]
+    },
+    {
+     "text": "Lumopolis's own tools (world_read, world_propose, world_annotate) sit behind it.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/worldGatewayTransport.ts:7"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/mcpGateway.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/worldGatewayTransport.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/mcpGateway"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-gateway",
+   "districtId": "d-gateway",
+   "name": "MCP gateway",
+   "techLabel": "policy · audit log",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "stdio adapter",
+     "tech": [
+      "stdio"
+     ],
+     "members": [
+      "src/mcp-adapter/stdio-adapter.cjs"
+     ]
+    },
+    {
+     "name": "Memory primer hook",
+     "tech": [],
+     "members": [
+      "src/mcp-adapter/memory-primer-hook.cjs"
+     ]
+    }
+   ],
+   "stack": [
+    "stdio",
+    "MCP"
+   ],
+   "how": [
+    {
+     "text": "Each agent starts this small program and talks to it over stdio; it passes the calls on to the MCP server.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/mcp-adapter/stdio-adapter.cjs:5"
+      }
+     ]
+    },
+    {
+     "text": "A hook puts the project's memory digest into each new Claude session.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/mcp-adapter/memory-primer-hook.cjs:8"
+      }
+     ]
+    }
+   ],
+   "why": [
+    {
+     "text": "Asking the agent to fetch memory itself was unreliable, so the hook hands it over at session start.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/mcp-adapter/memory-primer-hook.cjs:6"
+      }
+     ]
+    }
+   ],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/stdioAdapterContract.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/stdioAdapterDegraded.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/mcp-adapter"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-stdio",
+   "districtId": "d-gateway",
+   "name": "Agent plug-in",
+   "techLabel": "stdio · JSON-RPC",
+   "process": "agentChild"
+  },
+  {
+   "floors": [
+    {
+     "name": "Sealed channel",
+     "tech": [
+      "X25519",
+      "ChaCha20-Poly1305"
+     ],
+     "members": [
+      "src/main/remoteBridge/sealedChannel.ts"
+     ]
+    },
+    {
+     "name": "Bridge host",
+     "tech": [],
+     "members": [
+      "src/main/remoteBridgeHost.ts"
+     ]
+    },
+    {
+     "name": "Grants",
+     "tech": [],
+     "members": [
+      "src/main/remoteBridgeHost.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "X25519",
+    "ChaCha20-Poly1305",
+    "WebSocket",
+    "utilityProcess"
+   ],
+   "how": [
+    {
+     "text": "Off until you turn on Remote. Every message to your phone is sealed end to end before it leaves.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/remoteBridge/sealedChannel.ts:1"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/remoteBridgeSupervisor.ts:166"
+      }
+     ]
+    },
+    {
+     "text": "Reading, opening, typing into and closing terminals are four grants, all off by default and checked on the desktop.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "PRIVACY.md:410"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 3 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/remoteSealedChannel.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/remoteBridgeHost.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/remoteBridgeSupervisor.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/remoteBridge",
+    "src/main/remoteBridgeHost.ts",
+    "src/main/remoteBridgeSupervisor.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-remote",
+   "districtId": "d-remote",
+   "name": "Remote bridge",
+   "techLabel": "X25519 · ChaCha20-Poly1305",
+   "process": "remoteBridge"
+  },
+  {
+   "floors": [
+    {
+     "name": "Policy",
+     "tech": [],
+     "members": [
+      "src/main/linkedHost.ts"
+     ]
+    },
+    {
+     "name": "Jobs",
+     "tech": [
+      "headless agent"
+     ],
+     "members": [
+      "src/main/linkedJobs.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "headless agent"
+   ],
+   "how": [
+    {
+     "text": "Lets an agent hand a job to another computer you paired, over the same sealed relay.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/linkedHost.ts:12"
+      }
+     ]
+    },
+    {
+     "text": "A linked job runs with only the MCP config it is given (`--strict-mcp-config`).",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headlessExec.ts:241"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 2 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/linkedHost.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/linkedJobs.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/linkedHost.ts",
+    "src/main/linkedJobs.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-linked",
+   "districtId": "d-remote",
+   "name": "Linked machines",
+   "techLabel": "headless jobs",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "Boundary detectors",
+     "tech": [],
+     "members": [
+      "src/main/world/detectors"
+     ]
+    },
+    {
+     "name": "Compile",
+     "tech": [],
+     "members": [
+      "src/main/world/compile.ts"
+     ]
+    },
+    {
+     "name": "Test status",
+     "tech": [],
+     "members": [
+      "src/main/world/testStatus.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "utilityProcess"
+   ],
+   "how": [
+    {
+     "text": "Reads your code and finds its parts and what crosses between them: processes, messages, ports, tools.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/compile.ts:1"
+      }
+     ]
+    },
+    {
+     "text": "Starts the first time you open Lumopolis, never at app start.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/worldClient.ts:2"
+      }
+     ]
+    },
+    {
+     "text": "Test rings come from results already on disk, CI or agent transcripts; it never runs your tests.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/testStatus.ts:348"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 3 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/worldCompile.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/worldHost.test.ts",
+       "excerpt": "from CI (gh)"
+      },
+      {
+       "kind": "test",
+       "ref": "tests/electron/worldTestStatus.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/world/worldHost.ts",
+    "src/main/world/compile.ts",
+    "src/main/world/detectors",
+    "src/main/world/testStatus.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-worldhost",
+   "districtId": "d-lumo",
+   "name": "World compiler",
+   "techLabel": "detectors · layout",
+   "process": "worldHost"
+  },
+  {
+   "floors": [
+    {
+     "name": "Ask runner",
+     "tech": [
+      "headless agent"
+     ],
+     "members": [
+      "src/main/world/askRunner.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "headless agent"
+   ],
+   "how": [
+    {
+     "text": "Answers a question about the world with your own agent, hidden and read-only.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/askRunner.ts:2"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/world/askRunner.ts:115"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 1 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/worldAskRunner.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/world/askRunner.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-ask",
+   "districtId": "d-lumo",
+   "name": "Ask runner",
+   "techLabel": "headless agent · read-only",
+   "process": "main"
+  },
+  {
+   "floors": [
+    {
+     "name": "CI and transcripts",
+     "tech": [
+      "gh CLI"
+     ],
+     "members": [
+      "src/main/world/worldRuns.ts"
+     ]
+    }
+   ],
+   "stack": [
+    "gh CLI"
+   ],
+   "how": [
+    {
+     "text": "Asks GitHub, through your own gh login, whether CI passed for the commit you have checked out.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/worldRuns.ts:3"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/world/worldRuns.ts:102"
+      }
+     ]
+    }
+   ],
+   "why": [],
+   "claims": [
+    {
+     "text": "Its 1 linked test files passed in CI at 3bda338 (CI)",
+     "state": "verified",
+     "evidence": [
+      {
+       "kind": "test",
+       "ref": "tests/electron/worldRuns.test.ts",
+       "excerpt": "from CI (gh)"
+      }
+     ]
+    }
+   ],
+   "members": [
+    "src/main/world/worldRuns.ts"
+   ],
+   "nameState": "observed",
+   "status": "verified",
+   "id": "b-ci",
+   "districtId": "d-lumo",
+   "name": "CI reader",
+   "techLabel": "gh CLI",
+   "process": "main"
+  }
+ ],
+ "edges": [
+  {
+   "how": [
+    {
+     "text": "On Windows, a private message port from the window straight to the terminal host; elsewhere keys pass through the main process.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/directTyping.ts:69"
+      },
+      {
+       "kind": "file",
+       "ref": "src/main/directTyping.ts:109"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "MessagePort"
+   ],
+   "why": [],
+   "rate": "every keystroke",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-keys",
+   "from": "b-terminals",
+   "to": "b-pty",
+   "cargo": "keys",
+   "label": "Keystrokes and screen output"
+  },
+  {
+   "how": [
+    {
+     "text": "Agents are ordinary programs running in a terminal.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/ptyHost.ts:1"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "node-pty"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-pty-claude",
+   "from": "b-pty",
+   "to": "x-claude",
+   "cargo": "keys",
+   "label": "Runs in a terminal"
+  },
+  {
+   "how": [
+    {
+     "text": "Agents are ordinary programs running in a terminal.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/ptyHost.ts:1"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "node-pty"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-pty-codex",
+   "from": "b-pty",
+   "to": "x-codex",
+   "cargo": "keys",
+   "label": "Runs in a terminal"
+  },
+  {
+   "how": [
+    {
+     "text": "Agents are ordinary programs running in a terminal.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/ptyHost.ts:1"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "node-pty"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-pty-gemini",
+   "from": "b-pty",
+   "to": "x-gemini",
+   "cargo": "keys",
+   "label": "Runs in a terminal"
+  },
+  {
+   "how": [
+    {
+     "text": "New Claude sessions get ANTHROPIC_BASE_URL pointed at the local proxy, unless you route Claude yourself.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/proxySupervisor.ts:278"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "HTTP"
+   ],
+   "why": [],
+   "rate": "every model turn",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-claude-proxy",
+   "from": "x-claude",
+   "to": "b-proxy",
+   "cargo": "requests",
+   "label": "Model requests"
+  },
+  {
+   "how": [
+    {
+     "text": "Forwarded over HTTPS; the reply streams back unchanged.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/proxyMain.ts:97"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "HTTP",
+    "TLS"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-proxy-anthropic",
+   "from": "b-proxy",
+   "to": "x-anthropic",
+   "cargo": "requests",
+   "label": "Requests, tool results shrunk"
+  },
+  {
+   "how": [
+    {
+     "text": "Codex is pointed at the proxy only to set effort per message; nothing is compressed.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/codexLaunch.ts:3"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "HTTP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-codex-proxy",
+   "from": "x-codex",
+   "to": "b-proxy",
+   "cargo": "requests",
+   "label": "Requests, for effort only"
+  },
+  {
+   "how": [
+    {
+     "text": "To api.openai.com with an API key, otherwise chatgpt.com.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/codexRoute.ts:60"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "HTTP",
+    "TLS"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-proxy-openai",
+   "from": "b-proxy",
+   "to": "x-openai",
+   "cargo": "requests",
+   "label": "Codex requests"
+  },
+  {
+   "how": [
+    {
+     "text": "Gemini CLI and plain shells never go through the proxy.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "PRIVACY.md:263"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "HTTP",
+    "TLS"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-gemini-google",
+   "from": "x-gemini",
+   "to": "x-google",
+   "cargo": "requests",
+   "label": "Direct, never via the proxy"
+  },
+  {
+   "how": [
+    {
+     "text": "The main process starts the terminal host as a utility process.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/ptyHostTransport.ts:20"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "utilityProcess"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-main-pty",
+   "from": "b-main",
+   "to": "b-pty",
+   "cargo": "jobs",
+   "label": "Opens and resizes terminals"
+  },
+  {
+   "how": [
+    {
+     "text": "Child programs are started over there, never on the main thread.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/procHostTransport.ts:34"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "utilityProcess"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-main-proc",
+   "from": "b-main",
+   "to": "b-proc",
+   "cargo": "jobs",
+   "label": "Programs to start"
+  },
+  {
+   "how": [
+    {
+     "text": "Main unwraps the key from the OS keystore and hands it over; content is scrubbed first.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/memoryHost.ts:19"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "utilityProcess"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-main-mem",
+   "from": "b-main",
+   "to": "b-memhost",
+   "cargo": "memories",
+   "label": "Scrubbed memories and the key"
+  },
+  {
+   "how": [
+    {
+     "text": "Runs beside the memory store it serves.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/memoryHost.ts:52"
+      }
+     ]
+    }
+   ],
+   "tech": [],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-mem-embed",
+   "from": "b-memhost",
+   "to": "b-embed",
+   "cargo": "memories",
+   "label": "Text to embed"
+  },
+  {
+   "how": [
+    {
+     "text": "The memory host starts the reranker on a worker thread.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/memoryHost.ts:55"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "worker thread"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-mem-rerank",
+   "from": "b-memhost",
+   "to": "b-rerank",
+   "cargo": "memories",
+   "label": "Results to re-order"
+  },
+  {
+   "how": [
+    {
+     "text": "A headless `claude -p` run on Haiku with tools turned off.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/mnemeDistiller.ts:8"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "headless agent"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-distill-claude",
+   "from": "b-distiller",
+   "to": "x-claude",
+   "cargo": "requests",
+   "label": "Asks Haiku for lessons"
+  },
+  {
+   "how": [],
+   "tech": [],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-distill-mem",
+   "from": "b-distiller",
+   "to": "b-memhost",
+   "cargo": "memories",
+   "label": "Lessons to keep"
+  },
+  {
+   "how": [
+    {
+     "text": "The agent launches the adapter and speaks JSON-RPC to it.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/mcp-adapter/stdio-adapter.cjs:6"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "stdio",
+    "MCP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-claude-stdio",
+   "from": "x-claude",
+   "to": "b-stdio",
+   "cargo": "tools",
+   "label": "Tool calls over stdio"
+  },
+  {
+   "how": [
+    {
+     "text": "The agent launches the adapter and speaks JSON-RPC to it.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/mcp-adapter/stdio-adapter.cjs:6"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "stdio",
+    "MCP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-codex-stdio",
+   "from": "x-codex",
+   "to": "b-stdio",
+   "cargo": "tools",
+   "label": "Tool calls over stdio"
+  },
+  {
+   "how": [
+    {
+     "text": "The agent launches the adapter and speaks JSON-RPC to it.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/mcp-adapter/stdio-adapter.cjs:6"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "stdio",
+    "MCP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-gemini-stdio",
+   "from": "x-gemini",
+   "to": "b-stdio",
+   "cargo": "tools",
+   "label": "Tool calls over stdio"
+  },
+  {
+   "how": [
+    {
+     "text": "Each request is passed to the local HTTP server.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/mcp-adapter/stdio-adapter.cjs:7"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "HTTP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-stdio-mcp",
+   "from": "b-stdio",
+   "to": "b-mcp",
+   "cargo": "tools",
+   "label": "Tool calls to localhost:9315"
+  },
+  {
+   "how": [
+    {
+     "text": "Agents can open and drive terminals through tools.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/mcpServer.ts:212"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "MCP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-mcp-pty",
+   "from": "b-mcp",
+   "to": "b-pty",
+   "cargo": "tools",
+   "label": "run_command, read_output"
+  },
+  {
+   "how": [
+    {
+     "text": "Every agent shares one memory through these tools.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/mcpServer.ts:387"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "MCP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-mcp-mem",
+   "from": "b-mcp",
+   "to": "b-memhost",
+   "cargo": "memories",
+   "label": "memory_search, memory_write"
+  },
+  {
+   "how": [
+    {
+     "text": "Agents create and update swarm tasks through tools.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/mcpServer.ts:335"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "MCP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-mcp-swarm",
+   "from": "b-mcp",
+   "to": "b-swarm",
+   "cargo": "tools",
+   "label": "Swarm tasks and messages"
+  },
+  {
+   "how": [
+    {
+     "text": "Agents ask the code graph who calls what.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/mcpServer.ts:553"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "MCP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-mcp-code",
+   "from": "b-mcp",
+   "to": "b-codegraph",
+   "cargo": "tools",
+   "label": "code_callers, code_impact"
+  },
+  {
+   "how": [
+    {
+     "text": "Other MCP servers are reached through two tools only.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/mcpServer.ts:608"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "MCP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-mcp-gateway",
+   "from": "b-mcp",
+   "to": "b-gateway",
+   "cargo": "tools",
+   "label": "gateway_call"
+  },
+  {
+   "how": [
+    {
+     "text": "Lumopolis is a trusted built-in server behind the gateway.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/worldGatewayTransport.ts:7"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "MCP"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-gateway-world",
+   "from": "b-gateway",
+   "to": "b-worldhost",
+   "cargo": "world",
+   "label": "world_read, world_propose"
+  },
+  {
+   "how": [
+    {
+     "text": "Claude Code's own session files are read where it writes them.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/transcriptWatchers/claudeCodeWatcher.ts:14"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "JSONL"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-claude-watch",
+   "from": "x-claude",
+   "to": "b-watchers",
+   "cargo": "code",
+   "label": "Session logs, read only"
+  },
+  {
+   "how": [
+    {
+     "text": "Parsed with web-tree-sitter, without a compiler.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/codeGraph.ts:3"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "tree-sitter"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-files-code",
+   "from": "x-files",
+   "to": "b-codegraph",
+   "cargo": "code",
+   "label": "Source files parsed"
+  },
+  {
+   "how": [
+    {
+     "text": "The compiler reads your files through injected readers; nothing is uploaded.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/compile.ts:3"
+      }
+     ]
+    }
+   ],
+   "tech": [],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-files-world",
+   "from": "x-files",
+   "to": "b-worldhost",
+   "cargo": "code",
+   "label": "Code read to draw the map"
+  },
+  {
+   "how": [
+    {
+     "text": "One data contract between the compiler, the viewer and this web demo.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/shared/world/types.ts:1"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "IPC"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-world-pane",
+   "from": "b-worldhost",
+   "to": "b-lumo-pane",
+   "cargo": "world",
+   "label": "The world document"
+  },
+  {
+   "how": [
+    {
+     "text": "Your own agent answers, hidden and read-only.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/askRunner.ts:2"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "headless agent"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-ask-claude",
+   "from": "b-ask",
+   "to": "x-claude",
+   "cargo": "requests",
+   "label": "A read-only question"
+  },
+  {
+   "how": [
+    {
+     "text": "gh is started by its full path and uses its own login.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/world/worldRuns.ts:102"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "gh CLI"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-ci-github",
+   "from": "b-ci",
+   "to": "x-github",
+   "cargo": "updates",
+   "label": "CI result via gh"
+  },
+  {
+   "how": [
+    {
+     "text": "A check a few seconds after launch, then every 4 hours.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/autoUpdater.ts:491"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "HTTP",
+    "TLS"
+   ],
+   "why": [],
+   "rate": "every 4 hours",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-main-github",
+   "from": "b-main",
+   "to": "x-github",
+   "cargo": "updates",
+   "label": "Update checks"
+  },
+  {
+   "how": [
+    {
+     "text": "Only after crash-report consent.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/sentry.ts:115"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "HTTP",
+    "TLS"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-main-sentry",
+   "from": "b-main",
+   "to": "x-sentry",
+   "cargo": "updates",
+   "label": "Crash reports, if you agree"
+  },
+  {
+   "how": [
+    {
+     "text": "Every phone request is re-checked on the desktop against your grants.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "PRIVACY.md:412"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "utilityProcess"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-main-remote",
+   "from": "b-main",
+   "to": "b-remote",
+   "cargo": "jobs",
+   "label": "Granted requests only"
+  },
+  {
+   "how": [
+    {
+     "text": "The relay sees a room id, frame sizes and timing, and stores no messages.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "PRIVACY.md:429"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "WebSocket",
+    "TLS"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-remote-relay",
+   "from": "b-remote",
+   "to": "x-relay",
+   "cargo": "sealed",
+   "label": "Sealed frames"
+  },
+  {
+   "how": [
+    {
+     "text": "Default relay is wss://relay.termpolis.com; you can run your own.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/remoteBridge/protocol.ts:527"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "WebSocket",
+    "TLS"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-relay-phone",
+   "from": "x-relay",
+   "to": "x-phone",
+   "cargo": "sealed",
+   "label": "Sealed frames"
+  },
+  {
+   "how": [
+    {
+     "text": "Linked machines ride the Remote bridge; the bridge is transport, this is policy.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/linkedHost.ts:12"
+      }
+     ]
+    }
+   ],
+   "tech": [],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-linked-remote",
+   "from": "b-linked",
+   "to": "b-remote",
+   "cargo": "jobs",
+   "label": "Jobs for paired computers"
+  },
+  {
+   "how": [
+    {
+     "text": "The relay is a Cloudflare Worker with one Durable Object per pairing room.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "relay/src/pairingRoom.ts:56"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "WebSocket",
+    "TLS"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": true,
+   "claims": [],
+   "id": "e-relay-linked",
+   "from": "x-relay",
+   "to": "x-linked",
+   "cargo": "sealed",
+   "label": "Sealed frames"
+  },
+  {
+   "how": [
+    {
+     "text": "The conductor runs as `claude -p` in a terminal you do not see.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/renderer/src/lib/conductorLaunch.ts:5"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "headless agent"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-swarm-pty",
+   "from": "b-swarm",
+   "to": "b-pty",
+   "cargo": "jobs",
+   "label": "Hidden conductor terminal"
+  },
+  {
+   "how": [],
+   "tech": [
+    "IPC"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-canvas-engine",
+   "from": "b-workflow-canvas",
+   "to": "b-workflow-engine",
+   "cargo": "jobs",
+   "label": "Workflow to run"
+  },
+  {
+   "how": [
+    {
+     "text": "Command steps run in a terminal.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/workflow/workflowEngine.ts:45"
+      }
+     ]
+    }
+   ],
+   "tech": [],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-engine-pty",
+   "from": "b-workflow-engine",
+   "to": "b-pty",
+   "cargo": "jobs",
+   "label": "Command and agent steps"
+  },
+  {
+   "how": [
+    {
+     "text": "Each request's real token use is reported back for the savings ledger.",
+     "state": "observed",
+     "evidence": [
+      {
+       "kind": "file",
+       "ref": "src/main/headroomProxy/proxySupervisor.ts:9"
+      }
+     ]
+    }
+   ],
+   "tech": [
+    "utilityProcess"
+   ],
+   "why": [],
+   "rate": "",
+   "twoWay": false,
+   "claims": [],
+   "id": "e-proxy-main",
+   "from": "b-proxy",
+   "to": "b-main",
+   "cargo": "jobs",
+   "label": "Token counts per request"
+  }
+ ],
+ "externals": [
+  {
+   "id": "x-claude",
+   "name": "Claude Code",
+   "kind": "agent",
+   "fog": false
+  },
+  {
+   "id": "x-codex",
+   "name": "Codex",
+   "kind": "agent",
+   "fog": false
+  },
+  {
+   "id": "x-gemini",
+   "name": "Gemini CLI",
+   "kind": "agent",
+   "fog": false
+  },
+  {
+   "id": "x-files",
+   "name": "Your project files",
+   "kind": "files",
+   "fog": false
+  },
+  {
+   "id": "x-anthropic",
+   "name": "Anthropic API",
+   "kind": "provider",
+   "fog": false
+  },
+  {
+   "id": "x-openai",
+   "name": "OpenAI / ChatGPT",
+   "kind": "provider",
+   "fog": false
+  },
+  {
+   "id": "x-google",
+   "name": "Google Gemini API",
+   "kind": "provider",
+   "fog": false
+  },
+  {
+   "id": "x-github",
+   "name": "GitHub",
+   "kind": "service",
+   "fog": false
+  },
+  {
+   "id": "x-sentry",
+   "name": "Sentry (opt-in)",
+   "kind": "service",
+   "fog": false
+  },
+  {
+   "id": "x-relay",
+   "name": "Pairing relay",
+   "kind": "service",
+   "fog": false
+  },
+  {
+   "id": "x-phone",
+   "name": "Your phone",
+   "kind": "machine",
+   "fog": false
+  },
+  {
+   "id": "x-linked",
+   "name": "Linked computer",
+   "kind": "machine",
+   "fog": false
+  }
+ ],
+ "glossary": {
+  "React": "The library that builds the app's screens out of small components.",
+  "xterm.js": "The terminal emulator that draws text, colours and the cursor in each pane.",
+  "Monaco": "The code editor from VS Code, used to edit shell config files.",
+  "three.js": "A 3D drawing library for the web; it draws this city.",
+  "WebGL": "The browser's way to draw 3D with the graphics card.",
+  "MessagePort": "A private two-way pipe between two parts of the app.",
+  "Electron": "Runs a web-technology app as a desktop program, with a main process and windows.",
+  "IPC": "Messages between the app's window and its main process.",
+  "node-pty": "Gives a program a real terminal, so shells and agents behave as they would in any terminal.",
+  "utilityProcess": "A separate helper process Electron starts; if it is busy or crashes, the window keeps working.",
+  "worker thread": "A second thread inside a process, for heavy work that must not block the first.",
+  "tree-sitter": "A fast parser that reads source code into a tree of functions and calls.",
+  "JSONL": "A log file with one JSON record per line; agents write their sessions this way.",
+  "headless agent": "An AI agent run in the background with no window, for one job.",
+  "HNSW": "An index that finds the nearest vectors quickly, so similar memories are found fast.",
+  "AES-256-GCM": "A standard cipher that both hides data and detects any change to it.",
+  "OS keystore": "Where the operating system keeps secrets: DPAPI on Windows, Keychain on macOS, libsecret on Linux.",
+  "ONNX Runtime": "Runs a machine-learning model on your own computer, here as WebAssembly.",
+  "bge-small": "A small open embedding model (bge-small-en-v1.5) that turns text into 384 numbers.",
+  "cross-encoder": "A model that reads a question and a result together and scores how well they match.",
+  "HTTP": "The protocol web requests use.",
+  "TLS": "The encryption that protects a connection (the S in HTTPS and WSS).",
+  "MCP": "Model Context Protocol: the standard way an AI agent calls tools.",
+  "stdio": "A program's standard input and output, used here as a private pipe to the agent.",
+  "X25519": "A key agreement method: two devices make a shared secret without sending it.",
+  "ChaCha20-Poly1305": "An authenticated cipher that seals each message so only the other device can read it.",
+  "WebSocket": "A long-lived two-way connection over the web.",
+  "gh CLI": "GitHub's own command-line tool, signed in with your account."
+ },
+ "cargo": {
+  "keys": {
+   "shape": "sphere",
+   "color": "#4fc1ff",
+   "label": "Keystrokes and screen output"
+  },
+  "requests": {
+   "shape": "tetra",
+   "color": "#facc15",
+   "label": "Model requests"
+  },
+  "tools": {
+   "shape": "octa",
+   "color": "#e2e8f0",
+   "label": "Tool calls"
+  },
+  "memories": {
+   "shape": "cube",
+   "color": "#f472b6",
+   "label": "Memories"
+  },
+  "jobs": {
+   "shape": "sphere",
+   "color": "#fb923c",
+   "label": "Jobs for helper programs"
+  },
+  "sealed": {
+   "shape": "octa",
+   "color": "#34d399",
+   "label": "End-to-end sealed frames"
+  },
+  "code": {
+   "shape": "cube",
+   "color": "#38bdf8",
+   "label": "Code and session logs"
+  },
+  "world": {
+   "shape": "cube",
+   "color": "#c4b5fd",
+   "label": "World data"
+  },
+  "updates": {
+   "shape": "tetra",
+   "color": "#94a3b8",
+   "label": "Update checks and reports"
+  }
+ },
+ "processes": {
+  "renderer": {
+   "label": "App window (renderer)",
+   "color": "#86bcb6"
+  },
+  "main": {
+   "label": "Main process",
+   "color": "#f2c14e"
+  },
+  "ptyHost": {
+   "label": "termpolis-pty",
+   "color": "#f28e2b"
+  },
+  "procHost": {
+   "label": "termpolis-proc",
+   "color": "#e15759"
+  },
+  "memoryHost": {
+   "label": "termpolis-memory",
+   "color": "#ff9da7"
+  },
+  "rerankWorker": {
+   "label": "Reranker worker thread",
+   "color": "#4e79a7"
+  },
+  "headroomProxy": {
+   "label": "termpolis-headroom",
+   "color": "#b07aa1"
+  },
+  "remoteBridge": {
+   "label": "termpolis-remote-bridge",
+   "color": "#59a14f"
+  },
+  "worldHost": {
+   "label": "termpolis-lumopolis",
+   "color": "#edc948"
+  },
+  "agentChild": {
+   "label": "Started by each agent",
+   "color": "#bab0ac"
+  }
+ },
+ "tours": [
+  {
+   "id": "tour-big-picture",
+   "title": "The big picture",
+   "steps": [
+    {
+     "ids": [
+      "b-terminals",
+      "b-settings",
+      "b-workflow-canvas",
+      "b-lumo-pane"
+     ],
+     "caption": "The Screen: terminals, settings, the workflow designer and this view, all in one window."
+    },
+    {
+     "ids": [
+      "b-main",
+      "b-pty",
+      "b-proc"
+     ],
+     "caption": "The Core: the main process stays light, and starts helpers for terminals and other programs."
+    },
+    {
+     "ids": [
+      "b-memhost",
+      "b-embed",
+      "b-rerank",
+      "b-distiller"
+     ],
+     "caption": "Memory: what your agents learn, kept and searched on this computer, encrypted where a keystore exists."
+    },
+    {
+     "ids": [
+      "b-proxy"
+     ],
+     "caption": "The token proxy: a local program that shrinks what Claude Code sends."
+    },
+    {
+     "ids": [
+      "b-mcp",
+      "b-gateway",
+      "b-stdio"
+     ],
+     "caption": "The agent gateway: the tools Claude Code, Codex and Gemini CLI can call."
+    },
+    {
+     "ids": [
+      "b-remote",
+      "b-linked",
+      "x-relay",
+      "x-phone"
+     ],
+     "caption": "Remote and linked machines: off until you turn them on, sealed end to end."
+    },
+    {
+     "ids": [
+      "b-worldhost",
+      "b-ask",
+      "b-ci"
+     ],
+     "caption": "Lumopolis itself: it reads the code and draws this map."
+    }
+   ]
+  },
+  {
+   "id": "tour-keystroke",
+   "title": "Follow a keystroke",
+   "steps": [
+    {
+     "ids": [
+      "b-terminals",
+      "e-keys"
+     ],
+     "caption": "You type in a pane. On Windows the key takes a private line to the terminal host, past the main process."
+    },
+    {
+     "ids": [
+      "b-pty",
+      "e-pty-claude"
+     ],
+     "caption": "The terminal host hands it to the agent running in that terminal."
+    },
+    {
+     "ids": [
+      "x-claude",
+      "e-claude-proxy"
+     ],
+     "caption": "Claude Code sends its request to the local token proxy."
+    },
+    {
+     "ids": [
+      "b-proxy",
+      "e-proxy-anthropic",
+      "x-anthropic"
+     ],
+     "caption": "The proxy shrinks big tool results and forwards the request to Anthropic. The reply streams back untouched."
+    }
+   ]
+  },
+  {
+   "id": "tour-network",
+   "title": "What leaves this computer",
+   "steps": [
+    {
+     "ids": [
+      "x-anthropic",
+      "x-openai",
+      "x-google"
+     ],
+     "caption": "Your agents talk to their own model providers, under their own sign-in."
+    },
+    {
+     "ids": [
+      "x-github",
+      "e-main-github"
+     ],
+     "caption": "Update checks go to GitHub Releases, at launch and every 4 hours."
+    },
+    {
+     "ids": [
+      "x-sentry"
+     ],
+     "caption": "Crash reports only if you agree to them."
+    },
+    {
+     "ids": [
+      "x-relay",
+      "x-phone",
+      "x-linked"
+     ],
+     "caption": "The relay only when Remote is on, and it cannot read what it forwards."
+    }
+   ]
+  }
+ ],
+ "layout": {
+  "seed": 20261118,
+  "positions": {
+   "b-terminals": [
+    -50,
+    0,
+    -34
+   ],
+   "b-settings": [
+    -38,
+    0,
+    -38
+   ],
+   "b-workflow-canvas": [
+    -54,
+    0,
+    -22
+   ],
+   "b-lumo-pane": [
+    -40,
+    0,
+    -25
+   ],
+   "b-workflow-engine": [
+    -12,
+    0,
+    -16
+   ],
+   "b-main": [
+    -2,
+    0,
+    -12
+   ],
+   "b-pty": [
+    10,
+    0,
+    -15
+   ],
+   "b-proc": [
+    -12,
+    0,
+    -4
+   ],
+   "b-codegraph": [
+    -1,
+    0,
+    0
+   ],
+   "b-swarm": [
+    10,
+    0,
+    -3
+   ],
+   "b-watchers": [
+    4,
+    0,
+    10
+   ],
+   "b-memhost": [
+    -42,
+    0,
+    22
+   ],
+   "b-embed": [
+    -52,
+    0,
+    30
+   ],
+   "b-rerank": [
+    -37,
+    0,
+    33
+   ],
+   "b-distiller": [
+    -48,
+    0,
+    41
+   ],
+   "b-proxy": [
+    46,
+    0,
+    -8
+   ],
+   "b-mcp": [
+    -6,
+    0,
+    30
+   ],
+   "b-gateway": [
+    6,
+    0,
+    31
+   ],
+   "b-stdio": [
+    0,
+    0,
+    41
+   ],
+   "b-remote": [
+    38,
+    0,
+    30
+   ],
+   "b-linked": [
+    48,
+    0,
+    39
+   ],
+   "b-worldhost": [
+    28,
+    0,
+    -42
+   ],
+   "b-ask": [
+    38,
+    0,
+    -48
+   ],
+   "b-ci": [
+    40,
+    0,
+    -36
+   ],
+   "x-claude": [
+    26,
+    4,
+    4
+   ],
+   "x-codex": [
+    27,
+    4,
+    13
+   ],
+   "x-gemini": [
+    22,
+    4,
+    21
+   ],
+   "x-anthropic": [
+    72,
+    6,
+    -18
+   ],
+   "x-openai": [
+    72,
+    6,
+    -4
+   ],
+   "x-google": [
+    70,
+    6,
+    12
+   ],
+   "x-files": [
+    -4,
+    4,
+    -40
+   ],
+   "x-github": [
+    66,
+    6,
+    -44
+   ],
+   "x-sentry": [
+    -24,
+    6,
+    -52
+   ],
+   "x-relay": [
+    66,
+    6,
+    30
+   ],
+   "x-phone": [
+    84,
+    6,
+    22
+   ],
+   "x-linked": [
+    82,
+    6,
+    40
+   ],
+   "p-team-share": [
+    -28,
+    0,
+    46
+   ],
+   "p-team-review": [
+    -18,
+    0,
+    54
+   ]
+  }
+ },
+ "runtimeNames": {
+  "b-pty": [
+   "termpolis-pty"
+  ],
+  "b-proc": [
+   "termpolis-proc"
+  ],
+  "b-memhost": [
+   "termpolis-memory"
+  ],
+  "b-proxy": [
+   "termpolis-headroom"
+  ],
+  "b-remote": [
+   "termpolis-remote-bridge"
+  ],
+  "b-worldhost": [
+   "termpolis-lumopolis"
+  ]
+ },
+ "layers": {
+  "plan": [
+   {
+    "id": "team-sharing",
+    "title": "Team sharing (proposal, coming in 2.x)",
+    "summary": [
+     {
+      "text": "An example of a plan drawn over the built world: nothing here is built. Lumopolis shows a request like \"add team sharing\" as wireframes before any code is written.",
+      "state": "proposed",
+      "evidence": [
+       {
+        "kind": "file",
+        "ref": "docs/superpowers/specs/2026-11-15-world-view-design.md:181"
+       }
+      ]
+     }
+    ],
+    "buildings": [
+     {
+      "floors": [
+       {
+        "name": "Choose what to share",
+        "tech": [],
+        "members": []
+       },
+       {
+        "name": "Shared space",
+        "tech": [],
+        "members": []
+       }
+      ],
+      "stack": [],
+      "how": [
+       {
+        "text": "Would let you pick memories and send them to teammates you choose; nothing is shared by default.",
+        "state": "proposed",
+        "evidence": [
+         {
+          "kind": "file",
+          "ref": "docs/superpowers/specs/2026-11-15-world-view-design.md:181"
+         }
+        ]
+       }
+      ],
+      "why": [],
+      "claims": [],
+      "members": [],
+      "nameState": "observed",
+      "status": "proposed",
+      "id": "p-team-share",
+      "districtId": "d-memory",
+      "name": "Team share",
+      "techLabel": "planned",
+      "process": ""
+     },
+     {
+      "floors": [
+       {
+        "name": "Review queue",
+        "tech": [],
+        "members": []
+       }
+      ],
+      "stack": [],
+      "how": [
+       {
+        "text": "Would show each memory, scrubbed of secrets, for you to approve before it leaves.",
+        "state": "proposed",
+        "evidence": [
+         {
+          "kind": "file",
+          "ref": "docs/superpowers/specs/2026-11-15-world-view-design.md:181"
+         }
+        ]
+       }
+      ],
+      "why": [],
+      "claims": [],
+      "members": [],
+      "nameState": "observed",
+      "status": "proposed",
+      "id": "p-team-review",
+      "districtId": "d-memory",
+      "name": "Review before sharing",
+      "techLabel": "planned",
+      "process": ""
+     }
+    ],
+    "edges": [
+     {
+      "how": [
+       {
+        "text": "Planned: starts from memories you select.",
+        "state": "proposed",
+        "evidence": [
+         {
+          "kind": "file",
+          "ref": "docs/superpowers/specs/2026-11-15-world-view-design.md:181"
+         }
+        ]
+       }
+      ],
+      "tech": [],
+      "why": [],
+      "rate": "",
+      "twoWay": false,
+      "claims": [],
+      "id": "p-e-mem-review",
+      "from": "b-memhost",
+      "to": "p-team-review",
+      "cargo": "memories",
+      "label": "Memories you pick"
+     },
+     {
+      "how": [
+       {
+        "text": "Planned: only what you approved moves on.",
+        "state": "proposed",
+        "evidence": [
+         {
+          "kind": "file",
+          "ref": "docs/superpowers/specs/2026-11-15-world-view-design.md:181"
+         }
+        ]
+       }
+      ],
+      "tech": [],
+      "why": [],
+      "rate": "",
+      "twoWay": false,
+      "claims": [],
+      "id": "p-e-review-share",
+      "from": "p-team-review",
+      "to": "p-team-share",
+      "cargo": "memories",
+      "label": "Approved memories"
+     },
+     {
+      "how": [
+       {
+        "text": "Planned: would reuse the sealed relay the phone already uses.",
+        "state": "proposed",
+        "evidence": [
+         {
+          "kind": "file",
+          "ref": "docs/superpowers/specs/2026-11-15-world-view-design.md:181"
+         }
+        ]
+       }
+      ],
+      "tech": [],
+      "why": [],
+      "rate": "",
+      "twoWay": false,
+      "claims": [],
+      "id": "p-e-share-relay",
+      "from": "p-team-share",
+      "to": "x-relay",
+      "cargo": "sealed",
+      "label": "Sealed, to teammates"
+     }
+    ]
+   }
+  ]
+ }
+}

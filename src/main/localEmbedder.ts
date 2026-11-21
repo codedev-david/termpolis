@@ -22,12 +22,13 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { BertTokenizer } from './bertTokenizer'
+import { BGE_QUERY_PREFIX } from '../shared/world/askIndex'
 
 export const EMBED_DIM = 384
 
 // bge retrieval models expect this instruction prefix on QUERY text only —
 // stored passages are embedded verbatim. Mixing it up tanks recall.
-const QUERY_PREFIX = 'Represent this sentence for searching relevant passages: '
+// The query prefix lives in shared/world/askIndex.ts, the one source the exported page also reads.
 
 const MODEL_DIR_NAME = 'bge-small-en-v1.5'
 const ONNX_MODEL_FILE = 'model_quantized.onnx'
@@ -349,7 +350,7 @@ function noteWorkerStatus(usedWorker: boolean): void {
  */
 export async function embedBatch(texts: string[], opts?: EmbedOptions): Promise<(number[] | null)[]> {
   if (!Array.isArray(texts) || texts.length === 0) return []
-  const prepared = opts?.isQuery ? texts.map((t) => QUERY_PREFIX + t) : texts
+  const prepared = opts?.isQuery ? texts.map((t) => BGE_QUERY_PREFIX + t) : texts
   // BB11: try the off-thread worker first (single-text protocol). If it embeds every
   // text we're done; any miss disables it for this call and we use the in-process path.
   const worker = await ensureWorker()
