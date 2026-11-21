@@ -66,8 +66,11 @@ describe('Ask quality on the fixture world', () => {
     const vectors = await embedBatch(all.map((x) => x.q), { isQuery: true })
     const ranked = all.map(({ q }, i) => {
       const smart = cosineScores(packed, Float32Array.from(vectors[i] as number[]))
+      // The page never ranks by meaning alone (it fuses, or with FUSE off ranks by keyword); this measures the meaning
+      // ranking the spec bars. rankAsk ranks one list of scores as `keyword`, which differs from the meaning half of the
+      // fusion only by dropping the entries scored 0 or below; with 3 or more above 0 the top 3 are the same.
+      expect(smart.filter((x) => x > 0).length).toBeGreaterThanOrEqual(3)
       return {
-        // rankAsk ranks any one list of scores: here the meaning list alone.
         smart: rankAsk(entries, { keyword: smart }),
         fused: rankAsk(entries, { smart, keyword: bm25Scores(ix, q), named: nameFit(entries, q) })
       }

@@ -162,26 +162,41 @@ export interface AskHit { id: string; kind: AskKind; name: string; first: string
 const order = (scores: number[], positive: boolean): number[] =>
   scores.map((_, i) => i).filter((i) => !positive || scores[i] > 0).sort((a, b) => scores[b] - scores[a] || a - b)
 
+/** nameFit's score for a question that is an entry's whole name (stopwords aside). */
+export const WHOLE_NAME = 2
+
 /**
- * How much of each entry's own name the question says: the share of the name's words in the question, when every
- * word of the question is in that name, and 0 otherwise. "memory" is half of "Memory host" but only a third of the
- * line "Memory host → Embedder", whose name is made of the two names it joins. A question with any word outside a
- * name fits it 0, so a full sentence rarely fits anything and its ranking is left alone.
+ * How much of each entry's own name the question says, as a lead for rankAsk (0 for none):
+ * - every word of the question is in the name: 1 plus the share of the name's words said, so WHOLE_NAME for the whole
+ *   name. "memory" is half of "Memory host" (1.5) but a third of the line "Memory host → Embedder" (1.33), whose name
+ *   is the two names it joins;
+ * - the question says every word of the name among other words ("how does the token proxy work"): the share of the
+ *   question's words the name fills, below 1, so a question wholly inside a name always fits it better;
+ * - otherwise 0, as for a name with no words of its own (a stopword, one letter, punctuation), which every question
+ *   would otherwise contain.
  */
 export function nameFit(entries: AskEntry[], question: string): number[] {
   const asked = Array.from(new Set(tokenize(question)))
   return entries.map((e) => {
     const name = new Set(tokenize(e.name))
-    return asked.length > 0 && asked.every((w) => name.has(w)) ? asked.length / name.size : 0
+    if (asked.length === 0 || name.size === 0) return 0
+    if (asked.every((w) => name.has(w))) return 1 + asked.length / name.size
+    const said = asked.filter((w) => name.has(w)).length
+    return said === name.size ? said / asked.length : 0
   })
 }
+
+/** Which kind leads when two entries fit a question's name equally: the part itself before what mentions it. */
+const KIND_LEAD: Record<AskKind, number> = { building: 0, external: 0, line: 1, term: 2, tour: 3 }
 
 /**
  * The best parts for a question. A part made only of test files is scored at TEST_RANK_FACTOR. With meaning scores
  * of one per entry (and FUSE) the two rankings are fused; otherwise the keyword ranking stands alone, and a question no entry shares a
- * word with (empty, punctuation, only stopwords) answers nothing. With `named` (nameFit of the question), the parts
- * whose name the question fills most lead, in the order the ranking gives them: a newcomer who types a name, or one
- * word of it, gets that part first, above the lines that only repeat the name (both rankings like those short texts).
+ * word with (empty, punctuation, only stopwords) answers nothing. With `named` (nameFit of the question), the entries
+ * that fit the question's name best lead, a building or outside part before a line, a term and a tour, then in the
+ * order the ranking gives them; the rest keep their place. A newcomer who types a name, or says one in a sentence,
+ * gets that part first, above the lines that only repeat the name (both rankings like those short texts). A test part
+ * leads only for its whole name: otherwise it keeps its demoted place, below any part that leads.
  */
 export function rankAsk(entries: AskEntry[], scores: { smart?: number[]; keyword: number[]; named?: number[] }, limit = 5): AskHit[] {
   if (scores.keyword.length !== entries.length) {
@@ -197,8 +212,10 @@ export function rankAsk(entries: AskEntry[], scores: { smart?: number[]; keyword
   const ranked = FUSE && smart
     ? rrf([order(weigh(smart), false), order(weigh(scores.keyword), true)])
     : order(weigh(scores.keyword), true)
-  const best = named ? named.reduce((m, x) => Math.max(m, x), 0) : 0
-  const leads = (i: number): boolean => best > 0 && (named as number[])[i] === best
-  const ids = ranked.filter(leads).concat(ranked.filter((i) => !leads(i)))
+  const lead = (named ?? []).map((x, i) => (entries[i].test && x < WHOLE_NAME ? 0 : x))
+  const best = lead.reduce((m, x) => Math.max(m, x), 0)
+  const leads = (i: number): boolean => best > 0 && lead[i] === best
+  const first = ranked.filter(leads).sort((a, b) => KIND_LEAD[entries[a].kind] - KIND_LEAD[entries[b].kind])
+  const ids = first.concat(ranked.filter((i) => !leads(i)))
   return ids.slice(0, limit).map((i) => ({ id: entries[i].id, kind: entries[i].kind, name: entries[i].name, first: entries[i].first }))
 }

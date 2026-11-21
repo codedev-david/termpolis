@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ASK_INDEX_VERSION, BGE_QUERY_PREFIX, FUSE, TEST_RANK_FACTOR, askEntries, bm25Scores, buildBm25, cosineScores, nameFit, packInt8, rankAsk, rrf, tokenize,
+  ASK_INDEX_VERSION, BGE_QUERY_PREFIX, FUSE, TEST_RANK_FACTOR, askEntries, bm25Scores, buildBm25, cosineScores, nameFit, packInt8, rankAsk, rrf, tokenize, WHOLE_NAME,
   type AskEntry, type AskKind
 } from '../../../src/shared/world/askIndex'
 import { building, claim, edge, rich } from '../../renderer/world/helpers'
@@ -223,21 +223,37 @@ describe('nameFit', () => {
     named('t', 'tour', '→')
   ]
 
-  it('is the share of a name the question says, when every word of the question is in that name', () => {
-    expect(nameFit(entries, 'memory')).toEqual([1 / 2, 1 / 3, 0, 0, 0])
-    expect(nameFit(entries, 'Memory hosts')).toEqual([1, 2 / 3, 0, 0, 0])
-    expect(nameFit(entries, 'EMBEDDER')).toEqual([0, 1 / 3, 1, 0, 0])
+  it('is 1 plus the share of a name the question says, when every word of the question is in that name, and WHOLE_NAME for the whole name', () => {
+    expect(WHOLE_NAME).toBe(2)
+    expect(nameFit(entries, 'memory')).toEqual([1 + 1 / 2, 1 + 1 / 3, 0, 0, 0])
+    expect(nameFit(entries, 'Memory hosts')).toEqual([WHOLE_NAME, 1 + 2 / 3, 0, 0, 0])
+    expect(nameFit(entries, 'the memory host')).toEqual([WHOLE_NAME, 1 + 2 / 3, 0, 0, 0])
+    expect(nameFit(entries, 'EMBEDDER')).toEqual([0, 1 + 1 / 3, WHOLE_NAME, 0, 0])
   })
 
-  it('is 0 for a name the question says only part of itself', () => {
+  it('is the share of the question a whole name fills, below 1, when the question says the name among other words', () => {
+    expect(nameFit(entries, 'how does the memory host work')).toEqual([2 / 3, 0, 0, 0, 0])
+    expect(nameFit(entries, 'what does the memory host send to the embedder')).toEqual([2 / 4, 3 / 4, 1 / 4, 0, 0])
+    expect(nameFit(entries, 'what does the pairing relay do')).toEqual([0, 0, 0, WHOLE_NAME, 0])
+    expect(nameFit(entries, 'is the pairing relay safe')).toEqual([0, 0, 0, 2 / 3, 0])
+  })
+
+  it('is 0 for a name the question says only part of, beside other words', () => {
     expect(nameFit(entries, 'where is each memory kept')).toEqual([0, 0, 0, 0, 0])
     expect(nameFit(entries, 'relay memory')).toEqual([0, 0, 0, 0, 0])
   })
 
   it('counts a repeated word once, and is 0 everywhere for a question with no words', () => {
-    expect(nameFit(entries, 'relay relay relay')).toEqual([0, 0, 0, 1 / 2, 0])
+    expect(nameFit(entries, 'relay relay relay')).toEqual([0, 0, 0, 1 + 1 / 2, 0])
     for (const q of ['', '?!', 'the of and']) expect(nameFit(entries, q)).toEqual([0, 0, 0, 0, 0])
     expect(nameFit([], 'memory')).toEqual([])
+  })
+
+  it('never fits a name with no words of its own: a stopword, one letter or punctuation is in every question', () => {
+    const empty = ['A', 'The', 'C', 'C++', 'App', '→', 'R & D'].map((n, i) => named(`n${i}`, 'term', n))
+    for (const q of ['how does the app use a C library', 'R and D', 'a', 'the', 'what does it do']) {
+      expect(nameFit(empty, q)).toEqual(empty.map(() => 0))
+    }
   })
 })
 
@@ -322,6 +338,43 @@ describe('rankAsk', () => {
     const e = [entry('a'), entry('b'), entry('c')]
     expect(rankAsk(e, { keyword: [2, 1, 0], named: [0, 0, 1] }).map((h) => h.id)).toEqual(['a', 'b'])
     expect(rankAsk(e, { keyword: [3, 2, 1], named: [0, 1, 1] }, 1).map((h) => h.id)).toEqual(['b'])
+  })
+
+  it('breaks a tie in the lead by kind: a building or outside part, then a line, a term, a tour', () => {
+    const k = (id: string, kind: AskKind): AskEntry => ({ id, kind, name: id, first: '', text: id, test: false })
+    const e = [k('tour', 'tour'), k('term', 'term'), k('line', 'line'), k('ext', 'external'), k('bld', 'building'), k('rest', 'building')]
+    const keyword = [6, 5, 4, 3, 2, 1]
+    expect(rankAsk(e, { keyword, named: [1.5, 1.5, 1.5, 1.5, 1.5, 0] }).map((h) => h.id)).toEqual(['ext', 'bld', 'line', 'term', 'tour'])
+    // A better fit still wins over kind: the whole name of a term beats half the name of a building.
+    expect(rankAsk(e, { keyword, named: [0, WHOLE_NAME, 0, 0, 1.5, 0] }).map((h) => h.id)).toEqual(['term', 'tour', 'line', 'ext', 'bld'])
+  })
+
+  it('lets a test part lead only when the question is its whole name', () => {
+    const e = [entry('t', true), entry('real'), entry('other')]
+    // The whole name of a test part leads, even over a better-ranked part with half its name said.
+    expect(rankAsk(e, { keyword: [1, 3, 2], named: [WHOLE_NAME, 1.5, 0] }).map((h) => h.id)).toEqual(['t', 'real', 'other'])
+    // Part of a test part's name: a non-test part with any lead goes first, and the test part keeps its ranked place.
+    expect(rankAsk(e, { keyword: [3, 1, 2], named: [1.5, 1.2, 0] }).map((h) => h.id)).toEqual(['real', 't', 'other'])
+    expect(rankAsk(e, { keyword: [3, 1, 2], named: [1.5, 0.5, 0] }).map((h) => h.id)).toEqual(['real', 't', 'other'])
+    // With no non-test lead, the test part keeps the usual demotion: below an equal part.
+    expect(rankAsk(e, { keyword: [1, 1, 0], named: [1.5, 0, 0] }).map((h) => h.id)).toEqual(['real', 't'])
+    expect(rankAsk(e, { keyword: [1, 1, 0], named: [0.5, 0, 0] }).map((h) => h.id)).toEqual(['real', 't'])
+  })
+
+  it('keeps the test rule end to end: a test part that fits a one-word question better stays below the real part', () => {
+    const part = (id: string, name: string, test: boolean): AskEntry => ({ id, kind: 'building', name, first: '', text: `${name} keeps notes`, test })
+    const e = [part('b-mem-tests', 'Memory tests', true), part('b-mem', 'Memory host process', false)]
+    const ix = buildBm25(e.map((x) => x.text))
+    const ask = (q: string): string[] => rankAsk(e, { keyword: bm25Scores(ix, q), named: nameFit(e, q) }).map((h) => h.id)
+    expect(nameFit(e, 'memory')).toEqual([1 + 1 / 2, 1 + 1 / 3])
+    expect(ask('memory')).toEqual(['b-mem', 'b-mem-tests'])
+    expect(ask('memory tests')).toEqual(['b-mem-tests', 'b-mem'])
+  })
+
+  it('puts a question wholly inside one name above a name said among other words', () => {
+    const e = [entry('a'), entry('b'), entry('c')]
+    expect(rankAsk(e, { keyword: [3, 2, 1], named: [0.75, 1.5, 0] }).map((h) => h.id)).toEqual(['b', 'a', 'c'])
+    expect(rankAsk(e, { keyword: [3, 2, 1], named: [0, 0.5, 0] }).map((h) => h.id)).toEqual(['b', 'a', 'c'])
   })
 
   it('throws when the name fits are not one per entry', () => {

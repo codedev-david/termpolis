@@ -140,6 +140,9 @@ describe('mountAskBox', () => {
     await smart.box.ready
     await smart.ask('memory')
     expect(smart.ids()).toEqual(['b-mem', 'e-mem', 'b-emb'])
+    // The whole name among other words leads too.
+    await smart.ask('how does the memory host work')
+    expect(smart.ids()[0]).toBe('b-mem')
   })
 
   it('ranks by meaning fused with the keywords once smart Ask is ready', async () => {
