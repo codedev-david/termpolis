@@ -518,6 +518,10 @@ beforeAll(async () => {
   // The recheck markers remember what the disk said at the first look of a launch; each test here is a new launch.
   recheckModule = await import('../../src/main/mnemeLessonRecheck')
   await new Promise((resolve) => setTimeout(resolve, 50))
+  // The settings file is read off the main thread; on a busy machine that takes longer than the 50 ms above. Wait
+  // for the read itself (up to 5 s), so a slow disk is never mistaken for a host that was not told; a host never
+  // told still fails the test below with 0.
+  await vi.waitFor(() => { if (world.client.applySettings.mock.calls.length === 0) throw new Error('settings not applied yet') }, { timeout: 5000, interval: 10 }).catch(() => undefined)
   settingsAppliedAtStart = world.client.applySettings.mock.calls.length
   mcp = mockStartMcpServer.mock.calls[0]?.[0]
   indexer = mockStartIndexer.mock.calls[0]?.[0]
