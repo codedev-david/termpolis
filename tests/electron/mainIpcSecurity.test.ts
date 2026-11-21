@@ -70,6 +70,8 @@ const H = vi.hoisted(() => {
     openSync: vi.fn(() => 3),
     closeSync: vi.fn(),
     fsyncSync: vi.fn(),
+    // index.ts reads fs.promises as it loads (the world export's file operations), so the mock carries it too.
+    promises: { readFile: vi.fn(), writeFile: vi.fn(), rename: vi.fn(), unlink: vi.fn(), stat: vi.fn(), readdir: vi.fn() },
   }
 
   return {

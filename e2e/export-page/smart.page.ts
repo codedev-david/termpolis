@@ -5,11 +5,16 @@
  *
  * The CSP: the one grant beyond 'none' that smart Ask needs ('wasm-unsafe-eval') is proven needed by a copy of
  * smart.html without it (Chromium: Electron and Edge, where smart Ask must work).
+ *
+ * No retries in this file: the 6 s readiness budget must hold on the first run.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { ASK_FAILED, ask, askReady, expect, questions, test } from './helpers'
 import { FIXTURE_DIR, FIXTURE_JSON, SMART_HTML } from './paths'
+
+// A retry must not hide a readiness time over budget (a slow first run passing on its second): no retries here.
+test.describe.configure({ retries: 0 })
 
 const SMART_BROWSERS = new Set(['electron', 'msedge'])
 const READY_BUDGET_MS = 6000
@@ -72,13 +77,16 @@ test("smart Ask fails without 'wasm-unsafe-eval' in script-src", async ({ open }
   fs.writeFileSync(copy, html.replace(csp, stripped))
   const o = await open(copy)
   const ready = await askReady(o.page)
-  info.annotations.push({ type: 'csp', description: `without 'wasm-unsafe-eval': ${ready.state}; violations ${JSON.stringify(await o.violations())}` })
+  const violations = await o.violations()
+  info.annotations.push({ type: 'csp', description: `without 'wasm-unsafe-eval': ${ready.state}; violations ${JSON.stringify(violations)}` })
   expect(ready.state).toBe('failed')
   await expect(o.page.locator('.wx-ask-status')).toHaveText(ASK_FAILED)
+  // It failed because the CSP refused the wasm compile, not for some other reason.
+  expect(violations.some((v) => v.startsWith('script-src') && v.includes('wasm-eval')), `a script-src wasm-eval violation in ${JSON.stringify(violations)}`).toBe(true)
   expect(o.foreign()).toEqual([])
 })
 
-test('the CSP grants no worker or image source: everything else falls back to none', () => {
+test("the CSP names no worker or image source: worker-src falls back through child-src to script-src, img-src to default-src 'none'", () => {
   test.skip(test.info().project.name !== 'electron', 'a check of the file, once')
   expect(pagePolicy(fs.readFileSync(SMART_HTML, 'utf8'))).toBe("default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'none'")
 })

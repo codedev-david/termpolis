@@ -61,6 +61,18 @@ if (accountsSendReachesRenderer) {
   }
 }
 
+// The Lumopolis export sends its progress the same way (deps.send('world:export-progress', …) in world/exportIpc.ts),
+// through the `send` index.ts gives registerWorldExportIpc: once that `send` is webContents.send on a live window,
+// each channel exportIpc.ts sends counts as sent.
+const exportRegistration = /registerWorldExportIpc\(ipcMain, \{([\s\S]*?)\n\}\)/.exec(readFileSync(join(SRC, 'main', 'index.ts'), 'utf8'))
+const exportSendReachesRenderer = !!exportRegistration &&
+  /\n\s*send: \(channel, payload\) => \{\n\s*const win = mainWindow\n\s*if \(win && !win\.isDestroyed\(\)\) win\.webContents\.send\(channel, payload\)\n\s*\},/.test(exportRegistration[1])
+if (exportSendReachesRenderer) {
+  for (const [channel, file] of channels([join(SRC, 'main', 'world', 'exportIpc.ts')], /\bdeps\.send\(\s*'([^']+)'/g)) {
+    if (!sent.has(channel)) sent.set(channel, file)
+  }
+}
+
 describe('IPC channel sync (main <-> preload)', () => {
   it('found channels on both sides (the extraction itself still works)', () => {
     // If a refactor changes how events are sent, both sets go empty and every assertion below
@@ -72,6 +84,11 @@ describe('IPC channel sync (main <-> preload)', () => {
   it('sends the accounts events to the renderer: index.ts gives registerAccountsIpc webContents.send', () => {
     expect(accountsSendReachesRenderer).toBe(true)
     expect(sent.get(ACCOUNTS_IPC.terminalAccount)).toBe('main/accountsIpc.ts')
+  })
+
+  it('sends the export progress to the renderer: index.ts gives registerWorldExportIpc webContents.send', () => {
+    expect(exportSendReachesRenderer).toBe(true)
+    expect(sent.get('world:export-progress')).toBe('main/world/exportIpc.ts')
   })
 
   it('every channel main sends has a listener in preload (no dead bridges)', () => {

@@ -16,6 +16,13 @@ export const ASK_FAILED = "Smart Ask couldn't start in this browser; using keywo
 export const ASK_LOADING = 'Smart Ask is getting ready… keyword search works now.'
 export type AskState = 'keyword' | 'loading' | 'smart' | 'failed'
 
+/**
+ * The projects whose browser reports no request event for a file:// load: their request log can't prove itself
+ * live on the page's own file, so page.page.ts's canary (a copy of the page that makes one non-file request)
+ * proves it instead. Every other project proves it on each open: the log must hold the page's own file.
+ */
+export const SELF_LOAD_UNSEEN = new Set(['firefox'])
+
 export interface OpenOptions {
   /** getContext('webgl'|'webgl2'|'experimental-webgl') answers null, as in a browser without WebGL. */
   noWebGL?: boolean
@@ -129,6 +136,11 @@ export const test = base.extend<Fixtures>({
       const errors: string[] = []
       p.on('pageerror', (e) => { errors.push(String(e)) })
       await p.goto(own, { waitUntil: 'load', timeout: 60_000 })
+      // The positive control: an empty foreign() means something only if the log sees requests at all, and the
+      // page's own file is the one request every load makes (where the browser reports it; else the canary test).
+      if (!SELF_LOAD_UNSEEN.has(info.project.name)) {
+        expect(requests.some((u) => same(u, own)), `the request log saw the page itself (${JSON.stringify(requests.slice(0, 5))})`).toBe(true)
+      }
       return {
         page: p,
         requests,

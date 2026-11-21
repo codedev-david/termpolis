@@ -6,9 +6,10 @@
  * and logs every request, and nothing but that file (and data:/blob: URLs) may appear; nor may any CSP violation.
  */
 import fs from 'node:fs'
+import path from 'node:path'
 import type { Page } from '@playwright/test'
-import { ASK_LOADING, ask, askReady, askState, cityClip, expect, paint, test, type Opened } from './helpers'
-import { FIXTURE_JSON, KEYWORD_HTML, SMART_HTML } from './paths'
+import { ASK_LOADING, SELF_LOAD_UNSEEN, ask, askReady, askState, cityClip, expect, paint, test, type Opened } from './helpers'
+import { FIXTURE_DIR, FIXTURE_JSON, KEYWORD_HTML, SMART_HTML } from './paths'
 
 const world = JSON.parse(fs.readFileSync(FIXTURE_JSON, 'utf8')) as { tours: Array<{ title: string; steps: Array<{ caption: string }> }> }
 const SMART_BROWSERS = new Set(['electron', 'msedge'])
@@ -43,12 +44,53 @@ async function openCardByClick(page: Page): Promise<void> {
   throw new Error('no click across the city opened a card')
 }
 
+/**
+ * How far the label of the building named `name` sits from the middle of the city's free area (cityClip), as a
+ * share of that area's half-diagonal; null when no such label is drawn. The page exposes no camera (by design), but
+ * its labels are DOM elements the viewer places over each building, so a label at the middle is a building framed
+ * there.
+ */
+async function labelOffset(page: Page, name: string): Promise<number | null> {
+  const clip = await cityClip(page)
+  return page.evaluate(({ name, clip }) => {
+    const cx = clip.x + clip.width / 2
+    const cy = clip.y + clip.height / 2
+    const half = Math.hypot(clip.width, clip.height) / 2
+    let best: number | null = null
+    for (const el of Array.from(document.querySelectorAll('.lw-bldg'))) {
+      if (el.textContent !== name || getComputedStyle(el).display === 'none') continue
+      const r = el.getBoundingClientRect()
+      if (r.width === 0 && r.height === 0) continue
+      const d = Math.hypot(r.x + r.width / 2 - cx, r.y + r.height / 2 - cy) / half
+      if (best === null || d < best) best = d
+    }
+    return best
+  }, { name, clip })
+}
+
 /** What every test ends on: no request left the page, the page threw nothing, and its CSP refused nothing. */
 async function noRequestsNoErrors(o: Opened): Promise<void> {
   expect(o.foreign(), 'requests other than the page itself').toEqual([])
   expect(o.errors, 'errors thrown in the page').toEqual([])
   expect(await o.violations(), 'CSP violations').toEqual([])
 }
+
+test('the request log is live: a copy of the page without its CSP that asks for one image is caught asking', async ({ open }, info) => {
+  // The control for every "no request" check in these specs, in every project. Firefox needs it most: it reports
+  // no request for the page's own file:// load (SELF_LOAD_UNSEEN), so the fixture can't prove its log live there.
+  const html = fs.readFileSync(KEYWORD_HTML, 'utf8')
+  const meta = /<meta http-equiv="Content-Security-Policy" content="[^"]*">/
+  expect(html, 'the keyword page carries its CSP').toMatch(meta)
+  // A reserved name (.invalid) on https and its default port: a blocked port (such as 9) is refused by Firefox and
+  // WebKit before any request event, and the route aborts this one before any lookup.
+  const canary = 'https://export-canary.invalid/canary.png'
+  const copy = path.join(FIXTURE_DIR, 'request-canary.html')
+  fs.writeFileSync(copy, html.replace(meta, '').replace('</body>', `<img alt="" src="${canary}"></body>`))
+  const o = await open(copy)
+  // The route aborts it, so it never leaves the machine; what matters is that the log saw it and foreign() reports it.
+  await expect.poll(() => o.foreign(), { message: `foreign() reports the canary (${info.project.name}${SELF_LOAD_UNSEEN.has(info.project.name) ? ', whose own file:// load is unseen' : ''})` }).toContain(canary)
+  expect(o.foreign()).toEqual([canary])
+})
 
 test('the city paints, and no card shows at start', async ({ open }, info) => {
   const o = await open(KEYWORD_HTML)
@@ -145,26 +187,31 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
   await askReady(o.page)
   await settle(o.page)
   const three = await in3d(o.page)
-  const before = three ? await o.page.screenshot({ clip: await cityClip(o.page) }) : null
   const ids = await ask(o.page, 'where do the terminal shells actually run')
-  const first = o.page.locator('.wx-ask-results button.wx-ask-pick').first()
+  // The first building among the results (fixture building ids start "b-"): a building has a label to follow.
+  expect(ids.some((id) => id.startsWith('b-')), `a building among ${JSON.stringify(ids)}`).toBe(true)
+  const first = o.page.locator('.wx-ask-results button.wx-ask-pick[data-id^="b-"]').first()
   const name = (await first.locator('.wx-ask-name').textContent()) ?? ''
-  expect(ids[0]).not.toBe('')
+  const before = three ? await labelOffset(o.page, name) : null
   await first.click()
   const card = o.page.locator('.wx-card')
   await expect(card).toBeVisible()
   await expect(card.locator('.wx-card-body h3').first()).toHaveText(name)
-  if (before) {
-    // The camera flew: the middle of the city no longer looks as it did.
+  if (three) {
+    // The camera flew to it: the picked building's label now sits in the middle of the city, nearer than before.
     await settle(o.page)
-    const after = await o.page.screenshot({ clip: await cityClip(o.page) })
-    expect(after.equals(before), 'the city view changed after the pick').toBe(false)
+    const after = await labelOffset(o.page, name)
+    test.info().annotations.push({ type: 'fly', description: `${name}: label ${before === null ? 'not drawn' : before.toFixed(3)} -> ${after === null ? 'not drawn' : after.toFixed(3)} of the half-diagonal from the middle` })
+    expect(after, `the label of ${name} is drawn after the pick`).not.toBeNull()
+    expect(after as number).toBeLessThan(0.2)
+    if (before !== null) expect(after as number).toBeLessThan(before)
   }
   await noRequestsNoErrors(o)
 })
 
 test('the pages fit their size budgets', () => {
   const info = test.info()
+  test.skip(info.project.name !== 'electron', 'a check of the files, once')
   const smart = fs.statSync(SMART_HTML).size
   const keyword = fs.statSync(KEYWORD_HTML).size
   const fixture = fs.statSync(FIXTURE_JSON).size

@@ -212,12 +212,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - name: Download bundled embedding model
         run: bash scripts/download-embedding-model.sh
-      # The model's own hash names the cache, so the export-page job gets exactly these bytes (and a miss there is
-      # a failure, not a silent re-download). Cross-OS: the export-page job restores it on Windows and macOS too.
+      # The hash of every file under resources/models (model, tokenizer, config) names the cache, so the export-page
+      # job gets exactly these bytes (and a miss there is a failure, not a silent re-download). Cross-OS: the
+      # export-page job restores it on Windows and macOS too.
       - name: Hash the embedding model
         id: model
         shell: bash
-        run: echo "key=bge-small-$(sha256sum resources/models/bge-small-en-v1.5/onnx/model_quantized.onnx | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        run: echo "key=bge-small-$(cd resources/models && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Cache the embedding model for the export-page job
         uses: actions/cache/save@v4
         with:
@@ -378,7 +379,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-traces-export-page-${{ matrix.os }}
-          path: test-results/
+          # Not the exported fixture pages: the smart one alone is ~37 MB, and globalSetup rebuilds them every run.
+          path: |
+            test-results/
+            !test-results/export-fixture/
           retention-days: 7
 
   # The Windows installer, updating over a running Termpolis the way the in-app updater does.

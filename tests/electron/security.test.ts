@@ -339,16 +339,22 @@ vi.mock('child_process', () => ({
   execFile: mockExecFile,
 }))
 
+// index.ts reads fs.promises as it loads (the world export's file operations), so the mock carries it too.
+const { fsPromisesMock } = vi.hoisted(() => ({
+  fsPromisesMock: () => ({ readFile: vi.fn(), writeFile: vi.fn(), rename: vi.fn(), unlink: vi.fn(), stat: vi.fn(), readdir: vi.fn() }),
+}))
 vi.mock('fs', () => ({
   writeFileSync: vi.fn(), existsSync: vi.fn(() => false),
   readFileSync: vi.fn(() => '{}'), readdirSync: vi.fn(() => []),
   mkdirSync: vi.fn(), appendFileSync: vi.fn(),
   renameSync: vi.fn(), unlinkSync: vi.fn(),
+  promises: fsPromisesMock(),
   default: {
     writeFileSync: vi.fn(), existsSync: vi.fn(() => false),
     readFileSync: vi.fn(() => '{}'), readdirSync: vi.fn(() => []),
     mkdirSync: vi.fn(), appendFileSync: vi.fn(),
     renameSync: vi.fn(), unlinkSync: vi.fn(),
+    promises: fsPromisesMock(),
   },
 }))
 

@@ -129,8 +129,10 @@ export const EMBED_CHUNK = 16
 
 /**
  * The page's CSP (spec 5.3): no request of any kind, and the wasm may compile. Nothing else: smart Ask runs ORT on
- * one thread with no proxy worker and loads no image, so worker-src and img-src fall back to default-src 'none'
- * (e2e/export-page/smart.page.ts proved smart Ask still starts without them, and fails without 'wasm-unsafe-eval').
+ * one thread with no proxy worker and loads no image. Unset, img-src falls back to default-src 'none', and
+ * worker-src to child-src, then script-src, which names no source a worker could load from, so neither an image
+ * nor a worker can load (e2e/export-page/smart.page.ts proved smart Ask still starts without them, and fails
+ * without 'wasm-unsafe-eval').
  */
 export const EXPORT_CSP = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'none'"
 

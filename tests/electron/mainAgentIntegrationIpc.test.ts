@@ -412,6 +412,8 @@ vi.mock('fs', () => {
     statSync: vi.fn(() => ({ isDirectory: () => false, mtimeMs: 0, size: 0 })),
     mkdirSync: H.mkdirSync, appendFileSync: vi.fn(),
     renameSync: vi.fn(), unlinkSync: vi.fn(), watch: vi.fn(),
+    // index.ts reads fs.promises as it loads (the world export's file operations), so the mock carries it too.
+    promises: { readFile: vi.fn(), writeFile: vi.fn(), rename: vi.fn(), unlink: vi.fn(), stat: vi.fn(), readdir: vi.fn() },
   }
   return { ...impl, default: impl }
 })
