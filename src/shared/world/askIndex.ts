@@ -76,6 +76,7 @@ export function tokenize(text: string): string[] {
     .map((t) => t.replace(/(ies)$/, 'y').replace(/(ing|ed|es|s)$/, '').replace(/(.)\1$/, '$1') || t)
 }
 
+/** Rebuilt in memory from the texts, never JSON round-tripped: the null-prototype maps do not survive JSON. */
 export interface Bm25 { docs: number; avgLen: number; df: Record<string, number>; tf: Record<string, number>[]; len: number[] }
 
 const K1 = 1.2
@@ -120,16 +121,19 @@ export function packInt8(vectors: number[][]): PackedVectors {
   const dim = vectors.length > 0 ? vectors[0].length : 0
   const scales: number[] = []
   const data = new Int8Array(vectors.length * dim)
-  vectors.forEach((v, i) => {
+  vectors.forEach((row, i) => {
+    if (row.length !== dim) throw new Error(`packInt8: ragged row ${i} (${row.length} values, expected ${dim})`)
+    const v = row.map((x) => (Number.isFinite(x) ? x : 0)) // NaN and infinities count as 0
     const scale = v.reduce((m, x) => Math.max(m, Math.abs(x)), 0) / 127
     scales.push(scale)
-    if (scale > 0) v.forEach((x, h) => { data[i * dim + h] = Math.round(x / scale) })
+    if (scale > 0) v.forEach((x, h) => { data[i * dim + h] = Math.max(-127, Math.min(127, Math.round(x / scale))) })
   })
   return { dim, scales, data }
 }
 
-/** The cosine of the query with every packed row (0 for a zero row or a zero query). */
+/** The cosine of the query with every packed row (0 for a zero row, a zero query, or a query not `dim` wide). */
 export function cosineScores(p: PackedVectors, q: Float32Array): number[] {
+  if (q.length !== p.dim) return p.scales.map(() => 0)
   let qNorm = 0
   for (let h = 0; h < p.dim; h++) qNorm += q[h] * q[h]
   return p.scales.map((_, i) => {
@@ -160,13 +164,18 @@ const order = (scores: number[], positive: boolean): number[] =>
 
 /**
  * The best parts for a question. A part made only of test files is scored at TEST_RANK_FACTOR. With meaning scores
- * (and FUSE) the two rankings are fused; otherwise the keyword ranking stands alone, and a question no entry shares a
+ * of one per entry (and FUSE) the two rankings are fused; otherwise the keyword ranking stands alone, and a question no entry shares a
  * word with (empty, punctuation, only stopwords) answers nothing.
  */
 export function rankAsk(entries: AskEntry[], scores: { smart?: number[]; keyword: number[] }, limit = 5): AskHit[] {
-  const weigh = (s: number[]): number[] => s.map((x, i) => (entries[i].test ? x * TEST_RANK_FACTOR : x))
-  const ids = FUSE && scores.smart
-    ? rrf([order(weigh(scores.smart), false), order(weigh(scores.keyword), true)])
+  if (scores.keyword.length !== entries.length) {
+    throw new Error(`rankAsk: ${scores.keyword.length} keyword scores for ${entries.length} entries`)
+  }
+  // Demotion lowers a score whatever its sign (a negative cosine times 0.8 would rise).
+  const weigh = (s: number[]): number[] => s.map((x, i) => (entries[i].test ? x - Math.abs(x) * (1 - TEST_RANK_FACTOR) : x))
+  const smart = scores.smart && scores.smart.length === entries.length ? scores.smart : undefined
+  const ids = FUSE && smart
+    ? rrf([order(weigh(smart), false), order(weigh(scores.keyword), true)])
     : order(weigh(scores.keyword), true)
   return ids.slice(0, limit).map((i) => ({ id: entries[i].id, kind: entries[i].kind, name: entries[i].name, first: entries[i].first }))
 }

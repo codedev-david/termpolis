@@ -175,6 +175,24 @@ describe('int8 vectors', () => {
     expect(cosineScores(p, new Float32Array(8))).toEqual([0, 0])
   })
 
+  it('throws on a ragged row', () => {
+    expect(() => packInt8([[1, 0], [1]])).toThrow(/ragged/i)
+    expect(() => packInt8([[1, 0], [1, 0, 0]])).toThrow(/ragged/i)
+  })
+
+  it('scores all zeros when the query is not the packed width', () => {
+    const p = packInt8([[1, 0, 0], [0, 1, 0]])
+    expect(cosineScores(p, Float32Array.from([1, 0]))).toEqual([0, 0])
+    expect(cosineScores(p, Float32Array.from([1, 0, 0, 0]))).toEqual([0, 0])
+  })
+
+  it('maps NaN and infinite components to 0 and keeps every value within 127', () => {
+    const p = packInt8([[Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 1, -1]])
+    expect(p.scales[0]).toBeCloseTo(1 / 127, 10)
+    expect(Array.from(p.data)).toEqual([0, 0, 0, 127, -127])
+    expect(cosineScores(p, Float32Array.from([0, 0, 0, 1, 0])).every((x) => Number.isFinite(x))).toBe(true)
+  })
+
   it('packs no vectors', () => {
     const p = packInt8([])
     expect(p).toEqual({ dim: 0, scales: [], data: new Int8Array(0) })
@@ -229,6 +247,27 @@ describe('rankAsk', () => {
     const hits = rankAsk(e, { smart: [0.1, 0.9, 0.5], keyword: [0, 3, 2] })
     expect(hits.map((h) => h.id)).toEqual(['b', 'c', 'a'])
     expect(rankAsk(e, { smart: [0.9, 0.1, 0.5], keyword: [0, 0, 2] }).map((h) => h.id)).toEqual(['c', 'a', 'b'])
+  })
+
+  it('lowers a test part even when its score is negative', () => {
+    const e = [entry('t', true), entry('real')]
+    expect(rankAsk(e, { smart: [-0.5, -0.5], keyword: [1, 1] }).map((h) => h.id)).toEqual(['real', 't'])
+    expect(rankAsk(e, { smart: [-0.3, -0.3], keyword: [0, 0] }).map((h) => h.id)).toEqual(['real', 't'])
+  })
+
+  it('falls back to keywords when the meaning scores are not one per entry', () => {
+    const e = [entry('a'), entry('b'), entry('c')]
+    const keyword = [1, 3, 2]
+    const expected = ['b', 'c', 'a']
+    expect(rankAsk(e, { smart: [9, 9, 9, 9], keyword }).map((h) => h.id)).toEqual(expected)
+    expect(rankAsk(e, { smart: [9, 9], keyword }).map((h) => h.id)).toEqual(expected)
+    expect(rankAsk(e, { smart: [], keyword }).map((h) => h.id)).toEqual(expected)
+  })
+
+  it('throws when the keyword scores are not one per entry', () => {
+    const e = [entry('a'), entry('b')]
+    expect(() => rankAsk(e, { keyword: [1, 2, 3] })).toThrow(/keyword/)
+    expect(() => rankAsk(e, { keyword: [1] })).toThrow(/keyword/)
   })
 
   it('demotes a test part in the meaning ranking too', () => {
