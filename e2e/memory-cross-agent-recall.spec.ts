@@ -7,10 +7,12 @@
  * the "shared brain across all agents" claim through the actual server + auth +
  * dispatch + store, not just an in-process unit call.
  *
- * Runs in the unpacked dev build (no bundled model) → memory falls back to
- * keyword search, which is enough to prove the wire + the shared store. The
- * REAL-embedding semantic proof lives in tests/electron/memorySemanticRecall
- * (run in CI's package-verify, where the model is present).
+ * Runs in the unpacked dev build. CI's e2e jobs now put the bundled model in
+ * resources/models (e2e/world-export.spec.ts needs it), so search here is
+ * semantic there; without the model it falls back to keyword search. Either
+ * finds the marker, which is all this proves: the wire + the shared store. The
+ * REAL-embedding semantic quality proof lives in tests/electron/memorySemanticRecall
+ * (run in CI's package-verify).
  */
 import { test, expect, type ElectronApplication } from '@playwright/test'
 import { _electron as electron } from 'playwright'

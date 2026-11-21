@@ -23,7 +23,7 @@ import { pathToFileURL } from 'url'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal, paletteType, removeDirs } from './helpers/world'
 import { ask, askReady } from './export-page/helpers'
-import { CARD_HEADINGS, edgeFromCode } from '../src/shared/world/cardFacts'
+import { CARD_HEADINGS } from '../src/shared/world/cardFacts'
 import { escapeHtml } from '../src/shared/world/html'
 import type { WorldDoc } from '../src/shared/world/types'
 
@@ -86,7 +86,12 @@ async function worldDoc(): Promise<WorldDoc> {
   return doc as WorldDoc
 }
 
-/** Opens `file` in a new window of the app, with every request but the file itself (and data:/blob:) refused. */
+/**
+ * Opens `file` in a new window of the app, with every request but the file itself (and data:/blob:) refused.
+ * The page's own CSP (default-src/connect-src 'none') refuses a request before the route sees it, so `foreign`
+ * stays empty even for a page that tries to reach out: what such an attempt leaves is a CSP violation on the
+ * console, and close() fails on any of those (the export-page suite checks the CSP itself, request by request).
+ */
 async function openOffline(file: string): Promise<{ win: Page; foreign: string[]; close(): Promise<void> }> {
   const own = pathToFileURL(file).href
   const [win, id] = await Promise.all([
@@ -106,19 +111,24 @@ async function openOffline(file: string): Promise<{ win: Page; foreign: string[]
   })
   const errors: string[] = []
   win.on('pageerror', (e) => errors.push(String(e)))
+  const refused: string[] = []
+  win.on('console', (m) => { if (/Content Security Policy|Refused to/i.test(m.text())) refused.push(m.text()) })
   await win.goto(own, { waitUntil: 'load', timeout: 60_000 })
   return {
     win,
     foreign,
     close: async () => {
       expect(errors, 'errors thrown in the opened file').toEqual([])
+      expect(refused, 'requests the CSP refused in the opened file').toEqual([])
       await app.evaluate(({ BrowserWindow }, wid) => { BrowserWindow.fromId(wid)?.close() }, id)
     },
   }
 }
 
 test.describe.serial('Lumopolis export in the real app', () => {
-  test.setTimeout(PROOF ? 240_000 : 90_000)
+  // Test 0's own waits add up to 90 s (30 + 30 + 30) besides the terminal and the palette, so the budget covers them
+  // and a slow step fails at that step, with its own message.
+  test.setTimeout(PROOF ? 240_000 : 120_000)
 
   test('0. Lumopolis opens on the project and draws its world', async () => {
     await createTerminal(page, 'Notes', project)
@@ -126,8 +136,9 @@ test.describe.serial('Lumopolis export in the real app', () => {
     await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()
     await expect(pane()).toBeVisible()
     await expect(page.locator('[data-testid="world-project"]')).toHaveText(path.basename(project), { timeout: 30_000 })
-    // The first map of a launch can sit on one stage for half a minute on a busy machine (seen once locally at 55%).
-    await expect(page.locator('[data-testid="world-canvas-host"] canvas')).toBeVisible({ timeout: 60_000 })
+    // A cold first map of this project takes about 4-5 s here (open to canvas, 3 cold launches), its status stage
+    // under 1 s; 30 s is world-view.spec.ts's budget for the same wait.
+    await expect(page.locator('[data-testid="world-canvas-host"] canvas')).toBeVisible({ timeout: 30_000 })
     await expect(page.locator('[data-testid="world-export"]')).toBeEnabled({ timeout: 30_000 })
     expect((await worldDoc()).buildings.length).toBeGreaterThan(1)
     await beat()
@@ -200,13 +211,10 @@ test.describe.serial('Lumopolis export in the real app', () => {
     const html = fs.readFileSync(file, 'utf8')
     expect(html).toContain(`How ${escapeHtml(name)}`)
     expect(html).toContain(`>${escapeHtml(CARD_HEADINGS.whatItDoes)}<`)
-    // A line no model described says, under "How it travels", what the code alone shows: the same sentence its card says.
-    const doc = await worldDoc()
-    const line = doc.edges.find((e) => e.how.length === 0)
-    expect(line, 'a connection no model described').toBeDefined()
-    const sentence = edgeFromCode(doc, line!)
-    expect(sentence).toMatch(/^From the code: /)
-    expect(html).toContain(escapeHtml(sentence))
+    // A line no model described says, under "How it travels", what the code alone shows. One fixed sentence of the
+    // fixture's: src/main/index.ts imports ./store (the main and store buildings), written out here rather than
+    // worked out with the generator's own function, so a regression there can't carry the test with it.
+    expect(html).toContain(escapeHtml('From the code: main imports code from store.'))
 
     if (PROOF) {
       const opened = await openOffline(file)

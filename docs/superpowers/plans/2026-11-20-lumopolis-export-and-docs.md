@@ -661,7 +661,7 @@ it('memoryForLabels searches decisions in the given project only', async () => {
 **Files:**
 - Create: `e2e/world-export.spec.ts`
 - Modify: `.github/workflows/test.yml`, adding `npx playwright test e2e/world-export.spec.ts` to `e2e-smoke-macos`'s explicit list (`e2e-full` and `e2e-windows` run the whole directory)
-- Modify: `.github/workflows/defender-scan.yml`. Generate one smart export and one document with the Task 12 globalSetup (`npx playwright test -c playwright.export.config.ts --list` runs globalSetup), add both files to the scanned set, and fail the job on any detection, as for installers.
+- Modify: `.github/workflows/defender-scan.yml`. Generate one smart export and one document with the Task 12 globalSetup (`npx playwright test -c playwright.export.config.ts --grep "^no test has this title$" --pass-with-no-tests` runs globalSetup and then no test; `--list` would not do, because it loads the specs without running globalSetup and so writes no files), add both files to the scanned set, and fail the job on any detection, as for installers.
 - Modify: `docs/DOCUMENTATION.md`, adding a Lumopolis export section with the spec §8 limits stated plainly (about 37 MB; finds parts and does not write answers; 150–250 MB of tab memory; phones are not a target)
 
 **Interfaces:**

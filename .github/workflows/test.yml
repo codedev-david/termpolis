@@ -102,6 +102,32 @@ jobs:
       - name: Test mobile
         run: npm --prefix mobile run test:coverage
 
+  # The bundled embedding model, downloaded once per run and cached under a hash of its files (model, tokenizer,
+  # config). Every job that needs it restores exactly that key, with a miss a failure: never an older entry that
+  # happens to share a prefix, which would test a stale model without saying so after the download script changed.
+  # Runs alongside static (it needs nothing), so the jobs that wait on both don't start any later.
+  model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      key: ${{ steps.model.outputs.key }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download bundled embedding model
+        run: bash scripts/download-embedding-model.sh
+      - name: Hash the embedding model
+        id: model
+        shell: bash
+        run: echo "key=bge-small-$(cd resources/models && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      # Cross-OS: Windows and macOS jobs restore it too. A key that already exists (same files as an earlier run)
+      # is left as it is.
+      - name: Cache the embedding model
+        uses: actions/cache/save@v4
+        with:
+          path: resources/models
+          key: ${{ steps.model.outputs.key }}
+          enableCrossOsArchive: true
+
   # Unit tests across all three target platforms so we catch
   # platform-specific regressions (path separators, shell detection, node-pty).
   unit:
@@ -188,11 +214,8 @@ jobs:
   # against the produced dist-electron-builder/linux-unpacked tree. If
   # the adapter is not shipped, this fails the PR.
   package-verify:
-    needs: static
+    needs: [static, model]
     runs-on: ubuntu-latest
-    # The export-page job restores the model this job downloads, by this key (one download per run).
-    outputs:
-      model-key: ${{ steps.model.outputs.key }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -210,21 +233,14 @@ jobs:
           done
       - name: Install Linux build dependencies
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
-      - name: Download bundled embedding model
-        run: bash scripts/download-embedding-model.sh
-      # The hash of every file under resources/models (model, tokenizer, config) names the cache, so the export-page
-      # job gets exactly these bytes (and a miss there is a failure, not a silent re-download). Cross-OS: the
-      # export-page job restores it on Windows and macOS too.
-      - name: Hash the embedding model
-        id: model
-        shell: bash
-        run: echo "key=bge-small-$(cd resources/models && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      - name: Cache the embedding model for the export-page job
-        uses: actions/cache/save@v4
+      # The model job's download, by the exact hash of its files (see that job).
+      - name: Restore the embedding model
+        uses: actions/cache/restore@v4
         with:
           path: resources/models
-          key: ${{ steps.model.outputs.key }}
+          key: ${{ needs.model.outputs.key }}
           enableCrossOsArchive: true
+          fail-on-cache-miss: true
       # Lumopolis Ask quality GATE with the real model: smart or fused top-3 finds the right part for at least 12 of
       # the 15 labelled questions, and the exported page's in-browser embedding matches the app's (cosine >= 0.999).
       # TERMPOLIS_REQUIRE_MODEL turns a missing model into a failure here instead of a skip.
@@ -319,9 +335,9 @@ jobs:
   # page's own bytes within 6 s in Electron and Edge (Firefox and WebKit may fall back to keyword search, and must
   # say so), the CSP refuses nothing the page does, and no test sees a single request leave the page.
   # playwright.export.config.ts writes the pages in its globalSetup with the real model, restored from
-  # package-verify's cache (one download per run); Edge is a Windows runner's own browser, so only Windows runs it.
+  # the model job's cache (one download per run); Edge is a Windows runner's own browser, so only Windows runs it.
   export-page:
-    needs: package-verify
+    needs: [package-verify, model]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -356,7 +372,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: resources/models
-          key: ${{ needs.package-verify.outputs.model-key }}
+          key: ${{ needs.model.outputs.key }}
           enableCrossOsArchive: true
           fail-on-cache-miss: true
       # --with-deps on Linux also installs the browsers' system libraries; install-deps chromium adds the ones
@@ -449,7 +465,7 @@ jobs:
   # (see its README) and is excluded by playwright.config.ts's testIgnore — so
   # "not in the gate" is now a decision written down somewhere, not an accident.
   e2e-full:
-    needs: static
+    needs: [static, model]
     # Pinned: ubuntu-latest became 26.04, where Playwright has no Chromium build yet.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -474,20 +490,14 @@ jobs:
           done
       # e2e/world-export.spec.ts exports a world with the bundled embedding model on disk, as a shipped app has it:
       # an unlabelled world's export dialog then shows the low-coverage note (without the model it shows the
-      # "no model" line instead). Restored by prefix from package-verify's cache (this run's may not be saved yet),
-      # else downloaded.
+      # "no model" line instead). The model job's download, by the exact hash of its files.
       - name: Restore the embedding model
-        id: model
         uses: actions/cache/restore@v4
         with:
           path: resources/models
-          key: bge-small-e2e-${{ github.run_id }}
-          restore-keys: bge-small-
+          key: ${{ needs.model.outputs.key }}
           enableCrossOsArchive: true
-      - name: Download the embedding model
-        if: steps.model.outputs.cache-matched-key == ''
-        shell: bash
-        run: bash scripts/download-embedding-model.sh
+          fail-on-cache-miss: true
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       # quitApp() (e2e/helpers/launch.ts) attaches gdb to a main process that won't quit, so the
@@ -540,7 +550,7 @@ jobs:
   # continue-on-error to true while stabilizing, as with e2e-smoke-macos, rather than papering
   # over a real regression.
   e2e-windows:
-    needs: static
+    needs: [static, model]
     runs-on: windows-latest
     timeout-minutes: 45
     strategy:
@@ -564,20 +574,14 @@ jobs:
           done
       # e2e/world-export.spec.ts exports a world with the bundled embedding model on disk, as a shipped app has it:
       # an unlabelled world's export dialog then shows the low-coverage note (without the model it shows the
-      # "no model" line instead). Restored by prefix from package-verify's cache (this run's may not be saved yet),
-      # else downloaded.
+      # "no model" line instead). The model job's download, by the exact hash of its files.
       - name: Restore the embedding model
-        id: model
         uses: actions/cache/restore@v4
         with:
           path: resources/models
-          key: bge-small-e2e-${{ github.run_id }}
-          restore-keys: bge-small-
+          key: ${{ needs.model.outputs.key }}
           enableCrossOsArchive: true
-      - name: Download the embedding model
-        if: steps.model.outputs.cache-matched-key == ''
-        shell: bash
-        run: bash scripts/download-embedding-model.sh
+          fail-on-cache-miss: true
       - name: Build
         run: npm run build
       # bash, as in e2e-soak, where these specs were stabilized on Windows: the shells the specs
@@ -619,7 +623,7 @@ jobs:
   # continue-on-error back to true while we stabilize rather than
   # papering over a real regression.
   e2e-smoke-macos:
-    needs: static
+    needs: [static, model]
     runs-on: macos-latest
     continue-on-error: false
     # The Build step runs before any spec, so the specs launch its out/ instead of each
@@ -643,20 +647,14 @@ jobs:
           done
       # e2e/world-export.spec.ts exports a world with the bundled embedding model on disk, as a shipped app has it:
       # an unlabelled world's export dialog then shows the low-coverage note (without the model it shows the
-      # "no model" line instead). Restored by prefix from package-verify's cache (this run's may not be saved yet),
-      # else downloaded.
+      # "no model" line instead). The model job's download, by the exact hash of its files.
       - name: Restore the embedding model
-        id: model
         uses: actions/cache/restore@v4
         with:
           path: resources/models
-          key: bge-small-e2e-${{ github.run_id }}
-          restore-keys: bge-small-
+          key: ${{ needs.model.outputs.key }}
           enableCrossOsArchive: true
-      - name: Download the embedding model
-        if: steps.model.outputs.cache-matched-key == ''
-        shell: bash
-        run: bash scripts/download-embedding-model.sh
+          fail-on-cache-miss: true
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       - name: Build

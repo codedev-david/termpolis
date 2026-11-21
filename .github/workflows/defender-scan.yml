@@ -54,8 +54,12 @@ jobs:
       CLOUD_BLOCK_LEVEL: ${{ inputs.cloud_block_level }}
     steps:
       # The whole tree: the exported files are built from it, and the update step below runs
-      # scripts/test-installer-update.ps1.
+      # scripts/test-installer-update.ps1. At the tag being scanned, when there is one, so the exports
+      # come from the same commit as the installer (a manual re-run on an older tag included); with no
+      # tag, the ref the workflow was started on. On release.yml's tag push both are the same commit.
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -69,9 +73,38 @@ jobs:
             npm cache clean --force || true
             sleep 10
           done
-      - name: Download the embedding model
+      # The model the Tests workflow's package-verify job last cached (keyed by a hash of its files), so a
+      # release isn't blocked by a HuggingFace outage. That cache belongs to another workflow, so the exact
+      # key isn't known here: the newest bge-small-* entry is taken, checked, and downloaded fresh when
+      # anything is missing or a model file is too small to be real.
+      - name: Restore the embedding model
+        id: model
+        uses: actions/cache/restore@v4
+        with:
+          path: resources/models
+          key: bge-small-
+          restore-keys: bge-small-
+          enableCrossOsArchive: true
+      - name: Check the restored embedding model
+        id: model-check
         shell: bash
-        run: bash scripts/download-embedding-model.sh
+        run: |
+          ok=1
+          for d in bge-small-en-v1.5 ms-marco-MiniLM-L-6-v2; do
+            for f in tokenizer.json tokenizer_config.json config.json onnx/model_quantized.onnx; do
+              [ -s "resources/models/$d/$f" ] || { echo "missing: $d/$f"; ok=0; }
+            done
+            onnx="resources/models/$d/onnx/model_quantized.onnx"
+            if [ -f "$onnx" ] && [ "$(wc -c < "$onnx")" -lt 1000000 ]; then echo "too small: $onnx"; ok=0; fi
+          done
+          echo "Restored from: ${{ steps.model.outputs.cache-matched-key || 'nothing' }}"
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+      - name: Download the embedding model
+        if: steps.model-check.outputs.ok != '1'
+        shell: bash
+        run: |
+          rm -rf resources/models/bge-small-en-v1.5 resources/models/ms-marco-MiniLM-L-6-v2
+          bash scripts/download-embedding-model.sh
       - name: Build the world viewer and the export runtime
         run: npm run build:world-viewer
       # The export-page config's globalSetup writes test-results/export-fixture/{smart,keyword,

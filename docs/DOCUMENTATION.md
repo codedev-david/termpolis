@@ -39,9 +39,9 @@ This document covers installation, the AI Security Center, the share-to-Slack/Te
 28. [Troubleshooting](#28-troubleshooting)
 29. [Termpolis Remote (phone app)](#29-termpolis-remote-phone-app)
 30. [Linked machines](#30-linked-machines)
-- [Lumopolis export](#lumopolis-export)
-31. [Architecture](#31-architecture)
-32. [Keyboard Shortcut Reference](#32-keyboard-shortcut-reference)
+31. [Lumopolis export](#31-lumopolis-export)
+32. [Architecture](#32-architecture)
+33. [Keyboard Shortcut Reference](#33-keyboard-shortcut-reference)
 
 ---
 
@@ -447,7 +447,7 @@ Each row's reset button restores its default, and **Reset All** restores them al
 
 On macOS, `⌘` works wherever a binding says `Ctrl`.
 
-See [§32](#32-keyboard-shortcut-reference) for the complete default list.
+See [§33](#33-keyboard-shortcut-reference) for the complete default list.
 
 ---
 
@@ -1890,7 +1890,7 @@ The wire format is in [`docs/remote-wire-format.md` §13](remote-wire-format.md#
 
 ---
 
-## Lumopolis export
+## 31. Lumopolis export
 
 Lumopolis can save a world as files you can hand to someone who doesn't have Termpolis. Each one is a single `.html` file that opens in any desktop browser, with no install and no network.
 
@@ -1943,7 +1943,7 @@ It needs no script, prints cleanly to PDF, and leaves out the same things as the
 
 ---
 
-## 31. Architecture
+## 32. Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -1980,7 +1980,7 @@ It needs no script, prints cleanly to PDF, and leaves out the same things as the
 
 ---
 
-## 32. Keyboard Shortcut Reference
+## 33. Keyboard Shortcut Reference
 
 Everything listed in Settings → Keybindings can be rebound there, except the three copy shortcuts. The panel shortcuts (the command palette, the Swarm dashboard and so on) are fixed. Defaults:
 
