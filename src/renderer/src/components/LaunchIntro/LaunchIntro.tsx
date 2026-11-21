@@ -99,7 +99,7 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
   // first frame, with its cards transparent (opacity 0 inline, and each animation's first keyframe
   // while it waits to start). This layout effect runs before the first paint, so every animation
   // exists before any frame and all of them start together on the first frame the browser renders,
-  // the first frame that shows the overlay. The 2.0 s clock is that start, read from the stage
+  // the first frame that shows the overlay. The 4.0 s clock is that start, read from the stage
   // animation, not mount: a busy launch that delays the first frame delays the intro, and never eats into it.
   useLayoutEffect(() => {
     if (!active || done) return undefined
@@ -121,7 +121,7 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
     const root = rootRef.current as HTMLDivElement
     // Ask for the artwork decoded now, and don't wait for it: waiting would hold an empty stage, or the
     // window, on screen longer; the images are local files already loading from mount, the Termpolis
-    // card fades up from 0 over 150 ms, and the Lumopolis art isn't on screen before 800 ms.
+    // card fades up from 0 over 150 ms, and the Lumopolis art isn't on screen before 1800 ms.
     root.querySelectorAll('img').forEach((img) => {
       if (typeof img.decode === 'function') img.decode().catch(() => { /* shown when it loads */ })
     })
@@ -149,8 +149,8 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
       const startedAt = typeof stage.startTime === 'number' ? stage.startTime : t
       if (startedAt - mountedAt > NOT_PAINTED_MS) { end(); return }
       clearTimeout(timers[0])
-      // The timeline shares performance.now()'s clock. It ends one frame inside 2000 ms, so this
-      // removal lands by 2000 ms from the first frame even when the timer runs a frame late.
+      // The timeline shares performance.now()'s clock. It ends one frame inside 4000 ms, so this
+      // removal lands by 4000 ms from the first frame even when the timer runs a frame late.
       timers.push(setTimeout(end, Math.max(0, INTRO_TOTAL_MS - (t - startedAt))))
     }).catch(() => { /* cancelled before it started */ })
 

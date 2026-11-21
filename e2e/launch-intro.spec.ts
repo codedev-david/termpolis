@@ -21,7 +21,7 @@ import { UPDATE_RESTART_FILE } from '../src/main/launchIntro'
 import { dismissOnboarding, e2eLaunchArgs, e2eUserDataDir, ensureE2eBuild, quitApp } from './helpers/launch'
 
 const INTRO = '[data-testid="launch-intro"]'
-// The visible intro (its first frame on screen, to detach) is held to the spec's 2.0 s budget. Its
+// The visible intro (its first frame on screen, to detach) is held to the spec's 4.0 s budget. Its
 // first frame on screen is the stage animation's start: the stage's opacity runs on the compositor,
 // so the animation starts in the frame that first draws the overlay. The page computes that frame's
 // style earlier, while the window's first frame is still being drawn (85-130 ms on a warm Windows
@@ -29,9 +29,9 @@ const INTRO = '[data-testid="launch-intro"]'
 // agree: their first stage frame already shows the Termpolis card fading in.
 // Upper slack for the wall-clock sanity checks: a loaded runner's late timer and React commit.
 const UPPER_SLACK_MS = 250
-// The strict ceiling: on the stage animation's clock (the clock the product's 2.0 s cap reads), the
-// overlay is gone within the budget plus one frame. Measured: 1984-1999 ms on every CI runner and
-// 1984-1990 on Windows locally.
+// The strict ceiling: on the stage animation's clock (the clock the product's 4.0 s cap reads), the
+// overlay is gone within the budget plus one frame. Measured (at the 2.0 s budget): 1984-1999 ms on
+// every CI runner and 1984-1990 on Windows locally.
 const REMOVAL_SLACK_MS = 50
 // Lower slack: the timeline ends one 60 Hz frame inside the budget (INTRO_BUDGET_MS - INTRO_TOTAL_MS),
 // the animation's start and the frame on screen can sit a frame or two apart, plus 30 ms.
@@ -179,7 +179,7 @@ function freezeScript(t: number): string {
  * early, cutting the closing fade; positive: late). While the overlay is attached, the removal timer
  * (set when the stage animation is ready, to the rest of INTRO_TOTAL_MS) is shifted, and
  * `window.__introRemovalShifted` records that it was. The not-painted and hard-cap timers are untouched
- * (a late shift of 400 ms stays inside the hard cap: the cap counts 2984 ms from mount, and the
+ * (a late shift of 400 ms stays inside the hard cap: the cap counts 4984 ms from mount, and the
  * animation starts within NOT_PAINTED_MS of mount, in practice 100-350 ms).
  */
 function shiftRemovalScript(shiftMs: number): string {
@@ -238,7 +238,7 @@ async function introTiming(page: Page): Promise<Timing> {
   return m
 }
 
-/** When the overlay left, on the stage animation's clock: the time the product's 2.0 s cap measures. */
+/** When the overlay left, on the stage animation's clock: the time the product's 4.0 s cap measures. */
 function removalOnClock(m: Timing): number {
   return (m.detachedAt as number) - (m.startTime as number)
 }
@@ -329,7 +329,7 @@ function typedOnceProblem(lines: string[]): string | null {
 }
 
 test.describe('launch intro', () => {
-  test('is visible for at most 2.0 s, from its first frame on screen until it is gone, and never shows the app first', async () => {
+  test('is visible for at most 4.0 s, from its first frame on screen until it is gone, and never shows the app first', async () => {
     const page = await launch('intro-timing', { init: [WATCH_SCRIPT, TIMING_SCRIPT] })
     const m = await introTiming(page)
     const firstAt = m.firstAt as number
@@ -340,8 +340,8 @@ test.describe('launch intro', () => {
     const stageEnd = m.stageEnd as number
     const atRemoval = opacityAtRemoval(m)
     console.log(`intro timing: visible=${visible.toFixed(1)} ms (on screen to gone), first computed frame to gone=${(detachedAt - firstAt).toFixed(1)} ms, first computed frame to on screen=${(shownAt - firstAt).toFixed(1)} ms, frames=${m.frames}, first stage opacity=${m.firstStage.toFixed(3)}, first card opacity=${m.firstCard.toFixed(3)}, stage fade end=${stageEnd} ms, removal minus fade end=${(visible - stageEnd).toFixed(1)} ms, stage opacity at removal=${atRemoval.toFixed(3)}, last sample: stage opacity=${m.lastStage.toFixed(3)} at ${m.lastStageTime === null ? 'null' : m.lastStageTime.toFixed(1)} ms`)
-    // The strict ceiling, on the stage animation's clock: gone within 2.0 s of its first frame on screen.
-    expect(removalOnClock(m), "the overlay outlived the 2.0 s budget on the stage animation's clock").toBeLessThanOrEqual(INTRO_BUDGET_MS + REMOVAL_SLACK_MS)
+    // The strict ceiling, on the stage animation's clock: gone within 4.0 s of its first frame on screen.
+    expect(removalOnClock(m), "the overlay outlived the 4.0 s budget on the stage animation's clock").toBeLessThanOrEqual(INTRO_BUDGET_MS + REMOVAL_SLACK_MS)
     // Wall-clock sanity checks with a loaded runner's slack.
     expect(visible).toBeLessThanOrEqual(INTRO_BUDGET_MS + UPPER_SLACK_MS)
     expect(visible).toBeGreaterThanOrEqual(INTRO_BUDGET_MS - LOWER_SLACK_MS)
@@ -380,7 +380,7 @@ test.describe('launch intro', () => {
     expect(atRemoval).toBeGreaterThan(FINAL_OPACITY_MAX)
   })
 
-  test('control: a late removal fails the 2.0 s ceiling', async () => {
+  test('control: a late removal fails the 4.0 s ceiling', async () => {
     const m = await shiftedRemoval('intro-late-removal', LATE_REMOVAL_MS)
     console.log(`late removal: gone at ${removalOnClock(m).toFixed(1)} ms on the stage clock, ceiling ${INTRO_BUDGET_MS + REMOVAL_SLACK_MS} ms`)
     expect(removalOnClock(m)).toBeGreaterThan(INTRO_BUDGET_MS + REMOVAL_SLACK_MS)
@@ -480,7 +480,7 @@ test.describe('launch intro', () => {
     await expect.poll(() => fs.existsSync(marker), { timeout: 10_000 }).toBe(false)
   })
 
-  for (const [card, t] of [['termpolis', 600], ['lumopolis', 1650]] as const) {
+  for (const [card, t] of [['termpolis', 600], ['lumopolis', 2650]] as const) {
     test(`the ${card} card matches the reference frame`, async () => {
       test.info().snapshotSuffix = ''
       // Held at the card's time from the moment the overlay mounts (see freezeScript), so nothing

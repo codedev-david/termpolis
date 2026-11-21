@@ -7,6 +7,7 @@ Status: approved by David, 2026-11-20. This is the short design: a small change.
 David, 2026-11-20, verbatim:
 - "whenever you launch Termpolis app to have the logo of Termpolis and the byline "City of Terminals" + Lumopolis and the byline "City of Enlightenment" show with the same text we used for Lumopolis word in the feature video. and then have that fade away."
 - "can we have consistent logo and letters like we have in the video across all platforms and I think 2 seconds for max length is perfect ... only on when it first starts"
+- (2026-11-21, after seeing it) "it goes quick maybe add 1 second for the termpolis screen and 1 second for the lumopolis screen" ... "4 seconds is fine total"
 
 The intro is the 2.0 first impression. It introduces both names and covers the moment while startup finishes in the background. It never makes the app slower to use.
 
@@ -22,13 +23,13 @@ The intro is the 2.0 first impression. It introduces both names and covers the m
   - The images are committed under `src/renderer/src/assets/intro/` along with the small script that regenerates them. macOS and Linux therefore show exactly the film's letters.
   - The images are rendered output, not the font, so no font file is redistributed.
   - *My call.*
-- **Timing:** the hard maximum is **2.0 s** from first paint to fully gone, including the fade. It never waits on startup work.
+- **Timing:** the hard maximum is **4.0 s** from first paint to fully gone, including the fade. It never waits on startup work.
   - Terminals and the rest of startup start underneath immediately.
   - The intro is a non-interactive overlay above the app shell.
 - **When it plays:** only when the app first starts, on the first window. It does not play on renderer reloads, extra windows, an update restart, or e2e runs unless a test asks for it.
 - **Skipping:** any key or click ends it at once. The key still reaches the app; nothing typed is lost.
 - **Settings:** a "Show launch intro" switch, on by default, sits with the other appearance settings.
-- **Reduced motion:** with `prefers-reduced-motion`, there is no letter reveal or movement. Both cards show as plain fades within the same 2 s.
+- **Reduced motion:** with `prefers-reduced-motion`, there is no letter reveal or movement. Both cards show as plain fades within the same 4 s.
 
 ## Approaches considered
 
@@ -42,10 +43,10 @@ The intro is the 2.0 first impression. It introduces both names and covers the m
   - plays once per app start, first window only;
   - skipped on reload, a second window, an update restart and the setting off;
   - any key or click dismisses it and the key is passed through;
-  - the total never exceeds 2.0 s;
+  - the total never exceeds 4.0 s;
   - reduced motion swaps the animation.
 - **Real-app e2e:**
-  - the intro shows on launch and is gone by 2.0 s;
+  - the intro shows on launch and is gone by 4.0 s;
   - a terminal is ready, and typing during the intro lands in it;
   - with the setting off, nothing shows.
   - Run on Windows, macOS and Linux CI.
@@ -53,6 +54,6 @@ The intro is the 2.0 first impression. It introduces both names and covers the m
 
 ## Left to the builder
 
-- The exact split of the 2.0 s between the two cards and the fades.
+- The exact split of the 4.0 s between the two cards and the fades.
 - Image format and scale factors (for example WebP at 1x/2x/3x).
 - Where the overlay mounts in the renderer.

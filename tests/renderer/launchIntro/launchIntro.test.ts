@@ -6,9 +6,9 @@ import {
 
 describe('introSteps', () => {
   it('pins the timeline the spec leaves to the builder', () => {
-    expect(INTRO_BUDGET_MS).toBe(2000)
-    // One 60 Hz frame inside the spec's 2.0 s, so the removal lands at or before 2000 ms.
-    expect(INTRO_TOTAL_MS).toBe(1984)
+    expect(INTRO_BUDGET_MS).toBe(4000)
+    // One 60 Hz frame inside the spec's 4.0 s, so the removal lands at or before 4000 ms.
+    expect(INTRO_TOTAL_MS).toBe(3984)
     expect(INTRO_BUDGET_MS - INTRO_TOTAL_MS).toBeGreaterThanOrEqual(16)
     expect(INTRO_BUDGET_MS - INTRO_TOTAL_MS).toBeLessThan(34)
     expect(NOT_PAINTED_MS).toBe(1000)
@@ -19,7 +19,7 @@ describe('introSteps', () => {
   it('holds the whole LUMOPOLIS word, and its tag, at least 150 ms before the closing fade', () => {
     const { letters, tag, rule, fadeOut } = INTRO_TIMELINE
     const wordDone = letters.start + 8 * letters.stagger + letters.each
-    expect(wordDone).toBe(1550)
+    expect(wordDone).toBe(2550)
     expect(fadeOut[0] - wordDone).toBeGreaterThanOrEqual(150)
     expect(fadeOut[0] - tag[1]).toBeGreaterThanOrEqual(150)
     expect(fadeOut[0] - rule[1]).toBeGreaterThanOrEqual(150)
@@ -45,7 +45,7 @@ describe('introSteps', () => {
     ])
   })
 
-  it.each([false, true])('every step ends by the timeline end, inside 2000 ms (reduced=%s)', (reduced) => {
+  it.each([false, true])('every step ends by the timeline end, inside 4000 ms (reduced=%s)', (reduced) => {
     const steps = introSteps(reduced)
     expect(steps.length).toBeGreaterThan(9)
     expect(Math.max(...steps.map((s) => s.delay + s.duration))).toBe(INTRO_TOTAL_MS)
@@ -67,7 +67,7 @@ describe('introSteps', () => {
     expect(letters).toHaveLength(9)
     letters.forEach((s, i) => {
       expect(s.index).toBe(i)
-      expect(s.delay).toBe(1050 + 30 * i)
+      expect(s.delay).toBe(2050 + 30 * i)
       expect(s.duration).toBe(260)
       expect(s.keyframes[0]).toMatchObject({ opacity: 0, filter: 'blur(14px)', transform: 'translateY(18px)' })
       expect(s.keyframes[1]).toMatchObject({ opacity: 1, filter: 'blur(0px)', transform: 'translateY(0px)' })

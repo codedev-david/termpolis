@@ -1,12 +1,13 @@
-// The launch intro's timeline: pure data, so the 2.0 s budget is provable in a unit test.
+// The launch intro's timeline: pure data, so the 4.0 s budget is provable in a unit test.
 // All times are ms from the start of the overlay's own animation, the first frame it can paint.
-// The spec fixes the 2.0 s maximum and leaves the split open; this is the builder's split.
+// The spec fixes the 4.0 s maximum (David, 2026-11-21: one more second on each card than the first
+// 2.0 s) and leaves the split open; this is the builder's split.
 
 /** The spec's hard maximum, from the first visible frame to fully gone. */
-export const INTRO_BUDGET_MS = 2000
+export const INTRO_BUDGET_MS = 4000
 /**
  * Where the timeline, and the removal, end: one 60 Hz frame inside the budget, so a removal that
- * lands a frame late still lands by 2000 ms.
+ * lands a frame late still lands by 4000 ms.
  */
 export const INTRO_TOTAL_MS = INTRO_BUDGET_MS - 16
 /** If the overlay's animation has not started this long after mount, the intro never appears. */
@@ -16,14 +17,14 @@ export const INTRO_HARD_CAP_MS = NOT_PAINTED_MS + INTRO_TOTAL_MS
 
 export const INTRO_TIMELINE = {
   fadeIn: [0, 150],
-  termpolisHold: [150, 800],
-  crossfade: [800, 1050],
-  // Still one letter after another; the word is whole at 1050 + 8 * 30 + 260 = 1550.
-  letters: { start: 1050, stagger: 30, each: 260 },
-  rule: [1100, 1500],
-  tag: [1250, 1550],
-  // The full word, rule and tag hold 184 ms before this 250 ms fade to the app.
-  fadeOut: [1734, INTRO_TOTAL_MS],
+  termpolisHold: [150, 1800],
+  crossfade: [1800, 2050],
+  // Still one letter after another; the word is whole at 2050 + 8 * 30 + 260 = 2550.
+  letters: { start: 2050, stagger: 30, each: 260 },
+  rule: [2100, 2500],
+  tag: [2250, 2550],
+  // The full word, rule and tag hold 1184 ms before this 250 ms fade to the app.
+  fadeOut: [3734, INTRO_TOTAL_MS],
 } as const
 
 export const INTRO_LETTER_COUNT = 9
@@ -79,7 +80,7 @@ export function introSteps(reduced: boolean): IntroStep[] {
   const { start, stagger, each } = T.letters
   for (let i = 0; i < INTRO_LETTER_COUNT; i++) {
     steps.push(reduced
-      // No reveal: every letter, the rule and the tag take plain fades within the same 2 s.
+      // No reveal: every letter, the rule and the tag take plain fades within the same 4 s.
       ? { target: 'letter', index: i, delay: start, duration: each - 50, keyframes: fade(0, 1) }
       : {
           target: 'letter',
