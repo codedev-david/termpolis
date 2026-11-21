@@ -37,7 +37,33 @@ on:
         options: [x11, wayland]
 
 jobs:
+  # The bundled embedding model, downloaded once for every shard and copy, as in Tests' model job: the export specs
+  # (world-export.spec.ts) export a smart Ask page with it and fail in CI without it.
+  model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      key: ${{ steps.model.outputs.key }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Download bundled embedding model
+        run: bash scripts/download-embedding-model.sh
+      - name: Hash the embedding model
+        id: model
+        shell: bash
+        run: echo "key=bge-small-$(cd resources/models && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      # Cross-OS: a Windows or macOS soak restores it too. A key that already exists is left as it is.
+      - name: Cache the embedding model
+        uses: actions/cache/save@v4
+        with:
+          path: resources/models
+          key: ${{ steps.model.outputs.key }}
+          enableCrossOsArchive: true
+
   e2e:
+    needs: model
     runs-on: ${{ inputs.os }}
     timeout-minutes: 75
     strategy:
@@ -70,6 +96,14 @@ jobs:
       - name: Install gdb
         if: runner.os == 'Linux'
         run: sudo apt-get install -y --no-install-recommends gdb || true
+      # The model job's download, by the exact hash of its files.
+      - name: Restore the embedding model
+        uses: actions/cache/restore@v4
+        with:
+          path: resources/models
+          key: ${{ needs.model.outputs.key }}
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
       - name: Build
         run: npm run build
       # node-pty forks through its prebuilt spawn-helper on macOS, which npm can extract without

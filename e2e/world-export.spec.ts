@@ -28,6 +28,14 @@ import { escapeHtml } from '../src/shared/world/html'
 import type { WorldDoc } from '../src/shared/world/types'
 
 const PROOF = process.env.PROOF === '1'
+
+/**
+ * The bundled embedding model's files (scripts/download-embedding-model.sh). Without them the export dialog shows
+ * the "no model" line in place of the low-coverage note, so test 1 has nothing to prove: it skips locally and fails
+ * in CI, where the model job must have restored them.
+ */
+const MODEL_DIR = path.resolve('resources', 'models', 'bge-small-en-v1.5')
+const MODEL_FILES = ['tokenizer.json', path.join('onnx', 'model_quantized.onnx')]
 const PROOF_DIR = path.resolve('test-results', 'world-export-proof')
 
 let app: ElectronApplication
@@ -145,12 +153,19 @@ test.describe.serial('Lumopolis export in the real app', () => {
   })
 
   test('1. the palette opens the export dialog, and an unlabelled world shows the note with smart Ask off', async () => {
+    const missing = MODEL_FILES.filter((f) => !fs.existsSync(path.join(MODEL_DIR, f)))
+    if (missing.length > 0) {
+      const why = `the bundled embedding model is missing (${missing.join(', ')} in ${MODEL_DIR}); run bash scripts/download-embedding-model.sh`
+      if (process.env.CI) throw new Error(`The smart Ask note can't be tested: ${why}. CI restores it from the model job.`)
+      test.skip(true, `Skipped: ${why}.`)
+    }
+    // The e2e turns Describe parts with AI off (helpers/world.ts), so the note says to turn it on.
     await paletteType(page, 'export lumopolis world')
     await page.getByRole('button', { name: /^Export Lumopolis world\s*Save the world as one page/ }).click()
     await expect(exportDialog()).toBeVisible()
     await expect(page.locator('[data-testid="world-export-size"]')).toBeVisible({ timeout: 30_000 })
     await expect(page.locator('[data-testid="world-export-note"]')).toHaveText(
-      "Most parts aren't described yet, so smart Ask would mostly match file names. Re-label the world first, or export with keyword Ask.",
+      "Most parts aren't described yet, so smart Ask would mostly match file names. Turn on Describe parts with AI in Settings, then press Re-layout, or export with keyword Ask.",
     )
     // The model is there: the switch is off because of the note, not for want of a model.
     await expect(page.locator('[data-testid="world-export-keyword"]')).toHaveCount(0)
