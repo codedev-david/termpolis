@@ -4,6 +4,7 @@
 // escapeHtml, because names come from code and may hold markup. Pure, ES2020 and deterministic.
 import { PROPOSED_MEANS, STATES_MEAN, type DocBlock, type DocModel, type DocSection } from './documentation'
 import { escapeHtml as esc } from './html'
+import { placeOnMap } from './mapPlacement'
 import type { WorldDoc } from './types'
 
 type Pt = [number, number]
@@ -25,6 +26,9 @@ const GAP_Y = 110
  * already placed wins; failing that, the one that clips the least.
  */
 const BOWS = [0.12, 0.3, 0.5, 0.7, -0.12, -0.3, -0.5, -0.7]
+/** The map's smallest label size, and the least it may shrink to on screen: past that a narrow page scrolls the map. */
+const LABEL_PX = 12
+const LABEL_MIN_PX = 10
 /** Rough glyph widths, to cut a label to its box. */
 const PART_GLYPH = 6.6
 const AREA_GLYPH = 8.6
@@ -53,31 +57,11 @@ function border(b: Box, to: Pt, gap: number): Pt {
   return [c[0] + dx * s, c[1] + dy * s]
 }
 
-/**
- * Each district's anchor, by the placement rule of the 2D map (renderer engine fallback2d.ts, renderMap): a part
- * stands at its layout x and z, else at the next slot of a six-wide grid below the city; a district stands at its own
- * position, else at the centre of its parts, else at the origin. Mirrored here because that module lives in the
- * renderer and keeps the rule inline.
- */
-function anchors(doc: WorldDoc): Pt[] {
-  let slot = 0
-  const at = new Map<string, Pt>()
-  for (const b of doc.buildings) {
-    const p = doc.layout.positions[b.id]
-    at.set(b.id, p ? [p[0], p[2]] : [(slot % 6) * 8, 14 + Math.floor(slot++ / 6) * 8])
-  }
-  return doc.districts.map((d) => {
-    const own = doc.layout.positions[d.id]
-    const mine = doc.buildings.filter((b) => b.districtId === d.id).map((b) => at.get(b.id) as Pt)
-    if (own) return [own[0], own[2]]
-    return mine.length ? [mine.reduce((s, p) => s + p[0], 0) / mine.length, mine.reduce((s, p) => s + p[1], 0) / mine.length] : [0, 0]
-  })
-}
-
-/** The districts' grid cells, keeping the city's arrangement: rows from the back of the city (z) to the front, each
- *  row from left to right (x), ties in the world's order. Boxes never overlap, whatever the layout. */
+/** The districts' grid cells, keeping the city's arrangement as the 2D map places it (mapPlacement.ts): rows from the
+ *  back of the city (z) to the front, each row from left to right (x), ties in the world's order. Boxes never overlap,
+ *  whatever the layout. */
 function cells(doc: WorldDoc): { col: number; row: number }[] {
-  const at = anchors(doc)
+  const at = placeOnMap(doc).districts
   const n = at.length
   const cols = n <= 3 ? n : Math.min(3, Math.ceil(Math.sqrt(n)))
   const order = at.map((_, i) => i).sort((a, b) => at[a][1] - at[b][1] || at[a][0] - at[b][0] || a - b)
@@ -114,14 +98,14 @@ function route(a: Box, b: Box, others: Box[], placed: Route[]): Route {
 }
 
 const MAP_STYLE = [
-  '.lm-map{max-width:100%;height:auto;font-family:inherit}',
+  '.lm-map{display:block;margin:0 auto;max-width:100%;height:auto;font-family:inherit}',
   '.lm-box{fill:var(--map-box,#f3f5f9);stroke:var(--map-box-line,#cbd3e0)}',
   '.lm-area-name{fill:var(--map-text,#1b2230);font-size:15px;font-weight:650}',
-  '.lm-area-meta{fill:var(--map-muted,#5a6476);font-size:12px}',
+  '.lm-area-meta{fill:var(--map-muted,#566073);font-size:12px}',
   '.lm-part{fill:var(--map-part,#ffffff);stroke:var(--map-part-line,#b7c2d4)}',
   '.lm-part-label{fill:var(--map-text,#1b2230);font-size:12.5px}',
   '.lm-more{fill:none;stroke:var(--map-part-line,#b7c2d4);stroke-dasharray:4 3}',
-  '.lm-more-label,.lm-empty{fill:var(--map-muted,#5a6476);font-size:12px;font-style:italic}',
+  '.lm-more-label,.lm-empty{fill:var(--map-muted,#566073);font-size:12px;font-style:italic}',
   '.lm-line{fill:none;stroke:var(--map-line,#4d63cf);stroke-opacity:.8}',
   '.lm-arrowhead{fill:var(--map-line,#4d63cf)}',
   '.lm-count rect{fill:var(--map-count-bg,#ffffff);stroke:var(--map-line,#4d63cf)}',
@@ -137,9 +121,10 @@ const MAP_STYLE = [
  */
 export function docMapSvg(doc: WorldDoc): string {
   const open = (w: number, h: number, minX: number, minY: number, label: string): string =>
-    `<svg class="lm-map" viewBox="${n1(minX)} ${n1(minY)} ${n1(w)} ${n1(h)}" width="${n1(w)}" height="${n1(h)}" role="img" aria-label="${esc(label)}"><style>${MAP_STYLE}</style>`
+    `<svg class="lm-map" viewBox="${n1(minX)} ${n1(minY)} ${n1(w)} ${n1(h)}" width="${n1(w)}" height="${n1(h)}" role="img" aria-label="${esc(label)}"`
+    + ` style="min-width: ${Math.ceil((Number(n1(w)) * LABEL_MIN_PX) / LABEL_PX)}px"><style>${MAP_STYLE}</style>`
   if (doc.districts.length === 0) {
-    return `${open(480, 80, 0, 0, 'Map of the areas')}<text class="lm-empty" x="240" y="44" text-anchor="middle">No areas yet</text></svg>`
+    return `${open(320, 80, 0, 0, 'Map of the areas')}<text class="lm-empty" x="160" y="44" text-anchor="middle">No areas yet</text></svg>`
   }
   const groups = doc.districts.map((d) => doc.buildings.filter((b) => b.districtId === d.id))
   const most = Math.max(1, ...groups.map((g) => Math.min(g.length, BOX_CAP)))
@@ -291,7 +276,7 @@ const CSS = [
   'tbody tr:last-child td{border-bottom: 0}',
   '.empty{color: var(--muted); font-style: italic}',
   'figure{margin: 0 0 20px}',
-  '.map{padding: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; text-align: center}',
+  '.map{padding: 18px; overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px}',
   '.picture img{display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px}',
   'figcaption{margin-top: 10px; color: var(--muted); font-size: .85rem; text-align: left}',
   '.colophon{margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem}',
@@ -301,14 +286,16 @@ const CSS = [
     + ' .page{display: block; max-width: none; padding: 0}'
     + ' .toc{position: static; break-after: page}'
     + ' .area{break-before: page}'
-    + ' .area:first-of-type{break-before: auto}'
+    + ' #areas{break-before: page}'
+    + ' #areas > .area:first-of-type{break-before: auto}'
     + ' .field, figure, tr{break-inside: avoid}'
     + ' h2, h3, h4, h5, .area > p{break-after: avoid}'
     + ' table{font-size: 8.5pt}'
     + ' th, td{padding: 6px 8px}'
     + ' td{min-width: 0}'
     + ' .part{box-shadow: none}'
-    + ' .table-wrap{overflow: visible}'
+    + ' .table-wrap, .map{overflow: visible}'
+    + ' .lm-map{min-width: 0 !important}'
     + ' thead{display: table-header-group}'
     + ' a{color: inherit; text-decoration: none}'
     + ' *{-webkit-print-color-adjust: exact; print-color-adjust: exact}}'

@@ -5,34 +5,21 @@
 import type { WorldDoc } from '../../../../shared/world/types'
 import { escapeHtml as esc } from './html'
 import { edgeSummary } from '../../../../shared/world/edgeText'
+import { placeOnMap, type MapPoint as Pt } from '../../../../shared/world/mapPlacement'
 
 const tag = (kind: 'district' | 'building' | 'edge', id: string): string => ` data-kind="${kind}" data-id="${esc(id)}"`
 const item = (kind: 'district' | 'building' | 'edge', id: string): string => `${tag(kind, id)} tabindex="0"`
 
-type Pt = [number, number]
 const SIDE = 3
 const HEX_R = 6
 const MARGIN = 8
 const n2 = (n: number): string => String(Math.round(n * 100) / 100)
 
-/** The map: positions are the layout's x and z, drawn as x right and z down. */
+/** The map: positions are the layout's x and z, drawn as x right and z down, placed by the shared map placement. */
 function renderMap(doc: WorldDoc, title: string, label: (id: string) => string): string {
-  let slot = 0
-  const at = new Map<string, Pt>()
-  const place = (id: string): Pt => {
-    const p = doc.layout.positions[id]
-    const pt: Pt = p ? [p[0], p[2]] : [(slot % 6) * 8, 14 + Math.floor(slot++ / 6) * 8]
-    at.set(id, pt)
-    return pt
-  }
-  for (const b of doc.buildings) place(b.id)
-  for (const x of doc.externals) place(x.id)
-  const hexes = doc.districts.map((d) => {
-    const own = doc.layout.positions[d.id]
-    const mine = doc.buildings.filter((b) => b.districtId === d.id).map((b) => at.get(b.id) as Pt)
-    const c: Pt = own ? [own[0], own[2]] : mine.length ? [mine.reduce((s, p) => s + p[0], 0) / mine.length, mine.reduce((s, p) => s + p[1], 0) / mine.length] : [0, 0]
-    return { d, c }
-  })
+  const placement = placeOnMap(doc)
+  const at = placement.at
+  const hexes = doc.districts.map((d, i) => ({ d, c: placement.districts[i] }))
   const xs = [...at.values(), ...hexes.map((h) => h.c)]
   const minX = Math.min(0, ...xs.map((p) => p[0])) - MARGIN
   const minZ = Math.min(0, ...xs.map((p) => p[1])) - MARGIN

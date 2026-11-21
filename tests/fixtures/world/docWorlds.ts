@@ -168,21 +168,32 @@ export const HOSTILE = {
   quotes: `"double" 'single' & <b>bold</b>`,
   unicode: 'Ünïcødé 名前 Ωμέγα',
   emoji: 'Rocket 🚀 fire 🔥 family 👨‍👩‍👧',
-  long: LONG_NAME
+  long: LONG_NAME,
+  closer: '</title></svg><img src=x onerror="alert(1)">'
 }
+/** Ids and an evidence reference that would break out of an attribute, or run as a link, if a renderer let them. */
+export const HOSTILE_IDS = { district: 'd2" id="x" onclick="alert(1)', part: "b4' onmouseover='alert(1)", ref: 'javascript:alert(1)' }
 
-/** A world named with HOSTILE everywhere a name or sentence can go. */
+/**
+ * A world named with HOSTILE everywhere a name or sentence can go: two areas, the second with a hostile id, joined by a
+ * line with a hostile label, and claims whose evidence references are hostile too.
+ */
 export function hostileWorld(): WorldDoc {
   const doc = bare()
-  doc.districts = [district('d1', HOSTILE.script, HOSTILE.quotes)]
+  const { district: d2, part: b4, ref } = HOSTILE_IDS
+  doc.districts = [district('d1', HOSTILE.script, HOSTILE.quotes), district(d2, HOSTILE.closer, HOSTILE.script)]
   doc.glossary = { [HOSTILE.unicode]: HOSTILE.emoji }
   doc.processes = { p: { label: HOSTILE.quotes, color: '#000000' } }
   doc.buildings = [
-    building('b1', 'd1', { name: HOSTILE.script, techLabel: HOSTILE.quotes, process: 'p', stack: [HOSTILE.unicode], how: [claim(HOSTILE.emoji)] }),
+    building('b1', 'd1', { name: HOSTILE.script, techLabel: HOSTILE.quotes, process: 'p', stack: [HOSTILE.unicode], how: [claim(HOSTILE.emoji, 'inferred', ref)] }),
     building('b2', 'd1', { name: HOSTILE.long, floors: [{ name: HOSTILE.unicode, tech: [], members: [HOSTILE.emoji] }] }),
-    building('b3', 'd1', { name: HOSTILE.emoji, nameState: 'inferred' })
+    building('b3', 'd1', { name: HOSTILE.emoji, nameState: 'inferred' }),
+    building(b4, d2, { name: HOSTILE.closer, how: [claim(HOSTILE.quotes, 'observed', HOSTILE.closer)] })
   ]
-  doc.edges = [edge('e1', 'b1', 'b2', { label: HOSTILE.quotes, rate: HOSTILE.unicode })]
+  doc.edges = [
+    edge('e1', 'b1', 'b2', { label: HOSTILE.quotes, rate: HOSTILE.unicode }),
+    edge('e2', 'b1', b4, { label: HOSTILE.closer, how: [claim(HOSTILE.script, 'inferred', HOSTILE.script)] })
+  ]
   doc.externals = [external('x1', HOSTILE.script, { fog: true })]
   doc.tours = [{ id: 't1', title: HOSTILE.emoji, steps: [{ ids: ['b1'], caption: HOSTILE.script }] }]
   doc.runtimeNames = { b1: [HOSTILE.quotes] }

@@ -4,7 +4,7 @@ import { docMapSvg, renderDocumentation } from '../../../src/shared/world/docume
 import { escapeHtml } from '../../../src/shared/world/html'
 import type { WorldDoc } from '../../../src/shared/world/types'
 import {
-  HOSTILE, describedWorld, designWorld, emptyWorld, hostileWorld, labelledWorld, linkedDesignWorld, unlabelledWorld
+  HOSTILE, HOSTILE_IDS, describedWorld, designWorld, emptyWorld, hostileWorld, labelledWorld, linkedDesignWorld, unlabelledWorld
 } from '../../fixtures/world/docWorlds'
 
 const OPTS: DocOptions = { title: 'Termpolis', picture: false, generatedOn: '2026-11-21' }
@@ -45,8 +45,24 @@ describe('renderDocumentation: the page', () => {
     expect(style).toContain('@media (prefers-color-scheme: dark)')
     expect(style.indexOf(':root{')).toBeLessThan(style.indexOf('@media (prefers-color-scheme: dark)'))
   })
-  it('prints cleanly, each area starting a new page', () => {
-    expect(atRule(css(html), '@media print')).toMatch(/\.area\{[^}]*break-before: page/)
+  it('prints cleanly, a page break before each area, the Areas heading kept with the first', () => {
+    const print = atRule(css(html), '@media print')
+    expect(print).toMatch(/ \.area\{break-before: page\}/)
+    // The Areas chapter starts the page the first area shares, so its heading is never left alone.
+    expect(print).toMatch(/ #areas\{break-before: page\}/)
+    expect(print).toMatch(/ #areas > \.area:first-of-type\{break-before: auto\}/)
+    expect(html).toContain('<section class="chapter" id="areas"><h2>Areas</h2>')
+  })
+  it('draws the map with the light colours as its fallbacks, so the map matches the page with or without them', () => {
+    const light = (/:root\{color-scheme: light dark; ([^}]*)\}/.exec(css(html)) as RegExpExecArray)[1]
+    const vars = new Map(Array.from(light.matchAll(/(--[a-z-]+): (#[0-9a-f]{6})/g), (m) => [m[1], m[2]]))
+    const fallbacks = Array.from(docMapSvg(labelledWorld()).matchAll(/var\((--map-[a-z-]+),(#[0-9a-f]{6})\)/g), (m) => [m[1], m[2]])
+    expect(fallbacks.length).toBeGreaterThan(10)
+    for (const [name, colour] of fallbacks) expect([name, vars.get(name)]).toEqual([name, colour])
+  })
+  it('lets a wide map scroll sideways rather than shrink its labels', () => {
+    expect(css(html)).toMatch(/\.map\{[^}]*overflow-x: auto/)
+    expect(atRule(css(html), '@media print')).toMatch(/ \.lm-map\{min-width: 0 !important\}/)
   })
   it('has a sticky contents column naming every section and every area', () => {
     expect(html).toMatch(/<nav class="toc" aria-label="Contents">/)
@@ -90,7 +106,36 @@ describe('renderDocumentation: the page', () => {
   })
 })
 
+/** Every element the page may hold, and every attribute an element may carry; anything else came from data. */
+const TAGS = new Set([
+  'html', 'head', 'meta', 'title', 'style', 'body', 'div', 'header', 'nav', 'main', 'section', 'footer', 'h1', 'h2', 'h3',
+  'h4', 'h5', 'h6', 'p', 'ol', 'ul', 'li', 'a', 'span', 'code', 'em', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+  'figure', 'figcaption', 'img', 'svg', 'defs', 'marker', 'path', 'g', 'rect', 'text'
+])
+const ATTRS = new Set([
+  'lang', 'charset', 'name', 'content', 'http-equiv', 'class', 'id', 'href', 'src', 'alt', 'role', 'aria-label', 'style',
+  'viewBox', 'width', 'height', 'data-id', 'x', 'y', 'rx', 'd', 'stroke-width', 'marker-end', 'refX', 'refY',
+  'markerWidth', 'markerHeight', 'markerUnits', 'orient', 'text-anchor', 'dominant-baseline'
+])
+
 describe('renderDocumentation: every fixture world', () => {
+  it.each(FIXTURES)('%s holds only the page’s own elements and attributes, and links only within itself and to termpolis.com', (_, make) => {
+    for (const png of [undefined, PNG]) {
+      const out = render(make(), { picture: true }, png)
+      const tags = Array.from(out.matchAll(/<([^\s/>!][^\s/>]*)([^<>]*)>/g))
+      expect(tags.length).toBeGreaterThan(20)
+      for (const [, tag, rest] of tags) {
+        expect(TAGS.has(tag) ? tag : `<${tag}`).toBe(tag)
+        // Attribute values are double-quoted and escaped, so a name="value" pair is read whole.
+        const left = rest.replace(/\s+([A-Za-z][\w:-]*)="[^"]*"/g, (_m, attr: string) => {
+          expect(ATTRS.has(attr) ? attr : `${tag} ${attr}`).toBe(attr)
+          return ''
+        })
+        expect(left.trim()).toMatch(/^\/?$/)
+      }
+      for (const m of out.matchAll(/ href="([^"]*)"/g)) expect(m[1]).toMatch(/^(#[A-Za-z0-9-]+|https:\/\/termpolis\.com)$/)
+    }
+  })
   it.each(FIXTURES)('%s has no script and no external address but termpolis.com', (_, make) => {
     for (const png of [undefined, PNG]) {
       const out = render(make(), { picture: true }, png)
@@ -120,6 +165,16 @@ describe('renderDocumentation: escaping', () => {
     expect(svg).not.toMatch(/<script/i)
     expect(svg).toContain(escapeHtml(HOSTILE.script))
     expect(svg).toContain(`<title>${escapeHtml(HOSTILE.long)}</title>`)
+    expect(svg).toContain(`<title>1 connection from ${escapeHtml(HOSTILE.script)} to ${escapeHtml(HOSTILE.closer)}</title>`)
+    expect(svg).toContain(`<g data-id="${escapeHtml(HOSTILE_IDS.district)}" class="lm-area">`)
+  })
+  it('keeps hostile ids, labels and evidence references as text', () => {
+    expect(html).not.toContain(HOSTILE.closer)
+    expect(html).toContain(`<code>file ${escapeHtml(HOSTILE.closer)}</code>`)
+    expect(html).toContain(`<code>file ${HOSTILE_IDS.ref}</code>`)
+    expect(html).not.toContain('onclick="')
+    expect(html).not.toContain("onmouseover='")
+    expect(html).not.toContain('id="x"')
   })
 })
 
@@ -194,6 +249,12 @@ describe('docMapSvg', () => {
     expect(svg).toMatch(/>Long name Long na[^<]*…<\/text>/)
     expect(svg).toContain(`<title>${HOSTILE.long}</title>`)
     expect(svg).toContain('No parts yet')
+  })
+  it.each(FIXTURES)('%s: the map is never drawn so small that its 12px labels fall under 10px', (_, make) => {
+    const svg = docMapSvg(make())
+    const [, w, min] = (/<svg class="lm-map" viewBox="[-0-9.]+ [-0-9.]+ ([0-9.]+) [0-9.]+" [^>]*style="min-width: ([0-9]+)px"/.exec(svg) as RegExpExecArray).map(Number)
+    expect(min).toBe(Math.ceil((Number(w) * 10) / 12))
+    expect(Math.min(...Array.from(svg.matchAll(/font-size:([0-9.]+)px/g), (m) => Number(m[1])))).toBe(12)
   })
   it('an empty world says it has no areas', () => {
     const svg = docMapSvg(emptyWorld())
