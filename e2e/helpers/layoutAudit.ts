@@ -1,0 +1,283 @@
+// The responsive layout audit the responsive specs run in the page (e2e/world-responsive.spec.ts for the app's
+// Lumopolis pane, e2e/export-page/responsive.page.ts for the exported pages). It measures the DOM as a person
+// would see it and returns what is wrong, as readable lines:
+//   - overlaps:    two pieces of visible text (text runs, controls, the map's labels) whose boxes intersect by more
+//                  than `tolerance` pixels across AND down;
+//   - underPanels: visible text that intersects a panel it is not part of (a map label painted over the legend);
+//   - clipped:     text cut off by an ancestor that hides overflow without scrolling, or running out of its own
+//                  box, unless it is shortened on purpose (text-overflow: ellipsis) and carries its full text in a
+//                  title or aria-label;
+//   - crowded:     a district's name (bare text, no pill round it) side by side with another map label on one row,
+//                  less than one and a half font sizes apart, so the two read as one phrase ("CORE SHRINKS WHAT
+//                  CLAUDE SENDS");
+//   - outside:     visible text outside the viewport (left and right; up and down too unless the page scrolls);
+//   - scroll:      a horizontal scrollbar on the page or anywhere inside the root (a box that scrolls across, unless
+//                  it matches `scrollX`: a wide table or figure that scrolls on purpose), or a panel wider inside
+//                  than out without scrolling;
+//   - small:       text under `minFont` CSS pixels (`captionFont` for elements matching `captions`), taking any CSS
+//                  zoom into account.
+// A text field's text is measured by its content box (inside its padding), so an icon button sitting in that padding
+// (a voice button at the end of a text box) is not an overlap. Text that a scrolling panel has scrolled out of sight
+// is not on screen and is not audited. Labels faded below
+// MIN_OPACITY are not on show. `fonts` is each visible text's font size in CSS pixels, for the big-screen check.
+// The function is passed to page.evaluate: it must not reference anything outside itself.
+
+export interface AuditOptions {
+  /** Only text inside this element is audited (default: the whole body). */
+  root?: string
+  /** Panels text must stay out of unless it is inside them. */
+  panels: string[]
+  /** Elements whose text may be as small as captionFont (tiny legend captions). */
+  captions?: string[]
+  /** Elements not audited at all (decorative, or covered by a dialog). */
+  ignore?: string[]
+  minFont?: number
+  captionFont?: number
+  tolerance?: number
+  /** The page itself scrolls up and down (a long document): text below the fold is fine. */
+  verticalScroll?: boolean
+  /** Boxes that may scroll across on purpose (a wide table or figure in its own scrolling frame). */
+  scrollX?: string[]
+}
+
+export interface AuditResult {
+  overlaps: string[]
+  crowded: string[]
+  underPanels: string[]
+  clipped: string[]
+  outside: string[]
+  scroll: string[]
+  small: string[]
+  /** How many pieces of visible text were measured (a positive control: 0 means the audit saw nothing). */
+  texts: number
+  /** The font size of every visible text, CSS pixels, zoom included. */
+  fonts: number[]
+}
+
+export function layoutAudit(opts: AuditOptions): AuditResult {
+  const MIN_OPACITY = 0.1
+  const tol = opts.tolerance ?? 2
+  const minFont = opts.minFont ?? 12
+  const captionFont = opts.captionFont ?? 11
+  const root = opts.root ? document.querySelector<HTMLElement>(opts.root) : document.body
+  const out: AuditResult = { overlaps: [], crowded: [], underPanels: [], clipped: [], outside: [], scroll: [], small: [], texts: 0, fonts: [] }
+  if (!root) {
+    out.scroll.push(`no element for ${opts.root}`)
+    return out
+  }
+  const vw = document.documentElement.clientWidth
+  const vh = document.documentElement.clientHeight
+  const matches = (el: Element, sels: string[] | undefined): boolean => !!sels && sels.some((s) => el.closest(s) !== null)
+  // An element's effective CSS zoom: currentCSSZoom where the browser has it, else the product of every
+  // ancestor's own zoom (Electron's Chromium has no currentCSSZoom, and its font sizes are the unzoomed ones).
+  interface Rect { left: number; top: number; right: number; bottom: number }
+  const zooms = new Map<Element, number>()
+  const zoomOf = (el: Element): number => {
+    const own = (el as unknown as { currentCSSZoom?: number }).currentCSSZoom
+    if (typeof own === 'number') return own
+    const known = zooms.get(el)
+    if (known !== undefined) return known
+    const z = parseFloat(getComputedStyle(el).zoom)
+    const total = (z > 0 ? z : 1) * (el.parentElement ? zoomOf(el.parentElement) : 1)
+    zooms.set(el, total)
+    return total
+  }
+  // A Chromium before standard CSS zoom (128) measures a zoomed box, and everything in it, in that box's own
+  // pixels: its boxes are scaled back to the page's here.
+  const legacyZoom = !('currentCSSZoom' in document.documentElement)
+  const onScreen = (r: { left: number; top: number; right: number; bottom: number; width: number; height: number }, el: Element): Rect => {
+    const z = legacyZoom ? zoomOf(el) : 1
+    return { left: r.left * z, top: r.top * z, right: r.right * z, bottom: r.bottom * z }
+  }
+  const rectOf = (el: Element): Rect => onScreen(el.getBoundingClientRect(), el)
+  const shown = (el: Element): boolean => {
+    let opacity = 1
+    for (let e: Element | null = el; e; e = e.parentElement) {
+      const cs = getComputedStyle(e)
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse' || cs.contentVisibility === 'hidden') return false
+      opacity *= Number(cs.opacity)
+    }
+    return opacity >= MIN_OPACITY
+  }
+  const describe = (el: Element, text: string): string => {
+    const id = el.getAttribute('data-testid') || el.getAttribute('data-control') || ''
+    const cls = typeof el.className === 'string' && el.className.trim() !== '' ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : ''
+    const t = text.replace(/\s+/g, ' ').trim()
+    return `${el.tagName.toLowerCase()}${cls}${id ? `[${id}]` : ''} "${t.length > 40 ? t.slice(0, 39) + '…' : t}"`
+  }
+  const box = (r: { left: number; top: number; right: number; bottom: number }): string => `${Math.round(r.left)},${Math.round(r.top)}-${Math.round(r.right)},${Math.round(r.bottom)}`
+  interface Item { el: Element; label: string; r: Rect; label3d: boolean; font: number }
+
+  const CONTROL = 'button, select, input:not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea, [role="button"], [role="switch"]'
+  const items: Item[] = []
+  const seen = new Set<Element>()
+
+  /** The box once every scrolling ancestor has cut it to what it shows; null when scrolled out of sight. Records clipping by non-scrolling ancestors. */
+  const visibleRect = (el: Element, r: Rect, label: string): Rect | null => {
+    // Copied field by field: a DOMRect keeps its sides on its prototype, so a spread would copy none of them.
+    let v: Rect = { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
+    const ellipsis = (e: Element): boolean => getComputedStyle(e).textOverflow === 'ellipsis' && !!(e.closest('[title]')?.getAttribute('title') || e.getAttribute('aria-label'))
+    for (let a: Element | null = el; a && a !== document.documentElement; a = a.parentElement) {
+      const cs = getComputedStyle(a)
+      const ox = cs.overflowX
+      const oy = cs.overflowY
+      if (ox === 'visible' && oy === 'visible') continue
+      const ar = rectOf(a)
+      const z = zoomOf(a)
+      // The padding box: the border box less the borders (client box), where content is cut.
+      const left = ar.left + a.clientLeft * z
+      const top = ar.top + a.clientTop * z
+      const clip: Rect = { left, top, right: left + a.clientWidth * z, bottom: top + a.clientHeight * z }
+      const scrollsX = ox === 'auto' || ox === 'scroll'
+      const scrollsY = oy === 'auto' || oy === 'scroll'
+      const cutX = !scrollsX && ox !== 'visible' && (v.left < clip.left - tol || v.right > clip.right + tol)
+      const cutY = !scrollsY && oy !== 'visible' && (v.top < clip.top - tol || v.bottom > clip.bottom + tol)
+      if ((cutX || cutY) && !ellipsis(a) && !ellipsis(el)) {
+        // Fully outside a non-scrolling box is hidden on purpose (an off-stage label, a closed drawer), not cut.
+        const inside = v.right > clip.left && v.left < clip.right && v.bottom > clip.top && v.top < clip.bottom
+        if (inside) out.clipped.push(`${label} ${box(v)} cut by ${describe(a, '')} ${box(clip)}`)
+        else return null
+      }
+      if (scrollsX || ox !== 'visible') v = { ...v, left: Math.max(v.left, clip.left), right: Math.min(v.right, clip.right) }
+      if (scrollsY || oy !== 'visible') v = { ...v, top: Math.max(v.top, clip.top), bottom: Math.min(v.bottom, clip.bottom) }
+      if (v.right - v.left <= 0.5 || v.bottom - v.top <= 0.5) return null
+    }
+    return v
+  }
+
+  const add = (el: Element, text: string, r: Rect, label3d: boolean): void => {
+    if (r.right - r.left < 0.5 || r.bottom - r.top < 0.5) return
+    const label = describe(el, text)
+    const v = visibleRect(el, r, label)
+    if (!v) return
+    const cs = getComputedStyle(el)
+    const px = parseFloat(cs.fontSize) * zoomOf(el)
+    items.push({ el, label, r: v, label3d, font: px })
+    out.fonts.push(px)
+    const least = matches(el, opts.captions) ? captionFont : minFont
+    if (px < least - 0.01) out.small.push(`${label} ${px.toFixed(1)}px < ${least}px`)
+  }
+
+  // The map's labels and the controls are measured whole (a label's pill, a button's box); other text by its runs.
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>(`.lw-labels > *, ${CONTROL}`))) {
+    if (matches(el, opts.ignore) || !shown(el)) continue
+    const text = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value || el.placeholder : el instanceof HTMLSelectElement ? el.selectedOptions[0]?.textContent ?? '' : el.textContent ?? ''
+    if (text.trim() === '' && !(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
+      // An icon-only button still takes room: it is checked against text, but has no font to check.
+      const r = rectOf(el)
+      if (r.right > r.left && r.bottom > r.top && !el.closest('.lw-labels')) {
+        const v = visibleRect(el, r, describe(el, el.getAttribute('aria-label') || '(icon)'))
+        if (v) items.push({ el, label: describe(el, el.getAttribute('aria-label') || '(icon)'), r: v, label3d: false, font: 0 })
+      }
+      seen.add(el)
+      continue
+    }
+    seen.add(el)
+    let r: Rect = rectOf(el)
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+      // The text of a field is inside its padding and borders.
+      const cs = getComputedStyle(el)
+      const z = zoomOf(el)
+      const side = (k: string): number => (parseFloat(cs.getPropertyValue(`padding-${k}`)) + parseFloat(cs.getPropertyValue(`border-${k}-width`))) * z
+      r = { left: r.left + side('left'), top: r.top + side('top'), right: r.right - side('right'), bottom: r.bottom - side('bottom') }
+    }
+    add(el, text, r, el.closest('.lw-labels') !== null)
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const range = document.createRange()
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const t = n.textContent ?? ''
+    if (t.trim() === '') continue
+    const el = n.parentElement
+    if (!el || el.closest('script, style, noscript, template, option, title, svg title') || matches(el, opts.ignore)) continue
+    let owned = false
+    for (const s of seen) if (s.contains(el)) { owned = true; break }
+    if (owned || !shown(el)) continue
+    range.selectNodeContents(n)
+    const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0.5 && r.height > 0.5)
+    for (const r of rects) add(el, t, onScreen(r, el), false)
+  }
+  out.texts = items.length
+
+  for (let i = 0; i < items.length; i++) {
+    const a = items[i]
+    const ra = a.r
+    if (ra.left < -tol || ra.right > vw + tol || (!opts.verticalScroll && (ra.top < -tol || ra.bottom > vh + tol))) out.outside.push(`${a.label} ${box(ra)} viewport ${vw}x${vh}`)
+    for (let j = i + 1; j < items.length; j++) {
+      const b = items[j]
+      if (a.el === b.el || a.el.contains(b.el) || b.el.contains(a.el)) continue
+      const rb = b.r
+      const x = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left)
+      const y = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top)
+      if (x > tol && y > tol) out.overlaps.push(`${a.label} ${box(ra)} / ${b.label} ${box(rb)}`)
+      else if (a.label3d && b.label3d && (a.el.matches('.lw-district') || b.el.matches('.lw-district')) && y > 0.5 * Math.min(ra.bottom - ra.top, rb.bottom - rb.top) && -x < 1.5 * Math.max(a.font, b.font)) {
+        out.crowded.push(`${a.label} ${box(ra)} / ${b.label} ${box(rb)} ${Math.round(-x)}px apart`)
+      }
+    }
+  }
+
+  const panels = opts.panels.flatMap((s) => Array.from(root.querySelectorAll<HTMLElement>(s))).filter((p) => shown(p))
+  for (const p of panels) {
+    const pr = rectOf(p)
+    if (pr.right - pr.left < 1 || pr.bottom - pr.top < 1) continue
+    const name = describe(p, p.getAttribute('aria-label') || '')
+    for (const it of items) {
+      if (p.contains(it.el) || it.el.contains(p)) continue
+      // Text inside another panel that this one is inside (a menu in the toolbar) is that panel's business.
+      const x = Math.min(it.r.right, pr.right) - Math.max(it.r.left, pr.left)
+      const y = Math.min(it.r.bottom, pr.bottom) - Math.max(it.r.top, pr.top)
+      if (x > tol && y > tol) out.underPanels.push(`${it.label} ${box(it.r)} / panel ${name} ${box(pr)}`)
+    }
+    const cs = getComputedStyle(p)
+    if (cs.overflowX !== 'auto' && cs.overflowX !== 'scroll' && p.scrollWidth > p.clientWidth + 1) out.scroll.push(`panel ${name} is ${p.scrollWidth}px wide inside, ${p.clientWidth}px out`)
+  }
+  // Anything inside the root that scrolls across: text running past a narrow pane, hidden behind a scrollbar.
+  for (const el of [root, ...Array.from(root.querySelectorAll<HTMLElement>('*'))]) {
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) continue
+    const cs = getComputedStyle(el)
+    if (cs.overflowX !== 'auto' && cs.overflowX !== 'scroll') continue
+    if (el.scrollWidth <= el.clientWidth + 1 || matches(el, opts.scrollX) || !shown(el)) continue
+    out.scroll.push(`${describe(el, el.getAttribute('aria-label') || '')} scrolls across: ${el.scrollWidth}px inside, ${el.clientWidth}px out`)
+  }
+  const doc = document.scrollingElement ?? document.documentElement
+  if (doc.scrollWidth > doc.clientWidth + 1) out.scroll.push(`the page scrolls across: ${doc.scrollWidth}px in a ${doc.clientWidth}px window`)
+  if (!opts.verticalScroll && doc.scrollHeight > doc.clientHeight + 1) out.scroll.push(`the page scrolls down: ${doc.scrollHeight}px in a ${doc.clientHeight}px window`)
+  return out
+}
+
+/** The viewports every responsive spec covers: CSS size and device pixel ratio. */
+export interface Viewport { name: string; width: number; height: number; dpr: number }
+export const VIEWPORTS: Viewport[] = [
+  { name: '768x1024', width: 768, height: 1024, dpr: 1 },
+  { name: '1024x768', width: 1024, height: 768, dpr: 1 },
+  { name: '1280x800', width: 1280, height: 800, dpr: 1 },
+  { name: '1280x800@2x', width: 1280, height: 800, dpr: 2 },
+  { name: '1366x768', width: 1366, height: 768, dpr: 1 },
+  { name: '1920x1080', width: 1920, height: 1080, dpr: 1 },
+  { name: '2560x1440', width: 2560, height: 1440, dpr: 1 },
+  { name: '3440x1440', width: 3440, height: 1440, dpr: 1 },
+  // A 4K screen at 200% scaling: 3840x2160 device pixels, 1920x1080 CSS pixels.
+  { name: '3840x2160@2x', width: 1920, height: 1080, dpr: 2 },
+  { name: '3840x2160', width: 3840, height: 2160, dpr: 1 },
+  { name: '5120x2880', width: 5120, height: 2880, dpr: 1 },
+]
+
+/** The problems of an audit as one list, each line prefixed by its kind. */
+export function auditProblems(r: AuditResult): string[] {
+  return [
+    ...r.overlaps.map((s) => `overlap: ${s}`),
+    ...r.crowded.map((s) => `crowded: ${s}`),
+    ...r.underPanels.map((s) => `under a panel: ${s}`),
+    ...r.clipped.map((s) => `clipped: ${s}`),
+    ...r.outside.map((s) => `outside: ${s}`),
+    ...r.scroll.map((s) => `scroll: ${s}`),
+    ...r.small.map((s) => `too small: ${s}`),
+  ]
+}
+
+/** The median of the fonts measured (0 for none). */
+export function medianFont(r: AuditResult): number {
+  if (r.fonts.length === 0) return 0
+  const s = [...r.fonts].sort((a, b) => a - b)
+  return s[Math.floor(s.length / 2)]
+}
