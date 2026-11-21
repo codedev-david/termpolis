@@ -445,6 +445,8 @@ describe('cloneRepo token runs', () => {
     expect(env.GIT_TERMINAL_PROMPT).toBe('0')
     // No login helper may answer in the token's place.
     expect(configValue(env, 'credential.helper')).toBe('')
+    // git's prompt names only the scheme and host, never the path.
+    expect(configValue(env, 'credential.useHttpPath')).toBe('false')
     // The version check runs before the login settings exist: git --version never sees the token.
     expect(JSON.stringify(of('--version')[0].opts.env)).not.toContain(TOKEN)
   })

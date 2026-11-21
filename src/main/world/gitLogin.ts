@@ -1,8 +1,8 @@
 // Lumopolis git login: how each git run here is told whether it may use a login, and the checks around it.
 //
 // Every run carries the same safety flags on its command line (no local-file transport, no hooks, no
-// symlinks, no fsmonitor). The three login settings (`credential.helper`, `credential.interactive`,
-// `core.askPass`) are the only thing that differs between runs, and they travel in the environment as
+// symlinks, no fsmonitor). The login settings (`credential.helper`, `credential.interactive`,
+// `core.askPass`, and for a token run `credential.useHttpPath`) are the only thing that differs between runs, and they travel in the environment as
 // git's numbered config (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<i>, GIT_CONFIG_VALUE_<i>), which git reads
 // with the same weight as `-c`. Keeping them off the command line keeps every login word off it too.
 //
@@ -71,14 +71,15 @@ export function inheritedEnv(src: NodeJS.ProcessEnv): Record<string, string> {
   return env
 }
 
-/** The login settings for one run. Only these three keys ever differ between modes. */
+/** The login settings for one run. Only these four keys ever differ between modes. A token run also keeps
+ *  the path out of git's prompt (credential.useHttpPath=false), so the askpass sees only scheme and host. */
 export function loginConfig(run: LoginRun): Array<[string, string]> {
   switch (run.mode) {
     case 'machine':
       // A background run keeps any askpass program the person configured from opening a window too.
       return run.interactive ? [['core.askPass', '']] : [['credential.interactive', 'false'], ['core.askPass', '']]
     case 'token':
-      return [['credential.helper', '']]
+      return [['credential.helper', ''], ['credential.useHttpPath', 'false']]
     default:
       return [['credential.helper', ''], ['credential.interactive', 'false'], ['core.askPass', '']]
   }

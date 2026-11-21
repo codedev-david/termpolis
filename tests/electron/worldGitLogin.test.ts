@@ -48,7 +48,7 @@ function helperDeps(result: Partial<ExecResult> | (() => Promise<ExecResult>), e
 }
 
 describe('login modes', () => {
-  it('each mode changes only the three login settings', () => {
+  it('each mode changes only the four login settings', () => {
     for (const isWindows of [true, false]) {
       const flags = safetyFlags(isWindows)
       expect(flags).toEqual([
@@ -62,10 +62,11 @@ describe('login modes', () => {
     expect(loginConfig(NONE)).toEqual([['credential.helper', ''], ['credential.interactive', 'false'], ['core.askPass', '']])
     expect(loginConfig(BACKGROUND)).toEqual([['credential.interactive', 'false'], ['core.askPass', '']])
     expect(loginConfig(INTERACTIVE)).toEqual([['core.askPass', '']])
-    expect(loginConfig(TOKEN)).toEqual([['credential.helper', '']])
-    // Every mode's settings are drawn from the same three, so nothing else can differ by mode.
-    const three = new Set(['credential.helper', 'credential.interactive', 'core.askPass'])
-    for (const run of [NONE, BACKGROUND, INTERACTIVE, TOKEN]) expect(loginConfig(run).every(([k]) => three.has(k))).toBe(true)
+    // A token run also keeps the path out of git's prompt, so the askpass only ever sees scheme and host.
+    expect(loginConfig(TOKEN)).toEqual([['credential.helper', ''], ['credential.useHttpPath', 'false']])
+    // Every mode's settings are drawn from the same four, so nothing else can differ by mode.
+    const four = new Set(['credential.helper', 'credential.interactive', 'core.askPass', 'credential.useHttpPath'])
+    for (const run of [NONE, BACKGROUND, INTERACTIVE, TOKEN]) expect(loginConfig(run).every(([k]) => four.has(k))).toBe(true)
   })
 
   it('gitSource still hands out the same safety flags and dropped variables', () => {
@@ -278,13 +279,28 @@ describe('the shipped askpass script', () => {
     expect(text).toBe(
       [
         '#!/bin/sh',
-        '# Answers git for one run, and only for prompts that name the forge host Termpolis set.',
+        '# Answers git for one run, and only when the prompt is for https://<the forge host Termpolis set>.',
         'host=$TERMPOLIS_GIT_ASKPASS_HOST',
         '[ -n "$host" ] || exit 1',
+        '# git quotes the URL it asks about: the first quote must open https:// and another must close it.',
         'case "$1" in',
-        `  *//"$host'"*|*//"$host/"*|*@"$host'"*|*@"$host/"*) ;;`,
+        `  *"'"*) ;;`,
         '  *) exit 1 ;;',
         'esac',
+        `rest=\${1#*"'"}`,
+        'case "$rest" in',
+        `  https://*"'"*) ;;`,
+        '  *) exit 1 ;;',
+        'esac',
+        'rest=${rest#https://}',
+        `addr=\${rest%%"'"*}`,
+        '# A user goes before the host, never after a slash.',
+        'case "$addr" in',
+        '  */*@*) exit 1 ;;',
+        'esac',
+        'addr=${addr##*@}',
+        'addr=${addr%%/*}',
+        '[ "$addr" = "$host" ] || exit 1',
         'case "$1" in',
         `  Username*) printf '%s\\n' "$TERMPOLIS_GIT_ASKPASS_USER" ;;`,
         `  *) printf '%s\\n' "$TERMPOLIS_GIT_ASKPASS_REPLY" ;;`,
@@ -299,25 +315,42 @@ describe('the shipped askpass script', () => {
   it('answers the forge host: the user prompt with the user, the other prompt with the value', () => {
     expect(ask("Username for 'https://example.test': ")).toEqual(answered('x-access-token\n'))
     expect(ask("Enter value for 'https://example.test': ")).toEqual(answered(`${VALUE}\n`))
-    // The same host with the user git already knows, or with the path git adds when told to.
-    expect(ask("Enter value for 'https://someone@example.test': ")).toEqual(answered(`${VALUE}\n`))
+    // The same host with the user git already knows, or with a path, should git ever add one.
+    expect(ask("Enter value for 'https://me@example.test': ")).toEqual(answered(`${VALUE}\n`))
     expect(ask("Enter value for 'https://example.test/o/r.git': ")).toEqual(answered(`${VALUE}\n`))
-    expect(ask("Enter value for 'https://someone@example.test/o/r.git': ")).toEqual(answered(`${VALUE}\n`))
+    expect(ask("Enter value for 'https://me@example.test/o/r.git': ")).toEqual(answered(`${VALUE}\n`))
     // A forge on its own port is named with it.
-    expect(ask("Enter value for 'https://git.example.test:8443': ", 'git.example.test:8443')).toEqual(answered(`${VALUE}\n`))
+    expect(ask("Enter value for 'https://example.test:8443': ", 'example.test:8443')).toEqual(answered(`${VALUE}\n`))
+    expect(ask("Username for 'https://example.test:8443': ", 'example.test:8443')).toEqual(answered('x-access-token\n'))
   })
 
   it('a prompt for any other host, a proxy among them, gets nothing and a failure', () => {
     expect(ask("Enter value for 'http://proxy.example:3128': ")).toEqual(refused)
     expect(ask("Enter value for 'http://someone@proxy.example:3128': ")).toEqual(refused)
     expect(ask("Username for 'http://proxy.example:3128': ")).toEqual(refused)
-    // A host that only looks like the forge's is another host.
+    // A host that only looks like the forge's is another host; so is the forge on another port.
     expect(ask("Enter value for 'https://example.test.evil': ")).toEqual(refused)
     expect(ask("Enter value for 'https://notexample.test': ")).toEqual(refused)
     expect(ask("Enter value for 'https://example.test@evil.example': ")).toEqual(refused)
     expect(ask("Enter value for 'https://example.test:8443': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://example.test': ", 'example.test:8443')).toEqual(refused)
+  })
+
+  it('the host counts only as the host of the quoted https URL, never anywhere else in the prompt', () => {
+    // The forge's name in a path, after a slash-and-at, or in another scheme.
+    expect(ask("Enter value for 'https://example.test/@evil.example': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://evil.example/x@example.test': ")).toEqual(refused)
+    expect(ask("Enter value for 'cert:////example.test/k.p12': ")).toEqual(refused)
+    expect(ask("Username for 'cert:////example.test/k.p12': ")).toEqual(refused)
+    expect(ask("Enter value for 'http://example.test': ")).toEqual(refused)
+    // The first quoted text decides: an https URL later on, or one with no quotes, does not count.
+    expect(ask("Enter value for 'x' 'https://example.test': ")).toEqual(refused)
+    expect(ask("Enter value for '/k/'https://example.test'': ")).toEqual(refused)
+    expect(ask('Enter value for https://example.test: ')).toEqual(refused)
+    expect(ask("Enter value for 'https://example.test: ")).toEqual(refused)
     // A prompt that names no host at all, as a local file's passphrase prompt does.
     expect(ask("Enter value for 'cert.pem': ")).toEqual(refused)
+    expect(ask("Enter value for 'https://': ")).toEqual(refused)
     expect(ask('')).toEqual(refused)
   })
 
