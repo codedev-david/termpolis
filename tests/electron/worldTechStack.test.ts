@@ -97,16 +97,36 @@ describe('techStack', () => {
   })
 
   it('reads a huge file of type aliases, open braces and braced imports in linear time (round 2 N3)', () => {
-    const lines = (line: string): string => Array.from({ length: 20_000 }, () => line).join('\n')
-    // The quadratic version took seconds; the best of three runs keeps a busy machine's one-off stall out of the bound.
-    for (const text of [lines('export type A = number'), lines('export type {'), lines('import {'), lines('import type A')]) {
-      let best = Infinity
-      for (let run = 0; run < 3; run++) {
-        const start = performance.now()
-        expect(packageImports('src/gen.ts', text + "\nimport 'zod'")).toEqual(['zod'])
-        best = Math.min(best, performance.now() - start)
+    const lines = (line: string, n: number): string => Array.from({ length: n }, () => line).join('\n') + "\nimport 'zod'"
+    const plain = (length: number): string => lines('const value = 12345678', Math.ceil(length / 23))
+    // No wall-clock bound: a busy CI runner stalls for hundreds of ms. Two ratios measured in the same run instead,
+    // which load moves on both sides alike. 4N lines against N: a linear read takes about 4 times as long, a
+    // quadratic scan about 16. 4N lines against plain code of the same length (about 1): a scan that runs on past
+    // its line to its 20,000-character cap is linear but hundreds of times slower. Each side is the best of
+    // interleaved samples of enough calls to last milliseconds, so one stall moves neither.
+    const sample = (text: string, calls: number): number => {
+      const start = performance.now()
+      for (let i = 0; i < calls; i++) packageImports('src/gen.ts', text)
+      return performance.now() - start
+    }
+    for (const line of ['export type A = number', 'export type {', 'import {', 'import type A']) {
+      const small = lines(line, 2_000)
+      const big = lines(line, 8_000)
+      const same = plain(big.length)
+      expect(packageImports('src/gen.ts', small)).toEqual(['zod'])
+      expect(packageImports('src/gen.ts', big)).toEqual(['zod'])
+      let calls = 1
+      while (sample(small, calls) < 10 && calls < 1 << 12) calls *= 2
+      let bestSmall = Infinity
+      let bestBig = Infinity
+      let bestPlain = Infinity
+      for (let run = 0; run < 7; run++) {
+        bestSmall = Math.min(bestSmall, sample(small, calls))
+        bestBig = Math.min(bestBig, sample(big, calls))
+        bestPlain = Math.min(bestPlain, sample(same, calls))
       }
-      expect(best).toBeLessThan(200)
+      expect(bestBig / bestSmall, `${line}: 4N lines against N`).toBeLessThan(8)
+      expect(bestBig / bestPlain, `${line}: against plain code as long`).toBeLessThan(4)
     }
   })
 
