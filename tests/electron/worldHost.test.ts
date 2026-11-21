@@ -1251,7 +1251,8 @@ describe('createWorldHost cloneSource / cancelClone', () => {
   })
 
   it('cloneDeps override the real deps', async () => {
-    const execFile = vi.fn(async () => ({ code: 0, stderr: '' }))
+    // a git new enough to read the login settings from the environment
+    const execFile = vi.fn(async (_c: string, args: string[]) => ({ code: 0, stderr: '', stdout: args.includes('--version') ? 'git version 2.47.1' : '' }))
     const h = harness({ cloneDeps: {
         execFile,
         dirSize: async () => 1,
@@ -1556,7 +1557,7 @@ describe('fileSnapshot', () => {
     const git = async (): Promise<string | null> => '/usr/bin/git'
     expect(await gitListFiles('/r', exec, false, git)).toEqual(['src/a.ts', 'src/b c.ts'])
     expect(calls.map((c) => c.cmd)).toEqual(['/usr/bin/git'])
-    expect(calls[0].args).toEqual([...safetyFlags(false), '-c', 'core.fsmonitor=false', '-C', '/r', 'ls-files', '-z'])
+    expect(calls[0].args).toEqual([...safetyFlags(false), '-C', '/r', 'ls-files', '-z'])
     expect(calls[0].opts).toEqual({ timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
     expect(await gitListFiles('/r', async () => ({ code: 128, stdout: 'x', missing: false }), true, git)).toEqual([])
     expect(await gitListFiles('/r', async () => ({ code: 1, stdout: '', missing: true }), true, git)).toEqual([])
@@ -1572,14 +1573,16 @@ describe('fileSnapshot', () => {
     expect(calls.every((c) => c.cmd !== 'git' && /[\\/]git(\.exe)?$/i.test(c.cmd))).toBe(true)
   })
 
-  it('captureExec collects stdout, drops the git path variables, and fails on a timeout, too much output or a missing program', async () => {
+  it('captureExec collects stdout, drops the git path variables, runs with no login, and fails on a timeout, too much output or a missing program', async () => {
     const node = process.execPath
     const opts = { timeout: 20_000, maxBytes: 1024 }
     vi.stubEnv('GIT_DIR', '/somewhere')
+    vi.stubEnv('GIT_CONFIG_KEY_7', 'core.askPass')
     try {
-      expect(await captureExec(node, ['-e', 'process.stdout.write(String(process.env.GIT_DIR) + "," + process.env.GIT_TERMINAL_PROMPT)'], opts)).toEqual({
+      const show = ['GIT_DIR', 'GIT_TERMINAL_PROMPT', 'GCM_INTERACTIVE', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_KEY_7']
+      expect(await captureExec(node, ['-e', `process.stdout.write(${JSON.stringify(show)}.map((k) => String(process.env[k])).join(","))`], opts)).toEqual({
         code: 0,
-        stdout: 'undefined,0',
+        stdout: 'undefined,0,never,3,credential.helper,undefined',
         missing: false
       })
     } finally {

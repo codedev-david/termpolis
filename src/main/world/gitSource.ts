@@ -6,8 +6,11 @@
 // `^(https://|ssh://|git@)[^\s]+$`, the branch a conservative character set, both are placed after
 // `--` or validated not to start with `-`, and the environment forbids prompts and other protocols.
 //
-// Never interactive: git is never allowed to ask for a login. No terminal prompt, no askpass program,
-// no helper (so no OS sign-in window), and an auth failure becomes a plain in-app message.
+// Logins: each run takes a login mode (gitLogin.ts). By default (`none`) git may not ask for a login: no
+// terminal prompt, no askpass program, no helper, so no sign-in window. `machine` lets git use the
+// person's own login helper, with its window only on a run the person asked for. The login settings
+// travel in the environment, never on the command line. An https auth failure comes back as `needsLogin`,
+// so the app can offer a sign-in; an ssh one stays a plain message.
 // Never outside the clone: symlinks check out as small text files (core.symlinks=false), so indexing
 // cannot be led to a file elsewhere on the computer.
 //
@@ -18,16 +21,19 @@ import * as fsp from 'node:fs/promises'
 import { join } from 'node:path'
 import { BAD_REF_MESSAGE, stripUrlUserinfo, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
 import { binInside } from '../binPath'
+import { configEnv, gitNewEnough, hasLoginHelper, inheritedEnv, loginConfig, loginEnv, OLD_GIT_MESSAGE, parseGitVersion, safetyFlags, type LoginRun } from './gitLogin'
 
 export { BAD_URL_MESSAGE, BAD_REF_MESSAGE, validateGitUrl } from '../../shared/world/gitUrl'
+export { DROPPED_ENV, OLD_GIT_MESSAGE, safetyFlags, type LoginRun } from './gitLogin'
 export const TOO_BIG_MESSAGE = 'That repository is larger than 2 GB, so Lumopolis stopped cloning it.'
 export const CANCELLED_MESSAGE = 'Cancelled'
 export const CLEAR_MESSAGE = "Lumopolis couldn't clear an earlier partial copy of that repository. Try again in a moment."
 export const FINISH_MESSAGE = "Lumopolis couldn't save that repository. Try again in a moment."
 export const NO_GIT_MESSAGE = 'Lumopolis needs git to open a repository, and git was not found on this computer.'
 export const TIMEOUT_MESSAGE = 'That repository took longer than 5 minutes to download, so Lumopolis stopped.'
-export const AUTH_MESSAGE =
-  'That repository needs you to sign in, and Lumopolis never asks git for a login. Use an ssh URL your ssh agent can open, or clone it yourself and choose Open a folder.'
+export const AUTH_MESSAGE = 'That repository needs you to sign in. Sign in with the login this computer already uses for git, or use a token.'
+export const SSH_AUTH_MESSAGE =
+  "That repository needs you to sign in, and your ssh agent couldn't open it. Check that your ssh key is added, or clone it yourself and choose Open a folder."
 /** Written inside `.git` once a clone is complete; only a marked clone is updated in place. */
 export const CLONE_MARKER = 'lumopolis-complete'
 
@@ -48,37 +54,10 @@ export function cloneKey(url: string, ref?: string): string {
     .slice(0, 16)
 }
 
-/**
- * The flags every git command here carries: no local-file transport, no hooks, symlinks checked out as
- * plain files, and no way to ask for a login (an empty helper list resets any configured helper, and an
- * empty askPass turns off a configured askpass program).
- */
-export function safetyFlags(isWindows: boolean): string[] {
-  return [
-    '-c', 'protocol.file.allow=never',
-    '-c', `core.hooksPath=${isWindows ? 'NUL' : '/dev/null'}`,
-    '-c', 'core.symlinks=false',
-    '-c', 'credential.helper=',
-    '-c', 'credential.interactive=false',
-    '-c', 'core.askPass='
-  ]
-}
-
-/** Inherited variables that would point git at another repository, index, object store or config, or
- *  run a program to ask for a login. */
-export const DROPPED_ENV = [
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_INDEX_FILE',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CONFIG_PARAMETERS',
-  'GIT_CONFIG_COUNT',
-  'GIT_NAMESPACE',
-  'GIT_COMMON_DIR',
-  'GIT_ASKPASS',
-  'SSH_ASKPASS'
-]
+/** How long `git --version` may take. */
+export const VERSION_TIMEOUT_MS = 30_000
+/** The most a `git --version` or `git rev-parse HEAD` may print. */
+const SMALL_OUTPUT_MAX = 4096
 
 /** What git's own messages say when a host wanted a login it was not given. */
 const AUTH_RE = /terminal prompts disabled|could not read (username|password)|authentication failed|permission denied \(publickey|access denied|host key verification failed|invalid username or/i
@@ -101,6 +80,8 @@ export function cloneArgs(url: string, dir: string, ref?: string, isWindows: boo
 
 export interface ExecOpts {
   env: Record<string, string>
+  /** The folder git starts in (default: this process's). */
+  cwd?: string
   timeout: number
   signal?: AbortSignal
   /** Test hook: the wait after a kill (default KILL_GRACE_MS). */
@@ -201,7 +182,7 @@ export const nodeExecFile: ExecFn = (cmd, args, opts) =>
       stop()
     }, opts.timeout)
     try {
-      child = spawn(cmd, args, { env: opts.env, windowsHide: true, stdio: ['ignore', capture ? 'pipe' : 'ignore', 'pipe'] })
+      child = spawn(cmd, args, { env: opts.env, cwd: opts.cwd, windowsHide: true, stdio: ['ignore', capture ? 'pipe' : 'ignore', 'pipe'] })
     } catch (e) {
       return finish(1, (e as Error).message)
     }
@@ -293,11 +274,44 @@ function firstLine(stderr: string): string {
   return line.trim().replace(/\/\/[^/@\s]+@/g, '//***@') || 'no details'
 }
 
+/** What an https clone that needed a sign-in hands back: the host to sign in to, and whether git has a login helper for it. */
+export interface NeedsLogin {
+  host: string
+  helper: boolean
+}
+
+/** The host (with any port) of an https URL, lower case and without a login; null for ssh and anything else. */
+function httpsHost(url: string): string | null {
+  const m = /^https:\/\/(?:[^@/]*@)?([^/?#]+)/i.exec(url)
+  return m ? m[1].toLowerCase() : null
+}
+
+/** Each CloneDeps object asks git its version once: 'ok', 'missing' (git could not be started) or 'old'. */
+const versionChecks = new WeakMap<CloneDeps, Promise<'ok' | 'missing' | 'old'>>()
+
+function checkGitVersion(deps: CloneDeps, gitBin: string, env: Record<string, string>): Promise<'ok' | 'missing' | 'old'> {
+  let check = versionChecks.get(deps)
+  if (!check) {
+    check = deps.execFile(gitBin, ['--version'], { env, timeout: VERSION_TIMEOUT_MS, signal: deps.signal, stdoutMax: SMALL_OUTPUT_MAX }).then(
+      (r) => (r.missing ? 'missing' : gitNewEnough(parseGitVersion(r.code === 0 ? (r.stdout ?? '') : '')) ? 'ok' : 'old'),
+      () => 'old' as const
+    )
+    versionChecks.set(deps, check)
+  }
+  return check
+}
+
+/**
+ * Clones `url` (or updates the clone made earlier) under `<baseDir>/world/repos`. `run` says how git may
+ * log in (default `none`). `changed` says whether the files may differ from before: always for a new
+ * clone, and for an update only when HEAD moved (or could not be read).
+ */
 export async function cloneRepo(
   url: string,
   ref: string | undefined,
-  deps: CloneDeps
-): Promise<{ ok: true; root: string } | { ok: false; error: string }> {
+  deps: CloneDeps,
+  run: LoginRun = { mode: 'none' }
+): Promise<{ ok: true; root: string; changed: boolean } | { ok: false; error: string; needsLogin?: NeedsLogin }> {
   const checked = validateGitUrl(url)
   if (!checked.ok) return { ok: false, error: checked.reason }
   if (ref !== undefined && !validGitRef(ref)) return { ok: false, error: BAD_REF_MESSAGE }
@@ -321,6 +335,21 @@ export async function cloneRepo(
   const gitBin = await deps.gitBin()
   if (gitBin === null || (await binInside(gitBin, reposDir, deps.realpath ?? ((p) => fsp.realpath(p))))) return { ok: false, error: NO_GIT_MESSAGE }
 
+  const env = inheritedEnv(deps.env ?? process.env)
+  // Ssh must never open a window or prompt.
+  env.SSH_ASKPASS_REQUIRE = 'never'
+  env.GIT_ALLOW_PROTOCOL = 'https:ssh'
+  // git must never search upward out of the clone and act on a parent repository.
+  env.GIT_CEILING_DIRECTORIES = reposDir
+
+  // A git too old to read the login settings from the environment is refused before anything is touched.
+  const version = await checkGitVersion(deps, gitBin, env)
+  if (ext?.aborted) return { ok: false, error: CANCELLED_MESSAGE }
+  if (version === 'missing') return { ok: false, error: NO_GIT_MESSAGE }
+  if (version === 'old') return { ok: false, error: OLD_GIT_MESSAGE }
+  // The login settings for this run (and whether git may prompt) go over the inherited environment.
+  Object.assign(env, configEnv(loginConfig(run)), loginEnv(run))
+
   // Only a clone that finished (marker inside .git) is updated in place. Anything else is not trusted.
   const updating = await exists(join(root, '.git', CLONE_MARKER))
   if (!updating) {
@@ -331,19 +360,6 @@ export async function cloneRepo(
   }
   // A new clone is made beside its final place and renamed into it on success, so a partial clone never sits at root.
   const work = updating ? root : `${root}.tmp-${(deps.random ?? randomSuffix)()}`
-
-  const env: Record<string, string> = {}
-  const dropped = new Set(DROPPED_ENV)
-  for (const [k, v] of Object.entries(deps.env ?? process.env)) {
-    if (typeof v === 'string' && !dropped.has(k.toUpperCase())) env[k] = v
-  }
-  env.GIT_TERMINAL_PROMPT = '0'
-  // Git Credential Manager and ssh must never open a window or prompt either.
-  env.GCM_INTERACTIVE = 'never'
-  env.SSH_ASKPASS_REQUIRE = 'never'
-  env.GIT_ALLOW_PROTOCOL = 'https:ssh'
-  // git must never search upward out of the clone and act on a parent repository.
-  env.GIT_CEILING_DIRECTORIES = reposDir
 
   const flags = safetyFlags(deps.isWindows)
   const pin = ['--git-dir', join(root, '.git'), '--work-tree', root]
@@ -387,7 +403,19 @@ export async function cloneRepo(
   let timedOut = false
   let auth = false
   let failedStep = -1
+  /** The clone's HEAD commit, or null when it cannot be read in the time left. */
+  const readHead = async (): Promise<string | null> => {
+    const left = deadline - now()
+    if (left <= 0) return null
+    const r = await deps
+      .execFile(gitBin, [...flags, ...pin, 'rev-parse', 'HEAD'], { env, timeout: left, signal: ctl.signal, stdoutMax: SMALL_OUTPUT_MAX })
+      .catch(() => null)
+    const head = r !== null && r.code === 0 ? (r.stdout ?? '').trim() : ''
+    return head === '' ? null : head
+  }
+  let headBefore: string | null = null
   try {
+    if (updating) headBefore = await readHead()
     for (const [step, args] of commands.entries()) {
       const left = deadline - now()
       if (left <= 0) {
@@ -429,7 +457,11 @@ export async function cloneRepo(
   if (failure) {
     // A failed update leaves the earlier complete clone alone; a failed first clone leaves nothing.
     if (!updating) await rmq(work)
-    return { ok: false, error: auth ? AUTH_MESSAGE : `Couldn't reach that repository: ${failure}` }
+    if (!auth) return { ok: false, error: `Couldn't reach that repository: ${failure}` }
+    // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.
+    const host = httpsHost(url)
+    if (host === null) return { ok: false, error: SSH_AUTH_MESSAGE }
+    return { ok: false, error: AUTH_MESSAGE, needsLogin: { host, helper: await hasLoginHelper(deps, host) } }
   }
   if (!updating) {
     try {
@@ -439,6 +471,8 @@ export async function cloneRepo(
       await rmq(work)
       return { ok: false, error: FINISH_MESSAGE }
     }
+    return { ok: true, root, changed: true }
   }
-  return { ok: true, root }
+  const headAfter = await readHead()
+  return { ok: true, root, changed: headBefore === null || headAfter === null || headBefore !== headAfter }
 }

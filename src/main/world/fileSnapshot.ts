@@ -13,7 +13,8 @@ import type { GraphSnapshot } from '../codeGraph'
 import { isIndexableCodeFile } from '../codeFileFilter'
 import { extractFile, languageForFile } from '../codeGraphExtract'
 import { binInsideFolder, resolveGitBin } from '../binPath'
-import { DROPPED_ENV, nodeExecFile, safetyFlags } from './gitSource'
+import { configEnv, inheritedEnv, loginConfig, loginEnv, safetyFlags } from './gitLogin'
+import { nodeExecFile } from './gitSource'
 
 /** Files longer than this are left out, as the code graph's sweep leaves them out (512 KB of source). */
 export const MAX_SNAPSHOT_FILE_CHARS = 512 * 1024
@@ -34,12 +35,12 @@ export type CaptureFn = (cmd: string, args: string[], opts: { timeout: number; m
 /**
  * Runs a program without a shell and collects its stdout; never rejects. Output past `maxBytes`, or a run
  * past `timeout`, fails. It runs through gitSource's nodeExecFile, the world host's one process launcher,
- * with the clone's environment rule (git's path variables dropped, no terminal prompt).
+ * with the clone's environment rule (git's path variables dropped) and no login of any kind (no helper,
+ * no askpass, no prompt).
  */
 export const captureExec: CaptureFn = async (cmd, args, opts) => {
-  const dropped = new Set(DROPPED_ENV)
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !dropped.has(k.toUpperCase()))) as Record<string, string>
-  env.GIT_TERMINAL_PROMPT = '0'
+  const none = { mode: 'none' } as const
+  const env = { ...inheritedEnv(process.env), ...configEnv(loginConfig(none)), ...loginEnv(none) }
   const r = await nodeExecFile(cmd, args, { env, timeout: opts.timeout, stdoutMax: opts.maxBytes })
   return { code: r.code, stdout: r.stdout as string, missing: r.missing as boolean }
 }
@@ -47,7 +48,7 @@ export const captureExec: CaptureFn = async (cmd, args, opts) => {
 /**
  * The files git tracks under `root`, relative to it, as `git ls-files` lists them (what the code ingest
  * indexes). A folder outside git, a git failure, or no git at all lists nothing. Git runs with the same
- * safety flags as a clone (no hooks, no askpass, no login helper) and with fsmonitor off, and by its full
+ * safety flags as a clone (no hooks, no symlinks, no fsmonitor), with no login (captureExec), and by its full
  * path (binPath.ts resolveGitBin, never the bare name); a git inside the folder itself is never run.
  */
 export async function gitListFiles(
@@ -58,7 +59,7 @@ export async function gitListFiles(
 ): Promise<string[]> {
   const bin = await gitBin()
   if (bin === null || (await binInsideFolder(bin, root))) return []
-  const args = [...safetyFlags(isWindows), '-c', 'core.fsmonitor=false', '-C', root, 'ls-files', '-z']
+  const args = [...safetyFlags(isWindows), '-C', root, 'ls-files', '-z']
   const r = await exec(bin, args, { timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
   return r.code === 0 ? r.stdout.split('\0').filter((f) => f !== '') : []
 }

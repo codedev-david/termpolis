@@ -39,6 +39,15 @@ const WORK = `${ROOT}.tmp-r1`
 /** Where the tests' git was found: every clone command starts exactly this path. */
 const GIT = '/usr/bin/git'
 
+/** A git new enough to read the login settings from the environment. */
+const VERSION_OK = { code: 0, stderr: '', stdout: 'git version 2.47.1', missing: false }
+
+/**
+ * Fake clone deps. Git's `--version` check and the update's `rev-parse HEAD` reads are answered here and
+ * kept out of `calls` (and out of a test's own execFile), so each test sees only the clone, fetch and
+ * reset steps it is about. Login modes, the version gate and the HEAD reads have their own tests in
+ * worldGitSourceExec.test.ts.
+ */
 function mkDeps(over: Partial<CloneDeps> = {}) {
   const calls: { cmd: string; args: string[]; opts: Parameters<ExecFn>[2] }[] = []
   const rm = vi.fn(async (_p: string) => undefined)
@@ -62,6 +71,12 @@ function mkDeps(over: Partial<CloneDeps> = {}) {
     random: () => 'r1',
     ...over
   }
+  const steps = deps.execFile
+  deps.execFile = async (cmd, args, opts) => {
+    if (args.includes('--version')) return VERSION_OK
+    if (args.includes('rev-parse')) return { code: 0, stderr: '', stdout: '' }
+    return steps(cmd, args, opts)
+  }
   return { deps, calls, rm, mark, rename }
 }
 
@@ -69,9 +84,7 @@ const FLAGS = [
   '-c', 'protocol.file.allow=never',
   '-c', 'core.hooksPath=/dev/null',
   '-c', 'core.symlinks=false',
-  '-c', 'credential.helper=',
-  '-c', 'credential.interactive=false',
-  '-c', 'core.askPass='
+  '-c', 'core.fsmonitor=false'
 ]
 
 describe('stripUrlUserinfo', () => {
@@ -118,7 +131,7 @@ describe('cloneArgs', () => {
   it('defaults the platform from the process', () => {
     expect(cloneArgs(URL1, '/d')).toContain(`core.hooksPath=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`)
   })
-  it('never lets git ask for a login: an empty helper list, no askpass, no interactive helper, no symlinks', () => {
+  it('no hooks, no symlinks, no fsmonitor, no local-file transport, and no login word (login settings travel in the env)', () => {
     expect(safetyFlags(true)).toEqual(FLAGS.map((f) => (f === 'core.hooksPath=/dev/null' ? 'core.hooksPath=NUL' : f)))
     expect(safetyFlags(false)).toEqual(FLAGS)
   })
@@ -154,10 +167,13 @@ describe('cloneRepo', () => {
     const base = await mkdtemp(join(tmpdir(), 'world-clone-login-'))
     try {
       const isWindows = process.platform === 'win32'
+      // Real git reads only a config this test wrote: no system config, so no login helper can ever run.
+      const gitconfig = join(base, 'gitconfig')
+      await writeFile(gitconfig, '')
       const real = mkDeps({
         baseDir: base,
         isWindows,
-        env: process.env,
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: gitconfig },
         dirSize: async () => 10,
         rm: removeDir,
         listDir: listNames,
@@ -173,7 +189,7 @@ describe('cloneRepo', () => {
         }
       })
       const r = await cloneRepo(withLogin, undefined, real.deps)
-      expect(r).toEqual({ ok: true, root: join(base, 'world', 'repos', cloneKey(withLogin)) })
+      expect(r).toEqual({ ok: true, root: join(base, 'world', 'repos', cloneKey(withLogin)), changed: true })
       const config = await readFile(join((r as { root: string }).root, '.git', 'config'), 'utf8')
       expect(config).toContain(bare)
       expect(config).not.toContain(userinfo)
@@ -214,17 +230,24 @@ describe('cloneRepo', () => {
   it('clones into a temp sibling, marks it, renames it into <base>/world/repos/<hash>', async () => {
     const { deps, calls, mark, rename } = mkDeps({ env: { PATH: 'p', GONE: undefined }, now: () => 1000 })
     const r = await cloneRepo(URL1, undefined, deps)
-    expect(r).toEqual({ ok: true, root: ROOT })
+    expect(r).toEqual({ ok: true, root: ROOT, changed: true })
     expect(calls).toHaveLength(1)
     expect(calls[0].cmd).toBe(GIT)
     expect(calls[0].args).toEqual(cloneArgs(URL1, WORK, undefined, false))
     expect(calls[0].opts.env).toEqual({
       PATH: 'p',
-      GIT_TERMINAL_PROMPT: '0',
-      GCM_INTERACTIVE: 'never',
       SSH_ASKPASS_REQUIRE: 'never',
       GIT_ALLOW_PROTOCOL: 'https:ssh',
-      GIT_CEILING_DIRECTORIES: REPOS
+      GIT_CEILING_DIRECTORIES: REPOS,
+      GIT_CONFIG_COUNT: '3',
+      GIT_CONFIG_KEY_0: 'credential.helper',
+      GIT_CONFIG_VALUE_0: '',
+      GIT_CONFIG_KEY_1: 'credential.interactive',
+      GIT_CONFIG_VALUE_1: 'false',
+      GIT_CONFIG_KEY_2: 'core.askPass',
+      GIT_CONFIG_VALUE_2: '',
+      GIT_TERMINAL_PROMPT: '0',
+      GCM_INTERACTIVE: 'never'
     })
     expect(calls[0].opts.timeout).toBe(300_000)
     expect(calls[0].opts.signal).toBeInstanceOf(AbortSignal)
@@ -249,9 +272,11 @@ describe('cloneRepo', () => {
     env.Ssh_AskPass = 'x'
     const { deps, calls } = mkDeps({ env })
     await cloneRepo(URL1, undefined, deps)
-    expect(Object.keys(calls[0].opts.env).sort()).toEqual(
+    expect(Object.keys(calls[0].opts.env).filter((k) => !/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(k)).sort()).toEqual(
       ['GCM_INTERACTIVE', 'GIT_ALLOW_PROTOCOL', 'GIT_CEILING_DIRECTORIES', 'GIT_TERMINAL_PROMPT', 'PATH', 'SSH_ASKPASS_REQUIRE'].sort()
     )
+    // the numbered config git reads is this run's own, never the inherited one
+    expect(calls[0].opts.env.GIT_CONFIG_COUNT).toBe('3')
     expect(DROPPED_ENV).toEqual(expect.arrayContaining(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_CONFIG_PARAMETERS', 'GIT_ASKPASS', 'SSH_ASKPASS']))
   })
 
@@ -269,7 +294,7 @@ describe('cloneRepo', () => {
     expect(mark).not.toHaveBeenCalled()
   })
 
-  it('a repository that needs a sign-in gives the plain in-app message, never a prompt', async () => {
+  it('a repository that needs a sign-in gives the plain in-app message and the sign-in result, never a prompt', async () => {
     for (const line of [
       "fatal: could not read Username for 'https://user:pw@github.com': terminal prompts disabled",
       "remote: Invalid username or token. fatal: Authentication failed for 'https://github.com/a/b.git/'",
@@ -278,7 +303,7 @@ describe('cloneRepo', () => {
       'remote: Access denied'
     ]) {
       const { deps, rm } = mkDeps({ execFile: async () => ({ code: 128, stderr: `Cloning into 'x'...\n${line}` }) })
-      expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: AUTH_MESSAGE })
+      expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: AUTH_MESSAGE, needsLogin: { host: 'github.com', helper: false } })
       expect(rm).toHaveBeenLastCalledWith(WORK)
     }
     expect(AUTH_MESSAGE).not.toMatch(/user:pw/)
@@ -311,7 +336,7 @@ describe('cloneRepo', () => {
         return { code: 0, stderr: '' }
       }
     })
-    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root: ROOT })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root: ROOT, changed: true })
     expect(timeouts).toEqual([300_000, 100_000])
     expect(rm).not.toHaveBeenCalled()
   })
@@ -506,7 +531,7 @@ describe('cloneRepo', () => {
     })
     const r = await cloneRepo(URL1, 'dev', deps)
     const root = join(REPOS, cloneKey(URL1, 'dev'))
-    expect(r).toEqual({ ok: true, root })
+    expect(r).toEqual({ ok: true, root, changed: true })
     expect(seen).toEqual([join(root, '.git', CLONE_MARKER)])
     const pin = ['--git-dir', join(root, '.git'), '--work-tree', root]
     expect(calls.map((c) => c.args)).toEqual([
@@ -661,7 +686,7 @@ describe('rename retry', () => {
     const rename = vi.fn(async (_a: string, _b: string) => undefined)
     rename.mockRejectedValueOnce(err('EPERM')).mockRejectedValueOnce(err('EBUSY'))
     const { deps, rm } = mkDeps({ rename, sleep: async (ms) => void sleeps.push(ms) })
-    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root: ROOT })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root: ROOT, changed: true })
     expect(rename).toHaveBeenCalledTimes(3)
     expect(sleeps).toEqual([100, 200])
     expect(rm).not.toHaveBeenCalledWith(WORK)
@@ -710,9 +735,10 @@ describe('cloneRepo with the real fs defaults', () => {
     const gitCalls: string[][] = []
     const deps: CloneDeps = {
       execFile: async (_c, args) => {
+        if (args.includes('--version')) return VERSION_OK
         gitCalls.push(args)
         if (args.includes('clone')) await mkdir(join(args[args.length - 1], '.git'), { recursive: true })
-        return { code: 0, stderr: '' }
+        return { code: 0, stderr: '', stdout: args.includes('rev-parse') ? 'abc\n' : undefined }
       },
       gitBin: async () => GIT,
       baseDir: base,
@@ -725,11 +751,12 @@ describe('cloneRepo with the real fs defaults', () => {
     await mkdir(reposDir, { recursive: true })
     // a stale temp folder from a crashed clone is swept
     await mkdir(join(reposDir, `${HASH}.tmp-old`, '.git'), { recursive: true })
-    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root, changed: true })
     expect(await pathExists(join(root, '.git', CLONE_MARKER))).toBe(true)
     expect(await pathExists(join(reposDir, `${HASH}.tmp-old`))).toBe(false)
-    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root })
-    expect(gitCalls[gitCalls.length - 1]).toContain('reset')
+    // the update finds HEAD where it was
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root, changed: false })
+    expect(gitCalls[gitCalls.length - 2]).toContain('reset')
     // a folder with a .git but no marker (a killed clone) is not updated in place
     await rm(join(root, '.git', CLONE_MARKER))
     await cloneRepo(URL1, undefined, deps)
