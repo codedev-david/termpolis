@@ -74,12 +74,13 @@ jobs:
         run: bash scripts/download-embedding-model.sh
       - name: Build the world viewer and the export runtime
         run: npm run build:world-viewer
-      # --list runs the export-page config's globalSetup, which writes test-results/export-fixture/
-      # {smart,keyword,document}.html, and then only lists the specs: no browser is started. Still
-      # before Defender is on, like every other file this job gathers.
+      # The export-page config's globalSetup writes test-results/export-fixture/{smart,keyword,
+      # document}.html. A run whose --grep matches no test runs that setup and then nothing: no
+      # browser is started. (--list would not do: it loads the specs without running globalSetup.)
+      # Still before Defender is on, like every other file this job gathers.
       - name: Export a Lumopolis world and its documentation
         shell: bash
-        run: npx playwright test -c playwright.export.config.ts --list
+        run: npx playwright test -c playwright.export.config.ts --grep "^no test has this title$" --pass-with-no-tests
       # Defender is still off here, so nothing is quarantined on the way in, and each file is
       # judged by the explicit scan below.
       - name: Gather the files
