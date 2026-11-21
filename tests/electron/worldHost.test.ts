@@ -786,13 +786,18 @@ describe('createWorldHost', () => {
 
   it('a world main says was removed: its label run asks nothing more, saves nothing, and starts no new run until main takes it back (caveat 4, round 1)', async () => {
     const seen: boolean[] = []
+    // Which compiles could be stopped: only the label run's, which asks main's model. A cache-only compile of a removed
+    // world still takes its labels from the cache (round 2: the pass checks the stop before it reads any excerpt).
+    const stoppable: boolean[] = []
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      stoppable.push(typeof deps.label.stopped === 'function')
       seen.push(deps.label.stopped?.() === true)
       if (deps.label.llm) await deps.label.llm('p')
       seen.push(deps.label.stopped?.() === true)
       return doc(input.projectKey)
     })
-    const h = harness({ compile })
+    let ended = 0
+    const h = harness({ compile, onLabelRunEnd: () => void ended++ })
     await h.init()
     const asks = () => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
     await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
@@ -803,21 +808,26 @@ describe('createWorldHost', () => {
     // The world is removed (bad entries in the list are ignored), then its call comes back.
     await h.send({ kind: 'labelling-stopped', keys: ['k1', 7 as unknown as string] })
     await h.send({ kind: 'llm-result', id: asks()[0].id, text: null })
-    await vi.waitFor(() => expect(seen.slice(-1)).toEqual([true]))
-    await new Promise((r) => setTimeout(r, 30))
+    // The run ends (it would not while a marked run's ask waited for an answer).
+    await vi.waitFor(() => expect(ended).toBe(1))
+    expect(seen.slice(-1)).toEqual([true])
     // Neither the labelled world is saved nor the marked run made: one ask in all.
     expect(h.store.saves).toHaveLength(2)
     expect(asks()).toHaveLength(1)
-    // A compile of it while removed labels from the cache only and starts no run.
+    // A compile of it while removed labels from the cache only and starts no run. A run it started would have asked
+    // before the compile answers (labelLater starts it, and it asks, inside the compile's turn in the queue).
     await h.send({ kind: 'call', id: 3, fn: 'compile', args: ['k1', snap(), HEAD] })
-    await vi.waitFor(() => expect(h.store.saves).toHaveLength(3))
-    await new Promise((r) => setTimeout(r, 30))
+    expect(h.last()).toMatchObject({ id: 3, ok: true })
+    expect(h.store.saves).toHaveLength(3)
     expect(asks()).toHaveLength(1)
+    expect(ended).toBe(1)
     // Main takes it back (asked for again; a list of another shape counts as none removed): it labels again.
     await h.send({ kind: 'labelling-stopped', keys: 'k1' as unknown as string[] })
     await h.send({ kind: 'call', id: 4, fn: 'compile', args: ['k1', snap(), HEAD] })
     await vi.waitFor(() => expect(asks()).toHaveLength(2))
     expect(seen.slice(-1)).toEqual([false])
+    // compile 1 (cache only), its label run, compiles 2, 3 and 4 (cache only), compile 4's label run.
+    expect(stoppable).toEqual([false, true, false, false, false, true])
   })
 
   it('labelling off gives the compiler no model', async () => {

@@ -410,6 +410,8 @@ export interface WorldHostDeps {
   cloneRepo?: typeof cloneRepo
   /** Overrides for the real clone deps (tests). */
   cloneDeps?: Partial<CloneDeps>
+  /** Called as a project's label run ends, whatever ended it (tests: a run's end, not a wait, says nothing more comes). */
+  onLabelRunEnd?: (projectKey: string) => void
 }
 
 export interface WorldHost {
@@ -665,7 +667,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     const only = r.changed ? { changed: r.changed } : {}
     const out = await compile(
       { snap: r.from.snap, projectKey: key, head: r.from.head, previous: r.base, ...only, ...stagedArg(r.cache, []), ...planArg(r.from.plan) },
-      depsFor(st, key, r.from.snap, askMain(key))
+      depsFor(st, key, r.from.snap, askMain(key), true)
     )
     await serial(key, async () => {
       if (!st.labelling || removed.has(key)) return
@@ -717,18 +719,23 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     // Whatever happens, the project is freed, so a failed run never stops the next trigger from labelling.
     void loop()
       .catch((err: unknown) => console.error('[world host] labelling rerun failed:', err))
-      .finally(() => labelRuns.delete(key))
+      .finally(() => {
+        labelRuns.delete(key)
+        deps.onLabelRunEnd?.(key)
+      })
   }
 
-  /** `llm` is main's model, the label cache only, or none (labelling off). */
-  const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot, llm: LabelDeps['llm']): CompileDeps => {
+  /** `llm` is main's model, the label cache only, or none (labelling off). `stoppable`: the label run's pass, which a
+   *  removal stops (LabelDeps.stopped, checked before a batch reads its excerpts). A cache-only pass is never stopped,
+   *  so a world compiled while removed still takes its labels from the cache. */
+  const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot, llm: LabelDeps['llm'], stoppable = false): CompileDeps => {
     const root = String(snap.root).replace(/\/+$/, '')
     const cloned = isCloneRoot(st.userDataPath, root)
     const rf = cloned ? confinedTo(root, readFile) : readFile
     const rs = cloned ? confinedTo(root, readSource) : readSource
     const label: LabelDeps = {
       llm,
-      stopped: () => removed.has(projectKey),
+      ...(stoppable ? { stopped: () => removed.has(projectKey) } : {}),
       ...(st.labelling ? { context: askContext(projectKey) } : {}),
       cache: st.store.labelCache,
       excerpt: async (file, line) => {

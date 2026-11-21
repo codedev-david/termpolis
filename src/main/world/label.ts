@@ -677,6 +677,8 @@ const halted = (pass: Pass): boolean => pass.stopped() || noModel(pass)
  *  not sent when the same prompt was already sent this pass. */
 async function labelBatch(p: Planned, deps: LabelDeps, pass: Pass, second = false): Promise<BatchResult> {
   const out = emptyLabels()
+  // A removed world's pass saves nothing, so a batch it will not ask reads no excerpt either.
+  if (pass.stopped()) return { ...out, failed: 'later' }
   const { buildings, parts } = p
   const partOf = (id: string): BatchEnd | undefined => parts?.get(id) ?? deps.part?.(id)
   const { excerpts: all, core } = parts ? await collectLineExcerpts(p.edges, partOf, deps) : { excerpts: await collectExcerpts(buildings, deps), core: 0 }

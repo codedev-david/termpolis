@@ -1884,10 +1884,29 @@ describe('caveat 1 fix round 1', () => {
       expect(await run(true)).toBeLessThanOrEqual(LABEL_CONCURRENCY)
       expect(warn).not.toHaveBeenCalled()
       expect(info.mock.calls[0][0]).toContain('; the world was removed, the rest was not asked)')
-      // A world removed before the pass asks no model at all, and a reply that still lands is kept.
+      // A reply that still lands after the world was removed is kept, labels and cache, though nothing more is asked.
+      let gone = false
+      let k = 0
+      let landed = ''
+      const lands = vi.fn(async (p: string): Promise<string | null> => {
+        if (++k === 2) {
+          gone = true
+          landed = p
+        }
+        return describeEvery(p)
+      })
+      const kept = mkDeps({ llm: lands, stopped: () => gone })
+      const r = await labelWorld(g, kept)
+      expect(lands.mock.calls.length).toBeLessThanOrEqual(LABEL_CONCURRENCY)
+      expect(buildingsIn(landed).length).toBeGreaterThan(0)
+      for (const id of buildingsIn(landed)) expect(r.buildings[id].how.length).toBeGreaterThan(0)
+      expect(kept.store.size).toBe(lands.mock.calls.length)
+      // A world removed before the pass asks no model at all, and reads no excerpt for a batch it will not ask.
       const none = vi.fn(async (p: string) => describeEvery(p))
-      const l = await labelWorld(twoDistricts(), mkDeps({ llm: none, stopped: () => true }))
+      const excerpt = vi.fn(async (f: string) => `code of ${f}`)
+      const l = await labelWorld(twoDistricts(), mkDeps({ llm: none, excerpt, stopped: () => true }))
       expect(none).not.toHaveBeenCalled()
+      expect(excerpt).not.toHaveBeenCalled()
       expect(l.tokens).toBe(0)
     } finally {
       warn.mockRestore()
