@@ -108,6 +108,8 @@ export default defineConfig({
         // Lumopolis engine (pure modules). Listed explicitly for the same reason as src/shared:
         // without it the 100% engine threshold below matched no files and passed vacuously.
         'src/renderer/src/world/**/*.ts',
+        // The exported page's runtime (dist-world/world-export.js): plain TypeScript, no React.
+        'src/world-export/**/*.ts',
       ],
       exclude: [
         '**/*.d.ts',
@@ -176,6 +178,7 @@ export default defineConfig({
         'src/renderer/src/assets/intro/introManifest.ts': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/world/engine/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/components/World/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
+        'src/world-export/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
       },
     },
   },
