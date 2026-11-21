@@ -21,7 +21,7 @@ vi.mock('../../../src/world-export/askBox', async (importOriginal) => ({ ...(awa
 
 const META = { project: 'Termpolis', exportedOn: '2026-11-21', head7: 'abc1234', dirty: false }
 const fakeViewer = () => ({
-  load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(),
+  load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setPanels: vi.fn(), setLabelScale: vi.fn(),
   apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), resetView: vi.fn(), setPaused: vi.fn(), dispose: vi.fn(),
 })
 

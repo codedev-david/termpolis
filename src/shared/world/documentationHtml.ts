@@ -26,9 +26,11 @@ const GAP_Y = 110
  * already placed wins; failing that, the one that clips the least.
  */
 const BOWS = [0.12, 0.3, 0.5, 0.7, -0.12, -0.3, -0.5, -0.7]
-/** The map's smallest label size, and the least it may shrink to on screen: past that a narrow page scrolls the map. */
+/** The map's smallest label size, and the least it may shrink to on screen (a caption's 11px): past that a narrow page
+ *  scrolls the map in its frame. ROOT_PX is the page's 1rem at scale 1: the map's width in rem grows with the page. */
 const LABEL_PX = 12
-const LABEL_MIN_PX = 10
+const LABEL_MIN_PX = 11
+const ROOT_PX = 16
 /** Rough glyph widths, to cut a label to its box. */
 const PART_GLYPH = 6.6
 const AREA_GLYPH = 8.6
@@ -123,7 +125,7 @@ const MAP_STYLE = [
 export function docMapSvg(doc: WorldDoc, ownStyle = true): string {
   const open = (w: number, h: number, minX: number, minY: number, label: string): string =>
     `<svg class="lm-map" viewBox="${n1(minX)} ${n1(minY)} ${n1(w)} ${n1(h)}" width="${n1(w)}" height="${n1(h)}" role="img" aria-label="${esc(label)}"`
-    + ` style="min-width: ${Math.ceil((Number(n1(w)) * LABEL_MIN_PX) / LABEL_PX)}px">${ownStyle ? `<style>${MAP_STYLE}</style>` : ''}`
+    + ` style="width: ${n1(Number(n1(w)) / ROOT_PX)}rem; min-width: ${Math.ceil((Number(n1(w)) * LABEL_MIN_PX) / LABEL_PX)}px">${ownStyle ? `<style>${MAP_STYLE}</style>` : ''}`
   if (doc.districts.length === 0) {
     return `${open(320, 80, 0, 0, 'Map of the areas')}<text class="lm-empty" x="160" y="44" text-anchor="middle">No areas yet</text></svg>`
   }
@@ -226,74 +228,79 @@ const CSS = [
   `:root{color-scheme: light dark; ${LIGHT}}`,
   `@media (prefers-color-scheme: dark){:root{${DARK}}}`,
   '*{box-sizing: border-box}',
-  'html{-webkit-text-size-adjust: 100%}',
-  'body{margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; overflow-wrap: break-word}',
+  // 16px up to a 1920x1080 window, then half the window's growth past it (the smaller of across and down), at most twice:
+  // uiScale's rule, so a 4K screen reads like a laptop. Every length below is in rem and grows with it.
+  'html{-webkit-text-size-adjust: 100%; font-size: clamp(16px, calc(8px + min(.41667vw, .74074vh)), 32px)}',
+  'body{margin: 0; background: var(--bg); color: var(--text); font: 1rem/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; overflow-wrap: break-word}',
   'a{color: var(--accent)}',
-  '.page{max-width: 1200px; margin: 0 auto; padding: 48px 24px 64px; display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 48px}',
-  '.title-block{padding-bottom: 28px; border-bottom: 1px solid var(--line)}',
-  '.eyebrow{margin: 0 0 8px; font-size: .75rem; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--accent)}',
-  'h1{margin: 0 0 14px; font-size: 2.3rem; line-height: 1.15; letter-spacing: -.02em}',
+  '.page{max-width: 100rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 3rem}',
+  '.title-block{padding-bottom: 1.75rem; border-bottom: 1px solid var(--line)}',
+  '.eyebrow{margin: 0 0 .5rem; font-size: .75rem; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--accent)}',
+  'h1{margin: 0 0 .875rem; font-size: 2.3rem; line-height: 1.15; letter-spacing: -.02em}',
   '.title-block p{display: inline-block; margin: 0; color: var(--muted); font-size: .92rem}',
   '.title-block p+p::before{content: "\\00b7"; margin: 0 .6em; color: var(--strong-line)}',
-  '.toc{padding: 28px 0 8px; font-size: .9rem}',
-  '.toc-title{margin: 0 0 8px 8px; font-size: .72rem; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--muted)}',
+  '.toc{padding: 1.75rem 0 .5rem; font-size: .9rem}',
+  '.toc-title{margin: 0 0 .5rem .5rem; font-size: .75rem; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--muted)}',
   '.toc ol{list-style: none; margin: 0; padding: 0}',
-  '.toc ol ol{margin: 2px 0 6px 14px; padding-left: 8px; border-left: 1px solid var(--line)}',
-  '.toc a{display: block; padding: 3px 8px; border-radius: 6px; color: var(--text); text-decoration: none; line-height: 1.35}',
+  '.toc ol ol{margin: .125rem 0 .375rem .875rem; padding-left: .5rem; border-left: 1px solid var(--line)}',
+  '.toc a{display: block; padding: .1875rem .5rem; border-radius: .375rem; color: var(--text); text-decoration: none; line-height: 1.35}',
   '.toc ol ol a{color: var(--muted); font-size: .85rem}',
   '.toc a:hover{background: var(--accent-soft); color: var(--accent)}',
   'main{min-width: 0}',
-  '@media (min-width: 1000px){.page{grid-template-columns: 220px minmax(0, 1fr)} .title-block{grid-column: 1 / -1} .colophon{grid-column: 2}'
+  '@media (min-width: 1000px){.page{grid-template-columns: 13.75rem minmax(0, 1fr)} .title-block{grid-column: 1 / -1} .colophon{grid-column: 2}'
     + ' .toc{position: sticky; top: 0; align-self: start; max-height: 100vh; overflow-y: auto}}',
-  'h2{margin: 48px 0 16px; padding-top: 28px; border-top: 1px solid var(--line); font-size: 1.55rem; line-height: 1.25; letter-spacing: -.01em}',
-  'main > .chapter:first-child h2{margin-top: 12px; border-top: 0}',
-  'h3{margin: 32px 0 12px; font-size: 1.22rem; line-height: 1.3}',
-  '.area > h3{padding-left: 12px; border-left: 4px solid var(--accent)}',
+  'h2{margin: 3rem 0 1rem; padding-top: 1.75rem; border-top: 1px solid var(--line); font-size: 1.55rem; line-height: 1.25; letter-spacing: -.01em}',
+  'main > .chapter:first-child h2{margin-top: .75rem; border-top: 0}',
+  'h3{margin: 2rem 0 .75rem; font-size: 1.22rem; line-height: 1.3}',
+  '.area > h3{padding-left: .75rem; border-left: .25rem solid var(--accent)}',
   '.area > p{color: var(--muted)}',
-  '.part{margin: 16px 0; padding: 18px 22px 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 2px rgba(16, 24, 40, .05)}',
-  'h4{margin: 0 0 6px; font-size: 1.08rem; line-height: 1.35}',
+  '.part{margin: 1rem 0; padding: 1.125rem 1.375rem .5rem; background: var(--surface); border: 1px solid var(--line); border-radius: .75rem; box-shadow: 0 1px 2px rgba(16, 24, 40, .05)}',
+  'h4{margin: 0 0 .375rem; font-size: 1.08rem; line-height: 1.35}',
   '.part > p{margin: 0 0 2px; color: var(--muted); font-size: .9rem}',
-  '.field{margin-top: 16px}',
-  'h5{margin: 0 0 4px; font-size: .72rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--muted)}',
-  'p{margin: 0 0 12px}',
-  'ul, ol{margin: 0 0 14px; padding-left: 1.3em}',
-  'li{margin: 3px 0}',
+  '.field{margin-top: 1rem}',
+  'h5{margin: 0 0 .25rem; font-size: .75rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--muted)}',
+  'p{margin: 0 0 .75rem}',
+  'ul, ol{margin: 0 0 .875rem; padding-left: 1.3em}',
+  'li{margin: .1875rem 0}',
+  // Long reading keeps to about 75 characters a line, however wide the page; tables and the map use the whole column.
+  'p, li, figcaption{max-width: 66ch}',
   '.claims{list-style: none; padding: 0}',
-  '.claims li{margin: 6px 0}',
-  '.badge{display: inline-block; margin-right: 4px; padding: 0 8px; border-radius: 999px; font-size: .68rem; font-weight: 650; line-height: 1.7; letter-spacing: .04em; text-transform: uppercase; vertical-align: .12em}',
+  '.claims li{margin: .375rem 0}',
+  '.badge{display: inline-block; margin-right: .25rem; padding: 0 .5rem; border-radius: 999px; font-size: .75rem; font-weight: 650; line-height: 1.7; letter-spacing: .04em; text-transform: uppercase; vertical-align: .12em}',
   '.badge-inferred{color: var(--b-inferred); background: var(--b-inferred-bg)}',
   '.badge-verified{color: var(--b-verified); background: var(--b-verified-bg)}',
   '.badge-observed{color: var(--b-observed); background: var(--b-observed-bg)}',
   '.badge-proposed{color: var(--b-proposed); background: var(--b-proposed-bg)}',
-  '.refs{display: block; margin-top: 3px}',
+  '.refs{display: block; margin-top: .1875rem}',
   '.refs:empty{display: none}',
-  'code{font: .8em/1.5 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; padding: 1px 6px; border-radius: 5px; background: var(--code); color: var(--muted)}',
-  '.refs code + code{margin-left: 6px}',
+  'code{font: .8em/1.5 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; padding: .0625rem .375rem; border-radius: .3125rem; background: var(--code); color: var(--muted)}',
+  '.refs code + code{margin-left: .375rem}',
   '.steps{padding-left: 1.6em}',
-  '.steps li{padding-left: 4px}',
-  '.table-wrap{overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface)}',
+  '.steps li{padding-left: .25rem}',
+  '.table-wrap{overflow-x: auto; margin: 0 0 1rem; border: 1px solid var(--line); border-radius: .625rem; background: var(--surface)}',
   'table{width: 100%; border-collapse: collapse; font-size: .86rem; line-height: 1.45}',
-  'th, td{padding: 9px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line)}',
-  'th{font-size: .7rem; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); background: var(--head); white-space: nowrap}',
+  'th, td{padding: .5625rem .75rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line)}',
+  'th{font-size: .75rem; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); background: var(--head); white-space: nowrap}',
   'td{min-width: 7.5em}',
   'tbody tr:last-child td{border-bottom: 0}',
   '.empty{color: var(--muted); font-style: italic}',
-  'figure{margin: 0 0 20px}',
+  'figure{margin: 0 0 1.25rem}',
   // A wide map scrolls sideways, and an edge shows a shadow only while more of the map is hidden past it: two covers in
   // the surface colour scroll with the map (local) over two shadows fixed to the frame (scroll), and at an end of the
   // map its cover sits on that edge's shadow. A map that fits covers both. No script.
-  '.map{padding: 18px; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background-color: var(--surface);'
+  '.map{padding: 1.125rem; overflow-x: auto; border: 1px solid var(--line); border-radius: .75rem; background-color: var(--surface);'
     + ' background-image: linear-gradient(to right, var(--surface) 50%, transparent), linear-gradient(to left, var(--surface) 50%, transparent),'
     + ' linear-gradient(to right, var(--map-scroll-shadow), transparent), linear-gradient(to left, var(--map-scroll-shadow), transparent);'
     + ' background-position: left center, right center, left center, right center;'
     + ' background-size: 48px 100%, 48px 100%, 16px 100%, 16px 100%; background-repeat: no-repeat;'
     + ' background-attachment: local, local, scroll, scroll}',
   MAP_STYLE,
-  '.picture img{display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px}',
-  'figcaption{margin-top: 10px; color: var(--muted); font-size: .85rem; text-align: left}',
-  '.colophon{margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem}',
+  '.picture img{display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: .75rem}',
+  'figcaption{margin-top: .625rem; color: var(--muted); font-size: .85rem; text-align: left}',
+  '.colophon{margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem}',
   '@page{margin: 16mm 14mm}',
   `@media print{:root{${LIGHT}}`
+    + ' html{font-size: 16px}'
     + ' body{background: #ffffff; font-size: 10.5pt}'
     + ' .page{display: block; max-width: none; padding: 0}'
     + ' .toc{position: static; break-after: page}'
@@ -308,6 +315,7 @@ const CSS = [
     + ' .part{box-shadow: none}'
     + ' .table-wrap, .map{overflow: visible}'
     + ' .lm-map{min-width: 0 !important}'
+    + ' p, li, figcaption{max-width: none}'
     + ' thead{display: table-header-group}'
     + ' a{color: inherit; text-decoration: none}'
     + ' *{-webkit-print-color-adjust: exact; print-color-adjust: exact}}'

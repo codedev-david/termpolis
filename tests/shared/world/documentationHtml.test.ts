@@ -287,8 +287,10 @@ describe('docMapSvg', () => {
   })
   it.each(FIXTURES)('%s: the map is never drawn so small that its 12px labels fall under 10px', (_, make) => {
     const svg = docMapSvg(make())
-    const [, w, min] = (/<svg class="lm-map" viewBox="[-0-9.]+ [-0-9.]+ ([0-9.]+) [0-9.]+" [^>]*style="min-width: ([0-9]+)px"/.exec(svg) as RegExpExecArray).map(Number)
-    expect(min).toBe(Math.ceil((Number(w) * 10) / 12))
+    const [, w, rem, min] = (/<svg class="lm-map" viewBox="[-0-9.]+ [-0-9.]+ ([0-9.]+) [0-9.]+" [^>]*style="width: ([0-9.]+)rem; min-width: ([0-9]+)px"/.exec(svg) as RegExpExecArray).map(Number)
+    // It grows with the page (its width in rem, 16px each at scale 1), and never shrinks its labels under a caption's 11px.
+    expect(rem).toBe(Math.round((w / 16) * 10) / 10)
+    expect(min).toBe(Math.ceil((Number(w) * 11) / 12))
     expect(Math.min(...Array.from(svg.matchAll(/font-size:([0-9.]+)px/g), (m) => Number(m[1])))).toBe(12)
   })
   it('an empty world says it has no areas', () => {

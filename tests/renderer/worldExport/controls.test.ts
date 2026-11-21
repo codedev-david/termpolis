@@ -6,7 +6,7 @@ import type { WorldViewer } from '../../../src/renderer/src/world/engine'
 import type { WorldDoc } from '../../../src/shared/world/types'
 import type { PageMeta } from '../../../src/shared/world/exportMeta'
 import { REMOVALS_ID } from '../../../src/shared/world/designPatch'
-import { buildPage, headerText, legendHtml, MADE_WITH_URL } from '../../../src/world-export/controls'
+import { buildPage, headerText, legendHtml, MADE_WITH_URL, PAGE_CSS } from '../../../src/world-export/controls'
 import { edge, minimal, rich } from '../world/helpers'
 
 const META: PageMeta = { project: 'Termpolis', exportedOn: '2026-11-21', head7: 'abc1234', dirty: false }
@@ -14,6 +14,7 @@ const META: PageMeta = { project: 'Termpolis', exportedOn: '2026-11-21', head7: 
 function fakeViewer() {
   return {
     load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(),
+    setLabelScale: vi.fn(), setPanels: vi.fn(),
     apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), resetView: vi.fn(), setPaused: vi.fn(), dispose: vi.fn(),
   }
 }
@@ -42,10 +43,19 @@ const change = (el: HTMLInputElement | HTMLSelectElement, value: string | boolea
 /** A click that also works on the map's SVG shapes (jsdom gives SVG elements no click()). */
 const tap = (el: Element): void => { el.dispatchEvent(new MouseEvent('click', { bubbles: true })) }
 
+/** The window's size, as a resize would leave it (jsdom starts at 1024x768). */
+const windowSize = (w: number, h: number): void => {
+  Object.defineProperty(window, 'innerWidth', { value: w, configurable: true })
+  Object.defineProperty(window, 'innerHeight', { value: h, configurable: true })
+}
+
 afterEach(() => {
   document.body.innerHTML = ''
   document.head.innerHTML = ''
+  document.documentElement.style.fontSize = ''
+  windowSize(1024, 768)
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('headerText', () => {
@@ -123,6 +133,7 @@ describe('buildPage: header and control set', () => {
   })
 
   it('sets the theme, the names and the layers', () => {
+    windowSize(1280, 800)
     const { control, q, viewer } = setup()
     change(control('theme') as HTMLSelectElement, 'glass')
     expect(viewer.setTheme).toHaveBeenCalledWith('glass')
@@ -137,14 +148,17 @@ describe('buildPage: header and control set', () => {
     expect(q('.wx-legend').textContent).toContain('What runs where')
   })
 
-  it('reserves the toolbar and, on a wide page, the Ask strip and the open card', () => {
+  it('reserves the toolbar and, on a wide page, the Ask strip and the open card, all as measured', () => {
     const { q, page, viewer } = setup()
     expect(viewer.setRightReserve).toHaveBeenLastCalledWith(0, 732)
-    expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(56)
+    expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(24)
     expect(viewer.setCardReserve).toHaveBeenLastCalledWith(0, 0)
+    Object.defineProperty(q('.wx-toolbar'), 'offsetHeight', { value: 32 })
+    Object.defineProperty(q('.wx-ask-host'), 'offsetWidth', { value: 320 })
     Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: 1200, configurable: true })
     window.dispatchEvent(new Event('resize'))
     expect(viewer.setRightReserve).toHaveBeenLastCalledWith(344, 732)
+    expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(56)
     // A page 1024 wide (a macOS runner's screen) is under three times the strip, yet the Ask box covers its right
     // all the same: the page says the strip is kept clear from 732 px, so the engine keeps it there too.
     Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: 1024, configurable: true })
@@ -159,6 +173,78 @@ describe('buildPage: header and control set', () => {
     Object.defineProperty(card, 'offsetHeight', { value: 200 })
     page.showCard('<h3>Hi</h3>')
     expect(viewer.setCardReserve).toHaveBeenLastCalledWith(364, 224)
+  })
+})
+
+describe('buildPage: every screen size', () => {
+  it('scrolls the 2D map above the toolbar strip, behind an opaque border, so no map text passes under the toolbar', () => {
+    const rule = (PAGE_CSS.match(/\.wx-map2d\{[^}]*\}/) as RegExpMatchArray)[0]
+    expect(rule).toContain('overflow:auto')
+    expect(rule).toContain('box-sizing:border-box')
+    expect(rule).toContain('border-bottom:var(--wx-low) solid #0b1220')
+  })
+
+  it('draws at laptop size up to 1080p, and bigger on a big screen: the root, the labels and the reserves', () => {
+    const { q, viewer } = setup()
+    expect(document.documentElement.style.fontSize).toBe('13px')
+    expect(viewer.setLabelScale).toHaveBeenLastCalledWith(1)
+    windowSize(3840, 2160)
+    Object.defineProperty(q('.wx-toolbar'), 'offsetHeight', { value: 48 })
+    Object.defineProperty(q('.wx-ask-host'), 'offsetWidth', { value: 480 })
+    Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: 3840 })
+    window.dispatchEvent(new Event('resize'))
+    expect(document.documentElement.style.fontSize).toBe('19.5px')
+    expect(viewer.setLabelScale).toHaveBeenLastCalledWith(1.5)
+    expect(viewer.setRightReserve).toHaveBeenLastCalledWith(516, 1098)
+    expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(84)
+  })
+
+  it('keeps the Ask strip in the framing only from the scaled wide width', () => {
+    const { q, viewer } = setup()
+    windowSize(3840, 2160)
+    Object.defineProperty(q('.wx-ask-host'), 'offsetWidth', { value: 480 })
+    Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: 1000 })
+    window.dispatchEvent(new Event('resize'))
+    expect(viewer.setRightReserve).toHaveBeenLastCalledWith(0, 1098)
+  })
+
+  it('sets the strips the legend and the panels keep clear of, from the toolbar and the Ask box', () => {
+    const { q } = setup({ viewer: false })
+    Object.defineProperty(q('.wx-toolbar'), 'offsetHeight', { value: 60 })
+    Object.defineProperty(q('.wx-ask-host'), 'offsetTop', { value: 12 })
+    Object.defineProperty(q('.wx-ask-host'), 'offsetHeight', { value: 100 })
+    window.dispatchEvent(new Event('resize'))
+    expect(q('.wx-stage').style.getPropertyValue('--wx-low')).toBe('84px')
+    expect(q('.wx-stage').style.getPropertyValue('--wx-top')).toBe('124px')
+  })
+
+  it('hands the viewer the panels its labels keep out from under', () => {
+    const { q, viewer } = setup()
+    expect(viewer.setPanels).toHaveBeenCalledWith([q('.wx-card'), q('.wx-ask-host'), q('.wx-legend'), q('.wx-toolbar')])
+  })
+
+  it('fits again when the toolbar wraps or the Ask box grows', () => {
+    const observed: Element[] = []
+    let fire = (): void => undefined
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { fire = cb }
+      observe(el: Element): void { observed.push(el) }
+      disconnect(): void { /* not used */ }
+    })
+    const { q, viewer } = setup()
+    expect(observed).toEqual([q('.wx-toolbar'), q('.wx-ask-host')])
+    Object.defineProperty(q('.wx-toolbar'), 'offsetHeight', { value: 70 })
+    fire()
+    expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(94)
+  })
+
+  it('groups the toolbar into what is drawn and what to do, so a narrow screen wraps whole groups', () => {
+    const { q } = setup()
+    const groups = Array.from(q('.wx-toolbar').children)
+    expect(groups.map((g) => g.className)).toEqual(['wx-tools', 'wx-tools wx-actions'])
+    expect(groups[0].querySelector('[data-control="theme"]')).not.toBeNull()
+    expect(groups[1].querySelector('[data-control="reset"]')).not.toBeNull()
+    expect(groups[1].querySelector('[data-control="map2d"]')).not.toBeNull()
   })
 })
 
@@ -207,7 +293,8 @@ describe('buildPage: a design world shows its plan', () => {
 })
 
 describe('buildPage: legend', () => {
-  it('opens on a wide page and toggles closed and open', () => {
+  it('opens on a screen with room for it and toggles closed and open', () => {
+    windowSize(1280, 800)
     const { q } = setup()
     const toggle = (): HTMLButtonElement => q('.wx-legend-toggle')
     expect(toggle().getAttribute('aria-expanded')).toBe('true')
@@ -217,6 +304,21 @@ describe('buildPage: legend', () => {
     expect(q('.wx-legend-body')).toBeNull()
     toggle().click()
     expect(q('.wx-legend-body')).not.toBeNull()
+  })
+
+  it('starts closed on a tablet or a small laptop, and on a short screen', () => {
+    for (const [w, h] of [[768, 1024], [1024, 768], [1600, 700]]) {
+      windowSize(w, h)
+      const { q } = setup()
+      expect(q('.wx-legend-toggle').getAttribute('aria-expanded'), `${w}x${h}`).toBe('false')
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('opens on a big screen, measured at its scale', () => {
+    windowSize(3840, 2160)
+    const { q } = setup()
+    expect(q('.wx-legend-toggle').getAttribute('aria-expanded')).toBe('true')
   })
 
   it('starts closed on a narrow page', () => {

@@ -8,6 +8,7 @@ import type { ThemeName } from '../renderer/src/world/engine'
 import type { AskKind } from '../shared/world/askIndex'
 import { REMOVALS_ID } from '../shared/world/designPatch'
 import type { PageMeta } from '../shared/world/exportMeta'
+import { uiScale } from '../shared/world/uiScale'
 import type { Tour, WorldDoc } from '../shared/world/types'
 
 export const MADE_WITH_URL = 'https://termpolis.com'
@@ -24,67 +25,85 @@ export function headerText(meta: PageMeta): string {
 /** The engine's themes, named for the picker ("neon" shows as "Neon"). The viewer starts on neon. */
 const themeOptions = (): Array<[string, string]> => Object.keys(THEMES).map((t): [string, string] => [t, t.charAt(0).toUpperCase() + t.slice(1)])
 const FIRST_THEME: ThemeName = 'neon'
+/** The page's type size at scale 1 (a 1080p laptop): 1rem. A big screen scales the root (uiScale), so all of it grows. */
+const BASE_PX = 13
+/** `px` at scale 1, in rem: every length on the page but its hairline borders grows with the root. */
+const r = (px: number): string => `${+(px / BASE_PX).toFixed(4)}rem`
 const CARD_INSET = 12
 const CARD_WIDTH = 340
 const ASK_WIDTH = 320
-/** From this width the Ask box keeps its strip on the right out of the city's framing. */
+/** From this width (CSS px at scale 1) the Ask box keeps its strip on the right out of the city's framing. */
 const WIDE_PX = 732
-const TOOLBAR_RESERVE = 56
+/** From this size (CSS px at scale 1) the legend opens with the page; on a smaller screen it starts as its chip, out of the map's way. */
+const LEGEND_OPEN_W = 1200
+const LEGEND_OPEN_H = 720
+/** Room (CSS px at scale 1) the Ask box always leaves the legend's chip between it and the toolbar. */
+const LEGEND_CHIP_ROOM = 48
 const LEGEND_MAX_CARGO = 10
 
-/** One stylesheet for the whole page (the CSP allows inline styles, never a stylesheet from elsewhere). */
+/**
+ * One stylesheet for the whole page (the CSP allows inline styles, never a stylesheet from elsewhere). Lengths are in
+ * rem, so the page scales with its root (BASE_PX times uiScale, set as the window changes size); --wx-low (the
+ * toolbar's strip) and --wx-top (where the Ask box ends) follow the panels as they change size. Nothing readable is
+ * under 12px at scale 1. The 2D map scrolls above the toolbar's strip (an opaque bottom border), so none of its text
+ * passes under the toolbar.
+ */
 export const PAGE_CSS = `
-.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:#03050a;color:#e2e8f0;font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+html{font-size:${BASE_PX}px}
+.wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:#03050a;color:#e2e8f0;font:1rem/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 .wx-page [hidden]{display:none!important}
-.wx-header{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;justify-content:space-between;padding:6px 14px;font-size:12px;color:#94a3b8;border-bottom:1px solid rgba(148,163,184,.18)}
+.wx-header{display:flex;flex-wrap:wrap;gap:${r(4)} ${r(16)};align-items:center;justify-content:space-between;padding:${r(6)} ${r(14)};font-size:${r(12)};color:#94a3b8;border-bottom:1px solid rgba(148,163,184,.18)}
 .wx-header a{color:#7dd3fc}
-.wx-stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden}
-.wx-view{position:absolute;inset:0}
-.wx-map2d{position:absolute;inset:0;overflow:auto;padding:12px 16px 72px;background:#0b1220}
+.wx-stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;--wx-low:${r(56)};--wx-top:${r(CARD_INSET + 48)}}
+.wx-view{position:absolute;inset:0;z-index:0}
+.wx-map2d{position:absolute;inset:0;box-sizing:border-box;overflow:auto;padding:${r(12)} ${r(16)};border-bottom:var(--wx-low) solid #0b1220;background:#0b1220}
 .wx-map2d [data-kind]{cursor:pointer}
-.wx-map2d ul{padding-left:18px}
-.wx-panel{background:rgba(8,12,22,.82);backdrop-filter:blur(10px);border:1px solid rgba(148,163,184,.18);border-radius:12px;color:#e2e8f0}
-.wx-card{position:absolute;top:${CARD_INSET}px;left:${CARD_INSET}px;width:${CARD_WIDTH}px;max-width:calc(100% - ${CARD_INSET * 2}px);max-height:calc(100% - 110px);display:flex;flex-direction:column;box-sizing:border-box;padding:12px 6px 12px 14px;z-index:3}
-.wx-card-close{position:absolute;top:8px;right:10px;padding:2px 7px;border:0;border-radius:6px;background:transparent;color:#94a3b8;cursor:pointer}
-.wx-card-body{overflow-y:auto;padding-right:8px;overflow-wrap:anywhere}
-.wx-card-body h3{margin:0 0 4px;padding-right:26px;font-size:16px;font-weight:600;color:#f1f5f9}
-.wx-card-body h4{margin:12px 0 4px;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:#7dd3fc}
-.wx-card-body p{margin:4px 0}
-.wx-card-body ul{margin:2px 0;padding-left:16px}
+.wx-map2d ul{padding-left:${r(18)}}
+.wx-panel{background:rgba(8,12,22,.82);backdrop-filter:blur(10px);border:1px solid rgba(148,163,184,.18);border-radius:${r(12)};color:#e2e8f0}
+.wx-card{position:absolute;top:${r(CARD_INSET)};left:${r(CARD_INSET)};width:${r(CARD_WIDTH)};max-width:calc(100% - ${r(CARD_INSET * 2)});max-height:calc(100% - var(--wx-low) - ${r(CARD_INSET)});display:flex;flex-direction:column;box-sizing:border-box;padding:${r(12)} ${r(6)} ${r(12)} ${r(14)};z-index:3}
+.wx-card-close{position:absolute;top:${r(8)};right:${r(10)};padding:${r(2)} ${r(7)};border:0;border-radius:${r(6)};background:transparent;color:#94a3b8;font:inherit;font-size:${r(16)};line-height:1.2;cursor:pointer}
+.wx-card-body{overflow-y:auto;min-height:0;padding-right:${r(8)};overflow-wrap:anywhere}
+.wx-card-body h3{margin:0 0 ${r(4)};padding-right:${r(26)};font-size:${r(16)};font-weight:600;color:#f1f5f9}
+.wx-card-body h4{margin:${r(12)} 0 ${r(4)};font-size:${r(12)};font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#7dd3fc}
+.wx-card-body p{margin:${r(4)} 0}
+.wx-card-body ul{margin:${r(2)} 0;padding-left:${r(16)}}
 .wx-card-body ul.claims{list-style:none;padding-left:0}
-.wx-card-body .muted{color:#94a3b8;font-size:12px}
-.wx-card-body .proc{font-size:12px;background:rgba(148,163,184,.1);border-radius:6px;padding:4px 8px;margin:6px 0}
-.wx-card-body .tag,.wx-card-body .claim .state{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;background:#334155;color:#cbd5e1;margin-right:4px}
+.wx-card-body .muted{color:#94a3b8;font-size:${r(12)}}
+.wx-card-body .proc{font-size:${r(12)};background:rgba(148,163,184,.1);border-radius:${r(6)};padding:${r(4)} ${r(8)};margin:${r(6)} 0}
+.wx-card-body .tag,.wx-card-body .claim .state{display:inline-block;padding:${r(1)} ${r(8)};border-radius:99px;font-size:${r(12)};background:#334155;color:#cbd5e1;margin-right:${r(4)}}
 .wx-card-body .status-verified,.wx-card-body .claim[data-state=verified] .state{background:#14532d;color:#4ade80}
 .wx-card-body .status-built,.wx-card-body .claim[data-state=observed] .state{background:#1e3a5f;color:#7dd3fc}
 .wx-card-body .status-gap,.wx-card-body .claim[data-state=inferred] .state{background:#451a03;color:#fbbf24}
 .wx-card-body .status-proposed{background:#1e293b;color:#93c5fd}
-.wx-card-body .chip{display:inline-block;margin:2px 3px 2px 0;padding:2px 8px;border-radius:99px;font-size:11.5px;background:rgba(167,139,250,.14);border:1px solid rgba(167,139,250,.45);color:#ede9fe}
+.wx-card-body .chip{display:inline-block;margin:${r(2)} ${r(3)} ${r(2)} 0;padding:${r(2)} ${r(8)};border-radius:99px;font-size:${r(12)};background:rgba(167,139,250,.14);border:1px solid rgba(167,139,250,.45);color:#ede9fe}
 .wx-card-body .chip[data-tech]{cursor:pointer}
-.wx-card-body .cargo{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}
+.wx-card-body .cargo{display:inline-block;width:${r(10)};height:${r(10)};border-radius:${r(2)};margin-right:${r(6)}}
 .wx-card-body a{color:#7dd3fc;cursor:pointer;text-decoration:underline dotted}
-.wx-card-body .ev-ref{font-family:ui-monospace,monospace;font-size:11.5px;color:#94a3b8}
-.wx-ask-host{position:absolute;top:${CARD_INSET}px;right:${CARD_INSET}px;width:${ASK_WIDTH}px;max-width:calc(100% - ${CARD_INSET * 2}px);z-index:4}
-.wx-ask{padding:10px 12px}
-.wx-ask-input{width:100%;box-sizing:border-box;padding:6px 10px;border-radius:8px;border:1px solid rgba(148,163,184,.35);background:rgba(15,23,42,.9);color:#e2e8f0;font:inherit}
-.wx-ask-status,.wx-ask-none{margin:6px 0 0;font-size:12px;color:#fbbf24}
+.wx-card-body .ev-ref{font-family:ui-monospace,monospace;font-size:${r(12)};color:#94a3b8}
+.wx-ask-host{position:absolute;top:${r(CARD_INSET)};right:${r(CARD_INSET)};width:${r(ASK_WIDTH)};max-width:calc(100% - ${r(CARD_INSET * 2)});max-height:calc(100% - var(--wx-low) - ${r(CARD_INSET + LEGEND_CHIP_ROOM)});display:flex;flex-direction:column;box-sizing:border-box;z-index:4}
+.wx-ask{display:flex;flex-direction:column;min-height:0;padding:${r(10)} ${r(12)}}
+.wx-ask-input{width:100%;box-sizing:border-box;padding:${r(6)} ${r(10)};border-radius:${r(8)};border:1px solid rgba(148,163,184,.35);background:rgba(15,23,42,.9);color:#e2e8f0;font:inherit}
+.wx-ask-status,.wx-ask-none{margin:${r(6)} 0 0;font-size:${r(12)};color:#fbbf24}
 .wx-ask-none{color:#94a3b8}
-.wx-ask-results{list-style:none;margin:6px 0 0;padding:0}
-.wx-ask-pick{display:block;width:100%;text-align:left;margin:4px 0;padding:6px 8px;border-radius:8px;border:1px solid rgba(148,163,184,.18);background:rgba(15,23,42,.6);color:inherit;font:inherit;cursor:pointer}
-.wx-ask-head{display:flex;gap:8px;align-items:baseline;justify-content:space-between}
-.wx-ask-kind{flex:none;font-size:11px;color:#7dd3fc}
-.wx-ask-first{display:block;font-size:12px;color:#94a3b8}
-.wx-ask-caption{margin:6px 0 0;font-size:11px;color:#64748b}
-.wx-toolbar{position:absolute;left:${CARD_INSET}px;right:${CARD_INSET}px;bottom:${CARD_INSET}px;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:6px 10px;z-index:2}
-.wx-toolbar label{display:inline-flex;gap:4px;align-items:center;font-size:12px}
-.wx-toolbar button,.wx-toolbar select{padding:2px 8px;border-radius:6px;border:1px solid rgba(125,211,252,.4);background:transparent;color:#7dd3fc;font:inherit;font-size:12px;cursor:pointer}
+.wx-ask-results{list-style:none;margin:${r(6)} 0 0;padding:0;min-height:0;overflow-y:auto}
+.wx-ask-pick{display:block;width:100%;text-align:left;margin:${r(4)} 0;padding:${r(6)} ${r(8)};border-radius:${r(8)};border:1px solid rgba(148,163,184,.18);background:rgba(15,23,42,.6);color:inherit;font:inherit;cursor:pointer}
+.wx-ask-head{display:flex;gap:${r(8)};align-items:baseline;justify-content:space-between}
+.wx-ask-kind{flex:none;font-size:${r(12)};color:#7dd3fc}
+.wx-ask-first{display:block;font-size:${r(12)};color:#94a3b8}
+.wx-ask-caption{margin:${r(6)} 0 0;font-size:${r(12)};color:#94a3b8}
+.wx-toolbar{position:absolute;left:${r(CARD_INSET)};right:${r(CARD_INSET)};bottom:${r(CARD_INSET)};display:flex;flex-wrap:wrap;justify-content:space-between;gap:${r(6)} ${r(18)};align-items:center;padding:${r(6)} ${r(10)};z-index:2}
+.wx-tools{display:flex;flex-wrap:wrap;gap:${r(6)} ${r(12)};align-items:center}
+.wx-toolbar label{display:inline-flex;gap:${r(4)};align-items:center;font-size:${r(12)};white-space:nowrap}
+.wx-toolbar input[type=checkbox]{width:${r(13)};height:${r(13)};margin:0}
+.wx-toolbar button,.wx-toolbar select{padding:${r(2)} ${r(8)};border-radius:${r(6)};border:1px solid rgba(125,211,252,.4);background:transparent;color:#7dd3fc;font:inherit;font-size:${r(12)};white-space:nowrap;cursor:pointer}
 .wx-toolbar select option{background:#0b1220;color:#e2e8f0}
-.wx-legend{position:absolute;right:${CARD_INSET}px;bottom:72px;width:220px;max-height:calc(100% - 150px);overflow:auto;box-sizing:border-box;padding:8px 12px;font-size:12px;z-index:2}
+.wx-legend{position:absolute;right:${r(CARD_INSET)};bottom:var(--wx-low);width:${r(220)};max-height:calc(100% - var(--wx-low) - var(--wx-top));overflow:auto;box-sizing:border-box;padding:${r(8)} ${r(12)};font-size:${r(12)};z-index:2}
 .wx-legend-toggle{display:flex;width:100%;justify-content:space-between;background:none;border:0;padding:0;color:inherit;font:inherit;font-weight:600;cursor:pointer}
-.wx-legend b{display:block;margin:8px 0 4px}
-.wx-legend .row{display:flex;gap:8px;align-items:center;margin:2px 0;font-size:11.5px;overflow-wrap:anywhere}
-.wx-legend .sw{width:20px;height:10px;border-radius:3px;flex:none;box-sizing:border-box}
-.wx-legend .muted{color:#94a3b8;margin:0 0 4px}
+.wx-legend b{display:block;margin:${r(8)} 0 ${r(4)}}
+.wx-legend .row{display:flex;gap:${r(8)};align-items:center;margin:${r(2)} 0;font-size:${r(12)};overflow-wrap:anywhere}
+.wx-legend .row svg{width:${r(16)};height:${r(16)};flex:none}
+.wx-legend .sw{width:${r(20)};height:${r(10)};border-radius:${r(3)};flex:none;box-sizing:border-box}
+.wx-legend .muted{color:#94a3b8;margin:0 0 ${r(4)}}
 `
 
 /** A colour from the world doc, used only inside a style attribute: anything but a plain hex colour becomes grey. */
@@ -230,14 +249,33 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
   let viewer: WorldViewer | null = null
   let flat = true
   let processes = DEFAULT_LAYERS.processes
-  let legendOpen = (parent.clientWidth || window.innerWidth) >= WIDE_PX
+  /** How much bigger than a laptop's the page draws, for this window (uiScale). */
+  let scale = 1
+  const sizeRoot = (): void => {
+    scale = uiScale(window.innerWidth, window.innerHeight)
+    document.documentElement.style.fontSize = `${BASE_PX * scale}px`
+  }
+  sizeRoot()
+  // Open on a screen with room for the legend beside the city; a tablet or a small laptop gets its chip.
+  let legendOpen = (parent.clientWidth || window.innerWidth) / scale >= LEGEND_OPEN_W && window.innerHeight / scale >= LEGEND_OPEN_H
 
+  /**
+   * Fits the page to the window: the root's size, the strips the panels take (--wx-low under the toolbar, --wx-top
+   * under the Ask box), and the viewer's reserves, label size and the panels its labels keep out from under. Every
+   * length is measured, so it holds whatever the scale and however the toolbar wraps.
+   */
   const layout = (): void => {
+    sizeRoot()
+    const inset = CARD_INSET * scale
+    const low = toolbar.offsetHeight + inset * 2
+    stage.style.setProperty('--wx-low', `${low}px`)
+    stage.style.setProperty('--wx-top', `${askHost.offsetTop + askHost.offsetHeight + inset}px`)
     if (!viewer) return
-    // From WIDE_PX, not from three times the strip (1032 px): between the two the Ask box still covers the right.
-    viewer.setRightReserve(stage.clientWidth >= WIDE_PX ? ASK_WIDTH + CARD_INSET * 2 : 0, WIDE_PX)
-    viewer.setBottomReserve(TOOLBAR_RESERVE)
-    viewer.setCardReserve(card.hidden ? 0 : card.offsetLeft + card.offsetWidth + CARD_INSET, card.hidden ? 0 : card.offsetTop + card.offsetHeight + CARD_INSET)
+    viewer.setLabelScale(scale)
+    // From WIDE_PX, not from three times the strip: between the two the Ask box still covers the right.
+    viewer.setRightReserve(stage.clientWidth >= WIDE_PX * scale ? askHost.offsetWidth + inset * 2 : 0, WIDE_PX * scale)
+    viewer.setBottomReserve(low)
+    viewer.setCardReserve(card.hidden ? 0 : card.offsetLeft + card.offsetWidth + inset, card.hidden ? 0 : card.offsetTop + card.offsetHeight + inset)
   }
   const showCard = (html: string | null): void => {
     card.hidden = html === null || html === ''
@@ -315,6 +353,10 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
   const attach = (v: WorldViewer | null): void => {
     viewer = v
     toolbar.textContent = ''
+    // Two groups that wrap as wholes on a narrow screen: what is drawn (left), and what to do (right).
+    const tools = make('div', 'wx-tools')
+    const actions = make('div', 'wx-tools wx-actions')
+    toolbar.append(tools, actions)
     if (v) {
       const plan = doc.layers.plan
       const has = (id: string | undefined): id is string => id !== undefined && plan.some((p) => p.id === id)
@@ -325,7 +367,7 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
       v.setLayers({ proposal })
       // The controls start where the viewer's layers start (DEFAULT_LAYERS), so each shows what is drawn.
       const planned = checkbox('Planned parts', 'planned', DEFAULT_LAYERS.planned, (on) => v.setLayers({ planned: on }))
-      toolbar.append(
+      tools.append(
         select('Theme', 'theme', themeOptions(), FIRST_THEME, (t) => v.setTheme(t as ThemeName)),
         select('Names', 'labels', [['jobs', 'What it does'], ['tech', 'Technology']], DEFAULT_LAYERS.labels, (l) => v.setLayers({ labels: l as 'jobs' | 'tech' })),
         checkbox('Processes', 'processes', DEFAULT_LAYERS.processes, (on) => { processes = on; v.setLayers({ processes: on }); drawLegend() }),
@@ -336,13 +378,13 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
       // parts again, so "Planned parts" is ticked to match.
       if (proposal !== null || (design && plan.length > 0)) {
         const options: Array<[string, string]> = [['', design ? 'No proposal' : 'Built world only'], ...plan.map((p): [string, string] => [p.id, p.title])]
-        toolbar.appendChild(select('Proposal', 'proposal', options, proposal ?? '', (id) => {
+        tools.appendChild(select('Proposal', 'proposal', options, proposal ?? '', (id) => {
           v.setLayers({ proposal: id === '' ? null : id, planned: true })
           ;(planned.firstChild as HTMLInputElement).checked = true
         }))
       }
     }
-    for (const t of doc.tours) toolbar.appendChild(button(t.title, 'tour', () => playTour(t)))
+    for (const t of doc.tours) actions.appendChild(button(t.title, 'tour', () => playTour(t)))
     if (v) {
       const toggle = button('2D map', 'map2d', () => {
         setFlat(!flat)
@@ -350,14 +392,22 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
         toggle.setAttribute('aria-pressed', String(flat))
       })
       toggle.setAttribute('aria-pressed', 'false')
-      toolbar.appendChild(toggle)
+      actions.appendChild(toggle)
     }
-    toolbar.appendChild(button('Reset view', 'reset', () => { showCard(null); viewer?.resetView() }))
+    actions.appendChild(button('Reset view', 'reset', () => { showCard(null); viewer?.resetView() }))
     setFlat(v === null)
     drawLegend()
+    // The labels keep out from under every panel over the city (the header is above it).
+    v?.setPanels([card, askHost, legend, toolbar])
     layout()
   }
   window.addEventListener('resize', layout)
+  // A wrapping toolbar or a growing Ask box moves the strips the other panels keep clear of.
+  if (typeof ResizeObserver === 'function') {
+    const watch = new ResizeObserver(() => layout())
+    watch.observe(toolbar)
+    watch.observe(askHost)
+  }
 
   const pick = (id: string, kind: AskKind): void => {
     if (kind === 'term') { openTech(id.slice('tech:'.length)); return }

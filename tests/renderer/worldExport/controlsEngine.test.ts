@@ -21,7 +21,7 @@ describe('controls follow the engine constants', () => {
     const parent = document.createElement('div')
     document.body.appendChild(parent)
     const page = buildPage(parent, rich(), { project: 'P', exportedOn: '2026-11-21', head7: 'abc1234', dirty: false })
-    const viewer = { setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setPaused: vi.fn(), resetView: vi.fn() }
+    const viewer = { setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setPaused: vi.fn(), resetView: vi.fn(), setLabelScale: vi.fn(), setPanels: vi.fn() }
     page.attach(viewer as unknown as WorldViewer)
     const theme = parent.querySelector('[data-control="theme"]') as HTMLSelectElement
     expect(Array.from(theme.options, (o) => [o.value, o.textContent])).toEqual([['neon', 'Neon'], ['blueprint', 'Blueprint'], ['glass', 'Glass'], ['midnight', 'Midnight']])
