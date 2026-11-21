@@ -111,17 +111,48 @@ export function busyness(lines: number): number {
   return Math.sqrt(BUSY_LINES / Math.max(BUSY_LINES, lines))
 }
 
-/** A label on screen: its centre and size in pixels. */
-export interface LabelBox { id: string; x: number; y: number; w: number; h: number }
+/**
+ * A label on screen: its centre and size in pixels. With `rowGap`, the extra room across it needs
+ * from a label on the same row (a district's name, so it never reads on into its neighbour's words).
+ */
+export interface LabelBox { id: string; x: number; y: number; w: number; h: number; rowGap?: number }
 
-/** The size on screen of a line label of `chars` characters (11px type, 7px padding each side, border). */
-export function edgeLabelSize(chars: number): { w: number; h: number } {
-  return { w: Math.ceil(chars * 6.2) + 16, h: 18 }
+/**
+ * The size on screen of a line label of `chars` characters (12px type, 7px padding each side,
+ * border), drawn `scale` times its base size (the labels' scale on a big screen).
+ */
+export function edgeLabelSize(chars: number, scale = 1): { w: number; h: number } {
+  return { w: Math.ceil((chars * 6.8 + 16) * scale), h: Math.ceil(19 * scale) }
 }
 
-/** Whether two labels keep `gap` pixels clear of each other, across or up and down. */
+/**
+ * Whether two labels keep `gap` pixels clear of each other, across or up and down. Across, a label
+ * with a `rowGap` needs that much more: two labels on one row read on into each other otherwise.
+ */
 function clearOf(a: LabelBox, b: LabelBox, gap: number): boolean {
-  return Math.abs(a.x - b.x) * 2 >= a.w + b.w + gap * 2 || Math.abs(a.y - b.y) * 2 >= a.h + b.h + gap * 2
+  const across = gap + Math.max(a.rowGap ?? 0, b.rowGap ?? 0)
+  return Math.abs(a.x - b.x) * 2 >= a.w + b.w + across * 2 || Math.abs(a.y - b.y) * 2 >= a.h + b.h + gap * 2
+}
+
+/** A box on screen as left, top, right, bottom, in pixels. */
+export type Rect = readonly [number, number, number, number]
+
+/**
+ * Where labels may go: inside `bounds` (the view), whole, and clear of every box in `blocked` (the
+ * panels drawn over the view, the legend, the ask bar, the card): no label is ever drawn cut off at
+ * the view's edge or under a panel.
+ */
+export interface LabelRoom { bounds?: Rect; blocked?: readonly Rect[] }
+
+/** Whether a label sits whole inside the room's bounds and off every blocked box. */
+function roomFor(room: LabelRoom, c: LabelBox): boolean {
+  const l = c.x - c.w / 2
+  const t = c.y - c.h / 2
+  const r = c.x + c.w / 2
+  const b = c.y + c.h / 2
+  const [bl, bt, br, bb] = room.bounds ?? [-Infinity, -Infinity, Infinity, Infinity]
+  if (l < bl || t < bt || r > br || b > bb) return false
+  return (room.blocked ?? []).every(([pl, pt, pr, pb]) => r <= pl || l >= pr || b <= pt || t >= pb)
 }
 
 /**
@@ -168,17 +199,19 @@ export const VERTICAL_NUDGES: ReadonlyArray<readonly [number, number]> = NUDGES.
  * name without its subtitle) is placed in that form, so every name of its tier gets its room before
  * any subtitle; then, before the next tier is placed, each grows whole, in the same order, where the
  * whole label is clear of every label kept (by the keeping gap if it showed whole last time). One
- * that cannot stays compact (its id goes in `compact.now`). Returns each shown label's nudge, in the order they were placed.
+ * that cannot stays compact (its id goes in `compact.now`). Every place, a label's own point and an
+ * `always` label's last resort included, must leave it whole in the `room` (LabelRoom). Returns each
+ * shown label's nudge, in the order they were placed.
  */
 export function placeLabels(
   cands: LabelCandidate[], shown: ReadonlyMap<string, Nudge>, caps: Readonly<Record<string, number>> = {}, gap = LABEL_GAP, keepGap = LABEL_KEEP_GAP,
-  compact: CompactForms = { was: new Set(), now: new Set() },
+  compact: CompactForms = { was: new Set(), now: new Set() }, room: LabelRoom = {},
 ): Map<string, Nudge> {
   const order = cands.map((c, i) => ({ c, i })).sort((a, b) => a.c.tier - b.c.tier || a.i - b.i)
   const kept: Array<LabelBox & { c: LabelCandidate }> = []
   const out = new Map<string, Nudge>()
   const used = new Map<string, number>()
-  const clear = (box: LabelBox, g: number): boolean => kept.every((k) => clearOf(k, box, g))
+  const clear = (box: LabelBox, g: number): boolean => roomFor(room, box) && kept.every((k) => clearOf(k, box, g))
   // Each label with a compact form placed since `grown` grows whole where it is clear of every label kept.
   let grown = 0
   const grow = (): void => {
@@ -189,7 +222,7 @@ export function placeLabels(
       const at = out.get(c.id) as Nudge
       const whole = { ...c, x: c.x + at[0], y: c.y + at[1] }
       const g = shown.has(c.id) && !compact.was.has(c.id) ? keepGap : gap
-      if (within(c, at) && kept.every((o, j) => j === i || clearOf(o, whole, g))) kept[i] = { ...whole, c }
+      if (within(c, at) && roomFor(room, whole) && kept.every((o, j) => j === i || clearOf(o, whole, g))) kept[i] = { ...whole, c }
       else compact.now.add(c.id)
     }
   }
@@ -207,7 +240,9 @@ export function placeLabels(
     for (const [ux, uy] of steps) tries.push({ d: [ux * (box.w + gap), uy * (box.h + gap)], g: gap })
     const fit = tries.find(({ d, g }) => within(box, d) && clear({ ...box, x: box.x + d[0], y: box.y + d[1] }, g))?.d
     // Every place is taken: a label that must show keeps last time's place, or else its own point.
-    const at: Nudge | undefined = fit ?? (c.always ? was ?? [0, 0] : undefined)
+    // Never under a panel or cut off at the view's edge, though.
+    const last: Nudge = was ?? [0, 0]
+    const at: Nudge | undefined = fit ?? (c.always && roomFor(room, { ...box, x: box.x + last[0], y: box.y + last[1] }) ? last : undefined)
     if (!at) continue
     kept.push({ ...box, x: box.x + at[0], y: box.y + at[1], c })
     out.set(c.id, at)

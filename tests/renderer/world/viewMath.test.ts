@@ -118,8 +118,13 @@ describe('busyness', () => {
 
 describe('edgeLabelSize', () => {
   it('grows with the text and keeps one line height', () => {
-    expect(edgeLabelSize(0)).toEqual({ w: 16, h: 18 })
+    expect(edgeLabelSize(0)).toEqual({ w: 16, h: 19 })
+    expect(edgeLabelSize(10)).toEqual({ w: 84, h: 19 })
     expect(edgeLabelSize(32).w).toBeGreaterThan(edgeLabelSize(10).w)
+  })
+  it('scales with the labels on a big screen', () => {
+    expect(edgeLabelSize(10, 1.5)).toEqual({ w: 126, h: 29 })
+    expect(edgeLabelSize(0, 2)).toEqual({ w: 32, h: 38 })
   })
 })
 
@@ -240,6 +245,61 @@ describe('placeLabels', () => {
     expect([...placeLabels([box('m', 420, 100, 4), sub], none, {}, LABEL_GAP, LABEL_KEEP_GAP, later).keys()]).toEqual(['d'])
     expect(later.now.size).toBe(0)
     expect(placeLabels([], none, {}, LABEL_GAP, LABEL_KEEP_GAP, later).size).toBe(0)
+  })
+})
+
+describe('placeLabels in its room: the view and the panels over it', () => {
+  const none = new Map<string, readonly [number, number]>()
+  const box = (id: string, x: number, y: number, extra: Partial<LabelCandidate> = {}): LabelCandidate => ({ id, x, y, w: 100, h: 18, tier: 1, ...extra })
+  const view = [0, 0, 800, 600] as const
+  const legend = [600, 300, 800, 600] as const
+
+  it('drops a label cut off at the edge of the view, and one under a panel', () => {
+    const room = { bounds: view, blocked: [legend] }
+    const shown = placeLabels([box('in', 200, 100), box('cut', 30, 100), box('low', 200, 595), box('under', 650, 400), box('beside', 540, 400)], none, {}, LABEL_GAP, LABEL_KEEP_GAP, undefined, room)
+    expect([...shown.keys()]).toEqual(['in', 'beside'])
+    // With no room given, every place is open, as before.
+    expect(placeLabels([box('cut', 30, 100), box('under', 650, 400)], none).size).toBe(2)
+    // Bounds alone, or panels alone.
+    expect([...placeLabels([box('cut', 30, 100), box('under', 650, 400)], none, {}, LABEL_GAP, LABEL_KEEP_GAP, undefined, { bounds: view }).keys()]).toEqual(['under'])
+    expect([...placeLabels([box('cut', 30, 100), box('under', 650, 400)], none, {}, LABEL_GAP, LABEL_KEEP_GAP, undefined, { blocked: [legend] }).keys()]).toEqual(['cut'])
+  })
+
+  it('moves a label that may nudge out from under a panel', () => {
+    const room = { bounds: view, blocked: [[0, 0, 800, 90] as const] }
+    expect(placeLabels([box('b', 400, 90, { nudge: true })], none, {}, LABEL_GAP, LABEL_KEEP_GAP, undefined, room).get('b')).toEqual([0, 18 + LABEL_GAP])
+  })
+
+  it("never puts a label marked always under a panel as its last resort: last time's place, its own point, or not at all", () => {
+    const pile = (n: number): LabelCandidate[] => Array.from({ length: n }, (_, i) => box('e:' + i, 200, 200, { tier: 5, nudge: true, always: true }))
+    const cands = pile(NUDGES.length + 2)
+    const open = placeLabels(cands, none, {}, LABEL_GAP, LABEL_KEEP_GAP, undefined, { bounds: view })
+    expect(open.size).toBe(NUDGES.length + 2)
+    // A panel over the point: the crowded ones are not drawn under it.
+    const over = { bounds: view, blocked: [[150, 190, 250, 210] as const] }
+    const shown = placeLabels(cands, none, {}, LABEL_GAP, LABEL_KEEP_GAP, undefined, over)
+    expect([...shown.values()].every(([dx, dy]) => dx !== 0 || dy !== 0)).toBe(true)
+    // Last time's place is kept only while it is in the room.
+    const last = new Map<string, readonly [number, number]>([['e:' + (NUDGES.length + 1), [300, 300]]])
+    expect(placeLabels(cands, last, {}, LABEL_GAP, LABEL_KEEP_GAP, undefined, { bounds: view }).get('e:' + (NUDGES.length + 1))).toEqual([300, 300])
+    expect(placeLabels(cands, last, {}, LABEL_GAP, LABEL_KEEP_GAP, undefined, { bounds: [0, 0, 400, 400] }).has('e:' + (NUDGES.length + 1))).toBe(false)
+  })
+
+  it('keeps a district name compact where its whole label would run under a panel', () => {
+    const sub: LabelCandidate = { id: 'd', x: 300, y: 100, w: 300, h: 36, tier: 3, compact: { w: 40, h: 18 } }
+    const forms = { was: new Set<string>(), now: new Set<string>() }
+    expect(placeLabels([sub], none, {}, LABEL_GAP, LABEL_KEEP_GAP, forms, { bounds: view, blocked: [[380, 0, 800, 200]] }).get('d')).toEqual([0, 0])
+    expect([...forms.now]).toEqual(['d'])
+  })
+
+  it('keeps a word of room across between labels on one row when one asks for it (rowGap)', () => {
+    // 100-pixel labels whose edges are LABEL_GAP + 10 apart: clear, until one asks for 15 more across.
+    const at = 100 + LABEL_GAP + 10
+    expect(placeLabels([box('a', 0, 0), box('b', at, 0)], none).size).toBe(2)
+    expect([...placeLabels([box('a', 0, 0, { rowGap: 15 }), box('b', at, 0)], none).keys()]).toEqual(['a'])
+    expect([...placeLabels([box('a', 0, 0), box('b', at, 0, { rowGap: 15 })], none).keys()]).toEqual(['a'])
+    // Up and down, the row gap does not count.
+    expect(placeLabels([box('a', 0, 0, { rowGap: 15 }), box('b', 0, 18 + LABEL_GAP)], none).size).toBe(2)
   })
 })
 

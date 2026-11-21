@@ -441,7 +441,7 @@ function fakeRenderer(host: HTMLElement) {
   let hit: RenderPick | null = null
   const r = {
     canvas,
-    draw: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
+    draw: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setPanels: vi.fn(), setLabelScale: vi.fn(), setFocus: vi.fn(), setSelected: vi.fn(), setExploded: vi.fn(),
     getCamera: vi.fn(() => ({ pos: [1, 2, 3] as [number, number, number], target: [4, 5, 6] as [number, number, number] })), flyTo: vi.fn(async () => undefined),
     frame: vi.fn(async () => undefined), overview: vi.fn(async () => undefined), pulse: vi.fn(async () => undefined),
     stopPulses: vi.fn(), pick: vi.fn(() => hit), setCursor: vi.fn(), setHovered: vi.fn(), visibleIds: vi.fn(() => ['b1']), isShown: vi.fn((id: string) => id !== 'b1'),
@@ -1192,6 +1192,28 @@ describe('WebGL path (stand-in renderer)', () => {
     v.setCardReserve(352, 248)
     expect(r.setCardReserve).toHaveBeenCalledTimes(2)
     expect(() => createWorldViewer(document.createElement('div')).setCardReserve(1, 1)).not.toThrow()
+  })
+
+  it('passes the panels and the label scale on to the renderer, and not after dispose', () => {
+    withWebGL()
+    let fake: ReturnType<typeof fakeRenderer> | null = null
+    createThreeRenderer.mockImplementation((h: HTMLElement) => { fake = fakeRenderer(h); return fake.r })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const v = createWorldViewer(host)
+    const r = (fake as unknown as ReturnType<typeof fakeRenderer>).r
+    const legend = document.createElement('section')
+    v.setPanels([legend])
+    expect(r.setPanels).toHaveBeenCalledWith([legend])
+    v.setLabelScale(1.5)
+    expect(r.setLabelScale).toHaveBeenCalledWith(1.5)
+    v.dispose()
+    v.setPanels([])
+    v.setLabelScale(2)
+    expect(r.setPanels).toHaveBeenCalledTimes(1)
+    expect(r.setLabelScale).toHaveBeenCalledTimes(1)
+    const flat = createWorldViewer(document.createElement('div'))
+    expect(() => { flat.setPanels([legend]); flat.setLabelScale(2) }).not.toThrow()
   })
 
   it('a redraw keeps the open building or line lit and selected, and draws nothing before a world is loaded', () => {

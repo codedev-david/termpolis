@@ -44,6 +44,14 @@ export interface WorldViewer {
    * no card): a focus, a line's close-up or a tour step is framed around it. Ignored without WebGL.
    */
   setCardReserve(w: number, h: number): void
+  /**
+   * The panels drawn over the view (legend, ask bar, card, toolbar, notices): no map label is drawn
+   * under one or cut off at the view's edge. Their boxes are measured again as they change size; call
+   * it again when the set changes. Ignored without WebGL.
+   */
+  setPanels(els: readonly HTMLElement[]): void
+  /** How many times their base size the map's labels are drawn: 1, more on a big screen (uiScale). Ignored without WebGL. */
+  setLabelScale(s: number): void
   /** Runs one action now: camera flight, highlight, flow pulse, card open, tour, proposal reveal or reset. */
   apply(a: WorldAction): Promise<void>
   play(actions: WorldAction[]): Promise<void>
@@ -732,6 +740,12 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     },
     setCardReserve(w, h) {
       if (!disposed) r3?.setCardReserve(w, h)
+    },
+    setPanels(els) {
+      if (!disposed) r3?.setPanels(els)
+    },
+    setLabelScale(s) {
+      if (!disposed) r3?.setLabelScale(s)
     },
     setTheme(t) {
       if (disposed || !THEMES[t]) return

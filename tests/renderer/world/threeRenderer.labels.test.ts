@@ -8,7 +8,7 @@ import { createThreeRenderer, type ThreeRenderer } from '../../../src/renderer/s
 import type { SceneModel, SceneText } from '../../../src/renderer/src/world/engine/sceneModel'
 import { turnGround } from '../../../src/renderer/src/world/engine/viewMath'
 import {
-  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, emptyText, labelsOf, makeHost, sceneOf, smallCity, smallText,
+  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, emptyText, labelsOf, makeHost, rendererOf, resizeHost, sceneOf, smallCity, smallText,
   withHarness, worldOf,
 } from './threeHarness'
 
@@ -98,9 +98,9 @@ describe('threeRenderer labels', () => {
   const ALL = [...LINES.map((id) => id.toUpperCase()), 'M'].sort()
 
   it('with all line labels on, every line label shows, overlapping where every place is taken, and the lit ones too', () => {
-    // labels as big as the view: past the eleven places one can step to, none is clear
-    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(780)
-    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(580)
+    // twelve labels on one point: past the eleven places one can step to, none is clear (each still whole in the view)
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(60)
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(18)
     const r = drawn(stacked(), lineText(), true)
     expect(shown('edge').sort()).toEqual(ALL)
     r.setFocus({ ids: new Set(['p']), edgeIds: new Set(LINES) }) // the twelve lit, m not
@@ -220,11 +220,11 @@ describe('threeRenderer labels', () => {
     tiny.remove()
   })
 
-  /** Sizes from the page: a district name 40 x 18, its subtitle making it `sub` x 36 while it shows; other labels 40 x 18. */
-  function sized(sub: number): void {
+  /** Sizes from the page: a district name `name` x 18, its subtitle making it `sub` x 36 while it shows; other labels 40 x 18. */
+  function sized(sub: number, name = 40): void {
     vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
       const span = this.classList.contains('lw-district') ? this.querySelector('span') : null
-      return span ? (span.style.display === 'none' ? 40 : sub) : 40
+      return span ? (span.style.display === 'none' ? name : sub) : 40
     })
     vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
       const span = this.classList.contains('lw-district') ? this.querySelector('span') : null
@@ -241,11 +241,11 @@ describe('threeRenderer labels', () => {
   const withSubtitles = emptyText({ districts: { d1: 'Electron app tests that drive the chooser', d2: 'Build, packaging and verification helpers' } })
 
   it('neighbouring district names always both show; a subtitle shows only where it overlaps no name or subtitle, the earlier first (film bug 7)', () => {
-    // Two names 40 wide, about 63 pixels apart, in a view too short for either to step a row up or
+    // Two names 20 wide, about 63 pixels apart, in a view too short for either to step a row up or
     // down. Before, the second name dropped out (or, kept, drew under the first one's subtitle).
     const short = makeHost(800, 110)
     const subtitles = (sub: number): string[] => {
-      sized(sub)
+      sized(sub, 20)
       const r = drawn(twoDistricts(), withSubtitles, false, short)
       h.frames.step()
       const names = labelsOf(world(), 'district')
@@ -256,9 +256,11 @@ describe('threeRenderer labels', () => {
       r.dispose()
       return out
     }
+    // A district's label also keeps a word's room across (1.5em of its 15px name) from one on its row.
     expect(subtitles(700)).toEqual(['none', 'none']) // either subtitle would cover the other name
-    expect(subtitles(70)).toEqual(['', 'none']) // the first fits beside the second name; then the second meets it
-    expect(subtitles(50)).toEqual(['', '']) // both fit
+    expect(subtitles(70)).toEqual(['none', 'none']) // the first would come within a word of the second name
+    expect(subtitles(40)).toEqual(['', 'none']) // the first fits beside the second name; then the second meets it
+    expect(subtitles(30)).toEqual(['', '']) // both fit, a word apart
     short.remove()
   })
 
@@ -285,6 +287,105 @@ describe('threeRenderer labels', () => {
     const x = ((at.x + 1) / 2) * 800 + (parseFloat(name.element.style.marginLeft) || 0)
     expect(name.visible).toBe(true)
     expect(x + 150).toBeLessThanOrEqual(800 - 244 - 4 + 0.5)
+    r.dispose()
+  })
+
+  /** A panel over the view: an element whose box is `box` (left, top, right, bottom) from the page's corner. */
+  const panelAt = (box: [number, number, number, number]): HTMLElement => {
+    const el = document.createElement('section')
+    el.getBoundingClientRect = () => ({ left: box[0], top: box[1], right: box[2], bottom: box[3], width: box[2] - box[0], height: box[3] - box[1], x: box[0], y: box[1], toJSON: () => ({}) }) as DOMRect
+    return el
+  }
+
+  it('no label is drawn under a panel; a hidden panel hides none, and the boxes are measured again as they change', () => {
+    sized(300)
+    const r = drawn(twoDistricts(), withSubtitles)
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, true])
+    // A panel over the whole view: no name has room.
+    const cover = panelAt([0, 0, 800, 600])
+    r.setPanels([cover])
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([false, false])
+    // Measured once, not every frame, until the view changes size.
+    cover.getBoundingClientRect = () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([false, false])
+    // Measured again (here: by handing the panels over again), it is hidden: it hides nothing.
+    r.setPanels([cover])
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, true])
+    r.setPanels([])
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, true])
+    r.dispose()
+  })
+
+  it('watches the panels for size changes beside the view, measures them again on a resize, and stops watching old ones', () => {
+    let fire: (changed?: Array<{ target: Element }>) => void = () => undefined
+    const watched = new Set<Element>()
+    let off = 0
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: (changed?: Array<{ target: Element }>) => void) { fire = cb }
+      observe(el: Element): void { watched.add(el) }
+      unobserve(el: Element): void { watched.delete(el) }
+      disconnect(): void { off++; watched.clear() }
+    })
+    sized(300)
+    const r = drawn(twoDistricts(), withSubtitles)
+    const legend = panelAt([0, 0, 0, 0])
+    r.setPanels([legend])
+    expect([...watched]).toEqual([h.host, legend])
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, true])
+    // The legend opens over the view: its box is measured again, and the view keeps its size.
+    legend.getBoundingClientRect = panelAt([0, 0, 800, 600]).getBoundingClientRect
+    resizeHost(h.host, 820, 600)
+    const sizes = rendererOf().sizes.length
+    fire([{ target: legend }])
+    expect(rendererOf().sizes).toHaveLength(sizes)
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([false, false])
+    // It closes, and the view changes size: measured again with the view.
+    legend.getBoundingClientRect = panelAt([0, 0, 0, 0]).getBoundingClientRect
+    boxCanvas(r.canvas, 820, 600)
+    fire([{ target: h.host }])
+    expect(rendererOf().sizes[rendererOf().sizes.length - 1]).toEqual([820, 600])
+    h.frames.run(3)
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, true])
+    // A new set of panels: the old ones are no longer watched, the view still is.
+    const card = panelAt([0, 0, 0, 0])
+    r.setPanels([card])
+    expect([...watched]).toEqual([h.host, card])
+    r.dispose()
+    expect(off).toBe(1)
+  })
+
+  it('draws the labels at the scale it is given, and measures them again at it', () => {
+    const r = drawn()
+    expect(layer().style.getPropertyValue('--lw-s')).toBe('')
+    r.setLabelScale(1.5)
+    expect(layer().style.getPropertyValue('--lw-s')).toBe('1.5')
+    // Unmeasured, a line label is reckoned at the scale too; a nonsense or unchanged scale is ignored.
+    r.setLabelScale(0)
+    r.setLabelScale(Number.NaN)
+    r.setLabelScale(1.5)
+    expect(layer().style.getPropertyValue('--lw-s')).toBe('1.5')
+    const width = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(40)
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(18)
+    r.setLabelScale(2)
+    h.frames.step()
+    expect(width).toHaveBeenCalled() // every label measured again
+    expect(layer().style.getPropertyValue('--lw-s')).toBe('2')
+    r.dispose()
+  })
+
+  it('the stylesheet stacks the labels under the panels and sizes their type from the scale, at least 12 px', () => {
+    const r = drawn()
+    const css = (document.getElementById('lumopolis-world-style') as HTMLStyleElement).textContent ?? ''
+    expect(css).toMatch(/\.lw-labels\{[^}]*z-index:0/)
+    for (const cls of ['lw-bldg', 'lw-floor', 'lw-edge', 'lw-proc']) expect(css.includes(`.${cls}{font:calc(12px * var(--lw-s))`), cls).toBe(true)
+    expect(css).toMatch(/\.lw-district\{font:700 calc\(15px \* var\(--lw-s\)\)/)
     r.dispose()
   })
 

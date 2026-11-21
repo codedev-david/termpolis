@@ -16,9 +16,10 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
+import { screenRect } from './screenRect'
 
 /** Label strings and presentation lookups. The viewer derives these from the doc; the renderer only prints them. */
 export interface SceneText {
@@ -80,6 +81,13 @@ export interface ThreeRenderer {
    * when no card is open): a focus, a line's close-up or a tour step fits the city around it.
    */
   setCardReserve(w: number, h: number): void
+  /**
+   * The panels drawn over the view (the legend, the ask bar, the card, the toolbar): no map label is
+   * drawn under one, nor cut off at the view's edge. Their boxes are measured again as they change.
+   */
+  setPanels(els: readonly HTMLElement[]): void
+  /** How many times their base size the map's labels are drawn (1, more on a big screen: uiScale). */
+  setLabelScale(s: number): void
   setTheme(name: ThemeName, theme: Theme): void
   setFocus(focus: RenderFocus | null): void
   /** The selected building or line (its card is open), or null. */
@@ -151,14 +159,14 @@ const EXTRAS: Record<ThemeName, Extras> = {
 
 const STYLE_ID = 'lumopolis-world-style'
 const CSS = `
-.lw-labels{position:absolute;top:0;left:0;pointer-events:none}
-.lw-district{font:700 15px system-ui,sans-serif;letter-spacing:2px;text-transform:uppercase;text-shadow:0 0 12px currentColor;white-space:nowrap;text-align:center}
-.lw-district span{display:block;font-size:11px;letter-spacing:1px;font-weight:500;opacity:.75;text-shadow:none}
-.lw-bldg{font:12px system-ui,sans-serif;color:#e2e8f0;padding:2px 8px;border-radius:6px;background:rgba(3,7,18,.65);border:1px solid rgba(148,163,184,.25);white-space:nowrap}
-.lw-floor{font:11px system-ui,sans-serif;color:#e2e8f0;padding:1px 6px;border-radius:4px;background:rgba(3,7,18,.82);border-left:2px solid #38bdf8;white-space:nowrap;opacity:0}
-.lw-edge{font:11px system-ui,sans-serif;padding:2px 7px;border-radius:99px;background:rgba(3,7,18,.85);border:1px solid;white-space:nowrap;pointer-events:auto;cursor:pointer}
+.lw-labels{position:absolute;top:0;left:0;z-index:0;pointer-events:none;--lw-s:1}
+.lw-district{font:700 calc(15px * var(--lw-s)) system-ui,sans-serif;letter-spacing:.13em;text-transform:uppercase;text-shadow:0 0 .8em currentColor;white-space:nowrap;text-align:center}
+.lw-district span{display:block;font-size:.8em;letter-spacing:.08em;font-weight:500;opacity:.8;text-shadow:none}
+.lw-bldg{font:calc(12px * var(--lw-s)) system-ui,sans-serif;color:#e2e8f0;padding:.17em .67em;border-radius:.5em;background:rgba(3,7,18,.65);border:1px solid rgba(148,163,184,.25);white-space:nowrap}
+.lw-floor{font:calc(12px * var(--lw-s)) system-ui,sans-serif;color:#e2e8f0;padding:.08em .5em;border-radius:.33em;background:rgba(3,7,18,.82);border-left:2px solid #38bdf8;white-space:nowrap;opacity:0}
+.lw-edge{font:calc(12px * var(--lw-s)) system-ui,sans-serif;padding:.17em .58em;border-radius:99px;background:rgba(3,7,18,.85);border:1px solid;white-space:nowrap;pointer-events:auto;cursor:pointer}
 .lw-edge:hover{background:rgba(30,41,59,.95)}
-.lw-proc{font:10.5px system-ui,sans-serif;padding:1px 7px;border-radius:4px;background:rgba(3,7,18,.8);border:1px dashed;white-space:nowrap}
+.lw-proc{font:calc(12px * var(--lw-s)) system-ui,sans-serif;padding:.08em .58em;border-radius:.33em;background:rgba(3,7,18,.8);border:1px dashed;white-space:nowrap}
 `
 
 const FLOOR_W = 5
@@ -222,6 +230,9 @@ const OVERVIEW_MARGIN = 1.1
 const DISTRICT_NAME_HALF_PX = 64
 /** A district's name keeps this many pixels from the edge of the view. */
 const LABEL_VIEW_INSET = 4
+/** A district name's type size at scale 1 (.lw-district), and the room across it keeps from a label on its row, in that size. */
+const DISTRICT_FONT_PX = 15
+const DISTRICT_ROW_GAP_EM = 1.5
 /** Room round a clicked building and its neighbours. */
 const CLOSE_UP_MARGIN = 1.2
 /** The closest a click flies to a building: the prototype's framing distance (28 out, half that up). */
@@ -1834,6 +1845,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     renderer.setSize(width, height)
     composer?.setSize(width, height)
     labelRenderer.setSize(width, height)
+    panelBoxes = null
     // The city is fitted again to the new shape; a camera at the overview moves to the new one, a
     // framing on screen is done again for it.
     if (!lastModel) return
@@ -1841,7 +1853,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     fogTarget = fogFor()
     rig.resized()
   }
-  const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize)
+  // One observer watches the host and the panels over it (setPanels): any change has the panels'
+  // boxes measured again; the host's own changes resize the view.
+  const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver((changed?: ResizeObserverEntry[]) => {
+    panelBoxes = null
+    if (!changed || changed.some((e) => e.target === host)) resize()
+  })
   ro?.observe(host)
   undo.push(() => { ro?.disconnect() })
 
@@ -1863,9 +1880,25 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const labelAt = new THREE.Vector3()
   let placed = new Map<string, Nudge>()
   const pinned = new Map<string, Nudge>()
-  const sizes = new WeakMap<HTMLElement, { w: number; h: number }>()
+  let sizes = new WeakMap<HTMLElement, { w: number; h: number }>()
   /** A district name's size without its subtitle: the form it takes where the whole label finds no room. */
-  const compactSizes = new WeakMap<HTMLElement, { w: number; h: number }>()
+  let compactSizes = new WeakMap<HTMLElement, { w: number; h: number }>()
+  /** How many times their base size the labels are drawn (setLabelScale). */
+  let labelScale = 1
+  /** The panels over the view (setPanels), and their boxes from the view's top left corner (null: to measure again). */
+  let panels: readonly HTMLElement[] = []
+  let panelBoxes: Rect[] | null = []
+  /** The panels' boxes, measured once after each change: a hidden panel has none. */
+  function blocked(): Rect[] {
+    if (panelBoxes) return panelBoxes
+    const at = labelRenderer.domElement.getBoundingClientRect()
+    panelBoxes = []
+    for (const el of panels) {
+      const r = screenRect(el) // a zoomed panel at its real size on every Chromium
+      if (r.width > 0 && r.height > 0) panelBoxes.push([r.left - at.left, r.top - at.top, r.right - at.left, r.bottom - at.top])
+    }
+    return panelBoxes
+  }
   /** The district names shown without their subtitle last frame (placeLabels keeps them so until there is room). */
   let compactShown = new Set<string>()
   const subtitleOf = (el: HTMLElement): HTMLElement | null => (el.classList.contains('lw-district') ? el.querySelector('span') : null)
@@ -1898,7 +1931,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     o.getWorldPosition(labelAt)
     labelAt.project(camera)
     if (labelAt.z < -1 || labelAt.z > 1) return null
-    const { w, h } = sizes.get(o.element) ?? edgeLabelSize((o.element.textContent as string).length) // an element's text is never null
+    const { w, h } = sizes.get(o.element) ?? edgeLabelSize((o.element.textContent as string).length, labelScale) // an element's text is never null
     let x = ((labelAt.x + 1) / 2) * width
     let y = ((1 - labelAt.y) / 2) * height
     let keepIn: LabelCandidate['keepIn']
@@ -1914,7 +1947,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       keepIn = [LABEL_VIEW_INSET, LABEL_VIEW_INSET, width - beside - LABEL_VIEW_INSET, height - below - LABEL_VIEW_INSET]
       compact = compactSizes.get(o.element)
     } else if (x + w / 2 < 0 || x - w / 2 > width || y + h / 2 < 0 || y - h / 2 > height) return null
-    return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}), ...(keepIn ? { keepIn } : {}), ...(compact ? { compact } : {}) }
+    // A district's name keeps a word's room across from a label on its row, or the two read as one.
+    const rowGap = pin ? DISTRICT_ROW_GAP_EM * DISTRICT_FONT_PX * labelScale : 0
+    return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}), ...(keepIn ? { keepIn } : {}), ...(compact ? { compact } : {}), ...(rowGap ? { rowGap } : {}) }
   }
   function layLabels(): Map<string, Nudge> {
     camera.updateMatrixWorld()
@@ -1955,7 +1990,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (c) cands.push(allLabels && w.id.startsWith('e:') ? { ...c, always: true } : c)
     }
     const compactNow = new Set<string>()
-    placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS }, LABEL_GAP, LABEL_KEEP_GAP, { was: compactShown, now: compactNow })
+    const room = { bounds: [0, 0, width, height] as const, blocked: blocked() }
+    placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS }, LABEL_GAP, LABEL_KEEP_GAP, { was: compactShown, now: compactNow }, room)
     compactShown = compactNow
     if (pinned.size === 0) return placed
     const out = new Map(placed)
@@ -2339,6 +2375,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       // A closed card drops the framing where it is: the camera never flies back into its close-up.
       if (closed) rig.cardClosed()
       reframe() // a focus or a close-up is fitted again around the card
+    },
+    setPanels(els) {
+      for (const el of panels) ro?.unobserve(el)
+      panels = [...els]
+      for (const el of panels) ro?.observe(el)
+      panelBoxes = null
+    },
+    setLabelScale(v) {
+      if (!(v > 0) || v === labelScale) return
+      labelScale = v
+      labelRenderer.domElement.style.setProperty('--lw-s', String(v))
+      // Every label is measured again at its new size.
+      sizes = new WeakMap()
+      compactSizes = new WeakMap()
     },
     setTheme(name, th) {
       themeName = name
