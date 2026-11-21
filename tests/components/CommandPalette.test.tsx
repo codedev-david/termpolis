@@ -115,7 +115,7 @@ describe('CommandPalette', () => {
     expect(onAction).toHaveBeenCalledWith('world_document', undefined)
   })
 
-  it.each(['lumopolis documentation', 'world documentation', 'Lumopolis Documentation', 'generate world documentation'])('"%s" reaches the documentation on Enter, not Open Lumopolis', (q) => {
+  it.each(['lumopolis documentation', 'world documentation', 'Lumopolis Documentation', 'generate world documentation', 'open lumopolis documentation', 'show world documentation'])('"%s" reaches the documentation on Enter, not Open Lumopolis', (q) => {
     const onAction = vi.fn()
     render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
     const box = screen.getByPlaceholderText('Type a command...')

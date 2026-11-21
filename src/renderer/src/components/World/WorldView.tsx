@@ -695,13 +695,14 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
    */
   /** Export or Build it is open: the toolbar's buttons for both are off, so a running export is never cut short. */
   const dialogOpen = building || exporting !== null
-  const openExport = (kind: ExportKind): void => {
-    // The palette can still ask: it waits its turn behind the dialog the person has open.
-    if (dialogOpen) return
+  /** Returns false when a dialog is already open: a palette ask then is dropped, not queued. */
+  const openExport = (kind: ExportKind): boolean => {
+    // The palette can still ask while a dialog is open: that ask is dropped, and the open dialog keeps going.
+    if (dialogOpen) return false
     cancelAnimationFrame(pictureFrame.current)
     pictureRef.current = null
     const canvas = flat ? null : hostRef.current?.querySelector('canvas') ?? null
-    if (kind === 'world' || canvas === null) { setExporting(kind); return }
+    if (kind === 'world' || canvas === null) { setExporting(kind); return true }
     pictureFrame.current = requestAnimationFrame(() => {
       try {
         pictureRef.current = canvas.toDataURL('image/png')
@@ -710,6 +711,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       }
       setExporting('document')
     })
+    return true
   }
   // The palette's ask below runs it from an effect: through a ref, so the effect runs on the world's state only.
   const openExportRef = useRef(openExport)
@@ -721,9 +723,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     if (error !== null) { setPendingExport(null); return }
     if (!doc || worldKey === null) return
     setPendingExport(null)
-    openExportRef.current(pendingExport)
-    // The palette has closed: take the focus, so Esc reaches the dialog.
-    ;(dialogRef.current as HTMLDivElement).focus()
+    // The palette has closed: take the focus, so Esc reaches the dialog. A dropped ask leaves the focus alone.
+    if (openExportRef.current(pendingExport)) (dialogRef.current as HTMLDivElement).focus()
   }, [pendingExport, home, doc, worldKey, error])
   // Build it takes over from a documentation dialog still waiting for its picture frame.
   const openBuildIt = (): void => {

@@ -1832,8 +1832,12 @@ describe('WorldView export', () => {
     expect(screen.getByTestId('world-export')).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Export…' }))
     await settle()
+    const cancel = within(screen.getByTestId('world-export-dialog')).getByRole('button', { name: 'Cancel' })
+    cancel.focus()
     await m.again({ exportRequest: { kind: 'document', seq: 1 } })
     expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+    // The dropped ask leaves the focus where the person had it.
+    expect(document.activeElement).toBe(cancel)
     expect(screen.queryByTestId('world-document-dialog')).toBeNull()
     expect(b.api.worldExportCancel).not.toHaveBeenCalled()
     await act(async () => { run.resolve(ok({ path: 'C:/Users/me/Documents/repo.html', bytes: MB })) })
