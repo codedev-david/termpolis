@@ -10,6 +10,7 @@ import {
   cloneArgs,
   cloneKey,
   cloneRepo,
+  notFoundMessage,
   type CloneDeps,
   type ExecOpts,
   type ExecResult
@@ -242,6 +243,61 @@ describe('cloneRepo login modes', () => {
       needsLogin: { host: 'github.com', helper: true }
     })
     expect(of('clone')).toHaveLength(1)
+  })
+
+  // A helper (or token) signed in to an account without access gets GitHub's 404, never a 401.
+  const NOT_FOUND = [
+    "remote: Repository not found.\nfatal: repository 'https://github.com/o/r.git/' not found",
+    "fatal: repository 'https://github.com/o/r.git/' not found",
+    "fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 404"
+  ]
+  const SIGNED_IN: LoginRun[] = [{ mode: 'machine', interactive: true }, { mode: 'machine', interactive: false }, { mode: 'token' }]
+
+  it('a repository the signed-in account cannot see comes back as needing a sign-in, for machine and token runs', async () => {
+    for (const run of SIGNED_IN) {
+      for (const stderr of NOT_FOUND) {
+        const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
+        expect(await cloneRepo(HTTPS, undefined, deps, run)).toEqual({
+          ok: false,
+          error: notFoundMessage('github.com'),
+          needsLogin: { host: 'github.com', helper: true }
+        })
+        expect(of('clone')).toHaveLength(1)
+      }
+    }
+    // An update whose fetch is refused that way says the same.
+    const upd = fakeDeps({ step: (args) => (args.includes('fetch') ? { code: 128, stderr: NOT_FOUND[0] } : {}) }, { exists: async () => true })
+    expect(await cloneRepo(HTTPS, undefined, upd.deps, { mode: 'token' })).toEqual({
+      ok: false,
+      error: notFoundMessage('github.com'),
+      needsLogin: { host: 'github.com', helper: false }
+    })
+    expect(notFoundMessage('github.com')).toBe(
+      "The account you signed in to github.com with can't see that repository. Use a token from an account that can see it."
+    )
+  })
+
+  it('with no login a missing repository stays a plain failure: a typo never asks for a sign-in', async () => {
+    for (const stderr of NOT_FOUND) {
+      const { deps, of } = fakeDeps({ step: () => ({ code: 128, stderr }), config: { stdout: 'credential.helper\nmanager\0' } })
+      const r = await cloneRepo(HTTPS, undefined, deps, { mode: 'none' })
+      expect(r).toEqual({ ok: false, error: expect.stringMatching(/^Couldn't reach that repository: /) })
+      expect(r).not.toHaveProperty('needsLogin')
+      expect(of('--list')).toHaveLength(0)
+    }
+    // ssh is the ssh agent's business in every mode.
+    const ssh = fakeDeps({ step: () => ({ code: 128, stderr: 'ERROR: Repository not found.\nfatal: Could not read from remote repository.' }) })
+    const r = await cloneRepo('git@github.com:o/r.git', undefined, ssh.deps, { mode: 'machine', interactive: true })
+    expect(r).toEqual({ ok: false, error: expect.stringMatching(/^Couldn't reach that repository: /) })
+    expect(r).not.toHaveProperty('needsLogin')
+  })
+
+  it('the not-found answer never carries the login from the url', async () => {
+    const stderr = "remote: Repository not found.\nfatal: repository 'https://me:hunter2@GitHub.com/o/r.git/' not found"
+    const { deps } = fakeDeps({ step: () => ({ code: 128, stderr }) })
+    const r = await cloneRepo('https://me:hunter2@GitHub.com/o/r.git', undefined, deps, { mode: 'machine', interactive: false })
+    expect(r).toEqual({ ok: false, error: notFoundMessage('github.com'), needsLogin: { host: 'github.com', helper: false } })
+    expect(JSON.stringify(r)).not.toMatch(/me:|hunter2|@/)
   })
 
   it('old git is refused in plain words', async () => {

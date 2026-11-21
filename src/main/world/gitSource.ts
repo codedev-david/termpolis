@@ -32,6 +32,10 @@ export const FINISH_MESSAGE = "Lumopolis couldn't save that repository. Try agai
 export const NO_GIT_MESSAGE = 'Lumopolis needs git to open a repository, and git was not found on this computer.'
 export const TIMEOUT_MESSAGE = 'That repository took longer than 5 minutes to download, so Lumopolis stopped.'
 export const AUTH_MESSAGE = 'That repository needs you to sign in. Sign in with the login this computer already uses for git, or use a token.'
+/** A signed-in https run that the host answers with "not found": the account it used cannot see the repository. */
+export function notFoundMessage(host: string): string {
+  return `The account you signed in to ${host} with can't see that repository. Use a token from an account that can see it.`
+}
 export const SSH_AUTH_MESSAGE =
   "That repository needs you to sign in, and your ssh agent couldn't open it. Check that your ssh key is added, or clone it yourself and choose Open a folder."
 /** Written inside `.git` once a clone is complete; only a marked clone is updated in place. */
@@ -59,6 +63,9 @@ export const VERSION_TIMEOUT_MS = 30_000
 /** The most a `git --version` or `git rev-parse HEAD` may print. */
 const SMALL_OUTPUT_MAX = 4096
 
+/** What a host says when the account a run signed in with has no access: GitHub answers 404 rather than
+ *  401, so as not to reveal that a private repository exists. */
+const NOT_FOUND_RE = /repository not found|repository '[^']*' not found|returned error: 404\b/i
 /** What git's own messages say when a host wanted a login it was not given. */
 const AUTH_RE = /terminal prompts disabled|could not read (username|password)|authentication failed|permission denied \(publickey|access denied|host key verification failed|invalid username or/i
 
@@ -402,6 +409,7 @@ export async function cloneRepo(
   let failure = ''
   let timedOut = false
   let auth = false
+  let notFound = false
   let failedStep = -1
   /** The clone's HEAD commit, or null when it cannot be read in the time left. */
   const readHead = async (): Promise<string | null> => {
@@ -430,6 +438,7 @@ export async function cloneRepo(
         failedStep = step
         timedOut = now() >= deadline
         auth = AUTH_RE.test(r.stderr)
+        notFound = NOT_FOUND_RE.test(r.stderr)
         failure = firstLine(r.stderr)
         break
       }
@@ -457,11 +466,14 @@ export async function cloneRepo(
   if (failure) {
     // A failed update leaves the earlier complete clone alone; a failed first clone leaves nothing.
     if (!updating) await rmq(work)
-    if (!auth) return { ok: false, error: `Couldn't reach that repository: ${failure}` }
-    // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.
     const host = httpsHost(url)
+    // "Not found" after a sign-in means that account can't see it; with no login it is just not there (a typo
+    // must never ask for a sign-in), and over ssh it is the ssh agent's business.
+    const unseen = notFound && run.mode !== 'none' && host !== null
+    if (!auth && !unseen) return { ok: false, error: `Couldn't reach that repository: ${failure}` }
+    // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.
     if (host === null) return { ok: false, error: SSH_AUTH_MESSAGE }
-    return { ok: false, error: AUTH_MESSAGE, needsLogin: { host, helper: await hasLoginHelper(deps, host) } }
+    return { ok: false, error: auth ? AUTH_MESSAGE : notFoundMessage(host), needsLogin: { host, helper: await hasLoginHelper(deps, host) } }
   }
   if (!updating) {
     try {
