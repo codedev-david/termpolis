@@ -15,6 +15,8 @@ import { FIXTURE_DIR, FIXTURE_JSON, SMART_HTML } from './paths'
 
 // A retry must not hide a readiness time over budget (a slow first run passing on its second): no retries here.
 test.describe.configure({ retries: 0 })
+// With no retry, the config's trace on first retry never fires: keep the trace of any failed run instead.
+test.use({ trace: 'retain-on-failure' })
 
 const SMART_BROWSERS = new Set(['electron', 'msedge'])
 const READY_BUDGET_MS = 6000

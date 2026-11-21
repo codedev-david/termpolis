@@ -187,24 +187,40 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
   await askReady(o.page)
   await settle(o.page)
   const three = await in3d(o.page)
-  const ids = await ask(o.page, 'where do the terminal shells actually run')
-  // The first building among the results (fixture building ids start "b-"): a building has a label to follow.
-  expect(ids.some((id) => id.startsWith('b-')), `a building among ${JSON.stringify(ids)}`).toBe(true)
-  const first = o.page.locator('.wx-ask-results button.wx-ask-pick[data-id^="b-"]').first()
+  // Lesson distiller stands at a corner of the fixture city (-48, 0, 41), far from the middle of the opening
+  // view (about 0.56 of the half-diagonal), and the flight brings its label to about 0.09. A building near the
+  // middle (Terminal host, about 0.2 before any flight) could not show a camera that never moved, and one framed
+  // off-centre among far neighbours (Linked machines, 0.32 -> 0.35) does not come to the middle at all.
+  const ids = await ask(o.page, 'lesson distiller')
+  expect(ids, 'Lesson distiller among the results').toContain('b-distiller')
+  const first = o.page.locator('.wx-ask-results button.wx-ask-pick[data-id="b-distiller"]')
   const name = (await first.locator('.wx-ask-name').textContent()) ?? ''
-  const before = three ? await labelOffset(o.page, name) : null
   await first.click()
+  // The first reading, taken as soon as the click lands: the camera takes 1.5 s to frame a building
+  // (FRAME_FLIGHT_S), so this is where the label sits before the flight, and it is drawn because the
+  // building is now selected. Polled only until the label first shows (a frame or two), not until it moves.
+  // Every reading is kept: the first drawn one is where the flight starts, the last is where it ends.
+  const seen: (number | null)[] = []
+  const reading = async (): Promise<number | null> => {
+    const v = await labelOffset(o.page, name)
+    seen.push(v)
+    return v
+  }
+  if (three) {
+    await expect.poll(reading, { message: `the label of ${name} is drawn once it is picked`, intervals: [16], timeout: 2000 }).not.toBeNull()
+  }
   const card = o.page.locator('.wx-card')
   await expect(card).toBeVisible()
   await expect(card.locator('.wx-card-body h3').first()).toHaveText(name)
   if (three) {
-    // The camera flew to it: the picked building's label now sits in the middle of the city, nearer than before.
-    await settle(o.page)
-    const after = await labelOffset(o.page, name)
-    test.info().annotations.push({ type: 'fly', description: `${name}: label ${before === null ? 'not drawn' : before.toFixed(3)} -> ${after === null ? 'not drawn' : after.toFixed(3)} of the half-diagonal from the middle` })
-    expect(after, `the label of ${name} is drawn after the pick`).not.toBeNull()
-    expect(after as number).toBeLessThan(0.2)
-    if (before !== null) expect(after as number).toBeLessThan(before)
+    // The camera flew to it: the label ends in the middle of the city, and well nearer than it started.
+    // A camera that never moved fails both: the label stays where the first reading found it.
+    const from = seen.find((v): v is number => v !== null) as number
+    await expect.poll(reading, { message: `the label of ${name} reaches the middle of the city`, intervals: [100], timeout: 5000 }).toBeLessThan(0.2)
+    const to = seen[seen.length - 1] as number
+    test.info().annotations.push({ type: 'fly', description: `${name}: label ${from.toFixed(3)} -> ${to.toFixed(3)} of the half-diagonal from the middle` })
+    expect(from, `the label of ${name} starts far from the middle, so the flight has somewhere to go`).toBeGreaterThan(0.4)
+    expect(to, `the label of ${name} ends well nearer the middle than it started (${from.toFixed(3)})`).toBeLessThan(from / 2)
   }
   await noRequestsNoErrors(o)
 })
