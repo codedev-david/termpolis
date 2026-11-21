@@ -4,8 +4,8 @@
 // existsSync (+ mkdirSync + writeFileSync the first time) on the shell's integration file. It runs from a
 // person's click and from an agent's create_terminal call, on the thread that echoes every keystroke, where
 // one such call has been measured at up to 1.5 s on a busy Windows laptop. A caller asks prepareSpawn() first and
-// hands the answer to spawnTerminal, which then makes no file call at all. A caller that does not (a workflow
-// step; a test) gets the synchronous lookups, as before.
+// hands the answer to spawnTerminal, which then makes no file call at all (the click, create_terminal and workflow
+// paths all do). A caller that does not (a test; a spawner wired without a prepare) gets the synchronous lookups.
 
 import { promises as fsp } from 'fs'
 import { homedir } from 'os'
@@ -128,18 +128,69 @@ export function logRenameRefusal(path: string, log: (line: string) => void = (li
  * finds the file present only once the write has finished and been recorded. The synchronous fallback
  * (ensureIntegrationScript in terminalManager.ts) cannot wait: it asks integrationFileBusy() and, while the lock is
  * held, opens its terminal without integration rather than read or write a file mid-write.
+ *
+ * Only the WAIT is time-limited, never the job. A spawn queued behind another prepare of the same file for
+ * INTEGRATION_WAIT_MS gives up: it answers null (the terminal opens without integration) and its job is dropped. The
+ * lock is not released then, because the write it waited behind may still land, and nothing may write beside it. While
+ * the job running has outlasted a waiter like that, a spawn that arrives answers null at once rather than wait the whole
+ * limit again; the next turn of the queue (the stuck job has settled) clears that.
  */
-const integrationLocks = new Map<string, Promise<unknown>>()
+export interface IntegrationQueue {
+  /** The last job queued for this file: the next one starts when it settles. */
+  tail: Promise<unknown>
+  /** A waiter gave up behind the job running now: a spawn that arrives answers null at once, until the next turn. */
+  stalled: boolean
+  /** The path the job just ahead recorded (written, or checked present): a job starting right behind it takes its word. */
+  recorded?: string
+}
+const integrationLocks = new Map<string, IntegrationQueue>()
 
 /** True while a prepare holds this integration file (by IntegrationFile name): its write may be on the thread pool now. */
 export const integrationFileBusy = (name: string): boolean => integrationLocks.has(name)
 
-/** Run `job`, which never rejects, after every job queued before it for the same file. */
-function underIntegrationLock<T>(name: string, job: () => Promise<T>): Promise<T> {
-  const run = (integrationLocks.get(name) ?? Promise.resolve()).then(job)
-  integrationLocks.set(name, run)
-  void run.then(() => { if (integrationLocks.get(name) === run) integrationLocks.delete(name) })
-  return run
+/**
+ * How long a spawn waits behind another prepare of the same integration file before it opens without integration.
+ * A prepare takes milliseconds; a slow one on a busy laptop with a scanner about 2 s (one file call has been measured at
+ * up to 1.5 s, and the rename retries pause 200 ms at most). 4 s lets that finish, while the stall this is for, a cloud
+ * scan of a brand-new .ps1 holding the write for tens of seconds on a fresh install, costs each waiting terminal 4 s
+ * instead of the whole stall (and every terminal restored at start-up waits it out side by side, not in series). The
+ * timer is started only for a spawn that has to wait, is cleared when its turn comes, and is unref'd, so it never
+ * delays a normal spawn, never fires once it is not needed and never keeps the app alive.
+ */
+export const INTEGRATION_WAIT_MS = 4_000
+
+/**
+ * Run `job` after every job queued before it for the same file, or answer `onWaitTooLong` if it has waited
+ * INTEGRATION_WAIT_MS for them. A job that rejects rejects only its own caller: the next job runs all the same (`then(turn,
+ * turn)`) and the lock is released either way (`then(release, release)`, which also handles the rejection, where a
+ * `finally` would pass it on to a promise nobody awaits).
+ */
+export function underIntegrationLock<T>(
+  name: string,
+  job: (queue: IntegrationQueue) => Promise<T>,
+  onWaitTooLong: T,
+): Promise<T> {
+  const ahead = integrationLocks.get(name)
+  if (ahead?.stalled) return Promise.resolve(onWaitTooLong)
+  const queue: IntegrationQueue = ahead ?? { tail: Promise.resolve(), stalled: false }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let gaveUp = false
+  const turn = (): Promise<T> | undefined => {
+    clearTimeout(timer)
+    queue.stalled = false // whatever ran before this turn has settled
+    return gaveUp ? undefined : job(queue)
+  }
+  const run = queue.tail.then(turn, turn)
+  queue.tail = run
+  integrationLocks.set(name, queue)
+  const release = (): void => { if (queue.tail === run) integrationLocks.delete(name) }
+  void run.then(release, release)
+  if (!ahead) return run as Promise<T> // a free lock: nothing to wait for, so no timer
+  return new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => { gaveUp = true; queue.stalled = true; resolve(onWaitTooLong) }, INTEGRATION_WAIT_MS)
+    timer.unref()
+    run.then((v) => resolve(v as T), reject)
+  })
 }
 
 /** A temp file older than this is a leftover (a write takes milliseconds): one a scanner held when it was to be removed. */
@@ -193,14 +244,19 @@ export function ensureIntegrationScriptAsync(
   file: IntegrationFile = INTEGRATION_FILES.powershell,
   io: Partial<WholeFileIo> = {},
 ): Promise<string | null> {
-  return underIntegrationLock(file.name, async () => {
+  return underIntegrationLock(file.name, async (queue) => {
+    const vouched = queue.recorded
+    queue.recorded = undefined // said again below only if this job records the file too
     try {
       const known = integrationScriptState[file.name]
       const p = known ?? join(app.getPath('userData'), file.name)
       if (!tempSweep) tempSweep = sweepStaleIntegrationTemps(app.getPath('userData'))
       const set = integrationFileSet(file, p) // zsh's .zshenv brings three siblings; every other shell one file
       let present = false
-      if (known !== undefined) {
+      // The job just ahead in the queue recorded this file a moment ago (terminals restored at start-up queue up
+      // together): checking it again would only add one more file call per terminal, one after another.
+      if (known !== undefined && known === vouched) present = true
+      else if (known !== undefined) {
         try { await Promise.all(set.map((f) => fsp.access(f.path))); present = true } catch { /* cleaned up mid-session: written again below */ }
       }
       let kept = false
@@ -213,12 +269,12 @@ export function ensureIntegrationScriptAsync(
       // An old copy kept by a refused rename is used, but not recorded as written: the next spawn tries again, so a
       // scanner that refuses once cannot freeze an old script (or zsh's four files half old, half new) for the run.
       if (kept) delete integrationScriptState[file.name]
-      else integrationScriptState[file.name] = p
+      else { integrationScriptState[file.name] = p; queue.recorded = p }
       return p
     } catch {
       return null
     }
-  })
+  }, null)
 }
 
 export async function prepareSpawn(cwd: string, executable: string): Promise<SpawnPrep> {

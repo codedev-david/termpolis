@@ -188,7 +188,7 @@ describe('spawnTerminal', () => {
     expect(H.spawned[0].args[1]).toContain('termpolis-integration.fish')
   })
 
-  it('without a preparation it still looks synchronously (a workflow step, a test): the control that the counters see it', () => {
+  it('without a preparation (a test, a spawner wired without a prepare) it still looks synchronously: the control that the counters see it', () => {
     arm()
     spawnTerminal('t2', PS, process.cwd(), () => {})
     const c = disarm()
@@ -546,6 +546,193 @@ describe('no spawn reads an integration file mid-write', () => {
       expect(readAppLog(5000).filter((e) => e.msg.includes(target) && e.msg.includes('could not be replaced'))).toEqual([])
     })
   }
+})
+
+// Fix round 5. The lock must not turn one stuck write into a queue every later terminal of that shell waits in. Only the
+// WAIT is limited: a spawn queued behind another prepare for longer than INTEGRATION_WAIT_MS opens without integration,
+// and the lock stays held until the stuck write settles, so nothing writes beside it. Timers are vitest's fake clock and
+// the writes are gated by deferred promises; nothing sleeps.
+describe('a write that never settles does not hold up later spawns', () => {
+  const deferred = () => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } }
+  const settlesWithin = async (p: Promise<unknown>, turns = 400): Promise<boolean> => {
+    let settled = false
+    void p.then(() => { settled = true }, () => { settled = true })
+    for (let i = 0; i < turns && !settled; i++) await new Promise((r) => setImmediate(r))
+    return settled
+  }
+  const turn = () => new Promise((r) => setImmediate(r))
+  const files = async () => (await import('../../src/main/shellIntegration')).INTEGRATION_FILES
+  const lockApi = async () => {
+    const m = await import('../../src/main/terminalSpawnPrep')
+    return { WAIT: m.INTEGRATION_WAIT_MS, busy: m.integrationFileBusy, underLock: m.underIntegrationLock }
+  }
+  /** Every file call a spawn makes through its io, so a test can say "this one touched nothing". */
+  const recording = (calls: string[]) => ({
+    writeFile: (p: string, c: string) => { calls.push(`write ${p}`); writeFileSync(p, c) },
+    rename: (a: string, b: string) => { calls.push(`rename ${a}`); renameSync(a, b) },
+    rm: (p: string) => { calls.push(`rm ${p}`); rmSync(p, { force: true }) },
+    exists: (p: string) => { calls.push(`exists ${p}`); return existsSync(p) },
+    sleep: () => {},
+  })
+
+  it('waits at most INTEGRATION_WAIT_MS behind a stuck write, then opens without integration; the lock stays held, and once the write lands the next spawn works normally', async () => {
+    const { WAIT, busy } = await lockApi()
+    expect(WAIT).toBeGreaterThanOrEqual(3_000)
+    expect(WAIT).toBeLessThanOrEqual(5_000)
+    const file = (await files()).powershell
+    const target = scriptFile()
+    rmSync(target, { force: true })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const stuck = deferred()
+      const writing = deferred()
+      const a = ensureIntegrationScriptAsync(file, { writeFile: async (p, c) => { writing.resolve(); await stuck.promise; writeFileSync(p, c) } })
+      await writing.promise // A's temp write is on the thread pool, and will not come back until the test says so
+      expect(vi.getTimerCount()).toBe(0) // A waited for nothing: no timer on a free lock
+      const bCalls: string[] = []
+      const b = ensureIntegrationScriptAsync(file, recording(bCalls))
+      vi.advanceTimersByTime(WAIT - 1_000)
+      const cCalls: string[] = []
+      const c = ensureIntegrationScriptAsync(file, recording(cCalls)) // queued before B gives up
+      vi.advanceTimersByTime(999)
+      expect(await settlesWithin(b)).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(await b).toBeNull() // waited exactly INTEGRATION_WAIT_MS: this terminal opens without integration
+      expect(bCalls).toEqual([])
+      expect(busy(file.name)).toBe(true) // not freed on timeout: the stuck write may still land
+      // While it is stuck, a later spawn does not wait the whole limit again: it opens without integration at once, with no timer.
+      const dCalls: string[] = []
+      const d = ensureIntegrationScriptAsync(file, recording(dCalls))
+      expect(await settlesWithin(d, 3)).toBe(true)
+      expect(await d).toBeNull()
+      expect(vi.getTimerCount()).toBe(1) // only C's
+      expect(ensureIntegrationScript(file, recording(dCalls))).toBeNull() // the sync fallback too
+      expect(dCalls).toEqual([])
+      expect(await settlesWithin(c)).toBe(false)
+      stuck.resolve() // the stuck write lands at last
+      expect(await a).toBe(target)
+      expect(await c).toBe(target) // C was still in its wait: it runs now, normally, and needs to write nothing
+      expect(cCalls).toEqual([])
+      expect(vi.getTimerCount()).toBe(0) // C's timer was cleared when its turn came
+      await turn()
+      expect(busy(file.name)).toBe(false)
+      const eCalls: string[] = []
+      expect(await ensureIntegrationScriptAsync(file, recording(eCalls))).toBe(target) // the next spawn: normal
+      expect(eCalls).toEqual([])
+      expect(readFileSync(target, 'utf8')).toBe(file.content)
+      expect(state[file.name]).toBe(target)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the stuck write landing late overlaps no other write of that file: nothing writes it until it settles, and then only one at a time', async () => {
+    const { WAIT, busy } = await lockApi()
+    const file = (await files()).powershell
+    const target = scriptFile()
+    rmSync(target, { force: true })
+    let active = 0
+    let maxActive = 0
+    const writes: string[] = []
+    const stuck = deferred()
+    const direct = deferred()
+    const refused = (code: string) => Object.assign(new Error(code), { code })
+    const tracked = (who: string, gate?: Promise<void>) => ({
+      // A: a scanner refuses every rename, so a fresh install falls through to the direct write. The others rename normally.
+      rename: (x: string, y: string) => { if (gate) throw refused('EPERM'); writes.push(`${who} rename`); renameSync(x, y) },
+      sleep: () => {},
+      writeFile: async (p: string, c: string) => {
+        active++
+        maxActive = Math.max(maxActive, active)
+        writes.push(`${who} ${p === target ? 'direct' : 'temp'}`)
+        try {
+          if (p === target && gate) { writeFileSync(p, c.slice(0, 10)); direct.resolve(); await gate; throw refused('EIO') } // half written, then it fails
+          writeFileSync(p, c)
+        } finally { active-- }
+      },
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const a = ensureIntegrationScriptAsync(file, tracked('A', stuck.promise))
+      await direct.promise
+      const b = ensureIntegrationScriptAsync(file, tracked('B'))
+      vi.advanceTimersByTime(WAIT)
+      expect(await b).toBeNull()
+      const c = ensureIntegrationScriptAsync(file, tracked('C'))
+      expect(await c).toBeNull()
+      expect(ensureIntegrationScript(file, tracked('S') as never)).toBeNull()
+      expect(writes.filter((w) => !w.startsWith('A'))).toEqual([]) // nobody wrote beside the stuck write
+      stuck.resolve()
+      expect(await a).toBeNull() // it failed in the end: nothing recorded, so the next spawn writes again
+      expect(state[file.name]).toBeUndefined()
+      await turn()
+      expect(busy(file.name)).toBe(false)
+      const before = writes.length
+      const e = ensureIntegrationScriptAsync(file, tracked('E'))
+      const f = ensureIntegrationScriptAsync(file, tracked('F'))
+      expect(await e).toBe(target)
+      expect(await f).toBe(target)
+      expect(writes.slice(before).every((w) => w.startsWith('E'))).toBe(true) // F found E's finished file
+      expect(maxActive).toBe(1)
+      expect(readFileSync(target, 'utf8')).toBe(file.content)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a job that rejects does not poison the lock: the next job still runs, the lock is freed, and nothing is left unhandled', async () => {
+    const { busy, underLock } = await lockApi()
+    const name = 'round5-reject'
+    const ran: string[] = []
+    const first = underLock(name, async () => { ran.push('first'); throw new Error('boom') }, null)
+    const second = underLock(name, async () => { ran.push('second'); return 'second ran' }, null)
+    await expect(first).rejects.toThrow('boom')
+    expect(await second).toBe('second ran')
+    expect(ran).toEqual(['first', 'second'])
+    await turn()
+    expect(busy(name)).toBe(false)
+    // Alone, a rejecting job frees the lock as well.
+    await expect(underLock(name, async () => { throw new Error('alone') }, null)).rejects.toThrow('alone')
+    await turn()
+    expect(busy(name)).toBe(false)
+    expect(await underLock(name, async () => 'after', null)).toBe('after')
+  })
+
+  it('a job queued right behind one that recorded the file does not check it again; a prepare on a free lock still does', async () => {
+    const fs = await import('fs')
+    const file = (await files()).powershell
+    expect(await ensureIntegrationScriptAsync(file)).toBe(scriptFile()) // recorded and present
+    const access = vi.spyOn(fs.promises, 'access')
+    try {
+      const answers = await Promise.all(Array.from({ length: 6 }, () => ensureIntegrationScriptAsync(file)))
+      expect(answers.every((x) => x === scriptFile())).toBe(true)
+      expect(access).toHaveBeenCalledTimes(1) // the first checked; the five queued behind it took its word
+      await turn()
+      expect(await ensureIntegrationScriptAsync(file)).toBe(scriptFile())
+      expect(access).toHaveBeenCalledTimes(2) // alone, on a free lock: checked again (it may have been cleaned up)
+      // Behind a job that did not record the file (it failed), the next one checks for itself.
+      const failing = { writeFile: () => { throw Object.assign(new Error('EIO'), { code: 'EIO' }) } }
+      rmSync(scriptFile(), { force: true })
+      const [x, y] = await Promise.all([ensureIntegrationScriptAsync(file, failing), ensureIntegrationScriptAsync(file)])
+      expect(x).toBeNull() // checked (1), found it gone, failed to write
+      expect(y).toBe(scriptFile()) // checked (2) as well, found it gone, wrote it
+      expect(access).toHaveBeenCalledTimes(4)
+      expect(readFileSync(scriptFile(), 'utf8')).toBe(file.content)
+    } finally {
+      access.mockRestore()
+    }
+  })
+
+  it('a prepare that answered null frees the lock: the synchronous fallback is not turned away and writes the file', async () => {
+    const { busy } = await lockApi()
+    const file = (await files()).cmd
+    const target = join(H.userData, file.name)
+    rmSync(target, { force: true })
+    expect(await ensureIntegrationScriptAsync(file, { writeFile: () => { throw Object.assign(new Error('EIO'), { code: 'EIO' }) } })).toBeNull()
+    expect(busy(file.name)).toBe(false)
+    expect(ensureIntegrationScript(file)).toBe(target)
+    expect(readFileSync(target, 'utf8')).toBe(file.content)
+  })
 })
 
 // M3. A temp file the scanner still held could not be removed when its write gave up; the first prepare of a run sweeps
