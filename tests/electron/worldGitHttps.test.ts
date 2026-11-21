@@ -18,9 +18,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { resolveGitBin } from '../../src/main/binPath'
 import { cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps, type LoginRun } from '../../src/main/world/gitSource'
 import { TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
-import { fakeHelperConfig, fixtureToolsMissing, FAKE_HELPER_PATH, startGitHttps, type GitHttps } from '../fixtures/gitHttps/server'
+import { fakeHelperConfig, fixtureSkipReason, FAKE_HELPER_PATH, startGitHttps, type GitHttps } from '../fixtures/gitHttps/server'
 
-const missing = fixtureToolsMissing()
+// Locally a missing git-http-backend or openssl skips this file; on CI (CI=true) it throws and fails it.
+const missing = fixtureSkipReason()
 if (missing) console.warn(`[worldGitHttps] skipped: ${missing}`)
 const inCi = process.env.CI === 'true'
 
@@ -69,22 +70,17 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
     if (work) await removeDir(work)
   })
 
-  /** The environment the app's git would inherit: the fixture's CA, no system config, a temporary global
-   *  one, and the fake helper's answers. Any GCM_INTERACTIVE of this shell is left out. */
-  const envFor = (config: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
-    const env: NodeJS.ProcessEnv = { ...process.env }
-    delete env.GCM_INTERACTIVE
-    return {
-      ...env,
-      GIT_SSL_CAINFO: server.caFile,
-      GIT_CONFIG_NOSYSTEM: '1',
-      GIT_CONFIG_GLOBAL: config,
-      FAKE_HELPER_LOG: helperLog,
-      FAKE_HELPER_USER: user,
-      FAKE_HELPER_REPLY: reply,
-      ...extra
-    }
+  /** The environment the app's git would inherit: the fixture's CA, no system config and a temporary
+   *  global one. Any GCM_ or FAKE_HELPER_ variable of this shell is left out. */
+  const gitEnvFor = (config: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = {}
+    for (const [k, v] of Object.entries(process.env)) if (!/^(GCM_|FAKE_HELPER_)/i.test(k)) env[k] = v
+    return { ...env, GIT_SSL_CAINFO: server.caFile, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config, ...extra }
   }
+  /** gitEnvFor plus the fake helper's answers, for the runs whose config names the helper. A token run
+   *  uses gitEnvFor alone, so the reply reaches git only as the token. */
+  const envFor = (config: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv =>
+    gitEnvFor(config, { FAKE_HELPER_LOG: helperLog, FAKE_HELPER_USER: user, FAKE_HELPER_REPLY: reply, ...extra })
 
   const depsFor = async (env: NodeJS.ProcessEnv): Promise<CloneDeps> => ({
     execFile: nodeExecFile,
@@ -146,24 +142,27 @@ describe.skipIf(missing !== null)('Lumopolis private repositories against a loca
     expect(Date.now() - started).toBeLessThan(10_000)
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.needsLogin).toEqual({ host: new URL(server.url).host, helper: true })
-    expect((await helperLines()).filter((l) => l.startsWith('get ')).every((l) => l.includes('GCM_INTERACTIVE=never'))).toBe(true)
+    const goneLines = await helperLines()
+    // The helper was asked (so the check below cannot pass on an empty log), and never allowed to prompt.
+    expect(goneLines.some((l) => l.startsWith('get '))).toBe(true)
+    expect(goneLines.filter((l) => l.startsWith('get ')).every((l) => l.includes('GCM_INTERACTIVE=never'))).toBe(true)
   }, 60_000)
 
   it.runIf(inCi)('token mode opens it, and leaves nothing behind', async () => {
-    const deps = await depsFor(envFor(emptyConfig))
+    const deps = await depsFor(gitEnvFor(emptyConfig))
     const r = await cloneRepo(server.url, undefined, deps, { mode: 'token', value: ` ${reply}\n` })
     expect(r).toMatchObject({ ok: true, changed: true })
     if (!r.ok) return
     const needle = Buffer.from(reply)
     const holders = [...filesUnder(r.root), ...filesUnder(deps.baseDir), emptyConfig].filter((f) => fs.readFileSync(f).includes(needle))
     expect(holders).toEqual([])
-    const list = execFileSync('git', ['config', '--list'], { cwd: r.root, env: envFor(emptyConfig) as Record<string, string>, encoding: 'utf8' })
+    const list = execFileSync('git', ['config', '--list'], { cwd: r.root, env: gitEnvFor(emptyConfig) as Record<string, string>, encoding: 'utf8' })
     expect(list.includes(reply)).toBe(false)
   }, 60_000)
 
   it.runIf(inCi)('a wrong token gets TOKEN_REJECTED_MESSAGE without the token in it', async () => {
     const wrong = `w${randomBytes(20).toString('hex')}`
-    const r = await cloneRepo(server.url, undefined, await depsFor(envFor(emptyConfig)), { mode: 'token', value: wrong })
+    const r = await cloneRepo(server.url, undefined, await depsFor(gitEnvFor(emptyConfig)), { mode: 'token', value: wrong })
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.error).toBe(TOKEN_REJECTED_MESSAGE)

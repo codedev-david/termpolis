@@ -23,9 +23,11 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
-import { fakeHelperConfig, fixtureToolsMissing, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
+import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
-const missing = fixtureToolsMissing()
+// Locally a missing git-http-backend or openssl skips this file; on CI (CI=true) it throws and fails it.
+const missing = fixtureSkipReason()
+const inCi = process.env.CI === 'true'
 const user = `u${randomBytes(6).toString('hex')}`
 const reply = randomBytes(20).toString('hex')
 let server: GitHttps
@@ -64,7 +66,17 @@ function newUserData(label: string): string {
   return dir
 }
 
-/** Launches the app on `userData` with the fixture's git environment and `config` as the global git config. */
+/** The fake helper's answers, for the launches whose git config names the helper. A token launch goes
+ *  without them, so the reply reaches git only as the token. */
+const helperEnv = (extra: Record<string, string> = {}): Record<string, string> => ({
+  FAKE_HELPER_LOG: path.join(work, 'helper.log'),
+  FAKE_HELPER_USER: user,
+  FAKE_HELPER_REPLY: reply,
+  ...extra,
+})
+
+/** Launches the app on `userData` with the fixture's git environment and `config` as the global git
+ *  config; `extra` adds variables (the fake helper's, for a helper launch). */
 async function launch(userData: string, config: string, extra: Record<string, string> = {}): Promise<{ app: ElectronApplication; page: Page; errors: string[] }> {
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string' && !/^(GCM_|FAKE_HELPER_)/i.test(k)) env[k] = v
@@ -85,9 +97,6 @@ async function launch(userData: string, config: string, extra: Record<string, st
       GIT_SSL_CAINFO: server.caFile,
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: config,
-      FAKE_HELPER_LOG: path.join(work, 'helper.log'),
-      FAKE_HELPER_USER: user,
-      FAKE_HELPER_REPLY: reply,
       ...extra,
     },
   })
@@ -183,7 +192,7 @@ test.describe.serial('Lumopolis private repositories with this computer\'s login
 
   test('Sign in opens a private repository', async () => {
     userData = newUserData('sign-in')
-    const run = await launch(userData, helperConfig)
+    const run = await launch(userData, helperConfig, helperEnv())
     app = run.app
     const page = run.page
     await openHome(page)
@@ -198,7 +207,7 @@ test.describe.serial('Lumopolis private repositories with this computer\'s login
 
   test('a remembered repository whose login is gone shows Sign in needed, not a window', async () => {
     await quitApp(app)
-    const run = await launch(userData, helperConfig, { FAKE_HELPER_EMPTY: '1' })
+    const run = await launch(userData, helperConfig, helperEnv({ FAKE_HELPER_EMPTY: '1' }))
     app = run.app
     const page = run.page
     await openHome(page)
@@ -209,6 +218,8 @@ test.describe.serial('Lumopolis private repositories with this computer\'s login
     await expect(notice).toBeVisible({ timeout: 60_000 })
     await expect(notice.getByRole('button', { name: 'Use a token' })).toBeVisible()
     await expect(page.locator('[data-testid="world-canvas-host"] canvas')).toBeVisible()
+    // No login window, dialog or second app window came up: the app still has exactly its one window.
+    expect(run.app.windows()).toHaveLength(1)
     expect(run.errors).toEqual([])
   })
 })
@@ -228,7 +239,7 @@ test.describe.serial('Lumopolis private repositories with a token', () => {
   })
 
   test('Use a token opens a private repository', async () => {
-    test.skip(!process.env.CI, 'token runs hand the askpass its prompt on a command line, so they run only in CI')
+    test.skip(!inCi, 'token runs hand the askpass its prompt on a command line, so they run only in CI')
     userData = newUserData('token')
     const run = await launch(userData, emptyConfig)
     app = run.app

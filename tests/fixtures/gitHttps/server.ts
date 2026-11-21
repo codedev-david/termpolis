@@ -14,7 +14,7 @@
 //
 // tests/fixtures/gitHttps/fake-helper.sh is the login helper the tests name in their own temporary git
 // config (fakeHelperConfig). Paths resolve from the repository root, where vitest and Playwright run.
-import { execFile, spawn, spawnSync } from 'node:child_process'
+import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { timingSafeEqual } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as fsp from 'node:fs/promises'
@@ -30,7 +30,7 @@ export interface GitHttps {
   caFile: string
   /** Commits a change in the server's repository (pushed locally, never over the network). */
   pushCommit(msg: string): Promise<void>
-  /** Stops the server and deletes the certificate folder. */
+  /** Stops the server, kills any git http-backend still running and deletes the certificate folder. */
   stop(): Promise<void>
 }
 
@@ -62,6 +62,16 @@ export function fixtureToolsMissing(): string | null {
   const backend = join(exec.stdout.trim(), isWindows ? 'git-http-backend.exe' : 'git-http-backend')
   if (!fs.existsSync(backend)) return `this git has no http-backend (${backend}), so the local https git server cannot serve`
   return null
+}
+
+/** Why the fixture's tests should skip here, or null when they can run. On CI (CI=true) a missing tool
+ *  is a broken runner, not a reason to skip: this throws, so the run fails and names the tool. */
+export function fixtureSkipReason(): string | null {
+  const missing = fixtureToolsMissing()
+  if (missing !== null && process.env.CI === 'true') {
+    throw new Error(`The local https git server needs a tool this CI runner lacks: ${missing}. On CI this fails instead of skipping.`)
+  }
+  return missing
 }
 
 /** This process's environment without any git or fake-helper variable, plus a config that reads no
@@ -142,126 +152,152 @@ export async function startGitHttps(opts: { user: string; reply: string; dir: st
     throw e
   }
 
-  // The repository: a working copy with a few files, pushed (locally) into the bare one the server serves.
-  await fsp.mkdir(opts.dir, { recursive: true })
-  const fixtureConfig = join(opts.dir, 'fixture.gitconfig')
-  await fsp.writeFile(fixtureConfig, '')
-  const gitEnv: Record<string, string> = {
-    ...baseEnv(fixtureConfig),
-    GIT_AUTHOR_NAME: 'Lumopolis Fixture',
-    GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
-    GIT_COMMITTER_NAME: 'Lumopolis Fixture',
-    GIT_COMMITTER_EMAIL: 'fixture@example.invalid'
-  }
-  const git = (args: string[], cwd?: string): Promise<void> => run('git', args, { cwd, env: gitEnv })
-  const bare = join(opts.dir, REPO)
-  const work = join(opts.dir, 'work')
-  await git(['init', '--bare', '-q', '-b', 'main', bare])
-  await git(['--git-dir', bare, 'config', 'uploadpack.allowFilter', 'true'])
-  await git(['init', '-q', '-b', 'main', work])
-  await fsp.mkdir(join(work, 'src'), { recursive: true })
-  await fsp.writeFile(join(work, 'package.json'), JSON.stringify({ name: 'private-fixture', version: '1.0.0', main: 'src/index.ts' }, null, 2) + '\n')
-  await fsp.writeFile(join(work, 'src', 'index.ts'), "import { greet } from './greet'\n\nexport const hello = greet('world')\n")
-  await fsp.writeFile(join(work, 'src', 'greet.ts'), 'export function greet(name: string): string {\n  return `hello ${name}`\n}\n')
-  await git(['add', '-A'], work)
-  await git(['commit', '-q', '-m', 'First commit'], work)
-  await git(['push', '-q', bare, 'HEAD:refs/heads/main'], work)
-  let commits = 1
-
+  // From here on a failure (git, the first commit, listen) removes the certificate folder and closes the
+  // server before it is rethrown, so a fixture that never started leaves nothing behind.
   const sockets = new Set<Socket>()
-  const server = https.createServer({ key, cert }, (req, res) => {
-    const who = signedInUser(req.headers.authorization, opts.user, opts.reply)
-    if (who === null) {
-      req.resume()
-      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="lumopolis fixture"', 'Content-Type': 'text/plain' })
-      res.end('Sign in first.\n')
-      return
-    }
-    const u = new URL(req.url ?? '/', 'https://127.0.0.1')
-    const env: Record<string, string> = {
+  const children = new Set<ChildProcess>()
+  let server: https.Server | null = null
+  const closeServer = async (): Promise<void> => {
+    for (const c of children) c.kill()
+    children.clear()
+    const s = server
+    server = null
+    if (s === null || !s.listening) return
+    await new Promise<void>((done) => {
+      s.close(() => done())
+      for (const sock of sockets) sock.destroy()
+    })
+  }
+  try {
+    return await serve()
+  } catch (e) {
+    await closeServer()
+    await fsp.rm(tlsDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    throw e
+  }
+
+  async function serve(): Promise<GitHttps> {
+    // The repository: a working copy with a few files, pushed (locally) into the bare one the server serves.
+    await fsp.mkdir(opts.dir, { recursive: true })
+    const fixtureConfig = join(opts.dir, 'fixture.gitconfig')
+    await fsp.writeFile(fixtureConfig, '')
+    const gitEnv: Record<string, string> = {
       ...baseEnv(fixtureConfig),
-      GIT_PROJECT_ROOT: opts.dir,
-      GIT_HTTP_EXPORT_ALL: '1',
-      REQUEST_METHOD: req.method ?? 'GET',
-      PATH_INFO: decodeURIComponent(u.pathname),
-      QUERY_STRING: u.search.replace(/^\?/, ''),
-      CONTENT_TYPE: String(req.headers['content-type'] ?? ''),
-      REMOTE_USER: who,
-      REMOTE_ADDR: '127.0.0.1'
+      GIT_AUTHOR_NAME: 'Lumopolis Fixture',
+      GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+      GIT_COMMITTER_NAME: 'Lumopolis Fixture',
+      GIT_COMMITTER_EMAIL: 'fixture@example.invalid'
     }
-    if (req.headers['content-length'] !== undefined) env.CONTENT_LENGTH = String(req.headers['content-length'])
-    if (req.headers['content-encoding'] !== undefined) env.HTTP_CONTENT_ENCODING = String(req.headers['content-encoding'])
-    if (req.headers['git-protocol'] !== undefined) env.GIT_PROTOCOL = String(req.headers['git-protocol'])
-    const child = spawn('git', ['http-backend'], { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
-    child.stdin.on('error', () => undefined)
-    child.stderr.resume()
-    req.pipe(child.stdin)
-    // The CGI header block comes first: Status and the response headers, then a blank line, then the body.
-    let head: Buffer | null = Buffer.alloc(0)
-    const fail = (): void => {
-      if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain' })
-      res.end()
-    }
-    child.on('error', fail)
-    child.stdout.on('data', (chunk: Buffer) => {
-      if (head === null) {
-        res.write(chunk)
+    const git = (args: string[], cwd?: string): Promise<void> => run('git', args, { cwd, env: gitEnv })
+    const bare = join(opts.dir, REPO)
+    const work = join(opts.dir, 'work')
+    await git(['init', '--bare', '-q', '-b', 'main', bare])
+    await git(['--git-dir', bare, 'config', 'uploadpack.allowFilter', 'true'])
+    await git(['init', '-q', '-b', 'main', work])
+    await fsp.mkdir(join(work, 'src'), { recursive: true })
+    await fsp.writeFile(join(work, 'package.json'), JSON.stringify({ name: 'private-fixture', version: '1.0.0', main: 'src/index.ts' }, null, 2) + '\n')
+    await fsp.writeFile(join(work, 'src', 'index.ts'), "import { greet } from './greet'\n\nexport const hello = greet('world')\n")
+    await fsp.writeFile(join(work, 'src', 'greet.ts'), 'export function greet(name: string): string {\n  return `hello ${name}`\n}\n')
+    await git(['add', '-A'], work)
+    await git(['commit', '-q', '-m', 'First commit'], work)
+    await git(['push', '-q', bare, 'HEAD:refs/heads/main'], work)
+    let commits = 1
+
+    const httpsServer = https.createServer({ key, cert }, (req, res) => {
+      const who = signedInUser(req.headers.authorization, opts.user, opts.reply)
+      if (who === null) {
+        req.resume()
+        res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="lumopolis fixture"', 'Content-Type': 'text/plain' })
+        res.end('Sign in first.\n')
         return
       }
-      head = Buffer.concat([head, chunk])
-      const text = head.toString('latin1')
-      const crlf = text.indexOf('\r\n\r\n')
-      const lf = text.indexOf('\n\n')
-      const end = crlf >= 0 && (lf < 0 || crlf < lf) ? crlf + 4 : lf >= 0 ? lf + 2 : -1
-      if (end < 0) return
-      let status = 200
-      for (const line of text.slice(0, end).split(/\r?\n/)) {
-        const colon = line.indexOf(':')
-        if (colon <= 0) continue
-        const name = line.slice(0, colon).trim()
-        const value = line.slice(colon + 1).trim()
-        if (/^status$/i.test(name)) status = Number.parseInt(value, 10) || 200
-        else res.setHeader(name, value)
+      const u = new URL(req.url ?? '/', 'https://127.0.0.1')
+      const env: Record<string, string> = {
+        ...baseEnv(fixtureConfig),
+        GIT_PROJECT_ROOT: opts.dir,
+        GIT_HTTP_EXPORT_ALL: '1',
+        REQUEST_METHOD: req.method ?? 'GET',
+        PATH_INFO: decodeURIComponent(u.pathname),
+        QUERY_STRING: u.search.replace(/^\?/, ''),
+        CONTENT_TYPE: String(req.headers['content-type'] ?? ''),
+        REMOTE_USER: who,
+        REMOTE_ADDR: '127.0.0.1'
       }
-      res.writeHead(status)
-      const body = head.subarray(end)
-      head = null
-      if (body.length > 0) res.write(body)
-    })
-    child.stdout.on('end', () => {
-      if (head !== null) fail()
-      else res.end()
-    })
-  })
-  server.on('connection', (s: Socket) => {
-    sockets.add(s)
-    s.on('close', () => sockets.delete(s))
-  })
-  await new Promise<void>((done, fail) => {
-    server.once('error', fail)
-    server.listen(0, '127.0.0.1', () => done())
-  })
-  const port = (server.address() as AddressInfo).port
-
-  let stopped = false
-  return {
-    url: `https://127.0.0.1:${port}/${REPO}`,
-    caFile,
-    async pushCommit(msg: string) {
-      commits++
-      await fsp.writeFile(join(work, 'src', `change${commits}.ts`), `export const change${commits} = ${commits}\n`)
-      await git(['add', '-A'], work)
-      await git(['commit', '-q', '-m', msg], work)
-      await git(['push', '-q', bare, 'HEAD:refs/heads/main'], work)
-    },
-    async stop() {
-      if (stopped) return
-      stopped = true
-      await new Promise<void>((done) => {
-        server.close(() => done())
-        for (const s of sockets) s.destroy()
+      if (req.headers['content-length'] !== undefined) env.CONTENT_LENGTH = String(req.headers['content-length'])
+      if (req.headers['content-encoding'] !== undefined) env.HTTP_CONTENT_ENCODING = String(req.headers['content-encoding'])
+      if (req.headers['git-protocol'] !== undefined) env.GIT_PROTOCOL = String(req.headers['git-protocol'])
+      const child = spawn('git', ['http-backend'], { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+      children.add(child)
+      child.on('close', () => children.delete(child))
+      child.stdin.on('error', () => undefined)
+      child.stderr.resume()
+      req.pipe(child.stdin)
+      // The CGI header block comes first: Status and the response headers, then a blank line, then the body.
+      let head: Buffer | null = Buffer.alloc(0)
+      const fail = (): void => {
+        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain' })
+        res.end()
+      }
+      child.on('error', fail)
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (head === null) {
+          res.write(chunk)
+          return
+        }
+        head = Buffer.concat([head, chunk])
+        const text = head.toString('latin1')
+        const crlf = text.indexOf('\r\n\r\n')
+        const lf = text.indexOf('\n\n')
+        const end = crlf >= 0 && (lf < 0 || crlf < lf) ? crlf + 4 : lf >= 0 ? lf + 2 : -1
+        if (end < 0) return
+        let status = 200
+        for (const line of text.slice(0, end).split(/\r?\n/)) {
+          const colon = line.indexOf(':')
+          if (colon <= 0) continue
+          const name = line.slice(0, colon).trim()
+          const value = line.slice(colon + 1).trim()
+          if (/^status$/i.test(name)) status = Number.parseInt(value, 10) || 200
+          else res.setHeader(name, value)
+        }
+        res.writeHead(status)
+        const body = head.subarray(end)
+        head = null
+        if (body.length > 0) res.write(body)
       })
-      await fsp.rm(tlsDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+      child.stdout.on('end', () => {
+        if (head !== null) fail()
+        else res.end()
+      })
+    })
+    server = httpsServer
+    httpsServer.on('connection', (s: Socket) => {
+      sockets.add(s)
+      s.on('close', () => sockets.delete(s))
+    })
+    await new Promise<void>((done, fail) => {
+      httpsServer.once('error', fail)
+      httpsServer.listen(0, '127.0.0.1', () => done())
+    })
+    const port = (httpsServer.address() as AddressInfo).port
+
+    let stopped = false
+    return {
+      url: `https://127.0.0.1:${port}/${REPO}`,
+      caFile,
+      async pushCommit(msg: string) {
+        commits++
+        await fsp.writeFile(join(work, 'src', `change${commits}.ts`), `export const change${commits} = ${commits}\n`)
+        await git(['add', '-A'], work)
+        await git(['commit', '-q', '-m', msg], work)
+        await git(['push', '-q', bare, 'HEAD:refs/heads/main'], work)
+      },
+      async stop() {
+        if (stopped) return
+        stopped = true
+        // Any git http-backend still running is killed with the server.
+        await closeServer()
+        await fsp.rm(tlsDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+      }
     }
   }
 }
