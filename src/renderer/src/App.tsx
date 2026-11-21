@@ -33,6 +33,7 @@ import { useWorldPaneWidth, WorldPaneOpening } from './components/World/worldPan
 import { WorldPaneDivider } from './components/World/WorldPaneDivider'
 import { useWorldPane } from './components/World/worldOpen'
 import { LumopolisNotice } from './components/World/LumopolisNotice'
+import { LaunchIntro } from './components/LaunchIntro/LaunchIntro'
 import { StatusBar } from './components/StatusBar/StatusBar'
 import { UpdateBanner } from './components/UpdateBanner/UpdateBanner'
 import { SecretSentBanner } from './components/SecretSentBanner/SecretSentBanner'
@@ -1370,6 +1371,7 @@ export default function App() {
           </div>
         </div>
       )}
+      <LaunchIntro />
     </div>
   )
 }

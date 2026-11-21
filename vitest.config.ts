@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 import { createLogger } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -25,6 +26,14 @@ process.stderr.write = ((chunk: any, ...rest: any[]) => {
 export default defineConfig({
   plugins: [react()],
   customLogger: logger,
+  // The renderer's Vite root is src/renderer, so '/logo-termpolis.svg?url' reaches its public folder
+  // there; Vitest's root is the repo, so point that one import at the same file.
+  resolve: {
+    alias: [{
+      find: /^\/logo-termpolis\.svg\?url$/,
+      replacement: fileURLToPath(new URL('./src/renderer/public/logo-termpolis.svg', import.meta.url)) + '?url',
+    }],
+  },
   // An inline PostCSS config, so a test run never loads postcss.config.js. Vitest empties every
   // stylesheet a test imports, but Vite's CSS plugin still loads a PostCSS config to process the
   // empty file. postcss.config.js loads @tailwindcss/postcss, a build-only devDependency, so on a
@@ -162,6 +171,8 @@ export default defineConfig({
         'src/shared/world/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/main/world/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/main/launchIntro.ts': { lines: 100, functions: 100, branches: 100, statements: 100 },
+        'src/renderer/src/lib/launchIntro.ts': { lines: 100, functions: 100, branches: 100, statements: 100 },
+        'src/renderer/src/components/LaunchIntro/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/world/engine/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/components/World/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
       },
