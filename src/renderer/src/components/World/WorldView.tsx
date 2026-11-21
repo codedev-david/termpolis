@@ -41,6 +41,8 @@ import { focusTerminal } from '../../lib/accountMenu'
 import { useTerminalStore } from '../../store/terminalStore'
 import { useOpenWorld, type WorldRequest } from './useOpenWorld'
 import { WorldHome } from './WorldHome'
+import { SignInNeededNotice } from './SignInNeededNotice'
+import { RepoAccessDialog } from './RepoAccessDialog'
 import { WorldSwitcher } from './WorldSwitcher'
 import { BuildItDialog } from './BuildItDialog'
 import { legendDefaultOpen, legendReserve, WorldLegend } from './WorldLegend'
@@ -115,7 +117,9 @@ const hasPart = (d: WorldDoc, id: string): boolean =>
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
 export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, request }: WorldViewProps): JSX.Element {
-  const { world, open, goHome, entries, refresh } = useOpenWorld(root, request)
+  const { world, open, goHome, entries, refresh, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
+  const [tokenOpen, setTokenOpen] = useState(false)
+  useEffect(() => { if (!repoUpdate) setTokenOpen(false) }, [repoUpdate])
   const [webgl] = useState(() => hasWebGL())
   const [map2d, setMap2d] = useState(readMap2d)
   /** The flat map shows: no WebGL, or the switch is on. */
@@ -311,6 +315,14 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       })
     return () => { live = false }
   }, [worldRoot, designKey, attempt, refresh])
+
+  // A repository update that brought new files down: map the world again. The compile saves it and main
+  // pushes it through the listener below, so the new map arrives like any other change.
+  useEffect(() => {
+    const at = rootRef.current
+    if (repoChanged === 0 || at === null) return
+    window.termpolis.worldCompile(at).catch(() => undefined)
+  }, [repoChanged])
 
   // Pushes from main: compile progress, and a saved world (a compile, or a watched change).
   useEffect(() => {
@@ -597,6 +609,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   })
 
   escRef.current = () => {
+    if (tokenOpen) { setTokenOpen(false); return }
     cancelBookmark()
     if (confirmRelayout) { setConfirmRelayout(false); return }
     if (building) { setBuilding(false); return }
@@ -724,15 +737,33 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             </div>
           </div>
         )}
-        {(busy || notice) && (
-          <div
-            role="status"
-            data-testid="world-notice"
-            className="text-xs px-2 py-1 rounded border border-[#3c3c3c]"
-            style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 4, background: '#252526' }}
-          >
-            {busy ? 'Re-laying out…' : notice}
+        {(repoUpdate || busy || notice) && (
+          <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+            {repoUpdate && (
+              <SignInNeededNotice
+                host={repoUpdate.host}
+                helper={repoUpdate.helper}
+                busy={repoBusy}
+                error={repoError}
+                onSignIn={signIn}
+                onUseToken={() => { clearRepoError(); setTokenOpen(true) }}
+                onDismiss={dismissRepoUpdate}
+              />
+            )}
+            {(busy || notice) && (
+              <div
+                role="status"
+                data-testid="world-notice"
+                className="text-xs px-2 py-1 rounded border border-[#3c3c3c]"
+                style={{ background: '#252526' }}
+              >
+                {busy ? 'Re-laying out…' : notice}
+              </div>
+            )}
           </div>
+        )}
+        {repoUpdate && tokenOpen && (
+          <RepoAccessDialog host={repoUpdate.host} busy={repoBusy} error={repoError} onSubmit={useToken} onCancel={() => setTokenOpen(false)} />
         )}
         {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
         {card !== null && evidence !== null && (

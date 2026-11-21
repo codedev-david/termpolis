@@ -312,3 +312,141 @@ describe('WorldView sources', () => {
     expect(screen.queryByTestId('world-view')).toBeNull()
   })
 })
+
+describe('WorldView sign in needed', () => {
+  const GIT: WorldEntry = { key: 'kgit', source: { kind: 'git', url: 'https://github.com/o/r.git', root: 'C:/data/r', login: 'machine' }, title: 'rrepo', lastOpened: 3 }
+  const NEEDS = { needsLogin: { host: 'github.com', helper: true, message: 'Sign in please.' } }
+  const gitBridge = (update: unknown, over: Record<string, unknown> = {}) => bridge({
+    worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([GIT])),
+    worldTouchSource: vi.fn(async () => ok<WorldEntry | null>(GIT)),
+    worldUpdateSource: vi.fn(async () => update),
+    ...over,
+  })
+  const openGit = async () => {
+    await mount('')
+    fireEvent.click(screen.getByRole('button', { name: 'Open rrepo' }))
+    await settle()
+  }
+
+  it('shows the notice with its three actions, and Dismiss hides it', async () => {
+    gitBridge(ok(NEEDS))
+    await openGit()
+    const notice = screen.getByTestId('world-sign-in-needed')
+    expect(notice).toHaveTextContent("This repository needs you to sign in before Lumopolis can update it. You're seeing the saved copy.")
+    expect(within(notice).getByRole('button', { name: 'Sign in to GitHub' })).toBeInTheDocument()
+    expect(within(notice).getByRole('button', { name: 'Use a token' })).toBeInTheDocument()
+    fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
+  })
+
+  it('shows no notice when the update works, and recompiles when something changed', async () => {
+    const api = gitBridge(ok({ changed: true }))
+    await openGit()
+    expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
+    expect(api.worldCompile).toHaveBeenCalledWith('C:/data/r')
+  })
+
+  it('a recompile that fails after a changed update leaves the saved world showing', async () => {
+    const api = gitBridge(ok({ changed: true }), { worldCompile: vi.fn(async () => { throw new Error('down') }) })
+    await openGit()
+    expect(api.worldCompile).toHaveBeenCalledWith('C:/data/r')
+    expect(screen.getByTestId('world-view')).toBeInTheDocument()
+  })
+
+  it('Sign in retries interactively and the notice goes away', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    api.worldUpdateSource.mockResolvedValueOnce(ok({ changed: false }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to GitHub' }))
+    await settle()
+    expect(api.worldUpdateSource).toHaveBeenLastCalledWith('kgit', { mode: 'machine' })
+    expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
+  })
+
+  it('without a helper there is no Sign in, and Use a token opens the dialog; a token retries, a refusal keeps it open', async () => {
+    const api = gitBridge(ok({ needsLogin: { host: 'gitlab.example.com', helper: false, message: 'Sign in please.' } }))
+    await openGit()
+    expect(screen.queryByRole('button', { name: /^Sign in/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    const send = async (value: string) => {
+      fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value } })
+      fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+      await settle()
+    }
+    api.worldUpdateSource.mockResolvedValueOnce(fail('That token did not open it.'))
+    await send('ghp_x')
+    expect(api.worldUpdateSource).toHaveBeenLastCalledWith('kgit', { mode: 'token', value: 'ghp_x' })
+    expect(within(screen.getByTestId('world-repo-access')).getByRole('alert')).toHaveTextContent('That token did not open it.')
+    api.worldUpdateSource.mockResolvedValueOnce(ok({ changed: false }))
+    await send('ghp_y')
+    expect(screen.queryByTestId('world-repo-access')).toBeNull()
+    expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
+  })
+
+  it('cancelling the token dialog leaves the notice', async () => {
+    gitBridge(ok(NEEDS))
+    await openGit()
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('world-repo-access')).toBeNull()
+    expect(screen.getByTestId('world-sign-in-needed')).toBeInTheDocument()
+  })
+
+  it('a dismissed notice does not bring the token dialog back later', async () => {
+    gitBridge(ok(NEEDS))
+    await openGit()
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    fireEvent.click(within(screen.getByTestId('world-sign-in-needed')).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('world-repo-access')).toBeNull()
+    switchTo('__home')
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Open rrepo' }))
+    await settle()
+    expect(screen.getByTestId('world-sign-in-needed')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-repo-access')).toBeNull()
+  })
+
+  it('a failed Sign in says why in the notice, and Use a token starts without that message', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    api.worldUpdateSource.mockResolvedValueOnce(fail('Sign in was closed.'))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to GitHub' }))
+    await settle()
+    expect(within(screen.getByTestId('world-sign-in-needed')).getByRole('alert')).toHaveTextContent('Sign in was closed.')
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    expect(screen.queryByText('Sign in was closed.')).toBeNull()
+  })
+
+  it('Dismiss is disabled while a retry runs', async () => {
+    const api = gitBridge(ok(NEEDS))
+    await openGit()
+    let release!: (v: unknown) => void
+    api.worldUpdateSource.mockImplementationOnce(() => new Promise((res) => { release = res }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to GitHub' }))
+    await settle()
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeDisabled()
+    await act(async () => { release(ok({ changed: false })) })
+    expect(screen.queryByTestId('world-sign-in-needed')).toBeNull()
+  })
+
+  it('the sign in notice and the re-layout notice both show', async () => {
+    gitBridge(ok(NEEDS), { worldRelayout: vi.fn(() => new Promise(() => undefined)) })
+    await openGit()
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(await screen.findByTestId('world-relayout-go'))
+    expect(screen.getByTestId('world-sign-in-needed')).toBeInTheDocument()
+    expect(screen.getByTestId('world-notice')).toBeInTheDocument()
+  })
+
+  it('the token field takes the focus, and Esc closes the token dialog before anything else', async () => {
+    gitBridge(ok(NEEDS))
+    await openGit()
+    fireEvent.click(screen.getByRole('button', { name: 'Use a token' }))
+    const field = screen.getByTestId('world-repo-access-input')
+    expect(field).toHaveFocus()
+    fireEvent.keyDown(field, { key: 'Escape' })
+    expect(screen.queryByTestId('world-repo-access')).toBeNull()
+    expect(screen.getByTestId('world-sign-in-needed')).toBeInTheDocument()
+    expect(screen.getByTestId('world-view')).toBeInTheDocument()
+  })
+})

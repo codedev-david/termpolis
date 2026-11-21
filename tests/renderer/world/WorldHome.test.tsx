@@ -2,7 +2,7 @@
 // and design-start dialogs, Build it and the toolbar's world switcher. The bridge is mocked; every
 // call is checked for what it was handed.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, cleanup, within } from '@testing-library/react'
 import type { WorldEntry, WorldFolderPick, BuildItResult } from '../../../src/shared/world/types'
 import { BAD_URL_MESSAGE, BAD_REF_MESSAGE } from '../../../src/shared/world/gitUrl'
 
@@ -360,6 +360,113 @@ describe('CloneDialog', () => {
     fireEvent.click(cloneBtn())
     expect(await screen.findByRole('alert')).toHaveTextContent('That repository needs you to sign in.')
     expect(props.onCloned).not.toHaveBeenCalled()
+  })
+})
+
+describe('CloneDialog sign-in choices', () => {
+  const NEEDS = (helper: boolean, host = 'github.com') => ok({ needsLogin: { host, helper, message: 'That repository needs you to sign in.' } })
+  const GOT: WorldEntry = { key: 'k-c', source: { kind: 'git', url: 'https://github.com/o/r.git', root: 'C:/data/r', login: 'machine' }, title: 'r', lastOpened: NOW }
+  const mount = () => {
+    const props = { onCloned: vi.fn(), onClose: vi.fn() }
+    render(<CloneDialog {...props} />)
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://github.com/o/r.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    return props
+  }
+
+  it('offers Sign in to GitHub and Use a token when a helper is set up', async () => {
+    bridge({ worldClone: vi.fn(async () => NEEDS(true)) })
+    mount()
+    expect(await screen.findByTestId('world-clone-sign-in')).toHaveTextContent('Sign in to GitHub')
+    expect(screen.getByTestId('world-clone-use-token')).toHaveTextContent('Use a token')
+  })
+
+  it('offers only Use a token when no helper is set up', async () => {
+    bridge({ worldClone: vi.fn(async () => NEEDS(false, 'gitlab.example.com')) })
+    mount()
+    expect(await screen.findByTestId('world-clone-use-token')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-clone-sign-in')).toBeNull()
+  })
+
+  it('Sign in retries in machine mode, with its busy text, and opens the repository', async () => {
+    const d = deferred<Res<unknown>>()
+    const api = bridge({ worldClone: vi.fn().mockResolvedValueOnce(NEEDS(true)).mockImplementationOnce(() => d.promise) })
+    const props = mount()
+    fireEvent.click(await screen.findByTestId('world-clone-sign-in'))
+    expect(api.worldClone).toHaveBeenLastCalledWith('https://github.com/o/r.git', undefined, { mode: 'machine' })
+    expect(screen.getByText('Finish signing in in the window that opened…')).toBeInTheDocument()
+    expect(screen.getByTestId('world-clone-sign-in')).toBeDisabled()
+    expect(screen.getByTestId('world-clone-use-token')).toBeDisabled()
+    d.resolve(ok(GOT))
+    await settle()
+    expect(props.onCloned).toHaveBeenCalledWith(GOT)
+  })
+
+  it('a second needsLogin after Sign in shows the actions again and does not retry on its own', async () => {
+    const api = bridge({ worldClone: vi.fn(async () => NEEDS(true)) })
+    mount()
+    fireEvent.click(await screen.findByTestId('world-clone-sign-in'))
+    await settle()
+    expect(screen.getByTestId('world-clone-sign-in')).toBeEnabled()
+    expect(screen.queryByText('Finish signing in in the window that opened…')).toBeNull()
+    expect(api.worldClone).toHaveBeenCalledTimes(2)
+  })
+
+  it('Use a token opens the dialog, and a submitted token retries with it', async () => {
+    const api = bridge({ worldClone: vi.fn().mockResolvedValueOnce(NEEDS(true)).mockResolvedValueOnce(ok({ ...GOT, source: { ...GOT.source, login: 'token' } })) })
+    const props = mount()
+    fireEvent.click(await screen.findByTestId('world-clone-use-token'))
+    fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: ' ghp_x ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+    await settle()
+    expect(api.worldClone).toHaveBeenLastCalledWith('https://github.com/o/r.git', undefined, { mode: 'token', value: 'ghp_x' })
+    expect(props.onCloned).toHaveBeenCalled()
+  })
+
+  it('a refused token shows main\'s words in the token dialog, which stays open', async () => {
+    bridge({ worldClone: vi.fn().mockResolvedValueOnce(NEEDS(true)).mockResolvedValueOnce(fail('That token did not open it.')).mockResolvedValueOnce(NEEDS(true)).mockRejectedValueOnce(new Error('gone')) })
+    mount()
+    fireEvent.click(await screen.findByTestId('world-clone-use-token'))
+    const send = async () => {
+      fireEvent.change(screen.getByTestId('world-repo-access-input'), { target: { value: 'ghp_x' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Use this token' }))
+      await settle()
+    }
+    await send()
+    expect(within(screen.getByTestId('world-repo-access')).getByRole('alert')).toHaveTextContent('That token did not open it.')
+    await send()
+    expect(within(screen.getByTestId('world-repo-access')).getByRole('alert')).toHaveTextContent('That repository needs you to sign in.')
+    await send()
+    expect(within(screen.getByTestId('world-repo-access')).getByRole('alert')).toHaveTextContent("Lumopolis couldn't clone that repository. Try again.")
+  })
+
+  it('cancelling the token dialog goes back to the choices', async () => {
+    bridge({ worldClone: vi.fn(async () => NEEDS(true)) })
+    mount()
+    fireEvent.click(await screen.findByTestId('world-clone-use-token'))
+    fireEvent.click(within(screen.getByTestId('world-repo-access')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('world-repo-access')).toBeNull()
+    expect(screen.getByTestId('world-clone-use-token')).toBeInTheDocument()
+  })
+
+  it('changing the address or branch takes the sign-in choices away', async () => {
+    bridge({ worldClone: vi.fn(async () => NEEDS(true)) })
+    mount()
+    await screen.findByTestId('world-clone-sign-in')
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://github.com/o/s.git' } })
+    expect(screen.queryByTestId('world-clone-sign-in')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    await screen.findByTestId('world-clone-sign-in')
+    fireEvent.change(screen.getByLabelText('Branch (optional)'), { target: { value: 'dev' } })
+    expect(screen.queryByTestId('world-clone-use-token')).toBeNull()
+  })
+
+  it('a failed Sign in shows its error in the alert', async () => {
+    bridge({ worldClone: vi.fn().mockResolvedValueOnce(NEEDS(true)).mockResolvedValueOnce(fail('Sign in was closed.')) })
+    mount()
+    fireEvent.click(await screen.findByTestId('world-clone-sign-in'))
+    await settle()
+    expect(screen.getByRole('alert')).toHaveTextContent('Sign in was closed.')
   })
 })
 

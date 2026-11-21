@@ -3,8 +3,10 @@
 // main clones (shallow, into Termpolis's data folder) an indeterminate bar runs; Cancel stops it.
 import { useRef, useState } from 'react'
 import type { WorldEntry } from '../../../../shared/world/types'
+import type { NeedsLogin, RepoAccess } from '../../../../shared/world/repoAccess'
 import { BAD_REF_MESSAGE, validateGitUrl, validGitRef } from '../../../../shared/world/gitUrl'
-import { btnCls, dialogCls, fieldCls, primaryCls } from './worldTargets'
+import { btnCls, dialogCls, fieldCls, primaryCls, signInLabel } from './worldTargets'
+import { RepoAccessDialog } from './RepoAccessDialog'
 
 export interface CloneDialogProps {
   onCloned: (entry: WorldEntry) => void
@@ -18,6 +20,11 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
   const [branch, setBranch] = useState('')
   const [cloning, setCloning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** Set when the repository needs a sign-in: the choices to make one. */
+  const [login, setLogin] = useState<NeedsLogin | null>(null)
+  const [tokenOpen, setTokenOpen] = useState(false)
+  const [tokenError, setTokenError] = useState<string | null>(null)
+  const [signingIn, setSigningIn] = useState(false)
   /** Bumped by every clone and every cancel: only the latest clone's result counts. */
   const gen = useRef(0)
 
@@ -29,32 +36,50 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
   else if (ref !== undefined && !validGitRef(ref)) reason = BAD_REF_MESSAGE
   const canClone = trimmed !== '' && reason === null && !cloning
 
-  const clone = (): void => {
+  /** A changed address or branch is a different repository: the sign-in choices no longer apply. */
+  const edited = (): void => { setLogin(null); setTokenOpen(false) }
+
+  const clone = (access?: RepoAccess): void => {
     if (!canClone) return
     const mine = ++gen.current
     setCloning(true)
     setError(null)
-    const done = (message: string | null, entry?: WorldEntry): void => {
+    setTokenError(null)
+    setSigningIn(access?.mode === 'machine')
+    // The words go to the token dialog when the try came from it, else to the alert under the fields.
+    const viaToken = access?.mode === 'token'
+    const done = (message: string | null, entry?: WorldEntry, needs?: NeedsLogin): void => {
       if (gen.current !== mine) return
       setCloning(false)
-      if (entry) onCloned(entry)
+      setSigningIn(false)
+      if (entry) { onCloned(entry); return }
+      if (needs) setLogin(needs)
+      if (viaToken) setTokenError(message)
       else setError(message)
     }
-    // A repository that needs a sign-in shows main's words for now; the sign-in choices come with the dialog's next step.
-    window.termpolis.worldClone(trimmed, ref).then(
-      (res) => (!res.success ? done(res.error) : 'needsLogin' in res.data ? done(res.data.needsLogin.message) : done(null, res.data)),
+    const asked = access ? window.termpolis.worldClone(trimmed, ref, access) : window.termpolis.worldClone(trimmed, ref)
+    asked.then(
+      (res) => {
+        if (!res.success) done(res.error)
+        else if ('needsLogin' in res.data) done(res.data.needsLogin.message, undefined, res.data.needsLogin)
+        else done(null, res.data)
+      },
       () => done(CLONE_UNREACHABLE),
     )
   }
+
+  const submitToken = (value: string): void => clone({ mode: 'token', value })
 
   const cancel = (): void => {
     if (!cloning) { onClose(); return }
     gen.current++
     setCloning(false)
+    setSigningIn(false)
     window.termpolis.worldCloneCancel(trimmed, ref).catch(() => undefined)
   }
 
   return (
+    <>
     <div role="dialog" aria-label="Open a git repository" data-testid="world-clone" className={dialogCls}>
       <h2 className="text-base font-semibold text-white">Open a git repository</h2>
       <label className="flex flex-col gap-1 text-xs text-[#9ca3af]">
@@ -64,7 +89,7 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
           disabled={cloning}
           placeholder="https://github.com/owner/repo.git"
           spellCheck={false}
-          onChange={(e) => setUrl(e.target.value)}
+          onChange={(e) => { setUrl(e.target.value); edited() }}
           onKeyDown={(e) => { if (e.key === 'Enter') clone() }}
           className={fieldCls}
         />
@@ -76,7 +101,7 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
           disabled={cloning}
           placeholder="main"
           spellCheck={false}
-          onChange={(e) => setBranch(e.target.value)}
+          onChange={(e) => { setBranch(e.target.value); edited() }}
           className={fieldCls}
         />
       </label>
@@ -86,11 +111,32 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
           <div className="h-full w-1/3 animate-pulse rounded bg-[#0078d4]" />
         </div>
       )}
+      {signingIn && <p className="text-xs text-[#9ca3af]">Finish signing in in the window that opened…</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
+      {login !== null && (
+        <div className="flex gap-2">
+          {login.helper && (
+            <button type="button" data-testid="world-clone-sign-in" className={btnCls} disabled={cloning} onClick={() => clone({ mode: 'machine' })}>
+              {signInLabel(login.host)}
+            </button>
+          )}
+          <button type="button" data-testid="world-clone-use-token" className={btnCls} disabled={cloning} onClick={() => setTokenOpen(true)}>Use a token</button>
+        </div>
+      )}
       <div className="flex justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>
-        <button type="button" className={primaryCls} disabled={!canClone} onClick={clone}>Clone</button>
+        <button type="button" className={primaryCls} disabled={!canClone} onClick={() => clone()}>Clone</button>
       </div>
     </div>
+    {tokenOpen && login !== null && (
+      <RepoAccessDialog
+        host={login.host}
+        busy={cloning}
+        error={tokenError}
+        onSubmit={submitToken}
+        onCancel={() => { setTokenOpen(false); setTokenError(null) }}
+      />
+    )}
+    </>
   )
 }
