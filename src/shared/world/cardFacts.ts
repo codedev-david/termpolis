@@ -186,10 +186,14 @@ export const CARD_HEADINGS = {
   carriesConnections: 'Carries these connections'
 } as const
 
-/** The service names a part goes by while it runs, as the card words them (with "(edited by you)" when a person set
- *  them), or null when there are none. */
+/** The service names a part goes by while it runs, and whether a person set them. The one rule every output reads. */
+export function serviceNames(doc: WorldDoc, id: string): { names: string[]; handSet: boolean } {
+  return { names: doc.runtimeNames[id] ?? [], handSet: (doc.runtimeHandSet ?? []).includes(id) }
+}
+
+/** The service names as the card words them (with "(edited by you)" when a person set them), or null when there are none. */
 export function serviceNamesLine(doc: WorldDoc, id: string): string | null {
-  const names = doc.runtimeNames[id] ?? []
+  const { names, handSet } = serviceNames(doc, id)
   if (names.length === 0) return null
-  return names.join(', ') + ((doc.runtimeHandSet ?? []).includes(id) ? ' (edited by you)' : '')
+  return names.join(', ') + (handSet ? ' (edited by you)' : '')
 }

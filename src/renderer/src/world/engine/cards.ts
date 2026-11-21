@@ -1,7 +1,7 @@
 // Inspector cards as HTML strings. Every interpolated value is escaped (attributes too).
 import type { Claim, Evidence, WorldDoc, WorldEdge } from '../../../../shared/world/types'
 import { NOT_IN_DESIGN } from '../../../../shared/world/reconcile'
-import { BUILD_STATUS_TEXT as STATUS, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
+import { BUILD_STATUS_TEXT as STATUS, CARD_HEADINGS, NO_WHY_YET, allBuildings, allEdges, direction, edgeFromCode, nodeName, notInDesign, serviceNames as serviceNamesOf, runsIn as runsInOf, sizeNote, type FloorsView } from '../../../../shared/world/cardFacts'
 import { edgeItems, edgeSummary } from '../../../../shared/world/edgeText'
 import { escapeHtml as esc } from './html'
 
@@ -39,12 +39,12 @@ const known = (b: { id: string; how: Claim[]; why: Claim[]; claims: Claim[] }): 
  * there are none and none can be edited.
  */
 function serviceNames(doc: WorldDoc, id: string): string {
-  const names = doc.runtimeNames[id] ?? []
+  const { names, handSet } = serviceNamesOf(doc, id)
   const editable = doc.buildings.some((x) => x.id === id)
   if (names.length === 0 && !editable) return ''
   const list = names.length ? `<span class="rtnames">${esc(names.join(', '))}</span>` : '<span class="muted">None yet</span>'
   const edit = editable ? ` <button class="edit-names" data-runtime-edit="${esc(id)}" data-names="${esc(names.join(', '))}">Edit</button>` : ''
-  const by = (doc.runtimeHandSet ?? []).includes(id) ? ' <span class="muted">edited by you</span>' : ''
+  const by = handSet ? ' <span class="muted">edited by you</span>' : ''
   return section(CARD_HEADINGS.serviceNames, `<p>${list}${by}${edit}</p>`)
 }
 
