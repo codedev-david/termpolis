@@ -14,7 +14,10 @@
 //   - `~/` and `~user/`.
 //   - POSIX paths whose first folder is home, Users, root, mnt, media, Volumes, tmp, private, var, opt, srv,
 //     workspace or workspaces, in any letter case, starting the text or after a space, quote, bracket, `=`, `,`
-//     or `;` (not after `:`, so `route:/users` stays prose).
+//     or `;`. After a `:` (PATH lists, `file:line:` prefixes, `cwd:/x`) the folder must be followed by a real
+//     second name, one not starting with `:` or `{`: `PATH=/a:/home/ann` and `cwd:/Users/ann` count, while route
+//     prose such as `route:/users`, `route:/users/:id`, `route:/users/{id}` and `at:/home` keeps its words.
+//     (`api:/users/123` is rewritten too: it cannot be told apart from `api:/users/ann`.)
 // Other absolute POSIX text (`/api/users`, `/etc/hosts`) is left alone. Beyond that definition, the project root,
 // the home folder and the userData folder are found wherever they appear (any case, either slash, doubled
 // backslashes, the long and admin-share forms), so a folder name holding a space never splits.
@@ -37,6 +40,8 @@ const EXPORTED_KINDS: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>(['file',
 
 /** The characters a path in free text runs on with: up to a space, a quote, an angle bracket or a pipe. */
 const REST = `[^\\s"'<>|]*`
+/** A POSIX first folder that names a place on the machine, as a whole name. */
+const MACHINE_FOLDER = '/(?:home|users|root|mnt|media|volumes|tmp|private|var|opt|srv|workspaces?)(?![\\w.-])'
 /** The source of the revealing-path pattern described at the top of this file (use it with the `i` flag). */
 export const REVEALING_PATH = [
   `(?<![a-z0-9])[a-z]:(?:\\\\|/(?!/))${REST}`,
@@ -45,7 +50,8 @@ export const REVEALING_PATH = [
   `\\\\\\\\[^\\s\\\\/"'<>|]+[\\\\/]${REST}`,
   `file://${REST}`,
   `(?<![\\w~])~[\\w.-]*[\\\\/]${REST}`,
-  `(?<=^|[\\s"'\`(\\[{=,;])/(?:home|users|root|mnt|media|volumes|tmp|private|var|opt|srv|workspaces?)(?![\\w.-])${REST}`,
+  `(?<=^|[\\s"'\`(\\[{=,;])${MACHINE_FOLDER}${REST}`,
+  `(?<=:)${MACHINE_FOLDER}/[^\\s"'<>|:{/]${REST}`,
 ].join('|')
 
 /** Every revealing path in `text`, as written (trailing punctuation included). */

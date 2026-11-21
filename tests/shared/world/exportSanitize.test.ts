@@ -438,7 +438,7 @@ describe('fix round 1', () => {
 
 describe('fix round 2: a drive letter glued to a word', () => {
   const prose = [
-    'route:/users', 'see:/docs', 'type:/path', 'ns:/x', 'route:/users/:id',
+    'route:/users', 'see:/docs', 'type:/path', 'ns:/x', 'route:/users/:id', 'route:/users/{id}', 'at:/home',
     'http://localhost:3000/api', '12:30', 'a:b', 'git@github.com:org/repo.git',
   ]
   for (const t of prose) {
@@ -463,9 +463,30 @@ describe('fix round 2: a drive letter glued to a word', () => {
     })
   }
 
+  const afterColon: [string, string][] = [
+    ['PATH=/usr/bin:/home/ann/bin', `PATH=/usr/bin:${OUTSIDE}/bin`],
+    ['src/a.ts:/home/ann/x', `src/a.ts:${OUTSIDE}/x`],
+    ['cwd:/Users/ann/proj', `cwd:${OUTSIDE}/proj`],
+    ['file:/home/ann/x', `file:${OUTSIDE}/x`],
+    ['a.ts:12:/home/ann/x', `a.ts:12:${OUTSIDE}/x`],
+    // An outside path keeps only its last name (relativePath), here the folder `ann` itself.
+    ['"/srv/a":/var/lib/ann', `"${OUTSIDE}/a":${OUTSIDE}/ann`],
+  ]
+  for (const [t, want] of afterColon) {
+    it(`rewrites the folder path after a colon in ${t}`, () => {
+      expect(isRevealingPath(t)).toBe(true)
+      const out = sanitizeText(t, posix)
+      expect(out).toBe(want)
+      expect(out).not.toMatch(/ann\/|\/lib\//)
+      expect(isRevealingPath(out)).toBe(false)
+    })
+  }
+
   it('still rewrites a letter-glued home path through the known-folder pass', () => {
-    expect(isRevealingPath('xC:/Users/dev/a.ts')).toBe(false)
+    const ctx: SanitizeContext = { root: 'C:\\code\\dev\\repo', home: 'C:\\code\\dev', userData: 'C:\\code\\dev\\data' }
+    expect(isRevealingPath('xC:/code/dev/a.ts')).toBe(false)
+    expect(sanitizeText('xC:/code/dev/a.ts', ctx)).toBe(`x${OUTSIDE}/a.ts`)
+    expect(sanitizeText('xC:/code/dev/repo/src/a.ts', ctx)).toBe('xsrc/a.ts')
     expect(sanitizeText('xC:/Users/dev/a.ts', win)).toBe(`x${OUTSIDE}/a.ts`)
-    expect(sanitizeText('xC:/Users/dev/repo/src/a.ts', win)).toBe('xsrc/a.ts')
   })
 })
