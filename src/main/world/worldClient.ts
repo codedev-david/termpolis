@@ -365,6 +365,9 @@ export function createWorldClient(
       tr.onExit((code) => reset(tr, new Error(`Lumopolis host exited (code ${code})`)))
       const askpassPath = askpassOf()
       tr.postMessage({ kind: 'init', userDataPath: dataPath(), labelling: labelling() !== false, ...(askpassPath ? { askpassPath } : {}) })
+      // A host started after a world was removed (a restart, or a first start by a call for another world) is told at
+      // once, before any call, so a label run it starts for that world asks nothing.
+      if (removed.size > 0) tellRemoved()
     })
     live = p
     // A spawn that throws leaves nothing running: let the next call try again.
@@ -394,12 +397,13 @@ export function createWorldClient(
     })
   }
 
-  const keyOf = (root: string): string => {
+  /** The world's key for `root`. `opened`: a person compiling or opening the world (re-added, or opened in the pane),
+   *  which takes a removed world back so it labels again. A read (an agent's world tool, Ask) never does. */
+  const keyOf = (root: string, opened = false): string => {
     const key = typeof root === 'string' ? graphKeyForRoot(root) : ''
     if (!key) throw new Error('Lumopolis needs a project folder')
     roots.set(key, root)
-    // Asked for again (re-added, or opened): it labels again.
-    if (removed.delete(key)) tellRemoved()
+    if (opened && removed.delete(key)) tellRemoved()
     return key
   }
 
@@ -417,7 +421,7 @@ export function createWorldClient(
   const carried = (doc: WorldDoc): string => (doc.layers ? linkedPlanStamp(doc) : '')
 
   const compileWith = async (root: string, relayout: boolean, linked?: WorldDoc | null): Promise<WorldDoc> => {
-    const key = keyOf(root)
+    const key = keyOf(root, true)
     const snap = await snapshotOf(root)
     const head = await headOf(root)
     const plan = linked === undefined ? await planOf(key) : linked
@@ -471,7 +475,8 @@ export function createWorldClient(
     /** The stored world for `root`, or null when none was compiled yet. Returned at once; one from an
      *  older commit is also refreshed in the background (refreshIfStale) unless `opts.refresh` is false. */
     async get(root: string, opts: WorldGetOptions = {}): Promise<WorldDoc | null> {
-      const key = keyOf(root)
+      // The pane's get is a person opening the world; Ask's (no refresh) only reads it.
+      const key = keyOf(root, opts.refresh !== false)
       const doc = await call<WorldDoc | null>('get', [key])
       if (doc) {
         known.add(key)

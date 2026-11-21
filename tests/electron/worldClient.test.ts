@@ -492,18 +492,74 @@ describe('createWorldClient', () => {
     expect(result(8)).toEqual({ kind: 'llm-result', id: 8, text: 'done back' })
   })
 
-  it('a world removed while no host runs, or while the host cannot be told, is still kept from labelling (caveat 4, round 1)', async () => {
-    const llm = vi.fn(async () => 'x')
+  it('an agent or Ask reading a removed world does not take it back: no CLI starts and its label run is not resumed (caveat 4, round 2)', async () => {
+    const llm = vi.fn(async (_root: string, prompt: string) => `done ${prompt}`)
     const { client, spawned } = setup({ llm })
-    client.cancelLabelling(KEY)
     await client.compile(ROOT)
     const t = spawned[0]
-    // compile asked for it again, so it labels
-    t.emit({ kind: 'llm', id: 1, projectKey: KEY, prompt: 'p' })
+    const told = () => t.posted.filter((m) => m.kind === 'labelling-stopped')
+    const result = (id: number) => t.posted.find((m) => m.kind === 'llm-result' && m.id === id)
+    client.cancelLabelling(KEY)
+    // An agent's world tool reads it; Ask loads it without a refresh, then reads it.
+    await client.read(ROOT, { text: 'who calls it' })
+    await client.get(ROOT, { refresh: false })
+    // The host is never told it is back, so its label run stays stopped, and a request of the world starts no CLI.
+    expect(told()).toEqual([{ kind: 'labelling-stopped', keys: [KEY] }])
+    t.emit({ kind: 'llm', id: 1, projectKey: KEY, prompt: 'after the read' })
+    await flush()
+    expect(llm).not.toHaveBeenCalled()
+    expect(result(1)).toEqual({ kind: 'llm-result', id: 1, text: null })
+    // A person opening it (the pane's get) takes it back.
+    await client.get(ROOT)
+    expect(told().slice(-1)[0]).toEqual({ kind: 'labelling-stopped', keys: [] })
+    t.emit({ kind: 'llm', id: 2, projectKey: KEY, prompt: 'opened' })
     await flush()
     expect(llm).toHaveBeenCalledTimes(1)
-    t.postMessage = () => { throw new Error('gone') }
+    expect(result(2)).toEqual({ kind: 'llm-result', id: 2, text: 'done opened' })
+  })
+
+  it('a host started after a world was removed is told which worlds are removed before any call (caveat 4, round 2)', async () => {
+    const { client, spawned } = setup({ llm: vi.fn(async () => 'x') })
+    await client.compile(ROOT)
+    // None removed: a host is told nothing.
+    expect(spawned[0].posted.some((m) => m.kind === 'labelling-stopped')).toBe(false)
+    client.cancelLabelling(KEY)
+    // The host exits; the next host, started by a call for another world, is told at once.
+    spawned[0].exit(1)
+    await client.compile('C:/repos/other')
+    const t = spawned[1]
+    expect(t.posted.slice(0, 3).map((m) => m.kind)).toEqual(['init', 'labelling-stopped', 'call'])
+    expect(t.posted[1]).toEqual({ kind: 'labelling-stopped', keys: [KEY] })
+  })
+
+  it('a world removed while no host runs, or while the host cannot be told, still starts no CLI for its labelling requests (caveat 4, round 2)', async () => {
+    const llm = vi.fn(async () => 'x')
+    const { client, spawned } = setup({ llm })
+    const result = (id: number) => spawned[0].posted.find((m) => m.kind === 'llm-result' && m.id === id)
+    // Removed before any host runs; an agent's read then starts one.
+    client.cancelLabelling(KEY)
+    await client.read(ROOT, { text: 'q' })
+    const t = spawned[0]
+    t.emit({ kind: 'llm', id: 1, projectKey: KEY, prompt: 'no host when removed' })
+    await flush()
+    expect(llm).not.toHaveBeenCalled()
+    expect(result(1)).toEqual({ kind: 'llm-result', id: 1, text: null })
+    // Opened again, it labels.
+    await client.compile(ROOT)
+    t.emit({ kind: 'llm', id: 2, projectKey: KEY, prompt: 'opened' })
+    await flush()
+    expect(llm).toHaveBeenCalledTimes(1)
+    // Removed again while the host cannot be told: that throws nothing, and its next request still starts no CLI.
+    const post = t.postMessage.bind(t)
+    t.postMessage = (m) => {
+      if (m.kind === 'labelling-stopped') throw new Error('gone')
+      post(m)
+    }
     expect(() => client.cancelLabelling(KEY)).not.toThrow()
+    t.emit({ kind: 'llm', id: 3, projectKey: KEY, prompt: 'host not told' })
+    await flush()
+    expect(llm).toHaveBeenCalledTimes(1)
+    expect(result(3)).toEqual({ kind: 'llm-result', id: 3, text: null })
   })
 
   it('a running call the host gives up on is answered null at once and its CLI told to stop, but its slot waits until that CLI exits (caveat 4)', async () => {
