@@ -287,13 +287,7 @@ describe('bash, started for real with the integration', () => {
     roots.push(root)
     const home = join(root, 'home dir')
     mkdirSync(home)
-    writeFileSync(join(home, '.bash_profile'), [
-      'echo profile >> "$HOME/order.log"',
-      // A function of the person's own, named like a built-in lumopolis calls: bash looks functions up before
-      // built-ins when it runs one, so only `builtin local` keeps it out.
-      "local() { builtin printf 'FNHIJACK'; }",
-      '',
-    ].join('\n'))
+    writeFileSync(join(home, '.bash_profile'), 'echo profile >> "$HOME/order.log"\n')
     const belDir = belFolder(root)
     const spacedDir = spacedFolder(root)
     const env0 = baseEnv(home, belDir, spacedDir)
@@ -305,7 +299,13 @@ describe('bash, started for real with the integration', () => {
       await waitFor(sh.out, /\x1b\]7;file:\/\//, 'the first prompt (its OSC 7)')
       expect(readFileSync(join(home, 'order.log'), 'utf8').trim()).toBe('profile')
       await exercise(sh, belDir, spacedDir)
-      expect(sh.out()).not.toContain('FNHIJACK')
+      // A function of the person's own, named like a built-in lumopolis calls: bash looks functions up before
+      // built-ins when it runs one, so only `builtin local` keeps it out. It also reaches the system's own prompt
+      // hooks (Ubuntu's systemd OSC 3008 script calls local), so only lumopolis's own output is checked, in a file.
+      const hijacked = sh.out().length
+      sh.write(`local() { builtin printf 'FNHIJACK'; }; lumopolis "$TP_SPACED_DIR" > "$HOME/lp.out" 2>&1; unset -f local; echo LP-$((40+2))\r`)
+      await waitFor(() => sh.out().slice(hijacked), /LP-42/, 'lumopolis run with a function named local defined')
+      expect(readFileSync(join(home, 'lp.out'), 'utf8')).toBe(`\x1b]7377;lumopolis;${NONCE};${spacedDir}\x07`)
     } finally { sh.kill() }
   }, 60_000)
 })
