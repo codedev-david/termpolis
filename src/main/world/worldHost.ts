@@ -898,8 +898,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     const ctl = new AbortController()
     if (progress) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 0 })
     const entry = { ctl, run, progress } as { ctl: AbortController; done: Promise<CloneResult>; run: LoginRun; progress: boolean }
-    // The askpass check runs inside the registered entry: a cancel during it aborts ctl, and the clone then
-    // answers Cancelled before it looks for git.
+    // The askpass check runs inside the registered entry: a cancel during it aborts ctl, and the run answers
+    // Cancelled, whether the askpass was found (the clone stops before it looks for git) or not.
     const done = askpassReady(st, run)
       .then(
         (ready): Promise<CloneResult> =>
@@ -921,7 +921,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
                 },
                 run
               )
-            : Promise.resolve({ ok: false, error: TOKEN_REJECTED_MESSAGE })
+            : Promise.resolve({ ok: false, error: ctl.signal.aborted ? CANCELLED_MESSAGE : TOKEN_REJECTED_MESSAGE })
       )
       .then((res) => {
         if (res.ok && entry.progress) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 100 })

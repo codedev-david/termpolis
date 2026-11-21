@@ -97,6 +97,23 @@ describe('stripUrlUserinfo', () => {
     expect(stripUrlUserinfo('https://h.example/team@x/r')).toBe('https://h.example/team@x/r')
     for (const u of ['https://h.example/r.git', 'ssh://git@h.example/r', 'git@h.example:r.git', '/']) expect(stripUrlUserinfo(u)).toBe(u)
   })
+
+  it('drops everything up to the last @ of the host part, so a second strip changes nothing', () => {
+    expect(stripUrlUserinfo('https://a@b@host/x')).toBe('https://host/x')
+    expect(stripUrlUserinfo('https://a@b@host')).toBe('https://host')
+    expect(stripUrlUserinfo('https://a@b@host/team@x/r')).toBe('https://host/team@x/r')
+    // A query or a fragment ends the host part: an @ after one belongs to them, not to a user.
+    expect(stripUrlUserinfo('https://evil.example?@host/x')).toBe('https://evil.example?@host/x')
+    expect(stripUrlUserinfo('https://evil.example#@host/x')).toBe('https://evil.example#@host/x')
+    for (const u of ['https://a@b@host/x', 'https://u:p@h.example/r.git', 'https://name@h.example/r', 'https://@h/r', 'https://a@@h/r', 'https://h.example/team@x/r', 'https://e?@h/x', 'ssh://git@h.example/r', 'git@h.example:r.git']) {
+      expect(stripUrlUserinfo(stripUrlUserinfo(u))).toBe(stripUrlUserinfo(u))
+    }
+  })
+
+  it('a URL with two users names the same clone folder as the URL without them', () => {
+    expect(cloneKey('https://a@b@github.com/o/r.git')).toBe(cloneKey('https://github.com/o/r.git'))
+    expect(cloneKey('https://a@b@github.com/o/r.git', 'main')).toBe(cloneKey(stripUrlUserinfo('https://a@b@github.com/o/r.git'), 'main'))
+  })
 })
 
 describe('validateGitUrl', () => {

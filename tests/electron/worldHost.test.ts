@@ -1530,6 +1530,26 @@ describe('createWorldHost cloneSource / cancelClone', () => {
       })
     }
 
+    // A cancel that lands while a missing askpass is still being looked for is a cancel, not a refused token.
+    it('a cancel during the askpass check of a token run whose askpass is missing returns Cancelled', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      const execFile = vi.fn(async () => ({ code: 0, stderr: '', stdout: 'git version 2.47.1' }))
+      const gitBin = vi.fn(async () => '/usr/bin/git')
+      const h = harness({ cloneDeps: { execFile, gitBin } })
+      await h.send({ kind: 'init', userDataPath: '/ud', labelling: true, askpassPath: join(dir, 'no-askpass-here.sh') })
+      const a = call(h.send, 1, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      // no await between the two: the cancel lands while the stat of the missing file is still pending
+      await call(h.send, 2, 'cancelClone', [URL1])
+      expect(resultOf(h, 2)).toMatchObject({ ok: true, result: true })
+      await a
+      expect(resultOf(h, 1)).toMatchObject({ ok: true, result: { ok: false, error: CANCELLED_MESSAGE } })
+      expect(gitBin).not.toHaveBeenCalled()
+      expect(execFile).not.toHaveBeenCalled()
+      // with no cancel, the same missing askpass is a refused token
+      await call(h.send, 3, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      expect(resultOf(h, 3)).toMatchObject({ ok: true, result: { ok: false, error: TOKEN_REJECTED_MESSAGE } })
+    })
+
     it('a token run whose askpass is missing is still refused inside the run, so it waits its turn like any other', async () => {
       vi.spyOn(console, 'warn').mockImplementation(() => undefined)
       const { h, runs, releases } = pending()

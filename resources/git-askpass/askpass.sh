@@ -2,9 +2,9 @@
 # Answers git for one run, and only when the prompt is for https://<the forge host Termpolis set>.
 host=$TERMPOLIS_GIT_ASKPASS_HOST
 [ -n "$host" ] || exit 1
-# git quotes the URL it asks about: the first quote must open https:// and another must close it.
+# git quotes the URL it asks about: a quote opens it and a later quote closes it, or nothing is answered.
 case "$1" in
-  *"'"*) ;;
+  *"'"*"'"*) ;;
   *) exit 1 ;;
 esac
 rest=${1#*"'"}

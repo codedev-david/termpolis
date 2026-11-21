@@ -18,8 +18,9 @@ export function validateGitUrl(url: string): { ok: true } | { ok: false; reason:
 }
 
 // The user-info part of an https URL (https://name:secret@host/...): what a private-repository URL
-// carries to sign in. It reaches git for the clone, and nowhere else.
-const HTTPS_USERINFO_RE = /^(https:\/\/)[^\s/@]*@/i
+// carries to sign in. It reaches git for the clone, and nowhere else. It runs to the last @ before the
+// host part ends (at a /, ? or #), so what is left starts at the host and a second strip changes nothing.
+const HTTPS_USERINFO_RE = /^(https:\/\/)[^\s/?#]*@/i
 
 /** The URL with any https user-info removed, as it may be stored or shown; anything else unchanged. */
 export function stripUrlUserinfo(url: string): string {

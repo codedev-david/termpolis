@@ -161,6 +161,32 @@ async function expectWorldOpen(page: Page): Promise<string> {
   return (await project.textContent()) ?? ''
 }
 
+/**
+ * Records every reply main sends for world:update-source, so a test can say why a notice did not come.
+ * The map probe (TERMPOLIS_TEST_WORLD_PROBE) lives in the renderer's map and never sees an IPC reply, so
+ * this uses the main-process seam the e2e suite already uses (app.evaluate on ipcMain, as
+ * swarm-dashboard.spec.ts does): the app's own handler is kept and only wrapped, in this test run only.
+ */
+async function recordUpdateReplies(app: ElectronApplication): Promise<void> {
+  await app.evaluate(({ ipcMain }) => {
+    type Handler = (event: unknown, ...args: unknown[]) => unknown
+    const handlers = (ipcMain as unknown as { _invokeHandlers?: Map<string, Handler> })._invokeHandlers
+    const real = handlers?.get('world:update-source')
+    if (!handlers || !real) throw new Error('world:update-source has no handler to record')
+    const g = globalThis as unknown as { __worldUpdateReplies?: unknown[] }
+    g.__worldUpdateReplies = []
+    handlers.set('world:update-source', async (event, ...args) => {
+      const res = await real(event, ...args)
+      g.__worldUpdateReplies?.push(res)
+      return res
+    })
+  })
+}
+
+/** The world:update-source replies recorded so far. */
+const updateReplies = (app: ElectronApplication): Promise<unknown[]> =>
+  app.evaluate(() => (globalThis as unknown as { __worldUpdateReplies?: unknown[] }).__worldUpdateReplies ?? [])
+
 /** Every file under `dir` whose bytes contain `text`. */
 function filesContaining(dir: string, text: string): string[] {
   const needle = Buffer.from(text)
@@ -211,10 +237,18 @@ test.describe.serial('Lumopolis private repositories with this computer\'s login
     const run = await launch(userData, helperConfig, helperEnv({ FAKE_HELPER_EMPTY: '1' }))
     app = run.app
     const page = run.page
+    await recordUpdateReplies(run.app)
     await openHome(page)
     await home(page).getByRole('list', { name: 'Recent worlds' }).getByRole('button', { name: /^Open private/ }).click()
     // The saved copy renders, and the background update that met no login asks for a sign-in in the notice.
     expect(await expectWorldOpen(page)).toBe(savedCopy)
+    // First what main answered the background update, so a missing notice names its cause: an update
+    // that failed some other way shows nothing on purpose.
+    await expect.poll(async () => (await updateReplies(run.app)).length, { timeout: 60_000 }).toBeGreaterThan(0)
+    expect((await updateReplies(run.app))[0]).toEqual({
+      success: true,
+      data: { needsLogin: { host: expect.any(String), helper: true, message: expect.any(String) } },
+    })
     const notice = page.locator('[data-testid="world-sign-in-needed"]')
     await expect(notice).toBeVisible({ timeout: 60_000 })
     await expect(notice.getByRole('button', { name: 'Use a token' })).toBeVisible()

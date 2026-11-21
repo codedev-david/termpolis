@@ -303,9 +303,9 @@ describe('the shipped askpass script', () => {
         '# Answers git for one run, and only when the prompt is for https://<the forge host Termpolis set>.',
         'host=$TERMPOLIS_GIT_ASKPASS_HOST',
         '[ -n "$host" ] || exit 1',
-        '# git quotes the URL it asks about: the first quote must open https:// and another must close it.',
+        '# git quotes the URL it asks about: a quote opens it and a later quote closes it, or nothing is answered.',
         'case "$1" in',
-        `  *"'"*) ;;`,
+        `  *"'"*"'"*) ;;`,
         '  *) exit 1 ;;',
         'esac',
         `rest=\${1#*"'"}`,
@@ -396,6 +396,16 @@ describe('the shipped askpass script', () => {
     // A plain address with a query or a fragment after the host is still the forge's.
     expect(ask("Enter value for 'https://example.test?x=1': ")).toEqual(answered(`${VALUE}\n`))
     expect(ask("Enter value for 'https://example.test#top': ")).toEqual(answered(`${VALUE}\n`))
+  })
+
+  it('a prompt whose URL is never closed by a quote gets nothing', () => {
+    expect(ask("Enter value for 'https://example.test")).toEqual(refused)
+    expect(ask("Enter value for 'https://example.test: ")).toEqual(refused)
+    expect(ask("Username for 'https://example.test/o/r.git")).toEqual(refused)
+    expect(ask("Enter value for 'https://me@example.test")).toEqual(refused)
+    // the same prompts with their closing quote are answered
+    expect(ask("Enter value for 'https://example.test': ")).toEqual(answered(`${VALUE}\n`))
+    expect(ask("Username for 'https://example.test/o/r.git': ")).toEqual(answered('x-access-token\n'))
   })
 
   it('a normal prompt with the user git knows still gets its answers', () => {
