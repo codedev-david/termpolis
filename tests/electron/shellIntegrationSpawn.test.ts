@@ -6,6 +6,7 @@
 // Runs where the shell is on PATH. On the macOS and Linux CI runners the workflow installs both, and a missing shell
 // (or a node-pty that will not load) FAILS there rather than skipping: no silent false green. Every skip logs why.
 import { afterAll, describe, expect, it } from 'vitest'
+import { execFileSync } from 'child_process'
 import { createRequire } from 'module'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
@@ -137,6 +138,9 @@ describe('zsh, started for real with the integration', () => {
     it('zsh and node-pty are on this CI runner (a missing one fails here, never skips)', () => {
       expect(pty, ptyError).toBeTruthy()
       expect(zshPath, 'the workflow installs zsh on the macOS and Linux runners').toBeTruthy()
+      // For the log: the runner's own fpath folders that compinit calls insecure (see the person's .zshenv below).
+      const audit = execFileSync(zshPath!, ['-fc', 'autoload -Uz compaudit; compaudit 2>&1; true'], { encoding: 'utf8' })
+      console.log(`[shellIntegrationSpawn] compaudit on this runner: ${audit.trim() || 'nothing insecure'}`)
     })
   }
 
@@ -151,6 +155,11 @@ describe('zsh, started for real with the integration', () => {
       for (const f of ['.zshenv', '.zprofile', '.zshrc', '.zlogin']) {
         writeFileSync(join(userDir, f), `print -r -- "${f.slice(1)}:\${ZDOTDIR-none}" >> "$HOME/order.log"\n`)
       }
+      // Ubuntu's /etc/zsh/zshrc runs compinit, which stops at a y/n question when a folder in the runner's fpath is
+      // group or world writable (the GitHub Ubuntu image has one). That is the machine, not Termpolis: a plain zsh with
+      // no Termpolis files asks the same, and compaudit checks only fpath, never ZDOTDIR or HOME. Ubuntu's documented
+      // opt-out, set in the person's own .zshenv, keeps the run unattended; it does not skip anything Termpolis does.
+      writeFileSync(join(userDir, '.zshenv'), 'skip_global_compinit=1\n', { flag: 'a' })
       // The person's own precmd, which Termpolis's hook must sit beside, not replace.
       writeFileSync(join(userDir, '.zshrc'), "precmd() { builtin printf 'USERPRECMD' }\n", { flag: 'a' })
       const belDir = belFolder(root)
