@@ -124,17 +124,19 @@ if (-not $global:__termpolis_wrapped) {
 `
 
 /**
- * The body of `lumopolis` for bash and zsh, which share it. Built-ins only: local, [, case, [[, printf.
+ * The body of `lumopolis` for bash and zsh, which share it. Built-ins only: local, [, case, [[, printf, return, each
+ * that can be a function or alias name called through `builtin` (zsh defines this after the person's .zshrc, so an
+ * alias of theirs named printf would otherwise expand inside it; case and [[ are reserved words).
  * `-h` prints the usage. A relative folder is made absolute against $PWD; a drive with a separator after it
  * (C:\x, C:/x) counts as absolute under Git Bash, while C:foo (relative to the drive) does not. A folder whose
  * name holds a BEL would end the sequence early, so it is refused like a missing one.
  */
 const POSIX_LUMOPOLIS_BODY =
-  `local p="\${1:-.}"; ` +
-  `if [ "$p" = -h ] || [ "$p" = --help ]; then printf '%s\\n' '${LUMOPOLIS_USAGE}'; return 0; fi; ` +
+  `builtin local p="\${1:-.}"; ` +
+  `if builtin [ "$p" = -h ] || builtin [ "$p" = --help ]; then builtin printf '%s\\n' '${LUMOPOLIS_USAGE}'; builtin return 0; fi; ` +
   `case "$p" in /*|[A-Za-z]:[\\\\/]*) ;; *) p="$PWD/$p" ;; esac; ` +
-  `if [[ "$p" == *$'\\a'* || ! -d "$p" ]]; then printf 'lumopolis: no such folder: %s\\n' "\${1:-.}" >&2; return 1; fi; ` +
-  `printf '\\033]7377;lumopolis;%s;%s\\007' "$${LUMOPOLIS_NONCE_ENV}" "$p"; `
+  `if [[ "$p" == *$'\\a'* || ! -d "$p" ]]; then builtin printf 'lumopolis: no such folder: %s\\n' "\${1:-.}" >&2; builtin return 1; fi; ` +
+  `builtin printf '\\033]7377;lumopolis;%s;%s\\007' "$${LUMOPOLIS_NONCE_ENV}" "$p"; `
 
 /**
  * bash's `lumopolis`, handed over as an exported function: bash defines every `BASH_FUNC_<name>%%`
@@ -176,6 +178,12 @@ export const CMD_LUMOPOLIS_MACROS =
 
 /** Where Termpolis passes a ZDOTDIR of the person's own to its zsh start-up files. */
 export const ZSH_USER_ZDOTDIR_ENV = 'TERMPOLIS_USER_ZDOTDIR'
+/**
+ * Termpolis's zsh folder again, for .zshenv to read back instead of $ZDOTDIR: zsh 5.9 rewrites ZDOTDIR's stored value
+ * in place as it opens $ZDOTDIR/.zshenv (getsparam_u in sourcehome), so a folder with a letter whose UTF-8 has a byte
+ * in zsh's meta range (ß, č, П) reads back with that byte gone, and every hand-back would then point at no folder.
+ */
+export const ZSH_DIR_ENV = 'TERMPOLIS_ZSH_DIR'
 
 // The pieces of Termpolis's zsh start-up files. zsh reads $ZDOTDIR/.zshenv, then .zprofile (login shells), .zshrc
 // (interactive) and .zlogin (login), and looks ZDOTDIR up again before each. Each file of ours puts the person's
@@ -189,16 +197,16 @@ const ZSH_DONE = 'builtin unset __termpolis_zdotdir __termpolis_user_zdotdir'
 const ZSH_HEADER = '# Termpolis shell integration for zsh, written by Termpolis on each run. It runs your own file first.\n'
 
 export const ZSH_ZSHENV = ZSH_HEADER +
-  '__termpolis_zdotdir="$ZDOTDIR"\n' +
+  `__termpolis_zdotdir="\${${ZSH_DIR_ENV}:-$ZDOTDIR}"\n` +
   `__termpolis_user_zdotdir="\${${ZSH_USER_ZDOTDIR_ENV}-}"\n` +
-  `builtin unset ${ZSH_USER_ZDOTDIR_ENV}\n` +
+  `builtin unset ${ZSH_DIR_ENV} ${ZSH_USER_ZDOTDIR_ENV}\n` +
   `${ZSH_RESTORE}\n` +
   `${zshSource('.zshenv')}\n` +
   // A shell that reads nothing more (a script; start-up files switched off) keeps the person's ZDOTDIR.
   `if [[ -o rcs ]] && [[ -o interactive || -o login ]]; then ${ZSH_HANDBACK}; else ${ZSH_DONE}; fi\n` +
-  'true\n'
+  'builtin true\n'
 
-export const ZSH_ZPROFILE = ZSH_HEADER + `${ZSH_RESTORE}\n${zshSource('.zprofile')}\n${ZSH_HANDBACK}\ntrue\n`
+export const ZSH_ZPROFILE = ZSH_HEADER + `${ZSH_RESTORE}\n${zshSource('.zprofile')}\n${ZSH_HANDBACK}\nbuiltin true\n`
 
 /**
  * After the person's .zshrc: a precmd hook that reports the folder with the same OSC 7 as bash, added with
@@ -215,9 +223,9 @@ export const ZSH_ZSHRC = ZSH_HEADER +
   'builtin autoload -Uz add-zsh-hook\n' +
   'if ! add-zsh-hook precmd __termpolis_report_cwd 2>/dev/null; then precmd_functions+=(__termpolis_report_cwd); fi\n' +
   `if ! builtin typeset -f lumopolis >/dev/null 2>&1; then ${ZSH_LUMOPOLIS_FUNCTION}; fi\n` +
-  'true\n'
+  'builtin true\n'
 
-export const ZSH_ZLOGIN = ZSH_HEADER + `${ZSH_RESTORE}\n${zshSource('.zlogin')}\n${ZSH_DONE}\ntrue\n`
+export const ZSH_ZLOGIN = ZSH_HEADER + `${ZSH_RESTORE}\n${zshSource('.zlogin')}\n${ZSH_DONE}\nbuiltin true\n`
 
 /**
  * fish's integration, sourced with --init-command, which fish runs after config.fish and before the first prompt. The
@@ -375,6 +383,7 @@ export function integrationEnv(
       const file = unixish(scriptPath)
       const dir = file.slice(0, Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')))
       out.ZDOTDIR = dir
+      out[ZSH_DIR_ENV] = dir
       const theirs = existing.ZDOTDIR
       if (theirs && theirs !== dir) out[ZSH_USER_ZDOTDIR_ENV] = theirs
       break

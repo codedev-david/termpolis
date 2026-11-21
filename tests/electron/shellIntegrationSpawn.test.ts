@@ -1,9 +1,9 @@
-// zsh and fish with Termpolis's integration, for real: the generated files on disk, the shell started on a REAL
+// bash, zsh and fish with Termpolis's integration, for real: the generated files on disk, the shell started on a REAL
 // node-pty exactly as terminalManager starts it (its args and env from shellIntegration.ts), a scratch HOME whose own
 // start-up files record that they ran. Asserts the OSC 7 after `cd /tmp`, the lumopolis sequence, its refusals and
 // its usage line, that the person's own prompt hook still runs, and that zsh leaves ZDOTDIR as it found it.
 //
-// Runs where the shell is on PATH. On the macOS and Linux CI runners the workflow installs both, and a missing shell
+// Runs where the shell is on PATH. On the macOS and Linux CI runners the workflow installs zsh and fish, and a missing shell
 // (or a node-pty that will not load) FAILS there rather than skipping: no silent false green. Every skip logs why.
 import { afterAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'child_process'
@@ -45,7 +45,7 @@ function onPath(name: string): string | null {
 }
 
 function skipReason(shell: string, path: string | null): string | null {
-  if (process.platform === 'win32') return 'zsh and fish are tested on macOS and Linux (Termpolis offers them there)'
+  if (process.platform === 'win32') return `this file runs ${shell} on macOS and Linux only`
   if (!pty) return ptyError
   if (!path) return `${shell} is not on PATH`
   return null
@@ -72,10 +72,16 @@ async function waitFor(get: () => string, re: RegExp, what: string, ms = 20_000)
   throw new Error(`no ${what} within ${ms} ms; the terminal showed:\n${JSON.stringify(get().slice(-3000))}`)
 }
 
+/**
+ * Termpolis's data folder in each run: a plain one, and one with a space and a non-ASCII letter in it, as macOS's
+ * userData ("~/Library/Application Support/Termpolis") has a space and a person's own name may be in any script.
+ */
+const DATA_DIRS = ['data', 'Application Support/Termpolis üß']
+
 /** Termpolis's files for this shell, written where terminalSpawnPrep writes them (here: a scratch data folder). */
-function writeIntegration(root: string, shell: 'zsh' | 'fish'): string {
+function writeIntegration(root: string, shell: 'zsh' | 'fish', dataDir: string): string {
   const file = integrationFile(detectShellKind(shell))!
-  const main = join(root, 'data', file.name)
+  const main = join(root, dataDir, file.name)
   mkdirSync(join(main, '..'), { recursive: true })
   for (const f of integrationFileSet(file, main)) writeFileSync(f.path, f.content, 'utf8')
   return main
@@ -85,7 +91,7 @@ const OSC7_TMP = /\x1b\]7;file:\/\/[^\x07/]*\/(private\/)?tmp\x07/
 const LUMO_TMP = new RegExp(`\\x1b\\]7377;lumopolis;${NONCE};/(private/)?tmp/\\.\\x07`)
 
 /** Types each command and checks what came back after it, the same for both shells. */
-async function exercise(sh: ReturnType<typeof start>, belDir: string | null): Promise<void> {
+async function exercise(sh: ReturnType<typeof start>, belDir: string | null, spacedDir: string): Promise<void> {
   const after = (cmd: string): (() => string) => { const at = sh.out().length; sh.write(`${cmd}\r`); return () => sh.out().slice(at) }
 
   const cd = after('cd /tmp')
@@ -102,12 +108,25 @@ async function exercise(sh: ReturnType<typeof start>, belDir: string | null): Pr
   await waitFor(help, new RegExp(LUMOPOLIS_USAGE.replace(/[[\]]/g, '\\$&')), 'the usage line')
   expect(help()).not.toContain('\x1b]7377')
 
+  // A folder with a space and a non-ASCII letter in its name travels whole, as one argument.
+  const spaced = after('lumopolis "$TP_SPACED_DIR"')
+  await waitFor(spaced, new RegExp(`\\x1b\\]7377;lumopolis;${NONCE};${escapeRe(spacedDir)}\\x07`), 'the lumopolis sequence for a folder with a space')
+
   if (belDir) {
     // A real folder whose name holds a BEL: refused, because the BEL would end the sequence early.
     const bel = after('lumopolis "$TP_BEL_DIR"')
     await waitFor(bel, /lumopolis: no such folder: [^\r\n]*a\x07b/, 'the refusal of a folder with a BEL in its name')
     expect(bel()).not.toContain('\x1b]7377')
   }
+}
+
+const escapeRe = (s: string): string => s.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&')
+
+/** A real folder with a space and a non-ASCII letter in its name, for `lumopolis "<folder>"`. */
+function spacedFolder(root: string): string {
+  const d = join(root, 'my folder é')
+  mkdirSync(d)
+  return d
 }
 
 function belFolder(root: string): string | null {
@@ -118,13 +137,14 @@ function belFolder(root: string): string | null {
   }
 }
 
-function baseEnv(home: string, belDir: string | null): Record<string, string> {
+function baseEnv(home: string, belDir: string | null, spacedDir: string): Record<string, string> {
   return {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
     HOME: home,
     TERM: 'xterm-256color',
     LANG: 'C.UTF-8',
     [LUMOPOLIS_NONCE_ENV]: NONCE,
+    TP_SPACED_DIR: spacedDir,
     ...(belDir ? { TP_BEL_DIR: belDir } : {}),
   }
 }
@@ -144,8 +164,15 @@ describe('zsh, started for real with the integration', () => {
     })
   }
 
-  for (const withOwnZdotdir of [false, true]) {
-    it.skipIf(!!zshSkip)(`runs the person's four files in order, then OSC 7 and lumopolis (${withOwnZdotdir ? 'their own ZDOTDIR' : 'no ZDOTDIR'})`, async () => {
+  const cases = [
+    { withOwnZdotdir: false, dataDir: DATA_DIRS[0] },
+    { withOwnZdotdir: true, dataDir: DATA_DIRS[0] },
+    // The ß of this one is UTF-8 C3 9F, a byte zsh 5.9 drops from $ZDOTDIR as it opens .zshenv (see ZSH_DIR_ENV).
+    { withOwnZdotdir: false, dataDir: DATA_DIRS[1] },
+    { withOwnZdotdir: true, dataDir: DATA_DIRS[1] },
+  ]
+  for (const { withOwnZdotdir, dataDir } of cases) {
+    it.skipIf(!!zshSkip)(`runs the person's four files in order, then OSC 7 and lumopolis (${withOwnZdotdir ? 'their own ZDOTDIR' : 'no ZDOTDIR'}; data folder "${dataDir}")`, async () => {
       const root = mkdtempSync(join(tmpdir(), 'tp-zsh-'))
       roots.push(root)
       const home = join(root, 'home')
@@ -162,9 +189,13 @@ describe('zsh, started for real with the integration', () => {
       writeFileSync(join(userDir, '.zshenv'), 'skip_global_compinit=1\n', { flag: 'a' })
       // The person's own precmd, which Termpolis's hook must sit beside, not replace.
       writeFileSync(join(userDir, '.zshrc'), "precmd() { builtin printf 'USERPRECMD' }\n", { flag: 'a' })
+      // Aliases of the person's own, named like the built-ins lumopolis calls. zsh defines lumopolis after their .zshrc,
+      // so these would expand inside it unless each call goes through `builtin`.
+      writeFileSync(join(userDir, '.zshrc'), "alias printf='builtin print -rn -- ALIASED;' local='builtin print -rn -- ALIASED;' return='builtin print -rn -- ALIASED;'\n", { flag: 'a' })
       const belDir = belFolder(root)
-      const script = writeIntegration(root, 'zsh')
-      const env0 = { ...baseEnv(home, belDir), ...(withOwnZdotdir ? { ZDOTDIR: userDir } : {}) }
+      const spacedDir = spacedFolder(root)
+      const script = writeIntegration(root, 'zsh', dataDir)
+      const env0 = { ...baseEnv(home, belDir, spacedDir), ...(withOwnZdotdir ? { ZDOTDIR: userDir } : {}) }
       const env = { ...env0, ...integrationEnv('zsh', env0, script) }
       // As terminalManager: --login (getShellArgs, for a path ending in zsh), then the integration's own args (none).
       const sh = start(zshPath!, ['--login', ...integrationArgs('zsh', script)], env, root)
@@ -174,12 +205,13 @@ describe('zsh, started for real with the integration', () => {
         expect(readFileSync(log, 'utf8').trim().split('\n')).toEqual([`zshenv:${seen}`, `zprofile:${seen}`, `zshrc:${seen}`, `zlogin:${seen}`])
 
         const cd = sh.out().length
-        await exercise(sh, belDir)
+        await exercise(sh, belDir, spacedDir)
         expect(sh.out().slice(cd)).toContain('USERPRECMD')
+        expect(sh.out()).not.toContain('ALIASED')
 
         const at = sh.out().length
-        sh.write('print -r -- "ZD=[${ZDOTDIR-unset}] V=[${__termpolis_zdotdir-gone}] U=[${TERMPOLIS_USER_ZDOTDIR-gone}]"\r')
-        await waitFor(() => sh.out().slice(at), new RegExp(`ZD=\\[${withOwnZdotdir ? userDir.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&') : 'unset'}\\] V=\\[gone\\] U=\\[gone\\]`), "ZDOTDIR as the person had it, and nothing of Termpolis's left set")
+        sh.write('print -r -- "ZD=[${ZDOTDIR-unset}] V=[${__termpolis_zdotdir-gone}] U=[${TERMPOLIS_USER_ZDOTDIR-gone}] D=[${TERMPOLIS_ZSH_DIR-gone}]"\r')
+        await waitFor(() => sh.out().slice(at), new RegExp(`ZD=\\[${withOwnZdotdir ? escapeRe(userDir) : 'unset'}\\] V=\\[gone\\] U=\\[gone\\] D=\\[gone\\]`), "ZDOTDIR as the person had it, and nothing of Termpolis's left set")
 
         // History stays the person's (macOS's /etc/zshrc sets HISTFILE from ZDOTDIR while it is still Termpolis's).
         const h = sh.out().length
@@ -203,7 +235,7 @@ describe('fish, started for real with the integration', () => {
     })
   }
 
-  it.skipIf(!!fishSkip)("runs the person's config.fish first, then OSC 7 and lumopolis beside their own prompt handler", async () => {
+  for (const dataDir of DATA_DIRS) it.skipIf(!!fishSkip)(`runs the person's config.fish first, then OSC 7 and lumopolis beside their own prompt handler (data folder "${dataDir}")`, async () => {
     const root = mkdtempSync(join(tmpdir(), 'tp-fish-'))
     roots.push(root)
     const home = join(root, 'home')
@@ -219,8 +251,9 @@ describe('fish, started for real with the integration', () => {
       '',
     ].join('\n'))
     const belDir = belFolder(root)
-    const script = writeIntegration(root, 'fish')
-    const env0 = { ...baseEnv(home, belDir), XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share') }
+    const spacedDir = spacedFolder(root)
+    const script = writeIntegration(root, 'fish', dataDir)
+    const env0 = { ...baseEnv(home, belDir, spacedDir), XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share') }
     const env = { ...env0, ...integrationEnv('fish', env0, script) }
     const args = integrationArgs('fish', script)
     expect(args[0]).toBe('--init-command')
@@ -229,8 +262,50 @@ describe('fish, started for real with the integration', () => {
       await waitFor(sh.out, /\x1b\]7;file:\/\//, 'the first prompt (its OSC 7)')
       expect(readFileSync(join(home, 'order.log'), 'utf8').trim()).toBe('config')
       const cd = sh.out().length
-      await exercise(sh, belDir)
+      await exercise(sh, belDir, spacedDir)
       expect(sh.out().slice(cd)).toContain('USERPROMPT')
+    } finally { sh.kill() }
+  }, 60_000)
+})
+
+const bashPath = process.platform === 'win32' ? null : onPath('bash')
+const bashSkip = skipReason('bash', bashPath)
+if (bashSkip) console.log(`[shellIntegrationSpawn] bash skipped: ${bashSkip}`)
+
+// bash's integration travels in its environment alone (PROMPT_COMMAND and the exported lumopolis function), so it has
+// no file in the data folder; the space and the non-ASCII letter go in its HOME and working folder instead.
+describe('bash, started for real with the integration', () => {
+  if (CI_POSIX) {
+    it('bash and node-pty are on this CI runner (a missing one fails here, never skips)', () => {
+      expect(pty, ptyError).toBeTruthy()
+      expect(bashPath).toBeTruthy()
+    })
+  }
+
+  it.skipIf(!!bashSkip)("runs the person's .bash_profile, then OSC 7 and lumopolis, with a function of theirs named local", async () => {
+    const root = mkdtempSync(join(tmpdir(), `tp bash ${'ü'}-`))
+    roots.push(root)
+    const home = join(root, 'home dir')
+    mkdirSync(home)
+    writeFileSync(join(home, '.bash_profile'), [
+      'echo profile >> "$HOME/order.log"',
+      // A function of the person's own, named like a built-in lumopolis calls: bash looks functions up before
+      // built-ins when it runs one, so only `builtin local` keeps it out.
+      "local() { builtin printf 'FNHIJACK'; }",
+      '',
+    ].join('\n'))
+    const belDir = belFolder(root)
+    const spacedDir = spacedFolder(root)
+    const env0 = baseEnv(home, belDir, spacedDir)
+    const env = { ...env0, ...integrationEnv('bash', env0, null) }
+    // As terminalManager: --login (getShellArgs, for a path ending in bash), then the integration's own args (none).
+    expect(integrationFile('bash')).toBeNull()
+    const sh = start(bashPath!, ['--login', ...integrationArgs('bash', null)], env, root)
+    try {
+      await waitFor(sh.out, /\x1b\]7;file:\/\//, 'the first prompt (its OSC 7)')
+      expect(readFileSync(join(home, 'order.log'), 'utf8').trim()).toBe('profile')
+      await exercise(sh, belDir, spacedDir)
+      expect(sh.out()).not.toContain('FNHIJACK')
     } finally { sh.kill() }
   }, 60_000)
 })

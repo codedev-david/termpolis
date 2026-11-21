@@ -16,6 +16,7 @@ import {
   integrationFile,
   integrationFileSet,
   LUMOPOLIS_USAGE,
+  ZSH_DIR_ENV,
   ZSH_USER_ZDOTDIR_ENV,
   ZSH_ZSHENV,
   ZSH_ZPROFILE,
@@ -146,16 +147,22 @@ describe('integrationEnv', () => {
   })
 
   it("zsh: ZDOTDIR points at Termpolis's folder, and a ZDOTDIR of the person's own travels beside it", () => {
+    // The folder travels twice: ZDOTDIR for zsh to find the files, and a copy of our own for .zshenv to read back,
+    // because zsh 5.9 rewrites ZDOTDIR's stored value in place as it opens $ZDOTDIR/.zshenv (getsparam_u in
+    // sourcehome): a letter with a byte in zsh's meta range (ß, č, П) then reads back with that byte gone.
     expect(integrationEnv('zsh', {}, '/home/a/.config/Termpolis/termpolis-zsh/.zshenv')).toEqual({
       ZDOTDIR: '/home/a/.config/Termpolis/termpolis-zsh',
+      [ZSH_DIR_ENV]: '/home/a/.config/Termpolis/termpolis-zsh',
       [INTEGRATION_MARKER]: '1',
     })
     expect(integrationEnv('zsh', { ZDOTDIR: '/home/a/.config/zsh' }, '/d/termpolis-zsh/.zshenv')).toEqual({
       ZDOTDIR: '/d/termpolis-zsh',
+      [ZSH_DIR_ENV]: '/d/termpolis-zsh',
       [ZSH_USER_ZDOTDIR_ENV]: '/home/a/.config/zsh',
       [INTEGRATION_MARKER]: '1',
     })
     expect(ZSH_USER_ZDOTDIR_ENV).toBe('TERMPOLIS_USER_ZDOTDIR')
+    expect(ZSH_DIR_ENV).toBe('TERMPOLIS_ZSH_DIR')
     // Inherited from a parent that was itself one of ours: not the person's, so not passed on as theirs.
     expect(integrationEnv('zsh', { ZDOTDIR: '/d/termpolis-zsh' }, '/d/termpolis-zsh/.zshenv')[ZSH_USER_ZDOTDIR_ENV]).toBeUndefined()
     // An empty ZDOTDIR means $HOME to zsh, the same as none.
@@ -262,8 +269,8 @@ describe('POWERSHELL_INTEGRATION_SCRIPT', () => {
 // (Git Bash, Windows PowerShell 5.1 and cmd through node-pty; zsh and fish in shellIntegrationSpawn.test.ts).
 describe('the lumopolis command in each shell', () => {
   const USAGE = 'usage: lumopolis [folder] - maps a folder in Lumopolis, this one by default'
-  const NO_SUCH = 'if [[ "$p" == *$\'\\a\'* || ! -d "$p" ]]; then printf \'lumopolis: no such folder: %s\\n\' "${1:-.}" >&2; return 1; fi'
-  const PRINT = String.raw`printf '\033]7377;lumopolis;%s;%s\007' "$TERMPOLIS_LUMOPOLIS_NONCE" "$p"`
+  const NO_SUCH = 'if [[ "$p" == *$\'\\a\'* || ! -d "$p" ]]; then builtin printf \'lumopolis: no such folder: %s\\n\' "${1:-.}" >&2; builtin return 1; fi'
+  const PRINT = String.raw`builtin printf '\033]7377;lumopolis;%s;%s\007' "$TERMPOLIS_LUMOPOLIS_NONCE" "$p"`
 
   it('one usage line for every shell', () => {
     expect(LUMOPOLIS_USAGE).toBe(USAGE)
@@ -271,8 +278,8 @@ describe('the lumopolis command in each shell', () => {
 
   it('bash: a function body with only built-ins: -h, the folder made absolute, refused unless a folder, then the sequence', () => {
     const f = BASH_LUMOPOLIS_FUNCTION
-    expect(f.startsWith('() { local p="${1:-.}"; ')).toBe(true)
-    expect(f).toContain(`if [ "$p" = -h ] || [ "$p" = --help ]; then printf '%s\\n' '${USAGE}'; return 0; fi`)
+    expect(f.startsWith('() { builtin local p="${1:-.}"; ')).toBe(true)
+    expect(f).toContain(`if builtin [ "$p" = -h ] || builtin [ "$p" = --help ]; then builtin printf '%s\\n' '${USAGE}'; builtin return 0; fi`)
     // Only a drive with a separator after it is absolute (C:\x, C:/x); C:foo is relative to the drive, so relative here.
     expect(f).toContain(String.raw`case "$p" in /*|[A-Za-z]:[\\/]*) ;; *) p="$PWD/$p" ;; esac`)
     // A BEL in a folder name would end the sequence early, so such a name is refused like a missing one.
@@ -281,6 +288,10 @@ describe('the lumopolis command in each shell', () => {
     expect(f.endsWith('; }')).toBe(true)
     expect(f.indexOf('-h ]')).toBeLessThan(f.indexOf('case'))
     expect(f.indexOf('no such folder')).toBeLessThan(f.indexOf('7377'))
+    // zsh parses this after the person's .zshrc, so an alias or function of theirs named printf, local, [ or return
+    // must not reach inside it: every one is called through `builtin`.
+    expect(f.match(/(?:^|[;{]|then|\|\|) *(?:(?:printf|local|return)\b|\[ )/g)).toBeNull()
+    expect(f.match(/builtin (?:printf|local|\[|return)/g)).toHaveLength(8)
   })
 
   it('zsh: the same body as bash, defined by name', () => {
@@ -351,9 +362,10 @@ describe('zsh start-up files', () => {
 
   it(".zshenv: remembers Termpolis's folder, takes the person's ZDOTDIR from the environment, runs their .zshenv", () => {
     inOrder(ZSH_ZSHENV, [
-      '__termpolis_zdotdir="$ZDOTDIR"',
+      // Our own copy of the folder, never $ZDOTDIR (see the integrationEnv test): zsh has already rewritten that.
+      '__termpolis_zdotdir="${TERMPOLIS_ZSH_DIR:-$ZDOTDIR}"',
       '__termpolis_user_zdotdir="${TERMPOLIS_USER_ZDOTDIR-}"',
-      'builtin unset TERMPOLIS_USER_ZDOTDIR',
+      'builtin unset TERMPOLIS_ZSH_DIR TERMPOLIS_USER_ZDOTDIR',
       RESTORE,
       source('.zshenv'),
       // Only a shell that will read more start-up files (and has not switched them off) is handed back.
@@ -387,7 +399,7 @@ describe('zsh start-up files', () => {
   })
 
   it('every file ends in success, so a missing file of the person never fails start-up', () => {
-    for (const f of [ZSH_ZSHENV, ZSH_ZPROFILE, ZSH_ZSHRC, ZSH_ZLOGIN]) expect(f.trimEnd().endsWith('true')).toBe(true)
+    for (const f of [ZSH_ZSHENV, ZSH_ZPROFILE, ZSH_ZSHRC, ZSH_ZLOGIN]) expect(f.trimEnd().endsWith('\nbuiltin true')).toBe(true)
   })
 })
 
