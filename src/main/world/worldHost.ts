@@ -85,6 +85,11 @@ export interface WorldLlmStartedMsg {
   kind: 'llm-started'
   id: number
 }
+/** The worlds removed since they were last asked for (all of them, each time): their label runs ask nothing more. */
+export interface WorldLabellingStoppedMsg {
+  kind: 'labelling-stopped'
+  keys: string[]
+}
 /** The `worldLabelling` setting changed: the next compile or watcher recompile honours it, no restart. */
 export interface WorldSettingsMsg {
   kind: 'settings'
@@ -114,6 +119,7 @@ export type WorldHostRequest =
   | WorldContextResultMsg
   | WorldRunsResultMsg
   | WorldSettingsMsg
+  | WorldLabellingStoppedMsg
 
 export interface WorldReadyMsg { kind: 'ready'; pid: number }
 export interface WorldInitErrorMsg { kind: 'init-error'; error: SerializedError }
@@ -503,6 +509,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const llmWaiting = new Map<number, (text: string | null) => void>()
   /** Requests main has not started yet, by id: called when main says it started one. */
   const llmStarting = new Map<number, () => void>()
+  /** Worlds main says were removed: their label runs ask nothing more and save nothing (main's labelling-stopped). */
+  let removed = new Set<string>()
   let llmSeq = 0
   const contextWaiting = new Map<number, (evidence: Evidence[]) => void>()
   const runsWaiting = new Map<number, (msg: { runs?: unknown; files?: unknown }) => void>()
@@ -659,7 +667,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       depsFor(st, key, r.from.snap, askMain(key))
     )
     await serial(key, async () => {
-      if (!st.labelling) return
+      if (!st.labelling || removed.has(key)) return
       if (generations.get(key) === r.generation) return saveCompiled(st, key, out, r.from)
       const now = compiledFrom.get(key) as Latest
       const previous = await st.store.load(key)
@@ -680,8 +688,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
    * cache answers whatever is already labelled and the model is asked only for what is still missing.
    */
   const labelLater = (st: HostState, key: string, base: WorldDoc, from: Latest, cache: StageCache | null, changed?: string[]): void => {
-    // Labelling turned off since the cache-only pass started asks no model.
-    if (!st.labelling) return
+    // Labelling turned off, or the world removed, since the cache-only pass started asks no model.
+    if (!st.labelling || removed.has(key)) return
     const running = labelRuns.get(key)
     if (running) {
       running.changed = !running.again ? (changed ?? null) : running.changed && changed ? [...new Set([...running.changed, ...changed])].sort() : null
@@ -694,7 +702,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       let next: RunInput | null = { base, from, cache, changed, generation: generations.get(key) }
       while (next) {
         await labelOnce(st, key, next).catch((err: unknown) => console.error('[world host] labelled follow-up failed:', err))
-        if (!run.again || !st.labelling) break
+        if (!run.again || !st.labelling || removed.has(key)) break
         const files = run.changed ?? undefined
         run.again = false
         run.changed = null
@@ -719,6 +727,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     const rs = cloned ? confinedTo(root, readSource) : readSource
     const label: LabelDeps = {
       llm,
+      stopped: () => removed.has(projectKey),
       ...(st.labelling ? { context: askContext(projectKey) } : {}),
       cache: st.store.labelCache,
       excerpt: async (file, line) => {
@@ -1003,6 +1012,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         } catch (err) {
           post({ kind: 'init-error', error: serializeError(err) })
         }
+        return
+      }
+      if (msg.kind === 'labelling-stopped') {
+        removed = new Set(Array.isArray(msg.keys) ? msg.keys.filter(isStr) : [])
         return
       }
       if (msg.kind === 'settings') {

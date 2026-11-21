@@ -71,6 +71,9 @@ export interface LabelDeps {
   /** The clock a model call is timed with, in ms (default performance.now: monotonic, so a laptop that
    *  sleeps or a clock that is set mid-call does not make a quick failure look like a timeout). */
   now?: () => number
+  /** True once the world was removed: the pass asks nothing more, and a call cut short by the removal is neither a
+   *  quick failure nor asked again. Optional (never stopped). */
+  stopped?: () => boolean
 }
 
 export const DEFAULT_MAX_EXCERPT_CHARS = 1200
@@ -655,10 +658,14 @@ interface Pass {
   reached: boolean
   /** Second-chance batches not sent because their prompt was already sent this pass. */
   repeats: number
+  /** The world was removed (LabelDeps.stopped). */
+  stopped: () => boolean
 }
 
 /** No model is reachable: NO_MODEL_STRIKES calls reached none, and none reached one. The pass stops asking. */
 const noModel = (pass: Pass): boolean => !pass.reached && pass.quick >= NO_MODEL_STRIKES
+/** The pass asks nothing more: no model is reachable, or the world was removed. */
+const halted = (pass: Pass): boolean => pass.stopped() || noModel(pass)
 
 /** One batch's own labels (only what its reply set) and the tokens its call cost. `second`: a second-chance batch,
  *  not sent when the same prompt was already sent this pass. */
@@ -735,7 +742,7 @@ async function labelBatch(p: Planned, deps: LabelDeps, pass: Pass, second = fals
     pass.repeats++
     return out
   }
-  if (noModel(pass)) return { ...out, failed: 'later' }
+  if (halted(pass)) return { ...out, failed: 'later' }
   pass.sent.add(key)
   const clock = deps.now ?? (() => performance.now())
   // Timed from when the call began (LABEL_SLOW_FAIL_MS, LABEL_NO_MODEL_MS), never through a wait for a slot.
@@ -755,9 +762,9 @@ async function labelBatch(p: Planned, deps: LabelDeps, pass: Pass, second = fals
   if (raw !== null || took > LABEL_NO_MODEL_MS) {
     pass.reached = true
     out.tokens += estimateTokens(prompt) + estimateTokens(raw ?? '')
-  } else pass.quick++
+  } else if (!pass.stopped()) pass.quick++
   const reply = raw === null ? null : parseReply(raw)
-  if (!reply) return { ...out, failed: timedOut ? 'later' : 'retry' }
+  if (!reply) return { ...out, failed: timedOut || pass.stopped() ? 'later' : 'retry' }
   // A reply that counts is cached even if it left parts out: those get the second chance in smaller batches,
   // whose prompts differ and are cached on their own. The second chance is worked out from the reply whether it
   // came from the model or the cache, so every pass asks a left-out part again until it is described. A reply
@@ -806,7 +813,7 @@ async function labelHalves(p: Planned, deps: LabelDeps, pass: Pass, second: bool
  *  is reachable. Both calls' tokens count. */
 async function labelWithRetry(p: Planned, deps: LabelDeps, pass: Pass): Promise<BatchResult> {
   const first = await labelBatch(p, deps, pass)
-  if (first.failed !== 'retry' || noModel(pass)) return first
+  if (first.failed !== 'retry' || halted(pass)) return first
   console.warn(`[world label] batch retried: ${p.district.name}`)
   const again = await labelBatch(p, deps, pass)
   return { ...again, tokens: again.tokens + first.tokens }
@@ -861,19 +868,20 @@ export async function labelWorld(g: Grouping, deps: LabelDeps): Promise<Labels> 
   if (!llm) return labels
 
   const plan = planBatches(g)
-  const pass: Pass = { llm, sent: new Set(), quick: 0, reached: false, repeats: 0 }
+  const isStopped = deps.stopped
+  const pass: Pass = { llm, sent: new Set(), quick: 0, reached: false, repeats: 0, stopped: () => isStopped?.() === true }
   const results = await pool(plan, LABEL_CONCURRENCY, (p) => labelWithRetry(p, deps, pass))
   // Merged in batch order whatever order the calls finished in, so the world is the same every run:
   // a district takes its first batch's name, and the first batch to define a glossary term wins.
   results.forEach((r, i) => merge(labels, r, plan[i].first ? plan[i].district.id : null))
   const parts = new Map(g.buildings.map((b) => [b.id, b]))
-  const again = noModel(pass) ? [] : plan.flatMap((p, i) => secondChance(p, results[i], parts))
+  const again = halted(pass) ? [] : plan.flatMap((p, i) => secondChance(p, results[i], parts))
   const second = await pool(again, LABEL_CONCURRENCY, (p) => labelBatch(p, deps, pass, true))
   second.forEach((r, i) => merge(labels, r, again[i].first ? again[i].district.id : null))
   // One line per pass, so a run can show how much of the map is described.
   const left = g.buildings.filter((b) => bare(labels.buildings[b.id])).length
   const leftLines = g.edges.filter((e) => bare(labels.edges[edgeId(e)])).length
-  const stopped = noModel(pass) ? '; no model reachable, the rest was not asked' : ''
+  const stopped = pass.stopped() ? '; the world was removed, the rest was not asked' : noModel(pass) ? '; no model reachable, the rest was not asked' : ''
   console.info(
     `[world label] left undescribed: ${left} of ${g.buildings.length} buildings, ${leftLines} of ${g.edges.length} lines (${again.length - pass.repeats} batches asked a second time${stopped})`
   )

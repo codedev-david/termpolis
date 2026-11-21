@@ -458,6 +458,51 @@ describe('createWorldClient', () => {
     expect(running.has('behind')).toBe(false)
   })
 
+  it('a removed world starts no CLI for any labelling request it asks later, until it is asked for again (caveat 4, round 1)', async () => {
+    const llm = vi.fn(async (_root: string, prompt: string) => `done ${prompt}`)
+    const { client, spawned } = setup({ llm })
+    await client.compile(ROOT)
+    const t = spawned[0]
+    const result = (id: number) => t.posted.find((m) => m.kind === 'llm-result' && m.id === id)
+    client.cancelLabelling(KEY)
+    // The host is told, so its label run for the world stops asking.
+    expect(t.posted).toContainEqual({ kind: 'labelling-stopped', keys: [KEY] })
+    // The label run's next batches, and its second chances for the dropped ones, start nothing.
+    for (let i = 1; i <= 6; i++) t.emit({ kind: 'llm', id: i, projectKey: KEY, prompt: `later${i}` })
+    await flush()
+    for (let i = 1; i <= 6; i++) expect(result(i)).toEqual({ kind: 'llm-result', id: i, text: null })
+    expect(llm).not.toHaveBeenCalled()
+    expect(t.posted.some((m) => m.kind === 'llm-started')).toBe(false)
+    // Removing it twice tells the host the same set; asking for another world leaves it removed.
+    client.cancelLabelling(KEY)
+    expect(t.posted.filter((m) => m.kind === 'labelling-stopped').slice(-1)[0]).toEqual({ kind: 'labelling-stopped', keys: [KEY] })
+    await client.compile('C:/repos/other')
+    t.emit({ kind: 'llm', id: 7, projectKey: KEY, prompt: 'still removed' })
+    await flush()
+    expect(llm).not.toHaveBeenCalled()
+    // Opened again (re-added), it labels again, and the host is told it is no longer removed.
+    await client.compile(ROOT)
+    expect(t.posted.filter((m) => m.kind === 'labelling-stopped').slice(-1)[0]).toEqual({ kind: 'labelling-stopped', keys: [] })
+    t.emit({ kind: 'llm', id: 8, projectKey: KEY, prompt: 'back' })
+    await flush()
+    expect(llm).toHaveBeenCalledTimes(1)
+    expect(result(8)).toEqual({ kind: 'llm-result', id: 8, text: 'done back' })
+  })
+
+  it('a world removed while no host runs, or while the host cannot be told, is still kept from labelling (caveat 4, round 1)', async () => {
+    const llm = vi.fn(async () => 'x')
+    const { client, spawned } = setup({ llm })
+    client.cancelLabelling(KEY)
+    await client.compile(ROOT)
+    const t = spawned[0]
+    // compile asked for it again, so it labels
+    t.emit({ kind: 'llm', id: 1, projectKey: KEY, prompt: 'p' })
+    await flush()
+    expect(llm).toHaveBeenCalledTimes(1)
+    t.postMessage = () => { throw new Error('gone') }
+    expect(() => client.cancelLabelling(KEY)).not.toThrow()
+  })
+
   it('a running call the host gives up on is answered null at once and its CLI told to stop, but its slot waits until that CLI exits (caveat 4)', async () => {
     const running = new Map<string, { resolve(t: string | null): void; signal: AbortSignal }>()
     const llm = vi.fn((_root: string, prompt: string, signal: AbortSignal) => new Promise<string | null>((resolve) => running.set(prompt, { resolve, signal })))

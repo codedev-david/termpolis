@@ -1858,6 +1858,43 @@ describe('caveat 1 fix round 1', () => {
     }
   })
 
+  it('a world removed mid-pass asks nothing more: no next batch, no retry, no second chance, and its cut-short calls are no quick failure (caveat 4, round 1)', async () => {
+    const info = quiet()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const g = boundaryFan()
+      // The first call answers (a model is reachable); the world is removed while the others run, and they come back empty.
+      const run = async (stoppable: boolean) => {
+        let removed = false
+        let n = 0
+        const llm = vi.fn(async (p: string): Promise<string | null> => {
+          if (++n === 1) return describeEvery(p)
+          removed = true
+          return null
+        })
+        await labelWorld(g, mkDeps({ llm, ...(stoppable ? { stopped: () => removed } : {}) }))
+        return llm.mock.calls.length
+      }
+      // Without the stop, the same pass goes on: the next batches, a retry for each empty one, then second chances.
+      const goesOn = await run(false)
+      expect(goesOn).toBeGreaterThan(LABEL_CONCURRENCY)
+      warn.mockClear()
+      info.mockClear()
+      // With it, only the calls already on their way when the world was removed were made.
+      expect(await run(true)).toBeLessThanOrEqual(LABEL_CONCURRENCY)
+      expect(warn).not.toHaveBeenCalled()
+      expect(info.mock.calls[0][0]).toContain('; the world was removed, the rest was not asked)')
+      // A world removed before the pass asks no model at all, and a reply that still lands is kept.
+      const none = vi.fn(async (p: string) => describeEvery(p))
+      const l = await labelWorld(twoDistricts(), mkDeps({ llm: none, stopped: () => true }))
+      expect(none).not.toHaveBeenCalled()
+      expect(l.tokens).toBe(0)
+    } finally {
+      warn.mockRestore()
+      info.mockRestore()
+    }
+  })
+
   it("M5: on an incremental re-label a line's untouched end is named, and its files listed and read, through deps.part", async () => {
     const info = quiet()
     try {

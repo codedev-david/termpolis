@@ -168,6 +168,16 @@ export function createWorldClient(
   const refreshing = new Set<string>()
   /** projectKey → the HEAD and linked plan stamp whose background refresh last failed, and when (REFRESH_BACKOFF_MS). */
   const refreshFailed = new Map<string, { head: string; at: number }>()
+  /** Worlds removed since they were last asked for: no labelling request of theirs starts a CLI (cancelLabelling). */
+  const removed = new Set<string>()
+  /** Tells the host which worlds were removed, so their label runs stop asking (worldHost `labelling-stopped`). */
+  const tellRemoved = (): void => {
+    try {
+      current?.postMessage({ kind: 'labelling-stopped', keys: [...removed] })
+    } catch {
+      // the host is going away; a new one asks nothing for a world nobody opens
+    }
+  }
   /** Labelling requests waiting for a slot or running, each with the abort that takes it out (llmGate.ts). */
   const llmCalls = new Set<{ tr: WorldHostTransport; id: number; projectKey: string; ctl: AbortController }>()
   /** Stops the labelling requests `which` picks: a waiting one never starts, a running one is answered null. */
@@ -212,7 +222,7 @@ export function createWorldClient(
     const llm = opts.llm
     // Consent is checked at the moment of asking, and again when the call gets its slot: turning
     // "Describe parts with AI" off stops model calls at once, even mid-compile.
-    if (llm && root !== undefined && labelling() !== false) {
+    if (llm && root !== undefined && labelling() !== false && !removed.has(projectKey)) {
       const entry = { tr, id, projectKey, ctl: new AbortController() }
       llmCalls.add(entry)
       // The wait for a slot is not the call's time: the host starts its limit on `llm-started`.
@@ -382,6 +392,8 @@ export function createWorldClient(
     const key = typeof root === 'string' ? graphKeyForRoot(root) : ''
     if (!key) throw new Error('Lumopolis needs a project folder')
     roots.set(key, root)
+    // Asked for again (re-added, or opened): it labels again.
+    if (removed.delete(key)) tellRemoved()
     return key
   }
 
@@ -570,9 +582,12 @@ export function createWorldClient(
      */
     snapshotFromFiles: (root: string): Promise<GraphSnapshot> => call('snapshotFromFiles', [root]),
     /** The world with this key (graphKeyForRoot, the registry key) was removed: its labelling calls still waiting for a
-     *  slot never start, running ones are answered null. */
+     *  slot never start, running ones are answered null, and none it asks later starts a CLI until the world is asked
+     *  for again. The host is told, so its label run for the world stops asking. */
     cancelLabelling(projectKey: string): void {
+      removed.add(projectKey)
       cancelLlm((c) => c.projectKey === projectKey)
+      tellRemoved()
     },
     /** Stops the host (app quit). Calls after this reject. */
     dispose(): void {

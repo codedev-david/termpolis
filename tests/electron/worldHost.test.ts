@@ -784,6 +784,42 @@ describe('createWorldHost', () => {
     expect(h.out.some((m) => m.kind === 'llm-cancel')).toBe(false)
   })
 
+  it('a world main says was removed: its label run asks nothing more, saves nothing, and starts no new run until main takes it back (caveat 4, round 1)', async () => {
+    const seen: boolean[] = []
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      seen.push(deps.label.stopped?.() === true)
+      if (deps.label.llm) await deps.label.llm('p')
+      seen.push(deps.label.stopped?.() === true)
+      return doc(input.projectKey)
+    })
+    const h = harness({ compile })
+    await h.init()
+    const asks = () => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(asks()).toHaveLength(1))
+    // A second trigger while the run asks marks it to run once more.
+    await h.send({ kind: 'call', id: 2, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(2))
+    // The world is removed (bad entries in the list are ignored), then its call comes back.
+    await h.send({ kind: 'labelling-stopped', keys: ['k1', 7 as unknown as string] })
+    await h.send({ kind: 'llm-result', id: asks()[0].id, text: null })
+    await vi.waitFor(() => expect(seen.slice(-1)).toEqual([true]))
+    await new Promise((r) => setTimeout(r, 30))
+    // Neither the labelled world is saved nor the marked run made: one ask in all.
+    expect(h.store.saves).toHaveLength(2)
+    expect(asks()).toHaveLength(1)
+    // A compile of it while removed labels from the cache only and starts no run.
+    await h.send({ kind: 'call', id: 3, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(h.store.saves).toHaveLength(3))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(asks()).toHaveLength(1)
+    // Main takes it back (asked for again; a list of another shape counts as none removed): it labels again.
+    await h.send({ kind: 'labelling-stopped', keys: 'k1' as unknown as string[] })
+    await h.send({ kind: 'call', id: 4, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(asks()).toHaveLength(2))
+    expect(seen.slice(-1)).toEqual([false])
+  })
+
   it('labelling off gives the compiler no model', async () => {
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
       expect(deps.label.llm).toBeNull()
