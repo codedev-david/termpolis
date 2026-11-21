@@ -16,11 +16,12 @@ from playwright.sync_api import sync_playwright
 OUT = Path(__file__).resolve().parent
 PAD = 160  # px; the 140 px glow must never be clipped
 WORD = "LUMOPOLIS"
+FONT = "Segoe UI Variable Display"
 
 CSS = """
 html,body{margin:0;background:transparent}
-.wrap{display:block;width:max-content;padding:%dpx;box-sizing:content-box}
-.mark{font-family:"Segoe UI Variable Display","Aptos","Segoe UI",sans-serif;font-weight:300;font-size:150px;
+.wrap{position:absolute;left:0;top:0;visibility:hidden;width:max-content;padding:%dpx;box-sizing:content-box}
+.mark{font-family:"@FONT@","Aptos","Segoe UI",sans-serif;font-weight:300;font-size:150px;
   letter-spacing:34px;padding-left:34px;color:#fff;white-space:nowrap;
   text-shadow:0 0 18px rgba(95,227,255,.55),0 0 60px rgba(95,227,255,.35),0 0 140px rgba(169,139,255,.25)}
 .mark span{display:inline-block}
@@ -28,6 +29,7 @@ html,body{margin:0;background:transparent}
 .rule{height:2px;margin:34px auto 30px;width:900px;
   background:linear-gradient(90deg,transparent,#5fe3ff,#fff,#ffb45a,transparent);box-shadow:0 0 18px #5fe3ff}
 """ % PAD
+CSS = CSS.replace("@FONT@", FONT)
 
 
 def spans(word):
@@ -39,7 +41,8 @@ def build_html():
         '<div class="wrap" id="termpolisMark"><div class="mark">%s</div></div>' % spans("TERMPOLIS"),
         '<div class="wrap" id="termpolisTag"><div class="tag">City of Terminals</div></div>',
         '<div class="wrap" id="lumopolisTag"><div class="tag">City of Enlightenment</div></div>',
-        # measuring row: the whole word as the film lays it out (not screenshotted)
+        # measuring row: the whole word as the film lays it out (not screenshotted).
+        # The .rule here exists ONLY to measure ruleTop; it is never rendered to a PNG.
         '<div class="wrap" id="measure"><div class="mark" id="measureMark">%s</div>'
         '<div class="rule" id="rule"></div></div>' % spans(WORD),
     ]
@@ -55,9 +58,23 @@ def shoot(browser, html, scale):
     page = ctx.new_page()
     page.set_content(html)
     page.evaluate("document.fonts.ready")
-    ok = page.evaluate("""() => document.fonts.check('300 150px "Segoe UI Variable Display"')""")
+    # NOTE: document.fonts.check() is NOT a presence test: it returns true whenever no @font-face
+    # matches the family, which is the case for a system font. So measure real glyph widths instead:
+    # a probe in "<font>",<fallback> must differ from the bare fallback for two different fallbacks.
+    ok = page.evaluate("""(font) => {
+      const w = (family) => {
+        const s = document.createElement('span');
+        s.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font-weight:300;font-size:150px;font-family:' + family;
+        s.textContent = 'LUMOPOLISTERMPOLIS';
+        document.body.appendChild(s);
+        const width = s.getBoundingClientRect().width;
+        s.remove();
+        return width;
+      };
+      return w('"' + font + '",monospace') !== w('monospace') && w('"' + font + '",serif') !== w('serif');
+    }""", FONT)
     if not ok:
-        print("ERROR: font 'Segoe UI Variable Display' (weight 300) is not available; refusing to bake a fallback.",
+        print("ERROR: font '%s' (weight 300) is not installed; refusing to bake a fallback." % FONT,
               file=sys.stderr)
         sys.exit(2)
     # Snap every wrapper to whole CSS px so the 2x PNG is exactly double the 1x one.
@@ -71,6 +88,9 @@ def shoot(browser, html, scale):
         names["letter%d" % i] = "lumopolis-%d" % i
     sizes = {}
     for key, base in names.items():
+        # Each element is shot alone, at the page origin, so equal letters give identical bytes.
+        page.evaluate("(k) => { document.querySelectorAll('.wrap').forEach(w => w.style.visibility = 'hidden');"
+                      " document.getElementById(k).style.visibility = 'visible'; }", key)
         loc = page.locator("#" + key)
         loc.screenshot(path=str(OUT / ("%s@%dx.png" % (base, scale))), omit_background=True)
         box = loc.bounding_box()

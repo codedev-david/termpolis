@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { inflateSync } from 'node:zlib'
 
 const DIR = join(__dirname, '..', '..', '..', 'src', 'renderer', 'src', 'assets', 'intro')
 
@@ -24,6 +25,47 @@ function allImgs(m: Manifest): Img[] {
 function ihdr(file: string): { w: number; h: number; colorType: number } {
   const b = readFileSync(join(DIR, file))
   return { w: b.readUInt32BE(16), h: b.readUInt32BE(20), colorType: b[25] }
+}
+
+/** Decode an 8-bit RGBA PNG to its alpha plane (no dependencies). */
+function alphaPlane(file: string): { w: number; h: number; a: Uint8Array } {
+  const b = readFileSync(join(DIR, file))
+  const w = b.readUInt32BE(16)
+  const h = b.readUInt32BE(20)
+  expect(b[24]).toBe(8)
+  expect(b[25]).toBe(6)
+  const idat: Buffer[] = []
+  for (let p = 8; p < b.length; ) {
+    const len = b.readUInt32BE(p)
+    if (b.toString('latin1', p + 4, p + 8) === 'IDAT') idat.push(b.subarray(p + 8, p + 8 + len))
+    p += 12 + len
+  }
+  const raw = inflateSync(Buffer.concat(idat))
+  const stride = w * 4
+  const px = new Uint8Array(h * stride)
+  for (let y = 0; y < h; y++) {
+    const f = raw[y * (stride + 1)]
+    for (let x = 0; x < stride; x++) {
+      const v = raw[y * (stride + 1) + 1 + x]
+      const left = x >= 4 ? px[y * stride + x - 4] : 0
+      const up = y > 0 ? px[(y - 1) * stride + x] : 0
+      const ul = x >= 4 && y > 0 ? px[(y - 1) * stride + x - 4] : 0
+      let add = 0
+      if (f === 1) add = left
+      else if (f === 2) add = up
+      else if (f === 3) add = (left + up) >> 1
+      else if (f === 4) {
+        const pa = Math.abs(up - ul)
+        const pb = Math.abs(left - ul)
+        const pc = Math.abs(left + up - 2 * ul)
+        add = pa <= pb && pa <= pc ? left : pb <= pc ? up : ul
+      }
+      px[y * stride + x] = (v + add) & 255
+    }
+  }
+  const a = new Uint8Array(w * h)
+  for (let i = 0; i < w * h; i++) a[i] = px[i * 4 + 3]
+  return { w, h, a }
 }
 
 describe('launch intro artwork', () => {
@@ -60,5 +102,28 @@ describe('launch intro artwork', () => {
       .filter((f) => f.endsWith('.png'))
       .reduce((n, f) => n + statSync(join(DIR, f)).size, 0)
     expect(total).toBeLessThanOrEqual(4 * 1024 * 1024)
+  })
+
+  it('renders equal letters to identical bytes (L and O repeat in LUMOPOLIS)', () => {
+    const m = manifest()
+    for (const [i, j] of [[0, 6], [3, 5]]) {
+      for (const k of ['file1x', 'file2x'] as const) {
+        const a = readFileSync(join(DIR, m.images.letters[i][k]))
+        const b = readFileSync(join(DIR, m.images.letters[j][k]))
+        expect(a.equals(b)).toBe(true)
+      }
+    }
+  })
+
+  it('never clips the glow: the outermost pixel border is transparent', () => {
+    for (const i of allImgs(manifest())) {
+      for (const f of [i.file1x, i.file2x]) {
+        const { w, h, a } = alphaPlane(f)
+        let max = 0
+        for (let x = 0; x < w; x++) max = Math.max(max, a[x], a[(h - 1) * w + x])
+        for (let y = 0; y < h; y++) max = Math.max(max, a[y * w], a[y * w + w - 1])
+        expect(max).toBeLessThanOrEqual(2)
+      }
+    }
   })
 })
