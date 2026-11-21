@@ -22,6 +22,8 @@
 //   * The agents-running close guard must not cancel an update restart.
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { resolve as resolvePath } from 'path'
+import { pathToFileURL } from 'url'
 
 // ---------------------------------------------------------------------------
 // Harness — mirrors tests/electron/security.test.ts
@@ -88,6 +90,10 @@ const {
   mockAppendAudit: vi.fn(async () => undefined),
   mockInitAutoUpdater: vi.fn(),
   mockWriteFileSync: vi.fn(),
+}))
+const { mockFsPromisesReadFile, mockFsPromisesUnlink } = vi.hoisted(() => ({
+  mockFsPromisesReadFile: vi.fn(async () => 'marker'),
+  mockFsPromisesUnlink: vi.fn(async () => undefined),
 }))
 
 const wcOnHandlers = new Map<string, Function>()
@@ -315,15 +321,24 @@ vi.mock('fs', () => {
     statSync: vi.fn(() => ({ isDirectory: () => false, mtimeMs: 0, size: 0 })),
     mkdirSync: vi.fn(), appendFileSync: vi.fn(),
     renameSync: vi.fn(), unlinkSync: vi.fn(), watch: vi.fn(),
+    promises: { readFile: mockFsPromisesReadFile, unlink: mockFsPromisesUnlink },
   }
   return { ...impl, default: impl }
 })
 
 vi.mock('uuid', () => ({ v4: vi.fn(() => 'mock-uuid') }))
 
-const { mockClaim, introGateDeps } = vi.hoisted(() => ({ mockClaim: vi.fn(() => true), introGateDeps: [] as any[] }))
-vi.mock('../../src/main/launchIntro', () => ({
-  createIntroGate: (deps: unknown) => { introGateDeps.push(deps); return { claim: mockClaim } },
+const { mockClaim, introGateDeps, introStarts } = vi.hoisted(() => ({
+  mockClaim: vi.fn(() => true), introGateDeps: [] as any[], introStarts: [] as number[],
+}))
+vi.mock('../../src/main/launchIntro', async (importOriginal) => ({
+  // The real URL check; only the gate is a fake.
+  isRendererPage: (await importOriginal<typeof import('../../src/main/launchIntro')>()).isRendererPage,
+  createIntroGate: (deps: unknown) => {
+    introGateDeps.push(deps)
+    // How many windows existed when the decision started: it must start before the first.
+    return { claim: mockClaim, start: () => { introStarts.push(browserWindowOpts.length); return Promise.resolve() } }
+  },
 }))
 
 // ---------------------------------------------------------------------------
@@ -1512,31 +1527,58 @@ describe('fs + app info IPC', () => {
     })
   })
 
-  it('launch-intro:should-play answers synchronously with what the intro gate claims', () => {
-    mockClaim.mockReturnValueOnce(true).mockReturnValueOnce(false)
-    const page = { sender: { getURL: () => 'file:///app/index.html' } }
-    const first: { returnValue?: unknown; sender: typeof page.sender } = { ...page }
-    const second: { returnValue?: unknown; sender: typeof page.sender } = { ...page }
-    ipcOnHandlers.get('launch-intro:should-play')!.at(-1)!(first)
-    ipcOnHandlers.get('launch-intro:should-play')!.at(-1)!(second)
-    expect(first.returnValue).toBe(true)
-    expect(second.returnValue).toBe(false)
-  })
+  describe('launch-intro:should-play', () => {
+    const indexFile = resolvePath('src/renderer/index.html')
+    const packaged = pathToFileURL(indexFile).href
+    const ask = (sender: { getURL: () => string }) => {
+      const e: { returnValue?: unknown; sender: { getURL: () => string } } = { sender }
+      ipcOnHandlers.get('launch-intro:should-play')!.at(-1)!(e)
+      return e.returnValue
+    }
+    const fromMain = (url: string) => Object.assign(mockWebContents, { getURL: () => url })
+    afterEach(() => {
+      delete process.env['ELECTRON_RENDERER_URL']
+      delete (mockWebContents as { getURL?: unknown }).getURL
+    })
 
-  it('launch-intro:should-play ignores the initial empty document, so it cannot use up the claim', () => {
-    mockClaim.mockClear()
-    const blank: { returnValue?: unknown; sender: { getURL: () => string } } = { sender: { getURL: () => '' } }
-    ipcOnHandlers.get('launch-intro:should-play')!.at(-1)!(blank)
-    expect(blank.returnValue).toBe(false)
-    expect(mockClaim).not.toHaveBeenCalled()
-  })
+    it('answers synchronously with what the intro gate claims, for the packaged page', () => {
+      mockClaim.mockReturnValueOnce(true).mockReturnValueOnce(false)
+      expect(ask(fromMain(packaged))).toBe(true)
+      expect(ask(fromMain(`${packaged}#/x`))).toBe(false)
+      expect(mockClaim).toHaveBeenCalledTimes(2)
+    })
 
-  it('the intro gate reads and writes last-run-version through fs, for this app version', () => {
-    const deps = introGateDeps[0]
-    expect(deps.version).toBe('9.9.9')
-    expect(deps.readFile('/x/last-run-version')).toBe('{}')
-    deps.writeFile('/x/last-run-version', '9.9.9')
-    expect(mockWriteFileSync).toHaveBeenCalledWith('/x/last-run-version', '9.9.9', 'utf8')
+    it('claims for the dev server page when ELECTRON_RENDERER_URL is set', () => {
+      process.env['ELECTRON_RENDERER_URL'] = 'http://localhost:5173'
+      mockClaim.mockReturnValueOnce(true)
+      expect(ask(fromMain('http://localhost:5173/'))).toBe(true)
+      expect(ask(fromMain(packaged))).toBe(false)
+      expect(mockClaim).toHaveBeenCalledTimes(1)
+    })
+
+    it('never uses up the claim for the initial empty document, about:blank, or another page', () => {
+      for (const url of ['', 'about:blank', 'https://example.com/', pathToFileURL(resolvePath('other.html')).href]) {
+        expect(ask(fromMain(url))).toBe(false)
+      }
+      expect(mockClaim).not.toHaveBeenCalled()
+    })
+
+    it("never uses up the claim for another window's page, even the renderer's own URL", () => {
+      expect(ask({ getURL: () => packaged })).toBe(false)
+      expect(mockClaim).not.toHaveBeenCalled()
+    })
+
+    it('starts the decision once, before the first window exists, on fs.promises', async () => {
+      expect(introStarts).toEqual([0])
+      const deps = introGateDeps[0]
+      expect(deps.env).toBe(process.env)
+      expect(typeof deps.now()).toBe('number')
+      expect(await deps.readFile('/x/update-restart')).toBe('marker')
+      expect(mockFsPromisesReadFile).toHaveBeenCalledWith('/x/update-restart', 'utf8')
+      await deps.removeFile('/x/update-restart')
+      expect(mockFsPromisesUnlink).toHaveBeenCalledWith('/x/update-restart')
+      expect(mockWriteFileSync).not.toHaveBeenCalled()
+    })
   })
 
   it('app:platform-info-sync answers SYNCHRONOUSLY — xterm needs windowsPty at construction time', async () => {

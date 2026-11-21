@@ -1,19 +1,29 @@
 // The launch intro's timeline: pure data, so the 2.0 s budget is provable in a unit test.
-// All times are ms from first paint. The spec fixes the 2.0 s maximum and leaves the split open;
-// this is the builder's split.
+// All times are ms from the start of the overlay's own animation, the first frame it can paint.
+// The spec fixes the 2.0 s maximum and leaves the split open; this is the builder's split.
 
-export const INTRO_TOTAL_MS = 2000
-/** If the first frame has not painted this long after mount, the intro never appears. */
+/** The spec's hard maximum, from the first visible frame to fully gone. */
+export const INTRO_BUDGET_MS = 2000
+/**
+ * Where the timeline, and the removal, end: one 60 Hz frame inside the budget, so a removal that
+ * lands a frame late still lands by 2000 ms.
+ */
+export const INTRO_TOTAL_MS = INTRO_BUDGET_MS - 16
+/** If the overlay's animation has not started this long after mount, the intro never appears. */
 export const NOT_PAINTED_MS = 1000
+/** Backstop: the overlay is gone by now, whatever the animation or its timers did. */
+export const INTRO_HARD_CAP_MS = NOT_PAINTED_MS + INTRO_TOTAL_MS
 
 export const INTRO_TIMELINE = {
   fadeIn: [0, 150],
   termpolisHold: [150, 800],
   crossfade: [800, 1050],
-  letters: { start: 1050, stagger: 40, each: 300 },
+  // Still one letter after another; the word is whole at 1050 + 8 * 30 + 260 = 1550.
+  letters: { start: 1050, stagger: 30, each: 260 },
   rule: [1100, 1500],
-  tag: [1300, 1600],
-  fadeOut: [1700, 2000],
+  tag: [1250, 1550],
+  // The full word, rule and tag hold 184 ms before this 250 ms fade to the app.
+  fadeOut: [1734, INTRO_TOTAL_MS],
 } as const
 
 export const INTRO_LETTER_COUNT = 9
@@ -40,25 +50,26 @@ export function introSteps(reduced: boolean): IntroStep[] {
   const [fadeInEnd, holdEnd] = [T.fadeIn[1], T.termpolisHold[1]]
   const [xStart, xEnd] = T.crossfade
   const [outStart, outEnd] = T.fadeOut
-  // One animation for the whole overlay: in, hold, out.
+  // The stage is opaque from its first frame, so the starting app is never seen before the intro
+  // (a stage fading up from 0 shows the app on its first frames). It only fades out, to the app.
   const stage: IntroStep = {
     target: 'stage',
     delay: 0,
     duration: outEnd,
     keyframes: [
-      { opacity: 0, offset: 0 },
-      { opacity: 1, offset: fadeInEnd / outEnd },
+      { opacity: 1, offset: 0 },
       { opacity: 1, offset: outStart / outEnd },
       { opacity: 0, offset: 1 },
     ],
   }
-  // The Termpolis card holds, then leaves while the Lumopolis card arrives.
+  // The Termpolis card fades in on the stage, holds, then leaves while the Lumopolis card arrives.
   const termpolis: IntroStep = {
     target: 'termpolis',
     delay: 0,
     duration: xEnd,
     keyframes: [
-      { opacity: 1, offset: 0 },
+      { opacity: 0, offset: 0 },
+      { opacity: 1, offset: fadeInEnd / xEnd },
       { opacity: 1, offset: holdEnd / xEnd },
       { opacity: 0, offset: 1 },
     ],

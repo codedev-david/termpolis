@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import logoSvg from '/logo-termpolis.svg?url'
 import { INTRO_ART } from '../../assets/intro/introManifest'
 import type { IntroImg } from '../../assets/intro/introManifest'
-import { INTRO_RULE_WIDTH, INTRO_TOTAL_MS, NOT_PAINTED_MS, introEnabled, introScale, introSteps } from '../../lib/launchIntro'
+import { INTRO_HARD_CAP_MS, INTRO_RULE_WIDTH, INTRO_TOTAL_MS, NOT_PAINTED_MS, introEnabled, introScale, introSteps } from '../../lib/launchIntro'
 
 // The two-second launch intro: pre-rendered lettering from the film's title cards, animated with the
 // Web Animations API over the starting app. It is a non-interactive overlay: it never takes focus,
@@ -22,8 +22,6 @@ const STAGE_BG = '#03050b'
 
 const { pad } = INTRO_ART
 
-type Phase = 'pending' | 'playing' | 'done'
-
 interface Props {
   play?: boolean
   reducedMotion?: boolean
@@ -39,7 +37,6 @@ const rootStyle: CSSProperties = {
   pointerEvents: 'none',
   overflow: 'hidden',
   background: STAGE_BG,
-  opacity: 0,
 }
 
 const vignetteStyle: CSSProperties = {
@@ -88,7 +85,7 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
   // Decided once per mount: a late change of the setting never starts an intro half-way.
   const [active] = useState(() => (play ?? (window.termpolis?.launchIntro === true && introEnabled())) && canAnimate())
   const [reduced] = useState(() => reducedMotion ?? prefersReducedMotion())
-  const [phase, setPhase] = useState<Phase>('pending')
+  const [done, setDone] = useState(false)
   const [scale, setScale] = useState(viewportScale)
 
   const rootRef = useRef<HTMLDivElement>(null)
@@ -97,73 +94,77 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
   const ruleRef = useRef<HTMLDivElement>(null)
   const tagRef = useRef<HTMLImageElement | null>(null)
   const letterRefs = useRef<(HTMLImageElement | null)[]>([])
-  const paintedAt = useRef(0)
-  const removalTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  // Wait for the first frame. Past NOT_PAINTED_MS (a hidden or minimised window) it never appears.
-  useEffect(() => {
-    if (!active) return undefined
+  // The overlay is in the page from mount: an opaque stage that covers the starting app from the very
+  // first frame, with its cards transparent (opacity 0 inline, and each animation's first keyframe
+  // while it waits to start). This layout effect runs before the first paint, so every animation
+  // exists before any frame and all of them start together on the first frame the browser renders,
+  // the first frame that shows the overlay. The 2.0 s clock is that start, read from the stage
+  // animation, not mount: a busy launch that delays the first frame delays the intro, and never eats into it.
+  useLayoutEffect(() => {
+    if (!active || done) return undefined
     const mountedAt = now()
-    let frame = 0
-    const giveUp = (): void => {
-      // Never appear after giving up, even if the frame arrives later.
-      cancelAnimationFrame(frame)
-      setPhase('done')
-    }
-    const giveUpTimer = setTimeout(giveUp, NOT_PAINTED_MS)
-    frame = requestAnimationFrame(() => {
-      clearTimeout(giveUpTimer)
-      if (now() - mountedAt > NOT_PAINTED_MS) { giveUp(); return }
-      // The 2.0 s budget runs from this first paint, and the removal timer starts here. The animations
-      // would only start after React re-renders into 'playing', the next effect runs and the browser commits
-      // a frame: measured at about 260 ms later in the real app, and longer when the main thread is busy at
-      // launch. So the playing effect sets each animation's startTime to this paint time (a pending start is
-      // not enough: it waits for a frame too). The animation clock and the timer then end together, the
-      // closing fade completes before the overlay is removed, and the 2 s ceiling holds.
-      paintedAt.current = now()
-      removalTimer.current = setTimeout(giveUp, INTRO_TOTAL_MS)
-      setPhase('playing')
-    })
-    return () => {
-      cancelAnimationFrame(frame)
-      clearTimeout(giveUpTimer)
-      clearTimeout(removalTimer.current)
-    }
-  }, [active, now])
-
-  // Playing: animate, and end on any key or click. Nothing here stops or alters an event.
-  useEffect(() => {
-    if (phase !== 'playing') return undefined
+    let disposed = false
+    const timers: ReturnType<typeof setTimeout>[] = []
     const end = (): void => {
-      clearTimeout(removalTimer.current)
-      setPhase('done')
+      if (disposed) return
+      disposed = true
+      setDone(true)
     }
+    // Any key or click ends it at once, from mount. Nothing here stops or alters an event.
     const opts = { capture: true, passive: true } as const
     window.addEventListener('keydown', end, opts)
     window.addEventListener('pointerdown', end, opts)
     const onResize = (): void => setScale(viewportScale())
     window.addEventListener('resize', onResize, { passive: true })
+
+    const root = rootRef.current as HTMLDivElement
+    // Ask for the artwork decoded now, and don't wait for it: waiting would hold an empty stage, or the
+    // window, on screen longer; the images are local files already loading from mount, the Termpolis
+    // card fades up from 0 over 150 ms, and the Lumopolis art isn't on screen before 800 ms.
+    root.querySelectorAll('img').forEach((img) => {
+      if (typeof img.decode === 'function') img.decode().catch(() => { /* shown when it loads */ })
+    })
     const elements = {
-      stage: rootRef.current,
-      termpolis: termpolisRef.current,
-      lumopolis: lumopolisRef.current,
-      rule: ruleRef.current,
-      tag: tagRef.current,
+      stage: root,
+      termpolis: termpolisRef.current as HTMLElement,
+      lumopolis: lumopolisRef.current as HTMLElement,
+      rule: ruleRef.current as HTMLElement,
+      tag: tagRef.current as HTMLElement,
     }
     const animations = introSteps(reduced).map((step) => {
-      const el = step.target === 'letter' ? letterRefs.current[step.index as number] : elements[step.target]
-      const animation = el?.animate(step.keyframes, { delay: step.delay, duration: step.duration, fill: 'both' })
-      return animation && Object.assign(animation, { startTime: paintedAt.current })
+      const el = step.target === 'letter' ? (letterRefs.current[step.index as number] as HTMLElement) : elements[step.target]
+      return el.animate(step.keyframes, { delay: step.delay, duration: step.duration, fill: 'both' })
     })
+
+    // An animation that hasn't started within NOT_PAINTED_MS (a hidden or minimised window, a stalled
+    // renderer) never shows: animations start on the first frame that renders the overlay, so until
+    // they start no frame with the overlay exists.
+    timers.push(setTimeout(end, NOT_PAINTED_MS))
+    // Backstop: gone by the latest start that can play plus the timeline, whatever the clock reports.
+    timers.push(setTimeout(end, INTRO_HARD_CAP_MS))
+    animations[0].ready.then((stage) => {
+      if (disposed) return
+      const t = now()
+      const startedAt = typeof stage.startTime === 'number' ? stage.startTime : t
+      if (startedAt - mountedAt > NOT_PAINTED_MS) { end(); return }
+      clearTimeout(timers[0])
+      // The timeline shares performance.now()'s clock. It ends one frame inside 2000 ms, so this
+      // removal lands by 2000 ms from the first frame even when the timer runs a frame late.
+      timers.push(setTimeout(end, Math.max(0, INTRO_TOTAL_MS - (t - startedAt))))
+    }).catch(() => { /* cancelled before it started */ })
+
     return () => {
+      disposed = true
       window.removeEventListener('keydown', end, opts)
       window.removeEventListener('pointerdown', end, opts)
       window.removeEventListener('resize', onResize)
-      for (const a of animations) a?.cancel()
+      for (const timer of timers) clearTimeout(timer)
+      for (const a of animations) a.cancel()
     }
-  }, [phase, reduced])
+  }, [active, done, reduced, now])
 
-  if (!active || phase !== 'playing') return null
+  if (!active || done) return null
 
   const hidden: CSSProperties = { opacity: 0 }
   return (
@@ -181,7 +182,7 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
           transformOrigin: 'center center',
         }}
       >
-        <div ref={termpolisRef} data-testid="launch-intro-termpolis">
+        <div ref={termpolisRef} data-testid="launch-intro-termpolis" style={hidden}>
           <img
             src={logoSvg}
             width={LOGO_SIZE}

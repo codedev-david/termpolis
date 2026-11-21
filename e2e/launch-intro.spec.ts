@@ -9,22 +9,38 @@
  * artwork is pre-rendered, so one frame per card is right everywhere.
  */
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
+import fs from 'fs'
 import os from 'os'
-import { INTRO_TOTAL_MS } from '../src/renderer/src/lib/launchIntro'
-import { dismissOnboarding, e2eLaunchArgs, ensureE2eBuild, quitApp } from './helpers/launch'
+import path from 'path'
+import { INTRO_BUDGET_MS, INTRO_HARD_CAP_MS, INTRO_TOTAL_MS, NOT_PAINTED_MS } from '../src/renderer/src/lib/launchIntro'
+import { UPDATE_RESTART_FILE } from '../src/main/launchIntro'
+import { dismissOnboarding, e2eLaunchArgs, e2eUserDataDir, ensureE2eBuild, quitApp } from './helpers/launch'
 
 const INTRO = '[data-testid="launch-intro"]'
-// The product's own constant, so a change to the timeline cannot silently detach the freeze hook below.
-const INTRO_MAX_MS = INTRO_TOTAL_MS
-const TEST_SLACK_MS = 250
-// The overlay's animations are started at the time already spent since first paint, so their clock and the
-// removal timer end together: the measure (animation start to detach) is 2000 ms plus timer lateness, and a
-// timer never fires early. The floor allows one 60 Hz frame of measurement granularity plus 30 ms. Measured
-// on this machine over 3 runs: 2013, 2010 and 2004 ms, last opacity 0 to 0.012 (before the fix: 1700 to 1766 ms).
-const FLOOR_SLACK_MS = 50
-// The closing fade must be complete when the overlay goes: the last frame we see is at most a frame or two
-// from the end, which is below this opacity.
+// The visible intro (its first frame on screen, to detach) is held to the spec's 2.0 s budget. Its
+// first frame on screen is the stage animation's start: the stage's opacity runs on the compositor,
+// so the animation starts in the frame that first draws the overlay. The page computes that frame's
+// style earlier, while the window's first frame is still being drawn (85-130 ms on a warm Windows
+// launch, 425 ms on a cold one), and nothing of the overlay is on screen in that time. The recordings
+// agree: their first stage frame already shows the Termpolis card fading in.
+// Upper slack: a loaded runner's late timer and React commit. Measured on Windows: see the timing
+// test's log line and the fix report.
+const UPPER_SLACK_MS = 250
+// Lower slack: the timeline ends one 60 Hz frame inside the budget (INTRO_BUDGET_MS - INTRO_TOTAL_MS),
+// the animation's start and the frame on screen can sit a frame or two apart, plus 30 ms.
+const LOWER_SLACK_MS = INTRO_BUDGET_MS - INTRO_TOTAL_MS + 2 * 17 + 30
+// The Termpolis card fades in from 0 on the stage: on the overlay's first frame it is a frame or two
+// into its 150 ms at most.
+const FIRST_OPACITY_MAX = 0.3
+// The closing fade must be complete when the overlay goes: the last frame we see is at most a frame
+// or two from the end of its 250 ms.
 const FINAL_OPACITY_MAX = 0.1
+// The reference frames compare only the card's artwork (its bounding box), with an absolute pixel
+// budget. Set from Windows evidence (3 runs per card, budget 0): the real frames differ from the
+// reference by 0 pixels; without the tag line by 1379 (termpolis) and 2097 (lumopolis); without the
+// card by 7426 and 9631. The budget is under a tenth of the smallest of those, so every control below
+// fails by a wide margin, and leaves room for another platform's image resampling.
+const MAX_DIFF_PIXELS = 130
 const VIEW_W = 1280
 const VIEW_H = 720
 const SHELL = process.platform === 'win32' ? 'powershell' : 'bash'
@@ -49,30 +65,63 @@ const WATCH_SCRIPT = `(() => {
 })()`
 
 /**
- * Holds the intro at film time \`t\`, from the moment it mounts. The overlay removes itself on a
- * timer 2 s after first paint, and pausing animations does not stop that timer, so a slow runner
- * could lose the overlay before the screenshot. This cancels that one timer (the 2000 ms timer made
- * just before the overlay appears) and pins every animation at \`t\` on each frame.
+ * Times the intro from the document's first frame, so its opening frames are never missed (a loop the
+ * test starts after launch begins late, after the overlay is already up). Every frame while the overlay
+ * is attached it reads the computed opacity of the stage and of the Termpolis card, and takes the
+ * stage animation's start (the overlay's first frame on screen) once it has one; a MutationObserver
+ * stamps the exact moment the overlay leaves the DOM.
+ */
+const TIMING_SCRIPT = `(() => {
+  const m = window.__introTiming = { firstAt: null, firstStage: null, firstCard: null, lastStage: null, frames: 0, startTime: null, detachedAt: null }
+  let attached = false
+  new MutationObserver(() => {
+    const on = !!document.querySelector('${INTRO}')
+    if (attached && !on && m.detachedAt === null) m.detachedAt = performance.now()
+    attached = attached || on
+  }).observe(document, { childList: true, subtree: true })
+  const tick = (at) => {
+    const root = document.querySelector('${INTRO}')
+    if (root) {
+      const stage = Number(getComputedStyle(root).opacity)
+      if (m.firstAt === null && stage > 0) {
+        m.firstAt = at
+        m.firstStage = stage
+        m.firstCard = Number(getComputedStyle(root.querySelector('[data-testid="launch-intro-termpolis"]')).opacity)
+      }
+      if (m.firstAt !== null) { m.lastStage = stage; m.frames++ }
+      if (m.startTime === null) {
+        // The root's own animations: the stage's.
+        const a = root.getAnimations().find((x) => typeof x.startTime === 'number')
+        if (a) m.startTime = a.startTime
+      }
+    }
+    if (m.detachedAt === null) requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+})()`
+
+/**
+ * Holds the intro at film time \`t\`, from the moment it mounts. The overlay removes itself on its
+ * own timers (never started by NOT_PAINTED_MS, the removal at start + INTRO_TOTAL_MS, the hard cap),
+ * and pausing animations does not stop them, so a slow runner could lose the overlay before the
+ * screenshot. While the overlay is attached, a timer with one of those delays never fires; every
+ * other timer is untouched. Each frame pins every animation at \`t\`.
  * Only the frame tests install it; the timing test runs the real, unfrozen removal.
  */
 function freezeScript(t: number): string {
   return `(() => {
-  let latest = null
   const realSetTimeout = window.setTimeout.bind(window)
+  const introTimer = (delay) => delay === ${NOT_PAINTED_MS} || delay === ${INTRO_HARD_CAP_MS}
+    || (delay >= ${INTRO_TOTAL_MS - NOT_PAINTED_MS} && delay <= ${INTRO_TOTAL_MS})
   window.setTimeout = (cb, delay, ...args) => {
-    const id = realSetTimeout(cb, delay, ...args)
-    if (delay === ${INTRO_MAX_MS}) latest = [id, performance.now()]
-    return id
+    if (document.querySelector('${INTRO}') && introTimer(Number(delay))) {
+      window.__introTimersHeld = (window.__introTimersHeld || 0) + 1
+      return realSetTimeout(() => {}, delay)
+    }
+    return realSetTimeout(cb, delay, ...args)
   }
-  let released = false
   const tick = () => {
     if (document.querySelector('${INTRO}')) {
-      if (!released) {
-        released = true
-        const now = performance.now()
-        // Only the intro's own timer: the most recent ${INTRO_MAX_MS} ms timer, made just before it mounted.
-        if (latest && now - latest[1] < 1500) clearTimeout(latest[0])
-      }
       const animations = document.getAnimations()
       if (animations.length > 0) {
         animations.forEach((a) => { a.pause(); a.currentTime = ${t} })
@@ -90,14 +139,14 @@ interface LaunchOptions {
   init?: string[]
 }
 
+/** One userData folder per label, and per retry: a retried test must not inherit what the failed attempt stored. */
+const labelFor = (base: string): string => `${base}-${test.info().retry}`
+
 async function launch(base: string, { introSwitch = true, init = [] }: LaunchOptions = {}): Promise<Page> {
-  // One userData folder per label (e2e/helpers/launch.ts:31-48), and per retry: a retried test
-  // must not inherit the setting that the failed attempt stored.
-  const label = `${base}-${test.info().retry}`
   const env: Record<string, string> = { ...(process.env as Record<string, string>), NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1' }
   if (introSwitch) env.TERMPOLIS_TEST_LAUNCH_INTRO = '1'
   else delete env.TERMPOLIS_TEST_LAUNCH_INTRO
-  app = await electron.launch({ args: e2eLaunchArgs(label), env })
+  app = await electron.launch({ args: e2eLaunchArgs(labelFor(base)), env })
   // Before the window exists (it opens a few seconds after the process starts), so the scripts
   // are in the document from its first byte.
   for (const content of init) await app.context().addInitScript({ content })
@@ -117,11 +166,11 @@ async function relaunch(base: string, options?: LaunchOptions): Promise<Page> {
 
 /**
  * The intro never appears. Waits for a positive signal first (the app shell is up), then for longer
- * than the whole intro, then reads the in-page record of whether the overlay was ever attached.
+ * than the whole intro could last, then reads the in-page record of whether the overlay was ever attached.
  */
 async function expectNeverShown(page: Page): Promise<void> {
   await expect(page.locator('button[title="Settings"]')).toBeVisible({ timeout: 30_000 })
-  await page.waitForTimeout(INTRO_MAX_MS + TEST_SLACK_MS + 500)
+  await page.waitForTimeout(INTRO_HARD_CAP_MS + UPPER_SLACK_MS)
   expect(await page.evaluate(() => (window as unknown as { __introSeen?: boolean }).__introSeen)).toBe(false)
 }
 
@@ -133,42 +182,38 @@ async function terminalText(page: Page, id: string): Promise<string> {
 }
 
 test.describe('launch intro', () => {
-  test('shows on launch and is gone by 2.0 s after it first paints', async () => {
-    const page = await launch('intro-timing', { init: [WATCH_SCRIPT] })
-    const { elapsed, lastOpacity } = await page.evaluate(async (sel) => {
-      const frame = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()))
-      const deadline = performance.now() + 10_000
-      let el: Element | null = document.querySelector(sel)
-      while (!el) {
-        if (performance.now() > deadline) throw new Error('the intro never appeared')
-        await frame()
-        el = document.querySelector(sel)
-      }
-      // The overlay's own animation clock starts at its first frame; read it once it has begun.
-      let start: number | null = null
-      while (start === null) {
-        start = (el.getAnimations()[0]?.startTime as number | null | undefined) ?? null
-        if (start === null) await frame()
-      }
-      let lastOpacity = 1
-      for (let overlay = document.querySelector(sel); overlay; overlay = document.querySelector(sel)) {
-        if (performance.now() > start + 10_000) throw new Error('the intro never left')
-        lastOpacity = Number(getComputedStyle(overlay).opacity)
-        await frame()
-      }
-      return { elapsed: performance.now() - start, lastOpacity }
-    }, INTRO)
-    expect(elapsed).toBeLessThanOrEqual(INTRO_MAX_MS + TEST_SLACK_MS)
-    expect(elapsed).toBeGreaterThanOrEqual(INTRO_MAX_MS - FLOOR_SLACK_MS)
-    console.log(`intro timing: elapsed=${elapsed.toFixed(0)} ms, last opacity=${lastOpacity}`)
-    expect(lastOpacity).toBeLessThanOrEqual(FINAL_OPACITY_MAX)
+  test('is visible for at most 2.0 s, from its first frame on screen until it is gone, and never shows the app first', async () => {
+    const page = await launch('intro-timing', { init: [WATCH_SCRIPT, TIMING_SCRIPT] })
+    interface Timing { firstAt: number | null; firstStage: number; firstCard: number; lastStage: number; frames: number; startTime: number | null; detachedAt: number | null }
+    const read = (): Promise<Timing> => page.evaluate(() => (window as unknown as { __introTiming: Timing }).__introTiming)
+    await expect.poll(async () => (await read()).detachedAt !== null, { timeout: 30_000 }).toBe(true)
+    const m = await read()
+    expect(m.firstAt, 'the intro left without its page ever computing a frame of it').not.toBeNull()
+    expect(m.startTime, 'the intro left without ever reaching the screen').not.toBeNull()
+    const firstAt = m.firstAt as number
+    const shownAt = m.startTime as number
+    const detachedAt = m.detachedAt as number
+    const visible = detachedAt - shownAt
+    console.log(`intro timing: visible=${visible.toFixed(1)} ms (on screen to gone), first computed frame to gone=${(detachedAt - firstAt).toFixed(1)} ms, first computed frame to on screen=${(shownAt - firstAt).toFixed(1)} ms, frames=${m.frames}, first stage opacity=${m.firstStage.toFixed(3)}, first card opacity=${m.firstCard.toFixed(3)}, last stage opacity=${m.lastStage.toFixed(3)}`)
+    expect(visible).toBeLessThanOrEqual(INTRO_BUDGET_MS + UPPER_SLACK_MS)
+    expect(visible).toBeGreaterThanOrEqual(INTRO_BUDGET_MS - LOWER_SLACK_MS)
+    // The overlay reaches the screen after the page first computes it (never before), and within
+    // NOT_PAINTED_MS, or it would never have been shown; so it is in the page no longer than the hard cap.
+    expect(shownAt).toBeGreaterThanOrEqual(firstAt)
+    expect(shownAt - firstAt).toBeLessThan(NOT_PAINTED_MS)
+    expect(detachedAt - firstAt).toBeLessThanOrEqual(INTRO_HARD_CAP_MS + UPPER_SLACK_MS)
+    // Its first frame covers the app completely: the starting app is never seen before the intro.
+    expect(m.firstStage).toBe(1)
+    // And the Termpolis card fades in on it rather than appearing at full.
+    expect(m.firstCard).toBeLessThan(FIRST_OPACITY_MAX)
+    expect(m.lastStage).toBeLessThanOrEqual(FINAL_OPACITY_MAX)
     // The watcher saw the overlay, so the "never shown" checks below can be trusted to see it too.
     expect(await page.evaluate(() => (window as unknown as { __introSeen?: boolean }).__introSeen)).toBe(true)
   })
 
   test('typing during the intro lands in the terminal once', async () => {
     const page = await launch('intro-typing')
-    await expect(page.locator(INTRO)).toBeVisible({ timeout: 15_000 })
+    await expect(page.locator(INTRO)).toBeAttached({ timeout: 15_000 })
     // A terminal has to exist while the intro is up, and clicking the UI would end it. So open the
     // shell the way the app's own remote-open path does: the PTY through the real IPC, then the
     // event that puts it in the sidebar as an ordinary terminal.
@@ -205,7 +250,7 @@ test.describe('launch intro', () => {
   test('a reload does not play it again', async () => {
     const page = await launch('intro-reload', { init: [WATCH_SCRIPT] })
     await expect(page.locator(INTRO)).toBeVisible({ timeout: 15_000 })
-    await expect(page.locator(INTRO)).toHaveCount(0, { timeout: INTRO_MAX_MS + 3000 })
+    await expect(page.locator(INTRO)).toHaveCount(0, { timeout: INTRO_HARD_CAP_MS + 3000 })
     await page.reload()
     await page.waitForLoadState('domcontentloaded')
     // The watcher restarts with the new document, so this reads the reloaded page only.
@@ -216,7 +261,7 @@ test.describe('launch intro', () => {
     const label = 'intro-off'
     const page = await launch(label)
     await expect(page.locator(INTRO)).toBeVisible({ timeout: 15_000 })
-    await expect(page.locator(INTRO)).toHaveCount(0, { timeout: INTRO_MAX_MS + 3000 })
+    await expect(page.locator(INTRO)).toHaveCount(0, { timeout: INTRO_HARD_CAP_MS + 3000 })
     await dismissOnboarding(page)
     await page.locator('button[title="Settings"]').click()
     await page.getByRole('button', { name: 'General', exact: true }).click()
@@ -235,21 +280,51 @@ test.describe('launch intro', () => {
     await expectNeverShown(page)
   })
 
-  for (const [card, t] of [['termpolis', 600], ['lumopolis', 1690]] as const) {
+  test('does not show on the restart an update asked for, and consumes the marker', async () => {
+    // What the updater writes before it quits to install: the time, in the app's own userData.
+    const marker = path.join(e2eUserDataDir(labelFor('intro-update-restart')), UPDATE_RESTART_FILE)
+    fs.writeFileSync(marker, String(Date.now()))
+    const page = await launch('intro-update-restart', { init: [WATCH_SCRIPT] })
+    await expectNeverShown(page)
+    // One-shot: deleted, so the next start the user makes plays it.
+    await expect.poll(() => fs.existsSync(marker), { timeout: 10_000 }).toBe(false)
+  })
+
+  for (const [card, t] of [['termpolis', 600], ['lumopolis', 1650]] as const) {
     test(`the ${card} card matches the reference frame`, async () => {
       test.info().snapshotSuffix = ''
       // Held at the card's time from the moment the overlay mounts (see freezeScript), so nothing
       // here races the overlay's own removal, however slow the runner is.
       const page = await launch(`intro-shot-${card}`, { init: [freezeScript(t)] })
       await page.waitForFunction(() => (window as unknown as { __introFrozen?: boolean }).__introFrozen === true, undefined, { timeout: 30_000 })
-      // Loud check that the hook really cancelled the removal timer: well past the product's timeline the
-      // overlay must still be attached. If the product's timer changes and the hook misses it, this fails here.
-      await page.waitForTimeout(INTRO_MAX_MS + TEST_SLACK_MS)
+      // Loud check that the hook really held the overlay's timers: past the hard cap the overlay must
+      // still be attached. If the product's timers change and the hook misses them, this fails here.
+      await page.waitForTimeout(INTRO_HARD_CAP_MS + UPPER_SLACK_MS)
       await expect(page.locator(INTRO)).toHaveCount(1)
-      // The overlay is the whole viewport, so a viewport clip is the overlay; a clip rather than the element
-      // keeps the frame exactly 1280x720 even if the OS rounds the viewport by a pixel.
-      const shot = await page.screenshot({ clip: { x: 0, y: 0, width: VIEW_W, height: VIEW_H }, scale: 'css', animations: 'allow' })
-      expect(shot).toMatchSnapshot(`launch-intro-${card}.png`, { maxDiffPixelRatio: 0.02 })
+      // Compare the card's artwork only: the union of its pieces' boxes, rounded out to whole pixels.
+      // A whole-viewport compare with a ratio budget let a frame with the artwork missing pass.
+      const cardSel = `[data-testid="launch-intro-${card}"]`
+      const clip = await page.evaluate((s) => {
+        const boxes = [...document.querySelectorAll(`${s} img, ${s} div`)].map((e) => e.getBoundingClientRect())
+        const x = Math.floor(Math.min(...boxes.map((b) => b.left)))
+        const y = Math.floor(Math.min(...boxes.map((b) => b.top)))
+        return {
+          x, y,
+          width: Math.ceil(Math.max(...boxes.map((b) => b.right))) - x,
+          height: Math.ceil(Math.max(...boxes.map((b) => b.bottom))) - y,
+        }
+      }, cardSel)
+      expect(clip.width).toBeGreaterThan(200)
+      expect(clip.height).toBeGreaterThan(100)
+      const name = `launch-intro-${card}.png`
+      const options = { maxDiffPixels: MAX_DIFF_PIXELS }
+      const shoot = (): Promise<Buffer> => page.screenshot({ clip, scale: 'css', animations: 'allow' })
+      expect(await shoot()).toMatchSnapshot(name, options)
+      // Controls, with the same options: the budget must catch a missing tag line, and a missing card.
+      await page.evaluate((s) => { (document.querySelector(`${s} img:last-of-type`) as HTMLElement).style.visibility = 'hidden' }, cardSel)
+      expect(await shoot(), 'a frame without the tag line must not match').not.toMatchSnapshot(name, options)
+      await page.evaluate((s) => { (document.querySelector(s) as HTMLElement).style.visibility = 'hidden' }, cardSel)
+      expect(await shoot(), 'a frame without the card must not match').not.toMatchSnapshot(name, options)
     })
   }
 })

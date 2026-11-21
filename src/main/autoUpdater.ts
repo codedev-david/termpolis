@@ -32,6 +32,8 @@ import { sudoAskpassPath } from './sudoAskpass'
 import { recordUpdaterEvent } from './telemetry'
 import { createShedGate, type ShedGate } from './loopGovernor'
 import { classifyUpdaterError, DISK_FULL_MESSAGE, scrubUpdaterText, updaterFailureMessage } from './updaterErrors'
+import { clearUpdateRestart, markUpdateRestart } from './launchIntro'
+import { offMainFiles } from './offMainFiles'
 import {
   bundlePathFromExe,
   detectUpdateBlocker,
@@ -181,6 +183,9 @@ export interface UpdaterHost {
   debInstallerRunning: () => boolean
   /** Quit, once the .deb's install runner is waiting for this process to exit. */
   quit: () => void
+  /** Mark (true) or unmark (false) the coming start as an update restart, which skips the launch
+   *  intro (launchIntro.ts). Asynchronous; the quit's flushSync puts a pending write on disk. */
+  markUpdateRestart: (on: boolean) => void
 }
 
 function defaultHost(): UpdaterHost {
@@ -205,6 +210,13 @@ function defaultHost(): UpdaterHost {
     takeDebNotice: () => readDebInstallNotice(app.getPath('userData'), app.getVersion())?.message ?? null,
     debInstallerRunning: () => debInstallerRunning(app.getPath('userData')),
     quit: () => app.quit(),
+    markUpdateRestart: (on) => {
+      try {
+        const write = (p: string, text: string) => offMainFiles.write(p, text)
+        if (on) markUpdateRestart(app.getPath('userData'), write)
+        else clearUpdateRestart(app.getPath('userData'), write)
+      } catch { /* no userData: the restart plays the intro, which is harmless */ }
+    },
   }
 }
 
@@ -242,6 +254,9 @@ export function initAutoUpdater(
   const setQuitBypass = (armed: boolean) => {
     try { opts?.onBeforeQuitAndInstall?.(armed) } catch { /* never block the install, or the move */ }
   }
+  const markRestart = (on: boolean) => {
+    try { host.markUpdateRestart(on) } catch { /* never block the install over the launch intro */ }
+  }
   // From "Restart" until the app quits. An updater error in between means that quit isn't coming
   // (Squirrel.Mac failing to unpack, an installer that won't start), so the guard must guard again.
   let restartRequested = false
@@ -249,6 +264,7 @@ export function initAutoUpdater(
     if (!restartRequested) return
     restartRequested = false
     setQuitBypass(false)
+    markRestart(false)
   }
   // A Linux system package, which electron-updater would install with pkexec … dpkg through
   // spawnSync on this thread. The package-type the package carries says so, as it says to
@@ -284,6 +300,8 @@ export function initAutoUpdater(
       }
       // Armed for good: no updater error stops this quit, since the runner is already waiting.
       setQuitBypass(true)
+      // The runner starts Termpolis again once the install is done: that start skips the intro.
+      markRestart(true)
       // A tick later, so the renderer has its answer before the window goes.
       setImmediate(() => host.quit())
       return { success: true }
@@ -293,6 +311,9 @@ export function initAutoUpdater(
       if (!au) return { success: false, error: 'electron-updater unavailable' }
       restartRequested = true
       setQuitBypass(true)
+      // Before quitAndInstall, which can quit at once: the installer starts Termpolis again, and that
+      // start skips the intro. Taken back by cancelRestart if the quit doesn't come after all.
+      markRestart(true)
       au.quitAndInstall(false, true)
       return { success: true }
     } catch (e) {

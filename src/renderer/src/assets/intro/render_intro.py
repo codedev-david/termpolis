@@ -132,7 +132,9 @@ def main():
         "letterOffsets": [round(o, 2) for o in extra["offsets"]],
         "ruleTop": round(extra["ruleTop"], 2),
     }
-    (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    # LF on every platform: write_text would turn "\n" into CRLF on Windows.
+    with open(OUT / "manifest.json", "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(manifest, indent=2) + "\n")
     print("wrote", len(list(OUT.glob("*.png"))), "PNGs and manifest.json")
 
 

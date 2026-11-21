@@ -1,17 +1,54 @@
 import { describe, it, expect, vi } from 'vitest'
-import { INTRO_SETTING_KEY, INTRO_TIMELINE, INTRO_TOTAL_MS, NOT_PAINTED_MS, introEnabled, introScale, introSteps, setIntroEnabled } from '../../../src/renderer/src/lib/launchIntro'
+import {
+  INTRO_BUDGET_MS, INTRO_HARD_CAP_MS, INTRO_SETTING_KEY, INTRO_TIMELINE, INTRO_TOTAL_MS, NOT_PAINTED_MS,
+  introEnabled, introScale, introSteps, setIntroEnabled,
+} from '../../../src/renderer/src/lib/launchIntro'
 
 describe('introSteps', () => {
   it('pins the timeline the spec leaves to the builder', () => {
-    expect(INTRO_TOTAL_MS).toBe(2000)
+    expect(INTRO_BUDGET_MS).toBe(2000)
+    // One 60 Hz frame inside the spec's 2.0 s, so the removal lands at or before 2000 ms.
+    expect(INTRO_TOTAL_MS).toBe(1984)
+    expect(INTRO_BUDGET_MS - INTRO_TOTAL_MS).toBeGreaterThanOrEqual(16)
+    expect(INTRO_BUDGET_MS - INTRO_TOTAL_MS).toBeLessThan(34)
     expect(NOT_PAINTED_MS).toBe(1000)
-    expect(INTRO_TIMELINE.letters.start + 8 * INTRO_TIMELINE.letters.stagger + INTRO_TIMELINE.letters.each).toBe(1670)
+    expect(INTRO_HARD_CAP_MS).toBe(NOT_PAINTED_MS + INTRO_TOTAL_MS)
+    expect(INTRO_TIMELINE.fadeOut[1]).toBe(INTRO_TOTAL_MS)
   })
 
-  it.each([false, true])('every step ends by 2000 ms (reduced=%s)', (reduced) => {
+  it('holds the whole LUMOPOLIS word, and its tag, at least 150 ms before the closing fade', () => {
+    const { letters, tag, rule, fadeOut } = INTRO_TIMELINE
+    const wordDone = letters.start + 8 * letters.stagger + letters.each
+    expect(wordDone).toBe(1550)
+    expect(fadeOut[0] - wordDone).toBeGreaterThanOrEqual(150)
+    expect(fadeOut[0] - tag[1]).toBeGreaterThanOrEqual(150)
+    expect(fadeOut[0] - rule[1]).toBeGreaterThanOrEqual(150)
+    // Still one by one: each letter starts while the one before is moving.
+    expect(letters.stagger).toBeGreaterThan(0)
+    expect(letters.stagger).toBeLessThan(letters.each)
+  })
+
+  it.each([false, true])('the stage covers the app from its first frame and only fades out; the Termpolis card fades in on it (reduced=%s)', (reduced) => {
+    const { fadeIn, termpolisHold, crossfade, fadeOut } = INTRO_TIMELINE
+    const steps = introSteps(reduced)
+    // Opaque from the first frame: the app under it is never seen before the intro.
+    expect(steps.find((s) => s.target === 'stage')!.keyframes).toEqual([
+      { opacity: 1, offset: 0 },
+      { opacity: 1, offset: fadeOut[0] / INTRO_TOTAL_MS },
+      { opacity: 0, offset: 1 },
+    ])
+    expect(steps.find((s) => s.target === 'termpolis')!.keyframes).toEqual([
+      { opacity: 0, offset: 0 },
+      { opacity: 1, offset: fadeIn[1] / crossfade[1] },
+      { opacity: 1, offset: termpolisHold[1] / crossfade[1] },
+      { opacity: 0, offset: 1 },
+    ])
+  })
+
+  it.each([false, true])('every step ends by the timeline end, inside 2000 ms (reduced=%s)', (reduced) => {
     const steps = introSteps(reduced)
     expect(steps.length).toBeGreaterThan(9)
-    expect(Math.max(...steps.map((s) => s.delay + s.duration))).toBeLessThanOrEqual(INTRO_TOTAL_MS)
+    expect(Math.max(...steps.map((s) => s.delay + s.duration))).toBe(INTRO_TOTAL_MS)
     for (const s of steps) expect(s.delay).toBeGreaterThanOrEqual(0)
   })
 
@@ -30,8 +67,8 @@ describe('introSteps', () => {
     expect(letters).toHaveLength(9)
     letters.forEach((s, i) => {
       expect(s.index).toBe(i)
-      expect(s.delay).toBe(1050 + 40 * i)
-      expect(s.duration).toBe(300)
+      expect(s.delay).toBe(1050 + 30 * i)
+      expect(s.duration).toBe(260)
       expect(s.keyframes[0]).toMatchObject({ opacity: 0, filter: 'blur(14px)', transform: 'translateY(18px)' })
       expect(s.keyframes[1]).toMatchObject({ opacity: 1, filter: 'blur(0px)', transform: 'translateY(0px)' })
     })

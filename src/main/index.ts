@@ -199,7 +199,7 @@ import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync, primeHistory } from './historyStore'
 import { offMainFiles } from './offMainFiles'
 import { nodeAsyncFs } from './gitRefs'
-import { createIntroGate } from './launchIntro'
+import { createIntroGate, isRendererPage } from './launchIntro'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, type McpToolHandlers } from './mcpServer'
@@ -1519,18 +1519,26 @@ ipcMain.handle('telemetry:set-consent', async (_, choice?: { crash?: unknown; us
 ipcMain.handle('app:get-version', () => ok({ version: app.getVersion() }))
 
 // Whether the launch intro may play: decided once per process, here, so a renderer reload or a second
-// window can never replay it. Synchronous because the preload reads it before the renderer loads.
+// window can never replay it. The decision reads the update-restart marker off the main thread; it
+// starts early (introGate.start() below, before the window exists) and the preload's synchronous ask
+// only reads the cached answer (launchIntro.ts says why "not ready yet" means no intro).
 const introGate = createIntroGate({
   userData: app.getPath('userData'),
-  version: app.getVersion(),
   env: process.env,
-  readFile: (p) => readFileSync(p, 'utf8'),
-  writeFile: (p, text) => writeFileSync(p, text, 'utf8'),
+  now: () => Date.now(),
+  readFile: (p) => fsPromises.readFile(p, 'utf8'),
+  removeFile: (p) => fsPromises.unlink(p),
 })
 ipcMain.on('launch-intro:should-play', (e) => {
-  // The preload also runs in the window's initial empty document, before the app page loads. That one
-  // must not use up the single claim, or the real page is told "no" and the intro never plays.
-  e.returnValue = e.sender.getURL() === '' ? false : introGate.claim()
+  // Only the main window's own page may use up the single claim. The preload also runs in the window's
+  // initial empty document and in any other window or page; telling one of those "yes" would leave
+  // the real page a "no", and the intro would never play.
+  const own = mainWindow !== null && e.sender === mainWindow.webContents && isRendererPage(e.sender.getURL(), {
+    ...(process.env['ELECTRON_RENDERER_URL'] ? { devUrl: process.env['ELECTRON_RENDERER_URL'] } : {}),
+    indexFile: join(__dirname, '../renderer/index.html'),
+    platform: process.platform,
+  })
+  e.returnValue = own ? introGate.claim() : false
 })
 
 /** How long the status bar waits for the MCP server to bind before it stops saying "starting". */
@@ -4165,6 +4173,9 @@ if (!gotTheLock) {
   // Another instance is already running — quit immediately
   app.quit()
 } else {
+  // The launch intro's decision, started now so it is ready long before the window asks. Only the
+  // instance that holds the lock reads (and consumes) the update-restart marker.
+  void introGate.start()
   // When a second instance tries to launch, focus the existing window
   app.on('second-instance', () => {
     if (mainWindow) {

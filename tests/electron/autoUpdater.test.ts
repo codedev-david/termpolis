@@ -7,6 +7,8 @@ import { MOVE_FAILED_DIALOG, MOVE_OFFER_DIALOG, updateBlockerHint } from '../../
 import { DISK_FULL_MESSAGE, NO_UPDATE_FEED_MESSAGE, UPDATE_SERVER_UNREACHABLE_MESSAGE } from '../../src/main/updaterErrors'
 import { NO_NEW_PRIVS_UPDATE_MESSAGE, SNAP_UPDATE_MESSAGE } from '../../src/main/autoUpdater'
 import { hasNoNewPrivs } from '../../src/main/noNewPrivs'
+import { UPDATE_RESTART_FILE } from '../../src/main/launchIntro'
+import { offMainFiles } from '../../src/main/offMainFiles'
 import {
   DEB_BUSY_MESSAGE,
   DEB_CANCELLED_MESSAGE,
@@ -94,6 +96,8 @@ const DEB_PINS: Partial<UpdaterHost> = {
   takeDebNotice: () => null,
   debInstallerRunning: () => false,
   quit: () => {},
+  // Never the real marker in the real userData.
+  markUpdateRestart: () => {},
 }
 const LINUX_HOST: Partial<UpdaterHost> = {
   platform: 'linux',
@@ -1581,5 +1585,111 @@ describe('updater:quit-and-install for a Linux .deb — a window with no_new_pri
       flagged ? { success: false, error: NO_NEW_PRIVS_UPDATE_MESSAGE } : { success: true },
     )
     expect(installDeb).toHaveBeenCalledTimes(flagged ? 0 : 1)
+  })
+})
+
+describe('updater:quit-and-install marks the coming start as an update restart (the launch intro skips it)', () => {
+  const tick = () => new Promise((resolve) => setImmediate(resolve))
+
+  async function start(host: Partial<UpdaterHost>, calls: string[]) {
+    mockAutoUpdater.quitAndInstall.mockReset()
+    mockAutoUpdater.quitAndInstall.mockImplementation(() => calls.push('quitAndInstall'))
+    const mod = await freshAutoUpdater({ ...host, markUpdateRestart: (on: boolean) => { calls.push(`mark:${on}`) } })
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any, { onBeforeQuitAndInstall: (armed) => { calls.push(`bypass:${armed}`) } })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+  }
+
+  it('marks just before quitAndInstall, after the bypass', async () => {
+    const calls: string[] = []
+    await start(LINUX_HOST, calls)
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+    expect(calls).toEqual(['bypass:true', 'mark:true', 'quitAndInstall'])
+  })
+
+  it('takes the mark back when quitAndInstall throws, or an updater error says the quit is not coming', async () => {
+    const calls: string[] = []
+    await start(LINUX_HOST, calls)
+    mockAutoUpdater.quitAndInstall.mockImplementationOnce(() => { throw new Error('nope') })
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: false, error: 'nope' })
+    expect(calls).toEqual(['bypass:true', 'mark:true', 'bypass:false', 'mark:false'])
+    calls.length = 0
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+    eventHandlers['error']?.(diskFull())
+    expect(calls).toEqual(['bypass:true', 'mark:true', 'quitAndInstall', 'bypass:false', 'mark:false'])
+  })
+
+  it('marks the .deb hand-off once the runner has started, before the quit', async () => {
+    const calls: string[] = []
+    const installDeb = vi.fn((): DebInstallStart => { calls.push('installDeb'); return { started: true } })
+    await start({ ...DEB_HOST, installDeb, quit: () => { calls.push('quit') } }, calls)
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+    expect(calls).toEqual(['installDeb', 'bypass:true', 'mark:true'])
+    await tick()
+    expect(calls).toEqual(['installDeb', 'bypass:true', 'mark:true', 'quit'])
+  })
+
+  it('does not mark when nothing will restart: no update, or a .deb runner that did not start', async () => {
+    const calls: string[] = []
+    mockAutoUpdater.quitAndInstall.mockReset()
+    const mod = await freshAutoUpdater({ ...LINUX_HOST, markUpdateRestart: (on: boolean) => { calls.push(`mark:${on}`) } })
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: false, error: 'no update ready' })
+    await start({ ...DEB_HOST, installDeb: () => ({ started: false, message: 'no' }) }, calls)
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: false, error: 'no' })
+    expect(calls).toEqual([])
+  })
+
+  it('installs all the same when marking throws', async () => {
+    mockAutoUpdater.quitAndInstall.mockReset()
+    const mod = await freshAutoUpdater({ ...LINUX_HOST, markUpdateRestart: () => { throw new Error('EROFS') } })
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+    expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+    mockAutoUpdater.quitAndInstall.mockImplementationOnce(() => { throw new Error('nope') })
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: false, error: 'nope' })
+  })
+
+  describe('by default, in userData through the off-main-thread writer', () => {
+    let dir: string
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'au-mark-'))
+      Object.assign(electron.app, { getPath: vi.fn(() => dir) })
+    })
+    afterEach(() => {
+      delete electron.app.getPath
+      rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('writes the time now, and an empty marker when the restart is taken back', async () => {
+      const { markUpdateRestart: _m, ...host } = LINUX_HOST
+      mockAutoUpdater.quitAndInstall.mockReset()
+      const mod = await freshAutoUpdater(host)
+      mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+      eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+      const before = Date.now()
+      expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+      offMainFiles.flushSync()
+      await vi.waitFor(() => expect(existsSync(join(dir, UPDATE_RESTART_FILE))).toBe(true))
+      const at = Number(readFileSync(join(dir, UPDATE_RESTART_FILE), 'utf8'))
+      expect(at).toBeGreaterThanOrEqual(before)
+      expect(at).toBeLessThanOrEqual(Date.now())
+      expect(electron.app.getPath).toHaveBeenCalledWith('userData')
+      eventHandlers['error']?.(diskFull())
+      offMainFiles.flushSync()
+      await vi.waitFor(() => expect(readFileSync(join(dir, UPDATE_RESTART_FILE), 'utf8')).toBe(''))
+    })
+
+    it('never throws when userData cannot be found', async () => {
+      electron.app.getPath = vi.fn(() => { throw new Error('no userData') })
+      const { markUpdateRestart: _m, ...host } = LINUX_HOST
+      mockAutoUpdater.quitAndInstall.mockReset()
+      const mod = await freshAutoUpdater(host)
+      mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+      eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+      expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+      eventHandlers['error']?.(diskFull())
+      expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+    })
   })
 })
