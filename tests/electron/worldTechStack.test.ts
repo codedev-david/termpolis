@@ -103,7 +103,9 @@ describe('techStack', () => {
     // which load moves on both sides alike. 4N lines against N: a linear read takes about 4 times as long, a
     // quadratic scan about 16. 4N lines against plain code of the same length (about 1): a scan that runs on past
     // its line to its 20,000-character cap is linear but hundreds of times slower. Each side is the best of
-    // interleaved samples of enough calls to last milliseconds, so one stall moves neither.
+    // interleaved samples of enough calls to last milliseconds, so one stall moves neither. Measured on this code
+    // (Windows laptop, three plain runs and one under coverage): 4N against N 2.80 to 5.22, against plain code 0.78
+    // to 1.48, so at least 1.5 and 2.7 times inside the limits; the two bugs they catch measured 19.8 and 130.7.
     const sample = (text: string, calls: number): number => {
       const start = performance.now()
       for (let i = 0; i < calls; i++) packageImports('src/gen.ts', text)

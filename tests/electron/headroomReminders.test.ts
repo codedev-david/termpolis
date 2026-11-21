@@ -183,6 +183,9 @@ describe('eachOutsideReminder', () => {
   // one ended, so the stretches the searches cover tile the text exactly. A wrapper of our own on String.prototype.indexOf,
   // put back at once, adds them up. A visitor that searched from the start again for each reminder (quadratic) or read any
   // stretch twice covers more than the text, and one that skipped a stretch covers less.
+  // (Tied to indexOf on purpose: a string can be watched only through the methods it is read with, and a measure that did not
+  // know them would be a clock again. A visitor rewritten to read the text some other way fails here at once, covering 0 in 0
+  // calls, rather than passing unwatched: whoever rewrites it moves the count to the new reader.)
   it('reads a text dense in reminders once: its searches cover every character exactly once, and there is one per tag', () => {
     const text = Array.from({ length: 3000 }, (_, i) => `result line ${i} <system-reminder>keep this block of instructions ${i}</system-reminder>`).join('\n') + ' tail'
     const real = String.prototype.indexOf
