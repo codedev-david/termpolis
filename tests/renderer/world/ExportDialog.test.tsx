@@ -270,6 +270,24 @@ describe('ExportDialog', () => {
     })
 
     it.each([
+      ['answers with an error', async (): Promise<Res<WorldExportInfo>> => fail("This world can't be exported."), "This world can't be exported."],
+      ['throws', async (): Promise<Res<WorldExportInfo>> => { throw new Error('gone') }, UI_FAILED],
+    ])('when no info has arrived yet and asking again %s, it shows the error instead of reading forever', async (_what, again, sentence) => {
+      const first = deferred<Res<WorldExportInfo>>()
+      const answers: Array<() => Promise<Res<WorldExportInfo>>> = [() => first.promise, again]
+      bridge({ worldExportInfo: vi.fn(() => (answers.shift() as () => Promise<Res<WorldExportInfo>>)()) })
+      const d = await mount({ mapRun: 'describing' })
+      expect(screen.getByTestId('world-export-loading')).toBeInTheDocument()
+      await d.update({ mapRun: null })
+      expect(screen.getByRole('alert')).toHaveTextContent(sentence)
+      expect(screen.queryByTestId('world-export-loading')).toBeNull()
+      expect(exportBtn()).toBeDisabled()
+      first.resolve(ok(info())) // the older answer is still ignored
+      await settle()
+      expect(screen.getByRole('alert')).toHaveTextContent(sentence)
+    })
+
+    it.each([
       ['answers with an error', async (): Promise<Res<WorldExportInfo>> => fail("This world can't be exported.")],
       ['throws', async (): Promise<Res<WorldExportInfo>> => { throw new Error('gone') }],
     ])('when asking again %s, the dialog keeps what it showed', async (_what, again) => {
@@ -280,6 +298,44 @@ describe('ExportDialog', () => {
       expect(screen.queryByRole('alert')).toBeNull()
       expect(screen.getByTestId('world-export-note')).toBeInTheDocument()
       expect(exportBtn()).toBeEnabled()
+    })
+  })
+
+  describe('another world in the same dialog shows nothing of the one before', () => {
+    it.each([
+      ['another folder', { root: '/b' }, { root: '/b', designKey: undefined }],
+      ['a design', { designKey: 'design:d1' }, { root: undefined, designKey: 'design:d1' }],
+    ])('for %s it reads again, and a failed answer shows the error, not the old info', async (_what, next, asked) => {
+      const answers: Array<() => Promise<Res<WorldExportInfo>>> = [async () => ok(info({ smartBytes: 40 * MB })), async () => { throw new Error('gone') }]
+      const b = bridge({ worldExportInfo: vi.fn(() => (answers.shift() as () => Promise<Res<WorldExportInfo>>)()) })
+      const d = await mount({ root: '/a' })
+      expect(screen.getByTestId('world-export-size')).toHaveTextContent('About 40 MB')
+      await d.update(next)
+      expect(b.api.worldExportInfo).toHaveBeenLastCalledWith(asked)
+      expect(screen.getByRole('alert')).toHaveTextContent(UI_FAILED)
+      expect(screen.queryByTestId('world-export-size')).toBeNull()
+      expect(exportBtn()).toBeDisabled()
+    })
+
+    it('reads while the new answer is on its way, then takes its defaults, not the choices made for the world before', async () => {
+      const second = deferred<Res<WorldExportInfo>>()
+      const answers: Array<() => Promise<Res<WorldExportInfo>>> = [async () => ok(info({ smartDefault: true })), () => second.promise]
+      bridge({
+        worldExportInfo: vi.fn(() => (answers.shift() as () => Promise<Res<WorldExportInfo>>)()),
+        worldExport: vi.fn(async (): Promise<ExportRes> => ({ ...fail('Smart Ask needs the model.'), keywordOnly: true })),
+      })
+      const d = await mount({ root: '/a' })
+      fireEvent.click(exportBtn()) // main refuses smart Ask for this world
+      await settle()
+      expect(screen.getByTestId('world-export-keyword')).toHaveTextContent('Smart Ask needs the model.')
+      await d.update({ root: '/b' })
+      expect(screen.getByTestId('world-export-loading')).toBeInTheDocument()
+      expect(screen.queryByTestId('world-export-keyword')).toBeNull()
+      second.resolve(ok(info({ smartDefault: true })))
+      await settle()
+      expect(smart().checked).toBe(true)
+      expect(screen.queryByTestId('world-export-keyword')).toBeNull()
+      expect(screen.queryByRole('alert')).toBeNull()
     })
   })
 

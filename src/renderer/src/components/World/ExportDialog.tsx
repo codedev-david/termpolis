@@ -75,20 +75,37 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
     lastRun.current = mapRun
   }, [mapRun])
 
+  /** The world the dialog was last asked about, and the one whose info it shows (null: none yet). */
+  const askedFor = useRef<string | null>(null)
+  const shownFor = useRef<string | null>(null)
+
   useEffect(() => {
     const seq = ++infoSeq.current
-    // Asked again, a failure keeps what the dialog shows: the export still works from the saved map.
-    const first = ended === 0
+    const world = JSON.stringify([root, designKey])
+    if (askedFor.current !== null && askedFor.current !== world) {
+      // Another world: nothing shown or chosen for the one before carries over, and it reads until the answer.
+      shownFor.current = null
+      smartSet.current = false
+      setInfo(null)
+      setError(null)
+      setKeywordOnly(null)
+    }
+    askedFor.current = world
+    const failed = (sentence: string): void => {
+      // Asked again for the world it shows, a failure keeps what it shows: the export still works from the saved map.
+      if (seq === infoSeq.current && shownFor.current !== world) setError(sentence)
+    }
     window.termpolis.worldExportInfo({ root, designKey }).then(
       (res) => {
         if (seq !== infoSeq.current) return
-        if (!res.success) { if (first) setError(res.error); return }
+        if (!res.success) { failed(res.error); return }
         const data = res.data
+        shownFor.current = world
         setInfo(data)
         if (!smartSet.current) setSmart(data.smartDefault && data.smartAvailable)
         setPick((p) => (data.proposals.some((x) => x.id === p) ? p : data.proposals[0]?.id ?? ''))
       },
-      () => { if (seq === infoSeq.current && first) setError(UI_FAILED) },
+      () => failed(UI_FAILED),
     )
   }, [root, designKey, ended])
 
