@@ -422,7 +422,7 @@ describe('the exported-page runtime', () => {
     const res = makeWinFixture(join(sandbox, 'win-unpacked'), true)
     rmSync(join(res, 'world-export'), { recursive: true })
     expect(() => verifier.verifyResourcesFolder(res, 'win32')).toThrow(/world-export\/world-export\.js/)
-    expect(() => verifier.verifyResourcesFolder(res, 'win32')).toThrow(/from: "dist-world", to: "world-export"/)
+    expect(() => verifier.verifyResourcesFolder(res, 'win32')).toThrow('{ from: "dist-world", to: "world-export", filter: ["world-export.js"] }')
   })
 })
 

@@ -47,7 +47,7 @@ const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs', 'mcp-adapter/t
 /** Where each required file comes from in the repo, as package.json "build.extraResources" ships it. */
 const EXTRA_RESOURCES_HINT =
   '{ from: "src/mcp-adapter", to: "mcp-adapter", filter: ["**/*.cjs"] }, { from: "resources/git-askpass", to: "git-askpass" }' +
-  ' and { from: "dist-world", to: "world-export", filter: ["*.js"] } (run npm run build:world-viewer first)'
+  ' and { from: "dist-world", to: "world-export", filter: ["world-export.js"] } (run npm run build:world-viewer first)'
 
 // The bundled offline embedding model + its WASM runtime. Verified SEPARATELY
 // (not in REQUIRED_RESOURCE_FILES) because a build without the model downloaded
