@@ -15,7 +15,7 @@ vi.mock('electron', () => ({
 import type { GraphSnapshot } from '../../src/main/codeGraph'
 import { _resetCodeGraphForTests, graphKeyForRoot, indexFileContent } from '../../src/main/codeGraph'
 import { createWorldClient, type WorldClientOptions, type WorldHostTransport } from '../../src/main/world/worldClient'
-import { GATE_SETTLE_GRACE_MS } from '../../src/main/world/llmGate'
+import { createLlmGate, GATE_SETTLE_GRACE_MS, WORLD_LLM_HOST_LIMIT } from '../../src/main/world/llmGate'
 import { LABEL_ANSWER_LIMIT_MS, LABEL_CALL_TIMEOUT_MS, LABEL_PREP_ALLOWANCE_MS } from '../../src/main/world/label'
 import { LLM_TIMEOUT_MS } from '../../src/main/world/worldHost'
 import type { WorldHostRequest, WorldHostResponse } from '../../src/main/world/worldHost'
@@ -80,7 +80,9 @@ function setup(opts: WorldClientOptions = {}, configure?: (t: FakeTransport) => 
     spawned.push(t)
     return t
   })
-  const client = createWorldClient(spawn, { userDataPath: '/ud', snapshot: () => SNAP, ...opts })
+  // Each test gets its own gate, as main's one per process would carry one test's running calls into the next.
+  const llmGate = createLlmGate({ graceMs: LABEL_CALL_TIMEOUT_MS + GATE_SETTLE_GRACE_MS })
+  const client = createWorldClient(spawn, { userDataPath: '/ud', snapshot: () => SNAP, llmGate, ...opts })
   return { client, spawn, spawned }
 }
 
@@ -559,6 +561,28 @@ describe('createWorldClient', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('two clients made without a gate share the one gate of the process: a second client cannot double the limit (caveat 4, round 1)', async () => {
+    const running = new Map<string, (t: string) => void>()
+    const llm = vi.fn((_root: string, prompt: string) => new Promise<string | null>((resolve) => running.set(prompt, resolve)))
+    const a = setup({ llm, llmGate: undefined })
+    const b = setup({ llm, llmGate: undefined })
+    await a.client.compile(ROOT)
+    await b.client.compile(ROOT)
+    for (let i = 1; i <= WORLD_LLM_HOST_LIMIT; i++) a.spawned[0].emit({ kind: 'llm', id: i, projectKey: KEY, prompt: `a${i}` })
+    b.spawned[0].emit({ kind: 'llm', id: 1, projectKey: KEY, prompt: 'b1' })
+    await flush()
+    expect(llm).toHaveBeenCalledTimes(WORLD_LLM_HOST_LIMIT)
+    expect(running.has('b1')).toBe(false)
+    // One of the first client's calls ends: the second client's call takes its slot.
+    running.get('a1')?.('one')
+    await flush()
+    expect(running.has('b1')).toBe(true)
+    // (the shared gate is left empty for any later test)
+    for (const p of ['a2', 'a3', 'a4', 'b1']) running.get(p)?.('done')
+    await flush()
+    expect(b.spawned[0].posted).toContainEqual({ kind: 'llm-result', id: 1, text: 'done' })
   })
 
   it('a stopped CLI that never exits holds its slot for at most its own limit and the grace after it', async () => {

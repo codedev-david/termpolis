@@ -30,6 +30,13 @@ export interface WorldHostTransport {
   pid?: number
 }
 
+/** The gate every client in this process shares unless it is given its own, made on first use: a second client
+ *  cannot double the limit. A labelling CLI told to stop may not end at once (`claude -p` runs on the proc host, which
+ *  ends it only at its own LABEL_CALL_TIMEOUT_MS), so its slot is held until it really exits, and no more than its own
+ *  limit after that. */
+let sharedLlmGate: LlmGate | null = null
+const processLlmGate = (): LlmGate => (sharedLlmGate ??= createLlmGate({ graceMs: LABEL_CALL_TIMEOUT_MS + GATE_SETTLE_GRACE_MS }))
+
 export interface WorldClientOptions {
   /** Electron's userData folder (the store lives under `<it>/world/`). Default: `app.getPath('userData')`. */
   userDataPath?: string | (() => string)
@@ -41,8 +48,8 @@ export interface WorldClientOptions {
   /** Runs one labelling prompt for the project at `root`. Absent, or throwing, the host labels from code. `signal` is
    *  aborted when nobody waits for the answer any more (its limit passed, its compile ended, its world was removed). */
   llm?: (root: string, prompt: string, signal: AbortSignal) => Promise<string | null>
-  /** The limit every world's labelling calls share. Default: WORLD_LLM_HOST_LIMIT calls at once, a stopped call's slot
-   *  held until its CLI exits. */
+  /** The limit every world's labelling calls share. Default: the one gate of this process (WORLD_LLM_HOST_LIMIT calls
+   *  at once across every client, a stopped call's slot held until its CLI exits). */
   llmGate?: LlmGate
   /** Evidence about a building's files (commit subjects, docs lines, memory decisions) for labelling, for the project at
    *  `root`. Absent, or throwing: labelling uses file excerpts alone. */
@@ -149,9 +156,7 @@ export function createWorldClient(
       }
     })
   const callTimeoutMs = opts.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
-  // A labelling CLI told to stop may not end at once (`claude -p` runs on the proc host, which ends it only at its own
-  // LABEL_CALL_TIMEOUT_MS), so its slot is held until it really exits, and no more than its own limit after that.
-  const gate = opts.llmGate ?? createLlmGate({ graceMs: LABEL_CALL_TIMEOUT_MS + GATE_SETTLE_GRACE_MS })
+  const gate = opts.llmGate ?? processLlmGate()
   const initTimeoutMs = opts.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS
 
   let current: WorldHostTransport | null = null
