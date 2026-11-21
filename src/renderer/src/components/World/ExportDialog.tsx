@@ -9,6 +9,7 @@ import type { WorldExportInfo, WorldExportProgressEvent, WorldSavedFile } from '
 import { NO_MODEL } from '../../../../shared/world/exportMeta'
 import { btnCls, dialogCls, fieldCls, primaryCls, UI_FAILED } from './worldTargets'
 import { fileNameOf, formatMb, savedAtText } from './exportFormat'
+import { useUiZoom } from './worldPane'
 
 type Step = WorldExportProgressEvent['step']
 
@@ -49,6 +50,7 @@ function describeHint(design: boolean, describeOn: boolean | null, mapRun: Expor
 }
 
 export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onClose }: ExportDialogProps): JSX.Element {
+  const zoom = useUiZoom()
   const [info, setInfo] = useState<WorldExportInfo | null>(null)
   const [smart, setSmart] = useState(false)
   const [keywordOnly, setKeywordOnly] = useState<string | null>(null)
@@ -174,7 +176,7 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
   }
 
   return (
-    <div role="dialog" aria-label="Export Lumopolis world" data-testid="world-export-dialog" className={dialogCls}>
+    <div role="dialog" aria-label="Export Lumopolis world" data-testid="world-export-dialog" className={dialogCls} style={zoom}>
       <h2 className="text-base font-semibold text-white">Export Lumopolis world</h2>
       {info === null && error === null && (
         <p data-testid="world-export-loading" className="text-xs text-[#9ca3af]">Reading the world…</p>

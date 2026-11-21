@@ -7,6 +7,7 @@ import { THEMES } from '../../world/engine'
 import type { Bookmark, LayerState, ThemeName } from '../../world/engine'
 import { ExportMenu } from './ExportMenu'
 import type { ExportKind } from './ExportMenu'
+import { useUiZoom } from './worldPane'
 
 export interface WorldToolbarProps {
   projectName: string
@@ -54,6 +55,7 @@ const btn = 'text-xs px-2 py-1 rounded border border-[#3c3c3c] hover:bg-[#37373d
 const toggleCls = (on: boolean): string => `${btn} ${on ? 'bg-[#094771] text-white border-[#0078d4]' : 'text-[#cccccc]'}`
 
 export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
+  const zoom = useUiZoom()
   const { layers, onLayers } = props
   const [menu, setMenu] = useState(false)
   const [name, setName] = useState('')
@@ -78,7 +80,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
       aria-label="Lumopolis controls"
       className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-[#3c3c3c]"
       // In the pane's flow above the map, opaque, so nothing on the map shows through it.
-      style={{ position: 'relative', flex: 'none', zIndex: 6, background: '#252526' }}
+      style={{ position: 'relative', flex: 'none', zIndex: 6, background: '#252526', ...zoom }}
     >
       <span className="text-sm font-semibold text-white inline-flex items-center gap-2 mr-2">
         <i className="fa-solid fa-earth-americas text-[#4fc1ff]" aria-hidden="true" />

@@ -7,6 +7,7 @@ import type { NeedsLogin, RepoAccess } from '../../../../shared/world/repoAccess
 import { BAD_REF_MESSAGE, validateGitUrl, validGitRef } from '../../../../shared/world/gitUrl'
 import { btnCls, dialogCls, fieldCls, primaryCls, signInLabel } from './worldTargets'
 import { RepoAccessDialog } from './RepoAccessDialog'
+import { useUiZoom } from './worldPane'
 
 export interface CloneDialogProps {
   onCloned: (entry: WorldEntry) => void
@@ -16,6 +17,7 @@ export interface CloneDialogProps {
 export const CLONE_UNREACHABLE = "Lumopolis couldn't clone that repository. Try again."
 
 export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Element {
+  const zoom = useUiZoom()
   const [url, setUrl] = useState('')
   const [branch, setBranch] = useState('')
   const [cloning, setCloning] = useState(false)
@@ -80,7 +82,7 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
 
   return (
     <>
-    <div role="dialog" aria-label="Open a git repository" data-testid="world-clone" className={dialogCls}>
+    <div role="dialog" aria-label="Open a git repository" data-testid="world-clone" className={dialogCls} style={zoom}>
       <h2 className="text-base font-semibold text-white">Open a git repository</h2>
       <label className="flex flex-col gap-1 text-xs text-[#9ca3af]">
         Repository URL

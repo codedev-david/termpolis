@@ -106,6 +106,15 @@ describe('WorldHome', () => {
     expect(items[3].querySelector('.fa-pen-ruler')).not.toBeNull()
   })
 
+  it('lays its choices out by the pane width, not the window: two columns where they fit, one in a narrow pane', () => {
+    bridge()
+    home()
+    const grid = screen.getByRole('button', { name: /^Open a folder/ }).parentElement as HTMLElement
+    expect(grid.className).not.toMatch(/(^|\s)(sm|md|lg):/)
+    expect(grid.style.gridTemplateColumns).toBe('repeat(auto-fit, minmax(min(15rem, 100%), 1fr))')
+    expect(screen.getByRole('heading', { name: 'Lumopolis' }).className).toContain('flex-wrap')
+  })
+
   it('missing entry shows Remove', async () => {
     const api = bridge()
     const props = home()

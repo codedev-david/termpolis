@@ -51,8 +51,8 @@ import { BuildItDialog } from './BuildItDialog'
 import { ExportDialog, ExportToast } from './ExportDialog'
 import { DocumentDialog } from './DocumentDialog'
 import type { ExportKind } from './ExportMenu'
-import { legendDefaultOpen, legendReserve, WorldLegend } from './WorldLegend'
-import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardReserve, worldPaneStyle } from './worldPane'
+import { LEGEND_CHIP_RESERVE, LEGEND_RESERVE, legendDefaultOpen, legendReserveScaled, WorldLegend } from './WorldLegend'
+import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardMeetsLegend, cardReserve, UiScaleContext, useUiScale, worldPaneStyle } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
@@ -152,9 +152,16 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [proposalPick, setProposalPick] = useState<string | null | undefined>(undefined)
   const proposal = proposalPick === undefined ? (doc?.layers.plan.find((p) => p.reconcile)?.id ?? null) : proposalPick
   useEffect(() => { viewer?.setLayers({ proposal }) }, [viewer, proposal])
-  // The legend is expanded on a wide pane and a chip on a narrow one, until the user chooses.
+  // How much bigger than on a laptop the panels draw on a big monitor (useUiScale): they are zoomed by
+  // it, so every length measured from them below is multiplied by it to get the map's pixels.
+  const scale = useUiScale(width)
+  const scaleRef = useRef(scale)
+  scaleRef.current = scale
+  const zoom = scale === 1 ? {} : { zoom: scale }
+  // The legend is expanded on a wide pane and a chip on a narrow one, until the user chooses: wide in
+  // the panels' own (zoomed) pixels.
   const [legendChoice, setLegendChoice] = useState<boolean | null>(null)
-  const legendOpen = legendChoice ?? legendDefaultOpen(width)
+  const legendOpen = legendChoice ?? legendDefaultOpen(width / scale)
   const legendOpenRef = useRef(legendOpen)
   legendOpenRef.current = legendOpen
   const widthRef = useRef(width)
@@ -389,7 +396,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   }, [])
 
   // The overview is fitted to what the legend leaves free: it follows the legend and the pane's width.
-  const reserve = legendReserve(legendOpen, width)
+  const reserve = legendReserveScaled(legendOpen, width, scale)
   useEffect(() => { viewer?.setRightReserve(reserve) }, [viewer, reserve])
   // ...and to what the ask bar leaves free above it: its measured height, which changes as its chips
   // wrap in a narrow pane, or as it thinks and answers.
@@ -406,7 +413,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     ro.observe(el)
     return () => ro.disconnect()
   }, [showAsk])
-  const below = askReserve(askHeight)
+  const below = Math.ceil(askReserve(askHeight) * scale)
   useEffect(() => { viewer?.setBottomReserve(below) }, [viewer, below])
   // A focus, a line's close-up or a tour step is framed beside the open card: its measured box, read
   // again when it opens, shows another part, or changes size; none while it is closed.
@@ -422,7 +429,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     ro.observe(el)
     return () => ro.disconnect()
   }, [card])
-  const [cardW, cardH] = cardReserve(cardSize[0], cardSize[1])
+  const [cardW, cardH] = cardReserve(cardSize[0], cardSize[1]).map((v) => Math.ceil(v * scale))
   // In a narrow pane a tall card is capped so the city keeps room below it (cardMaxHeight): the stage's
   // measured size, read again as the pane or the window changes.
   const stageRef = useRef<HTMLDivElement>(null)
@@ -436,14 +443,29 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  const cardCap = cardMaxHeight(stageSize[0], stageSize[1], rightInset(stageSize[0], reserve), below)
+  // The cap is a length on the zoomed card: worked out in its pixels.
+  const cardCap = cardMaxHeight(stageSize[0] / scale, stageSize[1] / scale, rightInset(stageSize[0], reserve) / scale, below / scale)
   useEffect(() => { viewer?.setCardReserve(cardW, cardH) }, [viewer, cardW, cardH])
+  // Where the open card would reach the legend (a narrow pane), the legend steps aside until it closes.
+  const legendAside = card !== null && cardMeetsLegend(stageSize[0] / scale, legendOpen ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE)
+  // The map's labels grow with the panels, and keep out from under every panel over the map: the
+  // stage's children but the map itself, handed over again only when that set changes.
+  useEffect(() => { viewer?.setLabelScale(scale) }, [viewer, scale])
+  const panelsRef = useRef<HTMLElement[]>([])
+  useEffect(() => {
+    if (!viewer) return
+    const els = Array.from((stageRef.current as HTMLDivElement).children).filter((el): el is HTMLElement => el !== hostRef.current) as HTMLElement[]
+    const was = panelsRef.current
+    if (els.length === was.length && els.every((el, i) => el === was[i])) return
+    panelsRef.current = els
+    viewer.setPanels(els)
+  })
 
   // The 3D viewer, once, when WebGL is there.
   useEffect(() => {
     if (!webgl) return
     const v = createWorldViewer(hostRef.current as HTMLDivElement, {
-      rightReserve: legendReserve(legendOpenRef.current, widthRef.current),
+      rightReserve: legendReserveScaled(legendOpenRef.current, widthRef.current, scaleRef.current),
       renderCard: (html, fromClick) => {
         if (html !== null) armedRef.current = false
         setCard(html)
@@ -761,6 +783,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const mapRun = progress !== null && progress.pct < 100 ? (progress.stage === 'labelling' ? 'describing' : 'updating') : null
 
   return (
+    <UiScaleContext.Provider value={scale}>
     <div
       ref={dialogRef}
       role="region"
@@ -813,9 +836,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         {flat && doc && (
           <div
             data-testid="world-fallback"
-            className="overflow-auto p-6 text-sm [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:cursor-pointer [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
-            // It ends above the ask bar laid over the pane's foot, so no row sits under the suggestions or the box.
-            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: below }}
+            // Drawn at the pane's scale, wrapping long names, and ending above the ask bar laid over the
+            // pane's foot, so no row sits under the suggestions or the box.
+            className="overflow-auto p-6 text-sm [overflow-wrap:anywhere] [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:cursor-pointer [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: below / scale, ...zoom }}
             onClick={onFallbackClick}
             // renderFallback escapes every string from the doc.
             dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName) }}
@@ -830,14 +854,14 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             onRetry={() => setAttempt((n) => n + 1)}
           />
         )}
-        {webgl && !map2d && doc && !home && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} onToggle={() => setLegendChoice(!legendOpen)} />}
+        {webgl && !map2d && doc && !home && !legendAside && <WorldLegend doc={doc} processes={layers.processes} open={legendOpen} bottom={below / scale} onToggle={() => setLegendChoice(!legendOpen)} />}
         {confirmRelayout && (
           <div
             role="alertdialog"
             aria-label="Confirm re-layout"
             data-testid="world-relayout-confirm"
             className="p-3 rounded border border-[#3c3c3c] shadow-xl flex flex-col gap-2 text-xs"
-            style={{ position: 'absolute', top: 12, right: 12, width: 320, zIndex: 5, background: '#252526' }}
+            style={{ position: 'absolute', top: 12, right: 12, width: 320, maxWidth: 'calc(100% - 24px)', boxSizing: 'border-box', zIndex: 5, background: '#252526', ...zoom }}
           >
             <p>Re-layout places every part again from scratch and forgets the current arrangement. Continue?</p>
             <div className="flex justify-end gap-2">
@@ -857,7 +881,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           </div>
         )}
         {(repoUpdate || busy || notice || saved) && (
-          <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+          <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', maxWidth: 'calc(100% - 24px)', zIndex: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, ...zoom }}>
             {repoUpdate && (
               <SignInNeededNotice
                 host={repoUpdate.host}
@@ -886,12 +910,12 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         )}
         {card !== null && <WorldCard boxRef={cardRef} html={card} clickThrough={clickThrough} maxHeight={cardCap} onClose={() => { setCard(null); setEvidence(null); viewer?.resetView() }} onOpen={openPart} onTech={openTech} onConfirm={confirmClaim} onRuntimeNames={saveRuntimeNames} onEvidence={setEvidence} />}
         {card !== null && evidence !== null && (
-          <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 4, maxWidth: 360 }} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1">
+          <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 4, maxWidth: 'min(360px, calc(100% - 24px))', ...zoom }} className="rounded border border-[#3c3c3c] bg-[#252526] px-2 py-1">
             <EvidenceView evidence={evidence} onClose={() => setEvidence(null)} />
           </div>
         )}
         {askSlot && !home && (
-          <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3 }} data-testid="world-ask-slot">
+          <div ref={askRef} style={{ position: 'absolute', bottom: ASK_BOTTOM_PX, left: '50%', transform: 'translateX(-50%)', width: ASK_SLOT_WIDTH, zIndex: 3, ...zoom }} data-testid="world-ask-slot">
             {askSlot(map2d ? null : viewer, doc, worldKey, askLink, proposal)}
           </div>
         )}
@@ -920,5 +944,6 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         />
       )}
     </div>
+    </UiScaleContext.Provider>
   )
 }

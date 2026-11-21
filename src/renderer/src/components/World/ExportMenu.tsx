@@ -1,7 +1,9 @@
 // Lumopolis Export: the toolbar button and its menu. Each item opens one dialog: the interactive world as one
 // offline page (ExportDialog), or the world's documentation as one page (DocumentDialog). The menu is a plain group
 // of buttons, like Bookmarks beside it: Esc closes it and nothing else, and so does a click anywhere outside it.
-import { useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
+import { screenRect } from '../../world/engine/screenRect'
+import { UiScaleContext } from './worldPane'
 
 export type ExportKind = 'world' | 'document'
 
@@ -13,13 +15,14 @@ export interface ExportMenuProps {
   disabled?: boolean
 }
 
-/** The menu's width in px (w-56), to tell whether it fits to the left of the button. */
+/** The menu's width in its own px (w-56), to tell whether it fits to the left of the button: times the pane's scale on screen. */
 const MENU_W = 224
 
 const itemCls = 'text-left px-2 py-1.5 rounded text-[#d4d4d4] hover:bg-[#37373d] focus:bg-[#37373d] outline-none'
 
 export function ExportMenu({ btnClass, onExport, disabled = false }: ExportMenuProps): JSX.Element {
   const [open, setOpen] = useState(false)
+  const scale = useContext(UiScaleContext)
   // Which edge the menu hangs from. The toolbar wraps in a narrow pane, and Export can start a row: a menu hung
   // from its right edge would then reach past the pane's left edge, where the pane clips it.
   const [side, setSide] = useState<'left' | 'right'>('right')
@@ -60,8 +63,9 @@ export function ExportMenu({ btnClass, onExport, disabled = false }: ExportMenuP
         disabled={disabled}
         onClick={() => {
           const wrap = wrapRef.current as HTMLDivElement
-          const room = wrap.getBoundingClientRect().right - (wrap.parentElement as HTMLElement).getBoundingClientRect().left
-          setSide(room < MENU_W ? 'left' : 'right')
+          // Both on screen: on a big monitor the toolbar, and the menu in it, are drawn `scale` times bigger.
+          const room = screenRect(wrap).right - screenRect(wrap.parentElement as HTMLElement).left
+          setSide(room < MENU_W * scale ? 'left' : 'right')
           setOpen(!open)
         }}
         title="Save this world as a page you can share"

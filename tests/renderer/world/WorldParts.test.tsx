@@ -4,6 +4,7 @@ import { CARD_CLICK_GRACE_MS, WorldCard } from '../../../src/renderer/src/compon
 import { EvidenceView } from '../../../src/renderer/src/components/World/EvidenceView'
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
 import { WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
+import { UiScaleContext } from '../../../src/renderer/src/components/World/worldPane'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
 
 const noop = { onTech: vi.fn(), onConfirm: vi.fn(), onEvidence: vi.fn() }
@@ -117,6 +118,8 @@ describe('WorldCard', () => {
     const body = screen.getByTestId('world-card-body')
     // Uncapped (a wide pane): the stage less 110 px, as before.
     expect(card.style.maxHeight).toBe('calc(100% - 110px)')
+    // Never wider than the pane less its insets: a tablet's narrow pane gets a narrower card, not a cut-off one.
+    expect(card.style.maxWidth).toBe('calc(100% - 24px)')
     rerender(<WorldCard html={html} onOpen={vi.fn()} onClose={vi.fn()} {...noop} maxHeight={132} />)
     expect(card.style.maxHeight).toBe('min(132px, calc(100% - 110px))')
     // The body is the scroller: a region with a name, in the tab order, so arrows and Page Down scroll it.
@@ -261,5 +264,19 @@ describe('WorldToolbar Export', () => {
     fireEvent.click(button)
     expect(screen.getByTestId('world-export-menu')).toHaveClass('left-0')
     expect(screen.getByTestId('world-export-menu')).not.toHaveClass('right-0')
+  })
+
+  it('on a big monitor, judges the room on screen against the menu drawn at the pane scale', () => {
+    render(<UiScaleContext.Provider value={1.5}><WorldToolbar {...props({ onExport: vi.fn(), onBuildIt: vi.fn() })} /></UiScaleContext.Provider>)
+    const button = screen.getByTestId('world-export')
+    const wrap = button.parentElement as HTMLElement
+    const rect = (left: number, right: number) => ({ left, right, top: 0, bottom: 20, width: right - left, height: 20, x: left, y: 0, toJSON: () => ({}) })
+    // A Chromium with standard zoom: boxes already on screen. 300 px is room for a 224 px menu, not a 336 px one.
+    Object.defineProperty(wrap, 'currentCSSZoom', { value: 1.5, configurable: true })
+    Object.defineProperty(wrap.parentElement as HTMLElement, 'currentCSSZoom', { value: 1.5, configurable: true })
+    vi.spyOn(wrap.parentElement as HTMLElement, 'getBoundingClientRect').mockReturnValue(rect(300, 900) as DOMRect)
+    vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(520, 600) as DOMRect)
+    fireEvent.click(button)
+    expect(screen.getByTestId('world-export-menu')).toHaveClass('left-0')
   })
 })

@@ -16,7 +16,7 @@ vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => {
       const selectCbs = new Set<(s: WorldSelection | null) => void>()
       const v = {
         host, opts,
-        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(),
+        load: vi.fn(), setLayers: vi.fn(), setTheme: vi.fn(), setRightReserve: vi.fn(), setBottomReserve: vi.fn(), setCardReserve: vi.fn(), setPanels: vi.fn(), setLabelScale: vi.fn(),
         apply: vi.fn(async () => undefined), play: vi.fn(async () => undefined), cancelActions: vi.fn(),
         on: vi.fn((ev: string, cb: (s: WorldSelection | null) => void) => {
           if (ev !== 'select') return () => undefined
@@ -373,6 +373,22 @@ describe('WorldView', () => {
     }
   })
 
+  it('the 2D list ends above the ask bar, so none of it scrolls under the bar', async () => {
+    h.webgl = false
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'world-ask-slot' ? 40 : 0
+    })
+    try {
+      bridge()
+      await mount({ askSlot: () => <span>ask</span> })
+      const list = screen.getByTestId('world-fallback')
+      expect(list.style.bottom).toBe('64px') // 40 + 16 + 8
+      expect(list.style.top).toBe('0px')
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
   it('no WebGL → renders renderFallback(doc) list', async () => {
     h.webgl = false
     bridge()
@@ -645,6 +661,62 @@ describe('WorldView', () => {
         stage.w = 1000
         act(() => { for (const cb of seen) cb() })
         expect(screen.getByTestId('world-card').style.maxHeight).toBe('calc(100% - 110px)')
+      } finally {
+        vi.unstubAllGlobals()
+        vi.restoreAllMocks()
+      }
+    })
+
+    it('in a pane too narrow for both, puts the legend away while the card is open, and keeps a measured ask bar clear', async () => {
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? 180 : 0
+      })
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? 900 : 0
+      })
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-ask-slot' ? 160 : this.dataset.testid === 'world-card' ? 300 : 0
+      })
+      try {
+        bridge()
+        await mount({ askSlot: () => <input aria-label="ask" /> })
+        // The ask bar's reserve: 160 + 16 + 8 = 184, and the legend's top gap of 12.
+        expect(screen.getByTestId('world-legend').style.maxHeight).toBe('calc(100% - 196px)')
+        act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
+        expect(screen.queryByTestId('world-legend')).toBeNull()
+        fireEvent.click(screen.getByTestId('world-card-close'))
+        expect(screen.getByTestId('world-legend')).toBeTruthy()
+      } finally {
+        vi.restoreAllMocks()
+      }
+    })
+
+    it('in a wide pane stops the card above the ask bar, which an answer makes taller', async () => {
+      const ask = { h: 40 }
+      const seen: Array<() => void> = []
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(cb: () => void) { seen.push(cb) }
+        observe(): void {}
+        disconnect(): void {}
+      })
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? 1000 : 0
+      })
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-stage' ? 800 : 0
+      })
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'world-ask-slot' ? ask.h : 0
+      })
+      try {
+        bridge()
+        await mount({ askSlot: () => <input aria-label="ask" /> })
+        act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
+        // 800 - (40 + 16 + 8) - 12 - 8.
+        expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(716px, calc(100% - 110px))')
+        ask.h = 300
+        act(() => { for (const cb of seen) cb() })
+        expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(456px, calc(100% - 110px))')
       } finally {
         vi.unstubAllGlobals()
         vi.restoreAllMocks()
@@ -2110,5 +2182,78 @@ describe('WorldView export', () => {
     await m.again({ root: '/other' })
     expect(screen.queryByTestId('world-document-dialog')).toBeNull()
     expect(screen.queryByTestId('world-export-toast')).toBeNull()
+  })
+})
+
+describe('WorldView on a big monitor', () => {
+  const windowSize = (w: number, h: number): void => {
+    Object.defineProperty(window, 'innerWidth', { value: w, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: h, configurable: true })
+  }
+  afterEach(() => {
+    windowSize(1024, 768)
+    vi.restoreAllMocks()
+  })
+
+  it('draws its panels and labels bigger, and hands the viewer reserves in the map pixels', async () => {
+    windowSize(3840, 2160)
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'world-card' ? 330 : 0
+    })
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'world-card' ? 225 : this.dataset.testid === 'world-ask-slot' ? 40 : 0
+    })
+    bridge()
+    render(<WorldView root="/repo" width={1600} onClose={vi.fn()} askSlot={() => <input aria-label="ask" />} />)
+    await screen.findByTestId('world-legend')
+    const v = viewer()
+    expect(v.setLabelScale).toHaveBeenLastCalledWith(1.5)
+    expect(screen.getByTestId('world-legend').style.zoom).toBe('1.5')
+    expect(screen.getByRole('toolbar').style.zoom).toBe('1.5')
+    expect(screen.getByTestId('world-ask-slot').style.zoom).toBe('1.5')
+    expect(screen.getByTestId('world-canvas-host').style.zoom).toBe('')
+    // 1600 / 1.5 = 1067 of the legend's own pixels: wide, so it opens and its strip is kept, zoomed.
+    expect(screen.getByTestId('world-legend-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(v.setRightReserve).toHaveBeenLastCalledWith(366)
+    // The ask bar: (40 + 16 + 8) x 1.5.
+    expect(v.setBottomReserve).toHaveBeenLastCalledWith(96)
+    act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
+    expect(screen.getByTestId('world-card').style.zoom).toBe('1.5')
+    expect(v.setCardReserve).toHaveBeenLastCalledWith(528, 372)
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    expect(screen.getByTestId('world-relayout-confirm').style.zoom).toBe('1.5')
+    act(() => { windowSize(1280, 800); window.dispatchEvent(new Event('resize')) })
+    expect(v.setLabelScale).toHaveBeenLastCalledWith(1)
+    expect(screen.getByTestId('world-legend').style.zoom).toBe('')
+  })
+
+  it('caps the card in its own pixels', async () => {
+    windowSize(3840, 2160)
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'world-stage' ? 480 : 0
+    })
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'world-stage' ? 879 : 0
+    })
+    bridge()
+    render(<WorldView root="/repo" width={912} onClose={vi.fn()} />)
+    await screen.findByTestId('world-legend')
+    act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
+    // Scale 1.2 (912 / 760): the stage is 400 x 732.5 of the card's pixels: 732.5 less 45% is 402, 400 on a step, less 20.
+    expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(380px, calc(100% - 110px))')
+  })
+
+  it('tells the viewer which panels are over the map, again only when they change', async () => {
+    bridge()
+    await mount()
+    const v = viewer()
+    const last = (): HTMLElement[] => v.setPanels.mock.calls[v.setPanels.mock.calls.length - 1][0]
+    expect(last()).toContain(screen.getByTestId('world-legend'))
+    expect(last()).not.toContain(screen.getByTestId('world-canvas-host'))
+    const calls = v.setPanels.mock.calls.length
+    fireEvent.click(screen.getByTestId('world-legend-toggle')) // a render, the same panels
+    expect(v.setPanels).toHaveBeenCalledTimes(calls)
+    act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
+    expect(last()).toContain(screen.getByTestId('world-card'))
   })
 })

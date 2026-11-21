@@ -238,7 +238,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
         </button>
       </div>
       {state === 'answered' && cost && (
-        <div className="max-w-full text-center text-[11px] leading-snug text-[#9ca3af]" data-testid="world-ask-cost">
+        <div className="max-w-full text-center text-xs leading-snug text-[#9ca3af]" data-testid="world-ask-cost">
           This answer: {formatTokens(cost.answer)} · this session: {formatTokens(cost.session)}
         </div>
       )}

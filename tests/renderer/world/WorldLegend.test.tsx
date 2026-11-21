@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { useState } from 'react'
 import { rightInset } from '../../../src/renderer/src/world/engine/viewMath'
 import type { WorldDoc } from '../../../src/shared/world/types'
-import { WorldLegend, LEGEND_MAX_CARGO, LEGEND_RESERVE, LEGEND_CHIP_RESERVE, legendDefaultOpen, legendReserve } from '../../../src/renderer/src/components/World/WorldLegend'
+import { WorldLegend, LEGEND_MAX_CARGO, LEGEND_RESERVE, LEGEND_CHIP_RESERVE, legendDefaultOpen, legendMaxHeight, legendReserve, legendReserveScaled } from '../../../src/renderer/src/components/World/WorldLegend'
 import { WorldPaneOpening, worldPaneStyle, WORLD_OPENING_BACKGROUND } from '../../../src/renderer/src/components/World/worldPane'
 import { THEMES } from '../../../src/renderer/src/world/engine'
 import { edge, minimal, rich } from './helpers'
@@ -23,6 +23,19 @@ describe('the legend state', () => {
     expect(legendReserve(false, 1000)).toBe(LEGEND_CHIP_RESERVE)
     expect(LEGEND_CHIP_RESERVE).toBeLessThan(LEGEND_RESERVE)
     expect(rightInset(360, LEGEND_CHIP_RESERVE)).toBe(LEGEND_CHIP_RESERVE) // a chip is kept clear even in the narrowest pane
+  })
+  it('at a big monitor scale, judges the width in its own pixels and reserves its zoomed strip', () => {
+    expect(legendReserveScaled(true, 1600, 1)).toBe(LEGEND_RESERVE)
+    expect(legendReserveScaled(true, 1600, 1.5)).toBe(Math.ceil(LEGEND_RESERVE * 1.5))
+    expect(legendReserveScaled(true, 1000, 1.5)).toBe(Math.ceil(LEGEND_CHIP_RESERVE * 1.5)) // 667 of its own pixels: narrow
+    expect(legendReserveScaled(false, 1600, 1.5)).toBe(Math.ceil(LEGEND_CHIP_RESERVE * 1.5))
+  })
+  it('stops above the ask bar, keeping at least the 120 px it kept before the bar was measured', () => {
+    expect(legendMaxHeight(0)).toBe('calc(100% - 120px)')
+    expect(legendMaxHeight(100)).toBe('calc(100% - 120px)')
+    expect(legendMaxHeight(212.4)).toBe('calc(100% - 225px)') // 12 of top gap + the bar's reserve, rounded up
+    render(<WorldLegend doc={minimal()} processes={false} open onToggle={() => {}} bottom={300} />)
+    expect(screen.getByTestId('world-legend').style.maxHeight).toBe('calc(100% - 312px)')
   })
   it('a collapsed legend is a chip as wide as its reserve says', () => {
     render(<Legend doc={minimal()} processes={false} start={false} />)

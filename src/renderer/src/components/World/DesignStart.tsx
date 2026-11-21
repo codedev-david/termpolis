@@ -6,6 +6,7 @@ import { useRef, useState } from 'react'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { btnCls, dialogCls, fieldCls, primaryCls } from './worldTargets'
 import { lumopolisModel } from './worldAgentModel'
+import { useUiZoom } from './worldPane'
 
 export interface DesignStartProps {
   onDrafted: (key: string) => void
@@ -18,6 +19,7 @@ let drafts = 0
 const draftKey = (): string => `draft:${Date.now().toString(36)}-${++drafts}`
 
 export function DesignStart({ onDrafted, onClose }: DesignStartProps): JSX.Element {
+  const zoom = useUiZoom()
   const [text, setText] = useState('')
   const [drafting, setDrafting] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -55,7 +57,7 @@ export function DesignStart({ onDrafted, onClose }: DesignStartProps): JSX.Eleme
   }
 
   return (
-    <div role="dialog" aria-label="Design something new" data-testid="world-design-start" className={dialogCls}>
+    <div role="dialog" aria-label="Design something new" data-testid="world-design-start" className={dialogCls} style={zoom}>
       <h2 className="text-base font-semibold text-white">Design something new</h2>
       <p className="text-xs text-[#9ca3af]">Lumopolis drafts a planned world from your description. Nothing is written until you choose Build it.</p>
       <div className="relative">

@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import type { BuildItResult, WorldFolderPick } from '../../../../shared/world/types'
 import { btnCls, dialogCls, fieldCls, primaryCls, UI_FAILED } from './worldTargets'
+import { useUiZoom } from './worldPane'
 
 export interface BuildAgent { id: string; name: string }
 
@@ -20,6 +21,7 @@ export interface BuildItDialogProps {
 }
 
 export function BuildItDialog({ designKey, title, agents, defaultAgent, onBuilt, onClose }: BuildItDialogProps): JSX.Element {
+  const zoom = useUiZoom()
   const [folder, setFolder] = useState<WorldFolderPick | null>(null)
   const [anyway, setAnyway] = useState(false)
   const [agent, setAgent] = useState(() => (agents.some((a) => a.id === defaultAgent) ? defaultAgent as string : agents[0]?.id ?? ''))
@@ -57,7 +59,7 @@ export function BuildItDialog({ designKey, title, agents, defaultAgent, onBuilt,
   }
 
   return (
-    <div role="dialog" aria-label="Build it" data-testid="world-build-it" className={dialogCls}>
+    <div role="dialog" aria-label="Build it" data-testid="world-build-it" className={dialogCls} style={zoom}>
       <h2 className="text-base font-semibold text-white">Build “{title}”</h2>
       <p className="text-xs text-[#9ca3af]">
         Choose the folder the app goes in. Lumopolis links the design to it and opens your agent there with the design as its brief.

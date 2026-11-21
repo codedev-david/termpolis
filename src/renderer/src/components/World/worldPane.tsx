@@ -8,8 +8,9 @@
 //
 // App shows WorldPaneOpening while the Lumopolis chunk (the engine and Three.js) loads. This module
 // imports nothing from the engine, so it stays small enough for App's main chunk.
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, RefObject } from 'react'
+import { uiScale } from '../../../../shared/world/uiScale'
 
 /** The Neon theme's background (themes.ts): the pane always opens in Neon. A test keeps the two equal. */
 export const WORLD_OPENING_BACKGROUND = '#03050a'
@@ -86,18 +87,31 @@ export const CARD_MIN_HEIGHT_PX = 96
 /**
  * The open card's greatest height (WorldCard maxHeight), in a stage `width` x `height` whose right
  * `right` pixels the legend covers (viewMath rightInset) and bottom `ask` pixels the ask bar
- * (askReserve). Where the card leaves the city CARD_MIN_FREE_PX beside it, the pane is wide and the
- * card is not capped (null). In a narrow pane the city can only go below the card, so a tall card
+ * (askReserve). Where the card leaves the city CARD_MIN_FREE_PX beside it, the pane is wide: there the
+ * card only stops above the ask bar (which an answer makes taller), and with no ask bar it is not
+ * capped (null). In a narrow pane the city can only go below the card, so a tall card
  * (a busy building's) would leave nowhere for the selection and its line labels: there the card is
  * kept short enough that CARD_FREE_SHARE of the height stays free between its reserve
  * (cardReserve, which this lands on a step of) and the ask bar's, and its body scrolls.
  */
 export function cardMaxHeight(width: number, height: number, right: number, ask: number): number | null {
   if (!(width > 0) || !(height > 0)) return null
-  if (width - right - cardReserve(CARD_WIDTH_PX, 1)[0] >= CARD_MIN_FREE_PX) return null
+  if (width - right - cardReserve(CARD_WIDTH_PX, 1)[0] >= CARD_MIN_FREE_PX) {
+    return ask > 0 ? Math.max(CARD_MIN_HEIGHT_PX, Math.floor(height - ask - CARD_INSET_PX - CARD_CLEARANCE_PX)) : null
+  }
   const room = height - ask - Math.ceil(height * CARD_FREE_SHARE)
   const box = Math.floor(room / CARD_STEP_PX) * CARD_STEP_PX - CARD_INSET_PX - CARD_CLEARANCE_PX
   return Math.max(CARD_MIN_HEIGHT_PX, box)
+}
+
+/**
+ * Whether the open card, at its CARD_WIDTH_PX (held inside a `width` stage's edges), comes within its
+ * clearance of the legend drawn `legend` pixels from the right edge (LEGEND_RESERVE expanded,
+ * LEGEND_CHIP_RESERVE as a chip): in a narrow pane the two would sit on each other, so the legend is
+ * put away while the card is open. An unmeasured stage (0) never puts it away.
+ */
+export function cardMeetsLegend(width: number, legend: number): boolean {
+  return width > 0 && CARD_INSET_PX + Math.min(CARD_WIDTH_PX, width - CARD_INSET_PX * 2) + CARD_CLEARANCE_PX > width - legend
 }
 
 export function worldPaneStyle(background: string, width: number): CSSProperties {
@@ -142,6 +156,34 @@ export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active
     setSaved(next)
   }, [])
   return { width, min: clampWorldPaneWidth(0, room), max: clampWorldPaneWidth(Infinity, room), onDrag }
+}
+
+/**
+ * How much bigger than on a laptop the pane draws its panels (uiScale): 1 up to a 1080p window, more on a
+ * big monitor, never so much that a narrow pane (`paneWidth`) loses its room for laptop-sized text. Read
+ * again as the window changes size.
+ */
+export function useUiScale(paneWidth: number): number {
+  const [win, setWin] = useState(() => [window.innerWidth, window.innerHeight])
+  useEffect(() => {
+    const read = (): void => setWin([window.innerWidth, window.innerHeight])
+    window.addEventListener('resize', read)
+    return () => window.removeEventListener('resize', read)
+  }, [])
+  return uiScale(win[0], win[1], paneWidth)
+}
+
+/** The pane's scale (useUiScale), for the panels over the map: WorldView provides it. */
+export const UiScaleContext = createContext(1)
+
+/**
+ * The style that draws a panel at the pane's scale: a CSS zoom on its outermost box, so its text, its
+ * spacing and its own insets all grow together while percentages still resolve against the pane. Only
+ * panels get it, never the map's canvas (its pixels and picking stay one to one). None at scale 1.
+ */
+export function useUiZoom(): CSSProperties {
+  const s = useContext(UiScaleContext)
+  return s === 1 ? {} : { zoom: s }
 }
 
 export function WorldPaneOpening({ width }: { width: number }): JSX.Element {

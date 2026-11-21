@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { normalizeToken } from '../../../../shared/world/repoAccess'
 import { btnCls, dialogCls, fieldCls, primaryCls } from './worldTargets'
+import { useUiZoom } from './worldPane'
 
 export const TOKEN_PAGE_URL = 'https://github.com/settings/personal-access-tokens/new'
 
@@ -17,6 +18,7 @@ export interface RepoAccessDialogProps {
 }
 
 export function RepoAccessDialog({ host, busy, error, onSubmit, onCancel }: RepoAccessDialogProps): JSX.Element {
+  const zoom = useUiZoom()
   const [value, setValue] = useState('')
   const [refused, setRefused] = useState<string | null>(null)
   const field = useRef<HTMLInputElement>(null)
@@ -43,7 +45,7 @@ export function RepoAccessDialog({ host, busy, error, onSubmit, onCancel }: Repo
 
   const shown = refused ?? error
   return (
-    <div role="dialog" aria-label="Use a token" data-testid="world-repo-access" className={dialogCls}>
+    <div role="dialog" aria-label="Use a token" data-testid="world-repo-access" className={dialogCls} style={zoom}>
       <h2 className="text-base font-semibold text-white">Use a token</h2>
       <p className="text-xs text-[#9ca3af]">
         A token is a key you make on {host === 'github.com' ? 'GitHub' : host} that lets Lumopolis read this one repository. Lumopolis uses it once and doesn't keep it.

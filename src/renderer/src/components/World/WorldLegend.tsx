@@ -5,6 +5,7 @@
 // Layout and colours are inline styles so the panel looks the same whatever CSS the build ships.
 import type { CSSProperties } from 'react'
 import type { WorldDoc } from '../../../../shared/world/types'
+import { useUiZoom } from './worldPane'
 
 export interface WorldLegendProps {
   doc: WorldDoc
@@ -13,6 +14,8 @@ export interface WorldLegendProps {
   /** Expanded, or the compact chip. WorldView owns it: the fit reserves the legend's footprint. */
   open: boolean
   onToggle(): void
+  /** The ask bar's reserve at the stage's foot, in the legend's own pixels: an expanded legend stops above it and scrolls. */
+  bottom?: number
 }
 
 const EDGE = 12
@@ -35,15 +38,30 @@ export const legendDefaultOpen = (canvasWidth: number): boolean => canvasWidth >
 export const legendReserve = (open: boolean, canvasWidth: number): number =>
   open && canvasWidth >= LEGEND_WIDE_PX ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE
 
+/**
+ * legendReserve for a legend drawn `scale` times its size (the pane's zoom on a big monitor), in the
+ * map's pixels: whether the canvas is wide is judged in the legend's own pixels.
+ */
+/**
+ * The legend's greatest height: the stage less its top gap and the ask bar's reserve under it
+ * (`bottom`, which already holds the bar's gap and clearance), and never less room than the
+ * 120 px kept free before the ask bar was measured.
+ */
+export const legendMaxHeight = (bottom: number): string => `calc(100% - ${Math.max(120, EDGE + Math.ceil(bottom))}px)`
+
+export const legendReserveScaled = (open: boolean, canvasWidth: number, scale: number): number =>
+  Math.ceil(legendReserve(open, canvasWidth / scale) * scale)
+
 const PANEL: CSSProperties = {
-  position: 'absolute', top: EDGE, right: EDGE, width: WIDTH, maxHeight: 'calc(100% - 120px)', overflowY: 'auto', overflowX: 'hidden',
+  // Never wider than the pane less its edges (the 28 px of padding and 2 of border are outside the width).
+  position: 'absolute', top: EDGE, right: EDGE, width: WIDTH, maxWidth: `calc(100% - ${EDGE * 2 + 30}px)`, overflowY: 'auto', overflowX: 'hidden',
   background: 'rgba(8,12,22,.82)', backdropFilter: 'blur(10px)', border: '1px solid rgba(148,163,184,.18)',
   borderRadius: 12, padding: '10px 14px', fontSize: 12, color: '#e2e8f0', zIndex: 2,
 }
 const HEAD: CSSProperties = { display: 'block', margin: '8px 0 4px', fontSize: 12, fontWeight: 600 }
-const ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, margin: '2px 0', fontSize: 11.5, overflowWrap: 'anywhere' }
+const ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, margin: '2px 0', fontSize: 12, overflowWrap: 'anywhere' }
 const SWATCH: CSSProperties = { width: 20, height: 10, borderRadius: 3, flex: 'none', boxSizing: 'border-box' }
-const MUTED: CSSProperties = { color: '#94a3b8', fontSize: 11.5, margin: '0 0 4px' }
+const MUTED: CSSProperties = { color: '#94a3b8', fontSize: 12, margin: '0 0 4px' }
 
 function Item({ swatch, children }: { swatch: CSSProperties; children: string }): JSX.Element {
   return (
@@ -84,11 +102,12 @@ function CargoShape({ shape, color }: { shape: 'cube' | 'sphere' | 'octa' | 'tet
   )
 }
 
-export function WorldLegend({ doc, processes, open, onToggle }: WorldLegendProps): JSX.Element {
+export function WorldLegend({ doc, processes, open, onToggle, bottom = 0 }: WorldLegendProps): JSX.Element {
+  const zoom = useUiZoom()
   const { shown: cargo, more } = busiestCargo(doc)
   const procs = usedKeys(doc.processes, new Set(doc.buildings.map((b) => b.process)))
   return (
-    <section aria-label="Lumopolis legend" data-testid="world-legend" style={open ? PANEL : { ...PANEL, width: CHIP_WIDTH, padding: '8px 12px', boxSizing: 'border-box' }}>
+    <section aria-label="Lumopolis legend" data-testid="world-legend" style={{ ...PANEL, maxHeight: legendMaxHeight(bottom), ...(open ? {} : { width: CHIP_WIDTH, padding: '8px 12px', boxSizing: 'border-box' }), ...zoom }}>
       <button
         type="button"
         data-testid="world-legend-toggle"

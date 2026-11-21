@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
+import { createElement, type ReactNode } from 'react'
 import {
-  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, CARD_FREE_SHARE, CARD_INSET_PX, CARD_MIN_FREE_PX, CARD_MIN_HEIGHT_PX, CARD_WIDTH_PX, cardMaxHeight, cardReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneStyle, useWorldPaneWidth,
+  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, CARD_FREE_SHARE, CARD_INSET_PX, CARD_MIN_FREE_PX, CARD_MIN_HEIGHT_PX, CARD_WIDTH_PX, cardMaxHeight, cardMeetsLegend, cardReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneStyle, useWorldPaneWidth,
+  UiScaleContext, useUiScale, useUiZoom,
   WORLD_PANE_MIN_PX, TERMINAL_MIN_PX, WORLD_PANE_DEFAULT_FRACTION,
 } from '../../../src/renderer/src/components/World/worldPane'
 import { freeArea, MIN_FREE_PX } from '../../../src/renderer/src/world/engine/viewMath'
@@ -161,16 +163,34 @@ describe('cardMaxHeight', () => {
     expect(CARD_FREE_SHARE).toBe(0.45)
   })
 
-  it('leaves a wide pane, and an unmeasured stage, uncapped', () => {
-    expect(cardMaxHeight(1000, 586, 0, 164)).toBeNull()
+  it('in a wide pane only keeps the card above the ask bar, and leaves it uncapped with no bar or no stage', () => {
+    // 586 - 164 of ask bar - 12 of inset - 8 of clearance.
+    expect(cardMaxHeight(1000, 586, 0, 164)).toBe(402)
+    // An answer makes the bar taller: the card stops higher, down to its shortest.
+    expect(cardMaxHeight(1000, 586, 0, 360)).toBe(206)
+    expect(cardMaxHeight(1000, 586, 0, 560)).toBe(CARD_MIN_HEIGHT_PX)
+    expect(cardMaxHeight(1000, 586, 0, 0)).toBeNull()
     // The card's 352 px reserve and 120 px of city beside it: wide from 472 px.
-    expect(cardMaxHeight(472, 586, 0, 164)).toBeNull()
-    expect(cardMaxHeight(471, 586, 0, 164)).not.toBeNull()
+    expect(cardMaxHeight(472, 586, 0, 164)).toBe(402)
+    expect(cardMaxHeight(471, 586, 0, 164)).toBe(132)
     // The legend's strip counts against the room beside the card.
-    expect(cardMaxHeight(700, 586, 200, 164)).toBeNull()
-    expect(cardMaxHeight(600, 586, 200, 164)).not.toBeNull()
+    expect(cardMaxHeight(700, 586, 200, 164)).toBe(402)
+    expect(cardMaxHeight(600, 586, 200, 164)).toBe(132)
     expect(cardMaxHeight(0, 586, 0, 164)).toBeNull()
     expect(cardMaxHeight(416, 0, 0, 164)).toBeNull()
+  })
+
+  it('tells when the open card would reach the legend', () => {
+    // A 180 px pane: the card fills it, so the 108 px legend chip would sit on it.
+    expect(cardMeetsLegend(180, 108)).toBe(true)
+    // 480 px: card to 350 (12 + 330 + 8), chip from 372.
+    expect(cardMeetsLegend(480, 108)).toBe(false)
+    // ...but the expanded legend (244 px) starts at 236.
+    expect(cardMeetsLegend(480, 244)).toBe(true)
+    expect(cardMeetsLegend(594, 244)).toBe(false)
+    expect(cardMeetsLegend(593, 244)).toBe(true)
+    // A stage not measured yet keeps the legend.
+    expect(cardMeetsLegend(0, 108)).toBe(false)
   })
 
   it('caps a card in a narrow pane so 45% of the height stays free above the ask bar (the CI pane)', () => {
@@ -196,5 +216,33 @@ describe('cardMaxHeight', () => {
     }
     // A stage too short for both keeps the card's title row and a few lines.
     expect(cardMaxHeight(416, 300, 0, 164)).toBe(CARD_MIN_HEIGHT_PX)
+  })
+})
+
+describe('the pane scale', () => {
+  const windowSize = (w: number, h: number): void => {
+    Object.defineProperty(window, 'innerWidth', { value: w, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: h, configurable: true })
+  }
+  afterEach(() => windowSize(1024, 768))
+
+  it('is 1 up to a 1080p window, grows on a big monitor, keeps a narrow pane its room, and follows the window', () => {
+    windowSize(1920, 1080)
+    const { result, rerender, unmount } = renderHook(({ w }) => useUiScale(w), { initialProps: { w: 1600 } })
+    expect(result.current).toBe(1)
+    act(() => { windowSize(3840, 2160); window.dispatchEvent(new Event('resize')) })
+    expect(result.current).toBe(1.5)
+    rerender({ w: 912 }) // a pane split narrow: 912 / 760
+    expect(result.current).toBe(1.2)
+    const off = vi.spyOn(window, 'removeEventListener')
+    unmount()
+    expect(off).toHaveBeenCalledWith('resize', expect.any(Function))
+  })
+
+  it('zooms a panel by the scale the pane provides, and leaves it alone at 1', () => {
+    expect(renderHook(() => useUiZoom()).result.current).toEqual({})
+    const at = (s: number) => ({ children }: { children: ReactNode }) => createElement(UiScaleContext.Provider, { value: s }, children)
+    expect(renderHook(() => useUiZoom(), { wrapper: at(1) }).result.current).toEqual({})
+    expect(renderHook(() => useUiZoom(), { wrapper: at(1.5) }).result.current).toEqual({ zoom: 1.5 })
   })
 })
