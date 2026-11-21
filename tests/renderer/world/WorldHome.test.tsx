@@ -352,6 +352,15 @@ describe('CloneDialog', () => {
     fireEvent.click(cloneBtn())
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent("Lumopolis couldn't clone that repository. Try again."))
   })
+
+  it('a clone that needs a sign-in shows its message and opens nothing', async () => {
+    bridge({ worldClone: vi.fn(async () => ok({ needsLogin: { host: 'x.dev', helper: false, message: 'That repository needs you to sign in.' } })) })
+    const props = mount()
+    fireEvent.change(url(), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.click(cloneBtn())
+    expect(await screen.findByRole('alert')).toHaveTextContent('That repository needs you to sign in.')
+    expect(props.onCloned).not.toHaveBeenCalled()
+  })
 })
 
 describe('DesignStart', () => {

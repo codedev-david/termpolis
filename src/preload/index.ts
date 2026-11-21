@@ -301,11 +301,15 @@ const api: TermpolisAPI = {
   worldTerminalOpen: (args: { terminalId: string; payload: string; cwd?: string }) => ipcRenderer.invoke('world:terminal-open', args),
   worldOpenFolder: () => ipcRenderer.invoke('world:open-folder'),
   worldPickFolder: () => ipcRenderer.invoke('world:pick-folder'),
-  worldClone: (url: string, ref?: string) => ipcRenderer.invoke('world:clone', ref === undefined ? { url } : { url, ref }),
+  // `access` is how the person chose to sign in; a token travels only in this one request.
+  worldClone: (url: string, ref?: string, access?: import('../shared/world/repoAccess').RepoAccess) =>
+    ipcRenderer.invoke('world:clone', { url, ...(ref === undefined ? {} : { ref }), ...(access === undefined ? {} : { access }) }),
   worldCloneCancel: (url: string, ref?: string) => ipcRenderer.invoke('world:clone-cancel', ref === undefined ? { url } : { url, ref }),
   worldRemoveSource: (key: string) => ipcRenderer.invoke('world:remove-source', { key }),
   worldAnnotate: (key: string, itemId: string, text: string) => ipcRenderer.invoke('world:annotate', { key, itemId, text }),
   worldTouchSource: (key: string) => ipcRenderer.invoke('world:touch-source', { key }),
+  worldUpdateSource: (key: string, access?: import('../shared/world/repoAccess').RepoAccess) =>
+    ipcRenderer.invoke('world:update-source', access === undefined ? { key } : { key, access }),
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => ipcRenderer.invoke('world:build-it', req),
   onWorldProgress: (cb) => { const h = (_: unknown, e: import('../shared/world/types').WorldProgressEvent) => cb(e); ipcRenderer.on('world:progress', h); return () => ipcRenderer.removeListener('world:progress', h) },
   onWorldUpdated: (cb) => { const h = (_: unknown, e: import('../shared/world/types').WorldUpdatedEvent) => cb(e); ipcRenderer.on('world:updated', h); return () => ipcRenderer.removeListener('world:updated', h) },

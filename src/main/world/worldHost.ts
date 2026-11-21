@@ -27,7 +27,8 @@ import type { TestRun } from './testStatus'
 import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { confinedReader, isCloneRoot } from './folderSafety'
-import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps } from './gitSource'
+import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps, type CloneResult, type LoginRun, type NeedsLogin } from './gitSource'
+import { normalizeToken } from '../../shared/world/repoAccess'
 import { resolveGitBin } from '../binPath'
 import type { LabelDeps } from './label'
 import { createWorldStore, type WorldStore } from './worldStore'
@@ -51,6 +52,8 @@ export interface WorldInitMsg {
   userDataPath: string
   /** The `worldLabelling` setting. False: the host labels from the code alone (`llm: null`). */
   labelling: boolean
+  /** The askpass Termpolis ships (resources/git-askpass/askpass.sh); a token run needs it. */
+  askpassPath?: string
 }
 export interface WorldCallMsg {
   kind: 'call'
@@ -383,6 +386,31 @@ const planArg = (plan: unknown): { plan?: WorldDoc } => (plan && validateWorld(p
 
 const refOf = (ref: unknown): string | undefined => (isStr(ref) && ref !== '' ? ref : undefined)
 
+/** What opening a repository answers: its folder, or why not (with the host to sign in to when that is why). */
+export type CloneSourceResult = { ok: true; root: string } | { ok: false; error: string; needsLogin?: NeedsLogin }
+/** What a background update answers: whether anything new came down, or why not. */
+export type UpdateSourceResult = { ok: true; changed: boolean } | { ok: false; error: string; needsLogin?: NeedsLogin }
+
+/**
+ * The git run a person's request asks for. No access (or anything that is not one) is a run with no
+ * login; `machine` from a person is interactive; a token is trimmed and checked, and a refused one is
+ * its message, so git never sees it. The token stays a local of the call that asked for it.
+ */
+function accessRun(access: unknown): { run: LoginRun } | { error: string } {
+  if (!access || typeof access !== 'object') return { run: { mode: 'none' } }
+  const a = access as { mode?: unknown; value?: unknown }
+  if (a.mode === 'machine') return { run: { mode: 'machine', interactive: true } }
+  if (a.mode !== 'token') return { run: { mode: 'none' } }
+  const t = normalizeToken(a.value)
+  return t.ok ? { run: { mode: 'token', value: t.value } } : { error: t.error }
+}
+
+/** A background update with no access: a repository opened with this computer's login asks for no prompt. */
+function backgroundRun(login: unknown): LoginRun {
+  if (login === 'token') throw new Error('token update needs a token')
+  return login === 'machine' ? { mode: 'machine', interactive: false } : { mode: 'none' }
+}
+
 function needKey(projectKey: unknown): string {
   if (!isStr(projectKey) || projectKey === '') throw new Error('worldHost: projectKey required')
   return projectKey
@@ -393,6 +421,8 @@ interface HostState {
   annotations: AnnotationStore
   userDataPath: string
   labelling: boolean
+  /** From init: the shipped askpass, handed to every clone run (a token run is refused without it). */
+  askpassPath?: string
   /**
    * Projects whose stage cache a compile under this init checked against every file's text. Until then (a
    * restart: files may have changed while no host ran) and after a failed run (its stages were never
@@ -428,7 +458,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const contextWaiting = new Map<number, (evidence: Evidence[]) => void>()
   const runsWaiting = new Map<number, (msg: { runs?: unknown; files?: unknown }) => void>()
   /** cloneKey → the running clone and its abort controller: a repeat call joins it, cancel aborts it. */
-  const clones = new Map<string, { ctl: AbortController; done: Promise<unknown> }>()
+  const clones = new Map<string, { ctl: AbortController; done: Promise<CloneResult> }>()
 
   /** Runs `fn` after every earlier job for the same project, so saves never interleave. */
   const serial = <T>(key: string, fn: () => Promise<T>): Promise<T> => {
@@ -734,32 +764,19 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       return true
     },
     read: async (projectKey: unknown, query: WorldQuery) => filterWorld(await st.store.load(needKey(projectKey)), query),
-    cloneSource: (url: unknown, ref?: unknown) => {
-      const u = isStr(url) ? url : ''
-      const r = refOf(ref)
-      const hash = cloneKey(u, r)
-      const running = clones.get(hash)
-      if (running) return running.done
-      const ctl = new AbortController()
-      const projectKey = `clone:${hash}`
-      post({ kind: 'progress', projectKey, stage: 'cloning', pct: 0 })
-      const done = clone(u, r, {
-        execFile: nodeExecFile,
-        gitBin: resolveGitBin,
-        baseDir: st.userDataPath,
-        dirSize: dirSizeOf,
-        rm: removeDir,
-        isWindows: process.platform === 'win32',
-        ...deps.cloneDeps,
-        signal: ctl.signal
-      })
-        .then((res) => {
-          if (res.ok) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 100 })
-          return res
-        })
-        .finally(() => clones.delete(hash))
-      clones.set(hash, { ctl, done })
-      return done
+    cloneSource: async (url: unknown, ref?: unknown, access?: unknown): Promise<CloneSourceResult> => {
+      const asked = accessRun(access)
+      if ('error' in asked) return { ok: false, error: asked.error }
+      const res = await runClone(st, url, ref, asked.run, true)
+      return res.ok ? { ok: true, root: res.root } : res
+    },
+    // Brings a repository Lumopolis already opened up to date. With no access it runs the way the entry
+    // was opened: no login, or this computer's login without a prompt; a token entry needs the token again.
+    updateSource: async (url: unknown, ref?: unknown, login?: unknown, access?: unknown): Promise<UpdateSourceResult> => {
+      const asked = access === undefined ? { run: backgroundRun(login) } : accessRun(access)
+      if ('error' in asked) return { ok: false, error: asked.error }
+      const res = await runClone(st, url, ref, asked.run, false)
+      return res.ok ? { ok: true, changed: res.changed } : res
     },
     // The structure of a folder main has not indexed yet, read and parsed here rather than on main's
     // thread. A clone's reads never follow a link out of it.
@@ -775,6 +792,44 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     }
   })
 
+  /**
+   * One clone or update of a url and branch at a time: a repeat call joins the running one (and gets its
+   * result, whatever access it asked with); cancelClone aborts it. Only an open posts progress.
+   */
+  const runClone = (st: HostState, url: unknown, ref: unknown, run: LoginRun, progress: boolean): Promise<CloneResult> => {
+    const u = isStr(url) ? url : ''
+    const r = refOf(ref)
+    const hash = cloneKey(u, r)
+    const running = clones.get(hash)
+    if (running) return running.done
+    const ctl = new AbortController()
+    const projectKey = `clone:${hash}`
+    if (progress) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 0 })
+    const done = clone(
+      u,
+      r,
+      {
+        execFile: nodeExecFile,
+        gitBin: resolveGitBin,
+        baseDir: st.userDataPath,
+        dirSize: dirSizeOf,
+        rm: removeDir,
+        isWindows: process.platform === 'win32',
+        ...(st.askpassPath ? { askpassPath: st.askpassPath } : {}),
+        ...deps.cloneDeps,
+        signal: ctl.signal
+      },
+      run
+    )
+      .then((res) => {
+        if (res.ok && progress) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 100 })
+        return res
+      })
+      .finally(() => clones.delete(hash))
+    clones.set(hash, { ctl, done })
+    return done
+  }
+
   const fail = (id: number, message: string): void => post({ kind: 'result', id, ok: false, error: { name: 'Error', message } })
 
   return {
@@ -786,7 +841,15 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
           for (const s of schedulers.values()) s.dispose()
           schedulers.clear()
           const annotations = createAnnotations(msg.userDataPath)
-          state = { store: withAnnotations(createStore(msg.userDataPath), annotations), annotations, userDataPath: msg.userDataPath, labelling: msg.labelling !== false, checked: new Set(), carried: new Map() }
+          state = {
+            store: withAnnotations(createStore(msg.userDataPath), annotations),
+            annotations,
+            userDataPath: msg.userDataPath,
+            labelling: msg.labelling !== false,
+            ...(isStr(msg.askpassPath) && msg.askpassPath !== '' ? { askpassPath: msg.askpassPath } : {}),
+            checked: new Set(),
+            carried: new Map()
+          }
           post({ kind: 'ready', pid: process.pid })
         } catch (err) {
           post({ kind: 'init-error', error: serializeError(err) })

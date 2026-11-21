@@ -13,7 +13,8 @@ import { app, utilityProcess } from 'electron'
 import { graphKeyForRoot, graphSnapshot, type GraphSnapshot } from '../codeGraph'
 import { killUtility } from '../utilityKill'
 import type { Claim, Evidence, WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
-import type { SerializedError, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
+import type { CloneSourceResult, SerializedError, UpdateSourceResult, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
+import { hideValue, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
 import type { TestRun } from './testStatus'
 import { worldFileName } from './worldStore'
 import { linkedPlanStamp, planStamp } from '../../shared/world/reconcile'
@@ -29,6 +30,8 @@ export interface WorldHostTransport {
 export interface WorldClientOptions {
   /** Electron's userData folder (the store lives under `<it>/world/`). Default: `app.getPath('userData')`. */
   userDataPath?: string | (() => string)
+  /** The askpass Termpolis ships, handed to the host in init beside userData (a token run needs it). Absent or '': none. */
+  askpassPath?: string | (() => string)
   /** The `worldLabelling` setting, read when a host starts, when `applySettings` runs, and again on every
    *  labelling request (off: the request is answered null without asking the model). Default: on. */
   labelling?: () => boolean
@@ -79,6 +82,33 @@ const toError = (e: SerializedError | undefined): Error => {
   return err
 }
 
+/** Call arguments without the trailing ones left out (the host reads a missing one as undefined). */
+const argsOf = (...args: unknown[]): unknown[] => {
+  let n = args.length
+  while (n > 1 && args[n - 1] === undefined) n--
+  return args.slice(0, n)
+}
+
+/** The token a request carries, trimmed as the host trims it; '' for any other access. */
+const tokenOf = (access: RepoAccess | undefined): string =>
+  access && access.mode === 'token' && typeof access.value === 'string' ? access.value.trim() : ''
+
+/**
+ * A clone or update run with a token: whatever comes back (a failed result, a timeout, a crash, a thrown
+ * error) passes through hideValue, so the token never reaches an IPC answer or a log line from here.
+ */
+async function hiddenFrom<T extends { ok: boolean; error?: string }>(p: Promise<T>, value: string): Promise<T> {
+  if (!value) return p
+  let res: T
+  try {
+    res = await p
+  } catch (e) {
+    // call() only ever rejects with an Error (it wraps anything else), so the message is text.
+    throw new Error(hideValue((e as Error).message, value))
+  }
+  return !res.ok && typeof res.error === 'string' ? { ...res, error: hideValue(res.error, value) } : res
+}
+
 /** A watcher's paths, relative to the root, with forward slashes. */
 const normaliseFiles = (files: string[]): string[] =>
   (Array.isArray(files) ? files : [])
@@ -92,6 +122,11 @@ export function createWorldClient(
   const dataPath = (): string => {
     const p = opts.userDataPath ?? (() => app.getPath('userData'))
     return typeof p === 'function' ? p() : p
+  }
+  const askpassOf = (): string => {
+    const p = opts.askpassPath
+    const v = typeof p === 'function' ? p() : p
+    return typeof v === 'string' ? v : ''
   }
   const labelling = opts.labelling ?? (() => true)
   const headOf = opts.head ?? (async () => ({ head: '', dirty: false }))
@@ -283,7 +318,8 @@ export function createWorldClient(
       }
       tr.onMessage((m) => onMessage(tr, m))
       tr.onExit((code) => reset(tr, new Error(`Lumopolis host exited (code ${code})`)))
-      tr.postMessage({ kind: 'init', userDataPath: dataPath(), labelling: labelling() !== false })
+      const askpassPath = askpassOf()
+      tr.postMessage({ kind: 'init', userDataPath: dataPath(), labelling: labelling() !== false, ...(askpassPath ? { askpassPath } : {}) })
     })
     live = p
     // A spawn that throws leaves nothing running: let the next call try again.
@@ -482,9 +518,18 @@ export function createWorldClient(
         // the host is going away; the next one reads the setting in its init
       }
     },
-    /** Shallow-clones a git source into userData (progress arrives on onProgress as `clone:<hash>`, root ''). */
-    clone: (url: string, ref?: string): Promise<{ ok: true; root: string } | { ok: false; error: string }> =>
-      call('cloneSource', ref === undefined ? [url] : [url, ref]),
+    /**
+     * Shallow-clones a git source into userData (progress arrives on onProgress as `clone:<hash>`, root '').
+     * `access` is how the person chose to sign in; a token travels only as this call's argument.
+     */
+    clone: (url: string, ref?: string, access?: RepoAccess): Promise<CloneSourceResult> =>
+      hiddenFrom(call<CloneSourceResult>('cloneSource', argsOf(url, ref, access)), tokenOf(access)),
+    /**
+     * Brings an opened repository up to date in the background: `login` is how it was opened (from the
+     * registry), `access` a sign-in the person just gave. No progress is posted.
+     */
+    updateSource: (url: string, ref?: string, login?: RepoLogin, access?: RepoAccess): Promise<UpdateSourceResult> =>
+      hiddenFrom(call<UpdateSourceResult>('updateSource', argsOf(url, ref, login, access)), tokenOf(access)),
     /** Cancels a running clone of the same url and ref; true when there was one. */
     cancelClone: (url: string, ref?: string): Promise<boolean> => call('cancelClone', ref === undefined ? [url] : [url, ref]),
     /**
@@ -527,7 +572,15 @@ export function resolveWorldHostPath(): string {
 export function createWorldHostTransport(hostPath: string = resolveWorldHostPath()): WorldHostTransport {
   const child = utilityProcess.fork(hostPath, [], { serviceName: 'termpolis-lumopolis' })
   return {
-    postMessage: (msg) => child.postMessage(msg),
+    // A message the child cannot take (a closed port, a value that does not clone) fails with fixed text:
+    // Electron's own error can quote the message, and a clone call's arguments may carry a token.
+    postMessage: (msg) => {
+      try {
+        child.postMessage(msg)
+      } catch {
+        throw new Error('Lumopolis host could not take that request')
+      }
+    },
     onMessage: (cb) => {
       child.on('message', (m: WorldHostResponse) => cb(m))
     },

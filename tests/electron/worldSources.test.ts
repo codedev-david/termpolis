@@ -121,6 +121,23 @@ describe('source registry', () => {
     expect(await reg().list()).toEqual([])
   })
 
+  it('a git entry may remember how it was opened (machine or token); any other login is not a valid entry', async () => {
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const base = { key: 'k', title: 't', lastOpened: 1 }
+    for (const login of ['machine', 'token'] as const) {
+      await writeFile(sourcesFile(), JSON.stringify([{ ...base, source: { kind: 'git', url: 'https://h/r.git', root: '/g', login } }]))
+      expect((await reg().list()).map((e) => e.source)).toEqual([{ kind: 'git', url: 'https://h/r.git', root: '/g', login }])
+    }
+    for (const login of ['other', 1, null]) {
+      await writeFile(sourcesFile(), JSON.stringify([{ ...base, source: { kind: 'git', url: 'https://h/r.git', root: '/g', login } }]))
+      expect(await reg().list()).toEqual([])
+    }
+    const r = reg()
+    const e = await r.upsert({ kind: 'git', url: 'https://h/r.git', root: '/g', login: 'machine' })
+    expect(e.source).toEqual({ kind: 'git', url: 'https://h/r.git', root: '/g', login: 'machine' })
+    expect((await r.list())[0].source).toEqual({ kind: 'git', url: 'https://h/r.git', root: '/g', login: 'machine' })
+  })
+
   it('a bad backup rename still reads as empty; other read errors throw', async () => {
     await mkdir(join(dir, 'world'), { recursive: true })
     await writeFile(sourcesFile(), 'x')

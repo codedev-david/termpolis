@@ -14,6 +14,7 @@ import type { LimitLook } from '../../../shared/accountLimits'
 import type { RouteDecision } from '../../../shared/taskRouter'
 import type { ModelCatalog } from '../lib/modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, DesignDraftResult, DesignRefineResult, WorldDoc, WorldEntry, WorldFolderPick, WorldProgressEvent, WorldUpdatedEvent } from '../../../shared/world/types'
+import type { CloneNeedsLogin, RepoAccess } from '../../../shared/world/repoAccess'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
 
@@ -719,14 +720,18 @@ export interface TermpolisAPI {
   worldOpenFolder: () => Promise<IpcResponse<WorldEntry | null>>
   /** Lumopolis Build it: the native folder dialog only, and whether the folder is empty (null when cancelled). */
   worldPickFolder: () => Promise<IpcResponse<WorldFolderPick | null>>
-  /** Lumopolis home: shallow-clone a git repository into Termpolis's data folder and remember it. */
-  worldClone: (url: string, ref?: string) => Promise<IpcResponse<WorldEntry>>
+  /** Lumopolis home: shallow-clone a git repository into Termpolis's data folder and remember it (with how it
+   *  was opened, never a token). A repository that needs a sign-in first answers `needsLogin`. */
+  worldClone: (url: string, ref?: string, access?: RepoAccess) => Promise<IpcResponse<WorldEntry | CloneNeedsLogin>>
   /** Lumopolis home: stop a running clone of the same url and branch. */
   worldCloneCancel: (url: string, ref?: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis home: forget a world (its files are left alone). */
   worldRemoveSource: (key: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis home/switcher: a recent world was opened, so it is marked opened now (null if unknown). */
   worldTouchSource: (key: string) => Promise<IpcResponse<WorldEntry | null>>
+  /** Lumopolis: bring a cloned repository up to date in the background. Anything but a cloned repository, or one
+   *  opened with a token asked without it, is `skipped`; one that needs a sign-in answers `needsLogin`. */
+  worldUpdateSource: (key: string, access?: RepoAccess) => Promise<IpcResponse<{ changed: boolean } | { skipped: true } | CloneNeedsLogin>>
   /** Lumopolis Build it: link the design to the folder; answers the first prompt for the agent terminal. */
   worldAnnotate: (key: string, itemId: string, text: string) => Promise<IpcResponse<WorldDoc>>
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => Promise<IpcResponse<BuildItResult>>

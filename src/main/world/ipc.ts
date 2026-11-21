@@ -19,10 +19,13 @@
 //   world:map-project { root }       → ok(WorldEntry)          (the active terminal's project: a folder that looks like one)
 //   world:open-folder                → ok(WorldEntry | null)   (native folder dialog; null on cancel)
 //   world:pick-folder                → ok(WorldFolderPick | null)  (the dialog only: registers nothing)
-//   world:clone { url, ref? }        → ok(WorldEntry)          (shallow clone into userData, then registered)
+//   world:clone { url, ref?, access? } → ok(WorldEntry | CloneNeedsLogin)  (shallow clone into userData, then registered
+//                                      with how it was opened, never a token; a sign-in failure answers needsLogin)
 //   world:clone-cancel { url, ref? } → ok(boolean)
 //   world:remove-source { key }      → ok(true)
 //   world:touch-source { key }       → ok(WorldEntry | null)   (a recent world was opened: its lastOpened is now)
+//   world:update-source { key, access? } → ok({ changed } | { skipped: true } | CloneNeedsLogin)  (brings a cloned
+//                                      repository up to date; a token entry asked without its token is skipped)
 //   world:design-get { key }         → ok(WorldDoc)
 //   world:build-it { key, root, agent, confirmNonEmpty? } → ok(BuildItResult)  (links the design to the folder; the
 //                                      renderer then opens the agent terminal there with the first prompt)
@@ -36,6 +39,8 @@ import { isExecAgent } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import type { AskRequest, AskResult, BuildItResult, Claim, DesignDraftResult, DesignRefineResult, WorldDoc } from '../../shared/world/types'
 import { BAD_REF_MESSAGE, BAD_URL_MESSAGE, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
+import { TOKEN_REJECTED_MESSAGE, type CloneNeedsLogin, type NeedsLogin, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
+import { AUTH_MESSAGE } from './gitSource'
 import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
 import { folderKey, forbiddenFolderReal, isProjectFolder } from './folderSafety'
 import type { SourceRegistry } from './sources'
@@ -133,7 +138,15 @@ export interface WorldSourcesDeps {
   /** The native folder dialog: the chosen folder, or null when the user cancels. */
   pickFolder(): Promise<string | null>
   isEmpty(root: string): Promise<boolean>
-  clone(url: string, ref?: string): Promise<{ ok: true; root: string } | { ok: false; error: string }>
+  /** Clones with the sign-in the person chose; a token is only this call's argument. */
+  clone(url: string, ref?: string, access?: RepoAccess): Promise<{ ok: true; root: string } | { ok: false; error: string; needsLogin?: NeedsLogin }>
+  /** Updates a cloned repository: `login` is how it was opened, `access` a sign-in given now. */
+  updateSource(
+    url: string,
+    ref: string | undefined,
+    login: RepoLogin | undefined,
+    access?: RepoAccess
+  ): Promise<{ ok: true; changed: boolean } | { ok: false; error: string; needsLogin?: NeedsLogin }>
   cancelClone(url: string, ref?: string): Promise<boolean>
   /** Watches a Build it folder, so its world follows the agent's writes (a folder outside git has no other
    *  watch). True when this started a new watch, false when the folder was already watched. */
@@ -153,6 +166,8 @@ export interface WorldSourcesDeps {
 export const SOURCES_FAILED = "Lumopolis couldn't update its list of worlds. Try again."
 export const FOLDER_FAILED = "Lumopolis couldn't open that folder."
 export const CLONE_FAILED = "Lumopolis couldn't clone that repository. Try again."
+export const UPDATE_FAILED = "Lumopolis couldn't update that repository. Try again."
+export const BAD_ACCESS = 'Choose how to sign in: the login this computer uses for git, or a token.'
 export const NOT_EMPTY = "That folder isn't empty."
 export const NOT_PICKED = 'Choose the folder with the Choose folder button first.'
 export const NOT_A_PROJECT = "That folder doesn't look like a project. Use Open folder instead."
@@ -192,6 +207,26 @@ const cloneTargetOf = (args: unknown): { url: string; ref?: string } | string =>
   if (ref !== undefined && !validGitRef(ref)) return BAD_REF_MESSAGE
   return ref === undefined ? { url } : { url, ref }
 }
+
+/**
+ * The sign-in a request carries: absent, exactly `{ mode: 'machine' }`, or exactly `{ mode: 'token', value }`
+ * with text. Any other shape is refused (`null`), and a fresh object is returned so no unknown field travels on.
+ */
+const accessOf = (args: unknown): { access?: RepoAccess } | null => {
+  const a = field(args, 'access')
+  if (a === undefined) return {}
+  if (!a || typeof a !== 'object' || Array.isArray(a)) return null
+  const o = a as Record<string, unknown>
+  const keys = Object.keys(o).sort().join(',')
+  if (keys === 'mode' && o.mode === 'machine') return { access: { mode: 'machine' } }
+  if (keys === 'mode,value' && o.mode === 'token' && typeof o.value === 'string') return { access: { mode: 'token', value: o.value } }
+  return null
+}
+
+/** A sign-in failure as the renderer's data: the host, whether git has a helper, and the words to show. */
+const needsLoginOf = (n: NeedsLogin, access: RepoAccess | undefined): CloneNeedsLogin => ({
+  needsLogin: { host: n.host, helper: n.helper, message: access?.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE }
+})
 
 /** Registers the handlers and the push forwarding; returns a function that stops the forwarding. */
 export function registerWorldIpc(
@@ -397,15 +432,27 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
   ipc.handle('world:clone', async (_event: unknown, args?: unknown) => {
     const target = cloneTargetOf(args)
     if (typeof target === 'string') return err(target)
+    const asked = accessOf(args)
+    if (!asked) return err(BAD_ACCESS)
+    const { access } = asked
     let res: Awaited<ReturnType<WorldSourcesDeps['clone']>>
     try {
-      res = await deps.clone(target.url, target.ref)
+      res = access ? await deps.clone(target.url, target.ref, access) : await deps.clone(target.url, target.ref)
     } catch {
       return err(CLONE_FAILED)
     }
-    if (!res.ok) return err(res.error)
+    if (!res.ok) return res.needsLogin ? ok(needsLoginOf(res.needsLogin, access)) : err(res.error)
     try {
-      return ok(await registry.upsert({ kind: 'git', url: target.url, ...(target.ref === undefined ? {} : { ref: target.ref }), root: res.root }))
+      return ok(
+        await registry.upsert({
+          kind: 'git',
+          url: target.url,
+          ...(target.ref === undefined ? {} : { ref: target.ref }),
+          root: res.root,
+          // how it was opened, so a background update knows; the token itself is never kept
+          ...(access ? { login: access.mode } : {})
+        })
+      )
     } catch {
       return err(SOURCES_FAILED)
     }
@@ -449,6 +496,38 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     } catch {
       return err(SOURCES_FAILED)
     }
+  })
+
+  ipc.handle('world:update-source', async (_event: unknown, args?: unknown) => {
+    const key = field(args, 'key')
+    if (!nonEmpty(key) || key.length > MAX_KEY) return err('key required')
+    const asked = accessOf(args)
+    if (!asked) return err(BAD_ACCESS)
+    const { access } = asked
+    let entry: Awaited<ReturnType<WorldSourcesDeps['registry']['get']>>
+    try {
+      entry = await registry.get(key)
+    } catch {
+      return err(SOURCES_FAILED)
+    }
+    const src = entry?.source
+    // Only a cloned repository updates; one opened with a token waits until the person gives it again.
+    if (!src || src.kind !== 'git' || (src.login === 'token' && access?.mode !== 'token')) return ok({ skipped: true as const })
+    let res: Awaited<ReturnType<WorldSourcesDeps['updateSource']>>
+    try {
+      res = access ? await deps.updateSource(src.url, src.ref, src.login, access) : await deps.updateSource(src.url, src.ref, src.login)
+    } catch {
+      return err(UPDATE_FAILED)
+    }
+    if (!res.ok) return res.needsLogin ? ok(needsLoginOf(res.needsLogin, access)) : err(res.error)
+    if (access) {
+      try {
+        await registry.upsert({ ...src, login: access.mode })
+      } catch {
+        // the update worked; how it was opened is remembered next time
+      }
+    }
+    return ok({ changed: res.changed })
   })
 
   ipc.handle('world:design-get', async (_event: unknown, args?: unknown) => {

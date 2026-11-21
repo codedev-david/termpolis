@@ -41,7 +41,8 @@ function validSource(s: unknown): s is WorldSource {
     case 'folder':
       return isStr(o.root) && optStr(o.linkedDesign)
     case 'git':
-      return isStr(o.url) && isStr(o.root) && optStr(o.ref) && optStr(o.linkedDesign)
+      // `login` is only how it was opened (never a token); anything else is not an entry this build wrote.
+      return isStr(o.url) && isStr(o.root) && optStr(o.ref) && optStr(o.linkedDesign) && (o.login === undefined || o.login === 'machine' || o.login === 'token')
     case 'design':
       return isStr(o.id) && isStr(o.title) && optStr(o.linkedRoot)
     default:

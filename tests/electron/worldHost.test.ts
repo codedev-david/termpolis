@@ -42,7 +42,8 @@ import {
   type WorldHostRequest,
   type WorldHostResponse
 } from '../../src/main/world/worldHost'
-import { cloneKey, safetyFlags } from '../../src/main/world/gitSource'
+import { cloneKey, safetyFlags, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
+import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE } from '../../src/shared/world/repoAccess'
 import type { AnnotationStore } from '../../src/main/world/annotations'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
@@ -1266,6 +1267,105 @@ describe('createWorldHost cloneSource / cancelClone', () => {
     await call(h.send, 1, 'cloneSource', [URL1])
     expect(h.last()).toMatchObject({ result: { ok: true } })
     expect(execFile).toHaveBeenCalled()
+  })
+
+  describe('access, sign-in and background updates', () => {
+    const VALUE = 'neutral-value-1'
+    type Seen = { url: string; ref: string | undefined; run: LoginRun | undefined; askpassPath: string | undefined }
+    const recording = (result: CloneResult = { ok: true, root: '/r', changed: true }) => {
+      const seen: Seen[] = []
+      const h = harness({
+        cloneRepo: async (url, ref, d, run) => {
+          seen.push({ url, ref, run, askpassPath: d.askpassPath })
+          return result
+        }
+      })
+      return { h, seen }
+    }
+
+    it('maps each access to the right run', async () => {
+      const { h, seen } = recording()
+      await h.init()
+      await call(h.send, 1, 'cloneSource', [URL1])
+      expect(h.last()).toEqual({ kind: 'result', id: 1, ok: true, result: { ok: true, root: '/r' } })
+      await call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      await call(h.send, 3, 'cloneSource', [URL1, 'main', { mode: 'token', value: `  ${VALUE} \n` }])
+      // anything that is not a known access is a run with no login
+      await call(h.send, 4, 'cloneSource', [URL1, undefined, { mode: 'other' }])
+      await call(h.send, 5, 'cloneSource', [URL1, undefined, null])
+      expect(seen.map((s) => s.run)).toEqual([
+        { mode: 'none' },
+        { mode: 'machine', interactive: true },
+        { mode: 'token', value: VALUE },
+        { mode: 'none' },
+        { mode: 'none' }
+      ])
+      expect(seen[2].ref).toBe('main')
+      // the clone result never carries `changed` back to the renderer
+      for (const r of h.results()) expect(r).toMatchObject({ ok: true, result: { ok: true, root: '/r' } })
+      for (const r of h.results()) expect((r as { result: object }).result).not.toHaveProperty('changed')
+    })
+
+    it('the askpass path from init reaches the clone deps; without one (or not text) it is absent', async () => {
+      const { h, seen } = recording()
+      await h.send({ kind: 'init', userDataPath: '/ud', labelling: true, askpassPath: '/res/git-askpass/askpass.sh' })
+      await call(h.send, 1, 'cloneSource', [URL1])
+      await h.send({ kind: 'init', userDataPath: '/ud', labelling: true, askpassPath: 7 as unknown as string })
+      await call(h.send, 2, 'cloneSource', [URL1])
+      await h.init()
+      await call(h.send, 3, 'cloneSource', [URL1])
+      expect(seen.map((s) => s.askpassPath)).toEqual(['/res/git-askpass/askpass.sh', undefined, undefined])
+    })
+
+    it('a refused token never reaches git', async () => {
+      const { h, seen } = recording()
+      await h.init()
+      await call(h.send, 1, 'cloneSource', [URL1, undefined, { mode: 'token', value: '   ' }])
+      expect(h.last()).toMatchObject({ ok: true, result: { ok: false, error: TOKEN_EMPTY_MESSAGE } })
+      await call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'token', value: 'two words' }])
+      expect(h.last()).toMatchObject({ ok: true, result: { ok: false, error: TOKEN_FORMAT_MESSAGE } })
+      await call(h.send, 3, 'updateSource', [URL1, undefined, 'token', { mode: 'token', value: 7 }])
+      expect(h.last()).toMatchObject({ ok: true, result: { ok: false, error: TOKEN_EMPTY_MESSAGE } })
+      expect(seen).toEqual([])
+      expect(progress(h.out)).toEqual([])
+    })
+
+    it('updateSource for login machine without access runs interactive:false', async () => {
+      const { h, seen } = recording({ ok: true, root: '/r', changed: false })
+      await h.init()
+      await call(h.send, 1, 'updateSource', [URL1, 'main', 'machine'])
+      expect(h.last()).toEqual({ kind: 'result', id: 1, ok: true, result: { ok: true, changed: false } })
+      await call(h.send, 2, 'updateSource', [URL1])
+      await call(h.send, 3, 'updateSource', [URL1, undefined, 'machine', { mode: 'machine' }])
+      await call(h.send, 4, 'updateSource', [URL1, undefined, 'token', { mode: 'token', value: VALUE }])
+      await call(h.send, 5, 'updateSource', [URL1, undefined, 'other'])
+      expect(seen.map((s) => [s.ref, s.run])).toEqual([
+        ['main', { mode: 'machine', interactive: false }],
+        [undefined, { mode: 'none' }],
+        [undefined, { mode: 'machine', interactive: true }],
+        [undefined, { mode: 'token', value: VALUE }],
+        [undefined, { mode: 'none' }]
+      ])
+    })
+
+    it('updateSource for a token entry with no token throws before git runs', async () => {
+      const { h, seen } = recording()
+      await h.init()
+      await call(h.send, 1, 'updateSource', [URL1, undefined, 'token'])
+      expect(h.last()).toMatchObject({ id: 1, ok: false, error: { message: 'token update needs a token' } })
+      expect(seen).toEqual([])
+      expect(progress(h.out)).toEqual([])
+    })
+
+    it('a failure that needs a sign-in passes through cloneSource and updateSource with its needsLogin', async () => {
+      const failed: CloneResult = { ok: false, error: 'needs sign-in', needsLogin: { host: 'github.com', helper: true } }
+      const { h } = recording(failed)
+      await h.init()
+      await call(h.send, 1, 'cloneSource', [URL1])
+      expect(h.last()).toMatchObject({ ok: true, result: failed })
+      await call(h.send, 2, 'updateSource', [URL1, undefined, 'machine'])
+      expect(h.last()).toMatchObject({ ok: true, result: failed })
+    })
   })
 })
 

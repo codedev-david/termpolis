@@ -17,6 +17,7 @@ import { _resetCodeGraphForTests, graphKeyForRoot, indexFileContent } from '../.
 import { createWorldClient, type WorldClientOptions, type WorldHostTransport } from '../../src/main/world/worldClient'
 import type { WorldHostRequest, WorldHostResponse } from '../../src/main/world/worldHost'
 import { worldFileName } from '../../src/main/world/worldStore'
+import { captureConsole, clearAppLog, readAppLog, type ConsoleLike } from '../../src/main/appLog'
 import type { WorldDoc } from '../../src/shared/world/types'
 
 const ROOT = 'C:/repos/demo'
@@ -510,6 +511,97 @@ describe('createWorldClient', () => {
       ])
       t.emit({ kind: 'progress', projectKey: 'clone:abc', stage: 'cloning', pct: 0 })
       expect(progress).toEqual([{ root: '', projectKey: 'clone:abc', stage: 'cloning', pct: 0 }])
+    })
+
+    it('clone and updateSource carry the access and the remembered login as call arguments', async () => {
+      const { client, spawned } = setup({}, (t) => {
+        t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: m.fn === 'updateSource' ? { ok: true, changed: true } : { ok: true, root: '/r' } })
+      })
+      const machine = { mode: 'machine' } as const
+      const tok = { mode: 'token', value: 'neutral-value-2' } as const
+      expect(await client.clone('https://h/a.git', undefined, machine)).toEqual({ ok: true, root: '/r' })
+      expect(await client.clone('https://h/a.git', 'dev', tok)).toEqual({ ok: true, root: '/r' })
+      expect(await client.updateSource('https://h/a.git')).toEqual({ ok: true, changed: true })
+      expect(await client.updateSource('https://h/a.git', 'dev', 'machine')).toEqual({ ok: true, changed: true })
+      expect(await client.updateSource('https://h/a.git', undefined, 'token', tok)).toEqual({ ok: true, changed: true })
+      expect(spawned[0].calls().map((c) => [c.fn, c.args])).toEqual([
+        ['cloneSource', ['https://h/a.git', undefined, machine]],
+        ['cloneSource', ['https://h/a.git', 'dev', tok]],
+        ['updateSource', ['https://h/a.git']],
+        ['updateSource', ['https://h/a.git', 'dev', 'machine']],
+        ['updateSource', ['https://h/a.git', undefined, 'token', tok]]
+      ])
+    })
+
+    it('the askpass path reaches the host in init, beside userData, from a string or a function', async () => {
+      const a = setup({ askpassPath: '/res/git-askpass/askpass.sh' })
+      await a.client.get(ROOT)
+      expect(a.spawned[0].posted[0]).toEqual({ kind: 'init', userDataPath: '/ud', labelling: true, askpassPath: '/res/git-askpass/askpass.sh' })
+      const b = setup({ askpassPath: () => '/app/resources/git-askpass/askpass.sh' })
+      await b.client.get(ROOT)
+      expect(b.spawned[0].posted[0]).toEqual({ kind: 'init', userDataPath: '/ud', labelling: true, askpassPath: '/app/resources/git-askpass/askpass.sh' })
+      const c = setup({ askpassPath: () => '' })
+      await c.client.get(ROOT)
+      expect(c.spawned[0].posted[0]).not.toHaveProperty('askpassPath')
+    })
+
+    it('no token in the app log after a failed, a timed-out and a crashed clone', async () => {
+      const T = 'neutral-value-3'
+      const access = { mode: 'token', value: ` ${T}\n` } as const
+      const uninstall = captureConsole(console as unknown as ConsoleLike, 'main')
+      clearAppLog()
+      const errors: string[] = []
+      const errorOf = async (p: Promise<unknown>): Promise<void> => {
+        try {
+          const r = (await p) as { ok: boolean; error?: string }
+          errors.push(String(r.error))
+        } catch (e) {
+          errors.push((e as Error).message)
+        }
+      }
+      try {
+        // failed: the host answers a failed result, and (worse) an error that repeats the value
+        const failed = setup({}, (t) => {
+          t.reply = (m) =>
+            m.id === 1
+              ? { kind: 'result', id: m.id, ok: true, result: { ok: false, error: `fatal: could not read for ${T}` } }
+              : { kind: 'result', id: m.id, ok: false, error: { name: 'Error', message: `git said ${T}` } }
+        })
+        await errorOf(failed.client.clone('https://h/a.git', undefined, access))
+        await errorOf(failed.client.clone('https://h/a.git', undefined, access))
+        await errorOf(failed.client.updateSource('https://h/a.git', undefined, 'token', access))
+        // a failed result with no text, and one for a run with no token, pass through unchanged
+        const plain = setup({}, (t) => {
+          t.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: m.id === 1 ? { ok: false } : { ok: false, error: 'plain' } })
+        })
+        expect(await plain.client.clone('https://h/a.git', undefined, access)).toEqual({ ok: false })
+        expect(await plain.client.clone('https://h/a.git', undefined, { mode: 'machine' })).toEqual({ ok: false, error: 'plain' })
+        // timed out
+        const slow = setup({ callTimeoutMs: 5 }, (t) => {
+          t.reply = null
+        })
+        await errorOf(slow.client.clone('https://h/a.git', 'dev', access))
+        // crashed mid-clone
+        const crash = setup({}, (t) => {
+          t.reply = null
+        })
+        const pending = errorOf(crash.client.clone('https://h/a.git', undefined, access))
+        await flush()
+        crash.spawned[0].exit(1)
+        await pending
+        // a thrown non-Error is text too
+        const odd = setup({}, (t) => {
+          t.throwOnPost = `odd ${T}` as never
+        })
+        await errorOf(odd.client.clone('https://h/a.git', undefined, access))
+      } finally {
+        uninstall()
+      }
+      expect(errors).toHaveLength(6)
+      expect(errors.some((e) => e.includes('timed out'))).toBe(true)
+      expect(errors.some((e) => e.includes('exited'))).toBe(true)
+      for (const e of errors) expect(e).not.toContain(T)
+      for (const entry of readAppLog(1000)) expect(entry.msg).not.toContain(T)
     })
   })
 

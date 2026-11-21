@@ -12,6 +12,16 @@ export type RepoAccess = { mode: 'machine' } | { mode: 'token'; value: string }
 /** What the registry keeps about how a repository was opened. Never the token itself. */
 export type RepoLogin = 'machine' | 'token'
 
+/** What an https clone that needed a sign-in hands back: the host to sign in to, and whether git has a login helper for it. */
+export interface NeedsLogin {
+  host: string
+  helper: boolean
+}
+
+/** What main answers (as success) when opening or updating a repository needs a sign-in first:
+ *  the host, whether git has a login helper for it, and the plain words to show. */
+export type CloneNeedsLogin = { needsLogin: NeedsLogin & { message: string } }
+
 export const TOKEN_FORMAT_MESSAGE = 'That token has a space or line break inside it. Copy it again and paste only the token.'
 export const TOKEN_EMPTY_MESSAGE = 'Paste a token first.'
 export const TOKEN_REJECTED_MESSAGE = "That token didn't open the repository. Check that it hasn't expired and can read this repository, then try again."

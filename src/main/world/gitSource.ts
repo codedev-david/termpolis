@@ -22,7 +22,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import * as fsp from 'node:fs/promises'
 import { join } from 'node:path'
 import { BAD_REF_MESSAGE, stripUrlUserinfo, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
-import { hideValue, normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
+import { hideValue, normalizeToken, TOKEN_REJECTED_MESSAGE, type NeedsLogin } from '../../shared/world/repoAccess'
 import { binInside } from '../binPath'
 import {
   configEnv,
@@ -299,11 +299,7 @@ function firstLine(stderr: string): string {
   return line.trim().replace(/\/\/[^/@\s]+@/g, '//***@') || 'no details'
 }
 
-/** What an https clone that needed a sign-in hands back: the host to sign in to, and whether git has a login helper for it. */
-export interface NeedsLogin {
-  host: string
-  helper: boolean
-}
+export type { NeedsLogin }
 
 /** The host (with any port) of an https URL as written, without a login; '' for ssh and anything else.
  *  This is the form git puts in its prompts, which the askpass matches. */

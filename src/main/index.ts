@@ -2739,6 +2739,9 @@ const worldClient = createWorldClient(undefined, {
   transcriptFiles: worldRuns.transcriptFiles,
   ciRuns: worldRuns.ciRuns,
   userDataPath: () => app.getPath('userData'),
+  // The askpass Termpolis ships for a token run (package.json extraResources; checked by verifyPackagedResources).
+  askpassPath: () =>
+    app.isPackaged ? join(process.resourcesPath, 'git-askpass', 'askpass.sh') : join(app.getAppPath(), 'resources', 'git-askpass', 'askpass.sh'),
   // A project's linked design (plan versus built): registry entry -> linkedDesign -> the stored design.
   planFor: async (projectKey) => {
     const entry = await worldSources.get(projectKey)
@@ -2841,7 +2844,8 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAs
     return result.canceled || !result.filePaths[0] ? null : result.filePaths[0]
   },
   isEmpty: (root) => isFolderEmpty(root),
-  clone: (url, ref) => worldClient.clone(url, ref),
+  clone: (url, ref, access) => worldClient.clone(url, ref, access),
+  updateSource: (url, ref, login, access) => worldClient.updateSource(url, ref, login, access),
   cancelClone: (url, ref) => worldClient.cancelClone(url, ref),
   watch: (root) => watchRepoForGraphAndWorld(root),
   unwatch: (root) => void stopRepoWatch(root),

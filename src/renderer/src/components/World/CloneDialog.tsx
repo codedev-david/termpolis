@@ -40,8 +40,9 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
       if (entry) onCloned(entry)
       else setError(message)
     }
+    // A repository that needs a sign-in shows main's words for now; the sign-in choices come with the dialog's next step.
     window.termpolis.worldClone(trimmed, ref).then(
-      (res) => (res.success ? done(null, res.data) : done(res.error)),
+      (res) => (!res.success ? done(res.error) : 'needsLogin' in res.data ? done(res.data.needsLogin.message) : done(null, res.data)),
       () => done(CLONE_UNREACHABLE),
     )
   }

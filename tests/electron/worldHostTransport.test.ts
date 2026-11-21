@@ -57,4 +57,26 @@ describe('createWorldHostTransport', () => {
     t.kill()
     expect(killUtility).toHaveBeenCalledWith(child)
   })
+
+  it('a message the child cannot take fails with fixed text that never repeats the call arguments', () => {
+    const t = createWorldHostTransport('/h.js')
+    const child = children[0] as FakeChild
+    const arg = { mode: 'token', value: 'neutral-value-4' }
+    child.postMessage.mockImplementationOnce(() => {
+      throw new Error(`could not clone ${JSON.stringify(arg)}`)
+    })
+    const msg = { kind: 'call', id: 1, fn: 'cloneSource', args: ['https://h/r.git', undefined, arg] } as unknown as Parameters<typeof t.postMessage>[0]
+    let thrown: unknown
+    try {
+      t.postMessage(msg)
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    const text = `${(thrown as Error).name} ${(thrown as Error).message} ${String((thrown as Error).stack)}`
+    expect(text).not.toContain('neutral-value-4')
+    expect(text).not.toContain('cloneSource')
+    expect((thrown as Error).message).toBe('Lumopolis host could not take that request')
+    expect((thrown as { cause?: unknown }).cause).toBeUndefined()
+  })
 })

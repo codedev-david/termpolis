@@ -2,6 +2,8 @@
 // (main process), the engine/renderer and the standalone website demo. Types only: this file
 // emits no JavaScript.
 
+import type { RepoLogin } from './repoAccess'
+
 export type ClaimState = 'proposed' | 'observed' | 'inferred' | 'verified'
 export type EvidenceKind = 'file' | 'symbol' | 'test' | 'transcriptStep' | 'memory' | 'commit'
   | 'trace' | 'metric' | 'log' | 'deploy'            // trace..deploy reserved for the live layer (§5.11)
@@ -130,7 +132,7 @@ export interface DesignRefineResult { doc: WorldDoc; text: string; applied: numb
 export type WorldSource =
   | { kind: 'project'; root: string; linkedDesign?: string }
   | { kind: 'folder'; root: string; linkedDesign?: string }
-  | { kind: 'git'; url: string; ref?: string; root: string; linkedDesign?: string }
+  | { kind: 'git'; url: string; ref?: string; root: string; linkedDesign?: string; login?: RepoLogin }
   | { kind: 'design'; id: string; title: string; linkedRoot?: string }
 
 /** One recent world. `missing`: its folder (or stored design) is gone, so it can only be removed. */
