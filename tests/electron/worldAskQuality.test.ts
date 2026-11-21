@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { askEntries, bm25Scores, buildBm25, cosineScores, nameFit, packInt8, rankAsk, type AskHit } from '../../src/shared/world/askIndex'
+import { askEntries, bm25Scores, buildBm25, cosineScores, FUSE, nameFit, packInt8, rankAsk, type AskHit } from '../../src/shared/world/askIndex'
 import { validateWorld } from '../../src/shared/world/validate'
 import { embedBatch } from '../../src/main/localEmbedder'
 
@@ -53,7 +53,7 @@ describe('Ask quality on the fixture world', () => {
     expect(missed).toEqual([])
   })
 
-  it('smart and fused Ask find the right part in the top 3 for at least 12 of 15 questions, and fused Ask passes the name and area questions', async (ctx) => {
+  it('smart or fused Ask finds the right part in the top 3 for at least 12 of 15 questions', async (ctx) => {
     // The bge model is not in git; CI's package-verify job downloads it and sets TERMPOLIS_REQUIRE_MODEL=1.
     const [probe] = await embedBatch(['model check'])
     if (probe === null) {
@@ -70,14 +70,25 @@ describe('Ask quality on the fixture world', () => {
       // ranking the spec bars. rankAsk ranks one list of scores as `keyword`, which differs from the meaning half of the
       // fusion only by dropping the entries scored 0 or below; with 3 or more above 0 the top 3 are the same.
       expect(smart.filter((x) => x > 0).length).toBeGreaterThanOrEqual(3)
+      const keyword = bm25Scores(ix, q)
+      const named = nameFit(entries, q)
       return {
         smart: rankAsk(entries, { keyword: smart }),
-        fused: rankAsk(entries, { smart, keyword: bm25Scores(ix, q), named: nameFit(entries, q) })
+        fused: rankAsk(entries, { smart, keyword, named }),
+        keyword: rankAsk(entries, { keyword, named })
       }
     })
-    const top3 = (pick: 'smart' | 'fused'): number => questions.filter(({ labelled }, i) => accepted(labelled, ranked[i][pick].slice(0, 3))).length
-    expect(top3('smart')).toBeGreaterThanOrEqual(12)
-    expect(top3('fused')).toBeGreaterThanOrEqual(12)
+    const top3 = (pick: 'smart' | 'fused' | 'keyword'): number => questions.filter(({ labelled }, i) => accepted(labelled, ranked[i][pick].slice(0, 3))).length
+    const scores = { smart: top3('smart'), fused: top3('fused'), keyword: top3('keyword') }
+    // The numbers FUSE and TEST_RANK_FACTOR are chosen from (askIndex.ts): printed, so a run records them.
+    console.info(`Ask top-3 on ${questions.length} questions: smart ${scores.smart}, fused ${scores.fused}, keyword ${scores.keyword}`)
+    // The spec's bar: smart or fused Ask, at least 12 of 15.
+    expect(Math.max(scores.smart, scores.fused)).toBeGreaterThanOrEqual(12)
+    // The page ships the fused ranking (FUSE): it must clear the bar itself and never rank below keyword Ask alone,
+    // which is what the page would show with FUSE off.
+    expect(FUSE).toBe(true)
+    expect(scores.fused).toBeGreaterThanOrEqual(12)
+    expect(scores.fused).toBeGreaterThanOrEqual(scores.keyword)
     const missed = nameQuestions
       .filter(({ labelled, top }, i) => !accepted(labelled, ranked[questions.length + i].fused.slice(0, top)))
       .map(({ q }) => q)

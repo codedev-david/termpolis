@@ -39,7 +39,7 @@
 - User copy says "Lumopolis"; code and channel names say `world`.
 - EDR rule: never put credential-signature words on a command line. Keep them out of file names, test names and shell greps (use the Grep tool on named files). Secret samples in tests use the `'a'.repeat(N)` style.
 - Spec values used verbatim below:
-  - CSP: `default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; connect-src 'none'`;
+  - CSP: `default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'none'`;
   - smart default threshold: 80% of buildings and 80% of lines described;
   - budgets: smart export under 40 MB; keyword-only export under 1.5 MB plus the world JSON size; Ask ready in under 6 s;
   - quality gate: smart or fused top-3 ≥ 12/15, keyword top-3 ≥ 10/15.
@@ -635,7 +635,7 @@ it('memoryForLabels searches decisions in the given project only', async () => {
     - `await page.evaluate(() => window.__worldExport.ready)` resolves to `'smart'` in under 6000 ms;
     - the three questions `'how does the phone connect to my desktop'`, `'where are passwords and API keys kept safe'` (from `askQuestions.json`) and one more from that file each list an accepted id in the top 3.
   - `fallback.page.ts`: `context.addInitScript` makes `WebAssembly.instantiate` reject. The box then says `"Smart Ask couldn't start in this browser; using keyword search."` and keyword still answers.
-  - CSP allowances: one test per allowance loads a copy of `smart.html` with that allowance removed and expects smart Ask to report `'failed'`. This proves each allowance is required: `'wasm-unsafe-eval'`, `blob:` in `worker-src`, `data:`/`blob:` in `img-src`.
+  - CSP allowances: one test per allowance loads a copy of `smart.html` with that allowance removed and expects smart Ask to report `'failed'`. This proves each allowance is required: `'wasm-unsafe-eval'`, `blob:` in `worker-src`, `data:`/`blob:` in `img-src`. (Task 12: the last two proved unneeded and were dropped; the spec records it.)
   - Budgets:
     - `smart.html` is under `40 * 1024 * 1024` bytes;
     - `keyword.html` is under `1.5 * 1024 * 1024` bytes plus the fixture JSON's size.

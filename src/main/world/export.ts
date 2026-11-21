@@ -127,8 +127,12 @@ export const CANCELLED = 'The export was cancelled.'
 /** How many Ask entries are embedded at a time: the cancel is checked, and progress told, between chunks. */
 export const EMBED_CHUNK = 16
 
-/** The page's CSP (spec 5.3): no request of any kind; the wasm may compile, workers come from blobs. */
-export const EXPORT_CSP = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; connect-src 'none'"
+/**
+ * The page's CSP (spec 5.3): no request of any kind, and the wasm may compile. Nothing else: smart Ask runs ORT on
+ * one thread with no proxy worker and loads no image, so worker-src and img-src fall back to default-src 'none'
+ * (e2e/export-page/smart.page.ts proved smart Ask still starts without them, and fails without 'wasm-unsafe-eval').
+ */
+export const EXPORT_CSP = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'none'"
 
 /** The page's own CSS: only what holds until the runtime adds its stylesheet. */
 const PAGE_CSS = 'html,body{margin:0;height:100%;background:#03050a;color:#e2e8f0}'

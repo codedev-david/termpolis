@@ -9,9 +9,16 @@ import { NOT_DESCRIBED, direction, nodeName, sizeNote } from './cardFacts'
 export const BGE_QUERY_PREFIX = 'Represent this sentence for searching relevant passages: '
 /** Bumped whenever the entry text, the tokenizer or the packing changes, so a stored index is never read as a newer one. */
 export const ASK_INDEX_VERSION = 1
-/** What a part made only of test files scores, against an equal part of real code (tuned on the fixture world). */
+/**
+ * What a part made only of test files scores, against an equal part of real code. The fixture world has no part made
+ * only of tests, so the quality gate cannot move it: it stays at 0.8.
+ */
 export const TEST_RANK_FACTOR = 0.8
-/** Whether a ranking with meaning fuses it with the keyword ranking; the Task 12 gate decides it. */
+/**
+ * Whether a ranking with meaning fuses it with the keyword ranking. The quality gate (tests/electron/worldAskQuality)
+ * measured top-3 on its 15 questions: smart 13, fused 13, keyword 12. Fused ties smart and never ranks below keyword,
+ * so it stays on.
+ */
 export const FUSE: boolean = true
 
 export type AskKind = 'building' | 'line' | 'external' | 'term' | 'tour'

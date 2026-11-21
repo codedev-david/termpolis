@@ -22,7 +22,7 @@ import {
 import { embedBatch } from '../../src/main/localEmbedder'
 import { describedWorld, designWorld, labelledWorld, linkedDesignWorld } from '../fixtures/world/docWorlds'
 
-const SPEC_CSP = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; connect-src 'none'"
+const SPEC_CSP = "default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'none'"
 const HOME = 'C:/Users/someone'
 const CTX: SanitizeContext = { root: `${HOME}/repos/shop`, home: HOME, userData: `${HOME}/AppData/Roaming/Termpolis` }
 const TARGET = 'D:/out/Shop - Lumopolis.html'

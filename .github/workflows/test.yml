@@ -190,6 +190,9 @@ jobs:
   package-verify:
     needs: static
     runs-on: ubuntu-latest
+    # The export-page job restores the model this job downloads, by this key (one download per run).
+    outputs:
+      model-key: ${{ steps.model.outputs.key }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -209,6 +212,25 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
       - name: Download bundled embedding model
         run: bash scripts/download-embedding-model.sh
+      # The model's own hash names the cache, so the export-page job gets exactly these bytes (and a miss there is
+      # a failure, not a silent re-download). Cross-OS: the export-page job restores it on Windows and macOS too.
+      - name: Hash the embedding model
+        id: model
+        shell: bash
+        run: echo "key=bge-small-$(sha256sum resources/models/bge-small-en-v1.5/onnx/model_quantized.onnx | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Cache the embedding model for the export-page job
+        uses: actions/cache/save@v4
+        with:
+          path: resources/models
+          key: ${{ steps.model.outputs.key }}
+          enableCrossOsArchive: true
+      # Lumopolis Ask quality GATE with the real model: smart or fused top-3 finds the right part for at least 12 of
+      # the 15 labelled questions, and the exported page's in-browser embedding matches the app's (cosine >= 0.999).
+      # TERMPOLIS_REQUIRE_MODEL turns a missing model into a failure here instead of a skip.
+      - name: Lumopolis Ask quality gate and embedding parity (real bge)
+        env:
+          TERMPOLIS_REQUIRE_MODEL: '1'
+        run: npx vitest run tests/electron/worldAskQuality.test.ts tests/electron/worldExportEmbedParity.test.ts --reporter=verbose
       # Un-gates semantic recall in CI: with the real model now on disk
       # (resources/models), the skipIf(!hasBundledModel) tests RUN here and prove
       # real-embedding cross-agent recall — the plain unit jobs lack the model.
@@ -290,6 +312,74 @@ jobs:
           name: dist-electron-builder-linux
           path: dist-electron-builder/linux-unpacked/
           retention-days: 3
+
+  # The exported Lumopolis page, offline, in every browser a reader might open it in (spec 5.3): the city paints, a
+  # card opens and is read-only, a tour runs, Esc behaves, keyword Ask answers at once, smart Ask starts from the
+  # page's own bytes within 6 s in Electron and Edge (Firefox and WebKit may fall back to keyword search, and must
+  # say so), the CSP refuses nothing the page does, and no test sees a single request leave the page.
+  # playwright.export.config.ts writes the pages in its globalSetup with the real model, restored from
+  # package-verify's cache (one download per run); Edge is a Windows runner's own browser, so only Windows runs it.
+  export-page:
+    needs: package-verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            projects: --project=electron --project=msedge --project=firefox --project=webkit
+            wrap: ''
+          - os: macos-latest
+            projects: --project=electron --project=firefox --project=webkit
+            wrap: ''
+          - os: ubuntu-24.04
+            projects: --project=electron --project=firefox --project=webkit
+            wrap: xvfb-run --auto-servernum
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
+      - name: Restore the embedding model
+        uses: actions/cache/restore@v4
+        with:
+          path: resources/models
+          key: ${{ needs.package-verify.outputs.model-key }}
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      # --with-deps on Linux also installs the browsers' system libraries; install-deps chromium adds the ones
+      # Electron's own Chromium needs (no browser download).
+      - name: Install Playwright browsers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          npx playwright install --with-deps firefox webkit
+          npx playwright install-deps chromium
+      - name: Install Playwright browsers
+        if: runner.os != 'Linux'
+        run: npx playwright install firefox webkit
+      - name: Build the world viewer and the export runtime
+        run: npm run build:world-viewer
+      - name: Exported page e2e
+        shell: bash
+        run: ${{ matrix.wrap }} npx playwright test -c playwright.export.config.ts ${{ matrix.projects }} --reporter=list
+      - name: Upload failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces-export-page-${{ matrix.os }}
+          path: test-results/
+          retention-days: 7
 
   # The Windows installer, updating over a running Termpolis the way the in-app updater does.
   # build/installer.nsh replaces electron-builder's "is the app running" check, which ran

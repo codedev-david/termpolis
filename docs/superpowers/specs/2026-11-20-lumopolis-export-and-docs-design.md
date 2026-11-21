@@ -131,8 +131,8 @@ Both are part of the 2.0 headline, so the bar is the Lumopolis bar: correct on t
 
 **File layout,** in this order. The order is load-bearing; see trap 1 above.
 1. `<meta charset>`, viewport, title `<Project> · Lumopolis`.
-2. A CSP meta tag: `default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; worker-src blob:; connect-src 'none'`. This makes "no network" enforced by the browser, not just intended.
-   - The builder verifies that ORT runs under it in Chrome, Edge, Firefox and WebKit, and adjusts only what is needed, with a test proving each allowance is required.
+2. A CSP meta tag: `default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; connect-src 'none'`. This makes "no network" enforced by the browser, not just intended.
+   - The builder verifies that ORT runs under it in Chrome, Edge, Firefox and WebKit, and adjusts only what is needed, with a test proving each allowance is required. Those tests dropped `img-src data: blob:` and `worker-src blob:` (smart Ask starts without either: ORT runs on one thread with no proxy worker and loads no image); `'wasm-unsafe-eval'` stays, since smart Ask fails without it.
 3. Inline CSS.
 4. Data blocks as `<script type="application/octet-stream" id=…>`, each gzip-then-base64, decoded with `DecompressionStream`:
    - the validated world doc;
