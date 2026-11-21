@@ -121,7 +121,7 @@ describe('source registry', () => {
     expect(await reg().list()).toEqual([])
   })
 
-  it('a git entry may remember how it was opened (machine or token); any other login is not a valid entry', async () => {
+  it('a git entry may remember how it was opened (machine or token); any other login reads as token and hides nothing', async () => {
     await mkdir(join(dir, 'world'), { recursive: true })
     const base = { key: 'k', title: 't', lastOpened: 1 }
     for (const login of ['machine', 'token'] as const) {
@@ -129,13 +129,35 @@ describe('source registry', () => {
       expect((await reg().list()).map((e) => e.source)).toEqual([{ kind: 'git', url: 'https://h/r.git', root: '/g', login }])
     }
     for (const login of ['other', 1, null]) {
-      await writeFile(sourcesFile(), JSON.stringify([{ ...base, source: { kind: 'git', url: 'https://h/r.git', root: '/g', login } }]))
-      expect(await reg().list()).toEqual([])
+      const other = { key: 'k2', title: 'f', lastOpened: 2, source: { kind: 'folder', root: '/a' } }
+      await writeFile(sourcesFile(), JSON.stringify([{ ...base, source: { kind: 'git', url: 'https://h/r.git', root: '/g', login } }, other]))
+      const list = await reg().list()
+      // the whole list still shows; the unknown value is read conservatively, so it never updates unasked
+      expect(list.map((e) => e.key)).toEqual(['k2', 'k'])
+      expect(list[1].source).toEqual({ kind: 'git', url: 'https://h/r.git', root: '/g', login: 'token' })
+      expect(await reg().get('k')).toMatchObject({ source: { login: 'token' } })
+      await expect(readdir(join(dir, 'world'))).resolves.not.toContain('sources.json.bad')
     }
     const r = reg()
     const e = await r.upsert({ kind: 'git', url: 'https://h/r.git', root: '/g', login: 'machine' })
     expect(e.source).toEqual({ kind: 'git', url: 'https://h/r.git', root: '/g', login: 'machine' })
     expect((await r.list())[0].source).toEqual({ kind: 'git', url: 'https://h/r.git', root: '/g', login: 'machine' })
+  })
+
+  it('setLogin changes only how a git world was opened and keeps its place in the recent list', async () => {
+    const r = reg()
+    const g = await r.upsert({ kind: 'git', url: 'https://h/r.git', ref: 'main', root: '/g' }, 'Repo')
+    const a = await r.upsert({ kind: 'folder', root: '/a' })
+    const out = await r.setLogin(g.key, 'token')
+    expect(out).toEqual({ ...g, source: { ...g.source, login: 'token' } })
+    const list = await r.list()
+    expect(list.map((e) => e.key)).toEqual([a.key, g.key])
+    expect(list[1]).toEqual({ key: g.key, title: 'Repo', lastOpened: g.lastOpened, source: { kind: 'git', url: 'https://h/r.git', ref: 'main', root: '/g', login: 'token' } })
+    expect(list[0]).toEqual(a)
+    // not a git world, or not registered: nothing changes
+    expect(await r.setLogin(a.key, 'machine')).toBeNull()
+    expect(await r.setLogin('nope', 'machine')).toBeNull()
+    expect(await r.list()).toEqual(list)
   })
 
   it('a bad backup rename still reads as empty; other read errors throw', async () => {

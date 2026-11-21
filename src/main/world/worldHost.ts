@@ -28,7 +28,7 @@ import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from '.
 import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { confinedReader, isCloneRoot } from './folderSafety'
 import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps, type CloneResult, type LoginRun, type NeedsLogin } from './gitSource'
-import { normalizeToken } from '../../shared/world/repoAccess'
+import { normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
 import { resolveGitBin } from '../binPath'
 import type { LabelDeps } from './label'
 import { createWorldStore, type WorldStore } from './worldStore'
@@ -407,8 +407,19 @@ function accessRun(access: unknown): { run: LoginRun } | { error: string } {
 
 /** A background update with no access: a repository opened with this computer's login asks for no prompt. */
 function backgroundRun(login: unknown): LoginRun {
-  if (login === 'token') throw new Error('token update needs a token')
   return login === 'machine' ? { mode: 'machine', interactive: false } : { mode: 'none' }
+}
+
+/** True for an access that asks for a token run (its value is checked later by normalizeToken). */
+const isTokenAccess = (access: unknown): boolean =>
+  !!access && typeof access === 'object' && (access as { mode?: unknown }).mode === 'token'
+
+/** Two runs are the same run: same mode, same prompt choice, same token (compared here, never kept in a key). */
+function sameRun(a: LoginRun, b: LoginRun): boolean {
+  if (a.mode !== b.mode) return false
+  if (a.mode === 'machine') return a.interactive === (b as typeof a).interactive
+  if (a.mode === 'token') return a.value === (b as typeof a).value
+  return true
 }
 
 function needKey(projectKey: unknown): string {
@@ -458,7 +469,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const contextWaiting = new Map<number, (evidence: Evidence[]) => void>()
   const runsWaiting = new Map<number, (msg: { runs?: unknown; files?: unknown }) => void>()
   /** cloneKey → the running clone and its abort controller: a repeat call joins it, cancel aborts it. */
-  const clones = new Map<string, { ctl: AbortController; done: Promise<CloneResult> }>()
+  const clones = new Map<string, { ctl: AbortController; done: Promise<CloneResult>; run: LoginRun; progress: boolean }>()
 
   /** Runs `fn` after every earlier job for the same project, so saves never interleave. */
   const serial = <T>(key: string, fn: () => Promise<T>): Promise<T> => {
@@ -767,14 +778,18 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     cloneSource: async (url: unknown, ref?: unknown, access?: unknown): Promise<CloneSourceResult> => {
       const asked = accessRun(access)
       if ('error' in asked) return { ok: false, error: asked.error }
+      if (!(await askpassReady(st, asked.run))) return { ok: false, error: TOKEN_REJECTED_MESSAGE }
       const res = await runClone(st, url, ref, asked.run, true)
       return res.ok ? { ok: true, root: res.root } : res
     },
     // Brings a repository Lumopolis already opened up to date. With no access it runs the way the entry
-    // was opened: no login, or this computer's login without a prompt; a token entry needs the token again.
+    // was opened: no login, or this computer's login without a prompt. A token entry runs only with a token
+    // access: anything else (none, machine, an unknown shape) is refused here before git runs.
     updateSource: async (url: unknown, ref?: unknown, login?: unknown, access?: unknown): Promise<UpdateSourceResult> => {
+      if (login === 'token' && !isTokenAccess(access)) throw new Error('token update needs a token')
       const asked = access === undefined ? { run: backgroundRun(login) } : accessRun(access)
       if ('error' in asked) return { ok: false, error: asked.error }
+      if (!(await askpassReady(st, asked.run))) return { ok: false, error: TOKEN_REJECTED_MESSAGE }
       const res = await runClone(st, url, ref, asked.run, false)
       return res.ok ? { ok: true, changed: res.changed } : res
     },
@@ -793,18 +808,41 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   })
 
   /**
-   * One clone or update of a url and branch at a time: a repeat call joins the running one (and gets its
-   * result, whatever access it asked with); cancelClone aborts it. Only an open posts progress.
+   * A token run needs the askpass Termpolis ships to exist: without it git would ask a terminal nobody
+   * sees, so the run is refused before git starts and one plain line (never the value) is logged.
+   */
+  const askpassReady = async (st: HostState, run: LoginRun): Promise<boolean> => {
+    if (run.mode !== 'token') return true
+    const p = deps.cloneDeps?.askpassPath ?? st.askpassPath
+    const there = p ? await fsp.stat(p).then((s) => s.isFile(), () => false) : false
+    if (!there) console.warn('[world host] a token run was refused: the askpass Termpolis ships was not found')
+    return there
+  }
+
+  /**
+   * One clone or update of a url and branch at a time. A repeat call joins the running one only when it
+   * asks for the same run (an open joining a silent run turns its progress on); a different run waits for
+   * the running one to settle, then starts its own. cancelClone aborts the running one.
    */
   const runClone = (st: HostState, url: unknown, ref: unknown, run: LoginRun, progress: boolean): Promise<CloneResult> => {
     const u = isStr(url) ? url : ''
     const r = refOf(ref)
     const hash = cloneKey(u, r)
-    const running = clones.get(hash)
-    if (running) return running.done
-    const ctl = new AbortController()
     const projectKey = `clone:${hash}`
+    const running = clones.get(hash)
+    if (running) {
+      if (!sameRun(running.run, run)) {
+        return running.done.catch(() => undefined).then(() => runClone(st, url, ref, run, progress))
+      }
+      if (progress && !running.progress) {
+        running.progress = true
+        post({ kind: 'progress', projectKey, stage: 'cloning', pct: 0 })
+      }
+      return running.done
+    }
+    const ctl = new AbortController()
     if (progress) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 0 })
+    const entry = { ctl, run, progress } as { ctl: AbortController; done: Promise<CloneResult>; run: LoginRun; progress: boolean }
     const done = clone(
       u,
       r,
@@ -822,11 +860,12 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       run
     )
       .then((res) => {
-        if (res.ok && progress) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 100 })
+        if (res.ok && entry.progress) post({ kind: 'progress', projectKey, stage: 'cloning', pct: 100 })
         return res
       })
       .finally(() => clones.delete(hash))
-    clones.set(hash, { ctl, done })
+    entry.done = done
+    clones.set(hash, entry)
     return done
   }
 

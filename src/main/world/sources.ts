@@ -8,6 +8,7 @@ import { graphKeyForRoot } from '../codeGraph'
 import { worldFileName } from './worldStore'
 import { stripUrlUserinfo } from '../../shared/world/gitUrl'
 import type { WorldEntry, WorldSource } from '../../shared/world/types'
+import type { RepoLogin } from '../../shared/world/repoAccess'
 
 export type { WorldEntry, WorldSource }
 
@@ -22,6 +23,9 @@ export interface SourceRegistry {
   remove(key: string): Promise<void>
   /** Marks a registered world opened now (its lastOpened); null when the key is not registered. */
   touch(key: string): Promise<WorldEntry | null>
+  /** Remembers how a cloned repository was opened, changing nothing else (its place in the recent list
+   *  stays); null when the key is not a registered git world. */
+  setLogin(key: string, login: RepoLogin): Promise<WorldEntry | null>
   get(key: string): Promise<WorldEntry | null>
 }
 
@@ -41,8 +45,9 @@ function validSource(s: unknown): s is WorldSource {
     case 'folder':
       return isStr(o.root) && optStr(o.linkedDesign)
     case 'git':
-      // `login` is only how it was opened (never a token); anything else is not an entry this build wrote.
-      return isStr(o.url) && isStr(o.root) && optStr(o.ref) && optStr(o.linkedDesign) && (o.login === undefined || o.login === 'machine' || o.login === 'token')
+      // `login` is only how it was opened (never a token). Like any other unknown field it never fails the
+      // entry: loginRead reads an unknown value as 'token', so it is never updated without asking.
+      return isStr(o.url) && isStr(o.root) && optStr(o.ref) && optStr(o.linkedDesign)
     case 'design':
       return isStr(o.id) && isStr(o.title) && optStr(o.linkedRoot)
     default:
@@ -54,6 +59,14 @@ function validEntry(e: unknown): e is WorldEntry {
   if (typeof e !== 'object' || e === null) return false
   const o = e as Record<string, unknown>
   return isStr(o.key) && isStr(o.title) && typeof o.lastOpened === 'number' && validSource(o.source)
+}
+
+/** A git entry's `login` as this build reads it: 'machine' or 'token' as stored, absent stays absent, and
+ *  anything else (a newer build's value) is the conservative 'token'. */
+function loginRead(e: WorldEntry): WorldEntry {
+  if (e.source.kind !== 'git') return e
+  const login: unknown = e.source.login
+  return login === undefined || login === 'machine' || login === 'token' ? e : { ...e, source: { ...e.source, login: 'token' } }
 }
 
 /** The source as it may be stored or shown: a git URL never keeps the user-info it was cloned with. */
@@ -106,7 +119,7 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
     } catch {
       parsed = undefined
     }
-    if (Array.isArray(parsed) && parsed.every(validEntry)) return parsed
+    if (Array.isArray(parsed) && parsed.every(validEntry)) return parsed.map(loginRead)
     await rename(file, `${file}.bad`).catch(() => undefined)
     return []
   }
@@ -160,6 +173,17 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
         if (!old) return null
         const entry: WorldEntry = { ...old, lastOpened: deps.now() }
         await save([...entries.filter((e) => e.key !== key), entry])
+        return decorate(entry)
+      })
+    },
+
+    setLogin(key, login) {
+      return serial(async () => {
+        const entries = await load()
+        const old = entries.find((e) => e.key === key)
+        if (!old || old.source.kind !== 'git') return null
+        const entry: WorldEntry = { ...old, source: { ...old.source, login } }
+        await save(entries.map((e) => (e.key === key ? entry : e)))
         return decorate(entry)
       })
     },

@@ -2740,8 +2740,9 @@ const worldClient = createWorldClient(undefined, {
   ciRuns: worldRuns.ciRuns,
   userDataPath: () => app.getPath('userData'),
   // The askpass Termpolis ships for a token run (package.json extraResources; checked by verifyPackagedResources).
+  // In development it is resolved from out/main the way terminalManager finds resources/tools.
   askpassPath: () =>
-    app.isPackaged ? join(process.resourcesPath, 'git-askpass', 'askpass.sh') : join(app.getAppPath(), 'resources', 'git-askpass', 'askpass.sh'),
+    app.isPackaged ? join(process.resourcesPath, 'git-askpass', 'askpass.sh') : join(__dirname, '../../resources', 'git-askpass', 'askpass.sh'),
   // A project's linked design (plan versus built): registry entry -> linkedDesign -> the stored design.
   planFor: async (projectKey) => {
     const entry = await worldSources.get(projectKey)

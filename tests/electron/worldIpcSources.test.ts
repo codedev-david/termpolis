@@ -32,7 +32,8 @@ function setup(over: Partial<WorldSourcesDeps> = {}, designer?: WorldDesigner) {
     upsert: vi.fn(async (s: WorldSource, title?: string) => entryOf(s, title)),
     remove: vi.fn(async () => undefined),
     touch: vi.fn(async (key: string) => (key === 'kf' ? { ...entryOf({ kind: 'folder', root: 'C:/f' }), lastOpened: 9 } : null)),
-    get: vi.fn(async (key: string) => (key === 'design:d1' ? entryOf({ kind: 'design', id: 'd1', title: 'Shop' }, 'Shop') : null))
+    get: vi.fn(async (key: string) => (key === 'design:d1' ? entryOf({ kind: 'design', id: 'd1', title: 'Shop' }, 'Shop') : null)),
+    setLogin: vi.fn(async () => null)
   }
   const deps: WorldSourcesDeps = {
     registry,
@@ -287,8 +288,9 @@ describe('registerWorldIpc sources handlers', () => {
     expect(await s.invoke('world:update-source', { key: 'kg', access: { mode: 'token', value: 'neutral-value-8' } }))
       .toEqual({ success: true, data: { changed: true } })
     expect(s.deps.updateSource).toHaveBeenCalledWith('https://github.com/a/b.git', 'main', 'token', { mode: 'token', value: 'neutral-value-8' })
-    expect(s.registry.upsert).toHaveBeenLastCalledWith({ ...gitEntry().source, login: 'token' })
-    expect(JSON.stringify(s.registry.upsert.mock.calls)).not.toContain('neutral-value-8')
+    expect(s.registry.setLogin).toHaveBeenLastCalledWith('kg', 'token')
+    expect(s.registry.upsert).not.toHaveBeenCalled()
+    expect(JSON.stringify(s.registry.setLogin.mock.calls)).not.toContain('neutral-value-8')
   })
 
   it('update-source runs a remembered machine entry in background mode', async () => {
@@ -299,6 +301,7 @@ describe('registerWorldIpc sources handlers', () => {
     expect((s.deps.updateSource as ReturnType<typeof vi.fn>).mock.calls[0]).toHaveLength(3)
     // nothing new to remember without an access
     expect(s.registry.upsert).not.toHaveBeenCalled()
+    expect(s.registry.setLogin).not.toHaveBeenCalled()
   })
 
   it('update-source: an entry opened with no sign-in runs plain; asking with machine remembers machine', async () => {
@@ -307,9 +310,9 @@ describe('registerWorldIpc sources handlers', () => {
     expect(s.deps.updateSource).toHaveBeenLastCalledWith('https://github.com/a/b.git', 'main', undefined)
     expect(await s.invoke('world:update-source', { key: 'kg', access: { mode: 'machine' } })).toEqual({ success: true, data: { changed: true } })
     expect(s.deps.updateSource).toHaveBeenLastCalledWith('https://github.com/a/b.git', 'main', undefined, { mode: 'machine' })
-    expect(s.registry.upsert).toHaveBeenLastCalledWith({ ...gitEntry().source, login: 'machine' })
+    expect(s.registry.setLogin).toHaveBeenLastCalledWith('kg', 'machine')
     // a failed save of how it was opened does not fail the update that worked
-    s.registry.upsert.mockRejectedValueOnce(new Error('disk'))
+    s.registry.setLogin.mockRejectedValueOnce(new Error('disk'))
     expect(await s.invoke('world:update-source', { key: 'kg', access: { mode: 'machine' } })).toEqual({ success: true, data: { changed: true } })
   })
 
@@ -345,6 +348,27 @@ describe('registerWorldIpc sources handlers', () => {
     ;(s.deps.updateSource as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('token update needs a token'))
     expect(await s.invoke('world:update-source', { key: 'kg' })).toEqual({ success: false, error: UPDATE_FAILED })
     expect(s.registry.upsert).not.toHaveBeenCalled()
+    expect(s.registry.setLogin).not.toHaveBeenCalled()
+  })
+
+  it('an update that came with a sign-in keeps the recent order (a real registry)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'world-ipc-order-'))
+    try {
+      let clock = 100
+      const registry = createSourceRegistry(dir, { exists: async () => true, now: () => ++clock })
+      const s = setup({ registry })
+      const g = await registry.upsert({ kind: 'git', url: 'https://example.com/g.git', root: 'C:/ud/world/repos/g' })
+      const f = await registry.upsert({ kind: 'folder', root: 'C:/f' })
+      expect(await s.invoke('world:update-source', { key: g.key, access: { mode: 'token', value: 'neutral-value-11' } }))
+        .toEqual({ success: true, data: { changed: true } })
+      const list = await registry.list()
+      expect(list.map((e) => e.key)).toEqual([f.key, g.key])
+      expect(list[1]).toEqual({ ...g, source: { ...g.source, login: 'token' } })
+      const saved = await readFile(join(dir, 'world', 'sources.json'), 'utf8')
+      expect(saved).not.toContain('neutral-value-11')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('world:design-get answers the stored design; an unknown, bad or unreadable key is not found', async () => {

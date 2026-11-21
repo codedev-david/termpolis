@@ -43,7 +43,7 @@ import {
   type WorldHostResponse
 } from '../../src/main/world/worldHost'
 import { cloneKey, safetyFlags, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
-import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE } from '../../src/shared/world/repoAccess'
+import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import type { AnnotationStore } from '../../src/main/world/annotations'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
 import type { Building, Claim, District, WorldDoc, WorldEdge } from '../../src/shared/world/types'
@@ -1282,10 +1282,31 @@ describe('createWorldHost cloneSource / cancelClone', () => {
       })
       return { h, seen }
     }
+    /** Init with a real askpass file, as a token run needs. */
+    const initWithAskpass = async (h: ReturnType<typeof harness>): Promise<string> => {
+      const p = join(dir, 'askpass.sh')
+      await writeFile(p, '#!/bin/sh\n')
+      await h.send({ kind: 'init', userDataPath: '/ud', labelling: true, askpassPath: p })
+      return p
+    }
+    /** A cloneRepo that records each run and waits until the test releases it. */
+    const pending = () => {
+      const runs: (LoginRun | undefined)[] = []
+      const releases: ((r: CloneResult | Error) => void)[] = []
+      const h = harness({
+        cloneRepo: (_u, _r, _d, run) => {
+          runs.push(run)
+          return new Promise<CloneResult>((resolve, reject) => {
+            releases.push((r) => (r instanceof Error ? reject(r) : resolve(r)))
+          })
+        }
+      })
+      return { h, runs, releases }
+    }
 
     it('maps each access to the right run', async () => {
       const { h, seen } = recording()
-      await h.init()
+      await initWithAskpass(h)
       await call(h.send, 1, 'cloneSource', [URL1])
       expect(h.last()).toEqual({ kind: 'result', id: 1, ok: true, result: { ok: true, root: '/r' } })
       await call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
@@ -1332,7 +1353,7 @@ describe('createWorldHost cloneSource / cancelClone', () => {
 
     it('updateSource for login machine without access runs interactive:false', async () => {
       const { h, seen } = recording({ ok: true, root: '/r', changed: false })
-      await h.init()
+      await initWithAskpass(h)
       await call(h.send, 1, 'updateSource', [URL1, 'main', 'machine'])
       expect(h.last()).toEqual({ kind: 'result', id: 1, ok: true, result: { ok: true, changed: false } })
       await call(h.send, 2, 'updateSource', [URL1])
@@ -1348,13 +1369,139 @@ describe('createWorldHost cloneSource / cancelClone', () => {
       ])
     })
 
-    it('updateSource for a token entry with no token throws before git runs', async () => {
+    it('updateSource for a token entry throws before git runs unless the access is a token', async () => {
       const { h, seen } = recording()
-      await h.init()
-      await call(h.send, 1, 'updateSource', [URL1, undefined, 'token'])
-      expect(h.last()).toMatchObject({ id: 1, ok: false, error: { message: 'token update needs a token' } })
+      await initWithAskpass(h)
+      const shapes: unknown[][] = [[], [undefined], [null], [{ mode: 'other' }], [{ mode: 'machine' }], ['token']]
+      let id = 0
+      for (const extra of shapes) {
+        await call(h.send, ++id, 'updateSource', [URL1, undefined, 'token', ...extra])
+        expect(h.last()).toMatchObject({ id, ok: false, error: { message: 'token update needs a token' } })
+      }
       expect(seen).toEqual([])
       expect(progress(h.out)).toEqual([])
+      // with a token access it runs
+      await call(h.send, ++id, 'updateSource', [URL1, undefined, 'token', { mode: 'token', value: VALUE }])
+      expect(seen.map((s) => s.run)).toEqual([{ mode: 'token', value: VALUE }])
+    })
+
+    it('a token run whose askpass is missing is refused before git runs, with one plain log line', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      const { h, seen } = recording()
+      // no askpass at all
+      await h.init()
+      await call(h.send, 1, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      expect(h.last()).toMatchObject({ id: 1, ok: true, result: { ok: false, error: TOKEN_REJECTED_MESSAGE } })
+      // an askpass path that is not there, or is a folder
+      await h.send({ kind: 'init', userDataPath: '/ud', labelling: true, askpassPath: join(dir, 'gone.sh') })
+      await call(h.send, 2, 'updateSource', [URL1, undefined, 'token', { mode: 'token', value: VALUE }])
+      expect(h.last()).toMatchObject({ id: 2, ok: true, result: { ok: false, error: TOKEN_REJECTED_MESSAGE } })
+      await h.send({ kind: 'init', userDataPath: '/ud', labelling: true, askpassPath: dir })
+      await call(h.send, 3, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      expect(h.last()).toMatchObject({ id: 3, ok: true, result: { ok: false, error: TOKEN_REJECTED_MESSAGE } })
+      expect(seen).toEqual([])
+      expect(warn).toHaveBeenCalledTimes(3)
+      for (const c of warn.mock.calls) {
+        expect(c).toHaveLength(1)
+        expect(String(c[0])).not.toContain(VALUE)
+      }
+      // a run without a token never needs it
+      await call(h.send, 4, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      expect(seen).toHaveLength(1)
+      expect(warn).toHaveBeenCalledTimes(3)
+    })
+
+    it('an askpass given in cloneDeps is the one checked', async () => {
+      const p = join(dir, 'dep-askpass.sh')
+      await writeFile(p, '#!/bin/sh\n')
+      const seen: (string | undefined)[] = []
+      const h = harness({
+        cloneDeps: { askpassPath: p },
+        cloneRepo: async (_u, _r, d) => {
+          seen.push(d.askpassPath)
+          return { ok: true, root: '/r', changed: true }
+        }
+      })
+      await h.init()
+      await call(h.send, 1, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      expect(h.last()).toMatchObject({ id: 1, ok: true, result: { ok: true, root: '/r' } })
+      expect(seen).toEqual([p])
+    })
+
+    it('a token request during a running machine run waits for it, then git sees the token run', async () => {
+      const { h, runs, releases } = pending()
+      await initWithAskpass(h)
+      const a = call(h.send, 1, 'updateSource', [URL1, undefined, 'machine'])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      expect(runs).toEqual([{ mode: 'machine', interactive: false }])
+      releases[0]({ ok: false, error: 'needs sign-in', needsLogin: { host: 'github.com', helper: true } })
+      await a
+      for (let i = 0; i < 5 && runs.length < 2; i++) await tick()
+      expect(runs).toEqual([{ mode: 'machine', interactive: false }, { mode: 'token', value: VALUE }])
+      releases[1]({ ok: true, root: '/r', changed: true })
+      await b
+      expect(h.results().find((m) => (m as { id: number }).id === 2)).toMatchObject({ ok: true, result: { ok: true, root: '/r' } })
+    })
+
+    it('an interactive sign-in during a background update is a second, interactive run, even if the first fails', async () => {
+      const { h, runs, releases } = pending()
+      await h.init()
+      const a = call(h.send, 1, 'updateSource', [URL1, undefined, 'machine'])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      await tick()
+      expect(runs).toHaveLength(1)
+      releases[0](new Error('boom'))
+      await a
+      for (let i = 0; i < 5 && runs.length < 2; i++) await tick()
+      expect(runs).toEqual([{ mode: 'machine', interactive: false }, { mode: 'machine', interactive: true }])
+      releases[1]({ ok: true, root: '/r', changed: true })
+      await b
+      const key = `clone:${cloneKey(URL1, undefined)}`
+      // only the open posted progress
+      expect(progress(h.out)).toEqual([
+        { kind: 'progress', projectKey: key, stage: 'cloning', pct: 0 },
+        { kind: 'progress', projectKey: key, stage: 'cloning', pct: 100 }
+      ])
+    })
+
+    it('an identical request still joins; an open joining a silent run turns its progress on', async () => {
+      const { h, runs, releases } = pending()
+      await initWithAskpass(h)
+      const a = call(h.send, 1, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      const b = call(h.send, 2, 'updateSource', [URL1, undefined, 'token', { mode: 'token', value: ` ${VALUE} ` }])
+      await tick()
+      expect(runs).toHaveLength(1)
+      releases[0]({ ok: true, root: '/r', changed: true })
+      await Promise.all([a, b])
+      // a different token is a different run
+      const c = call(h.send, 3, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      const d = call(h.send, 4, 'cloneSource', [URL1, undefined, { mode: 'token', value: 'neutral-value-2' }])
+      await tick()
+      expect(runs).toHaveLength(2)
+      releases[1]({ ok: true, root: '/r', changed: false })
+      await c
+      for (let i = 0; i < 5 && runs.length < 3; i++) await tick()
+      expect(runs[2]).toEqual({ mode: 'token', value: 'neutral-value-2' })
+      releases[2]({ ok: true, root: '/r', changed: false })
+      await d
+      // a silent background run joined by the same open: progress is turned on once, then 100
+      h.out.length = 0
+      const e = call(h.send, 5, 'updateSource', [URL1, undefined, 'machine', { mode: 'machine' }])
+      await tick()
+      expect(progress(h.out)).toEqual([])
+      const f = call(h.send, 6, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      const g = call(h.send, 7, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      await tick()
+      expect(runs).toHaveLength(4)
+      releases[3]({ ok: true, root: '/r', changed: true })
+      await Promise.all([e, f, g])
+      expect(progress(h.out).map((m) => (m as { pct: number }).pct)).toEqual([0, 100])
+      expect(h.results().map((m) => (m as { id: number }).id).sort()).toEqual([5, 6, 7])
     })
 
     it('a failure that needs a sign-in passes through cloneSource and updateSource with its needsLogin', async () => {

@@ -25,7 +25,8 @@
 //   world:remove-source { key }      → ok(true)
 //   world:touch-source { key }       → ok(WorldEntry | null)   (a recent world was opened: its lastOpened is now)
 //   world:update-source { key, access? } → ok({ changed } | { skipped: true } | CloneNeedsLogin)  (brings a cloned
-//                                      repository up to date; a token entry asked without its token is skipped)
+//                                      repository up to date; a missing key, a world that is not a cloned
+//                                      repository, and a token entry asked without its token are all skipped)
 //   world:design-get { key }         → ok(WorldDoc)
 //   world:build-it { key, root, agent, confirmNonEmpty? } → ok(BuildItResult)  (links the design to the folder; the
 //                                      renderer then opens the agent terminal there with the first prompt)
@@ -133,7 +134,7 @@ const designErr = (e: unknown) => err(e instanceof DesignFailure ? e.message : D
 
 /** What the source handlers need; main passes the real registry, store, dialog and world host. */
 export interface WorldSourcesDeps {
-  registry: Pick<SourceRegistry, 'list' | 'upsert' | 'remove' | 'touch' | 'get'>
+  registry: Pick<SourceRegistry, 'list' | 'upsert' | 'remove' | 'touch' | 'get' | 'setLogin'>
   designs: { load(key: string): Promise<WorldDoc | null> }
   /** The native folder dialog: the chosen folder, or null when the user cancels. */
   pickFolder(): Promise<string | null>
@@ -522,7 +523,7 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps): void
     if (!res.ok) return res.needsLogin ? ok(needsLoginOf(res.needsLogin, access)) : err(res.error)
     if (access) {
       try {
-        await registry.upsert({ ...src, login: access.mode })
+        await registry.setLogin(key, access.mode)
       } catch {
         // the update worked; how it was opened is remembered next time
       }
