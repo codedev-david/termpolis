@@ -105,7 +105,9 @@ async function writeAtomic(target: string, text: string, sleep: (ms: number) => 
 export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): SourceRegistry {
   const folder = join(dir, 'world')
   const file = join(folder, 'sources.json')
-  // Writers run one after another so two upserts never lose each other's entry.
+  // Writers run one after another so two upserts never lose each other's entry. Reads take their turn on the same
+  // chain: on Windows a rename onto a file still open for reading fails (EPERM), so a write never lands while this
+  // registry reads the file, and a read sees every write asked before it. The file is small, so the wait is short.
   let chain: Promise<unknown> = Promise.resolve()
   const serial = <T>(fn: () => Promise<T>): Promise<T> => {
     const run = chain.then(fn)
@@ -149,7 +151,7 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
 
   return {
     async list() {
-      const sorted = [...(await load())].sort((a, b) => b.lastOpened - a.lastOpened)
+      const sorted = [...(await serial(load))].sort((a, b) => b.lastOpened - a.lastOpened)
       return Promise.all(sorted.map(decorate))
     },
 
@@ -199,7 +201,7 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
     },
 
     async get(key) {
-      const e = (await load()).find((x) => x.key === key)
+      const e = (await serial(load)).find((x) => x.key === key)
       return e ? decorate(e) : null
     }
   }

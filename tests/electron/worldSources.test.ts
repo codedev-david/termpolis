@@ -9,7 +9,7 @@ import * as fsp from 'node:fs/promises'
 
 vi.mock('node:fs/promises', async (orig) => {
   const actual = await orig<typeof import('node:fs/promises')>()
-  return { ...actual, rename: vi.fn(actual.rename) }
+  return { ...actual, rename: vi.fn(actual.rename), readFile: vi.fn(actual.readFile) }
 })
 
 let dir: string
@@ -225,6 +225,38 @@ describe('source registry', () => {
     expect(touched?.lastOpened).toBeGreaterThan(a.lastOpened)
     expect((await r.get(a.key))?.lastOpened).toBe(touched?.lastOpened)
     expect((await readdir(join(dir, 'world'))).filter((n) => n.endsWith('.tmp'))).toEqual([])
+  })
+
+  // On Windows a rename onto a file this registry is still reading fails (EPERM), so a read and a write of the same
+  // registry never overlap: a list or get waits for the write before it, and a write for the read before it.
+  it('a write never renames onto the file while a list or get of the same registry is reading it', async () => {
+    const r = reg()
+    const a = await r.upsert({ kind: 'git', url: 'https://h/x/y.git', root: '/g' })
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    for (const read of [() => r.list(), () => r.get(a.key)]) {
+      let release!: () => void
+      const held = new Promise<void>((res) => { release = res })
+      vi.mocked(fsp.readFile).mockImplementationOnce((async (...args: Parameters<typeof actual.readFile>) => {
+        await held
+        return actual.readFile(...args)
+      }) as typeof actual.readFile)
+      vi.mocked(fsp.rename).mockClear()
+      vi.mocked(fsp.readFile).mockClear()
+      const reading = read()
+      const touching = r.touch(a.key)
+      for (let i = 0; i < 20; i++) await new Promise((res) => setImmediate(res))
+      // the write has not even read the file yet: it waits for the held read, so it cannot rename under it
+      expect(fsp.readFile).toHaveBeenCalledTimes(1)
+      expect(fsp.rename).not.toHaveBeenCalled()
+      release()
+      await reading
+      expect((await touching)?.key).toBe(a.key)
+      expect(fsp.rename).toHaveBeenCalledTimes(1)
+    }
+    // and a read asked while a write is renaming waits for it, so it sees the new entry
+    const touched = r.touch(a.key)
+    const seen = await r.get(a.key)
+    expect(seen?.lastOpened).toBe((await touched)?.lastOpened)
   })
 
   it('a rename refused on every try gives up after the last one and leaves no temp file', async () => {
