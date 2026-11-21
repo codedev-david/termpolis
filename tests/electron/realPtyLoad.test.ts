@@ -30,7 +30,7 @@ import { join } from 'path'
 
 describe('the harness\'s posix shells report their prompts', () => {
   it('is the line Termpolis\'s own bash terminals run before each prompt', () => {
-    expect(POSIX_PROMPT_REPORT).toBe(String.raw`printf '\033]7;file://%s%s\007' "${'$'}{HOSTNAME:-}" "$PWD"`)
+    expect(POSIX_PROMPT_REPORT).toBe(String.raw`builtin printf '\033]7;file://%s%s\007' "${'$'}{HOSTNAME:-}" "$PWD"`)
   })
 
   const pty = loadPty()

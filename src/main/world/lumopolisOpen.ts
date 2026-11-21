@@ -10,11 +10,12 @@
 //   - and that folder exists and is a directory.
 // A refusal the person should read (a folder that is not there, a folder of the shell's own) carries `show: true`,
 // and the renderer shows it as a notice; one that only a forged request gets (no terminal, no nonce) stays silent.
-// Any program running in the terminal can read the nonce from its environment, so a limiter per terminal opens
-// nothing for the same folder asked again within a few seconds, nor past a handful of opens a minute: a looping
-// program cannot keep opening Lumopolis, mapping and labelling folders on the person's tokens. A repeat is still
-// said, with the folder, so the notice can offer an Open button: the person who closed the pane and typed the
-// command again at once gets it back with one click, and a loop cannot reopen a pane they closed.
+// Any program running in the terminal can read the nonce from its environment, so a limiter per terminal allows at
+// most one open of a folder every 3 seconds (REPEAT_MS) and 5 opens a minute (OPEN_LIMIT). Only an answer that
+// opened something is counted, so a loop asking every second still opens the pane again every 3 seconds, up to 5
+// times a minute, and no more: it cannot keep Lumopolis mapping and labelling folders on the person's tokens. A
+// repeat inside the 3 seconds is still said, with the folder, so the notice can offer an Open button: the person who
+// closed the pane and typed the command again at once gets it back with one click.
 // `ipc` and the checks are parameters, so this module never imports Electron and tests pass fakes.
 import { randomBytes } from 'crypto'
 import { posix, win32 } from 'path'

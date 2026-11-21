@@ -306,6 +306,19 @@ describe('bash, started for real with the integration', () => {
       sh.write(`local() { builtin printf 'FNHIJACK'; }; lumopolis "$TP_SPACED_DIR" > "$HOME/lp.out" 2>&1; unset -f local; echo LP-$((40+2))\r`)
       await waitFor(() => sh.out().slice(hijacked), /LP-42/, 'lumopolis run with a function named local defined')
       expect(readFileSync(join(home, 'lp.out'), 'utf8')).toBe(`\x1b]7377;lumopolis;${NONCE};${spacedDir}\x07`)
+
+      // An alias or a function of the person's named printf (a .bashrc can have either): the folder report before each
+      // prompt still arrives, so the globe, the git dot and the file tree follow the shell. Each one is defined on the line
+      // that changes folder; PROMPT_COMMAND is read after that line, with the alias or function in place.
+      for (const [hijack, undo, dir] of [
+        [`alias printf='builtin echo PFALIAS'`, 'unalias printf', home],
+        [`printf() { builtin echo PFHIJACK; }`, 'unset -f printf', spacedDir],
+      ] as const) {
+        const at = sh.out().length
+        sh.write(`${hijack}; cd "${dir}"\r`)
+        await waitFor(() => sh.out().slice(at), new RegExp(`\\x1b\\]7;file://[^\\x07]*${escapeRe(dir)}\\x07`), `the folder report with "${hijack}" defined`)
+        sh.write(`${undo}\r`)
+      }
     } finally { sh.kill() }
   }, 60_000)
 })

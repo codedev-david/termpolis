@@ -101,6 +101,8 @@ describe('integrationEnv', () => {
     const env = integrationEnv('bash')
     expect(env.PROMPT_COMMAND).toContain(']7;file://')
     expect(env.PROMPT_COMMAND).toContain('$PWD')
+    // Through `builtin`, so an alias or function of the person's named printf cannot stop the report.
+    expect(env.PROMPT_COMMAND).toBe(String.raw`builtin printf '\033]7;file://%s%s\007' "${'$'}{HOSTNAME:-}" "$PWD"`)
     expect(env[INTEGRATION_MARKER]).toBe('1')
   })
 

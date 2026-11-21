@@ -358,7 +358,9 @@ export function integrationEnv(
       // BEL terminates the sequence instead of ST purely to keep the escaping legible:
       // ST is ESC-backslash, which would need four levels of backslash by the time it
       // reaches printf through a JS string and an env var.
-      const report = `printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-}" "$PWD"`
+      // `builtin printf`: an alias or function of the person's named printf (a .bashrc can have either) is never run in
+      // its place, which would stop the report and leave the globe, the git dot and the file tree on an old folder.
+      const report = `builtin printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-}" "$PWD"`
       const prior = existing.PROMPT_COMMAND
       // Ours first: if the user's own command errors or exits non-zero, the report has
       // already been written.

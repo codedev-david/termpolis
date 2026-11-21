@@ -102,7 +102,7 @@ export function machineScale(): Promise<number> {
 const KEEP = 400_000
 
 /** The line bash runs before each prompt in Termpolis's own terminals (shellIntegration.ts), reporting the folder as OSC 7. */
-export const POSIX_PROMPT_REPORT = `printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-}" "$PWD"`
+export const POSIX_PROMPT_REPORT = `builtin printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-}" "$PWD"`
 
 export class RealTerminal {
   /** The tail of what the terminal drew, and the absolute offset of its end. */

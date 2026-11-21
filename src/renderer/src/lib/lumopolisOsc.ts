@@ -12,7 +12,8 @@
 // from any other terminal (a program left running there, which can read the nonce) does not take the screen:
 // a notice offers the open instead. A refusal main marks `show` (no such folder, a folder of the shell's own,
 // too many requests, the same folder asked again) becomes a notice, with an Open button when main names the
-// folder (a repeat opens nothing by itself, so a loop cannot reopen a pane the person closed); a quiet one (a
+// folder (a repeat inside main's 3 seconds opens nothing by itself; main allows at most one open of a folder every
+// 3 seconds and 5 a minute from a terminal, so a loop can reopen a closed pane that often and no more); a quiet one (a
 // forged request) says nothing.
 // A notice rather than a line written into the terminal: text written into xterm from here lands after the
 // prompt the shell has already drawn, so the line editor's idea of the cursor goes wrong, and it is missing
