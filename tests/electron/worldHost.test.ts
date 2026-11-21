@@ -830,6 +830,43 @@ describe('createWorldHost', () => {
     expect(stoppable).toEqual([false, true, false, false, false, true])
   })
 
+  it('a label pass stopped by a removal and taken back before its save is not saved: the stored world is compiled again from the label cache (caveat 4, round 3)', async () => {
+    type Marked = WorldDoc & { mark?: string }
+    const marked = (k: string, mark: string): WorldDoc => ({ ...doc(k), mark }) as Marked
+    let release: () => void = () => undefined
+    const later = new Promise<void>((r) => (release = r))
+    const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
+      // A cache-only pass takes every label the cache holds.
+      if (typeof deps.label.stopped !== 'function') {
+        if (deps.label.llm) await deps.label.llm('p')
+        return marked(input.projectKey, 'cached')
+      }
+      // The label run's pass: its call is cut short by the removal, and its next batch sees the stop, so the batches
+      // left come back blank, cached or not. Then its later stages run while the world is taken back.
+      await deps.label.llm?.('p')
+      expect(deps.label.stopped()).toBe(true)
+      await later
+      return marked(input.projectKey, 'blank')
+    })
+    let ended = 0
+    const h = harness({ compile, onLabelRunEnd: () => void ended++ })
+    await h.init()
+    const asks = () => h.out.filter((m) => m.kind === 'llm') as Extract<WorldHostResponse, { kind: 'llm' }>[]
+    await h.send({ kind: 'call', id: 1, fn: 'compile', args: ['k1', snap(), HEAD] })
+    await vi.waitFor(() => expect(asks()).toHaveLength(1))
+    await h.send({ kind: 'labelling-stopped', keys: ['k1'] })
+    await h.send({ kind: 'llm-result', id: asks()[0].id, text: null })
+    await vi.waitFor(() => expect(compile.mock.results).toHaveLength(2))
+    // A person opens it again (the pane's get) before the pass reaches its save.
+    await h.send({ kind: 'labelling-stopped', keys: [] })
+    release()
+    await vi.waitFor(() => expect(ended).toBe(1))
+    const marks = h.store.saves.map((d) => (d as Marked).mark)
+    expect(marks).not.toContain('blank')
+    expect(marks).toEqual(['cached', 'cached'])
+    expect(asks()).toHaveLength(1)
+  })
+
   it('labelling off gives the compiler no model', async () => {
     const compile = vi.fn(async (input: CompileInput, deps: CompileDeps) => {
       expect(deps.label.llm).toBeNull()

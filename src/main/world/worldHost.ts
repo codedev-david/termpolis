@@ -665,13 +665,21 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
    */
   const labelOnce = async (st: HostState, key: string, r: RunInput): Promise<void> => {
     const only = r.changed ? { changed: r.changed } : {}
+    // Latched: a pass the removal ever stopped left the batches it then reached blank, cached or not (label.ts).
+    let wasStopped = false
+    const stopped = (): boolean => {
+      if (removed.has(key)) wasStopped = true
+      return wasStopped
+    }
     const out = await compile(
       { snap: r.from.snap, projectKey: key, head: r.from.head, previous: r.base, ...only, ...stagedArg(r.cache, []), ...planArg(r.from.plan) },
-      depsFor(st, key, r.from.snap, askMain(key), true)
+      depsFor(st, key, r.from.snap, askMain(key), stopped)
     )
     await serial(key, async () => {
       if (!st.labelling || removed.has(key)) return
-      if (generations.get(key) === r.generation) return saveCompiled(st, key, out, r.from)
+      // A pass that was stopped, then taken back before here (a person opened the world), is not saved as it is: the
+      // stored world is compiled again from the label cache, which holds every reply that landed, so no label is lost.
+      if (generations.get(key) === r.generation && !wasStopped) return saveCompiled(st, key, out, r.from)
       const now = compiledFrom.get(key) as Latest
       const previous = await st.store.load(key)
       if (!previous) return
@@ -725,17 +733,17 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       })
   }
 
-  /** `llm` is main's model, the label cache only, or none (labelling off). `stoppable`: the label run's pass, which a
-   *  removal stops (LabelDeps.stopped, checked before a batch reads its excerpts). A cache-only pass is never stopped,
-   *  so a world compiled while removed still takes its labels from the cache. */
-  const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot, llm: LabelDeps['llm'], stoppable = false): CompileDeps => {
+  /** `llm` is main's model, the label cache only, or none (labelling off). `stopped`: given to the label run's pass only,
+   *  which a removal stops (LabelDeps.stopped, checked before a batch reads its excerpts). A cache-only pass is never
+   *  stopped, so a world compiled while removed still takes its labels from the cache. */
+  const depsFor = (st: HostState, projectKey: string, snap: GraphSnapshot, llm: LabelDeps['llm'], stopped?: () => boolean): CompileDeps => {
     const root = String(snap.root).replace(/\/+$/, '')
     const cloned = isCloneRoot(st.userDataPath, root)
     const rf = cloned ? confinedTo(root, readFile) : readFile
     const rs = cloned ? confinedTo(root, readSource) : readSource
     const label: LabelDeps = {
       llm,
-      ...(stoppable ? { stopped: () => removed.has(projectKey) } : {}),
+      ...(stopped ? { stopped } : {}),
       ...(st.labelling ? { context: askContext(projectKey) } : {}),
       cache: st.store.labelCache,
       excerpt: async (file, line) => {

@@ -75,7 +75,9 @@ export interface WorldClientOptions {
 
 /** What `get` does besides reading the stored world. */
 export interface WorldGetOptions {
-  /** False: never start a background refresh (the ask path: a refresh landing mid-answer would wipe it). Default true. */
+  /** False: never start a background refresh (the ask path: a refresh landing mid-answer would wipe it). Default true.
+   *  It also says who asks: false is a read, true (the default, the pane's world:get) a person opening the world. Only
+   *  a person opening takes a removed world back (cancelLabelling), so a pane path that opens a world must keep it on. */
   refresh?: boolean
 }
 
