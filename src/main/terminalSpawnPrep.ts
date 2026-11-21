@@ -27,6 +27,40 @@ export const integrationScriptState: Record<string, string> = {}
 
 export const INTEGRATION_SCRIPT_NAME = INTEGRATION_FILES.powershell.name
 
+let tempCount = 0
+/** A temp name beside `path`, its own for every write: concurrent writers (two terminals opening at once) never share one. */
+export const wholeFileTempName = (path: string): string =>
+  `${path}.${process.pid}.${++tempCount}.${Math.random().toString(36).slice(2, 8)}.tmp`
+
+/**
+ * Windows refuses a rename over a file another process has open (a shell reading it as it starts, a scanner) with
+ * one of these. The file there is whole, so it stays: an older copy beats no integration and an error in spawn.
+ */
+export const RENAME_REFUSED = new Set(['EPERM', 'EBUSY', 'EACCES'])
+
+/**
+ * Write `content` to `path` whole: to a temp file in the same folder, then renamed over it, so a shell starting while
+ * another terminal rewrites the file reads the old one or the new one, never half of one. A refused rename over a file
+ * that is there keeps that file and resolves; any other failure (or nothing there to keep) rejects. No temp file stays.
+ */
+export async function writeWholeFile(
+  path: string,
+  content: string,
+  rename: (from: string, to: string) => unknown = fsp.rename,
+): Promise<void> {
+  const tmp = wholeFileTempName(path)
+  await fsp.writeFile(tmp, content, 'utf8')
+  try {
+    await rename(tmp, path)
+  } catch (e) {
+    await fsp.rm(tmp, { force: true })
+    if (RENAME_REFUSED.has(String((e as NodeJS.ErrnoException).code))) {
+      try { await fsp.access(path); return } catch { /* nothing there to keep: the failure stands */ }
+    }
+    throw e
+  }
+}
+
 /**
  * Put a shell's integration file on disk, once per app run, and again if something cleaned it up mid-session.
  * It goes in Termpolis's own data folder, never anywhere the user owns, and not the temp dir (PowerShell running
@@ -44,7 +78,7 @@ export async function ensureIntegrationScriptAsync(file: IntegrationFile = INTEG
     }
     if (!present) {
       await fsp.mkdir(dirname(p), { recursive: true })
-      for (const f of set) await fsp.writeFile(f.path, f.content, 'utf8')
+      for (const f of set) await writeWholeFile(f.path, f.content)
     }
     integrationScriptState[file.name] = p
     return p

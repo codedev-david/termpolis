@@ -1,6 +1,6 @@
 import * as pty from 'node-pty'
 import { homedir } from 'os'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import { execSync } from 'child_process'
 import { app } from 'electron'
@@ -9,7 +9,7 @@ import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { flushBeforeResize } from './ptyResizeFlush'
 import { sudoAskpassEnv } from './sudoAskpass'
-import { integrationScriptState, type SpawnPrep } from './terminalSpawnPrep'
+import { integrationScriptState, RENAME_REFUSED, wholeFileTempName, type SpawnPrep } from './terminalSpawnPrep'
 import { lumopolisNonce } from './world/lumopolisOpen'
 import { LUMOPOLIS_NONCE_ENV } from '../shared/world/lumopolisCommand'
 import { hasJobControl, shellAlone, readConsoleProcessList } from './shellAlone'
@@ -604,6 +604,19 @@ export async function getTerminalCwdAsync(id: string): Promise<string | null> {
  *
  * Returns null on any failure, which the caller reads as "spawn exactly as before".
  */
+/** writeWholeFile (terminalSpawnPrep.ts) for the fallback that cannot wait: same temp-and-rename, same refusals. */
+export function writeWholeFileSync(path: string, content: string, rename: (from: string, to: string) => unknown = renameSync): void {
+  const tmp = wholeFileTempName(path)
+  writeFileSync(tmp, content, 'utf8')
+  try {
+    rename(tmp, path)
+  } catch (e) {
+    rmSync(tmp, { force: true })
+    if (RENAME_REFUSED.has(String((e as NodeJS.ErrnoException).code)) && existsSync(path)) return
+    throw e
+  }
+}
+
 function ensureIntegrationScript(file: IntegrationFile): string | null {
   try {
     const known = integrationScriptState[file.name]
@@ -611,7 +624,7 @@ function ensureIntegrationScript(file: IntegrationFile): string | null {
     const set = integrationFileSet(file, p)
     if (known === undefined || !set.every((f) => existsSync(f.path))) {
       mkdirSync(dirname(p), { recursive: true })
-      for (const f of set) writeFileSync(f.path, f.content, 'utf8')
+      for (const f of set) writeWholeFileSync(f.path, f.content)
     }
     integrationScriptState[file.name] = p
     return p

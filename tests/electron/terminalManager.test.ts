@@ -21,9 +21,9 @@ const { USER_DATA } = vi.hoisted(() => {
 vi.mock('electron', () => ({ app: { isPackaged: false, getPath: (name: string) => (name === 'userData' ? USER_DATA : '') } }))
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal() as any
-  // writeFileSync is stubbed so spawning a PowerShell terminal in a unit test does
+  // writeFileSync (and the rename that puts its temp file in place) is stubbed so spawning a PowerShell terminal in a unit test does
   // not drop a real integration script into the machine's temp directory.
-  return { ...actual, existsSync: vi.fn(() => true), writeFileSync: vi.fn() }
+  return { ...actual, existsSync: vi.fn(() => true), writeFileSync: vi.fn(), renameSync: vi.fn() }
 })
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal() as any

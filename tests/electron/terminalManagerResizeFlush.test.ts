@@ -30,7 +30,7 @@ const { USER_DATA } = vi.hoisted(() => {
 vi.mock('electron', () => ({ app: { isPackaged: false, getPath: (name: string) => (name === 'userData' ? USER_DATA : '') } }))
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal() as any
-  return { ...actual, existsSync: vi.fn(() => true), writeFileSync: vi.fn() }
+  return { ...actual, existsSync: vi.fn(() => true), writeFileSync: vi.fn(), renameSync: vi.fn() }
 })
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal() as any

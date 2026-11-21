@@ -4,7 +4,7 @@
 // IMPORT ORDER: the counters first (they patch fs and child_process before the modules under test load).
 import { arm, disarm, describeCounts, uninstall } from '../helpers/mainThreadCounters'
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'fs'
 import { join, sep } from 'path'
 import { tmpdir, homedir } from 'os'
 
@@ -32,11 +32,13 @@ let prepareSpawn: typeof import('../../src/main/terminalSpawnPrep').prepareSpawn
 let spawnTerminal: typeof import('../../src/main/terminalManager').spawnTerminal
 let primeBundledToolsCheck: typeof import('../../src/main/terminalManager').primeBundledToolsCheck
 let state: typeof import('../../src/main/terminalSpawnPrep').integrationScriptState
+let writeWholeFile: typeof import('../../src/main/terminalSpawnPrep').writeWholeFile
+let writeWholeFileSync: typeof import('../../src/main/terminalManager').writeWholeFileSync
 
 beforeAll(async () => {
   mkdirSync(H.userData, { recursive: true })
-  ;({ prepareSpawn, integrationScriptState: state } = await import('../../src/main/terminalSpawnPrep'))
-  ;({ spawnTerminal, primeBundledToolsCheck } = await import('../../src/main/terminalManager'))
+  ;({ prepareSpawn, integrationScriptState: state, writeWholeFile } = await import('../../src/main/terminalSpawnPrep'))
+  ;({ spawnTerminal, primeBundledToolsCheck, writeWholeFileSync } = await import('../../src/main/terminalManager'))
   // Start-up does this (index.ts), on the thread pool; without it spawnTerminal would probe for jq/yq/nano with execSync.
   await primeBundledToolsCheck()
 })
@@ -185,5 +187,98 @@ describe('spawnTerminal', () => {
     expect(H.spawned[0].opts.cwd).toBe(process.cwd())
     expect(existsSync(scriptFile())).toBe(true)
     expect(sep).toBeTruthy()
+  })
+})
+
+// A shell starting while another terminal's prepareSpawn rewrites the integration files must never read half of one:
+// each file is written to a temp file beside it and renamed into place. Windows can refuse that rename while another
+// process has the old file open (EPERM, EBUSY); the old file is whole, so it stays, and nothing is thrown into spawn.
+describe('the integration files are written whole', () => {
+  const tmpsIn = (dir: string): string[] => readdirSync(dir).filter((n) => n.endsWith('.tmp'))
+  const refused = (code: string) => Object.assign(new Error(`${code}: operation not permitted, rename`), { code })
+
+  for (const [name, write] of [
+    ['async (prepareSpawn)', (p: string, c: string, r?: (a: string, b: string) => unknown) => writeWholeFile(p, c, r as never)],
+    ['sync (the fallback)', async (p: string, c: string, r?: (a: string, b: string) => unknown) => writeWholeFileSync(p, c, r as never)],
+  ] as const) {
+    it(`${name}: writes a temp file in the same folder, then renames it over the file, leaving no temp file`, async () => {
+      const dir = mkdtempSync(join(H.root, 'whole-'))
+      const target = join(dir, 'f.ps1')
+      writeFileSync(target, 'old')
+      const renames: Array<[string, string]> = []
+      const { renameSync } = await import('fs')
+      await write(target, 'new', (a, b) => { renames.push([a, b]); renameSync(a, b) })
+      expect(readFileSync(target, 'utf8')).toBe('new')
+      expect(renames).toHaveLength(1)
+      expect(renames[0][1]).toBe(target)
+      expect(renames[0][0].startsWith(`${target}.`) && renames[0][0].endsWith('.tmp')).toBe(true)
+      expect(tmpsIn(dir)).toEqual([])
+      await write(join(dir, 'g.sh'), 'made') // the real rename by default, and a new file too
+      expect(readFileSync(join(dir, 'g.sh'), 'utf8')).toBe('made')
+      expect(tmpsIn(dir)).toEqual([])
+    })
+
+    for (const code of ['EPERM', 'EBUSY']) {
+      it(`${name}: a rename refused with ${code} over a file in use keeps the old file, removes the temp file and throws nothing`, async () => {
+        const dir = mkdtempSync(join(H.root, 'busy-'))
+        const target = join(dir, 'f.ps1')
+        writeFileSync(target, 'old and whole')
+        await expect(write(target, 'new', () => { throw refused(code) })).resolves.toBeUndefined()
+        expect(readFileSync(target, 'utf8')).toBe('old and whole')
+        expect(tmpsIn(dir)).toEqual([])
+      })
+    }
+
+    it(`${name}: any other rename failure fails even over a whole old file (the caller then answers null), leaving no temp file`, async () => {
+      const dir = mkdtempSync(join(H.root, 'other-'))
+      const target = join(dir, 'f.ps1')
+      writeFileSync(target, 'old')
+      await expect(write(target, 'new', () => { throw refused('EIO') })).rejects.toThrow('EIO')
+      expect(readFileSync(target, 'utf8')).toBe('old')
+      expect(tmpsIn(dir)).toEqual([])
+    })
+
+    it(`${name}: a refused rename with no old file to keep fails (the caller then spawns without the integration), leaving no temp file`, async () => {
+      const dir = mkdtempSync(join(H.root, 'none-'))
+      await expect(write(join(dir, 'f.ps1'), 'new', () => { throw refused('EPERM') })).rejects.toThrow('EPERM')
+      expect(readdirSync(dir)).toEqual([])
+    })
+  }
+
+  it('gives every write its own temp name, so concurrent writers never share one', async () => {
+    const dir = mkdtempSync(join(H.root, 'names-'))
+    const target = join(dir, 'f')
+    const tmps: string[] = []
+    const { renameSync } = await import('fs')
+    const rec = (a: string, b: string): void => { tmps.push(a); renameSync(a, b) }
+    await Promise.all([writeWholeFile(target, '1', rec), writeWholeFile(target, '2', rec)])
+    writeWholeFileSync(target, '3', rec)
+    expect(new Set(tmps).size).toBe(3)
+    expect(readFileSync(target, 'utf8')).toBe('3')
+  })
+
+  it('many terminals preparing at once, for every shell with files: each answers its file, every file whole, no temp file left', async () => {
+    rmSync(join(H.userData, 'termpolis-zsh'), { recursive: true, force: true })
+    rmSync(scriptFile(), { force: true })
+    const shells = [PS, 'C:/Windows/System32/cmd.exe', '/bin/zsh', '/usr/bin/fish']
+    const answers = await Promise.all(Array.from({ length: 24 }, (_, i) => prepareSpawn(process.cwd(), shells[i % 4])))
+    expect(answers.every((a) => a.integrationScript !== null)).toBe(true)
+    // Asked again with the state forgotten (a fresh run over the files of the last): rewritten in place, all at once.
+    for (const k of Object.keys(state)) delete state[k]
+    await Promise.all(Array.from({ length: 24 }, (_, i) => prepareSpawn(process.cwd(), shells[i % 4])))
+    const { integrationFile, integrationFileSet, detectShellKind } = await import('../../src/main/shellIntegration')
+    for (const sh of shells) {
+      const file = integrationFile(detectShellKind(sh))!
+      for (const f of integrationFileSet(file, join(H.userData, file.name))) expect(readFileSync(f.path, 'utf8'), f.path).toBe(f.content)
+    }
+    expect(tmpsIn(H.userData)).toEqual([])
+    expect(tmpsIn(join(H.userData, 'termpolis-zsh'))).toEqual([])
+  })
+
+  it('the fallback writes through the same whole-file write: zsh files written there leave no temp file', () => {
+    rmSync(join(H.userData, 'termpolis-zsh'), { recursive: true, force: true })
+    spawnTerminal('tw', '/bin/zsh', process.cwd(), () => {})
+    expect(existsSync(zshFile('.zshrc'))).toBe(true)
+    expect(tmpsIn(join(H.userData, 'termpolis-zsh'))).toEqual([])
   })
 })
