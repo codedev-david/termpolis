@@ -7,7 +7,7 @@
 //
 // Also the ways an answer writes a key file's lines (JOIN), and the strict leak measure: whether
 // any 12 characters of a key line are still in a text.
-import { generateKeyPairSync, randomBytes, type KeyObject } from 'crypto'
+import { createECDH, createHash, createPrivateKey, generateKeyPairSync, randomBytes, type KeyObject } from 'crypto'
 
 /** `s` cut into lines of `w` characters, as PEM and base64 wrap it. */
 export const wrap = (s: string, w = 64): string[] => s.match(new RegExp(`.{1,${w}}`, 'g')) ?? []
@@ -166,6 +166,17 @@ interface JsonWebKey {
   dp?: string
   dq?: string
   qi?: string
+}
+
+/** The P-256 key whose private value is the SHA-256 of `seed`: the same key every run, made in memory and never written
+ *  down (a test names it by its seed), so a shape one fresh key in hundreds has is held by a test every time. */
+export function ecKeyOf(seed: string): KeyObject {
+  const d = createHash('sha256').update(seed).digest()
+  const ecdh = createECDH('prime256v1')
+  ecdh.setPrivateKey(d)
+  const pub = ecdh.getPublicKey()
+  const b64url = (b: Buffer): string => b.toString('base64url')
+  return createPrivateKey({ key: { kty: 'EC', crv: 'P-256', d: b64url(d), x: b64url(pub.subarray(1, 33)), y: b64url(pub.subarray(33)) }, format: 'jwk' })
 }
 
 /** A fresh set of keys in every format. */

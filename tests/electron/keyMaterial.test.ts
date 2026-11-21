@@ -40,7 +40,7 @@ import {
   type KeySpan,
 } from '../../src/main/keyMaterial'
 import { COST_SHAPES, within } from './fixtures/costShapes'
-import { JOIN, T1_JOININGS, armor, der, leakedWindows, makeKeys, opensshEd25519, pgpPhotoExport, pgpRsaBody, secretLinesOf, shownWhole, ssh2Key, wrap, type Format, type KeySet } from './fixtures/freshKeys'
+import { JOIN, T1_JOININGS, armor, der, ecKeyOf, leakedWindows, makeKeys, opensshEd25519, pgpPhotoExport, pgpRsaBody, secretLinesOf, shownWhole, ssh2Key, wrap, type Format, type KeySet } from './fixtures/freshKeys'
 
 // Several tests here screen a key in every joining at every cut offset, or 200 trials of 22 kinds of text: 10 to 15 s each on a quiet
 // laptop, 3 to 5 times that under coverage, and 30 to 60 s beside the rest of the suite (two of them failed on the default 30 s). A
@@ -108,6 +108,8 @@ const EXPECT: Record<Format, [string, string]> = {
 const FORMATS = Object.keys(EXPECT) as Format[]
 /** A key file's last base64 line (the checksum excluded). */
 const lastLine = (ls: string[]): string => ls.filter((l) => /^[A-Za-z0-9+/]+=*$/.test(l) && !l.startsWith('=')).pop() as string
+/** A PEM file's lines. */
+const pemLines = (pem: string): string[] => pem.trim().split(/\r?\n/)
 /** The base64 lines of a PEM file between its BEGIN and END lines, joined. */
 const bodyOf = (ls: string[]): string => ls.slice(1, -1).join('')
 /** A key file's lines with no END line and its last base64 line cut to `cut` characters (the short last line
@@ -2584,22 +2586,36 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
   it('F-IRREGULAR: a short EC key with a line indented or re-wrapped goes whole with its END line', () => {
     // (its block stops at the uneven line, and the lines from there up to the END line start inside
     // what the block took: the rest of the block's own key)
-    for (const format of ['sec1_ec', 'pkcs8_ec'] as const) {
-      const lines = K.F[format]
-      const body = lines.slice(1, -1)
-      const flat = body.join('')
-      const rewrap = (a: number, b: number): string[] => {
-        const out: string[] = []
-        for (let i = 0, w = a; i < flat.length; i += w, w = w === a ? b : a) out.push(flat.slice(i, i + w))
-        return out
-      }
-      for (const [name, b] of [
-        ['one line indented', body.map((l, i) => (i === body.length >> 1 ? `  ${l}` : l))],
-        ['re-wrapped at 76 and 64', rewrap(76, 64)],
-        ['re-wrapped at 64 and 50', rewrap(64, 50)],
-      ] as const) {
-        const r = screenKeys(`Key:\n${[lines[0], ...b, lines[lines.length - 1]].join('\n')}\nDone.\n`)
-        expect(leakedWindows(r.text, secretLinesOf(lines)), `${format} ${name}`).toBe(0)
+    // The keys are fixed, made from seeds (ecKeyOf), so a run never depends on what a fresh key happened to be. Seeds 9, 377,
+    // 558 and 1743 are the shape that failed on macOS CI (run 44425096031) about once in 600 fresh keys: a P-256 PKCS#8 key's
+    // first 114 characters (its lines re-wrapped at 64 and 50) hold its 48-character header, the same in every such key, and
+    // only 37 to 39 distinct characters, under the 40 looksRandom asks of a body that long. The others are a property loop.
+    const rare = [9, 377, 558, 1743]
+    for (const n of rare) {
+      const flat = bodyOf(pemLines(ecKeyOf(`lumopolis ec ${n}`).export({ type: 'pkcs8', format: 'pem' }) as string))
+      expect(flat.length).toBe(184)
+      expect(new Set(flat.slice(0, 114)).size, `seed ${n} is still the rare shape`).toBeLessThan(40)
+    }
+    for (const n of [...rare, ...Array.from({ length: 150 }, (_, i) => 100_000 + i)]) {
+      const key = ecKeyOf(`lumopolis ec ${n}`)
+      for (const format of ['sec1_ec', 'pkcs8_ec'] as const) {
+        const lines = pemLines(key.export({ type: format === 'sec1_ec' ? 'sec1' : 'pkcs8', format: 'pem' }) as string)
+        const body = lines.slice(1, -1)
+        const flat = body.join('')
+        const rewrap = (a: number, b: number): string[] => {
+          const out: string[] = []
+          for (let i = 0, w = a; i < flat.length; i += w, w = w === a ? b : a) out.push(flat.slice(i, i + w))
+          return out
+        }
+        for (const [name, b] of [
+          ['one line indented', body.map((l, i) => (i === body.length >> 1 ? `  ${l}` : l))],
+          ['re-wrapped at 76 and 64', rewrap(76, 64)],
+          ['re-wrapped at 64 and 50', rewrap(64, 50)],
+          ['re-wrapped at 50 and 64', rewrap(50, 64)],
+        ] as const) {
+          const r = screenKeys(`Key:\n${[lines[0], ...b, lines[lines.length - 1]].join('\n')}\nDone.\n`)
+          expect(leakedWindows(r.text, secretLinesOf(lines)), `seed ${n} ${format} ${name}`).toBe(0)
+        }
       }
     }
   })

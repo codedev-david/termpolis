@@ -612,6 +612,10 @@ function bodyLooksRandom(body: string, st: (Structure & { head: string }) | null
   // (a short key of a verified structure: 24 of the 72 characters of an ML-DSA seed-only key are the header every such key has, and the count of distinct
   // characters that looksRandom asks of all 72 is missed by about 1 key in 300. Judged without the header, it is a random body's alone.)
   if (st && st.declared > 0 && body.length < SHORT_BODY && looksRandom(body.slice(SHORT_BODY_HEADER))) return true
+  // (and from its private value on, for a structure that locates one: everything before it is the header every key of its algorithm has. A P-256
+  // PKCS#8 key re-wrapped at 64 and 50 shows 114 characters before its uneven line, 48 of them that header, and about 1 key in 600 has fewer than the
+  // 40 distinct characters looksRandom asks of 114: the key then went out whole, only named in a note. Its 66 characters after the header are judged.)
+  if (st && st.declared > 0 && st.priv !== undefined && looksRandom(st.head.slice(Math.ceil((st.priv[0] * 4) / 3)))) return true
   if (!st || !st.fixed) return false
   if (st.priv !== undefined) {
     // (what of the value the decoded head holds: a key's last line is short, and is not part of the payload)
