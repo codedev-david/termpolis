@@ -30,6 +30,8 @@ export interface OpenOptions {
   wasmFails?: boolean
   /** WebAssembly.instantiate waits until the spec calls releaseWasm(), so smart Ask stays 'loading' meanwhile. */
   holdWasm?: boolean
+  /** Playwright's clock is installed before the page loads (time runs as usual), so the spec can pause it. */
+  clock?: boolean
 }
 
 export interface Opened {
@@ -109,6 +111,9 @@ export const test = base.extend<Fixtures>({
   // eslint-disable-next-line no-empty-pattern
   open: async ({}, use, info) => {
     const closers: Array<() => Promise<void>> = []
+    // These browsers are launched here, not by Playwright Test, so its trace option never reaches them:
+    // each context is traced from the start, and the trace is kept only when the test did not go as expected.
+    const traced: BrowserContext[] = []
     await use(async (file, opts = {}) => {
       const own = pathToFileURL(file).href
       let context: BrowserContext
@@ -123,6 +128,8 @@ export const test = base.extend<Fixtures>({
         closers.push(b.close)
         context = b.context
       }
+      await context.tracing.start({ screenshots: true, snapshots: true })
+      traced.push(context)
       const requests: string[] = []
       const allowed = (url: string): boolean => same(url, own) || url.startsWith('data:') || url.startsWith('blob:')
       context.on('request', (r) => { requests.push(r.url()) })
@@ -131,6 +138,7 @@ export const test = base.extend<Fixtures>({
       if (opts.noWebGL) await context.addInitScript(NO_WEBGL)
       if (opts.wasmFails) await context.addInitScript(WASM_FAILS)
       if (opts.holdWasm) await context.addInitScript(HOLD_WASM)
+      if (opts.clock) await context.clock.install()
       if (page === null) page = await context.newPage()
       const p = page
       const errors: string[] = []
@@ -150,6 +158,15 @@ export const test = base.extend<Fixtures>({
         releaseWasm: () => p.evaluate(() => (window as unknown as { __releaseWasm(): void }).__releaseWasm()),
       }
     })
+    const keep = info.status !== info.expectedStatus
+    for (const [i, context] of traced.entries()) {
+      try {
+        if (!keep) { await context.tracing.stop(); continue }
+        const path = info.outputPath(i === 0 ? 'trace.zip' : `trace-${i}.zip`)
+        await context.tracing.stop({ path })
+        await info.attach(i === 0 ? 'trace' : `trace-${i}`, { path, contentType: 'application/zip' })
+      } catch { /* a trace that cannot be saved never fails the teardown */ }
+    }
     for (const close of closers.reverse()) await close().catch(() => undefined)
   },
 })
