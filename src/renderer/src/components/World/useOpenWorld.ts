@@ -121,7 +121,6 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
         if (e && e.source.kind === 'git' && e.source.login !== 'token') updateInBackground(e.key)
       }, () => undefined)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh])
 
   const updateInBackground = (key: string): void => {
@@ -164,12 +163,11 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
     following.current = false
     clearRepo(null, worldId({ kind: 'home' }))
     setWorld({ kind: 'home' })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const id = worldId(world)
   // A world that came from somewhere else (a request, a cd) is not the one a pending update or notice belongs to.
-  useEffect(() => { if (id !== ownedId.current) clearRepo(null, id) }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (id !== ownedId.current) clearRepo(null, id) }, [id])
   useEffect(() => { refresh() }, [id, refresh])
 
   return { world, open, goHome, entries, refresh, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError }
