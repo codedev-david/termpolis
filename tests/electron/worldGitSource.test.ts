@@ -10,6 +10,7 @@ import {
   CANCELLED_MESSAGE,
   CLEAR_MESSAGE,
   CLONE_MARKER,
+  CLONE_TIMEOUT_MS,
   FINISH_MESSAGE,
   DROPPED_ENV,
   NO_GIT_MESSAGE,
@@ -322,6 +323,48 @@ describe('cloneRepo', () => {
     expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: false, error: TIMEOUT_MESSAGE })
     expect(rm).toHaveBeenLastCalledWith(WORK)
     expect(rename).not.toHaveBeenCalled()
+  })
+
+  it('a shorter timeoutMs from the caller sets the deadline; without one it is the full 5 minutes', async () => {
+    let t = 0
+    const timeouts: number[] = []
+    const { deps } = mkDeps({
+      exists: async () => true,
+      now: () => t,
+      timeoutMs: 120_000,
+      execFile: async (_c, _a, opts) => {
+        timeouts.push(opts.timeout)
+        t += 50_000
+        return { code: 0, stderr: '' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, deps)).toEqual({ ok: true, root: ROOT, changed: true })
+    expect(timeouts).toEqual([120_000, 70_000])
+
+    t = 0
+    const out = mkDeps({
+      exists: async () => true,
+      now: () => t,
+      timeoutMs: 60_000,
+      execFile: async () => {
+        t = 60_000
+        return { code: 1, stderr: 'it took too long' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, out.deps)).toEqual({ ok: false, error: TIMEOUT_MESSAGE })
+
+    t = 0
+    timeouts.length = 0
+    const full = mkDeps({
+      exists: async () => true,
+      now: () => t,
+      execFile: async (_c, _a, opts) => {
+        timeouts.push(opts.timeout)
+        return { code: 0, stderr: '' }
+      }
+    })
+    expect(await cloneRepo(URL1, undefined, full.deps)).toEqual({ ok: true, root: ROOT, changed: true })
+    expect(timeouts).toEqual([CLONE_TIMEOUT_MS, CLONE_TIMEOUT_MS])
   })
 
   it('an update shares the deadline: the reset gets only what the fetch left', async () => {

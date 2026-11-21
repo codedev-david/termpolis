@@ -846,30 +846,47 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
    * the running one to settle, then starts its own, unless cancelClone came meanwhile or the wait alone
    * used up a run's whole time (then it answers that copy and git never sees it).
    */
-  const runClone = (st: HostState, url: unknown, ref: unknown, run: LoginRun, progress: boolean): Promise<CloneResult> => {
+  /** `since` is when the caller first asked and `cancelsAtQueue` the cancel count when it first queued; a call
+   *  that waits behind one run and then another keeps both, so every wait counts against one CLONE_TIMEOUT_MS
+   *  and a cancel during any of its waits still stops it. */
+  const runClone = (
+    st: HostState,
+    url: unknown,
+    ref: unknown,
+    run: LoginRun,
+    progress: boolean,
+    since: number = now(),
+    cancelsAtQueue?: number
+  ): Promise<CloneResult> => {
     const u = isStr(url) ? url : ''
     const r = refOf(ref)
     const hash = cloneKey(u, r)
     const projectKey = `clone:${hash}`
+    // What is left of this caller's time: nothing left means no git, and no more waiting, for a caller whose
+    // client may already have given up.
+    const left = CLONE_TIMEOUT_MS - (now() - since)
+    if (left <= 0) return Promise.resolve({ ok: false, error: TIMEOUT_MESSAGE })
     const running = clones.get(hash)
     if (running) {
       if (!sameRun(running.run, run)) {
-        const cancelsAtQueue = cancels.get(hash) ?? 0
-        const queuedAt = now()
+        const snapshot = cancelsAtQueue ?? cancels.get(hash) ?? 0
         queued.set(hash, (queued.get(hash) ?? 0) + 1)
         return running.done
           .catch(() => undefined)
-          .then((): CloneResult | Promise<CloneResult> => {
-            const cancelled = (cancels.get(hash) ?? 0) !== cancelsAtQueue
-            const left = (queued.get(hash) as number) - 1
-            if (left > 0) queued.set(hash, left)
+          .then((): Promise<CloneResult> => {
+            const cancelled = (cancels.get(hash) ?? 0) !== snapshot
+            // Queue again (or start) before this wait is let go, so the cancel count this call holds a snapshot
+            // of is not cleared between its two waits.
+            const next: Promise<CloneResult> = cancelled
+              ? Promise.resolve({ ok: false, error: CANCELLED_MESSAGE })
+              : runClone(st, url, ref, run, progress, since, snapshot)
+            const waiting = (queued.get(hash) as number) - 1
+            if (waiting > 0) queued.set(hash, waiting)
             else {
               queued.delete(hash)
               cancels.delete(hash)
             }
-            if (cancelled) return { ok: false, error: CANCELLED_MESSAGE }
-            if (now() - queuedAt >= CLONE_TIMEOUT_MS) return { ok: false, error: TIMEOUT_MESSAGE }
-            return runClone(st, url, ref, run, progress)
+            return next
           })
       }
       if (progress && !running.progress) {
@@ -893,6 +910,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         isWindows: process.platform === 'win32',
         ...(st.askpassPath ? { askpassPath: st.askpassPath } : {}),
         ...deps.cloneDeps,
+        timeoutMs: left,
         signal: ctl.signal
       },
       run

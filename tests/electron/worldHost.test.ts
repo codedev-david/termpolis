@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { symlinkSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import {
   captureExec,
   gitListFiles,
@@ -1271,6 +1271,14 @@ describe('createWorldHost cloneSource / cancelClone', () => {
 
   describe('access, sign-in and background updates', () => {
     const VALUE = 'neutral-value-1'
+    // A token run stats the askpass file before it reaches the queue, on the libuv pool, so one timer turn is
+    // not always enough under load: each tick here also lets two stats of that file go through.
+    const tick = async (): Promise<void> => {
+      for (let i = 0; i < 2; i++) {
+        await stat(join(dir, 'askpass.sh')).catch(() => undefined)
+        await new Promise((r) => setTimeout(r, 0))
+      }
+    }
     type Seen = { url: string; ref: string | undefined; run: LoginRun | undefined; askpassPath: string | undefined }
     const recording = (result: CloneResult = { ok: true, root: '/r', changed: true }) => {
       const seen: Seen[] = []
@@ -1292,17 +1300,19 @@ describe('createWorldHost cloneSource / cancelClone', () => {
     /** A cloneRepo that records each run and waits until the test releases it. */
     const pending = (extra: WorldHostDeps = {}) => {
       const runs: (LoginRun | undefined)[] = []
+      const timeouts: (number | undefined)[] = []
       const releases: ((r: CloneResult | Error) => void)[] = []
       const h = harness({
         ...extra,
-        cloneRepo: (_u, _r, _d, run) => {
+        cloneRepo: (_u, _r, d, run) => {
           runs.push(run)
+          timeouts.push(d.timeoutMs)
           return new Promise<CloneResult>((resolve, reject) => {
             releases.push((r) => (r instanceof Error ? reject(r) : resolve(r)))
           })
         }
       })
-      return { h, runs, releases }
+      return { h, runs, timeouts, releases }
     }
 
     it('maps each access to the right run', async () => {
@@ -1545,6 +1555,129 @@ describe('createWorldHost cloneSource / cancelClone', () => {
       expect(runs).toHaveLength(3)
       releases[2]({ ok: true, root: '/r', changed: true })
       await e
+      expect(resultOf(h, 5)).toMatchObject({ ok: true, result: { ok: true, root: '/r' } })
+    })
+
+    it('a queued run gets only the time its wait left; a fresh run gets the full time', async () => {
+      let clock = 1_000
+      const { h, runs, timeouts, releases } = pending({ now: () => clock })
+      await initWithAskpass(h)
+      const a = call(h.send, 1, 'updateSource', [URL1, undefined, 'machine'])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      clock += 60_000
+      releases[0]({ ok: true, root: '/r', changed: false })
+      await a
+      await settle()
+      expect(runs).toEqual([{ mode: 'machine', interactive: false }, { mode: 'token', value: VALUE }])
+      expect(timeouts).toEqual([CLONE_TIMEOUT_MS, CLONE_TIMEOUT_MS - 60_000])
+      releases[1]({ ok: true, root: '/r', changed: true })
+      await b
+      expect(resultOf(h, 2)).toMatchObject({ ok: true, result: { ok: true, root: '/r' } })
+    })
+
+    it('waits add up across re-queues: token, machine, token times out with no git of its own', async () => {
+      let clock = 1_000
+      const { h, runs, timeouts, releases } = pending({ now: () => clock })
+      await initWithAskpass(h)
+      const a = call(h.send, 1, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      const c = call(h.send, 3, 'cloneSource', [URL1, undefined, { mode: 'token', value: 'neutral-value-2' }])
+      await tick()
+      // A takes 200 s; B starts, C queues again behind B
+      clock += 200_000
+      releases[0]({ ok: true, root: '/r', changed: true })
+      await a
+      await settle()
+      expect(runs).toEqual([{ mode: 'token', value: VALUE }, { mode: 'machine', interactive: true }])
+      expect(timeouts).toEqual([CLONE_TIMEOUT_MS, CLONE_TIMEOUT_MS - 200_000])
+      // B takes 100 s: C has now waited the whole run time and never starts git
+      clock += 100_000
+      releases[1]({ ok: true, root: '/r', changed: true })
+      await Promise.all([b, c])
+      await settle()
+      expect(runs).toHaveLength(2)
+      expect(resultOf(h, 2)).toMatchObject({ ok: true, result: { ok: true, root: '/r' } })
+      expect(resultOf(h, 3)).toMatchObject({ ok: true, result: { ok: false, error: TIMEOUT_MESSAGE } })
+      // nothing is left waiting or running
+      await call(h.send, 4, 'cancelClone', [URL1])
+      expect(resultOf(h, 4)).toMatchObject({ ok: true, result: false })
+    })
+
+    it('a call that re-queued still runs with the rest of its time when the waits stay short', async () => {
+      let clock = 1_000
+      const { h, runs, timeouts, releases } = pending({ now: () => clock })
+      await initWithAskpass(h)
+      const a = call(h.send, 1, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      const c = call(h.send, 3, 'cloneSource', [URL1, undefined, { mode: 'token', value: 'neutral-value-2' }])
+      await tick()
+      clock += 10_000
+      releases[0]({ ok: true, root: '/r', changed: true })
+      await a
+      await settle()
+      clock += 20_000
+      releases[1]({ ok: true, root: '/r', changed: true })
+      await b
+      await settle()
+      expect(runs).toEqual([
+        { mode: 'token', value: VALUE },
+        { mode: 'machine', interactive: true },
+        { mode: 'token', value: 'neutral-value-2' }
+      ])
+      expect(timeouts).toEqual([CLONE_TIMEOUT_MS, CLONE_TIMEOUT_MS - 10_000, CLONE_TIMEOUT_MS - 30_000])
+      releases[2]({ ok: true, root: '/r', changed: true })
+      await c
+      expect(resultOf(h, 3)).toMatchObject({ ok: true, result: { ok: true, root: '/r' } })
+    })
+
+    it('a cancel in the first wait stops every waiter, the one that would have re-queued included', async () => {
+      const { h, runs, releases } = pending()
+      await initWithAskpass(h)
+      const a = call(h.send, 1, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      const c = call(h.send, 3, 'cloneSource', [URL1, undefined, { mode: 'token', value: 'neutral-value-2' }])
+      await tick()
+      await call(h.send, 4, 'cancelClone', [URL1])
+      expect(resultOf(h, 4)).toMatchObject({ ok: true, result: true })
+      releases[0]({ ok: false, error: CANCELLED_MESSAGE })
+      await Promise.all([a, b, c])
+      await settle()
+      expect(runs).toEqual([{ mode: 'token', value: VALUE }])
+      expect(resultOf(h, 2)).toMatchObject({ ok: true, result: { ok: false, error: CANCELLED_MESSAGE } })
+      expect(resultOf(h, 3)).toMatchObject({ ok: true, result: { ok: false, error: CANCELLED_MESSAGE } })
+    })
+
+    it('a cancel while a re-queued call waits a second time stops it too', async () => {
+      const { h, runs, releases } = pending()
+      await initWithAskpass(h)
+      const a = call(h.send, 1, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      const c = call(h.send, 3, 'cloneSource', [URL1, undefined, { mode: 'token', value: 'neutral-value-2' }])
+      await tick()
+      releases[0]({ ok: true, root: '/r', changed: true })
+      await a
+      await settle()
+      expect(runs).toHaveLength(2)
+      // C is now queued behind B
+      await call(h.send, 4, 'cancelClone', [URL1])
+      expect(resultOf(h, 4)).toMatchObject({ ok: true, result: true })
+      releases[1]({ ok: false, error: CANCELLED_MESSAGE })
+      await Promise.all([b, c])
+      await settle()
+      expect(runs).toHaveLength(2)
+      expect(resultOf(h, 3)).toMatchObject({ ok: true, result: { ok: false, error: CANCELLED_MESSAGE } })
+      // a fresh call afterwards runs normally
+      const d = call(h.send, 5, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      await tick()
+      expect(runs).toHaveLength(3)
+      releases[2]({ ok: true, root: '/r', changed: true })
+      await d
       expect(resultOf(h, 5)).toMatchObject({ ok: true, result: { ok: true, root: '/r' } })
     })
 

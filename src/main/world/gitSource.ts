@@ -154,6 +154,9 @@ export interface CloneDeps {
   maxBytes?: number
   /** The clock for the overall deadline (default Date.now). */
   now?: () => number
+  /** The time the whole job may take (default CLONE_TIMEOUT_MS). The world host passes less when the call
+   *  already waited behind another run, so wait plus run stays inside CLONE_TIMEOUT_MS. */
+  timeoutMs?: number
   /** The full path of the askpass Termpolis ships (resources/git-askpass/askpass.sh). A token run without
    *  it is refused before git starts. */
   askpassPath?: string
@@ -450,7 +453,7 @@ async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, 
 
   // One deadline for the whole job, so fetch plus reset can never add up past the client's call timeout.
   const now = deps.now ?? Date.now
-  const deadline = now() + CLONE_TIMEOUT_MS
+  const deadline = now() + (deps.timeoutMs ?? CLONE_TIMEOUT_MS)
   let failure = ''
   let timedOut = false
   let auth = false
