@@ -95,7 +95,7 @@ Both are part of the 2.0 headline, so the bar is the Lumopolis bar: correct on t
   - **Documentation (HTML)…** opens the documentation dialog (§5.4).
 - **Command Palette.** "Export Lumopolis world" and "Generate Lumopolis documentation" open the same dialogs.
 - **Availability.** Both are available on a code world and a design world once the world has finished its first compile.
-  - While a compile or labelling run is going, they remain available and use the last saved world. The dialog says so: "Uses the map as it was saved at <time>; labelling is still running."
+  - While a compile or labelling run is going, they remain available and use the last saved world. The dialog says so: "Uses the map as it was saved at <time>; Lumopolis is still describing its parts." while labelling runs, and "…; Lumopolis is still updating it." in any other stage.
 - **No world open.** On the home (no world), the button is hidden.
 
 ### 5.2 The export dialog
@@ -119,7 +119,11 @@ Both are part of the 2.0 headline, so the bar is the Lumopolis bar: correct on t
   - For a design world: the design.
   - A proposal export includes the world plus only that proposal, shown selected on open.
 - **Smart Ask switch.** It defaults on when at least 80% of buildings and 80% of lines have a model description, meaning a `how` claim from labelling, not the fallback.
-  - Below that, it defaults off with the note: "Most parts aren't described yet, so smart Ask would mostly match file names. Re-label the world first, or export with keyword Ask." The person can still switch it on.
+  - Below that, it defaults off with the note "Most parts aren't described yet, so smart Ask would mostly match file names. <What to do>, or export with keyword Ask." The person can still switch it on. <What to do> is how the parts get described:
+    - design world: "Ask Lumopolis to say what each part does" (the design conversation describes parts);
+    - code world, Describe parts with AI off: "Turn on Describe parts with AI in Settings, then press Re-layout";
+    - code world, a compile or labelling run going: "Wait for Lumopolis to finish updating the map";
+    - otherwise: "Press Re-layout to have Lumopolis describe them" (Re-layout runs a full compile, which labels what the cache doesn't hold).
   - **Ruling (my call):** the 80% figure is a constant in one place; the builder may tune it from fixture evaluation.
 - **Size estimate.** A live estimate from the world JSON size plus the fixed smart cost.
 - **Saving.** **Export…** opens the OS save dialog (main process `dialog.showSaveDialog`). The default name is `<project> - Lumopolis.html`, in the person's Documents folder.
@@ -170,7 +174,7 @@ Both are part of the 2.0 headline, so the bar is the Lumopolis bar: correct on t
 - **The city**, exactly as in the app's World pane: cards, tours, layers, themes, the 2D toggle, search and Esc rules.
   - Read-only: no annotate, Build it, Re-layout, conversation or editing affordances.
   - Bookmarks are kept per viewer in localStorage (wrapped in try/catch) or hidden; builder's call.
-- **A slim header:** "<Project>, exported from Termpolis on <date> · commit <head7>[ (uncommitted changes)]", plus "Made with Termpolis" linking to termpolis.com. A link is only followed when clicked.
+- **A slim header:** "<Project>, exported from Termpolis on <date> · commit <head7>[ (uncommitted changes)]", plus "Made with Lumopolis in Termpolis" linking to termpolis.com. A link is only followed when clicked.
 - **Ask box** (top right, the app's Ask styling):
   - The placeholder is "Ask about this project".
   - While smart Ask loads: "Smart Ask is getting ready… keyword search works now."
@@ -323,6 +327,6 @@ The Connections table likewise carries every line-card field, including How ofte
 
 ## 8. Known limits to state honestly in the UI and docs
 
-- A smart export is about 37 MB: too large for most email attachments. Share it through OneDrive, Teams or a drive, or export with keyword Ask (about 1–3 MB).
+- A smart export is about 37 MB: too large for most email attachments. Share it through OneDrive, Teams or a drive, or export with keyword Ask (about 0.75 MB: the page runtime is 0.73 MB, and the e2e fixture's keyword export measured 751,904 bytes).
 - Exported Ask finds matching parts; it does not write new answers. In-app Ask, with an agent, can.
 - A tab holding a smart export uses more memory than a plain page, roughly 150–250 MB (not measured precisely in the spike). Phones are not a target.

@@ -1899,7 +1899,7 @@ Lumopolis can save a world as files you can hand to someone who doesn't have Ter
 - **Interactive world (HTML)…** saves the 3D city as one page.
 - **Documentation (HTML)…** saves a written explanation of the project.
 
-The Command Palette has the same two actions: **Export Lumopolis world** and **Generate Lumopolis documentation**. Both work once the world has finished its first map. While a map or labelling run is still going, they use the world as it was last saved, and the export dialog says so.
+The Command Palette has the same two actions: **Export Lumopolis world** and **Generate Lumopolis documentation**. Both work once the world has finished its first map. While Lumopolis is still updating the map or describing its parts, they use the world as it was last saved, and the export dialog says so.
 
 ### The interactive world
 
@@ -1908,7 +1908,9 @@ The page shows the city as the Lumopolis pane does: cards, tours, layers, themes
 **Ask in the page.** The exported page has an Ask box. It searches by keyword straight away. With **Include smart Ask (works offline, adds ~35 MB)** switched on, it also finds parts by meaning, using a small model packed into the file.
 
 - The switch is on by default when at least 80% of the parts and connections have a description from labelling.
-- Below that it starts off, with the note: "Most parts aren't described yet, so smart Ask would mostly match file names. Re-label the world first, or export with keyword Ask." You can still switch it on.
+- Below that it starts off, with a note: "Most parts aren't described yet, so smart Ask would mostly match file names." The note then says how to get the parts described, and ends "or export with keyword Ask." You can still switch it on.
+  - Code world: parts are described by **Lumopolis: Describe parts with AI** in **Settings ▸ Lumopolis**, which runs whenever the map is updated. If it's off, the note says to turn it on and press **Re-layout**. If it's on and the map is being updated, it says to wait for that to finish. Otherwise it says to press **Re-layout** to have Lumopolis describe the parts.
+  - Design world: the note says to ask Lumopolis, in the design conversation, to say what each part does.
 
 **What is in the file, and what isn't.**
 
@@ -1916,13 +1918,13 @@ The page shows the city as the Lumopolis pane does: cards, tours, layers, themes
 - Not included: your conversation with the agent, voice transcripts, and file paths outside the project. Paths are written relative to the project.
 - Code excerpts and notes from memory are removed from the evidence. A card keeps its references (for example `src/main/foo.ts`) as plain text.
 - Claim texts, commit subjects and captions go through the same secret scanner as memory, and anything it finds becomes `[redacted]`.
-- The page carries a strict Content Security Policy that blocks every network request, so the browser itself keeps it offline. The one link, "Made with Termpolis", is followed only if you click it.
+- The page carries a strict Content Security Policy that blocks every network request, so the browser itself keeps it offline. The one link, "Made with Lumopolis in Termpolis", is followed only if you click it.
 
 Export opens your system's save dialog. When it finishes, a message gives the file name and size, with **Show in folder** and **Open**. **Cancel** stops the export and leaves no partial file.
 
 ### The documentation page
 
-**Documentation (HTML)…** asks for a title (the project name to start with) and whether to include a picture of the city, which needs the 3D map on screen. **Save…** writes one page titled "How <project> works". It has:
+**Documentation (HTML)…** asks for a title (the project name to start with) and whether to include a picture of the city, which needs the 3D map on screen. **Save…** writes one page titled "How <project> works", or "<project>: application plan" for a design world. It has:
 
 - coverage figures and an overview;
 - a map of the areas;
@@ -1936,7 +1938,7 @@ It needs no script, prints cleanly to PDF, and leaves out the same things as the
 
 ### Limits
 
-- A smart export is about 37 MB, which is too large for most email attachments. Share it through OneDrive, Teams or a shared drive, or export with keyword Ask instead (about 1–3 MB).
+- A smart export is about 37 MB, which is too large for most email attachments. Share it through OneDrive, Teams or a shared drive, or export with keyword Ask instead (about 0.75 MB).
 - Ask in an exported page finds the parts that match a question. It doesn't write new answers. Ask inside Termpolis, with an agent, can.
 - A browser tab holding a smart export uses more memory than an ordinary page, roughly 150–250 MB. That figure is an estimate, not a precise measurement.
 - Phones are not a target. Open exported pages in a desktop browser.
