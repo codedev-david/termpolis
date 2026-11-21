@@ -301,3 +301,55 @@ describe('useOpenWorld repository updates', () => {
     expect(api.worldUpdateSource).toHaveBeenCalledTimes(1)
   })
 })
+
+// A touch that could not be saved (main could not write the registry: a file held open, a full disk) only loses
+// "last opened". The background update still runs from the entry the pane already shows, so a lapsed login
+// still shows "Sign in needed" (caveat 4, round 1).
+describe('useOpenWorld when marking the world opened fails', () => {
+  const shown = async (entries: WorldEntry[], update: unknown) => {
+    setup(null, update)
+    api.worldSourcesList.mockResolvedValue(ok(entries))
+    const r = renderHook(() => useOpenWorld(''))
+    await settle()
+    return r
+  }
+
+  it('a failed touch still updates the shown repository, so "Sign in needed" appears', async () => {
+    const r = await shown([gitEntry('machine')], ok(NEEDS))
+    api.worldTouchSource.mockResolvedValueOnce(fail('Could not save the world list.'))
+    await openIt(r)
+    expect(api.worldUpdateSource).toHaveBeenCalledTimes(1)
+    expect(api.worldUpdateSource).toHaveBeenCalledWith('kg')
+    expect(r.result.current.repoUpdate).toEqual({ key: 'kg', host: 'github.com', helper: true, message: 'Sign in please.' })
+  })
+
+  it('a touch whose call itself fails does the same', async () => {
+    const r = await shown([gitEntry(undefined, 'k2'), gitEntry()], ok(NEEDS))
+    api.worldTouchSource.mockRejectedValueOnce(new Error('ipc gone'))
+    await openIt(r)
+    expect(api.worldUpdateSource).toHaveBeenCalledTimes(1)
+    expect(api.worldUpdateSource).toHaveBeenCalledWith('kg')
+    expect(r.result.current.repoUpdate).not.toBeNull()
+  })
+
+  it('a list that cannot be read leaves nothing shown, so a failed touch updates nothing', async () => {
+    setup(null, ok(NEEDS))
+    api.worldSourcesList.mockRejectedValue(new Error('ipc gone'))
+    const r = renderHook(() => useOpenWorld(''))
+    await settle()
+    api.worldTouchSource.mockResolvedValueOnce(fail('x'))
+    await openIt(r)
+    expect(r.result.current.entries).toEqual([])
+    expect(api.worldUpdateSource).not.toHaveBeenCalled()
+  })
+
+  it('a failed touch for a token repository, or one the pane does not show, updates nothing', async () => {
+    const r = await shown([gitEntry('token')], ok(NEEDS))
+    api.worldTouchSource.mockResolvedValueOnce(fail('x'))
+    await openIt(r)
+    api.worldTouchSource.mockResolvedValueOnce(fail('x'))
+    await openIt(r, 'other')
+    expect(api.worldUpdateSource).not.toHaveBeenCalled()
+    expect(r.result.current.repoUpdate).toBeNull()
+  })
+})

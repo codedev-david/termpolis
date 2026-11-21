@@ -56,6 +56,9 @@ export const worldId = (w: OpenWorld): string =>
 export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld {
   const [world, setWorld] = useState<OpenWorld>(() => (request ? fromRequest(request) : fromRoot(root)))
   const [entries, setEntries] = useState<WorldEntry[]>([])
+  /** The list as last shown, for `open`, which outlives a render. */
+  const shownEntries = useRef(entries)
+  shownEntries.current = entries
   const following = useRef(!request)
   const live = useRef(true)
   useEffect(() => {
@@ -114,12 +117,17 @@ export function useOpenWorld(root: string, request?: WorldRequest): UseOpenWorld
     setWorld(next)
     clearRepo(t.key ?? null, worldId(next))
     if (t.key) {
-      window.termpolis.worldTouchSource(t.key).then((res) => {
+      const key = t.key
+      // A touch main could not save (the registry file held open, a full disk; main logs why) only loses "last
+      // opened": the update still runs, from the entry the pane shows, so a lapsed login still shows "Sign in needed".
+      const shown = (): WorldEntry | null => shownEntries.current.find((x) => x.key === key) ?? null
+      window.termpolis.worldTouchSource(key).then((res) => {
         refresh()
-        const e = res.success ? res.data : null
+        return res.success ? res.data : shown()
+      }, shown).then((e) => {
         // A repository opened with this computer's login updates once, quietly; one opened with a token only when asked.
         if (e && e.source.kind === 'git' && e.source.login !== 'token') updateInBackground(e.key)
-      }, () => undefined)
+      })
     }
   }, [refresh])
 

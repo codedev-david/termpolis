@@ -225,6 +225,29 @@ describe('registerWorldIpc sources handlers', () => {
     expect(await s.invoke('world:touch-source', { key: 'kf' })).toEqual({ success: false, error: SOURCES_FAILED })
   })
 
+  it('a touch that fails is written to the app log by its error code alone, never its message or the key', async () => {
+    const s = setup()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      s.registry.touch.mockRejectedValueOnce(Object.assign(new Error('EPERM: operation not permitted, rename C:/Users/someone/world/sources.json'), { code: 'EPERM' }))
+      expect(await s.invoke('world:touch-source', { key: 'kf' })).toEqual({ success: false, error: SOURCES_FAILED })
+      s.registry.touch.mockRejectedValueOnce(new Error('disk'))
+      await s.invoke('world:touch-source', { key: 'kf' })
+      s.registry.touch.mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'not a code, with C:/a/path' }))
+      await s.invoke('world:touch-source', { key: 'kf' })
+      s.registry.touch.mockRejectedValueOnce('a plain string')
+      await s.invoke('world:touch-source', { key: 'kf' })
+      expect(warn.mock.calls).toEqual([
+        ['[world] marking a world opened failed:', 'EPERM'],
+        ['[world] marking a world opened failed:', 'unknown'],
+        ['[world] marking a world opened failed:', 'unknown'],
+        ['[world] marking a world opened failed:', 'unknown'],
+      ])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('world:clone refuses an access of any other shape before git runs, and never repeats its value', async () => {
     const s = setup()
     const v = 'neutral-value-5'

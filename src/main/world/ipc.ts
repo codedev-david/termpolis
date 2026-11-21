@@ -497,7 +497,11 @@ function registerSourceHandlers(ipc: WorldIpcMain, deps: WorldSourcesDeps, clien
     if (!nonEmpty(key) || key.length > MAX_KEY) return err('key required')
     try {
       return ok(await registry.touch(key))
-    } catch {
+    } catch (e) {
+      // Logged so a failed touch can be told apart later (an EPERM from a file held open, a full disk): the code
+      // only, since the message names the user's folder. The renderer still updates the repository it shows.
+      const code = (e as { code?: unknown } | null)?.code
+      console.warn('[world] marking a world opened failed:', typeof code === 'string' && /^E[A-Z]+$/.test(code) ? code : 'unknown')
       return err(SOURCES_FAILED)
     }
   })
