@@ -214,7 +214,7 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
       }
     } finally {
       // Also on a failure, so its trace shows the page running rather than frozen.
-      await o.page.clock.resume()
+      await o.page.clock.resume().catch(() => undefined)
     }
     expect(from, `the label of ${name} is drawn once it is picked`).not.toBeNull()
   } else {
