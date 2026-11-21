@@ -32,6 +32,13 @@
 //                                      renderer then opens the agent terminal there with the first prompt)
 //   world:progress / world:updated           (webContents.send, while a world compiles / after a
 //                                             watcher-driven recompile saved)
+// Export (exportIpc.ts, registered beside these; the renderer names a world, main loads and titles it):
+//   world:export-info   { root? | designKey? }                        → ok(WorldExportInfo)
+//   world:export        { exportId, root? | designKey?, smart, proposalId? } → ok({ path, bytes } | { cancelled: true })
+//   world:export-cancel { exportId }                                  → ok(boolean)
+//   world:document      { root? | designKey?, title, picturePng? }    → ok({ path, bytes } | { cancelled: true })
+//   world:show-file / world:open-file { path }  → ok(true)  (only a file this session exported or documented)
+//   world:export-progress { exportId, step, done, total }  (webContents.send, while an export runs)
 // `ipc` and `win` are parameters, so this module never imports Electron and tests pass fakes.
 import { win32 } from 'path'
 import { err, ok } from '../ipcResult'

@@ -1341,6 +1341,12 @@ describe('preload — workflow orchestrator bridge', () => {
       [() => api.worldTouchSource('kf'), 'world:touch-source', { key: 'kf' }],
       [() => api.worldDesignGet('design:d1'), 'world:design-get', { key: 'design:d1' }],
       [() => api.worldBuildIt({ key: 'design:d1', root: 'C:/b', agent: 'claude', confirmNonEmpty: true }), 'world:build-it', { key: 'design:d1', root: 'C:/b', agent: 'claude', confirmNonEmpty: true }],
+      [() => api.worldExportInfo({ root: 'C:/r' }), 'world:export-info', { root: 'C:/r' }],
+      [() => api.worldExport({ exportId: 'x1', designKey: 'design:d1', smart: true, proposalId: 'p1' }), 'world:export', { exportId: 'x1', designKey: 'design:d1', smart: true, proposalId: 'p1' }],
+      [() => api.worldExportCancel('x1'), 'world:export-cancel', { exportId: 'x1' }],
+      [() => api.worldDocument({ root: 'C:/r', title: 'Shop', picturePng: 'data:image/png;base64,AA==' }), 'world:document', { root: 'C:/r', title: 'Shop', picturePng: 'data:image/png;base64,AA==' }],
+      [() => api.worldShowFile('C:/x/a.html'), 'world:show-file', { path: 'C:/x/a.html' }],
+      [() => api.worldOpenFile('C:/x/a.html'), 'world:open-file', { path: 'C:/x/a.html' }],
     ]
     for (const [call, channel, args] of calls) {
       await call()
@@ -1352,6 +1358,7 @@ describe('preload — workflow orchestrator bridge', () => {
   it.each([
     ['onWorldProgress', 'world:progress', { root: 'C:/repo', projectKey: 'k', stage: 'layout', pct: 50 }],
     ['onWorldUpdated', 'world:updated', { root: 'C:/repo', projectKey: 'k' }],
+    ['onWorldExportProgress', 'world:export-progress', { exportId: 'x1', step: 'index', done: 16, total: 40 }],
   ] as const)('%s forwards %s events and returns a working cleanup', (method, channel, evt) => {
     const cb = vi.fn()
     const cleanup = (exposed.termpolis[method] as (cb: (e: unknown) => void) => () => void)(cb)

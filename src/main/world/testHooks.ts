@@ -12,3 +12,15 @@ export async function testPickedFolder(
   if (env.NODE_ENV !== 'test' || !file) return undefined
   return (await read(file)).trim() || null
 }
+
+/** The Lumopolis export's save-dialog test answer, the same way: in a test run, TERMPOLIS_TEST_WORLD_SAVE_FILE
+ *  names a file whose text is the path to save to (empty text is a cancel, null). undefined means "no test
+ *  answer: show the real dialog". */
+export async function testSavePath(
+  env: Record<string, string | undefined>,
+  read: (file: string) => Promise<string>,
+): Promise<string | null | undefined> {
+  const file = env.TERMPOLIS_TEST_WORLD_SAVE_FILE
+  if (env.NODE_ENV !== 'test' || !file) return undefined
+  return (await read(file)).trim() || null
+}

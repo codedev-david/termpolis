@@ -311,6 +311,14 @@ const api: TermpolisAPI = {
   worldUpdateSource: (key: string, access?: import('../shared/world/repoAccess').RepoAccess) =>
     ipcRenderer.invoke('world:update-source', access === undefined ? { key } : { key, access }),
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => ipcRenderer.invoke('world:build-it', req),
+  // Lumopolis export: the renderer names the world (a folder or a design key); main loads, titles and saves it.
+  worldExportInfo: (req: { root?: string; designKey?: string }) => ipcRenderer.invoke('world:export-info', req),
+  worldExport: (req: { exportId: string; root?: string; designKey?: string; smart: boolean; proposalId?: string }) => ipcRenderer.invoke('world:export', req),
+  worldExportCancel: (exportId: string) => ipcRenderer.invoke('world:export-cancel', { exportId }),
+  worldDocument: (req: { root?: string; designKey?: string; title: string; picturePng?: string }) => ipcRenderer.invoke('world:document', req),
+  worldShowFile: (path: string) => ipcRenderer.invoke('world:show-file', { path }),
+  worldOpenFile: (path: string) => ipcRenderer.invoke('world:open-file', { path }),
+  onWorldExportProgress: (cb) => { const h = (_: unknown, e: import('../shared/world/types').WorldExportProgressEvent) => cb(e); ipcRenderer.on('world:export-progress', h); return () => ipcRenderer.removeListener('world:export-progress', h) },
   onWorldProgress: (cb) => { const h = (_: unknown, e: import('../shared/world/types').WorldProgressEvent) => cb(e); ipcRenderer.on('world:progress', h); return () => ipcRenderer.removeListener('world:progress', h) },
   onWorldUpdated: (cb) => { const h = (_: unknown, e: import('../shared/world/types').WorldUpdatedEvent) => cb(e); ipcRenderer.on('world:updated', h); return () => ipcRenderer.removeListener('world:updated', h) },
   // Brain export / import (portable .zip)

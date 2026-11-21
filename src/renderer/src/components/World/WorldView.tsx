@@ -29,6 +29,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
+import { worldTitle } from '../../../../shared/world/worldTitle'
 import { isRuntimeText, runtimeText } from '../../../../shared/world/runtimeNames'
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
 import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
@@ -100,7 +101,6 @@ export interface WorldProbe {
 }
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
-const baseName = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() as string
 /** A building's or a connection's card, straight from the doc (the 2D view); null when the id names neither. */
 /** The toolbar's line about the last labelling run. */
 const labelCostLine = (tokens: number): string =>
@@ -635,10 +635,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // The folder's name, never doc.projectKey: that is a sha1 slice of the path, not a name. A doc only
   // loads for a resolved root, and WorldDoc carries no root of its own to fall back on. A design is
   // named by its title in the recent worlds, and so is a cloned repository: its folder is named by a hash.
+  // Main titles an export the same way (shared/world/worldTitle.ts), so the page and the pane never differ.
   const home = world.kind === 'home'
-  const designTitle = designKey === null ? '' : entries.find((e) => e.key === designKey)?.title ?? 'Design'
-  const gitTitle = worldRoot ? entries.find((e) => e.source.kind === 'git' && e.source.root === worldRoot)?.title : undefined
-  const projectName = designKey !== null ? designTitle : gitTitle ?? (worldRoot ? baseName(worldRoot) : '')
+  const projectName = worldTitle(entries, { root: worldRoot, designKey })
   const worldKey = worldRoot ?? designKey
   let empty: 'loading' | 'mapping' | 'error' | null = null
   if (home) empty = null
@@ -781,7 +780,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       {building && designKey !== null && buildIt && (
         <BuildItDialog
           designKey={designKey}
-          title={designTitle}
+          title={projectName}
           agents={buildIt.agents}
           defaultAgent={buildIt.defaultAgent}
           onBuilt={onBuilt}

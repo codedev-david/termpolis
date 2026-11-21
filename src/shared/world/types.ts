@@ -148,3 +148,25 @@ export interface WorldEntry {
 export interface WorldFolderPick { root: string; empty: boolean }
 /** Build it: the folder now linked to the design, and the first prompt for the agent opened there. */
 export interface BuildItResult { root: string; key: string; title: string; prompt: string }
+
+// ---- Lumopolis export (renderer <-> main): one offline page, or a documentation file ----
+/** What the export dialog shows before it starts: the world's name and when it was saved, how described it is
+ *  (shares 0..1 of buildings and lines with at least one `how` claim), the page's estimated size with and without smart
+ *  Ask, whether smart Ask is possible (its model is installed) and the proposals a code world can export alone. */
+export interface WorldExportInfo {
+  title: string
+  savedAt: number
+  smartDefault: boolean
+  buildings: number
+  lines: number
+  smartBytes: number
+  keywordBytes: number
+  smartAvailable: boolean
+  proposals: Array<{ id: string; title: string }>
+}
+/** A saved file: where, and how big. */
+export interface WorldSavedFile { path: string; bytes: number }
+/** The person closed the save dialog, or cancelled the export: nothing was written. */
+export interface WorldSaveCancelled { cancelled: true }
+/** One step of a running export, pushed on world:export-progress with the export's own id. */
+export interface WorldExportProgressEvent { exportId: string; step: 'prepare' | 'index' | 'write'; done: number; total: number }

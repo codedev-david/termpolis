@@ -332,12 +332,14 @@ import type { ExecFn } from './mnemeDistiller'
 import { createWorldClient } from './world/worldClient'
 import { confinedReader, isCloneRoot, isFolderEmpty } from './world/folderSafety'
 import { registerWorldIpc } from './world/ipc'
+import { registerWorldExportIpc } from './world/exportIpc'
+import { resolveExportAssets } from './world/export'
 import { lumopolisNonce, registerLumopolisIpc } from './world/lumopolisOpen'
 import { createAskRunner } from './world/askRunner'
 import { createDesigner } from './world/designer'
 import { createAnnotationStore, withAnnotations } from './world/annotations'
 import { createSourceRegistry } from './world/sources'
-import { testPickedFolder } from './world/testHooks'
+import { testPickedFolder, testSavePath } from './world/testHooks'
 import { createWorldStore } from './world/worldStore'
 import { createWorldGatewayTransport } from './world/worldGatewayTransport'
 import { createWorldSettings, WORLD_SETTINGS_FILE } from './world/worldSettings'
@@ -372,7 +374,7 @@ import { isHighValueEpisode } from './mnemeReflect'
 import { makeHeadlessDistiller } from './mnemeDistiller'
 import { buildBrainArchive, mergeBrainArchive, realBrainFs } from './brainIpc'
 import { initMetrics, recordMetric, metricsSummary } from './metricsLedger'
-import { setWorkerSpawner } from './localEmbedder'
+import { embedBatch, setWorkerSpawner } from './localEmbedder'
 import { createWorkerTransport } from './embedWorker'
 import { setRerankWorkerSpawner } from './crossEncoderRerank'
 import { createRerankWorkerTransport } from './rerankWorker'
@@ -2853,6 +2855,33 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAs
   unwatch: (root) => void stopRepoWatch(root),
   homeDir: homedir(),
   userDataDir: worldUserData,
+})
+// Lumopolis export (world/exportIpc.ts): the renderer names a world; main loads it without a background refresh,
+// asks where to save (Documents by default; in a test run TERMPOLIS_TEST_WORLD_SAVE_FILE can answer instead) and
+// writes one offline page or the documentation. Show in folder and Open take only a file exported here.
+registerWorldExportIpc(ipcMain, {
+  getWorld: (root) => worldClient.get(root, { refresh: false }),
+  loadDesign: (key) => worldDesignStore.load(key),
+  entries: () => worldSources.list(),
+  saveDialog: async (defaultPath) => {
+    const opts = { defaultPath, filters: [{ name: 'Web page', extensions: ['html'] }] }
+    const win = mainWindow
+    const result = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    return result.canceled || !result.filePath ? null : result.filePath
+  },
+  testSave: () => testSavePath(process.env, (f) => fsPromises.readFile(f, 'utf8')),
+  documentsDir: app.getPath('documents'),
+  homeDir: homedir(),
+  userDataDir: worldUserData,
+  assets: () => resolveExportAssets({ resourcesPath: process.resourcesPath, appPath: app.getAppPath() }),
+  embed: (texts) => embedBatch(texts),
+  fs: fsPromises,
+  send: (channel, payload) => {
+    const win = mainWindow
+    if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+  },
+  showItemInFolder: (path) => shell.showItemInFolder(path),
+  openPath: (path) => shell.openPath(path),
 })
 // The `lumopolis` shell command: a terminal's own output asks to open the Lumopolis pane on a folder. Checked
 // (an open terminal, this run's nonce, a folder that exists) and stat'ed, never run (world/lumopolisOpen.ts).

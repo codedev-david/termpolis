@@ -13,7 +13,7 @@ import type { SignInInput, SignInStartRequest, SignInState } from '../../../shar
 import type { LimitLook } from '../../../shared/accountLimits'
 import type { RouteDecision } from '../../../shared/taskRouter'
 import type { ModelCatalog } from '../lib/modelCatalog'
-import type { AskRequest, AskResult, BuildItResult, DesignDraftResult, DesignRefineResult, WorldDoc, WorldEntry, WorldFolderPick, WorldProgressEvent, WorldUpdatedEvent } from '../../../shared/world/types'
+import type { AskRequest, AskResult, BuildItResult, DesignDraftResult, DesignRefineResult, WorldDoc, WorldEntry, WorldExportInfo, WorldExportProgressEvent, WorldFolderPick, WorldProgressEvent, WorldSaveCancelled, WorldSavedFile, WorldUpdatedEvent } from '../../../shared/world/types'
 import type { CloneNeedsLogin, RepoAccess } from '../../../shared/world/repoAccess'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
@@ -735,6 +735,20 @@ export interface TermpolisAPI {
   /** Lumopolis Build it: link the design to the folder; answers the first prompt for the agent terminal. */
   worldAnnotate: (key: string, itemId: string, text: string) => Promise<IpcResponse<WorldDoc>>
   worldBuildIt: (req: { key: string; root: string; agent: string; confirmNonEmpty?: boolean }) => Promise<IpcResponse<BuildItResult>>
+  /** Lumopolis export dialog: the world's name as the pane shows it, when it was saved, how described it is, the
+   *  page's size with and without smart Ask, and the proposals a code world can export alone. */
+  worldExportInfo: (req: { root?: string; designKey?: string }) => Promise<IpcResponse<WorldExportInfo>>
+  /** Lumopolis: export the saved world as one offline page where the person chooses (progress on onWorldExportProgress). */
+  worldExport: (req: { exportId: string; root?: string; designKey?: string; smart: boolean; proposalId?: string }) => Promise<IpcResponse<WorldSavedFile | WorldSaveCancelled>>
+  /** Lumopolis: cancel a running export by its id; true when one was running. */
+  worldExportCancel: (exportId: string) => Promise<IpcResponse<boolean>>
+  /** Lumopolis: write the world's documentation (one HTML file, `picturePng` the city as a PNG data URL) where the person chooses. */
+  worldDocument: (req: { root?: string; designKey?: string; title: string; picturePng?: string }) => Promise<IpcResponse<WorldSavedFile | WorldSaveCancelled>>
+  /** Lumopolis: show an exported file in its folder (only a file this session exported or documented). */
+  worldShowFile: (path: string) => Promise<IpcResponse<boolean>>
+  /** Lumopolis: open an exported file with its default app (only a file this session exported or documented). */
+  worldOpenFile: (path: string) => Promise<IpcResponse<boolean>>
+  onWorldExportProgress: (cb: (e: WorldExportProgressEvent) => void) => () => void
   /** Lumopolis settings: whether the world compiler may ask the Lumopolis agent's cheapest model to describe parts. */
   worldSettingsGet: () => Promise<IpcResponse<{ worldLabelling: boolean; worldSpeakAnswers: boolean; worldCiResults: boolean; worldAgent: 'claude' | 'codex' | 'gemini'; worldOpened: boolean; worldHintDismissed: boolean }>>
   /** Lumopolis settings: apply a patch (only known fields are kept) and answer the new settings. */
