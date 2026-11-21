@@ -61,11 +61,11 @@ describe('headerText', () => {
 })
 
 describe('buildPage: header and control set', () => {
-  it('shows the header and a Made with Termpolis link to termpolis.com', () => {
+  it('shows the header and a Made with Lumopolis in Termpolis link to termpolis.com', () => {
     const { q } = setup({ meta: { dirty: true } })
     expect(q('.wx-title').textContent).toBe('Termpolis, exported from Termpolis on 2026-11-21 · commit abc1234 (uncommitted changes)')
     const made = q<HTMLAnchorElement>('.wx-made')
-    expect(made.textContent).toBe('Made with Termpolis')
+    expect(made.textContent).toBe('Made with Lumopolis in Termpolis')
     expect(made.getAttribute('href')).toBe('https://termpolis.com')
     expect(MADE_WITH_URL).toBe('https://termpolis.com')
     expect(made.rel).toBe('noopener noreferrer')

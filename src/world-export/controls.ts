@@ -199,7 +199,7 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
 
   const page = make('div', 'wx-page')
   const header = make('header', 'wx-header')
-  const made = make('a', 'wx-made', 'Made with Termpolis')
+  const made = make('a', 'wx-made', 'Made with Lumopolis in Termpolis')
   made.href = MADE_WITH_URL
   made.target = '_blank'
   made.rel = 'noopener noreferrer'
