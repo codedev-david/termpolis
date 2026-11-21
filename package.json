@@ -71,6 +71,10 @@
       {
         "from": "resources/grammars",
         "to": "grammars"
+      },
+      {
+        "from": "resources/git-askpass",
+        "to": "git-askpass"
       }
     ],
     "afterPack": "scripts/afterPack.cjs",

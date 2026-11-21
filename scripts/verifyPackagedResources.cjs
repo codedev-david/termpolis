@@ -32,8 +32,16 @@ const path = require('path')
  *   - main/consoleListHelper.ts resolves `<resources>/mcp-adapter/termpolis-console-list.cjs` (1.54.5).
  *     If it's missing, every Windows check before typing into an agent answers
  *     "cannot tell" and every terminal close ends the shell alone.
+ *   - main/world resolves `<resources>/git-askpass/askpass.sh`, the askpass a Lumopolis token run hands
+ *     to git. If it's missing, every private repository opened by token is refused; on macOS and Linux
+ *     it must also be executable (see verifyResourcesFolder).
  */
-const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs', 'mcp-adapter/termpolis-console-list.cjs']
+const ASKPASS_REL = 'git-askpass/askpass.sh'
+const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs', 'mcp-adapter/termpolis-console-list.cjs', ASKPASS_REL]
+
+/** Where each required file comes from in the repo, as package.json "build.extraResources" ships it. */
+const EXTRA_RESOURCES_HINT =
+  '{ from: "src/mcp-adapter", to: "mcp-adapter", filter: ["**/*.cjs"] } and { from: "resources/git-askpass", to: "git-askpass" }'
 
 // The bundled offline embedding model + its WASM runtime. Verified SEPARATELY
 // (not in REQUIRED_RESOURCE_FILES) because a build without the model downloaded
@@ -67,8 +75,13 @@ function resolveResourcesDir(appOutDir, electronPlatformName, productFilename) {
 /**
  * Verify a single resources folder contains every required file.
  * Throws an Error with a descriptive message if any are missing.
+ *
+ * `platform` is the platform being packaged ('win32', 'darwin', 'mas', 'linux'; default: this one).
+ * Off Windows, git runs the askpass directly, so it must carry the owner-execute bit, which
+ * electron-builder copies from the checkout (the file is committed as 100755). Windows has no such
+ * bit to check: Git for Windows runs it by its #! line.
  */
-function verifyResourcesFolder(resourcesDir) {
+function verifyResourcesFolder(resourcesDir, platform = process.platform) {
   if (!fs.existsSync(resourcesDir)) {
     throw new Error(
       `[verifyPackagedResources] Resources directory does not exist: ${resourcesDir}\n` +
@@ -88,6 +101,8 @@ function verifyResourcesFolder(resourcesDir) {
       const stat = fs.statSync(full)
       if (stat.size === 0) {
         missing.push(`${rel} (exists but is 0 bytes)`)
+      } else if (rel === ASKPASS_REL && platform !== 'win32' && (stat.mode & 0o100) === 0) {
+        missing.push(`${rel} is not executable (commit it as 100755: git add --chmod=+x resources/${rel})`)
       }
     }
   }
@@ -95,11 +110,11 @@ function verifyResourcesFolder(resourcesDir) {
   if (missing.length > 0) {
     throw new Error(
       `[verifyPackagedResources] FATAL: the packaged app is missing ${missing.length} ` +
-        `required resource file(s) — the swarm conductor will silently fail at runtime.\n` +
+        `required resource file(s) — the swarm conductor, or a private repository opened by token, will fail at runtime.\n` +
         `Resources dir: ${resourcesDir}\n` +
         `Missing:\n  - ${missing.join('\n  - ')}\n\n` +
         `Likely cause: package.json "build.extraResources" is misconfigured. ` +
-        `It MUST include { from: "src/mcp-adapter", to: "mcp-adapter", filter: ["**/*.cjs"] }.`,
+        `It MUST include ${EXTRA_RESOURCES_HINT}.`,
     )
   }
 }
@@ -171,7 +186,7 @@ function verifyFromAfterPack(context) {
   )
   // eslint-disable-next-line no-console
   console.log(`[verifyPackagedResources] Checking: ${resourcesDir}`)
-  verifyResourcesFolder(resourcesDir)
+  verifyResourcesFolder(resourcesDir, context.electronPlatformName)
   verifyNoBuildTooling(resourcesDir)
   // eslint-disable-next-line no-console
   console.log(

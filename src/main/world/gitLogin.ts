@@ -12,7 +12,9 @@
 // - `machine`: git may use the login helper from the person's own git config (Git Credential Manager,
 //   the macOS keychain helper, the GitHub CLI). Only a run the person asked for (`interactive`) may show
 //   the helper's own sign-in window; a background run never can.
-// - `token`: a token the person pasted, handed to git by a one-shot askpass (added by the token task).
+// - `token`: a token the person pasted for this one run. No login helper may answer; git asks the askpass
+//   Termpolis ships (resources/git-askpass/askpass.sh), which prints the user or the value from two
+//   variables in this run's environment only. The value never reaches a command line, a file or a log.
 //
 // Git reads GIT_CONFIG_COUNT from 2.31 on, so an older git would ignore the login settings: a run is
 // refused below MIN_GIT. `hasLoginHelper` reads git config only, never a login store.
@@ -21,7 +23,7 @@
 import type { CloneDeps } from './gitSource'
 
 /** How one git run may log in. */
-export type LoginRun = { mode: 'none' } | { mode: 'machine'; interactive: boolean } | { mode: 'token' }
+export type LoginRun = { mode: 'none' } | { mode: 'machine'; interactive: boolean } | { mode: 'token'; value: string }
 
 /**
  * The flags every git command here carries: no local-file transport, no hooks, symlinks checked out as
@@ -37,7 +39,7 @@ export function safetyFlags(isWindows: boolean): string[] {
 }
 
 /** Inherited variables that would point git at another repository, index, object store or config, or
- *  run a program to ask for a login. */
+ *  run a program to ask for a login, or answer the shipped askpass with a value nobody pasted. */
 export const DROPPED_ENV = [
   'GIT_DIR',
   'GIT_WORK_TREE',
@@ -49,7 +51,9 @@ export const DROPPED_ENV = [
   'GIT_NAMESPACE',
   'GIT_COMMON_DIR',
   'GIT_ASKPASS',
-  'SSH_ASKPASS'
+  'SSH_ASKPASS',
+  'TERMPOLIS_GIT_ASKPASS_USER',
+  'TERMPOLIS_GIT_ASKPASS_REPLY'
 ]
 
 /** Inherited numbered config entries: a run sets its own, so none of the parent's may leak in beside them. */
@@ -89,11 +93,22 @@ export function configEnv(pairs: Array<[string, string]>): Record<string, string
   return env
 }
 
+/** The user a token run gives git. GitHub, GitLab and Gitea all take any user beside a token; this is
+ *  the one GitHub documents. */
+export const TOKEN_USER = 'x-access-token'
+
 /** The variables that keep a run from prompting: never a terminal prompt, and Git Credential Manager's
- *  window only on an interactive `machine` run. */
-export function loginEnv(run: LoginRun): Record<string, string> {
+ *  window only on an interactive `machine` run. A token run with the shipped askpass also gets the askpass
+ *  and the two answers it prints; without the askpass it gets nothing that could answer (the caller
+ *  refuses such a run before git starts). */
+export function loginEnv(run: LoginRun, askpassPath?: string): Record<string, string> {
   const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' }
   if (run.mode === 'none' || (run.mode === 'machine' && !run.interactive)) env.GCM_INTERACTIVE = 'never'
+  if (run.mode === 'token' && askpassPath) {
+    env.GIT_ASKPASS = askpassPath
+    env.TERMPOLIS_GIT_ASKPASS_USER = TOKEN_USER
+    env.TERMPOLIS_GIT_ASKPASS_REPLY = run.value
+  }
   return env
 }
 

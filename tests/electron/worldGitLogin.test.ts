@@ -1,4 +1,6 @@
-import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   DROPPED_ENV,
@@ -23,7 +25,10 @@ const GIT = '/usr/bin/git'
 const NONE: LoginRun = { mode: 'none' }
 const BACKGROUND: LoginRun = { mode: 'machine', interactive: false }
 const INTERACTIVE: LoginRun = { mode: 'machine', interactive: true }
-const TOKEN: LoginRun = { mode: 'token' }
+const VALUE = 'tv-' + 'Q7'.repeat(20)
+const TOKEN: LoginRun = { mode: 'token', value: VALUE }
+const ASKPASS = join('/res', 'git-askpass', 'askpass.sh')
+const LOGIN_WORDS = /credential|password|oauth|secret|token/i
 
 /** A `git config --list -z` listing: each entry is `key\nvalue`, entries end with NUL. */
 const listing = (...entries: string[]): string => entries.map((e) => `${e}\0`).join('')
@@ -31,6 +36,9 @@ const listing = (...entries: string[]): string => entries.map((e) => `${e}\0`).j
 function helperDeps(result: Partial<ExecResult> | (() => Promise<ExecResult>), env: NodeJS.ProcessEnv = { PATH: 'p' }) {
   const calls: { cmd: string; args: string[]; opts: ExecOpts }[] = []
   const execFile: ExecFn = async (cmd, args, opts) => {
+    // No login word and no pasted value ever reaches a command line.
+    expect(args.join(' ')).not.toMatch(LOGIN_WORDS)
+    expect(args.join(' ')).not.toContain(VALUE)
     calls.push({ cmd, args, opts })
     if (typeof result === 'function') return result()
     return { code: 0, stderr: '', stdout: '', missing: false, ...result }
@@ -82,7 +90,29 @@ describe('login modes', () => {
     // Only a run the person asked for may show the login helper's own window.
     expect(loginEnv(INTERACTIVE)).toEqual({ GIT_TERMINAL_PROMPT: '0' })
     expect(loginEnv(INTERACTIVE)).not.toHaveProperty('GCM_INTERACTIVE')
+    expect(loginEnv(TOKEN, ASKPASS)).not.toHaveProperty('GCM_INTERACTIVE')
+  })
+
+  it('a token run hands git the shipped askpass and the value, in the environment only', () => {
+    expect(loginEnv(TOKEN, ASKPASS)).toEqual({
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_ASKPASS: ASKPASS,
+      TERMPOLIS_GIT_ASKPASS_USER: 'x-access-token',
+      TERMPOLIS_GIT_ASKPASS_REPLY: VALUE
+    })
+    // With no askpass to read it, the value is not put anywhere.
     expect(loginEnv(TOKEN)).toEqual({ GIT_TERMINAL_PROMPT: '0' })
+    // Only a token run ever names an askpass.
+    for (const run of [NONE, BACKGROUND, INTERACTIVE]) {
+      const env = loginEnv(run, ASKPASS)
+      expect(env).not.toHaveProperty('GIT_ASKPASS')
+      expect(Object.keys(env).some((k) => k.startsWith('TERMPOLIS_GIT_ASKPASS_'))).toBe(false)
+    }
+  })
+
+  it('inherited askpass answers are dropped, in any case', () => {
+    expect(DROPPED_ENV).toEqual(expect.arrayContaining(['GIT_ASKPASS', 'SSH_ASKPASS', 'TERMPOLIS_GIT_ASKPASS_USER', 'TERMPOLIS_GIT_ASKPASS_REPLY']))
+    expect(inheritedEnv({ PATH: 'p', termpolis_git_askpass_reply: 'x', Termpolis_Git_Askpass_User: 'u', git_askpass: '/evil' })).toEqual({ PATH: 'p' })
   })
 
   it('inheritedEnv drops git path variables and any inherited numbered config, in any case', () => {
@@ -182,5 +212,34 @@ describe('hasLoginHelper', () => {
     const { deps, calls } = helperDeps({ stdout: '' }, undefined)
     await hasLoginHelper({ ...deps, env: undefined }, 'github.com')
     expect(calls[0].opts.env.GIT_CEILING_DIRECTORIES).toBe(BASE)
+  })
+})
+
+// The script Termpolis ships, run for real through the sh git itself brings. git is not involved: on this
+// machine no git run may hand a prompt to it, so the prompts here are neutral stand-ins for git's.
+describe('the shipped askpass script', () => {
+  const script = resolve(__dirname, '..', '..', 'resources', 'git-askpass', 'askpass.sh')
+  const sh = process.platform === 'win32' ? 'C:\\Program Files\\Git\\usr\\bin\\sh.exe' : '/bin/sh'
+  const env: Record<string, string> = { TERMPOLIS_GIT_ASKPASS_USER: 'x-access-token', TERMPOLIS_GIT_ASKPASS_REPLY: VALUE }
+  for (const k of ['PATH', 'SYSTEMROOT']) if (process.env[k]) env[k] = process.env[k] as string
+  const ask = (prompt: string): string => {
+    const args = [script, prompt]
+    expect(args.join(' ')).not.toMatch(LOGIN_WORDS)
+    expect(args.join(' ')).not.toContain(VALUE)
+    return execFileSync(sh, args, { env, encoding: 'utf8', windowsHide: true })
+  }
+
+  it('is exactly the one-shot script, with plain line endings, and never names what it answers', () => {
+    const text = readFileSync(script, 'utf8')
+    expect(text).toBe(
+      '#!/bin/sh\ncase "$1" in\n  Username*) printf \'%s\\n\' "$TERMPOLIS_GIT_ASKPASS_USER" ;;\n  *) printf \'%s\\n\' "$TERMPOLIS_GIT_ASKPASS_REPLY" ;;\nesac\n'
+    )
+    expect(text).not.toContain('\r')
+    expect(text).not.toMatch(LOGIN_WORDS)
+  })
+
+  it('answers the user prompt with the user, and any other prompt with the value from its environment', () => {
+    expect(ask("Username for 'https://example.test': ")).toBe('x-access-token\n')
+    expect(ask("Enter value for 'https://example.test': ")).toBe(`${VALUE}\n`)
   })
 })

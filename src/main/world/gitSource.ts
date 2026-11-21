@@ -10,7 +10,9 @@
 // terminal prompt, no askpass program, no helper, so no sign-in window. `machine` lets git use the
 // person's own login helper, with its window only on a run the person asked for. The login settings
 // travel in the environment, never on the command line. An https auth failure comes back as `needsLogin`,
-// so the app can offer a sign-in; an ssh one stays a plain message.
+// so the app can offer a sign-in; an ssh one stays a plain message. `token` hands git a token the person
+// pasted, through the environment of that one run and the askpass Termpolis ships; a token git refuses
+// comes back as TOKEN_REJECTED_MESSAGE, and every message and error of a token run has the token hidden.
 // Never outside the clone: symlinks check out as small text files (core.symlinks=false), so indexing
 // cannot be led to a file elsewhere on the computer.
 //
@@ -20,6 +22,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import * as fsp from 'node:fs/promises'
 import { join } from 'node:path'
 import { BAD_REF_MESSAGE, stripUrlUserinfo, validateGitUrl, validGitRef } from '../../shared/world/gitUrl'
+import { hideValue, normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
 import { binInside } from '../binPath'
 import { configEnv, gitNewEnough, hasLoginHelper, inheritedEnv, loginConfig, loginEnv, OLD_GIT_MESSAGE, parseGitVersion, safetyFlags, type LoginRun } from './gitLogin'
 
@@ -139,6 +142,9 @@ export interface CloneDeps {
   maxBytes?: number
   /** The clock for the overall deadline (default Date.now). */
   now?: () => number
+  /** The full path of the askpass Termpolis ships (resources/git-askpass/askpass.sh). A token run without
+   *  it is refused before git starts. */
+  askpassPath?: string
 }
 
 // ── Real implementations of the injectable deps ──────────────────────────────────────────────────
@@ -308,17 +314,31 @@ function checkGitVersion(deps: CloneDeps, gitBin: string, env: Record<string, st
   return check
 }
 
+export type CloneResult = { ok: true; root: string; changed: boolean } | { ok: false; error: string; needsLogin?: NeedsLogin }
+
 /**
  * Clones `url` (or updates the clone made earlier) under `<baseDir>/world/repos`. `run` says how git may
  * log in (default `none`). `changed` says whether the files may differ from before: always for a new
  * clone, and for an update only when HEAD moved (or could not be read).
+ *
+ * A token run is refused before git starts when the askpass is not shipped or the token cannot be one.
+ * Its returned error, and anything it throws, has every copy of the token hidden.
  */
-export async function cloneRepo(
-  url: string,
-  ref: string | undefined,
-  deps: CloneDeps,
-  run: LoginRun = { mode: 'none' }
-): Promise<{ ok: true; root: string; changed: boolean } | { ok: false; error: string; needsLogin?: NeedsLogin }> {
+export async function cloneRepo(url: string, ref: string | undefined, deps: CloneDeps, run: LoginRun = { mode: 'none' }): Promise<CloneResult> {
+  if (run.mode !== 'token') return cloneOnce(url, ref, deps, run)
+  if (!deps.askpassPath) return { ok: false, error: TOKEN_REJECTED_MESSAGE }
+  const token = normalizeToken(run.value)
+  if (!token.ok) return { ok: false, error: token.error }
+  const value = token.value
+  try {
+    const r = await cloneOnce(url, ref, deps, { mode: 'token', value })
+    return r.ok ? r : { ...r, error: hideValue(r.error, value) }
+  } catch (e) {
+    throw new Error(hideValue(e instanceof Error ? e.message : String(e), value))
+  }
+}
+
+async function cloneOnce(url: string, ref: string | undefined, deps: CloneDeps, run: LoginRun): Promise<CloneResult> {
   const checked = validateGitUrl(url)
   if (!checked.ok) return { ok: false, error: checked.reason }
   if (ref !== undefined && !validGitRef(ref)) return { ok: false, error: BAD_REF_MESSAGE }
@@ -350,12 +370,14 @@ export async function cloneRepo(
   env.GIT_CEILING_DIRECTORIES = reposDir
 
   // A git too old to read the login settings from the environment is refused before anything is touched.
-  const version = await checkGitVersion(deps, gitBin, env)
+  // It gets its own copy: the login settings below, a token's among them, are never in what it saw.
+  const version = await checkGitVersion(deps, gitBin, { ...env })
   if (ext?.aborted) return { ok: false, error: CANCELLED_MESSAGE }
   if (version === 'missing') return { ok: false, error: NO_GIT_MESSAGE }
   if (version === 'old') return { ok: false, error: OLD_GIT_MESSAGE }
   // The login settings for this run (and whether git may prompt) go over the inherited environment.
-  Object.assign(env, configEnv(loginConfig(run)), loginEnv(run))
+  // The env is built afresh for every run and dropped when it ends: nothing here keeps or returns it.
+  Object.assign(env, configEnv(loginConfig(run)), loginEnv(run, deps.askpassPath))
 
   // Only a clone that finished (marker inside .git) is updated in place. Anything else is not trusted.
   const updating = await exists(join(root, '.git', CLONE_MARKER))
@@ -473,7 +495,8 @@ export async function cloneRepo(
     if (!auth && !unseen) return { ok: false, error: `Couldn't reach that repository: ${failure}` }
     // An https host that wanted a login can be signed in to; ssh logins are the ssh agent's business.
     if (host === null) return { ok: false, error: SSH_AUTH_MESSAGE }
-    return { ok: false, error: auth ? AUTH_MESSAGE : notFoundMessage(host), needsLogin: { host, helper: await hasLoginHelper(deps, host) } }
+    const authError = run.mode === 'token' ? TOKEN_REJECTED_MESSAGE : AUTH_MESSAGE
+    return { ok: false, error: auth ? authError : notFoundMessage(host), needsLogin: { host, helper: await hasLoginHelper(deps, host) } }
   }
   if (!updating) {
     try {

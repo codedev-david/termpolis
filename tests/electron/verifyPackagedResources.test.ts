@@ -17,7 +17,8 @@
  *     REQUIRED_RESOURCE_FILES is updated).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from 'fs'
+import { execFileSync } from 'child_process'
+import { chmodSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { tmpdir } from 'os'
 
@@ -38,12 +39,22 @@ afterEach(() => {
   } catch {}
 })
 
+/** The shipped askpass, executable as electron-builder copies it from a checkout. */
+function addAskpass(res: string, mode = 0o755): string {
+  const file = join(res, 'git-askpass', 'askpass.sh')
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, '#!/bin/sh\n')
+  chmodSync(file, mode)
+  return file
+}
+
 function makeWinFixture(appOutDir: string, includeAdapter: boolean, size = 123) {
   const res = join(appOutDir, 'resources')
   mkdirSync(join(res, 'mcp-adapter'), { recursive: true })
   if (includeAdapter) {
     writeFileSync(join(res, 'mcp-adapter', 'stdio-adapter.cjs'), 'x'.repeat(size))
     writeFileSync(join(res, 'mcp-adapter', 'termpolis-console-list.cjs'), 'x'.repeat(size))
+    addAskpass(res)
   }
   return res
 }
@@ -54,6 +65,7 @@ function makeMacFixture(appOutDir: string, includeAdapter: boolean) {
   if (includeAdapter) {
     writeFileSync(join(res, 'mcp-adapter', 'stdio-adapter.cjs'), 'x'.repeat(100))
     writeFileSync(join(res, 'mcp-adapter', 'termpolis-console-list.cjs'), 'x'.repeat(100))
+    addAskpass(res)
   }
   return res
 }
@@ -127,6 +139,49 @@ describe('verifyPackagedResources — verifyResourcesFolder', () => {
     )
   })
 
+  it('THROWS when the askpass is missing, naming it and its extraResources entry', () => {
+    const res = makeWinFixture(join(sandbox, 'win-unpacked'), true)
+    rmSync(join(res, 'git-askpass'), { recursive: true })
+    expect(() => verifier.verifyResourcesFolder(res, 'win32')).toThrow(/git-askpass\/askpass\.sh/)
+    expect(() => verifier.verifyResourcesFolder(res, 'win32')).toThrow(/resources\/git-askpass/)
+  })
+
+  it('THROWS on a macOS or Linux package whose askpass git could not run', () => {
+    for (const platform of ['darwin', 'mas', 'linux']) {
+      const res = makeWinFixture(join(sandbox, `${platform}-unpacked`), true)
+      addAskpass(res, 0o644)
+      expect(() => verifier.verifyResourcesFolder(res, platform)).toThrow(/git-askpass\/askpass\.sh is not executable/)
+    }
+  })
+
+  it('a Windows package has no execute bit to check', () => {
+    const res = makeWinFixture(join(sandbox, 'win-unpacked'), true)
+    addAskpass(res, 0o644)
+    expect(() => verifier.verifyResourcesFolder(res, 'win32')).not.toThrow()
+  })
+
+  it.runIf(process.platform !== 'win32')('passes a macOS or Linux package whose askpass is executable', () => {
+    for (const platform of ['darwin', 'linux']) {
+      const res = makeWinFixture(join(sandbox, `${platform}-unpacked`), true)
+      expect(() => verifier.verifyResourcesFolder(res, platform)).not.toThrow()
+    }
+  })
+
+  it('checks the askpass bit for the platform this runs on when none is named', () => {
+    const res = makeWinFixture(join(sandbox, 'host-unpacked'), true)
+    addAskpass(res, 0o644)
+    if (process.platform === 'win32') expect(() => verifier.verifyResourcesFolder(res)).not.toThrow()
+    else expect(() => verifier.verifyResourcesFolder(res)).toThrow(/not executable/)
+  })
+
+  it('afterPack checks the bit for the platform being packaged', () => {
+    const out = join(sandbox, 'linux-unpacked')
+    const res = makeWinFixture(out, true)
+    addAskpass(res, 0o644)
+    expect(() => verifier.verifyFromAfterPack({ appOutDir: out, electronPlatformName: 'linux' })).toThrow(/not executable/)
+    expect(() => verifier.verifyFromAfterPack({ appOutDir: out, electronPlatformName: 'win32' })).not.toThrow()
+  })
+
   it('error message points at extraResources config (so next dev has a fix path)', () => {
     const out = join(sandbox, 'win-unpacked')
     const res = makeWinFixture(out, false)
@@ -156,13 +211,16 @@ describe('verifyPackagedResources — verifyFromAfterPack', () => {
   it('composes appOutDir + platform correctly (darwin)', () => {
     const out = join(sandbox, 'mac')
     makeMacFixture(out, true)
-    expect(() =>
+    const run = () =>
       verifier.verifyFromAfterPack({
         appOutDir: out,
         electronPlatformName: 'darwin',
         packager: { appInfo: { productFilename: 'Termpolis' } },
-      }),
-    ).not.toThrow()
+      })
+    // A Windows file system has no execute bit to give the fixture's askpass, so there the only
+    // complaint may be that bit: every file was still found inside Termpolis.app/Contents/Resources.
+    if (process.platform === 'win32') expect(run).toThrow(/missing 1 required[\s\S]*Missing:\n {2}- git-askpass\/askpass\.sh is not executable/)
+    else expect(run).not.toThrow()
   })
 
   it('throws with the resources path included when verification fails', () => {
@@ -318,12 +376,33 @@ describe('verifyPackagedResources — REQUIRED_RESOURCE_FILES contract', () => {
     expect(verifier.REQUIRED_RESOURCE_FILES).toContain('mcp-adapter/termpolis-console-list.cjs')
   })
 
+  it('includes the git askpass a token run hands to git', () => {
+    expect(verifier.REQUIRED_RESOURCE_FILES).toContain('git-askpass/askpass.sh')
+  })
+
   it('every required file has a matching source file in the repo so the build can actually ship it', () => {
     for (const rel of verifier.REQUIRED_RESOURCE_FILES) {
-      const src = rel.replace(/^mcp-adapter\//, 'src/mcp-adapter/')
+      const src = rel.replace(/^mcp-adapter\//, 'src/mcp-adapter/').replace(/^git-askpass\//, 'resources/git-askpass/')
       const abs = join(REPO_ROOT, src)
       expect(existsSync(abs), `source for required resource ${rel} not found at ${abs}`).toBe(true)
     }
+  })
+})
+
+describe('the git askpass in the repository', () => {
+  it('is committed executable, so a macOS or Linux checkout packages it runnable', () => {
+    const out = execFileSync('git', ['ls-files', '-s', 'resources/git-askpass/askpass.sh'], { cwd: REPO_ROOT, encoding: 'utf8' })
+    expect(out.split(' ')[0]).toBe('100755')
+  })
+
+  it('is shipped by package.json extraResources', () => {
+    const pkg = require('../../package.json')
+    expect(pkg.build.extraResources).toContainEqual({ from: 'resources/git-askpass', to: 'git-askpass' })
+  })
+
+  it('keeps plain line endings in every checkout, so sh can read it on Windows too', () => {
+    const attrs = execFileSync('git', ['check-attr', 'eol', 'resources/git-askpass/askpass.sh'], { cwd: REPO_ROOT, encoding: 'utf8' })
+    expect(attrs.trim()).toBe('resources/git-askpass/askpass.sh: eol: lf')
   })
 })
 
