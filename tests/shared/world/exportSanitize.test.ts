@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { cardText } from '../../../src/main/world/cardText'
 import { edgeCard } from '../../../src/renderer/src/world/engine/cards'
-import { OUTSIDE, relativePath, sanitizeText, sanitizeWorld, type SanitizeContext } from '../../../src/shared/world/exportSanitize'
+import { OUTSIDE, isRevealingPath, relativePath, revealingPaths, sanitizeText, sanitizeWorld, type SanitizeContext } from '../../../src/shared/world/exportSanitize'
 import type { Building, Claim, WorldDoc, WorldEdge } from '../../../src/shared/world/types'
 import { minimal } from '../../renderer/world/helpers'
 
@@ -95,10 +95,11 @@ describe('sanitizeText', () => {
   })
 
   it('finds a POSIX root outside the usual home folders', () => {
-    const ctx = { ...posix, root: '/srv/code/repo' }
-    expect(sanitizeText('cloned to /srv/code/repo/app.ts', ctx)).toBe('cloned to app.ts')
-    expect(sanitizeText('cloned to /srv/code/repo.', ctx)).toBe('cloned to ..')
-    expect(sanitizeText('see /srv/code/repo.old/x', ctx)).toBe('see /srv/code/repo.old/x')
+    const ctx = { ...posix, root: '/code/repo' }
+    expect(sanitizeText('cloned to /code/repo/app.ts', ctx)).toBe('cloned to app.ts')
+    expect(sanitizeText('cloned to /code/repo.', ctx)).toBe('cloned to ..')
+    expect(sanitizeText('see /code/repo.old/x', ctx)).toBe('see /code/repo.old/x')
+    expect(sanitizeText('see /srv/code/repo.old/x', { ...posix, root: '/srv/code/repo' })).toBe(`see ${OUTSIDE}/x`)
   })
 
   it('finds the home folder in any case and slash form, and only as a whole folder name', () => {
@@ -308,5 +309,129 @@ describe('sanitizeWorld', () => {
         expect(json).not.toContain(fwd.replace(/\//g, '\\'))
       }
     }
+  })
+})
+
+describe('fix round 1', () => {
+  const john: SanitizeContext = {
+    root: 'C:\\Users\\John Smith\\repo', home: 'C:\\Users\\John Smith', userData: 'C:\\Users\\John Smith\\AppData\\Roaming\\Termpolis',
+  }
+
+  describe('path fields also get the free-text scan', () => {
+    const forms: [string, string][] = [
+      ['file:///C:/Users/dev/notes.md', `${OUTSIDE}/notes.md`],
+      [' C:\\Users\\dev\\notes.md', ` ${OUTSIDE}/notes.md`],
+      ['"C:\\Users\\dev\\notes.md"', `"${OUTSIDE}/notes.md"`],
+      ['src/a.ts (from C:\\Users\\dev\\x)', `src/a.ts (from ${OUTSIDE}/x)`],
+    ]
+    for (const [form, want] of forms) {
+      it(`cleans ${JSON.stringify(form)} as an evidence ref, a member and a growth seed`, () => {
+        const doc = minimal()
+        const b = doc.buildings[0]
+        b.how = [claimOf('x', { kind: 'file', ref: form }, { kind: 'symbol', ref: form }, { kind: 'test', ref: form })]
+        b.members = [form]
+        b.floors[0].members = [form]
+        doc.districts[0].members = [form]
+        b.growth = { start: 'file', seed: form, folder: form, merged: 0, mergedFiles: 0, folded: 0, cap: 60 }
+        const out = sanitizeWorld(doc, win)
+        const ob = out.buildings[0]
+        expect(ob.how[0].evidence.map((e) => e.ref)).toEqual([want, want, want])
+        expect(ob.members).toEqual([want])
+        expect(ob.floors[0].members).toEqual([want])
+        expect(out.districts[0].members).toEqual([want])
+        expect(ob.growth).toMatchObject({ seed: want, folder: want })
+        expect(JSON.stringify(out).toLowerCase()).not.toMatch(/users[\\/]+dev/)
+      })
+    }
+  })
+
+  describe('a home folder with a space never leaks its user name', () => {
+    const probes: [string, string][] = [
+      ['\\\\?\\C:\\Users\\John Smith\\x.ts', `${OUTSIDE}/x.ts`],
+      ['\\\\localhost\\C$\\Users\\John Smith\\x', `${OUTSIDE}/x`],
+      ['C:\\\\Users\\\\John Smith\\\\x.ts', `${OUTSIDE}/x.ts`],
+      ['\\\\?\\C:\\Users\\John Smith\\repo\\src\\a.ts', 'src/a.ts'],
+      ['\\\\.\\c:\\users\\john smith', OUTSIDE],
+    ]
+    for (const [probe, want] of probes) {
+      it(`rewrites ${JSON.stringify(probe)}`, () => {
+        expect(sanitizeText(`at ${probe} now`, john)).toBe(`at ${want} now`)
+        expect(relativePath(probe, john)).toBe(want)
+      })
+    }
+
+    it('keeps the name out of a whole sanitised world', () => {
+      const doc = minimal()
+      const all = probes.map(([p]) => p)
+      doc.buildings[0].name = all.join(' and ')
+      doc.buildings[0].members = all
+      doc.buildings[0].how = [claimOf(all.join(', '), ...all.map((ref): Claim['evidence'][number] => ({ kind: 'file', ref })))]
+      const json = JSON.stringify(sanitizeWorld(doc, john))
+      expect(json).not.toContain('John Smith')
+      expect(json.toLowerCase()).not.toContain('john')
+    })
+
+    it('matches a UNC root given in long form', () => {
+      const ctx = { ...john, root: '\\\\srv\\share\\repo' }
+      expect(sanitizeText('in \\\\?\\UNC\\srv\\share\\repo\\b.ts', ctx)).toBe('in b.ts')
+      expect(sanitizeText('in \\\\srv\\share\\repo\\c.ts', ctx)).toBe('in c.ts')
+    })
+  })
+
+  it('keeps only file, symbol, test, commit and person evidence', () => {
+    const doc = minimal()
+    const kinds = ['file', 'symbol', 'test', 'commit', 'person', 'memory', 'transcriptStep', 'trace', 'metric', 'log', 'deploy'] as const
+    doc.buildings[0].how = [claimOf('x', ...kinds.map((kind) => ({ kind, ref: 'r' })))]
+    expect(sanitizeWorld(doc, win).buildings[0].how[0].evidence.map((e) => e.kind)).toEqual(['file', 'symbol', 'test', 'commit', 'person'])
+  })
+
+  describe('the revealing-path definition', () => {
+    const revealing = [
+      'C:\\Users\\a\\b.ts', 'D:/w/x.ts', 'x_C:\\Users\\a', '\\\\?\\C:\\a', '\\\\srv\\share\\a', 'file://host/x', 'FILE:///C:/x',
+      '~/a', '~ann/a', '/home/a', '/USERS/ann', '/root/x', '/mnt/c', '/media/x', '/Volumes/x', '/tmp/x', '/private/x',
+      '/var/log/x', '/opt/x', '/srv/x', '/workspace/x', '/workspaces/x', '(/home/a)', 'HOME=/home/a',
+    ]
+    const safe = ['/api/users', '/etc/hosts', 'https://example.com/a/b', 'src/a.ts', `${OUTSIDE}/home`, `${OUTSIDE}/x.ts`, 'a~/b', 'x/home/a', '/homework/x', '[redacted]']
+    for (const t of revealing) {
+      it(`counts ${t} as revealing`, () => {
+        expect(isRevealingPath(`see ${t}`)).toBe(true)
+        expect(isRevealingPath(sanitizeText(`see ${t}`, win))).toBe(false)
+      })
+    }
+    for (const t of safe) {
+      it(`leaves ${t} alone`, () => {
+        expect(isRevealingPath(t)).toBe(false)
+        expect(sanitizeText(t, win)).toBe(t)
+      })
+    }
+
+    it('lists every revealing path in a text', () => {
+      expect(revealingPaths('a C:\\x.ts and /opt/y, and /api/z')).toEqual(['C:\\x.ts', '/opt/y,'])
+      expect(revealingPaths('nothing here')).toEqual([])
+    })
+
+    it('rewrites the widened forms', () => {
+      expect(sanitizeText('x_C:\\Users\\a\\b.ts', win)).toBe(`x_${OUTSIDE}/b.ts`)
+      expect(sanitizeText('at /USERS/ann/f.md', win)).toBe(`at ${OUTSIDE}/f.md`)
+      expect(sanitizeText('at ~ann/notes/x.md and ~ann', win)).toBe(`at ${OUTSIDE}/x.md and ~ann`)
+      expect(sanitizeText('at file://srv/share/y.md', win)).toBe(`at ${OUTSIDE}/y.md`)
+      expect(sanitizeText('at file:///home/dev/repo/src/a.ts', posix)).toBe('at src/a.ts')
+      expect(sanitizeText('at file:/home/dev/repo/src/b.ts', posix)).toBe('at src/b.ts')
+      expect(sanitizeText('at file:///C:/Users/John Smith/repo/c.ts', john)).toBe('at c.ts')
+      expect(sanitizeText('at file:///C:/Users/John%20Smith/x.ts', john)).toBe(`at ${OUTSIDE}/x.ts`)
+      expect(sanitizeText('at file:///C:/a%zz/b.ts', win)).toBe(`at ${OUTSIDE}/b.ts`)
+      expect(relativePath('~ann', win)).toBe(OUTSIDE)
+    })
+  })
+
+  it('merges glossary terms that sanitise to the same text instead of dropping one', () => {
+    const doc = minimal()
+    doc.glossary = { 'C:\\Users\\dev\\repo': 'the project', 'c:/users/dev/repo': 'the folder', constructor: 'builds' }
+    expect(sanitizeWorld(doc, win).glossary).toEqual({ '.': 'the project; the folder', constructor: 'builds' })
+  })
+
+  it('gives a drive-root or filesystem-root project the key "project"', () => {
+    expect(sanitizeWorld(minimal(), { ...win, root: 'C:\\' }).projectKey).toBe('project')
+    expect(sanitizeWorld(minimal(), { ...posix, root: '/' }).projectKey).toBe('project')
   })
 })

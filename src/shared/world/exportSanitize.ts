@@ -2,6 +2,20 @@
 // WorldDoc this module returns, so nothing here may let through an absolute path, the home or userData folder,
 // a memory note, a transcript step, an evidence excerpt or a secret. The doc is rebuilt field by field from the
 // WorldDoc contract (types.ts): a field this file does not name is dropped, never copied.
+//
+// What counts as a revealing path in free text (REVEALING_PATH, isRevealingPath): one that names a place on the
+// machine, so it is always rewritten. It is a route-safe heuristic, deliberately so: a claim saying a service
+// "serves /api/users" must keep its words.
+//   - Windows drive paths, with either slash (`C:\x`, `C:/x`), even glued to a word (`x_C:\x`); `C://` is a URL.
+//   - UNC paths (`\\server\share`), with the long forms `\\?\` and `\\.\`.
+//   - `file://` URLs, whatever the host.
+//   - `~/` and `~user/`.
+//   - POSIX paths whose first folder is home, Users, root, mnt, media, Volumes, tmp, private, var, opt, srv,
+//     workspace or workspaces, in any letter case, starting the text or after a space, quote, bracket, `=`, `,`,
+//     `;` or `:`.
+// Other absolute POSIX text (`/api/users`, `/etc/hosts`) is left alone. Beyond that definition, the project root,
+// the home folder and the userData folder are found wherever they appear (any case, either slash, doubled
+// backslashes, the long and admin-share forms), so a folder name holding a space never splits.
 
 import { redactSecrets } from '../appLog'
 import type { Building, BuildingGrowth, Claim, District, Evidence, EvidenceKind, External, Floor, PlanReconcile, Proposal, Tour, WorldDoc, WorldEdge } from './types'
@@ -14,16 +28,59 @@ export const OUTSIDE = '<outside the project>'
 
 /** A design world's key (main/world/designer.ts DESIGN_KEY_RE): it holds no path, so it is kept as it is. */
 const DESIGN_KEY = /^design:[A-Za-z0-9][A-Za-z0-9._-]*$/
-/** Evidence kinds whose ref is a project path; every other ref is free text. */
+/** Evidence kinds whose ref is a project path; the other kept kinds' refs are free text. */
 const PATH_KINDS: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>(['file', 'symbol', 'test'])
-/** Evidence kinds that quote the person's notes or agent sessions: never exported. */
-const PRIVATE_KINDS: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>(['memory', 'transcriptStep'])
+/** The only evidence an export carries. Memory notes, transcript steps and the live layer's kinds never leave. */
+const EXPORTED_KINDS: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>(['file', 'symbol', 'test', 'commit', 'person'])
+
+/** The characters a path in free text runs on with: up to a space, a quote, an angle bracket or a pipe. */
+const REST = `[^\\s"'<>|]*`
+/** The source of the revealing-path pattern described at the top of this file (use it with the `i` flag). */
+export const REVEALING_PATH = [
+  `[a-z]:(?:\\\\|/(?!/))${REST}`,
+  `\\\\\\\\[^\\s\\\\/"'<>|]+[\\\\/]${REST}`,
+  `file://${REST}`,
+  `(?<![\\w~])~[\\w.-]*[\\\\/]${REST}`,
+  `(?<=^|[\\s"'\`(\\[{=,;:])/(?:home|users|root|mnt|media|volumes|tmp|private|var|opt|srv|workspaces?)(?![\\w.-])${REST}`,
+].join('|')
+
+/** Every revealing path in `text`, as written (trailing punctuation included). */
+export function revealingPaths(text: string): string[] {
+  return text.match(new RegExp(REVEALING_PATH, 'gi')) ?? []
+}
+
+/** Whether `text` holds a revealing path. */
+export function isRevealingPath(text: string): boolean {
+  return new RegExp(REVEALING_PATH, 'i').test(text)
+}
 
 /** Forward slashes, no trailing slash. */
 const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '')
 /** A drive path or a UNC path: compared without regard to case. */
 const windowsLike = (p: string): boolean => /^[A-Za-z]:(\/|$)/.test(p) || p.startsWith('//')
 const isAbsolute = (p: string): boolean => /^[A-Za-z]:(\/|$)/.test(p) || p.startsWith('/')
+
+/**
+ * A path in the plain form the comparisons expect: a file URL becomes its (decoded) path, every slash a single
+ * forward slash (a UNC path keeps its leading two), the long forms `//?/` and `//./` lose their prefix and an admin
+ * share (`//host/C$/x`) becomes its drive (`C:/x`).
+ */
+function plainPath(p: string): string {
+  let n = p
+  const url = /^file:(?:\/\/([^/\\]*))?(.*)$/i.exec(n)
+  if (url) {
+    n = (url[1] ? `//${url[1]}` : '') + url[2]
+    try { n = decodeURIComponent(n) } catch { /* a stray % : keep the path as written */ }
+    if (/^\/[A-Za-z]:/.test(n)) n = n.slice(1)
+  }
+  n = n.replace(/\\/g, '/')
+  n = (n.startsWith('//') ? '/' : '') + n.replace(/\/{2,}/g, '/')
+  const long = /^\/\/[?.]\/(unc\/)?/i.exec(n)
+  if (long) n = (long[1] ? '//' : '') + n.slice(long[0].length)
+  const share = /^\/\/[^/]+\/([A-Za-z])\$(?=\/|$)/.exec(n)
+  if (share) n = `${share[1]}:${n.slice(share[0].length)}`
+  return n
+}
 
 /** Whether `p` (normalised) lies in or is `base` (normalised), by whole folder names; gives the segments past it. */
 function under(p: string, base: string): string[] | null {
@@ -61,11 +118,12 @@ function resolveRelative(segments: string[]): string {
 /**
  * A path as the export may show it: relative to the project root with forward slashes, or `<outside the project>/`
  * and its basename. The home and userData folders themselves become `<outside the project>` alone, so the account
- * name never shows. `~` stands for the home folder.
+ * name never shows. `~` stands for the home folder; `~user` is another account's, so it is outside.
  */
 export function relativePath(p: string, ctx: SanitizeContext): string {
-  let n = p.replace(/\\/g, '/')
+  let n = plainPath(p)
   if (n === '~' || n.startsWith('~/')) n = norm(ctx.home) + n.slice(1)
+  else if (n.startsWith('~')) return outside(n.split('/').slice(1))
   if (!isAbsolute(n)) return n ? resolveRelative(n.split('/')) : ''
   const n2 = norm(n)
   const inRoot = ctx.root === null ? null : under(n2, norm(ctx.root))
@@ -74,65 +132,70 @@ export function relativePath(p: string, ctx: SanitizeContext): string {
   return outside(n2.split('/'))
 }
 
-/** A RegExp source matching `base` in either slash form and any letter case. */
+const SEP = '[\\\\/]+'
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * A RegExp source (for the `i` flag) matching folder `base` however a text writes it: either slash, doubled
+ * backslashes (JSON), the long forms `\\?\` and `\\.\`, and a drive as an admin share (`\\host\C$`).
+ */
 function baseSource(base: string): string {
-  return norm(base).split('/').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/[A-Za-z]/g, (c) => `[${c.toLowerCase()}${c.toUpperCase()}]`)).join('[\\\\/]')
+  const n = norm(base)
+  const parts = n.split('/')
+  const drive = /^([A-Za-z]):$/.exec(parts[0])
+  if (drive) {
+    const head = `(?:[\\\\/]{2}[?.]${SEP})?(?:${drive[1]}:|[\\\\/]{2}[^\\s\\\\/"'<>|]+${SEP}${drive[1]}\\$)`
+    return head + parts.slice(1).map((s) => SEP + escapeRe(s)).join('')
+  }
+  if (n.startsWith('//')) return `(?:[\\\\/]{2}[?.]${SEP}unc${SEP}|[\\\\/]{2})` + parts.slice(2).map(escapeRe).join(SEP)
+  return parts.map(escapeRe).join(SEP)
 }
 
 /** Whatever the app's log scanner (appLog.ts) takes for a secret, as `[redacted]`. */
 const redact = (text: string): string => redactSecrets(text).replace(/<redacted(?:-[a-z]+)?>/g, '[redacted]')
 
-/** The characters a path in free text runs on with: up to a space, a quote, an angle bracket or a pipe. */
-const REST = `[^\\s"'<>|]*`
-/** Absolute paths found in free text without knowing the folders: drive, UNC (backslashes), `~` and user folders. */
-const GENERIC = [
-  `\\b[A-Za-z]:[\\\\/]${REST}`,
-  `\\\\\\\\[^\\s\\\\/"'<>|]+[\\\\/]${REST}`,
-  `\\B~[\\\\/]${REST}`,
-  `\\B/(?:home|Users|root|mnt|media|Volumes|tmp|private)(?![A-Za-z0-9._-])${REST}`,
-].join('|')
 /** Punctuation that ends a sentence, not a path. */
 const TRAILING = /[.,;:!?)\]}]+$/
 
-function pathPattern(ctx: SanitizeContext): RegExp {
+/** The project root, home and userData folders, longest first, each ending at a whole name, then the rest of the path. */
+function knownPattern(ctx: SanitizeContext): RegExp {
   const bases = [ctx.root ?? '', ctx.userData, ctx.home].filter((b) => norm(b) !== '')
     .sort((a, b) => norm(b).length - norm(a).length).map(baseSource)
-  // `(?!)` never matches: with no folder known, group 1 simply never takes part. A known folder must end at a whole
-  // name: not followed by a name character, nor by a dot that starts one (a dot ending the sentence is fine).
-  const known = [...bases, '(?!)'].join('|')
-  return new RegExp(`(${known})(?![A-Za-z0-9_-]|\\.[A-Za-z0-9._-])((?:[\\\\/]${REST})?)|(${GENERIC})`, 'g')
+  // A `file:` URL of a known folder is taken whole. `(?!)` never matches, so with no folder known the pass changes
+  // nothing. A folder ends at a whole name: not followed by a name character, nor by a dot that starts one (a dot
+  // ending the sentence is fine).
+  return new RegExp(`((?:file:/*)?(?:${[...bases, '(?!)'].join('|')}))(?![\\w-]|\\.[\\w.-])((?:[\\\\/]${REST})?)`, 'gi')
+}
+
+/** sanitizeText for one context, its patterns built once (a world holds thousands of strings). */
+function textCleaner(ctx: SanitizeContext): (text: string) => string {
+  const known = knownPattern(ctx)
+  const revealing = new RegExp(REVEALING_PATH, 'gi')
+  const rewrite = (path: string, tail: string): string => relativePath(path.slice(0, path.length - tail.length), ctx) + tail
+  // A known folder named alone keeps its last character; a path running on drops the punctuation ending a sentence.
+  const knownHit = (_m: string, base: string, rest: string): string =>
+    rewrite(base + rest, rest ? (TRAILING.exec(rest) ?? [''])[0] : '')
+  const revealingHit = (m: string): string => rewrite(m, (TRAILING.exec(m) ?? [''])[0])
+  // The known folders go first, in a pass of their own: a generic pattern would stop at a space in the user name.
+  return (text) => redact(text).replace(known, knownHit).replace(revealing, revealingHit)
 }
 
 /**
- * Free text as the export may show it: a secret the app's log scanner recognises becomes `[redacted]`, then every
- * absolute path in it is rewritten with relativePath (the project root, the home and userData folders are found
- * in either slash form and any case, even holding spaces).
+ * Free text as the export may show it: a secret the app's log scanner recognises becomes `[redacted]`, then the
+ * project root, home and userData folders and every revealing path (top of this file) are rewritten with relativePath.
  */
 export function sanitizeText(text: string, ctx: SanitizeContext): string {
   return textCleaner(ctx)(text)
 }
 
-/** sanitizeText for one context, its pattern built once (a world holds thousands of strings). */
-function textCleaner(ctx: SanitizeContext): (text: string) => string {
-  const pattern = pathPattern(ctx)
-  const rewrite = (m: string, base: string | undefined, rest: string | undefined): string => {
-    const path = base === undefined ? m : base + rest
-    // A folder named alone keeps its last character; a path running on drops the punctuation that ends a sentence.
-    const tail = base === undefined || rest ? (TRAILING.exec(path) ?? [''])[0] : ''
-    return relativePath(path.slice(0, path.length - tail.length), ctx) + tail
-  }
-  return (text) => redact(text).replace(pattern, rewrite)
-}
-
 /** Rebuilds a WorldDoc from its known fields only, with every path relative and no private evidence. */
 export function sanitizeWorld(doc: WorldDoc, ctx: SanitizeContext): WorldDoc {
   const text = textCleaner(ctx)
-  const path = (s: string): string => relativePath(s, ctx)
-  const evidence = (e: Evidence): Evidence =>
-    ({ kind: e.kind, ref: PATH_KINDS.has(e.kind) ? redact(path(e.ref)) : text(e.ref) })
+  // A path field is relativised, then scanned as text: a URL, a quoted or padded path, or a note after it.
+  const path = (s: string): string => text(relativePath(s, ctx))
+  const evidence = (e: Evidence): Evidence => ({ kind: e.kind, ref: PATH_KINDS.has(e.kind) ? path(e.ref) : text(e.ref) })
   const claims = (list: Claim[]): Claim[] => list.map((c) =>
-    ({ text: text(c.text), state: c.state, evidence: c.evidence.filter((e) => !PRIVATE_KINDS.has(e.kind)).map(evidence) }))
+    ({ text: text(c.text), state: c.state, evidence: c.evidence.filter((e) => EXPORTED_KINDS.has(e.kind)).map(evidence) }))
   const floor = (f: Floor): Floor => ({ name: text(f.name), tech: f.tech.map(text), members: f.members.map(path) })
   const growth = (g: BuildingGrowth): BuildingGrowth => ({
     start: g.start, seed: path(g.seed), ...(g.folder !== undefined ? { folder: path(g.folder) } : {}),
@@ -161,25 +224,31 @@ export function sanitizeWorld(doc: WorldDoc, ctx: SanitizeContext): WorldDoc {
     id: p.id, title: text(p.title), summary: claims(p.summary), buildings: p.buildings.map(building), edges: p.edges.map(edge),
     ...(p.reconcile ? { reconcile: reconcile(p.reconcile) } : {}), ...(p.removes ? { removes: [...p.removes] } : {}),
   })
-  const record = <T, U>(r: Record<string, T>, key: (k: string) => string, value: (v: T) => U): Record<string, U> =>
-    Object.fromEntries(Object.entries(r).map(([k, v]) => [key(k), value(v)]))
-  const same = (k: string): string => k
+  const record = <T, U>(r: Record<string, T>, value: (v: T) => U): Record<string, U> =>
+    Object.fromEntries(Object.entries(r).map(([k, v]) => [k, value(v)]))
+  // Two terms can sanitise to the same text: the first keeps its place and the second's definition joins it.
+  const glossary = new Map<string, string>()
+  for (const [term, def] of Object.entries(doc.glossary)) {
+    const key = text(term)
+    const prev = glossary.get(key)
+    glossary.set(key, prev === undefined ? text(def) : `${prev}; ${text(def)}`)
+  }
   const projectKey = DESIGN_KEY.test(doc.projectKey) ? doc.projectKey
-    : ctx.root !== null ? baseName(norm(ctx.root).split('/')) : text(doc.projectKey)
+    : ctx.root !== null ? baseName(norm(ctx.root).split('/')) || 'project' : text(doc.projectKey)
   return {
     version: doc.version, projectKey, generatedAt: doc.generatedAt,
     sourceRevision: { head: doc.sourceRevision.head, dirty: doc.sourceRevision.dirty },
     districts: doc.districts.map(district), buildings: doc.buildings.map(building), edges: doc.edges.map(edge),
     externals: doc.externals.map(external),
-    glossary: record(doc.glossary, text, text),
-    cargo: record(doc.cargo, same, (c) => ({ shape: c.shape, color: c.color, label: text(c.label) })),
-    processes: record(doc.processes, same, (p) => ({ label: text(p.label), color: p.color })),
+    glossary: Object.fromEntries(glossary),
+    cargo: record(doc.cargo, (c) => ({ shape: c.shape, color: c.color, label: text(c.label) })),
+    processes: record(doc.processes, (p) => ({ label: text(p.label), color: p.color })),
     tours: doc.tours.map(tour),
     layout: {
-      seed: doc.layout.seed, positions: record(doc.layout.positions, same, (v) => [v[0], v[1], v[2]] as [number, number, number]),
+      seed: doc.layout.seed, positions: record(doc.layout.positions, (v) => [v[0], v[1], v[2]] as [number, number, number]),
       ...(doc.layout.round !== undefined ? { round: doc.layout.round } : {}),
     },
-    runtimeNames: record(doc.runtimeNames, same, (names) => names.map(text)),
+    runtimeNames: record(doc.runtimeNames, (names) => names.map(text)),
     ...(doc.runtimeHandSet ? { runtimeHandSet: [...doc.runtimeHandSet] } : {}),
     layers: { plan: doc.layers.plan.map(proposal) },
     ...(doc.labelTokens !== undefined ? { labelTokens: doc.labelTokens } : {}),
