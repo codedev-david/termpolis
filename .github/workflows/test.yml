@@ -374,15 +374,17 @@ jobs:
       - name: Exported page e2e
         shell: bash
         run: ${{ matrix.wrap }} npx playwright test -c playwright.export.config.ts ${{ matrix.projects }} --reporter=list
-      - name: Upload failure traces
-        if: failure()
+      # Not only on failure: a test that fails and then passes on its retry leaves the trace of the failed attempt.
+      - name: Upload traces
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: playwright-traces-export-page-${{ matrix.os }}
           # Not the exported fixture pages: the smart one alone is ~37 MB, and globalSetup rebuilds them every run.
           path: |
-            test-results/
+            test-results/export-page/
             !test-results/export-fixture/
+          if-no-files-found: ignore
           retention-days: 7
 
   # The Windows installer, updating over a running Termpolis the way the in-app updater does.

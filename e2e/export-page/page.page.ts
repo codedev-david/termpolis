@@ -199,18 +199,23 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
   const reading = (): Promise<number | null> => labelOffset(o.page, name)
   let from: number | null = null
   if (three) {
-    // The first reading is taken with the camera still. Hovering the building cannot draw its label here: at the
+    // The first reading is taken with the camera near-still. Hovering the building cannot draw its label here: at the
     // opening view a district's slab stands for its buildings, so a hover picks the district. So time stops (the
     // page's frames, timers and clock with it, and the idle turn), the click selects the building, and the clock
     // is stepped one frame at a time until the selected building's label is drawn. The flight (1.5 s, eased in)
-    // has then moved the camera by a fraction of a percent, however slow the runner.
+    // has then barely moved the camera: the reading has been up to 7% under that of a camera that never moved.
     await o.page.clock.pauseAt(await o.page.evaluate(() => Date.now() + 100))
-    await first.click({ force: true }) // no actionability wait: it watches animation frames, and they are stopped
-    for (let step = 0; step < 10 && from === null; step++) {
-      await o.page.clock.runFor(16)
-      from = await reading()
+    try {
+      await expect(first).toBeVisible()
+      await first.click({ force: true }) // no actionability wait: it watches animation frames, and they are stopped
+      for (let step = 0; step < 10 && from === null; step++) {
+        await o.page.clock.runFor(16)
+        from = await reading()
+      }
+    } finally {
+      // Also on a failure, so its trace shows the page running rather than frozen.
+      await o.page.clock.resume()
     }
-    await o.page.clock.resume()
     expect(from, `the label of ${name} is drawn once it is picked`).not.toBeNull()
   } else {
     await first.click()
@@ -224,7 +229,7 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
     const start = from as number
     let reached = Number.NaN
     await expect.poll(async () => (reached = (await reading()) ?? Number.NaN), { message: `the label of ${name} reaches the middle of the city`, intervals: [100], timeout: 5000 }).toBeLessThan(0.2)
-    test.info().annotations.push({ type: 'fly', description: `${name}: label at ${start.toFixed(3)} of the half-diagonal from the middle with the camera still; reached < 0.2 at ${reached.toFixed(3)}` })
+    test.info().annotations.push({ type: 'fly', description: `${name}: label at ${start.toFixed(3)} of the half-diagonal from the middle with the camera near-still; reached < 0.2 at ${reached.toFixed(3)}` })
     expect(start, `the label of ${name} starts far from the middle, so the flight has somewhere to go`).toBeGreaterThan(0.4)
     expect(reached, `the label of ${name} came well nearer the middle than it started (${start.toFixed(3)})`).toBeLessThan(start / 2)
   }

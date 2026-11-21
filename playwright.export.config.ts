@@ -17,7 +17,8 @@ export default defineConfig({
   retries: 1,
   // One at a time: a smart page holds about 40 MB of model and wasm, and the Ask-ready budget is measured.
   workers: 1,
-  use: { trace: 'on-first-retry', viewport: { width: 1280, height: 800 } },
+  // No `trace` here: the specs launch their own browsers, so tracing is done in the `open` fixture (helpers.ts).
+  use: { viewport: { width: 1280, height: 800 } },
   projects: [
     { name: 'electron' },
     ...(process.platform === 'win32' ? [{ name: 'msedge', use: { browserName: 'chromium' as const, channel: 'msedge' } }] : []),

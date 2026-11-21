@@ -73,6 +73,23 @@ const WATCH_CSP = `(() => {
   document.addEventListener('securitypolicyviolation', (e) => { seen.push(e.effectiveDirective + ' ' + e.blockedURI) })
 })()`
 
+/** How long one tracing.stop may take before the teardown gives up on that trace and goes on to close. */
+const STOP_TIMEOUT_MS = 15_000
+
+/** `work`, or a rejection naming `what` once `ms` have passed; the timer never holds the process open. */
+async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not settle in ${ms / 1000} s`)), ms)
+    timer.unref()
+  })
+  try {
+    return await Promise.race([work, late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 const same = (a: string, b: string): boolean => decodeURIComponent(a).toLowerCase() === decodeURIComponent(b).toLowerCase()
 
 /** The browser a project names; Electron is opened by the fixture itself. */
@@ -94,8 +111,11 @@ async function launchElectron(): Promise<{ app: ElectronApplication; page: Page;
     app,
     page,
     close: async () => {
-      await quitApp(app)
-      fs.rmSync(userData, { recursive: true, force: true })
+      try {
+        await quitApp(app)
+      } finally {
+        fs.rmSync(userData, { recursive: true, force: true })
+      }
     },
   }
 }
@@ -128,6 +148,7 @@ export const test = base.extend<Fixtures>({
         closers.push(b.close)
         context = b.context
       }
+      // Snapshots stay on: a failed smart.page test's trace measured 0.5-4.4 MB across the four projects.
       await context.tracing.start({ screenshots: true, snapshots: true })
       traced.push(context)
       const requests: string[] = []
@@ -159,15 +180,24 @@ export const test = base.extend<Fixtures>({
       }
     })
     const keep = info.status !== info.expectedStatus
-    for (const [i, context] of traced.entries()) {
-      try {
-        if (!keep) { await context.tracing.stop(); continue }
-        const path = info.outputPath(i === 0 ? 'trace.zip' : `trace-${i}.zip`)
-        await context.tracing.stop({ path })
-        await info.attach(i === 0 ? 'trace' : `trace-${i}`, { path, contentType: 'application/zip' })
-      } catch { /* a trace that cannot be saved never fails the teardown */ }
+    try {
+      for (const [i, context] of traced.entries()) {
+        const name = i === 0 ? 'trace' : `trace-${i}`
+        try {
+          if (!keep) { await within(context.tracing.stop(), STOP_TIMEOUT_MS, 'tracing.stop'); continue }
+          const file = info.outputPath(`${name}.zip`)
+          await within(context.tracing.stop({ path: file }), STOP_TIMEOUT_MS, 'tracing.stop')
+          // Pushed, not info.attach(): attach copies the file into attachments/, and a trace can be tens of MB.
+          info.attachments.push({ name, path: file, contentType: 'application/zip' })
+        } catch (e) {
+          // A trace that cannot be saved (a stalled stop, a browser or Electron that died mid-test) never fails
+          // the teardown, but the report says it is missing.
+          info.annotations.push({ type: 'trace', description: `${name} not saved: ${e instanceof Error ? e.message : String(e)}` })
+        }
+      }
+    } finally {
+      for (const close of closers.reverse()) await close().catch(() => undefined)
     }
-    for (const close of closers.reverse()) await close().catch(() => undefined)
   },
 })
 export { expect }
