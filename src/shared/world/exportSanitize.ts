@@ -6,13 +6,15 @@
 // What counts as a revealing path in free text (REVEALING_PATH, isRevealingPath): one that names a place on the
 // machine, so it is always rewritten. It is a route-safe heuristic, deliberately so: a claim saying a service
 // "serves /api/users" must keep its words.
-//   - Windows drive paths, with either slash (`C:\x`, `C:/x`), even glued to a word (`x_C:\x`); `C://` is a URL.
+//   - Windows drive paths: standalone with either slash (`C:\x`, `C:/x`; `C://` is a URL), glued after a digit or
+//     `_` with either slash (`x_C:/x`), glued after a letter only with a backslash (`xC:\x`), so prose such as
+//     `route:/users` keeps its words. The project, home and userData folders are caught glued in any form anyway.
 //   - UNC paths (`\\server\share`), with the long forms `\\?\` and `\\.\`.
 //   - `file://` URLs, whatever the host.
 //   - `~/` and `~user/`.
 //   - POSIX paths whose first folder is home, Users, root, mnt, media, Volumes, tmp, private, var, opt, srv,
-//     workspace or workspaces, in any letter case, starting the text or after a space, quote, bracket, `=`, `,`,
-//     `;` or `:`.
+//     workspace or workspaces, in any letter case, starting the text or after a space, quote, bracket, `=`, `,`
+//     or `;` (not after `:`, so `route:/users` stays prose).
 // Other absolute POSIX text (`/api/users`, `/etc/hosts`) is left alone. Beyond that definition, the project root,
 // the home folder and the userData folder are found wherever they appear (any case, either slash, doubled
 // backslashes, the long and admin-share forms), so a folder name holding a space never splits.
@@ -37,11 +39,13 @@ const EXPORTED_KINDS: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>(['file',
 const REST = `[^\\s"'<>|]*`
 /** The source of the revealing-path pattern described at the top of this file (use it with the `i` flag). */
 export const REVEALING_PATH = [
-  `[a-z]:(?:\\\\|/(?!/))${REST}`,
+  `(?<![a-z0-9])[a-z]:(?:\\\\|/(?!/))${REST}`,
+  `(?<=[0-9_])[a-z]:[\\\\/]${REST}`,
+  `(?<=[a-z])[a-z]:\\\\${REST}`,
   `\\\\\\\\[^\\s\\\\/"'<>|]+[\\\\/]${REST}`,
   `file://${REST}`,
   `(?<![\\w~])~[\\w.-]*[\\\\/]${REST}`,
-  `(?<=^|[\\s"'\`(\\[{=,;:])/(?:home|users|root|mnt|media|volumes|tmp|private|var|opt|srv|workspaces?)(?![\\w.-])${REST}`,
+  `(?<=^|[\\s"'\`(\\[{=,;])/(?:home|users|root|mnt|media|volumes|tmp|private|var|opt|srv|workspaces?)(?![\\w.-])${REST}`,
 ].join('|')
 
 /** Every revealing path in `text`, as written (trailing punctuation included). */

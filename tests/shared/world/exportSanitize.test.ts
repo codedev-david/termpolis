@@ -435,3 +435,37 @@ describe('fix round 1', () => {
     expect(sanitizeWorld(minimal(), { ...posix, root: '/' }).projectKey).toBe('project')
   })
 })
+
+describe('fix round 2: a drive letter glued to a word', () => {
+  const prose = [
+    'route:/users', 'see:/docs', 'type:/path', 'ns:/x', 'route:/users/:id',
+    'http://localhost:3000/api', '12:30', 'a:b', 'git@github.com:org/repo.git',
+  ]
+  for (const t of prose) {
+    it(`leaves ${t} alone`, () => {
+      expect(isRevealingPath(`go ${t} now`)).toBe(false)
+      expect(sanitizeText(`go ${t} now`, win)).toBe(`go ${t} now`)
+    })
+  }
+
+  const glued: [string, string][] = [
+    ['x_C:\\Users\\a\\b.ts', `x_${OUTSIDE}/b.ts`],
+    ['x_C:/Users/a/b.ts', `x_${OUTSIDE}/b.ts`],
+    ['x2C:/w/b.ts', `x2${OUTSIDE}/b.ts`],
+    ['xC:\\a', `x${OUTSIDE}/a`],
+    ['(C:/x)', `(${OUTSIDE}/x)`],
+    ['x=C:\\x', `x=${OUTSIDE}/x`],
+  ]
+  for (const [t, want] of glued) {
+    it(`still rewrites ${t}`, () => {
+      expect(isRevealingPath(t)).toBe(true)
+      expect(sanitizeText(t, win)).toBe(want)
+    })
+  }
+
+  it('still rewrites a letter-glued home path through the known-folder pass', () => {
+    expect(isRevealingPath('xC:/Users/dev/a.ts')).toBe(false)
+    expect(sanitizeText('xC:/Users/dev/a.ts', win)).toBe(`x${OUTSIDE}/a.ts`)
+    expect(sanitizeText('xC:/Users/dev/repo/src/a.ts', win)).toBe('xsrc/a.ts')
+  })
+})
