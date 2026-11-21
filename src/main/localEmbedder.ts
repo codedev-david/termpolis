@@ -154,6 +154,18 @@ function resolveOnnxModel(dir: string): string | undefined {
   return undefined
 }
 
+/**
+ * Where the embedding model sits, for the Lumopolis export (it copies the model into a smart Ask page): the folder
+ * holding tokenizer.json and tokenizer_config.json, and the ONNX model file. Undefined when either is missing. Uses
+ * the same resolvers, test override included, as the embedder itself, so the export and Ask find one model.
+ */
+export function resolveEmbedderAssets(): { dir: string; model: string } | undefined {
+  const dir = (assetDirResolver ?? resolveAssetDir)()
+  if (!dir) return undefined
+  const model = resolveOnnxModel(dir)
+  return model ? { dir, model } : undefined
+}
+
 function meanPoolNormalize(
   hidden: Float32Array,
   mask: number[][],

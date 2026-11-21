@@ -12,6 +12,7 @@ import {
   _setBackendForTests,
   _setOrtForTests,
   _resetEmbedderForTests,
+  resolveEmbedderAssets,
 } from '../../src/main/localEmbedder'
 import { hasBundledModel } from './_modelFixture'
 
@@ -257,6 +258,20 @@ describe('localEmbedder real load path (fake ort)', () => {
     } finally {
       proc.resourcesPath = orig
     }
+  })
+
+  it('resolveEmbedderAssets names the model folder and file the embedder loads, or undefined when one is missing', () => {
+    const dir = writeModelFixture()
+    _setOrtForTests(makeFakeOrt(), () => dir)
+    const found = resolveEmbedderAssets()
+    expect(found?.dir).toBe(dir)
+    expect(found && fs.existsSync(found.model) && path.basename(found.model)).toBe('model_quantized.onnx')
+    _setOrtForTests(makeFakeOrt(), () => undefined)
+    expect(resolveEmbedderAssets()).toBeUndefined()
+    const noModel = fs.mkdtempSync(path.join(os.tmpdir(), 'embed-nomodel-'))
+    tmpDirs.push(noModel)
+    _setOrtForTests(makeFakeOrt(), () => noModel)
+    expect(resolveEmbedderAssets()).toBeUndefined()
   })
 
   it('rejects a model whose output dim != EMBED_DIM as a hard load failure (F29)', async () => {

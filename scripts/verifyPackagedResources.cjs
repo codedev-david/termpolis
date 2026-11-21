@@ -35,13 +35,19 @@ const path = require('path')
  *   - main/world resolves `<resources>/git-askpass/askpass.sh`, the askpass a Lumopolis token run hands
  *     to git. If it's missing, every private repository opened by token is refused; on macOS and Linux
  *     it must also be executable (see verifyResourcesFolder).
+ *   - main/world/export.ts resolves `<resources>/world-export/world-export.js`, the runtime every exported
+ *     Lumopolis page inlines (built into dist-world by `npm run build:world-viewer`). If it's missing, no world
+ *     can be exported. The ORT wasm a smart Ask page also carries is the asar-unpacked one checked in
+ *     verifyEmbeddingModelBundled, so it is not shipped twice.
  */
 const ASKPASS_REL = 'git-askpass/askpass.sh'
-const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs', 'mcp-adapter/termpolis-console-list.cjs', ASKPASS_REL]
+const WORLD_EXPORT_REL = 'world-export/world-export.js'
+const REQUIRED_RESOURCE_FILES = ['mcp-adapter/stdio-adapter.cjs', 'mcp-adapter/termpolis-console-list.cjs', ASKPASS_REL, WORLD_EXPORT_REL]
 
 /** Where each required file comes from in the repo, as package.json "build.extraResources" ships it. */
 const EXTRA_RESOURCES_HINT =
-  '{ from: "src/mcp-adapter", to: "mcp-adapter", filter: ["**/*.cjs"] } and { from: "resources/git-askpass", to: "git-askpass" }'
+  '{ from: "src/mcp-adapter", to: "mcp-adapter", filter: ["**/*.cjs"] }, { from: "resources/git-askpass", to: "git-askpass" }' +
+  ' and { from: "dist-world", to: "world-export", filter: ["*.js"] } (run npm run build:world-viewer first)'
 
 // The bundled offline embedding model + its WASM runtime. Verified SEPARATELY
 // (not in REQUIRED_RESOURCE_FILES) because a build without the model downloaded

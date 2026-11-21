@@ -4,7 +4,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorldViewer } from '../../../src/renderer/src/world/engine'
 import type { WorldDoc } from '../../../src/shared/world/types'
-import { buildPage, headerText, legendHtml, MADE_WITH_URL, type PageMeta } from '../../../src/world-export/controls'
+import type { PageMeta } from '../../../src/shared/world/exportMeta'
+import { buildPage, headerText, legendHtml, MADE_WITH_URL } from '../../../src/world-export/controls'
 import { edge, minimal, rich } from '../world/helpers'
 
 const META: PageMeta = { project: 'Termpolis', exportedOn: '2026-11-21', head7: 'abc1234', dirty: false }
@@ -50,6 +51,11 @@ describe('headerText', () => {
   it('names the project, the export date and the commit, and says when the tree had uncommitted changes', () => {
     expect(headerText({ ...META, dirty: true })).toBe('Termpolis, exported from Termpolis on 2026-11-21 · commit abc1234 (uncommitted changes)')
     expect(headerText(META)).toBe('Termpolis, exported from Termpolis on 2026-11-21 · commit abc1234')
+  })
+
+  it('leaves the commit part out, dirty flag included, when the world has no commit (a design, a folder without git)', () => {
+    expect(headerText({ ...META, head7: '' })).toBe('Termpolis, exported from Termpolis on 2026-11-21')
+    expect(headerText({ ...META, head7: '', dirty: true })).toBe('Termpolis, exported from Termpolis on 2026-11-21')
   })
 })
 

@@ -6,16 +6,18 @@
 import { buildingCard, DEFAULT_LAYERS, edgeCard, escapeHtml as esc, renderFallback, techCard, THEMES, usesTech, type WorldViewer } from '../renderer/src/world/engine'
 import type { ThemeName } from '../renderer/src/world/engine'
 import type { AskKind } from '../shared/world/askIndex'
+import type { PageMeta } from '../shared/world/exportMeta'
 import type { Tour, WorldDoc } from '../shared/world/types'
-
-/** The page's `meta` block, written by the export. */
-export interface PageMeta { project: string; exportedOn: string; head7: string; dirty: boolean; proposalId?: string }
 
 export const MADE_WITH_URL = 'https://termpolis.com'
 
-/** "<Project>, exported from Termpolis on <date> · commit <head7>", and " (uncommitted changes)" when the tree was dirty. */
+/**
+ * "<Project>, exported from Termpolis on <date> · commit <head7>", and " (uncommitted changes)" when the tree was
+ * dirty. A world with no commit (a design, a folder without git) has no commit part at all, dirty flag included.
+ */
 export function headerText(meta: PageMeta): string {
-  return `${meta.project}, exported from Termpolis on ${meta.exportedOn} · commit ${meta.head7}${meta.dirty ? ' (uncommitted changes)' : ''}`
+  const at = `${meta.project}, exported from Termpolis on ${meta.exportedOn}`
+  return meta.head7 === '' ? at : `${at} · commit ${meta.head7}${meta.dirty ? ' (uncommitted changes)' : ''}`
 }
 
 /** The engine's themes, named for the picker ("neon" shows as "Neon"). The viewer starts on neon. */

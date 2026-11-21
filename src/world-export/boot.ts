@@ -7,7 +7,8 @@ import { askEntries, buildBm25, type AskEntry, type PackedVectors } from '../sha
 import { createWorldViewer, hasWebGL, validateWorld, type WorldViewer } from '../renderer/src/world/engine'
 import { mountAskBox, type AskState } from './askBox'
 import { readBlock, readJsonBlock } from './blocks'
-import { buildPage, type Page, type PageMeta } from './controls'
+import { isMeta, type PageMeta } from '../shared/world/exportMeta'
+import { buildPage, type Page } from './controls'
 import { startSmartAsk, type SmartAsk } from './smartAsk'
 
 /** The `ask` block: the entries the export indexed and, on a smart page, how its `askvec` rows are packed. */
@@ -31,15 +32,6 @@ const domReady = (): Promise<void> => new Promise((resolve) => {
 
 /** The Ask box's state, set once the box exists. */
 let current: () => AskState = () => 'loading'
-
-const META_TYPES: Record<string, string> = { project: 'string', exportedOn: 'string', head7: 'string', dirty: 'boolean' }
-
-/** The meta block as the export writes it: a non-boolean `dirty` would otherwise print "(uncommitted changes)". */
-function isMeta(m: unknown): m is PageMeta {
-  if (typeof m !== 'object' || m === null) return false
-  const x = m as Record<string, unknown>
-  return Object.keys(META_TYPES).every((k) => typeof x[k] === META_TYPES[k]) && (x.proposalId === undefined || typeof x.proposalId === 'string')
-}
 
 /** A block that cannot be read counts as missing: the Ask index is an extra, the world can show without it. */
 const orNull = <T>(read: Promise<T | null>): Promise<T | null> => read.catch(() => null)

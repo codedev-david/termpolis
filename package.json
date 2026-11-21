@@ -75,6 +75,13 @@
       {
         "from": "resources/git-askpass",
         "to": "git-askpass"
+      },
+      {
+        "from": "dist-world",
+        "to": "world-export",
+        "filter": [
+          "*.js"
+        ]
       }
     ],
     "afterPack": "scripts/afterPack.cjs",

@@ -48,6 +48,14 @@ function addAskpass(res: string, mode = 0o755): string {
   return file
 }
 
+/** The exported-page runtime, as electron-builder copies it from dist-world. */
+function addWorldExport(res: string): string {
+  const file = join(res, 'world-export', 'world-export.js')
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, '(()=>{})()\n')
+  return file
+}
+
 function makeWinFixture(appOutDir: string, includeAdapter: boolean, size = 123) {
   const res = join(appOutDir, 'resources')
   mkdirSync(join(res, 'mcp-adapter'), { recursive: true })
@@ -55,6 +63,7 @@ function makeWinFixture(appOutDir: string, includeAdapter: boolean, size = 123) 
     writeFileSync(join(res, 'mcp-adapter', 'stdio-adapter.cjs'), 'x'.repeat(size))
     writeFileSync(join(res, 'mcp-adapter', 'termpolis-console-list.cjs'), 'x'.repeat(size))
     addAskpass(res)
+    addWorldExport(res)
   }
   return res
 }
@@ -66,6 +75,7 @@ function makeMacFixture(appOutDir: string, includeAdapter: boolean) {
     writeFileSync(join(res, 'mcp-adapter', 'stdio-adapter.cjs'), 'x'.repeat(100))
     writeFileSync(join(res, 'mcp-adapter', 'termpolis-console-list.cjs'), 'x'.repeat(100))
     addAskpass(res)
+    addWorldExport(res)
   }
   return res
 }
@@ -380,12 +390,38 @@ describe('verifyPackagedResources — REQUIRED_RESOURCE_FILES contract', () => {
     expect(verifier.REQUIRED_RESOURCE_FILES).toContain('git-askpass/askpass.sh')
   })
 
+  it('includes the runtime every exported Lumopolis page inlines', () => {
+    expect(verifier.REQUIRED_RESOURCE_FILES).toContain('world-export/world-export.js')
+  })
+
   it('every required file has a matching source file in the repo so the build can actually ship it', () => {
+    // world-export.js is a build output (dist-world is not committed): its source is the runtime's entry.
     for (const rel of verifier.REQUIRED_RESOURCE_FILES) {
-      const src = rel.replace(/^mcp-adapter\//, 'src/mcp-adapter/').replace(/^git-askpass\//, 'resources/git-askpass/')
+      const src = rel === 'world-export/world-export.js' ? 'src/world-export/boot.ts'
+        : rel.replace(/^mcp-adapter\//, 'src/mcp-adapter/').replace(/^git-askpass\//, 'resources/git-askpass/')
       const abs = join(REPO_ROOT, src)
       expect(existsSync(abs), `source for required resource ${rel} not found at ${abs}`).toBe(true)
     }
+  })
+})
+
+describe('the exported-page runtime', () => {
+  it('is shipped by package.json extraResources from dist-world, scripts only', () => {
+    const pkg = require('../../package.json')
+    expect(pkg.build.extraResources).toContainEqual({ from: 'dist-world', to: 'world-export', filter: ['*.js'] })
+  })
+
+  it('is built before packaging: npm run build runs the world build, which includes the export pass', () => {
+    const pkg = require('../../package.json')
+    expect(pkg.scripts.build).toContain('npm run build:world-viewer')
+    expect(pkg.scripts['build:world-viewer']).toContain('--mode export')
+  })
+
+  it('THROWS when the runtime is missing, naming it and its extraResources entry', () => {
+    const res = makeWinFixture(join(sandbox, 'win-unpacked'), true)
+    rmSync(join(res, 'world-export'), { recursive: true })
+    expect(() => verifier.verifyResourcesFolder(res, 'win32')).toThrow(/world-export\/world-export\.js/)
+    expect(() => verifier.verifyResourcesFolder(res, 'win32')).toThrow(/from: "dist-world", to: "world-export"/)
   })
 })
 
