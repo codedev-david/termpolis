@@ -6,7 +6,10 @@
  * is a first start. A relaunch with the SAME folder is the "setting off" case.
  *
  * The two reference frames in launch-intro.spec.ts-snapshots/ are shared by all platforms: the
- * artwork is pre-rendered, so one frame per card is right everywhere.
+ * artwork is pre-rendered, so one frame per card is right everywhere. They are a Linux CI runner's
+ * frames (run 44871421371), cropped to the box the test takes: the Linux and Windows runners render
+ * them identically, macOS within 16 pixels, and a GPU-rasterised laptop within 47 and 87, so the
+ * runners' own rendering is the reference and a developer machine is the one with slack.
  */
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import fs from 'fs'
@@ -32,17 +35,27 @@ const LOWER_SLACK_MS = INTRO_BUDGET_MS - INTRO_TOTAL_MS + 2 * 17 + 30
 // The Termpolis card fades in from 0 on the stage: on the overlay's first frame it is a frame or two
 // into its 150 ms at most.
 const FIRST_OPACITY_MAX = 0.3
-// The closing fade must be complete when the overlay goes: the last frame we see is at most a frame
-// or two from the end of its 250 ms.
+// The closing fade must be complete when the overlay goes: by the stage animation's own clock, the
+// opacity its keyframes give at the moment of removal is at most this, a frame or two (25 ms) from the
+// end of its 250 ms. Measured on the animation's clock, not on the last frame the page sampled: a
+// starved runner samples a handful of frames in 2 s (11 on a macOS runner), so its last sample can sit
+// 180 ms before the end of a fade that the compositor finished on time.
 const FINAL_OPACITY_MAX = 0.1
-// The reference frames compare only the card's artwork (its bounding box), with an absolute pixel
-// budget. Set from Windows evidence (3 runs per card, budget 0): the real frames differ from the
-// reference by 0 pixels; without the tag line by 1379 (termpolis) and 2097 (lumopolis); without the
-// card by 7426 and 9631. The budget is under a tenth of the smallest of those, so every control below
-// fails by a wide margin, and leaves room for another platform's image resampling.
+// A sampled frame's stage opacity must be what the stage's keyframes give at that frame's time.
+const SAMPLE_OPACITY_TOLERANCE = 0.02
+// The control's cut: the removal timer fires this much early, in the middle of the 250 ms fade.
+const CUT_FADE_MS = 150
+// The reference frames compare only the card's artwork (a box around it), with an absolute pixel
+// budget. Against the reference, the real frames differ by 0 pixels on the Linux and Windows runners,
+// 1 and 16 on macOS, and 47 (termpolis) and 87 (lumopolis) on a GPU-rasterised Windows laptop; without
+// the tag line by 1247 and 2167, without the card by 7194 and 8165 (the laptop's frames). The budget
+// sits above every real frame and at about a tenth of the smallest control, so every control below
+// fails by a wide margin.
 const MAX_DIFF_PIXELS = 130
 const VIEW_W = 1280
 const VIEW_H = 720
+// The stage's scale in that viewport (introScale): 0.9 * 720 / 1080.
+const VIEW_STAGE_SCALE = 0.6
 const SHELL = process.platform === 'win32' ? 'powershell' : 'bash'
 
 let app: ElectronApplication | null = null
@@ -68,11 +81,14 @@ const WATCH_SCRIPT = `(() => {
  * Times the intro from the document's first frame, so its opening frames are never missed (a loop the
  * test starts after launch begins late, after the overlay is already up). Every frame while the overlay
  * is attached it reads the computed opacity of the stage and of the Termpolis card, and takes the
- * stage animation's start (the overlay's first frame on screen) once it has one; a MutationObserver
- * stamps the exact moment the overlay leaves the DOM.
+ * stage animation's start (the overlay's first frame on screen) once it has one, with the animation's
+ * keyframes and end time; each sample also keeps the stage animation's own time. A MutationObserver
+ * stamps the exact moment the overlay leaves the DOM (the overlay cancels its animations as it goes,
+ * so everything about the stage animation is read while it runs).
  */
 const TIMING_SCRIPT = `(() => {
-  const m = window.__introTiming = { firstAt: null, firstStage: null, firstCard: null, lastStage: null, frames: 0, startTime: null, detachedAt: null }
+  const m = window.__introTiming = { firstAt: null, firstStage: null, firstCard: null, lastStage: null, lastStageTime: null, frames: 0, startTime: null, stageEnd: null, stageDelay: null, stageEasing: null, stageKeyframes: null, detachedAt: null }
+  let stageAnim = null
   let attached = false
   new MutationObserver(() => {
     const on = !!document.querySelector('${INTRO}')
@@ -88,11 +104,24 @@ const TIMING_SCRIPT = `(() => {
         m.firstStage = stage
         m.firstCard = Number(getComputedStyle(root.querySelector('[data-testid="launch-intro-termpolis"]')).opacity)
       }
-      if (m.firstAt !== null) { m.lastStage = stage; m.frames++ }
       if (m.startTime === null) {
         // The root's own animations: the stage's.
         const a = root.getAnimations().find((x) => typeof x.startTime === 'number')
-        if (a) m.startTime = a.startTime
+        if (a) {
+          stageAnim = a
+          m.startTime = a.startTime
+          const timing = a.effect.getComputedTiming()
+          m.stageEnd = timing.endTime
+          m.stageDelay = timing.delay
+          m.stageEasing = timing.easing
+          m.stageKeyframes = a.effect.getKeyframes().map((k) => ({ offset: k.computedOffset, opacity: Number(k.opacity), easing: k.easing }))
+        }
+      }
+      if (m.firstAt !== null) {
+        m.lastStage = stage
+        // The same frame's time on the stage animation's clock (null before the animation has started).
+        m.lastStageTime = stageAnim ? stageAnim.currentTime : null
+        m.frames++
       }
     }
     if (m.detachedAt === null) requestAnimationFrame(tick)
@@ -134,6 +163,70 @@ function freezeScript(t: number): string {
 })()`
 }
 
+/**
+ * The control for the closing-fade check: a product whose removal comes before its fade ends. While
+ * the overlay is attached, the removal timer (set when the stage animation is ready, to the rest of
+ * INTRO_TOTAL_MS) fires CUT_FADE_MS early. The not-painted and hard-cap timers are untouched.
+ */
+const CUT_FADE_SCRIPT = `(() => {
+  const realSetTimeout = window.setTimeout.bind(window)
+  window.setTimeout = (cb, delay, ...args) => {
+    const d = Number(delay)
+    if (document.querySelector('${INTRO}') && d !== ${NOT_PAINTED_MS} && d > ${INTRO_TOTAL_MS - NOT_PAINTED_MS} && d <= ${INTRO_TOTAL_MS}) {
+      window.__introFadeCut = true
+      return realSetTimeout(cb, Math.max(0, d - ${CUT_FADE_MS}), ...args)
+    }
+    return realSetTimeout(cb, delay, ...args)
+  }
+})()`
+
+interface StageKeyframe { offset: number; opacity: number; easing: string }
+
+interface Timing {
+  firstAt: number | null
+  firstStage: number
+  firstCard: number
+  lastStage: number
+  lastStageTime: number | null
+  frames: number
+  startTime: number | null
+  stageEnd: number | null
+  stageDelay: number | null
+  stageEasing: string | null
+  stageKeyframes: StageKeyframe[] | null
+  detachedAt: number | null
+}
+
+/** The stage opacity the keyframes give at time `t` on the animation's clock (linear keyframes, no delay). */
+function stageOpacityAt(keyframes: StageKeyframe[], end: number, t: number): number {
+  const p = Math.min(1, Math.max(0, t / end))
+  for (let i = 1; i < keyframes.length; i++) {
+    const [a, b] = [keyframes[i - 1], keyframes[i]]
+    if (p <= b.offset) return b.offset === a.offset ? b.opacity : a.opacity + ((b.opacity - a.opacity) * (p - a.offset)) / (b.offset - a.offset)
+  }
+  return keyframes[keyframes.length - 1].opacity
+}
+
+/** Waits for the overlay to leave, then returns the in-page timing record. */
+async function introTiming(page: Page): Promise<Timing> {
+  const read = (): Promise<Timing> => page.evaluate(() => (window as unknown as { __introTiming: Timing }).__introTiming)
+  await expect.poll(async () => (await read()).detachedAt !== null, { timeout: 30_000 }).toBe(true)
+  const m = await read()
+  expect(m.firstAt, 'the intro left without its page ever computing a frame of it').not.toBeNull()
+  expect(m.startTime, 'the intro left without ever reaching the screen').not.toBeNull()
+  expect(m.stageKeyframes, 'the stage animation was never seen').not.toBeNull()
+  // The interpolation below is linear: the stage's fade must be too, or the check must learn its easing.
+  expect(m.stageEasing).toBe('linear')
+  expect(m.stageDelay).toBe(0)
+  expect((m.stageKeyframes as StageKeyframe[]).map((k) => k.easing)).toEqual((m.stageKeyframes as StageKeyframe[]).map(() => 'linear'))
+  return m
+}
+
+/** The stage opacity its own keyframes give at the moment the overlay was removed. */
+function opacityAtRemoval(m: Timing): number {
+  return stageOpacityAt(m.stageKeyframes as StageKeyframe[], m.stageEnd as number, (m.detachedAt as number) - (m.startTime as number))
+}
+
 interface LaunchOptions {
   introSwitch?: boolean
   init?: string[]
@@ -146,7 +239,11 @@ async function launch(base: string, { introSwitch = true, init = [] }: LaunchOpt
   const env: Record<string, string> = { ...(process.env as Record<string, string>), NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1' }
   if (introSwitch) env.TERMPOLIS_TEST_LAUNCH_INTRO = '1'
   else delete env.TERMPOLIS_TEST_LAUNCH_INTRO
-  app = await electron.launch({ args: e2eLaunchArgs(labelFor(base)), env })
+  // Device scale factor 1 whatever the display: on a machine whose window opens at another scale
+  // (a laptop with mixed-scale monitors reported devicePixelRatio 0.99999998 and innerWidth 1281 for
+  // a 1280 viewport), the stage lands a fraction of a pixel off, and every image of the artwork is
+  // resampled at a different phase. The CI runners are already at 1.
+  app = await electron.launch({ args: [...e2eLaunchArgs(labelFor(base)), '--force-device-scale-factor=1'], env })
   // Before the window exists (it opens a few seconds after the process starts), so the scripts
   // are in the document from its first byte.
   for (const content of init) await app.context().addInitScript({ content })
@@ -181,20 +278,37 @@ async function terminalText(page: Page, id: string): Promise<string> {
   )
 }
 
+/**
+ * Why a terminal's lines do not show `echo intro-ok` delivered exactly once, or null when they do.
+ * The command's output appears once. The command line itself can show up twice for one delivery:
+ * when the keys beat the shell's first prompt (seen on a Linux runner), the tty echoes the typed-ahead
+ * line on its own, then the shell redraws it after its prompt. Doubled keys garble a line ('eecho',
+ * 'echo intro-okecho intro-ok') and a repeated delivery runs the command twice. So every line with the
+ * command is the command alone or a prompt followed by it, with the text once, and at most one of each.
+ */
+function typedOnceProblem(lines: string[]): string | null {
+  const outputs = lines.filter((l) => l === 'intro-ok').length
+  if (outputs !== 1) return `the output appears ${outputs} times`
+  const commandLines = lines.filter((l) => l.includes('intro-ok') && l !== 'intro-ok')
+  const bad = commandLines.find((l) => !/^(?:.*[$>#%] )?echo intro-ok$/.test(l) || l.split('intro-ok').length !== 2)
+  if (bad !== undefined) return `a line carries the command doubled or garbled: ${bad}`
+  const echoed = commandLines.filter((l) => l === 'echo intro-ok').length
+  if (commandLines.length === 0 || echoed > 1 || commandLines.length - echoed > 1) return `the command line appears ${commandLines.length} times`
+  return null
+}
+
 test.describe('launch intro', () => {
   test('is visible for at most 2.0 s, from its first frame on screen until it is gone, and never shows the app first', async () => {
     const page = await launch('intro-timing', { init: [WATCH_SCRIPT, TIMING_SCRIPT] })
-    interface Timing { firstAt: number | null; firstStage: number; firstCard: number; lastStage: number; frames: number; startTime: number | null; detachedAt: number | null }
-    const read = (): Promise<Timing> => page.evaluate(() => (window as unknown as { __introTiming: Timing }).__introTiming)
-    await expect.poll(async () => (await read()).detachedAt !== null, { timeout: 30_000 }).toBe(true)
-    const m = await read()
-    expect(m.firstAt, 'the intro left without its page ever computing a frame of it').not.toBeNull()
-    expect(m.startTime, 'the intro left without ever reaching the screen').not.toBeNull()
+    const m = await introTiming(page)
     const firstAt = m.firstAt as number
     const shownAt = m.startTime as number
     const detachedAt = m.detachedAt as number
     const visible = detachedAt - shownAt
-    console.log(`intro timing: visible=${visible.toFixed(1)} ms (on screen to gone), first computed frame to gone=${(detachedAt - firstAt).toFixed(1)} ms, first computed frame to on screen=${(shownAt - firstAt).toFixed(1)} ms, frames=${m.frames}, first stage opacity=${m.firstStage.toFixed(3)}, first card opacity=${m.firstCard.toFixed(3)}, last stage opacity=${m.lastStage.toFixed(3)}`)
+    const keyframes = m.stageKeyframes as StageKeyframe[]
+    const stageEnd = m.stageEnd as number
+    const atRemoval = opacityAtRemoval(m)
+    console.log(`intro timing: visible=${visible.toFixed(1)} ms (on screen to gone), first computed frame to gone=${(detachedAt - firstAt).toFixed(1)} ms, first computed frame to on screen=${(shownAt - firstAt).toFixed(1)} ms, frames=${m.frames}, first stage opacity=${m.firstStage.toFixed(3)}, first card opacity=${m.firstCard.toFixed(3)}, stage fade end=${stageEnd} ms, removal minus fade end=${(visible - stageEnd).toFixed(1)} ms, stage opacity at removal=${atRemoval.toFixed(3)}, last sample: stage opacity=${m.lastStage.toFixed(3)} at ${m.lastStageTime === null ? 'null' : m.lastStageTime.toFixed(1)} ms`)
     expect(visible).toBeLessThanOrEqual(INTRO_BUDGET_MS + UPPER_SLACK_MS)
     expect(visible).toBeGreaterThanOrEqual(INTRO_BUDGET_MS - LOWER_SLACK_MS)
     // The overlay reaches the screen after the page first computes it (never before), and within
@@ -206,9 +320,30 @@ test.describe('launch intro', () => {
     expect(m.firstStage).toBe(1)
     // And the Termpolis card fades in on it rather than appearing at full.
     expect(m.firstCard).toBeLessThan(FIRST_OPACITY_MAX)
-    expect(m.lastStage).toBeLessThanOrEqual(FINAL_OPACITY_MAX)
+    // The closing fade ends at nothing, inside the budget, and is (nearly) complete when the overlay
+    // goes: on the stage animation's own clock, whatever the runner's frame rate.
+    expect(stageOpacityAt(keyframes, stageEnd, stageEnd)).toBe(0)
+    expect(stageEnd).toBeLessThanOrEqual(INTRO_BUDGET_MS)
+    expect(atRemoval).toBeLessThanOrEqual(FINAL_OPACITY_MAX)
+    // The measure catches a removal that the visible-time bounds alone let through: 60 ms early is
+    // still inside the lower bound, and leaves the stage at a quarter of its opacity.
+    expect(stageEnd - 60).toBeGreaterThanOrEqual(INTRO_BUDGET_MS - LOWER_SLACK_MS)
+    expect(stageOpacityAt(keyframes, stageEnd, stageEnd - 60)).toBeGreaterThan(FINAL_OPACITY_MAX)
+    // And the stage really shows that fade: the last frame the page sampled has the opacity the
+    // keyframes give at that frame's time (nothing else holds the stage up).
+    expect(m.lastStageTime, 'no frame was sampled after the stage animation started').not.toBeNull()
+    expect(Math.abs(m.lastStage - stageOpacityAt(keyframes, stageEnd, m.lastStageTime as number))).toBeLessThanOrEqual(SAMPLE_OPACITY_TOLERANCE)
     // The watcher saw the overlay, so the "never shown" checks below can be trusted to see it too.
     expect(await page.evaluate(() => (window as unknown as { __introSeen?: boolean }).__introSeen)).toBe(true)
+  })
+
+  test('control: a closing fade cut short fails the fade check', async () => {
+    const page = await launch('intro-cut-fade', { init: [TIMING_SCRIPT, CUT_FADE_SCRIPT] })
+    const m = await introTiming(page)
+    expect(await page.evaluate(() => (window as unknown as { __introFadeCut?: boolean }).__introFadeCut), 'the control never cut the removal timer').toBe(true)
+    const atRemoval = opacityAtRemoval(m)
+    console.log(`cut fade: removal minus fade end=${((m.detachedAt as number) - (m.startTime as number) - (m.stageEnd as number)).toFixed(1)} ms, stage opacity at removal=${atRemoval.toFixed(3)}`)
+    expect(atRemoval).toBeGreaterThan(FINAL_OPACITY_MAX)
   })
 
   test('typing during the intro lands in the terminal once', async () => {
@@ -242,8 +377,19 @@ test.describe('launch intro', () => {
     // And it stays one: not doubled by a late repeat.
     await page.waitForTimeout(1000)
     const lines = (await terminalText(page, id)).split(/\r?\n/).map((l) => l.trim())
-    expect(lines.filter((l) => l === 'intro-ok')).toHaveLength(1)
-    expect(lines.filter((l) => l.endsWith('echo intro-ok'))).toHaveLength(1)
+    expect(typedOnceProblem(lines), lines.join('\n')).toBeNull()
+    // The check itself: the Linux runner's typed-ahead transcript and a PowerShell one pass, and every
+    // shape of a doubled or repeated delivery fails.
+    expect(typedOnceProblem(['echo intro-ok', 'runner@host:~$ echo intro-ok', 'intro-ok', 'runner@host:~$'])).toBeNull()
+    expect(typedOnceProblem(['PS C:\\Users\\runner> echo intro-ok', 'intro-ok', 'PS C:\\Users\\runner>'])).toBeNull()
+    for (const doubled of [
+      ['runner@host:~$ echo intro-okecho intro-ok', 'intro-okecho intro-ok'],
+      ['runner@host:~$ eecho intro-ok', 'eecho: command not found'],
+      ['runner@host:~$ eecchhoo  iinnttrroo--ookk', 'eecchhoo: command not found'],
+      ['runner@host:~$ echo intro-ok', 'intro-ok', 'runner@host:~$ echo intro-ok', 'intro-ok'],
+      ['echo intro-ok', 'echo intro-ok', 'runner@host:~$ echo intro-ok', 'intro-ok'],
+      ['echo intro-ok', 'runner@host:~$ echo intro-ok', 'runner@host:~$ echo intro-ok', 'intro-ok'],
+    ]) expect(typedOnceProblem(doubled), doubled.join(' / ')).not.toBeNull()
     await expect(page.locator(INTRO)).toHaveCount(0)
   })
 
@@ -301,21 +447,35 @@ test.describe('launch intro', () => {
       // still be attached. If the product's timers change and the hook misses them, this fails here.
       await page.waitForTimeout(INTRO_HARD_CAP_MS + UPPER_SLACK_MS)
       await expect(page.locator(INTRO)).toHaveCount(1)
-      // Compare the card's artwork only: the union of its pieces' boxes, rounded out to whole pixels.
-      // A whole-viewport compare with a ratio budget let a frame with the artwork missing pass.
+      // Compare the card's artwork only: a box around its pieces. A whole-viewport compare with a ratio
+      // budget let a frame with the artwork missing pass.
+      // The frame is taken at the geometry the reference was: scale 1, the fixed viewport, the stage at 0.6.
       const cardSel = `[data-testid="launch-intro-${card}"]`
-      const clip = await page.evaluate((s) => {
+      const geometry = await page.evaluate((s) => {
         const boxes = [...document.querySelectorAll(`${s} img, ${s} div`)].map((e) => e.getBoundingClientRect())
-        const x = Math.floor(Math.min(...boxes.map((b) => b.left)))
-        const y = Math.floor(Math.min(...boxes.map((b) => b.top)))
+        const left = Math.min(...boxes.map((b) => b.left))
+        const top = Math.min(...boxes.map((b) => b.top))
         return {
-          x, y,
-          width: Math.ceil(Math.max(...boxes.map((b) => b.right))) - x,
-          height: Math.ceil(Math.max(...boxes.map((b) => b.bottom))) - y,
+          dpr: window.devicePixelRatio, width: window.innerWidth, height: window.innerHeight,
+          left, top,
+          extentW: Math.max(...boxes.map((b) => b.right)) - left,
+          extentH: Math.max(...boxes.map((b) => b.bottom)) - top,
         }
       }, cardSel)
-      expect(clip.width).toBeGreaterThan(200)
-      expect(clip.height).toBeGreaterThan(100)
+      expect(geometry.dpr).toBe(1)
+      expect([geometry.width, geometry.height]).toEqual([VIEW_W, VIEW_H])
+      // The box's size is the artwork's extent: the pieces' sizes (the manifest's, at the stage's scale),
+      // whatever fraction of a pixel the card starts at, rounded up once (a hair of slack absorbs
+      // float noise). Its origin is the card's top-left rounded down once. So the box is the same size
+      // on every machine, and the reference matches it exactly.
+      const clip = {
+        x: Math.floor(geometry.left),
+        y: Math.floor(geometry.top),
+        width: Math.ceil(geometry.extentW - 0.01),
+        height: Math.ceil(geometry.extentH - 0.01),
+      }
+      const expectedSize = card === 'termpolis' ? [822, 391] : [828, 385]
+      expect([clip.width, clip.height], `the ${card} artwork's extent at stage scale ${VIEW_STAGE_SCALE}`).toEqual(expectedSize)
       const name = `launch-intro-${card}.png`
       const options = { maxDiffPixels: MAX_DIFF_PIXELS }
       const shoot = (): Promise<Buffer> => page.screenshot({ clip, scale: 'css', animations: 'allow' })
