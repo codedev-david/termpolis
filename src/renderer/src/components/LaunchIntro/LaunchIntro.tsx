@@ -97,6 +97,7 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
   const ruleRef = useRef<HTMLDivElement>(null)
   const tagRef = useRef<HTMLImageElement | null>(null)
   const letterRefs = useRef<(HTMLImageElement | null)[]>([])
+  const paintedAt = useRef(0)
   const removalTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // Wait for the first frame. Past NOT_PAINTED_MS (a hidden or minimised window) it never appears.
@@ -113,8 +114,13 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
     frame = requestAnimationFrame(() => {
       clearTimeout(giveUpTimer)
       if (now() - mountedAt > NOT_PAINTED_MS) { giveUp(); return }
-      // The 2.0 s budget runs from this first paint. The timer starts at this frame while the animations
-      // start one to two frames later, so the final fade is cut about 16-30 ms short: invisible, and the 2 s ceiling holds.
+      // The 2.0 s budget runs from this first paint, and the removal timer starts here. The animations
+      // would only start after React re-renders into 'playing', the next effect runs and the browser commits
+      // a frame: measured at about 260 ms later in the real app, and longer when the main thread is busy at
+      // launch. So the playing effect sets each animation's startTime to this paint time (a pending start is
+      // not enough: it waits for a frame too). The animation clock and the timer then end together, the
+      // closing fade completes before the overlay is removed, and the 2 s ceiling holds.
+      paintedAt.current = now()
       removalTimer.current = setTimeout(giveUp, INTRO_TOTAL_MS)
       setPhase('playing')
     })
@@ -146,7 +152,8 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
     }
     const animations = introSteps(reduced).map((step) => {
       const el = step.target === 'letter' ? letterRefs.current[step.index as number] : elements[step.target]
-      return el?.animate(step.keyframes, { delay: step.delay, duration: step.duration, fill: 'both' })
+      const animation = el?.animate(step.keyframes, { delay: step.delay, duration: step.duration, fill: 'both' })
+      return animation && Object.assign(animation, { startTime: paintedAt.current })
     })
     return () => {
       window.removeEventListener('keydown', end, opts)

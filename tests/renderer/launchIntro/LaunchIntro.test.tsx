@@ -155,6 +155,55 @@ describe('LaunchIntro', () => {
     expect(calls.every((c) => c.cancel.mock.calls.length === 1)).toBe(true)
   })
 
+  it('starts the animations on the paint clock (startTime = first paint), and still removes at 2000 ms from paint', () => {
+    let t = 100
+    const now = () => t
+    // calls[].animation is the object returned by animate; record startTime writes on it
+    const times: (number | undefined)[] = []
+    Element.prototype.animate = function (this: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+      const cancel = vi.fn()
+      const anim = { cancel } as unknown as { cancel: typeof cancel; currentTime?: number }
+      Object.defineProperty(anim, 'startTime', { set: (v: number) => { times.push(v) }, get: () => undefined })
+      calls.push({ el: this, keyframes, options, cancel })
+      return anim as unknown as Animation
+    } as typeof Element.prototype.animate
+    render(<LaunchIntro play now={now} />)
+    t = 110
+    const queued = [...frames.values()]
+    frames.clear()
+    // paint at t=110; React renders and the effect runs 260 ms later by the clock
+    act(() => { for (const cb of queued) cb(0); t = 370 })
+    expect(calls.length).toBeGreaterThan(0)
+    expect(times).toHaveLength(calls.length)
+    expect(times.every((v) => v === 110)).toBe(true)
+    act(() => { vi.advanceTimersByTime(1999) })
+    expect(screen.queryByTestId('launch-intro')).not.toBeNull()
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(screen.queryByTestId('launch-intro')).toBeNull()
+  })
+
+  it('a start delayed past the whole timeline still removes at the cap, with the animations at their end', () => {
+    let t = 0
+    const times: (number | undefined)[] = []
+    Element.prototype.animate = function (this: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+      const cancel = vi.fn()
+      const anim = { cancel } as unknown as { cancel: typeof cancel }
+      Object.defineProperty(anim, 'startTime', { set: (v: number) => { times.push(v) }, get: () => undefined })
+      calls.push({ el: this, keyframes, options, cancel })
+      return anim as unknown as Animation
+    } as typeof Element.prototype.animate
+    render(<LaunchIntro play reducedMotion now={() => t} />)
+    const queued = [...frames.values()]
+    frames.clear()
+    act(() => { for (const cb of queued) cb(0); t = 900 })
+    expect(times.length).toBeGreaterThan(0)
+    expect(times.every((v) => v === 0)).toBe(true)
+    act(() => { vi.advanceTimersByTime(1999) })
+    expect(screen.queryByTestId('launch-intro')).not.toBeNull()
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(screen.queryByTestId('launch-intro')).toBeNull()
+  })
+
   it('a key ends it at once and still reaches the focused textarea exactly once', () => {
     const area = document.createElement('textarea')
     document.body.appendChild(area)

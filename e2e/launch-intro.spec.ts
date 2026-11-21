@@ -10,15 +10,21 @@
  */
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import os from 'os'
+import { INTRO_TOTAL_MS } from '../src/renderer/src/lib/launchIntro'
 import { dismissOnboarding, e2eLaunchArgs, ensureE2eBuild, quitApp } from './helpers/launch'
 
 const INTRO = '[data-testid="launch-intro"]'
-const INTRO_MAX_MS = 2000
+// The product's own constant, so a change to the timeline cannot silently detach the freeze hook below.
+const INTRO_MAX_MS = INTRO_TOTAL_MS
 const TEST_SLACK_MS = 250
-// The intro must have been up for nearly its whole timeline, not just some of it. The measure starts at
-// the overlay's animation clock, which begins a few frames after the removal timer does (one run on this
-// machine read 1741 ms), so the floor allows 400 ms. A cut-short intro ends far below that.
-const FLOOR_SLACK_MS = 400
+// The overlay's animations are started at the time already spent since first paint, so their clock and the
+// removal timer end together: the measure (animation start to detach) is 2000 ms plus timer lateness, and a
+// timer never fires early. The floor allows one 60 Hz frame of measurement granularity plus 30 ms. Measured
+// on this machine over 3 runs: 2013, 2010 and 2004 ms, last opacity 0 to 0.012 (before the fix: 1700 to 1766 ms).
+const FLOOR_SLACK_MS = 50
+// The closing fade must be complete when the overlay goes: the last frame we see is at most a frame or two
+// from the end, which is below this opacity.
+const FINAL_OPACITY_MAX = 0.1
 const VIEW_W = 1280
 const VIEW_H = 720
 const SHELL = process.platform === 'win32' ? 'powershell' : 'bash'
@@ -51,11 +57,11 @@ const WATCH_SCRIPT = `(() => {
  */
 function freezeScript(t: number): string {
   return `(() => {
-  const timers = []
+  let latest = null
   const realSetTimeout = window.setTimeout.bind(window)
   window.setTimeout = (cb, delay, ...args) => {
     const id = realSetTimeout(cb, delay, ...args)
-    if (delay === ${INTRO_MAX_MS}) timers.push([id, performance.now()])
+    if (delay === ${INTRO_MAX_MS}) latest = [id, performance.now()]
     return id
   }
   let released = false
@@ -64,7 +70,8 @@ function freezeScript(t: number): string {
       if (!released) {
         released = true
         const now = performance.now()
-        for (const [id, at] of timers) if (now - at < 1500) clearTimeout(id)
+        // Only the intro's own timer: the most recent ${INTRO_MAX_MS} ms timer, made just before it mounted.
+        if (latest && now - latest[1] < 1500) clearTimeout(latest[0])
       }
       const animations = document.getAnimations()
       if (animations.length > 0) {
@@ -128,7 +135,7 @@ async function terminalText(page: Page, id: string): Promise<string> {
 test.describe('launch intro', () => {
   test('shows on launch and is gone by 2.0 s after it first paints', async () => {
     const page = await launch('intro-timing', { init: [WATCH_SCRIPT] })
-    const elapsed = await page.evaluate(async (sel) => {
+    const { elapsed, lastOpacity } = await page.evaluate(async (sel) => {
       const frame = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()))
       const deadline = performance.now() + 10_000
       let el: Element | null = document.querySelector(sel)
@@ -143,14 +150,18 @@ test.describe('launch intro', () => {
         start = (el.getAnimations()[0]?.startTime as number | null | undefined) ?? null
         if (start === null) await frame()
       }
-      while (document.querySelector(sel)) {
+      let lastOpacity = 1
+      for (let overlay = document.querySelector(sel); overlay; overlay = document.querySelector(sel)) {
         if (performance.now() > start + 10_000) throw new Error('the intro never left')
+        lastOpacity = Number(getComputedStyle(overlay).opacity)
         await frame()
       }
-      return performance.now() - start
+      return { elapsed: performance.now() - start, lastOpacity }
     }, INTRO)
     expect(elapsed).toBeLessThanOrEqual(INTRO_MAX_MS + TEST_SLACK_MS)
     expect(elapsed).toBeGreaterThanOrEqual(INTRO_MAX_MS - FLOOR_SLACK_MS)
+    console.log(`intro timing: elapsed=${elapsed.toFixed(0)} ms, last opacity=${lastOpacity}`)
+    expect(lastOpacity).toBeLessThanOrEqual(FINAL_OPACITY_MAX)
     // The watcher saw the overlay, so the "never shown" checks below can be trusted to see it too.
     expect(await page.evaluate(() => (window as unknown as { __introSeen?: boolean }).__introSeen)).toBe(true)
   })
@@ -231,6 +242,10 @@ test.describe('launch intro', () => {
       // here races the overlay's own removal, however slow the runner is.
       const page = await launch(`intro-shot-${card}`, { init: [freezeScript(t)] })
       await page.waitForFunction(() => (window as unknown as { __introFrozen?: boolean }).__introFrozen === true, undefined, { timeout: 30_000 })
+      // Loud check that the hook really cancelled the removal timer: well past the product's timeline the
+      // overlay must still be attached. If the product's timer changes and the hook misses it, this fails here.
+      await page.waitForTimeout(INTRO_MAX_MS + TEST_SLACK_MS)
+      await expect(page.locator(INTRO)).toHaveCount(1)
       // The overlay is the whole viewport, so a viewport clip is the overlay; a clip rather than the element
       // keeps the frame exactly 1280x720 even if the OS rounds the viewport by a pixel.
       const shot = await page.screenshot({ clip: { x: 0, y: 0, width: VIEW_W, height: VIEW_H }, scale: 'css', animations: 'allow' })
