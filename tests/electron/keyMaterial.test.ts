@@ -4411,6 +4411,43 @@ describe('T1 K1: a private key whose algorithm parameters are fixed text (an EC 
   })
 })
 
+describe('a made-up private value that is varied but not random (bytes 0x01 to 0x20) over a real public key (caveat 4, round 1)', () => {
+  // B1 (2cd9cdf0) judges a verified structure from its private value on before the made-up-value check below it: the counting
+  // bytes, followed by the OID and a real public point, look random from there, so such a block is removed in every layout. Before
+  // B1 the PKCS#8 form re-wrapped at 64 and 50 was only reported for about 1 public key in 3 (65 of 200 seeds; seed 1 is one), the
+  // 114 characters before its uneven line holding too few distinct ones. The order is meant: what has a real key's structure and
+  // a real public key is removed when in doubt (a reported documentation example costs a reader one excerpt; a key that goes out
+  // whole cannot be taken back). The constant values (all zero, the number 1, all FF, a fill) are still only reported (above).
+  it('removes it, in SEC1 and PKCS#8, wrapped at 64 or re-wrapped, and leaves none of its lines', () => {
+    const counting = Buffer.from(Array.from({ length: 32 }, (_, i) => i + 1))
+    // (the public point of a fixed key, so the run never depends on a fresh one)
+    const pub = (ecKeyOf('lumopolis ec 1').export({ type: 'pkcs8', format: 'der' }) as Buffer).subarray(-65)
+    const oid = Buffer.from('2a8648ce3d030107', 'hex')
+    const point = der(0xa1, der(0x03, Buffer.concat([Buffer.from([0]), pub])))
+    const sec1 = der(0x30, Buffer.concat([der(0x02, Buffer.from([1])), der(0x04, counting), der(0xa0, der(0x06, oid)), point]))
+    const alg = der(0x30, Buffer.concat([der(0x06, Buffer.from('2a8648ce3d0201', 'hex')), der(0x06, oid)]))
+    const p8 = der(0x30, Buffer.concat([der(0x02, Buffer.from([0])), alg, der(0x04, der(0x30, Buffer.concat([der(0x02, Buffer.from([1])), der(0x04, counting), point])))]))
+    for (const [form, kind, buf] of [['SEC1', 'EC PRIVATE KEY', sec1], ['PKCS#8', 'PRIVATE KEY', p8]] as const) {
+      const flat = buf.toString('base64')
+      const rewrap = (a: number, b: number): string[] => {
+        const out: string[] = []
+        for (let i = 0, w = a; i < flat.length; i += w, w = w === a ? b : a) out.push(flat.slice(i, i + w))
+        return out
+      }
+      for (const [layout, lines] of [['64', wrap(flat)], ['64 and 50', rewrap(64, 50)], ['50 and 64', rewrap(50, 64)], ['76 and 64', rewrap(76, 64)]] as const) {
+        const pem = [`-----BEGIN ${kind}-----`, ...lines, `-----END ${kind}-----`]
+        const label = `${form} ${layout}`
+        // (re-wrapped, it goes in two pieces: the block up to the uneven line, and the rest of its own key from there)
+        expect(keyBlocks(pem.join('\n'))[0], label).toMatchObject({ cls: 'remove', rule: 'private_key' })
+        const r = screenKeys(`Example:\n${pem.join('\n')}\nDone.\n`)
+        expect(Object.keys(r.removed), label).toEqual(['private_key'])
+        expect(r.flagged, label).toEqual({})
+        expect(leakedWindows(r.text, secretLinesOf(pem)), label).toBe(0)
+      }
+    }
+  })
+})
+
 describe('T1 K1: a key in a grep or rg listing whose path holds a long run of base64 characters', () => {
   // `/keys/prod/private` in ./keys/prod/private_key.asc is 18 base64-alphabet characters (a slash is one), and an armored key's blank
   // line shows only its path: that piece was taken for the key's first line, narrower than the real ones, and the key was only reported.
