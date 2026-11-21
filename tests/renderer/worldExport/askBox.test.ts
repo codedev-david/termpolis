@@ -125,6 +125,23 @@ describe('mountAskBox', () => {
     expect(ids()).toEqual(['x1'])
   })
 
+  it('puts the part a one-word question names above a line that only repeats its name, by keyword and by meaning', async () => {
+    const named = [
+      entry('b-mem', 'building', 'Memory host', 'Memory host keeps each note on this computer in its own process and finds related ones with a vector index Memory memoryHost noteStore vectorIndex keyRing'),
+      entry('e-mem', 'line', 'Memory host → Embedder', 'Memory host → Embedder Both ways: Memory host reaches Embedder, and Embedder reaches Memory host memories'),
+      entry('b-emb', 'building', 'Embedder', 'Embedder turns text into numbers')
+    ]
+    const vectors = packInt8(named.map((_, i) => [0, 1, 2].map((h) => (h === i ? 1 : 0))))
+    const keywordOnly = mount({ entries: named, bm25: buildBm25(named.map((e) => e.text)) })
+    await keywordOnly.ask('memory')
+    expect(keywordOnly.ids()[0]).toBe('b-mem')
+    // The meaning ranking likes the line best, as the real model does for a short text that says the name three times.
+    const smart = mount({ entries: named, bm25: buildBm25(named.map((e) => e.text)), vectors, smart: Promise.resolve({ embed: async () => new Float32Array([0, 1, 0]) }) })
+    await smart.box.ready
+    await smart.ask('memory')
+    expect(smart.ids()).toEqual(['b-mem', 'e-mem', 'b-emb'])
+  })
+
   it('ranks by meaning fused with the keywords once smart Ask is ready', async () => {
     const embed = vi.fn(async () => along(3))
     const { ask, ids, box } = mount({ vectors: VECTORS, smart: Promise.resolve({ embed }) })

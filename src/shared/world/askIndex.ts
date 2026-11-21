@@ -163,19 +163,42 @@ const order = (scores: number[], positive: boolean): number[] =>
   scores.map((_, i) => i).filter((i) => !positive || scores[i] > 0).sort((a, b) => scores[b] - scores[a] || a - b)
 
 /**
+ * How much of each entry's own name the question says: the share of the name's words in the question, when every
+ * word of the question is in that name, and 0 otherwise. "memory" is half of "Memory host" but only a third of the
+ * line "Memory host → Embedder", whose name is made of the two names it joins. A question with any word outside a
+ * name fits it 0, so a full sentence rarely fits anything and its ranking is left alone.
+ */
+export function nameFit(entries: AskEntry[], question: string): number[] {
+  const asked = Array.from(new Set(tokenize(question)))
+  return entries.map((e) => {
+    const name = new Set(tokenize(e.name))
+    return asked.length > 0 && asked.every((w) => name.has(w)) ? asked.length / name.size : 0
+  })
+}
+
+/**
  * The best parts for a question. A part made only of test files is scored at TEST_RANK_FACTOR. With meaning scores
  * of one per entry (and FUSE) the two rankings are fused; otherwise the keyword ranking stands alone, and a question no entry shares a
- * word with (empty, punctuation, only stopwords) answers nothing.
+ * word with (empty, punctuation, only stopwords) answers nothing. With `named` (nameFit of the question), the parts
+ * whose name the question fills most lead, in the order the ranking gives them: a newcomer who types a name, or one
+ * word of it, gets that part first, above the lines that only repeat the name (both rankings like those short texts).
  */
-export function rankAsk(entries: AskEntry[], scores: { smart?: number[]; keyword: number[] }, limit = 5): AskHit[] {
+export function rankAsk(entries: AskEntry[], scores: { smart?: number[]; keyword: number[]; named?: number[] }, limit = 5): AskHit[] {
   if (scores.keyword.length !== entries.length) {
     throw new Error(`rankAsk: ${scores.keyword.length} keyword scores for ${entries.length} entries`)
   }
   // Demotion lowers a score whatever its sign (a negative cosine times 0.8 would rise).
   const weigh = (s: number[]): number[] => s.map((x, i) => (entries[i].test ? x - Math.abs(x) * (1 - TEST_RANK_FACTOR) : x))
   const smart = scores.smart && scores.smart.length === entries.length ? scores.smart : undefined
-  const ids = FUSE && smart
+  const named = scores.named
+  if (named && named.length !== entries.length) {
+    throw new Error(`rankAsk: ${named.length} name fits for ${entries.length} entries`)
+  }
+  const ranked = FUSE && smart
     ? rrf([order(weigh(smart), false), order(weigh(scores.keyword), true)])
     : order(weigh(scores.keyword), true)
+  const best = named ? named.reduce((m, x) => Math.max(m, x), 0) : 0
+  const leads = (i: number): boolean => best > 0 && (named as number[])[i] === best
+  const ids = ranked.filter(leads).concat(ranked.filter((i) => !leads(i)))
   return ids.slice(0, limit).map((i) => ({ id: entries[i].id, kind: entries[i].kind, name: entries[i].name, first: entries[i].first }))
 }

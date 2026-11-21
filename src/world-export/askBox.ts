@@ -2,7 +2,7 @@
 // same entry texts the export indexed) answers at once; when the page carries the model, smart Ask loads in the
 // background and, once ready, ranks by meaning fused with the keywords. It never writes an answer of its own.
 // Every result is built from the index's data with textContent, never from HTML.
-import { bm25Scores, cosineScores, rankAsk, tokenize, type AskEntry, type AskHit, type AskKind, type Bm25, type PackedVectors } from '../shared/world/askIndex'
+import { bm25Scores, cosineScores, nameFit, rankAsk, tokenize, type AskEntry, type AskHit, type AskKind, type Bm25, type PackedVectors } from '../shared/world/askIndex'
 import type { SmartAsk } from './smartAsk'
 
 export type AskState = 'keyword' | 'loading' | 'smart' | 'failed'
@@ -106,9 +106,10 @@ export function mountAskBox(host: HTMLElement, deps: AskBoxDeps): AskBox {
     // Nothing to search for (empty, punctuation, only common words): no ranking runs at all.
     if (tokenize(q).length === 0) { show([]); return }
     const keyword = bm25Scores(deps.bm25, q)
+    const named = nameFit(deps.entries, q)
     const smartScores = await meaning(q)
     if (n !== asked) return
-    show(rankAsk(deps.entries, smartScores ? { smart: smartScores, keyword } : { keyword }))
+    show(rankAsk(deps.entries, smartScores ? { smart: smartScores, keyword, named } : { keyword, named }))
   }
   form.addEventListener('submit', (e) => {
     e.preventDefault()

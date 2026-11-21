@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ASK_INDEX_VERSION, BGE_QUERY_PREFIX, FUSE, TEST_RANK_FACTOR, askEntries, bm25Scores, buildBm25, cosineScores, packInt8, rankAsk, rrf, tokenize,
-  type AskEntry
+  ASK_INDEX_VERSION, BGE_QUERY_PREFIX, FUSE, TEST_RANK_FACTOR, askEntries, bm25Scores, buildBm25, cosineScores, nameFit, packInt8, rankAsk, rrf, tokenize,
+  type AskEntry, type AskKind
 } from '../../../src/shared/world/askIndex'
 import { building, claim, edge, rich } from '../../renderer/world/helpers'
 
@@ -213,6 +213,34 @@ describe('rrf', () => {
   })
 })
 
+describe('nameFit', () => {
+  const named = (id: string, kind: AskKind, name: string): AskEntry => ({ id, kind, name, first: '', text: name, test: false })
+  const entries = [
+    named('b-mem', 'building', 'Memory host'),
+    named('e-mem', 'line', 'Memory host → Embedder'),
+    named('b-emb', 'building', 'Embedder'),
+    named('x-relay', 'external', 'Pairing relay'),
+    named('t', 'tour', '→')
+  ]
+
+  it('is the share of a name the question says, when every word of the question is in that name', () => {
+    expect(nameFit(entries, 'memory')).toEqual([1 / 2, 1 / 3, 0, 0, 0])
+    expect(nameFit(entries, 'Memory hosts')).toEqual([1, 2 / 3, 0, 0, 0])
+    expect(nameFit(entries, 'EMBEDDER')).toEqual([0, 1 / 3, 1, 0, 0])
+  })
+
+  it('is 0 for a name the question says only part of itself', () => {
+    expect(nameFit(entries, 'where is each memory kept')).toEqual([0, 0, 0, 0, 0])
+    expect(nameFit(entries, 'relay memory')).toEqual([0, 0, 0, 0, 0])
+  })
+
+  it('counts a repeated word once, and is 0 everywhere for a question with no words', () => {
+    expect(nameFit(entries, 'relay relay relay')).toEqual([0, 0, 0, 1 / 2, 0])
+    for (const q of ['', '?!', 'the of and']) expect(nameFit(entries, q)).toEqual([0, 0, 0, 0, 0])
+    expect(nameFit([], 'memory')).toEqual([])
+  })
+})
+
 describe('rankAsk', () => {
   const entry = (id: string, test = false): AskEntry => ({ id, kind: 'building', name: `N${id}`, first: `F${id}`, text: id, test })
   const entries = [entry('a'), entry('b'), entry('c', true), entry('d'), entry('e'), entry('f'), entry('g')]
@@ -273,5 +301,32 @@ describe('rankAsk', () => {
   it('demotes a test part in the meaning ranking too', () => {
     const e = [entry('t', true), entry('real')]
     expect(rankAsk(e, { smart: [0.5, 0.5], keyword: [1, 1] }).map((h) => h.id)).toEqual(['real', 't'])
+  })
+
+  it('puts the parts whose name the question fills most first, in ranking order, and leaves the rest in place', () => {
+    const e = [entry('a'), entry('b'), entry('c'), entry('d')]
+    const keyword = [4, 3, 2, 1]
+    expect(rankAsk(e, { keyword, named: [0, 0, 1 / 2, 0] }).map((h) => h.id)).toEqual(['c', 'a', 'b', 'd'])
+    expect(rankAsk(e, { keyword, named: [0, 1 / 3, 1 / 2, 1 / 2] }).map((h) => h.id)).toEqual(['c', 'd', 'a', 'b'])
+    expect(rankAsk(e, { keyword, named: [0, 0, 0, 0] }).map((h) => h.id)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('puts the named part first over a fused ranking too', () => {
+    const e = [entry('line'), entry('part'), entry('other')]
+    const scores = { smart: [0.9, 0.1, 0.7], keyword: [3, 1, 2] }
+    expect(rankAsk(e, scores).map((h) => h.id)).toEqual(['line', 'other', 'part'])
+    expect(rankAsk(e, { ...scores, named: [1 / 3, 1 / 2, 0] }).map((h) => h.id)).toEqual(['part', 'line', 'other'])
+  })
+
+  it('never adds a named part the keyword ranking left out, and keeps the limit', () => {
+    const e = [entry('a'), entry('b'), entry('c')]
+    expect(rankAsk(e, { keyword: [2, 1, 0], named: [0, 0, 1] }).map((h) => h.id)).toEqual(['a', 'b'])
+    expect(rankAsk(e, { keyword: [3, 2, 1], named: [0, 1, 1] }, 1).map((h) => h.id)).toEqual(['b'])
+  })
+
+  it('throws when the name fits are not one per entry', () => {
+    const e = [entry('a'), entry('b')]
+    expect(() => rankAsk(e, { keyword: [1, 2], named: [1] })).toThrow(/name/)
+    expect(() => rankAsk(e, { keyword: [1, 2], named: [1, 0, 0] })).toThrow(/name/)
   })
 })

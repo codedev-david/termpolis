@@ -1,0 +1,14 @@
+[
+  { "q": "memory", "top": 1, "labelled": ["b-memhost"] },
+  { "q": "relay", "top": 1, "labelled": ["x-relay"] },
+  { "q": "phone", "top": 1, "labelled": ["x-phone"] },
+  { "q": "proxy", "top": 1, "labelled": ["b-proxy"] },
+  { "q": "gateway", "top": 1, "labelled": ["b-gateway"] },
+  { "q": "embedder", "top": 1, "labelled": ["b-embed"] },
+  { "q": "swarm", "top": 1, "labelled": ["b-swarm"] },
+  { "q": "Token proxy", "top": 1, "labelled": ["b-proxy"] },
+  { "q": "screen", "top": 3, "labelled": ["b-terminals", "b-settings", "b-workflow-canvas", "b-lumo-pane"] },
+  { "q": "Remote & linked", "top": 3, "labelled": ["b-remote", "b-linked"] },
+  { "q": "Agent gateway", "top": 3, "labelled": ["b-mcp", "b-gateway", "b-stdio"] },
+  { "q": "Core", "top": 3, "labelled": ["b-main", "b-pty", "b-proc", "b-workflow-engine", "b-swarm", "b-watchers", "b-codegraph"] }
+]
