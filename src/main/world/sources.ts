@@ -62,7 +62,7 @@ function validEntry(e: unknown): e is WorldEntry {
 }
 
 /** A git entry's `login` as this build reads it: 'machine' or 'token' as stored, absent stays absent, and
- *  anything else (a newer build's value) is the conservative 'token'. */
+ *  anything else (a newer build's value) is the conservative 'token'. Applied only to what is returned. */
 function loginRead(e: WorldEntry): WorldEntry {
   if (e.source.kind !== 'git') return e
   const login: unknown = e.source.login
@@ -119,7 +119,8 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
     } catch {
       parsed = undefined
     }
-    if (Array.isArray(parsed) && parsed.every(validEntry)) return parsed.map(loginRead)
+    // Entries stay as stored (an unknown login included) so a save never rewrites what a newer build wrote.
+    if (Array.isArray(parsed) && parsed.every(validEntry)) return parsed
     await rename(file, `${file}.bad`).catch(() => undefined)
     return []
   }
@@ -132,7 +133,8 @@ export function createSourceRegistry(dir: string, deps: SourceRegistryDeps): Sou
   async function decorate(e: WorldEntry): Promise<WorldEntry> {
     const target = e.source.kind === 'design' ? join(folder, worldFileName(e.key)) : e.source.root
     // An entry stored before user-info was stripped on the way in is cleaned on the way out.
-    const out: WorldEntry = { ...e, source: withoutUserinfo(e.source) }
+    const read = loginRead(e)
+    const out: WorldEntry = { ...read, source: withoutUserinfo(read.source) }
     if (!(await deps.exists(target))) out.missing = true
     return out
   }

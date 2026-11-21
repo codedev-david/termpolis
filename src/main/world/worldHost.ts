@@ -27,7 +27,20 @@ import type { TestRun } from './testStatus'
 import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
 import { confinedReader, isCloneRoot } from './folderSafety'
-import { cloneKey, cloneRepo, dirSizeOf, nodeExecFile, removeDir, type CloneDeps, type CloneResult, type LoginRun, type NeedsLogin } from './gitSource'
+import {
+  CANCELLED_MESSAGE,
+  CLONE_TIMEOUT_MS,
+  cloneKey,
+  cloneRepo,
+  dirSizeOf,
+  nodeExecFile,
+  removeDir,
+  TIMEOUT_MESSAGE,
+  type CloneDeps,
+  type CloneResult,
+  type LoginRun,
+  type NeedsLogin
+} from './gitSource'
 import { normalizeToken, TOKEN_REJECTED_MESSAGE } from '../../shared/world/repoAccess'
 import { resolveGitBin } from '../binPath'
 import type { LabelDeps } from './label'
@@ -470,6 +483,10 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const runsWaiting = new Map<number, (msg: { runs?: unknown; files?: unknown }) => void>()
   /** cloneKey → the running clone and its abort controller: a repeat call joins it, cancel aborts it. */
   const clones = new Map<string, { ctl: AbortController; done: Promise<CloneResult>; run: LoginRun; progress: boolean }>()
+  // Calls waiting behind a different run, and how many cancels came while any waited, by clone key.
+  // Both are dropped when the last waiter of a key is done.
+  const queued = new Map<string, number>()
+  const cancels = new Map<string, number>()
 
   /** Runs `fn` after every earlier job for the same project, so saves never interleave. */
   const serial = <T>(key: string, fn: () => Promise<T>): Promise<T> => {
@@ -800,10 +817,14 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       const read = isCloneRoot(st.userDataPath, root) ? confinedTo(root, readSource) : readSource
       return snapshotFromFiles(root, { read, ...(deps.listFiles ? { listFiles: deps.listFiles } : {}) })
     },
+    // Cancels the running clone or update and every call waiting behind it (a waiting one never starts git).
     cancelClone: async (url: unknown, ref?: unknown) => {
-      const running = clones.get(cloneKey(isStr(url) ? url : '', refOf(ref)))
+      const hash = cloneKey(isStr(url) ? url : '', refOf(ref))
+      const waiting = queued.has(hash)
+      if (waiting) cancels.set(hash, (cancels.get(hash) ?? 0) + 1)
+      const running = clones.get(hash)
       running?.ctl.abort()
-      return running !== undefined
+      return running !== undefined || waiting
     }
   })
 
@@ -822,7 +843,8 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   /**
    * One clone or update of a url and branch at a time. A repeat call joins the running one only when it
    * asks for the same run (an open joining a silent run turns its progress on); a different run waits for
-   * the running one to settle, then starts its own. cancelClone aborts the running one.
+   * the running one to settle, then starts its own, unless cancelClone came meanwhile or the wait alone
+   * used up a run's whole time (then it answers that copy and git never sees it).
    */
   const runClone = (st: HostState, url: unknown, ref: unknown, run: LoginRun, progress: boolean): Promise<CloneResult> => {
     const u = isStr(url) ? url : ''
@@ -832,7 +854,23 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     const running = clones.get(hash)
     if (running) {
       if (!sameRun(running.run, run)) {
-        return running.done.catch(() => undefined).then(() => runClone(st, url, ref, run, progress))
+        const cancelsAtQueue = cancels.get(hash) ?? 0
+        const queuedAt = now()
+        queued.set(hash, (queued.get(hash) ?? 0) + 1)
+        return running.done
+          .catch(() => undefined)
+          .then((): CloneResult | Promise<CloneResult> => {
+            const cancelled = (cancels.get(hash) ?? 0) !== cancelsAtQueue
+            const left = (queued.get(hash) as number) - 1
+            if (left > 0) queued.set(hash, left)
+            else {
+              queued.delete(hash)
+              cancels.delete(hash)
+            }
+            if (cancelled) return { ok: false, error: CANCELLED_MESSAGE }
+            if (now() - queuedAt >= CLONE_TIMEOUT_MS) return { ok: false, error: TIMEOUT_MESSAGE }
+            return runClone(st, url, ref, run, progress)
+          })
       }
       if (progress && !running.progress) {
         running.progress = true

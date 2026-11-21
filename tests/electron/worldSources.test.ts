@@ -144,6 +144,19 @@ describe('source registry', () => {
     expect((await r.list())[0].source).toEqual({ kind: 'git', url: 'https://h/r.git', root: '/g', login: 'machine' })
   })
 
+  it("an unknown login survives a save of another entry unchanged on disk, yet reads as 'token'", async () => {
+    await mkdir(join(dir, 'world'), { recursive: true })
+    const stored = { key: 'k', title: 't', lastOpened: 1, source: { kind: 'git', url: 'https://h/r.git', root: '/g', login: 'future-mode' } }
+    const other = { key: 'k2', title: 'f', lastOpened: 2, source: { kind: 'folder', root: '/a' } }
+    await writeFile(sourcesFile(), JSON.stringify([stored, other]))
+    const r = reg()
+    expect(await r.touch('k2')).toMatchObject({ key: 'k2', lastOpened: 101 })
+    const onDisk = JSON.parse(await readFile(sourcesFile(), 'utf8')) as { key: string }[]
+    expect(onDisk.find((e) => e.key === 'k')).toEqual(stored)
+    expect((await r.get('k'))?.source).toEqual({ kind: 'git', url: 'https://h/r.git', root: '/g', login: 'token' })
+    expect((await r.list()).find((e) => e.key === 'k')?.source).toMatchObject({ login: 'token' })
+  })
+
   it('setLogin changes only how a git world was opened and keeps its place in the recent list', async () => {
     const r = reg()
     const g = await r.upsert({ kind: 'git', url: 'https://h/r.git', ref: 'main', root: '/g' }, 'Repo')

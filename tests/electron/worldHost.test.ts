@@ -42,7 +42,7 @@ import {
   type WorldHostRequest,
   type WorldHostResponse
 } from '../../src/main/world/worldHost'
-import { cloneKey, safetyFlags, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
+import { CANCELLED_MESSAGE, CLONE_TIMEOUT_MS, cloneKey, safetyFlags, TIMEOUT_MESSAGE, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
 import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import type { AnnotationStore } from '../../src/main/world/annotations'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
@@ -1290,10 +1290,11 @@ describe('createWorldHost cloneSource / cancelClone', () => {
       return p
     }
     /** A cloneRepo that records each run and waits until the test releases it. */
-    const pending = () => {
+    const pending = (extra: WorldHostDeps = {}) => {
       const runs: (LoginRun | undefined)[] = []
       const releases: ((r: CloneResult | Error) => void)[] = []
       const h = harness({
+        ...extra,
         cloneRepo: (_u, _r, _d, run) => {
           runs.push(run)
           return new Promise<CloneResult>((resolve, reject) => {
@@ -1465,6 +1466,86 @@ describe('createWorldHost cloneSource / cancelClone', () => {
         { kind: 'progress', projectKey: key, stage: 'cloning', pct: 0 },
         { kind: 'progress', projectKey: key, stage: 'cloning', pct: 100 }
       ])
+    })
+
+    const resultOf = (h: ReturnType<typeof harness>, id: number) => h.results().find((m) => (m as { id: number }).id === id)
+    const settle = async () => {
+      for (let i = 0; i < 5; i++) await tick()
+    }
+
+    for (const [label, access] of [
+      ['an interactive sign-in', { mode: 'machine' }],
+      ['a token run', { mode: 'token', value: VALUE }]
+    ] as const) {
+      it(`cancelling while ${label} waits behind another run: git never sees it`, async () => {
+        const { h, runs, releases } = pending()
+        await initWithAskpass(h)
+        const a = call(h.send, 1, 'updateSource', [URL1, undefined, 'machine'])
+        await tick()
+        const b = call(h.send, 2, 'cloneSource', [URL1, undefined, access])
+        await tick()
+        await call(h.send, 3, 'cancelClone', [URL1])
+        expect(resultOf(h, 3)).toMatchObject({ ok: true, result: true })
+        releases[0]({ ok: false, error: CANCELLED_MESSAGE })
+        await Promise.all([a, b])
+        await settle()
+        expect(runs).toEqual([{ mode: 'machine', interactive: false }])
+        expect(resultOf(h, 2)).toMatchObject({ ok: true, result: { ok: false, error: CANCELLED_MESSAGE } })
+        // nothing is left waiting or running
+        await call(h.send, 4, 'cancelClone', [URL1])
+        expect(resultOf(h, 4)).toMatchObject({ ok: true, result: false })
+      })
+    }
+
+    it('a request queued after a cancel still runs normally', async () => {
+      const { h, runs, releases } = pending()
+      await initWithAskpass(h)
+      const a = call(h.send, 1, 'updateSource', [URL1, undefined, 'machine'])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      await tick()
+      await call(h.send, 3, 'cancelClone', [URL1])
+      const c = call(h.send, 4, 'cloneSource', [URL1, undefined, { mode: 'token', value: VALUE }])
+      await tick()
+      releases[0]({ ok: false, error: CANCELLED_MESSAGE })
+      await Promise.all([a, b])
+      await settle()
+      expect(resultOf(h, 2)).toMatchObject({ ok: true, result: { ok: false, error: CANCELLED_MESSAGE } })
+      expect(runs).toEqual([{ mode: 'machine', interactive: false }, { mode: 'token', value: VALUE }])
+      releases[1]({ ok: true, root: '/r', changed: true })
+      await c
+      expect(resultOf(h, 4)).toMatchObject({ ok: true, result: { ok: true, root: '/r' } })
+    })
+
+    it('a call that waited a whole run time answers the timeout copy and never starts git', async () => {
+      let clock = 1_000
+      const { h, runs, releases } = pending({ now: () => clock })
+      await h.init()
+      const a = call(h.send, 1, 'updateSource', [URL1, undefined, 'machine'])
+      await tick()
+      const b = call(h.send, 2, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      const c = call(h.send, 3, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      await tick()
+      clock += CLONE_TIMEOUT_MS
+      releases[0]({ ok: true, root: '/r', changed: false })
+      await Promise.all([a, b, c])
+      await settle()
+      expect(runs).toHaveLength(1)
+      expect(resultOf(h, 2)).toMatchObject({ ok: true, result: { ok: false, error: TIMEOUT_MESSAGE } })
+      expect(resultOf(h, 3)).toMatchObject({ ok: true, result: { ok: false, error: TIMEOUT_MESSAGE } })
+      // one ms short of it still runs
+      const d = call(h.send, 4, 'updateSource', [URL1, undefined, 'machine'])
+      await tick()
+      const e = call(h.send, 5, 'cloneSource', [URL1, undefined, { mode: 'machine' }])
+      await tick()
+      clock += CLONE_TIMEOUT_MS - 1
+      releases[1]({ ok: true, root: '/r', changed: false })
+      await d
+      await settle()
+      expect(runs).toHaveLength(3)
+      releases[2]({ ok: true, root: '/r', changed: true })
+      await e
+      expect(resultOf(h, 5)).toMatchObject({ ok: true, result: { ok: true, root: '/r' } })
     })
 
     it('an identical request still joins; an open joining a silent run turns its progress on', async () => {
