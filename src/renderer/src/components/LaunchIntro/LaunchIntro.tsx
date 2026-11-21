@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react'
 import logoSvg from '/logo-termpolis.svg?url'
 import { INTRO_ART } from '../../assets/intro/introManifest'
 import type { IntroImg } from '../../assets/intro/introManifest'
-import { INTRO_RULE_WIDTH, INTRO_TOTAL_MS, NOT_PAINTED_MS, introScale, introSteps } from '../../lib/launchIntro'
+import { INTRO_RULE_WIDTH, INTRO_TOTAL_MS, NOT_PAINTED_MS, introEnabled, introScale, introSteps } from '../../lib/launchIntro'
 
 // The two-second launch intro: pre-rendered lettering from the film's title cards, animated with the
 // Web Animations API over the starting app. It is a non-interactive overlay: it never takes focus,
@@ -86,7 +86,7 @@ function viewportScale(): number {
 
 export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
   // Decided once per mount: a late change of the setting never starts an intro half-way.
-  const [active] = useState(() => (play ?? window.termpolis?.launchIntro === true) && canAnimate())
+  const [active] = useState(() => (play ?? (window.termpolis?.launchIntro === true && introEnabled())) && canAnimate())
   const [reduced] = useState(() => reducedMotion ?? prefersReducedMotion())
   const [phase, setPhase] = useState<Phase>('pending')
   const [scale, setScale] = useState(viewportScale)
@@ -113,7 +113,8 @@ export function LaunchIntro({ play, reducedMotion, now = defaultNow }: Props) {
     frame = requestAnimationFrame(() => {
       clearTimeout(giveUpTimer)
       if (now() - mountedAt > NOT_PAINTED_MS) { giveUp(); return }
-      // The 2.0 s budget runs from this first paint.
+      // The 2.0 s budget runs from this first paint. The timer starts at this frame while the animations
+      // start one to two frames later, so the final fade is cut about 16-30 ms short: invisible, and the 2 s ceiling holds.
       removalTimer.current = setTimeout(giveUp, INTRO_TOTAL_MS)
       setPhase('playing')
     })

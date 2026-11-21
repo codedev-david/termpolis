@@ -173,6 +173,7 @@ export default defineConfig({
         'src/main/launchIntro.ts': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/lib/launchIntro.ts': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/components/LaunchIntro/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
+        'src/renderer/src/assets/intro/introManifest.ts': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/world/engine/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
         'src/renderer/src/components/World/**': { lines: 100, functions: 100, branches: 100, statements: 100 },
       },

@@ -112,3 +112,22 @@ export function introSteps(reduced: boolean): IntroStep[] {
 export function introScale(viewport: { width: number; height: number }): number {
   return Math.min(1, (viewport.width * 0.9) / 1920, (viewport.height * 0.9) / 1080)
 }
+
+export const INTRO_SETTING_KEY = 'termpolis.launchIntro'
+
+/** On unless the stored value is exactly '0'. Blocked storage or any other value reads as on. */
+export function introEnabled(storage: Pick<Storage, 'getItem'> = localStorage): boolean {
+  try {
+    return storage.getItem(INTRO_SETTING_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+export function setIntroEnabled(on: boolean, storage: Pick<Storage, 'setItem'> = localStorage): void {
+  try {
+    storage.setItem(INTRO_SETTING_KEY, on ? '1' : '0')
+  } catch {
+    // Blocked or full storage: the setting just does not stick.
+  }
+}

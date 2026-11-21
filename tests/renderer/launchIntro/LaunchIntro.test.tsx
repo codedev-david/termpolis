@@ -81,6 +81,21 @@ describe('LaunchIntro', () => {
     expect(screen.getByTestId('launch-intro')).toBeTruthy()
   })
 
+  it("renders nothing when the user's setting is off, and plays when it is on", () => {
+    const w = window as unknown as Record<string, unknown>
+    w.termpolis = { launchIntro: true }
+    localStorage.setItem('termpolis.launchIntro', '0')
+    const off = render(<LaunchIntro />)
+    flushFrame()
+    expect(screen.queryByTestId('launch-intro')).toBeNull()
+    expect(frames.size).toBe(0)
+    off.unmount()
+    localStorage.removeItem('termpolis.launchIntro')
+    render(<LaunchIntro />)
+    flushFrame()
+    expect(screen.getByTestId('launch-intro')).toBeTruthy()
+  })
+
   it('renders nothing where Element.animate is missing', () => {
     ;(Element.prototype as unknown as Record<string, unknown>).animate = undefined
     render(<LaunchIntro play />)

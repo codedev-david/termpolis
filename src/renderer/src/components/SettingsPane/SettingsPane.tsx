@@ -21,6 +21,7 @@ import { ProcessesSettings } from './ProcessesSettings'
 import { PrivacySettings } from './PrivacySettings'
 import { LumopolisSettings } from './LumopolisSettings'
 import { useSettingsTab } from '../../lib/settingsNav'
+import { introEnabled, setIntroEnabled } from '../../lib/launchIntro'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isSoloLearningEnabled, setSoloLearningEnabled } from '../../lib/sessionReflection'
 import { isAutoReprimeOnCompactionEnabled, setAutoReprimeOnCompactionEnabled } from '../../lib/compactionReprime'
@@ -113,6 +114,7 @@ export function SettingsPane() {
   const [autoReprime, setAutoReprime] = useState(() => isAutoReprimeOnCompactionEnabled())
   const [autoIndex, setAutoIndex] = useState(() => isAutoIndexEnabled())
   const [termDefaults, setTermDefaults] = useState(() => getTerminalDefaults())
+  const [launchIntro, setLaunchIntro] = useState(() => introEnabled())
   const [agentNameFromFolder, setAgentNameFromFolder] = useState(() => isAgentNameFromFolderEnabled())
   const [appVersion, setAppVersion] = useState<string>('')
   const [updateStatus, setUpdateStatus] = useState<string>('')
@@ -455,6 +457,21 @@ export function SettingsPane() {
                   (e.g. <code className="bg-[#3c3c3c] px-1 rounded">termpolis</code>) instead of the
                   agent name. Resumed and handoff terminals keep their descriptive names.
                 </span>
+              </span>
+            </label>
+          </div>
+          <div className="flex flex-col gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="settings-launch-intro-block">
+            <label className="flex items-start gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                data-testid="settings-launch-intro"
+                checked={launchIntro}
+                onChange={e => { setLaunchIntro(e.target.checked); setIntroEnabled(e.target.checked) }}
+                className="mt-0.5"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span>Show launch intro</span>
+                <span className="text-xs text-[#9ca3af] leading-relaxed">Plays for two seconds when Termpolis starts.</span>
               </span>
             </label>
           </div>

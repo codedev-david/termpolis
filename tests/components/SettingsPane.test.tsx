@@ -398,6 +398,21 @@ describe('SettingsPane', () => {
     localStorage.removeItem('termpolis.terminal.defaults')
   })
 
+  it('launch-intro checkbox is on by default, writes 0 when unchecked, and stays off after a remount', () => {
+    localStorage.removeItem('termpolis.launchIntro')
+    const first = render(<SettingsPane />)
+    const box = screen.getByTestId('settings-launch-intro') as HTMLInputElement
+    expect(box.checked).toBe(true)
+    expect(screen.getByText('Show launch intro')).toBeTruthy()
+    expect(screen.getByText('Plays for two seconds when Termpolis starts.')).toBeTruthy()
+    fireEvent.click(box)
+    expect(localStorage.getItem('termpolis.launchIntro')).toBe('0')
+    first.unmount()
+    render(<SettingsPane />)
+    expect((screen.getByTestId('settings-launch-intro') as HTMLInputElement).checked).toBe(false)
+    localStorage.removeItem('termpolis.launchIntro')
+  })
+
   it('agent-name-from-folder checkbox is off by default and persists when toggled', () => {
     localStorage.removeItem('termpolis.terminal.agentNameFromFolder')
     render(<SettingsPane />)

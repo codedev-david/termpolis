@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { INTRO_TIMELINE, INTRO_TOTAL_MS, NOT_PAINTED_MS, introScale, introSteps } from '../../../src/renderer/src/lib/launchIntro'
+import { describe, it, expect, vi } from 'vitest'
+import { INTRO_SETTING_KEY, INTRO_TIMELINE, INTRO_TOTAL_MS, NOT_PAINTED_MS, introEnabled, introScale, introSteps, setIntroEnabled } from '../../../src/renderer/src/lib/launchIntro'
 
 describe('introSteps', () => {
   it('pins the timeline the spec leaves to the builder', () => {
@@ -69,5 +69,44 @@ describe('introScale', () => {
     expect(s).toBeGreaterThan(0)
     expect(1920 * s).toBeLessThanOrEqual(0.9 * width + 1e-9)
     expect(1080 * s).toBeLessThanOrEqual(0.9 * height + 1e-9)
+  })
+})
+
+describe('the launch intro setting', () => {
+  it('uses the documented key', () => {
+    expect(INTRO_SETTING_KEY).toBe('termpolis.launchIntro')
+  })
+
+  it('is on when nothing is stored, and for 1', () => {
+    expect(introEnabled({ getItem: () => null })).toBe(true)
+    expect(introEnabled({ getItem: () => '1' })).toBe(true)
+  })
+
+  it("is off only for exactly '0'", () => {
+    expect(introEnabled({ getItem: () => '0' })).toBe(false)
+    expect(introEnabled({ getItem: () => 'yes' })).toBe(true)
+    expect(introEnabled({ getItem: () => '' })).toBe(true)
+  })
+
+  it('reads as on when storage throws', () => {
+    expect(introEnabled({ getItem: () => { throw new Error('blocked') } })).toBe(true)
+  })
+
+  it('writes 1 or 0 and swallows a throwing setItem', () => {
+    const setItem = vi.fn()
+    setIntroEnabled(true, { setItem })
+    setIntroEnabled(false, { setItem })
+    expect(setItem).toHaveBeenNthCalledWith(1, 'termpolis.launchIntro', '1')
+    expect(setItem).toHaveBeenNthCalledWith(2, 'termpolis.launchIntro', '0')
+    expect(() => setIntroEnabled(false, { setItem: () => { throw new Error('full') } })).not.toThrow()
+  })
+
+  it('defaults to localStorage', () => {
+    localStorage.removeItem('termpolis.launchIntro')
+    expect(introEnabled()).toBe(true)
+    setIntroEnabled(false)
+    expect(localStorage.getItem('termpolis.launchIntro')).toBe('0')
+    expect(introEnabled()).toBe(false)
+    localStorage.removeItem('termpolis.launchIntro')
   })
 })
