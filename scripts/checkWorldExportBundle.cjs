@@ -2,11 +2,13 @@
 // Checks dist-world/world-export.js, the runtime an exported Lumopolis page inlines in ONE classic <script>
 // (npm run build:world-viewer runs it after the export pass of vite.world.config.ts). It fails when the script:
 //   - contains "</script" in any case: the HTML parser would end the inline script there;
+//   - contains "<!--": inside a script, "<!--" then "<script" puts the HTML parser in its double-escaped state,
+//     where "</script>" no longer ends the script;
 //   - contains "import(" or "import.meta": a classic inline script has no module loader and no import.meta,
 //     and the page's CSP allows no request a dynamic import could make;
 //   - is bigger than MAX_BYTES: the keyword-only page has a size budget, and a jump means something new got bundled.
-// It also fails when dist-world holds a .wasm file: the page carries the ORT wasm as a data block, so a wasm the
-// build emitted beside the script means ORT is still looking for it by URL.
+// It also fails when dist-world holds a .wasm file at any depth (Vite emits assets under assets/): the page carries
+// the ORT wasm as a data block, so a wasm the build emitted means ORT is still looking for it by URL.
 'use strict'
 const fs = require('node:fs')
 const path = require('node:path')
@@ -16,9 +18,16 @@ const MAX_BYTES = 800_000
 
 const RULES = [
   { re: /<\/script/i, why: 'contains "</script", which would end the inline <script> early' },
+  { re: /<!--/, why: 'contains "<!--", which with a later "<script" stops "</script>" from ending the inline <script>' },
   { re: /import\(/, why: 'contains "import(", and a classic inline script has no module loader' },
   { re: /import\.meta/, why: 'contains "import.meta", which a classic script does not have' },
 ]
+
+/** Every file under `dir`, as paths relative to it. */
+function filesUnder(dir, rel = '') {
+  return fs.readdirSync(path.join(dir, rel), { withFileTypes: true })
+    .flatMap((e) => (e.isDirectory() ? filesUnder(dir, path.join(rel, e.name)) : [path.join(rel, e.name)]))
+}
 
 /** The problems with `dir`/world-export.js (an empty list when it is fine). */
 function checkBundle(dir, maxBytes = MAX_BYTES) {
@@ -28,7 +37,7 @@ function checkBundle(dir, maxBytes = MAX_BYTES) {
   const problems = RULES.filter((r) => r.re.test(text)).map((r) => `world-export.js ${r.why}`)
   const size = Buffer.byteLength(text, 'utf8')
   if (size > maxBytes) problems.push(`world-export.js is ${size} bytes, over the ${maxBytes}-byte bound`)
-  for (const name of fs.readdirSync(dir)) {
+  for (const name of filesUnder(dir)) {
     if (/\.wasm$/i.test(name)) problems.push(`${name} was emitted beside the script: the page carries the wasm itself`)
   }
   return problems

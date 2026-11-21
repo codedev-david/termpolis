@@ -32,6 +32,7 @@ describe('checkBundle', () => {
     ['</script', 'x="</script>"', '</script'],
     ['import(', 'await import(n)', 'import('],
     ['import.meta', 'var u=import.meta.url', 'import.meta'],
+    ['<!--', 'x="<!--<script>"', '<!--'],
   ])('fails on %s', (_, text, word) => {
     const problems = checkBundle(dist(text))
     expect(problems).toHaveLength(1)
@@ -47,6 +48,14 @@ describe('checkBundle', () => {
   it('fails when a .wasm file sits beside the script', () => {
     const problems = checkBundle(dist('ok', ['ort-wasm-simd-threaded.wasm', 'world-viewer.js']))
     expect(problems).toEqual(['ort-wasm-simd-threaded.wasm was emitted beside the script: the page carries the wasm itself'])
+  })
+
+  it('fails when a .wasm file sits in a folder under dist-world (Vite puts assets in assets/)', () => {
+    const dir = dist('ok')
+    fs.mkdirSync(path.join(dir, 'assets', 'deep'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'assets', 'deep', 'ort-wasm-simd-threaded.wasm'), 'x')
+    fs.writeFileSync(path.join(dir, 'assets', 'world.css'), 'x')
+    expect(checkBundle(dir)).toEqual([`${path.join('assets', 'deep', 'ort-wasm-simd-threaded.wasm')} was emitted beside the script: the page carries the wasm itself`])
   })
 
   it('fails when the script is missing', () => {

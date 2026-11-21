@@ -4,17 +4,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { askEntries, packInt8 } from '../../../src/shared/world/askIndex'
 import type { WorldDoc } from '../../../src/shared/world/types'
+import * as ortWasm from 'onnxruntime-web/wasm'
+import type * as AskBoxModule from '../../../src/world-export/askBox'
 import type * as SmartAskModule from '../../../src/world-export/smartAsk'
 import { minimal } from '../world/helpers'
 import { addBlock, ensureDecompressionStream } from './helpers'
 
-const { createWorldViewer, hasWebGL, startSmartAsk } = vi.hoisted(() => ({ createWorldViewer: vi.fn(), hasWebGL: vi.fn(), startSmartAsk: vi.fn() }))
+const { createWorldViewer, hasWebGL, startSmartAsk, mountAskBox } = vi.hoisted(() => ({ createWorldViewer: vi.fn(), hasWebGL: vi.fn(), startSmartAsk: vi.fn(), mountAskBox: vi.fn() }))
 vi.mock('../../../src/renderer/src/world/engine', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/renderer/src/world/engine')>()),
   createWorldViewer,
   hasWebGL,
 }))
 vi.mock('../../../src/world-export/smartAsk', async (importOriginal) => ({ ...(await importOriginal<typeof SmartAskModule>()), startSmartAsk }))
+vi.mock('../../../src/world-export/askBox', async (importOriginal) => ({ ...(await importOriginal<typeof AskBoxModule>()), mountAskBox }))
 
 const META = { project: 'Termpolis', exportedOn: '2026-11-21', head7: 'abc1234', dirty: false }
 const fakeViewer = () => ({
@@ -23,7 +26,7 @@ const fakeViewer = () => ({
 })
 
 /** Writes a page's blocks: the keyword-only three, plus the smart ones when `smart`. */
-function writePage(opts: { doc?: WorldDoc; smart?: boolean; skip?: string[] } = {}): WorldDoc {
+function writePage(opts: { doc?: WorldDoc; smart?: boolean; skip?: string[]; replace?: Record<string, Uint8Array | object> } = {}): WorldDoc {
   const doc = opts.doc ?? minimal()
   const entries = Array.isArray(doc.buildings) ? askEntries(doc) : []
   const packed = packInt8(entries.map((_, i) => Array.from({ length: 4 }, (__, h) => (h === i % 4 ? 1 : 0))))
@@ -38,6 +41,7 @@ function writePage(opts: { doc?: WorldDoc; smart?: boolean; skip?: string[] } = 
     blocks.ortwasm = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 9, 9, 9])
     blocks.model = new Uint8Array([1, 2, 3, 4])
   }
+  Object.assign(blocks, opts.replace)
   for (const [id, data] of Object.entries(blocks)) if (!opts.skip?.includes(id)) addBlock(id, data)
   return doc
 }
@@ -55,10 +59,24 @@ const ask = async (q: string): Promise<string[]> => {
   return Array.from(document.querySelectorAll('.wx-ask-pick'), (b) => b.getAttribute('data-id') as string)
 }
 
+/** A block whose text is not gzip: reading it rejects. */
+function corruptBlock(id: string): void {
+  const el = document.getElementById(id) as HTMLElement
+  el.textContent = Buffer.from('not gzip at all').toString('base64')
+}
+
+const visibleBroken = (): void => {
+  expect(document.querySelector('.wx-page')).toBeNull()
+  const p = document.querySelector('.wx-broken') as HTMLElement
+  expect(p.textContent).toBe("This Lumopolis page's data is missing or damaged, so the world can't be shown.")
+  expect(p.parentElement).toBe(document.body)
+}
+
 let actualStart: typeof SmartAskModule.startSmartAsk
 beforeEach(async () => {
   ensureDecompressionStream()
   actualStart = (await vi.importActual<typeof SmartAskModule>('../../../src/world-export/smartAsk')).startSmartAsk
+  mountAskBox.mockReset().mockImplementation((await vi.importActual<typeof AskBoxModule>('../../../src/world-export/askBox')).mountAskBox)
   createWorldViewer.mockReset().mockImplementation(fakeViewer)
   hasWebGL.mockReset().mockReturnValue(true)
   startSmartAsk.mockReset().mockResolvedValue({ embed: async () => new Float32Array([1, 0, 0, 0]) })
@@ -185,8 +203,92 @@ describe('boot', () => {
     await boot()
     expect(await window.__worldExport.ready).toBe('failed')
     expect(window.__worldExport.state()).toBe('failed')
-    expect(document.querySelector('.wx-broken')!.textContent).toBe("This Lumopolis page's data is missing or damaged, so the world can't be shown.")
+    visibleBroken()
     expect(createWorldViewer).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['dirty as text', { ...META, dirty: 'false' }],
+    ['no head7', { project: 'P', exportedOn: '2026-11-21', dirty: false }],
+    ['a numeric proposalId', { ...META, proposalId: 7 }],
+    ['a meta that is not an object', ['P']],
+    ['a meta that is a string', 'P'],
+  ])('shows the damaged-page message on a meta block with %s', async (_, meta) => {
+    writePage({ replace: { meta: meta as object } })
+    await boot()
+    expect(await window.__worldExport.ready).toBe('failed')
+    visibleBroken()
+  })
+
+  it('takes a meta block with a proposalId', async () => {
+    writePage({ replace: { meta: { ...META, proposalId: 'p1' } } })
+    await boot()
+    expect(await window.__worldExport.ready).toBe('keyword')
+  })
+
+  it('falls back to the 2D map, with Ask working, when the 3D viewer cannot be created', async () => {
+    writePage()
+    createWorldViewer.mockImplementation(() => { throw new Error('Error creating WebGL context.') })
+    await boot()
+    expect(await window.__worldExport.ready).toBe('keyword')
+    expect(document.querySelector('.wx-broken')).toBeNull()
+    expect((document.querySelector('.wx-map2d') as HTMLElement).hidden).toBe(false)
+    expect(document.querySelector('[data-control="map2d"]')).toBeNull()
+    expect((await ask('memory')).length).toBeGreaterThan(0)
+  })
+
+  it('disposes the viewer and falls back to the 2D map when loading the world into it throws', async () => {
+    writePage()
+    const broken = fakeViewer()
+    broken.load.mockImplementation(() => { throw new Error('context lost') })
+    createWorldViewer.mockImplementation(() => broken)
+    await boot()
+    expect(await window.__worldExport.ready).toBe('keyword')
+    expect(broken.dispose).toHaveBeenCalledTimes(1)
+    expect(document.querySelector('.wx-broken')).toBeNull()
+    expect((document.querySelector('.wx-map2d') as HTMLElement).hidden).toBe(false)
+    expect((document.querySelector('.wx-view') as HTMLElement).childElementCount).toBe(0)
+    expect((await ask('memory')).length).toBeGreaterThan(0)
+  })
+
+  it('still falls back to the 2D map when wiring the viewer and disposing it both throw', async () => {
+    writePage()
+    const broken = fakeViewer()
+    broken.setLayers.mockImplementation(() => { throw new Error('no scene') })
+    broken.dispose.mockImplementation(() => { throw new Error('no renderer') })
+    createWorldViewer.mockImplementation(() => broken)
+    await boot()
+    expect(await window.__worldExport.ready).toBe('keyword')
+    expect((document.querySelector('.wx-map2d') as HTMLElement).hidden).toBe(false)
+  })
+
+  it('removes the page and shows the damaged-page message on top for any other failure after the page is built', async () => {
+    writePage()
+    mountAskBox.mockImplementation(() => { throw new Error('ask box') })
+    await boot()
+    expect(await window.__worldExport.ready).toBe('failed')
+    visibleBroken()
+    const viewer = createWorldViewer.mock.results[0].value as ReturnType<typeof fakeViewer>
+    expect(viewer.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['an ask block that is not gzip', (): void => { writePage({ smart: true }); corruptBlock('ask') }],
+    ['an ask block whose entries are not a list', (): void => { writePage({ smart: true, replace: { ask: { version: 1, entries: 'x', dim: 4, scales: [] } } }) }],
+    ['an ask block whose entries are not entries', (): void => { writePage({ smart: true, replace: { ask: { version: 1, entries: [{ id: 'b1' }], dim: 4, scales: [1] } } }) }],
+    ['an ask block whose entries hold a null', (): void => { writePage({ smart: true, replace: { ask: { version: 1, entries: [null], dim: 4, scales: [1] } } }) }],
+    ['an ask block without scales', (): void => { writePage({ smart: true, replace: { ask: { version: 1, entries: askEntries(minimal()), dim: 4 } } }) }],
+    ['an askvec block that is not gzip', (): void => { writePage({ smart: true }); corruptBlock('askvec') }],
+    ['an askvec block of the wrong size', (): void => { writePage({ smart: true, replace: { askvec: new Uint8Array(3) } }) }],
+    ['an ask block whose scales do not match its entries', (): void => { writePage({ smart: true, replace: { ask: { version: 1, entries: askEntries(minimal()), dim: 4, scales: [1] } } }) }],
+  ])('loads the page keyword-only from the world itself with %s', async (_, write) => {
+    write()
+    await boot()
+    expect(await window.__worldExport.ready).toBe('keyword')
+    expect(startSmartAsk).not.toHaveBeenCalled()
+    expect(document.querySelector('.wx-broken')).toBeNull()
+    expect(createWorldViewer).toHaveBeenCalledTimes(1)
+    expect(await ask('memory')).toContain('b2')
   })
 
   it.each([false, true])('makes no fetch, XHR, WebSocket or Worker call (model block: %s)', async (smart) => {
@@ -198,7 +300,10 @@ describe('boot', () => {
     vi.stubGlobal('XMLHttpRequest', xhr)
     vi.stubGlobal('WebSocket', ws)
     vi.stubGlobal('Worker', worker)
-    // The real smart Ask and the real onnxruntime-web, on the page's (bogus) wasm and model bytes: ORT fails to start.
+    // The real smart Ask and the real onnxruntime-web, on the page's (bogus) wasm and model bytes: ORT fails to start
+    // at wasm compile, so this proves nothing about the model-load or embed paths. Dropping env.wasm.wasmBinary would
+    // not reach the network under vitest either; smartAsk.test.ts ("sets numThreads 1, proxy false ...") guards the
+    // settings, and the check below proves the real ORT module got them here.
     startSmartAsk.mockImplementation(actualStart)
     writePage({ smart })
     await boot()
@@ -209,5 +314,10 @@ describe('boot', () => {
     expect(xhr).not.toHaveBeenCalled()
     expect(ws).not.toHaveBeenCalled()
     expect(worker).not.toHaveBeenCalled()
+    if (smart) {
+      expect(ortWasm.env.wasm.numThreads).toBe(1)
+      expect(ortWasm.env.wasm.proxy).toBe(false)
+      expect(Array.from(ortWasm.env.wasm.wasmBinary as Uint8Array)).toEqual([0, 97, 115, 109, 1, 0, 0, 0, 9, 9, 9])
+    }
   })
 })

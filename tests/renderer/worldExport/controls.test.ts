@@ -65,6 +65,17 @@ describe('buildPage: header and control set', () => {
     expect(document.head.querySelector('style')!.textContent).toContain('.wx-page')
   })
 
+  it('keeps a hidden panel out of sight although the stylesheet gives it a display (the empty card at start)', () => {
+    // A real browser lets ".wx-card{display:flex}" beat the hidden attribute (author rules win over the browser's
+    // own [hidden] rule); jsdom does not, so its computed style cannot show this. The page's own rule must.
+    const { card } = setup()
+    expect(card().hidden).toBe(true)
+    const sheet = (document.head.querySelector('style') as HTMLStyleElement).sheet as CSSStyleSheet
+    const rules = Array.from(sheet.cssRules) as CSSStyleRule[]
+    const hiding = rules.filter((r) => r.selectorText === '.wx-page [hidden]')
+    expect(hiding.map((r) => [r.style.getPropertyValue('display'), r.style.getPropertyPriority('display')])).toEqual([['none', 'important']])
+  })
+
   it('has no bookmarks, annotate, Build it or Re-layout control', () => {
     const { parent } = setup({ meta: { proposalId: 'p1' } })
     const words = Array.from(parent.querySelectorAll('button, select, label, a'), (e) => e.textContent!.toLowerCase()).join(' | ')
@@ -93,6 +104,15 @@ describe('buildPage: header and control set', () => {
     expect(viewer.setLayers).toHaveBeenLastCalledWith({ proposal: null, planned: true })
     change(picker, 'p1')
     expect(viewer.setLayers).toHaveBeenLastCalledWith({ proposal: 'p1', planned: true })
+  })
+
+  it('ticks "Planned parts" again when a proposal is picked, since the proposal shows them', () => {
+    const { control, q, viewer } = setup({ meta: { proposalId: 'p1' } })
+    const planned = q<HTMLInputElement>('[data-layer="planned"]')
+    change(planned, false)
+    expect(viewer.setLayers).toHaveBeenLastCalledWith({ planned: false })
+    change(control('proposal') as HTMLSelectElement, '')
+    expect(planned.checked).toBe(true)
   })
 
   it('sets the theme, the names and the layers', () => {

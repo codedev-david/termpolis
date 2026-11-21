@@ -3,7 +3,7 @@
 // no React. The page is read-only: there is no annotate, Build it, Re-layout, bookmark or editing control, the
 // cards are rendered with readOnly (no Confirm or Edit, evidence as plain text), and nothing is stored in the
 // browser. A technology chip (data-tech) only opens that term's glossary card, itself read-only.
-import { buildingCard, edgeCard, escapeHtml as esc, renderFallback, techCard, usesTech, type WorldViewer } from '../renderer/src/world/engine'
+import { buildingCard, DEFAULT_LAYERS, edgeCard, escapeHtml as esc, renderFallback, techCard, THEMES, usesTech, type WorldViewer } from '../renderer/src/world/engine'
 import type { ThemeName } from '../renderer/src/world/engine'
 import type { AskKind } from '../shared/world/askIndex'
 import type { Tour, WorldDoc } from '../shared/world/types'
@@ -18,7 +18,9 @@ export function headerText(meta: PageMeta): string {
   return `${meta.project}, exported from Termpolis on ${meta.exportedOn} · commit ${meta.head7}${meta.dirty ? ' (uncommitted changes)' : ''}`
 }
 
-const THEME_NAMES: Array<[ThemeName, string]> = [['neon', 'Neon'], ['blueprint', 'Blueprint'], ['glass', 'Glass']]
+/** The engine's themes, named for the picker ("neon" shows as "Neon"). The viewer starts on neon. */
+const themeOptions = (): Array<[string, string]> => Object.keys(THEMES).map((t): [string, string] => [t, t.charAt(0).toUpperCase() + t.slice(1)])
+const FIRST_THEME: ThemeName = 'neon'
 const CARD_INSET = 12
 const CARD_WIDTH = 340
 const ASK_WIDTH = 320
@@ -30,6 +32,7 @@ const LEGEND_MAX_CARGO = 10
 /** One stylesheet for the whole page (the CSP allows inline styles, never a stylesheet from elsewhere). */
 export const PAGE_CSS = `
 .wx-page{position:fixed;inset:0;display:flex;flex-direction:column;background:#03050a;color:#e2e8f0;font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wx-page [hidden]{display:none!important}
 .wx-header{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;justify-content:space-between;padding:6px 14px;font-size:12px;color:#94a3b8;border-bottom:1px solid rgba(148,163,184,.18)}
 .wx-header a{color:#7dd3fc}
 .wx-stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden}
@@ -223,7 +226,7 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
 
   let viewer: WorldViewer | null = null
   let flat = true
-  let processes = false
+  let processes = DEFAULT_LAYERS.processes
   let legendOpen = (parent.clientWidth || window.innerWidth) >= WIDE_PX
 
   const layout = (): void => {
@@ -311,17 +314,23 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     if (v) {
       const proposal = meta.proposalId !== undefined && doc.layers.plan.some((p) => p.id === meta.proposalId) ? meta.proposalId : null
       v.setLayers({ proposal })
+      // The controls start where the viewer's layers start (DEFAULT_LAYERS), so each shows what is drawn.
+      const planned = checkbox('Planned parts', 'planned', DEFAULT_LAYERS.planned, (on) => v.setLayers({ planned: on }))
       toolbar.append(
-        select('Theme', 'theme', THEME_NAMES, 'neon', (t) => v.setTheme(t as ThemeName)),
-        select('Names', 'labels', [['jobs', 'What it does'], ['tech', 'Technology']], 'jobs', (l) => v.setLayers({ labels: l as 'jobs' | 'tech' })),
-        checkbox('Processes', 'processes', false, (on) => { processes = on; v.setLayers({ processes: on }); drawLegend() }),
-        checkbox('All line labels', 'allLineLabels', false, (on) => v.setLayers({ allLineLabels: on })),
-        checkbox('Planned parts', 'planned', true, (on) => v.setLayers({ planned: on })),
+        select('Theme', 'theme', themeOptions(), FIRST_THEME, (t) => v.setTheme(t as ThemeName)),
+        select('Names', 'labels', [['jobs', 'What it does'], ['tech', 'Technology']], DEFAULT_LAYERS.labels, (l) => v.setLayers({ labels: l as 'jobs' | 'tech' })),
+        checkbox('Processes', 'processes', DEFAULT_LAYERS.processes, (on) => { processes = on; v.setLayers({ processes: on }); drawLegend() }),
+        checkbox('All line labels', 'allLineLabels', DEFAULT_LAYERS.allLineLabels, (on) => v.setLayers({ allLineLabels: on })),
+        planned,
       )
-      // Only a proposal export has a proposal to pick; it opens with that proposal shown.
+      // Only a proposal export has a proposal to pick; it opens with that proposal shown. Picking one draws the
+      // planned parts again, so "Planned parts" is ticked to match.
       if (proposal !== null) {
         const options: Array<[string, string]> = [['', 'Built world only'], ...doc.layers.plan.map((p): [string, string] => [p.id, p.title])]
-        toolbar.appendChild(select('Proposal', 'proposal', options, proposal, (id) => v.setLayers({ proposal: id === '' ? null : id, planned: true })))
+        toolbar.appendChild(select('Proposal', 'proposal', options, proposal, (id) => {
+          v.setLayers({ proposal: id === '' ? null : id, planned: true })
+          ;(planned.firstChild as HTMLInputElement).checked = true
+        }))
       }
     }
     for (const t of doc.tours) toolbar.appendChild(button(t.title, 'tour', () => playTour(t)))

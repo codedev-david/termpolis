@@ -43,6 +43,19 @@ describe('readBlock', () => {
     document.body.appendChild(el)
     await expect(readBlock('bad')).rejects.toBeTruthy()
   })
+
+  it('rejects a gzip block cut short (the realistic damage: half the base64 is gone)', async () => {
+    const el = addBlock('cut', new TextEncoder().encode(JSON.stringify({ text: 'x'.repeat(4000), n: Array.from({ length: 500 }, (_, i) => i) })))
+    const text = String(el.textContent)
+    el.textContent = text.slice(0, Math.floor(text.length / 2) & ~3)
+    await expect(readBlock('cut')).rejects.toBeTruthy()
+  })
+
+  it('rejects a block whose text is not base64', async () => {
+    const el = addBlock('notb64', new Uint8Array([1, 2, 3]))
+    el.textContent = '%%%not*base64!!'
+    await expect(readBlock('notb64')).rejects.toBeTruthy()
+  })
 })
 
 describe('readJsonBlock', () => {
