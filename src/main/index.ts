@@ -1527,7 +1527,11 @@ const introGate = createIntroGate({
   readFile: (p) => readFileSync(p, 'utf8'),
   writeFile: (p, text) => writeFileSync(p, text, 'utf8'),
 })
-ipcMain.on('launch-intro:should-play', (e) => { e.returnValue = introGate.claim() })
+ipcMain.on('launch-intro:should-play', (e) => {
+  // The preload also runs in the window's initial empty document, before the app page loads. That one
+  // must not use up the single claim, or the real page is told "no" and the intro never plays.
+  e.returnValue = e.sender.getURL() === '' ? false : introGate.claim()
+})
 
 /** How long the status bar waits for the MCP server to bind before it stops saying "starting". */
 const MCP_PORT_IPC_WAIT_MS = 10_000

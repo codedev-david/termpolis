@@ -1514,12 +1514,21 @@ describe('fs + app info IPC', () => {
 
   it('launch-intro:should-play answers synchronously with what the intro gate claims', () => {
     mockClaim.mockReturnValueOnce(true).mockReturnValueOnce(false)
-    const first: { returnValue?: unknown } = {}
-    const second: { returnValue?: unknown } = {}
+    const page = { sender: { getURL: () => 'file:///app/index.html' } }
+    const first: { returnValue?: unknown; sender: typeof page.sender } = { ...page }
+    const second: { returnValue?: unknown; sender: typeof page.sender } = { ...page }
     ipcOnHandlers.get('launch-intro:should-play')!.at(-1)!(first)
     ipcOnHandlers.get('launch-intro:should-play')!.at(-1)!(second)
     expect(first.returnValue).toBe(true)
     expect(second.returnValue).toBe(false)
+  })
+
+  it('launch-intro:should-play ignores the initial empty document, so it cannot use up the claim', () => {
+    mockClaim.mockClear()
+    const blank: { returnValue?: unknown; sender: { getURL: () => string } } = { sender: { getURL: () => '' } }
+    ipcOnHandlers.get('launch-intro:should-play')!.at(-1)!(blank)
+    expect(blank.returnValue).toBe(false)
+    expect(mockClaim).not.toHaveBeenCalled()
   })
 
   it('the intro gate reads and writes last-run-version through fs, for this app version', () => {
