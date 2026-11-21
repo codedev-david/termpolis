@@ -1,0 +1,95 @@
+{
+  "stage": {
+    "width": 1920,
+    "height": 1080
+  },
+  "pad": 160,
+  "images": {
+    "termpolisMark": {
+      "file1x": "termpolis-mark@1x.png",
+      "file2x": "termpolis-mark@2x.png",
+      "width": 1369,
+      "height": 520
+    },
+    "termpolisTag": {
+      "file1x": "termpolis-tag@1x.png",
+      "file2x": "termpolis-tag@2x.png",
+      "width": 695,
+      "height": 375
+    },
+    "lumopolisTag": {
+      "file1x": "lumopolis-tag@1x.png",
+      "file2x": "lumopolis-tag@2x.png",
+      "width": 793,
+      "height": 375
+    },
+    "letters": [
+      {
+        "file1x": "lumopolis-0@1x.png",
+        "file2x": "lumopolis-0@2x.png",
+        "width": 419,
+        "height": 520
+      },
+      {
+        "file1x": "lumopolis-1@1x.png",
+        "file2x": "lumopolis-1@2x.png",
+        "width": 448,
+        "height": 520
+      },
+      {
+        "file1x": "lumopolis-2@1x.png",
+        "file2x": "lumopolis-2@2x.png",
+        "width": 474,
+        "height": 520
+      },
+      {
+        "file1x": "lumopolis-3@1x.png",
+        "file2x": "lumopolis-3@2x.png",
+        "width": 467,
+        "height": 520
+      },
+      {
+        "file1x": "lumopolis-4@1x.png",
+        "file2x": "lumopolis-4@2x.png",
+        "width": 432,
+        "height": 520
+      },
+      {
+        "file1x": "lumopolis-5@1x.png",
+        "file2x": "lumopolis-5@2x.png",
+        "width": 467,
+        "height": 520
+      },
+      {
+        "file1x": "lumopolis-6@1x.png",
+        "file2x": "lumopolis-6@2x.png",
+        "width": 419,
+        "height": 520
+      },
+      {
+        "file1x": "lumopolis-7@1x.png",
+        "file2x": "lumopolis-7@2x.png",
+        "width": 385,
+        "height": 520
+      },
+      {
+        "file1x": "lumopolis-8@1x.png",
+        "file2x": "lumopolis-8@2x.png",
+        "width": 431,
+        "height": 520
+      }
+    ]
+  },
+  "letterOffsets": [
+    0,
+    98.83,
+    226.14,
+    379.45,
+    526.11,
+    637.69,
+    784.34,
+    883.17,
+    947.5
+  ],
+  "ruleTop": 234
+}
