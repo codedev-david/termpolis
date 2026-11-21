@@ -10,15 +10,20 @@
 //
 // Index reuse: the export embeds the Ask entries afresh every time. There is no cache in userData in 2.0: about
 // 30 s on a 600-line world is acceptable, and a cache adds a failure mode (a stale index that no longer matches).
+//
+// Main is never blocked: every block is compressed with zlib's async gzip, on the libuv threadpool (a smart page
+// gzips about 47 MB; gzipSync took about a second of main's time). The smart files are not cached between exports
+// either: holding their 36 MB of base64 in main for an export a person makes now and then costs more than it saves.
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { gzipSync } from 'node:zlib'
+import { promisify } from 'node:util'
+import { gzip } from 'node:zlib'
 import { askEntries, ASK_INDEX_VERSION, packInt8, type AskEntry } from '../../shared/world/askIndex'
 import { buildDocumentation } from '../../shared/world/documentation'
 import { renderDocumentation } from '../../shared/world/documentationHtml'
 import { pageMeta } from '../../shared/world/exportMeta'
-import { sanitizeWorld, type SanitizeContext } from '../../shared/world/exportSanitize'
+import { sanitizeText, sanitizeWorld, type SanitizeContext } from '../../shared/world/exportSanitize'
 import { escapeHtml } from '../../shared/world/html'
 import type { WorldDoc } from '../../shared/world/types'
 import { validateWorld } from '../../shared/world/validate'
@@ -163,32 +168,67 @@ export const DEFAULT_EXPORT_SIZES: ExportSizes = { runtime: 725_000, smartAssets
 /** What one entry's scale costs in the `ask` block, gzip then base64 (a float printed in full). */
 const SCALE_BYTES = 12
 
-/** gzip then base64: how the page stores every block. */
-const gz64 = (data: string | Uint8Array): string => gzipSync(data).toString('base64')
+const gzipAsync = promisify(gzip)
+/** gzip then base64: how the page stores every block. Async: compressing never runs on main's thread. */
+const gz64 = async (data: string | Uint8Array): Promise<string> => (await gzipAsync(data)).toString('base64')
 /** JSON with every `<` escaped, so no block's text could ever hold markup, even before it is encoded. */
 const safeJson = (value: unknown): string => JSON.stringify(value).replace(/</g, '\\u003c')
 /** The base64 length of `n` bytes. */
 const b64Length = (n: number): number => Math.ceil(n / 3) * 4
 
-/** The world as the page shows it: one proposal when the export is of a proposal, none otherwise. */
 const withPlan = (doc: WorldDoc, plan: WorldDoc['layers']['plan']): WorldDoc => ({ ...doc, layers: { ...doc.layers, plan } })
+
+/** What a request exports: the world as the page shows it, its sanitised title, or why it can't be exported. */
+type Prepared = { ok: true; doc: WorldDoc; title: string; proposalId?: string } | { ok: false; error: string }
+
+const failedChecks = (what: string, error: string): string => `This world didn't pass its checks, so ${what} (${error}).`
+
+/**
+ * The world as the page shows it (spec 5.2). It is checked before the sanitiser reads it (a malformed world is
+ * refused, never thrown on), sanitised, given its plan, and checked again as the page will check it. The plan: a
+ * proposal export keeps the one proposal asked for; a whole design world keeps its whole plan, the removals the
+ * design chat stores there included (the design is what it exports); a whole code world keeps none. The title is
+ * sanitised as the world is.
+ */
+function prepareWorld(req: Pick<ExportRequest, 'doc' | 'ctx' | 'title' | 'proposalId'>): Prepared {
+  const first = validateWorld(req.doc)
+  if (!first.ok) return { ok: false, error: failedChecks("it can't be exported", first.errors[0]) }
+  const clean = sanitizeWorld(first.doc, req.ctx)
+  let plan: WorldDoc['layers']['plan'] = []
+  if (req.proposalId !== undefined) {
+    const proposal = clean.layers.plan.find((p) => p.id === req.proposalId)
+    if (!proposal) return { ok: false, error: NO_PROPOSAL }
+    plan = [proposal]
+  } else if (first.doc.projectKey.startsWith('design:')) {
+    plan = clean.layers.plan
+  }
+  const checked = validateWorld(withPlan(clean, plan))
+  if (!checked.ok) return { ok: false, error: failedChecks("it can't be exported", checked.errors[0]) }
+  return { ok: true, doc: checked.doc, title: sanitizeText(req.title, req.ctx), ...(req.proposalId !== undefined ? { proposalId: req.proposalId } : {}) }
+}
 
 /** The `ask` block: the entries the page searches and, on a smart page, how the `askvec` rows are packed. */
 const askBlock = (entries: AskEntry[], dim: number, scales: number[]): string => safeJson({ version: ASK_INDEX_VERSION, entries, dim, scales })
 
 /**
- * The size of the exported page, for the dialog's live estimate: the world, its meta and Ask entries as the export
- * encodes them, the runtime, and on a smart page the fixed smart cost plus the vectors (spec 5.2, "A live
- * estimate from the world JSON size plus the fixed smart cost"). Checked against real pages in the tests.
+ * The size of the exported page, for the dialog's live estimate: the world the request exports (sanitised, with
+ * its plan), its meta and Ask entries as the export encodes them, the runtime, and on a smart page the fixed smart
+ * cost plus the vectors (spec 5.2, "A live estimate from the world JSON size plus the fixed smart cost"). Null when
+ * the export would refuse the world. Checked against real pages in the tests.
  */
-export function estimateExportBytes(doc: WorldDoc, smart: boolean, sizes: ExportSizes = DEFAULT_EXPORT_SIZES): number {
-  const world = withPlan(doc, [])
+export async function estimateExportBytes(
+  req: Pick<ExportRequest, 'doc' | 'ctx' | 'title' | 'smart' | 'proposalId'>,
+  sizes: ExportSizes = DEFAULT_EXPORT_SIZES,
+): Promise<number | null> {
+  const prepared = prepareWorld(req)
+  if (!prepared.ok) return null
+  const world = prepared.doc
   const entries = askEntries(world)
-  const meta = pageMeta(world, { title: 'Project', exportedOn: '2026-01-01' })
-  const blocks = [safeJson(world), safeJson(meta), askBlock(entries, 0, [])]
+  const meta = pageMeta(world, { title: prepared.title, exportedOn: '2026-01-01', ...(prepared.proposalId !== undefined ? { proposalId: prepared.proposalId } : {}) })
+  const blocks = await Promise.all([safeJson(world), safeJson(meta), askBlock(entries, 0, [])].map(gz64))
   const frame = Buffer.byteLength(exportPageHtml({ title: meta.project, blocks: [], runtimeJs: '' }), 'utf8')
-  const keyword = frame + sizes.runtime + blocks.reduce((sum, b) => sum + BLOCK_TAG_BYTES + gz64(b).length, 0)
-  if (!smart) return keyword
+  const keyword = frame + sizes.runtime + blocks.reduce((sum, b) => sum + BLOCK_TAG_BYTES + b.length, 0)
+  if (!req.smart) return keyword
   const vectors = b64Length(Math.ceil(entries.length * EMBED_DIM * sizes.vectorShare)) + entries.length * SCALE_BYTES
   return keyword + sizes.smartAssets + BLOCK_TAG_BYTES + vectors
 }
@@ -260,13 +300,14 @@ async function smartFiles(fs: ExportFs, assets: ExportAssets): Promise<{ id: str
   } catch {
     throw new AssetError(keywordOnly)
   }
-  return [{ id: 'vocab', gz64: gz64(vocab) }, { id: 'ortwasm', gz64: gz64(wasm) }, { id: 'model', gz64: gz64(model) }]
+  const [v, w, m] = await Promise.all([gz64(vocab), gz64(wasm), gz64(model)])
+  return [{ id: 'vocab', gz64: v }, { id: 'ortwasm', gz64: w }, { id: 'model', gz64: m }]
 }
 
 /**
- * Exports the world as one offline page at `req.target` (spec 5.2 and 5.3). The world is sanitised (no path
- * outside the project, no private evidence), keeps only the proposal asked for, and is checked as the page will
- * check it. A smart export embeds the Ask entries in chunks of EMBED_CHUNK, checking the cancel between chunks.
+ * Exports the world as one offline page at `req.target` (spec 5.2 and 5.3). The world is checked, sanitised (no
+ * path outside the project, no private evidence), given its plan (prepareWorld) and checked as the page will check
+ * it. A smart export embeds the Ask entries in chunks of EMBED_CHUNK, checking the cancel between chunks.
  * A missing model returns `keywordOnly` and writes nothing; a cancel or a failed write leaves no partial file.
  */
 export async function exportWorld(req: ExportRequest, deps: ExportDeps): Promise<ExportResult> {
@@ -277,13 +318,10 @@ export async function exportWorld(req: ExportRequest, deps: ExportDeps): Promise
     return { ok: false, error: CANCELLED, cancelled: true }
   }
   progress({ step: 'prepare', done: 0, total: 1 })
-  const clean = sanitizeWorld(req.doc, req.ctx)
-  const proposal = req.proposalId === undefined ? undefined : clean.layers.plan.find((p) => p.id === req.proposalId)
-  if (req.proposalId !== undefined && !proposal) return { ok: false, error: NO_PROPOSAL }
-  const checked = validateWorld(withPlan(clean, proposal ? [proposal] : []))
-  if (!checked.ok) return { ok: false, error: `This world didn't pass its checks, so it can't be exported (${checked.errors[0]}).` }
-  const doc = checked.doc
-  const meta = pageMeta(doc, { title: req.title, exportedOn: req.exportedOn, ...(proposal ? { proposalId: proposal.id } : {}) })
+  const prepared = prepareWorld(req)
+  if (!prepared.ok) return prepared
+  const doc = prepared.doc
+  const meta = pageMeta(doc, { title: prepared.title, exportedOn: req.exportedOn, ...(prepared.proposalId !== undefined ? { proposalId: prepared.proposalId } : {}) })
   const entries = askEntries(doc)
   let runtimeJs: string
   let extra: { id: string; gz64: string }[] = []
@@ -313,15 +351,16 @@ export async function exportWorld(req: ExportRequest, deps: ExportDeps): Promise
     // A row the embedder could not give at the right width is a zero row: that entry is found by keyword only.
     const packed = packInt8(rows.map((r) => (r !== null && r.length === EMBED_DIM ? r : new Array<number>(EMBED_DIM).fill(0))))
     ask = askBlock(entries, EMBED_DIM, packed.scales)
-    extra = [{ id: 'askvec', gz64: gz64(new Uint8Array(packed.data.buffer, packed.data.byteOffset, packed.data.byteLength)) }, ...extra]
+    extra = [{ id: 'askvec', gz64: await gz64(new Uint8Array(packed.data.buffer, packed.data.byteOffset, packed.data.byteLength)) }, ...extra]
   }
 
   progress({ step: 'write', done: 0, total: 1 })
+  const [world, metaGz, askGz] = await Promise.all([gz64(safeJson(doc)), gz64(safeJson(meta)), gz64(ask)])
   let html: string
   try {
     html = exportPageHtml({
-      title: req.title,
-      blocks: [{ id: 'world', gz64: gz64(safeJson(doc)) }, { id: 'meta', gz64: gz64(safeJson(meta)) }, { id: 'ask', gz64: gz64(ask) }, ...extra],
+      title: prepared.title,
+      blocks: [{ id: 'world', gz64: world }, { id: 'meta', gz64: metaGz }, { id: 'ask', gz64: askGz }, ...extra],
       runtimeJs,
     })
   } catch {
@@ -334,13 +373,17 @@ export async function exportWorld(req: ExportRequest, deps: ExportDeps): Promise
 
 /**
  * Writes the world's documentation (spec 5.4) to `req.target` as one HTML file, through the same .part-then-rename
- * as the page. The world is sanitised first; `picturePng` (a PNG data URL of the city) is optional.
+ * as the page. The world is checked before the sanitiser reads it (a malformed one is refused, never thrown on),
+ * then sanitised, title included; `picturePng` (a PNG data URL of the city) is optional.
  */
 export async function writeDocument(
   req: { doc: WorldDoc; ctx: SanitizeContext; title: string; picturePng?: string; target: string; generatedOn: string },
   fs: ExportFs,
 ): Promise<ExportResult> {
-  const doc = sanitizeWorld(req.doc, req.ctx)
-  const model = buildDocumentation(doc, { title: req.title, picture: req.picturePng !== undefined, generatedOn: req.generatedOn })
+  const checked = validateWorld(req.doc)
+  if (!checked.ok) return { ok: false, error: failedChecks("its documentation can't be written", checked.errors[0]) }
+  const doc = sanitizeWorld(checked.doc, req.ctx)
+  const title = sanitizeText(req.title, req.ctx)
+  const model = buildDocumentation(doc, { title, picture: req.picturePng !== undefined, generatedOn: req.generatedOn })
   return writeAtomically(fs, partName(req.target), req.target, renderDocumentation(model, doc, req.picturePng))
 }

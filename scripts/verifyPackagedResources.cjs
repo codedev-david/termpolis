@@ -190,11 +190,9 @@ function verifyFromAfterPack(context) {
     context.electronPlatformName,
     context.packager?.appInfo?.productFilename,
   )
-  // eslint-disable-next-line no-console
   console.log(`[verifyPackagedResources] Checking: ${resourcesDir}`)
   verifyResourcesFolder(resourcesDir, context.electronPlatformName)
   verifyNoBuildTooling(resourcesDir)
-  // eslint-disable-next-line no-console
   console.log(
     `[verifyPackagedResources] OK — all ${REQUIRED_RESOURCE_FILES.length} required file(s) present, no build tooling packed`,
   )
@@ -209,7 +207,6 @@ function verifyFromAfterPack(context) {
  */
 function verifyFromCLI(target) {
   if (!target) {
-    // eslint-disable-next-line no-console
     console.error(
       'Usage: node scripts/verifyPackagedResources.cjs <appOutDir-or-resources-dir>\n' +
         '  e.g. node scripts/verifyPackagedResources.cjs dist-electron-builder/win-unpacked',
@@ -219,7 +216,6 @@ function verifyFromCLI(target) {
 
   const abs = path.resolve(target)
   if (!fs.existsSync(abs)) {
-    // eslint-disable-next-line no-console
     console.error(`[verifyPackagedResources] Path does not exist: ${abs}`)
     process.exit(2)
   }
@@ -241,7 +237,6 @@ function verifyFromCLI(target) {
       try {
         verifyResourcesFolder(cand)
         verifyNoBuildTooling(cand)
-        // eslint-disable-next-line no-console
         console.log(`[verifyPackagedResources] OK — verified ${cand}`)
         return
       } catch (err) {
@@ -256,11 +251,9 @@ function verifyFromCLI(target) {
     // At least one candidate had mcp-adapter/ but failed verification —
     // print that error directly (it already names the missing files).
     for (const { err } of triedWithErrors) {
-      // eslint-disable-next-line no-console
       console.error(err)
     }
   } else {
-    // eslint-disable-next-line no-console
     console.error(
       `[verifyPackagedResources] FATAL: could not find mcp-adapter/ under any candidate under ${abs}\n` +
         `Looked at:\n  - ${candidates.join('\n  - ')}`,
@@ -323,7 +316,6 @@ function verifyEmbeddingModelBundled(appOutDir) {
     throw new Error(`[verifyPackagedResources] onnxruntime-web WASM not asar-unpacked under ${ortDist}`)
   }
 
-  // eslint-disable-next-line no-console
   console.log(
     `[verifyPackagedResources] OK — embedding model (${(modelSize / 1e6).toFixed(1)} MB) + cross-encoder (${(rerankSize / 1e6).toFixed(1)} MB) + onnxruntime-web WASM bundled`,
   )
@@ -348,7 +340,6 @@ if (require.main === module) {
       verifyFromCLI(process.argv[2])
     }
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.error(err.message || err)
     process.exit(1)
   }

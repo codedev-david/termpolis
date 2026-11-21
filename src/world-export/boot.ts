@@ -3,16 +3,13 @@
 // controls and the Ask box, and starts smart Ask after the first paint when the page carries the model.
 // The page makes no request of any kind: everything it shows is in the file (the CSP also forbids it).
 import type { WorldDoc } from '../shared/world/types'
-import { askEntries, buildBm25, type AskEntry, type PackedVectors } from '../shared/world/askIndex'
+import { buildBm25 } from '../shared/world/askIndex'
 import { createWorldViewer, hasWebGL, validateWorld, type WorldViewer } from '../renderer/src/world/engine'
 import { mountAskBox, type AskState } from './askBox'
-import { readBlock, readJsonBlock } from './blocks'
+import { readAskIndex, readBlock, readJsonBlock } from './blocks'
 import { isMeta, type PageMeta } from '../shared/world/exportMeta'
 import { buildPage, type Page } from './controls'
 import { startSmartAsk, type SmartAsk } from './smartAsk'
-
-/** The `ask` block: the entries the export indexed and, on a smart page, how its `askvec` rows are packed. */
-interface AskBlock { version: number; entries: AskEntry[]; dim: number; scales: number[] }
 
 /** What the page's own tests read (window.__worldExport): set as soon as the script runs, and read-only. */
 export interface WorldExportHandle { ready: Promise<AskState>; state(): AskState }
@@ -32,24 +29,6 @@ const domReady = (): Promise<void> => new Promise((resolve) => {
 
 /** The Ask box's state, set once the box exists. */
 let current: () => AskState = () => 'loading'
-
-/** A block that cannot be read counts as missing: the Ask index is an extra, the world can show without it. */
-const orNull = <T>(read: Promise<T | null>): Promise<T | null> => read.catch(() => null)
-
-/**
- * The export's Ask index (`ask`, and `askvec` on a smart page). A missing or damaged `ask` block falls back to an
- * index built from the world itself, keyword only; `askvec` is used only when its size matches the entries.
- */
-async function readAskIndex(doc: WorldDoc): Promise<{ entries: AskEntry[]; vectors: PackedVectors | null }> {
-  const ask = await orNull(readJsonBlock<AskBlock>('ask'))
-  if (!ask || !Array.isArray(ask.entries) || !ask.entries.every((e) => typeof e?.id === 'string' && typeof e.text === 'string')) {
-    return { entries: askEntries(doc), vectors: null }
-  }
-  const bytes = await orNull(readBlock('askvec'))
-  const n = ask.entries.length
-  const fits = bytes !== null && Array.isArray(ask.scales) && ask.scales.length === n && bytes.byteLength === n * ask.dim
-  return { entries: ask.entries, vectors: fits ? { dim: ask.dim, scales: ask.scales, data: new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) } : null }
-}
 
 /**
  * The 3D city, read-only, or null for the 2D map: without WebGL, and also when the viewer cannot be created or

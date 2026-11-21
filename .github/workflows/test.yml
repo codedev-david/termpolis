@@ -224,6 +224,10 @@ jobs:
       # marketing claims can never drift ahead of measured reality.
       - name: Proof benchmark GATE (real bge — fast lookups / token leverage / learning / relationships)
         run: npm run bench:proof
+      # dist-world (the world viewer and the exported page's runtime) is built apart from electron-vite, and the
+      # afterPack verifier requires world-export/world-export.js from it: without this step packaging fails.
+      - name: Build the world viewer and the export runtime
+        run: npm run build:world-viewer
       - name: Build app
         run: npx electron-vite build
       # The built main entries are ESM and electron-vite leaves real dependencies as

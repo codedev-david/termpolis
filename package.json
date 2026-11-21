@@ -80,7 +80,7 @@
         "from": "dist-world",
         "to": "world-export",
         "filter": [
-          "*.js"
+          "world-export.js"
         ]
       }
     ],

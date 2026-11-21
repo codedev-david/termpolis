@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorldViewer } from '../../../src/renderer/src/world/engine'
 import type { WorldDoc } from '../../../src/shared/world/types'
 import type { PageMeta } from '../../../src/shared/world/exportMeta'
+import { REMOVALS_ID } from '../../../src/shared/world/designPatch'
 import { buildPage, headerText, legendHtml, MADE_WITH_URL } from '../../../src/world-export/controls'
 import { edge, minimal, rich } from '../world/helpers'
 
@@ -151,6 +152,50 @@ describe('buildPage: header and control set', () => {
     Object.defineProperty(card, 'offsetHeight', { value: 200 })
     page.showCard('<h3>Hi</h3>')
     expect(viewer.setCardReserve).toHaveBeenLastCalledWith(364, 224)
+  })
+})
+
+/** A design world (projectKey "design:"), with p1 and, if asked, the Removals proposal the design chat keeps. */
+function designDoc(removals: boolean): WorldDoc {
+  const doc = rich()
+  doc.projectKey = 'design:7f3a'
+  if (removals) doc.layers.plan.push({ id: REMOVALS_ID, title: 'Removals', summary: [], buildings: [], edges: [], removes: ['b2'] })
+  return doc
+}
+
+describe('buildPage: a design world shows its plan', () => {
+  it('opens the picker on Removals, so the parts the design removes are drawn as removed', () => {
+    const { control, viewer } = setup({ doc: designDoc(true) })
+    const picker = control('proposal') as HTMLSelectElement
+    expect(picker.value).toBe(REMOVALS_ID)
+    expect(Array.from(picker.options, (o) => o.textContent)).toEqual(['No proposal', 'Plan', 'Removals'])
+    expect(viewer.setLayers).toHaveBeenCalledWith({ proposal: REMOVALS_ID })
+    change(picker, 'p1')
+    expect(viewer.setLayers).toHaveBeenLastCalledWith({ proposal: 'p1', planned: true })
+    change(picker, '')
+    expect(viewer.setLayers).toHaveBeenLastCalledWith({ proposal: null, planned: true })
+  })
+
+  it('without removals, offers the plan and starts on no proposal', () => {
+    const { control, viewer } = setup({ doc: designDoc(false) })
+    const picker = control('proposal') as HTMLSelectElement
+    expect(picker.value).toBe('')
+    expect(Array.from(picker.options, (o) => o.textContent)).toEqual(['No proposal', 'Plan'])
+    expect(viewer.setLayers).toHaveBeenCalledWith({ proposal: null })
+  })
+
+  it('a proposal the meta names wins over Removals', () => {
+    const { control, viewer } = setup({ doc: designDoc(true), meta: { proposalId: 'p1' } })
+    expect((control('proposal') as HTMLSelectElement).value).toBe('p1')
+    expect(viewer.setLayers).toHaveBeenCalledWith({ proposal: 'p1' })
+  })
+
+  it('has no picker when the design has no plan', () => {
+    const doc = designDoc(false)
+    doc.layers.plan = []
+    const { control, viewer } = setup({ doc })
+    expect(control('proposal')).toBeNull()
+    expect(viewer.setLayers).toHaveBeenCalledWith({ proposal: null })
   })
 })
 

@@ -137,6 +137,11 @@ jobs:
         # renderer build and electron-builder's extraResources (the grammars are gitignored).
         run: node scripts/copy-grammars.cjs
 
+      # dist-world (the world viewer and the exported page's runtime) is built apart from electron-vite, and the
+      # afterPack verifier requires world-export/world-export.js from it: without this step packaging fails.
+      - name: Build the world viewer and the export runtime
+        run: npm run build:world-viewer
+
       - name: Build app
         run: npx electron-vite build
         env:

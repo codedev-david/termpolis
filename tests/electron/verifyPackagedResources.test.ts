@@ -406,9 +406,10 @@ describe('verifyPackagedResources — REQUIRED_RESOURCE_FILES contract', () => {
 })
 
 describe('the exported-page runtime', () => {
-  it('is shipped by package.json extraResources from dist-world, scripts only', () => {
+  it('is shipped by package.json extraResources from dist-world: the runtime alone, not the app-only viewer bundles', () => {
     const pkg = require('../../package.json')
-    expect(pkg.build.extraResources).toContainEqual({ from: 'dist-world', to: 'world-export', filter: ['*.js'] })
+    expect(pkg.build.extraResources).toContainEqual({ from: 'dist-world', to: 'world-export', filter: ['world-export.js'] })
+    expect(pkg.build.extraResources.filter((r: { from?: string }) => r.from === 'dist-world')).toHaveLength(1)
   })
 
   it('is built before packaging: npm run build runs the world build, which includes the export pass', () => {

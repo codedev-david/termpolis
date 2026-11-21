@@ -1,6 +1,8 @@
 // The data an exported world page carries: <script type="application/octet-stream" id="<id>" data-enc="gz64">
 // blocks, each gzip then base64, written by the export in main. The browser decodes them itself
 // (DecompressionStream), so the page needs no library and makes no request to read its own data.
+import { askEntries, type AskEntry, type PackedVectors } from '../shared/world/askIndex'
+import type { WorldDoc } from '../shared/world/types'
 
 /** Base64 text to bytes (white space, as a line-wrapped block may hold, is ignored). */
 function fromBase64(text: string): Uint8Array<ArrayBuffer> {
@@ -48,4 +50,25 @@ export async function readBlock(id: string): Promise<Uint8Array | null> {
 export async function readJsonBlock<T>(id: string): Promise<T | null> {
   const bytes = await readBlock(id)
   return bytes === null ? null : (JSON.parse(new TextDecoder().decode(bytes)) as T)
+}
+
+/** The `ask` block: the entries the export indexed and, on a smart page, how its `askvec` rows are packed. */
+interface AskBlock { version: number; entries: AskEntry[]; dim: number; scales: number[] }
+
+/** A block that cannot be read counts as missing: the Ask index is an extra, the world can show without it. */
+const orNull = <T>(read: Promise<T | null>): Promise<T | null> => read.catch(() => null)
+
+/**
+ * The export's Ask index (`ask`, and `askvec` on a smart page). A missing or damaged `ask` block falls back to an
+ * index built from the world itself, keyword only; `askvec` is used only when its size matches the entries.
+ */
+export async function readAskIndex(doc: WorldDoc): Promise<{ entries: AskEntry[]; vectors: PackedVectors | null }> {
+  const ask = await orNull(readJsonBlock<AskBlock>('ask'))
+  if (!ask || !Array.isArray(ask.entries) || !ask.entries.every((e) => typeof e?.id === 'string' && typeof e.text === 'string')) {
+    return { entries: askEntries(doc), vectors: null }
+  }
+  const bytes = await orNull(readBlock('askvec'))
+  const n = ask.entries.length
+  const fits = bytes !== null && Array.isArray(ask.scales) && ask.scales.length === n && bytes.byteLength === n * ask.dim
+  return { entries: ask.entries, vectors: fits ? { dim: ask.dim, scales: ask.scales, data: new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) } : null }
 }

@@ -6,6 +6,7 @@
 import { buildingCard, DEFAULT_LAYERS, edgeCard, escapeHtml as esc, renderFallback, techCard, THEMES, usesTech, type WorldViewer } from '../renderer/src/world/engine'
 import type { ThemeName } from '../renderer/src/world/engine'
 import type { AskKind } from '../shared/world/askIndex'
+import { REMOVALS_ID } from '../shared/world/designPatch'
 import type { PageMeta } from '../shared/world/exportMeta'
 import type { Tour, WorldDoc } from '../shared/world/types'
 
@@ -314,7 +315,12 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     viewer = v
     toolbar.textContent = ''
     if (v) {
-      const proposal = meta.proposalId !== undefined && doc.layers.plan.some((p) => p.id === meta.proposalId) ? meta.proposalId : null
+      const plan = doc.layers.plan
+      const has = (id: string | undefined): id is string => id !== undefined && plan.some((p) => p.id === id)
+      // A design world's export keeps its whole plan (the design is what it exports): it opens on the Removals
+      // proposal, when the design removes parts, so they are drawn as removed. A proposal export opens on its one.
+      const design = doc.projectKey.startsWith('design:')
+      const proposal = has(meta.proposalId) ? meta.proposalId : design && has(REMOVALS_ID) ? REMOVALS_ID : null
       v.setLayers({ proposal })
       // The controls start where the viewer's layers start (DEFAULT_LAYERS), so each shows what is drawn.
       const planned = checkbox('Planned parts', 'planned', DEFAULT_LAYERS.planned, (on) => v.setLayers({ planned: on }))
@@ -325,11 +331,11 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
         checkbox('All line labels', 'allLineLabels', DEFAULT_LAYERS.allLineLabels, (on) => v.setLayers({ allLineLabels: on })),
         planned,
       )
-      // Only a proposal export has a proposal to pick; it opens with that proposal shown. Picking one draws the
-      // planned parts again, so "Planned parts" is ticked to match.
-      if (proposal !== null) {
-        const options: Array<[string, string]> = [['', 'Built world only'], ...doc.layers.plan.map((p): [string, string] => [p.id, p.title])]
-        toolbar.appendChild(select('Proposal', 'proposal', options, proposal, (id) => {
+      // A proposal export and a design world with a plan have proposals to pick. Picking one draws the planned
+      // parts again, so "Planned parts" is ticked to match.
+      if (proposal !== null || (design && plan.length > 0)) {
+        const options: Array<[string, string]> = [['', design ? 'No proposal' : 'Built world only'], ...plan.map((p): [string, string] => [p.id, p.title])]
+        toolbar.appendChild(select('Proposal', 'proposal', options, proposal ?? '', (id) => {
           v.setLayers({ proposal: id === '' ? null : id, planned: true })
           ;(planned.firstChild as HTMLInputElement).checked = true
         }))

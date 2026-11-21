@@ -10,13 +10,14 @@ import { gunzipSync, gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { askEntries, packInt8 } from '../../src/shared/world/askIndex'
 import { isMeta, pageMeta, type PageMeta } from '../../src/shared/world/exportMeta'
-import { OUTSIDE, sanitizeWorld, type SanitizeContext } from '../../src/shared/world/exportSanitize'
+import { applyDesignPatch, REMOVALS_ID } from '../../src/shared/world/designPatch'
+import { OUTSIDE, sanitizeText, sanitizeWorld, type SanitizeContext } from '../../src/shared/world/exportSanitize'
 import type { WorldDoc } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import {
   CANCELLED, DEFAULT_EXPORT_SIZES, describedShare, EMBED_CHUNK, estimateExportBytes, EXPORT_CSP, exportPageHtml, exportWorld,
   FILE_IN_USE, NO_ACCESS, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, resolveExportAssets, SMART_DEFAULT_SHARE, writeDocument,
-  type ExportAssets, type ExportDeps, type ExportFs, type ExportProgress, type ExportRequest,
+  type ExportAssets, type ExportDeps, type ExportFs, type ExportProgress, type ExportRequest, type ExportSizes,
 } from '../../src/main/world/export'
 import { embedBatch } from '../../src/main/localEmbedder'
 import { describedWorld, designWorld, labelledWorld, linkedDesignWorld } from '../fixtures/world/docWorlds'
@@ -106,6 +107,17 @@ function deps(over: Partial<ExportDeps> & { mem?: ReturnType<typeof memFs> } = {
 
 const request = (over: Partial<ExportRequest> = {}): ExportRequest =>
   ({ doc: labelledWorld(), ctx: CTX, title: 'Shop', smart: true, target: TARGET, exportedOn: '2026-11-21', ...over })
+
+/** A design world has no folder. */
+const DESIGN_CTX: SanitizeContext = { root: null, home: HOME, userData: CTX.userData }
+/** The design world with a part taken away (removePart stores it in layers.plan) and a later proposal naming a home path. */
+function designWithRemovals(): WorldDoc {
+  const doc = applyDesignPatch(designWorld(), [{ op: 'removePart', id: 'b2' }]).doc
+  doc.layers.plan.unshift({
+    id: 'later', title: 'Later', summary: [{ text: `Keeps notes in ${HOME}/notes/plan.md.`, state: 'proposed', evidence: [{ kind: 'person', ref: 'David' }] }], buildings: [], edges: [],
+  })
+  return doc
+}
 
 /** Every data block of a page, in order: its id and decoded bytes. */
 function blocksOf(html: string): { id: string; bytes: Buffer; raw: string }[] {
@@ -270,6 +282,54 @@ describe('exportWorld: the page', () => {
     expect(jsonBlock<WorldDoc>(pageAt(mem), 'world').projectKey).toBe('design:7f3a')
   })
 
+  it('a design world exports its whole plan, sanitised: the removals it stores there and its other proposals', async () => {
+    const doc = designWithRemovals()
+    expect(doc.layers.plan.map((p) => p.id)).toEqual(['later', REMOVALS_ID])
+    for (const smart of [true, false]) {
+      const { d, mem } = deps()
+      const r = await exportWorld(request({ doc, ctx: DESIGN_CTX, smart, title: 'Shop design' }), d)
+      expect(r.ok, JSON.stringify(r)).toBe(true)
+      const html = pageAt(mem)
+      const world = jsonBlock<WorldDoc>(html, 'world')
+      expect(world.layers.plan).toEqual(sanitizeWorld(doc, DESIGN_CTX).layers.plan)
+      expect(world.layers.plan.find((p) => p.id === REMOVALS_ID)?.removes).toEqual(['b2'])
+      expect(world.layers.plan[0].summary[0].text).toBe(`Keeps notes in ${OUTSIDE}/plan.md.`)
+      expect(blocksOf(html).find((b) => b.id === 'world')!.bytes.toString('utf8')).not.toContain(HOME)
+      // A design export is the design, not a proposal export: the page shows the plan on its own (controls.ts).
+      expect('proposalId' in jsonBlock<PageMeta>(html, 'meta')).toBe(false)
+      expect(jsonBlock<{ entries: { id: string }[] }>(html, 'ask').entries).toEqual(askEntries(world))
+    }
+  })
+
+  it('a proposal export of a design world still keeps only that proposal', async () => {
+    const { d, mem } = deps()
+    await exportWorld(request({ doc: designWithRemovals(), ctx: DESIGN_CTX, smart: false, proposalId: REMOVALS_ID }), d)
+    expect(jsonBlock<WorldDoc>(pageAt(mem), 'world').layers.plan.map((p) => p.id)).toEqual([REMOVALS_ID])
+    expect(jsonBlock<PageMeta>(pageAt(mem), 'meta').proposalId).toBe(REMOVALS_ID)
+  })
+
+  it('sanitises the title too: a path in it never reaches <title> or meta.project', async () => {
+    const title = `${HOME}/repos/shop`
+    const { d, mem } = deps()
+    await exportWorld(request({ title, smart: false }), d)
+    const html = pageAt(mem)
+    const meta = jsonBlock<PageMeta>(html, 'meta')
+    expect(meta.project).toBe(sanitizeText(title, CTX))
+    expect(meta.project).not.toContain(HOME)
+    expect(html).not.toContain(HOME)
+    expect(html).toContain(`<title>${meta.project.replace(/</g, '&lt;').replace(/>/g, '&gt;')} · Lumopolis</title>`)
+  })
+
+  it('checks the world before the sanitiser reads it: a malformed doc is refused, never thrown, and nothing is written', async () => {
+    for (const doc of [{ ...labelledWorld(), buildings: 'none' }, { ...labelledWorld(), layers: null }, null]) {
+      const { d, mem } = deps()
+      const r = await exportWorld(request({ doc: doc as unknown as WorldDoc }), d)
+      expect(r.ok).toBe(false)
+      expect(!r.ok && r.error).toMatch(/^This world didn't pass its checks, so it can't be exported \(.+\)\.$/)
+      expect(mem.fs.writeFile).not.toHaveBeenCalled()
+    }
+  })
+
   it('refuses a proposal the world no longer has, and a world that fails its checks, writing nothing', async () => {
     const a = deps()
     expect(await exportWorld(request({ proposalId: 'gone' }), a.d)).toEqual({ ok: false, error: NO_PROPOSAL })
@@ -281,6 +341,16 @@ describe('exportWorld: the page', () => {
     expect(!r.ok && r.error).toMatch(/^This world didn't pass its checks, so it can't be exported \(.+\)\.$/)
     expect(a.mem.fs.writeFile).not.toHaveBeenCalled()
     expect(b.mem.fs.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('checks the world again after sanitising: a claim whose only evidence is private is left with none, and refused', async () => {
+    const doc = labelledWorld()
+    doc.buildings[0].how = [{ text: 'Remembers the user.', state: 'observed', evidence: [{ kind: 'memory', ref: 'm-1' }] }]
+    expect(validateWorld(doc).ok).toBe(true)
+    const { d, mem } = deps()
+    const r = await exportWorld(request({ doc }), d)
+    expect(!r.ok && r.error).toMatch(/^This world didn't pass its checks, so it can't be exported \(.*claim without evidence\)\.$/)
+    expect(mem.fs.writeFile).not.toHaveBeenCalled()
   })
 })
 
@@ -510,6 +580,22 @@ describe('writeDocument', () => {
   })
 })
 
+describe('writeDocument: a malformed world', () => {
+  it('is refused with a sentence, never thrown, and nothing is written', async () => {
+    const mem = memFs()
+    const r = await writeDocument({ doc: { ...labelledWorld(), edges: 7 } as unknown as WorldDoc, ctx: CTX, title: 'Shop', target: 'D:/d.html', generatedOn: '2026-11-21' }, mem.fs)
+    expect(r.ok).toBe(false)
+    expect(!r.ok && r.error).toMatch(/^This world didn't pass its checks, so its documentation can't be written \(.+\)\.$/)
+    expect(mem.fs.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('sanitises the title of the document too', async () => {
+    const mem = memFs()
+    await writeDocument({ doc: labelledWorld(), ctx: CTX, title: `${HOME}/repos/shop`, target: 'D:/d.html', generatedOn: '2026-11-21' }, mem.fs)
+    expect(mem.written.get('D:/d.html')).not.toContain(HOME)
+  })
+})
+
 describe('describedShare', () => {
   it('starts smart Ask on from 80% of buildings and 80% of lines described', () => {
     expect(SMART_DEFAULT_SHARE).toBe(0.8)
@@ -533,10 +619,16 @@ describe('estimateExportBytes', () => {
   /** base64(gzip) of `data`, as the page stores a block. */
   const encoded = (data: string | Uint8Array): number => Math.ceil(gzipSync(data).length / 3) * 4
   const TAG = '<script type="application/octet-stream" id="vocab" data-enc="gz64"></script>\n'.length
-  const vocabJson = JSON.stringify({ tokenizer: TOKENIZER, tokenizerConfig: TOKENIZER_CONFIG }).replace(/</g, '\u003c')
+  // As the export writes it: every "<" escaped (safeJson).
+  const vocabJson = JSON.stringify({ tokenizer: TOKENIZER, tokenizerConfig: TOKENIZER_CONFIG }).replace(/</g, '\\u003c')
+  /** The world the page shows: sanitised, with the plan the export keeps (all of a design's, none of a code world's). */
+  const shown = (doc: WorldDoc, ctx = CTX): WorldDoc => {
+    const clean = sanitizeWorld(doc, ctx)
+    return doc.projectKey.startsWith('design:') ? clean : { ...clean, layers: { ...clean.layers, plan: [] } }
+  }
   /** The test's own files and vectors, measured here, independently of the export. */
-  const sizesFor = (doc: WorldDoc) => {
-    const rows = askEntries(sanitizeWorld({ ...doc, layers: { ...doc.layers, plan: [] } }, CTX)).map((e) => vectorFor(e.text))
+  const sizesFor = (doc: WorldDoc, ctx = CTX) => {
+    const rows = askEntries(shown(doc, ctx)).map((e) => vectorFor(e.text))
     const { data } = packInt8(rows)
     return {
       runtime: Buffer.byteLength(RUNTIME),
@@ -544,18 +636,25 @@ describe('estimateExportBytes', () => {
       vectorShare: data.length === 0 ? 1 : gzipSync(data).length / data.length,
     }
   }
-  const pageBytes = async (doc: WorldDoc, smart: boolean): Promise<number> => {
-    const r = await exportWorld(request({ doc, smart, title: 'Termpolis' }), deps().d)
+  const est = (doc: WorldDoc, smart: boolean, sizes?: ExportSizes, over: Partial<ExportRequest> = {}): Promise<number | null> =>
+    estimateExportBytes({ doc, ctx: CTX, title: 'Termpolis', smart, ...over }, sizes)
+  const pageBytes = async (doc: WorldDoc, smart: boolean, over: Partial<ExportRequest> = {}): Promise<number> => {
+    const r = await exportWorld(request({ doc, smart, title: 'Termpolis', ...over }), deps().d)
     return r.ok ? r.bytes : -1
   }
+  const off = (estimate: number | null, real: number): number => Math.abs((estimate as number) - real) / real
+
+  it("measures the export's own vocab block: escaped exactly as safeJson escapes it", () => {
+    expect(vocabJson).toContain('\\u003c/script>')
+    expect(vocabJson).not.toContain('<')
+  })
 
   // Tolerance, stated: within 1% of the whole page, and within 2% of what smart Ask adds. What the estimate cannot
-  // know is the title, the head7 and how the scales print; on the fixture those are a few hundred bytes.
+  // know is the head7 and how the scales print; on the fixture those are a few hundred bytes.
   it('is within 1% of the real keyword page and of the real smart page, for the fixture and a described world', async () => {
     for (const doc of [fixture(), describedWorld(40, 60, 40, 60), labelledWorld()]) {
       for (const smart of [false, true]) {
-        const real = await pageBytes(doc, smart)
-        expect(Math.abs(estimateExportBytes(doc, smart, sizesFor(doc)) - real) / real, `smart ${smart}`).toBeLessThan(0.01)
+        expect(off(await est(doc, smart, sizesFor(doc)), await pageBytes(doc, smart)), `smart ${smart}`).toBeLessThan(0.01)
       }
     }
   })
@@ -563,19 +662,54 @@ describe('estimateExportBytes', () => {
   it('smart minus keyword is the encoded smart files plus the vectors, within 2%', async () => {
     const doc = fixture()
     const realDiff = (await pageBytes(doc, true)) - (await pageBytes(doc, false))
-    const estDiff = estimateExportBytes(doc, true, sizesFor(doc)) - estimateExportBytes(doc, false, sizesFor(doc))
+    const estDiff = (await est(doc, true, sizesFor(doc)) as number) - (await est(doc, false, sizesFor(doc)) as number)
     expect(Math.abs(estDiff - realDiff) / realDiff).toBeLessThan(0.02)
   })
 
-  it('grows with the world and leaves proposals out (a whole-world export draws none)', () => {
-    expect(estimateExportBytes(describedWorld(60, 80, 60, 80), false)).toBeGreaterThan(estimateExportBytes(describedWorld(6, 8, 6, 8), false))
+  it('grows with the world; a whole code-world export leaves proposals out, a proposal export counts its one', async () => {
+    expect(await est(describedWorld(60, 80, 60, 80), false)).toBeGreaterThan(await est(describedWorld(6, 8, 6, 8), false) as number)
     const linked = linkedDesignWorld()
-    expect(estimateExportBytes(linked, false)).toBe(estimateExportBytes({ ...linked, layers: { ...linked.layers, plan: [] } }, false))
+    expect(await est(linked, false)).toBe(await est({ ...linked, layers: { ...linked.layers, plan: [] } }, false))
+    const p2 = { proposalId: 'p2' }
+    expect(await est(linked, false, undefined, p2)).toBeGreaterThan(await est(linked, false) as number)
+    // The vectors are measured on the world the proposal page shows: the built world plus p2.
+    const onlyP2 = sanitizeWorld({ ...linked, layers: { plan: linked.layers.plan.filter((p) => p.id === 'p2') } }, CTX)
+    const rows = packInt8(askEntries(onlyP2).map((e) => vectorFor(e.text))).data
+    const sizes = { ...sizesFor(linked), vectorShare: gzipSync(rows).length / rows.length }
+    for (const smart of [false, true]) {
+      expect(off(await est(linked, smart, sizes, p2), await pageBytes(linked, smart, p2)), `proposal, smart ${smart}`).toBeLessThan(0.01)
+    }
   })
 
-  it('defaults to the measured runtime and smart files: about 37.3 MB smart and 0.75 MB keyword for the Termpolis fixture', () => {
-    expect(estimateExportBytes(fixture(), true) / 1e6).toBeCloseTo(37.3, 1)
-    expect(estimateExportBytes(fixture(), false) / 1e6).toBeCloseTo(0.75, 1)
+  it("counts a design world's plan, removals included, as the export keeps it", async () => {
+    const doc = designWithRemovals()
+    const bare = { ...doc, layers: { plan: [] } }
+    const design = { ctx: DESIGN_CTX }
+    expect(await est(doc, false, undefined, design)).toBeGreaterThan(await est(bare, false, undefined, design) as number)
+    for (const smart of [false, true]) {
+      expect(off(await est(doc, smart, sizesFor(doc, DESIGN_CTX), design), await pageBytes(doc, smart, design)), `smart ${smart}`).toBeLessThan(0.01)
+    }
+  })
+
+  it('measures the sanitised world: evidence excerpts the export strips are not counted', async () => {
+    const doc = labelledWorld()
+    const long = labelledWorld()
+    for (const b of long.buildings) for (const c of b.how) c.evidence = c.evidence.map((e) => ({ ...e, excerpt: 'x'.repeat(1200) }))
+    expect(JSON.stringify(long).length).toBeGreaterThan(JSON.stringify(doc).length + 1200)
+    expect(await est(long, false)).toBe(await est(doc, false))
+  })
+
+  it('is null for a world the export would refuse: a malformed doc, one failing its checks, a proposal it lacks', async () => {
+    const broken = labelledWorld()
+    broken.edges[0].from = 'nowhere'
+    expect(await est({ ...labelledWorld(), buildings: 'none' } as unknown as WorldDoc, true)).toBeNull()
+    expect(await est(broken, false)).toBeNull()
+    expect(await est(labelledWorld(), false, undefined, { proposalId: 'gone' })).toBeNull()
+  })
+
+  it('defaults to the measured runtime and smart files: about 37.3 MB smart and 0.75 MB keyword for the Termpolis fixture', async () => {
+    expect((await est(fixture(), true) as number) / 1e6).toBeCloseTo(37.3, 1)
+    expect((await est(fixture(), false) as number) / 1e6).toBeCloseTo(0.75, 1)
   })
 
   // Where this checkout has the real files (a dev machine after model prep and npm run build:world-viewer, or CI's
@@ -593,8 +727,9 @@ describe('estimateExportBytes', () => {
       )
       expect(r.ok).toBe(true)
       const bytes = statSync(target).size
-      expect(Math.abs(estimateExportBytes(fixture(), true) - bytes) / bytes).toBeLessThan(0.02)
-      expect(Math.abs(estimateExportBytes(fixture(), false) + DEFAULT_EXPORT_SIZES.smartAssets - estimateExportBytes(fixture(), true)) / bytes).toBeLessThan(0.01)
+      const smart = await est(fixture(), true) as number
+      expect(Math.abs(smart - bytes) / bytes).toBeLessThan(0.02)
+      expect(Math.abs((await est(fixture(), false) as number) + DEFAULT_EXPORT_SIZES.smartAssets - smart) / bytes).toBeLessThan(0.01)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
