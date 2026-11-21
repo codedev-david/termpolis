@@ -176,25 +176,32 @@ describe('eachOutsideReminder', () => {
     expect(calls - before).toBeGreaterThanOrEqual(handed.length)
   })
 
-  // The time it takes is held coarsely: no slower than the rebuilder it replaces. Relative, in one process, best of several
-  // alternating rounds, met by any of three measurements (a slow moment of the machine is not a failure). It cannot tell a
-  // visitor that rebuilds from one that does not (the count above does that); it holds a visitor that has become slower
-  // than the thing it was written to be cheaper than.
-  it('is no slower than the rebuilding splitter it replaces, on a text dense in reminders', () => {
-    const text = Array.from({ length: 3000 }, (_, i) => `result line ${i} <system-reminder>keep this block of instructions ${i}</system-reminder>`).join('\n')
-    const visitor = (): void => { eachOutsideReminder(text, () => undefined) }
-    const rebuild = (): void => { mapOutsideReminders(text, (g) => ({ text: g, changed: false })) }
-    const time = (fn: () => void): number => { const t0 = process.hrtime.bigint(); for (let i = 0; i < 20; i++) fn(); return Number(process.hrtime.bigint() - t0) }
-    visitor(); rebuild()
-    let ratio = Infinity
-    let seen = ''
-    for (let attempt = 0; attempt < 3 && ratio > 1; attempt++) {
-      let v = Infinity, r = Infinity
-      for (let round = 0; round < 9; round++) { v = Math.min(v, time(visitor)); r = Math.min(r, time(rebuild)) }
-      ratio = Math.min(ratio, v / r)
-      seen += ` ${(v / r).toFixed(2)}`
+  // The time it takes, held as work done rather than a clock. It used to be timed against the rebuilder (no slower than it,
+  // best of several rounds), and on a Windows runner with coverage on it measured 1.01 to 1.05 every time (run
+  // 44412797458): coverage counters slow a hand-written loop and not the native regular expression it was compared with. The
+  // property that makes it cheap is that it reads the text once, through native indexOf: each search starts where the last
+  // one ended, so the stretches the searches cover tile the text exactly. A wrapper of our own on String.prototype.indexOf,
+  // put back at once, adds them up. A visitor that searched from the start again for each reminder (quadratic) or read any
+  // stretch twice covers more than the text, and one that skipped a stretch covers less.
+  it('reads a text dense in reminders once: its searches cover every character exactly once, and there is one per tag', () => {
+    const text = Array.from({ length: 3000 }, (_, i) => `result line ${i} <system-reminder>keep this block of instructions ${i}</system-reminder>`).join('\n') + ' tail'
+    const real = String.prototype.indexOf
+    let calls = 0
+    let covered = 0
+    const handed: string[] = []
+    String.prototype.indexOf = function (this: string, needle: string, from?: number): number {
+      const at = real.call(this, needle, from)
+      calls++
+      covered += (at === -1 ? this.length : at + needle.length) - (from ?? 0)
+      return at
     }
-    // Measured 0.46 to 0.69 here on a busy machine (about 0.5 on a quiet one).
-    expect(ratio, `visitor over rebuild, by attempt:${seen}`).toBeLessThanOrEqual(1)
+    try {
+      eachOutsideReminder(text, (segment) => { handed.push(segment) })
+    } finally {
+      String.prototype.indexOf = real
+    }
+    expect(handed).toHaveLength(3001) // the 3000 results and the tail: it did its work
+    expect(covered).toBe(text.length)
+    expect(calls).toBe(2 * 3000 + 1) // an opening and a closing search per reminder, and the last one that finds none
   })
 })
