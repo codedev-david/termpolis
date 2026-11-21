@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  ALREADY_RUNNING, DOCUMENT_FAILED, EXPORT_FAILED, NO_SAVED_WORLD, NOT_EXPORTABLE, NOT_EXPORTED, OPEN_FAILED, WHOLE_DESIGN, WORLD_REQUIRED,
+  ALREADY_RUNNING, DOCUMENT_FAILED, EXPORT_FAILED, KEYWORD_ONLY, NO_SAVED_WORLD, NOT_EXPORTABLE, NOT_EXPORTED, OPEN_FAILED, WHOLE_DESIGN, WORLD_REQUIRED,
   defaultSaveName, registerWorldExportIpc, type WorldExportDeps,
 } from '../../src/main/world/exportIpc'
 import { describedShare, estimateExportBytes, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, type ExportAssets, type ExportFs } from '../../src/main/world/export'
@@ -89,7 +89,7 @@ function setup(over: Partial<WorldExportDeps> & { mem?: ReturnType<typeof memFs>
     loadDesign: vi.fn(async (key: string) => (key === DESIGN ? designWorld() : null)),
     entries: vi.fn(async () => ENTRIES),
     saveDialog: vi.fn(async (defaultPath: string) => defaultPath),
-    documentsDir: DOCS,
+    documentsDir: vi.fn(() => DOCS),
     homeDir: HOME,
     userDataDir: USER_DATA,
     assets: vi.fn(() => ({ assets: ASSETS })),
@@ -108,6 +108,9 @@ function setup(over: Partial<WorldExportDeps> & { mem?: ReturnType<typeof memFs>
 }
 
 const ctxFor = (root: string | null) => ({ root, home: HOME, userData: USER_DATA })
+/** A real PNG's first bytes (its eight-byte signature and the IHDR chunk's start), as a data URL. */
+const PNG_HEAD = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
+const pngUrl = (bytes: Uint8Array = PNG_HEAD): string => `data:image/png;base64,${Buffer.from(bytes).toString('base64')}`
 
 describe('defaultSaveName', () => {
   it('names a world page and a documentation file after the title', () => {
@@ -125,6 +128,18 @@ describe('defaultSaveName', () => {
     expect(defaultSaveName('   ', 'document')).toBe('Lumopolis - Lumopolis documentation.html')
     const name = defaultSaveName('x'.repeat(300), 'world')
     expect(name.replace(' - Lumopolis.html', '')).toHaveLength(120)
+  })
+
+  it('counts the 120 by characters, so an emoji at the boundary is kept whole, never split', () => {
+    const stem = defaultSaveName(`${'x'.repeat(119)}\u{1F600}\u{1F600}tail`, 'world').replace(' - Lumopolis.html', '')
+    expect(stem).toBe(`${'x'.repeat(119)}\u{1F600}`)
+    expect(Array.from(stem)).toHaveLength(120)
+    expect(stem).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+  })
+
+  it('turns the text-direction controls into dashes, so a name cannot show reversed', () => {
+    expect(defaultSaveName('report\u202Eexe.html', 'world')).toBe('report-exe.html - Lumopolis.html')
+    expect(defaultSaveName('a\u202Ab\u202Bc\u202Cd\u202De\u2066f\u2067g\u2068h\u2069i', 'world')).toBe('a-b-c-d-e-f-g-h-i - Lumopolis.html')
   })
 })
 
@@ -240,6 +255,75 @@ describe('world:export', () => {
     expect(mem.fs.writeFile).not.toHaveBeenCalled()
   })
 
+  it('a cancel while the world loads answers cancelled and never opens the save dialog', async () => {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((r) => { release = r })
+    const getWorld = vi.fn(async (root: string) => { await gate; return root === ROOT ? shopWorld() : null })
+    const testSave = vi.fn(async () => undefined)
+    const { call, deps, mem } = setup({ getWorld, testSave })
+    const pending = call('world:export', { exportId: 'x1', root: ROOT, smart: true })
+    expect(await call('world:export-cancel', { exportId: 'x1' })).toEqual(ok(true))
+    release()
+    expect(await pending).toEqual(ok({ cancelled: true }))
+    expect(testSave).not.toHaveBeenCalled()
+    expect(deps.saveDialog).not.toHaveBeenCalled()
+    expect(mem.fs.readFile).not.toHaveBeenCalled()
+    expect(mem.fs.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('a cancel while the save dialog is open answers cancelled once it closes, reading no assets and writing nothing', async () => {
+    let cancel: () => Promise<unknown> = async () => undefined
+    const saveDialog = vi.fn(async (defaultPath: string) => { await cancel(); return defaultPath })
+    const { call, mem } = setup({ saveDialog })
+    cancel = () => call('world:export-cancel', { exportId: 'x1' })
+    expect(await call('world:export', { exportId: 'x1', root: ROOT, smart: true })).toEqual(ok({ cancelled: true }))
+    expect(saveDialog).toHaveBeenCalledTimes(1)
+    expect(mem.fs.readFile).not.toHaveBeenCalled()
+    expect(mem.fs.writeFile).not.toHaveBeenCalled()
+    expect(mem.written.size).toBe(0)
+  })
+
+  it('a chosen name without .html gets it, so Open always opens a web page; .HTML in any case is kept', async () => {
+    const bat = setup({ testSave: vi.fn(async () => 'D:\\out\\name.bat') })
+    const res = await bat.call('world:export', { exportId: 'x1', root: ROOT, smart: false })
+    expect(res.data.path).toBe('D:\\out\\name.bat.html')
+    expect([...bat.mem.written.keys()]).toEqual(['D:\\out\\name.bat.html'])
+    expect(await bat.call('world:open-file', { path: 'D:\\out\\name.bat.html' })).toEqual(ok(true))
+    expect(bat.deps.openPath).toHaveBeenCalledWith('D:\\out\\name.bat.html')
+    expect(await bat.call('world:open-file', { path: 'D:\\out\\name.bat' })).toEqual(err(NOT_EXPORTED))
+    const upper = setup({ testSave: vi.fn(async () => 'D:\\out\\name.HTML') })
+    expect((await upper.call('world:export', { exportId: 'x1', root: ROOT, smart: false })).data.path).toBe('D:\\out\\name.HTML')
+    const doc = setup({ platform: 'linux', saveDialog: vi.fn(async () => '/home/ann/guide') })
+    expect((await doc.call('world:document', { root: ROOT, title: 'Shop' })).data.path).toBe('/home/ann/guide.html')
+  })
+
+  it("model listed but the world couldn't be indexed: its own sentence and a keyword-only flag, never 'isn't installed'", async () => {
+    const nothing = setup({ embed: vi.fn(async (texts: string[]) => texts.map(() => null)) })
+    expect(await nothing.call('world:export', { exportId: 'x1', root: ROOT, smart: true })).toEqual({ ...err(KEYWORD_ONLY), keywordOnly: true })
+    expect(KEYWORD_ONLY).not.toMatch(/install/i)
+    expect(nothing.mem.written.size).toBe(0)
+    expect((await nothing.call('world:export', { exportId: 'x2', root: ROOT, smart: false })).success).toBe(true)
+    const unreadable = memFs()
+    const read = unreadable.fs.readFile
+    unreadable.fs.readFile = vi.fn(async (p: string) => {
+      if (p === ASSETS.modelFile) throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+      return read(p)
+    })
+    const locked = setup({ mem: unreadable })
+    expect(await locked.call('world:export', { exportId: 'x1', root: ROOT, smart: true })).toEqual({ ...err(KEYWORD_ONLY), keywordOnly: true })
+  })
+
+  it('saves default to the home folder when the OS cannot say where Documents is, asked at each save', async () => {
+    const documentsDir = vi.fn((): string => { throw new Error("Failed to get 'documents' path") })
+    const { call, deps } = setup({ documentsDir })
+    expect(documentsDir).not.toHaveBeenCalled()
+    await call('world:export', { exportId: 'x1', root: ROOT, smart: false })
+    expect(deps.saveDialog).toHaveBeenLastCalledWith(join(HOME, 'shop - Lumopolis.html'))
+    await call('world:document', { root: ROOT, title: 'Shop' })
+    expect(deps.saveDialog).toHaveBeenLastCalledWith(join(HOME, 'Shop - Lumopolis documentation.html'))
+    expect(documentsDir).toHaveBeenCalledTimes(2)
+  })
+
   it("takes the test run's save path instead of the dialog, and its cancel; undefined still shows the dialog", async () => {
     const picked = setup({ testSave: vi.fn(async () => 'D:\\e2e\\out.html') })
     expect(await picked.call('world:export', { exportId: 'x1', root: ROOT, smart: false })).toMatchObject(ok({ path: 'D:\\e2e\\out.html' }))
@@ -295,7 +379,7 @@ describe('world:export', () => {
 
   it('a missing model refuses a smart export but still exports with keyword Ask', async () => {
     const { call, mem } = setup({ assets: () => ({ missing: 'model', assets: KEYWORD_ASSETS }) })
-    expect(await call('world:export', { exportId: 'x1', root: ROOT, smart: true })).toEqual(err(NO_MODEL))
+    expect(await call('world:export', { exportId: 'x1', root: ROOT, smart: true })).toEqual({ ...err(NO_MODEL), keywordOnly: true })
     expect(mem.written.size).toBe(0)
     expect((await call('world:export', { exportId: 'x2', root: ROOT, smart: false })).success).toBe(true)
   })
@@ -381,7 +465,7 @@ describe('world:document', () => {
 
   it("uses the world's own title when the person's is blank, and carries the city picture", async () => {
     const { call, mem } = setup()
-    const png = `data:image/png;base64,${Buffer.from('png bytes').toString('base64')}`
+    const png = pngUrl()
     const res = await call('world:document', { designKey: DESIGN, title: '  ', picturePng: png })
     expect(res.data.path).toBe(join(DOCS, 'Shop design - Lumopolis documentation.html'))
     expect(mem.written.get(res.data.path) as string).toContain(png)
@@ -414,6 +498,8 @@ describe('world:document', () => {
     ['an endless title', { root: ROOT, title: 't'.repeat(201) }, 'title must be a string (up to 200 characters)'],
     ['a picture that is not a PNG data URL', { root: ROOT, title: 'Shop', picturePng: 'https://example.com/x.png' }, 'picturePng must be a PNG data URL'],
     ['a numeric picture', { root: ROOT, title: 'Shop', picturePng: 1 }, 'picturePng must be a PNG data URL'],
+    ['a PNG data URL whose bytes are not a PNG', { root: ROOT, title: 'Shop', picturePng: pngUrl(Buffer.from('GIF89a not a png')) }, 'picturePng must be a PNG data URL'],
+    ['a PNG data URL too short to hold the signature', { root: ROOT, title: 'Shop', picturePng: pngUrl(PNG_HEAD.subarray(0, 4)) }, 'picturePng must be a PNG data URL'],
     ['no world', { title: 'Shop' }, WORLD_REQUIRED],
     ['an unknown design', { designKey: 'design:gone', title: 'Shop' }, DESIGN_NOT_FOUND],
   ])('refuses %s and never throws', async (_what, args, message) => {

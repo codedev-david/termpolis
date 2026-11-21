@@ -11,10 +11,13 @@
 //   world:export-info   { root? | designKey? }                       -> ok(WorldExportInfo)
 //   world:export        { exportId, root? | designKey?, smart, proposalId? } -> ok({ path, bytes }) | ok({ cancelled: true })
 //   world:export-cancel { exportId }                                  -> ok(true) when that export was running, else ok(false)
+//       A cancel that loses the race (the file was already renamed into place) still answers ok(true); the
+//       export's own answer, ok({ path }), is the truth, so the renderer trusts that and the file stays.
 //   world:document      { root? | designKey?, title, picturePng? }    -> ok({ path, bytes }) | ok({ cancelled: true })
 //   world:show-file     { path }  shell.showItemInFolder, for an exported file only
 //   world:open-file     { path }  shell.openPath, for an exported file only
-// and pushes world:export-progress { exportId, step, done, total } while an export runs.
+// and pushes world:export-progress { exportId, step, done, total } while an export runs. A smart export that can't
+// use the model answers err(...) with `keywordOnly: true`: the renderer can offer the same export with keyword Ask.
 import { join, posix, win32 } from 'node:path'
 import { err, ok } from '../ipcResult'
 import type { SanitizeContext } from '../../shared/world/exportSanitize'
@@ -38,7 +41,9 @@ export interface WorldExportDeps {
   saveDialog(defaultPath: string): Promise<string | null>
   /** The e2e answer for the save dialog (testHooks.testSavePath): undefined means "show the real dialog". */
   testSave?: () => Promise<string | null | undefined>
-  documentsDir: string
+  /** The Documents folder (app.getPath('documents')), asked at each save: it can throw when the OS can't say
+   *  (a redirected or unavailable folder), and then the save dialog opens in the home folder. */
+  documentsDir(): string
   homeDir: string
   userDataDir: string
   /** Where the export's files are (export.ts resolveExportAssets). */
@@ -67,6 +72,8 @@ export const ALREADY_RUNNING = 'That export is already running.'
 export const WHOLE_DESIGN = 'A design exports whole, so it takes no proposal.'
 export const NOT_EXPORTED = 'That file was not exported here.'
 export const OPEN_FAILED = "Termpolis couldn't open that file."
+/** The model is installed but couldn't index this world (its files unreadable, or no embedding came back). */
+export const KEYWORD_ONLY = "Smart Ask couldn't index this world, so this export can use keyword Ask only."
 
 const ID_REQUIRED = 'exportId required'
 const SMART_REQUIRED = 'smart must be true or false'
@@ -82,20 +89,36 @@ const MAX_TITLE = 200
 /** A city picture is a few MB at most; past this the request is refused before anything is read. */
 const MAX_PICTURE = 32 * 1024 * 1024
 const PNG_URL = /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/
+const PNG_PREFIX = 'data:image/png;base64,'
+/** Every PNG file starts with these eight bytes. */
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+/** A PNG data URL within the size bound whose bytes start with the PNG signature. Only the first 12 base64
+ *  characters (9 bytes) are decoded: the regex has already checked the whole payload's alphabet. */
+const isPngUrl = (v: unknown): v is string => {
+  if (typeof v !== 'string' || v.length > MAX_PICTURE || !PNG_URL.test(v)) return false
+  const head = Buffer.from(v.slice(PNG_PREFIX.length, PNG_PREFIX.length + 12), 'base64')
+  return PNG_SIGNATURE.every((b, i) => head[i] === b)
+}
 /** The characters a file name can't hold on Windows (and `/` anywhere). */
 const NOT_IN_NAMES = '\\/:*?"<>|'
+/** Text-direction controls (embeddings, overrides and isolates): they could make a name read reversed. */
+const BIDI = /[\u202a-\u202e\u2066-\u2069]/
 const MAX_STEM = 120
 
 /**
  * The save dialog's default file name: `<title> - Lumopolis.html` for a world page and `<title> - Lumopolis
- * documentation.html` for its documentation. Characters a file name can't hold, and control characters, become
- * dashes; the stem keeps at most 120 characters, and an empty title is "Lumopolis".
+ * documentation.html` for its documentation. Characters a file name can't hold, control characters and
+ * text-direction controls become dashes; the stem keeps at most 120 characters (code points, so an emoji is never
+ * split), and an empty title is "Lumopolis".
  */
 export function defaultSaveName(title: string, kind: 'world' | 'document'): string {
-  const safe = Array.from(title, (c) => (c < ' ' || c === '\u007f' || NOT_IN_NAMES.includes(c) ? '-' : c)).join('')
-  const stem = safe.trim().slice(0, MAX_STEM).trim() || 'Lumopolis'
+  const safe = Array.from(title, (c) => (c < ' ' || c === '\u007f' || NOT_IN_NAMES.includes(c) || BIDI.test(c) ? '-' : c))
+  const stem = Array.from(safe.join('').trim()).slice(0, MAX_STEM).join('').trim() || 'Lumopolis'
   return `${stem} - Lumopolis${kind === 'world' ? '' : ' documentation'}.html`
 }
+
+/** The chosen path, ending in .html (in any letter case) so Open always opens a web page. */
+const asHtml = (p: string): string => (/\.html$/i.test(p) ? p : `${p}.html`)
 
 const field = (args: unknown, name: string): unknown => (args && typeof args === 'object' ? (args as Record<string, unknown>)[name] : undefined)
 const shortString = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim() !== '' && v.length <= max
@@ -135,10 +158,24 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
     return { doc, ctx: ctxOf(root), title: await titleOf({ root, designKey: null }), design: false }
   }
 
-  const pickTarget = async (defaultPath: string): Promise<string | null> => {
-    const test = await deps.testSave?.()
-    return test !== undefined ? test : deps.saveDialog(defaultPath)
+  /** Documents, asked now (never at startup); the home folder when the OS can't say. */
+  const saveFolder = (): string => {
+    try {
+      return deps.documentsDir()
+    } catch {
+      return deps.homeDir
+    }
   }
+
+  /** The save dialog (or the test run's answer), opened at `<Documents>/<name>`: the path ending in .html, or null. */
+  const pickTarget = async (name: string): Promise<string | null> => {
+    const test = await deps.testSave?.()
+    const chosen = test !== undefined ? test : await deps.saveDialog(join(saveFolder(), name))
+    return chosen === null ? null : asHtml(chosen)
+  }
+
+  /** A smart export that can't use the model: the sentence, and a flag so the renderer can offer keyword Ask. */
+  const keywordOnly = (sentence: string) => ({ ...err(sentence), keywordOnly: true as const })
 
   const progress = (exportId: string, p: ExportProgress): void => {
     try {
@@ -198,15 +235,19 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
       if (world.design && proposalId !== undefined) return err(WHOLE_DESIGN)
       const found = deps.assets()
       if (!('assets' in found)) return err(NO_RUNTIME)
-      if (smart && 'missing' in found) return err(NO_MODEL)
-      const target = await pickTarget(join(deps.documentsDir, defaultSaveName(world.title, 'world')))
-      if (target === null) return ok({ cancelled: true })
+      if (smart && 'missing' in found) return keywordOnly(NO_MODEL)
+      // A cancel while the world loaded never opens the dialog; one while the dialog was open reads and writes nothing.
+      if (controller.signal.aborted) return ok({ cancelled: true })
+      const target = await pickTarget(defaultSaveName(world.title, 'world'))
+      if (target === null || controller.signal.aborted) return ok({ cancelled: true })
       const result = await exportWorld(
         { doc: world.doc, ctx: world.ctx, title: world.title, smart, ...(proposalId !== undefined ? { proposalId } : {}), target, exportedOn: localDay(now()) },
         { assets: found.assets, embed: deps.embed, fs: deps.fs, signal: controller.signal, progress: (p) => progress(exportId, p) },
       )
       if (result.ok) return saved(result.path, result.bytes)
-      return result.cancelled ? ok({ cancelled: true }) : err(result.error)
+      if (result.cancelled) return ok({ cancelled: true })
+      // The assets said the model is here, yet it couldn't index this world: never "isn't installed".
+      return result.keywordOnly ? keywordOnly(KEYWORD_ONLY) : err(result.error)
     } catch {
       return err(EXPORT_FAILED)
     } finally {
@@ -226,15 +267,13 @@ export function registerWorldExportIpc(ipc: WorldIpcMain, deps: WorldExportDeps)
     const title = field(args, 'title')
     const picturePng = field(args, 'picturePng')
     if (typeof title !== 'string' || title.length > MAX_TITLE) return err(TITLE_REQUIRED)
-    if (picturePng !== undefined && !(typeof picturePng === 'string' && picturePng.length <= MAX_PICTURE && PNG_URL.test(picturePng))) {
-      return err(PICTURE_REQUIRED)
-    }
+    if (picturePng !== undefined && !isPngUrl(picturePng)) return err(PICTURE_REQUIRED)
     try {
       const world = await resolveWorld(args)
       if (typeof world === 'string') return err(world)
       // The person's title, else the world's own; writeDocument sanitises it either way.
       const name = title.trim() || world.title
-      const target = await pickTarget(join(deps.documentsDir, defaultSaveName(name, 'document')))
+      const target = await pickTarget(defaultSaveName(name, 'document'))
       if (target === null) return ok({ cancelled: true })
       const result = await writeDocument(
         { doc: world.doc, ctx: world.ctx, title: name, ...(typeof picturePng === 'string' ? { picturePng } : {}), target, generatedOn: localDay(now()) },

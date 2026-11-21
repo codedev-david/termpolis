@@ -739,7 +739,8 @@ export interface TermpolisAPI {
    *  page's size with and without smart Ask, and the proposals a code world can export alone. */
   worldExportInfo: (req: { root?: string; designKey?: string }) => Promise<IpcResponse<WorldExportInfo>>
   /** Lumopolis: export the saved world as one offline page where the person chooses (progress on onWorldExportProgress). */
-  worldExport: (req: { exportId: string; root?: string; designKey?: string; smart: boolean; proposalId?: string }) => Promise<IpcResponse<WorldSavedFile | WorldSaveCancelled>>
+  /** A failure with `keywordOnly: true` is a smart export that couldn't use the model: offer it with keyword Ask. */
+  worldExport: (req: { exportId: string; root?: string; designKey?: string; smart: boolean; proposalId?: string }) => Promise<IpcResponse<WorldSavedFile | WorldSaveCancelled> & { keywordOnly?: true }>
   /** Lumopolis: cancel a running export by its id; true when one was running. */
   worldExportCancel: (exportId: string) => Promise<IpcResponse<boolean>>
   /** Lumopolis: write the world's documentation (one HTML file, `picturePng` the city as a PNG data URL) where the person chooses. */

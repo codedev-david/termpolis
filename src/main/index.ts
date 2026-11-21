@@ -2870,7 +2870,7 @@ registerWorldExportIpc(ipcMain, {
     return result.canceled || !result.filePath ? null : result.filePath
   },
   testSave: () => testSavePath(process.env, (f) => fsPromises.readFile(f, 'utf8')),
-  documentsDir: app.getPath('documents'),
+  documentsDir: () => app.getPath('documents'),
   homeDir: homedir(),
   userDataDir: worldUserData,
   assets: () => resolveExportAssets({ resourcesPath: process.resourcesPath, appPath: app.getAppPath() }),
