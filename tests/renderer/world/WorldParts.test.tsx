@@ -242,4 +242,24 @@ describe('WorldToolbar Export', () => {
     fireEvent.click(button)
     expect(screen.queryByTestId('world-export-menu')).toBeNull()
   })
+
+  it('the Export menu opens toward the side with room, so a narrow pane never cuts it off', () => {
+    render(<WorldToolbar {...props({ onExport: vi.fn(), onBuildIt: vi.fn() })} />)
+    const button = screen.getByTestId('world-export')
+    const wrap = button.parentElement as HTMLElement
+    const bar = screen.getByRole('toolbar')
+    const rect = (left: number, right: number) => ({ left, right, top: 0, bottom: 20, width: right - left, height: 20, x: left, y: 0, toJSON: () => ({}) })
+    vi.spyOn(bar, 'getBoundingClientRect').mockReturnValue(rect(300, 720) as DOMRect)
+    // At the far end of a row: the menu hangs left from the button's right edge.
+    vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(620, 700) as DOMRect)
+    fireEvent.click(button)
+    expect(screen.getByTestId('world-export-menu')).toHaveClass('right-0')
+    expect(screen.getByTestId('world-export-menu')).not.toHaveClass('left-0')
+    fireEvent.click(button)
+    // Wrapped to the start of a row: no room on the left, so it opens to the right.
+    vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(312, 392) as DOMRect)
+    fireEvent.click(button)
+    expect(screen.getByTestId('world-export-menu')).toHaveClass('left-0')
+    expect(screen.getByTestId('world-export-menu')).not.toHaveClass('right-0')
+  })
 })

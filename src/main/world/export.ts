@@ -16,7 +16,7 @@
 // either: holding their 36 MB of base64 in main for an export a person makes now and then costs more than it saves.
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { gzip } from 'node:zlib'
 import { askEntries, ASK_INDEX_VERSION, packInt8, type AskEntry } from '../../shared/world/askIndex'
@@ -36,10 +36,29 @@ export interface ExportAssets { runtimeJs: string; ortWasm: string; modelDir: st
 const RUNTIME_FILE = 'world-export.js'
 /** The ORT wasm a smart Ask page carries: the asar-unpacked copy the embedder itself loads. */
 const ORT_WASM_REL = ['node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm']
+/** How far above appPath dev looks for the project folder: `electron out/main/index.js` gives appPath out/main. */
+const DEV_LEVELS = 3
+
+/**
+ * The folders dev looks in, nearest first: appPath, then each folder above it up to the first one that holds a
+ * package.json (the project), at most DEV_LEVELS above. `electron .` gives the project itself; `electron
+ * out/main/index.js`, as the e2e specs launch, gives out/main, two levels under it.
+ */
+export function devRoots(appPath: string): string[] {
+  const roots = [appPath]
+  let dir = appPath
+  for (let i = 0; i < DEV_LEVELS && !existsSync(join(dir, 'package.json')); i++) {
+    const up = dirname(dir)
+    if (up === dir) break
+    roots.push(up)
+    dir = up
+  }
+  return roots
+}
 
 /**
  * Where the export's files are: packaged first (<resourcesPath>/world-export, the asar-unpacked ORT wasm), then
- * dev (<appPath>/dist-world, <appPath>/node_modules). Without the runtime nothing can be exported. Without the
+ * dev (dist-world and node_modules in appPath or the project folder above it, devRoots). Without the runtime nothing can be exported. Without the
  * model or the wasm only keyword Ask can be: `missing: 'model'` then still carries the assets, with an empty
  * modelDir and modelFile, so the caller can offer a keyword export.
  */
@@ -48,9 +67,10 @@ export function resolveExportAssets(env: { resourcesPath?: string; appPath: stri
   const { resourcesPath, appPath, resolveModel = resolveEmbedderAssets } = env
   const first = (candidates: string[]): string => candidates.find((c) => existsSync(c)) ?? ''
   const packaged = (...rel: string[]): string[] => (resourcesPath ? [join(resourcesPath, ...rel)] : [])
-  const runtimeJs = first([...packaged('world-export', RUNTIME_FILE), join(appPath, 'dist-world', RUNTIME_FILE)])
+  const dev = (...rel: string[]): string[] => devRoots(appPath).map((root) => join(root, ...rel))
+  const runtimeJs = first([...packaged('world-export', RUNTIME_FILE), ...dev('dist-world', RUNTIME_FILE)])
   if (runtimeJs === '') return { missing: 'runtime' }
-  const ortWasm = first([...packaged('app.asar.unpacked', ...ORT_WASM_REL), join(appPath, ...ORT_WASM_REL)])
+  const ortWasm = first([...packaged('app.asar.unpacked', ...ORT_WASM_REL), ...dev(...ORT_WASM_REL)])
   const model = resolveModel()
   if (!model || ortWasm === '') return { missing: 'model', assets: { runtimeJs, ortWasm, modelDir: '', modelFile: '' } }
   return { assets: { runtimeJs, ortWasm, modelDir: model.dir, modelFile: model.model } }

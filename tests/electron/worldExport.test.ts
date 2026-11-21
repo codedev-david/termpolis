@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import * as fsp from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { askEntries, packInt8 } from '../../src/shared/world/askIndex'
@@ -16,7 +16,7 @@ import type { WorldDoc } from '../../src/shared/world/types'
 import { validateWorld } from '../../src/shared/world/validate'
 import {
   CANCELLED, DEFAULT_EXPORT_SIZES, describedShare, EMBED_CHUNK, estimateExportBytes, EXPORT_CSP, exportPageHtml, exportWorld,
-  FILE_IN_USE, NO_ACCESS, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, resolveExportAssets, SMART_DEFAULT_SHARE, writeDocument,
+  devRoots, FILE_IN_USE, NO_ACCESS, NO_MODEL, NO_PROPOSAL, NO_RUNTIME, NO_SPACE, resolveExportAssets, SMART_DEFAULT_SHARE, writeDocument,
   type ExportAssets, type ExportDeps, type ExportFs, type ExportProgress, type ExportRequest, type ExportSizes,
 } from '../../src/main/world/export'
 import { embedBatch } from '../../src/main/localEmbedder'
@@ -772,6 +772,41 @@ describe('resolveExportAssets', () => {
       .toEqual({ assets: { runtimeJs, ortWasm, modelDir: model.dir, modelFile: model.model } })
     expect(resolveExportAssets({ appPath: app, resolveModel: () => model }))
       .toEqual({ assets: { runtimeJs, ortWasm, modelDir: model.dir, modelFile: model.model } })
+  })
+
+  it('dev launched as out/main/index.js: the runtime and the wasm in the project folder two levels up', () => {
+    const project = temp()
+    touch(join(project, 'package.json'))
+    const runtimeJs = touch(join(project, 'dist-world', 'world-export.js'))
+    const ortWasm = touch(join(project, ...wasmRel))
+    const appPath = join(project, 'out', 'main')
+    mkdirSync(appPath, { recursive: true })
+    expect(devRoots(appPath)).toEqual([appPath, join(project, 'out'), project])
+    expect(resolveExportAssets({ appPath, resolveModel: () => model }))
+      .toEqual({ assets: { runtimeJs, ortWasm, modelDir: model.dir, modelFile: model.model } })
+    // The packaged copy still wins over the project's.
+    const res = temp()
+    const packed = touch(join(res, 'world-export', 'world-export.js'))
+    expect(resolveExportAssets({ resourcesPath: res, appPath, resolveModel: () => model }))
+      .toEqual({ assets: { runtimeJs: packed, ortWasm, modelDir: model.dir, modelFile: model.model } })
+  })
+
+  it('dev looks no further than the folder with package.json, nor more than three levels up, nor past the root', () => {
+    const project = temp()
+    touch(join(project, 'package.json'))
+    expect(devRoots(project)).toEqual([project])
+    // A runtime above the project folder is not this project's.
+    const outer = temp()
+    touch(join(outer, 'dist-world', 'world-export.js'))
+    const inner = join(outer, 'inner')
+    touch(join(inner, 'package.json'))
+    expect(resolveExportAssets({ appPath: join(inner, 'out', 'main'), resolveModel: () => model })).toEqual({ missing: 'runtime' })
+    // No package.json anywhere: three levels, then stop.
+    const deep = join(temp(), 'a', 'b', 'c', 'd')
+    expect(devRoots(deep)).toHaveLength(4)
+    // The root of the drive has no folder above it.
+    const root = parse(tmpdir()).root
+    expect(devRoots(root)).toEqual([root])
   })
 
   it('a missing runtime: nothing can be exported', () => {

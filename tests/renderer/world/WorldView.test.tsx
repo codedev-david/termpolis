@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, cleanup, within } from '@testing-library/react'
 import type { WorldDoc, WorldEntry, WorldProgressEvent, WorldUpdatedEvent } from '../../../src/shared/world/types'
 import type { WorldSelection, WorldViewerOptions } from '../../../src/renderer/src/world/engine'
 import { buildingCard, edgeCard } from '../../../src/renderer/src/world/engine'
@@ -1820,6 +1820,137 @@ describe('WorldView export', () => {
     await nextFrame()
     expect(c.toDataURL).toHaveBeenCalledTimes(1)
     expect(screen.getAllByTestId('world-document-dialog')).toHaveLength(1)
+  })
+
+  it('while a dialog is open Export is off, and a palette ask neither opens another dialog nor cuts the running export short', async () => {
+    const run = deferred<Res<{ path: string; bytes: number }>>()
+    const b = bridge(exportApi({ worldExport: vi.fn(() => run.promise) }))
+    const m = await mountWith()
+    expect(screen.getByTestId('world-export')).toBeEnabled()
+    openMenu('world')
+    await settle()
+    expect(screen.getByTestId('world-export')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Export…' }))
+    await settle()
+    await m.again({ exportRequest: { kind: 'document', seq: 1 } })
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    expect(b.api.worldExportCancel).not.toHaveBeenCalled()
+    await act(async () => { run.resolve(ok({ path: 'C:/Users/me/Documents/repo.html', bytes: MB })) })
+    await settle()
+    expect(screen.getByTestId('world-export-toast')).toBeInTheDocument()
+    expect(screen.getByTestId('world-export')).toBeEnabled()
+    // The ask that came while the export ran was dropped: nothing opens once it is done.
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    // The documentation dialog turns Export off too.
+    openMenu('document')
+    expect(screen.getByTestId('world-document-dialog')).toBeInTheDocument()
+    expect(screen.getByTestId('world-export')).toBeDisabled()
+  })
+
+  it('the Export menu is a group of buttons; Esc closes only the menu, and the next Esc reaches the map', async () => {
+    bridge(exportApi())
+    const onClose = vi.fn()
+    render(<WorldView root="/repo" onClose={onClose} />)
+    await settle()
+    const btn = screen.getByTestId('world-export')
+    expect(btn).toHaveAttribute('aria-haspopup', 'true')
+    fireEvent.click(btn)
+    expect(btn).toHaveAttribute('aria-expanded', 'true')
+    const menu = screen.getByRole('group', { name: 'Export' })
+    expect(within(menu).getAllByRole('button').map((x) => x.textContent)).toEqual(['Interactive world (HTML)…', 'Documentation (HTML)…'])
+    expect(screen.queryByRole('menu')).toBeNull()
+    // Another key leaves it open.
+    fireEvent.keyDown(btn, { key: 'Tab' })
+    expect(screen.getByTestId('world-export-menu')).toBeInTheDocument()
+    esc(btn)
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    expect(viewer().resetView).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+    // From one of its items, too.
+    fireEvent.click(btn)
+    esc(screen.getByTestId('world-export-document'))
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    expect(viewer().resetView).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    // With the menu closed, Esc does what it always did.
+    esc(btn)
+    expect(viewer().resetView).toHaveBeenCalledTimes(1)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('a click outside the Export menu closes it; a click inside does not', async () => {
+    bridge(exportApi())
+    await mountWith()
+    fireEvent.click(screen.getByTestId('world-export'))
+    fireEvent.mouseDown(screen.getByTestId('world-export-menu'))
+    expect(screen.getByTestId('world-export-menu')).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByTestId('world-canvas-host'))
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    expect(screen.getByTestId('world-export')).toHaveAttribute('aria-expanded', 'false')
+    // Closed, a click anywhere changes nothing.
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+  })
+
+  it('a palette ask that opens a dialog closes the Export menu under it', async () => {
+    bridge(exportApi())
+    const m = await mountWith()
+    fireEvent.click(screen.getByTestId('world-export'))
+    expect(screen.getByTestId('world-export-menu')).toBeInTheDocument()
+    await m.again({ exportRequest: { kind: 'world', seq: 1 } })
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    esc()
+    expect(screen.getByTestId('world-export')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('a palette ask is dropped when the world fails to load, so a world that loads later opens nothing', async () => {
+    const b = bridge(exportApi({ worldGet: vi.fn(async () => fail('The saved map is damaged.')) }))
+    await mountWith({ exportRequest: { kind: 'document', seq: 1 } })
+    expect(screen.getByText(/The saved map is damaged/)).toBeInTheDocument()
+    b.api.worldGet.mockResolvedValue(ok(minimal()))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(screen.getByTestId('world-export')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+  })
+
+  it('a first compile that throws or fails leaves no run going: a world that loads after says nothing of one', async () => {
+    for (const end of ['throw', 'fail'] as const) {
+      const compile = deferred<Res<WorldDoc>>()
+      const b = bridge(exportApi({ worldGet: vi.fn(async () => ok(null)), worldCompile: vi.fn(() => compile.promise) }))
+      const m = await mountWith()
+      b.progress({ root: '/repo', projectKey: 'k', stage: 'labelling', pct: 65 })
+      await act(async () => { if (end === 'throw') compile.reject(new Error('down')); else compile.resolve(fail('no source files found')) })
+      await settle()
+      expect(screen.queryByTestId('world-export')).toBeNull()
+      b.api.worldGet.mockResolvedValue(ok(minimal()))
+      await b.updated({ root: '/repo', projectKey: 'k' })
+      await settle()
+      openMenu('world')
+      await settle()
+      expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+      expect(screen.queryByTestId('world-export-saved-at')).toBeNull()
+      m.unmount()
+    }
+  })
+
+  it('a saved world ends the run that made it: the export dialog no longer says a compile is running', async () => {
+    const b = bridge(exportApi())
+    await mountWith()
+    b.progress({ root: '/repo', projectKey: 'k', stage: 'boundaries', pct: 40 })
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    openMenu('world')
+    await settle()
+    expect(screen.queryByTestId('world-export-saved-at')).toBeNull()
+    esc()
+    // A saved world for another folder leaves this one's run alone.
+    b.progress({ root: '/repo', projectKey: 'k', stage: 'boundaries', pct: 40 })
+    await b.updated({ root: '/other', projectKey: 'other' })
+    openMenu('world')
+    await settle()
+    expect(screen.getByTestId('world-export-saved-at')).toBeInTheDocument()
   })
 
   it('moving to another world closes an open dialog and the toast', async () => {

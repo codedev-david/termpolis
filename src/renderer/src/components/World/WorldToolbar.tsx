@@ -29,6 +29,8 @@ export interface WorldToolbarProps {
   onExport?: (kind: ExportKind) => void
   /** Set on a design world: the Build it button. */
   onBuildIt?: () => void
+  /** An Export or Build it dialog is open: both buttons are off until it closes. */
+  dialogOpen?: boolean
   /** The last labelling run's cost line, shown small and muted under the controls; absent: nothing. */
   labelCost?: string
   /** The saved views of this world, newest first. */
@@ -199,12 +201,13 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         )}
       </div>
       <div className="flex-1" />
-      {props.onExport && <ExportMenu btnClass={`${btn} text-[#cccccc]`} onExport={props.onExport} />}
+      {props.onExport && <ExportMenu btnClass={`${btn} text-[#cccccc]`} onExport={props.onExport} disabled={props.dialogOpen === true} />}
       {props.onBuildIt && (
         <button
           type="button"
           data-testid="world-build-it-open"
-          className="text-xs px-2 py-1 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white inline-flex items-center gap-1.5"
+          className="text-xs px-2 py-1 rounded bg-[#0078d4] hover:bg-[#106ebe] text-white inline-flex items-center gap-1.5 disabled:opacity-50 disabled:hover:bg-[#0078d4]"
+          disabled={props.dialogOpen === true}
           onClick={props.onBuildIt}
           title="Build this design in a folder with your agent"
         ><i className="fa-solid fa-hammer" aria-hidden="true" />Build it</button>

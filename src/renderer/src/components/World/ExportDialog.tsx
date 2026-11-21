@@ -70,6 +70,7 @@ export function ExportDialog({ root, designKey, labelling, onSaved, onClose }: E
 
   const cancel = (): void => {
     stopRun(runRef)
+    setRun(null)
     onClose()
   }
 

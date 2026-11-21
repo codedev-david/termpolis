@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, cleanup, within } from '@testing-library/react'
-import type { BuildItResult, WorldDoc, WorldEntry } from '../../../src/shared/world/types'
+import type { BuildItResult, WorldDoc, WorldEntry, WorldProgressEvent } from '../../../src/shared/world/types'
 import type { WorldViewerOptions } from '../../../src/renderer/src/world/engine'
 import { minimal } from './helpers'
 
@@ -38,6 +38,28 @@ const FOLDER: WorldEntry = { key: 'kf', source: { kind: 'folder', root: 'C:/work
 const DESIGN: WorldEntry = { key: 'design:d1', source: { kind: 'design', id: 'd1', title: 'Pet shop' }, title: 'Pet shop', lastOpened: 2 }
 const designDoc = (generatedAt = 5): WorldDoc => ({ ...minimal(), projectKey: 'design:d1', generatedAt })
 const BUILT: BuildItResult = { root: 'C:/build/pets', key: 'design:d1', title: 'Pet shop', prompt: 'Build the app.' }
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+/** What the Export button needs from the bridge. */
+const exportBits = () => ({
+  worldExportInfo: vi.fn(async () => ok({ title: 'Pet shop', savedAt: 1, smartDefault: false, buildings: 1, lines: 1, smartBytes: 1024, keywordBytes: 1024, smartAvailable: true, proposals: [] })),
+  worldExport: vi.fn(() => new Promise(() => undefined)),
+  worldExportCancel: vi.fn(async () => ok(true)),
+  onWorldExportProgress: vi.fn(() => () => undefined),
+})
+/** Main's compile progress, pushed by hand. */
+const progressHub = () => {
+  const cbs = new Set<(e: WorldProgressEvent) => void>()
+  return {
+    on: vi.fn((cb: (e: WorldProgressEvent) => void) => { cbs.add(cb); return () => { cbs.delete(cb) } }),
+    emit: (e: WorldProgressEvent) => act(() => { for (const cb of cbs) cb(e) }),
+  }
+}
 
 function bridge(over: Record<string, unknown> = {}) {
   const api = {
@@ -289,6 +311,51 @@ describe('WorldView sources', () => {
     expect(screen.queryByRole('dialog', { name: 'Build it' })).toBeNull()
   })
 
+  it('Build it and Export turn each other off while either dialog is open', async () => {
+    bridge(exportBits())
+    await mount('/repo')
+    switchTo('design:d1')
+    await settle()
+    const exportBtn = () => screen.getByTestId('world-export')
+    const buildBtn = () => screen.getByTestId('world-build-it-open')
+    expect(exportBtn()).toBeEnabled()
+    expect(buildBtn()).toBeEnabled()
+    fireEvent.click(buildBtn())
+    expect(screen.getByRole('dialog', { name: 'Build it' })).toBeInTheDocument()
+    expect(exportBtn()).toBeDisabled()
+    fireEvent.click(exportBtn())
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(exportBtn()).toBeEnabled()
+    fireEvent.click(exportBtn())
+    fireEvent.click(screen.getByTestId('world-export-world'))
+    await settle()
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+    expect(buildBtn()).toBeDisabled()
+    fireEvent.click(buildBtn())
+    expect(screen.queryByRole('dialog', { name: 'Build it' })).toBeNull()
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(buildBtn()).toBeEnabled()
+  })
+
+  it('Build it takes over from a documentation dialog still waiting for its picture', async () => {
+    bridge(exportBits())
+    await mount('/repo')
+    switchTo('design:d1')
+    await settle()
+    const c = document.createElement('canvas')
+    c.toDataURL = vi.fn(() => 'data:image/png;base64,AA') as never
+    screen.getByTestId('world-canvas-host').appendChild(c)
+    fireEvent.click(screen.getByTestId('world-export'))
+    fireEvent.click(screen.getByTestId('world-export-document'))
+    fireEvent.click(screen.getByTestId('world-build-it-open'))
+    await act(() => new Promise<void>((r) => { requestAnimationFrame(() => r()) }))
+    expect(c.toDataURL).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Build it' })).toBeInTheDocument()
+  })
+
   it('without a Build it launcher a design shows no Build it button', async () => {
     bridge()
     await mount('/repo', { buildIt: false })
@@ -406,6 +473,43 @@ describe('WorldView sign in needed', () => {
     await openGit()
     expect(api.worldCompile).toHaveBeenCalledWith('C:/data/r')
     expect(screen.getByTestId('world-view')).toBeInTheDocument()
+  })
+
+  it('a recompile after a repository update that fails leaves no run going for the export dialog', async () => {
+    const compile = deferred<Res<WorldDoc>>()
+    const p = progressHub()
+    gitBridge(ok({ changed: true }), { worldCompile: vi.fn(() => compile.promise), onWorldProgress: p.on, ...exportBits() })
+    await openGit()
+    p.emit({ root: 'C:/data/r', projectKey: 'k', stage: 'labelling', pct: 65 })
+    await act(async () => { compile.reject(new Error('down')) })
+    await settle()
+    fireEvent.click(screen.getByTestId('world-export'))
+    fireEvent.click(screen.getByTestId('world-export-world'))
+    await settle()
+    expect(screen.getByTestId('world-export-dialog')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-export-saved-at')).toBeNull()
+  })
+
+  it('a recompile that settles after another world opened leaves that world\'s run alone', async () => {
+    const compile = deferred<Res<WorldDoc>>()
+    const p = progressHub()
+    gitBridge(ok({ changed: true }), {
+      worldSourcesList: vi.fn(async () => ok<WorldEntry[]>([GIT, FOLDER])),
+      worldCompile: vi.fn(() => compile.promise),
+      onWorldProgress: p.on,
+      ...exportBits(),
+    })
+    await openGit()
+    switchTo('kf')
+    await settle()
+    expect(screen.getByTestId('world-project')).toHaveTextContent('shop')
+    p.emit({ root: 'C:/work/shop', projectKey: 'k', stage: 'boundaries', pct: 40 })
+    await act(async () => { compile.resolve(ok(minimal())) })
+    await settle()
+    fireEvent.click(screen.getByTestId('world-export'))
+    fireEvent.click(screen.getByTestId('world-export-world'))
+    await settle()
+    expect(screen.getByTestId('world-export-saved-at')).toBeInTheDocument()
   })
 
   it('Sign in retries interactively and the notice goes away', async () => {

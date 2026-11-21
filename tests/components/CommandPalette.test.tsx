@@ -115,13 +115,25 @@ describe('CommandPalette', () => {
     expect(onAction).toHaveBeenCalledWith('world_document', undefined)
   })
 
-  it('"lumopolis documentation" lists the documentation entry too, after Open Lumopolis', () => {
+  it.each(['lumopolis documentation', 'world documentation', 'Lumopolis Documentation', 'generate world documentation'])('"%s" reaches the documentation on Enter, not Open Lumopolis', (q) => {
     const onAction = vi.fn()
     render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
-    fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'lumopolis documentation' } })
-    expect(screen.getByText('Open Lumopolis')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('Generate Lumopolis documentation'))
+    const box = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(box, { target: { value: q } })
+    expect(screen.getByText('Generate Lumopolis documentation')).toBeInTheDocument()
+    expect(screen.queryByText('Open Lumopolis')).toBeNull()
+    fireEvent.keyDown(box, { key: 'Enter' })
     expect(onAction).toHaveBeenCalledWith('world_document', undefined)
+  })
+
+  it.each(['lumopolis', 'show world', 'open lumopolis', 'world', 'lumopolis docs', 'world documentations'])('"%s" still opens Lumopolis on Enter', (q) => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const box = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(box, { target: { value: q } })
+    expect(screen.getByText('Open Lumopolis')).toBeInTheDocument()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onAction).toHaveBeenCalledWith('show_world', undefined)
   })
 
   it('the export entries leave "lumopolis" and "export output" where they were', () => {

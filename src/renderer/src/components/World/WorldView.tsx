@@ -138,6 +138,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [mapping, setMapping] = useState(false)
   const [progress, setProgress] = useState<{ stage: string; pct: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // A world that failed to load has no run going: its last progress must not say one is.
+  useEffect(() => { if (error !== null) setProgress(null) }, [error])
   const [card, setCard] = useState<string | null>(null)
   // Whether a click on the map opened the card; a closed card forgets it, so a tree or legend open never inherits it.
   const [clickThrough, setClickThrough] = useState(false)
@@ -322,6 +324,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         return api.worldCompile(at).then((c) => {
           if (!live) return
           setMapping(false)
+          // The compile is over, whatever it ended with: its last progress is not a run still going.
+          setProgress(null)
           if (!c.success) { setError(c.error); return }
           setDoc(c.data)
           // The terminal's project was just mapped: it joins the recent worlds now, not only when it is
@@ -342,7 +346,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   useEffect(() => {
     const at = rootRef.current
     if (repoChanged === 0 || at === null) return
-    window.termpolis.worldCompile(at).catch(() => undefined)
+    // A recompile that fails pushes no world: its last progress must not read as a run still going. A world
+    // opened meanwhile has its own runs, so only this folder's progress is cleared.
+    const settled = (): void => { if (rootRef.current === at) setProgress(null) }
+    window.termpolis.worldCompile(at).then(settled, settled)
   }, [repoChanged])
 
   // Pushes from main: compile progress, and a saved world (a compile, or a watched change).
@@ -355,6 +362,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     const offUpdated = window.termpolis.onWorldUpdated((e) => {
       const at = rootRef.current
       if (!mine(e) || at === null) return
+      // A saved world ends the run that made it; a run that goes on reports its progress again.
+      setProgress(null)
       window.termpolis.worldGet(at).then(
         (res) => {
           if (!res.success || !res.data || rootRef.current !== at) return
@@ -646,6 +655,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       const t = e.target as Node | null
       const inside = (dialogRef.current as HTMLDivElement).contains(t)
       if (!inside) return
+      // An open toolbar menu closes itself on Esc, and only it: the map and the pane stay as they are.
+      if ((t as Element).closest('[data-world-own-esc]') !== null) return
       e.preventDefault()
       e.stopPropagation()
       escRef.current()
@@ -682,7 +693,11 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
    * the start of the one before, so its draw runs first). Without the 3D map (no WebGL, the 2D map, no canvas yet)
    * there is no picture.
    */
+  /** Export or Build it is open: the toolbar's buttons for both are off, so a running export is never cut short. */
+  const dialogOpen = building || exporting !== null
   const openExport = (kind: ExportKind): void => {
+    // The palette can still ask: it waits its turn behind the dialog the person has open.
+    if (dialogOpen) return
     cancelAnimationFrame(pictureFrame.current)
     pictureRef.current = null
     const canvas = flat ? null : hostRef.current?.querySelector('canvas') ?? null
@@ -702,12 +717,19 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   useEffect(() => {
     if (pendingExport === null) return
     if (home) { setPendingExport(null); setNotice('Open a world to export it.'); return }
+    // The world failed to load: the ask goes with it, so a world that loads later never pops a dialog unasked.
+    if (error !== null) { setPendingExport(null); return }
     if (!doc || worldKey === null) return
     setPendingExport(null)
     openExportRef.current(pendingExport)
     // The palette has closed: take the focus, so Esc reaches the dialog.
     ;(dialogRef.current as HTMLDivElement).focus()
-  }, [pendingExport, home, doc, worldKey])
+  }, [pendingExport, home, doc, worldKey, error])
+  // Build it takes over from a documentation dialog still waiting for its picture frame.
+  const openBuildIt = (): void => {
+    cancelAnimationFrame(pictureFrame.current)
+    setBuilding(true)
+  }
   const onSaved = (file: WorldSavedFile): void => {
     setNotice(null)
     setSaved(file)
@@ -742,7 +764,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         onClose={onClose}
         switcher={<WorldSwitcher entries={entries} onOpen={(t) => openWorld(t)} onHome={goHome} />}
         onExport={doc && worldKey !== null ? openExport : undefined}
-        onBuildIt={designKey !== null && buildIt && doc ? () => setBuilding(true) : undefined}
+        onBuildIt={designKey !== null && buildIt && doc ? openBuildIt : undefined}
+        dialogOpen={dialogOpen}
         bookmarks={bookmarks}
         onSaveBookmark={onSaveBookmark}
         onBookmark={onBookmark}

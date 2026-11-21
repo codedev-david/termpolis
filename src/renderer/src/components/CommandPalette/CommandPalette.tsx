@@ -38,10 +38,11 @@ const COMMAND_PATTERNS: CommandAction[] = [
   { pattern: /\btour\b/i, action: 'memory_tour', label: 'Memory tour', description: 'See memory work in under a minute', icon: 'fa-solid fa-graduation-cap' },
   { pattern: /memory|remember|brain/i, action: 'show_memory', label: 'Memory', description: 'Open the persistent shared-memory panel', icon: 'fa-solid fa-brain' },
   // Anchored at the start, so `run npm run sitemap` or `run ./hello-world.sh` stays a Run Command.
-  { pattern: /^\s*(open\s+)?(lumopolis|world|map|universe|architecture)\b/i, action: 'show_world', label: 'Open Lumopolis', description: 'See your project as a 3D world: its parts, connections and tours', icon: 'fa-solid fa-earth-americas' },
-  // Anchored too, so neither takes `lumopolis` from Open Lumopolis nor `export output` from Export Terminal Output.
+  { pattern: /^\s*((open|show)\s+)?(lumopolis|world|map|universe|architecture)\b(?!\s+documentation\b)/i, action: 'show_world', label: 'Open Lumopolis', description: 'See your project as a 3D world: its parts, connections and tours', icon: 'fa-solid fa-earth-americas' },
+  // Anchored too, so neither takes `lumopolis` from Open Lumopolis nor `export output` from Export Terminal Output;
+  // `lumopolis documentation` and `world documentation` reach the documentation, not Open Lumopolis.
   { pattern: /^\s*export\s+(the\s+)?(lumopolis|world)\b/i, action: 'world_export', label: 'Export Lumopolis world', description: 'Save the world as one page anyone can open offline', icon: 'fa-solid fa-file-export' },
-  { pattern: /^\s*(generate\s+)?(lumopolis\s+)?documentation\b/i, action: 'world_document', label: 'Generate Lumopolis documentation', description: 'Save a page that explains the project: its parts, connections and tours', icon: 'fa-solid fa-book' },
+  { pattern: /^\s*(generate\s+)?((lumopolis|world)\s+)?documentation\b/i, action: 'world_document', label: 'Generate Lumopolis documentation', description: 'Save a page that explains the project: its parts, connections and tours', icon: 'fa-solid fa-book' },
   { pattern: /launch\s*claude/i, action: 'launch_claude', label: 'Launch Claude', description: 'Launch Claude Code AI agent', icon: 'fa-solid fa-robot' },
   { pattern: /launch\s*codex/i, action: 'launch_codex', label: 'Launch Codex', description: 'Launch OpenAI Codex agent', icon: 'fa-solid fa-microchip' },
   { pattern: /launch\s*gemini/i, action: 'launch_gemini', label: 'Launch Gemini', description: 'Launch Gemini CLI agent', icon: 'fa-brands fa-google' },

@@ -258,6 +258,22 @@ describe('ExportDialog', () => {
     expect(b.listeners()).toBe(0)
   })
 
+  it('Cancel leaves the dialog idle, so a parent that keeps it mounted shows Export again, not Exporting', async () => {
+    const b = bridge({ worldExport: vi.fn(() => new Promise(() => undefined)) })
+    const m = await mount()
+    fireEvent.click(exportBtn())
+    expect(exportBtn()).toHaveTextContent('Exporting…')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(m.onClose).toHaveBeenCalledTimes(1)
+    expect(exportBtn()).toHaveTextContent('Export…')
+    expect(exportBtn()).toBeEnabled()
+    expect(screen.queryByTestId('world-export-steps')).toBeNull()
+    // A second run after the cancel is a new export with its own id.
+    fireEvent.click(exportBtn())
+    expect(b.api.worldExport).toHaveBeenCalledTimes(2)
+    expect(exportBtn()).toHaveTextContent('Exporting…')
+  })
+
   it('Cancel before exporting only closes', async () => {
     const b = bridge()
     const m = await mount()
@@ -306,7 +322,7 @@ describe('ExportDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await act(async () => { first.resolve(fail('Export was cancelled.')) })
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(exportBtn()).toHaveTextContent('Exporting…')
+    expect(exportBtn()).toHaveTextContent('Export…')
     m.unmount()
     const n = await mount()
     fireEvent.click(exportBtn())
