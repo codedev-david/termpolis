@@ -28,21 +28,24 @@ export interface ExportDialogProps {
    * (the labelling stage), 'updating' in any other stage; null: none.
    */
   mapRun: 'describing' | 'updating' | null
-  /** Describe parts with AI (Settings ▸ Lumopolis) is on. */
-  describeOn: boolean
+  /** Describe parts with AI (Settings ▸ Lumopolis) is on; null: the setting isn't known yet. */
+  describeOn: boolean | null
   /** A file was written. Called even after the dialog closed, when a cancel lost the race. */
   onSaved: (file: WorldSavedFile) => void
   onClose: () => void
 }
 
-/** What the low-description note tells the person to do, so that most parts get described (spec 5.2). */
-function describeHint(design: boolean, describeOn: boolean, mapRun: ExportDialogProps['mapRun']): string {
+/**
+ * What the low-description note tells the person to do, so that most parts get described (spec 5.2); null: nothing
+ * yet, since the step depends on a setting not known yet.
+ */
+function describeHint(design: boolean, describeOn: boolean | null, mapRun: ExportDialogProps['mapRun']): string | null {
   // A design's parts are described in the design conversation; a code world's by labelling, which a compile runs
   // when Describe parts with AI is on. Re-layout runs a full compile.
   if (design) return 'Ask Lumopolis to say what each part does'
-  if (!describeOn) return 'Turn on Describe parts with AI in Settings, then press Re-layout'
+  if (describeOn === false) return 'Turn on Describe parts with AI in Settings, then press Re-layout'
   if (mapRun !== null) return 'Wait for Lumopolis to finish updating the map'
-  return 'Press Re-layout to have Lumopolis describe them'
+  return describeOn === null ? null : 'Press Re-layout to have Lumopolis describe them'
 }
 
 export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onClose }: ExportDialogProps): JSX.Element {
@@ -58,18 +61,36 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
   const [indexTotal, setIndexTotal] = useState<number | null>(null)
   /** The id of the export running now: progress for any other id is ignored. */
   const runRef = useRef<string | null>(null)
+  /** How many runs ended while the dialog was open: each asks main for the info again. */
+  const [ended, setEnded] = useState(0)
+  const lastRun = useRef(mapRun)
+  /** The latest info request: an older answer is ignored. */
+  const infoSeq = useRef(0)
+  /** The smart switch was set by the person, or by main refusing smart Ask: a new info keeps it. */
+  const smartSet = useRef(false)
+
+  // A run that ends changes what the world holds (descriptions, sizes), so the note and the numbers are asked again.
+  useEffect(() => {
+    if (lastRun.current !== null && mapRun === null) setEnded((n) => n + 1)
+    lastRun.current = mapRun
+  }, [mapRun])
 
   useEffect(() => {
+    const seq = ++infoSeq.current
+    // Asked again, a failure keeps what the dialog shows: the export still works from the saved map.
+    const first = ended === 0
     window.termpolis.worldExportInfo({ root, designKey }).then(
       (res) => {
-        if (!res.success) { setError(res.error); return }
-        setInfo(res.data)
-        setSmart(res.data.smartDefault && res.data.smartAvailable)
-        setPick(res.data.proposals[0]?.id ?? '')
+        if (seq !== infoSeq.current) return
+        if (!res.success) { if (first) setError(res.error); return }
+        const data = res.data
+        setInfo(data)
+        if (!smartSet.current) setSmart(data.smartDefault && data.smartAvailable)
+        setPick((p) => (data.proposals.some((x) => x.id === p) ? p : data.proposals[0]?.id ?? ''))
       },
-      () => setError(UI_FAILED),
+      () => { if (seq === infoSeq.current && first) setError(UI_FAILED) },
     )
-  }, [root, designKey])
+  }, [root, designKey, ended])
 
   useEffect(() => {
     const off = window.termpolis.onWorldExportProgress((e) => {
@@ -111,7 +132,7 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
         runRef.current = null
         setRun(null)
         if (res.success) return // the save dialog was closed: back to the choices
-        if (res.keywordOnly) { setKeywordOnly(res.error); setSmart(false); return }
+        if (res.keywordOnly) { setKeywordOnly(res.error); smartSet.current = true; setSmart(false); return }
         setError(res.error)
       },
       () => {
@@ -125,6 +146,7 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
 
   const running = run !== null
   const keywordWhy = keywordOnly ?? (info !== null && !info.smartAvailable ? NO_MODEL : null)
+  const hint = describeHint(designKey !== undefined, describeOn, mapRun)
   const steps: Step[] = run !== null && run.smart ? ['prepare', 'index', 'write'] : ['prepare', 'write']
   const current = prog === null ? 0 : steps.indexOf(prog.step)
   const pct = prog !== null && prog.total > 0 ? Math.min(100, Math.round((prog.done / prog.total) * 100)) : 0
@@ -170,14 +192,14 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
           )}
           <div className="flex flex-col gap-1">
             <label className="inline-flex items-center gap-1.5 text-xs">
-              <input type="checkbox" checked={smart} disabled={running || keywordWhy !== null} onChange={(e) => setSmart(e.target.checked)} />
+              <input type="checkbox" checked={smart} disabled={running || keywordWhy !== null} onChange={(e) => { smartSet.current = true; setSmart(e.target.checked) }} />
               Include smart Ask (works offline, adds ~35 MB)
             </label>
             <p className="text-xs text-[#9ca3af] pl-5">Finds the parts that match a question by meaning.</p>
             {keywordWhy !== null && <p data-testid="world-export-keyword" className="text-xs text-[#f0b429] pl-5">{keywordWhy}</p>}
             {keywordWhy === null && !info.smartDefault && (
               <p data-testid="world-export-note" className="text-xs text-[#f0b429] pl-5">
-                Most parts aren&apos;t described yet, so smart Ask would mostly match file names. {describeHint(designKey !== undefined, describeOn, mapRun)}, or export with keyword Ask.
+                Most parts aren&apos;t described yet, so smart Ask would mostly match file names.{hint !== null && ` ${hint}, or export with keyword Ask.`}
               </p>
             )}
           </div>

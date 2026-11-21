@@ -53,24 +53,30 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve() })
 }
 
-async function mount(props: Partial<{ root: string; designKey: string; mapRun: 'describing' | 'updating' | null; describeOn: boolean }> = {}) {
+type MountProps = Partial<{ root: string; designKey: string; mapRun: 'describing' | 'updating' | null; describeOn: boolean | null }>
+
+async function mount(props: MountProps = {}) {
   const onClose = vi.fn()
   const onSaved = vi.fn()
-  const utils = render(
+  const dialog = (p: MountProps): JSX.Element => (
     <ExportDialog
-      root={'designKey' in props ? undefined : props.root ?? '/repo'}
-      designKey={props.designKey}
-      mapRun={props.mapRun ?? null}
-      describeOn={props.describeOn ?? true}
+      root={'designKey' in p ? undefined : p.root ?? '/repo'}
+      designKey={p.designKey}
+      mapRun={p.mapRun ?? null}
+      describeOn={p.describeOn === undefined ? true : p.describeOn}
       onClose={onClose}
       onSaved={onSaved}
-    />,
+    />
   )
+  const utils = render(dialog(props))
   await settle()
-  return { ...utils, onClose, onSaved }
+  /** Renders the dialog again with these props over the first ones. */
+  const update = async (next: MountProps): Promise<void> => { utils.rerender(dialog({ ...props, ...next })); await settle() }
+  return { ...utils, onClose, onSaved, update }
 }
 
 const smart = () => screen.getByLabelText('Include smart Ask (works offline, adds ~35 MB)') as HTMLInputElement
+const PICK = () => screen.getByLabelText('Proposal to export') as HTMLSelectElement
 const exportBtn = () => screen.getByRole('button', { name: /^Export…$|^Exporting…$/ })
 const steps = () => Array.from(screen.getByTestId('world-export-steps').querySelectorAll('li')).map((li) => `${li.getAttribute('data-state')}:${li.textContent}`)
 
@@ -173,12 +179,108 @@ describe('ExportDialog', () => {
     ['describing parts with AI is off', { describeOn: false }, 'Turn on Describe parts with AI in Settings, then press Re-layout, or export with keyword Ask.'],
     ['describing is off, even while a run is going', { describeOn: false, mapRun: 'updating' as const }, 'Turn on Describe parts with AI in Settings, then press Re-layout, or export with keyword Ask.'],
     ['the world is a design', { designKey: 'design:d1', describeOn: false }, 'Ask Lumopolis to say what each part does, or export with keyword Ask.'],
+    ['the setting is not known yet and a run is going', { describeOn: null, mapRun: 'updating' as const }, 'Wait for Lumopolis to finish updating the map, or export with keyword Ask.'],
   ])('the low-description note says what to do when %s', async (_what, props, tail) => {
     bridge({ worldExportInfo: vi.fn(async () => ok(info({ smartDefault: false }))) })
     await mount(props)
     expect(screen.getByTestId('world-export-note')).toHaveTextContent(
       `Most parts aren't described yet, so smart Ask would mostly match file names. ${tail}`,
     )
+  })
+
+  it('until the setting is known, the note names no step that depends on it', async () => {
+    bridge({ worldExportInfo: vi.fn(async () => ok(info({ smartDefault: false }))) })
+    await mount({ describeOn: null })
+    expect(screen.getByTestId('world-export-note').textContent).toBe("Most parts aren't described yet, so smart Ask would mostly match file names.")
+  })
+
+  describe('when a run ends, it asks main again, so the note and the numbers match the finished map', () => {
+    it('asks again only when a run ends, and takes the new note, switch and size', async () => {
+      const answers = [info({ smartDefault: false }), info({ smartDefault: true, smartBytes: 40 * MB })]
+      const b = bridge({ worldExportInfo: vi.fn(async () => ok(answers.shift() ?? info())) })
+      const d = await mount({ mapRun: 'describing' })
+      expect(screen.getByTestId('world-export-note')).toBeInTheDocument()
+      await d.update({ mapRun: 'updating' }) // still going
+      expect(b.api.worldExportInfo).toHaveBeenCalledTimes(1)
+      await d.update({ mapRun: null })
+      expect(b.api.worldExportInfo).toHaveBeenCalledTimes(2)
+      expect(b.api.worldExportInfo).toHaveBeenLastCalledWith({ root: '/repo', designKey: undefined })
+      expect(screen.queryByTestId('world-export-note')).toBeNull()
+      expect(screen.queryByTestId('world-export-saved-at')).toBeNull()
+      expect(smart().checked).toBe(true)
+      expect(screen.getByTestId('world-export-size')).toHaveTextContent('About 40 MB')
+      await d.update({ mapRun: 'updating' }) // a new run starting asks nothing
+      expect(b.api.worldExportInfo).toHaveBeenCalledTimes(2)
+    })
+
+    it('keeps the smart choice the person made, and their proposal while it still exists', async () => {
+      const two = [{ id: 'p1', title: 'One' }, { id: 'p2', title: 'Two' }]
+      const answers = [info({ proposals: two }), info({ proposals: two }), info({ proposals: [two[0]] })]
+      bridge({ worldExportInfo: vi.fn(async () => ok(answers.shift() ?? info())) })
+      const d = await mount({ mapRun: 'updating' })
+      fireEvent.click(smart()) // off, against the default
+      fireEvent.click(screen.getByRole('radio', { name: 'Proposal:' }))
+      fireEvent.change(PICK(), { target: { value: 'p2' } })
+      await d.update({ mapRun: null })
+      expect(smart().checked).toBe(false)
+      expect(PICK().value).toBe('p2')
+      await d.update({ mapRun: 'updating' })
+      await d.update({ mapRun: null })
+      expect(PICK().value).toBe('p1') // p2 is gone
+    })
+
+    it('a smart Ask main refused stays off when the info comes again', async () => {
+      const answers = [info(), info()]
+      const b = bridge({
+        worldExportInfo: vi.fn(async () => ok(answers.shift() ?? info())),
+        worldExport: vi.fn(async (): Promise<ExportRes> => ({ ...fail('Smart Ask needs the model.'), keywordOnly: true })),
+      })
+      const d = await mount({ mapRun: 'updating' })
+      fireEvent.click(exportBtn())
+      await settle()
+      expect(smart().checked).toBe(false)
+      await d.update({ mapRun: null })
+      expect(b.api.worldExportInfo).toHaveBeenCalledTimes(2)
+      expect(smart().checked).toBe(false)
+    })
+
+    it('an older answer that comes after a newer one is ignored', async () => {
+      const first = deferred<Res<WorldExportInfo>>()
+      const answers = [first.promise, Promise.resolve(ok(info({ smartDefault: true })))]
+      bridge({ worldExportInfo: vi.fn(() => answers.shift() as Promise<Res<WorldExportInfo>>) })
+      const d = await mount({ mapRun: 'describing' })
+      await d.update({ mapRun: null })
+      expect(screen.queryByTestId('world-export-note')).toBeNull()
+      first.resolve(ok(info({ smartDefault: false })))
+      await settle()
+      expect(screen.queryByTestId('world-export-note')).toBeNull()
+      expect(smart().checked).toBe(true)
+    })
+
+    it('an older answer that fails after a newer one shows nothing', async () => {
+      const first = deferred<Res<WorldExportInfo>>()
+      const answers = [first.promise, Promise.resolve(ok(info()))]
+      bridge({ worldExportInfo: vi.fn(() => answers.shift() as Promise<Res<WorldExportInfo>>) })
+      const d = await mount({ mapRun: 'describing' })
+      await d.update({ mapRun: null })
+      first.reject(new Error('gone'))
+      await settle()
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(exportBtn()).toBeEnabled()
+    })
+
+    it.each([
+      ['answers with an error', async (): Promise<Res<WorldExportInfo>> => fail("This world can't be exported.")],
+      ['throws', async (): Promise<Res<WorldExportInfo>> => { throw new Error('gone') }],
+    ])('when asking again %s, the dialog keeps what it showed', async (_what, again) => {
+      const answers: Array<() => Promise<Res<WorldExportInfo>>> = [async () => ok(info({ smartDefault: false })), again]
+      bridge({ worldExportInfo: vi.fn(() => (answers.shift() as () => Promise<Res<WorldExportInfo>>)()) })
+      const d = await mount({ mapRun: 'describing' })
+      await d.update({ mapRun: null })
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.getByTestId('world-export-note')).toBeInTheDocument()
+      expect(exportBtn()).toBeEnabled()
+    })
   })
 
   it('without the smart Ask model the switch is off and disabled, with main\'s sentence', async () => {

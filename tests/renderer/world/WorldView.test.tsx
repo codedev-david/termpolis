@@ -1994,6 +1994,26 @@ describe('WorldView export', () => {
     }
   })
 
+  it("until Describe parts with AI is known, the low-description note names no step; a setting that can't be read stays unknown", async () => {
+    const info = vi.fn(async () => ok({ title: 'repo', savedAt: 1, smartDefault: false, buildings: 0.1, lines: 0.1, smartBytes: 37 * MB, keywordBytes: MB, smartAvailable: true, proposals: [] }))
+    const only = "Most parts aren't described yet, so smart Ask would mostly match file names."
+    let answer!: (v: unknown) => void
+    bridge(exportApi({ worldExportInfo: info, worldSettingsGet: vi.fn(() => new Promise((res) => { answer = res })) }))
+    const m = await mountWith()
+    openMenu('world')
+    await settle()
+    expect(screen.getByTestId('world-export-note').textContent).toBe(only)
+    answer(ok({ worldLabelling: true, worldSpeakAnswers: false }))
+    await settle()
+    expect(screen.getByTestId('world-export-note')).toHaveTextContent(/Press Re-layout to have Lumopolis describe them/)
+    m.unmount()
+    bridge(exportApi({ worldExportInfo: info, worldSettingsGet: vi.fn(async () => fail('no')) }))
+    await mountWith()
+    openMenu('world')
+    await settle()
+    expect(screen.getByTestId('world-export-note').textContent).toBe(only)
+  })
+
   it('a saved world ends the run that made it: the export dialog no longer says a compile is running', async () => {
     const b = bridge(exportApi())
     await mountWith()

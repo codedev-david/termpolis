@@ -180,8 +180,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     askedOn.current = null
     setPendingExport(exportRequest.kind)
   }, [exportRequest])
-  // Describing parts with AI (Settings): while it is off there is nothing to show the cost of.
-  const [labelling, setLabelling] = useState(true)
+  // Describing parts with AI (Settings): while it is off there is nothing to show the cost of. null until the
+  // settings answer (or for good if they can't be read): the cost line still shows, and the export dialog names no
+  // step that depends on the setting.
+  const [labelling, setLabelling] = useState<boolean | null>(null)
   useEffect(() => {
     let live = true
     window.termpolis.worldSettingsGet?.()
@@ -789,7 +791,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         bookmarkSaveDisabled={!viewer || !doc}
         map2d={map2d}
         onMap2d={onMap2d}
-        labelCost={labelling && doc && doc.labelTokens !== undefined ? labelCostLine(doc.labelTokens) : undefined}
+        labelCost={labelling !== false && doc && doc.labelTokens !== undefined ? labelCostLine(doc.labelTokens) : undefined}
       />
       <div ref={stageRef} data-testid="world-stage" style={{ position: 'relative', flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
         {webgl && (
