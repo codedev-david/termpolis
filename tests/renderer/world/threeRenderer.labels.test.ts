@@ -405,6 +405,40 @@ describe('threeRenderer labels', () => {
     r.dispose()
   })
 
+  it("after an edit, with the camera still, a district's name keeps off the box the risen building ends at (m1)", () => {
+    sized(80, 80)
+    const model: SceneModel = { districts: [district('d', [0, 0, 0], 12), district('e', [-40, 0, 0], 8)], buildings: [bldg('front', [0, 0, 28], { height: 60 }), bldg('far', [-40, 0, 0])], conduits: [], orbs: [] }
+    // Reduced motion: no idle turn, so the camera is at rest and the boxes are not rebuilt for it.
+    const r = createThreeRenderer(h.host, { ...DEFAULT_OPTS, reducedMotion: true })
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(model, emptyText(), false)
+    h.frames.run(400)
+    // The edit: the world drawn again (the same fit, so the camera stays where it is) with the building new in it. It
+    // starts flat, its box below the name's point, and rises over 900 ms in front of it.
+    r.draw(model, emptyText(), false)
+    r.setFocus({ ids: new Set(['far']), edgeIds: new Set() }) // the buildings tier (the building stands, not its slab), its own name dimmed out
+    r.animateChanges({ rise: ['front'], pulse: [] })
+    h.frames.step()
+    h.frames.run(80, 20)
+    const name = labelsOf(world(), 'district')[0] // district d, drawn first
+    // Whether the name, where it was placed, keeps off the risen building's box (its own point lies on that box).
+    const clear = (): boolean => {
+      expect(name.visible).toBe(true)
+      const cam = cameraOf()
+      cam.updateMatrixWorld()
+      const px = (v: THREE.Vector3): [number, number] => { const p = v.clone().project(cam); return [((p.x + 1) / 2) * 800, ((1 - p.y) / 2) * 600] }
+      const [cx, cy] = px(name.getWorldPosition(new THREE.Vector3()))
+      const x = cx + (parseFloat(name.element.style.marginLeft) || 0)
+      const y = cy + (parseFloat(name.element.style.marginTop) || 0)
+      const corners = Array.from({ length: 8 }, (_, k) => px(new THREE.Vector3(k & 1 ? 2.5 : -2.5, k & 2 ? 60 : 0, 28 + (k & 4 ? 2.5 : -2.5))))
+      const [l, t, rt, b] = [Math.min(...corners.map((c) => c[0])), Math.min(...corners.map((c) => c[1])), Math.max(...corners.map((c) => c[0])), Math.max(...corners.map((c) => c[1]))]
+      expect(cx + 40 > l && cx - 40 < rt && cy + 9 > t && cy - 9 < b).toBe(true)
+      return x + 40 <= l || x - 40 >= rt || y + 9 <= t || y - 9 >= b
+    }
+    expect(clear()).toBe(true)
+    r.dispose()
+  })
+
   it('the stylesheet draws a district name left on a building over a dark halo, so it reads over the geometry', () => {
     const r = drawn()
     const css = (document.getElementById('lumopolis-world-style') as HTMLStyleElement).textContent ?? ''

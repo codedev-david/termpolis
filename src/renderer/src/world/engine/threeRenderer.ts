@@ -652,7 +652,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let farPickables: THREE.Object3D[] = []
   /** The tier the scene is laid out for (applyTier), null when it must be laid out again. */
   let appliedTier: ZoomTier | null = null
-  /** The last boxes the names keep off (solidBoxes); null after a resize, a new world or a new tier. */
+  /** The last boxes the names keep off (solidBoxes); null after a resize, a new world, a new tier or a change animating. */
   let solids: Rect[] | null = null
   /** The batches must be sorted again (regroup) or only refilled in a new order (refill): batchFrame. */
   let regroup = true
@@ -2363,6 +2363,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     raf = requestAnimationFrame(animate)
     frameNo++
     const dt = frameStep(clock.getDelta()) // only a tab-switch spike is cut, so a slow frame rate never runs the eases in slow motion
+    // A part rising after an edit changes its box with the camera still: the names' boxes are built again each frame
+    // a change runs, the frame it lands included (solidBoxes is keyed on the camera; a stopped change is redrawn).
+    if (changes.active() > 0) solids = null
     changes.tick(performance.now()) // wall-clock time: a slow frame rate never stretches a change
     // Reduced motion reads a frozen clock and a zero step: the rings, the fog and the wireframe pulse stand still.
     const t = reduced ? 0 : clock.elapsedTime
