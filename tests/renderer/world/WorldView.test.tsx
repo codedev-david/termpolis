@@ -1312,6 +1312,33 @@ describe('WorldView 2D map switch and bookmarks', () => {
   }
   const keyOf = () => 'termpolis.world.bookmarks.' + minimal().projectKey
 
+  it('the 2D map list keeps its last rows clear of the ask bar laid over its foot', async () => {
+    const seen: Array<() => void> = []
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { seen.push(cb) }
+      observe(): void {}
+      disconnect(): void {}
+    })
+    const ask = { h: 0 }
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === 'world-ask-slot' ? ask.h : 0
+    })
+    try {
+      bridge()
+      await mount({ askSlot: () => <span>ask</span> })
+      fireEvent.click(screen.getByTestId('world-map2d'))
+      const list = screen.getByTestId('world-fallback')
+      expect(list.style.paddingBottom).toBe('24px') // no bar measured yet: just the list's own padding
+      ask.h = 120 // the chips and the box
+      act(() => { for (const cb of seen) cb() })
+      // 24 of its own, then the bar: 120 tall, 16 off the bottom, 8 clear.
+      expect(list.style.paddingBottom).toBe('168px')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
+
   it('the 2D map switch shows the fallback with WebGL present, and is remembered', async () => {
     bridge()
     const askSlot = vi.fn(() => <span>ask</span>)

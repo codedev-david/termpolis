@@ -442,7 +442,11 @@ test.describe.serial('Lumopolis in the real app', () => {
     const p95 = lat[Math.min(n - 1, Math.ceil(n * 0.95) - 1)]
     const p50 = lat[Math.floor(n / 2)]
     const runs = r.runs.map((w, k) => `${(w.end - w.start).toFixed(0)} ms/${during.filter((x) => x.run === k).length} keys`).join(', ')
-    const summary = `samples=${n} (of ${r.down.length} keys, ${WARMUP_KEYS} warm-up) over ${r.runs.length} compiles [${runs}], p50=${p50?.toFixed(1)} ms p95=${p95?.toFixed(1)} ms max=${lat[n - 1]?.toFixed(1)} ms`
+    // For comparison only (not asserted): the keys pressed with no compile running (the warm-up, the
+    // gaps between compiles and the tail), so a slow machine's own echo shows apart from the compiles' cost.
+    const idle = r.down.map((d, i) => ({ ms: r.echo[i] - d, run: runOf(d) })).filter((x) => x.run < 0).map((x) => x.ms).sort((a, b) => a - b)
+    const idleStats = idle.length ? `n=${idle.length} p50=${idle[Math.floor(idle.length / 2)].toFixed(1)} ms max=${idle[idle.length - 1].toFixed(1)} ms` : 'none'
+    const summary = `samples=${n} (of ${r.down.length} keys, ${WARMUP_KEYS} warm-up) over ${r.runs.length} compiles [${runs}], p50=${p50?.toFixed(1)} ms p95=${p95?.toFixed(1)} ms max=${lat[n - 1]?.toFixed(1)} ms; no compile running: ${idleStats}`
     console.log(`[typing while compiling] ${summary}`)
     expect(n, `too few keys pressed during the compiles: ${summary}`).toBeGreaterThanOrEqual(MIN_SAMPLES)
     expect(p95, `p95 keystroke echo over budget: ${summary}`).toBeLessThan(P95_BUDGET_MS)

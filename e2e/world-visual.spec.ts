@@ -1125,7 +1125,14 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     const rate = (i: number): number => (pts[i + 1].eased - pts[i].eased) / (pts[i + 1].t - pts[i].t)
     const mid = pts.findIndex((p) => p.t >= 0.5)
     const m = Math.max(1, Math.min(pts.length - 2, mid > 0 ? mid - 1 : Math.floor(pts.length / 2)))
-    expect(rate(0), `first step ${rate(0)} vs middle step ${rate(m)}: ${JSON.stringify(pts)}`).toBeLessThan(rate(m))
+    // An ease in and out runs behind a straight line before the middle and ahead of it after.
+    for (const p of pts) {
+      if (p.t > 0.05 && p.t < 0.45) expect(p.eased, `not eased in at t=${p.t}: ${JSON.stringify(pts)}`).toBeLessThan(p.t)
+      if (p.t > 0.55 && p.t < 0.95) expect(p.eased, `not eased out at t=${p.t}: ${JSON.stringify(pts)}`).toBeGreaterThan(p.t)
+    }
+    // The first step is slow off the mark only when it was seen: a slow runner's first frame of the
+    // flight can come well into it (macOS CI's first sample was at t=0.56, already slowing down).
+    if (pts[0].t < 0.25) expect(rate(0), `first step ${rate(0)} vs middle step ${rate(m)}: ${JSON.stringify(pts)}`).toBeLessThan(rate(m))
     await toOverview()
   })
 

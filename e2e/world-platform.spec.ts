@@ -32,6 +32,9 @@ import { PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteTy
 const PLATFORM = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
 const SHOTS = path.resolve('test-results/lumopolis-shots')
 const VIDEO_DIR = path.join(SHOTS, 'video')
+/** The video needs Playwright's ffmpeg. The e2e-windows job installs none (it runs no \`playwright install\`),
+ *  and there a recording launch never loaded its window (30 s, twice); the macOS and Linux jobs install it. */
+const RECORD = !(process.platform === 'win32' && process.env.CI)
 const DESCRIPTION = 'A small pet shop'
 const PROJECT_NAME = 'My Project'
 /** Two files whose names differ only in case, written only where the file system keeps them apart (Linux). */
@@ -93,7 +96,7 @@ test.beforeAll(async () => {
 
   fs.rmSync(VIDEO_DIR, { recursive: true, force: true })
   const launched = await launchWorldApp({
-    videoDir: VIDEO_DIR,
+    ...(RECORD ? { videoDir: VIDEO_DIR } : {}),
     env: {
       ...shims,
       PATH: `${shimDir}${path.delimiter}${shims.PATH}`,
@@ -125,6 +128,7 @@ test.afterAll(async () => {
 
 const pane = () => page.locator('[data-testid="world-view"]')
 const canvas = () => page.locator('[data-testid="world-canvas-host"] canvas')
+const opening = () => page.locator('[data-testid="world-view-opening"]')
 const fallback = () => page.locator('[data-testid="world-fallback"]')
 const card = () => page.locator('[data-testid="world-card"]')
 const projectName = () => page.getByTestId('world-project')
@@ -217,11 +221,21 @@ test.describe.serial('Lumopolis on this platform', () => {
     await paletteType(page, 'Open Lumopolis')
     const result = page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ })
     await expect(result).toBeVisible()
+    const clicked = Date.now()
     await result.click()
-    await expect(pane()).toBeVisible()
+    // Something shows at once: the pane, or its frame saying "Opening Lumopolis…" while the pane's
+    // code (the engine and Three.js) loads on first use. On a cold macOS runner that load took over
+    // 5 s, with the frame and its words on screen the whole time and the app answering.
+    await expect(pane().or(opening())).toBeVisible()
+    const shown = Date.now() - clicked
+    await expect(pane()).toBeVisible({ timeout: 60_000 })
+    const paneAt = Date.now() - clicked
     await expect(projectName()).toHaveText(PROJECT_NAME, { timeout: 30_000 })
+    const namedAt = Date.now() - clicked
     await expect(canvas().or(fallback())).toBeVisible({ timeout: 120_000 })
+    const drawnAt = Date.now() - clicked
     mode = (await fallback().count()) > 0 ? '2d' : 'webgl'
+    note(`first open: something on screen ${shown} ms after the click, the pane ${paneAt} ms, its project named ${namedAt} ms, the map drawn ${drawnAt} ms`)
 
     // The GL renderer Chromium gives a page here: SwiftShader names itself in its renderer string.
     const gl = await page.evaluate(() => {
@@ -416,6 +430,8 @@ test.describe.serial('Lumopolis on this platform', () => {
       const id = ((await globe.getAttribute('data-testid')) ?? '').replace('terminal-open-world-', '')
       await expect.poll(async () => (await text(id)).trim().length, { timeout: 30_000 }).toBeGreaterThan(0)
       await page.waitForTimeout(1000) // the shell's prompt and its integration are up
+      // A start-up question (zsh's compinit asks one about insecure folders) would take the first key typed.
+      expect(await text(id), `${shell} asked a question at start-up`).not.toMatch(/insecure directories|\[y\]/)
 
       // A missing folder with a space in its name: the shell refuses it by name and nothing opens.
       await typeIn(id, "lumopolis 'no such dir'")

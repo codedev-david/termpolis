@@ -505,8 +505,14 @@ jobs:
       - name: Install gdb
         run: sudo apt-get install -y --no-install-recommends gdb || true
       # e2e/world-platform.spec.ts types `lumopolis` in bash and in zsh, and fails in CI when either is missing.
+      # Ubuntu's /etc/zsh/zshrc runs compinit, which stops at a y/n question when a completion folder is
+      # group- or world-writable, as some are on the runner image; a desktop's are not. Make them as a desktop has them.
       - name: Install zsh
-        run: sudo apt-get install -y --no-install-recommends zsh
+        run: |
+          sudo apt-get install -y --no-install-recommends zsh
+          insecure=$(zsh -fc 'autoload -Uz compaudit; compaudit' 2>/dev/null || true)
+          echo "compaudit: ${insecure:-nothing insecure}"
+          if [ -n "$insecure" ]; then echo "$insecure" | xargs sudo chmod g-w,o-w; fi
       - name: Build
         run: npm run build
       # e2e/linux-sandbox.spec.ts launches with Chromium's sandbox ON (issue #32), which needs

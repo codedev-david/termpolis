@@ -809,7 +809,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           <div
             data-testid="world-fallback"
             className="overflow-auto p-6 text-sm [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:cursor-pointer [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
-            style={{ position: 'absolute', inset: 0 }}
+            // Its foot clears the ask bar laid over it (p-6 plus the bar's strip), so the last rows can be scrolled into view.
+            style={{ position: 'absolute', inset: 0, paddingBottom: 24 + below }}
             onClick={onFallbackClick}
             // renderFallback escapes every string from the doc.
             dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName) }}
