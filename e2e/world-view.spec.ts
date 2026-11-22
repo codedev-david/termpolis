@@ -414,7 +414,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     // And the page's side: its own 10 ms timer's lateness and its long tasks (50 ms or more of its own script or
     // layout), so a slow last leg shows whether the page's thread was busy with its own work or not run at all.
     await page.evaluate(() => {
-      const s = { lag: [] as number[][], long: [] as number[][], stop: () => {} }
+      const s = { lag: [] as number[][], long: [] as number[][], frames: [] as { t: number; d: number; render: number; scripts: [string, number][] }[], stop: () => {} }
       ;(window as unknown as { __pageDiag: typeof s }).__pageDiag = s
       let last = performance.now()
       const timer = setInterval(() => { const now = performance.now(); s.lag.push([now, now - last - 10]); last = now }, 10)
@@ -423,7 +423,18 @@ test.describe.serial('Lumopolis in the real app', () => {
         obs = new PerformanceObserver((list) => { for (const e of list.getEntries()) s.long.push([e.startTime, e.duration]) })
         obs.observe({ type: 'longtask', buffered: false })
       } catch { obs = null }
-      s.stop = () => { clearInterval(timer); obs?.disconnect() }
+      // Long animation frames (50 ms or more from the frame's first task to its paint) also count the frame's
+      // style, layout and paint, which long tasks leave out, and name the scripts that ran in them.
+      let frameObs: PerformanceObserver | null = null
+      try {
+        frameObs = new PerformanceObserver((list) => {
+          for (const e of list.getEntries() as unknown as { startTime: number; duration: number; renderStart: number; scripts?: { invoker?: string; sourceURL?: string; duration: number }[] }[]) {
+            s.frames.push({ t: e.startTime, d: e.duration, render: e.renderStart ? e.startTime + e.duration - e.renderStart : 0, scripts: (e.scripts ?? []).map((x) => [`${x.invoker ?? '?'} ${(x.sourceURL ?? '').split('/').pop()}`, x.duration]) })
+          }
+        })
+        frameObs.observe({ type: 'long-animation-frame', buffered: false })
+      } catch { frameObs = null }
+      s.stop = () => { clearInterval(timer); obs?.disconnect(); frameObs?.disconnect() }
     })
     // It also stamps, in main, each typed letter's arrival (a second terminal:write listener, run after the real
     // one) and each terminal:data message as it leaves for the page, so every key's echo splits into page to main,
@@ -501,14 +512,22 @@ test.describe.serial('Lumopolis in the real app', () => {
       return { lag: s.lag, cpu: s.cpu, writes: s.writes, out: s.out }
     })
     const pageDiag = await page.evaluate(() => {
-      const s = (window as unknown as { __pageDiag: { lag: number[][]; long: number[][]; stop: () => void } }).__pageDiag
+      const s = (window as unknown as { __pageDiag: { lag: number[][]; long: number[][]; frames: { t: number; d: number; render: number; scripts: [string, number][] }[]; stop: () => void } }).__pageDiag
       s.stop()
-      return { lag: s.lag, long: s.long }
+      return { lag: s.lag, long: s.long, frames: s.frames }
     })
     const pageIn = (t: number): boolean => r.runs.some((w) => t >= w.start && t < w.end)
     const longOf = (during: boolean): string => {
       const xs = pageDiag.long.filter((x) => pageIn(x[0]) === during)
       return xs.length ? `${xs.length} long tasks, ${xs.reduce((a, x) => a + x[1], 0).toFixed(0)} ms in all, longest ${Math.max(...xs.map((x) => x[1])).toFixed(0)} ms` : 'no long tasks'
+    }
+    const framesOf = (during: boolean): string => {
+      const xs = pageDiag.frames.filter((x) => pageIn(x.t) === during)
+      if (!xs.length) return 'no long frames'
+      const by: Record<string, number> = {}
+      for (const x of xs) for (const [k, d] of x.scripts) by[k] = (by[k] ?? 0) + d
+      const top = Object.entries(by).sort((p, q) => q[1] - p[1]).slice(0, 4).map(([k, d]) => `${k} ${d.toFixed(0)} ms`).join(', ')
+      return `${xs.length} long frames, ${xs.reduce((a, x) => a + x.d, 0).toFixed(0)} ms in all (rendering ${xs.reduce((a, x) => a + x.render, 0).toFixed(0)} ms), longest ${Math.max(...xs.map((x) => x.d)).toFixed(0)} ms; scripts ${top || 'none'}`
     }
     // The page's clock as epoch ms: timeOrigin + now(), corrected by its offset from Date.now() at the end.
     const { origin, cores } = await page.evaluate(() => ({ origin: Date.now() - performance.now(), cores: navigator.hardwareConcurrency }))
@@ -552,7 +571,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     }
     console.log(`[typing while compiling, stages] during compiles ${stageOf(true)}; with none running ${stageOf(false)}`)
     const compileMs = r.runs.reduce((a, w) => a + (w.end - w.start), 0)
-    console.log(`[typing while compiling, page] page timer lateness during compiles ${lagOf(pageDiag.lag.filter((x) => pageIn(x[0])).map((x) => x[1]))}, with none running ${lagOf(pageDiag.lag.filter((x) => !pageIn(x[0])).map((x) => x[1]))}; during ${compileMs.toFixed(0)} ms of compiles ${longOf(true)}; with none running ${longOf(false)}`)
+    console.log(`[typing while compiling, page] page timer lateness during compiles ${lagOf(pageDiag.lag.filter((x) => pageIn(x[0])).map((x) => x[1]))}, with none running ${lagOf(pageDiag.lag.filter((x) => !pageIn(x[0])).map((x) => x[1]))}; during ${compileMs.toFixed(0)} ms of compiles ${longOf(true)}; with none running ${longOf(false)}; during compiles ${framesOf(true)}; with none running ${framesOf(false)}`)
     console.log(`[typing while compiling, main] ${cores} cores; main timer lateness during compiles ${lagOf(diag.lag.filter((x) => inRun(x[0])).map((x) => x[1]))}, with none running ${lagOf(diag.lag.filter((x) => !inRun(x[0])).map((x) => x[1]))}; Electron CPU during compiles ${cpuOf(true)}; with none running ${cpuOf(false)}`)
     expect(r.compiling, 'the compiles were still running after 60 s of typing').toBe(false)
     expect(r.compileError ?? null).toBeNull()
