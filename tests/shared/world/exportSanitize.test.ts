@@ -165,6 +165,7 @@ function fullDoc(): WorldDoc {
   doc.runtimeHandSet = ['b1']
   doc.labelTokens = 1234
   doc.filesCapped = 20000
+  doc.nestedCapped = 20000
   doc.filesUnreadable = 2
   const pb: Building = { ...b, id: 'pb', growth: undefined, members: ['C:\\Users\\dev\\repo\\src\\new.ts'] }
   delete pb.growth
@@ -254,7 +255,7 @@ describe('sanitizeWorld', () => {
     expect(out.layers).toEqual({ plan: expect.any(Array) })
     expect(Object.keys(out).sort()).toEqual([
       'buildings', 'cargo', 'districts', 'edges', 'externals', 'filesCapped', 'filesUnreadable', 'generatedAt', 'glossary', 'labelTokens', 'layers', 'layout',
-      'processes', 'projectKey', 'runtimeHandSet', 'runtimeNames', 'sourceRevision', 'tours', 'version',
+      'nestedCapped', 'processes', 'projectKey', 'runtimeHandSet', 'runtimeNames', 'sourceRevision', 'tours', 'version',
     ])
   })
 
@@ -270,6 +271,7 @@ describe('sanitizeWorld', () => {
     // The files note's counts: numbers only, so they carry nothing private.
     expect(out.filesCapped).toBe(20000)
     expect(out.filesUnreadable).toBe(2)
+    expect(out.nestedCapped).toBe(20000)
     expect(out.edges[0]).toMatchObject({ id: 'e1', from: 'b1', to: 'b2', cargo: 'memory', tech: ['ipc'], rate: 'often', twoWay: true, twoWayStated: true })
     expect(out.layers.plan[0]).toMatchObject({ id: 'p1', title: 'Plan for .', reconcile: { matched: { pb: 'b1' }, missing: ['pb'], extra: ['b2'], changed: ['b1'], planAt: 99 }, removes: ['b2'] })
     expect(out.layers.plan[0].edges[0]).not.toHaveProperty('twoWayStated')
@@ -285,6 +287,7 @@ describe('sanitizeWorld', () => {
     expect(out).not.toHaveProperty('labelTokens')
     expect(out).not.toHaveProperty('filesCapped')
     expect(out).not.toHaveProperty('filesUnreadable')
+    expect(out).not.toHaveProperty('nestedCapped')
     expect(out.layout).not.toHaveProperty('round')
   })
 

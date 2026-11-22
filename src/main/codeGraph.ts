@@ -18,6 +18,7 @@ import { extractFile, extractReferences, languageForFile, type CodeSymbol, type 
 import { extractFileTS } from './codeGraphTreeSitter'
 import { isIndexableCodeFile, discoverRepoFiles, repoListingNotes } from './codeIngest'
 import { projectKeyOf } from './projectKey'
+import { MAP_FILE_CAP } from './repoFileList'
 // A code-graph JSON is one object (not line-streamable), but reading a file past the V8 string limit
 // as 'utf8' fatals uncatchably (see fileLines.ts). Guard the whole-file reads below with this cliff.
 import { MAX_SINGLE_STRING_BYTES } from './fileLines'
@@ -666,8 +667,10 @@ export interface GraphSnapshot {
   symbols: SymbolHit[]
   callEdges: CodeGraphEdge[]
   fileImports: Record<string, string[]>
-  /** Set when the listing stopped at its cap (a folder walk, or nested repositories): how many files are mapped. */
+  /** Set when a folder walk stopped at its cap: how many files are mapped. */
   filesCapped?: number
+  /** Set when only the nested repositories were cut (the repository itself never is): the cap they shared. */
+  nestedCapped?: number
   /** Listed names that are not valid UTF-8, so no read finds them: the world counts the source files among them. */
   unreadable?: string[]
 }
@@ -726,7 +729,7 @@ export function graphSnapshot(projectKey: string, root?: string, opts: GraphSnap
   // What the repository's listing could not show (codeIngest.ts discoverRepoFiles), for the world's pane note.
   const notes = root ? repoListingNotes(base) : null
   const said = {
-    ...(notes?.capped ? { filesCapped: files.length } : {}),
+    ...(notes?.nestedCapped ? { nestedCapped: MAP_FILE_CAP } : {}),
     ...(notes && notes.unreadable.length > 0 ? { unreadable: [...notes.unreadable] } : {})
   }
   if (opts.structureOnly === true) return { root: base, files, symbols: [], callEdges: [], fileImports, ...said }

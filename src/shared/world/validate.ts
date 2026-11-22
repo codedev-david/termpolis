@@ -341,17 +341,19 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
 
   if (e.length) return { ok: false, errors: e }
   // labelTokens is optional and only a number is kept: a stored world without it, or with junk in it, still loads.
-  // filesCapped and filesUnreadable (the files note's counts) are kept only as whole numbers of at least 0.
+  // filesCapped, nestedCapped and filesUnreadable (the files note's counts) are kept only as whole numbers of at least 0.
   const badHand = doc.runtimeHandSet !== undefined && !(Array.isArray(doc.runtimeHandSet) && doc.runtimeHandSet.every((x) => typeof x === 'string'))
   const badCount = (n: unknown): boolean => n !== undefined && !(Number.isInteger(n) && (n as number) >= 0)
   const badCapped = badCount(doc.filesCapped)
   const badUnreadable = badCount(doc.filesUnreadable)
-  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped || badUnreadable) {
+  const badNested = badCount(doc.nestedCapped)
+  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped || badUnreadable || badNested) {
     const rest: Record<string, unknown> = { ...doc }
     if (doc.labelTokens !== undefined && !isNum(doc.labelTokens)) delete rest.labelTokens
     if (badHand) delete rest.runtimeHandSet
     if (badCapped) delete rest.filesCapped
     if (badUnreadable) delete rest.filesUnreadable
+    if (badNested) delete rest.nestedCapped
     return { ok: true, doc: rest as unknown as WorldDoc }
   }
   return { ok: true, doc: doc as unknown as WorldDoc }

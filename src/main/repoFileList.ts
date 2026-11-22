@@ -1,6 +1,9 @@
 // The git file listing every map of a repository reads: the code graph and memory ingest (codeIngest.ts) and
 // Lumopolis's own snapshot in the world utility process (world/fileSnapshot.ts). Pure: no process runs here (listRepo
 // is handed its git runner), so the world host can import it without reaching the main process's command runners.
+// Every git argument list built here starts with the world host's safety flags (gitLogin.ts safetyFlags: no fsmonitor
+// program, no hooks, no file transport, no symlinks), so neither caller can start git without them.
+import { safetyFlags } from './world/gitLogin'
 
 /** Folders whose code no world shows and no read needs: dependencies, virtual environments, build and test output. */
 export const IGNORED_DIRS: ReadonlySet<string> = new Set([
@@ -14,7 +17,13 @@ export const IGNORED_SUFFIXES: readonly string[] = ['.min.js', '.min.css', '.bun
  * .NET build output. `bin` is not one (it is often real scripts), and neither is `env`: a virtual environment by that
  * name is told by the pyvenv.cfg file in it, not by its name, so a source folder called env still shows.
  */
-export const SKIP_DIRS: ReadonlySet<string> = new Set([...IGNORED_DIRS, '.git', '.hg', '.svn', '.tox', 'obj'])
+export const SKIP_DIRS: ReadonlySet<string> = new Set([
+  ...IGNORED_DIRS, '.git', '.hg', '.svn', '.tox', 'obj',
+  // What the file watcher skips too (watchGuard.ts): nested checkouts, where agents keep worktrees of this same
+  // repository, and tool caches.
+  '.worktrees', '.nuxt', '.turbo', '.parcel-cache', '.svelte-kit', '.angular', '.gradle',
+  '.pytest_cache', '.mypy_cache', '.ruff_cache', '.vs'
+])
 /** The file every Python virtual environment holds at its top (python -m venv, virtualenv, uv). */
 export const VENV_MARKER = 'pyvenv.cfg'
 /** The most files a map takes from one folder walk, or from all nested repositories together. Past it the world says so. */
@@ -30,28 +39,43 @@ export function isIgnoredPath(rel: string): boolean {
   return hasIgnoredSuffix(rel) || parentDirs(rel).some((seg) => IGNORED_DIRS.has(seg))
 }
 
+/**
+ * Whether a folder called `name`, inside a folder called `parent` (undefined at the top), is never entered: a skip
+ * folder, or `.claude/worktrees`, where Claude Code puts its worktrees, which counts as one name (as in watchGuard.ts).
+ */
+export function skipsDir(name: string, parent: string | undefined): boolean {
+  return SKIP_DIRS.has(name) || (name === 'worktrees' && parent === '.claude')
+}
+
 /** A path under a skip folder at any depth, or with an ignored suffix. A trailing `/` (a folder entry) counts its last name. */
 export function inSkippedPath(rel: string): boolean {
-  return hasIgnoredSuffix(rel) || parentDirs(rel).some((seg) => SKIP_DIRS.has(seg))
+  return hasIgnoredSuffix(rel) || parentDirs(rel).some((seg, i, all) => skipsDir(seg, i > 0 ? all[i - 1] : undefined))
 }
+
+const onWindows = (): boolean => process.platform === 'win32'
 
 /**
  * Tracked files plus untracked ones the ignore files do not exclude, unquoted (core.quotepath=false), NUL separated and
  * tagged (-t: `H ` tracked, `? ` untracked), so untracked files can be held to the skip rules and a nested repository
  * (an untracked entry ending in `/`) can be listed on its own.
  */
-export function lsFilesArgs(root: string): string[] {
-  return ['-c', 'core.quotepath=false', '-C', root, 'ls-files', '-z', '-t', '--cached', '--others', '--exclude-standard']
+export function lsFilesArgs(root: string, isWindows: boolean = onWindows()): string[] {
+  return [...safetyFlags(isWindows), '-c', 'core.quotepath=false', '-C', root, 'ls-files', '-z', '-t', '--cached', '--others', '--exclude-standard']
 }
 
 /** The top folder of the repository `root` is in (to find its .gitmodules from a subfolder). */
-export function toplevelArgs(root: string): string[] {
-  return ['-C', root, 'rev-parse', '--show-toplevel']
+export function toplevelArgs(root: string, isWindows: boolean = onWindows()): string[] {
+  return [...safetyFlags(isWindows), '-C', root, 'rev-parse', '--show-toplevel']
 }
 
 /** Tracked files inside the submodules too. git allows --recurse-submodules only with --cached, so it is a second listing. */
-export function lsSubmoduleArgs(root: string): string[] {
-  return ['-c', 'core.quotepath=false', '-C', root, 'ls-files', '-z', '--cached', '--recurse-submodules']
+export function lsSubmoduleArgs(root: string, isWindows: boolean = onWindows()): string[] {
+  return [...safetyFlags(isWindows), '-c', 'core.quotepath=false', '-C', root, 'ls-files', '-z', '--cached', '--recurse-submodules']
+}
+
+/** The git folder `root` shares with every worktree of its repository, spelled in full (git 2.31 is the floor). */
+export function commonDirArgs(root: string, isWindows: boolean = onWindows()): string[] {
+  return [...safetyFlags(isWindows), '-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir']
 }
 
 const ESCAPES: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, '\\': 92 }
@@ -164,7 +188,16 @@ export interface RepoListing {
   files: string[]
   /** Names that could not be read (not valid UTF-8), at most MAP_FILE_CAP of them. */
   unreadable: string[]
-  /** The nested repositories held more files than MAP_FILE_CAP: some were left out. */
+  /** The nested repositories held more files than MAP_FILE_CAP: some were left out. The repository itself never is. */
+  nestedCapped: boolean
+  /** The nested repositories listed (or walked), folder-relative, sorted: a file watcher keeps their edits. */
+  nested: string[]
+}
+
+/** A plain-folder walk's answer (world/folderWalk.ts WalkResult). */
+export interface NestedWalk {
+  files: string[]
+  unreadable: string[]
   capped: boolean
 }
 
@@ -173,6 +206,24 @@ export interface ListRepoDeps {
   git: (args: string[]) => Promise<string | null>
   /** Whether a path exists. */
   exists: (path: string) => Promise<boolean>
+  /** Whether a path is a file (a worktree's `.git` is one). Default: nothing is, so no worktree is looked for. */
+  isFile?: (path: string) => Promise<boolean>
+  /** Walks a nested repository git refuses as a plain folder, listing at most `cap` files. Default: it is left out. */
+  walk?: (absDir: string, cap: number) => Promise<NestedWalk>
+  /** The platform git runs on: its safety flags, and whether paths fold case. Default: this one. */
+  platform?: NodeJS.Platform
+  /** Which safety flags git gets (the Windows hooks path or the POSIX one) when the caller names it apart from the
+   *  platform. Default: whether the platform is Windows. */
+  isWindows?: boolean
+}
+
+/** Platforms whose usual file systems fold case (NTFS, APFS), as watchGuard.ts CASE_FOLDING_PLATFORMS. */
+const FOLDS_CASE: ReadonlySet<string> = new Set(['win32', 'darwin'])
+
+/** A path as a comparison key: `/` separated, no trailing separator, lower case where the platform folds case. */
+export function pathKey(p: string, platform: string = process.platform): string {
+  const s = p.replace(/\\/g, '/').replace(/\/+$/, '')
+  return FOLDS_CASE.has(platform) ? s.toLowerCase() : s
 }
 
 /** `root` without a trailing separator, unless that is all there is to it (`/`, `C:\`). */
@@ -182,20 +233,56 @@ const trimRoot = (root: string): string => {
 }
 
 /** Whether the repository `root` is in declares submodules: a .gitmodules at its top, found from a subfolder too. */
-async function hasSubmodules(root: string, deps: ListRepoDeps): Promise<boolean> {
+async function hasSubmodules(root: string, ctx: Ctx): Promise<boolean> {
+  const { deps } = ctx
   if (await deps.exists(`${root}/.gitmodules`)) return true
   // A .git here (folder, or a worktree's or submodule's file) makes this the top, and it has no .gitmodules.
   if (await deps.exists(`${root}/.git`)) return false
-  const top = await deps.git(toplevelArgs(root))
+  const top = await deps.git(toplevelArgs(root, ctx.isWindows))
   return top !== null && deps.exists(`${top.trim()}/.gitmodules`)
 }
 
-interface Budget {
+/** One listing's state: the shared file budget of the nested repositories, and the git folders already asked. */
+interface Ctx {
+  deps: ListRepoDeps
+  isWindows: boolean
+  platform: string
   left: number
   capped: boolean
+  common: Map<string, Promise<string | null>>
 }
 
-async function collect(root: string, stdout: string, deps: ListRepoDeps, budget: Budget, depth: number): Promise<{ files: string[]; unreadable: string[] }> {
+/** The git folder `dir` shares with its worktrees, as a comparison key; null when git will not say. Asked once. */
+function commonDir(dir: string, ctx: Ctx): Promise<string | null> {
+  let got = ctx.common.get(dir)
+  if (got === undefined) {
+    got = ctx.deps.git(commonDirArgs(dir, ctx.isWindows)).then((out) => (out === null || out.trim() === '' ? null : pathKey(out.trim(), ctx.platform)))
+    ctx.common.set(dir, got)
+  }
+  return got
+}
+
+/**
+ * Whether the repository at `at` is a worktree of one of the repositories it sits in (`chain`): its `.git` is a file,
+ * and git names the same shared git folder for both. Its files are those repositories' own files again.
+ */
+async function isOwnWorktree(at: string, chain: readonly string[], ctx: Ctx): Promise<boolean> {
+  if (!ctx.deps.isFile || !(await ctx.deps.isFile(`${at}/.git`))) return false
+  const mine = await commonDir(at, ctx)
+  if (mine === null) return false
+  for (const up of chain) if ((await commonDir(up, ctx)) === mine) return true
+  return false
+}
+
+interface Collected {
+  files: string[]
+  unreadable: string[]
+  nested: string[]
+}
+
+async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly string[]): Promise<Collected> {
+  const { deps } = ctx
+  const depth = chain.length
   const listed = parseTaggedListing(stdout)
   // A virtual environment is told by its pyvenv.cfg, whatever its folder is called (env, .env, py311...).
   const venvs = listed.untracked.filter((n) => n.endsWith(`/${VENV_MARKER}`)).map((n) => n.slice(0, -VENV_MARKER.length))
@@ -204,8 +291,8 @@ async function collect(root: string, stdout: string, deps: ListRepoDeps, budget:
   const nested = untracked.filter((n) => n.endsWith('/'))
   let recursed: string[] = []
   let unreadableTracked = listed.unreadableTracked
-  if (await hasSubmodules(root, deps)) {
-    const sub = await deps.git(lsSubmoduleArgs(root))
+  if (await hasSubmodules(root, ctx)) {
+    const sub = await deps.git(lsSubmoduleArgs(root, ctx.isWindows))
     if (sub !== null) {
       // The recursed listing holds the repository's tracked files again, so its unreadable names replace the own ones.
       const parsed = parseLsFiles(sub)
@@ -215,40 +302,58 @@ async function collect(root: string, stdout: string, deps: ListRepoDeps, budget:
   }
   let files = mergeListings([...listed.tracked, ...untracked.filter((n) => !n.endsWith('/'))], recursed)
   if (depth > 0) {
-    if (files.length > budget.left) {
-      budget.capped = true
-      files = files.slice(0, budget.left)
+    if (files.length > ctx.left) {
+      ctx.capped = true
+      files = files.slice(0, ctx.left)
     }
-    budget.left -= files.length
+    ctx.left -= files.length
   }
   const unreadable = [...listed.unreadableUntracked.filter(keep), ...unreadableTracked]
+  const found: string[] = []
   if (depth < NESTED_DEPTH) {
     for (const n of nested) {
       const at = `${root}/${n.slice(0, -1)}`
       // git lists a folder holding a repository of its own as one entry; anything else with a trailing slash is not one.
       if (!(await deps.exists(`${at}/.git`))) continue
-      const out = await deps.git(lsFilesArgs(at))
-      // A nested repository git refuses (an owner it does not trust) is left out.
-      if (out === null) continue
-      const inner = await collect(at, out, deps, budget, depth + 1)
+      // The budget is spent: no more git is started, and the world says the nested repositories were cut.
+      if (ctx.left === 0) {
+        ctx.capped = true
+        break
+      }
+      if (await isOwnWorktree(at, [...chain, root], ctx)) continue
+      const out = await deps.git(lsFilesArgs(at, ctx.isWindows))
+      let inner: Collected
+      if (out !== null) inner = await collect(at, out, ctx, [...chain, root])
+      else if (deps.walk) {
+        // A nested repository git refuses (an owner it does not trust) is walked as a plain folder, by the same rules.
+        const walked = await deps.walk(at, ctx.left)
+        const take = walked.files.slice(0, ctx.left)
+        if (walked.capped || take.length < walked.files.length) ctx.capped = true
+        ctx.left -= take.length
+        inner = { files: take, unreadable: walked.unreadable, nested: [] }
+      } else continue
       files = files.concat(inner.files.map((f) => n + f))
       unreadable.push(...inner.unreadable.map((u) => n + u))
+      found.push(n.slice(0, -1), ...inner.nested.map((d) => n + d))
     }
   }
-  return { files, unreadable }
+  return { files, unreadable, nested: found }
 }
 
 /**
  * Every file git lists for `root`: tracked files, untracked ones the ignore files allow (minus skip folders and virtual
  * environments, which are never read), submodules' tracked files (found from the repository top, so a subfolder gets
  * them too), and the files of nested repositories that are not submodules, each listed by its own git under the same
- * rules, NESTED_DEPTH deep and MAP_FILE_CAP files in all. Null when git refuses `root` itself.
+ * rules (or walked, when git refuses one and a walk is given), NESTED_DEPTH deep and MAP_FILE_CAP files in all. A
+ * nested worktree of the repository itself (its `.git` a file into the same git folder) is not listed: its files are
+ * the repository's own again. Null when git refuses `root` itself.
  */
 export async function listRepo(root: string, deps: ListRepoDeps): Promise<RepoListing | null> {
   const base = trimRoot(root)
-  const own = await deps.git(lsFilesArgs(base))
+  const platform = deps.platform ?? process.platform
+  const ctx: Ctx = { deps, isWindows: deps.isWindows ?? platform === 'win32', platform, left: MAP_FILE_CAP, capped: false, common: new Map() }
+  const own = await deps.git(lsFilesArgs(base, ctx.isWindows))
   if (own === null) return null
-  const budget: Budget = { left: MAP_FILE_CAP, capped: false }
-  const got = await collect(base, own, deps, budget, 0)
-  return { files: got.files.sort(), unreadable: got.unreadable.slice(0, MAP_FILE_CAP), capped: budget.capped }
+  const got = await collect(base, own, ctx, [])
+  return { files: got.files.sort(), unreadable: got.unreadable.slice(0, MAP_FILE_CAP), nestedCapped: ctx.capped, nested: got.nested.sort() }
 }

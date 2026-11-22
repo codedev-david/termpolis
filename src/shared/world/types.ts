@@ -88,8 +88,10 @@ export interface WorldDoc {
   layers: { plan: Proposal[]; live?: unknown }       // plan authoring arrives in 2.x; live in §5.11
   /** Estimated tokens the last labelling run spent on model calls (cached replies cost none). Absent on older worlds. */
   labelTokens?: number
-  /** The listing stopped at its cap (a folder walk, or nested repositories): how many files the world maps. Absent when every file was listed. */
+  /** A folder walk stopped at its cap: how many files the world maps. Absent when every file was listed. */
   filesCapped?: number
+  /** The repositories nested in the folder held more files than the cap they share: that cap. Absent when none were cut. */
+  nestedCapped?: number
   /** Source files left out because their names are not valid UTF-8, so no read finds them. Absent when there are none. */
   filesUnreadable?: number
 }

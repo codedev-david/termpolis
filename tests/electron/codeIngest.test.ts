@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { execFileSync } from 'child_process'
+import { snapshotFromFiles } from '../../src/main/world/fileSnapshot'
 import {
   isIndexableCodeFile,
   chunkCode,
@@ -307,9 +308,56 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
       write(sdk, 'new.ts')
       write(sdk, 'node_modules/dep/index.js')
       expect(relTo(root, await discoverRepoFiles(root))).toEqual(['src/app.ts', 'tools/sdk/index.ts', 'tools/sdk/new.ts'])
-      expect(repoListingNotes(root)).toEqual({ capped: false, unreadable: [] })
+      expect(repoListingNotes(root)).toEqual({ nestedCapped: false, unreadable: [], nested: ['tools/sdk'] })
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('never maps or ingests a worktree of this same repository twice: .worktrees, .claude/worktrees, or any other name', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-worktrees-'))
+    try {
+      git(root, 'init', '-q')
+      write(root, 'src/app.ts', 'export const ONLY_ONCE = 1\n')
+      git(root, 'add', '-A')
+      git(root, 'commit', '-q', '-m', 'app')
+      // No .gitignore names them: the skip list catches the first two, the worktree check (a .git file into this
+      // repository's own git folder) the third.
+      git(root, 'worktree', 'add', '-q', '-b', 'a', '.worktrees/x')
+      git(root, 'worktree', 'add', '-q', '-b', 'b', '.claude/worktrees/y')
+      git(root, 'worktree', 'add', '-q', '-b', 'c', 'wt/feat')
+      write(root, 'wt/feat/src/extra.ts')
+      expect(relTo(root, await discoverRepoFiles(root))).toEqual(['src/app.ts'])
+      expect(repoListingNotes(root)?.nested).toEqual([])
+      const writes: string[] = []
+      await runCodeIngest({ hasHash: () => false, write: async (i) => { writes.push(i.content); return undefined } }, { repoRoot: root })
+      expect(writes.filter((w) => w.includes('ONLY_ONCE'))).toHaveLength(1)
+      // The world host's listing (the same shared code, its own git spawns) maps it once too.
+      expect((await snapshotFromFiles(root, { read: (p) => fs.promises.readFile(p, 'utf8') })).files).toEqual(['src/app.ts'])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still maps a separate repository checked out with a .git file pointing elsewhere (a submodule-style gitdir)', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-gitfile-'))
+    try {
+      const root = path.join(base, 'app')
+      fs.mkdirSync(root)
+      git(root, 'init', '-q')
+      write(root, 'src/app.ts')
+      git(root, 'add', '-A')
+      git(root, 'commit', '-q', '-m', 'app')
+      git(root, 'init', '-q', '--separate-git-dir', path.join(base, 'lib-git'), 'lib')
+      expect(fs.statSync(path.join(root, 'lib', '.git')).isFile()).toBe(true)
+      write(root, 'lib/util.ts')
+      git(path.join(root, 'lib'), 'add', '-A')
+      git(path.join(root, 'lib'), 'commit', '-q', '-m', 'lib')
+      expect(relTo(root, await discoverRepoFiles(root))).toEqual(['lib/util.ts', 'src/app.ts'])
+      expect(repoListingNotes(root)?.nested).toEqual(['lib'])
+      expect((await snapshotFromFiles(root, { read: (p) => fs.promises.readFile(p, 'utf8') })).files).toEqual(['lib/util.ts', 'src/app.ts'])
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
     }
   })
 

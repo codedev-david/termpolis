@@ -325,7 +325,7 @@ import { setSafeStorage } from './secureKeyStore'
 import { isInTranscriptRoot, runConversationIngest } from './conversationIngest'
 import { configureConversationIngest, getIngestRuntime, makeDrainRun, passResult } from './ingestRuntime'
 import { noteTyping, whenTypingQuiet } from './typingQuiet'
-import { runCodeIngest, discoverRepoFiles } from './codeIngest'
+import { runCodeIngest, discoverRepoFiles, repoListingNotes } from './codeIngest'
 import { outlineHint, countLinesIn, OUTLINE_MAX_FILE_BYTES, OUTLINE_MIN_FILE_BYTES } from './outlineHint'
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, fileSymbols, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, graphSnapshot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef, type GraphSnapshot } from './codeGraph'
 import type { ExecFn } from './mnemeDistiller'
@@ -2812,16 +2812,20 @@ void worldSettings.ready().then(tellWorldHostSettings)
  *  waits on the re-index alone, and notifyChanged never throws. Used by code ingest and by Build it (a new
  *  build folder is often outside git, so nothing else would watch it). True when a new watch started. */
 function watchRepoForGraphAndWorld(repoRoot: string): boolean {
-  return ensureRepoWatch(repoRoot, fsBackedWatchDeps(
-    fsWatch,
-    (root, files) => {
-      const reindexed = reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
-      void Promise.resolve(reindexed).then(() => worldClient.notifyChanged(root, files))
-      return reindexed
-    },
-    undefined,
-    true,
-  ))
+  return ensureRepoWatch(repoRoot, {
+    ...fsBackedWatchDeps(
+      fsWatch,
+      (root, files) => {
+        const reindexed = reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
+        void Promise.resolve(reindexed).then(() => worldClient.notifyChanged(root, files))
+        return reindexed
+      },
+      undefined,
+      true,
+    ),
+    // The nested repositories the last listing mapped: their edits refresh the map as the root's do.
+    nestedKept: () => repoListingNotes(repoRoot)?.nested ?? [],
+  })
 }
 // Ask: the Lumopolis agent runs read-only with the project's memory primer (headlessPrimer) and noRemember, so
 // a question reads the brain but never writes to it. deliver and headlessPrimer are resolved at call time

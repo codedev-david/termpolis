@@ -344,6 +344,7 @@ const mneme = vi.hoisted(() => ({
   runConversationIngest: vi.fn(async () => ({ chunksWritten: 4, truncated: false })),
   runCodeIngest: vi.fn(async () => ({ filesIndexed: 2 })),
   discoverRepoFiles: vi.fn(() => ['a.ts']),
+  repoListingNotes: vi.fn((): { nested: string[] } | null => null),
   // codeWatch
   ensureRepoWatch: vi.fn(), stopRepoWatches: vi.fn(), fsBackedWatchDeps: vi.fn(() => ({ watch: vi.fn() })),
   // brainIpc
@@ -387,7 +388,7 @@ vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: mockStartIndexer,
 vi.mock('../../src/main/conversationIngest', () => ({
   runConversationIngest: mneme.runConversationIngest, setExtraTranscriptRoots: vi.fn(), isInTranscriptRoot: vi.fn(() => false),
 }))
-vi.mock('../../src/main/codeIngest', () => ({ runCodeIngest: mneme.runCodeIngest, discoverRepoFiles: mneme.discoverRepoFiles }))
+vi.mock('../../src/main/codeIngest', () => ({ runCodeIngest: mneme.runCodeIngest, discoverRepoFiles: mneme.discoverRepoFiles, repoListingNotes: mneme.repoListingNotes }))
 vi.mock('../../src/main/codeWatch', () => ({
   ensureRepoWatch: mneme.ensureRepoWatch, stopRepoWatches: mneme.stopRepoWatches, fsBackedWatchDeps: mneme.fsBackedWatchDeps,
 }))
@@ -1107,6 +1108,12 @@ describe('memory:ingest-code', () => {
     expect(cg.buildCodeGraph).toHaveBeenCalledWith(expect.anything(), 'key:/repos/termpolis')
     // …and keeps the graph fresh by watching the repo
     expect(mneme.ensureRepoWatch).toHaveBeenCalledWith('/repos/termpolis', expect.anything())
+    // …including inside the nested repositories the last listing mapped, read fresh each time it is asked.
+    const watchDeps = mneme.ensureRepoWatch.mock.calls[0][1] as { nestedKept: () => Iterable<string> }
+    expect([...watchDeps.nestedKept()]).toEqual([])
+    mneme.repoListingNotes.mockReturnValueOnce({ nested: ['tools/sdk'] })
+    expect([...watchDeps.nestedKept()]).toEqual(['tools/sdk'])
+    expect(mneme.repoListingNotes).toHaveBeenLastCalledWith('/repos/termpolis')
   })
 
   it('wires the ingest deps and the graph builder to the real repo readers', async () => {

@@ -53,6 +53,10 @@ export interface WatchDeps {
   /** Async: the source files (relative to `absDir`, slash-separated) already inside a name that just
    *  appeared; rejects when it is not a directory. Without it, a new directory is not listed. */
   listSources?: (absDir: string) => Promise<string[]>
+  /** The nested repositories (relative, slash-separated) the last listing mapped: their edits refresh the map as the
+   *  root's do, instead of being dropped as another tree's. Asked when the watch starts, when a nested repository is
+   *  learned, and on every run; applied only when it changed. Without it, every nested repository stays out. */
+  nestedKept?: () => Iterable<string>
 }
 
 // Names that are not source of THIS repo beyond the shared list (watchGuard.ts): vendored Pods and the
@@ -153,7 +157,23 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
     if (closed || (!mass && found.size === 0)) return undefined
     return reindex(mass ? [] : [...found])
   }
-  const filter = createIgnoreFilter({ root, names: EXTRA_IGNORED, probeNested: deps.probeNested })
+  let keptSig = ''
+  /** Re-reads the nested repositories the listing mapped and hands them to the filter when they changed. */
+  const refreshKept = (): void => {
+    if (!deps.nestedKept) return
+    let dirs: string[]
+    try {
+      dirs = [...deps.nestedKept()].sort()
+    } catch {
+      return // best effort: what the filter already keeps stays as it was
+    }
+    const sig = dirs.join('\n')
+    if (sig === keptSig) return
+    keptSig = sig
+    filter.setKeep(dirs)
+  }
+  const filter = createIgnoreFilter({ root, names: EXTRA_IGNORED, probeNested: deps.probeNested, onLearn: refreshKept })
+  refreshKept()
   const gate = createRunGate({
     mode: 'trailing',
     windowMs: debounceMs,
@@ -164,6 +184,7 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
     label: `code index ${root}`,
     log: deps.log,
     run: () => {
+      refreshKept()
       const files = overflowed ? [] : [...changed]
       const names = overflowed ? [] : [...appeared]
       changed.clear()

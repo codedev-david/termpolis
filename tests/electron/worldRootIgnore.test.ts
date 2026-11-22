@@ -46,13 +46,31 @@ describe('rootIgnore: the plain patterns of a walked folder\'s own .gitignore', 
     expect(ig('a/logs', true)).toBe(false)
   })
 
-  it('leaves out what it does not support: negation, other **, character classes, escapes', () => {
-    const ig = parseRootIgnore('*.ts\n!keep.ts\na/**/b\n[ab].js\n\\#lit.py\n')
-    // The negation is not honoured: keep.ts stays ignored, as *.ts says.
-    expect(ig('keep.ts', false)).toBe(true)
+  it('a leading ! re-includes what an earlier line left out; the last line that matches decides, as in git', () => {
+    const top = parseRootIgnore('/*\n!/src\n!package.json\n')
+    expect(top('src', true)).toBe(false)
+    expect(top('lib', true)).toBe(true)
+    expect(top('package.json', false)).toBe(false)
+    expect(top('README.md', false)).toBe(true)
+    const only = parseRootIgnore('*\n!*/\n!*.ts\n')
+    expect(only('src', true)).toBe(false)
+    expect(only('a.ts', false)).toBe(false)
+    expect(only('src/deep/b.ts', false)).toBe(false)
+    expect(only('a.md', false)).toBe(true)
+    expect(only('src/b.md', false)).toBe(true)
+    // Order matters: a later exclusion wins over an earlier re-inclusion.
+    expect(parseRootIgnore('*.log\n!keep.log\n*.log\n')('keep.log', false)).toBe(true)
+    expect(parseRootIgnore('*.log\n!keep.log\n')('keep.log', false)).toBe(false)
+    // A lone ! is no pattern.
+    expect(parseRootIgnore('!\n')('a', false)).toBe(false)
+  })
+
+  it('leaves out what it does not support: other **, character classes, escapes', () => {
+    const ig = parseRootIgnore('a/**/b\n[ab].js\n\\#lit.py\n\\!bang.ts\n')
     expect(ig('a/x/b', true)).toBe(false)
     expect(ig('a.js', false)).toBe(false)
     expect(ig('#lit.py', false)).toBe(false)
+    expect(ig('!bang.ts', false)).toBe(false)
     // Regex characters in a name are literal.
     expect(parseRootIgnore('a+b.(x)\n')('a+b.(x)', false)).toBe(true)
   })

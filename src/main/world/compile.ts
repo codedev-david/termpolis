@@ -526,12 +526,17 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
  * moved to their new lines) while the structure hash matches, and made afresh when it moves.
  */
 /**
- * The doc's files note counts: a capped listing records the files the world maps; names the listing could not read
- * are counted when the world would have shown them (a source file outside the folders it leaves out).
+ * The doc's files note counts: a capped walk records the files the world maps; nested repositories cut at the cap
+ * record the cap they shared; names the listing could not read are counted when the world would have shown them (a
+ * source file outside the folders it leaves out).
  */
-function filesNotes(snap: GraphSnapshot, root: string, mapped: number): Pick<WorldDoc, 'filesCapped' | 'filesUnreadable'> {
+function filesNotes(snap: GraphSnapshot, root: string, mapped: number): Pick<WorldDoc, 'filesCapped' | 'nestedCapped' | 'filesUnreadable'> {
   const unreadable = (snap.unreadable ?? []).filter((f) => !isIgnored(f) && isIndexableCodeFile(`${root}/${f}`) && languageForFile(f) !== null).length
-  return { ...(snap.filesCapped !== undefined ? { filesCapped: mapped } : {}), ...(unreadable > 0 ? { filesUnreadable: unreadable } : {}) }
+  return {
+    ...(snap.filesCapped !== undefined ? { filesCapped: mapped } : {}),
+    ...(snap.nestedCapped !== undefined ? { nestedCapped: snap.nestedCapped } : {}),
+    ...(unreadable > 0 ? { filesUnreadable: unreadable } : {})
+  }
 }
 
 export async function compileWorldStaged(input: StagedInput, deps: CompileDeps): Promise<{ doc: WorldDoc; cache: StageCache }> {

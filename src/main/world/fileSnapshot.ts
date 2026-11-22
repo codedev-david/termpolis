@@ -16,12 +16,12 @@ import type { GraphSnapshot } from '../codeGraph'
 import { isIndexableCodeFile } from '../codeFileFilter'
 import { extractFile, languageForFile } from '../codeGraphExtract'
 import { binInsideFolder, resolveGitBin } from '../binPath'
-import { isIgnoredPath, listRepo, type RepoListing } from '../repoFileList'
-import { access } from 'node:fs/promises'
+import { isIgnoredPath, listRepo, MAP_FILE_CAP, type NestedWalk, type RepoListing } from '../repoFileList'
+import { access, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { walkFolder, type WalkResult } from './folderWalk'
 import { readRootIgnore } from './rootIgnore'
-import { configEnv, inheritedEnv, loginConfig, loginEnv, safetyFlags } from './gitLogin'
+import { configEnv, inheritedEnv, loginConfig, loginEnv } from './gitLogin'
 import { NO_GIT_MESSAGE, nodeExecFile } from './gitSource'
 
 /** Files longer than this are left out, as the code graph's sweep leaves them out (512 KB of source). */
@@ -54,13 +54,16 @@ export const captureExec: CaptureFn = async (cmd, args, opts) => {
 }
 
 const exists = (p: string): Promise<boolean> => access(p).then(() => true, () => false)
+const isFileOnDisk = (p: string): Promise<boolean> => stat(p).then((st) => st.isFile(), () => false)
 
 /**
  * The files git lists under `root`, relative to it, by the code index's own listing (repoFileList.ts listRepo:
  * tracked files, untracked ones the ignore files allow minus skip folders and virtual environments, submodules
- * recursed, nested repositories listed by their own git). Git runs with the same safety flags as a clone (no hooks,
- * no symlinks, no fsmonitor), with no login (captureExec), and by its full path (binPath.ts resolveGitBin, never the
- * bare name); a git inside the folder itself is never run, and lists nothing. No git at all throws NO_GIT_MESSAGE.
+ * recursed, nested repositories listed by their own git, or walked when git refuses one, and a nested worktree of
+ * the repository itself left out). Git runs with the same safety flags as a clone (no hooks, no symlinks, no
+ * fsmonitor: the shared argument builders put them first), with no login (captureExec), and by its full path
+ * (binPath.ts resolveGitBin, never the bare name); a git inside the folder itself is never run, and lists nothing.
+ * No git at all throws NO_GIT_MESSAGE.
  * Git that ran and refused `root` (not a repository after all, an owner it does not trust) is null, so the caller
  * can walk the folder instead.
  */
@@ -69,17 +72,20 @@ export async function gitListFiles(
   exec: CaptureFn = captureExec,
   isWindows: boolean = process.platform === 'win32',
   gitBin: () => Promise<string | null> = resolveGitBin,
-  has: (path: string) => Promise<boolean> = exists
+  has: (path: string) => Promise<boolean> = exists,
+  isFile: (path: string) => Promise<boolean> = isFileOnDisk,
+  walk: (absDir: string, cap: number) => Promise<NestedWalk> = walkSources
 ): Promise<RepoListing | null> {
   const bin = await gitBin()
   if (bin === null) throw new Error(NO_GIT_MESSAGE)
-  if (await binInsideFolder(bin, root)) return { files: [], unreadable: [], capped: false }
+  if (await binInsideFolder(bin, root)) return { files: [], unreadable: [], nestedCapped: false, nested: [] }
   const git = async (args: string[]): Promise<string | null> => {
-    const r = await exec(bin, [...safetyFlags(isWindows), ...args], { timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
+    const r = await exec(bin, args, { timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
     if (r.missing) throw new Error(NO_GIT_MESSAGE)
     return r.code === 0 ? r.stdout : null
   }
-  return listRepo(root, { git, exists: has })
+  // isWindows names git's safety flags (the Windows hooks path); folders compare case folded where this platform folds.
+  return listRepo(root, { git, exists: has, isFile, walk, isWindows })
 }
 
 /** Whether `root` sits in a git repository: a `.git` (folder, or the file a worktree or submodule has) in it or above it. */
@@ -104,11 +110,29 @@ export interface ListSourceDeps {
   walk?: (root: string) => Promise<WalkResult>
 }
 
-/** The capped walk of `root`: source files the world shows, minus what the folder's own .gitignore names. */
-async function walkSources(root: string): Promise<WalkResult> {
+/** The files of a folder: a walk's, or git's, which also says when the nested repositories were cut. */
+export interface SourceListing extends WalkResult {
+  /** The nested repositories held more than MAP_FILE_CAP files: some of theirs are left out. */
+  nestedCapped?: boolean
+}
+
+/**
+ * The capped walk of `root` (a plain folder, or a nested repository git refuses): source files the world shows,
+ * minus what the folder's own .gitignore names.
+ */
+async function walkSources(root: string, cap?: number): Promise<WalkResult> {
   const base = slashBase(root)
   const ignored = await readRootIgnore(root)
-  return walkFolder(root, { keep: (rel) => !isIgnoredPath(rel) && isSourceFile(`${base}/${rel}`), ...(ignored ? { ignored } : {}) })
+  return walkFolder(root, {
+    keep: (rel) => !isIgnoredPath(rel) && isSourceFile(`${base}/${rel}`),
+    ...(ignored ? { ignored } : {}),
+    ...(cap === undefined ? {} : { cap })
+  })
+}
+
+/** git's listing as the world's: the repository itself is never cut, and a nested cut is said apart. */
+function fromGit(listed: RepoListing): SourceListing {
+  return { files: listed.files, capped: false, unreadable: listed.unreadable, ...(listed.nestedCapped ? { nestedCapped: true } : {}) }
 }
 
 /**
@@ -116,21 +140,24 @@ async function walkSources(root: string): Promise<WalkResult> {
  * listing git answered with nothing (a folder its ignore files cover whole) is walked as well, and the walk is the
  * world when it found files on disk; otherwise the empty listing stands.
  */
-export async function listSourceFiles(root: string, deps: ListSourceDeps = {}): Promise<WalkResult> {
-  const walk = deps.walk ?? walkSources
+export async function listSourceFiles(root: string, deps: ListSourceDeps = {}): Promise<SourceListing> {
+  const walk = deps.walk ?? ((r: string) => walkSources(r))
   if (await (deps.inRepo ?? insideGitRepo)(root)) {
     const listed = await (deps.git ?? gitListFiles)(root)
-    if (listed !== null && listed.files.length > 0) return listed
+    if (listed !== null && listed.files.length > 0) return fromGit(listed)
     if (listed !== null) {
       const walked = await walk(root)
-      return walked.files.length > 0 || walked.unreadable.length > 0 ? walked : listed
+      return walked.files.length > 0 || walked.unreadable.length > 0 ? walked : fromGit(listed)
     }
   }
   return walk(root)
 }
 
-/** A listing: plain names, or a listing that says whether it stopped at its cap and which names it could not read. */
-export type FileListing = string[] | { files: string[]; capped: boolean; unreadable?: string[] }
+/**
+ * A listing: plain names, or a listing that says whether it stopped at its cap (or only the nested repositories
+ * did) and which names it could not read.
+ */
+export type FileListing = string[] | { files: string[]; capped: boolean; unreadable?: string[]; nestedCapped?: boolean }
 
 export interface FileSnapshotDeps {
   /** Folder-relative files under `root` (default: listSourceFiles). */
@@ -150,7 +177,8 @@ function safeRelative(file: string): string | null {
  * The structure-only snapshot of `root`. Never rejects for a missing or unreadable file; such a file is simply absent.
  * A listing that fails lists nothing, except git missing from a repository, which rejects with NO_GIT_MESSAGE so the
  * pane says so rather than showing an empty world. A file the world leaves out (group.ts isIgnored) is never read. A
- * capped listing records how many files are mapped (filesCapped); names the listing could not read pass through
+ * capped listing records how many files are mapped (filesCapped), one whose nested repositories alone were cut the
+ * cap they shared (nestedCapped); names the listing could not read pass through
  * (unreadable), for the world's count.
  */
 export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): Promise<GraphSnapshot> {
@@ -187,6 +215,7 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
     callEdges: [],
     fileImports,
     ...(listing.capped ? { filesCapped: files.length } : {}),
+    ...(listing.nestedCapped ? { nestedCapped: MAP_FILE_CAP } : {}),
     ...(unreadable.length > 0 ? { unreadable: [...unreadable] } : {})
   }
 }

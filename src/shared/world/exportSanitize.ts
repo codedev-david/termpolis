@@ -331,6 +331,7 @@ export function sanitizeWorld(doc: WorldDoc, ctx: SanitizeContext): WorldDoc {
     layers: { plan: doc.layers.plan.map(proposal) },
     ...(doc.labelTokens !== undefined ? { labelTokens: doc.labelTokens } : {}),
     ...(doc.filesCapped !== undefined ? { filesCapped: doc.filesCapped } : {}),
+    ...(doc.nestedCapped !== undefined ? { nestedCapped: doc.nestedCapped } : {}),
     ...(doc.filesUnreadable !== undefined ? { filesUnreadable: doc.filesUnreadable } : {}),
   }
 }

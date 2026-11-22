@@ -9,12 +9,15 @@
 // means node_modules/dist/out are excluded for free (they're gitignored).
 
 import * as crypto from 'crypto'
-import { promises as fsp } from 'fs'
+import { promises as fsp, type Stats } from 'fs'
 import { normalizeNewlines } from './lineEndings'
 import { join } from 'path'
 import { isIndexableCodeFile } from './codeFileFilter'
 import { safeGitAsync } from './gitCommand'
-import { listRepo } from './repoFileList'
+import { inSkippedPath, listRepo } from './repoFileList'
+import { CASE_FOLDING_PLATFORMS } from './watchGuard'
+import { walkFolder } from './world/folderWalk'
+import { readRootIgnore } from './world/rootIgnore'
 import { knownHashes } from './conversationIngest' // one membership-resolution rule for both ingesters
 
 export interface CodeChunk {
@@ -164,8 +167,9 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
 // The files a person sees in repoRoot: tracked ones plus untracked ones the ignore files allow (so node_modules and
 // dist stay out), minus untracked dependency folders and virtual environments the ignore files miss (a root-only
 // /node_modules rule, a venv with no .gitignore inside: never read, never indexed), the tracked files of its
-// submodules, and the files of nested repositories that are not submodules (repoFileList.ts listRepo). Absolute
-// paths. Returns [] if not a git repo / git missing.
+// submodules, and the files of nested repositories that are not submodules (repoFileList.ts listRepo; one git
+// refuses is walked as a plain folder, and a nested worktree of the repository itself is left out). Absolute paths.
+// Returns [] if not a git repo / git missing.
 export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
   if (!repoRoot) return []
   // The proc host runs git (safeGitAsync): the spawn happens off the main thread. This used to start git here with
@@ -178,22 +182,37 @@ export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
       (out) => out,
       () => null
     )
-  const exists = (p: string): Promise<boolean> => fsp.access(p).then(() => true, () => false)
-  const listed = await listRepo(repoRoot, { git, exists })
+  const statOf = (p: string): Promise<Stats | null> => fsp.stat(p).then((st) => st, () => null)
+  const exists = (p: string): Promise<boolean> => statOf(p).then((st) => st !== null)
+  const isFile = (p: string): Promise<boolean> => statOf(p).then((st) => st !== null && st.isFile())
+  const listed = await listRepo(repoRoot, { git, exists, isFile, walk: walkNested })
   if (listed === null) return []
-  listingNotes.set(notesKey(repoRoot), { capped: listed.capped, unreadable: listed.unreadable })
+  listingNotes.set(notesKey(repoRoot), { nestedCapped: listed.nestedCapped, unreadable: listed.unreadable, nested: listed.nested })
   return listed.files.map((rel) => join(repoRoot, rel))
 }
 
-/** What the last listing of a repository could not show: nested repositories past the cap, names that are not UTF-8. */
+/** A nested repository git refuses, walked as a plain folder: what git would list (no `.git` file), minus its own .gitignore. */
+async function walkNested(dir: string, cap: number): Promise<{ files: string[]; unreadable: string[]; capped: boolean }> {
+  const ignored = await readRootIgnore(dir)
+  return walkFolder(dir, { keep: (rel) => !inSkippedPath(rel) && !/(^|\/)\.git$/.test(rel), cap, ...(ignored ? { ignored } : {}) })
+}
+
+/** What the last listing of a repository could not show, and the nested repositories it holds. */
 export interface RepoListingNotes {
-  capped: boolean
-  /** Repository-relative names (at most repoFileList's MAP_FILE_CAP). */
+  /** Nested repositories held more files than the cap: some were left out. */
+  nestedCapped: boolean
+  /** Repository-relative names that are not UTF-8 (at most repoFileList's MAP_FILE_CAP). */
   unreadable: string[]
+  /** The nested repositories listed or walked, repository-relative: the file watcher keeps their edits. */
+  nested: string[]
 }
 
 const listingNotes = new Map<string, RepoListingNotes>()
-const notesKey = (root: string): string => root.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+/** The root as a key: `/` separated, no trailing separator, folded to lower case only where the file system folds case. */
+const notesKey = (root: string): string => {
+  const key = root.replace(/\\/g, '/').replace(/\/+$/, '')
+  return CASE_FOLDING_PLATFORMS.has(process.platform) ? key.toLowerCase() : key
+}
 
 /** The notes of the last discoverRepoFiles of `root` (Lumopolis says them in its pane); null before any listing. */
 export function repoListingNotes(root: string): RepoListingNotes | null {

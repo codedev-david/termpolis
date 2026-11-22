@@ -80,6 +80,18 @@ describe('validateWorld', () => {
     }
   })
 
+  it('nestedCapped is optional too: absent loads, a whole count is kept, junk is dropped and leaves the other counts', () => {
+    expect(((r) => r.ok && 'nestedCapped' in r.doc)(validateWorld(fresh()))).toBe(false)
+    const kept = validateWorld({ ...fresh(), nestedCapped: 20000 })
+    expect(kept.ok && kept.doc.nestedCapped).toBe(20000)
+    for (const junk of ['20000', -1, 2.5, null]) {
+      const r = validateWorld({ ...fresh(), nestedCapped: junk, filesUnreadable: 1 })
+      expect(r.ok).toBe(true)
+      expect(r.ok && 'nestedCapped' in r.doc).toBe(false)
+      expect(r.ok && r.doc.filesUnreadable).toBe(1)
+    }
+  })
+
   it('filesUnreadable is optional too: a whole count is kept, junk is dropped', () => {
     expect(((r) => r.ok && 'filesUnreadable' in r.doc)(validateWorld(fresh()))).toBe(false)
     const kept = validateWorld({ ...fresh(), filesUnreadable: 3 })

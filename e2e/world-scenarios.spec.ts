@@ -98,22 +98,52 @@ async function openFromHome(dir: string): Promise<void> {
   await expect(home()).toHaveCount(0)
 }
 
+/** A path as the file system knows it: real (8.3 short names expanded, links followed), slashes, and folded to lower
+ *  case where the file system folds case. Two spellings of one folder compare equal. */
+function realKey(p: string): string {
+  let r = p
+  try {
+    r = fs.realpathSync.native(p)
+  } catch {
+    /* gone: compare the spelling as given */
+  }
+  r = r.replace(/\\/g, '/').replace(/\/+$/, '')
+  return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r
+}
+
 /**
- * Every building member of the world main stored for `root`; null: no world yet. A folder opened as a folder is stored
- * under the folder as given, a project under its repository's top, which git may spell differently (a long name for
- * an 8.3 temp path), so both are asked.
+ * The key the app stores `dir`'s world under, and nothing else: a folder opened as a folder under the folder as the
+ * dialog gave it, a project under its repository's top as git spells it (which can differ from `dir`: a long name for
+ * an 8.3 temp path). A world saved under the other one is not found, so the check fails.
  */
-async function members(root: string): Promise<string[] | null> {
-  return page.evaluate(async (r) => {
+async function worldKey(dir: string, asFolder: boolean): Promise<string> {
+  if (asFolder) return dir
+  const top = await page.evaluate(
+    (r) => (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string | null }> } }).termpolis.gitFindRoot(r),
+    dir
+  )
+  return top.success && top.data ? top.data : dir
+}
+
+/** Every building member of the world main stored under `key`; null: no world there yet. */
+async function members(key: string): Promise<string[] | null> {
+  return page.evaluate(async (k) => {
     interface Doc { buildings: { members: string[] }[] }
-    const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string | null }>; worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
-    const own = await api.worldGet(r)
-    if (own.success && own.data) return own.data.buildings.flatMap((b) => b.members)
-    const top = await api.gitFindRoot(r)
-    if (!top.success || !top.data || top.data === r) return null
-    const res = await api.worldGet(top.data)
+    const api = (window as unknown as { termpolis: { worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
+    const res = await api.worldGet(k)
     return res.success && res.data ? res.data.buildings.flatMap((b) => b.members) : null
-  }, root)
+  }, key)
+}
+
+/** The kind of every recent world whose folder is `dir` under any spelling (compared as real paths). */
+async function listedKinds(dir: string): Promise<string[]> {
+  const entries = await page.evaluate(async () => {
+    const api = (window as unknown as { termpolis: { worldSourcesList: () => Promise<{ success: boolean; data?: { source: { kind: string; root?: string } }[] }> } }).termpolis
+    const res = await api.worldSourcesList()
+    return res.success && res.data ? res.data.map((e) => e.source) : []
+  })
+  const want = realKey(dir)
+  return entries.filter((e) => typeof e.root === 'string' && realKey(e.root) === want).map((e) => e.kind)
 }
 
 test.describe.serial('Lumopolis over the scenario fixtures', () => {
@@ -136,8 +166,11 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
       }
       await expectPaneOpens(page)
 
-      await expect.poll(() => members(dir), { message: `a world for ${row.name}`, timeout: 60_000 }).not.toBeNull()
-      const got = (await members(dir))!
+      const key = await worldKey(dir, row.openFolder === true)
+      await expect.poll(() => members(key), { message: `a world for ${row.name} under ${key}`, timeout: 60_000 }).not.toBeNull()
+      const got = (await members(key))!
+      // The home lists it as what it was opened as: a folder from Open a folder, a project from world:map-project.
+      expect(await listedKinds(dir), `${row.name} is in the home as a ${row.openFolder ? 'folder' : 'project'}`).toContain(row.openFolder ? 'folder' : 'project')
       for (const file of row.parts) expect(got, `${file} is a part of ${row.name}'s world`).toContain(file)
       for (const prefix of row.absent ?? []) {
         expect(got.filter((m) => m.startsWith(prefix)), `nothing under ${prefix} in ${row.name}'s world`).toEqual([])
@@ -162,9 +195,10 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
     expect(mapped.error ?? '').toBe('')
     await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), dir)
     await expectPaneOpens(page)
-    await expect.poll(() => members(dir), { message: 'a world for huge', timeout: 800_000, intervals: [1000] }).not.toBeNull()
+    const key = await worldKey(dir, false)
+    await expect.poll(() => members(key), { message: 'a world for huge', timeout: 800_000, intervals: [1000] }).not.toBeNull()
     const firstMapMs = Date.now() - started
-    const got = (await members(dir))!
+    const got = (await members(key))!
     expect(got.length).toBeGreaterThan(0)
     if (withGit) {
       expect(got.length).toBe(50_000)

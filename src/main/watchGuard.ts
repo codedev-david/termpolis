@@ -59,6 +59,8 @@ const BASE_IGNORED_DIRS: readonly string[] = [
 ]
 
 const BASE_NAMES: ReadonlySet<string> = new Set(BASE_IGNORED_DIRS)
+/** The names above, for the map's listing (repoFileList.ts SKIP_DIRS holds every one of them). */
+export const WATCH_IGNORED_DIRS: readonly string[] = BASE_IGNORED_DIRS
 
 /** `a\b\c`, `./a/b`, `/a/b` -> `a/b/c`, `a/b`, `a/b`. */
 function toSlashes(rel: string): string {

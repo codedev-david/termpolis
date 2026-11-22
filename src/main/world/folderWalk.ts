@@ -1,14 +1,15 @@
 // Lumopolis folder walk (world host, Node only): the files of a folder git does not know, for a world of a plain
 // folder. Breadth first and sorted, so a capped walk keeps the folder's top levels; links are never followed (a link
-// can point anywhere on the computer); the skip folders (repoFileList.ts SKIP_DIRS: version control, dependencies,
-// build output) and virtual environments (a folder holding pyvenv.cfg) are never entered; what the folder's own
+// can point anywhere on the computer); the skip folders (repoFileList.ts skipsDir: version control, dependencies,
+// build output, nested checkouts, tool caches) and virtual environments (a folder holding pyvenv.cfg, looked for
+// before the folder is opened, so its entries never count) are never entered; what the folder's own
 // .gitignore names (rootIgnore.ts, handed in as `ignored`) is left out. Each folder is read as a stream (opendir), so
 // the entry limit holds inside one folder of millions of entries too; past it, the entries kept are the first ones the
 // file system lists (sorted on NTFS, hash or creation order on ext4 and APFS), each folder's share sorted by name.
 import type { Dirent } from 'node:fs'
-import { opendir as fsOpendir } from 'node:fs/promises'
+import { opendir as fsOpendir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { MAP_FILE_CAP, SKIP_DIRS, VENV_MARKER } from '../repoFileList'
+import { MAP_FILE_CAP, SKIP_DIRS, skipsDir, VENV_MARKER } from '../repoFileList'
 
 /** The most files a walk lists (the map's one cap). Past it the world says it shows only the first ones. */
 export const WALK_FILE_CAP = MAP_FILE_CAP
@@ -35,7 +36,11 @@ export interface WalkOptions {
   entryLimit?: number
   /** Opens one folder for reading entry by entry (default: node's opendir). */
   opendir?: (dir: string) => Promise<AsyncIterable<Dirent>>
+  /** Whether a folder (absolute) is a virtual environment (default: it holds a pyvenv.cfg file). Asked before it is opened. */
+  hasMarker?: (dir: string) => Promise<boolean>
 }
+
+const holdsVenvMarker = (dir: string): Promise<boolean> => stat(join(dir, VENV_MARKER)).then((st) => st.isFile(), () => false)
 
 // Names in one folder are unique, so two entries never compare equal.
 const byName = (a: Dirent, z: Dirent): number => (a.name < z.name ? -1 : 1)
@@ -45,17 +50,21 @@ export async function walkFolder(root: string, opts: WalkOptions): Promise<WalkR
   const limit = opts.entryLimit ?? WALK_ENTRY_LIMIT
   const open = opts.opendir ?? ((d: string) => fsOpendir(d))
   const ignored = opts.ignored ?? ((): boolean => false)
+  const isVenv = opts.hasMarker ?? holdsVenvMarker
   const files: string[] = []
   const unreadable: string[] = []
   const queue: string[] = ['']
   let seen = 0
   for (let q = 0; q < queue.length; q++) {
     const rel = queue[q]
+    const at = rel === '' ? root : join(root, rel)
+    // A virtual environment below the top is left out whole, whatever it is called, before any entry of it is read.
+    if (rel !== '' && (await isVenv(at))) continue
     const entries: Dirent[] = []
     let cut = false
     try {
       // Breaking out of the loop closes the folder.
-      for await (const ent of await open(rel === '' ? root : join(root, rel))) {
+      for await (const ent of await open(at)) {
         if (++seen > limit) {
           cut = true
           break
@@ -65,13 +74,12 @@ export async function walkFolder(root: string, opts: WalkOptions): Promise<WalkR
     } catch {
       // An unreadable folder (no permission, gone since) lists what was read of it, if anything; the walk goes on.
     }
-    // A virtual environment below the top is left out whole, whatever it is called.
-    if (rel !== '' && entries.some((ent) => ent.name === VENV_MARKER && ent.isFile())) continue
+    const parent = rel === '' ? undefined : rel.slice(rel.lastIndexOf('/') + 1)
     for (const ent of entries.sort(byName)) {
       const path = rel === '' ? ent.name : `${rel}/${ent.name}`
       // A link is neither a directory nor a file here (opendir does not follow it), so it is skipped.
       if (ent.isDirectory()) {
-        if (!WALK_SKIP_DIRS.has(ent.name) && !ent.name.includes('�') && !ignored(path, true)) queue.push(path)
+        if (!skipsDir(ent.name, parent) && !ent.name.includes('�') && !ignored(path, true)) queue.push(path)
       } else if (ent.isFile() && !ignored(path, false) && opts.keep(path)) {
         if (ent.name.includes('�')) unreadable.push(path)
         else if (files.length === cap) return { files, capped: true, unreadable }

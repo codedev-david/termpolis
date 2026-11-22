@@ -102,6 +102,55 @@ describe('codeWatch storm guard', () => {
     expect(h.deps.reindex).toHaveBeenCalledWith('/repo', ['src/a.ts'])
   })
 
+  it('keeps indexing inside the nested repositories the last listing mapped, as it does the root\'s own files', async () => {
+    let kept: string[] = []
+    const nestedKept = vi.fn(() => kept)
+    const h = harness({ nestedKept })
+    watchRepo('/repo', h.deps)
+    // Before the first listing lands, a nested repository's edits stay out, as before.
+    h.emit('vendor/lib/.git/index')
+    h.emit('vendor/lib/src/a.ts')
+    h.flush()
+    expect(h.deps.reindex).not.toHaveBeenCalled()
+    // The listing maps vendor/lib: the next run picks that up, and its edits refresh the map.
+    kept = ['vendor/lib']
+    h.emit('src/root.ts')
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenLastCalledWith('/repo', ['src/root.ts'])
+    h.emit('vendor/lib/src/a.ts')
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenLastCalledWith('/repo', ['vendor/lib/src/a.ts'])
+    // A repository learned later is checked against the listing the moment it is learned.
+    kept = ['vendor/lib', 'tools/sdk']
+    h.emit('tools/sdk/.git/HEAD')
+    h.emit('tools/sdk/x.ts')
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenLastCalledWith('/repo', ['tools/sdk/x.ts'])
+    // One the listing no longer maps (it was cut at the cap, say) drops out again.
+    kept = ['tools/sdk']
+    h.emit('src/root.ts')
+    h.flush()
+    const before = (h.deps.reindex as ReturnType<typeof vi.fn>).mock.calls.length
+    h.emit('vendor/lib/src/a.ts')
+    h.flush()
+    expect((h.deps.reindex as ReturnType<typeof vi.fn>).mock.calls.length).toBe(before)
+    // The listing is asked again on every run (a map lookup; it is only re-applied when it changed).
+    const asked = nestedKept.mock.calls.length
+    h.emit('src/root.ts')
+    h.flush()
+    expect(nestedKept.mock.calls.length).toBeGreaterThan(asked)
+  })
+
+  it('a nestedKept that throws is the same as none', () => {
+    const h = harness({ nestedKept: () => { throw new Error('boom') } })
+    watchRepo('/repo', h.deps)
+    h.emit('vendor/lib/.git/index')
+    h.emit('vendor/lib/src/a.ts')
+    h.emit('src/a.ts')
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenCalledWith('/repo', ['src/a.ts'])
+  })
+
   it('learns a nested repository from the disk (async probe) with the default probe too', async () => {
     const probe = vi.fn(async (abs: string) => abs.replace(/\\/g, '/').endsWith('/vendor/lib'))
     const h = harness({ probeNested: probe })

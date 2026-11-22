@@ -292,6 +292,14 @@ describe('compileWorld', () => {
     const plain = await compileFixture()
     expect('filesCapped' in plain).toBe(false)
     expect('filesUnreadable' in plain).toBe(false)
+    expect('nestedCapped' in plain).toBe(false)
+  })
+
+  it('nested repositories cut at the cap set doc.nestedCapped to the cap they shared, and leave filesCapped out', async () => {
+    const snap = snapOf(FIXTURE)
+    const cut = await compileWorld({ snap: { ...snap, nestedCapped: 20000 }, projectKey: 'demo', head: HEAD, previous: null }, mkDeps(FIXTURE))
+    expect(cut.nestedCapped).toBe(20000)
+    expect('filesCapped' in cut).toBe(false)
   })
 
   it('counts the unreadable names the world would have shown: source files outside the folders it leaves out', async () => {

@@ -30,7 +30,11 @@ describe('folderWalk: the files of a folder outside git', () => {
     expect(WALK_ENTRY_LIMIT).toBe(200_000)
     expect(WALK_SKIP_DIRS).toBe(SKIP_DIRS)
     expect([...WALK_SKIP_DIRS].sort()).toEqual(
-      ['.git', '.hg', '.next', '.svn', '.tox', '.venv', '__pycache__', 'bower_components', 'build', 'coverage', 'dist', 'node_modules', 'obj', 'out', 'target', 'vendor', 'venv'].sort()
+      [
+        '.angular', '.git', '.gradle', '.hg', '.mypy_cache', '.next', '.nuxt', '.parcel-cache', '.pytest_cache', '.ruff_cache', '.svelte-kit', '.svn',
+        '.tox', '.turbo', '.venv', '.vs', '.worktrees', '__pycache__', 'bower_components', 'build', 'coverage', 'dist', 'node_modules', 'obj', 'out',
+        'target', 'vendor', 'venv'
+      ].sort()
     )
   })
 
@@ -66,6 +70,42 @@ describe('folderWalk: the files of a folder outside git', () => {
     expect((await walkFolder(dir, { keep: (rel) => !rel.endsWith('.cfg') })).files).toEqual(['main.py', 'src/env/config.ts'])
   })
 
+  it('knows a virtual environment by its pyvenv.cfg before opening it, so its entries never count toward the entry limit', async () => {
+    await put('main.py')
+    for (const n of ['a', 'b', 'c', 'd', 'e']) await put(`env/lib${n}.py`)
+    await put('env/pyvenv.cfg', 'home = /usr/bin\n')
+    // The top holds two entries (env, main.py); env's six would pass a limit of three if they were read.
+    expect(await walkFolder(dir, { keep: all, entryLimit: 3 })).toEqual({ files: ['main.py'], capped: false, unreadable: [] })
+    // The check is asked per folder below the top, before the folder is opened; a folder it names is never opened.
+    const opened: string[] = []
+    const asked: string[] = []
+    const got = await walkFolder(dir, {
+      keep: all,
+      hasMarker: async (d) => {
+        asked.push(d)
+        return d.endsWith('env')
+      },
+      opendir: async (d) => {
+        opened.push(d)
+        return opendir(d)
+      }
+    })
+    expect(got.files).toEqual(['main.py'])
+    expect(asked).toEqual([join(dir, 'env')])
+    expect(opened).toEqual([dir])
+  })
+
+  it('never enters the folders the watcher skips: nested checkouts (.worktrees, .claude/worktrees) and tool caches', async () => {
+    await put('a.ts')
+    await put('.worktrees/feat/src/a.ts')
+    await put('.claude/worktrees/x/src/a.ts')
+    await put('.claude/settings.ts')
+    await put('worktrees/b.ts')
+    await put('web/.svelte-kit/out.js')
+    await put('py/.ruff_cache/c.py')
+    expect((await walkFolder(dir, { keep: all })).files).toEqual(['a.ts', '.claude/settings.ts', 'worktrees/b.ts'])
+  })
+
   it('leaves out what the ignored matcher (the root .gitignore) names, folders and files', async () => {
     await put('a.ts')
     await put('gen/out.ts')
@@ -73,6 +113,15 @@ describe('folderWalk: the files of a folder outside git', () => {
     await put('src/b.generated.ts')
     const ignored = parseRootIgnore('gen/\n*.generated.ts\n')
     expect((await walkFolder(dir, { keep: all, ignored })).files).toEqual(['a.ts', 'src/b.ts'])
+  })
+
+  it('a file re-included under a folder the .gitignore leaves out stays out, as in git: the folder is never entered', async () => {
+    await put('gen/keep.ts')
+    await put('gen/other.ts')
+    await put('logs/a.log')
+    await put('logs/keep.log')
+    const ignored = parseRootIgnore('/gen/\n!/gen/keep.ts\n*.log\n!keep.log\n')
+    expect((await walkFolder(dir, { keep: all, ignored })).files).toEqual(['logs/keep.log'])
   })
 
   it('sets apart file names it cannot read (U+FFFD) that keep accepts, and never enters such a folder', async () => {

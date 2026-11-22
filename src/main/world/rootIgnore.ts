@@ -3,9 +3,11 @@
 //
 // Supported, as git reads them: blank lines and # comments; a name or glob (* and ?) with no slash, matching at any
 // depth; a trailing / for folders only; a leading or inner / anchoring the pattern to the folder; a leading **/
-// (matches at any depth) and a trailing /** (the folder itself).
-// Not supported, and left out (the line is skipped): ! negation, ** anywhere else, [] character classes, backslash
-// escapes; nor are .gitignore files further down, .git/info/exclude or the user's global excludes read.
+// (matches at any depth) and a trailing /** (the folder itself); a leading ! re-including what an earlier line left
+// out, the last line that matches deciding. As in git, a file re-included inside a folder that is left out stays out:
+// the walk never enters that folder.
+// Not supported, and left out (the line is skipped): ** anywhere else, [] character classes, backslash escapes (so
+// \! and \# lines too); nor are .gitignore files further down, .git/info/exclude or the user's global excludes read.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -16,6 +18,8 @@ interface Rule {
   segs: RegExp[]
   anchored: boolean
   dirOnly: boolean
+  /** A ! line: a match re-includes. */
+  negated: boolean
 }
 
 const segment = (glob: string): RegExp =>
@@ -23,7 +27,9 @@ const segment = (glob: string): RegExp =>
 
 function rule(line: string): Rule | null {
   let p = line.replace(/\s+$/, '')
-  if (p === '' || p.startsWith('#') || p.startsWith('!') || /[[\\]/.test(p)) return null
+  if (p === '' || p.startsWith('#') || /[[\\]/.test(p)) return null
+  const negated = p.startsWith('!')
+  if (negated) p = p.slice(1)
   let floating = false
   if (p.startsWith('**/')) {
     floating = true
@@ -45,7 +51,7 @@ function rule(line: string): Rule | null {
   const lead = p.startsWith('/')
   if (lead) p = p.slice(1)
   anchored = !floating && (anchored || lead || p.includes('/'))
-  return { segs: p.split('/').map(segment), anchored, dirOnly }
+  return { segs: p.split('/').map(segment), anchored, dirOnly, negated }
 }
 
 function matches(r: Rule, rel: string, isDir: boolean): boolean {
@@ -59,7 +65,11 @@ function matches(r: Rule, rel: string, isDir: boolean): boolean {
 /** The matcher for a .gitignore's text. */
 export function parseRootIgnore(text: string): IgnoreMatcher {
   const rules = text.split(/\r?\n/).map(rule).filter((r): r is Rule => r !== null)
-  return (rel, isDir) => rules.some((r) => matches(r, rel, isDir))
+  return (rel, isDir) => {
+    let ignored = false
+    for (const r of rules) if (matches(r, rel, isDir)) ignored = !r.negated
+    return ignored
+  }
 }
 
 /** The matcher for `root`'s own .gitignore; undefined when it has none, or it cannot be read. */
