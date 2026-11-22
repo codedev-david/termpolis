@@ -414,8 +414,13 @@ test.describe.serial('Lumopolis in the real app', () => {
     // And the page's side: its own 10 ms timer's lateness and its long tasks (50 ms or more of its own script or
     // layout), so a slow last leg shows whether the page's thread was busy with its own work or not run at all.
     await page.evaluate(() => {
-      const s = { lag: [] as number[][], long: [] as number[][], frames: [] as { t: number; d: number; render: number; scripts: [string, number][] }[], stop: () => {} }
+      const s = { lag: [] as number[][], long: [] as number[][], frames: [] as { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[], raf: [] as number[][], stop: () => {} }
       ;(window as unknown as { __pageDiag: typeof s }).__pageDiag = s
+      // The page's frames as requestAnimationFrame runs them: how often the page gets to paint.
+      let lastRaf = performance.now()
+      let rafId = 0
+      const onRaf = (now: number): void => { s.raf.push([now, now - lastRaf]); lastRaf = now; rafId = requestAnimationFrame(onRaf) }
+      rafId = requestAnimationFrame(onRaf)
       let last = performance.now()
       const timer = setInterval(() => { const now = performance.now(); s.lag.push([now, now - last - 10]); last = now }, 10)
       let obs: PerformanceObserver | null = null
@@ -428,13 +433,13 @@ test.describe.serial('Lumopolis in the real app', () => {
       let frameObs: PerformanceObserver | null = null
       try {
         frameObs = new PerformanceObserver((list) => {
-          for (const e of list.getEntries() as unknown as { startTime: number; duration: number; renderStart: number; scripts?: { invoker?: string; sourceURL?: string; duration: number }[] }[]) {
-            s.frames.push({ t: e.startTime, d: e.duration, render: e.renderStart ? e.startTime + e.duration - e.renderStart : 0, scripts: (e.scripts ?? []).map((x) => [`${x.invoker ?? '?'} ${(x.sourceURL ?? '').split('/').pop()}`, x.duration]) })
+          for (const e of list.getEntries() as unknown as { startTime: number; duration: number; renderStart: number; blockingDuration?: number; scripts?: { invoker?: string; sourceURL?: string; duration: number }[] }[]) {
+            s.frames.push({ t: e.startTime, d: e.duration, render: e.renderStart ? e.startTime + e.duration - e.renderStart : 0, blocking: e.blockingDuration ?? -1, scripts: (e.scripts ?? []).map((x) => [`${x.invoker ?? '?'} ${(x.sourceURL ?? '').split('/').pop()}`, x.duration]) })
           }
         })
         frameObs.observe({ type: 'long-animation-frame', buffered: false })
       } catch { frameObs = null }
-      s.stop = () => { clearInterval(timer); obs?.disconnect(); frameObs?.disconnect() }
+      s.stop = () => { clearInterval(timer); cancelAnimationFrame(rafId); obs?.disconnect(); frameObs?.disconnect() }
     })
     // It also stamps, in main, each typed letter's arrival (a second terminal:write listener, run after the real
     // one) and each terminal:data message as it leaves for the page, so every key's echo splits into page to main,
@@ -453,8 +458,17 @@ test.describe.serial('Lumopolis in the real app', () => {
       let last = Date.now()
       const lagTimer = setInterval(() => { const now = Date.now(); s.lag.push([now, now - last - 10]); last = now }, 10)
       eapp.getAppMetrics()
+      // The whole machine's busy share (all processes, not only Electron's) from the cores' own counters.
+      type Cpu = { times: { user: number; nice: number; sys: number; idle: number; irq: number } }
+      const os = (process as unknown as { getBuiltinModule?: (m: string) => { cpus: () => Cpu[] } | undefined }).getBuiltinModule?.('os')
+      const ticks = (): [number, number] => (os ? os.cpus() : []).reduce<[number, number]>((a, c) => { const t = c.times; return [a[0] + t.idle, a[1] + t.user + t.nice + t.sys + t.idle + t.irq] }, [0, 0])
+      let prevTicks = ticks()
       const cpuTimer = setInterval(() => {
-        s.cpu.push({ t: Date.now(), p: eapp.getAppMetrics().map((m) => ({ k: m.name ? `${m.type}:${m.name}` : m.type, c: m.cpu.percentCPUUsage })) })
+        const now = ticks()
+        const total = now[1] - prevTicks[1]
+        const machine = os && total > 0 ? 100 * (1 - (now[0] - prevTicks[0]) / total) * os.cpus().length : -1
+        prevTicks = now
+        s.cpu.push({ t: Date.now(), p: [...eapp.getAppMetrics().map((m) => ({ k: m.name ? `${m.type}:${m.name}` : m.type, c: m.cpu.percentCPUUsage })), { k: 'machine', c: machine }] })
       }, 250)
       s.stop = () => { clearInterval(lagTimer); clearInterval(cpuTimer); ipcMain.removeListener('terminal:write', onWrite); wc.send = send }
     })
@@ -512,9 +526,9 @@ test.describe.serial('Lumopolis in the real app', () => {
       return { lag: s.lag, cpu: s.cpu, writes: s.writes, out: s.out }
     })
     const pageDiag = await page.evaluate(() => {
-      const s = (window as unknown as { __pageDiag: { lag: number[][]; long: number[][]; frames: { t: number; d: number; render: number; scripts: [string, number][] }[]; stop: () => void } }).__pageDiag
+      const s = (window as unknown as { __pageDiag: { lag: number[][]; long: number[][]; frames: { t: number; d: number; render: number; blocking: number; scripts: [string, number][] }[]; raf: number[][]; stop: () => void } }).__pageDiag
       s.stop()
-      return { lag: s.lag, long: s.long, frames: s.frames }
+      return { lag: s.lag, long: s.long, frames: s.frames, raf: s.raf }
     })
     const pageIn = (t: number): boolean => r.runs.some((w) => t >= w.start && t < w.end)
     const longOf = (during: boolean): string => {
@@ -527,7 +541,7 @@ test.describe.serial('Lumopolis in the real app', () => {
       const by: Record<string, number> = {}
       for (const x of xs) for (const [k, d] of x.scripts) by[k] = (by[k] ?? 0) + d
       const top = Object.entries(by).sort((p, q) => q[1] - p[1]).slice(0, 4).map(([k, d]) => `${k} ${d.toFixed(0)} ms`).join(', ')
-      return `${xs.length} long frames, ${xs.reduce((a, x) => a + x.d, 0).toFixed(0)} ms in all (rendering ${xs.reduce((a, x) => a + x.render, 0).toFixed(0)} ms), longest ${Math.max(...xs.map((x) => x.d)).toFixed(0)} ms; scripts ${top || 'none'}`
+      return `${xs.length} long frames, ${xs.reduce((a, x) => a + x.d, 0).toFixed(0)} ms in all (rendering ${xs.reduce((a, x) => a + x.render, 0).toFixed(0)} ms, blocking ${xs.reduce((a, x) => a + x.blocking, 0).toFixed(0)} ms), longest ${Math.max(...xs.map((x) => x.d)).toFixed(0)} ms; scripts ${top || 'none'}`
     }
     // The page's clock as epoch ms: timeOrigin + now(), corrected by its offset from Date.now() at the end.
     const { origin, cores } = await page.evaluate(() => ({ origin: Date.now() - performance.now(), cores: navigator.hardwareConcurrency }))
@@ -540,10 +554,11 @@ test.describe.serial('Lumopolis in the real app', () => {
     const cpuOf = (during: boolean): string => {
       const rows = diag.cpu.filter((x) => inRun(x.t - 125) === during)
       const sum: Record<string, number> = {}
-      for (const x of rows) for (const q of x.p) sum[q.k] = (sum[q.k] ?? 0) + q.c
+      let machine = 0
+      for (const x of rows) for (const q of x.p) { if (q.k === 'machine') machine += q.c; else sum[q.k] = (sum[q.k] ?? 0) + q.c }
       const total = Object.values(sum).reduce((a, b) => a + b, 0) / Math.max(1, rows.length)
       const top = Object.entries(sum).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, c]) => `${k} ${(c / Math.max(1, rows.length)).toFixed(0)}%`).join(', ')
-      return `${rows.length} samples, total ${total.toFixed(0)}% (${top})`
+      return `${rows.length} samples, total ${total.toFixed(0)}% (${top}); whole machine ${(machine / Math.max(1, rows.length)).toFixed(0)}% of ${cores * 100}%`
     }
     // Each key pressed after the hooks went in, in order, to the next letter main received, then to the first
     // terminal:data after that write that holds a letter, then to the page seeing its echo.
@@ -571,6 +586,13 @@ test.describe.serial('Lumopolis in the real app', () => {
     }
     console.log(`[typing while compiling, stages] during compiles ${stageOf(true)}; with none running ${stageOf(false)}`)
     const compileMs = r.runs.reduce((a, w) => a + (w.end - w.start), 0)
+    const rafOf = (during: boolean): string => {
+      const xs = pageDiag.raf.filter((x) => pageIn(x[0]) === during).map((x) => x[1])
+      if (!xs.length) return 'no frames'
+      const span = pageDiag.raf.filter((x) => pageIn(x[0]) === during).reduce((a, x) => a + x[1], 0)
+      return `${xs.length} frames (${(1000 * xs.length / Math.max(1, span)).toFixed(0)} a second), gap ${lagOf(xs)}`
+    }
+    console.log(`[typing while compiling, frames] page frames during compiles ${rafOf(true)}; with none running ${rafOf(false)}`)
     console.log(`[typing while compiling, page] page timer lateness during compiles ${lagOf(pageDiag.lag.filter((x) => pageIn(x[0])).map((x) => x[1]))}, with none running ${lagOf(pageDiag.lag.filter((x) => !pageIn(x[0])).map((x) => x[1]))}; during ${compileMs.toFixed(0)} ms of compiles ${longOf(true)}; with none running ${longOf(false)}; during compiles ${framesOf(true)}; with none running ${framesOf(false)}`)
     console.log(`[typing while compiling, main] ${cores} cores; main timer lateness during compiles ${lagOf(diag.lag.filter((x) => inRun(x[0])).map((x) => x[1]))}, with none running ${lagOf(diag.lag.filter((x) => !inRun(x[0])).map((x) => x[1]))}; Electron CPU during compiles ${cpuOf(true)}; with none running ${cpuOf(false)}`)
     expect(r.compiling, 'the compiles were still running after 60 s of typing').toBe(false)
