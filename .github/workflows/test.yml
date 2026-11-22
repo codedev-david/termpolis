@@ -774,6 +774,31 @@ jobs:
       - name: Fix spawn-helper permissions (macOS)
         run: |
           find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
+      # Diagnostic, to be removed: which folders Spotlight indexes on this runner (the test's own temp userData,
+      # where a real Mac keeps the app's worlds, a .noindex twin, Caches, the workspace), each fed a world-like
+      # JSON file rewritten as a compile does (temp file, then rename), and what it indexed in the last 30 min.
+      - name: Spotlight probe (macOS runner, diagnostic)
+        run: |
+          set +e
+          tok="tpmd$(date +%s)$RANDOM"
+          tmp_root="${TMPDIR:-/tmp}"
+          locs=("${tmp_root%/}/termpolis-world-ud-probe" "$HOME/Library/Application Support/TermpolisProbe" "$HOME/Library/Application Support/TermpolisProbe.noindex" "$HOME/Library/Caches/TermpolisProbe" "$GITHUB_WORKSPACE/test-results/mdprobe")
+          i=0
+          for d in "${locs[@]}"; do
+            i=$((i+1)); mkdir -p "$d/world"; f="$d/world/${tok}n$i.json"
+            for k in $(seq 1 20); do printf '{"probe":"%sc%s","k":%s}' "$tok" "$i" "$k" > "$f.tmp"; mv "$f.tmp" "$f"; done
+          done
+          sleep 90
+          i=0
+          for d in "${locs[@]}"; do
+            i=$((i+1))
+            echo "spotlight probe: $d -> found by name $(mdfind -name "${tok}n$i" | wc -l | tr -d ' '), by content $(mdfind "${tok}c$i" | wc -l | tr -d ' ')"
+          done
+          echo "spotlight probe: items under TMPDIR in the index: $(mdfind -count -onlyin "$tmp_root" 'kMDItemFSName == "*"')"
+          echo "spotlight probe: items changed in the last 30 min, by folder:"
+          mdfind 'kMDItemFSContentChangeDate >= $time.now(-1800)' | awk -F/ '{print "/"$2"/"$3"/"$4"/"$5"/"$6}' | sort | uniq -c | sort -rn | head -25
+          rm -rf "${locs[@]}"
+          true
       # A fresh macOS runner spends the whole job indexing its disk for Spotlight (mds_stores, mds and the
       # mdworkers measured at most of a core of the 3), and the specs' own projects and worlds feed it more.
       # The typing e2e then waits for CPU the app is not using, so indexing is off for these specs.
