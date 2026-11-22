@@ -413,7 +413,9 @@ vi.mock('fs', () => {
     mkdirSync: H.mkdirSync, appendFileSync: vi.fn(),
     renameSync: vi.fn(), unlinkSync: vi.fn(), watch: vi.fn(),
     // index.ts reads fs.promises as it loads (the world export's file operations), so the mock carries it too.
-    promises: { readFile: vi.fn(), writeFile: vi.fn(), rename: vi.fn(), unlink: vi.fn(), stat: vi.fn(), readdir: vi.fn() },
+    // readdir answers an empty folder, as the real one does for a folder with nothing in it: the first terminal's sweep of
+    // leftover integration temp files (terminalSpawnPrep.ts) lists the data folder through it.
+    promises: { readFile: vi.fn(), writeFile: vi.fn(), rename: vi.fn(), unlink: vi.fn(), stat: vi.fn(), readdir: vi.fn(async () => []) },
   }
   return { ...impl, default: impl }
 })

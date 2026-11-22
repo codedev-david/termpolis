@@ -775,6 +775,25 @@ describe('leftover temp files are swept', () => {
     expect(await sweepStaleIntegrationTemps(join(root, 'not made yet'), now)).toEqual([]) // no folders: nothing, no throw
   })
 
+  it('a folder listing that is not a list skips that folder, and the sweep still resolves with what the other folders gave', async () => {
+    const { sweepStaleIntegrationTemps, STALE_TEMP_MS } = await import('../../src/main/terminalSpawnPrep')
+    const fs = require('fs') as typeof import('fs')
+    const root = mkdtempSync(join(H.root, 'sweep-odd-'))
+    mkdirSync(join(root, 'termpolis-zsh'))
+    const now = Date.now()
+    const stale = join(root, 'termpolis-zsh', '.zshenv.42.3.x1y2z3.tmp')
+    writeFileSync(stale, 'x')
+    const t = new Date(now - STALE_TEMP_MS - 60_000)
+    utimesSync(stale, t, t)
+    const real = fs.promises.readdir
+    const spy = vi.spyOn(fs.promises, 'readdir').mockImplementation(((dir: string, ...rest: unknown[]) =>
+      dir === root ? Promise.resolve(undefined) : (real as (...a: unknown[]) => unknown)(dir, ...rest)) as typeof fs.promises.readdir)
+    try {
+      expect(await sweepStaleIntegrationTemps(root, now)).toEqual([stale])
+    } finally { spy.mockRestore() }
+    expect(existsSync(stale)).toBe(false)
+  })
+
   it('the first prepare of the run starts the sweep of the data folder, once', async () => {
     const { integrationTempSweep } = await import('../../src/main/terminalSpawnPrep')
     const sweep = integrationTempSweep()

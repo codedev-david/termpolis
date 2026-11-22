@@ -215,9 +215,10 @@ export async function sweepStaleIntegrationTemps(root: string, now: number = Dat
   }
   const removed: string[] = []
   for (const [dir, bases] of basesByDir) {
-    let names: string[]
+    let names: unknown
     try { names = await fsp.readdir(dir) } catch { continue } // not made yet
-    for (const name of names) {
+    if (!Array.isArray(names)) continue // not a listing: nothing here to sweep, and the sweep still never rejects
+    for (const name of names as string[]) {
       if (!bases.some((b) => isTempOf(name, b))) continue
       const p = join(dir, name)
       try {
