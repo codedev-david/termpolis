@@ -694,7 +694,8 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     layout,
     runtimeNames,
     layers: { plan: [] },
-    labelTokens: labels.tokens
+    labelTokens: labels.tokens,
+    ...(input.snap.filesCapped ? { filesCapped: input.snap.filesCapped } : {})
   }
   // Annotations are merged by item id before the plan is laid over, so a recompile never loses one.
   const merged = deps.annotations ? mergeAnnotations(doc, await deps.annotations()) : doc

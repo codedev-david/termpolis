@@ -284,6 +284,12 @@ describe('compileWorld', () => {
     expect(third.layout.positions['x-codex']).toEqual(first.layout.positions['x-codex'])
   })
 
+  it('copies a capped folder walk to doc.filesCapped, so the pane can say only the first files are shown', async () => {
+    const capped = await compileWorld({ snap: { ...snapOf(FIXTURE), filesCapped: 20000 }, projectKey: 'demo', head: HEAD, previous: null }, mkDeps(FIXTURE))
+    expect(capped.filesCapped).toBe(20000)
+    expect('filesCapped' in (await compileFixture())).toBe(false)
+  })
+
   it('copies labels.tokens to doc.labelTokens, and an incremental run reports only its own calls', async () => {
     const reply = JSON.stringify({ buildings: {} })
     const llm = vi.fn(async (_prompt: string) => reply)

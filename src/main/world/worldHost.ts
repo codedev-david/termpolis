@@ -22,7 +22,7 @@ import { cardText } from './cardText'
 import type { Claim, Evidence, Proposal, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotations, type AnnotationStore } from './annotations'
 import { compileWorld, compileWorldStaged, createRecompileScheduler, type CompileDeps, type StagedInput } from './compile'
-import { snapshotFromFiles } from './fileSnapshot'
+import { snapshotFromFiles, type FileListing } from './fileSnapshot'
 import type { StageCache } from './stageCache'
 import type { TestRun } from './testStatus'
 import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
@@ -385,8 +385,8 @@ function proposalPlan(p: Proposal): NonNullable<WorldReadResult['plan']>['propos
 export interface WorldHostDeps {
   /** A plain compile (tests); without it the host compiles with the stage cache (compileWorldStaged). */
   compile?: typeof compileWorld
-  /** Lists a folder's files for snapshotFromFiles (default: `git ls-files`). */
-  listFiles?: (root: string) => Promise<string[]>
+  /** Lists a folder's files for snapshotFromFiles (default: listSourceFiles, git's listing or a walk). */
+  listFiles?: (root: string) => Promise<FileListing>
   createStore?: (dir: string) => WorldStore
   /** The annotation store for a userData folder (default: annotations.ts's). */
   createAnnotations?: (dir: string) => AnnotationStore

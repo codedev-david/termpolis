@@ -68,7 +68,12 @@ export const DEFAULT_MAX_BUILDINGS = 60
 /** Clusters in one district merge while w(X,Y) / (2|X||Y|) is above this (w counts directed imports). */
 export const MERGE_DENSITY = 0.35
 
-const IGNORED_DIRS = new Set(['node_modules', 'dist', 'out', 'build', 'vendor'])
+const IGNORED_DIRS = new Set([
+  'node_modules', 'dist', 'out', 'build', 'vendor',
+  '.venv', 'venv', '__pycache__', 'target', '.next', 'coverage', 'bower_components'
+])
+/** Minified and bundled files: generated, not written by a person. */
+const IGNORED_SUFFIXES = ['.min.js', '.min.css', '.bundle.js']
 const ENTRY_PROCESSES = new Set(['main', 'renderer', 'preload'])
 const ENTRY_NAMES = new Set(['index', 'main'])
 /** The OS process a seed folder's code runs in when that differs from its name: Electron loads a
@@ -110,9 +115,9 @@ export function slug(s: string): string {
     .replace(/^-|-$/g, '')
 }
 
-/** True for files under node_modules/dist/out/build/vendor folders, and minified bundles. */
+/** True for files under dependency, virtual-environment, cache and build output folders, and minified or bundled files. */
 export function isIgnored(path: string): boolean {
-  return path.endsWith('.min.js') || path.split('/').slice(0, -1).some((seg) => IGNORED_DIRS.has(seg))
+  return IGNORED_SUFFIXES.some((end) => path.endsWith(end)) || path.split('/').slice(0, -1).some((seg) => IGNORED_DIRS.has(seg))
 }
 
 const dirOf = (p: string): string => p.slice(0, Math.max(0, p.lastIndexOf('/')))

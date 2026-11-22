@@ -87,6 +87,15 @@ describe('isIgnored', () => {
       expect(isIgnored(p)).toBe(false)
     }
   })
+
+  it('ignores virtual environments, Python caches, Rust and Next.js output, coverage, bower and bundled css or js', () => {
+    for (const p of ['.venv/lib/site.py', 'venv/lib/x.py', 'app/__pycache__/m.py', 'target/debug/main.rs', '.next/server/page.js', 'coverage/lcov-report/a.js', 'bower_components/jq/jq.js', 'web/site.min.css', 'web/app.bundle.js']) {
+      expect(isIgnored(p)).toBe(true)
+    }
+    for (const p of ['src/target.ts', 'src/venv.py', 'src/coverage.ts', 'web/site.css', 'web/bundle.js', 'web/app.bundle.ts']) {
+      expect(isIgnored(p)).toBe(false)
+    }
+  })
 })
 
 describe('nameStem', () => {

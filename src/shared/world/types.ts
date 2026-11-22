@@ -88,6 +88,8 @@ export interface WorldDoc {
   layers: { plan: Proposal[]; live?: unknown }       // plan authoring arrives in 2.x; live in §5.11
   /** Estimated tokens the last labelling run spent on model calls (cached replies cost none). Absent on older worlds. */
   labelTokens?: number
+  /** The world maps a folder walk that stopped at its cap: how many files it listed. Absent when every file was listed. */
+  filesCapped?: number
 }
 export type WorldAction =
   | { type: 'focus'; ids: string[] } | { type: 'highlight'; ids: string[] }

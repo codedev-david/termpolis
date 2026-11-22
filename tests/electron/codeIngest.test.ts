@@ -188,6 +188,48 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
     }
   })
 
+  it('lists untracked files the ignore files allow, and names outside ASCII as written', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root })
+      fs.writeFileSync(path.join(root, '.gitignore'), 'skipped/\n')
+      fs.writeFileSync(path.join(root, 'tracked.ts'), 'export const a = 1\n')
+      execFileSync('git', ['add', '-A'], { cwd: root })
+      fs.writeFileSync(path.join(root, 'new.ts'), 'export const b = 1\n')
+      fs.writeFileSync(path.join(root, 'café.ts'), 'export const c = 1\n')
+      fs.mkdirSync(path.join(root, 'skipped'))
+      fs.writeFileSync(path.join(root, 'skipped', 'x.ts'), 'export const d = 1\n')
+      const rel = (await discoverRepoFiles(root)).map((f) => path.relative(root, f).split(path.sep).join('/')).sort()
+      expect(rel).toEqual(['.gitignore', 'café.ts', 'new.ts', 'tracked.ts'])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('recurses into submodules: their files are listed, the submodule folder itself is not', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-sub-'))
+    const git = (cwd: string, ...args: string[]): void => {
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'protocol.file.allow=always', ...args], { cwd, stdio: 'ignore' })
+    }
+    try {
+      const lib = path.join(base, 'lib')
+      fs.mkdirSync(lib)
+      git(lib, 'init', '-q')
+      fs.writeFileSync(path.join(lib, 'util.ts'), 'export const u = 1\n')
+      git(lib, 'add', '-A')
+      git(lib, 'commit', '-q', '-m', 'lib')
+      const root = path.join(base, 'app')
+      fs.mkdirSync(root)
+      git(root, 'init', '-q')
+      fs.writeFileSync(path.join(root, 'main.ts'), 'export const m = 1\n')
+      git(root, 'submodule', 'add', '-q', lib, 'libs/shared')
+      const rel = (await discoverRepoFiles(root)).map((f) => path.relative(root, f).split(path.sep).join('/')).sort()
+      expect(rel).toEqual(['.gitmodules', 'libs/shared/util.ts', 'main.ts'])
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  })
+
   it('indexes a tiny git repo end-to-end and never indexes .env', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'code-ingest-'))
     try {

@@ -68,6 +68,18 @@ describe('validateWorld', () => {
     }
   })
 
+  it('filesCapped is optional: absent loads, a whole count is kept, junk is dropped', () => {
+    const none = validateWorld(fresh())
+    expect(none.ok && 'filesCapped' in none.doc).toBe(false)
+    const kept = validateWorld({ ...fresh(), filesCapped: 20000 })
+    expect(kept.ok && kept.doc.filesCapped).toBe(20000)
+    for (const junk of ['20000', -1, 1.5, Number.NaN, null]) {
+      const r = validateWorld({ ...fresh(), filesCapped: junk })
+      expect(r.ok).toBe(true)
+      expect(r.ok && 'filesCapped' in r.doc).toBe(false)
+    }
+  })
+
   it('labelTokens is optional: absent loads, a number is kept, junk is dropped', () => {
     const none = validateWorld(fresh())
     expect(none.ok && 'labelTokens' in none.doc).toBe(false)

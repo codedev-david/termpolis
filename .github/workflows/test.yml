@@ -403,6 +403,7 @@ jobs:
             !test-results/export-fixture/
           if-no-files-found: ignore
           retention-days: 7
+          overwrite: true
 
   # The Windows installer, updating over a running Termpolis the way the in-app updater does.
   # build/installer.nsh replaces electron-builder's "is the app running" check, which ran
@@ -556,6 +557,7 @@ jobs:
           name: playwright-traces-full-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
+          overwrite: true
       # The Lumopolis screenshots and video (e2e/world-platform.spec.ts, its 2D run, e2e/world-visual.spec.ts), kept
       # two weeks, as lumopolis-shots-linux-shard<N> from each shard that ran one of them. Not merged into one
       # artifact: the merge action can't overwrite, so a re-run of a failed shard would fail on the merged name.
@@ -637,6 +639,7 @@ jobs:
           name: playwright-traces-windows-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
+          overwrite: true
 
   # macOS e2e smoke: Darwin runner exercising the core boot + first-run
   # flows. e2e-full above is Linux-only, so this is the sole Darwin coverage —
@@ -729,6 +732,7 @@ jobs:
           name: playwright-traces-macos
           path: test-results/
           retention-days: 7
+          overwrite: true
 
   # Lumopolis on macOS: every world spec (e2e/world*.spec.ts), where e2e-smoke-macos runs only the export. Linux
   # runs them in e2e-full and Windows in e2e-windows. e2e/world-platform.spec.ts records the renderer (WebGL on

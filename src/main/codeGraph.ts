@@ -666,6 +666,8 @@ export interface GraphSnapshot {
   symbols: SymbolHit[]
   callEdges: CodeGraphEdge[]
   fileImports: Record<string, string[]>
+  /** Set when the files come from a folder walk that stopped at its cap: how many files it listed. */
+  filesCapped?: number
 }
 
 const slashed = (p: string): string => p.replace(/\\/g, '/')

@@ -791,6 +791,16 @@ describe('WorldView', () => {
     expect(list).toBeTruthy()
   })
 
+  it('a world of a capped folder walk says it shows only the first files, and the note goes when the world is not capped', async () => {
+    const b = bridge({ worldGet: vi.fn(async () => ok({ ...minimal(), filesCapped: 20000 })) })
+    await mount()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Showing the first 20,000 files in this folder.')
+    b.api.worldGet.mockResolvedValueOnce(ok({ ...minimal(), generatedAt: 61 }))
+    await b.updated({ root: '/repo', projectKey: 'k' })
+    await settle()
+    expect(screen.queryByTestId('world-notice')).toBeNull()
+  })
+
   it('Re-layout asks for confirmation then calls worldRelayout', async () => {
     const relaid = { ...minimal(), generatedAt: 99 }
     const run = deferred<Res<WorldDoc>>()

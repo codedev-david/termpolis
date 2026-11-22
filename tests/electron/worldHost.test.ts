@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import {
   captureExec,
   gitListFiles,
+  insideGitRepo,
+  listSourceFiles,
   LIST_TIMEOUT_MS,
   MAX_LIST_BYTES,
   MAX_SNAPSHOT_FILE_CHARS,
@@ -42,7 +44,7 @@ import {
   type WorldHostRequest,
   type WorldHostResponse
 } from '../../src/main/world/worldHost'
-import { CANCELLED_MESSAGE, CLONE_MARKER, CLONE_TIMEOUT_MS, cloneKey, safetyFlags, TIMEOUT_MESSAGE, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
+import { CANCELLED_MESSAGE, CLONE_MARKER, CLONE_TIMEOUT_MS, cloneKey, NO_GIT_MESSAGE, safetyFlags, TIMEOUT_MESSAGE, type CloneResult, type LoginRun } from '../../src/main/world/gitSource'
 import { TOKEN_EMPTY_MESSAGE, TOKEN_FORMAT_MESSAGE, TOKEN_REJECTED_MESSAGE } from '../../src/shared/world/repoAccess'
 import type { AnnotationStore } from '../../src/main/world/annotations'
 import { createWorldStore, type WorldStore } from '../../src/main/world/worldStore'
@@ -2201,10 +2203,11 @@ describe('fileSnapshot', () => {
     expect(r).toMatchObject({ kind: 'result', id: 1, ok: true })
     expect((r as { result: GraphSnapshot }).result).toEqual({
       root: repo.replace(/\\/g, '/'),
-      files: ['src/a.ts', 'src/b.ts'],
+      // An untracked file is listed too: a person sees it in the folder.
+      files: ['src/a.ts', 'src/b.ts', 'src/untracked.ts'],
       symbols: [],
       callEdges: [],
-      fileImports: { 'src/a.ts': ['./b'], 'src/b.ts': [] }
+      fileImports: { 'src/a.ts': ['./b'], 'src/b.ts': [], 'src/untracked.ts': [] }
     })
     // Not a string, or empty: refused.
     await h.send({ kind: 'call', id: 2, fn: 'snapshotFromFiles', args: [42] })
@@ -2277,31 +2280,98 @@ describe('fileSnapshot', () => {
       }
     })
     expect(failing.files).toEqual([])
+    // Except git missing from a repository: that is said, not mapped as an empty world.
+    await expect(snapshotFromFiles('/r', { read, listFiles: async () => { throw new Error(NO_GIT_MESSAGE) } })).rejects.toThrow(NO_GIT_MESSAGE)
+    // A listing object: a capped walk records how many files it listed; an uncapped one adds nothing.
+    const capped = await snapshotFromFiles('/r', { read, listFiles: async () => ({ files: ['src/a.ts', 'src/b.ts', 'README.md'], capped: true }) })
+    expect(capped).toMatchObject({ files: ['src/a.ts', 'src/b.ts'], filesCapped: 3 })
+    const whole = await snapshotFromFiles('/r', { read, listFiles: async () => ({ files: ['src/a.ts'], capped: false }) })
+    expect('filesCapped' in whole).toBe(false)
   })
 
-  it('gitListFiles runs git by its full path with the clone safety flags, and lists nothing on failure or with no git', async () => {
+  it('listSourceFiles asks git inside a repository, and walks a plain folder or one git refuses', async () => {
+    const walk = vi.fn(async () => ({ files: ['w.ts'], capped: true }))
+    const git = vi.fn(async (): Promise<string[] | null> => ['g.ts'])
+    expect(await listSourceFiles('/r', { inRepo: async () => true, git, walk })).toEqual({ files: ['g.ts'], capped: false })
+    expect(walk).not.toHaveBeenCalled()
+    expect(await listSourceFiles('/r', { inRepo: async () => false, git, walk })).toEqual({ files: ['w.ts'], capped: true })
+    expect(git).toHaveBeenCalledTimes(1)
+    git.mockResolvedValueOnce(null)
+    expect(await listSourceFiles('/r', { inRepo: async () => true, git, walk })).toEqual({ files: ['w.ts'], capped: true })
+    // The defaults: a real plain folder is walked, keeping only source files and skipping dependency folders.
+    const plain = join(dir, 'plain-walk')
+    await mkdir(join(plain, 'src'), { recursive: true })
+    await mkdir(join(plain, 'node_modules', 'p'), { recursive: true })
+    await writeFile(join(plain, 'src', 'a.ts'), 'export const a = 1\n')
+    await writeFile(join(plain, 'notes.txt'), 'notes\n')
+    await writeFile(join(plain, 'node_modules', 'p', 'i.js'), 'x\n')
+    expect(await listSourceFiles(plain)).toEqual({ files: ['src/a.ts'], capped: false })
+  })
+
+  it('insideGitRepo looks for .git in the folder and every folder above it', async () => {
+    const seen: string[] = []
+    const at = (hit: string | null) => async (p: string): Promise<boolean> => {
+      seen.push(p.replace(/\\/g, '/'))
+      return hit !== null && p.replace(/\\/g, '/').endsWith(hit)
+    }
+    expect(await insideGitRepo(join(dir, 'a', 'b'), at('/a/.git'))).toBe(true)
+    expect(seen).toHaveLength(2)
+    expect(seen[0].endsWith('/a/b/.git')).toBe(true)
+    expect(seen[1].endsWith('/a/.git')).toBe(true)
+    seen.length = 0
+    expect(await insideGitRepo(join(dir, 'a'), at(null))).toBe(false)
+    expect(seen.length).toBeGreaterThan(1)
+    // The default checks the disk: a .git file (a worktree or submodule) counts as well as a folder.
+    const wt = join(dir, 'wt')
+    await mkdir(join(wt, 'src'), { recursive: true })
+    await writeFile(join(wt, '.git'), 'gitdir: elsewhere\n')
+    expect(await insideGitRepo(join(wt, 'src'))).toBe(true)
+  })
+
+  it('gitListFiles runs git by its full path with the clone safety flags: tracked and untracked files, submodules recursed', async () => {
     const calls: { cmd: string; args: string[]; opts: { timeout: number; maxBytes: number } }[] = []
+    const replies: CaptureResult[] = []
     const exec: CaptureFn = async (cmd, args, opts) => {
       calls.push({ cmd, args, opts })
-      return { code: 0, stdout: 'src/a.ts\0src/b c.ts\0', missing: false }
+      return replies.shift() ?? { code: 0, stdout: 'src/a.ts\0src/b c.ts\0src/café.ts\0', missing: false }
     }
     const git = async (): Promise<string | null> => '/usr/bin/git'
-    expect(await gitListFiles('/r', exec, false, git)).toEqual(['src/a.ts', 'src/b c.ts'])
+    const noSub = async (): Promise<boolean> => false
+    expect(await gitListFiles('/r', exec, false, git, noSub)).toEqual(['src/a.ts', 'src/b c.ts', 'src/café.ts'])
     expect(calls.map((c) => c.cmd)).toEqual(['/usr/bin/git'])
-    expect(calls[0].args).toEqual([...safetyFlags(false), '-C', '/r', 'ls-files', '-z'])
+    expect(calls[0].args).toEqual([...safetyFlags(false), '-c', 'core.quotepath=false', '-C', '/r', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'])
     expect(calls[0].opts).toEqual({ timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
-    expect(await gitListFiles('/r', async () => ({ code: 128, stdout: 'x', missing: false }), true, git)).toEqual([])
-    expect(await gitListFiles('/r', async () => ({ code: 1, stdout: '', missing: true }), true, git)).toEqual([])
-    // No git, or a git inside the folder being listed: nothing starts.
-    for (const bin of [null, '/r/git', '/r/tools/git.exe']) {
-      calls.length = 0
-      expect(await gitListFiles('/r', exec, false, async () => bin)).toEqual([])
+    // With submodules, a second listing recurses into them; the gitlink entry for the folder goes.
+    calls.length = 0
+    replies.push({ code: 0, stdout: 'libs/shared\0main.ts\0', missing: false }, { code: 0, stdout: 'libs/shared/u.ts\0main.ts\0', missing: false })
+    expect(await gitListFiles('/r', exec, true, git, async () => true)).toEqual(['libs/shared/u.ts', 'main.ts'])
+    expect(calls[1].args).toEqual([...safetyFlags(true), '-c', 'core.quotepath=false', '-C', '/r', 'ls-files', '-z', '--cached', '--recurse-submodules'])
+    // A submodule listing that fails leaves the repository's own files.
+    replies.push({ code: 0, stdout: 'libs/shared\0main.ts\0', missing: false }, { code: 1, stdout: '', missing: false })
+    expect(await gitListFiles('/r', exec, true, git, async () => true)).toEqual(['libs/shared', 'main.ts'])
+    // git ran and refused (not a repository after all, an owner it does not trust): null, so the caller walks.
+    expect(await gitListFiles('/r', async () => ({ code: 128, stdout: 'x', missing: false }), true, git, noSub)).toBeNull()
+    // No git: said plainly.
+    await expect(gitListFiles('/r', async () => ({ code: 1, stdout: '', missing: true }), true, git, noSub)).rejects.toThrow(NO_GIT_MESSAGE)
+    calls.length = 0
+    await expect(gitListFiles('/r', exec, false, async () => null, noSub)).rejects.toThrow(NO_GIT_MESSAGE)
+    expect(calls).toHaveLength(0)
+    // A git inside the folder being listed: nothing starts, nothing is listed.
+    for (const bin of ['/r/git', '/r/tools/git.exe']) {
+      expect(await gitListFiles('/r', exec, false, async () => bin, noSub)).toEqual([])
       expect(calls).toHaveLength(0)
     }
-    // The default looks git up for this process and never asks for the bare name.
+    // The defaults look git up for this process (never the bare name) and look for .gitmodules on disk.
+    const repo = join(dir, 'with-modules')
+    await mkdir(repo, { recursive: true })
+    await writeFile(join(repo, '.gitmodules'), '')
+    calls.length = 0
+    await gitListFiles(repo, exec)
+    expect(calls).toHaveLength(2)
+    expect(calls.every((c) => c.cmd !== 'git' && /[\\/]git(\.exe)?$/i.test(c.cmd))).toBe(true)
     calls.length = 0
     await gitListFiles('/nowhere-' + Date.now(), exec)
-    expect(calls.every((c) => c.cmd !== 'git' && /[\\/]git(\.exe)?$/i.test(c.cmd))).toBe(true)
+    expect(calls).toHaveLength(1)
   })
 
   it('captureExec collects stdout, drops the git path variables, runs with no login, and fails on a timeout, too much output or a missing program', async () => {
