@@ -91,9 +91,19 @@ describe('folderWalk: the files of a folder outside git', () => {
     expect(await walkFolder(dir, { keep: (rel) => rel !== 'a.ts', cap: 2 })).toEqual({ files: ['b.ts', 'c.ts'], capped: false, unreadable: [] })
   })
 
-  it('stops after the entry limit, as capped, so a folder of millions of entries ends', async () => {
+  it('stops after the entry limit, as capped, so a folder of millions of entries ends: it keeps the first entries the folder lists, sorted', async () => {
+    // The folder is streamed, so the entries inside the limit are the first ones the file system hands back: sorted on
+    // NTFS, hash or creation order on ext4 and APFS. Scripted here in an unsorted order...
+    const listed = ['d.ts', 'b.ts', 'c.ts', 'a.ts']
+    async function* inOrder(): AsyncGenerator<Dirent> {
+      for (const n of listed) yield fileEnt(n)
+    }
+    expect(await walkFolder(dir, { keep: all, entryLimit: 2, opendir: async () => inOrder() })).toEqual({ files: ['b.ts', 'd.ts'], capped: true, unreadable: [] })
+    // ...and on the real disk, in whatever order this file system lists the folder.
     for (const n of ['a', 'b', 'c', 'd']) await put(`${n}.ts`)
-    expect(await walkFolder(dir, { keep: all, entryLimit: 2 })).toEqual({ files: ['a.ts', 'b.ts'], capped: true, unreadable: [] })
+    const osOrder: string[] = []
+    for await (const ent of await opendir(dir)) osOrder.push(ent.name)
+    expect(await walkFolder(dir, { keep: all, entryLimit: 2 })).toEqual({ files: osOrder.slice(0, 2).sort(), capped: true, unreadable: [] })
   })
 
   it('streams a folder: past the entry limit it reads no further entry of it', async () => {

@@ -3,7 +3,8 @@
 // can point anywhere on the computer); the skip folders (repoFileList.ts SKIP_DIRS: version control, dependencies,
 // build output) and virtual environments (a folder holding pyvenv.cfg) are never entered; what the folder's own
 // .gitignore names (rootIgnore.ts, handed in as `ignored`) is left out. Each folder is read as a stream (opendir), so
-// the entry limit holds inside one folder of millions of entries too.
+// the entry limit holds inside one folder of millions of entries too; past it, the entries kept are the first ones the
+// file system lists (sorted on NTFS, hash or creation order on ext4 and APFS), each folder's share sorted by name.
 import type { Dirent } from 'node:fs'
 import { opendir as fsOpendir } from 'node:fs/promises'
 import { join } from 'node:path'
