@@ -261,6 +261,8 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
       git(root, 'submodule', 'add', '-q', lib, 'libs/shared')
       const rel = (await discoverRepoFiles(root)).map((f) => path.relative(root, f).split(path.sep).join('/')).sort()
       expect(rel).toEqual(['.gitmodules', 'libs/shared/util.ts', 'main.ts'])
+      // The submodule joins the nested list the file watcher keeps, so an edit inside it refreshes the map.
+      expect(repoListingNotes(root)?.nested).toEqual(['libs/shared'])
     } finally {
       fs.rmSync(base, { recursive: true, force: true })
     }
@@ -334,6 +336,16 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
       expect(writes.filter((w) => w.includes('ONLY_ONCE'))).toHaveLength(1)
       // The world host's listing (the same shared code, its own git spawns) maps it once too.
       expect((await snapshotFromFiles(root, { read: (p) => fs.promises.readFile(p, 'utf8') })).files).toEqual(['src/app.ts'])
+      // A .git file that cannot be read is left to git, which still knows the worktree.
+      const realRead = fs.promises.readFile
+      const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(((p: fs.PathLike, ...rest: unknown[]) =>
+        String(p).endsWith('.git') ? Promise.reject(new Error('unreadable')) : (realRead as (...a: unknown[]) => Promise<unknown>)(p, ...rest)) as typeof fs.promises.readFile)
+      try {
+        expect(relTo(root, await discoverRepoFiles(root))).toEqual(['src/app.ts'])
+        expect(spy.mock.calls.some((c) => String(c[0]).endsWith('.git'))).toBe(true)
+      } finally {
+        spy.mockRestore()
+      }
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

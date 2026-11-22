@@ -22,7 +22,7 @@
 
 import { promises as fsp, type Dirent } from 'fs'
 import { join } from 'path'
-import { createIgnoreFilter, createRunGate, makeNameRule } from './watchGuard'
+import { CASE_FOLDING_PLATFORMS, createIgnoreFilter, createRunGate, makeNameRule } from './watchGuard'
 import { scopedRecursiveWatch, CODE_SKIP_NAMES, type ScopedFsWatchFn } from './scopedWatch'
 
 export interface RepoWatcher {
@@ -55,7 +55,9 @@ export interface WatchDeps {
   listSources?: (absDir: string) => Promise<string[]>
   /** The nested repositories (relative, slash-separated) the last listing mapped: their edits refresh the map as the
    *  root's do, instead of being dropped as another tree's. Asked when the watch starts, when a nested repository is
-   *  learned, and on every run; applied only when it changed. Without it, every nested repository stays out. */
+   *  learned, at the start of every run and again when it is done (a full re-sweep relists); applied only when it
+   *  changed. A nested repository learned that it does not hold (a fresh clone) asks for one full re-sweep, once per
+   *  folder, so its listing can map it. Without it, every nested repository stays out. */
   nestedKept?: () => Iterable<string>
 }
 
@@ -158,21 +160,38 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
     return reindex(mass ? [] : [...found])
   }
   let keptSig = ''
-  /** Re-reads the nested repositories the listing mapped and hands them to the filter when they changed. */
-  const refreshKept = (): void => {
-    if (!deps.nestedKept) return
+  const foldCase = CASE_FOLDING_PLATFORMS.has(process.platform)
+  const keyOf = (dir: string): string => (foldCase ? dir.toLowerCase() : dir)
+  let keptKeys: ReadonlySet<string> = new Set()
+  /** Re-reads the nested repositories the listing mapped and hands them to the filter when they changed. False when
+   *  there is no list to read. */
+  const refreshKept = (): boolean => {
+    if (!deps.nestedKept) return false
     let dirs: string[]
     try {
       dirs = [...deps.nestedKept()].sort()
     } catch {
-      return // best effort: what the filter already keeps stays as it was
+      return false // best effort: what the filter already keeps stays as it was
     }
     const sig = dirs.join('\n')
-    if (sig === keptSig) return
+    if (sig === keptSig) return true
     keptSig = sig
+    keptKeys = new Set(dirs.map(keyOf))
     filter.setKeep(dirs)
+    return true
   }
-  const filter = createIgnoreFilter({ root, names: EXTRA_IGNORED, probeNested: deps.probeNested, onLearn: refreshKept })
+  /** Nested repositories a re-sweep was already asked for: one each, however often they are learned again. */
+  const resweepAsked = new Set<string>()
+  let resweep = false
+  const onLearn = (dir: string): void => {
+    if (!refreshKept()) return
+    const key = keyOf(dir)
+    if (keptKeys.has(key) || resweepAsked.has(key)) return
+    resweepAsked.add(key)
+    resweep = true
+    gate.note()
+  }
+  const filter = createIgnoreFilter({ root, names: EXTRA_IGNORED, probeNested: deps.probeNested, onLearn })
   refreshKept()
   const gate = createRunGate({
     mode: 'trailing',
@@ -185,13 +204,23 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
     log: deps.log,
     run: () => {
       refreshKept()
-      const files = overflowed ? [] : [...changed]
-      const names = overflowed ? [] : [...appeared]
+      const all = overflowed || resweep
+      const files = all ? [] : [...changed]
+      const names = all ? [] : [...appeared]
       changed.clear()
       appeared.clear()
       overflowed = false
-      if (names.length > 0 && deps.listSources) return listThenReindex(files, names, deps.listSources)
-      return reindex(files)
+      resweep = false
+      const done = names.length > 0 && deps.listSources ? listThenReindex(files, names, deps.listSources) : reindex(files)
+      // A full re-sweep relists the repository: what it now maps is kept from the next event on, not the next run.
+      if (done instanceof Promise) {
+        return done.then(
+          (got) => { refreshKept(); return got },
+          (err: unknown) => { refreshKept(); throw err },
+        )
+      }
+      refreshKept()
+      return done
     },
   })
   try {

@@ -2,12 +2,13 @@
 // as a ZIP, say) still names its build output and caches there, so the walk leaves them out as git would.
 //
 // Supported, as git reads them: blank lines and # comments; a name or glob (* and ?) with no slash, matching at any
-// depth; a trailing / for folders only; a leading or inner / anchoring the pattern to the folder; a leading **/
-// (matches at any depth) and a trailing /** (the folder itself); a leading ! re-including what an earlier line left
-// out, the last line that matches deciding. As in git, a file re-included inside a folder that is left out stays out:
-// the walk never enters that folder.
-// Not supported, and left out (the line is skipped): ** anywhere else, [] character classes, backslash escapes (so
-// \! and \# lines too); nor are .gitignore files further down, .git/info/exclude or the user's global excludes read.
+// depth; a trailing / for folders only; a leading or inner / anchoring the pattern to the folder; ** as a whole part
+// of the path: a leading **/ (any depth), an inner /**/ (zero or more folders), a trailing /** (everything inside the
+// folder, not the folder itself) and a lone ** (everything); a leading ! re-including what an earlier line left out,
+// the last line that matches deciding. As in git, a file re-included inside a folder that is left out stays out: the
+// walk never enters that folder.
+// Not supported, and left out (the line is skipped): [] character classes and backslash escapes (so \! and \# lines
+// too); nor are .gitignore files further down, .git/info/exclude or the user's global excludes read.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -15,51 +16,38 @@ import { join } from 'node:path'
 export type IgnoreMatcher = (rel: string, isDir: boolean) => boolean
 
 interface Rule {
-  segs: RegExp[]
-  anchored: boolean
+  /** The whole folder-relative path must match. */
+  re: RegExp
   dirOnly: boolean
   /** A ! line: a match re-includes. */
   negated: boolean
 }
 
-const segment = (glob: string): RegExp =>
-  new RegExp(`^${glob.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`)
+const glob = (part: string): string =>
+  part.replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*+/g, '[^/]*').replace(/\?/g, '[^/]')
 
 function rule(line: string): Rule | null {
   let p = line.replace(/\s+$/, '')
   if (p === '' || p.startsWith('#') || /[[\\]/.test(p)) return null
   const negated = p.startsWith('!')
   if (negated) p = p.slice(1)
-  let floating = false
-  if (p.startsWith('**/')) {
-    floating = true
-    p = p.slice(3)
-  }
   let dirOnly = false
-  // foo/** holds a slash, so it is anchored like any pattern with one.
-  let anchored = false
-  if (p.endsWith('/**')) {
-    dirOnly = true
-    anchored = true
-    p = p.slice(0, -3)
-  }
   if (p.endsWith('/')) {
     dirOnly = true
     p = p.slice(0, -1)
   }
-  if (p.includes('**') || p === '') return null
-  const lead = p.startsWith('/')
-  if (lead) p = p.slice(1)
-  anchored = !floating && (anchored || lead || p.includes('/'))
-  return { segs: p.split('/').map(segment), anchored, dirOnly, negated }
-}
-
-function matches(r: Rule, rel: string, isDir: boolean): boolean {
-  if (r.dirOnly && !isDir) return false
-  const parts = rel.split('/')
-  if (r.anchored ? parts.length !== r.segs.length : parts.length < r.segs.length) return false
-  const from = parts.length - r.segs.length
-  return r.segs.every((re, i) => re.test(parts[from + i]))
+  // A slash anywhere but the end anchors the pattern to the folder; without one it matches at any depth.
+  if (p.startsWith('/')) p = p.slice(1)
+  else if (!p.includes('/')) p = `**/${p}`
+  const parts = p.split('/').filter((part, i, all) => !(part === '**' && all[i - 1] === '**'))
+  if (parts.some((part) => part === '')) return null
+  let re = ''
+  parts.forEach((part, i) => {
+    const last = i === parts.length - 1
+    if (part === '**') re += i === 0 ? (last ? '.*' : '(?:.*/)?') : last ? '/.+' : '(?:/.+)?'
+    else re += (i > 0 && !(i === 1 && parts[0] === '**') ? '/' : '') + glob(part)
+  })
+  return { re: new RegExp(`^${re}$`), dirOnly, negated }
 }
 
 /** The matcher for a .gitignore's text. */
@@ -67,7 +55,7 @@ export function parseRootIgnore(text: string): IgnoreMatcher {
   const rules = text.split(/\r?\n/).map(rule).filter((r): r is Rule => r !== null)
   return (rel, isDir) => {
     let ignored = false
-    for (const r of rules) if (matches(r, rel, isDir)) ignored = !r.negated
+    for (const r of rules) if ((isDir || !r.dirOnly) && r.re.test(rel)) ignored = !r.negated
     return ignored
   }
 }

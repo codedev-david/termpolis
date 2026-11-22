@@ -239,7 +239,7 @@ describe('repoFileList: listRepo, the whole listing of a repository', () => {
     expect(await listRepo('/r', { git, exists: existsIn(['/r/.git', '/r/.gitmodules']) })).toEqual({
       files: ['.gitmodules', 'libs/shared/x.ts', 'src/a.ts', 'src/new.ts'],
       unreadable: ['libs/shared/w�.ts', 't�.ts'],
-      nestedCapped: false, nested: []
+      nestedCapped: false, nested: ['libs/shared']
     })
   })
 
@@ -258,7 +258,7 @@ describe('repoFileList: listRepo, the whole listing of a repository', () => {
       'top /r/services': '/r\n',
       'sub /r/services': z('a.ts', 'lib/x.ts')
     })
-    expect(await listRepo('/r/services', { git, exists: existsIn(['/r/.gitmodules']) })).toEqual({ files: ['a.ts', 'lib/x.ts'], unreadable: [], nestedCapped: false, nested: [] })
+    expect(await listRepo('/r/services', { git, exists: existsIn(['/r/.gitmodules']) })).toEqual({ files: ['a.ts', 'lib/x.ts'], unreadable: [], nestedCapped: false, nested: ['lib'] })
   })
 
   it('a subfolder of a repository without submodules runs no submodule listing; nor does a failed top lookup', async () => {
@@ -361,6 +361,79 @@ describe('repoFileList: listRepo, the whole listing of a repository', () => {
     expect(got?.nested).toEqual(['sdk'])
   })
 
+  it('a submodule inside a nested repository joins the nested list under its path; one not checked out (no files of its own) does not', async () => {
+    const git = fakeGit({
+      'ls /r': z('H a.ts', 'H .gitmodules', 'H empty', '? sdk/'),
+      'sub /r': z('.gitmodules', 'a.ts'),
+      'ls /r/sdk': z('H .gitmodules', 'H s.ts', 'H vendor/lib'),
+      'sub /r/sdk': z('.gitmodules', 's.ts', 'vendor/lib/v.ts')
+    })
+    const got = await listRepo('/r', { git, exists: existsIn(['/r/.git', '/r/.gitmodules', '/r/sdk/.git', '/r/sdk/.gitmodules']) })
+    expect(got?.files).toEqual(['.gitmodules', 'a.ts', 'empty', 'sdk/.gitmodules', 'sdk/s.ts', 'sdk/vendor/lib/v.ts'])
+    expect(got?.nested).toEqual(['sdk', 'sdk/vendor/lib'])
+  })
+
+  describe('a worktree is told apart without git as well (fails closed)', () => {
+    // A worktree's .git file names its git folder: <the repository's .git>/worktrees/<name>.
+    const texts = (files: Record<string, string>) => async (p: string): Promise<string | null> => (p in files ? files[p] : null)
+
+    it('git refuses rev-parse: a .git file pointing into the root repository\'s .git/worktrees is still skipped, absolute or relative', async () => {
+      const git = fakeGit({
+        'ls /r': z('H a.ts', '? wt/', '? rel/', '? other/'),
+        'common /r/other': null,
+        'common /r': null,
+        'ls /r/other': z('H o.ts')
+      })
+      const readText = texts({
+        '/r/wt/.git': 'gitdir: /r/.git/worktrees/wt\n',
+        '/r/rel/.git': 'gitdir: ../.git/worktrees/rel\r\n',
+        '/r/other/.git': 'gitdir: /elsewhere/.git/worktrees/other\n'
+      })
+      const exists = existsIn(['/r/.git', '/r/wt/.git', '/r/rel/.git', '/r/other/.git'])
+      const isFile = existsIn(['/r/wt/.git', '/r/rel/.git', '/r/other/.git'])
+      const got = await listRepo('/r', { git, exists, isFile, readText, platform: 'linux' })
+      expect(got?.files).toEqual(['a.ts', 'other/o.ts'])
+      expect(got?.nested).toEqual(['other'])
+      // The match needs no git at all.
+      const asked = git.mock.calls.map((c) => c[0][c[0].indexOf('-C') + 1])
+      expect(asked).not.toContain('/r/wt')
+      expect(asked).not.toContain('/r/rel')
+    })
+
+    it('a git too old for --path-format echoes it back: that answer (more than one line, or not absolute) is no answer, and the .git file decides', async () => {
+      const git = fakeGit({
+        'ls /r': z('H a.ts', '? wt/', '? sep/'),
+        'common /r/sep': '--path-format=absolute\n.git\n',
+        'common /r': '.git\n',
+        'ls /r/sep': z('H s.ts')
+      })
+      const readText = texts({ '/r/wt/.git': 'gitdir: /r/.git/worktrees/wt\n', '/r/sep/.git': 'gitdir: /r/sep.git\n' })
+      const got = await listRepo('/r', { git, exists: existsIn(['/r/.git', '/r/wt/.git', '/r/sep/.git']), isFile: existsIn(['/r/wt/.git', '/r/sep/.git']), readText, platform: 'linux' })
+      expect(got?.files).toEqual(['a.ts', 'sep/s.ts'])
+      // An old git's answer never matches another old answer: both are no answer.
+      expect(got?.nested).toEqual(['sep'])
+    })
+
+    it('compares the .git file by the platform: Windows paths, case folded, backslashes and all', async () => {
+      const git = fakeGit({ 'ls C:/R': z('H a.ts', '? wt/'), 'common C:/R/wt': null, 'common C:/R': null, 'ls C:/R/wt': z('H w.ts') })
+      const deps = (platform: NodeJS.Platform) => ({
+        git,
+        exists: existsIn(['C:/R/.git', 'C:/R/wt/.git']),
+        isFile: existsIn(['C:/R/wt/.git']),
+        readText: texts({ 'C:/R/wt/.git': 'gitdir: c:\\r\\.git\\worktrees\\wt\n' }),
+        platform
+      })
+      expect((await listRepo('C:/R', deps('win32')))?.files).toEqual(['a.ts'])
+      expect((await listRepo('C:/R', deps('linux')))?.files).toEqual(['a.ts', 'wt/w.ts'])
+    })
+
+    it('a .git file with no gitdir line, or one that cannot be read, is left to git', async () => {
+      const git = fakeGit({ 'ls /r': z('H a.ts', '? a/', '? b/'), 'common /r/a': null, 'common /r/b': null, 'ls /r/a': z('H x.ts'), 'ls /r/b': z('H y.ts') })
+      const got = await listRepo('/r', { git, exists: existsIn(['/r/.git', '/r/a/.git', '/r/b/.git']), isFile: existsIn(['/r/a/.git', '/r/b/.git']), readText: texts({ '/r/a/.git': 'not a pointer\n' }), platform: 'linux' })
+      expect(got?.files).toEqual(['a.ts', 'a/x.ts', 'b/y.ts'])
+    })
+  })
+
   it('walks a nested repository git refuses as a plain folder, under the shared cap; without a walk it is left out', async () => {
     const answers = { 'ls /r': z('H a.ts', '? refused/', '? sdk/'), 'ls /r/refused': null, 'ls /r/sdk': z('H s.ts') }
     const walk = vi.fn(async () => ({ files: ['w.ts', 'deep/x.ts'], unreadable: ['q\uFFFD.ts'], capped: false }))
@@ -394,6 +467,33 @@ describe('repoFileList: listRepo, the whole listing of a repository', () => {
     expect(got?.nested).toEqual(['a'])
     expect(git).toHaveBeenCalledTimes(2)
     expect(walk).not.toHaveBeenCalled()
+  })
+
+  it('a budget spent exactly, with only worktrees of the repository after it, cuts nothing: no note, and no more git', async () => {
+    const many = (n: number, pre: string): string[] => Array.from({ length: n }, (_, i) => `H ${pre}${String(i).padStart(6, '0')}.ts`)
+    const git = fakeGit({ 'ls /r': z('H a.ts', '? a/', '? wt1/', '? wt2/', '? notrepo/'), 'ls /r/a': z(...many(MAP_FILE_CAP, 'f')) })
+    const readText = async (p: string): Promise<string | null> => (p.startsWith('/r/wt') ? `gitdir: /r/.git/worktrees/${p.split('/')[2]}\n` : null)
+    const got = await listRepo('/r', {
+      git,
+      exists: existsIn(['/r/.git', '/r/a/.git', '/r/wt1/.git', '/r/wt2/.git']),
+      isFile: existsIn(['/r/wt1/.git', '/r/wt2/.git']),
+      readText,
+      platform: 'linux'
+    })
+    expect(got?.nestedCapped).toBe(false)
+    expect(got?.files.length).toBe(1 + MAP_FILE_CAP)
+    expect(git).toHaveBeenCalledTimes(2)
+    // A real repository after the spent budget is still cut, worktree or not before it.
+    const more = fakeGit({ 'ls /r': z('H a.ts', '? a/', '? wt1/', '? z/'), 'ls /r/a': z(...many(MAP_FILE_CAP, 'f')) })
+    const cut = await listRepo('/r', {
+      git: more,
+      exists: existsIn(['/r/.git', '/r/a/.git', '/r/wt1/.git', '/r/z/.git']),
+      isFile: existsIn(['/r/wt1/.git']),
+      readText,
+      platform: 'linux'
+    })
+    expect(cut?.nestedCapped).toBe(true)
+    expect(more).toHaveBeenCalledTimes(2)
   })
 
   it('keeps at most the cap of unreadable names', async () => {

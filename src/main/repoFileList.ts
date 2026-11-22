@@ -3,6 +3,7 @@
 // is handed its git runner), so the world host can import it without reaching the main process's command runners.
 // Every git argument list built here starts with the world host's safety flags (gitLogin.ts safetyFlags: no fsmonitor
 // program, no hooks, no file transport, no symlinks), so neither caller can start git without them.
+import { posix, win32 } from 'node:path'
 import { safetyFlags } from './world/gitLogin'
 
 /** Folders whose code no world shows and no read needs: dependencies, virtual environments, build and test output. */
@@ -190,7 +191,8 @@ export interface RepoListing {
   unreadable: string[]
   /** The nested repositories held more files than MAP_FILE_CAP: some were left out. The repository itself never is. */
   nestedCapped: boolean
-  /** The nested repositories listed (or walked), folder-relative, sorted: a file watcher keeps their edits. */
+  /** The nested repositories listed (or walked) and the submodules recursed, folder-relative, sorted: a file watcher
+   *  keeps their edits. */
   nested: string[]
 }
 
@@ -208,6 +210,9 @@ export interface ListRepoDeps {
   exists: (path: string) => Promise<boolean>
   /** Whether a path is a file (a worktree's `.git` is one). Default: nothing is, so no worktree is looked for. */
   isFile?: (path: string) => Promise<boolean>
+  /** A small file's text (a worktree's `.git` file), or null when it cannot be read. Default: none is, so a worktree
+   *  is told only by git. */
+  readText?: (path: string) => Promise<string | null>
   /** Walks a nested repository git refuses as a plain folder, listing at most `cap` files. Default: it is left out. */
   walk?: (absDir: string, cap: number) => Promise<NestedWalk>
   /** The platform git runs on: its safety flags, and whether paths fold case. Default: this one. */
@@ -252,22 +257,47 @@ interface Ctx {
   common: Map<string, Promise<string | null>>
 }
 
-/** The git folder `dir` shares with its worktrees, as a comparison key; null when git will not say. Asked once. */
+/** One absolute path, as git prints it on any platform (`/x`, `C:/x`, `C:\x`). */
+const ONE_ABSOLUTE_PATH = /^(?:[A-Za-z]:)?[\\/][^\n]*$/
+
+/**
+ * The git folder `dir` shares with its worktrees, as a comparison key; null when git will not say. Asked once. A git
+ * older than 2.31 does not know --path-format and prints it back, with a relative folder: that is no answer either.
+ */
 function commonDir(dir: string, ctx: Ctx): Promise<string | null> {
   let got = ctx.common.get(dir)
   if (got === undefined) {
-    got = ctx.deps.git(commonDirArgs(dir, ctx.isWindows)).then((out) => (out === null || out.trim() === '' ? null : pathKey(out.trim(), ctx.platform)))
+    got = ctx.deps.git(commonDirArgs(dir, ctx.isWindows)).then((out) => {
+      const t = out === null ? '' : out.trim()
+      return ONE_ABSOLUTE_PATH.test(t) ? pathKey(t, ctx.platform) : null
+    })
     ctx.common.set(dir, got)
   }
   return got
 }
 
 /**
+ * Whether the `.git` file at `at` points into the `.git/worktrees` folder of one of the repositories it sits in
+ * (`chain`), read without starting git: `gitdir: <a repository's .git>/worktrees/<name>`, absolute or relative to `at`.
+ */
+async function pointsIntoChain(at: string, chain: readonly string[], ctx: Ctx): Promise<boolean> {
+  const { deps } = ctx
+  if (!deps.readText || !deps.isFile || !(await deps.isFile(`${at}/.git`))) return false
+  const line = /^gitdir:\s*(.+?)\s*$/m.exec((await deps.readText(`${at}/.git`)) ?? '')
+  if (line === null) return false
+  const paths = ctx.platform === 'win32' ? win32 : posix
+  const into = pathKey(paths.dirname(paths.resolve(at, line[1])), ctx.platform)
+  return chain.some((up) => pathKey(paths.resolve(up, '.git', 'worktrees'), ctx.platform) === into)
+}
+
+/**
  * Whether the repository at `at` is a worktree of one of the repositories it sits in (`chain`): its `.git` is a file,
- * and git names the same shared git folder for both. Its files are those repositories' own files again.
+ * pointing into one's `.git/worktrees`, or git names the same shared git folder for both. Its files are those
+ * repositories' own files again.
  */
 async function isOwnWorktree(at: string, chain: readonly string[], ctx: Ctx): Promise<boolean> {
   if (!ctx.deps.isFile || !(await ctx.deps.isFile(`${at}/.git`))) return false
+  if (await pointsIntoChain(at, chain, ctx)) return true
   const mine = await commonDir(at, ctx)
   if (mine === null) return false
   for (const up of chain) if ((await commonDir(up, ctx)) === mine) return true
@@ -301,6 +331,10 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
     }
   }
   let files = mergeListings([...listed.tracked, ...untracked.filter((n) => !n.endsWith('/'))], recursed)
+  // A submodule is a tracked entry (its gitlink) that the recursed listing holds files under.
+  const inRecursed = new Set<string>()
+  for (const r of recursed) for (let at = r.indexOf('/'); at !== -1; at = r.indexOf('/', at + 1)) inRecursed.add(r.slice(0, at))
+  const submodules = listed.tracked.filter((t) => inRecursed.has(t))
   if (depth > 0) {
     if (files.length > ctx.left) {
       ctx.capped = true
@@ -309,14 +343,16 @@ async function collect(root: string, stdout: string, ctx: Ctx, chain: readonly s
     ctx.left -= files.length
   }
   const unreadable = [...listed.unreadableUntracked.filter(keep), ...unreadableTracked]
-  const found: string[] = []
+  const found: string[] = [...submodules]
   if (depth < NESTED_DEPTH) {
     for (const n of nested) {
       const at = `${root}/${n.slice(0, -1)}`
       // git lists a folder holding a repository of its own as one entry; anything else with a trailing slash is not one.
       if (!(await deps.exists(`${at}/.git`))) continue
-      // The budget is spent: no more git is started, and the world says the nested repositories were cut.
+      // The budget is spent: no more git is started, and the world says the nested repositories were cut, unless all
+      // that is left are worktrees of the repository itself (told without git), which add nothing.
       if (ctx.left === 0) {
+        if (await pointsIntoChain(at, [...chain, root], ctx)) continue
         ctx.capped = true
         break
       }

@@ -36,14 +36,22 @@ describe('rootIgnore: the plain patterns of a walked folder\'s own .gitignore', 
     expect(ig('pkg/build', true)).toBe(false)
   })
 
-  it('a leading **/ floats the rest; a trailing /** is the folder itself', () => {
-    const ig = parseRootIgnore('**/fixtures/big\nlogs/**\n')
+  it('** is any number of folders: a leading **/ floats the rest, a trailing /** is everything inside the folder (not the folder), an inner /**/ is zero or more folders, a lone ** is everything', () => {
+    const ig = parseRootIgnore('**/fixtures/big\nlogs/**\na/**/b\n')
     expect(ig('fixtures/big', true)).toBe(true)
     expect(ig('a/b/fixtures/big', false)).toBe(true)
     expect(ig('a/fixtures', true)).toBe(false)
-    expect(ig('logs', true)).toBe(true)
-    expect(ig('logs', false)).toBe(false)
-    expect(ig('a/logs', true)).toBe(false)
+    expect(ig('logs', true)).toBe(false)
+    expect(ig('logs/app.log', false)).toBe(true)
+    expect(ig('logs/deep', true)).toBe(true)
+    expect(ig('a/logs/app.log', false)).toBe(false)
+    expect(ig('a/b', false)).toBe(true)
+    expect(ig('a/x/y/b', true)).toBe(true)
+    expect(ig('a/xb', false)).toBe(false)
+    const every = parseRootIgnore('**\n')
+    expect(every('x', false)).toBe(true)
+    expect(every('d/e/f', true)).toBe(true)
+    expect(parseRootIgnore('**/**/tmp\n')('a/tmp', true)).toBe(true)
   })
 
   it('a leading ! re-includes what an earlier line left out; the last line that matches decides, as in git', () => {
@@ -65,9 +73,9 @@ describe('rootIgnore: the plain patterns of a walked folder\'s own .gitignore', 
     expect(parseRootIgnore('!\n')('a', false)).toBe(false)
   })
 
-  it('leaves out what it does not support: other **, character classes, escapes', () => {
-    const ig = parseRootIgnore('a/**/b\n[ab].js\n\\#lit.py\n\\!bang.ts\n')
-    expect(ig('a/x/b', true)).toBe(false)
+  it('leaves out what it does not support: character classes, escapes, empty parts', () => {
+    const ig = parseRootIgnore('a//b\n[ab].js\n\\#lit.py\n\\!bang.ts\n')
+    expect(ig('a/b', true)).toBe(false)
     expect(ig('a.js', false)).toBe(false)
     expect(ig('#lit.py', false)).toBe(false)
     expect(ig('!bang.ts', false)).toBe(false)

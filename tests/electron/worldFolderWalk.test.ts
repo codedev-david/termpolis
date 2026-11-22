@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { symlinkSync, type Dirent } from 'node:fs'
 import { mkdir, mkdtemp, opendir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -189,4 +190,42 @@ describe('folderWalk: the files of a folder outside git', () => {
       await rm(outside, { recursive: true, force: true })
     }
   })
+})
+
+// What git itself leaves out, for the same files and the same .gitignore: the walk must list exactly what
+// `git ls-files --others --exclude-standard` lists (no global or system config, no global excludes file).
+describe('folderWalk + rootIgnore agree with real git', () => {
+  const files = [
+    'README.md', 'src/a.ts', 'src/keep.ts', 'src/deep/b.ts', 'src/deep/c.md', 'gen/keep.ts', 'gen/other.ts',
+    'gen/sub/keep.ts', 'a/b.ts', 'a/x/y/b.ts', 'docs/deep/n.md', 'logs/app.log', 'logs/keep.log',
+  ]
+  const gitLists = (root: string): string[] => {
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: join(root, '.no-global'), GIT_CONFIG_NOSYSTEM: '1' }
+    const run = (...args: string[]): string =>
+      execFileSync('git', ['-c', `core.excludesFile=${join(root, '.no-excludes')}`, '-c', 'core.quotepath=off', ...args], { cwd: root, env, encoding: 'utf8' })
+    run('init', '-q')
+    return run('ls-files', '-z', '--others', '--exclude-standard').split('\0').filter(Boolean).sort()
+  }
+  const cases: Array<[string, string]> = [
+    ['allowlist: * then !*/ then !src/**', '*\n!*/\n!src/**\n'],
+    ['allowlist: * then !src/ then !src/**', '*\n!src/\n!src/**\n'],
+    ['gen/** then !gen/keep.ts (the folder gen itself is not left out)', 'gen/**\n!gen/keep.ts\n'],
+    ['gen/** then !gen/sub/keep.ts (gen/sub is left out, so its file stays out)', 'gen/**\n!gen/sub/keep.ts\n'],
+    ['*.ts then !src/**/*.ts (a ** in the middle)', '*.ts\n!src/**/*.ts\n'],
+    ['* then !src/** (src itself stays out)', '*\n!src/**\n'],
+    ['src/ then !src/keep.ts (a file under a left-out folder)', 'src/\n!src/keep.ts\n'],
+    ['/a/**/b.ts (zero or more folders)', '/a/**/b.ts\n'],
+    ['**/deep and *.log then !keep.log', '**/deep\n*.log\n!keep.log\n'],
+    ['a lone ** leaves out everything', '**\n'],
+    ['a/** with no other line', 'a/**\n'],
+  ]
+  for (const [name, gitignore] of cases) {
+    it(name, async () => {
+      for (const f of files) await put(f)
+      await writeFile(join(dir, '.gitignore'), gitignore)
+      const expected = gitLists(dir)
+      const walked = await walkFolder(dir, { keep: all, ignored: parseRootIgnore(gitignore) })
+      expect(walked.files.slice().sort()).toEqual(expected)
+    })
+  }
 })

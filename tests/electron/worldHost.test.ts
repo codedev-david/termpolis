@@ -2391,7 +2391,7 @@ describe('fileSnapshot', () => {
     // With submodules, a second listing recurses into them; the gitlink entry for the folder goes.
     calls.length = 0
     replies.push({ code: 0, stdout: 'H libs/shared\0H main.ts\0', missing: false }, { code: 0, stdout: 'libs/shared/u.ts\0main.ts\0', missing: false })
-    expect(await gitListFiles('/r', exec, true, git, has(['/r/.gitmodules']))).toEqual({ files: ['libs/shared/u.ts', 'main.ts'], unreadable: [], nestedCapped: false, nested: [] })
+    expect(await gitListFiles('/r', exec, true, git, has(['/r/.gitmodules']))).toEqual({ files: ['libs/shared/u.ts', 'main.ts'], unreadable: [], nestedCapped: false, nested: ['libs/shared'] })
     expect(calls[1].args).toEqual(lsSubmoduleArgs('/r', true))
     expect(calls[1].args.slice(0, 8)).toEqual(safetyFlags(true))
     // A submodule listing that fails leaves the repository's own files.
@@ -2422,6 +2422,11 @@ describe('fileSnapshot', () => {
     expect(calls.some((c) => c.args.includes('ls-files') && c.args.includes('/r/wt'))).toBe(false)
     expect(calls.map((c) => c.args)).toContainEqual(commonDirArgs('/r/wt', false))
     for (const c of calls) expect(c.args.slice(0, 8)).toEqual(safetyFlags(false))
+    // A .git file read as text that points into our own .git/worktrees tells the worktree without starting git.
+    calls.length = 0
+    const gitdir = async (p: string): Promise<string | null> => (p === '/r/wt/.git' ? 'gitdir: /r/.git/worktrees/wt\n' : null)
+    expect((await gitListFiles('/r', execBy, false, git, hasAll, has(['/r/wt/.git']), walkNested, gitdir))?.files).toEqual(['main.ts', 'refused/w.ts'])
+    expect(calls.map((c) => c.args)).not.toContainEqual(commonDirArgs('/r/wt', false))
     // With the host's own readers (stat for the .git file, the folder walk for a refused repository), on the real disk:
     // the refused repository is walked under the shared cap, by the walk's rules (its own .gitignore, skipped folders).
     const disk = await mkdtemp(join(tmpdir(), 'git-list-refused-'))

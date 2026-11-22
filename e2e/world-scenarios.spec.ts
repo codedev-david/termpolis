@@ -18,6 +18,7 @@
  * into) and nested-repo (a repository inside the folder, listed by its own git).
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
+import { execFileSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -114,7 +115,8 @@ function realKey(p: string): string {
 /**
  * The key the app stores `dir`'s world under, and nothing else: a folder opened as a folder under the folder as the
  * dialog gave it, a project under its repository's top as git spells it (which can differ from `dir`: a long name for
- * an 8.3 temp path). A world saved under the other one is not found, so the check fails.
+ * an 8.3 temp path). A world saved under the other one is not found, so the check fails. The app's own answer is
+ * checked against git run here first, so a wrong top from the app cannot agree with itself.
  */
 async function worldKey(dir: string, asFolder: boolean): Promise<string> {
   if (asFolder) return dir
@@ -122,7 +124,18 @@ async function worldKey(dir: string, asFolder: boolean): Promise<string> {
     (r) => (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string | null }> } }).termpolis.gitFindRoot(r),
     dir
   )
-  return top.success && top.data ? top.data : dir
+  const key = top.success && top.data ? top.data : dir
+  expect(realKey(key), `the app finds ${dir}'s repository top as git does`).toBe(realKey(gitTop(dir)))
+  return key
+}
+
+/** The repository top git itself names for `dir`, run here and not by the app; `dir` when it is in no repository. */
+function gitTop(dir: string): string {
+  try {
+    return execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || dir
+  } catch {
+    return dir
+  }
 }
 
 /** Every building member of the world main stored under `key`; null: no world there yet. */
@@ -155,10 +168,12 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
       if (row.openFolder) {
         await openFromHome(dir)
       } else {
-        // The project path: main maps the folder as a project, then the pane opens on it.
+        // The project path, as the home's Map this project takes it: main maps the repository's top (the spelling
+        // gitFindRoot gives, not the 8.3 temp path) as a project, then the pane opens on the folder.
+        const top = await worldKey(dir, false)
         const mapped = await page.evaluate(
           (r) => (window as unknown as { termpolis: { worldMapProject: (c: string) => Promise<{ success: boolean; error?: string }> } }).termpolis.worldMapProject(r),
-          dir
+          top
         )
         expect(mapped.error ?? '', `world:map-project refused ${row.name}`).toBe('')
         expect(mapped.success).toBe(true)
@@ -170,7 +185,7 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
       await expect.poll(() => members(key), { message: `a world for ${row.name} under ${key}`, timeout: 60_000 }).not.toBeNull()
       const got = (await members(key))!
       // The home lists it as what it was opened as: a folder from Open a folder, a project from world:map-project.
-      expect(await listedKinds(dir), `${row.name} is in the home as a ${row.openFolder ? 'folder' : 'project'}`).toContain(row.openFolder ? 'folder' : 'project')
+      expect(await listedKinds(dir), `${row.name} is in the home once, as a ${row.openFolder ? 'folder' : 'project'}`).toEqual([row.openFolder ? 'folder' : 'project'])
       for (const file of row.parts) expect(got, `${file} is a part of ${row.name}'s world`).toContain(file)
       for (const prefix of row.absent ?? []) {
         expect(got.filter((m) => m.startsWith(prefix)), `nothing under ${prefix} in ${row.name}'s world`).toEqual([])

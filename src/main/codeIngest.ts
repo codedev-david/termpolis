@@ -185,7 +185,8 @@ export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
   const statOf = (p: string): Promise<Stats | null> => fsp.stat(p).then((st) => st, () => null)
   const exists = (p: string): Promise<boolean> => statOf(p).then((st) => st !== null)
   const isFile = (p: string): Promise<boolean> => statOf(p).then((st) => st !== null && st.isFile())
-  const listed = await listRepo(repoRoot, { git, exists, isFile, walk: walkNested })
+  const readText = (p: string): Promise<string | null> => fsp.readFile(p, 'utf8').then((t) => t, () => null)
+  const listed = await listRepo(repoRoot, { git, exists, isFile, readText, walk: walkNested })
   if (listed === null) return []
   listingNotes.set(notesKey(repoRoot), { nestedCapped: listed.nestedCapped, unreadable: listed.unreadable, nested: listed.nested })
   return listed.files.map((rel) => join(repoRoot, rel))
@@ -203,7 +204,8 @@ export interface RepoListingNotes {
   nestedCapped: boolean
   /** Repository-relative names that are not UTF-8 (at most repoFileList's MAP_FILE_CAP). */
   unreadable: string[]
-  /** The nested repositories listed or walked, repository-relative: the file watcher keeps their edits. */
+  /** The nested repositories listed or walked and the submodules recursed, repository-relative: the file watcher
+   *  keeps their edits. */
   nested: string[]
 }
 

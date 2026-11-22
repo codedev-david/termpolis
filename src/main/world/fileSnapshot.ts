@@ -17,7 +17,7 @@ import { isIndexableCodeFile } from '../codeFileFilter'
 import { extractFile, languageForFile } from '../codeGraphExtract'
 import { binInsideFolder, resolveGitBin } from '../binPath'
 import { isIgnoredPath, listRepo, MAP_FILE_CAP, type NestedWalk, type RepoListing } from '../repoFileList'
-import { access, stat } from 'node:fs/promises'
+import { access, readFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { walkFolder, type WalkResult } from './folderWalk'
 import { readRootIgnore } from './rootIgnore'
@@ -55,6 +55,7 @@ export const captureExec: CaptureFn = async (cmd, args, opts) => {
 
 const exists = (p: string): Promise<boolean> => access(p).then(() => true, () => false)
 const isFileOnDisk = (p: string): Promise<boolean> => stat(p).then((st) => st.isFile(), () => false)
+const textOnDisk = (p: string): Promise<string | null> => readFile(p, 'utf8').then((t) => t, () => null)
 
 /**
  * The files git lists under `root`, relative to it, by the code index's own listing (repoFileList.ts listRepo:
@@ -74,7 +75,8 @@ export async function gitListFiles(
   gitBin: () => Promise<string | null> = resolveGitBin,
   has: (path: string) => Promise<boolean> = exists,
   isFile: (path: string) => Promise<boolean> = isFileOnDisk,
-  walk: (absDir: string, cap: number) => Promise<NestedWalk> = walkSources
+  walk: (absDir: string, cap: number) => Promise<NestedWalk> = walkSources,
+  readText: (path: string) => Promise<string | null> = textOnDisk
 ): Promise<RepoListing | null> {
   const bin = await gitBin()
   if (bin === null) throw new Error(NO_GIT_MESSAGE)
@@ -85,7 +87,7 @@ export async function gitListFiles(
     return r.code === 0 ? r.stdout : null
   }
   // isWindows names git's safety flags (the Windows hooks path); folders compare case folded where this platform folds.
-  return listRepo(root, { git, exists: has, isFile, walk, isWindows })
+  return listRepo(root, { git, exists: has, isFile, readText, walk, isWindows })
 }
 
 /** Whether `root` sits in a git repository: a `.git` (folder, or the file a worktree or submodule has) in it or above it. */

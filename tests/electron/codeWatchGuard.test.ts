@@ -107,11 +107,12 @@ describe('codeWatch storm guard', () => {
     const nestedKept = vi.fn(() => kept)
     const h = harness({ nestedKept })
     watchRepo('/repo', h.deps)
-    // Before the first listing lands, a nested repository's edits stay out, as before.
+    // Before the first listing lands, a nested repository's edits stay out; learning it asks for one re-sweep (below).
     h.emit('vendor/lib/.git/index')
     h.emit('vendor/lib/src/a.ts')
     h.flush()
-    expect(h.deps.reindex).not.toHaveBeenCalled()
+    expect(h.deps.reindex).toHaveBeenCalledTimes(1)
+    expect(h.deps.reindex).toHaveBeenLastCalledWith('/repo', [])
     // The listing maps vendor/lib: the next run picks that up, and its edits refresh the map.
     kept = ['vendor/lib']
     h.emit('src/root.ts')
@@ -139,6 +140,63 @@ describe('codeWatch storm guard', () => {
     h.emit('src/root.ts')
     h.flush()
     expect(nestedKept.mock.calls.length).toBeGreaterThan(asked)
+  })
+
+  it('a nested repository the last listing does not map (a fresh clone) asks for one full re-sweep, which relists; the list is read again once it lands, so the first edit inside counts', async () => {
+    let kept: string[] = []
+    let land: () => void = () => {}
+    const reindex = vi.fn((_root: string, files: string[]) =>
+      files.length === 0 ? new Promise<void>((done) => { land = () => { kept = ['vendor/new']; done() } }) : undefined)
+    const h = harness({ nestedKept: () => kept, reindex })
+    watchRepo('/repo', h.deps)
+    h.emit('vendor/new/.git/HEAD')
+    h.flush()
+    expect(reindex).toHaveBeenCalledTimes(1)
+    expect(reindex).toHaveBeenLastCalledWith('/repo', [])
+    // The re-sweep's listing maps the new repository; the watcher reads that the moment the run is done, with no
+    // edit outside it needed first.
+    land()
+    await new Promise((r) => setImmediate(r))
+    h.flush()
+    h.emit('vendor/new/src/a.ts')
+    h.flush()
+    expect(reindex).toHaveBeenLastCalledWith('/repo', ['vendor/new/src/a.ts'])
+    // Asked once per repository: one learned again, or one the listing leaves out on purpose, re-sweeps no more.
+    h.emit('ignored/repo/.git/HEAD')
+    h.flush()
+    expect(reindex).toHaveBeenCalledTimes(3)
+    expect(reindex).toHaveBeenLastCalledWith('/repo', [])
+    land()
+    await new Promise((r) => setImmediate(r))
+    h.flush()
+    h.raw('rename', 'ignored/repo') // forgotten, then learned again
+    h.emit('ignored/repo/.git/index')
+    h.flush()
+    expect(reindex).toHaveBeenCalledTimes(3)
+  })
+
+  it('compares a learned repository with the listing by the platform: case folded on Windows and macOS, as written on Linux', () => {
+    const real = process.platform
+    for (const [platform, sweeps] of [['linux', 1], ['win32', 0], ['darwin', 0]] as const) {
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+      try {
+        const h = harness({ nestedKept: () => ['vendor/new'] })
+        watchRepo('/repo', h.deps)
+        h.emit('Vendor/New/.git/HEAD')
+        h.flush()
+        expect((h.deps.reindex as ReturnType<typeof vi.fn>).mock.calls.length, platform).toBe(sweeps)
+      } finally {
+        Object.defineProperty(process, 'platform', { value: real, configurable: true })
+      }
+    }
+  })
+
+  it('a nested repository learned with no listing to keep it asks for no re-sweep', () => {
+    const h = harness()
+    watchRepo('/repo', h.deps)
+    h.emit('vendor/new/.git/HEAD')
+    h.flush()
+    expect(h.deps.reindex).not.toHaveBeenCalled()
   })
 
   it('a nestedKept that throws is the same as none', () => {
