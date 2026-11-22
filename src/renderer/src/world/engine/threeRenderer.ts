@@ -16,7 +16,7 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, LABEL_MIN_OPACITY, placeLabels, readableOpacity, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
@@ -237,6 +237,8 @@ const DISTRICT_ROW_GAP_EM = 1.5
 const CLOSE_UP_MARGIN = 1.2
 /** The closest a click flies to a building: the prototype's framing distance (28 out, half that up). */
 const CLOSE_UP_MIN = 28 * Math.hypot(1, 0.5)
+/** How far a building's name reaches above its point on screen at scale 1: half its height and the view's inset. */
+const NAME_ROOM_PX = 16
 /**
  * Line and packet sizes grow with the world (scale) up to this, so a big city's lines stay lines:
  * past it, dozens of fat tubes meeting at one building bloom into a white or pink glare.
@@ -1396,9 +1398,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       pts.push([base.x, base.y, base.z], [m.anchor.x, m.anchor.y + 3, m.anchor.z])
     }
     const t: V3 = [target.x, target.y, target.z]
-    const fit = fitDistance(pts, t, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
-    const dist = clamp(fit, CLOSE_UP_MIN, overviewDist * 0.7)
-    return { pos: target.clone().addScaledVector(dir, dist), target }
+    const fitAt = (): number => clamp(fitDistance(pts, t, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN), CLOSE_UP_MIN, overviewDist * 0.7)
+    // Each name is a box on screen over its point: the point its half height (and the inset) higher, at
+    // the distance found, is framed too, so the clicked part's name is never cut at the picture's top.
+    const names = pts.filter((_, i) => i % 2 === 1).map(([x, y, z]): V3 => [x, y, z])
+    const a = areaFor(true)
+    const room = (NAME_ROOM_PX * labelScale / Math.max(1, height - a.top - a.bottom)) * 2 * Math.tan(THREE.MathUtils.degToRad(fitFov()) / 2)
+    const near = fitAt()
+    for (const [x, y, z] of names) pts.push([x, y + room * near, z])
+    return { pos: target.clone().addScaledVector(dir, fitAt()), target }
   }
 
   /** The building or orb standing at a line's end: the nearest one across the ground, if any is that near. */
@@ -1957,16 +1965,53 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     } else if (x + w / 2 < 0 || x - w / 2 > width || y + h / 2 < 0 || y - h / 2 > height) return null
     // A district's name keeps a word's room across from a label on its row, or the two read as one.
     const rowGap = pin ? DISTRICT_ROW_GAP_EM * DISTRICT_FONT_PX * labelScale : 0
-    return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}), ...(keepIn ? { keepIn } : {}), ...(compact ? { compact } : {}), ...(rowGap ? { rowGap } : {}) }
+    // A district's name (pinned) keeps off the buildings where it has a place to: on one it reads as the building's.
+    return { id, x, y, w, h, tier, ...(group === undefined ? {} : { group }), ...(nudge ? { nudge } : {}), ...(keepIn ? { keepIn } : {}), ...(compact ? { compact } : {}), ...(rowGap ? { rowGap, solidFree: true } : {}) }
+  }
+  /** How strongly each name placed this frame reads (labelOpacity), for the frame's opacities. */
+  const opacities = new Map<LabelRec, number>()
+  const nameAt = new THREE.Vector3()
+  /**
+   * How strongly a building's or district's name reads now: in full lit or hovered; else district names from the
+   * overview of any size of world (their fade starts past it), building names a little less with distance, either
+   * times the focus's dimming, at least LABEL_MIN_OPACITY, or null where that leaves it too faint (readableOpacity).
+   */
+  function labelOpacity(l: LabelRec): number | null {
+    if (l.lit || hoverLabels.includes(l)) return 1
+    const d = l.o.getWorldPosition(nameAt).distanceTo(camera.position)
+    const districtFade = Math.max(170, overviewDist * 1.15)
+    return readableOpacity((l.kind === 'district' ? clamp(1.9 - d / districtFade, 0, 1) : clamp(2 - d / overviewDist, 0.55, 1)) * l.dim)
+  }
+  const boxCorner = new THREE.Vector3()
+  /** Each drawn building's and orb's box on screen (its eight corners), left, top, right, bottom; none for one partly behind the camera. */
+  function solidBoxes(): Rect[] {
+    const out: Rect[] = []
+    for (const n of nodes.values()) {
+      if (!n.group.visible) continue
+      n.group.updateWorldMatrix(true, false)
+      const r = n.orb ? ORB_R : FLOOR_W * 0.5
+      let l = Infinity, t = Infinity, rt = -Infinity, b = -Infinity
+      let behind = false
+      for (let k = 0; k < 8; k++) {
+        boxCorner.set(k & 1 ? r : -r, k & 2 ? n.height : 0, k & 4 ? r : -r)
+        n.group.localToWorld(boxCorner).project(camera)
+        if (boxCorner.z < -1 || boxCorner.z > 1) behind = true
+        const x = ((boxCorner.x + 1) / 2) * width
+        const y = ((1 - boxCorner.y) / 2) * height
+        l = Math.min(l, x); rt = Math.max(rt, x); t = Math.min(t, y); b = Math.max(b, y)
+      }
+      if (!behind) out.push([l, t, rt, b])
+    }
+    return out
   }
   function layLabels(): Map<string, Nudge> {
     camera.updateMatrixWorld()
-    const want: { o: CSS2DObject; id: string; tier: number; group?: string; nudge?: boolean | 'vertical'; pin?: boolean | 'edge' }[] = []
+    const want: { o: CSS2DObject; id: string; tier: number; group?: string; nudge?: boolean | 'vertical'; pin?: boolean | 'edge'; rec?: LabelRec }[] = []
     pinned.clear()
     const targets = new Set([hoveredId, selectedId])
     for (const n of nodes.values()) {
       if (floorLabelsShown(tier, n.exploded, targets.has(n.id))) n.floorLabels.forEach((l) => { if (l) want.push({ o: l.o, id: l.key, tier: 0 }) })
-      if (targets.has(n.id) && n.group.visible) for (const l of n.labels) want.push({ o: l.o, id: l.key, tier: 0, nudge: true, pin: 'edge' })
+      if (targets.has(n.id) && n.group.visible) for (const l of n.labels) want.push({ o: l.o, id: l.key, tier: 0, nudge: true, pin: 'edge', rec: l })
     }
     const lit = [...edges.values()].filter((e) => e.focus)
     const near = (e: EdgeRec): number => e.label.getWorldPosition(labelAt).distanceTo(camera.position)
@@ -1978,27 +2023,35 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     named.forEach((n, rank) => {
       if (targets.has(n.id) || !n.group.visible) return
       for (const l of n.labels) {
-        if (l.lit) want.push({ o: l.o, id: l.key, tier: 2, nudge: true })
+        if (l.lit) want.push({ o: l.o, id: l.key, tier: 2, nudge: true, rec: l })
         // A name already on show keeps its place a little past the budget, so a zoom does not flicker it.
-        else if (budget > 0 && (rank < budget || (placed.has(l.key) && rank < budget * 1.25 + 1))) want.push({ o: l.o, id: l.key, tier: 4 })
+        else if (budget > 0 && (rank < budget || (placed.has(l.key) && rank < budget * 1.25 + 1))) want.push({ o: l.o, id: l.key, tier: 4, rec: l })
       }
     })
     // A district's name moves a row up or down before it is dropped (another name sits on its point).
     for (const l of labels) {
-      if (l.kind === 'district') want.push({ o: l.o, id: l.key, tier: 3, nudge: 'vertical', pin: true })
+      if (l.kind === 'district') want.push({ o: l.o, id: l.key, tier: 3, nudge: 'vertical', pin: true, rec: l })
       else if (l.kind === 'proc' && l.o.parent?.visible !== false) want.push({ o: l.o, id: l.key, tier: 3 })
     }
     // Label every line: each line's label may step aside, as a lit line's does, rather than drop on an overlap.
     if (allLabels) for (const e of edges.values()) if (!e.focus) want.push({ o: e.label, id: 'e:' + e.id, tier: 5, nudge: true })
-    measure(want.map((w) => w.o.element))
+    // A name too faint to read (dimmed by the focus, a district name far out) is not drawn, and takes no room.
+    opacities.clear()
+    const legible = want.filter((w) => {
+      if (!w.rec) return true
+      const o = labelOpacity(w.rec)
+      if (o !== null) opacities.set(w.rec, o)
+      return o !== null
+    })
+    measure(legible.map((w) => w.o.element))
     const cands: LabelCandidate[] = []
-    for (const w of want) {
+    for (const w of legible) {
       const c = candidate(w.o, w.id, w.tier, w.group, w.nudge, w.pin)
       // With every line labelled, a line's label shows even when every place it could step to is taken.
       if (c) cands.push(allLabels && w.id.startsWith('e:') ? { ...c, always: true } : c)
     }
     const compactNow = new Set<string>()
-    const room = { bounds: [0, 0, width, height] as const, blocked: blocked() }
+    const room = { bounds: [0, 0, width, height] as const, blocked: blocked(), solid: solidBoxes() }
     placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS }, LABEL_GAP, LABEL_KEEP_GAP, { was: compactShown, now: compactNow }, room)
     compactShown = compactNow
     if (pinned.size === 0) return placed
@@ -2332,7 +2385,6 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // read at the overview and fade a little with distance; the hovered or selected part's and its
     // neighbours' names read in full.
     const shown = layLabels()
-    const districtFade = Math.max(170, overviewDist * 1.15)
     for (const l of labels) {
       l.o.visible = shown.has(l.key)
       if (l.o.visible) nudgeLabel(l.o.element, shown.get(l.key) as Nudge)
@@ -2340,17 +2392,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const subShown = compactShown.has(l.key) ? 'none' : ''
       if (sub && sub.style.display !== subShown) sub.style.display = subShown
       if (!l.o.visible || l.kind === 'floor' || l.kind === 'proc') continue
-      let o = 1
-      if (!l.lit && !hoverLabels.includes(l)) {
-        const d = l.o.getWorldPosition(wp).distanceTo(camera.position)
-        o = (l.kind === 'district' ? clamp(1.9 - d / districtFade, 0, 1) : clamp(2 - d / overviewDist, 0.55, 1)) * l.dim
-      }
-      l.o.element.style.opacity = String(o)
+      l.o.element.style.opacity = String(opacities.get(l) as number) // every name shown was found legible (layLabels)
     }
     for (const e of edges.values()) {
       e.label.visible = shown.has('e:' + e.id)
       if (e.label.visible) nudgeLabel(e.label.element, shown.get('e:' + e.id) as Nudge)
-      if (e.label.visible) e.label.element.style.opacity = String(Math.max(0.35, Math.min(1, 1.8 - e.label.getWorldPosition(wp).distanceTo(camera.position) / 110)))
+      if (e.label.visible) e.label.element.style.opacity = String(Math.max(LABEL_MIN_OPACITY, Math.min(1, 1.8 - e.label.getWorldPosition(wp).distanceTo(camera.position) / 110)))
     }
     batchFrame()
     renderer.info.reset()

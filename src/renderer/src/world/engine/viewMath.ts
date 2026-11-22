@@ -140,9 +140,19 @@ export type Rect = readonly [number, number, number, number]
 /**
  * Where labels may go: inside `bounds` (the view), whole, and clear of every box in `blocked` (the
  * panels drawn over the view, the legend, the ask bar, the card): no label is ever drawn cut off at
- * the view's edge or under a panel.
+ * the view's edge or under a panel. `solid` are the buildings' boxes on screen: a label marked
+ * `solidFree` (a district's name) takes a place off them where it has one, and its own point else.
  */
-export interface LabelRoom { bounds?: Rect; blocked?: readonly Rect[] }
+export interface LabelRoom { bounds?: Rect; blocked?: readonly Rect[]; solid?: readonly Rect[] }
+
+/** Whether a label lies off every box in `rects`. */
+function offAll(rects: readonly Rect[], c: LabelBox): boolean {
+  const l = c.x - c.w / 2
+  const t = c.y - c.h / 2
+  const r = c.x + c.w / 2
+  const b = c.y + c.h / 2
+  return rects.every(([pl, pt, pr, pb]) => r <= pl || l >= pr || b <= pt || t >= pb)
+}
 
 /** Whether a label sits whole inside the room's bounds and off every blocked box. */
 function roomFor(room: LabelRoom, c: LabelBox): boolean {
@@ -152,7 +162,7 @@ function roomFor(room: LabelRoom, c: LabelBox): boolean {
   const b = c.y + c.h / 2
   const [bl, bt, br, bb] = room.bounds ?? [-Infinity, -Infinity, Infinity, Infinity]
   if (l < bl || t < bt || r > br || b > bb) return false
-  return (room.blocked ?? []).every(([pl, pt, pr, pb]) => r <= pl || l >= pr || b <= pt || t >= pb)
+  return offAll(room.blocked ?? [], c)
 }
 
 /**
@@ -167,6 +177,8 @@ export interface LabelCandidate extends LabelBox {
   tier: number; group?: string; nudge?: boolean | 'vertical'; keepIn?: readonly [number, number, number, number]; always?: boolean
   /** A smaller form on the same point (a district's name without its subtitle), tried where the whole label finds no room. */
   compact?: { w: number; h: number }
+  /** Takes the first of its places off the room's `solid` boxes (the buildings) where one is clear; else places as any label. */
+  solidFree?: boolean
 }
 
 /** The labels shown in their compact form: last time's (`was`), and this time's, which placeLabels fills (`now`). */
@@ -175,6 +187,19 @@ export interface CompactForms { was: ReadonlySet<string>; now: Set<string> }
 /** Room a label needs round it to appear, and the room it needs to stay once shown (LABEL_KEEP_GAP). */
 export const LABEL_GAP = 6
 export const LABEL_KEEP_GAP = 1
+
+/**
+ * The faintest a map label is drawn: fainter text reads as a smudge, not a word. A label that would fade below
+ * LABEL_HIDE_BELOW (a name dimmed by the focus, a district name far out) is not drawn at all; one between the two
+ * is drawn at LABEL_MIN_OPACITY.
+ */
+export const LABEL_MIN_OPACITY = 0.6
+export const LABEL_HIDE_BELOW = 0.3
+
+/** How strongly a label of opacity `o` is drawn: at least LABEL_MIN_OPACITY, or null (not drawn) below LABEL_HIDE_BELOW. */
+export function readableOpacity(o: number): number | null {
+  return o < LABEL_HIDE_BELOW ? null : Math.max(LABEL_MIN_OPACITY, o)
+}
 
 /** How far a label moves off its point, in pixels across and down. */
 export type Nudge = readonly [number, number]
@@ -208,7 +233,8 @@ export function placeLabels(
   compact: CompactForms = { was: new Set(), now: new Set() }, room: LabelRoom = {},
 ): Map<string, Nudge> {
   const order = cands.map((c, i) => ({ c, i })).sort((a, b) => a.c.tier - b.c.tier || a.i - b.i)
-  const kept: Array<LabelBox & { c: LabelCandidate }> = []
+  // `off`: placed off the buildings (solidFree), so it grows whole only where the whole label is off them too.
+  const kept: Array<LabelBox & { c: LabelCandidate; off?: boolean }> = []
   const out = new Map<string, Nudge>()
   const used = new Map<string, number>()
   const clear = (box: LabelBox, g: number): boolean => roomFor(room, box) && kept.every((k) => clearOf(k, box, g))
@@ -222,7 +248,7 @@ export function placeLabels(
       const at = out.get(c.id) as Nudge
       const whole = { ...c, x: c.x + at[0], y: c.y + at[1] }
       const g = shown.has(c.id) && !compact.was.has(c.id) ? keepGap : gap
-      if (within(c, at) && roomFor(room, whole) && kept.every((o, j) => j === i || clearOf(o, whole, g))) kept[i] = { ...whole, c }
+      if (within(c, at) && roomFor(room, whole) && (!kept[i].off || offAll(room.solid ?? [], whole)) && kept.every((o, j) => j === i || clearOf(o, whole, g))) kept[i] = { ...kept[i], ...whole }
       else compact.now.add(c.id)
     }
   }
@@ -238,13 +264,16 @@ export function placeLabels(
     if (was) tries.push({ d: was, g: keepGap })
     const steps = c.nudge === 'vertical' ? VERTICAL_NUDGES : c.nudge ? NUDGES : NUDGES.slice(0, 1)
     for (const [ux, uy] of steps) tries.push({ d: [ux * (box.w + gap), uy * (box.h + gap)], g: gap })
-    const fit = tries.find(({ d, g }) => within(box, d) && clear({ ...box, x: box.x + d[0], y: box.y + d[1] }, g))?.d
+    const fits = ({ d, g }: { d: Nudge; g: number }): boolean => within(box, d) && clear({ ...box, x: box.x + d[0], y: box.y + d[1] }, g)
+    // A name kept off the buildings: the first clear place off them all, before any place on one.
+    const off = c.solidFree ? tries.find((t) => fits(t) && offAll(room.solid ?? [], { ...box, x: box.x + t.d[0], y: box.y + t.d[1] }))?.d : undefined
+    const fit = off ?? tries.find(fits)?.d
     // Every place is taken: a label that must show keeps last time's place, or else its own point.
     // Never under a panel or cut off at the view's edge, though.
     const last: Nudge = was ?? [0, 0]
     const at: Nudge | undefined = fit ?? (c.always && roomFor(room, { ...box, x: box.x + last[0], y: box.y + last[1] }) ? last : undefined)
     if (!at) continue
-    kept.push({ ...box, x: box.x + at[0], y: box.y + at[1], c })
+    kept.push({ ...box, x: box.x + at[0], y: box.y + at[1], c, ...(off ? { off: true } : {}) })
     out.set(c.id, at)
     if (c.group !== undefined) used.set(c.group, n + 1)
   }

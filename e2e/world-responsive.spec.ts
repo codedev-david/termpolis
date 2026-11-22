@@ -450,6 +450,18 @@ async function cardOnLegend(): Promise<number> {
   })
 }
 
+/**
+ * The map labels on show drawn fainter than the readable floor (LABEL_MIN_OPACITY in viewMath, 0.6), by text and
+ * opacity. A label is either readable or not drawn: at 1280x800 on macOS a line label and a building name once sat
+ * behind the scene at about 15% contrast. A label at opacity 0 (a floor name put away) is not on show.
+ */
+async function faintLabels(): Promise<string[]> {
+  return page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('.lw-labels > *'))
+    .map((el) => ({ el, cs: getComputedStyle(el) }))
+    .filter(({ cs }) => cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0 && Number(cs.opacity) < 0.6 - 1e-6)
+    .map(({ el, cs }) => `${el.textContent ?? ''} (${cs.opacity})`))
+}
+
 /** Opens the toolbar's More menu when the pane folds it (true), so a folded control can be reached. */
 async function openMore(): Promise<boolean> {
   const more = page.locator('[data-testid="world-more"]')
@@ -551,6 +563,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
       const bar = await toolbarLayout()
       expect.soft(bar.rows, `the toolbar keeps to two rows at ${tag}`).toBeLessThanOrEqual(2)
       expect.soft(bar.closeBeside, `the close button sits beside the toolbar's first row at ${tag}`).toBe(true)
+      expect.soft(await faintLabels(), `no map label is drawn too faint to read at ${tag}`).toEqual([])
       await shoot(`app-world-${name}`)
 
       const toggle = page.locator('[data-testid="world-legend-toggle"]')
@@ -570,6 +583,8 @@ test.describe.serial('Lumopolis at every screen size', () => {
       expect.soft(await openCard(), `a building's card opened at ${tag}`).toBe(true)
       // The card never lies on the legend (at 1280x800 on Linux it once covered most of the Legend button).
       expect.soft(await cardOnLegend(), `the card leaves the legend clear at ${tag}`).toBe(0)
+      // With a part selected the rest is dimmed: names too faint to read are put away, not drawn as a smudge.
+      expect.soft(await faintLabels(), `no map label is drawn too faint to read with the card open at ${tag}`).toEqual([])
       await check(`card at ${tag}`)
       await shoot(`app-card-${name}`)
       await closeCard()

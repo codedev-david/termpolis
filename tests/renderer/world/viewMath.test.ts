@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest'
-import { easeShare, frameStep, MAX_FRAME_DT, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -828,5 +828,69 @@ describe('toleratedPick', () => {
     expect(toleratedPick(null, boxes, 98, 101)).toEqual({ kind: 'node', id: 'm3' })
     expect(toleratedPick(null, boxes, 120, 101)).toBeNull()
     expect(projected).toBe(2)
+  })
+})
+
+describe('placeLabels: names kept off the buildings (solid)', () => {
+  const name = (id: string, x: number, y: number, over: Partial<LabelCandidate> = {}): LabelCandidate => ({ id, x, y, w: 100, h: 20, tier: 3, nudge: 'vertical', solidFree: true, ...over })
+  const none = new Map<string, readonly [number, number]>()
+
+  it("moves a name that would lie on a building's box up or down to a place clear of it", () => {
+    // A building's box on screen right over the name's point; above it (a row up) is clear.
+    const out = placeLabels([name('d', 200, 200)], none, {}, 6, 1, undefined, { solid: [[150, 195, 250, 260]] })
+    expect(out.get('d')).toEqual([0, -26])
+  })
+
+  it('keeps the name on its point where every place it could go meets a building, rather than dropping it', () => {
+    const out = placeLabels([name('d', 200, 200)], none, {}, 6, 1, undefined, { solid: [[0, 0, 400, 400]] })
+    expect(out.get('d')).toEqual([0, 0])
+  })
+
+  it('places a name kept off the buildings on its point where the room names no buildings', () => {
+    expect(placeLabels([name('d', 200, 200)], none, {}, 6, 1, undefined, {}).get('d')).toEqual([0, 0])
+  })
+
+  it('lets a label not marked solidFree lie on a building, and a name clear of the buildings stay on its point', () => {
+    const out = placeLabels([name('chip', 200, 200, { solidFree: false, tier: 0 }), name('d', 200, 40)], none, {}, 6, 1, undefined, { solid: [[150, 150, 250, 260]] })
+    expect(out.get('chip')).toEqual([0, 0])
+    expect(out.get('d')).toEqual([0, 0])
+  })
+
+  it('a solid-free place still keeps clear of the labels already kept and inside its room', () => {
+    // The point and a row down meet the building; a row and two rows up are taken by labels; two rows down is clear of all.
+    const chip = (id: string, y: number): LabelCandidate => name(id, 200, y, { solidFree: false, tier: 0, nudge: undefined })
+    const out = placeLabels(
+      [chip('chip', 174), chip('chip2', 148), name('d', 200, 200)],
+      none, {}, 6, 1, undefined, { solid: [[150, 195, 250, 235]], bounds: [0, 0, 400, 400] },
+    )
+    expect(out.get('d')).toEqual([0, 52])
+  })
+
+  it("grows a name's subtitle only where the whole label stays off the buildings it kept clear of", () => {
+    const compact = { was: new Set<string>(), now: new Set<string>() }
+    // The name alone (20 px) fits above the building; whole (40 px tall, from the same middle) it would reach down onto it.
+    placeLabels([name('d', 200, 100, { h: 40, compact: { w: 100, h: 20 } })], none, {}, 6, 1, compact, { solid: [[150, 112, 250, 200]] })
+    expect([...compact.now]).toEqual(['d'])
+    const roomy = { was: new Set<string>(), now: new Set<string>() }
+    placeLabels([name('d', 200, 100, { h: 40, compact: { w: 100, h: 20 } })], none, {}, 6, 1, roomy, { solid: [[150, 130, 250, 200]] })
+    expect([...roomy.now]).toEqual([])
+    // A name left on a building (no clear place) grows as it did before: it lies on the building either way.
+    const stuck = { was: new Set<string>(), now: new Set<string>() }
+    placeLabels([name('d', 200, 100, { h: 40, compact: { w: 100, h: 20 } })], none, {}, 6, 1, stuck, { solid: [[0, 0, 400, 400]] })
+    expect([...stuck.now]).toEqual([])
+  })
+})
+
+describe('readableOpacity', () => {
+  it('raises a faint label to a readable floor and hides one fainter still, rather than drawing it as a smudge', () => {
+    expect(LABEL_MIN_OPACITY).toBeGreaterThanOrEqual(0.5)
+    expect(LABEL_HIDE_BELOW).toBeLessThan(LABEL_MIN_OPACITY)
+    expect(readableOpacity(1)).toBe(1)
+    expect(readableOpacity(0.8)).toBe(0.8)
+    expect(readableOpacity(LABEL_MIN_OPACITY - 0.05)).toBe(LABEL_MIN_OPACITY)
+    expect(readableOpacity(LABEL_HIDE_BELOW)).toBe(LABEL_MIN_OPACITY)
+    expect(readableOpacity(LABEL_HIDE_BELOW - 0.01)).toBeNull()
+    expect(readableOpacity(0.2)).toBeNull()
+    expect(readableOpacity(0)).toBeNull()
   })
 })

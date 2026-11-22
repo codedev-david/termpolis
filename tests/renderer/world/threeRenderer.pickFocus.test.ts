@@ -7,8 +7,10 @@ import * as THREE from 'three'
 import { createThreeRenderer, type ThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import { focusOpacity } from '../../../src/renderer/src/world/engine/interaction'
+import { LABEL_MIN_OPACITY } from '../../../src/renderer/src/world/engine/viewMath'
+import type { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import {
-  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, floorsOf, labelsOf, orb, sceneOf, smallCity, smallText,
+  atRatio, bldg, boxCanvas, cameraOf, conduit, DEFAULT_OPTS, district, floorsOf, labelsOf, makeHost, orb, sceneOf, smallCity, smallText,
   withHarness, withData, worldOf,
 } from './threeHarness'
 
@@ -318,17 +320,22 @@ describe('threeRenderer focus', () => {
     expect((wireSeam.material as THREE.Material).opacity).toBe(wireBefore) // the pulse sets it, not the focus
     h.frames.step()
     expect((wireSeam.material as THREE.Material).opacity).toBeLessThan(0.12 + 1e-9)
-    // b's name reads at 0.2 at most; a's (lit) in full
-    const name = (id: string): HTMLElement => labelsOf(world, 'bldg').find((l) => l.parent === floorsOf(world, id)[0].parent?.parent)?.element as HTMLElement
-    expect(Number(name('b').style.opacity)).toBeLessThanOrEqual(0.2)
+    // b's name, dimmed to 0.2 by the focus, is too faint to read: it is not drawn at all (F8), and a's (lit) reads in full
+    const label = (id: string): CSS2DObject => labelsOf(world, 'bldg').find((l) => l.parent === floorsOf(world, id)[0].parent?.parent) as CSS2DObject
+    const name = (id: string): HTMLElement => label(id).element
+    expect(label('b').visible).toBe(false)
+    expect(label('a').visible).toBe(true)
     expect(name('a').style.opacity).toBe('1')
+    // no name on show is drawn fainter than the readable floor
+    for (const l of labelsOf(world, 'bldg')) if (l.visible) expect(Number(l.element.style.opacity)).toBeGreaterThanOrEqual(LABEL_MIN_OPACITY)
     // a hovered building's name reads in full, dimmed or not; an unknown id or none hovers nothing
     r.setHovered('b')
     h.frames.step()
+    expect(label('b').visible).toBe(true)
     expect(name('b').style.opacity).toBe('1')
     r.setHovered('nope')
     h.frames.step()
-    expect(Number(name('b').style.opacity)).toBeLessThanOrEqual(0.2)
+    expect(label('b').visible).toBe(false)
     r.setHovered(null)
     // cleared
     r.setFocus(null)
@@ -380,6 +387,23 @@ describe('threeRenderer framing', () => {
     expect(cam.pos[2]).toBeGreaterThan(cam.target[2])
     expect(Math.abs(cam.pos[0] - cam.target[0])).toBeLessThan(1e-6)
     r.dispose()
+  })
+
+  it("frames a clicked building with its name's whole box in the picture, even in a short view (F5)", async () => {
+    const short = makeHost(800, 120)
+    const r = createThreeRenderer(short, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, 120)
+    r.draw({ districts: [district('d', [0, 0, 0], 80)], buildings: [bldg('t', [0, 0, 0], { floors: 10, height: 60 })], conduits: [], orbs: [] }, smallText(), false)
+    h.frames.step()
+    await r.frame(['t'], true)
+    h.frames.step()
+    const cam = cameraOf()
+    cam.updateMatrixWorld()
+    // The name's point (3 over the roof) lies at least the name's half height and the view's inset below the top.
+    const y = ((1 - new THREE.Vector3(0, 63, 0).project(cam).y) / 2) * 120
+    expect(y).toBeGreaterThanOrEqual(16 - 0.5)
+    r.dispose()
+    short.remove()
   })
 })
 
