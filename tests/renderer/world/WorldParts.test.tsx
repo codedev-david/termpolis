@@ -3,7 +3,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { CARD_CLICK_GRACE_MS, WorldCard } from '../../../src/renderer/src/components/World/WorldCard'
 import { EvidenceView } from '../../../src/renderer/src/components/World/EvidenceView'
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
-import { TOOLBAR_FOLD_PX, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
+import { TOOLBAR_FOLD_PX, TOOLBAR_MAX_ROWS, toolbarRows, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
 import { UiScaleContext } from '../../../src/renderer/src/components/World/worldPane'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
 
@@ -555,5 +555,81 @@ describe('WorldToolbar in a narrow pane', () => {
     expect(screen.getByTestId('world-close')).toHaveStyle({ position: 'absolute', top: '8px', right: '8px' })
     // 48px: the 36px button and its 8px inset, with room to spare.
     expect(screen.getByRole('toolbar')).toHaveClass('pr-12')
+  })
+})
+
+describe('WorldToolbar rows', () => {
+  const props = (over: Partial<WorldToolbarProps> = {}): WorldToolbarProps => ({
+    projectName: 'termpolis', layers: DEFAULT_LAYERS, onLayers: vi.fn(), proposals: [], onProposal: vi.fn(), theme: 'neon', onTheme: vi.fn(),
+    tours: [], onTour: vi.fn(), onResetView: vi.fn(), onRelayout: vi.fn(), relayoutDisabled: false, onClose: vi.fn(),
+    bookmarks: [], onSaveBookmark: vi.fn(), onBookmark: vi.fn(), onRemoveBookmark: vi.fn(), map2d: false, onMap2d: vi.fn(), ...over,
+  })
+  const box = (top: number, height: number, width = 50) => ({ left: 0, right: width, top, bottom: top + height, width, height, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+
+  it('keeps the full toolbar to two rows at most', () => {
+    expect(TOOLBAR_MAX_ROWS).toBe(2)
+  })
+
+  it('counts the rows its controls lie on by their middles, leaving out what takes no room and what is marked off the rows', () => {
+    const bar = document.createElement('div')
+    const add = (r: DOMRect, skip = false): void => {
+      const el = document.createElement('span')
+      if (skip) el.setAttribute('data-world-row-skip', '')
+      el.getBoundingClientRect = () => r
+      bar.appendChild(el)
+    }
+    // A 24px select and a 20px button centred on one row; a second row 32px down; a third.
+    add(box(8, 24)); add(box(10, 20)); add(box(40, 24)); add(box(42, 20)); add(box(72, 24))
+    expect(toolbarRows(bar)).toBe(3)
+    // The empty spacer (no height), the close button in the corner and the cost line under the rows.
+    add(box(200, 0)); add(box(500, 30), true); add(box(104, 16, 0))
+    expect(toolbarRows(bar)).toBe(3)
+    expect(toolbarRows(document.createElement('div'))).toBe(0)
+  })
+
+  it('folds into More when the full toolbar would take more than two rows, and unfolds once the pane is wider than where it folded', () => {
+    const size = { client: 400, perRow: 4 }
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return this.getAttribute('role') === 'toolbar' ? size.client : 0 })
+    const spyR = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const bar = this.parentElement
+      if (!bar || bar.getAttribute('role') !== 'toolbar') return box(0, 0, 0)
+      const i = Array.from(bar.children).indexOf(this)
+      return box(8 + Math.floor(i / size.perRow) * 32, 24)
+    })
+    try {
+      const { rerender } = render(<WorldToolbar {...props({ onExport: vi.fn() })} />)
+      // The full toolbar's controls spread over four rows: the secondary ones fold into More.
+      expect(screen.getByTestId('world-more')).toBeInTheDocument()
+      expect(screen.queryByTestId('world-layer-labels')).toBeNull()
+      // Re-rendered at the same width: it stays folded.
+      rerender(<WorldToolbar {...props({ onExport: vi.fn() })} />)
+      expect(screen.getByTestId('world-more')).toBeInTheDocument()
+      // Wider than where it folded, and the full toolbar fits on two rows: it unfolds.
+      size.client = 700
+      size.perRow = 12
+      rerender(<WorldToolbar {...props({ onExport: vi.fn() })} />)
+      expect(screen.queryByTestId('world-more')).toBeNull()
+      expect(screen.getByTestId('world-layer-labels')).toBeInTheDocument()
+      // Narrow again: it folds again.
+      size.client = 420
+      size.perRow = 4
+      rerender(<WorldToolbar {...props({ onExport: vi.fn() })} />)
+      expect(screen.getByTestId('world-more')).toBeInTheDocument()
+      // Wider, but the full toolbar still needs three rows there: it folds again at the new width.
+      size.client = 480
+      size.perRow = 6
+      rerender(<WorldToolbar {...props({ onExport: vi.fn() })} />)
+      expect(screen.getByTestId('world-more')).toBeInTheDocument()
+      expect(screen.queryByTestId('world-layer-labels')).toBeNull()
+    } finally {
+      spyC.mockRestore()
+      spyR.mockRestore()
+    }
+  })
+
+  it('never counts the close button in the corner or the cost line as a row', () => {
+    render(<WorldToolbar {...props({ labelCost: 'Labelling cost 1,200 tokens' })} />)
+    expect(screen.getByTestId('world-close')).toHaveAttribute('data-world-row-skip')
+    expect(screen.getByTestId('world-label-cost')).toHaveAttribute('data-world-row-skip')
   })
 })

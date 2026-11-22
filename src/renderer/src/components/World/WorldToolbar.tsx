@@ -1,10 +1,11 @@
 // The Lumopolis toolbar: the world switcher, layer toggles, theme, tours, Export, Build it (design worlds),
-// reset, re-layout and close. In a narrow pane (`compact`) the secondary controls (the layer toggles, the
-// proposal, theme and tours, the 2D map, Reset view and Re-layout) fold into a More menu, so the toolbar
-// keeps to a row or two instead of taking a third of the pane. The close button sits in the top right
+// reset, re-layout and close. In a narrow pane (`compact`), or wherever the full toolbar would take more than
+// TOOLBAR_MAX_ROWS rows (wider fonts on Linux, a pane just over the fold), the secondary controls (the layer
+// toggles, the proposal, theme and tours, the 2D map, Reset view and Re-layout) fold into a More menu, so the
+// toolbar keeps to a row or two instead of taking a third of the pane. The close button sits in the top right
 // corner, out of the wrapping rows, so it is never left alone on a row of its own. One popup (Bookmarks, More,
 // Export) is open at a time; Esc shuts it wherever the focus is in the pane, and so does a click outside it.
-import { useContext, useEffect, useId, useRef, useState } from 'react'
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Tour } from '../../../../shared/world/types'
 import { THEMES } from '../../world/engine'
@@ -16,6 +17,30 @@ import { screenRect } from '../../world/engine/screenRect'
 
 /** Below this width, in the pane's own px (its width over its scale), the toolbar folds its secondary controls into More. */
 export const TOOLBAR_FOLD_PX = 440
+/** The most rows the full toolbar may take; past it, the secondary controls fold into More, whatever the width. */
+export const TOOLBAR_MAX_ROWS = 2
+
+/**
+ * The rows the toolbar's controls lie on: its children grouped by their middles (a row's controls are centred
+ * on one line), leaving out what takes no room (the spacer) and what is marked `data-world-row-skip` (the close
+ * button in the corner, the cost line under the rows).
+ */
+export function toolbarRows(bar: HTMLElement): number {
+  const mids: number[] = []
+  for (const el of Array.from(bar.children)) {
+    if (el.hasAttribute('data-world-row-skip')) continue
+    const r = el.getBoundingClientRect()
+    if (r.width >= 1 && r.height >= 1) mids.push(r.top + r.height / 2)
+  }
+  mids.sort((a, b) => a - b)
+  let rows = 0
+  let row = -Infinity
+  for (const m of mids) {
+    if (m - row > 8) { rows++; row = m }
+  }
+  return rows
+}
+
 /** The More menu's width in its own px (w-60), to tell which way it fits: times the pane's scale on screen. */
 const MORE_W = 240
 
@@ -73,7 +98,11 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   const zoom = useUiZoom()
   const scale = useContext(UiScaleContext)
   const { layers, onLayers } = props
-  const compact = props.compact === true
+  // Folded because the full toolbar took more than TOOLBAR_MAX_ROWS rows at the bar's width then (crowdedAt):
+  // it unfolds to look again once the bar is wider than that.
+  const [crowded, setCrowded] = useState(false)
+  const crowdedAt = useRef(0)
+  const compact = props.compact === true || crowded
   const [popup, setPopup] = useState<Popup | null>(null)
   const menu = popup === 'bookmarks'
   const more = popup === 'more'
@@ -94,6 +123,19 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   }
   // A pane widened past the fold puts the controls back in the row: the menu has nothing left to show.
   useEffect(() => { if (!compact) setPopup((open) => (open === 'more' ? null : open)) }, [compact])
+  // Measured after every render (the pane re-renders as it is dragged or the window resized), before paint. It
+  // settles: it folds at a width and only looks again once the bar is wider than that.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- no dependency list on purpose: every render is measured
+  useLayoutEffect(() => {
+    const bar = barRef.current as HTMLDivElement
+    const width = bar.clientWidth
+    if (crowded) {
+      if (width > crowdedAt.current) setCrowded(false)
+    } else if (props.compact !== true && toolbarRows(bar) > TOOLBAR_MAX_ROWS) {
+      crowdedAt.current = width
+      setCrowded(true)
+    }
+  })
   // A dialog opened some other way (the palette) shuts the Export menu under it, and a world closed takes it away.
   const exportOff = props.dialogOpen === true || props.onExport === undefined
   useEffect(() => { if (exportOff) setPopup((open) => (open === 'export' ? null : open)) }, [exportOff])
@@ -357,12 +399,13 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         aria-label="Close Lumopolis"
         data-testid="world-close"
         title="Close (Esc twice)"
+        data-world-row-skip=""
         className="px-2 py-1 rounded text-[#999] hover:text-white hover:bg-[#37373d]"
         style={{ position: 'absolute', top: 8, right: 8 }}
         onClick={props.onClose}
       ><i className="fa-solid fa-xmark" aria-hidden="true" /></button>
       {props.labelCost && (
-        <div className="basis-full text-[11px] leading-snug text-[#9ca3af]" data-testid="world-label-cost">{props.labelCost}</div>
+        <div className="basis-full text-[11px] leading-snug text-[#9ca3af]" data-testid="world-label-cost" data-world-row-skip="">{props.labelCost}</div>
       )}
     </div>
   )

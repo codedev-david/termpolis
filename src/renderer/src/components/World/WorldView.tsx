@@ -824,6 +824,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         bookmarkSaveDisabled={!viewer || !doc}
         map2d={map2d}
         onMap2d={onMap2d}
+        // Always folded below TOOLBAR_FOLD_PX; above it the toolbar folds itself where it would take too many rows.
         compact={width / scale < TOOLBAR_FOLD_PX}
         labelCost={labelling !== false && doc && doc.labelTokens !== undefined ? labelCostLine(doc.labelTokens) : undefined}
       />

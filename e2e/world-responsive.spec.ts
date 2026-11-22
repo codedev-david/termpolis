@@ -413,6 +413,43 @@ async function layoutAt(v: Viewport, width: number | null): Promise<{ w: number;
 /** Every size and width the run checks. */
 const LAYOUTS = RUN.flatMap((v) => widths(v).map((width) => ({ v, width })))
 
+/**
+ * The toolbar as a person sees it: how many rows its controls take (the close button in the corner and the
+ * labelling cost line under the rows left out), and whether the close button sits beside the first row rather
+ * than on a row of its own. Measured on screen, apart from how WorldToolbar counts its own rows.
+ */
+async function toolbarLayout(): Promise<{ rows: number; closeBeside: boolean }> {
+  return page.evaluate(() => {
+    const bar = document.querySelector('[aria-label="Lumopolis controls"]') as HTMLElement
+    const close = bar.querySelector('[data-testid="world-close"]') as HTMLElement
+    const rows: Array<{ top: number; bottom: number }> = []
+    const boxes = Array.from(bar.querySelectorAll<HTMLElement>(':scope > *, :scope > * > button'))
+      .filter((el) => el !== close && el.dataset.testid !== 'world-label-cost' && !el.closest('[role="group"]'))
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width >= 1 && r.height >= 1)
+      .sort((a, b) => a.top - b.top)
+    for (const r of boxes) {
+      const row = rows.find((w) => r.top < w.bottom && r.bottom > w.top)
+      if (row) { row.top = Math.min(row.top, r.top); row.bottom = Math.max(row.bottom, r.bottom) } else rows.push({ top: r.top, bottom: r.bottom })
+    }
+    const c = close.getBoundingClientRect()
+    const mid = (c.top + c.bottom) / 2
+    return { rows: rows.length, closeBeside: rows.length > 0 && mid >= rows[0].top && mid <= rows[0].bottom }
+  })
+}
+
+/** How many square pixels of the open card and the legend (its button or its panel) lie on each other. */
+async function cardOnLegend(): Promise<number> {
+  return page.evaluate(() => {
+    const card = document.querySelector('[data-testid="world-card"]')
+    const legend = document.querySelector('[data-testid="world-legend"]')
+    if (!card || !legend) return 0
+    const a = card.getBoundingClientRect()
+    const b = legend.getBoundingClientRect()
+    return Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))
+  })
+}
+
 /** Opens the toolbar's More menu when the pane folds it (true), so a folded control can be reached. */
 async function openMore(): Promise<boolean> {
   const more = page.locator('[data-testid="world-more"]')
@@ -509,6 +546,11 @@ test.describe.serial('Lumopolis at every screen size', () => {
         expect((await paneState()).terminals, `the terminals stay mounted under the pane at ${tag}`).toBeGreaterThan(0)
       }
       expectMedian(await check(`world at ${tag}`), `world at ${tag}`, v, at.w)
+      // The toolbar keeps to two rows, its close button beside the first (at 1280x800 on Linux it once took four
+      // rows, the close button alone on the last).
+      const bar = await toolbarLayout()
+      expect.soft(bar.rows, `the toolbar keeps to two rows at ${tag}`).toBeLessThanOrEqual(2)
+      expect.soft(bar.closeBeside, `the close button sits beside the toolbar's first row at ${tag}`).toBe(true)
       await shoot(`app-world-${name}`)
 
       const toggle = page.locator('[data-testid="world-legend-toggle"]')
@@ -526,6 +568,8 @@ test.describe.serial('Lumopolis at every screen size', () => {
       }
 
       expect.soft(await openCard(), `a building's card opened at ${tag}`).toBe(true)
+      // The card never lies on the legend (at 1280x800 on Linux it once covered most of the Legend button).
+      expect.soft(await cardOnLegend(), `the card leaves the legend clear at ${tag}`).toBe(0)
       await check(`card at ${tag}`)
       await shoot(`app-card-${name}`)
       await closeCard()
