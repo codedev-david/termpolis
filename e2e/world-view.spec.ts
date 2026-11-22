@@ -28,7 +28,7 @@
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
-import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteType, removeDirs } from './helpers/world'
+import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteType, removeDirs, expectPaneOpens } from './helpers/world'
 
 let app: ElectronApplication
 let page: Page
@@ -134,7 +134,7 @@ test.describe.serial('Lumopolis in the real app', () => {
     await expect(result).toBeVisible()
     await result.click()
 
-    await expect(pane()).toBeVisible()
+    await expectPaneOpens(page)
     // No WebGL would show the 2D list instead: the launch switches above are meant to rule that out.
     await expect(page.locator('[data-testid="world-fallback"]')).toHaveCount(0)
     await expect(canvas()).toBeVisible({ timeout: 30_000 })
@@ -446,7 +446,20 @@ test.describe.serial('Lumopolis in the real app', () => {
     // gaps between compiles and the tail), so a slow machine's own echo shows apart from the compiles' cost.
     const idle = r.down.map((d, i) => ({ ms: r.echo[i] - d, run: runOf(d) })).filter((x) => x.run < 0).map((x) => x.ms).sort((a, b) => a - b)
     const idleStats = idle.length ? `n=${idle.length} p50=${idle[Math.floor(idle.length / 2)].toFixed(1)} ms max=${idle[idle.length - 1].toFixed(1)} ms` : 'none'
-    const summary = `samples=${n} (of ${r.down.length} keys, ${WARMUP_KEYS} warm-up) over ${r.runs.length} compiles [${runs}], p50=${p50?.toFixed(1)} ms p95=${p95?.toFixed(1)} ms max=${lat[n - 1]?.toFixed(1)} ms; no compile running: ${idleStats}`
+    // Also for comparison only: the keys' worst echo by the quarter of its compile they were pressed in, so a
+    // slow start (main reading the project) shows apart from the compile itself (in its own process) or its end
+    // (main saving the world and sending it on).
+    const quarters = [0, 1, 2, 3].map((q) => {
+      const ms = during.filter((x) => {
+        const w = r.runs[x.run]
+        return Math.min(3, Math.floor((4 * (x.d - w.start)) / Math.max(1, w.end - w.start))) === q
+      }).map((x) => x.ms)
+      return ms.length ? `${ms.length} keys max ${Math.max(...ms).toFixed(1)} ms` : '0 keys'
+    }).join(' / ')
+    // And the first compile (main also builds the project's code graph then) apart from the forced recompiles.
+    const worst = (xs: typeof during): string => xs.length ? `${xs.length} keys max ${Math.max(...xs.map((x) => x.ms)).toFixed(1)} ms` : '0 keys'
+    const firstVsRest = `first compile ${worst(during.filter((x) => x.run === 0))}, recompiles ${worst(during.filter((x) => x.run > 0))}`
+    const summary = `samples=${n} (of ${r.down.length} keys, ${WARMUP_KEYS} warm-up) over ${r.runs.length} compiles [${runs}], p50=${p50?.toFixed(1)} ms p95=${p95?.toFixed(1)} ms max=${lat[n - 1]?.toFixed(1)} ms; by quarter of the compile: ${quarters}; ${firstVsRest}; no compile running: ${idleStats}`
     console.log(`[typing while compiling] ${summary}`)
     expect(n, `too few keys pressed during the compiles: ${summary}`).toBeGreaterThanOrEqual(MIN_SAMPLES)
     expect(p95, `p95 keystroke echo over budget: ${summary}`).toBeLessThan(P95_BUDGET_MS)

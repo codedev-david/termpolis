@@ -1312,7 +1312,7 @@ describe('WorldView 2D map switch and bookmarks', () => {
   }
   const keyOf = () => 'termpolis.world.bookmarks.' + minimal().projectKey
 
-  it('the 2D map list keeps its last rows clear of the ask bar laid over its foot', async () => {
+  it("the 2D map list ends above the ask bar laid over the pane's foot", async () => {
     const seen: Array<() => void> = []
     vi.stubGlobal('ResizeObserver', class {
       constructor(cb: () => void) { seen.push(cb) }
@@ -1328,11 +1328,11 @@ describe('WorldView 2D map switch and bookmarks', () => {
       await mount({ askSlot: () => <span>ask</span> })
       fireEvent.click(screen.getByTestId('world-map2d'))
       const list = screen.getByTestId('world-fallback')
-      expect(list.style.paddingBottom).toBe('24px') // no bar measured yet: just the list's own padding
+      expect(list.style.bottom).toBe('0px') // no bar measured yet
       ask.h = 120 // the chips and the box
       act(() => { for (const cb of seen) cb() })
-      // 24 of its own, then the bar: 120 tall, 16 off the bottom, 8 clear.
-      expect(list.style.paddingBottom).toBe('168px')
+      // The bar: 120 tall, 16 off the bottom, 8 clear.
+      expect(list.style.bottom).toBe('144px')
     } finally {
       vi.unstubAllGlobals()
       vi.restoreAllMocks()

@@ -21,7 +21,7 @@ import fs from 'fs'
 import os from 'os'
 import { pathToFileURL } from 'url'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
-import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal, paletteType, removeDirs } from './helpers/world'
+import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal, paletteType, removeDirs, expectPaneOpens } from './helpers/world'
 import { ask, askReady } from './export-page/helpers'
 import { CARD_HEADINGS } from '../src/shared/world/cardFacts'
 import { escapeHtml } from '../src/shared/world/html'
@@ -76,7 +76,6 @@ test.afterAll(async () => {
   removeDirs([userDataDir, project, outDir])
 })
 
-const pane = () => page.locator('[data-testid="world-view"]')
 const exportDialog = () => page.locator('[data-testid="world-export-dialog"]')
 const documentDialog = () => page.locator('[data-testid="world-document-dialog"]')
 const toast = () => page.locator('[data-testid="world-export-toast"]')
@@ -142,7 +141,7 @@ test.describe.serial('Lumopolis export in the real app', () => {
     await createTerminal(page, 'Notes', project)
     await paletteType(page, 'Open Lumopolis')
     await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()
-    await expect(pane()).toBeVisible()
+    await expectPaneOpens(page)
     await expect(page.locator('[data-testid="world-project"]')).toHaveText(path.basename(project), { timeout: 30_000 })
     // A cold first map of this project takes about 4-5 s here (open to canvas, 3 cold launches), its status stage
     // under 1 s; 30 s is world-view.spec.ts's budget for the same wait.

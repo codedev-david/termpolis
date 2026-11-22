@@ -15,6 +15,18 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 
+/**
+ * Waits for the Lumopolis pane after the click that opens it. Something shows at once: the pane, or its frame
+ * saying "Opening Lumopolis…" while the pane's code (the engine and Three.js) loads on its first use. On a cold
+ * macOS runner that load took about 7 s, twice, with the frame and its words on screen the whole time and the app
+ * answering, so the pane itself gets 60 s.
+ */
+export async function expectPaneOpens(page: Page): Promise<void> {
+  const pane = page.locator('[data-testid="world-view"]')
+  await expect(pane.or(page.locator('[data-testid="world-view-opening"]'))).toBeVisible()
+  await expect(pane).toBeVisible({ timeout: 60_000 })
+}
+
 /** Writes `files` under a new temp folder and makes it a git repository with every file staged. */
 export function makeRepo(label: string, files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `termpolis-world-${label}-`))

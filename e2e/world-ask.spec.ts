@@ -26,6 +26,7 @@
  * The launch adds the software GL switches, as world-view.spec.ts does.
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
+import { expectPaneOpens } from './helpers/world'
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import path from 'path'
@@ -198,7 +199,6 @@ async function createTerminal(name: string, cwd: string): Promise<void> {
   await page.waitForTimeout(1500)
 }
 
-const pane = () => page.locator('[data-testid="world-view"]')
 const canvas = () => page.locator('[data-testid="world-canvas-host"] canvas')
 const card = () => page.locator('[data-testid="world-card"]')
 const askBox = () => page.getByPlaceholder('Ask about this project…')
@@ -249,7 +249,7 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
     await expect(result).toBeVisible()
     await result.click()
 
-    await expect(pane()).toBeVisible()
+    await expectPaneOpens(page)
     await expect(page.locator('[data-testid="world-fallback"]')).toHaveCount(0)
     await expect(canvas()).toBeVisible({ timeout: 120_000 })
     await expect(page.locator('[data-testid="world-canvas-host"]')).toHaveCSS('visibility', 'visible', { timeout: 30_000 })
