@@ -26,10 +26,11 @@ const GAP_Y = 110
  * already placed wins; failing that, the one that clips the least.
  */
 const BOWS = [0.12, 0.3, 0.5, 0.7, -0.12, -0.3, -0.5, -0.7]
-/** The map's smallest label size, and the least it may shrink to on screen (a caption's 11px): past that a narrow page
- *  scrolls the map in its frame. ROOT_PX is the page's 1rem at scale 1: the map's width in rem grows with the page. */
+/** The map's smallest label size. The map is never drawn under its natural width (min-width), so no label shows under
+ *  12px: past that a narrow page scrolls the map in its frame. ROOT_PX is the page's 1rem at scale 1: the map's width
+ *  in rem grows with the page. */
 const LABEL_PX = 12
-const LABEL_MIN_PX = 11
+const LABEL_MIN_PX = 12
 const ROOT_PX = 16
 /** Rough glyph widths, to cut a label to its box. */
 const PART_GLYPH = 6.6
@@ -233,11 +234,14 @@ const CSS = [
   'html{-webkit-text-size-adjust: 100%; font-size: clamp(16px, calc(8px + min(.41667vw, .74074vh)), 32px)}',
   'body{margin: 0; background: var(--bg); color: var(--text); font: 1rem/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; overflow-wrap: break-word}',
   'a{color: var(--accent)}',
-  '.page{max-width: 100rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 3rem}',
+  // 104rem: from a 1080p screen up the column holds a map of about 80rem (the fixture city's) whole, with its frame.
+  '.page{max-width: 104rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 3rem}',
   '.title-block{padding-bottom: 1.75rem; border-bottom: 1px solid var(--line)}',
   '.eyebrow{margin: 0 0 .5rem; font-size: .75rem; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--accent)}',
   'h1{margin: 0 0 .875rem; font-size: 2.3rem; line-height: 1.15; letter-spacing: -.02em}',
   '.title-block p{display: inline-block; margin: 0; color: var(--muted); font-size: .92rem}',
+  // The eyebrow is a block of its own: inline-block, its line would take the parent's line height and run into the title.
+  '.title-block .eyebrow{display: block; margin: 0 0 .5rem; color: var(--accent); font-size: .75rem}',
   '.title-block p+p::before{content: "\\00b7"; margin: 0 .6em; color: var(--strong-line)}',
   '.toc{padding: 1.75rem 0 .5rem; font-size: .9rem}',
   '.toc-title{margin: 0 0 .5rem .5rem; font-size: .75rem; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--muted)}',
