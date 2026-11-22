@@ -121,14 +121,20 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   const [moreSide, setMoreSide] = useState<'left' | 'right'>('left')
   const moreRef = useRef<HTMLDivElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
-  /** A popup's wrapper: its button first, then its menu. */
-  const wrapOf = (p: Popup): HTMLElement => (barRef.current as HTMLDivElement).querySelector(`[data-world-popup="${p}"]`) as HTMLElement
+  /** The side the More menu hangs toward: the one with room, on screen (the toolbar is drawn `scale` times bigger on a big monitor). */
+  const sideNow = (): 'left' | 'right' => {
+    const wrap = screenRect(moreRef.current as HTMLDivElement)
+    const bar = screenRect(barRef.current as HTMLDivElement)
+    return bar.right - wrap.left >= MORE_W * scale || wrap.right - bar.left < MORE_W * scale ? 'left' : 'right'
+  }
+  /** A popup's wrapper: its button first, then its menu (null: More, in the frame a toolbar has unfolded to look). */
+  const wrapOf = (p: Popup): HTMLElement | null => (barRef.current as HTMLDivElement).querySelector(`[data-world-popup="${p}"]`)
   /** A button opens its popup, shutting any other, or shuts its own. */
   const toggle = (p: Popup): void => setPopup((open) => (open === p ? null : p))
   /** Shuts the popup `p` after a choice in it, the focus back on its button: the control chosen goes with the menu. */
   const done = (p: Popup): void => {
     if (popup !== p) return
-    ;(wrapOf(p).firstElementChild as HTMLElement).focus()
+    ;((wrapOf(p) as HTMLElement).firstElementChild as HTMLElement).focus()
     setPopup(null)
   }
   // A pane widened past the fold puts the controls back in the row: the menu has nothing left to show. A frame later,
@@ -143,6 +149,12 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- no dependency list on purpose: every render is measured
   useLayoutEffect(() => {
     const bar = barRef.current as HTMLDivElement
+    // An open More menu is judged again as the toolbar moves (the pane dragged, the window resized, the rows
+    // re-wrapped), or it keeps the side it was opened toward and can hang out of the pane.
+    if (popup === 'more' && moreRef.current !== null) {
+      const side = sideNow()
+      if (side !== moreSide) setMoreSide(side)
+    }
     const width = bar.clientWidth
     if (crowded) {
       if (width > crowdedAt.current + (popup === 'more' ? TOOLBAR_UNFOLD_SLACK_PX : 0) || holds !== crowdedFor.current) setCrowded(false)
@@ -157,15 +169,20 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   useEffect(() => { if (exportOff) setPopup((open) => (open === 'export' ? null : open)) }, [exportOff])
   useEffect(() => {
     if (popup === null) return
-    const wrap = wrapOf(popup)
+    // The wrapper is looked up at each event, not once: a folded toolbar that unfolds to look and folds straight
+    // back draws the More button and its menu anew, and the old wrapper, no longer in the page, would hold none of
+    // them, so a press on the menu or its button would count as a click outside (the menu shut on the mousedown, the
+    // choice lost, or reopened by the button's click).
     const onDown = (e: MouseEvent): void => {
-      if (!wrap.contains(e.target as Node | null)) setPopup(null)
+      const wrap = wrapOf(popup)
+      if (wrap === null || !wrap.contains(e.target as Node | null)) setPopup(null)
     }
     // Capture on the document: after the pane's own Esc (on the window), which leaves Esc to an open popup.
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape') return
+      const wrap = wrapOf(popup)
       const at = document.activeElement
-      if (wrap.contains(at) || at === document.body) (wrap.firstElementChild as HTMLElement).focus()
+      if (wrap !== null && (wrap.contains(at) || at === document.body)) (wrap.firstElementChild as HTMLElement).focus()
       setPopup(null)
       // An Esc from the pane is the popup's alone; one from outside it (a terminal) is still that one's too.
       if (((barRef.current as HTMLDivElement).parentElement as HTMLElement).contains(e.target as Node | null)) {
@@ -365,10 +382,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
             className={`${btn} text-[#cccccc] inline-flex items-center gap-1.5`}
             title="Layers, theme, tours, the 2D map, Reset view and Re-layout"
             onClick={() => {
-              // Toward the side with room, on screen (the toolbar is drawn `scale` times bigger on a big monitor).
-              const wrap = screenRect(moreRef.current as HTMLDivElement)
-              const bar = screenRect(barRef.current as HTMLDivElement)
-              setMoreSide(bar.right - wrap.left >= MORE_W * scale || wrap.right - bar.left < MORE_W * scale ? 'left' : 'right')
+              setMoreSide(sideNow())
               toggle('more')
             }}
           ><i className="fa-solid fa-ellipsis" aria-hidden="true" />More</button>

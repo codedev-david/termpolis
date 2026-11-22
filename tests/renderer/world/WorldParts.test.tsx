@@ -463,7 +463,8 @@ describe('WorldToolbar in a narrow pane', () => {
   })
 
   it('opens the menu toward the side with room, judged on screen at the pane scale', () => {
-    render(<UiScaleContext.Provider value={1.5}><WorldToolbar {...props({ compact: true })} /></UiScaleContext.Provider>)
+    const view = (): JSX.Element => <UiScaleContext.Provider value={1.5}><WorldToolbar {...props({ compact: true })} /></UiScaleContext.Provider>
+    const { rerender } = render(view())
     const more = screen.getByTestId('world-more')
     const wrap = more.parentElement as HTMLElement
     const bar = screen.getByRole('toolbar')
@@ -483,6 +484,15 @@ describe('WorldToolbar in a narrow pane', () => {
     vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(100, 160))
     fireEvent.click(more)
     expect(screen.getByTestId('world-more-menu')).toHaveClass('left-0')
+    // Left open while the toolbar moves (the pane widened, the rows re-wrapped): judged again, so it never keeps a
+    // side that now hangs out of the pane.
+    vi.spyOn(bar, 'getBoundingClientRect').mockReturnValue(rect(0, 600))
+    vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(500, 560))
+    rerender(view())
+    expect(screen.getByTestId('world-more-menu')).toHaveClass('right-0')
+    // Re-rendered where it already fits: it stays.
+    rerender(view())
+    expect(screen.getByTestId('world-more-menu')).toHaveClass('right-0')
   })
 
   it('keeps one popup open at a time: opening Bookmarks, More or Export shuts the one that was open', () => {
@@ -711,6 +721,70 @@ describe('WorldToolbar rows', () => {
       size.perRow = 4
       rerender(<WorldToolbar {...props()} />)
       expect(screen.queryByTestId('world-more-menu')).toBeNull()
+    } finally {
+      spyC.mockRestore()
+      spyR.mockRestore()
+    }
+  })
+
+  it('after an unfold that folds straight back, the open More menu still shuts on its button and still runs a choice in it', async () => {
+    const size = { client: 400, perRow: 4 }
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return this.getAttribute('role') === 'toolbar' ? size.client : 0 })
+    const spyR = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const bar = this.parentElement
+      if (!bar || bar.getAttribute('role') !== 'toolbar') return box(0, 0, 0)
+      const i = Array.from(bar.children).indexOf(this)
+      return box(8 + Math.floor(i / size.perRow) * 32, 24)
+    })
+    const onResetView = vi.fn()
+    try {
+      const { rerender } = render(<WorldToolbar {...props({ onResetView })} />)
+      const press = (el: HTMLElement): void => { fireEvent.mouseDown(el); fireEvent.click(el) }
+      press(screen.getByTestId('world-more'))
+      // Well wider, but the full toolbar still needs three rows: it unfolds to look and folds back before paint, the
+      // More button and its menu drawn anew.
+      size.client = 470
+      rerender(<WorldToolbar {...props({ onResetView })} />)
+      await act(async () => { await nextFrame() })
+      expect(screen.getByTestId('world-more-menu')).toBeInTheDocument()
+      // A choice in the menu runs (its mousedown is inside the menu, not a click outside that took it away first).
+      press(screen.getByTestId('world-reset'))
+      expect(onResetView).toHaveBeenCalledTimes(1)
+      expect(screen.queryByTestId('world-more-menu')).toBeNull()
+      // Open again, through another unfold that folds back: its own button shuts it, and it stays shut.
+      press(screen.getByTestId('world-more'))
+      size.client = 520
+      rerender(<WorldToolbar {...props({ onResetView })} />)
+      await act(async () => { await nextFrame() })
+      expect(screen.getByTestId('world-more-menu')).toBeInTheDocument()
+      press(screen.getByTestId('world-more'))
+      expect(screen.queryByTestId('world-more-menu')).toBeNull()
+      expect(screen.getByTestId('world-more')).toHaveAttribute('aria-expanded', 'false')
+      // And Esc still shuts it, the focus back on the More button drawn now.
+      press(screen.getByTestId('world-more'))
+      size.client = 570
+      rerender(<WorldToolbar {...props({ onResetView })} />)
+      await act(async () => { await nextFrame() })
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(screen.queryByTestId('world-more-menu')).toBeNull()
+      expect(document.activeElement).toBe(screen.getByTestId('world-more'))
+      // In the frame a toolbar has unfolded (no More button yet to hold the menu), a press anywhere or an Esc shuts it.
+      for (const shut of [(): void => { fireEvent.mouseDown(document.body) }, (): void => { fireEvent.keyDown(document.body, { key: 'Escape' }) }]) {
+        size.client = 400
+        size.perRow = 4
+        rerender(<WorldToolbar {...props({ onResetView })} />)
+        press(screen.getByTestId('world-more'))
+        size.client = 900
+        size.perRow = 20
+        rerender(<WorldToolbar {...props({ onResetView })} />)
+        expect(screen.queryByTestId('world-more')).toBeNull()
+        act(() => { shut() })
+        await act(async () => { await nextFrame() })
+        size.client = 400
+        size.perRow = 4
+        rerender(<WorldToolbar {...props({ onResetView })} />)
+        expect(screen.queryByTestId('world-more-menu')).toBeNull()
+      }
     } finally {
       spyC.mockRestore()
       spyR.mockRestore()
