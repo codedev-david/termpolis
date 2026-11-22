@@ -390,9 +390,12 @@ export function freeArea(width: number, height: number, legend: number, ask: num
 
 /**
  * Whether the view point at (ndcX, ndcY), -1..1 each way across a `width` by `height` view (y up),
- * lies in the part the panels leave free (`f`), at least `inset` pixels inside its edges.
+ * lies in the part the panels leave free (`f`), at least `inset` pixels inside its edges. A point
+ * whose depth (`ndcZ`) is past -1..1 lies behind the camera, nearer than its near plane or past its
+ * far one, and shows nowhere.
  */
-export function inFreeArea(ndcX: number, ndcY: number, width: number, height: number, f: FreeArea, inset = 0): boolean {
+export function inFreeArea(ndcX: number, ndcY: number, width: number, height: number, f: FreeArea, inset = 0, ndcZ = 0): boolean {
+  if (Math.abs(ndcZ) > 1) return false
   const x = ((ndcX + 1) / 2) * width
   const y = ((1 - ndcY) / 2) * height
   return x >= f.left + inset && x <= width - f.right - inset && y >= f.top + inset && y <= height - f.bottom - inset

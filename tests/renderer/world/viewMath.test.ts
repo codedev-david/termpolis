@@ -665,6 +665,10 @@ describe("a long line's close-up: both ends beside the card", () => {
     expect(inFreeArea(...ndc(3, 300), 416, 618, card, 6)).toBe(false) // on the view's edge
     expect(inFreeArea(...ndc(150, 180), 416, 618, card, 6)).toBe(false) // on the card's edge
     expect(inFreeArea(...ndc(150, 190), 416, 618, card, 6)).toBe(true)
+    // a point past the far plane, or behind the camera, shows nowhere
+    expect(inFreeArea(...ndc(150, 300), 416, 618, card, 0, 0.99)).toBe(true)
+    expect(inFreeArea(...ndc(150, 300), 416, 618, card, 0, 1.01)).toBe(false)
+    expect(inFreeArea(...ndc(150, 300), 416, 618, card, 0, -1.01)).toBe(false)
   })
   it('backOffs steps out from the fit to the reach, the reach last', () => {
     expect(backOffs(100, 300, 1.5)).toEqual([100, 150, 225, 300])

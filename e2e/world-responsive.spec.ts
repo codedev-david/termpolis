@@ -26,6 +26,7 @@
 import { test, expect, type ElectronApplication, type Page, type CDPSession, type Locator } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import { randomBytes } from 'crypto'
+import { PNG } from 'pngjs'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -467,6 +468,35 @@ async function faintLabels(): Promise<string[]> {
  * heading). At 1280x800 on Linux the card once cut its "What it does" heading in half, and a line card stopped
  * mid-sentence, the one sentence that explains the line behind a scroll inside a scroll.
  */
+/**
+ * The share of the map's pixels brighter than its background (its most common tone), labels and panels hidden: the
+ * stars and the city. At 5120x2880 with the pane 480 wide the overview stood past the camera's far plane once, and
+ * the whole map was black.
+ */
+async function litShare(): Promise<number> {
+  const style = await page.addStyleTag({
+    content: '.lw-labels, [data-testid="world-stage"] > :not([data-testid="world-canvas-host"]) { visibility: hidden !important }',
+  })
+  try {
+    await page.waitForTimeout(300)
+    const png = PNG.sync.read(await page.locator('[data-testid="world-canvas-host"] canvas').first().screenshot())
+    const n = png.width * png.height
+    const ys = new Uint8Array(n)
+    const hist = new Array<number>(256).fill(0)
+    for (let p = 0; p < n; p++) {
+      const i = p * 4
+      ys[p] = Math.round(0.2126 * png.data[i] + 0.7152 * png.data[i + 1] + 0.0722 * png.data[i + 2])
+      hist[ys[p]]++
+    }
+    const bg = hist.indexOf(Math.max(...hist))
+    let lit = 0
+    for (const y of ys) if (y > bg + 24) lit++
+    return lit / n
+  } finally {
+    await style.evaluate((el) => (el as Element).remove())
+  }
+}
+
 async function cardShowsFirstLine(): Promise<boolean> {
   return page.evaluate(() => {
     const body = document.querySelector('[data-testid="world-card-body"]')
@@ -585,6 +615,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
       expect.soft(bar.rows, `the toolbar keeps to two rows at ${tag}`).toBeLessThanOrEqual(2)
       expect.soft(bar.closeBeside, `the close button sits beside the toolbar's first row at ${tag}`).toBe(true)
       expect.soft(await faintLabels(), `no map label is drawn too faint to read at ${tag}`).toEqual([])
+      expect.soft(await litShare(), `the stars and the city are drawn on the map at ${tag}`).toBeGreaterThan(0.0005)
       await shoot(`app-world-${name}`)
 
       const toggle = page.locator('[data-testid="world-legend-toggle"]')

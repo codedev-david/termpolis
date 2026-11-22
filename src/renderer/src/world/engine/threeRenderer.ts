@@ -226,6 +226,15 @@ const BASE_FOV = 55
 const PROTO_OVERVIEW = 120
 /** Room round the city at the overview: the whole city fills the picture with a tenth to spare. */
 const OVERVIEW_MARGIN = 1.1
+/** The camera's far plane for a world of ordinary size; a bigger overview pushes it out (fitOverview). */
+const CAMERA_FAR = 3000
+/** The near plane is at least this share of the far one, so the depth buffer keeps its precision as the far plane moves out. */
+const NEAR_PER_FAR = 1 / 30000
+/** The starfield's shell: its inner and outer radius at scale 1. */
+const STAR_INNER = 500
+const STAR_OUTER = 1400
+/** The stars' inner radius is at least this many times the overview's distance, so the city stands in front of them. */
+const STAR_ROOM = 2.4
 /** Half the width of a district's name on screen ("6 PARTS · 14 FILES"), kept in the overview. */
 const DISTRICT_NAME_HALF_PX = 64
 /** A district's name keeps this many pixels from the edge of the view. */
@@ -357,7 +366,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   host.appendChild(labelRenderer.domElement)
 
   const scene = new THREE.Scene()
-  const camera = new THREE.PerspectiveCamera(BASE_FOV, width / height, 0.1, 3000)
+  const camera = new THREE.PerspectiveCamera(BASE_FOV, width / height, CAMERA_FAR * NEAR_PER_FAR, CAMERA_FAR)
   /** The reserve rightInset works from: the legend's footprint, which changes as it opens and closes. */
   let reserve = opts.rightReserve ?? 0
   /** From what view width that strip is kept clear: undefined for rightInset's own rule (three times the strip). */
@@ -501,7 +510,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     const n = 3500
     const p = new Float32Array(n * 3)
     for (let i = 0; i < n; i++) {
-      const r = 500 + Math.random() * 900
+      const r = STAR_INNER + Math.random() * (STAR_OUTER - STAR_INNER)
       const th = Math.random() * Math.PI * 2
       const ph = Math.acos(Math.random() * 2 - 1)
       p[i * 3] = r * Math.sin(ph) * Math.cos(th)
@@ -1066,6 +1075,17 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     overviewPos.set(overviewTarget.x + dir[0] * overviewDist, overviewTarget.y + dir[1] * overviewDist, overviewTarget.z + dir[2] * overviewDist)
     // Room to step back from the overview of even a very big world.
     controls.maxDistance = Math.max(420, overviewDist * 1.6)
+    // The stars and the far plane go out with the overview. In a very tall, narrow view (a pane 480
+    // wide on a 5K screen) the overview of a wide city stands thousands of units back: past a fixed
+    // far plane, and outside the starfield, the whole picture was black. An ordinary world keeps both.
+    const shell = Math.max(1, (overviewDist * STAR_ROOM) / STAR_INNER)
+    stars.scale.setScalar(shell)
+    const far = Math.max(CAMERA_FAR, (STAR_OUTER * shell + controls.maxDistance + overviewTarget.length()) * 1.05)
+    for (const cam of [camera, scout]) {
+      cam.far = far
+      cam.near = far * NEAR_PER_FAR
+      cam.updateProjectionMatrix()
+    }
   }
 
   /** A district name's own half width (measured; the constant when it cannot be) and the height under its point. */
@@ -1472,7 +1492,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // Where each end falls in the free area first (cheap), then the clicks there (rays).
     const spots = ends.map((m) => probePoints(m).flatMap((p) => {
       scoutPt.copy(p).project(scout)
-      return Math.abs(scoutPt.z) <= 1 && inFreeArea(scoutPt.x, scoutPt.y, width, height, a, END_INSET_PX) ? [[scoutPt.x, scoutPt.y] as const] : []
+      return inFreeArea(scoutPt.x, scoutPt.y, width, height, a, END_INSET_PX, scoutPt.z) ? [[scoutPt.x, scoutPt.y] as const] : []
     }))
     let hidden = spots.filter((sp) => sp.length === 0).length
     if (hidden > 0) return hidden

@@ -6,7 +6,7 @@ import * as THREE from 'three'
 import { createThreeRenderer } from '../../../src/renderer/src/world/engine/threeRenderer'
 import type { SceneModel } from '../../../src/renderer/src/world/engine/sceneModel'
 import {
-  bldg, boxCanvas, cameraOf, DEFAULT_OPTS, district, emptyText, floorsOf, orb, packetBatches, rendererOf, sceneOf,
+  bldg, boxCanvas, cameraOf, DEFAULT_OPTS, district, emptyText, floorsOf, makeHost, orb, packetBatches, rendererOf, sceneOf,
   smallCity, smallText, withHarness, withData, worldOf,
 } from './threeHarness'
 
@@ -188,6 +188,42 @@ describe('threeRenderer motion', () => {
     r.draw({ ...smallCity(), buildings: smallCity().buildings.filter((b) => b.id !== 'a') }, smallText(), false)
     expect(r.motionState().exploded).toBeNull()
     r.dispose()
+  })
+
+  it('in a very tall, narrow view the overview stands far back, and the city and the stars stay nearer than the far plane (5120x2880 pane 480)', async () => {
+    // A pane 480 wide at 5K draws at twice the size: a view 240 by 1350, where the overview of a wide
+    // city stands thousands of units back. Past the camera's far plane the whole picture was black.
+    const tall = makeHost(240, 1350)
+    const r = createThreeRenderer(tall, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 240, 1350)
+    const at = (k: number): [number, number, number] => [(k % 6) * 90 - 225, 0, Math.floor(k / 6) * 90 - 180]
+    const ks = Array.from({ length: 30 }, (_, k) => k)
+    r.draw({ districts: ks.map((k) => district(`d${k}`, at(k), 35)), buildings: ks.map((k) => bldg(`b${k}`, at(k))), conduits: [], orbs: [] }, smallText(), false)
+    await r.overview(true)
+    h.frames.step()
+    const cam = cameraOf()
+    cam.updateMatrixWorld()
+    expect(cam.position.length()).toBeGreaterThan(3000) // the case: far past the old fixed far plane
+    // every district's middle is in the picture, nearer than the far plane
+    for (const k of ks) {
+      const v = new THREE.Vector3(...at(k)).project(cam)
+      expect(Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1 && v.z > -1 && v.z < 1, `d${k}`).toBe(true)
+    }
+    // and every star, wherever the camera can be zoomed out to, behind the city and before the far plane
+    const stars = sceneOf().children.find((o) => o instanceof THREE.Points && !(o.material as THREE.PointsMaterial).fog) as THREE.Points
+    stars.updateMatrixWorld()
+    const p = stars.geometry.getAttribute('position')
+    const v = new THREE.Vector3()
+    let near = Infinity
+    let far = 0
+    for (let i = 0; i < p.count; i++) {
+      const d = v.fromBufferAttribute(p, i).applyMatrix4(stars.matrixWorld).distanceTo(cam.position)
+      near = Math.min(near, d); far = Math.max(far, d)
+    }
+    expect(far).toBeLessThan(cam.far)
+    expect(near).toBeGreaterThan(cam.position.distanceTo(new THREE.Vector3(...r.getCamera().target)))
+    r.dispose()
+    tall.remove()
   })
 
   it('camera flights land on their targets: a pose, the overview and a framing', async () => {

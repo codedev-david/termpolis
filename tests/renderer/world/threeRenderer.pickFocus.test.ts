@@ -389,6 +389,18 @@ describe('threeRenderer framing', () => {
     r.dispose()
   })
 
+  it('a line whose ends show nowhere beside the panels (a free strip narrower than the inset) is seen from high above', async () => {
+    const r = drawn()
+    r.setRightReserve(780, 0) // 20 px left free: no end is END_INSET_PX inside both its edges
+    h.frames.step()
+    await r.frame(['e1'], true)
+    h.frames.step()
+    const cam = r.getCamera()
+    // the overhead view: high over the line's middle
+    expect(cam.pos[1] - cam.target[1]).toBeGreaterThan(Math.hypot(cam.pos[0] - cam.target[0], cam.pos[2] - cam.target[2]))
+    r.dispose()
+  })
+
   it("frames a clicked building with its name's whole box in the picture, even in a short view (F5)", async () => {
     const short = makeHost(800, 120)
     const r = createThreeRenderer(short, DEFAULT_OPTS)
@@ -439,7 +451,7 @@ describe('threeRenderer line framing', () => {
   })
 
   it('a line whose middle runs through towers is framed with both ends in view, the middle hidden wherever the camera stands', async () => {
-    // a world 3 km across: the furthest looks tried stand past the camera's far plane, where nothing shows
+    // a world 3 km across: the furthest looks tried stand thousands of units back, inside the far plane that goes out with the overview
     const r = drawn({
       districts: [district('d1', [0, 0, 0], 1500)],
       buildings: [bldg('p', [-12, 0, 0]), bldg('q', [12, 0, 0]), ...[-5, 0, 5].map((x, k) => bldg(`t${k}`, [x, 0, 0], { floors: 10, height: 40 }))],
