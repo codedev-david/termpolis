@@ -388,16 +388,27 @@ test.describe.serial('Lumopolis in the real app', () => {
     // the pty through main (Windows types straight to the pty host), so the report shows whether main's event
     // loop stalls during a compile (a 10 ms timer's lateness) or the machine is short of CPU (Electron's own
     // per-process CPU use, sampled every 250 ms). Times are epoch ms, as the renderer's timeOrigin + now().
-    await app.evaluate(({ app: eapp }) => {
-      const s = { lag: [] as number[][], cpu: [] as { t: number; p: { k: string; c: number }[] }[], stop: () => {} }
+    // It also stamps, in main, each typed letter's arrival (a second terminal:write listener, run after the real
+    // one) and each terminal:data message as it leaves for the page, so every key's echo splits into page to main,
+    // main to the shell and back (the pty host and the shell), and main to the page's screen.
+    await app.evaluate(({ app: eapp, ipcMain, BrowserWindow }) => {
+      const s = { lag: [] as number[][], cpu: [] as { t: number; p: { k: string; c: number }[] }[], writes: [] as number[], out: [] as [number, string][], stop: () => {} }
       ;(globalThis as unknown as { __mainDiag: typeof s }).__mainDiag = s
+      const onWrite = (_e: unknown, p: { data?: unknown }): void => { if (typeof p?.data === 'string' && /^[a-z]$/.test(p.data)) s.writes.push(Date.now()) }
+      ipcMain.on('terminal:write', onWrite)
+      const wc = BrowserWindow.getAllWindows()[0].webContents
+      const send = wc.send
+      wc.send = function (channel: string, ...args: unknown[]) {
+        if (channel === 'terminal:data' && typeof args[1] === 'string') s.out.push([Date.now(), args[1]])
+        return send.call(this, channel, ...args)
+      }
       let last = Date.now()
       const lagTimer = setInterval(() => { const now = Date.now(); s.lag.push([now, now - last - 10]); last = now }, 10)
       eapp.getAppMetrics()
       const cpuTimer = setInterval(() => {
         s.cpu.push({ t: Date.now(), p: eapp.getAppMetrics().map((m) => ({ k: m.name ? `${m.type}:${m.name}` : m.type, c: m.cpu.percentCPUUsage })) })
       }, 250)
-      s.stop = () => { clearInterval(lagTimer); clearInterval(cpuTimer) }
+      s.stop = () => { clearInterval(lagTimer); clearInterval(cpuTimer); ipcMain.removeListener('terminal:write', onWrite); wc.send = send }
     })
 
     // The load: main builds the bigger project's code graph, then its utility process compiles it.
@@ -448,11 +459,12 @@ test.describe.serial('Lumopolis in the real app', () => {
       return { down: s.down, echo: s.echo, compiling: s.compiling, runs: s.runs, compileError: s.compileError }
     })
     const diag = await app.evaluate(() => {
-      const s = (globalThis as unknown as { __mainDiag: { lag: number[][]; cpu: { t: number; p: { k: string; c: number }[] }[]; stop: () => void } }).__mainDiag
+      const s = (globalThis as unknown as { __mainDiag: { lag: number[][]; cpu: { t: number; p: { k: string; c: number }[] }[]; writes: number[]; out: [number, string][]; stop: () => void } }).__mainDiag
       s.stop()
-      return { lag: s.lag, cpu: s.cpu }
+      return { lag: s.lag, cpu: s.cpu, writes: s.writes, out: s.out }
     })
-    const { origin, cores } = await page.evaluate(() => ({ origin: performance.timeOrigin, cores: navigator.hardwareConcurrency }))
+    // The page's clock as epoch ms: timeOrigin + now(), corrected by its offset from Date.now() at the end.
+    const { origin, cores } = await page.evaluate(() => ({ origin: Date.now() - performance.now(), cores: navigator.hardwareConcurrency }))
     const inRun = (t: number): boolean => r.runs.some((w) => t >= origin + w.start && t < origin + w.end)
     const lagOf = (xs: number[]): string => {
       if (!xs.length) return 'none'
@@ -467,6 +479,31 @@ test.describe.serial('Lumopolis in the real app', () => {
       const top = Object.entries(sum).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, c]) => `${k} ${(c / Math.max(1, rows.length)).toFixed(0)}%`).join(', ')
       return `${rows.length} samples, total ${total.toFixed(0)}% (${top})`
     }
+    // Each key pressed after the hooks went in, in order, to the next letter main received, then to the first
+    // terminal:data after that write that holds a letter, then to the page seeing its echo.
+    const stages: { during: boolean; t1: number; t2: number; t3: number }[] = []
+    {
+      let wi = 0
+      let oi = 0
+      const first = diag.writes.length ? diag.writes[0] - 50 : Infinity
+      r.down.forEach((d, i) => {
+        const D = origin + d
+        if (D < first || !r.echo[i]) return
+        while (wi < diag.writes.length && diag.writes[wi] < D - 2) wi++
+        if (wi >= diag.writes.length) return
+        const W = diag.writes[wi++]
+        while (oi < diag.out.length && (diag.out[oi][0] < W || !/[a-z]/.test(diag.out[oi][1]))) oi++
+        if (oi >= diag.out.length) return
+        const S = diag.out[oi][0]
+        stages.push({ during: r.runs.some((w) => d >= w.start && d < w.end), t1: W - D, t2: S - W, t3: origin + r.echo[i] - S })
+      })
+    }
+    const stageOf = (during: boolean): string => {
+      const xs = stages.filter((x) => x.during === during)
+      const q = (k: 't1' | 't2' | 't3'): string => { const v = xs.map((x) => x[k]).sort((a, b) => a - b); return v.length ? `p50 ${v[Math.floor(v.length / 2)].toFixed(0)} p95 ${v[Math.min(v.length - 1, Math.ceil(v.length * 0.95) - 1)].toFixed(0)}` : '-' }
+      return `${xs.length} keys: page to main ${q('t1')}, main to shell and back ${q('t2')}, main to the page's screen ${q('t3')} ms`
+    }
+    console.log(`[typing while compiling, stages] during compiles ${stageOf(true)}; with none running ${stageOf(false)}`)
     console.log(`[typing while compiling, main] ${cores} cores; main timer lateness during compiles ${lagOf(diag.lag.filter((x) => inRun(x[0])).map((x) => x[1]))}, with none running ${lagOf(diag.lag.filter((x) => !inRun(x[0])).map((x) => x[1]))}; Electron CPU during compiles ${cpuOf(true)}; with none running ${cpuOf(false)}`)
     expect(r.compiling, 'the compiles were still running after 60 s of typing').toBe(false)
     expect(r.compileError ?? null).toBeNull()
