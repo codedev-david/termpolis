@@ -230,6 +230,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   /** True after an Esc reset with nothing done since: the next Esc closes. */
   const armedRef = useRef(false)
   const escRef = useRef<() => void>(onClose) // replaced on every render, below
+  /** The home's share of the pane's Esc (WorldHome): true when a dialog open on it took the key. */
+  const homeEscRef = useRef<(() => boolean) | null>(null)
   /**
    * The doc the viewer holds, so the same world arriving twice (a compile, then its own push) loads
    * once, and a newer world of the same project animates from it.
@@ -671,6 +673,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   })
 
   escRef.current = () => {
+    // A dialog open on the home takes the Esc and does its Cancel: never the pane's close or a camera reset.
+    if (world.kind === 'home' && homeEscRef.current?.()) { armedRef.current = false; return }
     if (tokenOpen) { setTokenOpen(false); return }
     cancelBookmark()
     if (confirmRelayout) { setConfirmRelayout(false); return }
@@ -847,7 +851,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName) }}
           />
         )}
-        {home && <WorldHome entries={entries} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} />}
+        {home && <WorldHome entries={entries} projectCwd={root} onOpen={(t) => openWorld(t)} onChanged={refresh} escRef={homeEscRef} />}
         {empty && (
           <WorldEmptyState
             mode={empty}

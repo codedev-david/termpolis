@@ -2,7 +2,7 @@
 // voice sink as the Ask bar: nothing reaches a terminal), main's designer drafts a planned world
 // read-only, and the pane opens it. The draft runs under a draft:<token> key, so Cancel can stop it
 // before its design key exists.
-import { useRef, useState } from 'react'
+import { useRef, useState, type MutableRefObject } from 'react'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { btnCls, dialogCls, fieldCls, primaryCls } from './worldTargets'
 import { lumopolisModel } from './worldAgentModel'
@@ -11,6 +11,8 @@ import { useUiZoom } from './worldPane'
 export interface DesignStartProps {
   onDrafted: (key: string) => void
   onClose: () => void
+  /** The pane hands this dialog its Esc (WorldHome): set on every render to what Esc does now. */
+  escRef?: MutableRefObject<(() => void) | null>
 }
 
 export const DRAFT_UNREACHABLE = "Lumopolis couldn't draft that design. Try again."
@@ -18,7 +20,7 @@ export const DRAFT_UNREACHABLE = "Lumopolis couldn't draft that design. Try agai
 let drafts = 0
 const draftKey = (): string => `draft:${Date.now().toString(36)}-${++drafts}`
 
-export function DesignStart({ onDrafted, onClose }: DesignStartProps): JSX.Element {
+export function DesignStart({ onDrafted, onClose, escRef }: DesignStartProps): JSX.Element {
   const zoom = useUiZoom()
   const [text, setText] = useState('')
   const [drafting, setDrafting] = useState<string | null>(null)
@@ -55,6 +57,8 @@ export function DesignStart({ onDrafted, onClose }: DesignStartProps): JSX.Eleme
     setDrafting(null)
     window.termpolis.worldDesignCancel(drafting).catch(() => undefined)
   }
+  // Esc is Cancel: it stops a draft under way, or closes the dialog.
+  if (escRef) escRef.current = cancel
 
   return (
     <div role="dialog" aria-label="Design something new" data-testid="world-design-start" className={dialogCls} style={zoom}>

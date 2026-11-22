@@ -1,7 +1,7 @@
 // Lumopolis: open a git repository. The URL is checked as it is typed (the same rules main enforces:
 // https://, ssh:// or git@ only, nothing that reads as an option), with an optional branch. While
 // main clones (shallow, into Termpolis's data folder) an indeterminate bar runs; Cancel stops it.
-import { useRef, useState } from 'react'
+import { useRef, useState, type MutableRefObject } from 'react'
 import type { WorldEntry } from '../../../../shared/world/types'
 import type { NeedsLogin, RepoAccess } from '../../../../shared/world/repoAccess'
 import { BAD_REF_MESSAGE, validateGitUrl, validGitRef } from '../../../../shared/world/gitUrl'
@@ -12,11 +12,13 @@ import { useUiZoom } from './worldPane'
 export interface CloneDialogProps {
   onCloned: (entry: WorldEntry) => void
   onClose: () => void
+  /** The pane hands this dialog its Esc (WorldHome): set on every render to what Esc does now. */
+  escRef?: MutableRefObject<(() => void) | null>
 }
 
 export const CLONE_UNREACHABLE = "Lumopolis couldn't clone that repository. Try again."
 
-export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Element {
+export function CloneDialog({ onCloned, onClose, escRef }: CloneDialogProps): JSX.Element {
   const zoom = useUiZoom()
   const [url, setUrl] = useState('')
   const [branch, setBranch] = useState('')
@@ -79,6 +81,10 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
     setSigningIn(false)
     window.termpolis.worldCloneCancel(trimmed, ref).catch(() => undefined)
   }
+  const closeToken = (): void => { setTokenOpen(false); setTokenError(null) }
+  // Esc is the Cancel of the dialog on top: the token dialog's when it is up, else this one's (which stops a clone
+  // under way before it closes anything).
+  if (escRef) escRef.current = tokenOpen && login !== null ? closeToken : cancel
 
   return (
     <>
@@ -136,7 +142,7 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
         busy={cloning}
         error={tokenError}
         onSubmit={submitToken}
-        onCancel={() => { setTokenOpen(false); setTokenError(null) }}
+        onCancel={closeToken}
       />
     )}
     </>

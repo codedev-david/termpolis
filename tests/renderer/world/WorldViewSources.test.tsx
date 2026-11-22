@@ -609,3 +609,96 @@ describe('WorldView sign in needed', () => {
     expect(screen.getByTestId('world-view')).toBeInTheDocument()
   })
 })
+
+describe('WorldView: Esc in a home dialog', () => {
+  const NEEDS = { needsLogin: { host: 'github.com', helper: false, message: 'That repository needs you to sign in.' } }
+  const homeView = async (over: Record<string, unknown> = {}) => {
+    const api = bridge({
+      worldClone: vi.fn(() => new Promise(() => undefined)),
+      worldCloneCancel: vi.fn(async () => ok(true)),
+      worldDesignDraft: vi.fn(() => new Promise(() => undefined)),
+      worldDesignCancel: vi.fn(async () => ok(true)),
+      ...over,
+    })
+    const onClose = vi.fn()
+    render(<WorldView root="" onClose={onClose} askSlot={() => <span />} />)
+    await settle()
+    return { api, onClose }
+  }
+  const esc = (el: Element) => fireEvent.keyDown(el, { key: 'Escape' })
+  const choice = (name: RegExp) => screen.getByRole('button', { name })
+
+  it('closes the clone or design dialog and only it, wherever the focus is in the pane: the pane stays open', async () => {
+    const { onClose } = await homeView()
+    // One Esc on the home arms the pane's close; a dialog opened after it takes the next Esc and disarms it.
+    esc(screen.getByTestId('world-home'))
+    fireEvent.click(choice(/^Open a git repository/))
+    // The focus still on the choice behind the scrim: that Esc is the dialog's too.
+    esc(choice(/^Open a git repository/))
+    expect(screen.queryByTestId('world-clone')).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.click(choice(/^Design something new/))
+    esc(screen.getByLabelText('Describe the app you want'))
+    expect(screen.queryByTestId('world-design-start')).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
+    // With no dialog left, Esc does what it did: the first resets, the second closes the pane.
+    esc(screen.getByTestId('world-home'))
+    expect(onClose).not.toHaveBeenCalled()
+    esc(screen.getByTestId('world-home'))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops a clone or a draft under way and keeps its dialog, as Cancel does', async () => {
+    const { api, onClose } = await homeView()
+    fireEvent.click(choice(/^Open a git repository/))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    expect(screen.getByRole('progressbar', { name: 'Cloning' })).toBeInTheDocument()
+    esc(screen.getByLabelText('Repository URL'))
+    expect(api.worldCloneCancel).toHaveBeenCalledWith('https://x.dev/a.git', undefined)
+    expect(screen.getByTestId('world-clone')).toBeInTheDocument()
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    esc(screen.getByLabelText('Repository URL'))
+    expect(screen.queryByTestId('world-clone')).toBeNull()
+    fireEvent.click(choice(/^Design something new/))
+    fireEvent.change(screen.getByLabelText('Describe the app you want'), { target: { value: 'A pet shop' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Design it' }))
+    await settle()
+    expect(api.worldDesignDraft).toHaveBeenCalled()
+    esc(screen.getByLabelText('Describe the app you want'))
+    expect(api.worldDesignCancel).toHaveBeenCalled()
+    expect(screen.getByTestId('world-design-start')).toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('in the token dialog over the clone dialog, closes only the token dialog', async () => {
+    const { onClose } = await homeView({ worldClone: vi.fn(async () => ok(NEEDS)) })
+    fireEvent.click(choice(/^Open a git repository/))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://github.com/o/r.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    await settle()
+    fireEvent.click(screen.getByTestId('world-clone-use-token'))
+    esc(screen.getByTestId('world-repo-access-input'))
+    expect(screen.queryByTestId('world-repo-access')).toBeNull()
+    expect(screen.getByTestId('world-clone')).toBeInTheDocument()
+    esc(screen.getByLabelText('Repository URL'))
+    expect(screen.queryByTestId('world-clone')).toBeNull()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('an Esc in a world opened from a dialog is the world\'s again', async () => {
+    const entry: WorldEntry = { key: 'kc', source: { kind: 'git', url: 'https://x.dev/a.git', root: 'C:/data/a' }, title: 'a', lastOpened: 4 }
+    await homeView({
+      worldClone: vi.fn(async () => ok(entry)),
+      worldTouchSource: vi.fn(async () => ok<WorldEntry | null>(entry)),
+      worldUpdateSource: vi.fn(async () => ok({ changed: false })),
+    })
+    fireEvent.click(choice(/^Open a git repository/))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://x.dev/a.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clone' }))
+    await settle()
+    expect(screen.queryByTestId('world-home')).toBeNull()
+    esc(screen.getByTestId('world-view'))
+    expect(viewer().resetView).toHaveBeenCalled()
+  })
+})

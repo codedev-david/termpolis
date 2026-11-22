@@ -2,7 +2,7 @@
 // repository, a new design) and the recent worlds below them. A world whose folder or design is gone
 // shows "missing" and can only be removed (its files, if any, are left alone).
 import { useLayoutEffect, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, MutableRefObject } from 'react'
 import type { WorldEntry, WorldSource } from '../../../../shared/world/types'
 import { CloneDialog } from './CloneDialog'
 import { DesignStart } from './DesignStart'
@@ -22,6 +22,8 @@ export interface WorldHomeProps {
   onChanged: () => void
   /** Tests pin the clock. */
   now?: number
+  /** The pane's Esc, offered to the home first (WorldView): true when an open dialog took it. Set on every render. */
+  escRef?: MutableRefObject<(() => boolean) | null>
 }
 
 const ICONS: Record<WorldSource['kind'], { icon: string; label: string }> = {
@@ -45,7 +47,7 @@ export function agoText(at: number, now: number): string {
 const CHOICE_GRID: CSSProperties = { gridTemplateColumns: 'repeat(auto-fit, minmax(min(15rem, 100%), 1fr))' }
 const choiceCls = 'flex flex-col items-start gap-1 rounded-lg border border-[#3c3c3c] bg-[#1b2236] hover:bg-[#222b44] hover:border-[#4fc1ff]/60 px-4 py-3 text-left disabled:opacity-50 disabled:hover:bg-[#1b2236] disabled:hover:border-[#3c3c3c]'
 
-export function WorldHome({ entries, projectCwd, onOpen, onChanged, now }: WorldHomeProps): JSX.Element {
+export function WorldHome({ entries, projectCwd, onOpen, onChanged, now, escRef }: WorldHomeProps): JSX.Element {
   const zoom = useUiZoom()
   const [dialog, setDialog] = useState<'clone' | 'design' | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -56,6 +58,16 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now }: World
     if (dialog !== null) (homeRef.current as HTMLDivElement).scrollTop = 0
   }, [dialog])
   const at = now ?? Date.now()
+  // An open dialog takes the pane's Esc, wherever the focus is in the pane, and does its Cancel with it: the pane
+  // stays open. The dialog sets what that is (dialogEsc) as it renders.
+  const dialogEsc = useRef<(() => void) | null>(null)
+  if (escRef) {
+    escRef.current = () => {
+      if (dialog === null) return false
+      ;(dialogEsc.current as () => void)()
+      return true
+    }
+  }
 
   /** Runs one home action: a failure shows main's friendly reason, a throw a fixed one. */
   const run = (fn: () => Promise<string | null>): void => {
@@ -161,12 +173,14 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now }: World
       {dialog !== null && <div data-testid="world-home-scrim" aria-hidden="true" className="absolute inset-0 z-10 bg-black/50" />}
       {dialog === 'clone' && (
         <CloneDialog
+          escRef={dialogEsc}
           onClose={() => setDialog(null)}
           onCloned={(entry) => { setDialog(null); onChanged(); onOpen(targetOf(entry)) }}
         />
       )}
       {dialog === 'design' && (
         <DesignStart
+          escRef={dialogEsc}
           onClose={() => setDialog(null)}
           onDrafted={(key) => { setDialog(null); onChanged(); onOpen({ kind: 'design', key }) }}
         />
