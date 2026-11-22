@@ -25,6 +25,8 @@ export interface AskRunnerDeps {
   /** How long each step between the world and the agent (the matches, the run environment, the memory primer) may take
    *  before the ask goes on without it. Default DEFAULT_PREP_TIMEOUT_MS. */
   prepTimeoutMs?: number
+  /** Writes a line to the app log. Default console.warn, which main mirrors into the app log. */
+  log?: (message: string) => void
 }
 
 export interface AskRunner {
@@ -55,19 +57,30 @@ export const agentMissingMessage = (agent: ExecAgent): string => `${AGENT_NAMES[
 /** True when a failed run says the agent's program could not be found. */
 export const isMissingCli = (error: string | undefined): boolean => /ENOENT|is not recognized as/i.test(error ?? '')
 
-/** `p`, or a rejection once `ms` pass or `signal` aborts, whichever comes first. */
-const bounded = <T>(p: Promise<T>, ms: number, signal: AbortSignal): Promise<T> =>
+/**
+ * The step `start` begins, or a rejection once `ms` pass or `signal` aborts, whichever comes first. A cancel that
+ * landed before the step began rejects at once, and the step is never started (a memory search left running costs the
+ * machine). A step that runs out says so in the app log (`log`): which step, its limit and how long it took, since it is
+ * then left out of the answer with nothing on screen to show it.
+ */
+const bounded = <T>(start: () => Promise<T>, ms: number, signal: AbortSignal, step: string, log: (message: string) => void): Promise<T> =>
   new Promise<T>((resolve, reject) => {
+    if (signal.aborted) { reject(new Error('stopped')); return }
+    const began = Date.now()
     const stop = (): void => reject(new Error('stopped'))
-    const timer = setTimeout(stop, ms)
+    const timer = setTimeout(() => {
+      log(`[world] ask: ${step} ran out after ${Date.now() - began} ms (limit ${ms} ms)`)
+      stop()
+    }, ms)
     signal.addEventListener('abort', stop, { once: true })
-    p.then(resolve, reject).finally(() => {
+    start().then(resolve, reject).finally(() => {
       clearTimeout(timer)
       signal.removeEventListener('abort', stop)
     })
   })
 
 export function createAskRunner(deps: AskRunnerDeps): AskRunner {
+  const log = deps.log ?? ((message: string) => console.warn(message))
   const byAsk = new Map<string, AbortController>()
   const byRoot = new Map<string, string>()
 
@@ -88,15 +101,19 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       let doc: WorldDoc | null
       try {
         // No background refresh from here: a refreshed world landing mid-answer would wipe the answer.
-        doc = await bounded(deps.client.get(root, { refresh: false }), deps.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS, ctl.signal)
-      } catch {
-        return ctl.signal.aborted ? cancelled() : { askId, ok: false, error: MAP_FAILED }
+        doc = await bounded(() => deps.client.get(root, { refresh: false }), deps.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS, ctl.signal, 'loading the map', log)
+      } catch (err) {
+        if (ctl.signal.aborted) return cancelled()
+        // A limit that ran out was logged by bounded; a host that failed says how, so a retry has a reason on record.
+        const why = err instanceof Error ? err.message : String(err)
+        if (why !== 'stopped') log(`[world] ask: loading the map failed: ${why}`)
+        return { askId, ok: false, error: MAP_FAILED }
       }
       if (ctl.signal.aborted) return cancelled()
       if (!doc) return { askId, ok: false, error: NOT_MAPPED }
       let matches: WorldReadResult
       try {
-        matches = await bounded(deps.client.read(root, { text: req.question, limit: 20 }), prepMs, ctl.signal)
+        matches = await bounded(() => deps.client.read(root, { text: req.question, limit: 20 }), prepMs, ctl.signal, 'reading matches', log)
       } catch {
         matches = { items: [], evidence: [] }
       }
@@ -110,7 +127,7 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       const agent = deps.agent()
       let run: { env: Record<string, string>; baseUrl?: string } = { env: {} }
       try {
-        run = await bounded(deps.runEnv(agent, root), prepMs, ctl.signal)
+        run = await bounded(() => deps.runEnv(agent, root), prepMs, ctl.signal, 'the run environment', log)
       } catch {
         // A broken or slow proxy must not block a question: the run goes direct.
       }
@@ -124,7 +141,7 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
             env: run.env,
             ...(run.baseUrl ? { baseUrl: run.baseUrl } : {})
           },
-          { ...deps.execDeps, primer: async (cwd) => { try { return await bounded(deps.primer(cwd), prepMs, ctl.signal) } catch { return null } } }
+          { ...deps.execDeps, primer: async (cwd) => { try { return await bounded(() => deps.primer(cwd), prepMs, ctl.signal, 'the memory primer', log) } catch { return null } } }
         )
       } catch (e) {
         if (ctl.signal.aborted) return cancelled()

@@ -14,7 +14,7 @@ const okRes = (output: string): ExecResult => ({ ok: true, output, primerChars: 
 
 function setup(
   exec: (req: ExecRequest) => Promise<ExecResult>, doc: WorldDoc | null = DOC, timeoutMs?: number, getTimeoutMs?: number,
-  over: Partial<Pick<Parameters<typeof createAskRunner>[0], 'agent' | 'runEnv' | 'primer' | 'prepTimeoutMs'>> = {}
+  over: Partial<Pick<Parameters<typeof createAskRunner>[0], 'agent' | 'runEnv' | 'primer' | 'prepTimeoutMs' | 'log'>> = {}
 ) {
   const execFn = vi.fn(exec)
   const client = {
@@ -24,11 +24,12 @@ function setup(
   const execDeps = { deliver: vi.fn() }
   const runEnv = vi.fn(async () => ({ env: {} as Record<string, string> }))
   const primer = vi.fn(async () => null as string | null)
+  const log = vi.fn()
   const runner = createAskRunner({
     exec: execFn as never, execDeps: execDeps as never, client: client as never, timeoutMs, getTimeoutMs,
-    agent: () => 'claude', runEnv, primer, ...over
+    agent: () => 'claude', runEnv, primer, log, ...over
   })
-  return { runner, execFn, client, execDeps, runEnv, primer }
+  return { runner, execFn, client, execDeps, runEnv, primer, log }
 }
 
 /** An exec that never answers by itself and rejects when its signal aborts. */
@@ -331,14 +332,125 @@ describe('createAskRunner', () => {
     })
   })
 
+  describe('a cancel before a step, and a step that runs out (round 4: m2, m3)', () => {
+    const never = <T>(): Promise<T> => new Promise<T>(() => undefined)
+    const primed = async (_req: ExecRequest, deps?: unknown): Promise<ExecResult> =>
+      okRes(`primer:${String(await (deps as { primer: (cwd: string) => Promise<string | null> }).primer('C:/repo'))}`)
+
+    it('a cancel that lands before priming begins answers cancelled at once, and the primer search is never started', async () => {
+      vi.useFakeTimers()
+      try {
+        let release!: () => void
+        const gate = new Promise<void>((r) => { release = r })
+        let got: string | null | undefined
+        // runHeadless awaits its own checks (cwdProblem) before it asks for the primer: the cancel lands there.
+        const exec = async (_req: ExecRequest, deps?: unknown): Promise<ExecResult> => {
+          await gate
+          got = await (deps as { primer: (cwd: string) => Promise<string | null> }).primer('C:/repo')
+          return okRes('late')
+        }
+        const primer = vi.fn(() => never<string | null>())
+        const { runner, execFn } = setup(exec, DOC, undefined, undefined, { primer })
+        const p = runner.ask(REQ)
+        await vi.waitFor(() => expect(execFn).toHaveBeenCalled())
+        runner.cancel('a1')
+        release()
+        await vi.advanceTimersByTimeAsync(0)
+        expect(got).toBeNull() // not after the 10 s limit: at once
+        expect(primer).not.toHaveBeenCalled()
+        expect(await p).toMatchObject({ ok: false, cancelled: true })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('each step that runs out writes which step, its limit and its time to the app log; nothing else is logged', async () => {
+      vi.useFakeTimers()
+      try {
+        const { runner, client, log } = setup(primed, DOC, undefined, undefined, {
+          primer: vi.fn(() => never<string | null>()), runEnv: vi.fn(() => never<{ env: Record<string, string> }>())
+        })
+        client.read.mockImplementationOnce(() => never())
+        const p = runner.ask(REQ)
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect(await p).toMatchObject({ ok: true, answer: { text: 'primer:null' } })
+        expect(log.mock.calls.map((c) => c[0])).toEqual([
+          '[world] ask: reading matches ran out after 10000 ms (limit 10000 ms)',
+          '[world] ask: the run environment ran out after 10000 ms (limit 10000 ms)',
+          '[world] ask: the memory primer ran out after 10000 ms (limit 10000 ms)'
+        ])
+        // The map's own limit logs too; a step in time, or one that fails fast, logs nothing.
+        log.mockClear()
+        client.get.mockImplementationOnce(() => never())
+        const q = runner.ask({ ...REQ, askId: 'a2' })
+        await vi.advanceTimersByTimeAsync(15_000)
+        expect(await q).toMatchObject({ ok: false })
+        expect(log.mock.calls.map((c) => c[0])).toEqual(['[world] ask: loading the map ran out after 15000 ms (limit 15000 ms)'])
+        const fast = setup(async () => okRes('hi'))
+        fast.client.read.mockRejectedValueOnce(new Error('host gone'))
+        expect(await fast.runner.ask(REQ)).toMatchObject({ ok: true })
+        expect(fast.log).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a cancel logs no step as run out', async () => {
+      const primer = vi.fn(() => never<string | null>())
+      const { runner, log } = setup(primed, DOC, undefined, undefined, { primer })
+      const p = runner.ask(REQ)
+      await vi.waitFor(() => expect(primer).toHaveBeenCalled())
+      runner.cancel('a1')
+      expect(await p).toMatchObject({ cancelled: true })
+      expect(log).not.toHaveBeenCalled()
+    })
+
+    it('a primer that answers, or fails, after its limit changes nothing: the run already started cold', async () => {
+      vi.useFakeTimers()
+      try {
+        for (const fail of [false, true]) {
+          let settle!: () => void
+          const primer = vi.fn(() => new Promise<string | null>((res, rej) => { settle = () => (fail ? rej(new Error('search failed')) : res('too late')) }))
+          const { runner } = setup(primed, DOC, undefined, undefined, { primer })
+          const p = runner.ask(REQ)
+          await vi.advanceTimersByTimeAsync(10_000)
+          expect(await p).toMatchObject({ ok: true, answer: { text: 'primer:null' } })
+          settle()
+          await vi.advanceTimersByTimeAsync(0)
+        }
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('without a log of its own, a step that runs out goes to console.warn (the app log)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        const runner = createAskRunner({
+          exec: (async () => okRes('hi')) as never, execDeps: {} as never, client: { get: async () => DOC, read: () => never() } as never,
+          agent: () => 'claude', runEnv: async () => ({ env: {} }), primer: async () => null, prepTimeoutMs: 5
+        })
+        expect(await runner.ask(REQ)).toMatchObject({ ok: true })
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[world\] ask: reading matches ran out after \d+ ms \(limit 5 ms\)/))
+      } finally {
+        warn.mockRestore()
+      }
+    })
+  })
+
   describe('loading the world fails', () => {
     const MAP_FAILED = "Lumopolis couldn't load this project's map. Try again."
 
     it('a host failure shows plain copy, never the raw error', async () => {
-      const { runner, client, execFn } = setup(async () => okRes('x'))
+      const { runner, client, execFn, log } = setup(async () => okRes('x'))
       client.get.mockRejectedValueOnce(new Error('Lumopolis host exited (code 3)'))
       expect(await runner.ask(REQ)).toEqual({ askId: 'a1', ok: false, error: MAP_FAILED })
       expect(execFn).not.toHaveBeenCalled()
+      // The raw reason goes to the app log only (round 4: m5).
+      expect(log.mock.calls.map((c) => c[0])).toEqual(['[world] ask: loading the map failed: Lumopolis host exited (code 3)'])
+      client.get.mockRejectedValueOnce('gone')
+      expect(await runner.ask({ ...REQ, askId: 'a2' })).toEqual({ askId: 'a2', ok: false, error: MAP_FAILED })
+      expect(log).toHaveBeenLastCalledWith('[world] ask: loading the map failed: gone')
     })
 
     it('a host that does not answer in time shows plain copy (15 s by default)', async () => {
