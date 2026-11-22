@@ -192,8 +192,14 @@ async function setViewport(v: Viewport): Promise<void> {
 async function shoot(name: string): Promise<void> {
   // A 4K or 5K frame drawn in software takes longer than the default 30 s to capture.
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`), timeout: 120_000 })
-  // Playwright puts the window's own DPR back after a screenshot. The session still holds the same override, so the
-  // same one sent again is ignored: clear it, then set it.
+  await reEmulate()
+}
+
+/**
+ * Playwright puts the window's own DPR back after a screenshot. The session still holds the same override, so the
+ * same one sent again is ignored: clear it, then set it.
+ */
+async function reEmulate(): Promise<void> {
   if (current && (await sizeNow(current)) !== 'ok') {
     await cdp.send('Emulation.clearDeviceMetricsOverride')
     await emulate(current)
@@ -484,7 +490,13 @@ async function litShare(): Promise<number> {
   })
   try {
     await page.waitForTimeout(300)
-    const png = PNG.sync.read(await page.locator('[data-testid="world-canvas-host"] canvas').first().screenshot())
+    // A clip of the page, not an element shot: at 5K a frame takes seconds, and an element shot waits for two frames
+    // in a row with the canvas still, which once ran out its time after half an hour of sizes. CSS scale keeps the
+    // PNG at the layout's own size.
+    const box = await page.locator('[data-testid="world-canvas-host"] canvas').first().boundingBox()
+    if (!box) return 0
+    const png = PNG.sync.read(await page.screenshot({ clip: box, scale: 'css', timeout: 120_000 }))
+    await reEmulate()
     const n = png.width * png.height
     const ys = new Uint8Array(n)
     const hist = new Array<number>(256).fill(0)
