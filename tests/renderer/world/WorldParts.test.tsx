@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import { CARD_CLICK_GRACE_MS, WorldCard } from '../../../src/renderer/src/components/World/WorldCard'
+import { CARD_CLICK_GRACE_MS, CARD_FADE_PX, WorldCard } from '../../../src/renderer/src/components/World/WorldCard'
 import { EvidenceView } from '../../../src/renderer/src/components/World/EvidenceView'
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
 import { TOOLBAR_FOLD_PX, TOOLBAR_MAX_ROWS, toolbarRows, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
@@ -37,6 +37,49 @@ describe('WorldCard', () => {
       expect(disconnect).toHaveBeenCalled()
     } finally {
       spyO.mockRestore()
+      spyC.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('fades its bottom edge while more lies below, at every scroll position and size, and not at the end (round 4: m6)', () => {
+    let fire = (): void => undefined
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { fire = cb }
+      observe(): void {}
+      disconnect(): void {}
+    })
+    const box = { scroll: 400, client: 200 }
+    const spyS = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => box.scroll)
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(() => box.client)
+    try {
+      const { rerender } = render(<WorldCard html="<h3>Store</h3>" onClose={() => {}} onOpen={() => {}} {...noop} />)
+      const body = screen.getByTestId('world-card-body')
+      expect(body).toHaveAttribute('data-more')
+      // Scrolled to within a pixel of the end: nothing more below, no fade.
+      body.scrollTop = 199.5
+      fireEvent.scroll(body)
+      expect(body).not.toHaveAttribute('data-more')
+      body.scrollTop = 100
+      fireEvent.scroll(body)
+      expect(body).toHaveAttribute('data-more')
+      // The card grows to hold it all (a new cap): the fade goes.
+      body.scrollTop = 0
+      box.client = 400
+      act(() => fire())
+      expect(body).not.toHaveAttribute('data-more')
+      // A longer card shown in it is measured again.
+      box.scroll = 900
+      rerender(<WorldCard html="<h3>Longer</h3>" onClose={() => {}} onOpen={() => {}} {...noop} />)
+      expect(body).toHaveAttribute('data-more')
+      // The fade is CARD_FADE_PX deep, on the text only: the scrollbar's gutter keeps a solid mask.
+      const css = screen.getByTestId('world-card').querySelector('style')?.textContent ?? ''
+      expect(CARD_FADE_PX).toBe(24)
+      expect(css).toContain('.world-card-body[data-more]{-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 24px),transparent),linear-gradient(#000,#000);')
+      expect(css).toContain('mask-size:calc(100% - var(--world-card-gutter,0px)) 100%,var(--world-card-gutter,0px) 100%;')
+      expect(css).toContain('mask-position:left top,right top;')
+    } finally {
+      spyS.mockRestore()
       spyC.mockRestore()
       vi.unstubAllGlobals()
     }

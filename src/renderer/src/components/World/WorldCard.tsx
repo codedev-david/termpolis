@@ -47,6 +47,16 @@ export interface WorldCardProps {
 }
 
 /**
+ * How far up from the bottom of a card that scrolls on its content fades out. A capped card's bottom edge falls
+ * wherever the cap does, through a line of text as often as not (at 1366x768 it sliced a list entry through its
+ * glyphs). Fading the last stretch, instead of snapping the card's height to an item's end, works whatever the
+ * items' heights (a wrapped paragraph, a row of chips, the sticky title) and at every scroll position, gives the
+ * card all its height, and says there is more below. It is deeper than any line the card shows (13 px text at
+ * 1.45, a 16 px title, a chip row of about 22 px), so a line the edge cuts lies wholly in the fade. Gone at the end.
+ */
+export const CARD_FADE_PX = 24
+
+/**
  * The prototype's inspector look (world-relationships.html): a dark glass panel, the name large, section
  * headings small capitals in sky blue so they read as labels and the text under them as values, status
  * pills, technology chips and dotted links. Scoped to .world-card so nothing leaks into the app.
@@ -56,6 +66,7 @@ const CARD_CSS = `
 .world-card-close{position:absolute;top:8px;right:calc(10px + var(--world-card-gutter, 0px));z-index:2;padding:2px 7px;border-radius:6px;color:#94a3b8;background:transparent;border:0;cursor:pointer}
 .world-card-close:hover{color:#e0f2fe;background:rgba(56,189,248,.18)}
 .world-card-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-wrap:anywhere;padding-right:8px;scrollbar-width:thin;scrollbar-color:rgba(125,211,252,.55) rgba(148,163,184,.12)}
+.world-card-body[data-more]{-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - ${CARD_FADE_PX}px),transparent),linear-gradient(#000,#000);mask-image:linear-gradient(to bottom,#000 calc(100% - ${CARD_FADE_PX}px),transparent),linear-gradient(#000,#000);-webkit-mask-size:calc(100% - var(--world-card-gutter,0px)) 100%,var(--world-card-gutter,0px) 100%;mask-size:calc(100% - var(--world-card-gutter,0px)) 100%,var(--world-card-gutter,0px) 100%;-webkit-mask-position:left top,right top;mask-position:left top,right top;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}
 .world-card-body:focus-visible{outline:1px solid rgba(125,211,252,.6);outline-offset:2px;border-radius:4px}
 .world-card-body > h3:first-child{position:sticky;top:0;z-index:1;padding:0 26px 4px 0;background:rgba(8,12,22,.96)}
 .world-card-body > :first-child:not(h3){padding-right:26px}
@@ -119,9 +130,18 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
   // scrollbar's measured width (0 with an overlay scrollbar or none), so it is never drawn over the scrollbar.
   const bodyRef = useRef<HTMLDivElement>(null)
   const [gutter, setGutter] = useState(0)
+  // Whether more lies below what the body shows: its bottom edge then fades (CARD_FADE_PX), never the scrollbar.
+  const [more, setMore] = useState(false)
+  const readMore = (): void => {
+    const body = bodyRef.current as HTMLDivElement
+    setMore(body.scrollHeight - body.scrollTop - body.clientHeight > 1)
+  }
   useLayoutEffect(() => {
     const body = bodyRef.current as HTMLDivElement
-    const measure = (): void => setGutter(body.offsetWidth - body.clientWidth)
+    const measure = (): void => {
+      setGutter(body.offsetWidth - body.clientWidth)
+      readMore()
+    }
     measure()
     // The scrollbar comes and goes as the card meets its cap; its width is taken from the body's content box.
     if (typeof ResizeObserver !== 'function') return
@@ -197,6 +217,8 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
         aria-label="Details"
         tabIndex={0}
         onClick={onClick}
+        onScroll={readMore}
+        {...(more ? { 'data-more': '' } : {})}
         dangerouslySetInnerHTML={{ __html: html }}
       />
       {edit && (

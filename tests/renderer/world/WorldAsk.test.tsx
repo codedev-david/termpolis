@@ -19,6 +19,7 @@ vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
   }
 }))
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
+import { ANSWER_TEXT_MAX_HEIGHT } from '../../../src/renderer/src/components/World/WorldAnswer'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
@@ -314,6 +315,57 @@ describe('WorldAsk', () => {
       expect(v.apply).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'openCard' }))
       fireEvent.click(chip)
       expect(screen.queryByText('file src/main/x.ts')).toBeNull()
+    })
+
+    it('the answer scrolls inside a capped region of its own; the ×, the honesty note and Show me again stay outside it (round 4: I2)', async () => {
+      const v = makeViewer()
+      ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'Long [E1].', {
+        cited: { E1: { kind: 'file', ref: 'src/a.ts', items: [] } },
+        answer: { text: 'Long [E1].', sentences: [{ text: 'Long [E1].', actions: [0], sep: '' }], actions: [{ type: 'reset' }], evidence: [], dropped: 0, unsupported: [], uncited: true }
+      }))
+      await submit(v, 'q')
+      const scroller = screen.getByTestId('world-answer-scroll')
+      expect(ANSWER_TEXT_MAX_HEIGHT).toBe('6rem')
+      expect(scroller.style.maxHeight).toBe('6rem')
+      expect(scroller.className).toMatch(/(^| )overflow-y-auto( |$)/)
+      expect(scroller).toHaveAttribute('role', 'region')
+      expect(scroller).toHaveAccessibleName('Answer')
+      expect(scroller.tabIndex).toBe(0)
+      expect(scroller.contains(screen.getByTestId('world-answer-text'))).toBe(true)
+      expect(scroller.contains(screen.getByRole('button', { name: 'Evidence E1' }))).toBe(true)
+      for (const outside of [screen.getByRole('button', { name: 'Close answer' }), screen.getByRole('note'), screen.getByRole('button', { name: 'Show me again' })]) {
+        expect(scroller.contains(outside)).toBe(false)
+      }
+      // An opened evidence line is inside the scroller too, so the panel never grows past its cap.
+      fireEvent.click(screen.getByRole('button', { name: 'Evidence E1' }))
+      expect(scroller.contains(screen.getByTestId('evidence-view'))).toBe(true)
+    })
+
+    it('an evidence line that opens is scrolled into view; one that closes is not (round 4: I2)', async () => {
+      const into = vi.fn()
+      const was = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
+      Object.defineProperty(Element.prototype, 'scrollIntoView', { value: into, configurable: true, writable: true })
+      try {
+        const v = makeViewer()
+        withCited('See [E1] and [E2].', { E1: { kind: 'file', ref: 'src/a.ts', items: [] }, E2: { kind: 'file', ref: 'src/b.ts', items: [] } })
+        await submit(v, 'q')
+        const chip = (n: number): HTMLElement => screen.getByRole('button', { name: `Evidence E${n}` })
+        fireEvent.click(chip(2))
+        expect(into).toHaveBeenCalledTimes(1)
+        expect(into.mock.instances[0]).toBe(screen.getByText('file src/b.ts').closest('[data-evidence-label]'))
+        expect(into).toHaveBeenLastCalledWith({ block: 'nearest' })
+        fireEvent.click(chip(2))
+        expect(into).toHaveBeenCalledTimes(1)
+        // Opened again, it is scrolled to again.
+        fireEvent.click(chip(2))
+        expect(into).toHaveBeenCalledTimes(2)
+        fireEvent.click(chip(1))
+        expect(into).toHaveBeenCalledTimes(3)
+        expect(into.mock.instances[2]).toBe(screen.getByText('file src/a.ts').closest('[data-evidence-label="E1"]'))
+      } finally {
+        if (was) Object.defineProperty(Element.prototype, 'scrollIntoView', was)
+        else delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+      }
     })
 
     it('a chip names the part it cites: E1 · <building name>, or the edge label', async () => {
