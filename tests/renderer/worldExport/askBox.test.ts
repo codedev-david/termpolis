@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildBm25, packInt8, type AskEntry, type AskKind } from '../../../src/shared/world/askIndex'
 import * as askIndex from '../../../src/shared/world/askIndex'
-import { ASK_CAPTION, ASK_FAILED, ASK_LOADING, ASK_NONE, ASK_PLACEHOLDER, mountAskBox, type AskBoxDeps } from '../../../src/world-export/askBox'
+import { ASK_CAPTION, ASK_FAILED, ASK_LOADING, ASK_NONE, ASK_PLACEHOLDER, mountAskBox, showAnswers, type AskBoxDeps } from '../../../src/world-export/askBox'
 import type { SmartAsk } from '../../../src/world-export/smartAsk'
 
 const entry = (id: string, kind: AskKind, name: string, text: string, first = `${name} first line`): AskEntry => ({ id, kind, name, first, text, test: false })
@@ -113,11 +113,13 @@ describe('mountAskBox', () => {
   it('fold hides the answer under the question until the box is used again', async () => {
     const { host, box, input, ask } = mount()
     const section = host.querySelector('.wx-ask') as HTMLElement
-    box.fold() // nothing asked yet: nothing to fold
+    expect(box.fold()).toBe(false) // nothing asked yet: nothing to fold
     expect(section.hasAttribute('data-folded')).toBe(false)
+    expect(box.folded()).toBe(false)
     await ask('memory')
-    box.fold()
+    expect(box.fold()).toBe(true)
     expect(section.hasAttribute('data-folded')).toBe(true)
+    expect(box.folded()).toBe(true)
     input.dispatchEvent(new Event('focus'))
     expect(section.hasAttribute('data-folded')).toBe(false)
     box.fold()
@@ -129,13 +131,60 @@ describe('mountAskBox', () => {
     box.fold()
     await ask('memory') // asking again shows the answer
     expect(section.hasAttribute('data-folded')).toBe(false)
+    box.fold()
+    box.unfold()
+    expect(box.folded()).toBe(false)
   })
 
-  it('fold also folds a no-match answer away', async () => {
+  it('a folded answer shows a "Show N answers" button that says it is collapsed; the button opens it and hands the focus to the first result', async () => {
+    const { host, box, ask, ids } = mount()
+    const more = host.querySelector('.wx-ask-more') as HTMLButtonElement
+    const results = host.querySelector('.wx-ask-results') as HTMLElement
+    expect(more.hidden).toBe(true)
+    expect(more.type).toBe('button')
+    expect(more.getAttribute('aria-controls')).toBe(results.id)
+    expect(results.id).not.toBe('')
+    await ask('memory')
+    const n = ids().length
+    expect(n).toBeGreaterThan(1)
+    box.fold()
+    expect(more.hidden).toBe(false)
+    expect(more.textContent).toBe(`Show ${n} answers`)
+    expect(more.getAttribute('aria-expanded')).toBe('false')
+    more.click()
+    expect(box.folded()).toBe(false)
+    expect(more.hidden).toBe(true)
+    expect(more.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement).toBe(host.querySelector('.wx-ask-pick'))
+    await ask('github')
+    box.fold()
+    expect(more.textContent).toBe('Show 1 answer')
+    expect(showAnswers(1)).toBe('Show 1 answer')
+    expect(showAnswers(5)).toBe('Show 5 answers')
+    box.unfold()
+    expect(more.hidden).toBe(true)
+  })
+
+  it('withAnswer reads the box as it is with the answer shown, and puts the fold back', async () => {
+    const { host, box, ask } = mount()
+    const section = host.querySelector('.wx-ask') as HTMLElement
+    const more = host.querySelector('.wx-ask-more') as HTMLButtonElement
+    expect(box.withAnswer(() => section.hasAttribute('data-folded'))).toBe(false)
+    await ask('memory')
+    box.fold()
+    expect(box.withAnswer(() => [section.hasAttribute('data-folded'), more.hidden])).toEqual([false, true])
+    expect(section.hasAttribute('data-folded')).toBe(true)
+    expect(more.hidden).toBe(false)
+    expect(() => box.withAnswer(() => { throw new Error('read failed') })).toThrow('read failed')
+    expect(section.hasAttribute('data-folded')).toBe(true)
+  })
+
+  it('does not fold a no-match answer: there is nothing to show again', async () => {
     const { host, box, ask } = mount()
     await ask('zzzz')
-    box.fold()
-    expect((host.querySelector('.wx-ask') as HTMLElement).hasAttribute('data-folded')).toBe(true)
+    expect(box.fold()).toBe(false)
+    expect((host.querySelector('.wx-ask') as HTMLElement).hasAttribute('data-folded')).toBe(false)
+    expect((host.querySelector('.wx-ask-more') as HTMLElement).hidden).toBe(true)
   })
 
   it('calls onPick with the id of the clicked result', async () => {

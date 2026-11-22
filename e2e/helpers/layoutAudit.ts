@@ -398,6 +398,18 @@ export async function stillMoving(page: Evaluates, root: string | null = null): 
   return 'nothing in four pairs of looks'
 }
 
+/** The share of a test's time left that one settle may wait: a page that never settles fails that settle (softly)
+ *  and still leaves the test the time to walk its other states. */
+export const SETTLE_SHARE = 0.25
+/**
+ * How long one settle may wait: `want` (already scaled for a slow window), but no more than SETTLE_SHARE of what a
+ * `timeout` ms test started at `startedAt` has left, and at least a second. With no test timeout (0), `want`.
+ */
+export function settleBudget(want: number, timeout: number, startedAt: number, now = Date.now()): number {
+  if (!(timeout > 0)) return want
+  return Math.max(1_000, Math.min(want, (timeout - (now - startedAt)) * SETTLE_SHARE))
+}
+
 /**
  * Waits, instead of a fixed time, until the layout under `root` has stayed the same for STEADY_SAMPLES samples
  * STEADY_EVERY_MS apart; false when it was still moving after `timeout` ms. `log`, when given, gets each sample's time

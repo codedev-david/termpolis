@@ -23,11 +23,18 @@ export interface AskBox {
   /** Settles once smart Ask is ready or has failed ('keyword' at once on a keyword-only page). Never rejects. */
   ready: Promise<AskState>
   /**
-   * Folds the answer away (the results, the no-match line and the caption) down to the question, when the page needs
-   * the room for what was just opened. The question stays; clicking into it, typing or asking again brings the
-   * answer back. Nothing to fold (no question asked yet): nothing changes.
+   * Folds the answer away (the results and the caption) down to the question and a "Show N answers" button, when the
+   * page needs the room for what was just opened. The question stays; the button, clicking into the question, typing
+   * or asking again brings the answer back. Only results fold: with none (nothing asked yet, or no match) nothing
+   * changes. True when the answer is folded.
    */
-  fold(): void
+  fold(): boolean
+  /** Brings a folded answer back. */
+  unfold(): void
+  /** Whether the answer is folded now. */
+  folded(): boolean
+  /** What `read` measures with the answer shown, the fold put back after (synchronously, so nothing is drawn between). */
+  withAnswer<T>(read: () => T): T
 }
 
 export const ASK_PLACEHOLDER = 'Ask about this project'
@@ -35,6 +42,8 @@ export const ASK_LOADING = 'Smart Ask is getting ready… keyword search works n
 export const ASK_FAILED = "Smart Ask couldn't start in this browser; using keyword search."
 export const ASK_CAPTION = "Offline search: finds the parts that match; it doesn't write new answers."
 export const ASK_NONE = 'No matching parts'
+/** The button a folded answer leaves under the question. */
+export const showAnswers = (n: number): string => `Show ${n} ${n === 1 ? 'answer' : 'answers'}`
 export const KIND_WORD: Record<AskKind, string> = { building: 'building', line: 'line', external: 'outside system', term: 'term', tour: 'tour' }
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] => {
@@ -43,6 +52,9 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: s
   if (text !== undefined) e.textContent = text
   return e
 }
+
+/** Each box's results list gets its own id, for the fold button's aria-controls. */
+let boxes = 0
 
 export function mountAskBox(host: HTMLElement, deps: AskBoxDeps): AskBox {
   let state: AskState = deps.smart ? 'loading' : 'keyword'
@@ -63,14 +75,32 @@ export function mountAskBox(host: HTMLElement, deps: AskBoxDeps): AskBox {
   const status = el('p', 'wx-ask-status')
   status.setAttribute('role', 'status')
   const results = el('ul', 'wx-ask-results')
+  results.id = `wx-ask-results-${++boxes}`
+  const more = el('button', 'wx-ask-more')
+  more.type = 'button'
+  more.hidden = true
+  more.setAttribute('aria-controls', results.id)
+  more.setAttribute('aria-expanded', 'true')
   const none = el('p', 'wx-ask-none', ASK_NONE)
   none.hidden = true
   const caption = el('p', 'wx-ask-caption', ASK_CAPTION)
-  box.append(form, status, results, none, caption)
+  box.append(form, status, more, results, none, caption)
   host.appendChild(box)
 
-  /** Folded (fold): the answer is hidden under the question until the box is used again. */
-  const unfold = (): void => box.removeAttribute('data-folded')
+  /** Folded (fold): the answer is hidden under the question, and the button says how many results it holds. */
+  const setFolded = (on: boolean): void => {
+    if (on) box.setAttribute('data-folded', '')
+    else box.removeAttribute('data-folded')
+    more.hidden = !on
+    more.setAttribute('aria-expanded', String(!on))
+    if (on) more.textContent = showAnswers(results.childElementCount)
+  }
+  const folded = (): boolean => box.hasAttribute('data-folded')
+  const unfold = (): void => setFolded(false)
+  more.addEventListener('click', () => {
+    unfold()
+    ;(results.querySelector('button') as HTMLButtonElement).focus()
+  })
   input.addEventListener('focus', unfold)
   input.addEventListener('pointerdown', unfold)
   input.addEventListener('input', unfold)
@@ -135,8 +165,14 @@ export function mountAskBox(host: HTMLElement, deps: AskBoxDeps): AskBox {
       (s) => { smart = s; state = 'smart'; showState(); return state },
       () => { state = 'failed'; showState(); return state },
     )
-  const fold = (): void => {
-    if (results.childElementCount > 0 || !none.hidden) box.setAttribute('data-folded', '')
+  const fold = (): boolean => {
+    if (results.childElementCount > 0) setFolded(true)
+    return folded()
   }
-  return { state: () => state, ready, fold }
+  const withAnswer = <T>(read: () => T): T => {
+    const was = folded()
+    setFolded(false)
+    try { return read() } finally { setFolded(was) }
+  }
+  return { state: () => state, ready, fold, unfold, folded, withAnswer }
 }

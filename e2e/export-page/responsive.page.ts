@@ -16,10 +16,10 @@
 // name must stay clear of one another.
 import fs from 'node:fs'
 import path from 'node:path'
-import type { Page } from '@playwright/test'
+import type { CDPSession, Page } from '@playwright/test'
 import { ask, askReady, expect, test } from './helpers'
 import { DOCUMENT_HTML, KEYWORD_HTML, SMART_HTML } from './paths'
-import { auditProblems, layoutAudit, medianFont, responsiveViewports, stillMoving, steady, type AuditOptions, type Viewport } from '../helpers/layoutAudit'
+import { auditProblems, layoutAudit, medianFont, responsiveViewports, settleBudget, stillMoving, steady, type AuditOptions, type Viewport } from '../helpers/layoutAudit'
 import { uiScale } from '../../src/shared/world/uiScale'
 
 const SHOTS = path.resolve(process.env.RESPONSIVE_SHOTS ?? 'test-results/responsive-shots')
@@ -33,34 +33,62 @@ const DOCUMENT: AuditOptions = { panels: [], verticalScroll: true, scrollX: ['.m
 const LAPTOP_MEDIAN = 12
 const wantMedian = (v: Viewport): number => LAPTOP_MEDIAN * uiScale(v.width, v.height)
 
+/** Each page's size under test and the session that emulates it. Playwright puts its own viewport back after every
+ *  screenshot (msedge: its 1280x800; Electron: the display's own DPR), so shoot emulates the size again after each. */
+const emulated = new WeakMap<Page, { cdp: CDPSession; v: Viewport }>()
+
+/** The window's size and DPR now, as `v`'s name would say it, or 'ok' when it is `v` (within a pixel: the window's own
+ *  display scaling leaves a rounding pixel under emulation). */
+const sizeNow = (page: Page, v: Viewport): Promise<string> =>
+  page.evaluate(({ w, h, d }) => Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1 && Math.abs(devicePixelRatio - d) < 0.01 ? 'ok' : `${innerWidth}x${innerHeight}@${devicePixelRatio}`, { w: v.width, h: v.height, d: v.dpr })
+
+async function emulate(page: Page, cdp: CDPSession, v: Viewport): Promise<void> {
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dpr, mobile: false })
+  await expect.poll(() => sizeNow(page, v), { timeout: 10_000 }).toBe('ok')
+}
+
 async function setViewport(page: Page, v: Viewport): Promise<void> {
   // The session stays attached: Chromium drops a session's emulation when it detaches. It closes with the page.
   const cdp = await page.context().newCDPSession(page)
-  await cdp.send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dpr, mobile: false })
-  // Within a pixel: the window's own display scaling leaves a rounding pixel under emulation.
-  await expect.poll(() => page.evaluate(({ w, h, d }) => Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1 && Math.abs(devicePixelRatio - d) < 0.01 ? 'ok' : `${innerWidth}x${innerHeight}@${devicePixelRatio}`, { w: v.width, h: v.height, d: v.dpr }), { timeout: 10_000 }).toBe('ok')
+  emulated.set(page, { cdp, v })
+  await emulate(page, cdp, v)
 }
+
+/** When the test started, for settleBudget. */
+let testStarted = Date.now()
+test.beforeEach(() => { testStarted = Date.now() })
 
 /** Waits until the page has settled (the city's frames, the label pass after a resize, the camera's moves): until its
  *  layout stops changing, not for a fixed time. A page still moving after 15 s, times how much slower than at 1080p a
- *  frame is, is a soft failure: the city's glides step by the frame's time capped at 0.05 s, and the test renders in
- *  software, where a 4K frame takes about 0.4 s, so a half-second glide there spans some 13 s of the test's time. */
+ *  frame is, is a soft failure. The test renders in software, where a 4K frame takes about 0.4 s: the city's moves
+ *  run on the clock and end on time, but each sample of the layout waits for a frame, and the label pass and the
+ *  steady samples after a move take frames, not time. One settle waits at most a share of the test's time left
+ *  (settleBudget), so a page that never settles still leaves the test its other states. The size is the emulated
+ *  one (innerWidth), not Playwright's viewport. */
 async function settle(page: Page, state: string): Promise<void> {
   const log: string[] = []
-  const size = page.viewportSize() ?? { width: 1920, height: 1080 }
-  const dpr = await page.evaluate(() => devicePixelRatio)
-  const slowness = Math.max(1, (size.width * size.height * dpr * dpr) / (1920 * 1080))
-  const settled = await steady(page, null, 15_000 * slowness, log)
+  const [w, h, dpr] = await page.evaluate(() => [innerWidth, innerHeight, devicePixelRatio])
+  const slowness = Math.max(1, (w * h * dpr * dpr) / (1920 * 1080))
+  const settled = await steady(page, null, settleBudget(15_000 * slowness, test.info().timeout, testStarted), log)
   expect.soft(settled, `${state}: the page settled${settled ? '' : ` (samples: ${log.join(', ')}; still moving: ${await stillMoving(page)})`}`).toBe(true)
 }
 
 async function shoot(page: Page, name: string, fullPage = false): Promise<void> {
   fs.mkdirSync(SHOTS, { recursive: true })
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage })
+  const e = emulated.get(page)
+  if (e && (await sizeNow(page, e.v)) !== 'ok') {
+    // The session still holds the same override, so the same one sent again is ignored: clear it, then set it.
+    await e.cdp.send('Emulation.clearDeviceMetricsOverride')
+    await emulate(page, e.cdp, e.v)
+  }
 }
 
 /** Audits the page as it is now; records every problem as a soft failure under `state`, and returns the median font. */
 async function check(page: Page, state: string, opts: AuditOptions): Promise<number> {
+  // Audited at the size under test, or the audit says nothing about it.
+  const e = emulated.get(page)
+  if (e) expect(await sizeNow(page, e.v), `${state}: the window is at ${e.v.name}`).toBe('ok')
   const r = await page.evaluate(layoutAudit, opts)
   expect.soft(r.texts, `${state}: the audit measured no text`).toBeGreaterThan(0)
   expect.soft(auditProblems(r), state).toEqual([])
@@ -185,9 +213,9 @@ for (const v of responsiveViewports()) {
   })
 }
 
-/** The pages a long card leaves least room on: under 828 px no column is left between the card and the Ask box, so
- *  opening the card folds the Ask answer away (800 px: the band where the framing gives up the box's strip for the
- *  card; 768x1024: a portrait tablet). */
+/** The pages a long card leaves least room on: no room is left below the card, and the room beside it is under the
+ *  Ask box, so opening the card folds the Ask answer away until the card closes (800 px: the band where the framing
+ *  gives up the box's strip for the card; 768x1024: a portrait tablet). */
 const LONG_CARD_VIEWPORTS: Viewport[] = [
   { name: 'long-card-800x700', width: 800, height: 700, dpr: 1 },
   { name: 'long-card-768x1024', width: 768, height: 1024, dpr: 1 },
@@ -241,13 +269,34 @@ for (const v of LONG_CARD_VIEWPORTS) {
       expect.soft(overlaps(l, c!), `${name}'s name (${show(l)}) under the card (${show(c!)})`).toBe(false)
       expect.soft(overlaps(l, a!), `${name}'s name (${show(l)}) under the Ask box (${show(a!)})`).toBe(false)
     }
-    // The answer folded away under the question, and the focus went from the clicked result to the card.
+    // The answer folded away under the question, leaving a button that says what it holds and that it is collapsed;
+    // the focus went from the clicked result to the card.
+    const more = page.locator('.wx-ask-more')
     await expect(page.locator('.wx-ask-results')).toBeHidden()
+    await expect(more).toBeVisible()
+    await expect(more).toHaveText(/^Show \d+ answers?$/)
+    await expect(more).toHaveAttribute('aria-expanded', 'false')
     expect(await page.evaluate(() => document.activeElement?.classList.contains('wx-card') ?? false), 'the focus is on the card').toBe(true)
     await check(page, 'long card', CITY)
     await shoot(page, `export-keyword-longcard-${v.width}x${v.height}`)
-    // Clicking back into the question brings the answer back.
-    await page.locator('.wx-ask input').click()
-    await expect(page.locator(`.wx-ask-results button.wx-ask-pick[data-id="${LONG_ID}"]`)).toBeVisible()
+    // Esc closes the card: the answer comes back, and the focus goes back to the result that opened it.
+    await page.keyboard.press('Escape')
+    await expect(card).toBeHidden()
+    await expect(pickEl).toBeVisible()
+    await expect(more).toBeHidden()
+    expect(await page.evaluate((id) => document.activeElement?.getAttribute('data-id') === id, LONG_ID), 'the focus is back on the result').toBe(true)
+    await settle(page, 'card closed')
+    await shoot(page, `export-keyword-longcard-closed-${v.width}x${v.height}`)
+    // Opened again, folded again; the button brings the answer back with the card still open, focus on its first result.
+    await pickEl.click()
+    await expect(more).toBeVisible()
+    await more.click()
+    await expect(pickEl).toBeVisible()
+    await expect(card).toBeVisible()
+    expect(await page.evaluate(() => document.activeElement?.classList.contains('wx-ask-pick') ?? false), 'the focus is on a result').toBe(true)
+    // The close button closes it, and the answer stays.
+    await card.locator('.wx-card-close').click()
+    await expect(card).toBeHidden()
+    await expect(pickEl).toBeVisible()
   })
 }

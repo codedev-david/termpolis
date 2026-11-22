@@ -77,7 +77,7 @@ async function boot(): Promise<AskState> {
       ? afterPaint().then(() => startSmartAsk(readBlock))
       : null
     const box = mountAskBox(page.askHost, { entries, bm25: buildBm25(entries.map((e) => e.text)), vectors, smart, onPick: page.pick })
-    page.setAskFold(box.fold)
+    page.setAsk(box)
     current = box.state
     return await box.ready
   } catch {

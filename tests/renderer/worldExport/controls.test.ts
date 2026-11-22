@@ -498,68 +498,218 @@ describe('buildPage: the 2D map', () => {
   })
 })
 
-describe('a card on a page too narrow for the card and the Ask box side by side', () => {
-  const sizes = (q: (sel: string) => HTMLElement, stage: number): void => {
-    Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: stage, configurable: true })
-    Object.defineProperty(q('.wx-card'), 'offsetWidth', { value: 340, configurable: true })
-    Object.defineProperty(q('.wx-ask-host'), 'offsetWidth', { value: 320, configurable: true })
+describe('the Ask answer folds away while it would cover the open card or the part the card frames', () => {
+  /** A box's place in the stage: left, top, width, height. */
+  type Box = [number, number, number, number]
+  const place = (el: HTMLElement, [l, t, w, h]: Box): void => {
+    for (const [k, v] of [['offsetLeft', l], ['offsetTop', t], ['offsetWidth', w], ['offsetHeight', h]] as const) Object.defineProperty(el, k, { value: v, configurable: true })
   }
-  const result = (askHost: HTMLElement): HTMLButtonElement => {
-    const b = document.createElement('button')
-    askHost.appendChild(b)
-    return b
+  const stageSize = (q: (sel: string) => HTMLElement, w: number, h: number): void => {
+    Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: w, configurable: true })
+    Object.defineProperty(q('.wx-stage'), 'clientHeight', { value: h, configurable: true })
   }
+  /** The Ask host at `l, t`, `w` wide: `open` px tall with its answer shown, 44 px folded. */
+  const askAt = (askHost: HTMLElement, folded: () => boolean, measuring: () => boolean, [l, t, w, open]: Box): void => {
+    place(askHost, [l, t, w, open])
+    Object.defineProperty(askHost, 'offsetHeight', { get: () => (folded() && !measuring() ? 44 : open), configurable: true })
+  }
+  /** A stand-in Ask box with a result and a question box in the host. The user can open its answer by itself. */
+  const fakeAsk = (askHost: HTMLElement, box: Box) => {
+    let folded = false
+    let measuring = false
+    const results = document.createElement('button')
+    results.className = 'result'
+    const input = document.createElement('input')
+    askHost.append(input, results)
+    const ask = {
+      results,
+      input,
+      fold: vi.fn((): boolean => { folded = true; return true }),
+      unfold: vi.fn((): void => { folded = false }),
+      folded: (): boolean => folded,
+      withAnswer: <T>(read: () => T): T => { measuring = true; try { return read() } finally { measuring = false } },
+      userOpens: (): void => { folded = false },
+      moveTo: (b: Box): void => askAt(askHost, () => folded, () => measuring, b),
+    }
+    ask.moveTo(box)
+    return ask
+  }
+  /** An 800x700 page (the Ask strip from 732 is kept): a card in the top left corner, the Ask box at the top right. */
+  const page800 = (opts: { card?: number; viewer?: boolean; width?: number } = {}) => {
+    const t = setup({ viewer: opts.viewer })
+    const width = opts.width ?? 800
+    stageSize(t.q, width, 700)
+    place(t.card(), [12, 12, 340, opts.card ?? 600])
+    const ask = fakeAsk(t.page.askHost, [width - 332, 12, 320, 400])
+    t.page.setAsk(ask)
+    return { ...t, ask }
+  }
+  const esc = (from: EventTarget = document.body): void => { from.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) }
 
-  it('folds the Ask answer away and hands the focus from a result to the card', () => {
-    const { page, q, card } = setup()
-    sizes(q, 800) // 800 - 340 - 320 - 48 = 92: under the 120 px a column needs
-    const fold = vi.fn()
-    page.setAskFold(fold)
-    result(page.askHost).focus()
+  it('folds for a long card, whose framed part is drawn under the answer, and hands the focus from a result to the card', () => {
+    const { page, ask, card } = page800()
+    ask.results.focus()
     page.showCard('<h3>Store</h3>')
-    expect(fold).toHaveBeenCalledTimes(1)
+    expect(ask.fold).toHaveBeenCalledTimes(1)
     expect(document.activeElement).toBe(card())
   })
 
-  it('keeps the focus in the question box when that is where it is', () => {
-    const { page, q } = setup()
-    sizes(q, 800)
-    const fold = vi.fn()
-    page.setAskFold(fold)
-    const input = document.createElement('input')
-    page.askHost.appendChild(input)
-    input.focus()
-    page.showCard('<h3>Store</h3>')
-    expect(fold).toHaveBeenCalledTimes(1)
-    expect(document.activeElement).toBe(input)
+  it('keeps the focus in the question box when that is where it is, and leaves a focus outside the box alone', () => {
+    const a = page800()
+    a.ask.input.focus()
+    a.page.showCard('<h3>Store</h3>')
+    expect(a.ask.fold).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(a.ask.input)
+    a.page.showCard(null)
+    expect(document.activeElement).toBe(a.ask.input)
+    a.ask.input.blur()
+    a.page.showCard('<h3>Store</h3>')
+    expect(document.activeElement).not.toBe(a.card())
   })
 
-  it('leaves the focus alone when it is outside the Ask box', () => {
-    const { page, q, card } = setup()
-    sizes(q, 768)
-    const fold = vi.fn()
-    page.setAskFold(fold)
-    ;(document.activeElement as HTMLElement | null)?.blur()
-    page.showCard('<h3>Store</h3>')
-    expect(fold).toHaveBeenCalledTimes(1)
-    expect(document.activeElement).not.toBe(card())
+  it('does not fold for a short card: its part is framed below it, clear of the answer', () => {
+    const { page, ask } = page800({ card: 150 })
+    page.showCard('<ol><li>One</li></ol>')
+    expect(ask.fold).not.toHaveBeenCalled()
   })
 
-  it('does not fold with a column of 120 px or more beside the card, nor when the card closes', () => {
-    const { page, q } = setup()
-    sizes(q, 828) // 828 - 708 = 120
-    const fold = vi.fn()
-    page.setAskFold(fold)
+  it('folds when the answer would cover the card itself, in the 2D map too, and a district click brings it back', () => {
+    const { ask, control, q } = page800({ card: 150, width: 600 })
+    control('map2d').click()
+    tap(q('.wx-map2d [data-kind="building"]'))
+    expect(ask.fold).toHaveBeenCalledTimes(1)
+    expect(ask.folded()).toBe(true)
+    tap(q('.wx-map2d [data-kind="district"]'))
+    expect(ask.folded()).toBe(false)
+  })
+
+  it('in the 2D map a card beside the answer folds nothing (no part is framed there)', () => {
+    const { page, ask, control } = page800()
+    control('map2d').click()
     page.showCard('<h3>Store</h3>')
-    sizes(q, 700)
+    expect(ask.fold).not.toHaveBeenCalled()
+  })
+
+  it('without a viewer only the card counts', () => {
+    const { page, ask } = page800({ viewer: false })
+    page.showCard('<h3>Store</h3>')
+    expect(ask.fold).not.toHaveBeenCalled()
+  })
+
+  it('the answer comes back when the card that folded it closes: by its close button, by Esc, by Reset view', () => {
+    const { page, ask, q, control } = page800()
+    page.showCard('<h3>Store</h3>')
+    expect(ask.folded()).toBe(true)
+    q<HTMLButtonElement>('.wx-card-close').click()
+    expect(ask.folded()).toBe(false)
+    expect(ask.unfold).toHaveBeenCalledTimes(1)
+    page.showCard('<h3>Store</h3>')
+    expect(ask.folded()).toBe(true)
+    esc()
+    expect(ask.folded()).toBe(false)
+    page.showCard('<h3>Store</h3>')
+    control('reset').click()
+    expect(ask.folded()).toBe(false)
+    page.showCard(null) // closed already: nothing more to undo
+    expect(ask.unfold).toHaveBeenCalledTimes(3)
+  })
+
+  it('an answer the user opened again stays open while that card is open; the next card folds it again', () => {
+    const { page, ask } = page800()
+    page.showCard('<h3>Store</h3>')
+    ask.userOpens()
+    window.dispatchEvent(new Event('resize'))
+    window.dispatchEvent(new Event('resize'))
+    expect(ask.fold).toHaveBeenCalledTimes(1)
     page.showCard(null)
-    expect(fold).not.toHaveBeenCalled()
+    expect(ask.unfold).not.toHaveBeenCalled() // it was open already
+    page.showCard('<h3>Other</h3>')
+    expect(ask.fold).toHaveBeenCalledTimes(2)
   })
 
-  it('folds nothing before an Ask box hands over its fold', () => {
-    const { page, q } = setup()
-    sizes(q, 800)
+  it('an answer with nothing to fold is not taken as folded', () => {
+    const { page, ask } = page800()
+    ask.fold.mockImplementation(() => false)
+    page.showCard('<h3>Store</h3>')
+    window.dispatchEvent(new Event('resize'))
+    expect(ask.fold).toHaveBeenCalledTimes(2) // tried again: nothing was folded, nothing was opened by the user
+    page.showCard(null)
+    expect(ask.unfold).not.toHaveBeenCalled()
+  })
+
+  it('follows a resize: folds when the window narrows into the crowded band, opens again when it widens', () => {
+    const { page, ask, q } = page800({ width: 1100 })
+    page.showCard('<h3>Store</h3>')
+    expect(ask.fold).not.toHaveBeenCalled()
+    stageSize(q, 800, 700)
+    ask.moveTo([468, 12, 320, 400])
+    window.dispatchEvent(new Event('resize'))
+    expect(ask.folded()).toBe(true)
+    stageSize(q, 1100, 700)
+    ask.moveTo([768, 12, 320, 400])
+    window.dispatchEvent(new Event('resize'))
+    expect(ask.folded()).toBe(false)
+  })
+
+  it('folds nothing before an Ask box is handed over', () => {
+    const { page, q, card } = setup()
+    stageSize(q, 800, 700)
+    place(card(), [12, 12, 340, 600])
     expect(() => page.showCard('<h3>Store</h3>')).not.toThrow()
+  })
+
+  it('Esc and the close button hand the focus back to what opened the card, or to the question', () => {
+    const { page, ask, q, card } = page800({ card: 150 })
+    ask.results.focus()
+    page.showCard('<h3>Store</h3>')
+    card().focus()
+    esc()
+    expect(document.activeElement).toBe(ask.results)
+    // Opened from nothing focusable (the city, by mouse): Esc gives it to the question; the close button only takes
+    // it out of the closed card (a tap must not open a tablet's keyboard).
+    ask.results.blur()
+    page.showCard('<h3>Store</h3>')
+    esc()
+    expect(document.activeElement).toBe(ask.input)
+    ask.input.blur()
+    page.showCard('<h3>Store</h3>')
+    q<HTMLButtonElement>('.wx-card-close').focus()
+    q<HTMLButtonElement>('.wx-card-close').click()
+    expect(document.activeElement).toBe(document.body)
+    // An opener since taken out of the page, or hidden: the question.
+    for (const away of [(b: HTMLElement): void => b.remove(), (b: HTMLElement): void => { b.hidden = true }]) {
+      const opener = document.createElement('button')
+      document.body.appendChild(opener)
+      opener.focus()
+      page.showCard('<h3>Store</h3>')
+      page.showCard('<h3>Next</h3>') // a card replacing a card keeps the first opener
+      away(opener)
+      card().focus()
+      esc()
+      expect(document.activeElement).toBe(ask.input)
+    }
+  })
+
+  it('Esc leaves the focus alone when it is somewhere other than the card', () => {
+    const { page, ask } = page800({ card: 150 })
+    const other = document.createElement('button')
+    document.body.appendChild(other)
+    page.showCard('<h3>Store</h3>')
+    other.focus()
+    esc(other)
+    expect(document.activeElement).toBe(other)
+    expect(document.activeElement).not.toBe(ask.input)
+  })
+
+  it('with no question box at all, a closed card leaves the focus on the page', () => {
+    const { page, card } = setup()
+    page.showCard('<h3>Store</h3>')
+    card().focus()
+    esc()
+    expect(card().contains(document.activeElement)).toBe(false)
+    page.showCard('<h3>Store</h3>')
+    esc()
+    expect(document.activeElement).toBe(document.body)
   })
 })
 

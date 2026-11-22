@@ -5,7 +5,7 @@
 // browser. A technology chip (data-tech) only opens that term's glossary card, itself read-only.
 import { buildingCard, DEFAULT_LAYERS, edgeCard, escapeHtml as esc, renderFallback, techCard, THEMES, usesTech, type WorldViewer } from '../renderer/src/world/engine'
 import type { ThemeName } from '../renderer/src/world/engine'
-import { MIN_FREE_PX } from '../renderer/src/world/engine/viewMath'
+import { freeArea } from '../renderer/src/world/engine/viewMath'
 import type { AskKind } from '../shared/world/askIndex'
 import { REMOVALS_ID } from '../shared/world/designPatch'
 import type { PageMeta } from '../shared/world/exportMeta'
@@ -93,6 +93,8 @@ html{font-size:${BASE_PX}px}
 .wx-ask-first{display:block;font-size:${r(12)};color:#94a3b8}
 .wx-ask-caption{margin:${r(6)} 0 0;font-size:${r(12)};color:#94a3b8}
 .wx-ask[data-folded] .wx-ask-results,.wx-ask[data-folded] .wx-ask-none,.wx-ask[data-folded] .wx-ask-caption{display:none}
+.wx-ask-more{display:block;margin:${r(6)} 0 0;padding:${r(4)} ${r(10)};border-radius:${r(8)};border:1px solid rgba(125,211,252,.4);background:rgba(15,23,42,.6);color:#7dd3fc;font:inherit;font-size:${r(12)};cursor:pointer}
+.wx-ask-more[hidden]{display:none}
 .wx-toolbar{position:absolute;left:${r(CARD_INSET)};right:${r(CARD_INSET)};bottom:${r(CARD_INSET)};display:flex;flex-wrap:wrap;justify-content:space-between;gap:${r(6)} ${r(18)};align-items:center;padding:${r(6)} ${r(10)};z-index:2}
 .wx-tools{display:flex;flex-wrap:wrap;gap:${r(6)} ${r(12)};align-items:center}
 .wx-toolbar label{display:inline-flex;gap:${r(4)};align-items:center;font-size:${r(12)};white-space:nowrap}
@@ -168,9 +170,22 @@ export interface Page {
   attach(viewer: WorldViewer | null): void
   /** Opens what an Ask result names: a part's card, a term's card, or a tour. */
   pick(id: string, kind: AskKind): void
-  /** How the Ask box folds its answer away (AskBox.fold): a card opened on a page too narrow for both panels uses it. */
-  setAskFold(fold: () => void): void
+  /** The Ask box (AskBox): its answer folds away while it would cover the open card or the part the card frames. */
+  setAsk(ask: PageAsk): void
 }
+
+/** What the page needs of the Ask box (AskBox) to fold its answer away for a card and bring it back. */
+export interface PageAsk {
+  fold(): boolean
+  unfold(): void
+  folded(): boolean
+  withAnswer<T>(read: () => T): T
+}
+
+/** A panel's box in the stage, edge by edge (CSS px). */
+interface Rect { l: number; t: number; r: number; b: number }
+const rectOf = (e: HTMLElement): Rect => ({ l: e.offsetLeft, t: e.offsetTop, r: e.offsetLeft + e.offsetWidth, b: e.offsetTop + e.offsetHeight })
+const meets = (a: Rect, b: Rect): boolean => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b
 
 const make = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] => {
   const e = document.createElement(tag)
@@ -270,10 +285,15 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
    * under the Ask box), and the viewer's reserves, label size and the panels its labels keep out from under. Every
    * length is measured, so it holds whatever the scale and however the toolbar wraps.
    */
+  /** The strip under the toolbar the city keeps clear of (CSS px). */
+  const lowStrip = (): number => toolbar.offsetHeight + CARD_INSET * scale * 2
+  /** The Ask box's strip on the right the city's framing keeps clear of: from WIDE_PX, 0 below it. */
+  const askStrip = (): number => (stage.clientWidth >= WIDE_PX * scale ? askHost.offsetWidth + CARD_INSET * scale * 2 : 0)
   const layout = (): void => {
     sizeRoot()
+    fitAnswer()
     const inset = CARD_INSET * scale
-    const low = toolbar.offsetHeight + inset * 2
+    const low = lowStrip()
     stage.style.setProperty('--wx-low', `${low}px`)
     stage.style.setProperty('--wx-top', `${askHost.offsetTop + askHost.offsetHeight + inset}px`)
     // A capped card's scrollbar takes the body's right edge: the close button moves left by its width (0 when overlaid or none).
@@ -283,28 +303,81 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     if (!viewer) return
     viewer.setLabelScale(scale)
     // From WIDE_PX, not from three times the strip: between the two the Ask box still covers the right.
-    viewer.setRightReserve(stage.clientWidth >= WIDE_PX * scale ? askHost.offsetWidth + inset * 2 : 0, WIDE_PX * scale)
+    viewer.setRightReserve(askStrip(), WIDE_PX * scale)
     viewer.setBottomReserve(low)
     viewer.setCardReserve(card.hidden ? 0 : card.offsetLeft + card.offsetWidth + inset, card.hidden ? 0 : card.offsetTop + card.offsetHeight + inset)
   }
-  let askFold = (): void => undefined
+  let ask: PageAsk | null = null
+  /** The answer is folded for the open card; the user opened it again while that card is open. */
+  let foldedForCard = false
+  let userOpened = false
+  /** What had the focus when the card opened, to hand it back when the card closes. */
+  let opener: HTMLElement | null = null
+  /** An Esc is closing the card: with nothing to hand the focus back to, the question gets it. */
+  let escClosing = false
+  /** A folded answer the user brought back (its button, the question, a new answer) stays open while this card is. */
+  const noteUserOpen = (a: PageAsk): void => {
+    if (foldedForCard && !a.folded()) { foldedForCard = false; userOpened = true }
+  }
   /**
-   * Whether the stage leaves no column MIN_FREE_PX wide between the open card and the Ask box (under 828 px at scale
-   * 1). There the framed part is drawn where the Ask box's answer hangs over the view: from WIDE_PX the framing gives
-   * up the box's strip for the card (freeArea), and below it never kept it.
+   * Whether the Ask answer, shown, would cover the open card, or in the 3D city the part of the view its part is
+   * framed in (freeArea, as the viewer works it out from the same reserves). A short card leaves room below it, clear
+   * of the answer; a long one on a page under about 830 px at scale 1 leaves the room beside it, under the answer.
    */
-  const crowded = (): boolean => stage.clientWidth - card.offsetWidth - askHost.offsetWidth - CARD_INSET * scale * 4 < MIN_FREE_PX * scale
+  const answerCovers = (a: PageAsk): boolean => {
+    const box = a.withAnswer(() => rectOf(askHost))
+    const c = rectOf(card)
+    if (meets(box, c)) return true
+    if (!viewer || flat) return false
+    const inset = CARD_INSET * scale
+    const w = stage.clientWidth
+    const h = stage.clientHeight
+    const f = freeArea(w, h, askStrip(), lowStrip(), [c.r + inset, c.b + inset], WIDE_PX * scale)
+    return meets(box, { l: f.left, t: f.top, r: w - f.right, b: h - f.bottom })
+  }
+  /**
+   * Folds the answer away while it would cover the open card or its framed part, and brings it back when it no longer
+   * would: the card closed, or the window grew. The focus, if it was on a result, goes to the card.
+   */
+  const fitAnswer = (): void => {
+    if (!ask) return
+    noteUserOpen(ask)
+    const want = !card.hidden && !userOpened && answerCovers(ask)
+    if (want && !foldedForCard) {
+      const onResult = askHost.contains(document.activeElement) && !(document.activeElement instanceof HTMLInputElement)
+      foldedForCard = ask.fold()
+      if (foldedForCard && onResult) card.focus({ preventScroll: true })
+    } else if (!want && foldedForCard) {
+      foldedForCard = false
+      ask.unfold()
+    }
+  }
+  /**
+   * A closed card hands the focus it held back to what opened it, while that is still on the page and shown; after an
+   * Esc with nothing to go back to, to the question. Focus somewhere else stays where it is.
+   */
+  const handFocusBack = (): void => {
+    const at = document.activeElement as HTMLElement
+    const back = opener
+    opener = null
+    if (!card.contains(at) && !(escClosing && at === document.body)) return
+    const question = askHost.querySelector('input')
+    if (back && back.isConnected && !back.closest('[hidden]')) back.focus({ preventScroll: true })
+    else if (escClosing && question) question.focus({ preventScroll: true })
+    else if (card.contains(at)) at.blur()
+  }
   const showCard = (html: string | null): void => {
+    const wasOpen = !card.hidden
+    if (ask) noteUserOpen(ask)
     card.hidden = html === null || html === ''
     cardBody.innerHTML = card.hidden ? '' : (html as string)
     cardBody.scrollTop = 0
-    if (!card.hidden && crowded()) {
-      // The answer folds away so the part the card is about shows beside it; the focus, if it was on a result, goes to the card.
-      const onResult = askHost.contains(document.activeElement) && !(document.activeElement instanceof HTMLInputElement)
-      askFold()
-      if (onResult) card.focus({ preventScroll: true })
+    if (!card.hidden) {
+      userOpened = false
+      if (!wasOpen) opener = document.activeElement === document.body ? null : (document.activeElement as HTMLElement)
     }
     layout()
+    if (wasOpen && card.hidden) handFocusBack()
   }
   /** Closes the card; in 3D the camera also flies back to the overview (as the app's close and Esc do). */
   const closeCard = (): void => {
@@ -362,7 +435,8 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
   // Esc outside the 3D view (the viewer handles its own while it has focus): close the card, back to the overview.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || viewHost.contains(e.target as Node)) return
-    closeCard()
+    escClosing = true
+    try { closeCard() } finally { escClosing = false }
   })
 
   const setFlat = (on: boolean): void => {
@@ -441,5 +515,5 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     if (tour) playTour(tour)
   }
 
-  return { askHost, viewHost, showCard, attach, pick, setAskFold: (fold) => { askFold = fold } }
+  return { askHost, viewHost, showCard, attach, pick, setAsk: (a) => { ask = a; layout() } }
 }
