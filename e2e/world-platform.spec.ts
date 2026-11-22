@@ -33,6 +33,7 @@ import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
 import { PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteType, removeDirs } from './helpers/world'
+import { closeMore, toolbarControl } from './helpers/worldToolbar'
 
 const PLATFORM = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
 /** The 2D run: no WebGL, as on a machine without it. */
@@ -210,7 +211,7 @@ async function toBuildings(): Promise<void> {
   if (await card().count()) await page.locator('[data-testid="world-card-close"]').click()
   await expect(card()).toHaveCount(0)
   await page.mouse.move(2, 400)
-  await page.locator('[data-testid="world-reset"]').click()
+  await (await toolbarControl(page, 'world-reset')).click()
   await page.waitForTimeout(2500)
   const box = (await canvas().boundingBox())!
   // OrbitControls (three r160) divides the wheel delta by `devicePixelRatio | 0` (see world-view.spec.ts).
@@ -382,8 +383,7 @@ test.describe.serial('Lumopolis on this platform', () => {
 
   test('7. a tour plays with its caption, and the 2D map draws an svg whose buildings open cards', async () => {
     test.skip(mode === '2d', 'the 2D list is already shown')
-    const tours = page.locator('[data-testid="world-tours"]')
-    await expect(tours).toBeVisible()
+    const tours = await toolbarControl(page, 'world-tours')
     const values = await tours.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value).filter(Boolean))
     expect(values.length).toBeGreaterThan(0)
     await tours.selectOption(values[0])
@@ -393,7 +393,8 @@ test.describe.serial('Lumopolis on this platform', () => {
     await page.locator('[data-testid="world-card-close"]').click()
     await expect(card()).toHaveCount(0)
 
-    await page.getByTestId('world-map2d').click()
+    await (await toolbarControl(page, 'world-map2d')).click()
+    await closeMore(page)
     const map = page.locator('svg[role=img]')
     await expect(map).toBeVisible()
     const rects = map.locator('rect[data-kind="building"]')
@@ -404,7 +405,8 @@ test.describe.serial('Lumopolis on this platform', () => {
     await shot('08-2d-map')
     await expectNoBackslash('the 2D map\'s card')
     await page.locator('[data-testid="world-card-close"]').click()
-    await page.getByTestId('world-map2d').click()
+    await (await toolbarControl(page, 'world-map2d')).click()
+    await closeMore(page)
     await expect(map).toHaveCount(0)
   })
 
@@ -498,7 +500,8 @@ test.describe.serial('Lumopolis on this platform', () => {
     await start.getByPlaceholder('Describe the app you want…').fill(DESCRIPTION)
     await start.getByRole('button', { name: 'Design it' }).click()
     await expect(projectName()).toHaveText(DESCRIPTION, { timeout: 60_000 })
-    await expect(page.locator('[data-testid="world-layer-planned"]')).toHaveAttribute('aria-pressed', 'true')
+    await expect(await toolbarControl(page, 'world-layer-planned')).toHaveAttribute('aria-pressed', 'true')
+    await closeMore(page)
     if (mode === 'webgl') {
       await expect.poll(async () => [...(await probe<{ wireframes: string[] }>('drawn')).wireframes].sort(), { timeout: 60_000 }).toEqual(['catalog', 'orders', 'storefront'])
     } else {
