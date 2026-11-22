@@ -230,7 +230,10 @@ describe('cardMaxHeight', () => {
   it('keeps its constants in step with the card and the free area', () => {
     expect(CARD_WIDTH_PX).toBe(330)
     expect(CARD_MIN_FREE_PX).toBe(MIN_FREE_PX)
-    expect(CARD_FREE_SHARE).toBe(0.45)
+    expect(CARD_FREE_SHARE).toBe(0.3)
+    // A capped card shows its title, its first heading and a sentence or two under it (F4: at 132 px a line's one
+    // explaining sentence was cut mid-way).
+    expect(CARD_MIN_HEIGHT_PX).toBe(168)
   })
 
   it('in a wide pane only keeps the card above the ask bar, and leaves it uncapped with no bar or no stage', () => {
@@ -242,10 +245,10 @@ describe('cardMaxHeight', () => {
     expect(cardMaxHeight(1000, 586, 0, 0)).toBeNull()
     // The card's 352 px reserve and 120 px of city beside it: wide from 472 px.
     expect(cardMaxHeight(472, 586, 0, 164)).toBe(402)
-    expect(cardMaxHeight(471, 586, 0, 164)).toBe(132)
+    expect(cardMaxHeight(471, 586, 0, 164)).toBe(220)
     // The legend's strip counts against the room beside the card.
     expect(cardMaxHeight(700, 586, 200, 164)).toBe(402)
-    expect(cardMaxHeight(600, 586, 200, 164)).toBe(132)
+    expect(cardMaxHeight(600, 586, 200, 164)).toBe(220)
     expect(cardMaxHeight(0, 586, 0, 164)).toBeNull()
     expect(cardMaxHeight(416, 0, 0, 164)).toBeNull()
   })
@@ -263,17 +266,19 @@ describe('cardMaxHeight', () => {
     expect(cardMeetsLegend(0, 108)).toBe(false)
   })
 
-  it('caps a card in a narrow pane so 45% of the height stays free above the ask bar (the CI pane)', () => {
-    // 416 x 586, ask bar reserve 164: 586 - 164 - 264 = 158 px for the card's reserve, 152 on a step,
+  it('caps a card in a narrow pane so 30% of the height stays free above the ask bar (the CI pane)', () => {
+    // 416 x 586, ask bar reserve 164: 586 - 164 - 176 = 246 px for the card's reserve, 240 on a step,
     // less its 12 px inset and 8 px clearance.
-    expect(cardMaxHeight(416, 586, 0, 164)).toBe(132)
-    expect(cardReserve(CARD_WIDTH_PX, 132)).toEqual([352, 152])
-    // A tall card (m12's, about 410 px) is held at the cap; the city is then framed below it.
-    const area = freeArea(416, 586, 0, 164, cardReserve(CARD_WIDTH_PX, Math.min(410, 132)))
-    expect(area.top).toBe(152)
+    expect(cardMaxHeight(416, 586, 0, 164)).toBe(220)
+    expect(cardReserve(CARD_WIDTH_PX, 220)).toEqual([352, 240])
+    // A tall card (m12's, about 410 px) is held at the cap; the city is then framed below it, in more than the
+    // least room the city keeps.
+    const area = freeArea(416, 586, 0, 164, cardReserve(CARD_WIDTH_PX, Math.min(410, 220)))
+    expect(area.top).toBe(240)
     expect(586 - area.top - area.bottom).toBeGreaterThanOrEqual(586 * CARD_FREE_SHARE)
+    expect(586 - area.top - area.bottom).toBeGreaterThanOrEqual(CARD_MIN_FREE_PX)
     // A short card is never stretched: the cap is a ceiling, so its reserve follows its own height.
-    expect(cardReserve(CARD_WIDTH_PX, Math.min(100, 132))).toEqual([352, 120])
+    expect(cardReserve(CARD_WIDTH_PX, Math.min(100, 220))).toEqual([352, 120])
   })
 
   it('always leaves the share free when there is room for a usable card, and never goes under its minimum', () => {

@@ -679,8 +679,8 @@ describe('WorldView', () => {
         bridge()
         await mount()
         act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
-        // No ask bar here: 586 - 264 = 322 for the card's reserve, 320 on a step, less 20.
-        expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(300px, calc(100% - 110px))')
+        // No ask bar here: 586 - 176 = 410 for the card's reserve, 408 on a step, less 20.
+        expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(388px, calc(100% - 110px))')
         stage.w = 1000
         act(() => { for (const cb of seen) cb() })
         expect(screen.getByTestId('world-card').style.maxHeight).toBe('calc(100% - 110px)')
@@ -2267,8 +2267,8 @@ describe('WorldView on a big monitor', () => {
     render(<WorldView root="/repo" width={912} onClose={vi.fn()} />)
     await screen.findByTestId('world-legend')
     act(() => viewer().opts.renderCard(buildingCard(minimal(), 'b1')))
-    // Scale 1.2 (912 / 760): the stage is 400 x 732.5 of the card's pixels: 732.5 less 45% is 402, 400 on a step, less 20.
-    expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(380px, calc(100% - 110px))')
+    // Scale 1.2 (912 / 760): the stage is 400 x 732.5 of the card's pixels: 732.5 less 30% is 512.5, 512 on a step, less 20.
+    expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(492px, calc(100% - 110px))')
   })
 
   it('tells the viewer which panels are over the map after every render, so one that moved is measured again', async () => {

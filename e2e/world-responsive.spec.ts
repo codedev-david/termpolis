@@ -462,6 +462,27 @@ async function faintLabels(): Promise<string[]> {
     .map(({ el, cs }) => `${el.textContent ?? ''} (${cs.opacity})`))
 }
 
+/**
+ * Whether the open card shows its first heading and the first line under it without a scroll (true where it has no
+ * heading). At 1280x800 on Linux the card once cut its "What it does" heading in half, and a line card stopped
+ * mid-sentence, the one sentence that explains the line behind a scroll inside a scroll.
+ */
+async function cardShowsFirstLine(): Promise<boolean> {
+  return page.evaluate(() => {
+    const body = document.querySelector('[data-testid="world-card-body"]')
+    const h = body?.querySelector('h4')
+    if (!body || !h) return true
+    const under = h.nextElementSibling ?? h
+    const walk = document.createTreeWalker(under, NodeFilter.SHOW_TEXT, { acceptNode: (n) => ((n.textContent ?? '').trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) })
+    const text = walk.nextNode() ?? h.firstChild
+    if (!text) return true
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, Math.min(1, (text.textContent ?? '').length))
+    return range.getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 0.5
+  })
+}
+
 /** Opens the toolbar's More menu when the pane folds it (true), so a folded control can be reached. */
 async function openMore(): Promise<boolean> {
   const more = page.locator('[data-testid="world-more"]')
@@ -583,6 +604,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
       expect.soft(await openCard(), `a building's card opened at ${tag}`).toBe(true)
       // The card never lies on the legend (at 1280x800 on Linux it once covered most of the Legend button).
       expect.soft(await cardOnLegend(), `the card leaves the legend clear at ${tag}`).toBe(0)
+      expect.soft(await cardShowsFirstLine(), `the card shows its first heading and the line under it at ${tag}`).toBe(true)
       // With a part selected the rest is dimmed: names too faint to read are put away, not drawn as a smudge.
       expect.soft(await faintLabels(), `no map label is drawn too faint to read with the card open at ${tag}`).toEqual([])
       await check(`card at ${tag}`)

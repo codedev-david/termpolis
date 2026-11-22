@@ -85,10 +85,14 @@ export function cardReserve(width: number, height: number): [number, number] {
 export const CARD_WIDTH_PX = 330
 /** The least room the city keeps beside or below the card: viewMath's MIN_FREE_PX, kept equal by a test. */
 export const CARD_MIN_FREE_PX = 120
-/** In a narrow pane, the share of the stage's height kept free between the card and the ask bar's reserve. */
-export const CARD_FREE_SHARE = 0.45
-/** The shortest a capped card gets: its title row and a few lines of its body. */
-export const CARD_MIN_HEIGHT_PX = 96
+/**
+ * In a narrow pane, the share of the stage's height kept free between the card and the ask bar's reserve: enough
+ * to frame the selection below the card (above CARD_MIN_FREE_PX at the CI pane's 586 px) while the card still
+ * shows its first heading and the sentence under it, which at 45% it cut mid-way at 800 px tall.
+ */
+export const CARD_FREE_SHARE = 0.3
+/** The shortest a capped card gets: its title row, its first heading and a sentence or two under it. */
+export const CARD_MIN_HEIGHT_PX = 168
 
 /**
  * The open card's greatest height (WorldCard maxHeight), in a stage `width` x `height` whose right
