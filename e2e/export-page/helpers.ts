@@ -251,9 +251,10 @@ export const askReady = (page: Page, timeout = 60_000): Promise<{ state: AskStat
  * decoded before the paint and the three smart Ask decodes after it (each "at+ms:KB"); the ORT wasm compile; from it
  * to ready (the model's session plus one embed); long tasks before ready (their total, then the first eight as
  * "at+ms"); and a fixed CPU probe run after ready,
- * which compares runners (the same work on a slower machine takes longer).
+ * which compares runners (the same work on a slower machine takes longer). wasmMs is the ORT wasm's instantiate on
+ * its own (null if the page never compiled it).
  */
-export async function phaseReport(page: Page, readyAt: number): Promise<string> {
+export async function phaseReport(page: Page, readyAt: number): Promise<{ line: string; wasmMs: number | null }> {
   return page.evaluate((ready) => {
     const r = (window as unknown as { __wxPhases: { atob: Array<{ start: number; end: number; bytes: number }>; wasm: Array<{ start: number; end: number }>; canvasAt: number | null; longTasks: Array<{ start: number; ms: number }> } }).__wxPhases
     const n = (x: number | null | undefined): string => (x === null || x === undefined ? '-' : String(Math.round(x)))
@@ -266,13 +267,14 @@ export async function phaseReport(page: Page, readyAt: number): Promise<string> 
     let x = 0
     for (let i = 0; i < 20_000_000; i++) x = (x + i * 7) % 1_000_003
     const probe = performance.now() - t0
-    return [
+    const line = [
       `parsed ${n(nav?.domInteractive)}`, `dcl ${n(nav?.domContentLoadedEventEnd)}`, `load ${n(nav?.loadEventEnd)}`,
       `fcp ${n(fcp)}`, `canvas ${n(r.canvasAt)}`, `decodes [${blocks}]`,
       `wasm ${w ? `${n(w.start)}+${n(w.end - w.start)}` : '-'}`, `wasm->ready ${w ? n(ready - w.end) : '-'}`, `ready ${n(ready)}`,
       `longtasks ${before.length ? `${n(before.reduce((a, t) => a + t.ms, 0))}ms [${before.slice(0, 8).map((t) => `${n(t.start)}+${n(t.ms)}`).join(' ')}]` : '-'}`,
       `cpu-probe ${n(probe)}${x < 0 ? '' : ''}`,
     ].join(' | ')
+    return { line, wasmMs: w ? w.end - w.start : null }
   }, readyAt)
 }
 

@@ -13,7 +13,7 @@ import { FIXTURE_DIR, FIXTURE_JSON, KEYWORD_HTML, SMART_HTML } from './paths'
 import { FRAME_FLIGHT_S } from '../../src/renderer/src/world/engine/cameraRig'
 
 const world = JSON.parse(fs.readFileSync(FIXTURE_JSON, 'utf8')) as { tours: Array<{ title: string; steps: Array<{ caption: string }> }> }
-const SMART_BROWSERS = new Set(['electron', 'msedge'])
+const SMART_BROWSERS = new Set(['electron', 'msedge', 'chrome'])
 
 /** Whether the page drew the 3D city (a canvas in the view) rather than the 2D map. */
 const in3d = async (page: Page): Promise<boolean> => (await page.locator('.wx-view canvas').count()) > 0
@@ -124,7 +124,7 @@ test('the city paints, and no card shows at start', async ({ open }, info) => {
   expect((await askReady(o.page)).state).toBe('keyword')
   await expect(o.page.locator('.wx-card')).toBeHidden()
   if (!(await in3d(o.page))) {
-    // A browser without WebGL in this runner: the page shows the 2D map. Electron and Edge must draw the city.
+    // A browser without WebGL in this runner: the page shows the 2D map. Electron, Edge and Chrome must draw the city.
     expect(SMART_BROWSERS.has(info.project.name), `${info.project.name} drew no 3D city`).toBe(false)
     await expect(o.page.locator('.wx-map2d')).toBeVisible()
     info.annotations.push({ type: 'no-webgl', description: `${info.project.name} has no WebGL here: the 2D map showed` })

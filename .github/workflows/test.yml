@@ -347,8 +347,9 @@ jobs:
           - os: windows-latest
             projects: --project=electron --project=msedge --project=firefox --project=webkit
             wrap: ''
+          # chrome: the runner image's own Google Chrome (nothing is installed for it).
           - os: macos-latest
-            projects: --project=electron --project=firefox --project=webkit
+            projects: --project=electron --project=chrome --project=firefox --project=webkit
             wrap: ''
           - os: ubuntu-24.04
             projects: --project=electron --project=firefox --project=webkit
