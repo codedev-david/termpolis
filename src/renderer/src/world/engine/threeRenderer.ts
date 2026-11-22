@@ -162,6 +162,7 @@ const CSS = `
 .lw-labels{position:absolute;top:0;left:0;z-index:0;pointer-events:none;--lw-s:1}
 .lw-district{font:700 calc(15px * var(--lw-s)) system-ui,sans-serif;letter-spacing:.13em;text-transform:uppercase;text-shadow:0 0 .8em currentColor;white-space:nowrap;text-align:center}
 .lw-district span{display:block;font-size:.8em;letter-spacing:.08em;font-weight:500;opacity:.8;text-shadow:none}
+.lw-district.lw-on-solid{text-shadow:0 0 2px rgba(0,0,0,.95),0 0 .3em rgba(0,0,0,.9),0 0 .7em rgba(0,0,0,.75),0 0 1.1em rgba(0,0,0,.5)}
 .lw-bldg{font:calc(12px * var(--lw-s)) system-ui,sans-serif;color:#e2e8f0;padding:.17em .67em;border-radius:.5em;background:rgba(3,7,18,.65);border:1px solid rgba(148,163,184,.25);white-space:nowrap}
 .lw-floor{font:calc(12px * var(--lw-s)) system-ui,sans-serif;color:#e2e8f0;padding:.08em .5em;border-radius:.33em;background:rgba(3,7,18,.82);border-left:2px solid #38bdf8;white-space:nowrap;opacity:0}
 .lw-edge{font:calc(12px * var(--lw-s)) system-ui,sans-serif;padding:.17em .58em;border-radius:99px;background:rgba(3,7,18,.85);border:1px solid;white-space:nowrap;pointer-events:auto;cursor:pointer}
@@ -1935,6 +1936,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   /** The district names shown without their subtitle last frame (placeLabels keeps them so until there is room). */
   let compactShown = new Set<string>()
+  /** The district names placeLabels had to leave on a building or slab this frame: drawn over a dark halo (lw-on-solid). */
+  let onSolid = new Set<string>()
   const subtitleOf = (el: HTMLElement): HTMLElement | null => (el.classList.contains('lw-district') ? el.querySelector('span') : null)
   function measure(els: HTMLElement[]): void {
     const todo = els.filter((el) => !sizes.has(el))
@@ -2096,8 +2099,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (c) cands.push(allLabels && w.id.startsWith('e:') ? { ...c, always: true } : c)
     }
     const compactNow = new Set<string>()
+    onSolid = new Set<string>()
     const room = { bounds: [0, 0, width, height] as const, blocked: blocked(), solid: solidBoxes() }
-    placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS }, LABEL_GAP, LABEL_KEEP_GAP, { was: compactShown, now: compactNow }, room)
+    placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS }, LABEL_GAP, LABEL_KEEP_GAP, { was: compactShown, now: compactNow, solid: onSolid }, room)
     compactShown = compactNow
     if (pinned.size === 0) return placed
     const out = new Map(placed)
@@ -2436,6 +2440,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const sub = l.kind === 'district' ? subtitleOf(l.o.element) : null
       const subShown = compactShown.has(l.key) ? 'none' : ''
       if (sub && sub.style.display !== subShown) sub.style.display = subShown
+      // A district name left on a building or slab reads over a dark halo, not its glow alone.
+      if (l.kind === 'district' && l.o.element.classList.contains('lw-on-solid') !== onSolid.has(l.key)) l.o.element.classList.toggle('lw-on-solid')
       if (!l.o.visible || l.kind === 'floor' || l.kind === 'proc') continue
       l.o.element.style.opacity = String(opacities.get(l) as number) // every name shown was found legible (layLabels)
     }

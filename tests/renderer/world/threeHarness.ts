@@ -281,7 +281,7 @@ export const floorsOf = (root: THREE.Object3D, id: string): THREE.Mesh[] =>
 /** CSS2D label objects of `kind` (bldg, floor, district, edge, proc). */
 export function labelsOf(root: THREE.Object3D, kind: string): Array<THREE.Object3D & { element: HTMLElement }> {
   const out: Array<THREE.Object3D & { element: HTMLElement }> = []
-  root.traverse((o) => { const x = o as Obj; if (x.isCSS2DObject && x.element?.className === 'lw-' + kind) out.push(x as THREE.Object3D & { element: HTMLElement }) })
+  root.traverse((o) => { const x = o as Obj; if (x.isCSS2DObject && x.element?.classList.contains('lw-' + kind)) out.push(x as THREE.Object3D & { element: HTMLElement }) })
   return out
 }
 export const labelTexts = (root: THREE.Object3D, kind: string): string[] => labelsOf(root, kind).map((o) => o.element.textContent ?? '')

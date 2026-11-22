@@ -339,6 +339,44 @@ describe('threeRenderer labels', () => {
     r.dispose()
   })
 
+  it('a district name with no place off its slab shows compact, over a dark halo; one that found a place keeps its subtitle and no halo (N1)', () => {
+    const tall = (): SceneModel => ({
+      districts: [district('d', [0, 0, 0], 12)],
+      buildings: [bldg('p', [-4, 0, 3], { height: 40 }), bldg('q', [4, 0, 3], { height: 40 }), bldg('s', [0, 0, -4], { height: 40 })],
+      conduits: [],
+      orbs: [],
+    })
+    const text = emptyText({ districts: { d: '3 parts · 12 files' } })
+    // A small view the slab fills: every place the name could step to lies on it or outside the view.
+    sized(80, 80)
+    const small = makeHost(120, 70)
+    let r = drawn(tall(), text, false, small)
+    h.frames.run(3)
+    expect(r.drawnCounts().tier).toBe('districts')
+    let name = labelsOf(world(), 'district')[0]
+    expect(name.visible).toBe(true)
+    expect(subtitle(name).style.display).toBe('none')
+    expect(name.element.classList.contains('lw-on-solid')).toBe(true)
+    r.dispose()
+    small.remove()
+    // A roomy view: the name steps off its slab, grows whole, and has no halo.
+    sized(80, 80)
+    r = drawn(tall(), text)
+    h.frames.run(3)
+    name = labelsOf(world(), 'district')[0]
+    expect(name.visible).toBe(true)
+    expect(subtitle(name).style.display).toBe('')
+    expect(name.element.classList.contains('lw-on-solid')).toBe(false)
+    r.dispose()
+  })
+
+  it('the stylesheet draws a district name left on a building over a dark halo, so it reads over the geometry', () => {
+    const r = drawn()
+    const css = (document.getElementById('lumopolis-world-style') as HTMLStyleElement).textContent ?? ''
+    expect(css).toMatch(/\.lw-district\.lw-on-solid\{text-shadow:0 0 [^}]*rgba\(0,0,0,/)
+    r.dispose()
+  })
+
   it('district names stay left of the legend', () => {
     sized(300)
     // The district on the right of the city, so its wide name would run under the legend.

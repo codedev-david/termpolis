@@ -177,12 +177,18 @@ export interface LabelCandidate extends LabelBox {
   tier: number; group?: string; nudge?: boolean | 'vertical'; keepIn?: readonly [number, number, number, number]; always?: boolean
   /** A smaller form on the same point (a district's name without its subtitle), tried where the whole label finds no room. */
   compact?: { w: number; h: number }
-  /** Takes the first of its places off the room's `solid` boxes (the buildings) where one is clear; else places as any label. */
+  /**
+   * Takes the first of its places off the room's `solid` boxes (the buildings) where one is clear, a step to either
+   * side included when it otherwise moves only up or down; else places as any label, compact, and goes in `solid`.
+   */
   solidFree?: boolean
 }
 
-/** The labels shown in their compact form: last time's (`was`), and this time's, which placeLabels fills (`now`). */
-export interface CompactForms { was: ReadonlySet<string>; now: Set<string> }
+/**
+ * The labels shown in their compact form: last time's (`was`), and this time's, which placeLabels fills (`now`); and,
+ * where given, the solid-free labels it had to leave on a building (`solid`), which placeLabels also fills.
+ */
+export interface CompactForms { was: ReadonlySet<string>; now: Set<string>; solid?: Set<string> }
 
 /** Room a label needs round it to appear, and the room it needs to stay once shown (LABEL_KEEP_GAP). */
 export const LABEL_GAP = 6
@@ -212,6 +218,8 @@ export type Nudge = readonly [number, number]
 export const NUDGES: ReadonlyArray<readonly [number, number]> = [[0, 0], [0, -1], [0, 1], [0, -2], [0, 2], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]]
 /** The NUDGES that stay over or under the label's point: its point, then a row up or down, then two. */
 export const VERTICAL_NUDGES: ReadonlyArray<readonly [number, number]> = NUDGES.filter(([ux]) => ux === 0)
+/** The NUDGES straight to either side, which a name kept off the buildings also tries before it settles on one. */
+const SIDE_STEPS: ReadonlyArray<readonly [number, number]> = NUDGES.filter(([ux, uy]) => ux !== 0 && uy === 0)
 
 /**
  * Which labels to show so that no two overlap, and where: the lowest tier first (the order given
@@ -224,7 +232,8 @@ export const VERTICAL_NUDGES: ReadonlyArray<readonly [number, number]> = NUDGES.
  * name without its subtitle) is placed in that form, so every name of its tier gets its room before
  * any subtitle; then, before the next tier is placed, each grows whole, in the same order, where the
  * whole label is clear of every label kept (by the keeping gap if it showed whole last time). One
- * that cannot stays compact (its id goes in `compact.now`). Every place, a label's own point and an
+ * that cannot stays compact (its id goes in `compact.now`), as does a `solidFree` one with no place off the buildings,
+ * which also goes in `compact.solid`. Every place, a label's own point and an
  * `always` label's last resort included, must leave it whole in the `room` (LabelRoom). Returns each
  * shown label's nudge, in the order they were placed.
  */
@@ -248,7 +257,9 @@ export function placeLabels(
       const at = out.get(c.id) as Nudge
       const whole = { ...c, x: c.x + at[0], y: c.y + at[1] }
       const g = shown.has(c.id) && !compact.was.has(c.id) ? keepGap : gap
-      if (within(c, at) && roomFor(room, whole) && (!kept[i].off || offAll(room.solid ?? [], whole)) && kept.every((o, j) => j === i || clearOf(o, whole, g))) kept[i] = { ...kept[i], ...whole }
+      // A name kept off the buildings grows only where the whole label is off them too: one left on a building stays
+      // compact, since its thinner second line is what turns to a jumble over the glyphs.
+      if (within(c, at) && roomFor(room, whole) && (!c.solidFree || (kept[i].off === true && offAll(room.solid ?? [], whole))) && kept.every((o, j) => j === i || clearOf(o, whole, g))) kept[i] = { ...kept[i], ...whole }
       else compact.now.add(c.id)
     }
   }
@@ -265,8 +276,10 @@ export function placeLabels(
     const steps = c.nudge === 'vertical' ? VERTICAL_NUDGES : c.nudge ? NUDGES : NUDGES.slice(0, 1)
     for (const [ux, uy] of steps) tries.push({ d: [ux * (box.w + gap), uy * (box.h + gap)], g: gap })
     const fits = ({ d, g }: { d: Nudge; g: number }): boolean => within(box, d) && clear({ ...box, x: box.x + d[0], y: box.y + d[1] }, g)
-    // A name kept off the buildings: the first clear place off them all, before any place on one.
-    const off = c.solidFree ? tries.find((t) => fits(t) && offAll(room.solid ?? [], { ...box, x: box.x + t.d[0], y: box.y + t.d[1] }))?.d : undefined
+    // A name kept off the buildings: the first clear place off them all, before any place on one, a step to either
+    // side included.
+    const offTries = c.nudge === 'vertical' ? tries.concat(SIDE_STEPS.map(([ux]) => ({ d: [ux * (box.w + gap), 0] as Nudge, g: gap }))) : tries
+    const off = c.solidFree ? offTries.find((t) => fits(t) && offAll(room.solid ?? [], { ...box, x: box.x + t.d[0], y: box.y + t.d[1] }))?.d : undefined
     const fit = off ?? tries.find(fits)?.d
     // Every place is taken: a label that must show keeps last time's place, or else its own point.
     // Never under a panel or cut off at the view's edge, though.
@@ -274,6 +287,7 @@ export function placeLabels(
     const at: Nudge | undefined = fit ?? (c.always && roomFor(room, { ...box, x: box.x + last[0], y: box.y + last[1] }) ? last : undefined)
     if (!at) continue
     kept.push({ ...box, x: box.x + at[0], y: box.y + at[1], c, ...(off ? { off: true } : {}) })
+    if (c.solidFree && !off && compact.solid) compact.solid.add(c.id)
     out.set(c.id, at)
     if (c.group !== undefined) used.set(c.group, n + 1)
   }

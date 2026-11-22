@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest'
-import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { LABEL_HIDE_BELOW, LABEL_MIN_OPACITY, readableOpacity, easeShare, frameStep, MAX_FRAME_DT, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type Rect, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -878,10 +878,44 @@ describe('placeLabels: names kept off the buildings (solid)', () => {
     const roomy = { was: new Set<string>(), now: new Set<string>() }
     placeLabels([name('d', 200, 100, { h: 40, compact: { w: 100, h: 20 } })], none, {}, 6, 1, roomy, { solid: [[150, 130, 250, 200]] })
     expect([...roomy.now]).toEqual([])
-    // A name left on a building (no clear place) grows as it did before: it lies on the building either way.
-    const stuck = { was: new Set<string>(), now: new Set<string>() }
+    // A name left on a building (no clear place) stays compact: its thinner second line is what turns to a jumble
+    // over the glyphs, and the card and the hover carry the counts (N1).
+    const stuck = { was: new Set<string>(), now: new Set<string>(), solid: new Set<string>() }
     placeLabels([name('d', 200, 100, { h: 40, compact: { w: 100, h: 20 } })], none, {}, 6, 1, stuck, { solid: [[0, 0, 400, 400]] })
-    expect([...stuck.now]).toEqual([])
+    expect([...stuck.now]).toEqual(['d'])
+    expect([...stuck.solid]).toEqual(['d'])
+    // A label not kept off the buildings grows on one as before.
+    const free = { was: new Set<string>(), now: new Set<string>() }
+    placeLabels([name('d', 200, 100, { h: 40, compact: { w: 100, h: 20 }, solidFree: false })], none, {}, 6, 1, free, { solid: [[0, 0, 400, 400]] })
+    expect([...free.now]).toEqual([])
+  })
+
+  it('tells which names it had to leave on a building, so they can be drawn over a dark halo; not those it moved off, nor other labels', () => {
+    const forms = { was: new Set<string>(), now: new Set<string>(), solid: new Set<string>() }
+    const out = placeLabels(
+      [name('chip', 200, 300, { solidFree: false, tier: 0 }), name('moved', 200, 200), name('stuck', 600, 200)],
+      none, {}, 6, 1, forms, { solid: [[150, 195, 250, 320], [450, 0, 750, 400]] },
+    )
+    expect(out.get('moved')).toEqual([0, -26])
+    expect(out.get('stuck')).toEqual([0, 0])
+    expect([...forms.solid]).toEqual(['stuck'])
+    // Without a set to fill, it places the same.
+    expect(placeLabels([name('stuck', 600, 200)], none, {}, 6, 1, undefined, { solid: [[450, 0, 750, 400]] }).get('stuck')).toEqual([0, 0])
+  })
+
+  it('a name kept off the buildings tries a step to either side before it settles on one, though it moves only up or down otherwise', () => {
+    // The building covers the name's column, two rows up and down; beside it, to the left, is clear.
+    const solid: Rect[] = [[150, 100, 1000, 300]]
+    expect(placeLabels([name('d', 200, 200)], none, {}, 6, 1, undefined, { solid }).get('d')).toEqual([-106, 0])
+    // A label that is not kept off the buildings, and only moves up or down, never steps aside for a taken point:
+    // with no room above or below, it drops out.
+    const taken = name('t', 200, 200, { solidFree: false, tier: 0, nudge: undefined })
+    const plain = name('p', 200, 200, { solidFree: false, tier: 1 })
+    const out = placeLabels([taken, plain], none, {}, 6, 1, undefined, { bounds: [0, 185, 1000, 215] })
+    expect(out.has('t')).toBe(true)
+    expect(out.has('p')).toBe(false)
+    // The sideways step stays inside the name's keepIn: with the left closed off, it stays on its point, on the building.
+    expect(placeLabels([name('d', 200, 200, { keepIn: [140, 0, 1000, 400] })], none, {}, 6, 1, undefined, { solid }).get('d')).toEqual([0, 0])
   })
 })
 
