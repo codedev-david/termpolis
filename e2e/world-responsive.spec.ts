@@ -29,7 +29,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
-import { auditProblems, layoutAudit, medianFont, responsiveViewports, steady, type AuditOptions, type Viewport } from './helpers/layoutAudit'
+import { auditProblems, layoutAudit, medianFont, responsiveViewports, stillMoving, steady, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
@@ -179,9 +179,13 @@ async function shoot(name: string): Promise<void> {
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`), timeout: 120_000 })
 }
 
-/** Waits until the pane's layout has stopped changing (layoutAudit's steady), a soft failure when it never does. */
+/** Waits until the pane's layout has stopped changing (layoutAudit's steady), a soft failure when it never does. The
+ *  wait scales by `slowness`: the city's glides step by the frame's time capped at 0.05 s, so in the software-rendered
+ *  4K window they take many times their real length. */
 async function still(state: string): Promise<void> {
-  expect.soft(await steady(page, PANE), `${state}: the pane settled`).toBe(true)
+  const log: string[] = []
+  const settled = await steady(page, PANE, 15_000 * slowness, log)
+  expect.soft(settled, `${state}: the pane settled${settled ? '' : ` (samples: ${log.join(', ')}; still moving: ${await stillMoving(page, PANE)})`}`).toBe(true)
 }
 
 /** Audits the pane (or `root`) as it is now, every problem a soft failure under `state`; returns the median font. */

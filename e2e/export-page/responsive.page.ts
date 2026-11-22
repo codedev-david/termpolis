@@ -17,9 +17,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Page } from '@playwright/test'
-import { ask, askReady, cityClip, expect, test } from './helpers'
+import { ask, askReady, expect, test } from './helpers'
 import { DOCUMENT_HTML, KEYWORD_HTML, SMART_HTML } from './paths'
-import { auditProblems, layoutAudit, medianFont, responsiveViewports, steady, type AuditOptions, type Viewport } from '../helpers/layoutAudit'
+import { auditProblems, layoutAudit, medianFont, responsiveViewports, stillMoving, steady, type AuditOptions, type Viewport } from '../helpers/layoutAudit'
 import { uiScale } from '../../src/shared/world/uiScale'
 
 const SHOTS = path.resolve(process.env.RESPONSIVE_SHOTS ?? 'test-results/responsive-shots')
@@ -42,9 +42,16 @@ async function setViewport(page: Page, v: Viewport): Promise<void> {
 }
 
 /** Waits until the page has settled (the city's frames, the label pass after a resize, the camera's moves): until its
- *  layout stops changing, not for a fixed time. A page still moving after 15 s is a soft failure. */
+ *  layout stops changing, not for a fixed time. A page still moving after 15 s, times how much slower than at 1080p a
+ *  frame is, is a soft failure: the city's glides step by the frame's time capped at 0.05 s, and the test renders in
+ *  software, where a 4K frame takes about 0.4 s, so a half-second glide there spans some 13 s of the test's time. */
 async function settle(page: Page, state: string): Promise<void> {
-  expect.soft(await steady(page), `${state}: the page settled`).toBe(true)
+  const log: string[] = []
+  const size = page.viewportSize() ?? { width: 1920, height: 1080 }
+  const dpr = await page.evaluate(() => devicePixelRatio)
+  const slowness = Math.max(1, (size.width * size.height * dpr * dpr) / (1920 * 1080))
+  const settled = await steady(page, null, 15_000 * slowness, log)
+  expect.soft(settled, `${state}: the page settled${settled ? '' : ` (samples: ${log.join(', ')}; still moving: ${await stillMoving(page)})`}`).toBe(true)
 }
 
 async function shoot(page: Page, name: string, fullPage = false): Promise<void> {
@@ -60,15 +67,32 @@ async function check(page: Page, state: string, opts: AuditOptions): Promise<num
   return medianFont(r)
 }
 
+/**
+ * Clicks across the city until a card opens. Only points where the 3D view itself is hit, not a panel or a label, are
+ * clicked: where the city sits moves with the size (beside the Ask strip from 732 px, centred below it).
+ */
 async function openCard(page: Page): Promise<boolean> {
   const card = page.locator('.wx-card')
-  const clip = await cityClip(page)
-  for (let row = 1; row <= 6; row++) {
-    for (let col = 1; col <= 8; col++) {
-      await page.mouse.click(clip.x + (clip.width * col) / 9, clip.y + (clip.height * row) / 7)
-      // The card opens on the click itself (the page picks on the same frame), so a short look is enough.
-      if (await card.waitFor({ state: 'visible', timeout: 250 }).then(() => true, () => false)) return true
+  const points = await page.evaluate(() => {
+    const view = (document.querySelector('.wx-view') as HTMLElement).getBoundingClientRect()
+    const out: Array<[number, number]> = []
+    for (let row = 1; row <= 11; row++) {
+      for (let col = 1; col <= 13; col++) {
+        const x = view.left + (view.width * col) / 14
+        const y = view.top + (view.height * row) / 12
+        const hit = document.elementFromPoint(x, y)
+        if (hit instanceof HTMLCanvasElement && hit.closest('.wx-view')) out.push([x, y])
+      }
     }
+    // Nearest the view's middle first: the city is drawn there, the ground at the edges.
+    const mx = view.left + view.width / 2
+    const my = view.top + view.height / 2
+    return out.sort((a, b) => Math.hypot(a[0] - mx, a[1] - my) - Math.hypot(b[0] - mx, b[1] - my))
+  })
+  for (const [x, y] of points) {
+    await page.mouse.click(x, y)
+    // The card opens on the click itself (the page picks on the same frame), so a short look is enough.
+    if (await card.waitFor({ state: 'visible', timeout: 250 }).then(() => true, () => false)) return true
   }
   return false
 }

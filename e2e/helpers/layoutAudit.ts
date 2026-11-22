@@ -340,22 +340,81 @@ export async function layoutSignature(root: string | null): Promise<string> {
   return String(h)
 }
 
+/**
+ * What still moves under `root`: the elements whose box changed between two looks a drawn frame and 250 ms apart,
+ * named by tag, test id or class (up to 8), for the message of a page that never settled.
+ */
+export async function movers(root: string | null): Promise<string[]> {
+  const look = async (): Promise<Map<Element, string>> => {
+    await new Promise<void>((resolve) => {
+      const done = setTimeout(resolve, 1000)
+      requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(done); resolve() }))
+    })
+    const top = root ? document.querySelector(root) : document.body
+    const m = new Map<Element, string>()
+    for (const e of top ? Array.from(top.querySelectorAll('*')) : []) {
+      const r = e.getBoundingClientRect()
+      m.set(e, `${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}`)
+    }
+    return m
+  }
+  const a = await look()
+  const texts = new Map<Element, number>()
+  a.forEach((_box, e) => { if (e.childElementCount === 0) texts.set(e, (e.textContent ?? '').length) })
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  const b = await look()
+  const name = (e: Element): string => {
+    const id = e.getAttribute('data-testid')
+    const cls = typeof e.className === 'string' ? e.className.split(/\s+/).filter(Boolean).slice(0, 2).join('.') : ''
+    return `${e.tagName.toLowerCase()}${id ? `[${id}]` : cls ? `.${cls}` : ''} "${(e.textContent ?? '').trim().slice(0, 24)}"`
+  }
+  const out: string[] = []
+  b.forEach((now, e) => {
+    const was = a.get(e)
+    if (out.length < 8 && was !== now) out.push(`${name(e)} ${was ?? 'new'} -> ${now}`)
+  })
+  // The signature also counts the elements and the text, so a removed element or a text that changed length without
+  // moving is named too.
+  a.forEach((was, e) => {
+    if (out.length < 8 && !b.has(e)) out.push(`${name(e)} ${was} -> gone`)
+  })
+  b.forEach((_now, e) => {
+    const before = texts.get(e)
+    const after = e.childElementCount === 0 ? (e.textContent ?? '').length : before
+    if (out.length < 8 && before !== undefined && after !== before) out.push(`${name(e)} text ${before} -> ${after} chars`)
+  })
+  return out
+}
+
 /** The page's own evaluate, so this file needs nothing from Playwright. */
 interface Evaluates { evaluate<R, A>(fn: (arg: A) => R | Promise<R>, arg: A): Promise<R> }
 
+/** What `movers` names over up to four pairs of looks, for a page that moves now and then rather than all the time. */
+export async function stillMoving(page: Evaluates, root: string | null = null): Promise<string> {
+  for (let i = 0; i < 4; i++) {
+    const found = await page.evaluate(movers, root)
+    if (found.length > 0) return found.join('; ')
+  }
+  return 'nothing in four pairs of looks'
+}
+
 /**
  * Waits, instead of a fixed time, until the layout under `root` has stayed the same for STEADY_SAMPLES samples
- * STEADY_EVERY_MS apart; false when it was still moving after `timeout` ms.
+ * STEADY_EVERY_MS apart; false when it was still moving after `timeout` ms. `log`, when given, gets each sample's time
+ * and whether it moved, and what was moving at the third sample that moved.
  */
 const STEADY_EVERY_MS = 250
 const STEADY_SAMPLES = 4
-export async function steady(page: Evaluates, root: string | null = null, timeout = 15_000): Promise<boolean> {
-  const end = Date.now() + timeout
+export async function steady(page: Evaluates, root: string | null = null, timeout = 15_000, log?: string[]): Promise<boolean> {
+  const start = Date.now()
+  const end = start + timeout
   let last = await page.evaluate(layoutSignature, root)
   let same = 0
   while (Date.now() < end) {
     await new Promise((resolve) => setTimeout(resolve, STEADY_EVERY_MS))
     const now = await page.evaluate(layoutSignature, root)
+    log?.push(`${Date.now() - start}ms ${now === last ? 'same' : 'moved'}`)
+    if (log && now !== last && log.length === 3) log.push(`moving then: ${(await page.evaluate(movers, root)).join('; ') || 'nothing'}`)
     same = now === last ? same + 1 : 0
     if (same >= STEADY_SAMPLES - 1) return true
     last = now
