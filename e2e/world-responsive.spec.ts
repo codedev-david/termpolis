@@ -506,6 +506,27 @@ async function litShare(): Promise<number> {
   }
 }
 
+/**
+ * Whether the open card shows a typical answer without a scroll: its first heading and the first two items after it
+ * (a claim, a sentence or a list entry; true where it has fewer). At 1366x768 with an answer open the card was held at
+ * its 168 px minimum and its first items scrolled.
+ */
+async function cardShowsTwoItems(): Promise<boolean> {
+  return page.evaluate(() => {
+    const body = document.querySelector('[data-testid="world-card-body"]')
+    const h = body?.querySelector('h4')
+    if (!body || !h) return true
+    const items: Element[] = []
+    for (let el = h.nextElementSibling; el && items.length < 2; el = el.nextElementSibling) {
+      if (el.tagName === 'H4') continue
+      if (el.tagName === 'UL' || el.tagName === 'OL') items.push(...Array.from(el.children).slice(0, 2 - items.length))
+      else items.push(el)
+    }
+    if (items.length === 0) return true
+    return items[items.length - 1].getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 0.5 && body.scrollTop === 0
+  })
+}
+
 async function cardShowsFirstLine(): Promise<boolean> {
   return page.evaluate(() => {
     const body = document.querySelector('[data-testid="world-card-body"]')
@@ -645,6 +666,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
       // The card never lies on the legend (at 1280x800 on Linux it once covered most of the Legend button).
       expect.soft(await cardOnLegend(), `the card leaves the legend clear at ${tag}`).toBe(0)
       expect.soft(await cardShowsFirstLine(), `the card shows its first heading and the line under it at ${tag}`).toBe(true)
+      expect.soft(await cardShowsTwoItems(), `the card shows its first heading and two items under it at ${tag}`).toBe(true)
       // With a part selected the rest is dimmed: names too faint to read are put away, not drawn as a smudge.
       expect.soft(await faintLabels(), `no map label is drawn too faint to read with the card open at ${tag}`).toEqual([])
       await check(`card at ${tag}`)
@@ -684,6 +706,8 @@ test.describe.serial('Lumopolis at every screen size', () => {
         }
         await expect(answer).toBeVisible({ timeout: ASK_MS })
         await check(`answer at ${tag}`)
+        // The answer's card reads without a scroll even with the answer's taller ask bar under it.
+        await expect.poll(cardShowsTwoItems, { message: `the answer's card shows its first heading and two items under it at ${tag}`, timeout: 10_000 }).toBe(true)
         await shoot(`app-answer-${name}`)
         await click(page.getByRole('button', { name: 'Close answer' }))
         await expect(page.locator('[data-testid="world-answer"]')).toHaveCount(0)

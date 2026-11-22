@@ -93,6 +93,13 @@ export const CARD_MIN_FREE_PX = 120
 export const CARD_FREE_SHARE = 0.3
 /** The shortest a capped card gets: its title row, its first heading and a sentence or two under it. */
 export const CARD_MIN_HEIGHT_PX = 168
+/**
+ * The height a card needs for a typical answer to read without a scroll: its title, technology and status, its
+ * first heading and the first two items under it. In a narrow pane the card gets this before the city gets its
+ * CARD_FREE_SHARE, the city giving way down to CARD_MIN_FREE_PX. (At 1366x768 with an answer open the card was
+ * held at CARD_MIN_HEIGHT_PX and its first items scrolled.)
+ */
+export const CARD_READABLE_PX = 232
 
 /**
  * The open card's greatest height (WorldCard maxHeight), in a stage `width` x `height` whose right
@@ -102,16 +109,20 @@ export const CARD_MIN_HEIGHT_PX = 168
  * capped (null). In a narrow pane the city can only go below the card, so a tall card
  * (a busy building's) would leave nowhere for the selection and its line labels: there the card is
  * kept short enough that CARD_FREE_SHARE of the height stays free between its reserve
- * (cardReserve, which this lands on a step of) and the ask bar's, and its body scrolls.
+ * (cardReserve, which this lands on a step of) and the ask bar's, and its body scrolls; but it always gets
+ * CARD_READABLE_PX first where that still leaves the city CARD_MIN_FREE_PX (an answer's tall ask bar on a short
+ * screen).
  */
 export function cardMaxHeight(width: number, height: number, right: number, ask: number): number | null {
   if (!(width > 0) || !(height > 0)) return null
   if (width - right - cardReserve(CARD_WIDTH_PX, 1)[0] >= CARD_MIN_FREE_PX) {
     return ask > 0 ? Math.max(CARD_MIN_HEIGHT_PX, Math.floor(height - ask - CARD_INSET_PX - CARD_CLEARANCE_PX)) : null
   }
-  const room = height - ask - Math.ceil(height * CARD_FREE_SHARE)
-  const box = Math.floor(room / CARD_STEP_PX) * CARD_STEP_PX - CARD_INSET_PX - CARD_CLEARANCE_PX
-  return Math.max(CARD_MIN_HEIGHT_PX, box)
+  // The card's height whose reserve (on a step) fits in `room`.
+  const fit = (room: number): number => Math.floor(room / CARD_STEP_PX) * CARD_STEP_PX - CARD_INSET_PX - CARD_CLEARANCE_PX
+  const shared = fit(height - ask - Math.ceil(height * CARD_FREE_SHARE))
+  const readable = Math.min(fit(height - ask - CARD_MIN_FREE_PX), CARD_READABLE_PX)
+  return Math.max(CARD_MIN_HEIGHT_PX, shared, readable)
 }
 
 /**

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import {
-  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, CARD_FREE_SHARE, CARD_INSET_PX, CARD_MIN_FREE_PX, CARD_MIN_HEIGHT_PX, CARD_WIDTH_PX, cardMaxHeight, cardMeetsLegend, cardReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneOverlays, worldPaneStyle, useWorldPaneWidth,
+  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, CARD_FREE_SHARE, CARD_INSET_PX, CARD_MIN_FREE_PX, CARD_MIN_HEIGHT_PX, CARD_READABLE_PX, CARD_WIDTH_PX, cardMaxHeight, cardMeetsLegend, cardReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneOverlays, worldPaneStyle, useWorldPaneWidth,
   UiScaleContext, useUiScale, useUiZoom,
   WORLD_PANE_MIN_PX, TERMINAL_MIN_PX, WORLD_PANE_DEFAULT_FRACTION,
 } from '../../../src/renderer/src/components/World/worldPane'
@@ -245,10 +245,10 @@ describe('cardMaxHeight', () => {
     expect(cardMaxHeight(1000, 586, 0, 0)).toBeNull()
     // The card's 352 px reserve and 120 px of city beside it: wide from 472 px.
     expect(cardMaxHeight(472, 586, 0, 164)).toBe(402)
-    expect(cardMaxHeight(471, 586, 0, 164)).toBe(220)
+    expect(cardMaxHeight(471, 586, 0, 164)).toBe(CARD_READABLE_PX)
     // The legend's strip counts against the room beside the card.
     expect(cardMaxHeight(700, 586, 200, 164)).toBe(402)
-    expect(cardMaxHeight(600, 586, 200, 164)).toBe(220)
+    expect(cardMaxHeight(600, 586, 200, 164)).toBe(CARD_READABLE_PX)
     expect(cardMaxHeight(0, 586, 0, 164)).toBeNull()
     expect(cardMaxHeight(416, 0, 0, 164)).toBeNull()
   })
@@ -266,27 +266,40 @@ describe('cardMaxHeight', () => {
     expect(cardMeetsLegend(0, 108)).toBe(false)
   })
 
-  it('caps a card in a narrow pane so 30% of the height stays free above the ask bar (the CI pane)', () => {
-    // 416 x 586, ask bar reserve 164: 586 - 164 - 176 = 246 px for the card's reserve, 240 on a step,
-    // less its 12 px inset and 8 px clearance.
-    expect(cardMaxHeight(416, 586, 0, 164)).toBe(220)
-    expect(cardReserve(CARD_WIDTH_PX, 220)).toEqual([352, 240])
+  it('caps a card in a narrow pane at its readable height where 30% of the height would leave it less (the CI pane)', () => {
+    // 416 x 586, ask bar reserve 164: the share (586 - 164 - 176 = 246 px for the card's reserve, 240 on a step, less
+    // its 12 px inset and 8 px clearance) would give 220; the card gets its readable 232, a 256 px reserve.
+    expect(cardMaxHeight(416, 586, 0, 164)).toBe(CARD_READABLE_PX)
+    expect(cardReserve(CARD_WIDTH_PX, CARD_READABLE_PX)).toEqual([352, 256])
     // A tall card (m12's, about 410 px) is held at the cap; the city is then framed below it, in more than the
     // least room the city keeps.
-    const area = freeArea(416, 586, 0, 164, cardReserve(CARD_WIDTH_PX, Math.min(410, 220)))
-    expect(area.top).toBe(240)
-    expect(586 - area.top - area.bottom).toBeGreaterThanOrEqual(586 * CARD_FREE_SHARE)
+    const area = freeArea(416, 586, 0, 164, cardReserve(CARD_WIDTH_PX, Math.min(410, CARD_READABLE_PX)))
+    expect(area.top).toBe(256)
     expect(586 - area.top - area.bottom).toBeGreaterThanOrEqual(CARD_MIN_FREE_PX)
     // A short card is never stretched: the cap is a ceiling, so its reserve follows its own height.
-    expect(cardReserve(CARD_WIDTH_PX, Math.min(100, 220))).toEqual([352, 120])
+    expect(cardReserve(CARD_WIDTH_PX, Math.min(100, CARD_READABLE_PX))).toEqual([352, 120])
   })
 
-  it('always leaves the share free when there is room for a usable card, and never goes under its minimum', () => {
+  it('with an answer open on a short screen, the card keeps room for its heading and first two items before the city its share (designer item)', () => {
+    expect(CARD_READABLE_PX).toBe(232)
+    // 1366x768, the pane at its default width: a 584 px stage, the answer's ask bar reserve 217. The share would
+    // leave the card its 168 px minimum; the city gives way down to the least room it keeps, and the card gets 220.
+    expect(cardMaxHeight(423, 584, 0, 217)).toBe(220)
+    expect(584 - 217 - cardReserve(CARD_WIDTH_PX, 220)[1]).toBeGreaterThanOrEqual(CARD_MIN_FREE_PX)
+    // A little more height and the card gets its full readable room, the city more than its least.
+    expect(cardMaxHeight(423, 640, 0, 217)).toBe(CARD_READABLE_PX)
+    // Where the share already leaves the card more, the share holds: 900 - 164 - 270 = 466, 464 on a step.
+    expect(cardMaxHeight(416, 900, 0, 164)).toBe(444)
+  })
+
+  it('always leaves the city its least room (or its share, on a stage too short for that) when there is room for a usable card, the share once the card is readable, and never goes under its minimum', () => {
     for (let h = 300; h <= 1400; h += 7) {
-      for (const ask of [0, 80, 164]) {
+      for (const ask of [0, 80, 164, 217]) {
         const cap = cardMaxHeight(416, h, 0, ask) as number
         expect(cap).toBeGreaterThanOrEqual(CARD_MIN_HEIGHT_PX)
-        if (cap > CARD_MIN_HEIGHT_PX) expect(h - ask - cardReserve(CARD_WIDTH_PX, cap)[1]).toBeGreaterThanOrEqual(h * CARD_FREE_SHARE)
+        const free = h - ask - cardReserve(CARD_WIDTH_PX, cap)[1]
+        if (cap > CARD_MIN_HEIGHT_PX) expect(free).toBeGreaterThanOrEqual(Math.min(CARD_MIN_FREE_PX, h * CARD_FREE_SHARE))
+        if (cap > CARD_READABLE_PX) expect(free).toBeGreaterThanOrEqual(h * CARD_FREE_SHARE)
       }
     }
     // A stage too short for both keeps the card's title row and a few lines.
