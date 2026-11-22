@@ -401,18 +401,20 @@ describe('threeRenderer framing', () => {
     r.dispose()
   })
 
-  it("frames a clicked building with its name's whole box in the picture, even in a short view (F5)", async () => {
-    const short = makeHost(800, 120)
+  it.each([120, 80, 60, 48])("frames a clicked building with its name's whole box in the picture, even in a short view %i px tall (F5, M2)", async (tall) => {
+    const short = makeHost(800, tall)
     const r = createThreeRenderer(short, DEFAULT_OPTS)
-    boxCanvas(r.canvas, 800, 120)
-    r.draw({ districts: [district('d', [0, 0, 0], 80)], buildings: [bldg('t', [0, 0, 0], { floors: 10, height: 60 })], conduits: [], orbs: [] }, smallText(), false)
+    boxCanvas(r.canvas, 800, tall)
+    // A wide district, so the close-up is not held in by its cap (most of the overview).
+    r.draw({ districts: [district('d', [0, 0, 0], 600)], buildings: [bldg('t', [0, 0, 0], { floors: 10, height: 60 })], conduits: [], orbs: [] }, smallText(), false)
     h.frames.step()
     await r.frame(['t'], true)
     h.frames.step()
     const cam = cameraOf()
     cam.updateMatrixWorld()
-    // The name's point (3 over the roof) lies at least the name's half height and the view's inset below the top.
-    const y = ((1 - new THREE.Vector3(0, 63, 0).project(cam).y) / 2) * 120
+    // The name's point (3 over the roof) lies at least the name's half height and the view's inset below the top:
+    // the room is reserved at the distance the camera ends at, and as it looks on screen from a camera pitched down.
+    const y = ((1 - new THREE.Vector3(0, 63, 0).project(cam).y) / 2) * tall
     expect(y).toBeGreaterThanOrEqual(16 - 0.5)
     r.dispose()
     short.remove()
@@ -431,6 +433,32 @@ const ring = (tag: string, x: number, z: number, height: number): ReturnType<typ
   Array.from({ length: 8 }, (_, k) => bldg(`${tag}${k}`, [x + 6 * Math.cos((k * Math.PI) / 4), 0, z + 6 * Math.sin((k * Math.PI) / 4)], { floors: 10, height }))
 
 describe('threeRenderer line framing', () => {
+  it.each([120, 60, 48])("frames a line's close-up with room for both end names over their buildings, in a view %i px tall (F5, M3)", async (tall) => {
+    const short = makeHost(800, tall)
+    const r = createThreeRenderer(short, DEFAULT_OPTS)
+    boxCanvas(r.canvas, 800, tall)
+    // A wide district, so the close-up is not held in by its cap (most of the overview).
+    r.draw({
+      districts: [district('d', [0, 0, 0], 600)],
+      buildings: [bldg('p', [-90, 0, 0], { floors: 10, height: 60 }), bldg('q', [90, 0, 0], { floors: 10, height: 60 })],
+      // A low, flat line: the end names, not the arch, are the highest things in the shot.
+      conduits: [conduit('e', [-90, 60, 0], [90, 60, 0], { ctrl: [0, 30, 0] })],
+      orbs: [],
+    }, smallText(), false)
+    h.frames.step()
+    await r.frame(['e'], true)
+    h.frames.step()
+    const cam = cameraOf()
+    cam.updateMatrixWorld()
+    // Each end's name point (3 over its roof) lies at least the name's half height and the view's inset below the top.
+    for (const x of [-90, 90]) {
+      const y = ((1 - new THREE.Vector3(x, 63, 0).project(cam).y) / 2) * tall
+      expect(y, `end at ${x}`).toBeGreaterThanOrEqual(16 - 0.5)
+    }
+    r.dispose()
+    short.remove()
+  })
+
   it('a line whose close looks are crossed by another line is framed from further out, both ends and its middle in sight', async () => {
     const r = drawn({
       districts: [district('d1', [0, 0, 0], 30)],

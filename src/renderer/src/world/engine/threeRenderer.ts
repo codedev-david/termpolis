@@ -254,6 +254,8 @@ const CLOSE_UP_MARGIN = 1.2
 const CLOSE_UP_MIN = 28 * Math.hypot(1, 0.5)
 /** How far a building's name reaches above its point on screen at scale 1: half its height and the view's inset. */
 const NAME_ROOM_PX = 16
+/** How many times a close-up works its names' room out again at the distance it was pushed back to (nameRoomFit). */
+const NAME_ROOM_REFITS = 4
 /**
  * Line and packet sizes grow with the world (scale) up to this, so a big city's lines stay lines:
  * past it, dozens of fat tubes meeting at one building bloom into a white or pink glare.
@@ -1429,15 +1431,25 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       pts.push([base.x, base.y, base.z], [m.anchor.x, m.anchor.y + 3, m.anchor.z])
     }
     const t: V3 = [target.x, target.y, target.z]
-    const fitAt = (): number => clamp(fitDistance(pts, t, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN), CLOSE_UP_MIN, overviewDist * 0.7)
-    // Each name is a box on screen over its point: the point its half height (and the inset) higher, at
-    // the distance found, is framed too, so the clicked part's name is never cut at the picture's top.
-    const names = pts.filter((_, i) => i % 2 === 1).map(([x, y, z]): V3 => [x, y, z])
+    // Each name is a box on screen over its point: the point its half height (and the inset) higher is framed too,
+    // so the clicked part's name is never cut at the picture's top (nameRoomFit).
+    const names = pts.filter((_, i) => i % 2 === 1)
+    const fitAt = (all: V3[]): { dist: number } => ({ dist: clamp(fitDistance(all, t, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN), CLOSE_UP_MIN, overviewDist * 0.7) })
+    return { pos: target.clone().addScaledVector(dir, withNameRoom(pts, names, dir, fitAt).dist), target }
+  }
+
+  /**
+   * A close-up along `dir` (`fit` frames a set of points) of `pts`, with room over each of the `names` points for its
+   * name: NAME_ROOM_PX on screen, as high in the world as that is at the distance the camera ends at, seen from a
+   * camera pitched down (a rise of h shows as h times the cosine of the pitch). Raising the points pushes the camera
+   * back, which makes the same pixels taller in the world, so the room is worked out again at each new distance.
+   */
+  function withNameRoom<T extends { dist: number }>(pts: V3[], names: V3[], dir: THREE.Vector3, fit: (all: V3[]) => T): T {
     const a = areaFor(true)
-    const room = (NAME_ROOM_PX * labelScale / Math.max(1, height - a.top - a.bottom)) * 2 * Math.tan(THREE.MathUtils.degToRad(fitFov()) / 2)
-    const near = fitAt()
-    for (const [x, y, z] of names) pts.push([x, y + room * near, z])
-    return { pos: target.clone().addScaledVector(dir, fitAt()), target }
+    const perDist = (NAME_ROOM_PX * labelScale / Math.max(1, height - a.top - a.bottom)) * 2 * Math.tan(THREE.MathUtils.degToRad(fitFov()) / 2) / Math.max(0.1, Math.hypot(dir.x, dir.z))
+    let got = fit(pts)
+    for (let k = 0; k < NAME_ROOM_REFITS; k++) got = fit(pts.concat(names.map(([x, y, z]): V3 => [x, y + perDist * got.dist, z])))
+    return got
   }
 
   /** The building or orb standing at a line's end: the nearest one across the ground, if any is that near. */
@@ -1552,11 +1564,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // The arch, and each end building's upper part up to its name: in a tall, busy district the
     // whole towers would fill the picture and squeeze the line itself to a sliver at the top.
     const pts: V3[] = e.path.map((p) => [p.x, p.y, p.z])
+    // Each end's name point, framed with room for its name over it (withNameRoom), as a clicked building's is.
+    const names: V3[] = []
     for (const end of [e.curve.v0, e.curve.v2]) {
       const m = nodeAt(end)
       if (!m) continue
-      pts.push([m.anchor.x, m.anchor.y - m.height * 0.4, m.anchor.z], [m.anchor.x, m.anchor.y + 3, m.anchor.z])
+      pts.push([m.anchor.x, m.anchor.y - m.height * 0.4, m.anchor.z])
+      names.push([m.anchor.x, m.anchor.y + 3, m.anchor.z])
     }
+    const lineFit = (dir: THREE.Vector3): ReturnType<typeof fitView> => withNameRoom(pts.concat(names), names, dir, (all) => fitView(all, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN))
     const h = sideOf(from)
     const along = e.curve.v2.clone().sub(e.curve.v0).setY(0)
     if (along.lengthSq() > 1e-6) {
@@ -1579,7 +1595,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     for (const across of along.lengthSq() > 1e-6 ? [h, h.clone().negate()] : [h]) {
       for (const lift of LINE_LIFTS) {
         const dir = new THREE.Vector3(across.x, lift, across.z).normalize()
-        const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+        const fit = lineFit(dir)
         const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
         const far = Math.max(fit.dist, overviewDist * 0.7)
         let dist = fit.dist
@@ -1602,7 +1618,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     wide: for (const [x, z] of turnAcross([h.x, h.z], LINE_TURNS)) {
       for (const lift of LINE_WIDE_LIFTS) {
         const dir = new THREE.Vector3(x, lift, z).normalize()
-        const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+        const fit = lineFit(dir)
         const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
         for (const dist of backOffs(fit.dist, controls.maxDistance, LINE_BACK_STEP)) {
           const eye = target.clone().addScaledVector(dir, dist)
@@ -1620,7 +1636,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (bestScore < ends.length) return bestShot as Shot // a finite score was set with its shot
     // Nothing shows an end: from high above, as far back as it takes to clear the roofs.
     const dir = new THREE.Vector3(h.x, LINE_LIFTS[2], h.z).normalize()
-    const fit = fitView(pts, [dir.x, dir.y, dir.z], fitFov(), fitAspect(), CLOSE_UP_MARGIN, CLOSE_UP_MIN)
+    const fit = lineFit(dir)
     const target = new THREE.Vector3(fit.target[0], fit.target[1], fit.target[2])
     const far = Math.max(fit.dist, overviewDist * 0.7)
     let dist = fit.dist
