@@ -302,7 +302,9 @@ export interface FreeArea { left: number; top: number; right: number; bottom: nu
  * (`card`, its width and height from the corner, gaps included). The card is kept out as a strip
  * along the top or along the left, whichever leaves the larger free area: in a narrow pane, where
  * the card spans nearly the width, the top. A card that would leave less than MIN_FREE_PX either
- * way on both sides is not reserved (the fit keeps the rest of the view).
+ * way on both sides is not reserved (the fit keeps the rest of the view), except beside a legend strip kept
+ * only because `legendFrom` is narrower than the default: then the strip is dropped if that lets the card be
+ * reserved, since the card is what was just opened.
  */
 export function freeArea(width: number, height: number, legend: number, ask: number, card: readonly [number, number] | null, legendFrom?: number): FreeArea {
   const out: FreeArea = { left: 0, top: 0, right: rightInset(width, legend, legendFrom), bottom: bottomInset(height, ask) }
@@ -312,7 +314,13 @@ export function freeArea(width: number, height: number, legend: number, ask: num
   const fh = height - out.bottom
   const below = fw >= MIN_FREE_PX && fh - ch >= MIN_FREE_PX ? fw * (fh - ch) : -1
   const beside = fw - cw >= MIN_FREE_PX && fh >= MIN_FREE_PX ? (fw - cw) * fh : -1
-  if (below < 0 && beside < 0) return out
+  if (below < 0 && beside < 0) {
+    if (out.right > 0 && rightInset(width, legend) === 0) {
+      const bare = freeArea(width, height, 0, ask, card)
+      if (bare.left > 0 || bare.top > 0) return bare
+    }
+    return out
+  }
   return below >= beside ? { ...out, top: ch } : { ...out, left: cw }
 }
 

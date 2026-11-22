@@ -462,6 +462,26 @@ describe('freeArea', () => {
     expect(freeArea(1024, 645, 344, 56, [352, 549], 732)).toEqual({ left: 352, top: 0, right: 344, bottom: 56 })
   })
 
+  it('drops a strip kept only from the width given for it when the open card fits nowhere beside it', () => {
+    // The exported page 732 to 827 px wide with a full-height card (12 + 340 + 12 wide, its CSS max height
+    // calc(100% - 110px) plus its gaps tall): beside the Ask strip (344) the card leaves under MIN_FREE_PX, so the
+    // card wins and the building is framed right of it, not behind it.
+    const centreX = (w: number, f: FreeArea): number => f.left + (w - f.left - f.right) / 2
+    for (const [w, h] of [[800, 700], [732, 600]] as const) {
+      const card = [364, h - 86] as const
+      const f = freeArea(w, h, 344, 56, card, 732)
+      expect(f).toEqual({ left: 364, top: 0, right: 0, bottom: 56 })
+      expect(centreX(w, f), `${w} x ${h}: the framed building's centre is right of the card`).toBeGreaterThan(card[0])
+    }
+    // From 828 px the card fits beside the strip, and both are kept.
+    expect(freeArea(828, 700, 344, 56, [364, 614], 732)).toEqual({ left: 364, top: 0, right: 344, bottom: 56 })
+    // A card that fits nowhere even without the strip leaves the strip kept, as before.
+    expect(freeArea(732, 600, 344, 56, [700, 560], 732)).toEqual({ left: 0, top: 0, right: 344, bottom: 56 })
+    // A strip the default width (three times its own) keeps is never dropped for the card.
+    expect(freeArea(1100, 150, 344, 56, [364, 140], 732)).toEqual({ left: 0, top: 0, right: 344, bottom: 56 })
+    expect(freeArea(1100, 150, 344, 56, [364, 140])).toEqual({ left: 0, top: 0, right: 344, bottom: 56 })
+  })
+
   it('a narrow pane keeps the card out as a strip along the top, with the ask bar below', () => {
     // 416 px wide, the 330 px card spans nearly the width: beside it only 64 px would be left.
     const a = freeArea(416, 586, 0, 158, [352, 248])
