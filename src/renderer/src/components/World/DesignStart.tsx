@@ -86,7 +86,7 @@ export function DesignStart({ onDrafted, onClose }: DesignStartProps): JSX.Eleme
       {mic.errorMsg && <p role="alert" className="text-xs text-[#f14c4c]">{mic.errorMsg}</p>}
       {drafting !== null && <p role="status" className="text-xs text-[#9ca3af] animate-pulse">Drafting your design…</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>
         <button type="button" className={primaryCls} disabled={description === '' || drafting !== null} onClick={submit}>Design it</button>
       </div>

@@ -47,8 +47,8 @@ type BuildItProp = { agents: { id: string; name: string }[]; defaultAgent?: stri
 const BUILT = { root: '/build/pets', key: 'design:d1', title: 'Pets', prompt: 'Build the app.' }
 vi.mock('../../../src/renderer/src/components/World', () => ({
   // The real pane resolves `root` to its git root; this stand-in says the cwd's root is /repos/app.
-  WorldView: ({ root, width, onClose, askSlot, buildIt, exportRequest }: { root: string; width?: number; onClose: () => void; askSlot?: (...a: unknown[]) => React.ReactNode; buildIt?: BuildItProp; exportRequest?: { kind: string; seq: number } }) => (
-    <div role="region" aria-label="Lumopolis" data-testid="world-view" style={{ width }} data-root={root} data-agents={buildIt?.agents.map((a) => a.id).join(',')} data-default={buildIt?.defaultAgent} data-export={exportRequest ? `${exportRequest.kind}:${exportRequest.seq}` : ''}>
+  WorldView: ({ root, width, onClose, askSlot, buildIt, exportRequest, overlay }: { root: string; width?: number; onClose: () => void; askSlot?: (...a: unknown[]) => React.ReactNode; buildIt?: BuildItProp; exportRequest?: { kind: string; seq: number }; overlay?: { left: number } | null }) => (
+    <div role="region" aria-label="Lumopolis" data-testid="world-view" style={{ width }} data-overlay={overlay ? String(overlay.left) : ''} data-root={root} data-agents={buildIt?.agents.map((a) => a.id).join(',')} data-default={buildIt?.defaultAgent} data-export={exportRequest ? `${exportRequest.kind}:${exportRequest.seq}` : ''}>
       <button onClick={onClose}>Close Lumopolis</button>
       <button onClick={() => buildIt?.launch(BUILT, 'claude')}>Build with claude</button>
       <button onClick={() => buildIt?.launch(BUILT, 'nobody')}>Build with nobody</button>
@@ -105,6 +105,8 @@ afterEach(() => {
 
 describe('App Lumopolis wiring', () => {
   it('opening Lumopolis keeps the terminal area rendered beside the pane, with a divider between them', async () => {
+    // jsdom has no layout: say the terminals' column is 1200 px wide.
+    const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1200)
     render(<App />)
     await settle()
     act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
@@ -113,6 +115,21 @@ describe('App Lumopolis wiring', () => {
     expect(screen.getByRole('main')).toBeVisible()
     expect(screen.getByRole('main').nextElementSibling).toBe(screen.getByRole('separator'))
     expect(screen.getByRole('separator').nextElementSibling).toBe(pane)
+    expect(pane).toHaveAttribute('data-overlay', '')
+    client.mockRestore()
+  })
+
+  it('in a row too narrow for the pane and the terminals side by side, the pane lies over the terminals, which stay rendered, with no divider', async () => {
+    // jsdom has no layout: every column measures 0 px, under the pane's least width beside the terminals'.
+    render(<App />)
+    await settle()
+    act(() => { window.dispatchEvent(new CustomEvent('termpolis:openWorld')) })
+    const pane = await screen.findByTestId('world-view')
+    expect(screen.queryByRole('separator')).toBeNull()
+    expect(screen.getByRole('main')).toBeInTheDocument()
+    expect(pane.parentElement).toBe(screen.getByRole('main').parentElement)
+    expect(pane.parentElement).toHaveClass('relative')
+    expect(pane).toHaveAttribute('data-overlay', '0') // at the terminals' column's left edge
   })
 
   it("a lumopolis notice shows in the app, and its Open opens the pane on that folder", async () => {

@@ -265,7 +265,7 @@ export function ExportDialog({ root, designKey, mapRun, describeOn, onSaved, onC
         </div>
       )}
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>
         <button type="button" className={primaryCls} disabled={info === null || running} onClick={start}>{running ? 'Exporting…' : 'Export…'}</button>
       </div>

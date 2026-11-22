@@ -24,7 +24,7 @@ export function SignInNeededNotice({ host, helper, busy, error, onSignIn, onUseT
     >
       <span>This repository needs you to sign in before Lumopolis can update it. You're seeing the saved copy.</span>
       {error !== null && <span role="alert" className="text-[#f14c4c]">{error}</span>}
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
         {helper && <button type="button" className={btnCls} disabled={busy} onClick={onSignIn}>{signInLabel(host)}</button>}
         <button type="button" className={btnCls} disabled={busy} onClick={onUseToken}>Use a token</button>
         <button type="button" className={btnCls} disabled={busy} onClick={onDismiss}>Dismiss</button>

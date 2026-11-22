@@ -95,7 +95,7 @@ export function DocumentDialog({ root, designKey, projectName, picture, onSaved,
         )}
       </div>
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>
         <button type="button" className={primaryCls} disabled={saving || title.trim() === ''} onClick={save}>{saving ? 'Saving…' : 'Save…'}</button>
       </div>

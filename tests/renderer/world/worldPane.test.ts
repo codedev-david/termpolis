@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import {
-  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, CARD_FREE_SHARE, CARD_INSET_PX, CARD_MIN_FREE_PX, CARD_MIN_HEIGHT_PX, CARD_WIDTH_PX, cardMaxHeight, cardMeetsLegend, cardReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneStyle, useWorldPaneWidth,
+  ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, CARD_FREE_SHARE, CARD_INSET_PX, CARD_MIN_FREE_PX, CARD_MIN_HEIGHT_PX, CARD_WIDTH_PX, cardMaxHeight, cardMeetsLegend, cardReserve, clampWorldPaneWidth, loadWorldPaneWidth, saveWorldPaneWidth, worldPaneOverlays, worldPaneStyle, useWorldPaneWidth,
   UiScaleContext, useUiScale, useUiZoom,
   WORLD_PANE_MIN_PX, TERMINAL_MIN_PX, WORLD_PANE_DEFAULT_FRACTION,
 } from '../../../src/renderer/src/components/World/worldPane'
@@ -19,18 +19,27 @@ describe('clampWorldPaneWidth', () => {
     expect(clampWorldPaneWidth(100, 1000)).toBe(360)
     expect(clampWorldPaneWidth(500, 800)).toBe(476)
   })
-  it('lets the terminal minimum win when the row cannot hold both (Ruling P12)', () => {
-    expect(clampWorldPaneWidth(500, 600)).toBe(276)
-    expect(clampWorldPaneWidth(500, 100)).toBe(0)
+  it('lies over the terminals at the full row when the row cannot hold the pane at 360 beside the terminals at 320', () => {
+    expect(worldPaneOverlays(684)).toBe(false) // 360 + 4 + 320: both fit exactly
+    expect(clampWorldPaneWidth(500, 684)).toBe(360)
+    expect(worldPaneOverlays(683)).toBe(true)
+    expect(clampWorldPaneWidth(500, 600)).toBe(600)
+    expect(clampWorldPaneWidth(100, 100)).toBe(100)
+    expect(clampWorldPaneWidth(500, -5)).toBe(0)
   })
 })
 
 describe('worldPaneStyle', () => {
-  it('is a flex sibling, never an overlay', () => {
+  it('is a flex sibling beside the terminals', () => {
     const s = worldPaneStyle('#03050a', 500)
     expect(s).toMatchObject({ position: 'relative', flex: '0 0 auto', width: 500, minWidth: 500, background: '#03050a' })
     expect(s.zIndex).toBeUndefined()
     expect(s.top).toBeUndefined()
+  })
+  it('lies over the terminals column, above xterm and under the dialogs, when it overlays', () => {
+    const s = worldPaneStyle('#03050a', 528, { left: 240 })
+    expect(s).toMatchObject({ position: 'absolute', top: 0, bottom: 0, left: 240, width: 528, zIndex: 30, background: '#03050a', overflow: 'hidden' })
+    expect(s.flex).toBeUndefined()
   })
 })
 
@@ -71,8 +80,47 @@ describe('useWorldPaneWidth', () => {
     expect(result.current.width).toBe(566)
     act(() => { el.current.clientWidth = 700; window.dispatchEvent(new Event('resize')) })
     expect(result.current.width).toBe(508) // room 700 + 566 + 4, 40% of it
+    expect(result.current.overlay).toBeNull()
     act(() => { el.current.clientWidth = 100; window.dispatchEvent(new Event('resize')) })
-    expect(result.current.width).toBe(288) // the room 612 leaves the terminals 320 and the divider 4: the pane gives way under its own minimum
+    // The room 100 + 508 + 4 = 612 cannot hold the pane at 360 beside the terminals at 320: it lies over them
+    // at the full room, and from then on the terminals' column alone is the room.
+    expect(result.current.width).toBe(612)
+    expect(result.current.overlay).toEqual({ left: 0 })
+  })
+
+  it('in an overlay measures the column alone, at its left edge, and goes back beside the terminals when the row grows', () => {
+    const el = { current: { clientWidth: 500, offsetLeft: 240 } as HTMLElement }
+    const { result } = renderHook(() => useWorldPaneWidth(el, true))
+    // 500 + 410 + 4 = 914 first; 40% of it, 366, sits beside the terminals.
+    expect(result.current.overlay).toBeNull()
+    act(() => { (el.current as { clientWidth: number }).clientWidth = 200; window.dispatchEvent(new Event('resize')) })
+    // 200 + 366 + 4 = 570: too narrow, so the pane covers the column, whose width (now the whole room) is 570.
+    act(() => { (el.current as { clientWidth: number }).clientWidth = 570; window.dispatchEvent(new Event('resize')) })
+    expect(result.current.overlay).toEqual({ left: 240 })
+    expect(result.current.width).toBe(570)
+    // The divider is gone; a stray drag changes nothing.
+    act(() => result.current.onDrag(-50))
+    expect(result.current.width).toBe(570)
+    expect(loadWorldPaneWidth()).toBeNull()
+    act(() => { (el.current as { clientWidth: number }).clientWidth = 1000; window.dispatchEvent(new Event('resize')) })
+    expect(result.current.overlay).toBeNull()
+    expect(result.current.width).toBe(400) // 40% of the room 1000, back beside the terminals
+  })
+
+  it('counts only the part of a pane inside the row when the window shrinks under it', () => {
+    const row = { scrollWidth: 1414, clientWidth: 1414 }
+    const el = { current: { clientWidth: 1000, offsetLeft: 0, parentElement: row } as unknown as HTMLElement }
+    const { result } = renderHook(() => useWorldPaneWidth(el, true))
+    expect(result.current.width).toBe(566) // 40% of 1000 + 410 + 4
+    // The window shrinks to a 400 px row: the column is squeezed to 0 and the pane and divider (570) run 170 past its edge.
+    act(() => {
+      Object.assign(el.current as unknown as Record<string, unknown>, { clientWidth: 0 })
+      Object.assign(row, { scrollWidth: 570, clientWidth: 400 })
+      window.dispatchEvent(new Event('resize'))
+    })
+    // The room is 0 + 566 + 4 - 170 = 400, the row's own width: too narrow for both, so the pane covers it.
+    expect(result.current.overlay).toEqual({ left: 0 })
+    expect(result.current.width).toBe(400)
   })
 
   it('re-clamps when the terminals column changes size on its own (the Changes panel, the sidebar)', () => {
@@ -234,6 +282,8 @@ describe('the pane scale', () => {
     expect(result.current).toBe(1.5)
     rerender({ w: 912 }) // a pane split narrow: 912 / 760
     expect(result.current).toBe(1.2)
+    rerender({ w: 480 }) // narrower: the floor, 75% of 1.5 rounded down to a step
+    expect(result.current).toBe(1.1)
     const off = vi.spyOn(window, 'removeEventListener')
     unmount()
     expect(off).toHaveBeenCalledWith('resize', expect.any(Function))

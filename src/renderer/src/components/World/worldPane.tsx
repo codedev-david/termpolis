@@ -1,10 +1,11 @@
 // The frame of the Lumopolis pane: a resizable column in the app's flex row, beside the terminals (like
-// the Changes panel), never an overlay. Opaque background from its first frame. Inline styles, so the
-// frame never depends on which utility classes the CSS build happens to contain.
+// the Changes panel). Opaque background from its first frame. Inline styles, so the frame never depends on
+// which utility classes the CSS build happens to contain.
 //
 // Width: the saved width (localStorage) or 40% of the row, kept within [WORLD_PANE_MIN_PX, row minus
-// TERMINAL_MIN_PX]. The terminal minimum wins when the row is too narrow for both: the pane shrinks
-// under its minimum rather than squeeze the terminals.
+// TERMINAL_MIN_PX]. A row too narrow for both (a tablet, a small window) never squeezes either: the pane
+// lies over the terminals' column at its full width (worldPaneOverlays), the divider goes, and the
+// terminals stay mounted underneath, back as they were when the pane closes.
 //
 // App shows WorldPaneOpening while the Lumopolis chunk (the engine and Three.js) loads. This module
 // imports nothing from the engine, so it stays small enough for App's main chunk.
@@ -22,10 +23,15 @@ export const WORLD_PANE_DEFAULT_FRACTION = 0.4
 export const WORLD_DIVIDER_PX = 4
 const WIDTH_KEY = 'termpolis.world.paneWidth'
 
-/** The pane's width within a row `rowWidth` wide (the room for the terminals, the divider and the pane). */
+/** Whether a row `rowWidth` wide (the room for the terminals, the divider and the pane) is too narrow for the pane at its minimum beside the terminals at theirs. */
+export function worldPaneOverlays(rowWidth: number): boolean {
+  return rowWidth < WORLD_PANE_MIN_PX + WORLD_DIVIDER_PX + TERMINAL_MIN_PX
+}
+
+/** The pane's width within a row `rowWidth` wide: the whole row when it overlays the terminals. */
 export function clampWorldPaneWidth(px: number, rowWidth: number): number {
-  const room = Math.max(0, rowWidth - TERMINAL_MIN_PX - WORLD_DIVIDER_PX)
-  return Math.min(Math.max(px, WORLD_PANE_MIN_PX), room)
+  if (worldPaneOverlays(rowWidth)) return Math.max(0, rowWidth)
+  return Math.min(Math.max(px, WORLD_PANE_MIN_PX), rowWidth - TERMINAL_MIN_PX - WORLD_DIVIDER_PX)
 }
 
 export function loadWorldPaneWidth(): number | null {
@@ -114,27 +120,48 @@ export function cardMeetsLegend(width: number, legend: number): boolean {
   return width > 0 && CARD_INSET_PX + Math.min(CARD_WIDTH_PX, width - CARD_INSET_PX * 2) + CARD_CLEARANCE_PX > width - legend
 }
 
-export function worldPaneStyle(background: string, width: number): CSSProperties {
-  return {
-    position: 'relative', flex: '0 0 auto', width, minWidth: width, overflow: 'hidden',
-    display: 'flex', flexDirection: 'column', background, color: '#cccccc',
-  }
+/** Where the pane lies over the terminals' column when the row is too narrow for both (null: beside them). */
+export interface WorldPaneOverlay { left: number }
+
+/** Over the terminals (xterm's layers go to z-index 7) and under the app's dialogs (z-50). */
+const OVERLAY_Z = 30
+
+export function worldPaneStyle(background: string, width: number, overlay: WorldPaneOverlay | null = null): CSSProperties {
+  const frame: CSSProperties = { overflow: 'hidden', display: 'flex', flexDirection: 'column', background, color: '#cccccc' }
+  if (overlay) return { ...frame, position: 'absolute', top: 0, bottom: 0, left: overlay.left, width, zIndex: OVERLAY_Z }
+  return { ...frame, position: 'relative', flex: '0 0 auto', width, minWidth: width }
 }
 
 /**
- * The pane's width and its divider's drag handler. `mainRef` is the terminals' column: the room is its
- * width plus the pane and divider now beside it, so it holds whatever else shares the row.
+ * The pane's width, its divider's drag handler, and whether it overlays the terminals. `mainRef` is the
+ * terminals' column: the room is its width plus the pane and divider beside it, so it holds whatever else
+ * shares the row; while the pane overlays the column, the column alone is the room. The row (the column's
+ * parent) is what an overlay is placed in, at the column's left edge.
  */
-export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active: boolean): { width: number; min: number; max: number; onDrag: (dx: number) => void } {
+export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active: boolean): {
+  width: number; min: number; max: number; onDrag: (dx: number) => void; overlay: WorldPaneOverlay | null
+} {
   const [room, setRoom] = useState(() => window.innerWidth)
+  const [left, setLeft] = useState(0)
   const [saved, setSaved] = useState<number | null>(loadWorldPaneWidth)
+  const overlays = worldPaneOverlays(room)
   const width = clampWorldPaneWidth(saved ?? Math.round(room * WORLD_PANE_DEFAULT_FRACTION), room)
   const widthRef = useRef(width)
   widthRef.current = width
+  const overlaysRef = useRef(overlays)
+  overlaysRef.current = overlays
 
   useLayoutEffect(() => {
     if (!active) return
-    const measure = (): void => setRoom((mainRef.current as HTMLElement).clientWidth + widthRef.current + WORLD_DIVIDER_PX)
+    const measure = (): void => {
+      const main = mainRef.current as HTMLElement
+      // A pane wider than a row that just shrank (a window made smaller) runs past the row's edge, with the
+      // column squeezed to nothing: only the part of it inside the row is room.
+      const row = main.parentElement
+      const past = row ? Math.max(0, row.scrollWidth - row.clientWidth) : 0
+      setRoom(main.clientWidth + (overlaysRef.current ? 0 : widthRef.current + WORLD_DIVIDER_PX) - past)
+      setLeft(main.offsetLeft || 0)
+    }
     measure()
     window.addEventListener('resize', measure)
     // Anything else that resizes the terminals' column (the Changes panel, the sidebar) re-clamps too.
@@ -150,12 +177,16 @@ export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active
   roomRef.current = room
   /** `dx` is how far the divider moved to the right: to the left makes the pane wider. */
   const onDrag = useCallback((dx: number): void => {
+    if (worldPaneOverlays(roomRef.current)) return
     const next = clampWorldPaneWidth(widthRef.current - dx, roomRef.current)
     widthRef.current = next // the next move may come before the next render
     saveWorldPaneWidth(next)
     setSaved(next)
   }, [])
-  return { width, min: clampWorldPaneWidth(0, room), max: clampWorldPaneWidth(Infinity, room), onDrag }
+  return {
+    width, min: clampWorldPaneWidth(0, room), max: clampWorldPaneWidth(Infinity, room), onDrag,
+    overlay: overlays ? { left } : null,
+  }
 }
 
 /**
@@ -186,9 +217,9 @@ export function useUiZoom(): CSSProperties {
   return s === 1 ? {} : { zoom: s }
 }
 
-export function WorldPaneOpening({ width }: { width: number }): JSX.Element {
+export function WorldPaneOpening({ width, overlay = null }: { width: number; overlay?: WorldPaneOverlay | null }): JSX.Element {
   return (
-    <div data-testid="world-view-opening" style={worldPaneStyle(WORLD_OPENING_BACKGROUND, width)}>
+    <div data-testid="world-view-opening" style={worldPaneStyle(WORLD_OPENING_BACKGROUND, width, overlay)}>
       <div role="status" style={{ margin: 'auto', fontSize: 14, color: '#9ca3af' }}>Opening Lumopolis…</div>
     </div>
   )

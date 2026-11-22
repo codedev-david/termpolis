@@ -125,7 +125,7 @@ export function CloneDialog({ onCloned, onClose }: CloneDialogProps): JSX.Elemen
           <button type="button" data-testid="world-clone-use-token" className={btnCls} disabled={cloning} onClick={() => setTokenOpen(true)}>Use a token</button>
         </div>
       )}
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>
         <button type="button" className={primaryCls} disabled={!canClone} onClick={() => clone()}>Clone</button>
       </div>

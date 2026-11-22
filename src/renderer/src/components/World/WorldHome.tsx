@@ -1,7 +1,7 @@
 // The Lumopolis home: shown when no world is open. Four ways in (this project, a folder, a git
 // repository, a new design) and the recent worlds below them. A world whose folder or design is gone
 // shows "missing" and can only be removed (its files, if any, are left alone).
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { WorldEntry, WorldSource } from '../../../../shared/world/types'
 import { CloneDialog } from './CloneDialog'
@@ -49,6 +49,12 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now }: World
   const zoom = useUiZoom()
   const [dialog, setDialog] = useState<'clone' | 'design' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // An open dialog dims the home behind it (a scrim over the cards), which is held at its top while the
+  // dialog is up, so the dialog, placed near the top, is always in view and the scrim covers every card.
+  const homeRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (dialog !== null) (homeRef.current as HTMLDivElement).scrollTop = 0
+  }, [dialog])
   const at = now ?? Date.now()
 
   /** Runs one home action: a failure shows main's friendly reason, a throw a fixed one. */
@@ -92,7 +98,7 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now }: World
   ]
 
   return (
-    <div data-testid="world-home" className="overflow-auto" style={{ position: 'absolute', inset: 0 }}>
+    <div ref={homeRef} data-testid="world-home" className={dialog === null ? 'overflow-auto' : 'overflow-hidden'} style={{ position: 'absolute', inset: 0 }}>
       <div className="mx-auto max-w-3xl px-6 py-10 flex flex-col gap-6" style={zoom}>
         <div className="flex flex-col items-center gap-1 text-center">
           <h1 className="text-3xl font-semibold text-white inline-flex flex-wrap justify-center items-center gap-x-3">
@@ -152,6 +158,7 @@ export function WorldHome({ entries, projectCwd, onOpen, onChanged, now }: World
           )}
         </section>
       </div>
+      {dialog !== null && <div data-testid="world-home-scrim" aria-hidden="true" className="absolute inset-0 z-10 bg-black/50" />}
       {dialog === 'clone' && (
         <CloneDialog
           onClose={() => setDialog(null)}

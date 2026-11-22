@@ -36,7 +36,7 @@ import { isRuntimeText, runtimeText } from '../../../../shared/world/runtimeName
 import { buildingCard, createWorldViewer, DEFAULT_LAYERS, edgeCard, hasWebGL, loadBookmarks, removeBookmark, renderFallback, saveBookmark, techCard, THEMES, usesTech } from '../../world/engine'
 import type { Bookmark, CameraState, LayerState, ThemeName, WorldDrawn, WorldViewer } from '../../world/engine'
 import { exposesWorldProbe } from '../../lib/testAgents'
-import { WorldToolbar } from './WorldToolbar'
+import { TOOLBAR_FOLD_PX, WorldToolbar } from './WorldToolbar'
 import { WorldCard } from './WorldCard'
 import { EvidenceView } from './EvidenceView'
 import { WorldEmptyState } from './WorldEmptyState'
@@ -53,6 +53,7 @@ import { DocumentDialog } from './DocumentDialog'
 import type { ExportKind } from './ExportMenu'
 import { LEGEND_CHIP_RESERVE, LEGEND_RESERVE, legendDefaultOpen, legendReserveScaled, WorldLegend } from './WorldLegend'
 import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardMeetsLegend, cardReserve, UiScaleContext, useUiScale, worldPaneStyle } from './worldPane'
+import type { WorldPaneOverlay } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
@@ -75,6 +76,8 @@ export interface WorldViewProps {
   buildIt?: { agents: BuildAgent[]; defaultAgent?: string; launch: (res: BuildItResult, agentId: string) => void }
   /** The pane's width in px (App owns it: the divider and the window size change it). */
   width?: number
+  /** Set when the row is too narrow for the pane beside the terminals: the pane lies over their column. */
+  overlay?: WorldPaneOverlay | null
   /** A folder someone asked for (a terminal's globe, the `lumopolis` command, the file tree): its project
    *  opens, and the pane comes forward. Undefined: the pane follows the active terminal (`root`). */
   request?: WorldRequest
@@ -124,7 +127,7 @@ const hasPart = (d: WorldDoc, id: string): boolean =>
 
 const partCard = (d: WorldDoc, id: string): string | null => buildingCard(d, id) || edgeCard(d, id) || null
 
-export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, request, exportRequest }: WorldViewProps): JSX.Element {
+export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WIDTH, overlay = null, request, exportRequest }: WorldViewProps): JSX.Element {
   const { world, open, goHome, entries, refresh, repoUpdate, repoBusy, repoError, repoChanged, signIn, useToken, dismissRepoUpdate, clearRepoError } = useOpenWorld(root, request)
   const [tokenOpen, setTokenOpen] = useState(false)
   useEffect(() => { if (!repoUpdate) setTokenOpen(false) }, [repoUpdate])
@@ -449,16 +452,12 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   // Where the open card would reach the legend (a narrow pane), the legend steps aside until it closes.
   const legendAside = card !== null && cardMeetsLegend(stageSize[0] / scale, legendOpen ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE)
   // The map's labels grow with the panels, and keep out from under every panel over the map: the
-  // stage's children but the map itself, handed over again only when that set changes.
+  // stage's children but the map itself, handed over after every render, so a panel that moved
+  // without changing size is measured again (the viewer re-watches them only when the set changes).
   useEffect(() => { viewer?.setLabelScale(scale) }, [viewer, scale])
-  const panelsRef = useRef<HTMLElement[]>([])
   useEffect(() => {
     if (!viewer) return
-    const els = Array.from((stageRef.current as HTMLDivElement).children).filter((el): el is HTMLElement => el !== hostRef.current) as HTMLElement[]
-    const was = panelsRef.current
-    if (els.length === was.length && els.every((el, i) => el === was[i])) return
-    panelsRef.current = els
-    viewer.setPanels(els)
+    viewer.setPanels(Array.from((stageRef.current as HTMLDivElement).children).filter((el): el is HTMLElement => el !== hostRef.current) as HTMLElement[])
   })
 
   // The 3D viewer, once, when WebGL is there.
@@ -791,7 +790,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       tabIndex={-1}
       data-testid="world-view"
       className="outline-none"
-      style={worldPaneStyle(THEMES[theme].background, width)}
+      style={worldPaneStyle(THEMES[theme].background, width, overlay)}
       onFocusCapture={() => { hadFocusRef.current = true }}
     >
       <WorldToolbar
@@ -819,6 +818,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
         bookmarkSaveDisabled={!viewer || !doc}
         map2d={map2d}
         onMap2d={onMap2d}
+        compact={width / scale < TOOLBAR_FOLD_PX}
         labelCost={labelling !== false && doc && doc.labelTokens !== undefined ? labelCostLine(doc.labelTokens) : undefined}
       />
       <div ref={stageRef} data-testid="world-stage" style={{ position: 'relative', flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
@@ -864,7 +864,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
             style={{ position: 'absolute', top: 12, right: 12, width: 320, maxWidth: 'calc(100% - 24px)', boxSizing: 'border-box', zIndex: 5, background: '#252526', ...zoom }}
           >
             <p>Re-layout places every part again from scratch and forgets the current arrangement. Continue?</p>
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <button
                 type="button"
                 data-testid="world-relayout-cancel"

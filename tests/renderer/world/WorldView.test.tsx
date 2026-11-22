@@ -545,6 +545,27 @@ describe('WorldView', () => {
     expect(dialog()).toHaveStyle({ width: '512px' })
   })
 
+  it("folds its toolbar's secondary controls into More in a pane under the fold, judged in its own pixels", async () => {
+    bridge()
+    const { unmount } = render(<WorldView root="/repo" width={400} onClose={vi.fn()} />)
+    await screen.findByTestId('world-legend')
+    expect(screen.getByTestId('world-more')).toBeInTheDocument()
+    expect(screen.queryByTestId('world-relayout')).toBeNull()
+    unmount()
+    bridge()
+    render(<WorldView root="/repo" width={480} onClose={vi.fn()} />)
+    await screen.findByTestId('world-legend')
+    expect(screen.queryByTestId('world-more')).toBeNull()
+    expect(screen.getByTestId('world-relayout')).toBeInTheDocument()
+  })
+
+  it('lies over the terminals where it is told to, at the left it is given', async () => {
+    const get = deferred<Res<WorldDoc | null>>()
+    bridge({ worldGet: vi.fn(() => get.promise) })
+    render(<WorldView root="/repo" width={600} overlay={{ left: 240 }} onClose={vi.fn()} />)
+    expect(dialog()).toHaveStyle({ position: 'absolute', left: '240px', width: '600px', zIndex: '30' })
+  })
+
   it('drops a re-layout answer for a project the pane has left, and one that lands after close', async () => {
     const run = deferred<Res<WorldDoc>>()
     const b = bridge({ worldRelayout: vi.fn(() => run.promise) })
@@ -2243,7 +2264,7 @@ describe('WorldView on a big monitor', () => {
     expect(screen.getByTestId('world-card').style.maxHeight).toBe('min(380px, calc(100% - 110px))')
   })
 
-  it('tells the viewer which panels are over the map, again only when they change', async () => {
+  it('tells the viewer which panels are over the map after every render, so one that moved is measured again', async () => {
     bridge()
     await mount()
     const v = viewer()
@@ -2251,8 +2272,10 @@ describe('WorldView on a big monitor', () => {
     expect(last()).toContain(screen.getByTestId('world-legend'))
     expect(last()).not.toContain(screen.getByTestId('world-canvas-host'))
     const calls = v.setPanels.mock.calls.length
-    fireEvent.click(screen.getByTestId('world-legend-toggle')) // a render, the same panels
-    expect(v.setPanels).toHaveBeenCalledTimes(calls)
+    const before = last()
+    fireEvent.click(screen.getByTestId('world-legend-toggle')) // a render, the same panels: handed over again
+    expect(v.setPanels.mock.calls.length).toBeGreaterThan(calls)
+    expect(last()).toEqual(before)
     act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
     expect(last()).toContain(screen.getByTestId('world-card'))
   })

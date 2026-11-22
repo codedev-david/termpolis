@@ -90,7 +90,7 @@ export function BuildItDialog({ designKey, title, agents, defaultAgent, onBuilt,
       </p>
       {agents.length === 0 && <p className="text-xs text-[#f0b429]">Build it needs Claude Code: add a Claude Code profile in the sidebar first.</p>}
       {error !== null && <p role="alert" className="text-xs text-[#f14c4c]">{error}</p>}
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={onClose}>Cancel</button>
         <button type="button" className={primaryCls} disabled={!ready} onClick={build}>{building ? 'Building…' : 'Build it'}</button>
       </div>

@@ -252,6 +252,28 @@ describe('WorldHome', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('dialog', { name: 'Design something new' })).toBeNull()
   })
+
+  it('an open dialog dims the home behind it, held at its top; closed, the home scrolls again', () => {
+    bridge()
+    home()
+    const page = screen.getByTestId('world-home')
+    expect(page).toHaveClass('overflow-auto')
+    expect(screen.queryByTestId('world-home-scrim')).toBeNull()
+    page.scrollTop = 300
+    fireEvent.click(screen.getByRole('button', { name: /^Design something new/ }))
+    expect(page.scrollTop).toBe(0)
+    expect(page).toHaveClass('overflow-hidden')
+    const scrim = screen.getByTestId('world-home-scrim')
+    expect(scrim).toHaveAttribute('aria-hidden', 'true')
+    expect(scrim.nextElementSibling).toBe(screen.getByRole('dialog', { name: 'Design something new' })) // drawn over it
+    // Its buttons keep their labels on one line; the row wraps whole buttons.
+    const go = screen.getByRole('button', { name: 'Design it' })
+    expect(go).toHaveClass('whitespace-nowrap')
+    expect(go.parentElement).toHaveClass('flex-wrap')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('world-home-scrim')).toBeNull()
+    expect(page).toHaveClass('overflow-auto')
+  })
 })
 
 describe('agoText and targetOf', () => {

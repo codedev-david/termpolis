@@ -149,7 +149,7 @@ export default function App() {
   const [worldExportRequest, setWorldExportRequest] = useState<{ kind: 'world' | 'document'; seq: number } | undefined>(undefined)
   useEffect(() => { if (!showWorld) setWorldExportRequest(undefined) }, [showWorld])
   const mainRef = useRef<HTMLElement>(null)
-  const { width: worldWidth, min: worldMin, max: worldMax, onDrag: onWorldDrag } = useWorldPaneWidth(mainRef, showWorld)
+  const { width: worldWidth, min: worldMin, max: worldMax, onDrag: onWorldDrag, overlay: worldOverlay } = useWorldPaneWidth(mainRef, showWorld)
   // Bumped to open the Memory panel on its This week tab.
   const [memoryWeekRequest, setMemoryWeekRequest] = useState(0)
   const [showMemoryTour, setShowMemoryTour] = useState(false)
@@ -1142,7 +1142,7 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-[#1e1e1e] text-[#d4d4d4] overflow-hidden">
       <TitleBar />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
         <Sidebar />
         <main ref={mainRef} className="flex-1 overflow-hidden relative flex flex-col">
           {swarmNotification && (
@@ -1248,16 +1248,18 @@ export default function App() {
             />
           )}
           {showWorld && (
-            // A pane beside the terminals, like the Changes panel, with a divider to resize it. Its own
-            // boundary: the opaque pane frame fills its column at once while the Lumopolis chunk (the
+            // A pane beside the terminals, like the Changes panel, with a divider to resize it; in a row too
+            // narrow for both, over the terminals' column (which stays mounted underneath), with no divider.
+            // Its own boundary: the opaque pane frame fills its column at once while the Lumopolis chunk (the
             // engine and Three.js) loads.
             <>
-              <WorldPaneDivider onDrag={onWorldDrag} width={worldWidth} min={worldMin} max={worldMax} />
-              <Suspense fallback={<WorldPaneOpening width={worldWidth} />}>
+              {!worldOverlay && <WorldPaneDivider onDrag={onWorldDrag} width={worldWidth} min={worldMin} max={worldMax} />}
+              <Suspense fallback={<WorldPaneOpening width={worldWidth} overlay={worldOverlay} />}>
                 <WorldView
                   root={terminals.find(t => t.id === activeTerminalId)?.cwd ?? ''}
                   request={worldPane.request}
                   width={worldWidth}
+                  overlay={worldOverlay}
                   onClose={worldPane.close}
                   askSlot={(v, d, r, link, proposal) => <WorldAsk viewer={v} doc={d} root={r ?? ''} link={link} proposal={proposal} />}
                   buildIt={worldBuildIt}

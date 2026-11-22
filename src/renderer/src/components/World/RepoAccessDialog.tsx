@@ -71,7 +71,7 @@ export function RepoAccessDialog({ host, busy, error, onSubmit, onCancel }: Repo
         />
       </label>
       {shown !== null && <p role="alert" className="text-xs text-[#f14c4c]">{shown}</p>}
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
         <button type="button" className={btnCls} onClick={cancel}>Cancel</button>
         <button type="button" className={primaryCls} disabled={busy} onClick={submit}>Use this token</button>
       </div>

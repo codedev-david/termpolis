@@ -3,7 +3,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { CARD_CLICK_GRACE_MS, WorldCard } from '../../../src/renderer/src/components/World/WorldCard'
 import { EvidenceView } from '../../../src/renderer/src/components/World/EvidenceView'
 import { WorldEmptyState } from '../../../src/renderer/src/components/World/WorldEmptyState'
-import { WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
+import { TOOLBAR_FOLD_PX, WorldToolbar, type WorldToolbarProps } from '../../../src/renderer/src/components/World/WorldToolbar'
 import { UiScaleContext } from '../../../src/renderer/src/components/World/worldPane'
 import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
 
@@ -278,5 +278,126 @@ describe('WorldToolbar Export', () => {
     vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(520, 600) as DOMRect)
     fireEvent.click(button)
     expect(screen.getByTestId('world-export-menu')).toHaveClass('left-0')
+  })
+})
+
+describe('WorldToolbar in a narrow pane', () => {
+  const props = (over: Partial<WorldToolbarProps> = {}): WorldToolbarProps => ({
+    projectName: 'termpolis', layers: DEFAULT_LAYERS, onLayers: vi.fn(), proposals: [{ id: 'p1', title: 'Split the core' }], onProposal: vi.fn(), theme: 'neon', onTheme: vi.fn(),
+    tours: [{ id: 't1', title: 'The tour', stops: [] } as unknown as WorldToolbarProps['tours'][number]], onTour: vi.fn(), onResetView: vi.fn(), onRelayout: vi.fn(), relayoutDisabled: false, onClose: vi.fn(),
+    bookmarks: [], onSaveBookmark: vi.fn(), onBookmark: vi.fn(), onRemoveBookmark: vi.fn(), map2d: false, onMap2d: vi.fn(), ...over,
+  })
+  const FOLDED = ['world-layer-labels', 'world-layer-processes', 'world-layer-allLineLabels', 'world-layer-planned', 'world-proposal', 'world-theme', 'world-tours', 'world-map2d', 'world-reset', 'world-relayout']
+  const rect = (left: number, right: number) => ({ left, right, top: 0, bottom: 20, width: right - left, height: 20, x: left, y: 0, toJSON: () => ({}) }) as DOMRect
+
+  it('folds below 440 of its own px', () => {
+    expect(TOOLBAR_FOLD_PX).toBe(440)
+  })
+
+  it('keeps every control in the row when wide, with no More', () => {
+    render(<WorldToolbar {...props({ onExport: vi.fn() })} />)
+    expect(screen.queryByTestId('world-more')).toBeNull()
+    for (const id of FOLDED) expect(screen.getByTestId(id), id).toBeInTheDocument()
+  })
+
+  it('folds the secondary controls into More, keeping the name, switcher, Bookmarks, Export, Build it and close in the row', () => {
+    const p = props({ compact: true, onExport: vi.fn(), onBuildIt: vi.fn(), switcher: <span data-testid="sw">switch</span> })
+    render(<WorldToolbar {...p} />)
+    for (const id of FOLDED) expect(screen.queryByTestId(id), id).toBeNull()
+    for (const id of ['world-project', 'sw', 'world-bookmarks', 'world-export', 'world-build-it-open', 'world-close']) expect(screen.getByTestId(id), id).toBeInTheDocument()
+    const more = screen.getByTestId('world-more')
+    expect(more).toHaveTextContent('More')
+    expect(more).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(more)
+    expect(more).toHaveAttribute('aria-expanded', 'true')
+    const menu = screen.getByTestId('world-more-menu')
+    expect(menu).toHaveAttribute('role', 'group')
+    expect(menu).toHaveAttribute('aria-label', 'More')
+    for (const id of FOLDED) expect(menu.contains(screen.getByTestId(id)), id).toBe(true)
+    // A layer toggle leaves the menu open, so several can be set in one go.
+    fireEvent.click(screen.getByTestId('world-layer-processes'))
+    expect(p.onLayers).toHaveBeenCalledWith({ processes: true })
+    fireEvent.click(screen.getByTestId('world-map2d'))
+    expect(p.onMap2d).toHaveBeenCalledWith(true)
+    fireEvent.change(screen.getByTestId('world-theme'), { target: { value: 'glass' } })
+    expect(p.onTheme).toHaveBeenCalledWith('glass')
+    expect(screen.getByTestId('world-more-menu')).toBeInTheDocument()
+    // Starting a tour, resetting the view and re-laying out leave the menu.
+    fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+    expect(p.onTour).toHaveBeenCalled()
+    expect(screen.queryByTestId('world-more-menu')).toBeNull()
+    fireEvent.click(more)
+    fireEvent.click(screen.getByTestId('world-reset'))
+    expect(p.onResetView).toHaveBeenCalled()
+    expect(screen.queryByTestId('world-more-menu')).toBeNull()
+    fireEvent.click(more)
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    expect(p.onRelayout).toHaveBeenCalled()
+    expect(screen.queryByTestId('world-more-menu')).toBeNull()
+    // The button toggles it shut too.
+    fireEvent.click(more)
+    fireEvent.click(more)
+    expect(screen.queryByTestId('world-more-menu')).toBeNull()
+  })
+
+  it('closes on Esc (and keeps that Esc from the pane), on a click outside, and when the pane widens past the fold', () => {
+    const p = props({ compact: true })
+    const { rerender } = render(<WorldToolbar {...p} />)
+    const more = screen.getByTestId('world-more')
+    expect(more.parentElement).not.toHaveAttribute('data-world-own-esc')
+    fireEvent.click(more)
+    expect(more.parentElement).toHaveAttribute('data-world-own-esc', '')
+    // Another key does nothing.
+    fireEvent.keyDown(screen.getByTestId('world-theme'), { key: 'a' })
+    expect(screen.getByTestId('world-more-menu')).toBeInTheDocument()
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    act(() => { screen.getByTestId('world-theme').dispatchEvent(esc) })
+    expect(esc.defaultPrevented).toBe(true)
+    expect(screen.queryByTestId('world-more-menu')).toBeNull()
+    // Esc with the menu shut is not the menu's.
+    const esc2 = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    act(() => { more.dispatchEvent(esc2) })
+    expect(esc2.defaultPrevented).toBe(false)
+    fireEvent.click(more)
+    fireEvent.mouseDown(screen.getByTestId('world-theme'))
+    expect(screen.getByTestId('world-more-menu')).toBeInTheDocument()
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByTestId('world-more-menu')).toBeNull()
+    fireEvent.click(more)
+    rerender(<WorldToolbar {...p} compact={false} />)
+    expect(screen.queryByTestId('world-more-menu')).toBeNull()
+    expect(screen.getByTestId('world-theme')).toBeInTheDocument()
+    rerender(<WorldToolbar {...p} compact />)
+    expect(screen.queryByTestId('world-more-menu')).toBeNull()
+  })
+
+  it('opens the menu toward the side with room, judged on screen at the pane scale', () => {
+    render(<UiScaleContext.Provider value={1.5}><WorldToolbar {...props({ compact: true })} /></UiScaleContext.Provider>)
+    const more = screen.getByTestId('world-more')
+    const wrap = more.parentElement as HTMLElement
+    const bar = screen.getByRole('toolbar')
+    vi.spyOn(bar, 'getBoundingClientRect').mockReturnValue(rect(0, 600))
+    // 400 px to the bar's right edge: room for the 360 px menu (240 at 1.5), so it hangs from the left.
+    vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(200, 260))
+    fireEvent.click(more)
+    expect(screen.getByTestId('world-more-menu')).toHaveClass('left-0')
+    fireEvent.click(more)
+    // Near the right edge, with room to the left: it hangs from the right.
+    vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(500, 560))
+    fireEvent.click(more)
+    expect(screen.getByTestId('world-more-menu')).toHaveClass('right-0')
+    fireEvent.click(more)
+    // No room either way: from the left, where its start stays readable.
+    vi.spyOn(bar, 'getBoundingClientRect').mockReturnValue(rect(0, 300))
+    vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(100, 160))
+    fireEvent.click(more)
+    expect(screen.getByTestId('world-more-menu')).toHaveClass('left-0')
+  })
+
+  it('puts the close button in the top right corner, out of the rows, which keep clear of it', () => {
+    render(<WorldToolbar {...props()} />)
+    expect(screen.getByTestId('world-close')).toHaveStyle({ position: 'absolute', top: '8px', right: '8px' })
+    // 48px: the 36px button and its 8px inset, with room to spare.
+    expect(screen.getByRole('toolbar')).toHaveClass('pr-12')
   })
 })
