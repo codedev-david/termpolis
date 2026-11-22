@@ -9,6 +9,9 @@ import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
 
 const noop = { onTech: vi.fn(), onConfirm: vi.fn(), onEvidence: vi.fn() }
 
+/** Resolves after the next animation frame (jsdom runs them on a timer). */
+const nextFrame = (): Promise<void> => new Promise((done) => { requestAnimationFrame(() => done()) })
+
 describe('WorldCard', () => {
   it('moves the close button left by the scrollbar a capped body shows, and watches the body for it', () => {
     const observed: Element[] = []
@@ -383,7 +386,7 @@ describe('WorldToolbar in a narrow pane', () => {
     expect(screen.queryByTestId('world-more-menu')).toBeNull()
   })
 
-  it('closes on Esc (and keeps that Esc from the pane), on a click outside, and when the pane widens past the fold', () => {
+  it('closes on Esc (and keeps that Esc from the pane), on a click outside, and when the pane widens past the fold', async () => {
     const p = props({ compact: true })
     const { rerender } = render(<WorldToolbar {...p} />)
     const more = screen.getByTestId('world-more')
@@ -410,6 +413,8 @@ describe('WorldToolbar in a narrow pane', () => {
     rerender(<WorldToolbar {...p} compact={false} />)
     expect(screen.queryByTestId('world-more-menu')).toBeNull()
     expect(screen.getByTestId('world-theme')).toBeInTheDocument()
+    // Unfolded for a frame: the menu has nothing left to show, and is shut.
+    await act(async () => { await nextFrame() })
     rerender(<WorldToolbar {...p} compact />)
     expect(screen.queryByTestId('world-more-menu')).toBeNull()
   })
@@ -621,6 +626,80 @@ describe('WorldToolbar rows', () => {
       rerender(<WorldToolbar {...props({ onExport: vi.fn() })} />)
       expect(screen.getByTestId('world-more')).toBeInTheDocument()
       expect(screen.queryByTestId('world-layer-labels')).toBeNull()
+    } finally {
+      spyC.mockRestore()
+      spyR.mockRestore()
+    }
+  })
+
+  it('a folded toolbar widened a little keeps an open More menu; one that unfolds and folds straight back keeps it too (M1)', async () => {
+    const size = { client: 400, perRow: 4 }
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return this.getAttribute('role') === 'toolbar' ? size.client : 0 })
+    const spyR = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const bar = this.parentElement
+      if (!bar || bar.getAttribute('role') !== 'toolbar') return box(0, 0, 0)
+      const i = Array.from(bar.children).indexOf(this)
+      return box(8 + Math.floor(i / size.perRow) * 32, 24)
+    })
+    try {
+      const { rerender } = render(<WorldToolbar {...props()} />)
+      fireEvent.click(screen.getByTestId('world-more'))
+      expect(screen.getByTestId('world-more-menu')).toBeInTheDocument()
+      // A pixel wider, then a few: it stays folded (it looks again only well past where it folded), the menu open.
+      for (const w of [401, 410, 420]) {
+        size.client = w
+        rerender(<WorldToolbar {...props()} />)
+        await act(async () => { await nextFrame() })
+        expect(screen.getByTestId('world-more-menu')).toBeInTheDocument()
+      }
+      // Well wider, but the full toolbar still needs three rows: it unfolds to look, folds back before paint, and
+      // the menu stays open.
+      size.client = 470
+      rerender(<WorldToolbar {...props()} />)
+      await act(async () => { await nextFrame() })
+      expect(screen.getByTestId('world-more-menu')).toBeInTheDocument()
+      // Wide enough for the full toolbar: it unfolds, and the menu, with nothing left to show, shuts.
+      size.client = 900
+      size.perRow = 20
+      rerender(<WorldToolbar {...props()} />)
+      await act(async () => { await nextFrame() })
+      expect(screen.queryByTestId('world-more')).toBeNull()
+      size.client = 400
+      size.perRow = 4
+      rerender(<WorldToolbar {...props()} />)
+      expect(screen.queryByTestId('world-more-menu')).toBeNull()
+    } finally {
+      spyC.mockRestore()
+      spyR.mockRestore()
+    }
+  })
+
+  it('a folded toolbar looks again when what it holds shrinks at the same width: a shorter name, a smaller zoom or scale (M1)', () => {
+    const size = { client: 400, perRow: 4 }
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return this.getAttribute('role') === 'toolbar' ? size.client : 0 })
+    const spyR = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const bar = this.parentElement
+      if (!bar || bar.getAttribute('role') !== 'toolbar') return box(0, 0, 0)
+      const i = Array.from(bar.children).indexOf(this)
+      return box(8 + Math.floor(i / size.perRow) * 32, 24)
+    })
+    try {
+      const { rerender } = render(<UiScaleContext.Provider value={1.5}><WorldToolbar {...props({ projectName: 'a-very-long-project-name' })} /></UiScaleContext.Provider>)
+      expect(screen.getByTestId('world-more')).toBeInTheDocument()
+      // The same width; the controls now fit on two rows.
+      size.perRow = 20
+      rerender(<UiScaleContext.Provider value={1.5}><WorldToolbar {...props({ projectName: 'a-very-long-project-name' })} /></UiScaleContext.Provider>)
+      expect(screen.getByTestId('world-more')).toBeInTheDocument()
+      // A shorter name: it looks again and unfolds.
+      rerender(<UiScaleContext.Provider value={1.5}><WorldToolbar {...props({ projectName: 'w' })} /></UiScaleContext.Provider>)
+      expect(screen.queryByTestId('world-more')).toBeNull()
+      // Crowded again; a smaller scale at the same width: it looks again.
+      size.perRow = 4
+      rerender(<UiScaleContext.Provider value={1.5}><WorldToolbar {...props({ projectName: 'w' })} /></UiScaleContext.Provider>)
+      expect(screen.getByTestId('world-more')).toBeInTheDocument()
+      size.perRow = 20
+      rerender(<UiScaleContext.Provider value={1}><WorldToolbar {...props({ projectName: 'w' })} /></UiScaleContext.Provider>)
+      expect(screen.queryByTestId('world-more')).toBeNull()
     } finally {
       spyC.mockRestore()
       spyR.mockRestore()

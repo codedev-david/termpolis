@@ -19,6 +19,11 @@ import { screenRect } from '../../world/engine/screenRect'
 export const TOOLBAR_FOLD_PX = 440
 /** The most rows the full toolbar may take; past it, the secondary controls fold into More, whatever the width. */
 export const TOOLBAR_MAX_ROWS = 2
+/**
+ * How much wider than where it folded the bar must grow before a folded toolbar looks again: a pane dragged a few
+ * pixels, or a scrollbar coming and going, does not unfold it for a frame.
+ */
+export const TOOLBAR_UNFOLD_SLACK_PX = 24
 
 /**
  * The rows the toolbar's controls lie on: its children grouped by their middles (a row's controls are centred
@@ -98,10 +103,13 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   const zoom = useUiZoom()
   const scale = useContext(UiScaleContext)
   const { layers, onLayers } = props
-  // Folded because the full toolbar took more than TOOLBAR_MAX_ROWS rows at the bar's width then (crowdedAt):
-  // it unfolds to look again once the bar is wider than that.
+  // Folded because the full toolbar took more than TOOLBAR_MAX_ROWS rows at the bar's width then (crowdedAt), with
+  // what it held then (crowdedFor): it unfolds to look again once the bar is TOOLBAR_UNFOLD_SLACK_PX wider than that,
+  // or what it holds may have shrunk (the zoom, the pane scale, the world's name or the optional controls changed).
   const [crowded, setCrowded] = useState(false)
   const crowdedAt = useRef(0)
+  const crowdedFor = useRef('')
+  const holds = [zoom, scale, props.projectName, props.proposals.length > 0, props.tours.length > 0, !!props.onExport, !!props.onBuildIt].join('|')
   const compact = props.compact === true || crowded
   const [popup, setPopup] = useState<Popup | null>(null)
   const menu = popup === 'bookmarks'
@@ -121,8 +129,13 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
     ;(wrapOf(p).firstElementChild as HTMLElement).focus()
     setPopup(null)
   }
-  // A pane widened past the fold puts the controls back in the row: the menu has nothing left to show.
-  useEffect(() => { if (!compact) setPopup((open) => (open === 'more' ? null : open)) }, [compact])
+  // A pane widened past the fold puts the controls back in the row: the menu has nothing left to show. A frame later,
+  // so a toolbar that unfolds to look again and folds straight back (before paint) keeps its menu open.
+  useEffect(() => {
+    if (compact) return
+    const frame = requestAnimationFrame(() => setPopup((open) => (open === 'more' ? null : open)))
+    return () => cancelAnimationFrame(frame)
+  }, [compact])
   // Measured after every render (the pane re-renders as it is dragged or the window resized), before paint. It
   // settles: it folds at a width and only looks again once the bar is wider than that.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- no dependency list on purpose: every render is measured
@@ -130,9 +143,10 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
     const bar = barRef.current as HTMLDivElement
     const width = bar.clientWidth
     if (crowded) {
-      if (width > crowdedAt.current) setCrowded(false)
+      if (width > crowdedAt.current + TOOLBAR_UNFOLD_SLACK_PX || holds !== crowdedFor.current) setCrowded(false)
     } else if (props.compact !== true && toolbarRows(bar) > TOOLBAR_MAX_ROWS) {
       crowdedAt.current = width
+      crowdedFor.current = holds
       setCrowded(true)
     }
   })
