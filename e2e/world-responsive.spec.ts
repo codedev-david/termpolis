@@ -13,7 +13,8 @@
  * Sizes: the blocking run checks BLOCKING_VIEWPORTS (768x1024, 1366x768, 1920x1080, 3840x2160) at the pane's
  * default width, and 3840x2160 also with the pane dragged to 640 and 480 px, where the narrow pane's scale floor
  * shows. RESPONSIVE_FULL=1 checks every size of VIEWPORTS (DPR 1 and 2) at all three widths, by hand;
- * RESPONSIVE_ONLY names sizes to look at again. At 768x1024 the row has no room for the pane beside the terminals,
+ * RESPONSIVE_ONLY names sizes to look at again. RESPONSIVE_REDUCED=1 (the macOS CI job, whose software-rendered 4K
+ * run would not fit the job's time) checks a MacBook's 1440x900 at DPR 2 alone, at the default width and at 480. At 768x1024 the row has no room for the pane beside the terminals,
  * so the pane lies over them, which is checked too.
  *
  * The world is this repository with labelling off (names from the code); the Ask answer and the design are
@@ -50,7 +51,9 @@ const FULL = process.env.RESPONSIVE_FULL === '1'
 /** The size a blocking run also drags the pane narrow at: 4K, where a narrow pane's scale floor shows. */
 const SPLIT_AT = '3840x2160'
 /** The pane widths each size is checked at: its default (null: 40% of the row), then dragged narrow. */
-const widths = (v: Viewport): Array<number | null> => [null, ...(FULL || v.name === SPLIT_AT ? [640, 480] : [])]
+/** The reduced run (RESPONSIVE_REDUCED=1): one size, at its default width and dragged to the narrowest. */
+const REDUCED = !FULL && process.env.RESPONSIVE_REDUCED === '1'
+const widths = (v: Viewport): Array<number | null> => (REDUCED ? [null, 480] : [null, ...(FULL || v.name === SPLIT_AT ? [640, 480] : [])])
 /** How near the dragged pane must come to the width asked for. */
 const SPLIT_TOLERANCE_PX = 8
 /** The median text size a laptop shows, before the pane's own scale. */

@@ -266,6 +266,8 @@ export const VIEWPORTS: Viewport[] = [
   { name: '1280x800', width: 1280, height: 800, dpr: 1 },
   { name: '1280x800@2x', width: 1280, height: 800, dpr: 2 },
   { name: '1366x768', width: 1366, height: 768, dpr: 1 },
+  // A MacBook's screen: 2880x1800 device pixels at 200%, 1440x900 CSS pixels.
+  { name: '1440x900@2x', width: 1440, height: 900, dpr: 2 },
   { name: '1920x1080', width: 1920, height: 1080, dpr: 1 },
   { name: '2560x1440', width: 2560, height: 1440, dpr: 1 },
   { name: '3440x1440', width: 3440, height: 1440, dpr: 1 },
@@ -277,15 +279,19 @@ export const VIEWPORTS: Viewport[] = [
 
 /** The sizes the blocking runs check: a tablet, a small laptop, 1080p and a 4K monitor at DPR 1. */
 export const BLOCKING_VIEWPORTS = ['768x1024', '1366x768', '1920x1080', '3840x2160']
+/** The size a reduced run checks (RESPONSIVE_REDUCED=1, the macOS CI job): a MacBook's screen at DPR 2. */
+export const REDUCED_VIEWPORTS = ['1440x900@2x']
 
 /**
  * The viewports a responsive spec runs: those RESPONSIVE_ONLY names (comma separated, to look again at one size),
- * else all of VIEWPORTS with RESPONSIVE_FULL=1 (the full matrix at DPR 1 and 2, run by hand), else BLOCKING_VIEWPORTS.
+ * else all of VIEWPORTS with RESPONSIVE_FULL=1 (the full matrix at DPR 1 and 2, run by hand), else REDUCED_VIEWPORTS
+ * with RESPONSIVE_REDUCED=1, else BLOCKING_VIEWPORTS.
  */
 export function responsiveViewports(env: Record<string, string | undefined> = process.env): Viewport[] {
   const only = (env.RESPONSIVE_ONLY ?? '').split(',').map((n) => n.trim()).filter(Boolean)
   if (only.length > 0) return VIEWPORTS.filter((v) => only.includes(v.name))
   if (env.RESPONSIVE_FULL === '1') return VIEWPORTS
+  if (env.RESPONSIVE_REDUCED === '1') return VIEWPORTS.filter((v) => REDUCED_VIEWPORTS.includes(v.name))
   return VIEWPORTS.filter((v) => BLOCKING_VIEWPORTS.includes(v.name))
 }
 
