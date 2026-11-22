@@ -384,6 +384,22 @@ test.describe.serial('Lumopolis in the real app', () => {
     await until('the marker', markerShown)
     for (let i = 0; i < WARMUP_KEYS; i++) await key()
 
+    // For comparison only (not asserted): main's side while the keys are typed. Keys on macOS and Linux reach
+    // the pty through main (Windows types straight to the pty host), so the report shows whether main's event
+    // loop stalls during a compile (a 10 ms timer's lateness) or the machine is short of CPU (Electron's own
+    // per-process CPU use, sampled every 250 ms). Times are epoch ms, as the renderer's timeOrigin + now().
+    await app.evaluate(({ app: eapp }) => {
+      const s = { lag: [] as number[][], cpu: [] as { t: number; p: { k: string; c: number }[] }[], stop: () => {} }
+      ;(globalThis as unknown as { __mainDiag: typeof s }).__mainDiag = s
+      let last = Date.now()
+      const lagTimer = setInterval(() => { const now = Date.now(); s.lag.push([now, now - last - 10]); last = now }, 10)
+      eapp.getAppMetrics()
+      const cpuTimer = setInterval(() => {
+        s.cpu.push({ t: Date.now(), p: eapp.getAppMetrics().map((m) => ({ k: m.name ? `${m.type}:${m.name}` : m.type, c: m.cpu.percentCPUUsage })) })
+      }, 250)
+      s.stop = () => { clearInterval(lagTimer); clearInterval(cpuTimer) }
+    })
+
     // The load: main builds the bigger project's code graph, then its utility process compiles it.
     // As each compile ends the next starts at once (a forced recompile, world:relayout, the call
     // Re-layout makes), until MIN_SAMPLES keys fell inside a compile or MAX_COMPILES ran. The typing
@@ -431,6 +447,27 @@ test.describe.serial('Lumopolis in the real app', () => {
       s.done = true
       return { down: s.down, echo: s.echo, compiling: s.compiling, runs: s.runs, compileError: s.compileError }
     })
+    const diag = await app.evaluate(() => {
+      const s = (globalThis as unknown as { __mainDiag: { lag: number[][]; cpu: { t: number; p: { k: string; c: number }[] }[]; stop: () => void } }).__mainDiag
+      s.stop()
+      return { lag: s.lag, cpu: s.cpu }
+    })
+    const { origin, cores } = await page.evaluate(() => ({ origin: performance.timeOrigin, cores: navigator.hardwareConcurrency }))
+    const inRun = (t: number): boolean => r.runs.some((w) => t >= origin + w.start && t < origin + w.end)
+    const lagOf = (xs: number[]): string => {
+      if (!xs.length) return 'none'
+      const v = xs.slice().sort((a, b) => a - b)
+      return `p50 ${v[Math.floor(v.length / 2)].toFixed(0)} p95 ${v[Math.min(v.length - 1, Math.ceil(v.length * 0.95) - 1)].toFixed(0)} max ${v[v.length - 1].toFixed(0)} ms`
+    }
+    const cpuOf = (during: boolean): string => {
+      const rows = diag.cpu.filter((x) => inRun(x.t - 125) === during)
+      const sum: Record<string, number> = {}
+      for (const x of rows) for (const q of x.p) sum[q.k] = (sum[q.k] ?? 0) + q.c
+      const total = Object.values(sum).reduce((a, b) => a + b, 0) / Math.max(1, rows.length)
+      const top = Object.entries(sum).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, c]) => `${k} ${(c / Math.max(1, rows.length)).toFixed(0)}%`).join(', ')
+      return `${rows.length} samples, total ${total.toFixed(0)}% (${top})`
+    }
+    console.log(`[typing while compiling, main] ${cores} cores; main timer lateness during compiles ${lagOf(diag.lag.filter((x) => inRun(x[0])).map((x) => x[1]))}, with none running ${lagOf(diag.lag.filter((x) => !inRun(x[0])).map((x) => x[1]))}; Electron CPU during compiles ${cpuOf(true)}; with none running ${cpuOf(false)}`)
     expect(r.compiling, 'the compiles were still running after 60 s of typing').toBe(false)
     expect(r.compileError ?? null).toBeNull()
     // Only keys pressed while a compile ran count: that leaves out the warm-up, the gaps between
