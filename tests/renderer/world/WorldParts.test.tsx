@@ -674,6 +674,34 @@ describe('WorldToolbar rows', () => {
     }
   })
 
+  it('with the More menu shut, a toolbar folded by a narrow moment unfolds as soon as the bar is any wider and the full toolbar fits (M1)', () => {
+    const size = { client: 700, perRow: 12 }
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return this.getAttribute('role') === 'toolbar' ? size.client : 0 })
+    const spyR = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const bar = this.parentElement
+      if (!bar || bar.getAttribute('role') !== 'toolbar') return box(0, 0, 0)
+      const i = Array.from(bar.children).indexOf(this)
+      return box(8 + Math.floor(i / size.perRow) * 32, 24)
+    })
+    try {
+      const { rerender } = render(<WorldToolbar {...props()} />)
+      expect(screen.queryByTestId('world-more')).toBeNull()
+      // A scrollbar or a relayout narrows the bar for a moment: it folds.
+      size.client = 690
+      size.perRow = 4
+      rerender(<WorldToolbar {...props()} />)
+      expect(screen.getByTestId('world-more')).toBeInTheDocument()
+      // Back to its width, under the slack: no menu is open to keep, so it looks again and unfolds.
+      size.client = 700
+      size.perRow = 12
+      rerender(<WorldToolbar {...props()} />)
+      expect(screen.queryByTestId('world-more')).toBeNull()
+    } finally {
+      spyC.mockRestore()
+      spyR.mockRestore()
+    }
+  })
+
   it('a folded toolbar looks again when what it holds shrinks at the same width: a shorter name, a smaller zoom or scale (M1)', () => {
     const size = { client: 400, perRow: 4 }
     const spyC = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) { return this.getAttribute('role') === 'toolbar' ? size.client : 0 })

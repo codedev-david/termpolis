@@ -20,8 +20,9 @@ export const TOOLBAR_FOLD_PX = 440
 /** The most rows the full toolbar may take; past it, the secondary controls fold into More, whatever the width. */
 export const TOOLBAR_MAX_ROWS = 2
 /**
- * How much wider than where it folded the bar must grow before a folded toolbar looks again: a pane dragged a few
- * pixels, or a scrollbar coming and going, does not unfold it for a frame.
+ * How much wider than where it folded the bar must grow before a folded toolbar with its More menu open looks again:
+ * a pane dragged a few pixels, or a scrollbar coming and going, does not unfold it under the menu. With the menu shut
+ * it looks again at any wider width, so a fold from a narrow moment never outlasts it.
  */
 export const TOOLBAR_UNFOLD_SLACK_PX = 24
 
@@ -104,12 +105,13 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   const scale = useContext(UiScaleContext)
   const { layers, onLayers } = props
   // Folded because the full toolbar took more than TOOLBAR_MAX_ROWS rows at the bar's width then (crowdedAt), with
-  // what it held then (crowdedFor): it unfolds to look again once the bar is TOOLBAR_UNFOLD_SLACK_PX wider than that,
-  // or what it holds may have shrunk (the zoom, the pane scale, the world's name or the optional controls changed).
+  // what it held then (crowdedFor): it unfolds to look again once the bar is wider than that (TOOLBAR_UNFOLD_SLACK_PX
+  // wider while the More menu is open), or what it holds may have shrunk (the pane scale, the world's name or the
+  // optional controls changed).
   const [crowded, setCrowded] = useState(false)
   const crowdedAt = useRef(0)
   const crowdedFor = useRef('')
-  const holds = [zoom, scale, props.projectName, props.proposals.length > 0, props.tours.length > 0, !!props.onExport, !!props.onBuildIt].join('|')
+  const holds = [scale, props.projectName, props.proposals.length > 0, props.tours.length > 0, !!props.onExport, !!props.onBuildIt].join('|')
   const compact = props.compact === true || crowded
   const [popup, setPopup] = useState<Popup | null>(null)
   const menu = popup === 'bookmarks'
@@ -143,7 +145,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
     const bar = barRef.current as HTMLDivElement
     const width = bar.clientWidth
     if (crowded) {
-      if (width > crowdedAt.current + TOOLBAR_UNFOLD_SLACK_PX || holds !== crowdedFor.current) setCrowded(false)
+      if (width > crowdedAt.current + (popup === 'more' ? TOOLBAR_UNFOLD_SLACK_PX : 0) || holds !== crowdedFor.current) setCrowded(false)
     } else if (props.compact !== true && toolbarRows(bar) > TOOLBAR_MAX_ROWS) {
       crowdedAt.current = width
       crowdedFor.current = holds
