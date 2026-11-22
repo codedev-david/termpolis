@@ -14,7 +14,8 @@
  * default width, and 3840x2160 also with the pane dragged to 640 and 480 px, where the narrow pane's scale floor
  * shows. RESPONSIVE_FULL=1 checks every size of VIEWPORTS (DPR 1 and 2) at all three widths, by hand;
  * RESPONSIVE_ONLY names sizes to look at again. RESPONSIVE_REDUCED=1 (the macOS CI job, whose software-rendered 4K
- * run would not fit the job's time) checks a MacBook's 1440x900 at DPR 2 alone, at the default width and at 480. At 768x1024 the row has no room for the pane beside the terminals,
+ * run would not fit the job's time) checks a MacBook's 1280x800 and 1440x900 at DPR 2 at the default width, and the
+ * larger dragged to 480 (paneWidths). At 768x1024 the row has no room for the pane beside the terminals,
  * so the pane lies over them, which is checked too.
  *
  * The world is this repository with labelling off (names from the code); the Ask answer and the design are
@@ -31,7 +32,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
-import { auditProblems, layoutAudit, medianFont, responsiveViewports, settleBudget, stillMoving, steady, type AuditOptions, type Viewport } from './helpers/layoutAudit'
+import { auditProblems, layoutAudit, medianFont, paneWidths, responsiveViewports, settleBudget, stillMoving, steady, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
@@ -51,12 +52,6 @@ const PANELS = [
 const WORLD: AuditOptions = { root: PANE, panels: PANELS, popups: ['[data-map-panel]'] }
 const RUN = responsiveViewports()
 const FULL = process.env.RESPONSIVE_FULL === '1'
-/** The size a blocking run also drags the pane narrow at: 4K, where a narrow pane's scale floor shows. */
-const SPLIT_AT = '3840x2160'
-/** The pane widths each size is checked at: its default (null: 40% of the row), then dragged narrow. */
-/** The reduced run (RESPONSIVE_REDUCED=1): one size, at its default width and dragged to the narrowest. */
-const REDUCED = !FULL && process.env.RESPONSIVE_REDUCED === '1'
-const widths = (v: Viewport): Array<number | null> => (REDUCED ? [null, 480] : [null, ...(FULL || v.name === SPLIT_AT ? [640, 480] : [])])
 /** How near the dragged pane must come to the width asked for. */
 const SPLIT_TOLERANCE_PX = 8
 /** The median text size a laptop shows, before the pane's own scale. */
@@ -425,7 +420,7 @@ async function layoutAt(v: Viewport, width: number | null): Promise<{ w: number;
 }
 
 /** Every size and width the run checks. */
-const LAYOUTS = RUN.flatMap((v) => widths(v).map((width) => ({ v, width })))
+const LAYOUTS = RUN.flatMap((v) => paneWidths(v).map((width) => ({ v, width })))
 
 /**
  * The toolbar as a person sees it: how many rows its controls take (the close button in the corner and the
@@ -476,11 +471,6 @@ async function faintLabels(): Promise<string[]> {
     .map(({ el, cs }) => `${el.textContent ?? ''} (${cs.opacity})`))
 }
 
-/**
- * Whether the open card shows its first heading and the first line under it without a scroll (true where it has no
- * heading). At 1280x800 on Linux the card once cut its "What it does" heading in half, and a line card stopped
- * mid-sentence, the one sentence that explains the line behind a scroll inside a scroll.
- */
 /**
  * The share of the map's pixels brighter than its background (its most common tone), labels and panels hidden: the
  * stars and the city. At 5120x2880 with the pane 480 wide the overview stood past the camera's far plane once, and

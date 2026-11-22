@@ -786,9 +786,10 @@ jobs:
           sudo -n mdutil -a -i off || true
           mdutil -a -s || true
       # The step's timeout sits under the job's, so the uploads below still run when it runs out. world-responsive
-      # runs its reduced form here (RESPONSIVE_REDUCED): a MacBook's 1440x900 at DPR 2, at the pane's default width
-      # and dragged to 480 px. Its full form (four sizes up to a software-rendered 4K) runs on Linux and Windows.
-      # On a Windows laptop the reduced form took 270 s and the full form 833 s.
+      # runs its reduced form here (RESPONSIVE_REDUCED): a MacBook's 1280x800 and 1440x900 at DPR 2 at the pane's
+      # default width, and 1440x900 dragged to 480 px. Its blocking form runs on Linux and Windows, not on macOS:
+      # 768x1024 (the pane over the terminals), 1366x768, 1920x1080 and a software-rendered 3840x2160, with 4K
+      # also dragged to 640 and 480. On a Windows laptop the reduced form took 270 s (one size) and the full 833 s.
       - name: Lumopolis world specs (macOS)
         timeout-minutes: 50
         env:

@@ -311,8 +311,23 @@ export const VIEWPORTS: Viewport[] = [
 
 /** The sizes the blocking runs check: a tablet, a small laptop, 1080p and a 4K monitor at DPR 1. */
 export const BLOCKING_VIEWPORTS = ['768x1024', '1366x768', '1920x1080', '3840x2160']
-/** The size a reduced run checks (RESPONSIVE_REDUCED=1, the macOS CI job): a MacBook's screen at DPR 2. */
-export const REDUCED_VIEWPORTS = ['1440x900@2x']
+/** The sizes a reduced run checks (RESPONSIVE_REDUCED=1, the macOS CI job): a MacBook's two common screens at DPR 2. */
+export const REDUCED_VIEWPORTS = ['1280x800@2x', '1440x900@2x']
+/** The size a blocking run also drags the pane narrow at: 4K, where a narrow pane's scale floor shows. */
+export const SPLIT_AT = '3840x2160'
+/** The size a reduced run also drags the pane to its narrowest at. */
+export const REDUCED_SPLIT_AT = '1440x900@2x'
+
+/**
+ * The pane widths a responsive spec checks size `v` at: its default (null: 40% of the row) first, then dragged narrow.
+ * Every size at 640 and 480 with RESPONSIVE_FULL=1; REDUCED_SPLIT_AT at 480 with RESPONSIVE_REDUCED=1; else SPLIT_AT
+ * at 640 and 480. The other sizes only at the default.
+ */
+export function paneWidths(v: Viewport, env: Record<string, string | undefined> = process.env): Array<number | null> {
+  if (env.RESPONSIVE_FULL === '1') return [null, 640, 480]
+  if (env.RESPONSIVE_REDUCED === '1') return v.name === REDUCED_SPLIT_AT ? [null, 480] : [null]
+  return v.name === SPLIT_AT ? [null, 640, 480] : [null]
+}
 
 /**
  * The viewports a responsive spec runs: those RESPONSIVE_ONLY names (comma separated, to look again at one size),
