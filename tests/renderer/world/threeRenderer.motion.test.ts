@@ -358,6 +358,23 @@ describe('threeRenderer motion', () => {
     rr.dispose()
   })
 
+  it('keeps a right strip under three times its width only from the view width its owner names', () => {
+    const r = createThreeRenderer(h.host, { quality: 'low', reducedMotion: true })
+    r.draw(smallCity(), smallText(), false)
+    h.frames.step()
+    // A 300 px strip in this 800 px view is under three times the strip: by itself, not kept.
+    r.setRightReserve(300)
+    h.frames.step()
+    expect(cameraOf().view?.enabled ?? false).toBe(false)
+    // Its owner (the exported page's Ask box) keeps it clear from 700 px: kept, the picture's centre moves left.
+    r.setRightReserve(300, 700)
+    r.setRightReserve(300, 700) // unchanged: nothing
+    h.frames.step()
+    expect(cameraOf().view?.enabled).toBe(true)
+    expect(cameraOf().view!.fullWidth).toBe(800 + 300)
+    r.dispose()
+  })
+
   it('floors in a closing building settle back into their batch; meanwhile the batch is refilled', () => {
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     r.draw(smallCity(), smallText(), false)

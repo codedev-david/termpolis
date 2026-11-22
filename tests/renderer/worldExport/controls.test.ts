@@ -139,12 +139,19 @@ describe('buildPage: header and control set', () => {
 
   it('reserves the toolbar and, on a wide page, the Ask strip and the open card', () => {
     const { q, page, viewer } = setup()
-    expect(viewer.setRightReserve).toHaveBeenLastCalledWith(0)
+    expect(viewer.setRightReserve).toHaveBeenLastCalledWith(0, 732)
     expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(56)
     expect(viewer.setCardReserve).toHaveBeenLastCalledWith(0, 0)
-    Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: 1200 })
+    Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: 1200, configurable: true })
     window.dispatchEvent(new Event('resize'))
-    expect(viewer.setRightReserve).toHaveBeenLastCalledWith(344)
+    expect(viewer.setRightReserve).toHaveBeenLastCalledWith(344, 732)
+    // A page 1024 wide (a macOS runner's screen) is under three times the strip, yet the Ask box covers its right
+    // all the same: the page says the strip is kept clear from 732 px, so the engine keeps it there too.
+    Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: 1024, configurable: true })
+    window.dispatchEvent(new Event('resize'))
+    expect(viewer.setRightReserve).toHaveBeenLastCalledWith(344, 732)
+    Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: 1200, configurable: true })
+    window.dispatchEvent(new Event('resize'))
     const card = q('.wx-card')
     Object.defineProperty(card, 'offsetLeft', { value: 12 })
     Object.defineProperty(card, 'offsetWidth', { value: 340 })

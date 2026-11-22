@@ -1057,10 +1057,12 @@ describe('WebGL path (stand-in renderer)', () => {
     const v = createWorldViewer(host, { rightReserve: 244 })
     const r = (fake as unknown as ReturnType<typeof fakeRenderer>).r
     v.setRightReserve(108)
-    expect(r.setRightReserve).toHaveBeenCalledWith(108)
+    expect(r.setRightReserve).toHaveBeenCalledWith(108, undefined)
+    v.setRightReserve(344, 732)
+    expect(r.setRightReserve).toHaveBeenLastCalledWith(344, 732)
     v.dispose()
     v.setRightReserve(244)
-    expect(r.setRightReserve).toHaveBeenCalledTimes(1)
+    expect(r.setRightReserve).toHaveBeenCalledTimes(2)
   })
 
   it('cameraState reads the renderer camera and setCamera flies it there, instantly under reduced motion, and neither does anything in 2D or after dispose', async () => {

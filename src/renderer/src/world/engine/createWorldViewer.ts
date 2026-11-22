@@ -32,8 +32,11 @@ export interface WorldViewer {
   load(doc: WorldDoc, opts?: WorldLoadOptions): void
   setLayers(l: Partial<LayerState>): void
   setTheme(t: ThemeName): void
-  /** Pixels on the right the legend covers now; the overview is fitted to the rest. Ignored without WebGL. */
-  setRightReserve(px: number): void
+  /**
+   * Pixels on the right the legend covers now; the overview is fitted to the rest. Ignored without WebGL.
+   * `from`: the view width from which that strip is kept clear (by default three times the strip).
+   */
+  setRightReserve(px: number, from?: number): void
   /** Pixels at the bottom the ask bar covers now; the overview is fitted above it. Ignored without WebGL. */
   setBottomReserve(px: number): void
   /**
@@ -715,11 +718,11 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
       layers = { ...layers, ...l }
       redraw()
     },
-    setRightReserve(px) {
+    setRightReserve(px, from) {
       if (disposed) return
       sideReserve = px
       toast.place(lowReserve, sideReserve)
-      r3?.setRightReserve(px)
+      r3?.setRightReserve(px, from)
     },
     setBottomReserve(px) {
       if (disposed) return

@@ -327,6 +327,15 @@ describe('rightInset', () => {
     expect(rightInset(700, 244)).toBe(0)
     expect(rightInset(1600, 0)).toBe(0)
   })
+
+  it('keeps the strip from the width its owner names, when it names one', () => {
+    // The exported page's Ask strip (344 px) is kept clear from 732 px, not from three times the strip (1032).
+    expect(rightInset(1024, 344)).toBe(0)
+    expect(rightInset(1024, 344, 732)).toBe(344)
+    expect(rightInset(732, 344, 732)).toBe(344)
+    expect(rightInset(731, 344, 732)).toBe(0)
+    expect(rightInset(1600, 0, 732)).toBe(0)
+  })
 })
 
 describe('district name fit and clamp', () => {
@@ -445,6 +454,12 @@ describe('freeArea', () => {
     // A card of no size reserves nothing.
     expect(freeArea(900, 700, 0, 0, [0, 248])).toEqual({ left: 0, top: 0, right: 0, bottom: 0 })
     expect(freeArea(900, 700, 0, 0, [352, 0])).toEqual({ left: 0, top: 0, right: 0, bottom: 0 })
+  })
+
+  it('keeps the legend strip from the width given for it', () => {
+    // 1024 x 645, the exported page on a macOS runner: the Ask strip (344) and the card beside it (352).
+    expect(freeArea(1024, 645, 344, 56, [352, 549])).toEqual({ left: 352, top: 0, right: 0, bottom: 56 })
+    expect(freeArea(1024, 645, 344, 56, [352, 549], 732)).toEqual({ left: 352, top: 0, right: 344, bottom: 56 })
   })
 
   it('a narrow pane keeps the card out as a strip along the top, with the ask bar below', () => {

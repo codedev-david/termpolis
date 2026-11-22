@@ -68,8 +68,11 @@ export interface RendererOptions {
 export interface ThreeRenderer {
   readonly canvas: HTMLCanvasElement
   draw(model: SceneModel, text: SceneText, allEdgeLabels: boolean): void
-  /** The strip on the right the legend covers has changed (it opened or closed): fit the city to the rest. */
-  setRightReserve(px: number): void
+  /**
+   * The strip on the right the legend covers has changed (it opened or closed): fit the city to the rest.
+   * `from`: the view width from which the strip is kept clear (by default three times the strip).
+   */
+  setRightReserve(px: number, from?: number): void
   /** The strip at the bottom the ask bar covers has changed (its height): fit the city to the rest. */
   setBottomReserve(px: number): void
   /**
@@ -344,6 +347,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const camera = new THREE.PerspectiveCamera(BASE_FOV, width / height, 0.1, 3000)
   /** The reserve rightInset works from: the legend's footprint, which changes as it opens and closes. */
   let reserve = opts.rightReserve ?? 0
+  /** From what view width that strip is kept clear: undefined for rightInset's own rule (three times the strip). */
+  let reserveFrom: number | undefined
   /** The reserve bottomInset works from: the ask bar's height, which changes as it wraps or answers. */
   let lowReserve = opts.bottomReserve ?? 0
   /** The open card's box from the top left corner, or null: kept out of every fit but the overview's. */
@@ -380,7 +385,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * with no card: it fits around the legend and the ask bar only. Every other framing (a building's
    * focus, a line's close-up, a tour step) fits around the open card too.
    */
-  const areaFor = (withCard: boolean): FreeArea => freeArea(width, height, reserve, lowReserve, withCard ? cardBox : null)
+  const areaFor = (withCard: boolean): FreeArea => freeArea(width, height, reserve, lowReserve, withCard ? cardBox : null, reserveFrom)
   /** The free area the picture is centred on now, and the one it eases toward (no jump when a panel opens or closes). */
   let area: FreeArea = areaFor(false)
   let areaGoal: FreeArea = area
@@ -2315,9 +2320,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   return {
     canvas: renderer.domElement,
     draw,
-    setRightReserve(px) {
-      if (px === reserve) return
+    setRightReserve(px, from) {
+      if (px === reserve && from === reserveFrom) return
       reserve = px
+      reserveFrom = from
       reframe() // the city is fitted again to the part the legend leaves free
     },
     setBottomReserve(px) {

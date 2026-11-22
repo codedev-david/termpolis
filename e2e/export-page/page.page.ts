@@ -18,29 +18,30 @@ const SMART_BROWSERS = new Set(['electron', 'msedge'])
 /** Whether the page drew the 3D city (a canvas in the view) rather than the 2D map. */
 const in3d = async (page: Page): Promise<boolean> => (await page.locator('.wx-view canvas').count()) > 0
 
+/** Page time from a pick to the end of the camera's flight to the building. */
+const FLIGHT_MS = FRAME_FLIGHT_S * 1000
 /**
- * Page time from a pick to a camera at rest on the building: the flight (FRAME_FLIGHT_S), then half a second for the
- * picture's move to the free area beside the card (easeArea closes 1 - e^-12t of the gap: past 99.7% by then).
+ * Frames, each 50 ms of page time (the most one frame counts), for the picture's move to the free area beside the
+ * card: easeArea closes 1 - e^(-12 x 0.05) of the gap per frame, so ten close all but 0.3% of it.
  */
-const LANDED_MS = FRAME_FLIGHT_S * 1000 + 500
+const EASE_FRAMES = 10
 
 /**
- * Stops the page's clock where it is. pauseAt takes a time that must still be ahead of the page's, and the page's
- * time is read before the pause reaches it: on a busy page the pause arrives late (465 ms after the reading in Edge
- * on a CI runner, against the 100 ms it allowed) and is refused with "Cannot fast-forward to the past". pauseAt has
- * stopped the clock by then all the same (it stops it before it moves it on), so the second reading is of a stopped
- * clock, and a pause 100 ms ahead of that cannot come too late. A second refusal means that no longer holds: it fails.
+ * Stops the page's clock where it is, in one task of the page. page.clock.pauseAt takes a time that must still be
+ * ahead of the page's, read before the pause reaches the page: on a busy page the pause arrives late (465 ms after
+ * the reading in Edge on a CI runner) and is refused with "Cannot fast-forward to the past", which Firefox also
+ * reports as an error of the page. So the pause is made in the page: the clock Playwright installed reads its own
+ * time and pauses at it in the same task, with nothing left to fast-forward. `__pwClock` is Playwright's own
+ * (1.58, the version package-lock pins); a page without it fails here rather than running on a live clock.
  */
 async function pauseClock(page: Page): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    const at = await page.evaluate(() => Date.now() + 100)
-    try {
-      await page.clock.pauseAt(at)
-      return
-    } catch (e) {
-      if (attempt > 0 || !/Cannot fast-forward to the past/.test(String(e))) throw e
-    }
-  }
+  const paused = await page.evaluate(async () => {
+    const clock = (globalThis as { __pwClock?: { controller?: { now(): number; pauseAt(time: number): Promise<number> } } }).__pwClock?.controller
+    if (!clock) return false
+    await clock.pauseAt(clock.now())
+    return true
+  })
+  expect(paused, 'the page has the clock Playwright installed').toBe(true)
 }
 
 /** Lets the city settle after load: its first frames, labels and the camera's opening move. */
@@ -257,12 +258,14 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
         await o.page.clock.runFor(16)
         from = await reading()
       }
-      // The rest of the flight runs on the stopped clock too, frame by frame, to past its landing and the picture's
-      // move to the free area beside the card. Where the camera ends up then depends on the page's time alone, never
-      // on how long this browser takes to answer: Firefox on a macOS runner once stalled over 4 s on a frame
-      // mid-flight, and a 5 s wait for the label, counted on the runner's clock, ran out before the camera landed.
+      // The rest of the flight runs on the stopped clock too, so where the camera ends up depends on the page's time
+      // alone, never on how long this browser takes to answer: Firefox on a macOS runner once stalled over 4 s on a
+      // frame mid-flight. And few frames: a frame there can take seconds, so running every 16 ms frame of the flight
+      // (runFor) outlasted the test. fastForward moves the clock past the landing in one frame (the flight reads the
+      // time, not the frames), then each 50 ms step is one frame of the picture's move beside the card.
       if (from !== null) {
-        await o.page.clock.runFor(LANDED_MS)
+        await o.page.clock.fastForward(FLIGHT_MS)
+        for (let step = 0; step < EASE_FRAMES; step++) await o.page.clock.fastForward(50)
         landed = await reading()
       }
     } finally {

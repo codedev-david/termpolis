@@ -234,7 +234,8 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
 
   const layout = (): void => {
     if (!viewer) return
-    viewer.setRightReserve(stage.clientWidth >= WIDE_PX ? ASK_WIDTH + CARD_INSET * 2 : 0)
+    // From WIDE_PX, not from three times the strip (1032 px): between the two the Ask box still covers the right.
+    viewer.setRightReserve(stage.clientWidth >= WIDE_PX ? ASK_WIDTH + CARD_INSET * 2 : 0, WIDE_PX)
     viewer.setBottomReserve(TOOLBAR_RESERVE)
     viewer.setCardReserve(card.hidden ? 0 : card.offsetLeft + card.offsetWidth + CARD_INSET, card.hidden ? 0 : card.offsetTop + card.offsetHeight + CARD_INSET)
   }

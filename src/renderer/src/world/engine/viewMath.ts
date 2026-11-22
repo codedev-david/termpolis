@@ -262,10 +262,11 @@ export function nameBudget(n: number, zoom: number): number {
 
 /**
  * The strip on the right of the view a panel covers (the legend), kept out of the overview's fit:
- * `reserve` pixels, or none when the view is too narrow to give that much up (under three times it).
+ * `reserve` pixels, or none when the view is too narrow to give that much up (under `from`, which is
+ * three times the strip unless the panel's owner says from what width it keeps the strip clear).
  */
-export function rightInset(width: number, reserve: number): number {
-  return reserve > 0 && width >= reserve * 3 ? reserve : 0
+export function rightInset(width: number, reserve: number, from = reserve * 3): number {
+  return reserve > 0 && width >= from ? reserve : 0
 }
 
 /**
@@ -295,15 +296,16 @@ export interface FreeArea { left: number; top: number; right: number; bottom: nu
 
 /**
  * The part of the view the panels leave free, which every fit fills (the overview, a building's
- * focus, a line's close-up, a tour step): the legend's strip on the right (`legend`, rightInset),
+ * focus, a line's close-up, a tour step): the legend's strip on the right (`legend`, rightInset, from
+ * `legendFrom` wide when given),
  * the ask bar's at the bottom (`ask`, bottomInset), and the open card's box in the top left corner
  * (`card`, its width and height from the corner, gaps included). The card is kept out as a strip
  * along the top or along the left, whichever leaves the larger free area: in a narrow pane, where
  * the card spans nearly the width, the top. A card that would leave less than MIN_FREE_PX either
  * way on both sides is not reserved (the fit keeps the rest of the view).
  */
-export function freeArea(width: number, height: number, legend: number, ask: number, card: readonly [number, number] | null): FreeArea {
-  const out: FreeArea = { left: 0, top: 0, right: rightInset(width, legend), bottom: bottomInset(height, ask) }
+export function freeArea(width: number, height: number, legend: number, ask: number, card: readonly [number, number] | null, legendFrom?: number): FreeArea {
+  const out: FreeArea = { left: 0, top: 0, right: rightInset(width, legend, legendFrom), bottom: bottomInset(height, ask) }
   if (!card || !(card[0] > 0) || !(card[1] > 0)) return out
   const [cw, ch] = card
   const fw = width - out.right
