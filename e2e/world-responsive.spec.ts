@@ -1,22 +1,37 @@
 /**
- * Lumopolis in the real app at every screen size, from a tablet to a 5K monitor, with the pane at its own
- * default width and split narrow beside the terminals (about 640 and 480 px): acceptance items 1, 2, 3, 5 and 6
- * of the responsive brief, measured in the DOM by e2e/helpers/layoutAudit.ts. No text overlaps text, a panel or
- * the toolbar (the map's labels included); no text is cut off; nothing scrolls across; nothing is under 12 CSS px;
- * and on a big screen at DPR 1 the pane's text grows. States: the home and its two dialogs, a loaded world in 3D
- * with the legend both ways, a building's card, the 2D map, an Ask answer, and the Export and Document dialogs.
- * Every state is saved as a PNG (RESPONSIVE_SHOTS, default test-results/responsive-shots) for the contact sheet.
+ * Lumopolis in the real app from a tablet to a 4K monitor, with the pane at its own default width and dragged
+ * narrow beside the terminals by its divider: acceptance items 1, 2, 3, 5 and 6 of the responsive brief, measured
+ * in the DOM by e2e/helpers/layoutAudit.ts. No text overlaps text, a panel or the toolbar (the map's labels
+ * included); no text is cut off; nothing scrolls across; nothing is under 12 CSS px; and the pane's median text is
+ * at least the laptop's 12 px times the pane's own scale (uiScale), so on a big screen at DPR 1 it grows.
  *
- * The world is this repository with labelling off (names from the code); the Ask answer is mock-claude's canned
- * one (MOCK_CLAUDE_WORLD_ANSWER), as in world-ask.spec.ts.
+ * States: the home and its dialogs (Design something new, Open a git repository…, Use a token), a loaded world in
+ * 3D with the legend both ways, a building's card, the toolbar's More menu where the pane folds it, the 2D map, an
+ * Ask answer, the Export and Document dialogs, and the Build it dialog of a design. Every state is saved as a PNG
+ * (RESPONSIVE_SHOTS, default test-results/responsive-shots) for the contact sheet.
+ *
+ * Sizes: the blocking run checks BLOCKING_VIEWPORTS (768x1024, 1366x768, 1920x1080, 3840x2160) at the pane's
+ * default width, and 3840x2160 also with the pane dragged to 640 and 480 px, where the narrow pane's scale floor
+ * shows. RESPONSIVE_FULL=1 checks every size of VIEWPORTS (DPR 1 and 2) at all three widths, by hand;
+ * RESPONSIVE_ONLY names sizes to look at again. At 768x1024 the row has no room for the pane beside the terminals,
+ * so the pane lies over them, which is checked too.
+ *
+ * The world is this repository with labelling off (names from the code); the Ask answer and the design are
+ * mock-claude's canned ones (MOCK_CLAUDE_WORLD_ANSWER), as in world-ask.spec.ts and lumopolis-sources.spec.ts. The
+ * Use a token dialog comes from a clone of the local https git server of lumopolis-private-repos.spec.ts, with its
+ * fake login helper; nothing is ever signed in or sent, and without that server (no git-http-backend or openssl)
+ * that one dialog is skipped and says so.
  */
 import { test, expect, type ElectronApplication, type Page, type CDPSession, type Locator } from '@playwright/test'
 import { _electron as electron } from 'playwright'
+import { randomBytes } from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
-import { VIEWPORTS, auditProblems, layoutAudit, medianFont, type AuditOptions, type Viewport } from './helpers/layoutAudit'
+import { auditProblems, layoutAudit, medianFont, responsiveViewports, steady, type AuditOptions, type Viewport } from './helpers/layoutAudit'
+import { uiScale } from '../src/shared/world/uiScale'
+import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
 const SHOTS = path.resolve(process.env.RESPONSIVE_SHOTS ?? 'test-results/responsive-shots')
 const PANE = '[data-testid="world-view"]'
@@ -30,17 +45,22 @@ const PANELS = [
   '[role="alertdialog"]',
 ]
 const WORLD: AuditOptions = { root: PANE, panels: PANELS }
-/** The pane widths each window is checked at: its default (40% of the row), then split narrow. */
-const SPLITS: Array<number | null> = [null, 640, 480]
-/** The windows to check: every one, or those RESPONSIVE_ONLY names (comma separated), to look again at one size. */
-const ONLY = process.env.RESPONSIVE_ONLY?.split(',').map((n) => n.trim()).filter(Boolean)
-const RUN = ONLY && ONLY.length > 0 ? VIEWPORTS.filter((v) => ONLY.includes(v.name)) : VIEWPORTS
-/** The windows the dialogs are checked at: a tablet, a laptop and a 4K monitor at DPR 1. */
-const DIALOG_VIEWPORTS = new Set(['768x1024', '1280x800', '3840x2160'])
-
-/** How much bigger a big screen's text must be than a laptop's: half the window's growth past 1920x1080 at DPR 1. */
-const growth = (v: Viewport): number => (v.dpr === 1 ? Math.max(1, 1 + (Math.min(v.width / 1920, v.height / 1080) - 1) * 0.5) : 1)
+const RUN = responsiveViewports()
+const FULL = process.env.RESPONSIVE_FULL === '1'
+/** The size a blocking run also drags the pane narrow at: 4K, where a narrow pane's scale floor shows. */
+const SPLIT_AT = '3840x2160'
+/** The pane widths each size is checked at: its default (null: 40% of the row), then dragged narrow. */
+const widths = (v: Viewport): Array<number | null> => [null, ...(FULL || v.name === SPLIT_AT ? [640, 480] : [])]
+/** How near the dragged pane must come to the width asked for. */
+const SPLIT_TOLERANCE_PX = 8
+/** The median text size a laptop shows, before the pane's own scale. */
 const LAPTOP_MEDIAN = 12
+
+const missing = fixtureSkipReason()
+const gitUser = `u${randomBytes(6).toString('hex')}`
+const gitReply = randomBytes(20).toString('hex')
+let server: GitHttps | undefined
+let gitWork: string | undefined
 
 let app: ElectronApplication
 let page: Page
@@ -48,6 +68,7 @@ let cdp: CDPSession
 let userDataDir: string
 let shimDir: string
 let shims: Record<string, string>
+let current: Viewport | null = null
 
 interface Probe { pickAt(x: number, y: number): { kind: string; id: string } | null; drawn(): { changing: number } }
 
@@ -69,6 +90,25 @@ test.beforeAll(async () => {
 exit $LASTEXITCODE
 `)
   }
+  // The local git server for the Use a token dialog, with the fake login helper as the only helper git knows
+  // (as lumopolis-private-repos.spec.ts runs it). The computer's own login helpers are kept out of the app.
+  const gitEnv: Record<string, string> = {}
+  if (missing === null) {
+    gitWork = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-responsive-git-'))
+    server = await startGitHttps({ user: gitUser, reply: gitReply, dir: path.join(gitWork, 'server') })
+    const config = path.join(gitWork, 'helper.gitconfig')
+    fs.writeFileSync(config, fakeHelperConfig())
+    Object.assign(gitEnv, {
+      GIT_SSL_CAINFO: server.caFile,
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: config,
+      FAKE_HELPER_LOG: path.join(gitWork, 'helper.log'),
+      FAKE_HELPER_USER: gitUser,
+      FAKE_HELPER_REPLY: gitReply,
+    })
+  }
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string' && !/^(GCM_|FAKE_HELPER_)/i.test(k)) env[k] = v
   app = await electron.launch({
     args: [
       path.resolve('out/main/index.js'),
@@ -79,8 +119,9 @@ exit $LASTEXITCODE
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
     ],
     env: {
-      ...process.env,
+      ...env,
       ...shims,
+      ...gitEnv,
       PATH: `${shimDir}${path.delimiter}${shims.PATH}`,
       PSExecutionPolicyPreference: 'Bypass',
       NODE_ENV: 'test',
@@ -94,8 +135,7 @@ exit $LASTEXITCODE
   await page.waitForLoadState('domcontentloaded')
   // The session stays attached: Chromium drops a session's emulation when it detaches.
   cdp = await page.context().newCDPSession(page)
-  await setViewport(VIEWPORTS[2])
-  await page.waitForTimeout(1500)
+  await setViewport(RUN[0])
   await page.evaluate(() => {
     try {
       localStorage.setItem('termpolis.onboarding.seen.v1', '1')
@@ -114,7 +154,8 @@ exit $LASTEXITCODE
 
 test.afterAll(async () => {
   await quitApp(app)
-  for (const d of [userDataDir, shimDir]) {
+  await server?.stop()
+  for (const d of [userDataDir, shimDir, gitWork]) {
     try {
       if (d) fs.rmSync(d, { recursive: true, force: true })
     } catch {
@@ -124,24 +165,72 @@ test.afterAll(async () => {
 })
 
 async function setViewport(v: Viewport): Promise<void> {
+  if (current === v) return
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dpr, mobile: false })
   // Within a pixel: the window's own display scaling leaves a rounding pixel under emulation.
   await expect
     .poll(() => page.evaluate(({ w, h, d }) => (Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1 && Math.abs(devicePixelRatio - d) < 0.01 ? 'ok' : `${innerWidth}x${innerHeight}@${devicePixelRatio}`), { w: v.width, h: v.height, d: v.dpr }), { timeout: 10_000 })
     .toBe('ok')
+  current = v
 }
 
 async function shoot(name: string): Promise<void> {
-  // A 5K frame drawn in software takes longer than the default 30 s to capture.
+  // A 4K or 5K frame drawn in software takes longer than the default 30 s to capture.
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`), timeout: 120_000 })
+}
+
+/** Waits until the pane's layout has stopped changing (layoutAudit's steady), a soft failure when it never does. */
+async function still(state: string): Promise<void> {
+  expect.soft(await steady(page, PANE), `${state}: the pane settled`).toBe(true)
 }
 
 /** Audits the pane (or `root`) as it is now, every problem a soft failure under `state`; returns the median font. */
 async function check(state: string, opts: AuditOptions = WORLD): Promise<number> {
+  await still(state)
   const r = await page.evaluate(layoutAudit, opts)
   expect.soft(r.texts, `${state}: the audit measured no text`).toBeGreaterThan(0)
   expect.soft(auditProblems(r), state).toEqual([])
   return medianFont(r)
+}
+
+/** The pane's median text is at least the laptop's times the scale the pane draws at, at its width `paneWidth`. */
+function expectMedian(median: number, state: string, v: Viewport, paneWidth: number): void {
+  const want = LAPTOP_MEDIAN * uiScale(v.width, v.height, paneWidth)
+  expect.soft(median, `${state}: the median text size (want at least ${want.toFixed(1)} px)`).toBeGreaterThanOrEqual(want - 0.5)
+}
+
+/**
+ * Clicks `target` with the mouse, at the middle of its box on screen. The pane's panels are CSS-zoomed on a big
+ * screen, and the Chromium local runs use (Electron 30, before standard zoom) measures a zoomed element in the zoomed
+ * box's own pixels, so Playwright's own click aims beside it there: the box is scaled up by the zoom it is under, as
+ * src/renderer/src/world/engine/screenRect.ts does (Chromium 128 and later, which CI's Electron is, measures it on
+ * screen already). When something else lies at that point, `strict` fails the test; otherwise the press falls back to
+ * Enter on the focused element, the one place Electron 30 would force the keyboard, and the run says so.
+ */
+async function click(target: Locator, strict = false): Promise<void> {
+  await expect(target).toBeVisible()
+  const at = await target.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    let z = 1
+    if (typeof (el as unknown as { currentCSSZoom?: unknown }).currentCSSZoom !== 'number') {
+      for (let e: Element | null = el; e; e = e.parentElement) {
+        const own = parseFloat(getComputedStyle(e).zoom)
+        if (own > 0) z *= own
+      }
+    }
+    const x = (r.left + r.width / 2) * z
+    const y = (r.top + r.height / 2) * z
+    const hit = document.elementFromPoint(x, y)
+    return { x, y, hits: hit !== null && (hit === el || el.contains(hit)), label: el.getAttribute('data-testid') ?? el.textContent ?? '' }
+  })
+  if (strict) expect(at.hits, `the mouse lands on ${at.label} at ${Math.round(at.x)},${Math.round(at.y)}`).toBe(true)
+  if (at.hits) {
+    await page.mouse.click(at.x, at.y)
+    return
+  }
+  test.info().annotations.push({ type: 'keyboard press', description: `${at.label}: something else lies at its middle, pressed with Enter` })
+  await target.focus()
+  await page.keyboard.press('Enter')
 }
 
 async function createTerminal(name: string, cwd: string): Promise<void> {
@@ -151,7 +240,8 @@ async function createTerminal(name: string, cwd: string): Promise<void> {
   await dialog.locator('input').first().fill(name)
   await dialog.locator('input[placeholder="Home directory"]').fill(cwd)
   await page.getByRole('button', { name: 'Create', exact: true }).click()
-  await page.waitForTimeout(1500)
+  await expect(dialog).toHaveCount(0)
+  await expect(page.locator('main .xterm').first()).toBeVisible({ timeout: 30_000 })
 }
 
 async function openPane(): Promise<void> {
@@ -164,21 +254,6 @@ async function openPane(): Promise<void> {
   await expect(page.locator(PANE)).toBeVisible({ timeout: 30_000 })
 }
 
-/**
- * Presses a button in the pane with Enter, as the keyboard does. The pane's panels are CSS-zoomed on a big screen,
- * and the Chromium that local runs use (Electron 30, before standard zoom) reports their boxes unzoomed, so a mouse
- * click aims beside the button; Enter on the focused button is the same press on every Chromium.
- */
-async function press(button: Locator): Promise<void> {
-  await button.focus()
-  await page.keyboard.press('Enter')
-}
-
-async function closePane(): Promise<void> {
-  await press(page.locator('[data-testid="world-close"]'))
-  await expect(page.locator(PANE)).toHaveCount(0)
-}
-
 /** Waits until the world is on the canvas and still. */
 async function settled(compileMs = 120_000): Promise<void> {
   await expect(page.locator('[data-testid="world-canvas-host"] canvas')).toBeVisible({ timeout: compileMs })
@@ -186,12 +261,18 @@ async function settled(compileMs = 120_000): Promise<void> {
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __termpolis_world?: Probe }).__termpolis_world?.drawn().changing ?? -1), { timeout: 30_000 })
     .toBe(0)
-  await page.waitForTimeout(1500)
+  await still('the world')
 }
 
 /** Clicks the first building found on a grid across the stage; true when its card opened. */
+/**
+ * How many times slower than at 1080p a frame is in the window now: the test renders in software, so the time a frame
+ * takes grows with the pixels drawn (at 3840x2160 about 226 ms). Waits that hang on frames scale by it.
+ */
+let slowness = 1
+
 async function openCard(): Promise<boolean> {
-  // A few tries: in the test's software-rendered 5K window a frame takes long enough that the city can
+  // A few tries: in the test's software-rendered 4K window a frame takes long enough that the city can
   // settle between finding a building and clicking it.
   for (let attempt = 0; attempt < 3; attempt++) {
     const at = await page.evaluate(() => {
@@ -213,8 +294,7 @@ async function openCard(): Promise<boolean> {
     if (!at) return false
     await page.mouse.click(at.x, at.y)
     // The card opens once the camera has flown to the building: frames are slow in the test's software-rendered window.
-    await expect(page.locator('[data-testid="world-card"]')).toBeVisible({ timeout: 15_000 }).catch(() => {})
-    if (await page.locator('[data-testid="world-card"]').isVisible()) return true
+    if (await page.locator('[data-testid="world-card"]').waitFor({ state: 'visible', timeout: 15_000 * slowness }).then(() => true, () => false)) return true
   }
   return false
 }
@@ -223,121 +303,272 @@ async function closeCard(): Promise<void> {
   const card = page.locator('[data-testid="world-card"]')
   if (await card.isVisible()) {
     await page.keyboard.press('Escape')
-    if (await card.isVisible()) await press(card.getByRole('button', { name: /close/i }).first()).catch(() => {})
+    if (await card.isVisible()) await click(card.getByRole('button', { name: /close/i }).first())
   }
-  await page.waitForTimeout(600)
+  await expect(card).toHaveCount(0)
 }
 
-/** Sets the pane's saved width (null: its default) and opens it again so it takes it. */
-async function split(width: number | null): Promise<void> {
-  await closePane()
-  await page.evaluate((w) => {
-    try {
-      if (w === null) localStorage.removeItem('termpolis.world.paneWidth')
-      else localStorage.setItem('termpolis.world.paneWidth', String(w))
-    } catch {
-      /* ignore */
+/** The pane's measured width, and what the room and the divider say about it. */
+async function paneState(): Promise<{ pane: number; main: number; overlays: boolean; position: string; terminals: number; max: number | null }> {
+  return page.evaluate((sel) => {
+    const pane = document.querySelector(sel) as HTMLElement
+    const main = document.querySelector('main') as HTMLElement
+    const divider = document.querySelector('[data-testid="world-pane-divider"]')
+    return {
+      pane: pane.getBoundingClientRect().width,
+      main: main.clientWidth,
+      overlays: divider === null,
+      position: getComputedStyle(pane).position,
+      terminals: main.querySelectorAll('.xterm').length,
+      max: divider ? Number(divider.getAttribute('aria-valuemax')) : null,
     }
-  }, width)
-  await openPane()
-  await settled()
+  }, PANE)
+}
+
+/**
+ * Drags the pane's divider with the mouse until the pane is `width` px wide (null: its default, 40% of the row), as a
+ * person does, and checks the measured pane comes within SPLIT_TOLERANCE_PX of it. Returns the pane's width, or null
+ * when the row has no room for that width (the run notes it and skips that width). Where the row is too narrow for
+ * the pane beside the terminals there is no divider: the pane lies over the terminals across the row's width, and the
+ * terminals stay mounted under it.
+ */
+async function split(width: number | null): Promise<number | null> {
+  // The app measures the row after the window changes and lays the pane out again a frame later: wait for it to be
+  // either over the terminals across their column or beside them, with the divider's limit measured on the new row
+  // (the row less the terminals' 320 px minimum and the 4 px divider), not the last window's.
+  await expect.poll(async () => {
+    const now = await paneState()
+    if (now.overlays) return Math.abs(now.pane - now.main) <= 1
+    return now.position !== 'absolute' && now.max !== null && Math.abs(now.max - (now.main + now.pane - 320)) <= 2
+  }, { message: 'the pane lies over the terminals or beside them, measured on this window', timeout: 10_000 }).toBe(true)
+  const s = await paneState()
+  if (s.overlays) {
+    expect(s.position, 'the pane lies over the terminals').toBe('absolute')
+    expect(Math.abs(s.pane - s.main), `the pane covers the terminals' column (${s.pane} of ${s.main} px)`).toBeLessThanOrEqual(1)
+    await expect(page.locator('main')).toHaveCount(1)
+    return width === null ? Math.round(s.pane) : null
+  }
+  // The room is the terminals' column, the divider and the pane; the default is 40% of it.
+  const target = width ?? Math.max(360, Math.round((s.main + s.pane + 4) * 0.4))
+  if (s.max !== null && target > s.max) {
+    test.info().annotations.push({ type: 'skipped width', description: `${width} px: the row holds a pane of at most ${s.max} px here` })
+    return null
+  }
+  const divider = page.locator('[data-testid="world-pane-divider"]')
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const now = (await paneState()).pane
+    if (Math.abs(now - target) <= SPLIT_TOLERANCE_PX) break
+    const box = await divider.boundingBox()
+    if (!box) throw new Error('the divider has no box')
+    const x = box.x + box.width / 2
+    const y = box.y + box.height / 2
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    // To the right narrows the pane.
+    await page.mouse.move(x + (now - target), y, { steps: 5 })
+    await page.mouse.up()
+    await expect.poll(async () => Math.abs((await paneState()).pane - now) > 0.5 || Math.abs(now - target) <= SPLIT_TOLERANCE_PX, { timeout: 10_000 }).toBe(true)
+  }
+  const got = (await paneState()).pane
+  expect(Math.abs(got - target), `the dragged pane is ${Math.round(got)} px, asked for ${target}`).toBeLessThanOrEqual(SPLIT_TOLERANCE_PX)
+  return Math.round(got)
+}
+
+/** Puts the window at `v` and the pane at `width`; the names a state is reported and saved under, or null to skip. */
+async function layoutAt(v: Viewport, width: number | null): Promise<{ w: number; tag: string; name: string } | null> {
+  await setViewport(v)
+  slowness = Math.max(1, (v.width * v.height * v.dpr * v.dpr) / (1920 * 1080))
+  const w = await split(width)
+  if (w === null) return null
+  return { w, tag: `${v.name} pane ${width === null ? 'default' : width} (${w}px)`, name: `${v.name}-${width === null ? 'default' : `w${width}`}` }
+}
+
+/** Every size and width the run checks. */
+const LAYOUTS = RUN.flatMap((v) => widths(v).map((width) => ({ v, width })))
+
+/** Opens the toolbar's More menu when the pane folds it (true), so a folded control can be reached. */
+async function openMore(): Promise<boolean> {
+  const more = page.locator('[data-testid="world-more"]')
+  if (!(await more.isVisible())) return false
+  if ((await more.getAttribute('aria-expanded')) !== 'true') await click(more)
+  await expect(page.locator('[data-testid="world-more-menu"]')).toBeVisible()
+  return true
+}
+
+async function closeMore(): Promise<void> {
+  const more = page.locator('[data-testid="world-more"]')
+  if ((await more.count()) === 0 || (await more.getAttribute('aria-expanded')) !== 'true') return
+  await click(more)
+  await expect(page.locator('[data-testid="world-more-menu"]')).toHaveCount(0)
+}
+
+/** Presses a toolbar control that a narrow pane folds into More, leaving the menu shut. */
+async function pressFolded(testid: string): Promise<void> {
+  await openMore()
+  await click(page.locator(`[data-testid="${testid}"]`))
+  await closeMore()
+}
+
+const home = (): Locator => page.locator('[data-testid="world-home"]')
+
+async function closePane(): Promise<void> {
+  await click(page.locator('[data-testid="world-close"]'))
+  await expect(page.locator(PANE)).toHaveCount(0)
+}
+
+/** Checks the dialog `testid` at every size and width of the run, opened once by `open` and closed by its Cancel. */
+async function checkDialog(testid: string, label: string, open: () => Promise<void>): Promise<void> {
+  const dialog = page.locator(`[data-testid="${testid}"]`)
+  await open()
+  await expect(dialog).toBeVisible({ timeout: 30_000 })
+  for (const { v, width } of LAYOUTS) {
+    const at = await layoutAt(v, width)
+    if (!at) continue
+    await check(`${label} dialog at ${at.tag}`, { root: `[data-testid="${testid}"]`, panels: [] })
+    await shoot(`app-dialog-${label}-${at.name}`)
+  }
+  // Cancel, not Esc: the home's dialogs leave Esc to the pane, whose second Esc closes the pane.
+  await click(dialog.getByRole('button', { name: /^(Cancel|Close)$/ }).first())
+  await expect(dialog).toHaveCount(0)
 }
 
 test.describe.serial('Lumopolis at every screen size', () => {
-  test('the home and its dialogs fit at every size', async () => {
-    test.setTimeout(600_000)
+  test('the home and its dialogs fit at every size and width', async () => {
+    test.setTimeout(900_000)
     await openPane()
-    await expect(page.locator('[data-testid="world-home"]')).toBeVisible({ timeout: 30_000 })
-    for (const v of RUN) {
-      await setViewport(v)
-      await page.waitForTimeout(600)
-      const median = await check(`home at ${v.name}`)
-      const want = LAPTOP_MEDIAN * growth(v)
-      expect.soft(median, `home at ${v.name}: the median text size (want at least ${want.toFixed(1)} px)`).toBeGreaterThanOrEqual(want - 0.5)
-      await shoot(`app-home-${v.name}`)
-      if (!DIALOG_VIEWPORTS.has(v.name)) continue
-      for (const [choice, testid, name] of [['Design something new', 'world-design-start', 'design'], ['Open a git repository…', 'world-clone', 'clone']] as const) {
-        await press(page.getByRole('button', { name: new RegExp(`^${choice}`) }))
-        await expect(page.locator(`[data-testid="${testid}"]`)).toBeVisible()
-        await check(`${name} dialog at ${v.name}`, { root: `[data-testid="${testid}"]`, panels: [] })
-        await shoot(`app-dialog-${name}-${v.name}`)
-        // Cancel, not Esc: the home's two dialogs leave Esc to the pane, whose second Esc closes the pane.
-        await press(page.locator(`[data-testid="${testid}"]`).getByRole('button', { name: /^(Cancel|Close)$/ }).first())
-        await expect(page.locator(`[data-testid="${testid}"]`)).toHaveCount(0)
-      }
+    await expect(home()).toBeVisible({ timeout: 30_000 })
+    for (const { v, width } of LAYOUTS) {
+      const at = await layoutAt(v, width)
+      if (!at) continue
+      expectMedian(await check(`home at ${at.tag}`), `home at ${at.tag}`, v, at.w)
+      await shoot(`app-home-${at.name}`)
+    }
+    await checkDialog('world-design-start', 'design', () => click(home().getByRole('button', { name: /^Design something new/ })))
+    await checkDialog('world-clone', 'clone', () => click(home().getByRole('button', { name: /^Open a git repository/ })))
+    if (server) {
+      // Use a token: a clone of the local server meets its sign-in and offers it. The dialog is checked and cancelled.
+      await setViewport(RUN[0])
+      await split(null)
+      await click(home().getByRole('button', { name: /^Open a git repository/ }))
+      const clone = page.locator('[data-testid="world-clone"]')
+      await clone.getByPlaceholder('https://github.com/owner/repo.git').fill(server.url)
+      await click(clone.getByRole('button', { name: 'Clone', exact: true }))
+      await expect(page.locator('[data-testid="world-clone-use-token"]')).toBeVisible({ timeout: 60_000 })
+      await checkDialog('world-repo-access', 'token', () => click(page.locator('[data-testid="world-clone-use-token"]')))
+      await click(clone.getByRole('button', { name: 'Cancel', exact: true }))
+      await expect(clone).toHaveCount(0)
+    } else {
+      test.info().annotations.push({ type: 'skipped dialog', description: `Use a token: the local https git server cannot run here: ${missing}` })
     }
     await closePane()
-    await setViewport(VIEWPORTS[2])
   })
 
-  test('a loaded world, its card, 2D map, answer and dialogs fit at every size and split', async () => {
-    test.setTimeout(3_000_000)
+  test('a loaded world, its card, More menu, 2D map, answer and dialogs fit at every size and width', async () => {
+    // The full matrix walks 11 sizes at three widths, the 5K ones at several seconds a frame.
+    test.setTimeout(FULL ? 10_800_000 : 3_000_000)
+    await setViewport(RUN[RUN.length - 1])
     await createTerminal('Repo', path.resolve('.'))
     await openPane()
     await settled(180_000)
-    for (const v of RUN) {
-      await setViewport(v)
-      for (const width of SPLITS) {
-        await split(width)
-        const w = await page.locator(PANE).evaluate((el) => Math.round(el.getBoundingClientRect().width))
-        const tag = `${v.name} pane ${width === null ? 'default' : width}`
-        const name = `${v.name}-${width === null ? 'default' : `w${width}`}`
-        const median = await check(`world at ${tag} (${w}px)`)
-        if (width === null) {
-          const want = LAPTOP_MEDIAN * growth(v)
-          expect.soft(median, `world at ${tag}: the median text size (want at least ${want.toFixed(1)} px)`).toBeGreaterThanOrEqual(want - 0.5)
-        }
-        await shoot(`app-world-${name}`)
+    let clickedZoomed = false
+    for (const { v, width } of LAYOUTS) {
+      const at = await layoutAt(v, width)
+      if (!at) continue
+      await settled()
+      const { tag, name } = at
+      if (width === null && (v.name === '768x1024' || (await paneState()).overlays)) {
+        expect((await paneState()).terminals, `the terminals stay mounted under the pane at ${tag}`).toBeGreaterThan(0)
+      }
+      expectMedian(await check(`world at ${tag}`), `world at ${tag}`, v, at.w)
+      await shoot(`app-world-${name}`)
 
-        const toggle = page.locator('[data-testid="world-legend-toggle"]')
-        if (await toggle.isVisible()) {
-          await press(toggle)
-          await page.waitForTimeout(900)
-          await check(`legend toggled at ${tag}`)
-          await shoot(`app-legend-${name}`)
-          await press(toggle)
-          await page.waitForTimeout(600)
-        }
+      const toggle = page.locator('[data-testid="world-legend-toggle"]')
+      if (await toggle.isVisible()) {
+        const before = await toggle.getAttribute('aria-expanded')
+        // One real mouse click on a zoomed button (the pane draws at 1.5 at 4K), where it must land.
+        const zoomed = uiScale(v.width, v.height, at.w) > 1
+        await click(toggle, zoomed && !clickedZoomed)
+        if (zoomed) clickedZoomed = true
+        await expect(toggle).not.toHaveAttribute('aria-expanded', before ?? '')
+        await check(`legend toggled at ${tag}`)
+        await shoot(`app-legend-${name}`)
+        await click(toggle)
+        await expect(toggle).toHaveAttribute('aria-expanded', before ?? '')
+      }
 
-        expect.soft(await openCard(), `a building's card opened at ${tag}`).toBe(true)
-        await page.waitForTimeout(1500)
-        await check(`card at ${tag}`)
-        await shoot(`app-card-${name}`)
-        await closeCard()
+      expect.soft(await openCard(), `a building's card opened at ${tag}`).toBe(true)
+      await check(`card at ${tag}`)
+      await shoot(`app-card-${name}`)
+      await closeCard()
 
-        await press(page.locator('[data-testid="world-map2d"]'))
-        await page.waitForTimeout(800)
-        await check(`2D map at ${tag}`)
-        await shoot(`app-map2d-${name}`)
-        await press(page.locator('[data-testid="world-map2d"]'))
-        await page.waitForTimeout(800)
+      if (await openMore()) {
+        await check(`More menu at ${tag}`)
+        await shoot(`app-more-${name}`)
+        await closeMore()
+      }
 
-        if (width !== null) continue
+      const host = page.locator('[data-testid="world-canvas-host"]')
+      await pressFolded('world-map2d')
+      await expect(host).toHaveCSS('visibility', 'hidden')
+      await check(`2D map at ${tag}`)
+      await shoot(`app-map2d-${name}`)
+      await pressFolded('world-map2d')
+      await expect(host).toHaveCSS('visibility', 'visible')
+
+      if (width === null) {
         const askBox = page.getByPlaceholder('Ask about this project…')
         await askBox.fill('How does the memory search work?')
         await askBox.press('Enter')
-        await expect(page.locator('[data-testid="world-answer"]')).toBeVisible({ timeout: 30_000 })
-        await page.waitForTimeout(4000)
+        // The ask reads the stored world with a 15 s limit; in this software-rendered window, with the repo's own
+        // world refreshing as the run writes screenshots into it, that read can run out once. The app then offers
+        // Retry, which is what a person would press: the size checks are about the answer once it is there. The
+        // answer comes from a mock agent started through PowerShell, which can take a while to start on a busy
+        // machine, so the waits are the app's own limits: 15 s to read the world and 90 s for the agent.
+        const ASK_MS = 15_000 + 90_000
+        const answer = page.locator('[data-testid="world-answer"]')
+        const retry = page.getByRole('alert').getByRole('button', { name: 'Retry' })
+        await expect(answer.or(retry).first()).toBeVisible({ timeout: ASK_MS })
+        if (await retry.isVisible()) {
+          test.info().annotations.push({ type: 'ask retried', description: `the world read ran out at ${tag}` })
+          await click(retry)
+        }
+        await expect(answer).toBeVisible({ timeout: ASK_MS })
         await check(`answer at ${tag}`)
         await shoot(`app-answer-${name}`)
-        await press(page.getByRole('button', { name: 'Close answer' }))
-        await page.waitForTimeout(800)
+        await click(page.getByRole('button', { name: 'Close answer' }))
+        await expect(page.locator('[data-testid="world-answer"]')).toHaveCount(0)
+        // An answer shows its first part in the map, with that part's card open: shut it, so the next size starts
+        // from the bare world.
+        await closeCard()
+      }
 
-        if (!DIALOG_VIEWPORTS.has(v.name)) continue
-        for (const [item, testid, label] of [['world-export-world', 'world-export-dialog', 'export'], ['world-export-document', 'world-document-dialog', 'document']] as const) {
-          await press(page.locator('[data-testid="world-export"]'))
-          await press(page.locator(`[data-testid="${item}"]`))
-          // The Document dialog opens after a picture of the map is taken on the next frame: in the test's
-          // software-rendered 4K window a frame and the picture take seconds, not the milliseconds a GPU takes.
-          await expect(page.locator(`[data-testid="${testid}"]`)).toBeVisible({ timeout: 30_000 })
-          await page.waitForTimeout(1500)
-          await check(`${label} dialog at ${tag}`, { root: `[data-testid="${testid}"]`, panels: [] })
-          await shoot(`app-dialog-${label}-${name}`)
-          await page.keyboard.press('Escape')
-          if (await page.locator(`[data-testid="${testid}"]`).isVisible()) await press(page.locator(`[data-testid="${testid}"]`).getByRole('button', { name: /^(Cancel|Close)$/ }).first())
-          await expect(page.locator(`[data-testid="${testid}"]`)).toHaveCount(0)
-        }
+      for (const [item, testid, label] of [['world-export-world', 'world-export-dialog', 'export'], ['world-export-document', 'world-document-dialog', 'document']] as const) {
+        await click(page.locator('[data-testid="world-export"]'))
+        await click(page.locator(`[data-testid="${item}"]`))
+        // The Document dialog opens after a picture of the map is taken on the next frame: in the test's
+        // software-rendered 4K window a frame and the picture take seconds, not the milliseconds a GPU takes.
+        await expect(page.locator(`[data-testid="${testid}"]`)).toBeVisible({ timeout: 30_000 })
+        await check(`${label} dialog at ${tag}`, { root: `[data-testid="${testid}"]`, panels: [] })
+        await shoot(`app-dialog-${label}-${name}`)
+        await page.keyboard.press('Escape')
+        if (await page.locator(`[data-testid="${testid}"]`).isVisible()) await click(page.locator(`[data-testid="${testid}"]`).getByRole('button', { name: /^(Cancel|Close)$/ }).first())
+        await expect(page.locator(`[data-testid="${testid}"]`)).toHaveCount(0)
       }
     }
+    expect(clickedZoomed, 'a zoomed button was clicked with the mouse').toBe(RUN.some((v) => uiScale(v.width, v.height) > 1))
+  })
+
+  test("a design's Build it dialog fits at every size and width", async () => {
+    test.setTimeout(900_000)
+    await setViewport(RUN[RUN.length - 1])
+    await split(null)
+    await page.getByRole('combobox', { name: 'Worlds' }).selectOption('__home')
+    await expect(home()).toBeVisible()
+    await click(home().getByRole('button', { name: /^Design something new/ }))
+    const start = page.getByRole('dialog', { name: 'Design something new' })
+    await start.getByPlaceholder('Describe the app you want…').fill('A small shop with a catalog and orders')
+    await click(start.getByRole('button', { name: 'Design it' }))
+    await expect(page.locator('[data-testid="world-build-it-open"]')).toBeVisible({ timeout: 60_000 })
+    await checkDialog('world-build-it', 'build', () => click(page.locator('[data-testid="world-build-it-open"]')))
   })
 })

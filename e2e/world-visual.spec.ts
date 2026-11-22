@@ -39,6 +39,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
+import { closeMore, toolbarControl } from './helpers/worldToolbar'
 import { edgeSummary } from '../src/shared/world/edgeText'
 
 /**
@@ -555,7 +556,7 @@ async function toOverview(): Promise<void> {
   if (await card().count()) await page.locator('[data-testid="world-card-close"]').click()
   await expect(card()).toHaveCount(0)
   await page.mouse.move(2, 400)
-  await page.locator('[data-testid="world-reset"]').click()
+  await (await toolbarControl(page, 'world-reset')).click()
   await page.waitForTimeout(2500)
 }
 
@@ -601,7 +602,8 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
   const wantLabels = Math.min(MIN_DISTRICT_LABELS, districts)
 
   for (const [t, theme] of themes.entries()) {
-    await page.getByRole('combobox', { name: 'Theme' }).selectOption(theme)
+    await (await toolbarControl(page, 'world-theme')).selectOption(theme)
+    await closeMore(page)
     await toOverview()
 
     const m = await measure(`${tag}-${theme}-canvas.png`)
@@ -776,7 +778,8 @@ test.describe.serial('Lumopolis can be seen', () => {
       const fx = fixtures.find((f) => f.label === label)!
       await checkWorld(label, fx.dir, THEMES)
       const { ids } = await world(fx.dir)
-      await page.getByRole('combobox', { name: 'Theme' }).selectOption('neon')
+      await (await toolbarControl(page, 'world-theme')).selectOption('neon')
+      await closeMore(page)
 
       // A resize fits the overview again: the city stays on the canvas and out of the legend's strip.
       await toOverview()
@@ -816,7 +819,8 @@ test.describe.serial('Lumopolis can be seen', () => {
     await settled(240_000)
     const { ids } = await world(fx.dir)
     expect(ids.length).toBeGreaterThan(1)
-    await page.getByRole('combobox', { name: 'Theme' }).selectOption('neon')
+    await (await toolbarControl(page, 'world-theme')).selectOption('neon')
+    await closeMore(page)
     await toOverview()
     const drawn = (): Promise<Drawn> => page.evaluate(() => (window as unknown as { __termpolis_world: Probe }).__termpolis_world.drawn())
     const far = await drawn()
@@ -897,7 +901,8 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
     await createTerminal('Visual motion', fx.dir)
     await openPane()
     await settled(240_000)
-    await page.getByRole('combobox', { name: 'Theme' }).selectOption('neon')
+    await (await toolbarControl(page, 'world-theme')).selectOption('neon')
+    await closeMore(page)
     // OrbitControls (three r160) divides the wheel delta by `devicePixelRatio | 0` (see toBuildingsTier).
     await page.evaluate(() => { if ((window.devicePixelRatio | 0) === 0) Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true }) })
     motionDoc = await page.evaluate(async (r) => {
@@ -944,7 +949,7 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
       await page.setViewportSize({ width, height })
       await page.waitForTimeout(3500) // any toast still up has gone
       // Waits in the page for the toast and measures it the moment it shows (it stays up 3 s).
-      const shown = page.evaluate(() => new Promise<{ text: string; hits: boolean[]; inHost: boolean; overAsk: boolean; overLegend: boolean }>((resolve, reject) => {
+      const shown = page.evaluate(() => new Promise<{ text: string; hits: boolean[]; over: string[]; inHost: boolean; overAsk: boolean; overLegend: boolean }>((resolve, reject) => {
         const t0 = performance.now()
         const tick = (): void => {
           const el = document.querySelector<HTMLElement>('.lw-toast')
@@ -957,7 +962,10 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
             const cx = (r.left + r.right) / 2
             const cy = (r.top + r.bottom) / 2
             const points: Array<[number, number]> = [[cx, cy], [r.left + 4, cy], [r.right - 4, cy], [cx, r.top + 2], [cx, r.bottom - 2]]
-            const hits = points.map(([x, y]) => { const at = document.elementFromPoint(x, y); return at !== null && (at === el || el.contains(at)) })
+            const tops = points.map(([x, y]) => document.elementFromPoint(x, y))
+            const hits = tops.map((at) => at !== null && (at === el || el.contains(at)))
+            // What lies over it where it is covered, to name in the failure.
+            const over = tops.map((at, k) => (hits[k] || at === null ? '' : `${at.tagName.toLowerCase()}${at.getAttribute('data-testid') ? `[${at.getAttribute('data-testid')}]` : ''}.${String(at.getAttribute('class') ?? '').split(' ')[0]}`))
             el.style.pointerEvents = was
             const meets = (sel: string): boolean => {
               const n = document.querySelector(sel)
@@ -967,7 +975,7 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
             }
             const host = document.querySelector('[data-testid="world-canvas-host"]')!.getBoundingClientRect()
             const inHost = r.left >= host.left && r.right <= host.right && r.top >= host.top && r.bottom <= host.bottom
-            resolve({ text: el.textContent, hits, inHost, overAsk: meets('[data-testid="world-ask"]'), overLegend: meets('[data-testid="world-legend"]') })
+            resolve({ text: el.textContent, hits, over, inHost, overAsk: meets('[data-testid="world-ask"]'), overLegend: meets('[data-testid="world-legend"]') })
             return
           }
           if (performance.now() - t0 > 90_000) { reject(new Error('no change toast within 90 s')); return }
@@ -981,7 +989,7 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
       const toast = await shown
       await page.screenshot({ path: path.join(SHOTS, `live-change-toast-${width}x${height}.png`) })
       expect(toast.text.length).toBeGreaterThan(0)
-      expect(toast.hits, `toast "${toast.text}" at ${width}x${height}: centre, left, right, top, bottom on top`).toEqual([true, true, true, true, true])
+      expect(toast.hits, `toast "${toast.text}" at ${width}x${height}: centre, left, right, top, bottom on top (under: ${toast.over.join(', ')})`).toEqual([true, true, true, true, true])
       expect(toast.inHost).toBe(true)
       expect(toast.overAsk).toBe(false)
       expect(toast.overLegend).toBe(false)
@@ -1138,11 +1146,12 @@ test.describe.serial('Lumopolis draws what the spec describes', () => {
 
   test('label every line shows one label per edge', async () => {
     await toOverview()
-    const toggle = page.locator('[data-testid="world-layer-allLineLabels"]')
+    const toggle = await toolbarControl(page, 'world-layer-allLineLabels')
     if ((await toggle.getAttribute('aria-pressed')) !== 'true') await toggle.click()
     await expect(toggle).toHaveAttribute('aria-pressed', 'true')
     await expect.poll(async () => (await visual()).lineLabels, { timeout: 5000 }).toBe(motionDoc.edges.length)
     await toggle.click()
     await expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    await closeMore(page)
   })
 })

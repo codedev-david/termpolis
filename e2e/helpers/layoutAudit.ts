@@ -15,7 +15,7 @@
 //                  it matches `scrollX`: a wide table or figure that scrolls on purpose), or a panel wider inside
 //                  than out without scrolling;
 //   - small:       text under `minFont` CSS pixels (`captionFont` for elements matching `captions`), taking any CSS
-//                  zoom into account.
+//                  zoom, and an SVG drawn smaller or bigger than its viewBox, into account.
 // A text field's text is measured by its content box (inside its padding), so an icon button sitting in that padding
 // (a voice button at the end of a text box) is not an overlap. Text that a scrolling panel has scrolled out of sight
 // is not on screen and is not audited. Labels faded below
@@ -50,7 +50,7 @@ export interface AuditResult {
   small: string[]
   /** How many pieces of visible text were measured (a positive control: 0 means the audit saw nothing). */
   texts: number
-  /** The font size of every visible text, CSS pixels, zoom included. */
+  /** The font size of every visible text, CSS pixels, zoom and SVG scaling included. */
   fonts: number[]
 }
 
@@ -145,13 +145,26 @@ export function layoutAudit(opts: AuditOptions): AuditResult {
     return v
   }
 
+  // The size a text shows at, CSS pixels: its font size times any CSS zoom, and inside an SVG times the SVG's own
+  // scale (its box on screen over its viewBox, the smaller of across and down as preserveAspectRatio "meet" draws
+  // it): a 12px map label in an SVG drawn at half its natural width shows at 6px. The SVG's box is measured on
+  // screen, so the zoom is already in it.
+  const fontOf = (el: Element): number => {
+    const size = parseFloat(getComputedStyle(el).fontSize)
+    const svg = el instanceof SVGElement ? (el instanceof SVGSVGElement ? el : el.ownerSVGElement) : null
+    const vb = svg ? svg.viewBox.baseVal : null
+    if (svg && vb && vb.width > 0 && vb.height > 0) {
+      const r = rectOf(svg)
+      return size * Math.min((r.right - r.left) / vb.width, (r.bottom - r.top) / vb.height)
+    }
+    return size * zoomOf(el)
+  }
   const add = (el: Element, text: string, r: Rect, label3d: boolean): void => {
     if (r.right - r.left < 0.5 || r.bottom - r.top < 0.5) return
     const label = describe(el, text)
     const v = visibleRect(el, r, label)
     if (!v) return
-    const cs = getComputedStyle(el)
-    const px = parseFloat(cs.fontSize) * zoomOf(el)
+    const px = fontOf(el)
     items.push({ el, label, r: v, label3d, font: px })
     out.fonts.push(px)
     const least = matches(el, opts.captions) ? captionFont : minFont
@@ -262,6 +275,20 @@ export const VIEWPORTS: Viewport[] = [
   { name: '5120x2880', width: 5120, height: 2880, dpr: 1 },
 ]
 
+/** The sizes the blocking runs check: a tablet, a small laptop, 1080p and a 4K monitor at DPR 1. */
+export const BLOCKING_VIEWPORTS = ['768x1024', '1366x768', '1920x1080', '3840x2160']
+
+/**
+ * The viewports a responsive spec runs: those RESPONSIVE_ONLY names (comma separated, to look again at one size),
+ * else all of VIEWPORTS with RESPONSIVE_FULL=1 (the full matrix at DPR 1 and 2, run by hand), else BLOCKING_VIEWPORTS.
+ */
+export function responsiveViewports(env: Record<string, string | undefined> = process.env): Viewport[] {
+  const only = (env.RESPONSIVE_ONLY ?? '').split(',').map((n) => n.trim()).filter(Boolean)
+  if (only.length > 0) return VIEWPORTS.filter((v) => only.includes(v.name))
+  if (env.RESPONSIVE_FULL === '1') return VIEWPORTS
+  return VIEWPORTS.filter((v) => BLOCKING_VIEWPORTS.includes(v.name))
+}
+
 /** The problems of an audit as one list, each line prefixed by its kind. */
 export function auditProblems(r: AuditResult): string[] {
   return [
@@ -280,4 +307,58 @@ export function medianFont(r: AuditResult): number {
   if (r.fonts.length === 0) return 0
   const s = [...r.fonts].sort((a, b) => a - b)
   return s[Math.floor(s.length / 2)]
+}
+
+/**
+ * A fingerprint of where everything under `root` (a selector; the body when null) is drawn, and of its text. Runs in
+ * the page: equal fingerprints across a few samples mean the layout has settled (the label pass, the camera's move, a
+ * streaming answer).
+ */
+export async function layoutSignature(root: string | null): Promise<string> {
+  // Two frames first (a second at most, should the page not be drawing), so every sample follows a drawn frame: a page
+  // that has yet to draw since a resize does not read as settled.
+  await new Promise<void>((resolve) => {
+    const done = setTimeout(resolve, 1000)
+    requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(done); resolve() }))
+  })
+  const top = root ? document.querySelector(root) : document.body
+  if (!top) return 'none'
+  let h = 0
+  const add = (n: number): void => {
+    h = (h * 31 + Math.round(n)) | 0
+  }
+  const all = Array.from(top.querySelectorAll('*'))
+  add(all.length)
+  for (const e of all) {
+    const r = e.getBoundingClientRect()
+    add(r.left)
+    add(r.top)
+    add(r.width)
+    add(r.height)
+  }
+  add((top.textContent ?? '').length)
+  return String(h)
+}
+
+/** The page's own evaluate, so this file needs nothing from Playwright. */
+interface Evaluates { evaluate<R, A>(fn: (arg: A) => R | Promise<R>, arg: A): Promise<R> }
+
+/**
+ * Waits, instead of a fixed time, until the layout under `root` has stayed the same for STEADY_SAMPLES samples
+ * STEADY_EVERY_MS apart; false when it was still moving after `timeout` ms.
+ */
+const STEADY_EVERY_MS = 250
+const STEADY_SAMPLES = 4
+export async function steady(page: Evaluates, root: string | null = null, timeout = 15_000): Promise<boolean> {
+  const end = Date.now() + timeout
+  let last = await page.evaluate(layoutSignature, root)
+  let same = 0
+  while (Date.now() < end) {
+    await new Promise((resolve) => setTimeout(resolve, STEADY_EVERY_MS))
+    const now = await page.evaluate(layoutSignature, root)
+    same = now === last ? same + 1 : 0
+    if (same >= STEADY_SAMPLES - 1) return true
+    last = now
+  }
+  return false
 }

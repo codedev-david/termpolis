@@ -30,6 +30,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
+import { closeMore, toolbarControl } from './helpers/worldToolbar'
 
 let app: ElectronApplication
 let page: Page
@@ -232,7 +233,8 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
     await start.getByRole('button', { name: 'Design it' }).click()
 
     await expect(projectName()).toHaveText(DESCRIPTION, { timeout: 60_000 })
-    await expect(page.locator('[data-testid="world-layer-planned"]')).toHaveAttribute('aria-pressed', 'true')
+    await expect(await toolbarControl(page, 'world-layer-planned')).toHaveAttribute('aria-pressed', 'true')
+    await closeMore(page)
     await expect.poll(wireframes, { timeout: 60_000 }).toEqual(['catalog', 'orders', 'storefront'])
   })
 
@@ -258,7 +260,8 @@ test.describe.serial('Lumopolis sources, design and Build it in the real app', (
 
     // The pane is on the build folder's world: the linked plan alone, every part still a wireframe.
     await expect(projectName()).toHaveText(path.basename(buildDir), { timeout: 30_000 })
-    await expect(page.locator('[data-testid="world-layer-planned"]')).toHaveAttribute('aria-pressed', 'true')
+    await expect(await toolbarControl(page, 'world-layer-planned')).toHaveAttribute('aria-pressed', 'true')
+    await closeMore(page)
     await expect.poll(wireframes, { timeout: 60_000 }).toEqual(['catalog', 'orders', 'payments', 'storefront'])
     // ...and every one of them is on screen: planned parts stand in no code district, so no slab may hide them.
     await expect.poll(shownWireframes, { timeout: 10_000 }).toEqual(['catalog', 'orders', 'payments', 'storefront'])

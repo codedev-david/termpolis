@@ -29,6 +29,7 @@
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteType, removeDirs, expectPaneOpens } from './helpers/world'
+import { closeMore, toolbarControl } from './helpers/worldToolbar'
 
 let app: ElectronApplication
 let page: Page
@@ -207,8 +208,7 @@ test.describe.serial('Lumopolis in the real app', () => {
   })
 
   test('3. "What runs where" draws the process shells, and takes them away again', async () => {
-    const toggle = page.locator('[data-testid="world-layer-processes"]')
-    await expect(toggle).toBeVisible()
+    const toggle = await toolbarControl(page, 'world-layer-processes')
     await expect(toggle).toHaveAttribute('aria-pressed', 'false')
     expect(await drawn()).toMatchObject({ layers: { processes: false }, processShells: 0 })
     await toggle.click()
@@ -220,11 +220,11 @@ test.describe.serial('Lumopolis in the real app', () => {
     await expect(toggle).toHaveAttribute('aria-pressed', 'false')
     await expect.poll(async () => (await drawn())?.processShells ?? -1).toBe(0)
     expect((await drawn())!.layers.processes).toBe(false)
+    await closeMore(page)
   })
 
   test('4. a tour plays and its caption changes from step to step', async () => {
-    const tours = page.locator('[data-testid="world-tours"]')
-    await expect(tours).toBeVisible()
+    const tours = await toolbarControl(page, 'world-tours')
     const values = await tours.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value).filter(Boolean))
     expect(values.length).toBeGreaterThan(0)
     // Every caption the card shows, recorded as it appears (a fast step is not missed between polls).
@@ -710,14 +710,16 @@ test.describe.serial('Lumopolis in the real app', () => {
       return Math.max(...c.pos.map((v, i) => Math.abs(v - saved!.pos[i])), ...c.target.map((v, i) => Math.abs(v - saved!.target[i])))
     }, { timeout: 8000 }).toBeLessThan(0.5)
     // The 2D map: an svg with a rect per building, and a click on one opens its card.
-    await page.getByTestId('world-map2d').click()
+    await (await toolbarControl(page, 'world-map2d')).click()
+    await closeMore(page)
     const map = page.locator('svg[role=img]')
     await expect(map).toBeVisible()
     const rects = map.locator('rect[data-kind="building"]')
     expect(await rects.count()).toBeGreaterThan(0)
     await rects.first().click()
     await expect(card()).toBeVisible()
-    await page.getByTestId('world-map2d').click() // off again
+    await (await toolbarControl(page, 'world-map2d')).click() // off again
+    await closeMore(page)
     await expect(map).toHaveCount(0)
   })
 
