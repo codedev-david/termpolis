@@ -361,6 +361,69 @@ describe('threeRenderer labels', () => {
     expect(off).toBe(1)
   })
 
+  it("the hovered or selected part's name, partly off the picture, is moved in to the edge, never dropped; off screen it goes", () => {
+    const model: SceneModel = { districts: [district('d1', [0, 0, 0], 60)], buildings: [bldg('l', [-40, 0, 0]), bldg('m', [0, 0, 0])], conduits: [], orbs: [] }
+    const text = emptyText({ labels: { l: 'Left', m: 'Mid' } })
+    const nameOf = (t: string): THREE.Object3D & { element: HTMLElement } => labelsOf(world(), 'bldg').find((l) => l.element.textContent === t) as THREE.Object3D & { element: HTMLElement }
+    const r0 = drawn(model, text)
+    const at = nameOf('Left').getWorldPosition(new THREE.Vector3()).project(cameraOf())
+    const x = ((at.x + 1) / 2) * 800
+    const y = ((1 - at.y) / 2) * 600
+    r0.dispose()
+    expect(x).toBeGreaterThan(0)
+    expect(x).toBeLessThan(400)
+    // A name wider than twice its distance from the left edge: half of it would be off the picture.
+    const w = Math.ceil(2 * x + 100)
+    vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(w)
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(18)
+    const r = drawn(model, text)
+    r.setSelected('l')
+    h.frames.step()
+    const name = nameOf('Left')
+    expect(name.visible).toBe(true)
+    // Moved right so its left edge sits the view's inset (4 px) in.
+    expect(parseFloat(name.element.style.marginLeft)).toBeCloseTo(4 + w / 2 - x, 0)
+    // A strip of panel over its place: it steps a row aside rather than vanish.
+    r.setPanels([panelAt([0, y - 12, 800, y + 12])])
+    h.frames.step()
+    expect(name.visible).toBe(true)
+    expect(Math.abs(parseFloat(name.element.style.marginTop))).toBeGreaterThanOrEqual(21)
+    // Its part off the picture: it goes.
+    void r.flyTo({ pos: [400, 30, 0], target: [400, 0, 0] }, true)
+    h.frames.run(3)
+    expect(name.visible).toBe(false)
+    r.dispose()
+  })
+
+  it('the same panels handed over again are measured again (a panel moved without resizing), and not watched twice', () => {
+    const watched: Element[] = []
+    const unwatched: Element[] = []
+    vi.stubGlobal('ResizeObserver', class {
+      observe(el: Element): void { watched.push(el) }
+      unobserve(el: Element): void { unwatched.push(el) }
+      disconnect(): void { /* nothing */ }
+    })
+    sized(300)
+    const r = drawn(twoDistricts(), withSubtitles)
+    // The card sits off to the side: both names have room.
+    const card = panelAt([0, 0, 0, 0])
+    r.setPanels([card])
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, true])
+    const seen = watched.length
+    // Its content changes and it moves over the whole view at the same size: no ResizeObserver fires.
+    card.getBoundingClientRect = panelAt([0, 0, 800, 600]).getBoundingClientRect
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([true, true]) // still the old box
+    // The stage renders and hands the same panels over: measured again, not watched again.
+    r.setPanels([card])
+    h.frames.step()
+    expect(labelsOf(world(), 'district').map((l) => l.visible)).toEqual([false, false])
+    expect(watched).toHaveLength(seen)
+    expect(unwatched).toEqual([])
+    r.dispose()
+  })
+
   it('draws the labels at the scale it is given, and measures them again at it', () => {
     const r = drawn()
     expect(layer().style.getPropertyValue('--lw-s')).toBe('')

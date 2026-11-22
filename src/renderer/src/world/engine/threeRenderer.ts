@@ -1927,7 +1927,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     todo.forEach((el, i) => { el.style.display = was[i][0]; el.style.visibility = was[i][1] })
   }
-  function candidate(o: CSS2DObject, id: string, tier: number, group?: string, nudge?: boolean | 'vertical', pin?: boolean): LabelCandidate | null {
+  function candidate(o: CSS2DObject, id: string, tier: number, group?: string, nudge?: boolean | 'vertical', pin?: boolean | 'edge'): LabelCandidate | null {
     o.getWorldPosition(labelAt)
     labelAt.project(camera)
     if (labelAt.z < -1 || labelAt.z > 1) return null
@@ -1936,7 +1936,15 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     let y = ((1 - labelAt.y) / 2) * height
     let keepIn: LabelCandidate['keepIn']
     let compact: LabelCandidate['compact']
-    if (pin) {
+    if (pin === 'edge') {
+      // The hovered or selected part's own name, partly off the picture, is moved in to the edge rather
+      // than dropped (it may also step aside off a panel): it vanishes only with the part off screen.
+      if (x + w / 2 < 0 || x - w / 2 > width || y + h / 2 < 0 || y - h / 2 > height) return null
+      const [sx, sy] = clampIntoView(x, y, w, h, width, height, LABEL_VIEW_INSET)
+      x += sx
+      y += sy
+      if (sx !== 0 || sy !== 0) pinned.set(id, [sx, sy])
+    } else if (pin) {
       // A district's name stays whole inside the view, above the ask bar and left of the legend, and
       // moves up or down only within it; the shift is added back to its nudge (layLabels). Where it
       // finds no room whole, it shows without its subtitle (placeLabels), so neighbours never overlap.
@@ -1953,12 +1961,12 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   function layLabels(): Map<string, Nudge> {
     camera.updateMatrixWorld()
-    const want: { o: CSS2DObject; id: string; tier: number; group?: string; nudge?: boolean | 'vertical'; pin?: boolean }[] = []
+    const want: { o: CSS2DObject; id: string; tier: number; group?: string; nudge?: boolean | 'vertical'; pin?: boolean | 'edge' }[] = []
     pinned.clear()
     const targets = new Set([hoveredId, selectedId])
     for (const n of nodes.values()) {
       if (floorLabelsShown(tier, n.exploded, targets.has(n.id))) n.floorLabels.forEach((l) => { if (l) want.push({ o: l.o, id: l.key, tier: 0 }) })
-      if (targets.has(n.id) && n.group.visible) for (const l of n.labels) want.push({ o: l.o, id: l.key, tier: 0 })
+      if (targets.has(n.id) && n.group.visible) for (const l of n.labels) want.push({ o: l.o, id: l.key, tier: 0, nudge: true, pin: 'edge' })
     }
     const lit = [...edges.values()].filter((e) => e.focus)
     const near = (e: EdgeRec): number => e.label.getWorldPosition(labelAt).distanceTo(camera.position)
@@ -2377,10 +2385,13 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       reframe() // a focus or a close-up is fitted again around the card
     },
     setPanels(els) {
+      // The same panels again (the stage rendered): only their boxes are measured again, since a panel can move
+      // without changing size (the card's content, the ask bar's answer above it), which no ResizeObserver reports.
+      panelBoxes = null
+      if (els.length === panels.length && els.every((el, i) => el === panels[i])) return
       for (const el of panels) ro?.unobserve(el)
       panels = [...els]
       for (const el of panels) ro?.observe(el)
-      panelBoxes = null
     },
     setLabelScale(v) {
       if (!(v > 0) || v === labelScale) return
