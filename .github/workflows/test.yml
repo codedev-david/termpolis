@@ -774,42 +774,56 @@ jobs:
       - name: Fix spawn-helper permissions (macOS)
         run: |
           find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
-      # Diagnostic, to be removed: which folders Spotlight indexes on this runner (the test's own temp userData,
-      # where a real Mac keeps the app's worlds, a .noindex twin, Caches, the workspace), each fed a world-like
-      # JSON file rewritten as a compile does (temp file, then rename), and what it indexed in the last 30 min.
-      - name: Spotlight probe (macOS runner, diagnostic)
+      # Diagnostic for one run, to be removed: Spotlight stays ON through the specs, and this records what it
+      # indexes while they run, to tell the runner's own files (the checkout, node_modules) from what the app
+      # writes (the test's temp userData and projects, where a real Mac keeps the worlds). Every 20 s it lists
+      # the indexed items changed in the last 25 s, by folder. Probe files written now, rewritten the way the world
+      # store writes (temp file, then rename), show which folders get indexed at all, the workspace as control.
+      - name: Spotlight sampler start (macOS runner, diagnostic)
         run: |
           set +e
-          tok="tpmd$(date +%s)$RANDOM"
-          tmp_root="${TMPDIR:-/tmp}"
-          locs=("${tmp_root%/}/termpolis-world-ud-probe" "$HOME/Library/Application Support/TermpolisProbe" "$HOME/Library/Application Support/TermpolisProbe.noindex" "$HOME/Library/Caches/TermpolisProbe" "$GITHUB_WORKSPACE/test-results/mdprobe")
+          tok="tpmd$(date +%s)$RANDOM"; echo "$tok" > "$RUNNER_TEMP/mdtok"
+          tmp_root="${TMPDIR:-/tmp}"; tmp_root="${tmp_root%/}"
+          printf '%s\n' "$tmp_root/termpolis-world-ud-probe" "$HOME/Library/Application Support/TermpolisProbe" "$HOME/Library/Application Support/TermpolisProbe.noindex" "$HOME/Library/Caches/TermpolisProbe" "$GITHUB_WORKSPACE/test-results/mdprobe" > "$RUNNER_TEMP/mdlocs"
           i=0
-          for d in "${locs[@]}"; do
+          while IFS= read -r d; do
             i=$((i+1)); mkdir -p "$d/world"; f="$d/world/${tok}n$i.json"
             for k in $(seq 1 20); do printf '{"probe":"%sc%s","k":%s}' "$tok" "$i" "$k" > "$f.tmp"; mv "$f.tmp" "$f"; done
+          done < "$RUNNER_TEMP/mdlocs"
+          cat > "$RUNNER_TEMP/mdsample.sh" <<'SH'
+          while true; do
+            mdfind 'kMDItemFSContentChangeDate >= $time.now(-25)' 2>/dev/null \
+              | sed -E 's#^/private/var/#/var/#' \
+              | awk -F/ '{ if ($2=="var") { n=split($0,a,"/"); o=""; for (k=2;k<=9&&k<=n;k++) o=o"/"a[k]; print o } else print "/"$2"/"$3"/"$4"/"$5"/"$6 }' \
+              | sed -E 's#(termpolis-world-[a-z]+)-[A-Za-z0-9]+#\1-*#; s#/[^/]*\.(json|tmp|txt)$##' \
+              | sort | uniq -c | sed "s#^#$(date +%H:%M:%S) #"
+            sleep 20
           done
-          sleep 90
-          i=0
-          for d in "${locs[@]}"; do
-            i=$((i+1))
-            echo "spotlight probe: $d -> found by name $(mdfind -name "${tok}n$i" | wc -l | tr -d ' '), by content $(mdfind "${tok}c$i" | wc -l | tr -d ' ')"
-          done
-          echo "spotlight probe: items under TMPDIR in the index: $(mdfind -count -onlyin "$tmp_root" 'kMDItemFSName == "*"')"
-          echo "spotlight probe: items changed in the last 30 min, by folder:"
-          mdfind 'kMDItemFSContentChangeDate >= $time.now(-1800)' | awk -F/ '{print "/"$2"/"$3"/"$4"/"$5"/"$6}' | sort | uniq -c | sort -rn | head -25
-          rm -rf "${locs[@]}"
-          true
-      # A fresh macOS runner spends the whole job indexing its disk for Spotlight (mds_stores, mds and the
-      # mdworkers measured at most of a core of the 3), and the specs' own projects and worlds feed it more.
-      # The typing e2e then waits for CPU the app is not using, so indexing is off for these specs.
-      - name: Turn off Spotlight indexing (macOS runner)
-        run: |
-          sudo mdutil -a -i off || true
+          SH
+          nohup bash "$RUNNER_TEMP/mdsample.sh" > "$RUNNER_TEMP/mdsample.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/mdsample.pid"
           mdutil -a -s || true
+          true
       # The step's timeout sits under the job's, so the uploads below still run when it runs out.
       - name: Lumopolis world specs (macOS)
         timeout-minutes: 50
         run: npx playwright test e2e/world --reporter=list
+      - name: Spotlight sampler report (macOS runner, diagnostic)
+        if: ${{ !cancelled() }}
+        run: |
+          set +e
+          kill "$(cat "$RUNNER_TEMP/mdsample.pid")" 2>/dev/null
+          tok="$(cat "$RUNNER_TEMP/mdtok")"; i=0
+          while IFS= read -r d; do
+            i=$((i+1))
+            echo "spotlight probe: $d -> found by name $(mdfind -name "${tok}n$i" 2>/dev/null | wc -l | tr -d ' '), by content $(mdfind "${tok}c$i" 2>/dev/null | wc -l | tr -d ' ')"
+            rm -rf "$d"
+          done < "$RUNNER_TEMP/mdlocs"
+          echo "spotlight sampler: $(grep -c . "$RUNNER_TEMP/mdsample.log") rows; indexed items changed while the specs ran, summed over the samples, by folder:"
+          awk '{ n=$2; $1=""; $2=""; sub(/^ +/, ""); c[$0]+=n } END { for (k in c) print c[k], k }' "$RUNNER_TEMP/mdsample.log" | sort -rn | head -40
+          echo "spotlight sampler: the app's temp folders, per sample:"
+          grep -E 'termpolis-world' "$RUNNER_TEMP/mdsample.log" | head -60
+          true
       - name: Upload Lumopolis screenshots
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
