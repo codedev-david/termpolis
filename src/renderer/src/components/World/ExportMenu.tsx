@@ -68,7 +68,7 @@ export function ExportMenu({ btnClass, onExport, disabled = false, open, onToggl
           id={menuId}
           role="group"
           aria-label="Export"
-          data-testid="world-export-menu"
+          data-testid="world-export-menu" data-map-panel
           className={`absolute ${side === 'left' ? 'left-0' : 'right-0'} top-full mt-1 p-1 rounded border border-[#3c3c3c] shadow-xl flex flex-col gap-0.5 text-xs w-56`}
           style={{ zIndex: 7, background: '#252526' }}
         >

@@ -27,7 +27,7 @@
 // E2E only (TERMPOLIS_TEST_WORLD_PROBE): window.__termpolis_world, a read-only probe of the map
 // (a part's place on screen, what is drawn), so a spec can click a building and see a layer change
 // without guessing at the 3D scene. Off in every normal run.
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
 import type { BuildItResult, Evidence, Tour, WorldAction, WorldDoc, WorldSavedFile } from '../../../../shared/world/types'
 import { formatTokens } from '../../../../shared/world/tokens'
@@ -456,12 +456,24 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const legendAside = card !== null && cardMeetsLegend(stageSize[0] / scale, legendOpen ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE)
   // The map's labels grow with the panels, and keep out from under every panel over the map: the
   // stage's children but the map itself, handed over after every render, so a panel that moved
-  // without changing size is measured again (the viewer re-watches them only when the set changes).
+  // without changing size is measured again (the viewer re-watches them only when the set changes). An open
+  // toolbar popup (data-map-panel) hangs from the toolbar over the map, so it is a panel of its own; it opens
+  // and shuts in the toolbar's own render, so a change anywhere in the pane hands the panels over again too.
   useEffect(() => { viewer?.setLabelScale(scale) }, [viewer, scale])
+  const handPanels = useCallback((): void => {
+    const stage = stageRef.current as HTMLDivElement
+    const panels = Array.from(stage.children).filter((el) => el !== hostRef.current) as HTMLElement[]
+    viewer?.setPanels([...panels, ...Array.from((dialogRef.current as HTMLDivElement).querySelectorAll<HTMLElement>('[data-map-panel]'))])
+  }, [viewer])
+  useEffect(() => { if (viewer) handPanels() })
   useEffect(() => {
     if (!viewer) return
-    viewer.setPanels(Array.from((stageRef.current as HTMLDivElement).children).filter((el): el is HTMLElement => el !== hostRef.current) as HTMLElement[])
-  })
+    const host = hostRef.current as HTMLDivElement
+    // The map's own labels change under the host every frame: only a change outside it counts.
+    const mo = new MutationObserver((recs) => { if (recs.some((r) => !host.contains(r.target))) handPanels() })
+    mo.observe(dialogRef.current as HTMLDivElement, { childList: true, subtree: true })
+    return () => mo.disconnect()
+  }, [viewer, handPanels])
 
   // The 3D viewer, once, when WebGL is there.
   useEffect(() => {

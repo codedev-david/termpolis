@@ -2285,5 +2285,17 @@ describe('WorldView on a big monitor', () => {
     expect(last()).toEqual(before)
     act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
     expect(last()).toContain(screen.getByTestId('world-card'))
+    // A toolbar popup hangs below the toolbar, outside its box: open, it is a panel of its own, so no name is
+    // drawn under it (the More menu once lay over a district's name); shut, it is gone from the panels again.
+    fireEvent.click(screen.getByTestId('world-export'))
+    await waitFor(() => expect(last()).toContain(screen.getByTestId('world-export-menu')))
+    fireEvent.click(screen.getByTestId('world-export'))
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    await waitFor(() => expect(last().every((el) => el.isConnected)).toBe(true))
+    // A change in the map's own labels (under the host) hands nothing over.
+    const calls2 = v.setPanels.mock.calls.length
+    screen.getByTestId('world-canvas-host').appendChild(document.createElement('div'))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(v.setPanels.mock.calls.length).toBe(calls2)
   })
 })

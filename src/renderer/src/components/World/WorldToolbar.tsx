@@ -289,7 +289,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
             id={idOf('bookmarks')}
             role="group"
             aria-label="Bookmarks"
-            data-testid="world-bookmarks-menu"
+            data-testid="world-bookmarks-menu" data-map-panel
             className="absolute left-0 top-full mt-1 p-2 rounded border border-[#3c3c3c] shadow-xl flex flex-col gap-1 text-xs w-64"
             style={{ zIndex: 7, background: '#252526' }}
           >
@@ -361,7 +361,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
               id={idOf('more')}
               role="group"
               aria-label="More"
-              data-testid="world-more-menu"
+              data-testid="world-more-menu" data-map-panel
               className={`absolute ${moreSide === 'left' ? 'left-0' : 'right-0'} top-full mt-1 p-2 rounded border border-[#3c3c3c] shadow-xl flex flex-wrap items-center gap-2 w-60`}
               style={{ zIndex: 7, background: '#252526' }}
             >
