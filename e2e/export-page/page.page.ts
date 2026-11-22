@@ -10,12 +10,38 @@ import path from 'node:path'
 import type { Page } from '@playwright/test'
 import { ASK_LOADING, SELF_LOAD_UNSEEN, ask, askReady, askState, cityClip, expect, paint, test, type Opened } from './helpers'
 import { FIXTURE_DIR, FIXTURE_JSON, KEYWORD_HTML, SMART_HTML } from './paths'
+import { FRAME_FLIGHT_S } from '../../src/renderer/src/world/engine/cameraRig'
 
 const world = JSON.parse(fs.readFileSync(FIXTURE_JSON, 'utf8')) as { tours: Array<{ title: string; steps: Array<{ caption: string }> }> }
 const SMART_BROWSERS = new Set(['electron', 'msedge'])
 
 /** Whether the page drew the 3D city (a canvas in the view) rather than the 2D map. */
 const in3d = async (page: Page): Promise<boolean> => (await page.locator('.wx-view canvas').count()) > 0
+
+/**
+ * Page time from a pick to a camera at rest on the building: the flight (FRAME_FLIGHT_S), then half a second for the
+ * picture's move to the free area beside the card (easeArea closes 1 - e^-12t of the gap: past 99.7% by then).
+ */
+const LANDED_MS = FRAME_FLIGHT_S * 1000 + 500
+
+/**
+ * Stops the page's clock where it is. pauseAt takes a time that must still be ahead of the page's, and the page's
+ * time is read before the pause reaches it: on a busy page the pause arrives late (465 ms after the reading in Edge
+ * on a CI runner, against the 100 ms it allowed) and is refused with "Cannot fast-forward to the past". pauseAt has
+ * stopped the clock by then all the same (it stops it before it moves it on), so the second reading is of a stopped
+ * clock, and a pause 100 ms ahead of that cannot come too late. A second refusal means that no longer holds: it fails.
+ */
+async function pauseClock(page: Page): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    const at = await page.evaluate(() => Date.now() + 100)
+    try {
+      await page.clock.pauseAt(at)
+      return
+    } catch (e) {
+      if (attempt > 0 || !/Cannot fast-forward to the past/.test(String(e))) throw e
+    }
+  }
+}
 
 /** Lets the city settle after load: its first frames, labels and the camera's opening move. */
 const settle = (page: Page): Promise<void> => page.waitForTimeout(1500)
@@ -137,13 +163,31 @@ test('a tour runs', async ({ open }) => {
   const o = await open(KEYWORD_HTML)
   await askReady(o.page)
   const tour = world.tours[0]
+  // Every caption the card shows is written down in the page as it goes in. A step can be on screen for little more
+  // than its 1.4 s pause, and on a slow software-WebGL page each call into it can take half a second (the click
+  // itself took 3.7 s in Edge on a CI runner): asked from here, the first caption had come and gone before the
+  // first look. The page's own record misses none, however slowly it is read.
+  await o.page.evaluate(() => {
+    const seen: string[] = []
+    ;(window as unknown as { __tourCaptions: string[] }).__tourCaptions = seen
+    new MutationObserver((records) => {
+      for (const r of records) {
+        for (const n of Array.from(r.addedNodes)) {
+          if (!(n instanceof Element)) continue
+          const caption = n.matches('.tour-caption') ? n : n.querySelector('.tour-caption')
+          if (caption) seen.push(caption.textContent ?? '')
+        }
+      }
+    }).observe(document.querySelector('.wx-card') as Element, { childList: true, subtree: true })
+  })
+  const captions = (): Promise<string[]> => o.page.evaluate(() => [...(window as unknown as { __tourCaptions: string[] }).__tourCaptions])
   await o.page.locator('[data-control="tour"]', { hasText: tour.title }).click()
   const card = o.page.locator('.wx-card')
   await expect(card).toBeVisible()
   if (await in3d(o.page)) {
-    // The city plays it: each step's caption in the card, in order.
-    await expect(card.locator('.tour-caption')).toHaveText(tour.steps[0].caption)
-    await expect(card.locator('.tour-caption')).toHaveText(tour.steps[1].caption, { timeout: 15_000 })
+    // The city plays it: each step's caption in the card, in order, the first one first.
+    await expect.poll(async () => (await captions()).slice(0, 2), { message: 'the first two captions the card showed', timeout: 15_000 })
+      .toEqual([tour.steps[0].caption, tour.steps[1].caption])
   } else {
     await expect(card.locator('ol li')).toHaveCount(tour.steps.length)
   }
@@ -198,19 +242,28 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
   const name = (await first.locator('.wx-ask-name').textContent()) ?? ''
   const reading = (): Promise<number | null> => labelOffset(o.page, name)
   let from: number | null = null
+  let landed: number | null = null
   if (three) {
     // The first reading is taken with the camera near-still. Hovering the building cannot draw its label here: at the
     // opening view a district's slab stands for its buildings, so a hover picks the district. So time stops (the
     // page's frames, timers and clock with it, and the idle turn), the click selects the building, and the clock
     // is stepped one frame at a time until the selected building's label is drawn. The flight (1.5 s, eased in)
     // has then barely moved the camera: the reading has been up to 7% under that of a camera that never moved.
-    await o.page.clock.pauseAt(await o.page.evaluate(() => Date.now() + 100))
+    await pauseClock(o.page)
     try {
       await expect(first).toBeVisible()
       await first.click({ force: true }) // no actionability wait: it watches animation frames, and they are stopped
       for (let step = 0; step < 10 && from === null; step++) {
         await o.page.clock.runFor(16)
         from = await reading()
+      }
+      // The rest of the flight runs on the stopped clock too, frame by frame, to past its landing and the picture's
+      // move to the free area beside the card. Where the camera ends up then depends on the page's time alone, never
+      // on how long this browser takes to answer: Firefox on a macOS runner once stalled over 4 s on a frame
+      // mid-flight, and a 5 s wait for the label, counted on the runner's clock, ran out before the camera landed.
+      if (from !== null) {
+        await o.page.clock.runFor(LANDED_MS)
+        landed = await reading()
       }
     } finally {
       // Also on a failure, so its trace shows the page running rather than frozen.
@@ -224,14 +277,14 @@ test('clicking a result flies to it and opens its card', async ({ open }) => {
   await expect(card).toBeVisible()
   await expect(card.locator('.wx-card-body h3').first()).toHaveText(name)
   if (three) {
-    // The camera flew to it: the label comes to the middle of the city, well nearer than it started.
+    // The camera flew to it: the label came to the middle of the city, well nearer than it started.
     // A camera that never moved fails both: the label stays where the first reading found it.
     const start = from as number
-    let reached = Number.NaN
-    await expect.poll(async () => (reached = (await reading()) ?? Number.NaN), { message: `the label of ${name} reaches the middle of the city`, intervals: [100], timeout: 5000 }).toBeLessThan(0.2)
-    test.info().annotations.push({ type: 'fly', description: `${name}: label at ${start.toFixed(3)} of the half-diagonal from the middle with the camera near-still; reached < 0.2 at ${reached.toFixed(3)}` })
+    test.info().annotations.push({ type: 'fly', description: `${name}: label at ${start.toFixed(3)} of the half-diagonal from the middle with the camera near-still; at ${landed === null ? 'none' : landed.toFixed(3)} once landed` })
+    expect(landed, `the label of ${name} is drawn once the camera has landed`).not.toBeNull()
+    expect(landed as number, `the label of ${name} reaches the middle of the city`).toBeLessThan(0.2)
     expect(start, `the label of ${name} starts far from the middle, so the flight has somewhere to go`).toBeGreaterThan(0.4)
-    expect(reached, `the label of ${name} came well nearer the middle than it started (${start.toFixed(3)})`).toBeLessThan(start / 2)
+    expect(landed as number, `the label of ${name} came well nearer the middle than it started (${start.toFixed(3)})`).toBeLessThan(start / 2)
   }
   await noRequestsNoErrors(o)
 })
