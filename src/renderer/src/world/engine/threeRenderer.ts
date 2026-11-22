@@ -2009,24 +2009,43 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return readableOpacity((l.kind === 'district' ? clamp(1.9 - d / districtFade, 0, 1) : clamp(2 - d / overviewDist, 0.55, 1)) * l.dim)
   }
   const boxCorner = new THREE.Vector3()
-  /** Each drawn building's and orb's box on screen (its eight corners), left, top, right, bottom; none for one partly behind the camera. */
+  const slabToWorld = new THREE.Matrix4()
+  /**
+   * A box's outline on screen (its eight corners, `r` either side of the middle and `h` up, through `toWorld`): left,
+   * top, right, bottom, or null for one partly behind the camera.
+   */
+  function screenBox(r: number, h: number, toWorld: THREE.Matrix4): Rect | null {
+    let l = Infinity, t = Infinity, rt = -Infinity, b = -Infinity
+    for (let k = 0; k < 8; k++) {
+      boxCorner.set(k & 1 ? r : -r, k & 2 ? h : 0, k & 4 ? r : -r).applyMatrix4(toWorld).project(camera)
+      if (boxCorner.z < -1 || boxCorner.z > 1) return null
+      const x = ((boxCorner.x + 1) / 2) * width
+      const y = ((1 - boxCorner.y) / 2) * height
+      l = Math.min(l, x); rt = Math.max(rt, x); t = Math.min(t, y); b = Math.max(b, y)
+    }
+    return [l, t, rt, b]
+  }
+  /**
+   * Each drawn building's and orb's box on screen, and from far away each district's slab, which stands for its
+   * buildings there (a district's name lay on its own slab at the overview): left, top, right, bottom.
+   */
   function solidBoxes(): Rect[] {
     const out: Rect[] = []
     for (const n of nodes.values()) {
       if (!n.group.visible) continue
       n.group.updateWorldMatrix(true, false)
-      const r = n.orb ? ORB_R : FLOOR_W * 0.5
-      let l = Infinity, t = Infinity, rt = -Infinity, b = -Infinity
-      let behind = false
-      for (let k = 0; k < 8; k++) {
-        boxCorner.set(k & 1 ? r : -r, k & 2 ? n.height : 0, k & 4 ? r : -r)
-        n.group.localToWorld(boxCorner).project(camera)
-        if (boxCorner.z < -1 || boxCorner.z > 1) behind = true
-        const x = ((boxCorner.x + 1) / 2) * width
-        const y = ((1 - boxCorner.y) / 2) * height
-        l = Math.min(l, x); rt = Math.max(rt, x); t = Math.min(t, y); b = Math.max(b, y)
+      const box = screenBox(n.orb ? ORB_R : FLOOR_W * 0.5, n.height, n.group.matrixWorld)
+      if (box) out.push(box)
+    }
+    for (const im of slabMeshes) {
+      if (!im.visible) continue
+      im.updateWorldMatrix(true, false)
+      for (let j = 0; j < im.count; j++) {
+        im.getMatrixAt(j, slabToWorld)
+        // The unit hexagon stands from 0 to 1 within a radius of 1.
+        const box = screenBox(1, 1, slabToWorld.premultiply(im.matrixWorld))
+        if (box) out.push(box)
       }
-      if (!behind) out.push([l, t, rt, b])
     }
     return out
   }

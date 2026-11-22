@@ -232,6 +232,13 @@ describe('threeRenderer labels', () => {
     })
   }
   const subtitle = (l: { element: HTMLElement }): HTMLElement => l.element.querySelector('span') as HTMLElement
+  /** The districts' slabs (the districts tier), which their names keep off. */
+  const slabsOf = (): THREE.InstancedMesh[] => {
+    const out: THREE.InstancedMesh[] = []
+    sceneOf().traverse((o) => { if ((o as THREE.InstancedMesh).isInstancedMesh && o.userData.slabIds) out.push(o as THREE.InstancedMesh) })
+    return out
+  }
+  const hideSlabs = (): void => { for (const im of slabsOf()) im.visible = false }
   const twoDistricts = (): SceneModel => ({
     districts: [district('d1', [-60, 0, 0], 12), district('d2', [60, 0, 0], 12)],
     buildings: [bldg('a', [-60, 0, 0]), bldg('b', [60, 0, 0])],
@@ -247,6 +254,9 @@ describe('threeRenderer labels', () => {
     const subtitles = (sub: number): string[] => {
       sized(sub, 20)
       const r = drawn(twoDistricts(), withSubtitles, false, short)
+      // The slabs put away: in a view this short each name and subtitle would lie on its own slab, which keeps the
+      // subtitles off (its own test, the districts tier); here only the names' rule against each other is looked at.
+      hideSlabs()
       h.frames.step()
       const names = labelsOf(world(), 'district')
       expect(names.map((l) => l.visible)).toEqual([true, true])
@@ -291,6 +301,39 @@ describe('threeRenderer labels', () => {
     const corners = Array.from({ length: 8 }, (_, k) => px(new THREE.Vector3(k & 1 ? 2.5 : -2.5, k & 2 ? 30 : 0, 13 + (k & 4 ? 2.5 : -2.5))))
     const [l, t, rt, b] = [Math.min(...corners.map((c) => c[0])), Math.min(...corners.map((c) => c[1])), Math.max(...corners.map((c) => c[0])), Math.max(...corners.map((c) => c[1]))]
     // On its own point the name would lie on the building's box; it was moved clear of it.
+    expect(cx + 40 > l && cx - 40 < rt && cy + 9 > t && cy - 9 < b).toBe(true)
+    expect(x + 40 <= l || x - 40 >= rt || y + 9 <= t || y - 9 >= b).toBe(true)
+    r.dispose()
+  })
+
+  it("from far away a district's name keeps off its own slab, where it has a place to (F2, the districts tier)", () => {
+    sized(80, 80)
+    // Tall buildings inside the district: from far away one slab stands for them, as tall as they are on average.
+    const model: SceneModel = {
+      districts: [district('d', [0, 0, 0], 12)],
+      buildings: [bldg('p', [-4, 0, 3], { height: 40 }), bldg('q', [4, 0, 3], { height: 40 }), bldg('s', [0, 0, -4], { height: 40 })],
+      conduits: [],
+      orbs: [],
+    }
+    const r = drawn(model, emptyText())
+    h.frames.run(3)
+    expect(r.drawnCounts().tier).toBe('districts')
+    const name = labelsOf(world(), 'district')[0]
+    expect(name.visible).toBe(true)
+    const cam = cameraOf()
+    cam.updateMatrixWorld()
+    const px = (v: THREE.Vector3): [number, number] => { const p = v.clone().project(cam); return [((p.x + 1) / 2) * 800, ((1 - p.y) / 2) * 600] }
+    const slab = slabsOf()[0]
+    expect(slab.visible).toBe(true)
+    const m = new THREE.Matrix4()
+    slab.getMatrixAt(0, m)
+    slab.updateWorldMatrix(true, false)
+    const corners = Array.from({ length: 8 }, (_, k) => px(new THREE.Vector3(k & 1 ? 1 : -1, k & 2 ? 1 : 0, k & 4 ? 1 : -1).applyMatrix4(m).applyMatrix4(slab.matrixWorld)))
+    const [l, t, rt, b] = [Math.min(...corners.map((c) => c[0])), Math.min(...corners.map((c) => c[1])), Math.max(...corners.map((c) => c[0])), Math.max(...corners.map((c) => c[1]))]
+    const [cx, cy] = px(name.getWorldPosition(new THREE.Vector3()))
+    const x = cx + (parseFloat(name.element.style.marginLeft) || 0)
+    const y = cy + (parseFloat(name.element.style.marginTop) || 0)
+    // On its own point the name would lie on the slab; it was moved clear of it.
     expect(cx + 40 > l && cx - 40 < rt && cy + 9 > t && cy - 9 < b).toBe(true)
     expect(x + 40 <= l || x - 40 >= rt || y + 9 <= t || y - 9 >= b).toBe(true)
     r.dispose()
