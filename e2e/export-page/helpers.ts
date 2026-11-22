@@ -32,6 +32,8 @@ export interface OpenOptions {
   holdWasm?: boolean
   /** Playwright's clock is installed before the page loads (time runs as usual), so the spec can pause it. */
   clock?: boolean
+  /** The page records when each step of its start happens, for phaseReport (smart.page.ts's readiness budget). */
+  phases?: boolean
 }
 
 export interface Opened {
@@ -66,6 +68,36 @@ const HOLD_WASM = `(() => {
   Object.defineProperty(window, '__releaseWasm', { value: () => release(), configurable: true })
   const instantiate = WebAssembly.instantiate.bind(WebAssembly)
   WebAssembly.instantiate = (...args) => held.then(() => instantiate(...args))
+})()`
+/**
+ * Times each step of the page's start on its own clock (performance.now), without changing what the page does: the
+ * base64 decode of every block (atob: the city's blocks before the first paint, then vocab, ORT wasm and model),
+ * the ORT wasm's compile (WebAssembly.instantiate), the 3D canvas's arrival, and the main thread's long tasks
+ * (Chromium only). phaseReport reads them back with the navigation and paint timings.
+ */
+const PHASES = `(() => {
+  const now = () => performance.now()
+  const rec = { atob: [], wasm: [], canvasAt: null, longTasks: [] }
+  Object.defineProperty(window, '__wxPhases', { value: rec, configurable: true })
+  const atob0 = window.atob.bind(window)
+  window.atob = (text) => {
+    const start = now()
+    const out = atob0(text)
+    rec.atob.push({ start, end: now(), bytes: out.length })
+    return out
+  }
+  const inst = WebAssembly.instantiate.bind(WebAssembly)
+  WebAssembly.instantiate = (...args) => {
+    const start = now()
+    return inst(...args).then((r) => { rec.wasm.push({ start, end: now() }); return r })
+  }
+  new MutationObserver((list, obs) => {
+    if (document.querySelector('canvas')) { rec.canvasAt = now(); obs.disconnect() }
+  }).observe(document, { childList: true, subtree: true })
+  try {
+    new PerformanceObserver((l) => { for (const e of l.getEntries()) rec.longTasks.push({ start: e.startTime, ms: e.duration }) })
+      .observe({ type: 'longtask', buffered: true })
+  } catch { /* no long-task timing in this browser */ }
 })()`
 const WATCH_CSP = `(() => {
   const seen = []
@@ -159,6 +191,7 @@ export const test = base.extend<Fixtures>({
       if (opts.noWebGL) await context.addInitScript(NO_WEBGL)
       if (opts.wasmFails) await context.addInitScript(WASM_FAILS)
       if (opts.holdWasm) await context.addInitScript(HOLD_WASM)
+      if (opts.phases) await context.addInitScript(PHASES)
       if (opts.clock) await context.clock.install()
       if (page === null) page = await context.newPage()
       const p = page
@@ -211,6 +244,37 @@ export const askReady = (page: Page, timeout = 60_000): Promise<{ state: AskStat
     (window as unknown as { __worldExport: { ready: Promise<AskState> } }).__worldExport.ready.then((state) => ({ state, at: performance.now() })),
     new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Ask was not ready after ${ms} ms`)), ms)),
   ]), timeout)
+
+/**
+ * Where the page's time to Ask-ready went, as one line of milliseconds on the page's clock (opened with `phases`):
+ * HTML parsed (the page carries its blocks inline), DOMContentLoaded, load, first paint, the 3D canvas; the blocks
+ * decoded before the paint and the three smart Ask decodes after it (each "at+ms:KB"); the ORT wasm compile; from it
+ * to ready (the model's session plus one embed); long tasks before ready (their total, then the first eight as
+ * "at+ms"); and a fixed CPU probe run after ready,
+ * which compares runners (the same work on a slower machine takes longer).
+ */
+export async function phaseReport(page: Page, readyAt: number): Promise<string> {
+  return page.evaluate((ready) => {
+    const r = (window as unknown as { __wxPhases: { atob: Array<{ start: number; end: number; bytes: number }>; wasm: Array<{ start: number; end: number }>; canvasAt: number | null; longTasks: Array<{ start: number; ms: number }> } }).__wxPhases
+    const n = (x: number | null | undefined): string => (x === null || x === undefined ? '-' : String(Math.round(x)))
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
+    const fcp = performance.getEntriesByName('first-contentful-paint')[0]?.startTime
+    const blocks = r.atob.map((b) => `${n(b.start)}+${n(b.end - b.start)}:${Math.round(b.bytes / 1024)}KB`).join(' ')
+    const w = r.wasm[r.wasm.length - 1]
+    const before = r.longTasks.filter((t) => t.start < ready)
+    const t0 = performance.now()
+    let x = 0
+    for (let i = 0; i < 20_000_000; i++) x = (x + i * 7) % 1_000_003
+    const probe = performance.now() - t0
+    return [
+      `parsed ${n(nav?.domInteractive)}`, `dcl ${n(nav?.domContentLoadedEventEnd)}`, `load ${n(nav?.loadEventEnd)}`,
+      `fcp ${n(fcp)}`, `canvas ${n(r.canvasAt)}`, `decodes [${blocks}]`,
+      `wasm ${w ? `${n(w.start)}+${n(w.end - w.start)}` : '-'}`, `wasm->ready ${w ? n(ready - w.end) : '-'}`, `ready ${n(ready)}`,
+      `longtasks ${before.length ? `${n(before.reduce((a, t) => a + t.ms, 0))}ms [${before.slice(0, 8).map((t) => `${n(t.start)}+${n(t.ms)}`).join(' ')}]` : '-'}`,
+      `cpu-probe ${n(probe)}${x < 0 ? '' : ''}`,
+    ].join(' | ')
+  }, readyAt)
+}
 
 /** Asks a question (typed, then Enter) and returns the result ids in order, once the list shows. */
 export async function ask(page: Page, q: string): Promise<string[]> {

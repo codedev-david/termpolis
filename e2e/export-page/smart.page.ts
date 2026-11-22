@@ -10,7 +10,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { ASK_FAILED, ask, askReady, expect, questions, test } from './helpers'
+import { ASK_FAILED, ask, askReady, expect, phaseReport, questions, test } from './helpers'
 import { FIXTURE_DIR, FIXTURE_JSON, SMART_HTML } from './paths'
 
 // A retry must not hide a readiness time over budget (a slow first run passing on its second): no retries here.
@@ -27,9 +27,12 @@ const accepted = (labelled: string[], ids: string[]): boolean => ids.some((id) =
 })
 
 test('smart Ask is ready within 6 s and finds the right part for plain questions', async ({ open }, info) => {
-  const o = await open(SMART_HTML)
+  const o = await open(SMART_HTML, { phases: true })
   const ready = await askReady(o.page)
-  info.annotations.push({ type: 'ask-ready', description: `${info.project.name}: ${ready.state} at ${Math.round(ready.at)} ms` })
+  // Printed, so a run's log shows where the time to ready went whether or not it is over budget.
+  const phases = await phaseReport(o.page, ready.at)
+  console.log(`ask-ready ${info.project.name}: ${ready.state} at ${Math.round(ready.at)} ms | ${phases}`)
+  info.annotations.push({ type: 'ask-ready', description: `${info.project.name}: ${ready.state} at ${Math.round(ready.at)} ms | ${phases}` })
   if (SMART_BROWSERS.has(info.project.name)) {
     expect(ready.state).toBe('smart')
     expect(ready.at).toBeLessThan(READY_BUDGET_MS)
