@@ -218,8 +218,8 @@ export async function sweepStaleIntegrationTemps(root: string, now: number = Dat
     let names: unknown
     try { names = await fsp.readdir(dir) } catch { continue } // not made yet
     if (!Array.isArray(names)) continue // not a listing: nothing here to sweep, and the sweep still never rejects
-    for (const name of names as string[]) {
-      if (!bases.some((b) => isTempOf(name, b))) continue
+    for (const name of names as unknown[]) {
+      if (typeof name !== 'string' || !bases.some((b) => isTempOf(name, b))) continue // not a name: nothing to sweep
       const p = join(dir, name)
       try {
         if (now - (await fsp.stat(p)).mtimeMs < STALE_TEMP_MS) continue
@@ -251,7 +251,8 @@ export function ensureIntegrationScriptAsync(
     try {
       const known = integrationScriptState[file.name]
       const p = known ?? join(app.getPath('userData'), file.name)
-      if (!tempSweep) tempSweep = sweepStaleIntegrationTemps(app.getPath('userData'))
+      // Never awaited by this job: a sweep that somehow rejected would be an unhandled rejection, so it answers [].
+      if (!tempSweep) tempSweep = sweepStaleIntegrationTemps(app.getPath('userData')).catch(() => [])
       const set = integrationFileSet(file, p) // zsh's .zshenv brings three siblings; every other shell one file
       let present = false
       // The job just ahead in the queue recorded this file a moment ago (terminals restored at start-up queue up
