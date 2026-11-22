@@ -26,7 +26,6 @@
  * The fixture projects, the launch (labelling off, software GL) and the Add Terminal dialog come from
  * e2e/helpers/world.ts, which e2e/world-export.spec.ts shares.
  */
-import { execFileSync } from 'node:child_process'
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { makeRepo, PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteType, removeDirs, expectPaneOpens } from './helpers/world'
@@ -596,18 +595,6 @@ test.describe.serial('Lumopolis in the real app', () => {
     console.log(`[typing while compiling, frames] page frames during compiles ${rafOf(true)}; with none running ${rafOf(false)}`)
     console.log(`[typing while compiling, page] page timer lateness during compiles ${lagOf(pageDiag.lag.filter((x) => pageIn(x[0])).map((x) => x[1]))}, with none running ${lagOf(pageDiag.lag.filter((x) => !pageIn(x[0])).map((x) => x[1]))}; during ${compileMs.toFixed(0)} ms of compiles ${longOf(true)}; with none running ${longOf(false)}; during compiles ${framesOf(true)}; with none running ${framesOf(false)}`)
     console.log(`[typing while compiling, main] ${cores} cores; main timer lateness during compiles ${lagOf(diag.lag.filter((x) => inRun(x[0])).map((x) => x[1]))}, with none running ${lagOf(diag.lag.filter((x) => !inRun(x[0])).map((x) => x[1]))}; Electron CPU during compiles ${cpuOf(true)}; with none running ${cpuOf(false)}`)
-    // On a CI runner only (macOS and Linux, never a developer's machine): the runner's busiest processes as the
-    // compiles end, so a machine that is full while Electron uses little of it shows what else holds the cores.
-    if (process.env.CI && process.platform !== 'win32') {
-      try {
-        const args = process.platform === 'darwin' ? ['-Ao', 'pcpu,pid,ppid,etime,comm', '-r'] : ['-eo', 'pcpu,pid,ppid,etime,comm', '--sort=-pcpu']
-        const out = execFileSync('ps', args, { encoding: 'utf8', timeout: 10_000 })
-        const rows = out.split('\n').slice(0, 16).map((l) => `  ${l.slice(0, 160)}`)
-        console.log(`[typing while compiling, runner] busiest processes:\n${rows.join('\n')}`)
-      } catch (e) {
-        console.log(`[typing while compiling, runner] ps failed: ${String(e)}`)
-      }
-    }
     expect(r.compiling, 'the compiles were still running after 60 s of typing').toBe(false)
     expect(r.compileError ?? null).toBeNull()
     // Only keys pressed while a compile ran count: that leaves out the warm-up, the gaps between

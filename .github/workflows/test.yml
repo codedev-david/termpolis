@@ -774,6 +774,13 @@ jobs:
       - name: Fix spawn-helper permissions (macOS)
         run: |
           find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
+      # A fresh macOS runner spends the whole job indexing its disk for Spotlight (mds_stores, mds and the
+      # mdworkers measured at most of a core of the 3), and the specs' own projects and worlds feed it more.
+      # The typing e2e then waits for CPU the app is not using, so indexing is off for these specs.
+      - name: Turn off Spotlight indexing (macOS runner)
+        run: |
+          sudo mdutil -a -i off || true
+          mdutil -a -s || true
       # The step's timeout sits under the job's, so the uploads below still run when it runs out.
       - name: Lumopolis world specs (macOS)
         timeout-minutes: 50
