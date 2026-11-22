@@ -447,16 +447,19 @@ test.describe.serial('Lumopolis in the real app', () => {
     await app.evaluate(({ app: eapp, ipcMain, BrowserWindow }) => {
       const s = { lag: [] as number[][], cpu: [] as { t: number; p: { k: string; c: number }[] }[], writes: [] as number[], out: [] as [number, string][], stop: () => {} }
       ;(globalThis as unknown as { __mainDiag: typeof s }).__mainDiag = s
-      const onWrite = (_e: unknown, p: { data?: unknown }): void => { if (typeof p?.data === 'string' && /^[a-z]$/.test(p.data)) s.writes.push(Date.now()) }
+      // Monotonic epoch ms, as the page's timeOrigin + now(). Date.now() can drift from the page's monotonic clock
+      // while the system's time sync adjusts it: on one macOS run it put the page 60 to 80 ms behind main.
+      const clock = (): number => performance.timeOrigin + performance.now()
+      const onWrite = (_e: unknown, p: { data?: unknown }): void => { if (typeof p?.data === 'string' && /^[a-z]$/.test(p.data)) s.writes.push(clock()) }
       ipcMain.on('terminal:write', onWrite)
       const wc = BrowserWindow.getAllWindows()[0].webContents
       const send = wc.send
       wc.send = function (channel: string, ...args: unknown[]) {
-        if (channel === 'terminal:data' && typeof args[1] === 'string') s.out.push([Date.now(), args[1]])
+        if (channel === 'terminal:data' && typeof args[1] === 'string') s.out.push([clock(), args[1]])
         return send.call(this, channel, ...args)
       }
-      let last = Date.now()
-      const lagTimer = setInterval(() => { const now = Date.now(); s.lag.push([now, now - last - 10]); last = now }, 10)
+      let last = clock()
+      const lagTimer = setInterval(() => { const now = clock(); s.lag.push([now, now - last - 10]); last = now }, 10)
       eapp.getAppMetrics()
       // The whole machine's busy share (all processes, not only Electron's) from the cores' own counters.
       type Cpu = { times: { user: number; nice: number; sys: number; idle: number; irq: number } }
@@ -468,7 +471,7 @@ test.describe.serial('Lumopolis in the real app', () => {
         const total = now[1] - prevTicks[1]
         const machine = os && total > 0 ? 100 * (1 - (now[0] - prevTicks[0]) / total) * os.cpus().length : -1
         prevTicks = now
-        s.cpu.push({ t: Date.now(), p: [...eapp.getAppMetrics().map((m) => ({ k: m.name ? `${m.type}:${m.name}` : m.type, c: m.cpu.percentCPUUsage })), { k: 'machine', c: machine }] })
+        s.cpu.push({ t: clock(), p: [...eapp.getAppMetrics().map((m) => ({ k: m.name ? `${m.type}:${m.name}` : m.type, c: m.cpu.percentCPUUsage })), { k: 'machine', c: machine }] })
       }, 250)
       s.stop = () => { clearInterval(lagTimer); clearInterval(cpuTimer); ipcMain.removeListener('terminal:write', onWrite); wc.send = send }
     })
@@ -543,8 +546,8 @@ test.describe.serial('Lumopolis in the real app', () => {
       const top = Object.entries(by).sort((p, q) => q[1] - p[1]).slice(0, 4).map(([k, d]) => `${k} ${d.toFixed(0)} ms`).join(', ')
       return `${xs.length} long frames, ${xs.reduce((a, x) => a + x.d, 0).toFixed(0)} ms in all (rendering ${xs.reduce((a, x) => a + x.render, 0).toFixed(0)} ms, blocking ${xs.reduce((a, x) => a + x.blocking, 0).toFixed(0)} ms), longest ${Math.max(...xs.map((x) => x.d)).toFixed(0)} ms; scripts ${top || 'none'}`
     }
-    // The page's clock as epoch ms: timeOrigin + now(), corrected by its offset from Date.now() at the end.
-    const { origin, cores } = await page.evaluate(() => ({ origin: Date.now() - performance.now(), cores: navigator.hardwareConcurrency }))
+    // The page's clock as epoch ms: its timeOrigin + now(), the same monotonic clock main stamps with.
+    const { origin, cores } = await page.evaluate(() => ({ origin: performance.timeOrigin, cores: navigator.hardwareConcurrency }))
     const inRun = (t: number): boolean => r.runs.some((w) => t >= origin + w.start && t < origin + w.end)
     const lagOf = (xs: number[]): string => {
       if (!xs.length) return 'none'
