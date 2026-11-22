@@ -30,10 +30,16 @@ function walk(dir: string): string[] {
   return out
 }
 
+// A source file's text with its line breaks as \n. A Windows checkout (core.autocrlf) gives the runner CRLF files, and
+// the patterns below spell line breaks as \n: read raw, `\{\n` never matches `{\r\n` there and the guard reports a seam
+// that is wired as broken. Every file this guard reads goes through here.
+const lf = (text: string): string => text.replace(/\r\n?/g, '\n')
+const source = (file: string): string => lf(readFileSync(file, 'utf8'))
+
 function channels(files: string[], re: RegExp): Map<string, string> {
   const found = new Map<string, string>()
   for (const f of files) {
-    const src = readFileSync(f, 'utf8')
+    const src = source(f)
     for (const m of src.matchAll(re)) {
       if (!found.has(m[1])) found.set(m[1], f.replace(/\\/g, '/').split('/src/')[1] ?? f)
     }
@@ -52,8 +58,12 @@ const listened = channels(walk(join(SRC, 'preload')), /ipcRenderer\.on\(\s*'([^'
 // (deps.send(ACCOUNTS_IPC.terminalAccount, …) in accountsIpc.ts), through the `send` index.ts
 // gives registerAccountsIpc. Once that `send` is webContents.send, each counts as sent under the
 // name it stands for.
-const registration = /registerAccountsIpc\(ipcMain, \{([\s\S]*?)\n\}\)/.exec(readFileSync(join(SRC, 'main', 'index.ts'), 'utf8'))
-const accountsSendReachesRenderer = !!registration && /\n\s*send: \(channel, payload\) => \{ mainWindow\?\.webContents\.send\(channel, payload\) \},/.test(registration[1])
+const indexSource = source(join(SRC, 'main', 'index.ts'))
+const accountsReach = (text: string): boolean => {
+  const registration = /registerAccountsIpc\(ipcMain, \{([\s\S]*?)\n\}\)/.exec(lf(text))
+  return !!registration && /\n\s*send: \(channel, payload\) => \{ mainWindow\?\.webContents\.send\(channel, payload\) \},/.test(registration[1])
+}
+const accountsSendReachesRenderer = accountsReach(indexSource)
 if (accountsSendReachesRenderer) {
   for (const [key, file] of channels(walk(join(SRC, 'main')), /\bsend(?:\?\.)?\(\s*ACCOUNTS_IPC\.(\w+)/g)) {
     const channel = (ACCOUNTS_IPC as Record<string, string>)[key]
@@ -64,9 +74,12 @@ if (accountsSendReachesRenderer) {
 // The Lumopolis export sends its progress the same way (deps.send('world:export-progress', …) in world/exportIpc.ts),
 // through the `send` index.ts gives registerWorldExportIpc: once that `send` is webContents.send on a live window,
 // each channel exportIpc.ts sends counts as sent.
-const exportRegistration = /registerWorldExportIpc\(ipcMain, \{([\s\S]*?)\n\}\)/.exec(readFileSync(join(SRC, 'main', 'index.ts'), 'utf8'))
-const exportSendReachesRenderer = !!exportRegistration &&
-  /\n\s*send: \(channel, payload\) => \{\n\s*const win = mainWindow\n\s*if \(win && !win\.isDestroyed\(\)\) win\.webContents\.send\(channel, payload\)\n\s*\},/.test(exportRegistration[1])
+const exportReach = (text: string): boolean => {
+  const registration = /registerWorldExportIpc\(ipcMain, \{([\s\S]*?)\n\}\)/.exec(lf(text))
+  return !!registration &&
+    /\n\s*send: \(channel, payload\) => \{\n\s*const win = mainWindow\n\s*if \(win && !win\.isDestroyed\(\)\) win\.webContents\.send\(channel, payload\)\n\s*\},/.test(registration[1])
+}
+const exportSendReachesRenderer = exportReach(indexSource)
 if (exportSendReachesRenderer) {
   for (const [channel, file] of channels([join(SRC, 'main', 'world', 'exportIpc.ts')], /\bdeps\.send\(\s*'([^']+)'/g)) {
     if (!sent.has(channel)) sent.set(channel, file)
@@ -89,6 +102,15 @@ describe('IPC channel sync (main <-> preload)', () => {
   it('sends the export progress to the renderer: index.ts gives registerWorldExportIpc webContents.send', () => {
     expect(exportSendReachesRenderer).toBe(true)
     expect(sent.get('world:export-progress')).toBe('main/world/exportIpc.ts')
+  })
+
+  it('reads index.ts the same whatever its line breaks (a Windows checkout gives CRLF)', () => {
+    const asCrlf = indexSource.replace(/\n/g, '\r\n')
+    expect(asCrlf).toContain('\r\n') // the copy really is CRLF
+    expect(exportReach(indexSource)).toBe(true)
+    expect(exportReach(asCrlf)).toBe(true)
+    expect(accountsReach(indexSource)).toBe(true)
+    expect(accountsReach(asCrlf)).toBe(true)
   })
 
   it('every channel main sends has a listener in preload (no dead bridges)', () => {
