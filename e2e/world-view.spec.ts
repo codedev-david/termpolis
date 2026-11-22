@@ -379,21 +379,24 @@ test.describe.serial('Lumopolis in the real app', () => {
     const lineKeys = Math.min(LINE_KEYS, cols - ((prompt.length + 1) % cols) - marker.length - MARGIN_COLS)
     expect(lineKeys, `too little room on the shell line: ${JSON.stringify({ cols, prompt })}`).toBeGreaterThanOrEqual(WARMUP_KEYS)
 
-    // A person typing has the app in front. Playwright's keys reach the page without making the window the
-    // key window, and on a macOS runner the app can sit behind others, where the OS runs its timers late
-    // (backgroundThrottling is already off, so this is the OS, not Chromium). So the app is brought to the front
-    // first, and its focus before and after is printed with the result.
+    // The window's focus before and after is printed with the result. On CI the app is also brought to the front
+    // first, so the runs stay comparable with the ones that tested whether a window behind others had its timers
+    // run late: it did not (the app was already frontmost in e6d9c45b and typing was just as slow; the cause was
+    // the runner's Spotlight indexing). Never on a developer's machine, where it would take the keyboard from
+    // whatever they are typing in, and their keys would land in the measured terminal.
     const focusState = (): Promise<string> => app.evaluate(({ app: eapp, BrowserWindow }) => {
       const w = BrowserWindow.getAllWindows()[0]
       return `window focused ${w.isFocused()}, visible ${w.isVisible()}, app hidden ${process.platform === 'darwin' ? eapp.isHidden() : false}`
     })
     const focusBefore = `${await focusState()}, page ${await page.evaluate(() => `${document.visibilityState} focus ${document.hasFocus()}`)}`
-    await app.evaluate(({ app: eapp, BrowserWindow }) => {
-      if (process.platform === 'darwin') eapp.focus({ steal: true })
-      const w = BrowserWindow.getAllWindows()[0]
-      w.show()
-      w.focus()
-    })
+    if (process.env.CI) {
+      await app.evaluate(({ app: eapp, BrowserWindow }) => {
+        if (process.platform === 'darwin') eapp.focus({ steal: true })
+        const w = BrowserWindow.getAllWindows()[0]
+        w.show()
+        w.focus()
+      })
+    }
     await page.evaluate(() => {
       const visible = [...document.querySelectorAll<HTMLTextAreaElement>('.xterm-helper-textarea')].filter((t) => t.closest('.xterm')?.getClientRects().length)
       visible[visible.length - 1]?.focus()

@@ -91,6 +91,9 @@ export interface WorldAppOptions {
   videoDir?: string
   /** Called with the first window before it loads, so a spec can listen from the start. */
   onPage?: (page: Page) => void
+  /** Launches with the GPU and its software fallback off, so the page has no WebGL and the pane shows its 2D
+   *  list, as on a machine without WebGL. */
+  noWebGL?: boolean
 }
 
 export interface WorldApp {
@@ -114,10 +117,11 @@ export async function launchWorldApp(opts: WorldAppOptions = {}): Promise<WorldA
     args: [
       path.resolve('out/main/index.js'),
       `--user-data-dir=${userDataDir}`,
-      // Software GL (SwiftShader), so a runner with no GPU still gets a WebGL context.
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
-      '--ignore-gpu-blocklist',
+      // Software GL (SwiftShader), so a runner with no GPU still gets a WebGL context; or, for noWebGL, no GPU
+      // and no software fallback, as on a machine without WebGL.
+      ...(opts.noWebGL
+        ? ['--disable-gpu', '--disable-software-rasterizer']
+        : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist']),
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
     ],
     env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_SMOKE_SKIP_PICKERS: '1', TERMPOLIS_TEST_WORLD_PROBE: '1', ...opts.env },

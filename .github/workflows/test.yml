@@ -539,6 +539,16 @@ jobs:
         env:
           TERMPOLIS_E2E_PREBUILT: '1'
         run: xvfb-run --auto-servernum npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list
+      # e2e/world-platform.spec.ts again with the GPU and its software fallback off, so the pane's 2D list (what a machine without
+      # WebGL gets) runs in CI: every runner here draws WebGL on SwiftShader. On the shortest shard only, a few
+      # minutes. --output keeps Playwright from clearing test-results/, which holds the suite's own results.
+      - name: Lumopolis without WebGL (the 2D list)
+        if: matrix.shard == 1
+        timeout-minutes: 6
+        env:
+          TERMPOLIS_E2E_PREBUILT: '1'
+          TERMPOLIS_E2E_WORLD_2D: '1'
+        run: xvfb-run --auto-servernum npx playwright test e2e/world-platform.spec.ts --reporter=list --output=test-results/world-2d
       - name: Upload failure traces
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -546,8 +556,10 @@ jobs:
           name: playwright-traces-full-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
-      # The Lumopolis screenshots and video (e2e/world-platform.spec.ts, e2e/world-visual.spec.ts), kept two weeks.
-      # Only the shard that ran those specs has them; e2e-lumopolis-linux-shots merges the shards into one artifact.
+      # The Lumopolis screenshots and video (e2e/world-platform.spec.ts, its 2D run, e2e/world-visual.spec.ts), kept
+      # two weeks, as lumopolis-shots-linux-shard<N> from each shard that ran one of them. Not merged into one
+      # artifact: the merge action can't overwrite, so a re-run of a failed shard would fail on the merged name.
+      # overwrite lets a re-run shard replace its own.
       - name: Upload Lumopolis screenshots
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -555,23 +567,11 @@ jobs:
           name: lumopolis-shots-linux-shard${{ matrix.shard }}
           path: |
             test-results/lumopolis-shots/
+            test-results/lumopolis-shots-2d/
             test-results/world-visual/
           if-no-files-found: ignore
           retention-days: 14
-
-  # The Linux Lumopolis screenshots as one artifact, named for the OS like the macOS job's.
-  e2e-lumopolis-linux-shots:
-    needs: e2e-full
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/upload-artifact/merge@v4
-        with:
-          name: lumopolis-shots-linux
-          pattern: lumopolis-shots-linux-shard*
-          delete-merged: true
-          retention-days: 14
+          overwrite: true
 
   # THE Windows e2e gate: the whole e2e directory again, blocking, sharded 4 ways like e2e-full.
   #
@@ -779,7 +779,7 @@ jobs:
       # the indexer never reached in those runs, so this changes the runner only, not what the app does.
       - name: Turn off Spotlight indexing (macOS runner)
         run: |
-          sudo mdutil -a -i off || true
+          sudo -n mdutil -a -i off || true
           mdutil -a -s || true
       # The step's timeout sits under the job's, so the uploads below still run when it runs out.
       - name: Lumopolis world specs (macOS)
@@ -795,6 +795,7 @@ jobs:
             test-results/world-visual/
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4
@@ -802,3 +803,4 @@ jobs:
           name: playwright-traces-lumopolis-macos
           path: test-results/
           retention-days: 7
+          overwrite: true

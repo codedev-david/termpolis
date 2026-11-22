@@ -133,11 +133,12 @@ async function openOffline(file: string): Promise<{ win: Page; foreign: string[]
 }
 
 test.describe.serial('Lumopolis export in the real app', () => {
-  // Test 0's own waits add up to 90 s (30 + 30 + 30) besides the terminal and the palette, so the budget covers them
-  // and a slow step fails at that step, with its own message.
   test.setTimeout(PROOF ? 240_000 : 120_000)
 
   test('0. Lumopolis opens on the project and draws its world', async () => {
+    // This test's own waits add up to 150 s (expectPaneOpens' 60 s for the pane, then 30 + 30 + 30) besides the
+    // terminal and the palette, so its budget covers them and a slow step fails at that step, with its own message.
+    test.setTimeout(PROOF ? 300_000 : 180_000)
     await createTerminal(page, 'Notes', project)
     await paletteType(page, 'Open Lumopolis')
     await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()

@@ -17,6 +17,11 @@
  *   9. A design world (Home, Design something new, the mock agent's three planned parts).
  *  10. The renderer logged no console error.
  *
+ * TERMPOLIS_E2E_WORLD_2D=1 runs the same spec with the GPU and its software fallback off, so the 2D list's branches run where
+ * every runner has WebGL on SwiftShader: test 1 then fails unless the list shows, its shots go to
+ * test-results/lumopolis-shots-2d/, and the shell command (test 8, which doesn't depend on the renderer) is left
+ * to the WebGL run. CI runs it once on Linux.
+ *
  * Labelling is off (launchWorldApp), the design draft runs e2e/mocks/mock-claude.cjs (as in
  * lumopolis-sources.spec.ts), and the launch is the shared one: software GL switches, and on Linux the
  * same --no-sandbox the other world specs pass.
@@ -30,13 +35,17 @@ import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
 import { PROJECT_FILES, launchWorldApp, createTerminal as addTerminal, paletteType, removeDirs } from './helpers/world'
 
 const PLATFORM = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
-const SHOTS = path.resolve('test-results/lumopolis-shots')
+/** The 2D run: no WebGL, as on a machine without it. */
+const FORCED_2D = process.env.TERMPOLIS_E2E_WORLD_2D === '1'
+const SHOTS = path.resolve(FORCED_2D ? 'test-results/lumopolis-shots-2d' : 'test-results/lumopolis-shots')
 const VIDEO_DIR = path.join(SHOTS, 'video')
 /** The video needs Playwright's ffmpeg. The e2e-windows job installs none (it runs no \`playwright install\`),
  *  and there a recording launch never loaded its window (30 s, twice); the macOS and Linux jobs install it. */
 const RECORD = !(process.platform === 'win32' && process.env.CI)
 const DESCRIPTION = 'A small pet shop'
 const PROJECT_NAME = 'My Project'
+/** A second project beside the first, also under the path with spaces, which only the quoted folder in test 8 opens. */
+const OTHER_NAME = 'Other Project'
 /** Two files whose names differ only in case, written only where the file system keeps them apart (Linux). */
 const CASE_PAIR = ['src/lib/Util.ts', 'src/lib/util.ts']
 const CASE_SENSITIVE = process.platform === 'linux'
@@ -46,6 +55,7 @@ let page: Page
 let userDataDir: string
 let base: string
 let project: string
+let other: string
 let shimDir: string
 let pickFile: string
 let video: string | undefined
@@ -82,6 +92,15 @@ test.beforeAll(async () => {
   }
   execFileSync('git', ['init', '-q'], { cwd: project })
   execFileSync('git', ['add', '-A'], { cwd: project })
+  // Its own name, so a `lumopolis` that ignored the folder it was given and reopened the last world would show
+  // "My Project" and fail.
+  other = path.join(base, OTHER_NAME)
+  for (const [rel, text] of Object.entries(PROJECT_FILES)) {
+    fs.mkdirSync(path.dirname(path.join(other, rel)), { recursive: true })
+    fs.writeFileSync(path.join(other, rel), text)
+  }
+  execFileSync('git', ['init', '-q'], { cwd: other })
+  execFileSync('git', ['add', '-A'], { cwd: other })
 
   // The design draft's hidden agent run, as in lumopolis-sources.spec.ts: on Windows the mock as a
   // PowerShell script first on PATH; elsewhere e2e/test-shims/claude, which e2eShimEnv puts on PATH.
@@ -97,6 +116,7 @@ test.beforeAll(async () => {
   fs.rmSync(VIDEO_DIR, { recursive: true, force: true })
   const launched = await launchWorldApp({
     ...(RECORD ? { videoDir: VIDEO_DIR } : {}),
+    ...(FORCED_2D ? { noWebGL: true } : {}),
     env: {
       ...shims,
       PATH: `${shimDir}${path.delimiter}${shims.PATH}`,
@@ -235,6 +255,7 @@ test.describe.serial('Lumopolis on this platform', () => {
     await expect(canvas().or(fallback())).toBeVisible({ timeout: 120_000 })
     const drawnAt = Date.now() - clicked
     mode = (await fallback().count()) > 0 ? '2d' : 'webgl'
+    if (FORCED_2D) expect(mode, 'the 2D run drew a WebGL canvas: WebGL was not turned off').toBe('2d')
     note(`first open: something on screen ${shown} ms after the click, the pane ${paneAt} ms, its project named ${namedAt} ms, the map drawn ${drawnAt} ms`)
 
     // The GL renderer Chromium gives a page here: SwiftShader names itself in its renderer string.
@@ -252,7 +273,7 @@ test.describe.serial('Lumopolis on this platform', () => {
       return info
     })
     const swiftshader = !!gl && /swiftshader/i.test(`${gl.renderer} ${gl.vendor}`)
-    const record = { platform: PLATFORM, mode, swiftshader, gl }
+    const record = { platform: PLATFORM, mode, forced2d: FORCED_2D, swiftshader, gl }
     fs.writeFileSync(path.join(SHOTS, 'renderer.json'), `${JSON.stringify(record, null, 2)}\n`)
     note(mode === '2d' ? `2D list (no WebGL; GL: ${gl ? gl.renderer : 'none'})` : `WebGL${swiftshader ? ' on SwiftShader' : ''}: ${gl ? `${gl.renderer} (${gl.version})` : 'unknown'}`)
 
@@ -263,10 +284,13 @@ test.describe.serial('Lumopolis on this platform', () => {
       await page.waitForTimeout(1500) // the camera's first framing
       await shot('01-opened')
     } else {
-      // The 2D list: every building listed, and one opens its card.
+      // The 2D list: every building drawn once on its flat map and listed once below it, and one opens its card.
       await shot('00-2d-fallback')
-      for (const b of doc.buildings) await expect(fallback().locator(`[data-kind="building"][data-id="${b.id}"]`)).toHaveCount(1)
-      await fallback().locator(`[data-kind="building"][data-id="${doc.buildings[0].id}"]`).click()
+      for (const b of doc.buildings) {
+        await expect(fallback().locator(`svg rect[data-kind="building"][data-id="${b.id}"]`), `${b.id} on the flat map`).toHaveCount(1)
+        await expect(fallback().locator(`li[data-kind="building"][data-id="${b.id}"]`), `${b.id} in the list`).toHaveCount(1)
+      }
+      await fallback().locator(`li[data-kind="building"][data-id="${doc.buildings[0].id}"]`).click()
       await expect(card()).toBeVisible()
       await expect(card().locator('h3').first()).toHaveText(doc.buildings[0].name)
       await shot('01-opened')
@@ -386,6 +410,7 @@ test.describe.serial('Lumopolis on this platform', () => {
 
   test('8. the lumopolis command works in bash and zsh, with spaces in the folder', async () => {
     test.skip(process.platform === 'win32', 'lumopolis-openers.spec.ts covers PowerShell on Windows')
+    test.skip(FORCED_2D, 'the WebGL run covers the shell command, which does not depend on the renderer')
     test.setTimeout(150_000)
     if (await pane().count()) {
       await page.locator('[data-testid="world-close"]').click()
@@ -445,10 +470,11 @@ test.describe.serial('Lumopolis on this platform', () => {
       await expect(projectName()).toHaveText(PROJECT_NAME, { timeout: 30_000 })
       await closePane()
 
-      // The project's own folder, quoted, from another folder: the spaces reach the pane whole.
-      await typeIn(id, `cd / && lumopolis '${project}'`)
+      // Another project's folder, quoted, from another folder: the spaces reach the pane whole, and the pane
+      // maps the folder given, not the project it showed last.
+      await typeIn(id, `cd / && lumopolis '${other}'`)
       await expect(pane()).toBeVisible({ timeout: 20_000 })
-      await expect(projectName()).toHaveText(PROJECT_NAME, { timeout: 30_000 })
+      await expect(projectName()).toHaveText(OTHER_NAME, { timeout: 30_000 })
       const shown = await text(id)
       expect(shown).not.toContain('7377')
       expect(shown).not.toMatch(/lumopolis;[0-9a-f]{32}/)
