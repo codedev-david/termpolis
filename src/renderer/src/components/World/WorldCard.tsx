@@ -1,7 +1,7 @@
 // The detail card over the Lumopolis map, top left. Its HTML comes only from the engine's card builders
 // (buildingCard, edgeCard, the tour caption), which escape every string from the world document,
 // so it is safe to set as innerHTML. Never pass raw document strings here.
-import { useEffect, useState, type FormEvent, type MouseEvent, type Ref } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type CSSProperties, type MouseEvent, type Ref } from 'react'
 import type { Evidence } from '../../../../shared/world/types'
 import { cleanRuntimeNames, MAX_RUNTIME_NAMES } from '../../../../shared/world/runtimeNames'
 import { CARD_INSET_PX, CARD_WIDTH_PX, useUiZoom } from './worldPane'
@@ -53,7 +53,7 @@ export interface WorldCardProps {
  */
 const CARD_CSS = `
 .world-card{display:flex;flex-direction:column;overflow:hidden;background:rgba(8,12,22,.78);backdrop-filter:blur(10px);border:1px solid rgba(148,163,184,.18);border-radius:12px;padding:12px 6px 12px 14px;font-size:13px;line-height:1.45;color:#e2e8f0;box-shadow:0 8px 24px rgba(0,0,0,.35)}
-.world-card-close{position:absolute;top:8px;right:10px;z-index:2;padding:2px 7px;border-radius:6px;color:#94a3b8;background:transparent;border:0;cursor:pointer}
+.world-card-close{position:absolute;top:8px;right:calc(10px + var(--world-card-gutter, 0px));z-index:2;padding:2px 7px;border-radius:6px;color:#94a3b8;background:transparent;border:0;cursor:pointer}
 .world-card-close:hover{color:#e0f2fe;background:rgba(56,189,248,.18)}
 .world-card-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-wrap:anywhere;padding-right:8px;scrollbar-width:thin;scrollbar-color:rgba(125,211,252,.55) rgba(148,163,184,.12)}
 .world-card-body:focus-visible{outline:1px solid rgba(125,211,252,.6);outline-offset:2px;border-radius:4px}
@@ -115,6 +115,20 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
   // The service-names editor: the part it edits and what is typed. A new card (another part, or the saved one) closes it.
   const [edit, setEdit] = useState<{ id: string; text: string; was: string; error: boolean } | null>(null)
   useEffect(() => setEdit(null), [html])
+  // A capped card's scrollbar takes the body's right edge, where the close button sits: the button moves left by the
+  // scrollbar's measured width (0 with an overlay scrollbar or none), so it is never drawn over the scrollbar.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [gutter, setGutter] = useState(0)
+  useLayoutEffect(() => {
+    const body = bodyRef.current as HTMLDivElement
+    const measure = (): void => setGutter(body.offsetWidth - body.clientWidth)
+    measure()
+    // The scrollbar comes and goes as the card meets its cap; its width is taken from the body's content box.
+    if (typeof ResizeObserver !== 'function') return
+    const watch = new ResizeObserver(measure)
+    watch.observe(body)
+    return () => watch.disconnect()
+  }, [html])
   const save = (e: FormEvent): void => {
     e.preventDefault()
     const typed = (edit as { id: string; text: string; was: string }).text.split(',').map((n) => n.trim()).filter((n) => n !== '')
@@ -164,7 +178,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
       data-testid="world-card"
       className="world-card"
       // Top left over the map, where the prototype's inspector sits (the legend is top right).
-      style={{ position: 'absolute', top: CARD_INSET_PX, left: CARD_INSET_PX, width: CARD_WIDTH_PX, maxWidth: `calc(100% - ${CARD_INSET_PX * 2}px)`, maxHeight: maxHeight === null ? 'calc(100% - 110px)' : `min(${maxHeight}px, calc(100% - 110px))`, boxSizing: 'border-box', zIndex: 3, ...zoom, ...(opening ? { pointerEvents: 'none' as const } : {}) }}
+      style={{ position: 'absolute', top: CARD_INSET_PX, left: CARD_INSET_PX, width: CARD_WIDTH_PX, maxWidth: `calc(100% - ${CARD_INSET_PX * 2}px)`, maxHeight: maxHeight === null ? 'calc(100% - 110px)' : `min(${maxHeight}px, calc(100% - 110px))`, boxSizing: 'border-box', zIndex: 3, ...zoom, ...(opening ? { pointerEvents: 'none' as const } : {}), ...(gutter > 0 ? { '--world-card-gutter': `${gutter}px` } : {}) } as CSSProperties}
     >
       <style>{CARD_CSS}</style>
       <button
@@ -176,6 +190,7 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
       ><i className="fa-solid fa-xmark" aria-hidden="true" /></button>
       {/* Its own scroller, reachable by Tab, so the arrow keys and Page Up/Down scroll a capped card. */}
       <div
+        ref={bodyRef}
         className="world-card-body"
         data-testid="world-card-body"
         role="region"

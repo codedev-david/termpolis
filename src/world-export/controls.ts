@@ -5,6 +5,7 @@
 // browser. A technology chip (data-tech) only opens that term's glossary card, itself read-only.
 import { buildingCard, DEFAULT_LAYERS, edgeCard, escapeHtml as esc, renderFallback, techCard, THEMES, usesTech, type WorldViewer } from '../renderer/src/world/engine'
 import type { ThemeName } from '../renderer/src/world/engine'
+import { MIN_FREE_PX } from '../renderer/src/world/engine/viewMath'
 import type { AskKind } from '../shared/world/askIndex'
 import { REMOVALS_ID } from '../shared/world/designPatch'
 import type { PageMeta } from '../shared/world/exportMeta'
@@ -61,8 +62,8 @@ html{font-size:${BASE_PX}px}
 .wx-map2d ul{padding-left:${r(18)}}
 .wx-panel{background:rgba(8,12,22,.82);backdrop-filter:blur(10px);border:1px solid rgba(148,163,184,.18);border-radius:${r(12)};color:#e2e8f0}
 .wx-card{position:absolute;top:${r(CARD_INSET)};left:${r(CARD_INSET)};width:${r(CARD_WIDTH)};max-width:calc(100% - ${r(CARD_INSET * 2)});max-height:calc(100% - var(--wx-low) - ${r(CARD_INSET)});display:flex;flex-direction:column;box-sizing:border-box;padding:${r(12)} ${r(6)} ${r(12)} ${r(14)};z-index:3}
-.wx-card-close{position:absolute;top:${r(8)};right:${r(10)};padding:${r(2)} ${r(7)};border:0;border-radius:${r(6)};background:transparent;color:#94a3b8;font:inherit;font-size:${r(16)};line-height:1.2;cursor:pointer}
-.wx-card-body{overflow-y:auto;min-height:0;padding-right:${r(8)};overflow-wrap:anywhere}
+.wx-card-close{position:absolute;top:${r(8)};right:calc(${r(10)} + var(--wx-card-gutter, 0px));padding:${r(2)} ${r(7)};border:0;border-radius:${r(6)};background:transparent;color:#94a3b8;font:inherit;font-size:${r(16)};line-height:1.2;cursor:pointer}
+.wx-card-body{overflow-y:auto;min-height:0;padding-right:${r(8)};overflow-wrap:anywhere;scrollbar-width:thin;scrollbar-color:rgba(125,211,252,.55) rgba(148,163,184,.12)}
 .wx-card-body h3{margin:0 0 ${r(4)};padding-right:${r(26)};font-size:${r(16)};font-weight:600;color:#f1f5f9}
 .wx-card-body h4{margin:${r(12)} 0 ${r(4)};font-size:${r(12)};font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#7dd3fc}
 .wx-card-body p{margin:${r(4)} 0}
@@ -91,6 +92,7 @@ html{font-size:${BASE_PX}px}
 .wx-ask-kind{flex:none;font-size:${r(12)};color:#7dd3fc}
 .wx-ask-first{display:block;font-size:${r(12)};color:#94a3b8}
 .wx-ask-caption{margin:${r(6)} 0 0;font-size:${r(12)};color:#94a3b8}
+.wx-ask[data-folded] .wx-ask-results,.wx-ask[data-folded] .wx-ask-none,.wx-ask[data-folded] .wx-ask-caption{display:none}
 .wx-toolbar{position:absolute;left:${r(CARD_INSET)};right:${r(CARD_INSET)};bottom:${r(CARD_INSET)};display:flex;flex-wrap:wrap;justify-content:space-between;gap:${r(6)} ${r(18)};align-items:center;padding:${r(6)} ${r(10)};z-index:2}
 .wx-tools{display:flex;flex-wrap:wrap;gap:${r(6)} ${r(12)};align-items:center}
 .wx-toolbar label{display:inline-flex;gap:${r(4)};align-items:center;font-size:${r(12)};white-space:nowrap}
@@ -166,6 +168,8 @@ export interface Page {
   attach(viewer: WorldViewer | null): void
   /** Opens what an Ask result names: a part's card, a term's card, or a tour. */
   pick(id: string, kind: AskKind): void
+  /** How the Ask box folds its answer away (AskBox.fold): a card opened on a page too narrow for both panels uses it. */
+  setAskFold(fold: () => void): void
 }
 
 const make = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] => {
@@ -232,6 +236,8 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
   const card = make('aside', 'wx-card wx-panel')
   card.setAttribute('aria-label', 'Lumopolis details')
   card.hidden = true
+  // Focusable from script: an Ask result folded away under the focus hands it to the card it opened.
+  card.tabIndex = -1
   const close = make('button', 'wx-card-close', '×')
   close.type = 'button'
   close.setAttribute('aria-label', 'Close')
@@ -270,6 +276,10 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     const low = toolbar.offsetHeight + inset * 2
     stage.style.setProperty('--wx-low', `${low}px`)
     stage.style.setProperty('--wx-top', `${askHost.offsetTop + askHost.offsetHeight + inset}px`)
+    // A capped card's scrollbar takes the body's right edge: the close button moves left by its width (0 when overlaid or none).
+    const gutter = cardBody.offsetWidth - cardBody.clientWidth
+    if (gutter > 0) card.style.setProperty('--wx-card-gutter', `${gutter}px`)
+    else card.style.removeProperty('--wx-card-gutter')
     if (!viewer) return
     viewer.setLabelScale(scale)
     // From WIDE_PX, not from three times the strip: between the two the Ask box still covers the right.
@@ -277,10 +287,23 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     viewer.setBottomReserve(low)
     viewer.setCardReserve(card.hidden ? 0 : card.offsetLeft + card.offsetWidth + inset, card.hidden ? 0 : card.offsetTop + card.offsetHeight + inset)
   }
+  let askFold = (): void => undefined
+  /**
+   * Whether the stage leaves no column MIN_FREE_PX wide between the open card and the Ask box (under 828 px at scale
+   * 1). There the framed part is drawn where the Ask box's answer hangs over the view: from WIDE_PX the framing gives
+   * up the box's strip for the card (freeArea), and below it never kept it.
+   */
+  const crowded = (): boolean => stage.clientWidth - card.offsetWidth - askHost.offsetWidth - CARD_INSET * scale * 4 < MIN_FREE_PX * scale
   const showCard = (html: string | null): void => {
     card.hidden = html === null || html === ''
     cardBody.innerHTML = card.hidden ? '' : (html as string)
     cardBody.scrollTop = 0
+    if (!card.hidden && crowded()) {
+      // The answer folds away so the part the card is about shows beside it; the focus, if it was on a result, goes to the card.
+      const onResult = askHost.contains(document.activeElement) && !(document.activeElement instanceof HTMLInputElement)
+      askFold()
+      if (onResult) card.focus({ preventScroll: true })
+    }
     layout()
   }
   /** Closes the card; in 3D the camera also flies back to the overview (as the app's close and Esc do). */
@@ -402,11 +425,13 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     layout()
   }
   window.addEventListener('resize', layout)
-  // A wrapping toolbar or a growing Ask box moves the strips the other panels keep clear of.
+  // A wrapping toolbar or a growing Ask box moves the strips the other panels keep clear of; a card meeting its cap
+  // gains a scrollbar (the body's content box narrows), which the close button moves clear of.
   if (typeof ResizeObserver === 'function') {
     const watch = new ResizeObserver(() => layout())
     watch.observe(toolbar)
     watch.observe(askHost)
+    watch.observe(cardBody)
   }
 
   const pick = (id: string, kind: AskKind): void => {
@@ -416,5 +441,5 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
     if (tour) playTour(tour)
   }
 
-  return { askHost, viewHost, showCard, attach, pick }
+  return { askHost, viewHost, showCard, attach, pick, setAskFold: (fold) => { askFold = fold } }
 }

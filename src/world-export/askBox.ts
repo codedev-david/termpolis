@@ -22,6 +22,12 @@ export interface AskBox {
   state(): AskState
   /** Settles once smart Ask is ready or has failed ('keyword' at once on a keyword-only page). Never rejects. */
   ready: Promise<AskState>
+  /**
+   * Folds the answer away (the results, the no-match line and the caption) down to the question, when the page needs
+   * the room for what was just opened. The question stays; clicking into it, typing or asking again brings the
+   * answer back. Nothing to fold (no question asked yet): nothing changes.
+   */
+  fold(): void
 }
 
 export const ASK_PLACEHOLDER = 'Ask about this project'
@@ -63,6 +69,12 @@ export function mountAskBox(host: HTMLElement, deps: AskBoxDeps): AskBox {
   box.append(form, status, results, none, caption)
   host.appendChild(box)
 
+  /** Folded (fold): the answer is hidden under the question until the box is used again. */
+  const unfold = (): void => box.removeAttribute('data-folded')
+  input.addEventListener('focus', unfold)
+  input.addEventListener('pointerdown', unfold)
+  input.addEventListener('input', unfold)
+
   const showState = (): void => {
     status.textContent = state === 'loading' ? ASK_LOADING : state === 'failed' ? ASK_FAILED : ''
     status.hidden = status.textContent === ''
@@ -71,6 +83,7 @@ export function mountAskBox(host: HTMLElement, deps: AskBoxDeps): AskBox {
   showState()
 
   const show = (hits: AskHit[]): void => {
+    unfold()
     results.textContent = ''
     none.hidden = hits.length > 0
     for (const hit of hits) {
@@ -122,5 +135,8 @@ export function mountAskBox(host: HTMLElement, deps: AskBoxDeps): AskBox {
       (s) => { smart = s; state = 'smart'; showState(); return state },
       () => { state = 'failed'; showState(); return state },
     )
-  return { state: () => state, ready }
+  const fold = (): void => {
+    if (results.childElementCount > 0 || !none.hidden) box.setAttribute('data-folded', '')
+  }
+  return { state: () => state, ready, fold }
 }

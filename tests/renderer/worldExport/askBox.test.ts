@@ -110,6 +110,34 @@ describe('mountAskBox', () => {
     expect(host.querySelector('.wx-ask-name')!.textContent).toBe('<img src=x onerror=alert(1)>')
   })
 
+  it('fold hides the answer under the question until the box is used again', async () => {
+    const { host, box, input, ask } = mount()
+    const section = host.querySelector('.wx-ask') as HTMLElement
+    box.fold() // nothing asked yet: nothing to fold
+    expect(section.hasAttribute('data-folded')).toBe(false)
+    await ask('memory')
+    box.fold()
+    expect(section.hasAttribute('data-folded')).toBe(true)
+    input.dispatchEvent(new Event('focus'))
+    expect(section.hasAttribute('data-folded')).toBe(false)
+    box.fold()
+    input.dispatchEvent(new Event('pointerdown'))
+    expect(section.hasAttribute('data-folded')).toBe(false)
+    box.fold()
+    input.dispatchEvent(new Event('input'))
+    expect(section.hasAttribute('data-folded')).toBe(false)
+    box.fold()
+    await ask('memory') // asking again shows the answer
+    expect(section.hasAttribute('data-folded')).toBe(false)
+  })
+
+  it('fold also folds a no-match answer away', async () => {
+    const { host, box, ask } = mount()
+    await ask('zzzz')
+    box.fold()
+    expect((host.querySelector('.wx-ask') as HTMLElement).hasAttribute('data-folded')).toBe(true)
+  })
+
   it('calls onPick with the id of the clicked result', async () => {
     const { host, ask, onPick } = mount()
     await ask('github')

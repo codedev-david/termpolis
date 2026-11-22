@@ -10,6 +10,49 @@ import { DEFAULT_LAYERS } from '../../../src/renderer/src/world/engine'
 const noop = { onTech: vi.fn(), onConfirm: vi.fn(), onEvidence: vi.fn() }
 
 describe('WorldCard', () => {
+  it('moves the close button left by the scrollbar a capped body shows, and watches the body for it', () => {
+    const observed: Element[] = []
+    let fire = (): void => undefined
+    const disconnect = vi.fn()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { fire = cb }
+      observe(el: Element): void { observed.push(el) }
+      disconnect(): void { disconnect() }
+    })
+    const widths = { offset: 320, client: 320 }
+    const spyO = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(() => widths.offset)
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => widths.client)
+    try {
+      const { unmount } = render(<WorldCard html="<h3>Store</h3>" onClose={() => {}} onOpen={() => {}} onTech={() => {}} onConfirm={() => {}} onEvidence={() => {}} />)
+      const card = screen.getByTestId('world-card')
+      expect(card.style.getPropertyValue('--world-card-gutter')).toBe('')
+      expect(observed).toEqual([screen.getByTestId('world-card-body')])
+      widths.client = 306
+      act(() => fire())
+      expect(card.style.getPropertyValue('--world-card-gutter')).toBe('14px')
+      unmount()
+      expect(disconnect).toHaveBeenCalled()
+    } finally {
+      spyO.mockRestore()
+      spyC.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('measures the scrollbar once where there is no ResizeObserver', () => {
+    vi.stubGlobal('ResizeObserver', undefined)
+    const spyO = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(() => 320)
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => 312)
+    try {
+      render(<WorldCard html="<h3>Store</h3>" onClose={() => {}} onOpen={() => {}} onTech={() => {}} onConfirm={() => {}} onEvidence={() => {}} />)
+      expect(screen.getByTestId('world-card').style.getPropertyValue('--world-card-gutter')).toBe('8px')
+    } finally {
+      spyO.mockRestore()
+      spyC.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('a chip calls onTech, Confirm calls onConfirm with the part and the claim text, evidence calls onEvidence', () => {
     const onTech = vi.fn()
     const onConfirm = vi.fn()

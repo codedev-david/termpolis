@@ -154,7 +154,7 @@ describe('buildPage: header and control set', () => {
     expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(24)
     expect(viewer.setCardReserve).toHaveBeenLastCalledWith(0, 0)
     Object.defineProperty(q('.wx-toolbar'), 'offsetHeight', { value: 32 })
-    Object.defineProperty(q('.wx-ask-host'), 'offsetWidth', { value: 320 })
+    Object.defineProperty(q('.wx-ask-host'), 'offsetWidth', { value: 320, configurable: true })
     Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: 1200, configurable: true })
     window.dispatchEvent(new Event('resize'))
     expect(viewer.setRightReserve).toHaveBeenLastCalledWith(344, 732)
@@ -223,7 +223,7 @@ describe('buildPage: every screen size', () => {
     expect(viewer.setPanels).toHaveBeenCalledWith([q('.wx-card'), q('.wx-ask-host'), q('.wx-legend'), q('.wx-toolbar')])
   })
 
-  it('fits again when the toolbar wraps or the Ask box grows', () => {
+  it('fits again when the toolbar wraps, the Ask box grows or the card gains a scrollbar', () => {
     const observed: Element[] = []
     let fire = (): void => undefined
     vi.stubGlobal('ResizeObserver', class {
@@ -232,7 +232,7 @@ describe('buildPage: every screen size', () => {
       disconnect(): void { /* not used */ }
     })
     const { q, viewer } = setup()
-    expect(observed).toEqual([q('.wx-toolbar'), q('.wx-ask-host')])
+    expect(observed).toEqual([q('.wx-toolbar'), q('.wx-ask-host'), q('.wx-card-body')])
     Object.defineProperty(q('.wx-toolbar'), 'offsetHeight', { value: 70 })
     fire()
     expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(94)
@@ -495,5 +495,89 @@ describe('buildPage: the 2D map', () => {
     page.showCard('<h3>x</h3>')
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     expect(card().hidden).toBe(true)
+  })
+})
+
+describe('a card on a page too narrow for the card and the Ask box side by side', () => {
+  const sizes = (q: (sel: string) => HTMLElement, stage: number): void => {
+    Object.defineProperty(q('.wx-stage'), 'clientWidth', { value: stage, configurable: true })
+    Object.defineProperty(q('.wx-card'), 'offsetWidth', { value: 340, configurable: true })
+    Object.defineProperty(q('.wx-ask-host'), 'offsetWidth', { value: 320, configurable: true })
+  }
+  const result = (askHost: HTMLElement): HTMLButtonElement => {
+    const b = document.createElement('button')
+    askHost.appendChild(b)
+    return b
+  }
+
+  it('folds the Ask answer away and hands the focus from a result to the card', () => {
+    const { page, q, card } = setup()
+    sizes(q, 800) // 800 - 340 - 320 - 48 = 92: under the 120 px a column needs
+    const fold = vi.fn()
+    page.setAskFold(fold)
+    result(page.askHost).focus()
+    page.showCard('<h3>Store</h3>')
+    expect(fold).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(card())
+  })
+
+  it('keeps the focus in the question box when that is where it is', () => {
+    const { page, q } = setup()
+    sizes(q, 800)
+    const fold = vi.fn()
+    page.setAskFold(fold)
+    const input = document.createElement('input')
+    page.askHost.appendChild(input)
+    input.focus()
+    page.showCard('<h3>Store</h3>')
+    expect(fold).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('leaves the focus alone when it is outside the Ask box', () => {
+    const { page, q, card } = setup()
+    sizes(q, 768)
+    const fold = vi.fn()
+    page.setAskFold(fold)
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    page.showCard('<h3>Store</h3>')
+    expect(fold).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).not.toBe(card())
+  })
+
+  it('does not fold with a column of 120 px or more beside the card, nor when the card closes', () => {
+    const { page, q } = setup()
+    sizes(q, 828) // 828 - 708 = 120
+    const fold = vi.fn()
+    page.setAskFold(fold)
+    page.showCard('<h3>Store</h3>')
+    sizes(q, 700)
+    page.showCard(null)
+    expect(fold).not.toHaveBeenCalled()
+  })
+
+  it('folds nothing before an Ask box hands over its fold', () => {
+    const { page, q } = setup()
+    sizes(q, 800)
+    expect(() => page.showCard('<h3>Store</h3>')).not.toThrow()
+  })
+})
+
+describe('the card close button and the card scrollbar', () => {
+  it('moves left by the scrollbar the capped card body shows, and back when it goes', () => {
+    const { page, q, card } = setup()
+    const body = q('.wx-card-body')
+    Object.defineProperty(body, 'offsetWidth', { value: 320, configurable: true })
+    Object.defineProperty(body, 'clientWidth', { value: 306, configurable: true })
+    page.showCard('<h3>Store</h3>')
+    expect(card().style.getPropertyValue('--wx-card-gutter')).toBe('14px')
+    Object.defineProperty(body, 'clientWidth', { value: 320, configurable: true })
+    page.showCard('<h3>Store</h3>')
+    expect(card().style.getPropertyValue('--wx-card-gutter')).toBe('')
+  })
+
+  it('keeps the close button clear of the gutter in the page CSS', () => {
+    setup()
+    expect(Array.from(document.querySelectorAll('style')).map((st) => st.textContent).join('')).toMatch(/\.wx-card-close\{[^}]*right:calc\([^)]*var\(--wx-card-gutter, 0px\)\)/)
   })
 })
