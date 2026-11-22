@@ -564,7 +564,6 @@ jobs:
     needs: e2e-full
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 10
     steps:
       - uses: actions/upload-artifact/merge@v4
@@ -735,11 +734,10 @@ jobs:
   # runs them in e2e-full and Windows in e2e-windows. e2e/world-platform.spec.ts records the renderer (WebGL on
   # SwiftShader, or the 2D list) in the step summary, checks the platform's paths, file names and the `lumopolis`
   # shell command in bash and zsh, and saves a screenshot at each key moment and a video, uploaded for two weeks.
-  # Not blocking until it has been green twice in a row.
+  # Blocking since it was green twice in a row (runs 44995369453 attempts 1 and 2).
   e2e-lumopolis-macos:
     needs: [static, model]
     runs-on: macos-latest
-    continue-on-error: true
     timeout-minutes: 60
     env:
       TERMPOLIS_E2E_PREBUILT: '1'
