@@ -426,6 +426,46 @@ describe('threeRenderer motion', () => {
     r.dispose()
   })
 
+  it('an opened legend in a 640 px view glides the city clear of its 244 px strip when its owner names 600 px (and not without)', () => {
+    // The pane at 1366x768 dragged to 640: the expanded legend's strip is kept from 600 px wide (WorldLegend
+    // legendReserveFrom). Followed through the glide to where the camera comes to rest, every building's
+    // footprint and roof, and every district's rim, lies left of the strip.
+    const rightmost = (reduced: boolean, from?: number): number => {
+      const host = makeHost(640, 622)
+      const r = createThreeRenderer(host, { quality: 'low', reducedMotion: reduced })
+      const city = smallCity()
+      r.draw(city, smallText(), false)
+      h.frames.run(60, 20)
+      r.setRightReserve(244, from)
+      h.frames.run(150, 20)
+      const cam = cameraOf()
+      const world = worldOf(sceneOf())
+      world.updateMatrixWorld(true)
+      cam.updateMatrixWorld(true)
+      const pts: THREE.Vector3[] = []
+      for (const b of city.buildings) {
+        for (const [dx, dz] of [[2.5, 2.5], [-2.5, 2.5], [2.5, -2.5], [-2.5, -2.5]]) {
+          pts.push(new THREE.Vector3(b.pos[0] + dx, b.pos[1], b.pos[2] + dz), new THREE.Vector3(b.pos[0] + dx, b.pos[1] + b.height, b.pos[2] + dz))
+        }
+      }
+      for (const d of city.districts) {
+        // The platform's foot as drawn: a hexagon 1.05 times the radius, corners where CylinderGeometry lays them.
+        for (let k = 0; k < 6; k++) {
+          const a = (k / 6) * Math.PI * 2
+          pts.push(new THREE.Vector3(d.pos[0] + Math.sin(a) * d.radius * 1.05, d.pos[1] - 1.2, d.pos[2] + Math.cos(a) * d.radius * 1.05))
+        }
+      }
+      const xs = pts.map((p) => ((world.localToWorld(p.clone()).project(cam).x + 1) / 2) * 640)
+      r.dispose()
+      host.remove()
+      return Math.max(...xs)
+    }
+    expect(rightmost(true, 600)).toBeLessThanOrEqual(640 - 244)
+    expect(rightmost(false, 600)).toBeLessThanOrEqual(640 - 244)
+    // Without the owner's width the 3x rule (732 px) drops the strip, and the city runs under the legend.
+    expect(rightmost(false)).toBeGreaterThan(640 - 244)
+  })
+
   it('an opening building and a panel glide reach the same state at the same wall time at 10, 30 and 60 fps', () => {
     // Below 20 fps a frame step cut at 0.05 s ran every ease in slow motion; only a tab-switch spike is cut now.
     const at = (fps: number): { gap: number; aspect: number } => {

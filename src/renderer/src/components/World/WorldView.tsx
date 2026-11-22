@@ -51,7 +51,7 @@ import { BuildItDialog } from './BuildItDialog'
 import { ExportDialog, ExportToast } from './ExportDialog'
 import { DocumentDialog } from './DocumentDialog'
 import type { ExportKind } from './ExportMenu'
-import { LEGEND_CHIP_RESERVE, LEGEND_RESERVE, legendDefaultOpen, legendReserveScaled, WorldLegend } from './WorldLegend'
+import { LEGEND_CHIP_RESERVE, LEGEND_RESERVE, legendDefaultOpen, legendReserveFrom, legendReserveScaled, WorldLegend } from './WorldLegend'
 import { ASK_BOTTOM_PX, ASK_SLOT_WIDTH, askReserve, cardMaxHeight, cardMeetsLegend, cardReserve, UiScaleContext, useUiScale, worldPaneStyle } from './worldPane'
 import type { WorldPaneOverlay } from './worldPane'
 import { rightInset } from '../../world/engine/viewMath'
@@ -402,8 +402,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   }, [])
 
   // The overview is fitted to what the legend leaves free: it follows the legend and the pane's width.
+  // The camera is told from what width the strip is kept, or under 732 px it drops the strip the fit was promised.
   const reserve = legendReserveScaled(legendOpen, width, scale)
-  useEffect(() => { viewer?.setRightReserve(reserve) }, [viewer, reserve])
+  const reserveFrom = legendReserveFrom(legendOpen, width, scale)
+  useEffect(() => { viewer?.setRightReserve(reserve, reserveFrom) }, [viewer, reserve, reserveFrom])
   // ...and to what the ask bar leaves free above it: its measured height, which changes as its chips
   // wrap in a narrow pane, or as it thinks and answers.
   const askRef = useRef<HTMLDivElement>(null)
@@ -450,7 +452,7 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
     return () => ro.disconnect()
   }, [])
   // The cap is a length on the zoomed card: worked out in its pixels.
-  const cardCap = cardMaxHeight(stageSize[0] / scale, stageSize[1] / scale, rightInset(stageSize[0], reserve) / scale, below / scale)
+  const cardCap = cardMaxHeight(stageSize[0] / scale, stageSize[1] / scale, rightInset(stageSize[0], reserve, reserveFrom) / scale, below / scale)
   useEffect(() => { viewer?.setCardReserve(cardW, cardH) }, [viewer, cardW, cardH])
   // Where the open card would reach the legend (a narrow pane), the legend steps aside until it closes.
   const legendAside = card !== null && cardMeetsLegend(stageSize[0] / scale, legendOpen ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE)

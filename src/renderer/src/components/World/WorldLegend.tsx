@@ -48,15 +48,24 @@ export const legendReserve = (open: boolean, canvasWidth: number): number =>
  * legendReserve for a legend drawn `scale` times its size (the pane's zoom on a big monitor), in the
  * map's pixels: whether the canvas is wide is judged in the legend's own pixels.
  */
+export const legendReserveScaled = (open: boolean, canvasWidth: number, scale: number): number =>
+  Math.ceil(legendReserve(open, canvasWidth / scale) * scale)
+
+/**
+ * The canvas width, in the map's pixels, from which the camera keeps legendReserveScaled's strip clear (rightInset's
+ * `from`): LEGEND_ASIDE_PX for the expanded legend, whose strip is kept on a canvas under three times its width;
+ * undefined for the chip, which keeps rightInset's own rule. Without it the camera dropped the strip the fit was
+ * promised under 732 px, and the opened legend lay over the city in a 640 px pane.
+ */
+export const legendReserveFrom = (open: boolean, canvasWidth: number, scale: number): number | undefined =>
+  open && canvasWidth / scale >= LEGEND_ASIDE_PX ? LEGEND_ASIDE_PX * scale : undefined
+
 /**
  * The legend's greatest height: the stage less its top gap and the ask bar's reserve under it
  * (`bottom`, which already holds the bar's gap and clearance), and never less room than the
  * 120 px kept free before the ask bar was measured.
  */
 export const legendMaxHeight = (bottom: number): string => `calc(100% - ${Math.max(120, EDGE + Math.ceil(bottom))}px)`
-
-export const legendReserveScaled = (open: boolean, canvasWidth: number, scale: number): number =>
-  Math.ceil(legendReserve(open, canvasWidth / scale) * scale)
 
 const PANEL: CSSProperties = {
   // Never wider than the pane less its edges (the 28 px of padding and 2 of border are outside the width).

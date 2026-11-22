@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { useState } from 'react'
 import { rightInset } from '../../../src/renderer/src/world/engine/viewMath'
 import type { WorldDoc } from '../../../src/shared/world/types'
-import { WorldLegend, LEGEND_ASIDE_PX, LEGEND_MAX_CARGO, LEGEND_RESERVE, LEGEND_CHIP_RESERVE, legendDefaultOpen, legendMaxHeight, legendReserve, legendReserveScaled } from '../../../src/renderer/src/components/World/WorldLegend'
+import { WorldLegend, LEGEND_ASIDE_PX, LEGEND_MAX_CARGO, LEGEND_RESERVE, LEGEND_CHIP_RESERVE, legendDefaultOpen, legendMaxHeight, legendReserve, legendReserveFrom, legendReserveScaled } from '../../../src/renderer/src/components/World/WorldLegend'
 import { WorldPaneOpening, worldPaneStyle, WORLD_OPENING_BACKGROUND } from '../../../src/renderer/src/components/World/worldPane'
 import { THEMES } from '../../../src/renderer/src/world/engine'
 import { edge, minimal, rich } from './helpers'
@@ -37,6 +37,15 @@ describe('the legend state', () => {
     expect(legendReserveScaled(true, 1000, 1.5)).toBe(Math.ceil(LEGEND_RESERVE * 1.5)) // 667 of its own pixels: room beside it
     expect(legendReserveScaled(true, 870, 1.5)).toBe(Math.ceil(LEGEND_CHIP_RESERVE * 1.5)) // 580 of its own pixels: narrow
     expect(legendReserveScaled(false, 1600, 1.5)).toBe(Math.ceil(LEGEND_CHIP_RESERVE * 1.5))
+  })
+  it('names the width its strip is kept from (under three times the strip) only for the expanded legend with room', () => {
+    expect(legendReserveFrom(true, 640, 1)).toBe(LEGEND_ASIDE_PX)
+    expect(legendReserveFrom(true, 1000, 1.5)).toBe(LEGEND_ASIDE_PX * 1.5)
+    // The kept strip passes rightInset with it, and only with it, in a 640 px canvas.
+    expect(rightInset(640, legendReserveScaled(true, 640, 1), legendReserveFrom(true, 640, 1))).toBe(LEGEND_RESERVE)
+    expect(rightInset(640, legendReserveScaled(true, 640, 1))).toBe(0)
+    expect(legendReserveFrom(true, 580, 1)).toBeUndefined() // narrow: the chip's footprint, the default rule
+    expect(legendReserveFrom(false, 1600, 1)).toBeUndefined()
   })
   it('stops above the ask bar, keeping at least the 120 px it kept before the bar was measured', () => {
     expect(legendMaxHeight(0)).toBe('calc(100% - 120px)')

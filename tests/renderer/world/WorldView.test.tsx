@@ -525,19 +525,29 @@ describe('WorldView', () => {
     bridge()
     const narrow = await mount()
     expect(screen.getByTestId('world-legend-toggle')).toHaveAttribute('aria-expanded', 'false')
-    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108)
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108, undefined)
     // Opened by choice in a narrow pane it covers the map: the fit keeps its chip-sized strip.
     fireEvent.click(screen.getByTestId('world-legend-toggle'))
     expect(screen.getByTestId('world-legend-toggle')).toHaveAttribute('aria-expanded', 'true')
-    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108)
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108, undefined)
     narrow.unmount()
     bridge()
     render(<WorldView root="/repo" width={800} onClose={vi.fn()} />)
     await screen.findByTestId('world-legend')
     expect(screen.getByTestId('world-legend-toggle')).toHaveAttribute('aria-expanded', 'true')
-    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(244)
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(244, 600)
     fireEvent.click(screen.getByTestId('world-legend-toggle'))
-    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108)
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108, undefined)
+    cleanup()
+    // The pane at 1366x768 dragged to 640: opened by choice its strip is kept, and the camera is told from what
+    // width (under three times the strip, so without it the camera dropped the strip and the city ran under it).
+    bridge()
+    render(<WorldView root="/repo" width={640} onClose={vi.fn()} />)
+    await screen.findByTestId('world-legend')
+    expect(screen.getByTestId('world-legend-toggle')).toHaveAttribute('aria-expanded', 'false')
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(108, undefined)
+    fireEvent.click(screen.getByTestId('world-legend-toggle'))
+    expect(viewer().setRightReserve).toHaveBeenLastCalledWith(244, 600)
   })
 
   it('takes its width from the width prop', async () => {
@@ -2242,7 +2252,7 @@ describe('WorldView on a big monitor', () => {
     expect(screen.getByTestId('world-canvas-host').style.zoom).toBe('')
     // 1600 / 1.5 = 1067 of the legend's own pixels: wide, so it opens and its strip is kept, zoomed.
     expect(screen.getByTestId('world-legend-toggle')).toHaveAttribute('aria-expanded', 'true')
-    expect(v.setRightReserve).toHaveBeenLastCalledWith(366)
+    expect(v.setRightReserve).toHaveBeenLastCalledWith(366, 900)
     // The ask bar: (40 + 16 + 8) x 1.5.
     expect(v.setBottomReserve).toHaveBeenLastCalledWith(96)
     act(() => v.opts.renderCard(buildingCard(minimal(), 'b1')))
