@@ -504,6 +504,9 @@ jobs:
       # warning it leaves names the native frame the quit is stuck in.
       - name: Install gdb
         run: sudo apt-get install -y --no-install-recommends gdb || true
+      # e2e/world-platform.spec.ts types `lumopolis` in bash and in zsh, and fails in CI when either is missing.
+      - name: Install zsh
+        run: sudo apt-get install -y --no-install-recommends zsh
       - name: Build
         run: npm run build
       # e2e/linux-sandbox.spec.ts launches with Chromium's sandbox ON (issue #32), which needs
@@ -536,6 +539,33 @@ jobs:
           name: playwright-traces-full-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
+      # The Lumopolis screenshots and video (e2e/world-platform.spec.ts, e2e/world-visual.spec.ts), kept two weeks.
+      # Only the shard that ran those specs has them; e2e-lumopolis-linux-shots merges the shards into one artifact.
+      - name: Upload Lumopolis screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumopolis-shots-linux-shard${{ matrix.shard }}
+          path: |
+            test-results/lumopolis-shots/
+            test-results/world-visual/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The Linux Lumopolis screenshots as one artifact, named for the OS like the macOS job's.
+  e2e-lumopolis-linux-shots:
+    needs: e2e-full
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 10
+    steps:
+      - uses: actions/upload-artifact/merge@v4
+        with:
+          name: lumopolis-shots-linux
+          pattern: lumopolis-shots-linux-shard*
+          delete-merged: true
+          retention-days: 14
 
   # THE Windows e2e gate: the whole e2e directory again, blocking, sharded 4 ways like e2e-full.
   #
@@ -691,5 +721,70 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-traces-macos
+          path: test-results/
+          retention-days: 7
+
+  # Lumopolis on macOS: every world spec (e2e/world*.spec.ts), where e2e-smoke-macos runs only the export. Linux
+  # runs them in e2e-full and Windows in e2e-windows. e2e/world-platform.spec.ts records the renderer (WebGL on
+  # SwiftShader, or the 2D list) in the step summary, checks the platform's paths, file names and the `lumopolis`
+  # shell command in bash and zsh, and saves a screenshot at each key moment and a video, uploaded for two weeks.
+  # Not blocking until it has been green twice in a row.
+  e2e-lumopolis-macos:
+    needs: [static, model]
+    runs-on: macos-latest
+    continue-on-error: true
+    timeout-minutes: 60
+    env:
+      TERMPOLIS_E2E_PREBUILT: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
+      # world-export.spec.ts exports a world with the bundled embedding model, as in e2e-smoke-macos.
+      - name: Restore the embedding model
+        uses: actions/cache/restore@v4
+        with:
+          path: resources/models
+          key: ${{ needs.model.outputs.key }}
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Build
+        run: npm run build
+      # As in e2e-smoke-macos: node-pty's prebuilt spawn-helper can land without +x.
+      - name: Fix spawn-helper permissions (macOS)
+        run: |
+          find node_modules/node-pty -name "spawn-helper" -type f -exec chmod 755 {} \; -print
+      # The step's timeout sits under the job's, so the uploads below still run when it runs out.
+      - name: Lumopolis world specs (macOS)
+        timeout-minutes: 50
+        run: npx playwright test e2e/world --reporter=list
+      - name: Upload Lumopolis screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumopolis-shots-macos
+          path: |
+            test-results/lumopolis-shots/
+            test-results/world-visual/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload failure traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces-lumopolis-macos
           path: test-results/
           retention-days: 7
