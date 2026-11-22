@@ -379,6 +379,29 @@ test.describe.serial('Lumopolis in the real app', () => {
     const lineKeys = Math.min(LINE_KEYS, cols - ((prompt.length + 1) % cols) - marker.length - MARGIN_COLS)
     expect(lineKeys, `too little room on the shell line: ${JSON.stringify({ cols, prompt })}`).toBeGreaterThanOrEqual(WARMUP_KEYS)
 
+    // A person typing has the app in front. Playwright's keys reach the page without making the window the
+    // key window, and on a macOS runner the app can sit behind others, where the OS runs its timers late
+    // (backgroundThrottling is already off, so this is the OS, not Chromium). So the app is brought to the front
+    // first, and its focus before and after is printed with the result.
+    const focusState = (): Promise<string> => app.evaluate(({ app: eapp, BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0]
+      return `window focused ${w.isFocused()}, visible ${w.isVisible()}, app hidden ${process.platform === 'darwin' ? eapp.isHidden() : false}`
+    })
+    const focusBefore = `${await focusState()}, page ${await page.evaluate(() => `${document.visibilityState} focus ${document.hasFocus()}`)}`
+    await app.evaluate(({ app: eapp, BrowserWindow }) => {
+      if (process.platform === 'darwin') eapp.focus({ steal: true })
+      const w = BrowserWindow.getAllWindows()[0]
+      w.show()
+      w.focus()
+    })
+    await page.evaluate(() => {
+      const visible = [...document.querySelectorAll<HTMLTextAreaElement>('.xterm-helper-textarea')].filter((t) => t.closest('.xterm')?.getClientRects().length)
+      visible[visible.length - 1]?.focus()
+    })
+    await until('the terminal to have focus again', () => page.evaluate(() => !!document.activeElement?.classList.contains('xterm-helper-textarea')))
+    const focusAfter = `${await focusState()}, page ${await page.evaluate(() => `${document.visibilityState} focus ${document.hasFocus()}`)}`
+    console.log(`[typing while compiling, focus] before: ${focusBefore}; after bringing the app to the front: ${focusAfter}`)
+
     // Warm-up, before any load: typed and echoed, and not counted.
     await page.keyboard.type(marker, { delay: KEY_GAP_MS })
     await until('the marker', markerShown)
