@@ -4,7 +4,7 @@
  * WebKit may report 'failed' instead, as long as the page says so and keyword search still answers.
  *
  * The CSP: the one grant beyond 'none' that smart Ask needs ('wasm-unsafe-eval') is proven needed by a copy of
- * smart.html without it (Chromium: Electron and Edge, where smart Ask must work).
+ * smart.html without it (Chromium: Electron, Edge and Chrome, where smart Ask must work).
  *
  * No retries in this file: the 6 s readiness budget must hold on the first run.
  */

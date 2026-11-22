@@ -33,6 +33,8 @@ const EASE_FRAMES = 10
  * reports as an error of the page. So the pause is made in the page: the clock Playwright installed reads its own
  * time and pauses at it in the same task, with nothing left to fast-forward. `__pwClock` is Playwright's own
  * (1.58, the version package-lock pins); a page without it fails here rather than running on a live clock.
+ * `__pwClock.controller` (its now() and pauseAt()) is private to Playwright, not its API: recheck this helper on
+ * every Playwright upgrade.
  */
 async function pauseClock(page: Page): Promise<void> {
   const paused = await page.evaluate(async () => {
