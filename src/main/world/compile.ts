@@ -369,6 +369,14 @@ interface Hop {
   pref: number
 }
 
+/**
+ * A building's stop on a tour: its name and the first thing said about what it does ("main: Starts the app and
+ * opens its window."), so a stop explains itself; its name alone where nothing is said yet.
+ */
+function stopCaption(b: BuildingLabel): string {
+  return b.how.length > 0 ? `${b.name}: ${b.how[0].text}` : b.name
+}
+
 /** Longest simple path (depth <= 8) over boundary edges from the renderer, preferring ipc/http/port. */
 function followRequest(g: Grouping, labels: Labels): Tour | null {
   const ids = g.buildings.map((b) => b.id).sort(cmp)
@@ -417,10 +425,10 @@ function followRequest(g: Grouping, labels: Labels): Tour | null {
     visited.delete(s)
   }
   if (best.edges.length === 0) return null
-  const steps: Tour['steps'] = [{ ids: [best.nodes[0]], caption: labels.buildings[best.nodes[0]].name }]
+  const steps: Tour['steps'] = [{ ids: [best.nodes[0]], caption: stopCaption(labels.buildings[best.nodes[0]]) }]
   best.edges.forEach((e, i) => {
     const n = best.nodes[i + 1]
-    steps.push({ ids: [e], caption: edgeSummary(labels.edges[e].label) }, { ids: [n], caption: labels.buildings[n].name })
+    steps.push({ ids: [e], caption: edgeSummary(labels.edges[e].label) }, { ids: [n], caption: stopCaption(labels.buildings[n]) })
   })
   return { id: 'tour-follow-request', title: 'Follow a request', steps }
 }

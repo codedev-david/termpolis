@@ -675,6 +675,19 @@ describe('buildTours', () => {
     expect(follow?.steps[1].caption).toBe('calls 1 web address') // 'http-out h.io', summarised
   })
 
+  it("a building's stop says what it does after its name; one with nothing said keeps its name alone (F6)", async () => {
+    const g: Grouping = {
+      districts: [{ id: 'd', name: 'D', members: ['a', 'b'] }],
+      buildings: [bld('a', 'd'), bld('b', 'd')],
+      edges: [{ from: 'a', to: 'b', via: [B('ipc', 'ch')] }]
+    }
+    const labels = await labelWorld(g, labelDeps())
+    labels.buildings.a = { ...labels.buildings.a, how: [{ text: 'Draws the window and sends what you type to the main process.', state: 'inferred', evidence: [] }, { text: 'Second.', state: 'inferred', evidence: [] }] }
+    labels.buildings.b = { ...labels.buildings.b, how: [] }
+    const follow = buildTours(g, labels).find((t) => t.id === 'tour-follow-request')
+    expect(follow?.steps.map((s) => s.caption)).toEqual(['a: Draws the window and sends what you type to the main process.', 'uses 1 message channel', 'b'])
+  })
+
   it('starts at the renderer, caps depth at 8 edges and bounds the search on dense graphs', async () => {
     const chain: Grouping = {
       districts: [{ id: 'd', name: 'D', members: [] }],
