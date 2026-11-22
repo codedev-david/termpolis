@@ -696,18 +696,11 @@ test.describe.serial('Lumopolis at every screen size', () => {
         // world refreshing as the run writes screenshots into it, that read can run out once. The app then offers
         // Retry, which is what a person would press: the size checks are about the answer once it is there. The
         // answer comes from a mock agent started through PowerShell, which can take a while to start on a busy
-        // machine, so the waits are the app's own limits: 15 s to read the world and 90 s for the agent.
-        // On a machine busy with other work the answer has been seen to stay at Thinking… past both limits, with no
-        // error to retry (round 3, three runs; the same asks took 10 s on a quiet one): there a person asks again,
-        // which replaces the stuck question, and so does the test, once.
-        const ASK_MS = 15_000 + 90_000
+        // machine, so the wait is the app's own limits: 15 s to load the world, 10 s for each of the matches, the run
+        // environment and the memory primer (which took over 100 s here before it had a limit), and 90 s for the agent.
+        const ASK_MS = 15_000 + 3 * 10_000 + 90_000
         const answer = page.locator('[data-testid="world-answer"]')
         const retry = page.getByRole('alert').getByRole('button', { name: 'Retry' })
-        if (!(await answer.or(retry).first().waitFor({ state: 'visible', timeout: ASK_MS }).then(() => true, () => false))) {
-          test.info().annotations.push({ type: 'ask repeated', description: `no answer after ${ASK_MS / 1000} s at ${tag}` })
-          await askBox.fill('How does the memory search work?')
-          await askBox.press('Enter')
-        }
         await expect(answer.or(retry).first()).toBeVisible({ timeout: ASK_MS })
         if (await retry.isVisible()) {
           test.info().annotations.push({ type: 'ask retried', description: `the world read ran out at ${tag}` })

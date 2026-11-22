@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { agentMissingMessage, createAskRunner } from '../../src/main/world/askRunner'
+import { agentMissingMessage, createAskRunner, DEFAULT_PREP_TIMEOUT_MS } from '../../src/main/world/askRunner'
 import type { AskRequest, WorldDoc } from '../../src/shared/world/types'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 
@@ -14,7 +14,7 @@ const okRes = (output: string): ExecResult => ({ ok: true, output, primerChars: 
 
 function setup(
   exec: (req: ExecRequest) => Promise<ExecResult>, doc: WorldDoc | null = DOC, timeoutMs?: number, getTimeoutMs?: number,
-  over: Partial<Pick<Parameters<typeof createAskRunner>[0], 'agent' | 'runEnv' | 'primer'>> = {}
+  over: Partial<Pick<Parameters<typeof createAskRunner>[0], 'agent' | 'runEnv' | 'primer' | 'prepTimeoutMs'>> = {}
 ) {
   const execFn = vi.fn(exec)
   const client = {
@@ -240,6 +240,95 @@ describe('createAskRunner', () => {
     const { runner, client } = setup(async () => okRes('hi'))
     await runner.ask(REQ)
     expect(client.get).toHaveBeenCalledWith('C:/repo', { refresh: false })
+  })
+
+  describe('nothing before the agent holds a question (round 3: a memory primer took 99 s and 108 s on a busy machine)', () => {
+    const never = <T>(): Promise<T> => new Promise<T>(() => undefined)
+    /** An exec that asks for its primer, as runHeadless does, and answers with what it got. */
+    const primed = async (_req: ExecRequest, deps?: unknown): Promise<ExecResult> => {
+      const primer = await (deps as { primer: (cwd: string) => Promise<string | null> }).primer('C:/repo')
+      return okRes(`primer:${String(primer)}`)
+    }
+
+    it('waits 10 s by default for each step before the agent', () => {
+      expect(DEFAULT_PREP_TIMEOUT_MS).toBe(10_000)
+    })
+
+    it('a primer that does not come in time is left out: the run starts cold after 10 s', async () => {
+      vi.useFakeTimers()
+      try {
+        const { runner, execFn } = setup(primed, DOC, undefined, undefined, { primer: vi.fn(() => never<string | null>()) })
+        const p = runner.ask(REQ)
+        let settled = false
+        void p.then(() => { settled = true })
+        await vi.advanceTimersByTimeAsync(9_999)
+        expect(settled).toBe(false)
+        await vi.advanceTimersByTimeAsync(1)
+        expect(await p).toMatchObject({ ok: true, answer: { text: 'primer:null' } })
+        expect(execFn).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a primer that comes in time is used', async () => {
+      const { runner } = setup(primed, DOC, undefined, undefined, { primer: vi.fn(async () => 'recalled') })
+      expect(await runner.ask(REQ)).toMatchObject({ ok: true, answer: { text: 'primer:recalled' } })
+    })
+
+    it('a read of matches that does not come in time is left out: the ask goes on with no matches after 10 s', async () => {
+      vi.useFakeTimers()
+      try {
+        const { runner, client, execFn } = setup(async () => okRes('hi'))
+        client.read.mockImplementationOnce(() => never())
+        const p = runner.ask(REQ)
+        await vi.advanceTimersByTimeAsync(9_999)
+        expect(execFn).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(1)
+        expect(await p).toMatchObject({ ok: true })
+        expect(execFn).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a run environment that does not come in time is left out: the run goes direct after 10 s', async () => {
+      vi.useFakeTimers()
+      try {
+        const runEnv = vi.fn(() => never<{ env: Record<string, string> }>())
+        const { runner, execFn } = setup(async () => okRes('hi'), DOC, undefined, undefined, { runEnv })
+        const p = runner.ask(REQ)
+        await vi.advanceTimersByTimeAsync(9_999)
+        expect(execFn).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(1)
+        expect(await p).toMatchObject({ ok: true })
+        expect((execFn.mock.calls[0][0] as ExecRequest).env).toEqual({})
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('honours a custom limit for the steps before the agent', async () => {
+      const { runner, client } = setup(primed, DOC, undefined, undefined, { primer: vi.fn(() => never<string | null>()), prepTimeoutMs: 5 })
+      client.read.mockImplementationOnce(() => never())
+      expect(await runner.ask(REQ)).toMatchObject({ ok: true, answer: { text: 'primer:null' } })
+    })
+
+    it('a cancel while the primer is working answers cancelled at once', async () => {
+      let execSignal: AbortSignal | undefined
+      const exec = async (req: ExecRequest, deps?: unknown): Promise<ExecResult> => {
+        execSignal = req.signal
+        await (deps as { primer: (cwd: string) => Promise<string | null> }).primer('C:/repo')
+        return okRes('late')
+      }
+      const primer = vi.fn(() => never<string | null>())
+      const { runner } = setup(exec, DOC, undefined, undefined, { primer })
+      const p = runner.ask(REQ)
+      await vi.waitFor(() => expect(primer).toHaveBeenCalled())
+      runner.cancel('a1')
+      expect(await p).toMatchObject({ ok: false, cancelled: true })
+      expect(execSignal?.aborted).toBe(true)
+    })
   })
 
   describe('loading the world fails', () => {

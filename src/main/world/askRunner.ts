@@ -22,6 +22,9 @@ export interface AskRunnerDeps {
   timeoutMs?: number
   /** How long loading the stored world may take before the ask gives up. Default 15 s. */
   getTimeoutMs?: number
+  /** How long each step between the world and the agent (the matches, the run environment, the memory primer) may take
+   *  before the ask goes on without it. Default DEFAULT_PREP_TIMEOUT_MS. */
+  prepTimeoutMs?: number
 }
 
 export interface AskRunner {
@@ -42,6 +45,9 @@ const NOT_MAPPED = 'This project has not been mapped yet.'
 /** Shown for any failure to load the stored world (host down, restarting or too slow): never the raw error. */
 export const MAP_FAILED = "Lumopolis couldn't load this project's map. Try again."
 export const DEFAULT_GET_TIMEOUT_MS = 15_000
+/** Each step before the agent gets this long: a memory primer has taken over 100 s on a busy machine, and a question
+ *  must not sit at Thinking… for it. A step that runs out is left out, as one that fails is. */
+export const DEFAULT_PREP_TIMEOUT_MS = 10_000
 
 const AGENT_NAMES: Record<ExecAgent, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' }
 /** Shown when the chosen agent's CLI is not installed. */
@@ -77,6 +83,7 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
     byAsk.set(askId, ctl)
     byRoot.set(root, askId)
     const cancelled = (): AskResult => ({ askId, ok: false, error: 'cancelled', cancelled: true })
+    const prepMs = deps.prepTimeoutMs ?? DEFAULT_PREP_TIMEOUT_MS
     try {
       let doc: WorldDoc | null
       try {
@@ -89,7 +96,7 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       if (!doc) return { askId, ok: false, error: NOT_MAPPED }
       let matches: WorldReadResult
       try {
-        matches = await deps.client.read(root, { text: req.question, limit: 20 })
+        matches = await bounded(deps.client.read(root, { text: req.question, limit: 20 }), prepMs, ctl.signal)
       } catch {
         matches = { items: [], evidence: [] }
       }
@@ -103,9 +110,9 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       const agent = deps.agent()
       let run: { env: Record<string, string>; baseUrl?: string } = { env: {} }
       try {
-        run = await deps.runEnv(agent, root)
+        run = await bounded(deps.runEnv(agent, root), prepMs, ctl.signal)
       } catch {
-        // A broken proxy must not block a question: the run goes direct.
+        // A broken or slow proxy must not block a question: the run goes direct.
       }
       if (ctl.signal.aborted) return cancelled()
       let res: ExecResult
@@ -117,7 +124,7 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
             env: run.env,
             ...(run.baseUrl ? { baseUrl: run.baseUrl } : {})
           },
-          { ...deps.execDeps, primer: async (cwd) => { try { return await deps.primer(cwd) } catch { return null } } }
+          { ...deps.execDeps, primer: async (cwd) => { try { return await bounded(deps.primer(cwd), prepMs, ctl.signal) } catch { return null } } }
         )
       } catch (e) {
         if (ctl.signal.aborted) return cancelled()
