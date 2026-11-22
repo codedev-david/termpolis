@@ -75,7 +75,8 @@ async function settle(page: Page, state: string): Promise<void> {
 
 async function shoot(page: Page, name: string, fullPage = false): Promise<void> {
   fs.mkdirSync(SHOTS, { recursive: true })
-  await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage })
+  // A 5K page takes seconds a frame here: the default 30 s once ran out on the document page at 5120x2880.
+  await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage, timeout: 120_000 })
   const e = emulated.get(page)
   if (e && (await sizeNow(page, e.v)) !== 'ok') {
     // The session still holds the same override, so the same one sent again is ignored: clear it, then set it.
@@ -184,7 +185,7 @@ for (const v of responsiveViewports()) {
     })
 
     test(`the document page reads at a comfortable size and line length, nothing cut off, at ${v.name}`, async ({ open }) => {
-      test.setTimeout(120_000)
+      test.setTimeout(180_000)
       const { page } = await open(DOCUMENT_HTML)
       await setViewport(page, v)
       await settle(page, 'document')
