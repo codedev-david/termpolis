@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { useState } from 'react'
 import { rightInset } from '../../../src/renderer/src/world/engine/viewMath'
 import type { WorldDoc } from '../../../src/shared/world/types'
-import { WorldLegend, LEGEND_MAX_CARGO, LEGEND_RESERVE, LEGEND_CHIP_RESERVE, legendDefaultOpen, legendMaxHeight, legendReserve, legendReserveScaled } from '../../../src/renderer/src/components/World/WorldLegend'
+import { WorldLegend, LEGEND_ASIDE_PX, LEGEND_MAX_CARGO, LEGEND_RESERVE, LEGEND_CHIP_RESERVE, legendDefaultOpen, legendMaxHeight, legendReserve, legendReserveScaled } from '../../../src/renderer/src/components/World/WorldLegend'
 import { WorldPaneOpening, worldPaneStyle, WORLD_OPENING_BACKGROUND } from '../../../src/renderer/src/components/World/worldPane'
 import { THEMES } from '../../../src/renderer/src/world/engine'
 import { edge, minimal, rich } from './helpers'
@@ -20,6 +20,13 @@ describe('the legend state', () => {
     expect(legendDefaultOpen(731)).toBe(false)
     expect(legendReserve(true, 1000)).toBe(LEGEND_RESERVE)
     expect(legendReserve(true, 520)).toBe(LEGEND_CHIP_RESERVE) // opened over the map by choice: no refit
+    // Opened by choice in a pane with room beside it (a w640 pane at 1366x768): the city is fitted clear of it.
+    expect(LEGEND_ASIDE_PX).toBe(600)
+    expect(legendReserve(true, 640)).toBe(LEGEND_RESERVE)
+    expect(legendReserve(true, LEGEND_ASIDE_PX)).toBe(LEGEND_RESERVE)
+    expect(legendReserve(true, LEGEND_ASIDE_PX - 1)).toBe(LEGEND_CHIP_RESERVE)
+    expect(legendReserve(false, 640)).toBe(LEGEND_CHIP_RESERVE)
+    expect(legendDefaultOpen(640)).toBe(false) // and it starts as the chip there
     expect(legendReserve(false, 1000)).toBe(LEGEND_CHIP_RESERVE)
     expect(LEGEND_CHIP_RESERVE).toBeLessThan(LEGEND_RESERVE)
     expect(rightInset(360, LEGEND_CHIP_RESERVE)).toBe(LEGEND_CHIP_RESERVE) // a chip is kept clear even in the narrowest pane
@@ -27,7 +34,8 @@ describe('the legend state', () => {
   it('at a big monitor scale, judges the width in its own pixels and reserves its zoomed strip', () => {
     expect(legendReserveScaled(true, 1600, 1)).toBe(LEGEND_RESERVE)
     expect(legendReserveScaled(true, 1600, 1.5)).toBe(Math.ceil(LEGEND_RESERVE * 1.5))
-    expect(legendReserveScaled(true, 1000, 1.5)).toBe(Math.ceil(LEGEND_CHIP_RESERVE * 1.5)) // 667 of its own pixels: narrow
+    expect(legendReserveScaled(true, 1000, 1.5)).toBe(Math.ceil(LEGEND_RESERVE * 1.5)) // 667 of its own pixels: room beside it
+    expect(legendReserveScaled(true, 870, 1.5)).toBe(Math.ceil(LEGEND_CHIP_RESERVE * 1.5)) // 580 of its own pixels: narrow
     expect(legendReserveScaled(false, 1600, 1.5)).toBe(Math.ceil(LEGEND_CHIP_RESERVE * 1.5))
   })
   it('stops above the ask bar, keeping at least the 120 px it kept before the bar was measured', () => {

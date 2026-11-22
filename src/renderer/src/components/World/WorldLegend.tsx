@@ -32,11 +32,17 @@ export const LEGEND_WIDE_PX = 732
 export const legendDefaultOpen = (canvasWidth: number): boolean => canvasWidth >= LEGEND_WIDE_PX
 
 /**
- * The strip the overview's fit keeps clear. An expanded legend takes its full strip on a wide canvas;
- * on a narrow one it opens over the map (the user asked for it), so only the chip's footprint counts.
+ * From this canvas width a legend opened by choice has its strip kept out of the fit too: the city still gets about
+ * 356 px beside it. (At 1366x768 with the pane dragged to 640 the opened legend once lay over a third of the city.)
+ */
+export const LEGEND_ASIDE_PX = 600
+
+/**
+ * The strip the overview's fit keeps clear. An expanded legend takes its full strip on a canvas from LEGEND_ASIDE_PX
+ * wide; on a narrower one it opens over the map (the user asked for it), so only the chip's footprint counts.
  */
 export const legendReserve = (open: boolean, canvasWidth: number): number =>
-  open && canvasWidth >= LEGEND_WIDE_PX ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE
+  open && canvasWidth >= LEGEND_ASIDE_PX ? LEGEND_RESERVE : LEGEND_CHIP_RESERVE
 
 /**
  * legendReserve for a legend drawn `scale` times its size (the pane's zoom on a big monitor), in the
