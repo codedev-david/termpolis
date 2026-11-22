@@ -370,6 +370,41 @@ describe('threeRenderer labels', () => {
     r.dispose()
   })
 
+  it('the boxes names keep off are built again only when the camera or the world changes, not on an idle frame (M4)', () => {
+    sized(80, 80)
+    const model: SceneModel = {
+      districts: [district('d', [0, 0, 0], 12), district('e', [40, 0, 0], 12)],
+      buildings: [bldg('p', [-4, 0, 3], { height: 40 }), bldg('q', [40, 0, 3], { height: 40 })],
+      conduits: [],
+      orbs: [],
+    }
+    // Reduced motion: no idle turn, so once the opening move settles the camera is at rest (the idle turn moves it,
+    // and the boxes with it, every frame).
+    const r = createThreeRenderer(h.host, { ...DEFAULT_OPTS, reducedMotion: true })
+    boxCanvas(r.canvas, 800, 600)
+    r.draw(model, emptyText(), false)
+    h.frames.run(400)
+    expect(r.drawnCounts().tier).toBe('districts')
+    const built = vi.spyOn(THREE.InstancedMesh.prototype, 'getMatrixAt')
+    h.frames.run(3)
+    expect(built).not.toHaveBeenCalled()
+    // The camera moves: built again, once for the new view, then idle again.
+    cameraOf().position.x += 3
+    h.frames.step()
+    expect(built).toHaveBeenCalled()
+    built.mockClear()
+    h.frames.run(400)
+    built.mockClear()
+    h.frames.step()
+    expect(built).not.toHaveBeenCalled()
+    // A new world: built again.
+    built.mockClear()
+    r.draw(model, emptyText(), false)
+    h.frames.step()
+    expect(built).toHaveBeenCalled()
+    r.dispose()
+  })
+
   it('the stylesheet draws a district name left on a building over a dark halo, so it reads over the geometry', () => {
     const r = drawn()
     const css = (document.getElementById('lumopolis-world-style') as HTMLStyleElement).textContent ?? ''

@@ -650,6 +650,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   let farPickables: THREE.Object3D[] = []
   /** The tier the scene is laid out for (applyTier), null when it must be laid out again. */
   let appliedTier: ZoomTier | null = null
+  /** The last boxes the names keep off (solidBoxes); null after a resize, a new world or a new tier. */
+  let solids: Rect[] | null = null
   /** The batches must be sorted again (regroup) or only refilled in a new order (refill): batchFrame. */
   let regroup = true
   let refill = true
@@ -1111,6 +1113,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     allLabels = allEdgeLabels
     changes.settle() // the objects rising or pulsing are about to be freed
     clearWorld()
+    solids = null
     fitOverview(model) // first: the world's scale sizes the lines, packets and fog below
     scale = Math.max(1, Math.sqrt(overviewDist / PROTO_OVERVIEW))
     busy = busyness(model.conduits.length)
@@ -1292,6 +1295,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   function applyTier(): void {
     if (tier === appliedTier) return
     appliedTier = tier
+    solids = null
     const far = tier === 'districts'
     for (const n of nodes.values()) {
       if (n.orb) continue
@@ -1875,6 +1879,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
 
   // ---------------- resize ----------------
   const resize = (): void => {
+    solids = null
     ;[width, height] = size()
     applyView()
     renderer.setSize(width, height)
@@ -2013,6 +2018,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   const boxCorner = new THREE.Vector3()
   const slabToWorld = new THREE.Matrix4()
+  const solidsCam = new THREE.Matrix4()
+  const solidsLens = new THREE.Matrix4()
   /**
    * A box's outline on screen (its eight corners, `r` either side of the middle and `h` up, through `toWorld`): left,
    * top, right, bottom, or null for one partly behind the camera.
@@ -2033,12 +2040,17 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
    * buildings there (a district's name lay on its own slab at the overview): left, top, right, bottom.
    */
   function solidBoxes(): Rect[] {
+    // Built once per view: the camera's place and lens, the view's size, the tier and the world all as last time.
+    if (solids && solidsCam.equals(camera.matrixWorld) && solidsLens.equals(camera.projectionMatrix)) return solids
+    solidsCam.copy(camera.matrixWorld)
+    solidsLens.copy(camera.projectionMatrix)
     const out: Rect[] = []
+    // A box partly behind the camera has no outline on screen (null) and is left out.
+    const add = (box: Rect | null): void => { if (box) out.push(box) }
     for (const n of nodes.values()) {
       if (!n.group.visible) continue
       n.group.updateWorldMatrix(true, false)
-      const box = screenBox(n.orb ? ORB_R : FLOOR_W * 0.5, n.height, n.group.matrixWorld)
-      if (box) out.push(box)
+      add(screenBox(n.orb ? ORB_R : FLOOR_W * 0.5, n.height, n.group.matrixWorld))
     }
     for (const im of slabMeshes) {
       if (!im.visible) continue
@@ -2046,10 +2058,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       for (let j = 0; j < im.count; j++) {
         im.getMatrixAt(j, slabToWorld)
         // The unit hexagon stands from 0 to 1 within a radius of 1.
-        const box = screenBox(1, 1, slabToWorld.premultiply(im.matrixWorld))
-        if (box) out.push(box)
+        add(screenBox(1, 1, slabToWorld.premultiply(im.matrixWorld)))
       }
     }
+    solids = out
     return out
   }
   function layLabels(): Map<string, Nudge> {
@@ -2100,7 +2112,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     }
     const compactNow = new Set<string>()
     onSolid = new Set<string>()
-    const room = { bounds: [0, 0, width, height] as const, blocked: blocked(), solid: solidBoxes() }
+    // Only a name kept off the buildings (a district's) looks at their boxes: without one, none are built.
+    const room = { bounds: [0, 0, width, height] as const, blocked: blocked(), solid: cands.some((c) => c.solidFree) ? solidBoxes() : [] }
     placed = placeLabels(cands, placed, allLabels ? {} : { line: focus?.hover ? HOVER_EDGE_LABELS : FOCUS_EDGE_LABELS }, LABEL_GAP, LABEL_KEEP_GAP, { was: compactShown, now: compactNow, solid: onSolid }, room)
     compactShown = compactNow
     if (pinned.size === 0) return placed

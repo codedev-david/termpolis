@@ -279,7 +279,9 @@ export function placeLabels(
     // A name kept off the buildings: the first clear place off them all, before any place on one, a step to either
     // side included.
     const offTries = c.nudge === 'vertical' ? tries.concat(SIDE_STEPS.map(([ux]) => ({ d: [ux * (box.w + gap), 0] as Nudge, g: gap }))) : tries
-    const off = c.solidFree ? offTries.find((t) => fits(t) && offAll(room.solid ?? [], { ...box, x: box.x + t.d[0], y: box.y + t.d[1] }))?.d : undefined
+    // Only the buildings within reach of one of those places: a big world has thousands, each place looks at a few.
+    const near = c.solidFree ? solidsNear(room.solid ?? [], box, offTries.map((t) => t.d)) : []
+    const off = c.solidFree ? offTries.find((t) => fits(t) && offAll(near, { ...box, x: box.x + t.d[0], y: box.y + t.d[1] }))?.d : undefined
     const fit = off ?? tries.find(fits)?.d
     // Every place is taken: a label that must show keeps last time's place, or else its own point.
     // Never under a panel or cut off at the view's edge, though.
@@ -293,6 +295,16 @@ export function placeLabels(
   }
   grow()
   return out
+}
+
+/** The boxes in `solid` that meet `box` moved by any of `moves`: those a place of the label could lie on. */
+function solidsNear(solid: readonly Rect[], box: LabelBox, moves: readonly Nudge[]): Rect[] {
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity
+  for (const [dx, dy] of moves) {
+    l = Math.min(l, box.x + dx - box.w / 2); r = Math.max(r, box.x + dx + box.w / 2)
+    t = Math.min(t, box.y + dy - box.h / 2); b = Math.max(b, box.y + dy + box.h / 2)
+  }
+  return solid.filter(([sl, st, sr, sb]) => sr > l && sl < r && sb > t && st < b)
 }
 
 /** Whether a label moved by `d` stays inside its `keepIn` rectangle; unmoved, or with none, it always does. */
