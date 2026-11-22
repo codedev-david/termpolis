@@ -82,6 +82,41 @@ describe('createChangeToast', () => {
     expect(el.style.textOverflow).toBe('ellipsis')
   })
 
+  it('moves into the column beside an open card that comes down into its row, and stays put above a short one', () => {
+    const size = (w: number, h: number): void => {
+      Object.defineProperty(host, 'clientWidth', { value: w, configurable: true })
+      Object.defineProperty(host, 'clientHeight', { value: h, configurable: true })
+    }
+    size(900, 600)
+    const toast = createChangeToast(host)
+    // A wide pane's card stops only above the ask bar: 560 tall reaches the toast's row (600 - 72 - 31 = 497).
+    toast.place(72, 0, [352, 560])
+    toast.show('+1 part', THEMES.neon)
+    const el = toastEl() as HTMLElement
+    expect(el.style.bottom).toBe('72px')
+    expect(el.style.left).toBe('calc(50% + 176px)')
+    expect(el.style.maxWidth).toBe('calc(100% - 376px)')
+    // Beside the legend too: centred in what the card and the legend leave between them.
+    toast.place(72, 244, [352, 560])
+    expect(el.style.left).toBe('calc(50% + 54px)')
+    expect(el.style.maxWidth).toBe('calc(100% - 620px)')
+    // A short card ends above its row: centred as before.
+    toast.place(72, 244, [352, 497])
+    expect(el.style.left).toBe('calc(50% - 122px)')
+    expect(el.style.maxWidth).toBe('calc(100% - 268px)')
+    toast.place(72, 0, [0, 0])
+    expect(el.style.left).toBe('calc(50% - 0px)')
+    // Too little beside the card (under TOAST_MIN_COLUMN_PX): the whole width, as without a card.
+    size(470, 600)
+    toast.place(72, 0, [352, 560])
+    expect(el.style.left).toBe('calc(50% - 0px)')
+    expect(el.style.maxWidth).toBe('calc(100% - 24px)')
+    // The next show places it for the view as it is then (the pane grew since the last place).
+    size(900, 600)
+    toast.show('+2 parts', THEMES.neon)
+    expect(el.style.left).toBe('calc(50% + 176px)')
+  })
+
   it('dispose removes it and stops its timer', () => {
     const toast = createChangeToast(host)
     toast.dispose() // nothing shown yet: still fine

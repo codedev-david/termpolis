@@ -212,6 +212,8 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
   /** The ask bar's and the legend's strips: the toast keeps out of both (the fit gets them too, in 3D). */
   let lowReserve = opts.bottomReserve ?? 0
   let sideReserve = opts.rightReserve ?? 0
+  /** The open card's box from the top left corner (0, 0 with none): the toast keeps out from under it too. */
+  let cardReserve: readonly [number, number] = [0, 0]
   toast.place(lowReserve, sideReserve)
 
   const pos = getComputedStyle(container).position
@@ -729,17 +731,20 @@ export function createWorldViewer(container: HTMLElement, opts: WorldViewerOptio
     setRightReserve(px, from) {
       if (disposed) return
       sideReserve = px
-      toast.place(lowReserve, sideReserve)
+      toast.place(lowReserve, sideReserve, cardReserve)
       r3?.setRightReserve(px, from)
     },
     setBottomReserve(px) {
       if (disposed) return
       lowReserve = px
-      toast.place(lowReserve, sideReserve)
+      toast.place(lowReserve, sideReserve, cardReserve)
       r3?.setBottomReserve(px)
     },
     setCardReserve(w, h) {
-      if (!disposed) r3?.setCardReserve(w, h)
+      if (disposed) return
+      cardReserve = [w, h]
+      toast.place(lowReserve, sideReserve, cardReserve)
+      r3?.setCardReserve(w, h)
     },
     setPanels(els) {
       if (!disposed) r3?.setPanels(els)
