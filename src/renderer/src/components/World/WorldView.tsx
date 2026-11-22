@@ -687,8 +687,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
       const t = e.target as Node | null
       const inside = (dialogRef.current as HTMLDivElement).contains(t)
       if (!inside) return
-      // An open toolbar menu closes itself on Esc, and only it: the map and the pane stay as they are.
-      if ((t as Element).closest('[data-world-own-esc]') !== null) return
+      // An open toolbar popup shuts on Esc wherever the focus is in the pane, and only it: the map and the pane stay
+      // as they are (WorldToolbar).
+      if ((dialogRef.current as HTMLDivElement).querySelector('[data-world-own-esc]') !== null) return
       e.preventDefault()
       e.stopPropagation()
       escRef.current()

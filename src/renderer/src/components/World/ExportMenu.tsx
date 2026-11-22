@@ -1,7 +1,8 @@
 // Lumopolis Export: the toolbar button and its menu. Each item opens one dialog: the interactive world as one
 // offline page (ExportDialog), or the world's documentation as one page (DocumentDialog). The menu is a plain group
-// of buttons, like Bookmarks beside it: Esc closes it and nothing else, and so does a click anywhere outside it.
-import { useContext, useEffect, useRef, useState } from 'react'
+// of buttons, like Bookmarks beside it. The toolbar opens and shuts it (WorldToolbar keeps one popup open at a
+// time): Esc shuts it and nothing else, and so does a click anywhere outside it.
+import { useContext, useRef, useState } from 'react'
 import { screenRect } from '../../world/engine/screenRect'
 import { UiScaleContext } from './worldPane'
 
@@ -11,8 +12,16 @@ export interface ExportMenuProps {
   /** The toolbar's button class, so Export looks like its neighbours. */
   btnClass: string
   onExport: (kind: ExportKind) => void
-  /** An Export or Build it dialog is open: the button is off and the menu closed. */
+  /** An Export or Build it dialog is open: the button is off (and the toolbar shuts the menu). */
   disabled?: boolean
+  /** The menu is open. */
+  open: boolean
+  /** The button was pressed: opens the menu, or shuts it. */
+  onToggle: () => void
+  /** An item was chosen: shuts the menu, the focus back on the button. */
+  onDone: () => void
+  /** The menu's id, for the button's aria-controls. */
+  menuId: string
 }
 
 /** The menu's width in its own px (w-56), to tell whether it fits to the left of the button: times the pane's scale on screen. */
@@ -20,44 +29,28 @@ const MENU_W = 224
 
 const itemCls = 'text-left px-2 py-1.5 rounded text-[#d4d4d4] hover:bg-[#37373d] focus:bg-[#37373d] outline-none'
 
-export function ExportMenu({ btnClass, onExport, disabled = false }: ExportMenuProps): JSX.Element {
-  const [open, setOpen] = useState(false)
+export function ExportMenu({ btnClass, onExport, disabled = false, open, onToggle, onDone, menuId }: ExportMenuProps): JSX.Element {
   const scale = useContext(UiScaleContext)
   // Which edge the menu hangs from. The toolbar wraps in a narrow pane, and Export can start a row: a menu hung
   // from its right edge would then reach past the pane's left edge, where the pane clips it.
   const [side, setSide] = useState<'left' | 'right'>('right')
   const wrapRef = useRef<HTMLDivElement>(null)
-  // A dialog opened some other way (the palette) closes the menu under it.
-  useEffect(() => { if (disabled) setOpen(false) }, [disabled])
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent): void => {
-      if (!(wrapRef.current as HTMLDivElement).contains(e.target as Node | null)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown, true)
-    return () => document.removeEventListener('mousedown', onDown, true)
-  }, [open])
   const choose = (kind: ExportKind): void => {
-    setOpen(false)
+    onDone()
     onExport(kind)
   }
   return (
     <div
       ref={wrapRef}
       className="relative"
-      // The pane leaves an Esc from inside an open menu to the menu (WorldView reads this attribute).
+      data-world-popup="export"
+      // While the menu is open the pane leaves Esc to it (WorldView reads this attribute).
       data-world-own-esc={open ? '' : undefined}
-      onKeyDown={(e) => {
-        if (!open || e.key !== 'Escape') return
-        e.preventDefault()
-        e.stopPropagation()
-        setOpen(false)
-      }}
     >
       <button
         type="button"
-        aria-haspopup="true"
         aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
         data-testid="world-export"
         className={`${btnClass} inline-flex items-center gap-1.5`}
         disabled={disabled}
@@ -66,12 +59,13 @@ export function ExportMenu({ btnClass, onExport, disabled = false }: ExportMenuP
           // Both on screen: on a big monitor the toolbar, and the menu in it, are drawn `scale` times bigger.
           const room = screenRect(wrap).right - screenRect(wrap.parentElement as HTMLElement).left
           setSide(room < MENU_W * scale ? 'left' : 'right')
-          setOpen(!open)
+          onToggle()
         }}
         title="Save this world as a page you can share"
       ><i className="fa-solid fa-file-export" aria-hidden="true" />Export</button>
       {open && (
         <div
+          id={menuId}
           role="group"
           aria-label="Export"
           data-testid="world-export-menu"

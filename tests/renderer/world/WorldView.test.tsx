@@ -2023,7 +2023,7 @@ describe('WorldView export', () => {
     render(<WorldView root="/repo" onClose={onClose} />)
     await settle()
     const btn = screen.getByTestId('world-export')
-    expect(btn).toHaveAttribute('aria-haspopup', 'true')
+    expect(btn).not.toHaveAttribute('aria-haspopup')
     fireEvent.click(btn)
     expect(btn).toHaveAttribute('aria-expanded', 'true')
     const menu = screen.getByRole('group', { name: 'Export' })
@@ -2042,6 +2042,11 @@ describe('WorldView export', () => {
     expect(screen.queryByTestId('world-export-menu')).toBeNull()
     expect(viewer().resetView).not.toHaveBeenCalled()
     expect(screen.queryByTestId('world-document-dialog')).toBeNull()
+    // From elsewhere in the pane (the map), too: the menu shuts and the camera stays.
+    fireEvent.click(btn)
+    esc(screen.getByTestId('world-canvas-host'))
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+    expect(viewer().resetView).not.toHaveBeenCalled()
     // With the menu closed, Esc does what it always did.
     esc(btn)
     expect(viewer().resetView).toHaveBeenCalledTimes(1)

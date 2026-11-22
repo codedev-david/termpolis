@@ -2,8 +2,9 @@
 // reset, re-layout and close. In a narrow pane (`compact`) the secondary controls (the layer toggles, the
 // proposal, theme and tours, the 2D map, Reset view and Re-layout) fold into a More menu, so the toolbar
 // keeps to a row or two instead of taking a third of the pane. The close button sits in the top right
-// corner, out of the wrapping rows, so it is never left alone on a row of its own.
-import { useContext, useEffect, useRef, useState } from 'react'
+// corner, out of the wrapping rows, so it is never left alone on a row of its own. One popup (Bookmarks, More,
+// Export) is open at a time; Esc shuts it wherever the focus is in the pane, and so does a click outside it.
+import { useContext, useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Tour } from '../../../../shared/world/types'
 import { THEMES } from '../../world/engine'
@@ -59,6 +60,9 @@ export interface WorldToolbarProps {
   compact?: boolean
 }
 
+/** The toolbar's popups, one open at a time. */
+type Popup = 'bookmarks' | 'more' | 'export'
+
 const THEME_NAMES = Object.keys(THEMES) as ThemeName[]
 const themeLabel = (t: ThemeName): string => t.charAt(0).toUpperCase() + t.slice(1)
 
@@ -70,23 +74,56 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
   const scale = useContext(UiScaleContext)
   const { layers, onLayers } = props
   const compact = props.compact === true
-  const [menu, setMenu] = useState(false)
-  const [more, setMore] = useState(false)
+  const [popup, setPopup] = useState<Popup | null>(null)
+  const menu = popup === 'bookmarks'
+  const more = popup === 'more'
+  const ids = useId()
+  const idOf = (p: Popup): string => `${ids}-${p}`
   const [moreSide, setMoreSide] = useState<'left' | 'right'>('left')
   const moreRef = useRef<HTMLDivElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
+  /** A popup's wrapper: its button first, then its menu. */
+  const wrapOf = (p: Popup): HTMLElement => (barRef.current as HTMLDivElement).querySelector(`[data-world-popup="${p}"]`) as HTMLElement
+  /** A button opens its popup, shutting any other, or shuts its own. */
+  const toggle = (p: Popup): void => setPopup((open) => (open === p ? null : p))
+  /** Shuts the popup `p` after a choice in it, the focus back on its button: the control chosen goes with the menu. */
+  const done = (p: Popup): void => {
+    if (popup !== p) return
+    ;(wrapOf(p).firstElementChild as HTMLElement).focus()
+    setPopup(null)
+  }
   // A pane widened past the fold puts the controls back in the row: the menu has nothing left to show.
-  useEffect(() => { if (!compact) setMore(false) }, [compact])
+  useEffect(() => { if (!compact) setPopup((open) => (open === 'more' ? null : open)) }, [compact])
+  // A dialog opened some other way (the palette) shuts the Export menu under it, and a world closed takes it away.
+  const exportOff = props.dialogOpen === true || props.onExport === undefined
+  useEffect(() => { if (exportOff) setPopup((open) => (open === 'export' ? null : open)) }, [exportOff])
   useEffect(() => {
-    if (!more) return
+    if (popup === null) return
+    const wrap = wrapOf(popup)
     const onDown = (e: MouseEvent): void => {
-      if (!(moreRef.current as HTMLDivElement).contains(e.target as Node | null)) setMore(false)
+      if (!wrap.contains(e.target as Node | null)) setPopup(null)
+    }
+    // Capture on the document: after the pane's own Esc (on the window), which leaves Esc to an open popup.
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      const at = document.activeElement
+      if (wrap.contains(at) || at === document.body) (wrap.firstElementChild as HTMLElement).focus()
+      setPopup(null)
+      // An Esc from the pane is the popup's alone; one from outside it (a terminal) is still that one's too.
+      if (((barRef.current as HTMLDivElement).parentElement as HTMLElement).contains(e.target as Node | null)) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
     }
     document.addEventListener('mousedown', onDown, true)
-    return () => document.removeEventListener('mousedown', onDown, true)
-  }, [more])
-  /** Runs a control's action; one that leaves the view (a tour, a reset, a re-layout) closes the menu too. */
-  const andClose = (fn: () => void): (() => void) => () => { setMore(false); fn() }
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('mousedown', onDown, true)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [popup])
+  /** Runs a control's action; one that leaves the view (a tour, a reset, a re-layout) shuts the More menu too. */
+  const andClose = (fn: () => void): (() => void) => () => { done('more'); fn() }
   const [name, setName] = useState('')
   const save = (): void => {
     const n = name.trim()
@@ -195,18 +232,19 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
       </span>
       {props.switcher}
       {!compact && secondary}
-      <div className="relative">
+      <div className="relative" data-world-popup="bookmarks" data-world-own-esc={menu ? '' : undefined}>
         <button
           type="button"
-          aria-haspopup="true"
           aria-expanded={menu}
+          aria-controls={menu ? idOf('bookmarks') : undefined}
           data-testid="world-bookmarks"
           className={`${btn} text-[#cccccc]`}
-          onClick={() => setMenu(!menu)}
+          onClick={() => toggle('bookmarks')}
           title="Saved views of this map"
         >Bookmarks</button>
         {menu && (
           <div
+            id={idOf('bookmarks')}
             role="group"
             aria-label="Bookmarks"
             data-testid="world-bookmarks-menu"
@@ -239,7 +277,7 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
                   type="button"
                   data-testid="world-bookmark-go"
                   className="flex-1 min-w-0 text-left truncate px-1.5 py-1 rounded hover:bg-[#37373d] text-[#cccccc]"
-                  onClick={() => { props.onBookmark(b); setMenu(false) }}
+                  onClick={() => { props.onBookmark(b); done('bookmarks') }}
                 >{b.name}</button>
                 <button
                   type="button"
@@ -257,19 +295,14 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         <div
           ref={moreRef}
           className="relative"
-          // The pane leaves an Esc from inside the open menu to the menu (WorldView reads this attribute).
+          data-world-popup="more"
+          // While a popup is open the pane leaves Esc to it (WorldView reads this attribute).
           data-world-own-esc={more ? '' : undefined}
-          onKeyDown={(e) => {
-            if (!more || e.key !== 'Escape') return
-            e.preventDefault()
-            e.stopPropagation()
-            setMore(false)
-          }}
         >
           <button
             type="button"
-            aria-haspopup="true"
             aria-expanded={more}
+            aria-controls={more ? idOf('more') : undefined}
             data-testid="world-more"
             className={`${btn} text-[#cccccc] inline-flex items-center gap-1.5`}
             title="Layers, theme, tours, the 2D map, Reset view and Re-layout"
@@ -278,11 +311,12 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
               const wrap = screenRect(moreRef.current as HTMLDivElement)
               const bar = screenRect(barRef.current as HTMLDivElement)
               setMoreSide(bar.right - wrap.left >= MORE_W * scale || wrap.right - bar.left < MORE_W * scale ? 'left' : 'right')
-              setMore(!more)
+              toggle('more')
             }}
           ><i className="fa-solid fa-ellipsis" aria-hidden="true" />More</button>
           {more && (
             <div
+              id={idOf('more')}
               role="group"
               aria-label="More"
               data-testid="world-more-menu"
@@ -296,7 +330,17 @@ export function WorldToolbar(props: WorldToolbarProps): JSX.Element {
         </div>
       )}
       <div className="flex-1" />
-      {props.onExport && <ExportMenu btnClass={`${btn} text-[#cccccc]`} onExport={props.onExport} disabled={props.dialogOpen === true} />}
+      {props.onExport && (
+        <ExportMenu
+          btnClass={`${btn} text-[#cccccc]`}
+          onExport={props.onExport}
+          disabled={props.dialogOpen === true}
+          open={popup === 'export'}
+          onToggle={() => toggle('export')}
+          onDone={() => done('export')}
+          menuId={idOf('export')}
+        />
+      )}
       {props.onBuildIt && (
         <button
           type="button"

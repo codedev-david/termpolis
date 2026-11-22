@@ -437,6 +437,119 @@ describe('WorldToolbar in a narrow pane', () => {
     expect(screen.getByTestId('world-more-menu')).toHaveClass('left-0')
   })
 
+  it('keeps one popup open at a time: opening Bookmarks, More or Export shuts the one that was open', () => {
+    render(<WorldToolbar {...props({ compact: true, onExport: vi.fn() })} />)
+    const open = (): string[] => ['world-bookmarks-menu', 'world-more-menu', 'world-export-menu'].filter((id) => screen.queryByTestId(id) !== null)
+    // Keyboard presses: no mousedown outside closes the one before.
+    fireEvent.click(screen.getByTestId('world-more'))
+    expect(open()).toEqual(['world-more-menu'])
+    fireEvent.click(screen.getByTestId('world-bookmarks'))
+    expect(open()).toEqual(['world-bookmarks-menu'])
+    expect(screen.getByTestId('world-more')).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(screen.getByTestId('world-export'))
+    expect(open()).toEqual(['world-export-menu'])
+    expect(screen.getByTestId('world-bookmarks')).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(screen.getByTestId('world-more'))
+    expect(open()).toEqual(['world-more-menu'])
+  })
+
+  it('names what each button opens with aria-controls while it is open, and claims no popup role it lacks', () => {
+    render(<WorldToolbar {...props({ compact: true, onExport: vi.fn() })} />)
+    for (const [button, menu] of [['world-bookmarks', 'world-bookmarks-menu'], ['world-more', 'world-more-menu'], ['world-export', 'world-export-menu']]) {
+      const b = screen.getByTestId(button)
+      expect(b, button).not.toHaveAttribute('aria-haspopup')
+      expect(b, button).not.toHaveAttribute('aria-controls')
+      fireEvent.click(b)
+      const m = screen.getByTestId(menu)
+      expect(m.id, menu).not.toBe('')
+      expect(b, button).toHaveAttribute('aria-controls', m.id)
+      fireEvent.click(b)
+      expect(b, button).not.toHaveAttribute('aria-controls')
+    }
+  })
+
+  it('Esc shuts the open popup wherever the focus is in the pane; the focus goes back to its button when it was in the menu', () => {
+    render(<div><button type="button" data-testid="elsewhere">map</button><WorldToolbar {...props({ compact: true, onExport: vi.fn() })} /></div>)
+    const escAt = (el: Element): KeyboardEvent => {
+      const e = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      act(() => { el.dispatchEvent(e) })
+      return e
+    }
+    const bookmarks = screen.getByTestId('world-bookmarks')
+    // From inside the menu: shut, focus on its button, and the pane never sees that Esc.
+    fireEvent.click(bookmarks)
+    screen.getByTestId('world-bookmark-name').focus()
+    expect(escAt(screen.getByTestId('world-bookmark-name')).defaultPrevented).toBe(true)
+    expect(screen.queryByTestId('world-bookmarks-menu')).toBeNull()
+    expect(document.activeElement).toBe(bookmarks)
+    // From elsewhere in the pane: shut, the focus stays where it is.
+    fireEvent.click(bookmarks)
+    const elsewhere = screen.getByTestId('elsewhere')
+    elsewhere.focus()
+    expect(escAt(elsewhere).defaultPrevented).toBe(true)
+    expect(screen.queryByTestId('world-bookmarks-menu')).toBeNull()
+    expect(document.activeElement).toBe(elsewhere)
+    // Focus lost to the page (the control it was on is gone): back to the button. An Esc from outside the pane
+    // (a terminal) shuts the menu too, and is still the terminal's.
+    fireEvent.click(screen.getByTestId('world-more'))
+    elsewhere.blur()
+    const outside = document.createElement('div')
+    document.body.appendChild(outside)
+    expect(escAt(outside).defaultPrevented).toBe(false)
+    expect(screen.queryByTestId('world-more-menu')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByTestId('world-more'))
+    outside.remove()
+    // Another key does nothing.
+    fireEvent.click(screen.getByTestId('world-export'))
+    fireEvent.keyDown(screen.getByTestId('world-export'), { key: 'Tab' })
+    expect(screen.getByTestId('world-export-menu')).toBeInTheDocument()
+  })
+
+  it('a choice that shuts a popup gives the focus back to its button, not to the page', () => {
+    const p = props({ compact: true, onExport: vi.fn(), bookmarks: [{ name: 'Home view' } as unknown as WorldToolbarProps['bookmarks'][number]] })
+    render(<WorldToolbar {...p} />)
+    const more = screen.getByTestId('world-more')
+    fireEvent.click(more)
+    screen.getByTestId('world-reset').focus()
+    fireEvent.click(screen.getByTestId('world-reset'))
+    expect(p.onResetView).toHaveBeenCalled()
+    expect(document.activeElement).toBe(more)
+    fireEvent.click(more)
+    fireEvent.change(screen.getByTestId('world-tours'), { target: { value: 't1' } })
+    expect(document.activeElement).toBe(more)
+    const bookmarks = screen.getByTestId('world-bookmarks')
+    fireEvent.click(bookmarks)
+    fireEvent.click(screen.getByTestId('world-bookmark-go'))
+    expect(p.onBookmark).toHaveBeenCalled()
+    expect(screen.queryByTestId('world-bookmarks-menu')).toBeNull()
+    expect(document.activeElement).toBe(bookmarks)
+    const exp = screen.getByTestId('world-export')
+    fireEvent.click(exp)
+    fireEvent.click(screen.getByTestId('world-export-world'))
+    expect(p.onExport).toHaveBeenCalledWith('world')
+    expect(document.activeElement).toBe(exp)
+  })
+
+  it('a click outside shuts Bookmarks too, and a row control (wide pane) leaves an open popup alone', () => {
+    const p = props({ onExport: vi.fn() })
+    const { rerender } = render(<WorldToolbar {...p} />)
+    fireEvent.click(screen.getByTestId('world-bookmarks'))
+    fireEvent.mouseDown(screen.getByTestId('world-bookmark-name'))
+    expect(screen.getByTestId('world-bookmarks-menu')).toBeInTheDocument()
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByTestId('world-bookmarks-menu')).toBeNull()
+    fireEvent.click(screen.getByTestId('world-bookmarks'))
+    screen.getByTestId('world-bookmark-name').focus()
+    fireEvent.click(screen.getByTestId('world-reset'))
+    expect(p.onResetView).toHaveBeenCalled()
+    expect(screen.getByTestId('world-bookmarks-menu')).toBeInTheDocument()
+    // Export taken away (the world closed) with its menu open: the menu goes with it, and does not come back.
+    fireEvent.click(screen.getByTestId('world-export'))
+    rerender(<WorldToolbar {...p} onExport={undefined} />)
+    rerender(<WorldToolbar {...p} />)
+    expect(screen.queryByTestId('world-export-menu')).toBeNull()
+  })
+
   it('puts the close button in the top right corner, out of the rows, which keep clear of it', () => {
     render(<WorldToolbar {...props()} />)
     expect(screen.getByTestId('world-close')).toHaveStyle({ position: 'absolute', top: '8px', right: '8px' })
