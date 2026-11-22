@@ -175,12 +175,14 @@ test.afterAll(async () => {
 const sizeNow = (v: Viewport): Promise<string> =>
   page.evaluate(({ w, h, d }) => (Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1 && Math.abs(devicePixelRatio - d) < 0.01 ? 'ok' : `${innerWidth}x${innerHeight}@${devicePixelRatio}`), { w: v.width, h: v.height, d: v.dpr })
 
+/** A size's pixels over a 1080p screen's: how much longer than there a frame drawn in software takes, at least 1. */
+const frameCost = (s: Viewport | null): number => Math.max(1, s ? (s.width * s.height * s.dpr * s.dpr) / (1920 * 1080) : 1)
+
 async function emulate(v: Viewport): Promise<void> {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dpr, mobile: false })
   // The page answers once its frame is drawn: a 5K frame drawn in software, at the size left or the size asked for,
   // can take longer than 10 s on its own.
-  const px = (s: Viewport | null): number => (s ? (s.width * s.height * s.dpr * s.dpr) / (1920 * 1080) : 1)
-  await expect.poll(() => sizeNow(v), { timeout: 10_000 * Math.max(1, px(current), px(v)) }).toBe('ok')
+  await expect.poll(() => sizeNow(v), { timeout: 10_000 * Math.max(frameCost(current), frameCost(v)) }).toBe('ok')
 }
 
 async function setViewport(v: Viewport): Promise<void> {
@@ -379,7 +381,7 @@ async function split(width: number | null): Promise<number | null> {
     const now = await paneState()
     if (now.overlays) return Math.abs(now.pane - now.main) <= 1
     return now.position !== 'absolute' && now.max !== null && Math.abs(now.max - (now.main + now.pane - 320)) <= 2
-  }, { message: 'the pane lies over the terminals or beside them, measured on this window', timeout: 10_000 }).toBe(true)
+  }, { message: 'the pane lies over the terminals or beside them, measured on this window', timeout: 10_000 * frameCost(current) }).toBe(true)
   const s = await paneState()
   if (s.overlays) {
     expect(s.position, 'the pane lies over the terminals').toBe('absolute')
@@ -406,7 +408,7 @@ async function split(width: number | null): Promise<number | null> {
     // To the right narrows the pane.
     await page.mouse.move(x + (now - target), y, { steps: 5 })
     await page.mouse.up()
-    await expect.poll(async () => Math.abs((await paneState()).pane - now) > 0.5 || Math.abs(now - target) <= SPLIT_TOLERANCE_PX, { timeout: 10_000 }).toBe(true)
+    await expect.poll(async () => Math.abs((await paneState()).pane - now) > 0.5 || Math.abs(now - target) <= SPLIT_TOLERANCE_PX, { timeout: 10_000 * frameCost(current) }).toBe(true)
   }
   const got = (await paneState()).pane
   expect(Math.abs(got - target), `the dragged pane is ${Math.round(got)} px, asked for ${target}`).toBeLessThanOrEqual(SPLIT_TOLERANCE_PX)
