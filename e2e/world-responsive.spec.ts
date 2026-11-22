@@ -693,7 +693,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
         await askBox.fill('How does the memory search work?')
         await askBox.press('Enter')
         // The ask reads the stored world with a 15 s limit; in this software-rendered window, with the repo's own
-        // world refreshing as the run writes screenshots into it, that read can run out once. The app then offers
+        // world refreshing as the run writes screenshots into it, that read can run out. The app then offers
         // Retry, which is what a person would press: the size checks are about the answer once it is there. The
         // answer comes from a mock agent started through PowerShell, which can take a while to start on a busy
         // machine, so the wait is the app's own limits: 15 s to load the world, 10 s for each of the matches, the run
@@ -701,8 +701,11 @@ test.describe.serial('Lumopolis at every screen size', () => {
         const ASK_MS = 15_000 + 3 * 10_000 + 90_000
         const answer = page.locator('[data-testid="world-answer"]')
         const retry = page.getByRole('alert').getByRole('button', { name: 'Retry' })
-        await expect(answer.or(retry).first()).toBeVisible({ timeout: ASK_MS })
-        if (await retry.isVisible()) {
+        // A person presses Retry again while the map still can't load; the test does too, up to three times (round 3
+        // saw the read run out twice in a row at 3440x1440 while the run's own screenshots kept the world refreshing).
+        for (let tries = 0; ; tries++) {
+          await expect(answer.or(retry).first()).toBeVisible({ timeout: ASK_MS })
+          if (!(await retry.isVisible()) || tries === 3) break
           test.info().annotations.push({ type: 'ask retried', description: `the world read ran out at ${tag}` })
           await click(retry)
         }
