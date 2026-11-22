@@ -38,6 +38,12 @@ export interface AuditOptions {
   verticalScroll?: boolean
   /** Boxes that may scroll across on purpose (a wide table or figure in its own scrolling frame). */
   scrollX?: string[]
+  /**
+   * Open menus that drop over the page on purpose (a toolbar's More menu). A control or text a menu covers, where
+   * the menu is the one on top, is hidden while it is open, not overlapped; and the menu's own text, where it is on
+   * top, is not under a panel. A map label it covers is still reported: labels keep off the panels, menus included.
+   */
+  popups?: string[]
 }
 
 export interface AuditResult {
@@ -212,6 +218,31 @@ export function layoutAudit(opts: AuditOptions): AuditResult {
   }
   out.texts = items.length
 
+  // What the open menus cover, and which of their text is on top (the menu is what a click there would reach).
+  const popups = (opts.popups ?? []).flatMap((s) => Array.from(root.querySelectorAll<HTMLElement>(s))).filter((p) => shown(p))
+  const popupAt = (x: number, y: number): HTMLElement | null => {
+    const hit = document.elementFromPoint(x, y)
+    return hit ? popups.find((p) => p.contains(hit)) ?? null : null
+  }
+  const covered = new Set<Item>()
+  const onTop = new Set<Item>()
+  for (const it of items) {
+    const own = popups.find((p) => p.contains(it.el))
+    if (own) {
+      if (popupAt((it.r.left + it.r.right) / 2, (it.r.top + it.r.bottom) / 2) === own) onTop.add(it)
+      continue
+    }
+    if (it.label3d) continue
+    for (const p of popups) {
+      const pr = rectOf(p)
+      const l = Math.max(it.r.left, pr.left)
+      const r = Math.min(it.r.right, pr.right)
+      const t = Math.max(it.r.top, pr.top)
+      const b = Math.min(it.r.bottom, pr.bottom)
+      if (r - l > tol && b - t > tol && popupAt((l + r) / 2, (t + b) / 2) === p) { covered.add(it); break }
+    }
+  }
+
   for (let i = 0; i < items.length; i++) {
     const a = items[i]
     const ra = a.r
@@ -219,6 +250,7 @@ export function layoutAudit(opts: AuditOptions): AuditResult {
     for (let j = i + 1; j < items.length; j++) {
       const b = items[j]
       if (a.el === b.el || a.el.contains(b.el) || b.el.contains(a.el)) continue
+      if (covered.has(a) || covered.has(b)) continue
       const rb = b.r
       const x = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left)
       const y = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top)
@@ -235,7 +267,7 @@ export function layoutAudit(opts: AuditOptions): AuditResult {
     if (pr.right - pr.left < 1 || pr.bottom - pr.top < 1) continue
     const name = describe(p, p.getAttribute('aria-label') || '')
     for (const it of items) {
-      if (p.contains(it.el) || it.el.contains(p)) continue
+      if (p.contains(it.el) || it.el.contains(p) || covered.has(it) || onTop.has(it)) continue
       // Text inside another panel that this one is inside (a menu in the toolbar) is that panel's business.
       const x = Math.min(it.r.right, pr.right) - Math.max(it.r.left, pr.left)
       const y = Math.min(it.r.bottom, pr.bottom) - Math.max(it.r.top, pr.top)

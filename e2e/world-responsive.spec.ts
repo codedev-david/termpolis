@@ -45,8 +45,10 @@ const PANELS = [
   '[data-testid="world-notice"]',
   '[role="dialog"]',
   '[role="alertdialog"]',
+  '[data-map-panel]', // an open toolbar menu (Bookmarks, More, Export): no map label under it
 ]
-const WORLD: AuditOptions = { root: PANE, panels: PANELS }
+// An open toolbar menu drops over the legend and the map on purpose; what it covers is hidden while it is open.
+const WORLD: AuditOptions = { root: PANE, panels: PANELS, popups: ['[data-map-panel]'] }
 const RUN = responsiveViewports()
 const FULL = process.env.RESPONSIVE_FULL === '1'
 /** The size a blocking run also drags the pane narrow at: 4K, where a narrow pane's scale floor shows. */
