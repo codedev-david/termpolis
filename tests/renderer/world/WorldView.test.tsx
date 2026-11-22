@@ -399,6 +399,8 @@ describe('WorldView', () => {
     expect(screen.queryByTestId('world-canvas-host')).toBeNull()
     const list = screen.getByTestId('world-fallback')
     expect(list.querySelector('section.world-fallback')).not.toBeNull()
+    // The list is dark, so its scrollbar is drawn dark too, not as a light bar in a dark pane (F7).
+    expect((list.style as CSSStyleDeclaration & { colorScheme?: string }).colorScheme).toBe('dark')
     expect(list.querySelector('[data-kind="building"][data-id="b1"]')).toHaveTextContent('Desktop app')
     expect(askSlot).toHaveBeenLastCalledWith(null, expect.objectContaining({ buildings: expect.any(Array) }), '/repo', expect.objectContaining({ onEscape: expect.any(Function), setBusy: expect.any(Function) }), null)
     const doc = minimal()

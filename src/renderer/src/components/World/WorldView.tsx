@@ -844,9 +844,9 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
           <div
             data-testid="world-fallback"
             // Drawn at the pane's scale, wrapping long names, and ending above the ask bar laid over the
-            // pane's foot, so no row sits under the suggestions or the box.
+            // pane's foot, so no row sits under the suggestions or the box. Dark like the pane, so its scrollbar is too.
             className="overflow-auto p-6 text-sm [overflow-wrap:anywhere] [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:font-semibold [&_li]:cursor-pointer [&_ul]:pl-4 [&_p]:text-[#9ca3af]"
-            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: below / scale, ...zoom }}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: below / scale, colorScheme: 'dark', ...zoom }}
             onClick={onFallbackClick}
             // renderFallback escapes every string from the doc.
             dangerouslySetInnerHTML={{ __html: renderFallback(doc, projectName) }}
