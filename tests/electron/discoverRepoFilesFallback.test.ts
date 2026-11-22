@@ -13,9 +13,10 @@ const H = vi.hoisted(() => ({ installedGitWorks: true }))
 vi.mock('child_process', () => {
   type Cb = (e: Error | null, out: string, err: string) => void
   const enoent = (): Error => Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })
-  const execFile = (bin: string, _args: string[], _opts: unknown, cb: Cb): void => {
+  const execFile = (bin: string, args: string[], _opts: unknown, cb: Cb): void => {
     if (bin === 'git' || !H.installedGitWorks) return cb(enoent(), '', '')
-    cb(null, 'src/a.ts\nsrc/b.ts\n', '')
+    // ls-files -t tags each name with its status ("H " tracked), as the listing asks for.
+    cb(null, args.includes('-t') ? 'H src/a.ts\nH src/b.ts\n' : 'src/a.ts\nsrc/b.ts\n', '')
   }
   const exec = (_cmd: string, _opts: unknown, cb: Cb): void => cb(null, '', '')
   const execFileSync = (): Buffer => Buffer.from('')

@@ -13,6 +13,7 @@ import {
   type CaptureFn,
   type CaptureResult
 } from '../../src/main/world/fileSnapshot'
+import { lsFilesArgs, lsSubmoduleArgs, type RepoListing } from '../../src/main/repoFileList'
 import type { StageCache } from '../../src/main/world/stageCache'
 import { MAX_DETECT_FILE_CHARS } from '../../src/main/world/detectors'
 import { tmpdir } from 'node:os'
@@ -2282,30 +2283,65 @@ describe('fileSnapshot', () => {
     expect(failing.files).toEqual([])
     // Except git missing from a repository: that is said, not mapped as an empty world.
     await expect(snapshotFromFiles('/r', { read, listFiles: async () => { throw new Error(NO_GIT_MESSAGE) } })).rejects.toThrow(NO_GIT_MESSAGE)
-    // A listing object: a capped walk records how many files it listed; an uncapped one adds nothing.
-    const capped = await snapshotFromFiles('/r', { read, listFiles: async () => ({ files: ['src/a.ts', 'src/b.ts', 'README.md'], capped: true }) })
-    expect(capped).toMatchObject({ files: ['src/a.ts', 'src/b.ts'], filesCapped: 3 })
+    // A listing object: a capped one records how many files are mapped; an uncapped one adds nothing.
+    const capped = await snapshotFromFiles('/r', { read, listFiles: async () => ({ files: ['src/a.ts', 'src/b.ts', 'README.md'], capped: true, unreadable: [] }) })
+    expect(capped).toMatchObject({ files: ['src/a.ts', 'src/b.ts'], filesCapped: 2 })
+    expect('unreadable' in capped).toBe(false)
     const whole = await snapshotFromFiles('/r', { read, listFiles: async () => ({ files: ['src/a.ts'], capped: false }) })
     expect('filesCapped' in whole).toBe(false)
+    // Names the listing could not read pass through, for the world's count.
+    const odd = await snapshotFromFiles('/r', { read, listFiles: async () => ({ files: ['src/a.ts'], capped: false, unreadable: ['src/q\uFFFD.ts'] }) })
+    expect(odd.unreadable).toEqual(['src/q\uFFFD.ts'])
+  })
+
+  it('snapshotFromFiles never reads a file the world leaves out (a dependency, build or cache folder, a bundle)', async () => {
+    const read = vi.fn(async () => 'export const x = 1\n')
+    const listed = ['src/a.ts', 'vendor/lib/v.ts', 'packages/x/node_modules/dep/index.js', 'build/gen.ts', '.venv/lib/site.py', 'web/app.bundle.js', 'web/app.min.js']
+    const got = await snapshotFromFiles('/r', { read, listFiles: async () => listed })
+    expect(got.files).toEqual(['src/a.ts'])
+    expect(read.mock.calls).toEqual([['/r/src/a.ts']])
   })
 
   it('listSourceFiles asks git inside a repository, and walks a plain folder or one git refuses', async () => {
-    const walk = vi.fn(async () => ({ files: ['w.ts'], capped: true }))
-    const git = vi.fn(async (): Promise<string[] | null> => ['g.ts'])
-    expect(await listSourceFiles('/r', { inRepo: async () => true, git, walk })).toEqual({ files: ['g.ts'], capped: false })
+    const walked = { files: ['w.ts'], capped: true, unreadable: [] }
+    const walk = vi.fn(async () => walked)
+    const git = vi.fn(async (): Promise<RepoListing | null> => ({ files: ['g.ts'], capped: false, unreadable: ['u\uFFFD.ts'] }))
+    expect(await listSourceFiles('/r', { inRepo: async () => true, git, walk })).toEqual({ files: ['g.ts'], capped: false, unreadable: ['u\uFFFD.ts'] })
     expect(walk).not.toHaveBeenCalled()
-    expect(await listSourceFiles('/r', { inRepo: async () => false, git, walk })).toEqual({ files: ['w.ts'], capped: true })
+    expect(await listSourceFiles('/r', { inRepo: async () => false, git, walk })).toEqual(walked)
     expect(git).toHaveBeenCalledTimes(1)
     git.mockResolvedValueOnce(null)
-    expect(await listSourceFiles('/r', { inRepo: async () => true, git, walk })).toEqual({ files: ['w.ts'], capped: true })
-    // The defaults: a real plain folder is walked, keeping only source files and skipping dependency folders.
+    expect(await listSourceFiles('/r', { inRepo: async () => true, git, walk })).toEqual(walked)
+    // git answered with nothing: the folder is walked, and its files are the world when it has any on disk.
+    const none: RepoListing = { files: [], capped: false, unreadable: [] }
+    git.mockResolvedValueOnce(none)
+    expect(await listSourceFiles('/r', { inRepo: async () => true, git, walk })).toEqual(walked)
+    // ...and stays empty when it has none.
+    git.mockResolvedValueOnce(none)
+    walk.mockResolvedValueOnce({ files: [], capped: false, unreadable: [] })
+    expect(await listSourceFiles('/r', { inRepo: async () => true, git, walk })).toBe(none)
+    // A walk that found only names it cannot read still found files on disk.
+    git.mockResolvedValueOnce(none)
+    const oddOnly = { files: [], capped: false, unreadable: ['q\uFFFD.ts'] }
+    walk.mockResolvedValueOnce(oddOnly)
+    expect(await listSourceFiles('/r', { inRepo: async () => true, git, walk })).toBe(oddOnly)
+    // The defaults: a real plain folder is walked, keeping only source files the world shows, skipping dependency
+    // folders and virtual environments, and leaving out what the folder's own .gitignore names.
     const plain = join(dir, 'plain-walk')
     await mkdir(join(plain, 'src'), { recursive: true })
     await mkdir(join(plain, 'node_modules', 'p'), { recursive: true })
+    await mkdir(join(plain, 'env', 'lib'), { recursive: true })
+    await mkdir(join(plain, 'generated'), { recursive: true })
     await writeFile(join(plain, 'src', 'a.ts'), 'export const a = 1\n')
+    await writeFile(join(plain, 'src', 'app.bundle.js'), 'x\n')
     await writeFile(join(plain, 'notes.txt'), 'notes\n')
     await writeFile(join(plain, 'node_modules', 'p', 'i.js'), 'x\n')
-    expect(await listSourceFiles(plain)).toEqual({ files: ['src/a.ts'], capped: false })
+    await writeFile(join(plain, 'env', 'pyvenv.cfg'), 'home = /usr/bin\n')
+    await writeFile(join(plain, 'env', 'lib', 'site.py'), 'x = 1\n')
+    await writeFile(join(plain, 'generated', 'g.ts'), 'export const g = 1\n')
+    expect(await listSourceFiles(plain)).toEqual({ files: ['generated/g.ts', 'src/a.ts'], capped: false, unreadable: [] })
+    await writeFile(join(plain, '.gitignore'), 'generated/\n')
+    expect(await listSourceFiles(plain)).toEqual({ files: ['src/a.ts'], capped: false, unreadable: [] })
   })
 
   it('insideGitRepo looks for .git in the folder and every folder above it', async () => {
@@ -2328,37 +2364,45 @@ describe('fileSnapshot', () => {
     expect(await insideGitRepo(join(wt, 'src'))).toBe(true)
   })
 
-  it('gitListFiles runs git by its full path with the clone safety flags: tracked and untracked files, submodules recursed', async () => {
+  it('gitListFiles runs git by its full path with the clone safety flags, through the shared listing (repoFileList listRepo)', async () => {
     const calls: { cmd: string; args: string[]; opts: { timeout: number; maxBytes: number } }[] = []
     const replies: CaptureResult[] = []
     const exec: CaptureFn = async (cmd, args, opts) => {
       calls.push({ cmd, args, opts })
-      return replies.shift() ?? { code: 0, stdout: 'src/a.ts\0src/b c.ts\0src/café.ts\0', missing: false }
+      return replies.shift() ?? { code: 0, stdout: 'H src/a.ts\0H src/b c.ts\0? src/café.ts\0? src/q\uFFFD.ts\0? node_modules/\0', missing: false }
     }
     const git = async (): Promise<string | null> => '/usr/bin/git'
-    const noSub = async (): Promise<boolean> => false
-    expect(await gitListFiles('/r', exec, false, git, noSub)).toEqual(['src/a.ts', 'src/b c.ts', 'src/café.ts'])
+    const has = (paths: string[]) => async (p: string): Promise<boolean> => paths.includes(p.replace(/\\/g, '/'))
+    const top = has(['/r/.git'])
+    expect(await gitListFiles('/r', exec, false, git, top)).toEqual({ files: ['src/a.ts', 'src/b c.ts', 'src/café.ts'], unreadable: ['src/q\uFFFD.ts'], capped: false })
     expect(calls.map((c) => c.cmd)).toEqual(['/usr/bin/git'])
-    expect(calls[0].args).toEqual([...safetyFlags(false), '-c', 'core.quotepath=false', '-C', '/r', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'])
+    expect(calls[0].args).toEqual([...safetyFlags(false), ...lsFilesArgs('/r')])
     expect(calls[0].opts).toEqual({ timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
     // With submodules, a second listing recurses into them; the gitlink entry for the folder goes.
     calls.length = 0
-    replies.push({ code: 0, stdout: 'libs/shared\0main.ts\0', missing: false }, { code: 0, stdout: 'libs/shared/u.ts\0main.ts\0', missing: false })
-    expect(await gitListFiles('/r', exec, true, git, async () => true)).toEqual(['libs/shared/u.ts', 'main.ts'])
-    expect(calls[1].args).toEqual([...safetyFlags(true), '-c', 'core.quotepath=false', '-C', '/r', 'ls-files', '-z', '--cached', '--recurse-submodules'])
+    replies.push({ code: 0, stdout: 'H libs/shared\0H main.ts\0', missing: false }, { code: 0, stdout: 'libs/shared/u.ts\0main.ts\0', missing: false })
+    expect(await gitListFiles('/r', exec, true, git, has(['/r/.gitmodules']))).toEqual({ files: ['libs/shared/u.ts', 'main.ts'], unreadable: [], capped: false })
+    expect(calls[1].args).toEqual([...safetyFlags(true), ...lsSubmoduleArgs('/r')])
     // A submodule listing that fails leaves the repository's own files.
-    replies.push({ code: 0, stdout: 'libs/shared\0main.ts\0', missing: false }, { code: 1, stdout: '', missing: false })
-    expect(await gitListFiles('/r', exec, true, git, async () => true)).toEqual(['libs/shared', 'main.ts'])
-    // git ran and refused (not a repository after all, an owner it does not trust): null, so the caller walks.
-    expect(await gitListFiles('/r', async () => ({ code: 128, stdout: 'x', missing: false }), true, git, noSub)).toBeNull()
-    // No git: said plainly.
-    await expect(gitListFiles('/r', async () => ({ code: 1, stdout: '', missing: true }), true, git, noSub)).rejects.toThrow(NO_GIT_MESSAGE)
+    replies.push({ code: 0, stdout: 'H libs/shared\0H main.ts\0', missing: false }, { code: 1, stdout: '', missing: false })
+    expect((await gitListFiles('/r', exec, true, git, has(['/r/.gitmodules'])))?.files).toEqual(['libs/shared', 'main.ts'])
+    // A nested repository that is not a submodule is listed by its own git, as the shared listing does.
     calls.length = 0
-    await expect(gitListFiles('/r', exec, false, async () => null, noSub)).rejects.toThrow(NO_GIT_MESSAGE)
+    replies.push({ code: 0, stdout: 'H main.ts\0? tools/sdk/\0', missing: false }, { code: 0, stdout: 'H index.ts\0', missing: false })
+    expect((await gitListFiles('/r', exec, false, git, has(['/r/.git', '/r/tools/sdk/.git'])))?.files).toEqual(['main.ts', 'tools/sdk/index.ts'])
+    expect(calls[1].args).toEqual([...safetyFlags(false), ...lsFilesArgs('/r/tools/sdk')])
+    // git ran and refused (not a repository after all, an owner it does not trust): null, so the caller walks.
+    expect(await gitListFiles('/r', async () => ({ code: 128, stdout: 'x', missing: false }), true, git, top)).toBeNull()
+    // No git: said plainly, on any of its runs.
+    await expect(gitListFiles('/r', async () => ({ code: 1, stdout: '', missing: true }), true, git, top)).rejects.toThrow(NO_GIT_MESSAGE)
+    replies.push({ code: 0, stdout: 'H main.ts\0', missing: false }, { code: 1, stdout: '', missing: true })
+    await expect(gitListFiles('/r', exec, true, git, has(['/r/.gitmodules']))).rejects.toThrow(NO_GIT_MESSAGE)
+    calls.length = 0
+    await expect(gitListFiles('/r', exec, false, async () => null, top)).rejects.toThrow(NO_GIT_MESSAGE)
     expect(calls).toHaveLength(0)
     // A git inside the folder being listed: nothing starts, nothing is listed.
     for (const bin of ['/r/git', '/r/tools/git.exe']) {
-      expect(await gitListFiles('/r', exec, false, async () => bin, noSub)).toEqual([])
+      expect(await gitListFiles('/r', exec, false, async () => bin, top)).toEqual({ files: [], unreadable: [], capped: false })
       expect(calls).toHaveLength(0)
     }
     // The defaults look git up for this process (never the bare name) and look for .gitmodules on disk.
@@ -2366,12 +2410,15 @@ describe('fileSnapshot', () => {
     await mkdir(repo, { recursive: true })
     await writeFile(join(repo, '.gitmodules'), '')
     calls.length = 0
+    replies.push({ code: 0, stdout: 'H a.ts\0', missing: false }, { code: 0, stdout: 'a.ts\0', missing: false })
     await gitListFiles(repo, exec)
     expect(calls).toHaveLength(2)
     expect(calls.every((c) => c.cmd !== 'git' && /[\\/]git(\.exe)?$/i.test(c.cmd))).toBe(true)
     calls.length = 0
+    replies.push({ code: 0, stdout: 'H a.ts\0', missing: false }, { code: 1, stdout: '', missing: false })
     await gitListFiles('/nowhere-' + Date.now(), exec)
-    expect(calls).toHaveLength(1)
+    // No .gitmodules and no .git there: it asks git for the top (which fails), and lists nothing more.
+    expect(calls).toHaveLength(2)
   })
 
   it('captureExec collects stdout, drops the git path variables, runs with no login, and fails on a timeout, too much output or a missing program', async () => {

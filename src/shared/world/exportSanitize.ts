@@ -330,5 +330,7 @@ export function sanitizeWorld(doc: WorldDoc, ctx: SanitizeContext): WorldDoc {
     ...(doc.runtimeHandSet ? { runtimeHandSet: [...doc.runtimeHandSet] } : {}),
     layers: { plan: doc.layers.plan.map(proposal) },
     ...(doc.labelTokens !== undefined ? { labelTokens: doc.labelTokens } : {}),
+    ...(doc.filesCapped !== undefined ? { filesCapped: doc.filesCapped } : {}),
+    ...(doc.filesUnreadable !== undefined ? { filesUnreadable: doc.filesUnreadable } : {}),
   }
 }

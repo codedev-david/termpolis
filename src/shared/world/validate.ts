@@ -341,14 +341,17 @@ export function validateWorld(doc: unknown): { ok: true; doc: WorldDoc } | { ok:
 
   if (e.length) return { ok: false, errors: e }
   // labelTokens is optional and only a number is kept: a stored world without it, or with junk in it, still loads.
-  // filesCapped (a capped folder walk's file count) is kept only as a whole number of at least 0.
+  // filesCapped and filesUnreadable (the files note's counts) are kept only as whole numbers of at least 0.
   const badHand = doc.runtimeHandSet !== undefined && !(Array.isArray(doc.runtimeHandSet) && doc.runtimeHandSet.every((x) => typeof x === 'string'))
-  const badCapped = doc.filesCapped !== undefined && !(Number.isInteger(doc.filesCapped) && (doc.filesCapped as number) >= 0)
-  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped) {
+  const badCount = (n: unknown): boolean => n !== undefined && !(Number.isInteger(n) && (n as number) >= 0)
+  const badCapped = badCount(doc.filesCapped)
+  const badUnreadable = badCount(doc.filesUnreadable)
+  if ((doc.labelTokens !== undefined && !isNum(doc.labelTokens)) || badHand || badCapped || badUnreadable) {
     const rest: Record<string, unknown> = { ...doc }
     if (doc.labelTokens !== undefined && !isNum(doc.labelTokens)) delete rest.labelTokens
     if (badHand) delete rest.runtimeHandSet
     if (badCapped) delete rest.filesCapped
+    if (badUnreadable) delete rest.filesUnreadable
     return { ok: true, doc: rest as unknown as WorldDoc }
   }
   return { ok: true, doc: doc as unknown as WorldDoc }

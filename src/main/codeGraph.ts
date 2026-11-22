@@ -16,7 +16,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { extractFile, extractReferences, languageForFile, type CodeSymbol, type SymbolKind, type FileExtract } from './codeGraphExtract'
 import { extractFileTS } from './codeGraphTreeSitter'
-import { isIndexableCodeFile, discoverRepoFiles } from './codeIngest'
+import { isIndexableCodeFile, discoverRepoFiles, repoListingNotes } from './codeIngest'
 import { projectKeyOf } from './projectKey'
 // A code-graph JSON is one object (not line-streamable), but reading a file past the V8 string limit
 // as 'utf8' fatals uncatchably (see fileLines.ts). Guard the whole-file reads below with this cliff.
@@ -666,8 +666,10 @@ export interface GraphSnapshot {
   symbols: SymbolHit[]
   callEdges: CodeGraphEdge[]
   fileImports: Record<string, string[]>
-  /** Set when the files come from a folder walk that stopped at its cap: how many files it listed. */
+  /** Set when the listing stopped at its cap (a folder walk, or nested repositories): how many files are mapped. */
   filesCapped?: number
+  /** Listed names that are not valid UTF-8, so no read finds them: the world counts the source files among them. */
+  unreadable?: string[]
 }
 
 const slashed = (p: string): string => p.replace(/\\/g, '/')
@@ -721,7 +723,13 @@ export function graphSnapshot(projectKey: string, root?: string, opts: GraphSnap
     const r = rel(f)
     if (r !== null) fileImports[r] = [...imps]
   }
-  if (opts.structureOnly === true) return { root: base, files, symbols: [], callEdges: [], fileImports }
+  // What the repository's listing could not show (codeIngest.ts discoverRepoFiles), for the world's pane note.
+  const notes = root ? repoListingNotes(base) : null
+  const said = {
+    ...(notes?.capped ? { filesCapped: files.length } : {}),
+    ...(notes && notes.unreadable.length > 0 ? { unreadable: [...notes.unreadable] } : {})
+  }
+  if (opts.structureOnly === true) return { root: base, files, symbols: [], callEdges: [], fileImports, ...said }
   const idMap = new Map<string, string>()
   const symbols: SymbolHit[] = []
   for (const s of st.symbolsById.values()) {
@@ -739,7 +747,7 @@ export function graphSnapshot(projectKey: string, root?: string, opts: GraphSnap
     const to = idMap.get(e.to)
     if (from !== undefined && to !== undefined) callEdges.push({ from, to })
   }
-  return { root: base, files, symbols, callEdges, fileImports }
+  return { root: base, files, symbols, callEdges, fileImports, ...said }
 }
 
 /** The projectKey of the graph most recently built/queried (the repo the user is in). */

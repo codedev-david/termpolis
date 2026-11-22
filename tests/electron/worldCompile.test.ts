@@ -284,10 +284,22 @@ describe('compileWorld', () => {
     expect(third.layout.positions['x-codex']).toEqual(first.layout.positions['x-codex'])
   })
 
-  it('copies a capped folder walk to doc.filesCapped, so the pane can say only the first files are shown', async () => {
-    const capped = await compileWorld({ snap: { ...snapOf(FIXTURE), filesCapped: 20000 }, projectKey: 'demo', head: HEAD, previous: null }, mkDeps(FIXTURE))
-    expect(capped.filesCapped).toBe(20000)
-    expect('filesCapped' in (await compileFixture())).toBe(false)
+  it('a capped listing sets doc.filesCapped to the files the world maps, so the pane can say only the first files are shown', async () => {
+    const snap = snapOf(FIXTURE)
+    const capped = await compileWorld({ snap: { ...snap, filesCapped: 20000 }, projectKey: 'demo', head: HEAD, previous: null }, mkDeps(FIXTURE))
+    expect(capped.filesCapped).toBe(new Set(capped.buildings.flatMap((b) => b.members)).size)
+    expect(capped.filesCapped).toBeLessThan(20000)
+    const plain = await compileFixture()
+    expect('filesCapped' in plain).toBe(false)
+    expect('filesUnreadable' in plain).toBe(false)
+  })
+
+  it('counts the unreadable names the world would have shown: source files outside the folders it leaves out', async () => {
+    const unreadable = ['src/q\uFFFD.ts', 'lib/r\uFFFD.py', 'notes/n\uFFFD.md', 'vendor/v\uFFFD.ts', 'web/w\uFFFD.min.js', 'img/i\uFFFD.png']
+    const doc = await compileWorld({ snap: { ...snapOf(FIXTURE), unreadable }, projectKey: 'demo', head: HEAD, previous: null }, mkDeps(FIXTURE))
+    expect(doc.filesUnreadable).toBe(2)
+    const none = await compileWorld({ snap: { ...snapOf(FIXTURE), unreadable: ['notes/n\uFFFD.md'] }, projectKey: 'demo', head: HEAD, previous: null }, mkDeps(FIXTURE))
+    expect('filesUnreadable' in none).toBe(false)
   })
 
   it('copies labels.tokens to doc.labelTokens, and an incremental run reports only its own calls', async () => {

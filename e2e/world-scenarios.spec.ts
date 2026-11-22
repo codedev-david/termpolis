@@ -1,13 +1,21 @@
 /**
  * Lumopolis over the edge-case scenario fixtures (tests/e2e/fixtures/worldScenarios.ts), in the real app with one
- * launch for the whole table. Each scenario is opened as the Open folder button opens a folder: main is asked to map
- * it as a project (world:map-project), then the pane opens on it. For each row the world must have the files a
- * person can see as parts (every building's members), none of the vendored ones, and no error in the pane. Last, the
- * renderer must have logged no console error and thrown no page error.
+ * launch for the whole table. Most rows open their scenario the way the app opens a project's world: main is asked to
+ * map it (world:map-project), then the pane opens on it (the termpolis:openWorld event). One row, nested-repo, goes
+ * through the Lumopolis home's real Open a folder button instead (world:open-folder, its folder dialog answered from
+ * TERMPOLIS_TEST_WORLD_PICK_FILE). For each row the world must have the files a person can see as parts (every
+ * building's members), none of the vendored ones, and no error in the pane. Last, the renderer must have logged no
+ * console error and thrown no page error.
+ *
+ * With WORLD_SCENARIO_HUGE=1 two more rows run: huge (50,000 files) as a plain folder, where the walk stops at its cap
+ * and the pane says so, and as a repository, where git lists every file. Each prints the time to the first map and
+ * every process's peak working set (app.getAppMetrics) for the record. CI does not set it: each fixture writes 50,000
+ * files.
  *
  * The rows: unicode-names (a git repository, so git's quoting of non-ASCII names is in play), non-git (a plain
- * folder, walked), untracked (a file never added), vendored (dependency, build and minified files committed) and
- * submodule (recursed into).
+ * folder, walked), untracked (a file never added), vendored (dependency, build, minified and bundled files committed),
+ * vendored-untracked (dependency, environment, cache and build folders written and never added), submodule (recursed
+ * into) and nested-repo (a repository inside the folder, listed by its own git).
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import fs from 'fs'
@@ -15,12 +23,13 @@ import os from 'os'
 import path from 'path'
 import { quitApp, ensureE2eBuild } from './helpers/launch'
 import { launchWorldApp, removeDirs, expectPaneOpens } from './helpers/world'
-import { makeScenario, type ScenarioName, type ScenarioOptions } from '../tests/e2e/fixtures/worldScenarios'
+import { makeScenario, UNTRACKED_VENDORED, type ScenarioName, type ScenarioOptions } from '../tests/e2e/fixtures/worldScenarios'
 
 let app: ElectronApplication
 let page: Page
 let userDataDir: string
 let base: string
+let pickFile: string
 const consoleErrors: string[] = []
 
 interface Row {
@@ -30,6 +39,8 @@ interface Row {
   parts: string[]
   /** Path prefixes no member may start with. */
   absent?: string[]
+  /** Opened through the home's Open a folder button (world:open-folder) rather than world:map-project. */
+  openFolder?: boolean
 }
 
 const ROWS: Row[] = [
@@ -39,15 +50,20 @@ const ROWS: Row[] = [
   {
     name: 'vendored',
     parts: ['src/main.ts', 'src/util.ts'],
-    absent: ['node_modules/', '.venv/', 'target/', 'dist/', 'site.min.css']
+    // src/app.bundle.js is a .js file in a folder the world shows: only its name keeps it out, so this can fail.
+    absent: ['node_modules/', '.venv/', 'target/', 'dist/', 'src/app.bundle.js']
   },
-  { name: 'submodule', parts: ['src/app.ts', 'libs/shared/index.ts', 'libs/shared/helper.ts'] }
+  { name: 'vendored-untracked', parts: ['src/main.ts', 'src/util.ts'], absent: UNTRACKED_VENDORED },
+  { name: 'submodule', parts: ['src/app.ts', 'libs/shared/index.ts', 'libs/shared/helper.ts'] },
+  { name: 'nested-repo', parts: ['src/app.ts', 'nested/lib.ts', 'nested/helper.ts'], openFolder: true }
 ]
 
 test.beforeAll(async () => {
   ensureE2eBuild()
   base = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-scenarios-'))
+  pickFile = path.join(base, 'pick.txt')
   const launched = await launchWorldApp({
+    env: { TERMPOLIS_TEST_WORLD_PICK_FILE: pickFile },
     onPage: (p) => {
       p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
       p.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`))
@@ -64,14 +80,38 @@ test.afterAll(async () => {
 })
 
 const pane = () => page.locator('[data-testid="world-view"]')
+const home = () => page.getByTestId('world-home')
 
-/** Every building member of the world main stored for `root` (its repository's top when it is in one); null: no world yet. */
+/** The home's Open a folder button, with the folder dialog answered by `dir`: the real world:open-folder handler. */
+async function openFromHome(dir: string): Promise<void> {
+  fs.writeFileSync(pickFile, dir)
+  await page.keyboard.press('ControlOrMeta+k')
+  const input = page.getByPlaceholder('Type a command...')
+  await expect(input).toBeVisible()
+  await input.fill('Open Lumopolis')
+  await page.getByRole('button', { name: /^Open Lumopolis\s*See your project as a 3D world/ }).click()
+  await expect(pane()).toBeVisible()
+  // The pane opens on the home, or on the last world; the Worlds list goes home from there.
+  if (!(await home().isVisible().catch(() => false))) await page.getByRole('combobox', { name: 'Worlds' }).selectOption('__home')
+  await expect(home()).toBeVisible()
+  await home().getByRole('button', { name: /^Open a folder/ }).click()
+  await expect(home()).toHaveCount(0)
+}
+
+/**
+ * Every building member of the world main stored for `root`; null: no world yet. A folder opened as a folder is stored
+ * under the folder as given, a project under its repository's top, which git may spell differently (a long name for
+ * an 8.3 temp path), so both are asked.
+ */
 async function members(root: string): Promise<string[] | null> {
   return page.evaluate(async (r) => {
     interface Doc { buildings: { members: string[] }[] }
     const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string | null }>; worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
+    const own = await api.worldGet(r)
+    if (own.success && own.data) return own.data.buildings.flatMap((b) => b.members)
     const top = await api.gitFindRoot(r)
-    const res = await api.worldGet(top.success && top.data ? top.data : r)
+    if (!top.success || !top.data || top.data === r) return null
+    const res = await api.worldGet(top.data)
     return res.success && res.data ? res.data.buildings.flatMap((b) => b.members) : null
   }, root)
 }
@@ -82,14 +122,18 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
       test.setTimeout(90_000)
       const dir = await makeScenario(row.name, base, row.opts)
 
-      // The Open folder path: main maps the folder as a project, then the pane opens on it.
-      const mapped = await page.evaluate(
-        (r) => (window as unknown as { termpolis: { worldMapProject: (c: string) => Promise<{ success: boolean; error?: string }> } }).termpolis.worldMapProject(r),
-        dir
-      )
-      expect(mapped.error ?? '', `world:map-project refused ${row.name}`).toBe('')
-      expect(mapped.success).toBe(true)
-      await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), dir)
+      if (row.openFolder) {
+        await openFromHome(dir)
+      } else {
+        // The project path: main maps the folder as a project, then the pane opens on it.
+        const mapped = await page.evaluate(
+          (r) => (window as unknown as { termpolis: { worldMapProject: (c: string) => Promise<{ success: boolean; error?: string }> } }).termpolis.worldMapProject(r),
+          dir
+        )
+        expect(mapped.error ?? '', `world:map-project refused ${row.name}`).toBe('')
+        expect(mapped.success).toBe(true)
+        await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), dir)
+      }
       await expectPaneOpens(page)
 
       await expect.poll(() => members(dir), { message: `a world for ${row.name}`, timeout: 60_000 }).not.toBeNull()
@@ -103,6 +147,41 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
       await page.locator('[data-testid="world-close"]').click()
       await expect(pane()).toHaveCount(0)
     })
+  }
+
+  for (const withGit of [false, true]) {
+  test(`huge ${withGit ? 'repository' : 'folder'} (WORLD_SCENARIO_HUGE=1 only): ${withGit ? 'git lists every file' : 'the walk stops at its cap and the pane says so'}; time and memory are printed`, async () => {
+    test.skip(process.env.WORLD_SCENARIO_HUGE !== '1', 'huge writes 50,000 files; set WORLD_SCENARIO_HUGE=1 to run it')
+    test.setTimeout(900_000)
+    const dir = await makeScenario('huge', base, { git: withGit })
+    const started = Date.now()
+    const mapped = await page.evaluate(
+      (r) => (window as unknown as { termpolis: { worldMapProject: (c: string) => Promise<{ success: boolean; error?: string }> } }).termpolis.worldMapProject(r),
+      dir
+    )
+    expect(mapped.error ?? '').toBe('')
+    await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), dir)
+    await expectPaneOpens(page)
+    await expect.poll(() => members(dir), { message: 'a world for huge', timeout: 800_000, intervals: [1000] }).not.toBeNull()
+    const firstMapMs = Date.now() - started
+    const got = (await members(dir))!
+    expect(got.length).toBeGreaterThan(0)
+    if (withGit) {
+      expect(got.length).toBe(50_000)
+      await expect(page.locator('[data-testid="world-notice"]', { hasText: 'Showing the first ' })).toHaveCount(0)
+    } else {
+      expect(got.length).toBeLessThanOrEqual(20_000)
+      await expect(page.locator('[data-testid="world-notice"]')).toContainText('Showing the first ', { timeout: 60_000 })
+    }
+    const peaks = await app.evaluate(({ app: eapp }) =>
+      eapp.getAppMetrics().map((m) => ({ process: m.name ? `${m.type}:${m.name}` : m.type, peakMB: Math.round(m.memory.peakWorkingSetSize / 1024) }))
+    )
+    const report = { git: withGit, firstMapMs, mapped: got.length, peaks }
+    console.log(`[huge] ${JSON.stringify(report)}`)
+    test.info().annotations.push({ type: 'huge', description: JSON.stringify(report) })
+    await page.locator('[data-testid="world-close"]').click()
+    await expect(pane()).toHaveCount(0)
+  })
   }
 
   test('the renderer logged no console errors and threw no page errors', async () => {

@@ -5,7 +5,8 @@
  * integration tests.
  *
  * Rules: no network, ever. Git runs (`git init`, `git add`, `git commit`, with `-c user.name=t -c user.email=t@t`)
- * only for the scenarios that are repositories (GIT_SCENARIOS), or when the caller asks for one with `{ git: true }`.
+ * only for the scenarios that are repositories (GIT_SCENARIOS), or when the caller asks for one with `{ git: true }`,
+ * and never reads the machine's git config (GIT_CONFIG_GLOBAL is an empty file, GIT_CONFIG_NOSYSTEM=1).
  * A scenario that is not a repository gets a project marker (package.json, pyproject.toml or go.mod) so the app's
  * Open folder accepts it. Every file stays under 30 KB except twenty-mb-file's big.ts. Everything is generated when
  * the scenario is made; nothing big is checked in.
@@ -13,6 +14,7 @@
 import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -29,6 +31,8 @@ export const SCENARIO_NAMES = [
   'non-git',
   'untracked',
   'vendored',
+  'vendored-untracked',
+  'nested-repo',
   'binary',
   'twenty-mb-file',
   'huge',
@@ -50,7 +54,14 @@ export const SCENARIO_NAMES = [
 export type ScenarioName = (typeof SCENARIO_NAMES)[number]
 
 /** The scenarios that are git repositories whatever the caller asks. */
-export const GIT_SCENARIOS: ReadonlySet<ScenarioName> = new Set<ScenarioName>(['empty-git', 'submodule', 'untracked', 'vendored'])
+export const GIT_SCENARIOS: ReadonlySet<ScenarioName> = new Set<ScenarioName>([
+  'empty-git',
+  'submodule',
+  'untracked',
+  'vendored',
+  'vendored-untracked',
+  'nested-repo'
+])
 
 /** The scenarios that are never repositories, even with `{ git: true }`. */
 export const PLAIN_SCENARIOS: ReadonlySet<ScenarioName> = new Set<ScenarioName>(['non-git'])
@@ -70,12 +81,27 @@ type Files = Record<string, string | Buffer>
 
 const isWindows = process.platform === 'win32'
 
-/** Git with a fixed identity, no signing, no hooks from the machine's config and no line-ending conversion. */
+let emptyConfig: Promise<string> | undefined
+
+/** An empty git config file, made once, so the fixtures' git never reads the machine's own. */
+function hermeticConfig(): Promise<string> {
+  emptyConfig ??= (async () => {
+    const file = join(await mkdtemp(join(tmpdir(), 'termpolis-fixture-git-')), 'config')
+    await writeFile(file, '')
+    return file
+  })()
+  return emptyConfig
+}
+
+/**
+ * Git with a fixed identity, no signing and no line-ending conversion, and none of the machine's config: the global
+ * file is an empty one and the system file is not read, so no hook, alias or template of the runner's leaks in.
+ */
 export async function git(cwd: string, ...args: string[]): Promise<void> {
   await run(
     'git',
     ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'core.autocrlf=false', '-c', 'init.defaultBranch=main', ...args],
-    { cwd, windowsHide: true }
+    { cwd, windowsHide: true, env: { ...process.env, GIT_CONFIG_GLOBAL: await hermeticConfig(), GIT_CONFIG_NOSYSTEM: '1' } }
   )
 }
 
@@ -260,6 +286,62 @@ async function makeSubmodule(dir: string, baseDir: string): Promise<void> {
   await commitAll(dir, 'parent')
 }
 
+/** The folders vendored-untracked writes and never adds: dependencies, environments, caches and build output. */
+export const UNTRACKED_VENDORED = [
+  'packages/x/node_modules/',
+  '.venv/',
+  'venv/',
+  'env/',
+  '.tox/',
+  'obj/',
+  '__pycache__/',
+  '.next/',
+  'coverage/',
+  'bower_components/'
+]
+
+async function makeVendoredUntracked(dir: string): Promise<void> {
+  await put(dir, {
+    'package.json': pkg('vendored-untracked'),
+    'src/main.ts': ts(["import { util } from './util'"], 'export const main = (): number => util()'),
+    'src/util.ts': ts([], 'export const util = (): number => 1')
+  })
+  await git(dir, 'init', '-q')
+  await commitAll(dir, 'src')
+  // Written after the commit, with no ignore file: git lists every one as untracked, and the listing drops them.
+  await put(dir, {
+    'packages/x/node_modules/dep/index.js': 'module.exports.dep = () => 1\n',
+    '.venv/pyvenv.cfg': 'home = /usr/bin\n',
+    '.venv/lib/site.py': 'def site():\n    return 1\n',
+    'venv/lib/v.py': 'def v():\n    return 1\n',
+    // A virtual environment named env: told by its pyvenv.cfg, not its name.
+    'env/pyvenv.cfg': 'home = /usr/bin\n',
+    'env/lib/e.py': 'def e():\n    return 1\n',
+    '.tox/py311/t.py': 'def t():\n    return 1\n',
+    'obj/Debug/gen.ts': 'export const gen = 1\n',
+    '__pycache__/c.py': 'def c():\n    return 1\n',
+    '.next/server/page.js': 'export const page = 1\n',
+    'coverage/lcov-report/sorter.js': 'export const sort = 1\n',
+    'bower_components/b/b.js': 'export const b = 1\n'
+  })
+}
+
+async function makeNestedRepo(dir: string): Promise<void> {
+  await put(dir, {
+    'package.json': pkg('nested-repo'),
+    'src/app.ts': ts(["import { lib } from '../nested/lib'"], 'export const app = (): number => lib()')
+  })
+  await git(dir, 'init', '-q')
+  await commitAll(dir, 'parent')
+  // A repository of its own inside the folder, not a submodule: the parent's git sees only "nested/".
+  await put(join(dir, 'nested'), {
+    'lib.ts': ts(["import { helper } from './helper'"], 'export const lib = (): number => helper()'),
+    'helper.ts': ts([], 'export const helper = (): number => 1')
+  })
+  await git(join(dir, 'nested'), 'init', '-q')
+  await commitAll(join(dir, 'nested'), 'nested')
+}
+
 async function makeHuge(dir: string): Promise<void> {
   if (process.env.WORLD_SCENARIO_HUGE !== '1') {
     throw new Error('worldScenarios: huge writes 50,000 files and runs only with WORLD_SCENARIO_HUGE=1')
@@ -359,10 +441,17 @@ export async function makeScenario(name: ScenarioName, baseDir: string, opts: Sc
         '.venv/lib/y.py': 'def y():\n    return 1\n',
         'target/z.rs': 'pub fn z() -> u8 { 1 }\n',
         'dist/app.min.js': 'var a=1;function b(){return a}\n',
-        'site.min.css': 'body{margin:0}\n'
+        // A bundle outside any build folder: only its name keeps it out of the world.
+        'src/app.bundle.js': "import { util } from './util'\nexport const bundled = () => util()\n"
       })
       await git(dir, 'init', '-q')
       await commitAll(dir, 'vendored')
+      return dir
+    case 'vendored-untracked':
+      await makeVendoredUntracked(dir)
+      return dir
+    case 'nested-repo':
+      await makeNestedRepo(dir)
       return dir
     case 'huge':
       await makeHuge(dir)

@@ -1,18 +1,43 @@
 import { describe, expect, it } from 'vitest'
-import { cappedNotice, nextCappedNotice } from '../../../src/renderer/src/components/World/worldNotes'
+import { cappedNotice, filesNotice, isFilesNotice, nextFilesNotice, unreadableNotice } from '../../../src/renderer/src/components/World/worldNotes'
 
-describe('worldNotes: the capped-walk notice', () => {
-  it('says how many files the world shows, with a thousands separator', () => {
+describe('worldNotes: what the pane says about the files a world maps', () => {
+  it('the capped note says how many files the world shows, with a thousands separator', () => {
     expect(cappedNotice(20000)).toBe('Showing the first 20,000 files in this folder.')
     expect(cappedNotice(7)).toBe('Showing the first 7 files in this folder.')
   })
 
-  it('shows for a capped world, replaces only its own text when the world is not capped, and leaves other notices', () => {
-    expect(nextCappedNotice(20000, null)).toBe('Showing the first 20,000 files in this folder.')
-    expect(nextCappedNotice(20000, 'Re-layout failed: x')).toBe('Showing the first 20,000 files in this folder.')
-    expect(nextCappedNotice(undefined, 'Showing the first 20,000 files in this folder.')).toBeNull()
-    expect(nextCappedNotice(0, 'Showing the first 3 files in this folder.')).toBeNull()
-    expect(nextCappedNotice(undefined, 'Re-layout failed: x')).toBe('Re-layout failed: x')
-    expect(nextCappedNotice(undefined, null)).toBeNull()
+  it('the unreadable note counts the files skipped for a name that cannot be read, singular and plural', () => {
+    expect(unreadableNotice(1)).toBe("1 file was skipped because its name can't be read.")
+    expect(unreadableNotice(3)).toBe("3 files were skipped because their names can't be read.")
+    expect(unreadableNotice(1200)).toBe("1,200 files were skipped because their names can't be read.")
+  })
+
+  it('a world carries both, either or neither', () => {
+    expect(filesNotice(null)).toBeNull()
+    expect(filesNotice({})).toBeNull()
+    expect(filesNotice({ filesCapped: 0, filesUnreadable: 0 })).toBeNull()
+    expect(filesNotice({ filesCapped: 20000 })).toBe('Showing the first 20,000 files in this folder.')
+    expect(filesNotice({ filesUnreadable: 2 })).toBe("2 files were skipped because their names can't be read.")
+    expect(filesNotice({ filesCapped: 5, filesUnreadable: 1 })).toBe("Showing the first 5 files in this folder. 1 file was skipped because its name can't be read.")
+  })
+
+  it('tells its own notes from every other notice', () => {
+    expect(isFilesNotice(cappedNotice(3))).toBe(true)
+    expect(isFilesNotice(unreadableNotice(1))).toBe(true)
+    expect(isFilesNotice(unreadableNotice(4))).toBe(true)
+    expect(isFilesNotice('Re-layout failed: x')).toBe(false)
+    expect(isFilesNotice('Open a world to export it.')).toBe(false)
+  })
+
+  it('fills an empty slot or replaces its own old note; leaves any other notice; a stale note goes', () => {
+    const note = cappedNotice(20000)
+    expect(nextFilesNotice(note, null)).toBe(note)
+    expect(nextFilesNotice(note, cappedNotice(5))).toBe(note)
+    expect(nextFilesNotice(note, 'Re-layout failed: x')).toBe('Re-layout failed: x')
+    expect(nextFilesNotice(null, cappedNotice(5))).toBeNull()
+    expect(nextFilesNotice(null, unreadableNotice(2))).toBeNull()
+    expect(nextFilesNotice(null, 'Re-layout failed: x')).toBe('Re-layout failed: x')
+    expect(nextFilesNotice(null, null)).toBeNull()
   })
 })

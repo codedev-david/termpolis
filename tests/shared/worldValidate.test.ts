@@ -80,6 +80,18 @@ describe('validateWorld', () => {
     }
   })
 
+  it('filesUnreadable is optional too: a whole count is kept, junk is dropped', () => {
+    expect(((r) => r.ok && 'filesUnreadable' in r.doc)(validateWorld(fresh()))).toBe(false)
+    const kept = validateWorld({ ...fresh(), filesUnreadable: 3 })
+    expect(kept.ok && kept.doc.filesUnreadable).toBe(3)
+    for (const junk of ['3', -1, 0.5, null]) {
+      const r = validateWorld({ ...fresh(), filesUnreadable: junk, filesCapped: 10 })
+      expect(r.ok).toBe(true)
+      expect(r.ok && 'filesUnreadable' in r.doc).toBe(false)
+      expect(r.ok && r.doc.filesCapped).toBe(10)
+    }
+  })
+
   it('labelTokens is optional: absent loads, a number is kept, junk is dropped', () => {
     const none = validateWorld(fresh())
     expect(none.ok && 'labelTokens' in none.doc).toBe(false)

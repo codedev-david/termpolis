@@ -57,7 +57,7 @@ import { rightInset } from '../../world/engine/viewMath'
 import type { BuildAgent } from './BuildItDialog'
 import type { OpenTarget } from './worldTargets'
 import { WORLD_OPENED_EVENT } from './worldOpen'
-import { nextCappedNotice } from './worldNotes'
+import { filesNotice, nextFilesNotice } from './worldNotes'
 
 export interface WorldViewProps {
   /** A folder inside the project (the active terminal's cwd). Empty when there is none. */
@@ -170,8 +170,10 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   const [saved, setSaved] = useState<WorldSavedFile | null>(null)
   // A notice or a re-layout takes the slot: the toast it replaces is not brought back.
   useEffect(() => { if (busy || notice !== null) setSaved(null) }, [busy, notice])
-  // A world of a folder walk that stopped at its cap says it shows only the first files (worldNotes.ts).
-  useEffect(() => { setNotice((cur) => nextCappedNotice(doc?.filesCapped, cur)) }, [doc?.filesCapped])
+  // The world's files note (a capped listing, unreadable names: worldNotes.ts) holds the slot whenever it is free, so a
+  // Re-layout or a dismissed export toast gives it back.
+  const filesNote = filesNotice(doc)
+  useEffect(() => { if (!busy && saved === null) setNotice(nextFilesNotice(filesNote, notice)) }, [filesNote, busy, saved, notice])
   /** An export the palette asked for, waiting for the world to load. */
   const [pendingExport, setPendingExport] = useState<ExportKind | null>(null)
   const handledExport = useRef(0)

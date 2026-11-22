@@ -17,6 +17,8 @@ import { cargoColors, cargoLabel, cargoOf } from './cargoTypes'
 import { edgeSummary } from '../../shared/world/edgeText'
 import { markTwoWay } from '../../shared/world/cardFacts'
 import { edgeId, groupProject, isIgnored, resolveImport, slug, type GroupBuilding, type Grouping } from './group'
+import { isIndexableCodeFile } from '../codeFileFilter'
+import { languageForFile } from '../codeGraphExtract'
 import { mergeAnnotations } from './annotations'
 import { relativeImports, withImports } from './imports'
 import { BUILTIN_TECH, detectStack, packageImports, techChips } from './techStack'
@@ -523,6 +525,15 @@ export async function compileWorld(input: CompileInput, deps: CompileDeps): Prom
  * old scan. Without a cache every file is read and scanned. The grouping is reused (its boundaries
  * moved to their new lines) while the structure hash matches, and made afresh when it moves.
  */
+/**
+ * The doc's files note counts: a capped listing records the files the world maps; names the listing could not read
+ * are counted when the world would have shown them (a source file outside the folders it leaves out).
+ */
+function filesNotes(snap: GraphSnapshot, root: string, mapped: number): Pick<WorldDoc, 'filesCapped' | 'filesUnreadable'> {
+  const unreadable = (snap.unreadable ?? []).filter((f) => !isIgnored(f) && isIndexableCodeFile(`${root}/${f}`) && languageForFile(f) !== null).length
+  return { ...(snap.filesCapped !== undefined ? { filesCapped: mapped } : {}), ...(unreadable > 0 ? { filesUnreadable: unreadable } : {}) }
+}
+
 export async function compileWorldStaged(input: StagedInput, deps: CompileDeps): Promise<{ doc: WorldDoc; cache: StageCache }> {
   const { previous } = input
   let { snap } = input
@@ -695,7 +706,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     runtimeNames,
     layers: { plan: [] },
     labelTokens: labels.tokens,
-    ...(input.snap.filesCapped ? { filesCapped: input.snap.filesCapped } : {})
+    ...filesNotes(snap, root, files.length)
   }
   // Annotations are merged by item id before the plan is laid over, so a recompile never loses one.
   const merged = deps.annotations ? mergeAnnotations(doc, await deps.annotations()) : doc

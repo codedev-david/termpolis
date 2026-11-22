@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterAll } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -9,6 +9,7 @@ import {
   ingestCode,
   discoverRepoFiles,
   runCodeIngest,
+  repoListingNotes,
   type CodeChunk,
   type CodeIngestDeps,
   type CodeIngestMemory,
@@ -86,6 +87,29 @@ describe('ingestCode', () => {
     const s2 = await ingestCode(deps) // idempotent re-run
     expect(s2.chunksWritten).toBe(0)
     expect(s2.chunksSkipped).toBe(2)
+  })
+
+  it('after a prune, re-asks the store: a chunk the prune left (or a failing prune) is skipped, the rest rewritten', async () => {
+    const file = Array.from({ length: 6 }, (_, i) => `export const v${i} = ${i}`).join('\n')
+    const written: CodeChunk[] = []
+    const kept = new Set<string>()
+    let asks = 0
+    const deps: CodeIngestDeps = {
+      listFiles: async () => ['src/a.ts'],
+      readFile: async () => file,
+      // First ask: nothing known (the file changed). After the prune: the store still holds the first chunk.
+      hasHashes: (hashes) => (++asks === 1 ? [] : hashes.filter((h) => kept.has(h))),
+      write: async (c) => { written.push(c) },
+      prunePath: async () => { throw new Error('store busy') },
+      chunkOptions: { maxLines: 2 },
+    }
+    const chunks = chunkCode('src/a.ts', file, { maxLines: 2 })
+    kept.add(chunks[0].hash)
+    const s = await ingestCode(deps)
+    expect(asks).toBe(2)
+    expect(s.chunksSkipped).toBe(1)
+    expect(s.chunksWritten).toBe(chunks.length - 1)
+    expect(written.map((c) => c.hash)).toEqual(chunks.slice(1).map((c) => c.hash))
   })
 
   it('returns zeroed stats when listFiles throws', async () => {
@@ -171,6 +195,20 @@ describe('ingestCode', () => {
   })
 })
 
+// Fixture git runs with no global or system config, so a developer's hooks path, templates or commit template never run.
+const gitConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-cfg-'))
+fs.writeFileSync(path.join(gitConfigDir, 'empty'), '')
+const hermeticEnv = { ...process.env, GIT_CONFIG_GLOBAL: path.join(gitConfigDir, 'empty'), GIT_CONFIG_NOSYSTEM: '1' }
+afterAll(() => fs.rmSync(gitConfigDir, { recursive: true, force: true }))
+const git = (cwd: string, ...args: string[]): void => {
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'protocol.file.allow=always', ...args], { cwd, stdio: 'ignore', env: hermeticEnv })
+}
+const write = (root: string, rel: string, text = 'export const x = 1\n'): void => {
+  fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true })
+  fs.writeFileSync(path.join(root, rel), text)
+}
+const relTo = (root: string, files: string[]): string[] => files.map((f) => path.relative(root, f).split(path.sep).join('/')).sort()
+
 describe('discoverRepoFiles + runCodeIngest (real git)', () => {
   it('lists git-tracked files of this repo', async () => {
     const files = await discoverRepoFiles(process.cwd())
@@ -191,10 +229,10 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
   it('lists untracked files the ignore files allow, and names outside ASCII as written', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-'))
     try {
-      execFileSync('git', ['init', '-q'], { cwd: root })
+      git(root, 'init', '-q')
       fs.writeFileSync(path.join(root, '.gitignore'), 'skipped/\n')
       fs.writeFileSync(path.join(root, 'tracked.ts'), 'export const a = 1\n')
-      execFileSync('git', ['add', '-A'], { cwd: root })
+      git(root, 'add', '-A')
       fs.writeFileSync(path.join(root, 'new.ts'), 'export const b = 1\n')
       fs.writeFileSync(path.join(root, 'café.ts'), 'export const c = 1\n')
       fs.mkdirSync(path.join(root, 'skipped'))
@@ -208,9 +246,6 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
 
   it('recurses into submodules: their files are listed, the submodule folder itself is not', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-sub-'))
-    const git = (cwd: string, ...args: string[]): void => {
-      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'protocol.file.allow=always', ...args], { cwd, stdio: 'ignore' })
-    }
     try {
       const lib = path.join(base, 'lib')
       fs.mkdirSync(lib)
@@ -230,13 +265,82 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
     }
   })
 
+  it('never lists or ingests untracked dependency folders and virtual environments the ignore files miss', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-vendored-'))
+    try {
+      git(root, 'init', '-q')
+      // A root-only rule: the workspace package's own node_modules is not covered.
+      write(root, '.gitignore', '/node_modules\n')
+      write(root, 'src/app.ts')
+      git(root, 'add', '-A')
+      write(root, 'packages/x/node_modules/dep/index.js', 'export const DEPENDENCY_CODE = 1\n')
+      write(root, 'packages/x/index.ts')
+      // An older python -m venv writes no .gitignore inside.
+      write(root, '.venv/pyvenv.cfg', 'home = /usr/bin\n')
+      write(root, '.venv/lib/site.py', 'VENV_CODE = 1\n')
+      write(root, 'env/pyvenv.cfg', 'home = /usr/bin\n')
+      write(root, 'env/lib/other.py', 'VENV_CODE = 2\n')
+      write(root, '.tox/py311/lib/t.py', 'VENV_CODE = 3\n')
+      expect(relTo(root, await discoverRepoFiles(root))).toEqual(['.gitignore', 'packages/x/index.ts', 'src/app.ts'])
+
+      const writes: string[] = []
+      await runCodeIngest({ hasHash: () => false, write: async (i) => { writes.push(i.content); return undefined } }, { repoRoot: root })
+      expect(writes.length).toBeGreaterThan(0)
+      expect(writes.some((w) => w.includes('DEPENDENCY_CODE') || w.includes('VENV_CODE'))).toBe(false)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lists a nested repository that is not a submodule with its own git, under the same rules', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-nested-'))
+    try {
+      git(root, 'init', '-q')
+      write(root, 'src/app.ts')
+      git(root, 'add', '-A')
+      const sdk = path.join(root, 'tools', 'sdk')
+      fs.mkdirSync(sdk, { recursive: true })
+      git(sdk, 'init', '-q')
+      write(sdk, 'index.ts')
+      git(sdk, 'add', '-A')
+      git(sdk, 'commit', '-q', '-m', 'sdk')
+      write(sdk, 'new.ts')
+      write(sdk, 'node_modules/dep/index.js')
+      expect(relTo(root, await discoverRepoFiles(root))).toEqual(['src/app.ts', 'tools/sdk/index.ts', 'tools/sdk/new.ts'])
+      expect(repoListingNotes(root)).toEqual({ capped: false, unreadable: [] })
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('finds a submodule from the repository top when the folder mapped is a subfolder', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'discover-subfolder-'))
+    try {
+      const lib = path.join(base, 'lib')
+      fs.mkdirSync(lib)
+      git(lib, 'init', '-q')
+      write(lib, 'util.ts')
+      git(lib, 'add', '-A')
+      git(lib, 'commit', '-q', '-m', 'lib')
+      const root = path.join(base, 'app')
+      fs.mkdirSync(root)
+      git(root, 'init', '-q')
+      write(root, 'services/a.ts')
+      git(root, 'submodule', 'add', '-q', lib, 'services/vendor-lib')
+      const services = path.join(root, 'services')
+      expect(relTo(services, await discoverRepoFiles(services))).toEqual(['a.ts', 'vendor-lib/util.ts'])
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  })
+
   it('indexes a tiny git repo end-to-end and never indexes .env', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'code-ingest-'))
     try {
-      execFileSync('git', ['init', '-q'], { cwd: root })
+      git(root, 'init', '-q')
       fs.writeFileSync(path.join(root, 'a.ts'), 'export const x = 1\n')
       fs.writeFileSync(path.join(root, '.env'), 'SECRET=abc\n') // must be skipped
-      execFileSync('git', ['add', '-A'], { cwd: root })
+      git(root, 'add', '-A')
 
       const seen = new Set<string>()
       const writes: Parameters<CodeIngestMemory['write']>[0][] = []
@@ -256,9 +360,9 @@ describe('discoverRepoFiles + runCodeIngest (real git)', () => {
   it('tags code chunks with the repo project slug', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'code-ingest-proj-'))
     try {
-      execFileSync('git', ['init', '-q'], { cwd: root })
+      git(root, 'init', '-q')
       fs.writeFileSync(path.join(root, 'a.ts'), 'export const x = 1\n')
-      execFileSync('git', ['add', '-A'], { cwd: root })
+      git(root, 'add', '-A')
 
       const writes: Parameters<CodeIngestMemory['write']>[0][] = []
       const memory: CodeIngestMemory = {

@@ -801,6 +801,21 @@ describe('WorldView', () => {
     expect(screen.queryByTestId('world-notice')).toBeNull()
   })
 
+  it('the files note stays through a Re-layout of the same world, and counts files skipped for unreadable names', async () => {
+    const doc = { ...minimal(), filesCapped: 1234, filesUnreadable: 2 }
+    const note = "Showing the first 1,234 files in this folder. 2 files were skipped because their names can't be read."
+    const run = deferred<Res<WorldDoc>>()
+    bridge({ worldGet: vi.fn(async () => ok(doc)), worldRelayout: vi.fn(() => run.promise) })
+    await mount()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent(note)
+    fireEvent.click(screen.getByTestId('world-relayout'))
+    fireEvent.click(screen.getByTestId('world-relayout-go'))
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Re-laying out…')
+    await act(async () => { run.resolve(ok({ ...doc, generatedAt: 70 })) })
+    await settle()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent(note)
+  })
+
   it('Re-layout asks for confirmation then calls worldRelayout', async () => {
     const relaid = { ...minimal(), generatedAt: 99 }
     const run = deferred<Res<WorldDoc>>()
@@ -1724,6 +1739,20 @@ describe('WorldView export', () => {
     await settle()
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByTestId('world-notice')).toBeNull()
+  })
+
+  it('a capped world\'s note gives the slot to the export toast and comes back when the toast is dismissed', async () => {
+    bridge(exportApi({ worldGet: vi.fn(async () => ok({ ...minimal(), filesCapped: 20000 })) }))
+    await mountWith()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Showing the first 20,000 files in this folder.')
+    openMenu('world')
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Export…' }))
+    await settle()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Exported repo.html (37 MB)')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await settle()
+    expect(screen.getByTestId('world-notice')).toHaveTextContent('Showing the first 20,000 files in this folder.')
   })
 
   it('a later notice takes the slot from the toast', async () => {

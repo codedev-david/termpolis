@@ -14,7 +14,7 @@ import { normalizeNewlines } from './lineEndings'
 import { join } from 'path'
 import { isIndexableCodeFile } from './codeFileFilter'
 import { safeGitAsync } from './gitCommand'
-import { lsFilesArgs, lsSubmoduleArgs, mergeListings, parseLsFiles } from './repoFileList'
+import { listRepo } from './repoFileList'
 import { knownHashes } from './conversationIngest' // one membership-resolution rule for both ingesters
 
 export interface CodeChunk {
@@ -162,27 +162,42 @@ export async function ingestCode(deps: CodeIngestDeps): Promise<CodeIngestStats>
 }
 
 // The files a person sees in repoRoot: tracked ones plus untracked ones the ignore files allow (so node_modules and
-// dist stay out), and the tracked files of its submodules. Absolute paths. Returns [] if not a git repo / git missing.
+// dist stay out), minus untracked dependency folders and virtual environments the ignore files miss (a root-only
+// /node_modules rule, a venv with no .gitignore inside: never read, never indexed), the tracked files of its
+// submodules, and the files of nested repositories that are not submodules (repoFileList.ts listRepo). Absolute
+// paths. Returns [] if not a git repo / git missing.
 export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
   if (!repoRoot) return []
-  const git = (args: string[]): Promise<string> =>
-    safeGitAsync(args, { cwd: repoRoot, timeout: LIST_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 })
-  let own: string[]
-  try {
-    // The proc host runs git (safeGitAsync): the spawn happens off the main thread. This used to start git here with
-    // child_process.execFile, whose spawn blocks the calling thread (0.1-0.3 s on a busy Windows laptop), on every
-    // code re-index (a watcher event), and only fell back to the host when that failed. safeGitAsync also resolves the
-    // binary from the common install locations when a packaged app inherits a PATH without git, which is what stops a
-    // transient git-off-PATH from silently wiping the code graph. A REAL "not a repo" error still throws → [].
-    own = parseLsFiles(await git(lsFilesArgs(repoRoot)))
-  } catch {
-    return []
-  }
-  // Submodules are recursed into (Lumopolis maps their code with the rest). Their files need a second listing, run
-  // only when the repository declares one; if it fails, the repository's own files still count.
-  const hasSubmodules = await fsp.access(join(repoRoot, '.gitmodules')).then(() => true, () => false)
-  const recursed = hasSubmodules ? await git(lsSubmoduleArgs(repoRoot)).then(parseLsFiles, () => []) : []
-  return mergeListings(own, recursed).map((rel) => join(repoRoot, rel))
+  // The proc host runs git (safeGitAsync): the spawn happens off the main thread. This used to start git here with
+  // child_process.execFile, whose spawn blocks the calling thread (0.1-0.3 s on a busy Windows laptop), on every
+  // code re-index (a watcher event), and only fell back to the host when that failed. safeGitAsync also resolves the
+  // binary from the common install locations when a packaged app inherits a PATH without git, which is what stops a
+  // transient git-off-PATH from silently wiping the code graph. A REAL "not a repo" error still lists nothing.
+  const git = (args: string[]): Promise<string | null> =>
+    safeGitAsync(args, { cwd: repoRoot, timeout: LIST_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }).then(
+      (out) => out,
+      () => null
+    )
+  const exists = (p: string): Promise<boolean> => fsp.access(p).then(() => true, () => false)
+  const listed = await listRepo(repoRoot, { git, exists })
+  if (listed === null) return []
+  listingNotes.set(notesKey(repoRoot), { capped: listed.capped, unreadable: listed.unreadable })
+  return listed.files.map((rel) => join(repoRoot, rel))
+}
+
+/** What the last listing of a repository could not show: nested repositories past the cap, names that are not UTF-8. */
+export interface RepoListingNotes {
+  capped: boolean
+  /** Repository-relative names (at most repoFileList's MAP_FILE_CAP). */
+  unreadable: string[]
+}
+
+const listingNotes = new Map<string, RepoListingNotes>()
+const notesKey = (root: string): string => root.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+
+/** The notes of the last discoverRepoFiles of `root` (Lumopolis says them in its pane); null before any listing. */
+export function repoListingNotes(root: string): RepoListingNotes | null {
+  return listingNotes.get(notesKey(root)) ?? null
 }
 
 /** A listing of a large repository with many untracked folders walks them all: more time than git's usual 10 s. */

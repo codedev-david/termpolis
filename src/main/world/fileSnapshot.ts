@@ -2,10 +2,12 @@
 // indexed yet, made in the world utility process so a first world never reads and parses a whole
 // repository on the main thread. It is the shape graphSnapshot(..., { structureOnly: true }) answers:
 // the source files (repository-relative, `/` separated, sorted) and each file's import specifiers as
-// written. Inside a repository git lists them (tracked and untracked files the ignore files allow, and the
-// submodules' files); a plain folder, or one git refuses, is walked (folderWalk.ts, capped). The files are chosen by the code index's own rules (isIndexableCodeFile:
-// no secrets, binaries, bundles or lock files; a language the extractor knows; the same size cap) and
-// parsed by the same pure extractor the code graph falls back to.
+// written. Inside a repository git lists them, as the code index's own listing does (repoFileList.ts listRepo:
+// tracked and untracked files the ignore files allow, submodules and nested repositories); a plain folder, or one
+// git refuses or lists nothing for, is walked (folderWalk.ts, capped, honouring the folder's own .gitignore). The
+// files are chosen by the code index's own rules (isIndexableCodeFile: no secrets, binaries, bundles or lock files;
+// a language the extractor knows; the same size cap), minus what the world leaves out (group.ts isIgnored: never
+// read at all), and parsed by the same pure extractor the code graph falls back to.
 //
 // This module must stay out of the code ingest and git command modules: they reach the proc host,
 // which starts itself on any process with a parent port, so importing them here would hijack the
@@ -14,10 +16,11 @@ import type { GraphSnapshot } from '../codeGraph'
 import { isIndexableCodeFile } from '../codeFileFilter'
 import { extractFile, languageForFile } from '../codeGraphExtract'
 import { binInsideFolder, resolveGitBin } from '../binPath'
-import { lsFilesArgs, lsSubmoduleArgs, mergeListings, parseLsFiles } from '../repoFileList'
+import { isIgnoredPath, listRepo, type RepoListing } from '../repoFileList'
 import { access } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { walkFolder, type WalkResult } from './folderWalk'
+import { readRootIgnore } from './rootIgnore'
 import { configEnv, inheritedEnv, loginConfig, loginEnv, safetyFlags } from './gitLogin'
 import { NO_GIT_MESSAGE, nodeExecFile } from './gitSource'
 
@@ -53,32 +56,30 @@ export const captureExec: CaptureFn = async (cmd, args, opts) => {
 const exists = (p: string): Promise<boolean> => access(p).then(() => true, () => false)
 
 /**
- * The files git lists under `root`, relative to it: tracked ones, untracked ones the ignore files allow, and, when
- * the repository has submodules, theirs (recursed into: Lumopolis maps them with the rest). Git runs with the same
- * safety flags as a clone (no hooks, no symlinks, no fsmonitor), with no login (captureExec), and by its full path
- * (binPath.ts resolveGitBin, never the bare name); a git inside the folder itself is never run, and lists nothing.
- * No git at all throws NO_GIT_MESSAGE. Git that ran and refused (not a repository after all, an owner it does not
- * trust) is null, so the caller can walk the folder instead.
+ * The files git lists under `root`, relative to it, by the code index's own listing (repoFileList.ts listRepo:
+ * tracked files, untracked ones the ignore files allow minus skip folders and virtual environments, submodules
+ * recursed, nested repositories listed by their own git). Git runs with the same safety flags as a clone (no hooks,
+ * no symlinks, no fsmonitor), with no login (captureExec), and by its full path (binPath.ts resolveGitBin, never the
+ * bare name); a git inside the folder itself is never run, and lists nothing. No git at all throws NO_GIT_MESSAGE.
+ * Git that ran and refused `root` (not a repository after all, an owner it does not trust) is null, so the caller
+ * can walk the folder instead.
  */
 export async function gitListFiles(
   root: string,
   exec: CaptureFn = captureExec,
   isWindows: boolean = process.platform === 'win32',
   gitBin: () => Promise<string | null> = resolveGitBin,
-  hasSubmodules: (root: string) => Promise<boolean> = (r) => exists(join(r, '.gitmodules'))
-): Promise<string[] | null> {
+  has: (path: string) => Promise<boolean> = exists
+): Promise<RepoListing | null> {
   const bin = await gitBin()
   if (bin === null) throw new Error(NO_GIT_MESSAGE)
-  if (await binInsideFolder(bin, root)) return []
-  const run = (args: string[]): Promise<CaptureResult> =>
-    exec(bin, [...safetyFlags(isWindows), ...args], { timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
-  const r = await run(lsFilesArgs(root))
-  if (r.missing) throw new Error(NO_GIT_MESSAGE)
-  if (r.code !== 0) return null
-  const own = parseLsFiles(r.stdout)
-  if (!(await hasSubmodules(root))) return own
-  const sub = await run(lsSubmoduleArgs(root))
-  return mergeListings(own, sub.code === 0 ? parseLsFiles(sub.stdout) : [])
+  if (await binInsideFolder(bin, root)) return { files: [], unreadable: [], capped: false }
+  const git = async (args: string[]): Promise<string | null> => {
+    const r = await exec(bin, [...safetyFlags(isWindows), ...args], { timeout: LIST_TIMEOUT_MS, maxBytes: MAX_LIST_BYTES })
+    if (r.missing) throw new Error(NO_GIT_MESSAGE)
+    return r.code === 0 ? r.stdout : null
+  }
+  return listRepo(root, { git, exists: has })
 }
 
 /** Whether `root` sits in a git repository: a `.git` (folder, or the file a worktree or submodule has) in it or above it. */
@@ -99,22 +100,37 @@ const isSourceFile = (abs: string): boolean => isIndexableCodeFile(abs) && langu
 
 export interface ListSourceDeps {
   inRepo?: (root: string) => Promise<boolean>
-  git?: (root: string) => Promise<string[] | null>
+  git?: (root: string) => Promise<RepoListing | null>
   walk?: (root: string) => Promise<WalkResult>
 }
 
-/** The files of `root`: git's listing inside a repository, else (a plain folder, or git refused) a capped walk. */
-export async function listSourceFiles(root: string, deps: ListSourceDeps = {}): Promise<WalkResult> {
-  if (await (deps.inRepo ?? insideGitRepo)(root)) {
-    const listed = await (deps.git ?? gitListFiles)(root)
-    if (listed !== null) return { files: listed, capped: false }
-  }
+/** The capped walk of `root`: source files the world shows, minus what the folder's own .gitignore names. */
+async function walkSources(root: string): Promise<WalkResult> {
   const base = slashBase(root)
-  return (deps.walk ?? ((r: string) => walkFolder(r, { keep: (rel) => isSourceFile(`${base}/${rel}`) })))(root)
+  const ignored = await readRootIgnore(root)
+  return walkFolder(root, { keep: (rel) => !isIgnoredPath(rel) && isSourceFile(`${base}/${rel}`), ...(ignored ? { ignored } : {}) })
 }
 
-/** A listing: plain names, or a walk's result (which says whether it stopped at its cap). */
-export type FileListing = string[] | WalkResult
+/**
+ * The files of `root`: git's listing inside a repository, else (a plain folder, or git refused) a capped walk. A
+ * listing git answered with nothing (a folder its ignore files cover whole) is walked as well, and the walk is the
+ * world when it found files on disk; otherwise the empty listing stands.
+ */
+export async function listSourceFiles(root: string, deps: ListSourceDeps = {}): Promise<WalkResult> {
+  const walk = deps.walk ?? walkSources
+  if (await (deps.inRepo ?? insideGitRepo)(root)) {
+    const listed = await (deps.git ?? gitListFiles)(root)
+    if (listed !== null && listed.files.length > 0) return listed
+    if (listed !== null) {
+      const walked = await walk(root)
+      return walked.files.length > 0 || walked.unreadable.length > 0 ? walked : listed
+    }
+  }
+  return walk(root)
+}
+
+/** A listing: plain names, or a listing that says whether it stopped at its cap and which names it could not read. */
+export type FileListing = string[] | { files: string[]; capped: boolean; unreadable?: string[] }
 
 export interface FileSnapshotDeps {
   /** Folder-relative files under `root` (default: listSourceFiles). */
@@ -133,11 +149,13 @@ function safeRelative(file: string): string | null {
 /**
  * The structure-only snapshot of `root`. Never rejects for a missing or unreadable file; such a file is simply absent.
  * A listing that fails lists nothing, except git missing from a repository, which rejects with NO_GIT_MESSAGE so the
- * pane says so rather than showing an empty world. A capped walk records how many files it listed (filesCapped).
+ * pane says so rather than showing an empty world. A file the world leaves out (group.ts isIgnored) is never read. A
+ * capped listing records how many files are mapped (filesCapped); names the listing could not read pass through
+ * (unreadable), for the world's count.
  */
 export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): Promise<GraphSnapshot> {
   const base = slashBase(root)
-  let listing: WalkResult
+  let listing: Exclude<FileListing, string[]>
   try {
     const got = await (deps.listFiles ?? listSourceFiles)(root)
     listing = Array.isArray(got) ? { files: got, capped: false } : got
@@ -150,7 +168,7 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
   const fileImports: Record<string, string[]> = {}
   for (const raw of new Set(listed)) {
     const rel = safeRelative(raw)
-    if (rel === null || Object.hasOwn(fileImports, rel)) continue
+    if (rel === null || Object.hasOwn(fileImports, rel) || isIgnoredPath(rel)) continue
     const abs = `${base}/${rel}`
     if (!isSourceFile(abs)) continue
     const content = await deps.read(abs).catch(() => null)
@@ -161,5 +179,14 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
     fileImports[rel] = ex.imports
   }
   files.sort()
-  return { root: base, files, symbols: [], callEdges: [], fileImports, ...(listing.capped ? { filesCapped: listing.files.length } : {}) }
+  const unreadable = listing.unreadable ?? []
+  return {
+    root: base,
+    files,
+    symbols: [],
+    callEdges: [],
+    fileImports,
+    ...(listing.capped ? { filesCapped: files.length } : {}),
+    ...(unreadable.length > 0 ? { unreadable: [...unreadable] } : {})
+  }
 }
