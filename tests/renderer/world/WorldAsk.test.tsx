@@ -19,7 +19,7 @@ vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
   }
 }))
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
-import { ANSWER_TEXT_MAX_HEIGHT } from '../../../src/renderer/src/components/World/WorldAnswer'
+import { ANSWER_TEXT_CEILING, ANSWER_TEXT_MAX_HEIGHT, answerTextMaxHeight, evidenceReach } from '../../../src/renderer/src/components/World/WorldAnswer'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
@@ -326,7 +326,7 @@ describe('WorldAsk', () => {
       await submit(v, 'q')
       const scroller = screen.getByTestId('world-answer-scroll')
       expect(ANSWER_TEXT_MAX_HEIGHT).toBe('6rem')
-      expect(scroller.style.maxHeight).toBe('6rem')
+      expect(scroller.style.maxHeight).toBe(answerTextMaxHeight(0))
       expect(scroller.className).toMatch(/(^| )overflow-y-auto( |$)/)
       expect(scroller).toHaveAttribute('role', 'region')
       expect(scroller).toHaveAccessibleName('Answer')
@@ -365,6 +365,60 @@ describe('WorldAsk', () => {
       } finally {
         if (was) Object.defineProperty(Element.prototype, 'scrollIntoView', was)
         else delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+      }
+    })
+
+    it('the answer grows past its cap only as far as its first two pieces of evidence reach, never past the ceiling', () => {
+      expect(ANSWER_TEXT_CEILING).toBe('8rem')
+      expect(answerTextMaxHeight(null)).toBe('6rem')
+      expect(answerTextMaxHeight(130)).toBe('max(6rem, min(8rem, 130px))')
+      const box = document.createElement('div')
+      expect(evidenceReach(box)).toBeNull()
+      const chip = (label: string, top: number, height: number): void => {
+        const el = document.createElement('button')
+        el.setAttribute('data-evidence', label)
+        Object.defineProperty(el, 'offsetTop', { value: top })
+        Object.defineProperty(el, 'offsetHeight', { value: height })
+        box.appendChild(el)
+      }
+      // One chip: as far as it reaches.
+      chip('E2', 90, 20.4)
+      expect(evidenceReach(box)).toBe(111)
+      // E2 cited again further down, then E1 above it, then E3 far below: the first two distinct ones count.
+      chip('E2', 400, 20)
+      chip('E1', 30, 20)
+      chip('E3', 600, 20)
+      expect(evidenceReach(box)).toBe(111)
+    })
+
+    it('the panel measures the reach on each render and as the text reflows, and stops watching when it goes', async () => {
+      let reflow: () => void = () => {}
+      const disconnect = vi.fn()
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(cb: () => void) { reflow = cb }
+        observe(): void {}
+        disconnect(): void { disconnect() }
+      })
+      try {
+        const v = makeViewer()
+        withCited('See [E1] and [E2].', { E1: { kind: 'file', ref: 'src/a.ts', items: [] }, E2: { kind: 'file', ref: 'src/b.ts', items: [] } })
+        const { unmount } = await submit(v, 'q')
+        const scroller = screen.getByTestId('world-answer-scroll')
+        // jsdom lays nothing out: both chips at 0.
+        expect(scroller.style.maxHeight).toBe(answerTextMaxHeight(0))
+        expect(scroller.className).toMatch(/(^| )relative( |$)/)
+        // A narrower pane wraps E2 onto a lower line.
+        Object.defineProperty(screen.getByRole('button', { name: 'Evidence E2' }), 'offsetTop', { value: 112, configurable: true })
+        Object.defineProperty(screen.getByRole('button', { name: 'Evidence E2' }), 'offsetHeight', { value: 18, configurable: true })
+        act(() => { reflow() })
+        expect(scroller.style.maxHeight).toBe(answerTextMaxHeight(130))
+        // Reflowed to the same place: nothing changes.
+        act(() => { reflow() })
+        expect(scroller.style.maxHeight).toBe(answerTextMaxHeight(130))
+        unmount()
+        expect(disconnect).toHaveBeenCalled()
+      } finally {
+        vi.unstubAllGlobals()
       }
     })
 

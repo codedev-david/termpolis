@@ -1,7 +1,7 @@
 // The Lumopolis answer panel. The agent's text is only ever rendered as React text nodes: a small
 // markdown subset (paragraphs, lists, bold, italic, code) becomes React elements, [E<n>] markers become
 // evidence chips, and nothing is parsed as HTML.
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { answerText, type WorldAnswer as Answer } from '../../../../shared/world/answerProtocol'
 import { parseAnswerMarkdown, type Inline } from '../../../../shared/world/answerMarkdown'
 import type { CitedEvidence } from '../../../../shared/world/types'
@@ -30,6 +30,33 @@ export interface WorldAnswerPanelProps {
  */
 export const ANSWER_TEXT_MAX_HEIGHT = '6rem'
 
+/**
+ * How tall the answer's text may grow past ANSWER_TEXT_MAX_HEIGHT to keep its first two pieces of evidence on show
+ * without a scroll: a narrow pane (360 px at 1024x768) wraps the same answer onto more lines, and its second chip
+ * fell below the cap. The text grows only as far as that chip's line, and never past this.
+ */
+export const ANSWER_TEXT_CEILING = '8rem'
+
+/** The bottom of the answer's first two distinct evidence chips, in the scroller's own px (null: it cites none). */
+export function evidenceReach(box: HTMLElement): number | null {
+  const seen = new Set<string>()
+  let reach: number | null = null
+  for (const chip of Array.from(box.querySelectorAll<HTMLElement>('[data-evidence]'))) {
+    const label = chip.getAttribute('data-evidence') as string
+    if (seen.has(label)) continue
+    seen.add(label)
+    // The scroller is the chips' offsetParent (it is positioned): offsetTop is from its top, whatever it has scrolled.
+    reach = Math.max(reach ?? 0, Math.ceil(chip.offsetTop + chip.offsetHeight))
+    if (seen.size === 2) break
+  }
+  return reach
+}
+
+/** The scroller's height cap: ANSWER_TEXT_MAX_HEIGHT, or as far as the first two chips reach, up to the ceiling. */
+export function answerTextMaxHeight(reach: number | null): string {
+  return reach === null ? ANSWER_TEXT_MAX_HEIGHT : `max(${ANSWER_TEXT_MAX_HEIGHT}, min(${ANSWER_TEXT_CEILING}, ${reach}px))`
+}
+
 export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, onOpenPart, partName, isPart }: WorldAnswerPanelProps): JSX.Element {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   const blocks = parseAnswerMarkdown(answerText(answer.sentences, revealed))
@@ -43,6 +70,25 @@ export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, o
     const line = (scroller.current as HTMLDivElement).querySelector(`[data-evidence-label="${opened.label}"]`) as HTMLElement
     if (typeof line.scrollIntoView === 'function') line.scrollIntoView({ block: 'nearest' })
   }, [opened])
+  // Measured after every render (a sentence revealed, an evidence line opened) and whenever the text is reflowed
+  // (the pane resized), before paint.
+  const [reach, setReach] = useState<number | null>(null)
+  const textRef = useRef<HTMLDivElement>(null)
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- no dependency list on purpose: every render is measured
+  useLayoutEffect(() => {
+    const next = evidenceReach(scroller.current as HTMLDivElement)
+    setReach((was) => (was === next ? was : next))
+  })
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver !== 'function') return
+    const box = scroller.current as HTMLDivElement
+    const watch = new ResizeObserver(() => {
+      const next = evidenceReach(box)
+      setReach((was) => (was === next ? was : next))
+    })
+    watch.observe(textRef.current as HTMLDivElement)
+    return () => watch.disconnect()
+  }, [])
 
   const click = (label: string): void => {
     const ev = cited[label]
@@ -75,6 +121,7 @@ export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, o
           key={i}
           type="button"
           aria-label={`Evidence ${n.v}`}
+          data-evidence={n.v}
           onClick={() => click(n.v)}
           className="mx-0.5 px-1.5 rounded bg-[#0078d4]/30 text-[#4fc1ff] text-xs hover:bg-[#0078d4]/50"
         >
@@ -89,14 +136,14 @@ export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, o
         {/* Its own scroller, reachable by Tab, so a long answer scrolls with the arrow keys too. */}
         <div
           ref={scroller}
-          className="flex-1 min-w-0 overflow-y-auto"
-          style={{ maxHeight: ANSWER_TEXT_MAX_HEIGHT }}
+          className="relative flex-1 min-w-0 overflow-y-auto"
+          style={{ maxHeight: answerTextMaxHeight(reach) }}
           data-testid="world-answer-scroll"
           role="region"
           aria-label="Answer"
           tabIndex={0}
         >
-          <div className="leading-relaxed space-y-2 break-words" data-testid="world-answer-text">
+          <div ref={textRef} className="leading-relaxed space-y-2 break-words" data-testid="world-answer-text">
             {blocks.map((b, i) =>
               b.type === 'p' ? (
                 <p key={i}>
