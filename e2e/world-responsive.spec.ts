@@ -29,7 +29,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { quitApp, ensureE2eBuild, e2eShimEnv } from './helpers/launch'
-import { auditProblems, layoutAudit, medianFont, responsiveViewports, stillMoving, steady, type AuditOptions, type Viewport } from './helpers/layoutAudit'
+import { auditProblems, layoutAudit, medianFont, responsiveViewports, settleBudget, stillMoving, steady, type AuditOptions, type Viewport } from './helpers/layoutAudit'
 import { uiScale } from '../src/shared/world/uiScale'
 import { fakeHelperConfig, fixtureSkipReason, startGitHttps, type GitHttps } from '../tests/fixtures/gitHttps/server'
 
@@ -164,32 +164,52 @@ test.afterAll(async () => {
   }
 })
 
+/** The window's size and DPR now, or 'ok' when it is `v` (within a pixel: the window's own display scaling leaves a
+ *  rounding pixel under emulation). */
+const sizeNow = (v: Viewport): Promise<string> =>
+  page.evaluate(({ w, h, d }) => (Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1 && Math.abs(devicePixelRatio - d) < 0.01 ? 'ok' : `${innerWidth}x${innerHeight}@${devicePixelRatio}`), { w: v.width, h: v.height, d: v.dpr })
+
+async function emulate(v: Viewport): Promise<void> {
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dpr, mobile: false })
+  await expect.poll(() => sizeNow(v), { timeout: 10_000 }).toBe('ok')
+}
+
 async function setViewport(v: Viewport): Promise<void> {
   if (current === v) return
-  await cdp.send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dpr, mobile: false })
-  // Within a pixel: the window's own display scaling leaves a rounding pixel under emulation.
-  await expect
-    .poll(() => page.evaluate(({ w, h, d }) => (Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1 && Math.abs(devicePixelRatio - d) < 0.01 ? 'ok' : `${innerWidth}x${innerHeight}@${devicePixelRatio}`), { w: v.width, h: v.height, d: v.dpr }), { timeout: 10_000 })
-    .toBe('ok')
+  await emulate(v)
   current = v
 }
 
 async function shoot(name: string): Promise<void> {
   // A 4K or 5K frame drawn in software takes longer than the default 30 s to capture.
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`), timeout: 120_000 })
+  // Playwright puts the window's own DPR back after a screenshot. The session still holds the same override, so the
+  // same one sent again is ignored: clear it, then set it.
+  if (current && (await sizeNow(current)) !== 'ok') {
+    await cdp.send('Emulation.clearDeviceMetricsOverride')
+    await emulate(current)
+  }
 }
 
+/** When the test started, for settleBudget. */
+let testStarted = Date.now()
+test.beforeEach(() => { testStarted = Date.now() })
+
 /** Waits until the pane's layout has stopped changing (layoutAudit's steady), a soft failure when it never does. The
- *  wait scales by `slowness`: the city's glides step by the frame's time capped at 0.05 s, so in the software-rendered
- *  4K window they take many times their real length. */
+ *  wait scales by `slowness`: the city's moves run on the clock and end on time, but in the software-rendered 4K
+ *  window each sample of the layout waits for a frame, and the label pass and the steady samples after a move take
+ *  frames, not time. One wait takes at most a share of the test's time left (settleBudget), so a pane that never
+ *  settles still leaves the test its other states. */
 async function still(state: string): Promise<void> {
   const log: string[] = []
-  const settled = await steady(page, PANE, 15_000 * slowness, log)
+  const settled = await steady(page, PANE, settleBudget(15_000 * slowness, test.info().timeout, testStarted), log)
   expect.soft(settled, `${state}: the pane settled${settled ? '' : ` (samples: ${log.join(', ')}; still moving: ${await stillMoving(page, PANE)})`}`).toBe(true)
 }
 
 /** Audits the pane (or `root`) as it is now, every problem a soft failure under `state`; returns the median font. */
 async function check(state: string, opts: AuditOptions = WORLD): Promise<number> {
+  // Audited at the size under test, or the audit says nothing about it.
+  if (current) expect(await sizeNow(current), `${state}: the window is at ${current.name}`).toBe('ok')
   await still(state)
   const r = await page.evaluate(layoutAudit, opts)
   expect.soft(r.texts, `${state}: the audit measured no text`).toBeGreaterThan(0)
@@ -268,13 +288,13 @@ async function settled(compileMs = 120_000): Promise<void> {
   await still('the world')
 }
 
-/** Clicks the first building found on a grid across the stage; true when its card opened. */
 /**
  * How many times slower than at 1080p a frame is in the window now: the test renders in software, so the time a frame
  * takes grows with the pixels drawn (at 3840x2160 about 226 ms). Waits that hang on frames scale by it.
  */
 let slowness = 1
 
+/** Clicks the first building found on a grid across the stage; true when its card opened. */
 async function openCard(): Promise<boolean> {
   // A few tries: in the test's software-rendered 4K window a frame takes long enough that the city can
   // settle between finding a building and clicking it.
@@ -431,9 +451,11 @@ async function checkDialog(testid: string, label: string, open: () => Promise<vo
     await check(`${label} dialog at ${at.tag}`, { root: `[data-testid="${testid}"]`, panels: [] })
     await shoot(`app-dialog-${label}-${at.name}`)
   }
-  // Cancel, not Esc: the home's dialogs leave Esc to the pane, whose second Esc closes the pane.
-  await click(dialog.getByRole('button', { name: /^(Cancel|Close)$/ }).first())
+  // Esc closes the dialog and only it (the dialog on top: the token dialog leaves the clone dialog under it); the
+  // pane stays open.
+  await page.keyboard.press('Escape')
   await expect(dialog).toHaveCount(0)
+  await expect(page.locator(PANE)).toBeVisible()
 }
 
 test.describe.serial('Lumopolis at every screen size', () => {
