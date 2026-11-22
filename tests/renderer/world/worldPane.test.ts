@@ -107,6 +107,28 @@ describe('useWorldPaneWidth', () => {
     expect(result.current.width).toBe(400) // 40% of the room 1000, back beside the terminals
   })
 
+  it('makes the covered terminals column inert while the pane lies over it, and live again when the row grows or the pane closes', () => {
+    const el = { current: { clientWidth: 1000, offsetLeft: 0, inert: false } as HTMLElement }
+    const { result, rerender } = renderHook(({ active }) => useWorldPaneWidth(el, active), { initialProps: { active: true } })
+    expect(el.current.inert).toBe(false) // beside the terminals: they stay in reach
+    act(() => { (el.current as { clientWidth: number }).clientWidth = 100; window.dispatchEvent(new Event('resize')) })
+    expect(result.current.overlay).not.toBeNull()
+    expect(el.current.inert).toBe(true) // covered: Tab and clicks stay in the pane
+    act(() => { (el.current as { clientWidth: number }).clientWidth = 1400; window.dispatchEvent(new Event('resize')) })
+    expect(result.current.overlay).toBeNull()
+    expect(el.current.inert).toBe(false)
+    act(() => { (el.current as { clientWidth: number }).clientWidth = 100; window.dispatchEvent(new Event('resize')) })
+    expect(el.current.inert).toBe(true)
+    rerender({ active: false }) // the pane closed
+    expect(el.current.inert).toBe(false)
+  })
+
+  it('leaves the column alone while no pane is open, even in a row too narrow for one', () => {
+    const el = { current: { clientWidth: 100, offsetLeft: 0, inert: false } as HTMLElement }
+    renderHook(() => useWorldPaneWidth(el, false))
+    expect(el.current.inert).toBe(false)
+  })
+
   it('counts only the part of a pane inside the row when the window shrinks under it', () => {
     const row = { scrollWidth: 1414, clientWidth: 1414 }
     const el = { current: { clientWidth: 1000, offsetLeft: 0, parentElement: row } as unknown as HTMLElement }

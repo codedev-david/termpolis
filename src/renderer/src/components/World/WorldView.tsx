@@ -265,7 +265,8 @@ export function WorldView({ root, onClose, askSlot, buildIt, width = DEFAULT_WID
   }))
 
   // Take the focus on open (so Esc reaches the pane), and give it back on close: to the control that
-  // opened it, else to the active terminal. No trap: the terminals beside it stay in reach.
+  // opened it, else to the active terminal. Beside the terminals there is no trap: they stay in reach. Over
+  // them (overlay), their column is inert while the pane covers it (useWorldPaneWidth), so the focus stays here.
   useEffect(() => {
     const el = dialogRef.current as HTMLDivElement
     const before = document.activeElement as HTMLElement | null

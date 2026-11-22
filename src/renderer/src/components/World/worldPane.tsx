@@ -136,7 +136,8 @@ export function worldPaneStyle(background: string, width: number, overlay: World
  * The pane's width, its divider's drag handler, and whether it overlays the terminals. `mainRef` is the
  * terminals' column: the room is its width plus the pane and divider beside it, so it holds whatever else
  * shares the row; while the pane overlays the column, the column alone is the room. The row (the column's
- * parent) is what an overlay is placed in, at the column's left edge.
+ * parent) is what an overlay is placed in, at the column's left edge. While the pane overlays the column, the
+ * column is inert.
  */
 export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active: boolean): {
   width: number; min: number; max: number; onDrag: (dx: number) => void; overlay: WorldPaneOverlay | null
@@ -172,6 +173,17 @@ export function useWorldPaneWidth(mainRef: RefObject<HTMLElement | null>, active
       observer?.disconnect()
     }
   }, [active, mainRef])
+
+  // Over the terminals, their column is inert: Tab, clicks and a screen reader stay in the pane, the only thing
+  // drawn there. Live again when the row grows or the pane closes; a layout effect, so it is live before the
+  // pane's closing hands the focus back to a terminal (a passive effect, after this).
+  const covering = active && overlays
+  useLayoutEffect(() => {
+    if (!covering) return
+    const main = mainRef.current as HTMLElement
+    main.inert = true
+    return () => { main.inert = false }
+  }, [covering, mainRef])
 
   const roomRef = useRef(room)
   roomRef.current = room
