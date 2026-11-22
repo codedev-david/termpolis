@@ -222,8 +222,21 @@ describe('threeRenderer motion', () => {
     }
     expect(far).toBeLessThan(cam.far)
     expect(near).toBeGreaterThan(cam.position.distanceTo(new THREE.Vector3(...r.getCamera().target)))
+    // pushed out, each star grows with the field (its size attenuates with distance), so the stars still show
+    const mat = stars.material as THREE.PointsMaterial
+    expect(stars.scale.x).toBeGreaterThan(1)
+    expect(mat.size).toBeCloseTo(1.6 * stars.scale.x, 6)
     r.dispose()
     tall.remove()
+    // an ordinary world in an ordinary view keeps the far plane, the near plane and the stars as they were
+    const plain = createThreeRenderer(h.host, DEFAULT_OPTS)
+    boxCanvas(plain.canvas, 800, 600)
+    plain.draw(smallCity(), smallText(), false)
+    await plain.overview(true)
+    const c = cameraOf()
+    const s = sceneOf().children.find((o) => o instanceof THREE.Points && !(o.material as THREE.PointsMaterial).fog) as THREE.Points
+    expect([c.far, c.near, s.scale.x, (s.material as THREE.PointsMaterial).size]).toEqual([3000, 0.1, 1, 1.6])
+    plain.dispose()
   })
 
   it('camera flights land on their targets: a pose, the overview and a framing', async () => {

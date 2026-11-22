@@ -235,6 +235,8 @@ const STAR_INNER = 500
 const STAR_OUTER = 1400
 /** The stars' inner radius is at least this many times the overview's distance, so the city stands in front of them. */
 const STAR_ROOM = 2.4
+/** A star's size at scale 1; a starfield pushed out grows its stars with it, so they show as large as before. */
+const STAR_SIZE = 1.6
 /** Half the width of a district's name on screen ("6 PARTS · 14 FILES"), kept in the overview. */
 const DISTRICT_NAME_HALF_PX = 64
 /** A district's name keeps this many pixels from the edge of the view. */
@@ -536,7 +538,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     return new THREE.CanvasTexture(c)
   })()
   const starMat = new THREE.PointsMaterial({
-    color: 0xcbd5e1, size: 1.6, sizeAttenuation: true, fog: false, map: dotTex, transparent: true, alphaTest: 0.02, depthWrite: false,
+    color: 0xcbd5e1, size: STAR_SIZE, sizeAttenuation: true, fog: false, map: dotTex, transparent: true, alphaTest: 0.02, depthWrite: false,
   })
   const stars = new THREE.Points(starGeo, starMat)
   stars.renderOrder = BACKDROP_ORDER // shows through the platforms
@@ -1080,6 +1082,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // far plane, and outside the starfield, the whole picture was black. An ordinary world keeps both.
     const shell = Math.max(1, (overviewDist * STAR_ROOM) / STAR_INNER)
     stars.scale.setScalar(shell)
+    starMat.size = STAR_SIZE * shell
     const far = Math.max(CAMERA_FAR, (STAR_OUTER * shell + controls.maxDistance + overviewTarget.length()) * 1.05)
     for (const cam of [camera, scout]) {
       cam.far = far
