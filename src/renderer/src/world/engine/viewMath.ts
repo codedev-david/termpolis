@@ -391,6 +391,30 @@ export function turnAcross(h: readonly [number, number], degrees: readonly numbe
   })
 }
 
+/**
+ * The longest frame step the city's loop takes, in seconds. Only a spike is cut (a tab switched away
+ * and back, a stall): a slow frame rate keeps its real step, so every ease and drift keeps wall time
+ * however few frames a weak GPU draws at 4K.
+ */
+export const MAX_FRAME_DT = 0.25
+
+/** A frame's step in seconds, from the clock's delta: never negative, cut only at MAX_FRAME_DT. */
+export function frameStep(delta: number): number {
+  return Math.min(Math.max(0, delta), MAX_FRAME_DT)
+}
+
+/** The share of the way an ease at `rate` covers in `dt` seconds: the same state at the same wall time at any frame rate. */
+export function easeShare(rate: number, dt: number): number {
+  return dt > 0 ? 1 - Math.exp(-rate * dt) : 0
+}
+
+/** A rate whose 60 fps frame moves `perFrame` of the way: the feel the old `min(1, dt * k)` step had at 60 fps. */
+const at60 = (perFrame: number): number => -60 * Math.log(1 - perFrame)
+/** An opening building's floors rising (5/60 of the way a frame at 60 fps), turning (4/60), and the fog's drift (2/60). */
+export const FLOOR_RISE_RATE = at60(5 / 60)
+export const FLOOR_TURN_RATE = at60(4 / 60)
+export const FOG_RATE = at60(2 / 60)
+
 /** Whether two free areas are the same to within half a pixel on every side. */
 export function sameArea(a: FreeArea, b: FreeArea): boolean {
   return Math.abs(a.left - b.left) < 0.5 && Math.abs(a.top - b.top) < 0.5 && Math.abs(a.right - b.right) < 0.5 && Math.abs(a.bottom - b.bottom) < 0.5

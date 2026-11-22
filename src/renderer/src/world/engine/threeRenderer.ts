@@ -16,7 +16,7 @@ import { slabLook, slabSignals, type SlabLook, type SlabSignals } from './slabSi
 import { createCameraRig, type FlightState, type Vec3 as RigVec } from './cameraRig'
 import { createChangeAnimator } from './changeAnimation'
 import { focusOpacity } from './interaction'
-import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
+import { zoomTierAt, type ZoomTier, backOffs, busyness, clamp, clampIntoView, districtNameHalf, easeArea, easeShare, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, frameStep, edgeLabelSize, fitDistance, fitView, fogDensity, freeArea, inFreeArea, nameBudget, overviewDir, LABEL_GAP, LABEL_KEEP_GAP, placeLabels, sameArea, toleratedPick, turnAcross, turnGround, viewFrame, type FreeArea, type LabelCandidate, type Nudge, type Rect, type ScreenBox, type V3 } from './viewMath'
 import { HEAT_COLOR, heatMix, type SceneBuilding, SceneConduit, SceneDistrict, SceneModel, SceneOrb, Vec3 } from './sceneModel'
 import type { Theme, ThemeName } from './themes'
 import { screenRect } from './screenRect'
@@ -2231,7 +2231,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   function animate(): void {
     raf = requestAnimationFrame(animate)
     frameNo++
-    const dt = Math.min(clock.getDelta(), 0.05)
+    const dt = frameStep(clock.getDelta()) // only a tab-switch spike is cut, so a slow frame rate never runs the eases in slow motion
     changes.tick(performance.now()) // wall-clock time: a slow frame rate never stretches a change
     // Reduced motion reads a frozen clock and a zero step: the rings, the fog and the wireframe pulse stand still.
     const t = reduced ? 0 : clock.elapsedTime
@@ -2259,8 +2259,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         const d = n.exploded ? fl.userData.explodedY : fl.userData.baseY
         const tr = n.exploded ? (k % 2 ? 0.12 : -0.12) : 0
         if (Math.abs(d - fl.position.y) > EASED || Math.abs(tr - fl.rotation.y) > EASED) refill = true // a closing building's floors settle in their batch
-        fl.position.y += (d - fl.position.y) * Math.min(1, dt * 5)
-        fl.rotation.y += (tr - fl.rotation.y) * Math.min(1, dt * 4)
+        fl.position.y += (d - fl.position.y) * easeShare(FLOOR_RISE_RATE, dt)
+        fl.rotation.y += (tr - fl.rotation.y) * easeShare(FLOOR_TURN_RATE, dt)
         const fLabel = n.floorLabels[k]
         if (fLabel) fLabel.o.element.style.opacity = floorLabelsShown(tier, n.exploded, n.id === hoveredId || n.id === selectedId) ? '1' : '0'
       })
@@ -2318,7 +2318,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         pa.done()
       }
     }
-    fog.density += (fogTarget - fog.density) * Math.min(1, dt * 2)
+    fog.density += (fogTarget - fog.density) * easeShare(FOG_RATE, dt)
     if (dustGeo && !reduced) {
       const dp = dustGeo.attributes.position.array as Float32Array
       for (let i = 1; i < dp.length; i += 3) { dp[i] += dt * 1.1; if (dp[i] > 58) dp[i] = -2 }

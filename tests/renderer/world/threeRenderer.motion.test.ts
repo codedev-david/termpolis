@@ -375,6 +375,29 @@ describe('threeRenderer motion', () => {
     r.dispose()
   })
 
+  it('an opening building and a panel glide reach the same state at the same wall time at 10, 30 and 60 fps', () => {
+    // Below 20 fps a frame step cut at 0.05 s ran every ease in slow motion; only a tab-switch spike is cut now.
+    const at = (fps: number): { gap: number; aspect: number } => {
+      const r = createThreeRenderer(h.host, DEFAULT_OPTS)
+      r.draw(smallCity(), smallText(), false)
+      h.frames.step()
+      r.setExploded('a')
+      r.setRightReserve(200)
+      h.frames.run(Math.round(fps * 0.4), 1000 / fps)
+      const out = { gap: r.motionState().explodeGap, aspect: cameraOf().aspect }
+      r.dispose()
+      return out
+    }
+    const at60 = at(60)
+    expect(at60.gap).toBeGreaterThan(0)
+    expect(at60.gap).toBeLessThan(3 * 2 * 1.4 + 0.8 - 0.1) // still on its way: the comparison is mid-ease
+    for (const fps of [10, 30]) {
+      const got = at(fps)
+      expect(got.gap).toBeCloseTo(at60.gap, 2)
+      expect(got.aspect).toBeCloseTo(at60.aspect, 3)
+    }
+  })
+
   it('floors in a closing building settle back into their batch; meanwhile the batch is refilled', () => {
     const r = createThreeRenderer(h.host, DEFAULT_OPTS)
     r.draw(smallCity(), smallText(), false)

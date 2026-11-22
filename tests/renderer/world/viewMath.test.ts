@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest'
-import { zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
+import { easeShare, frameStep, MAX_FRAME_DT, FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, zoomTier, zoomTierAt, ZOOM_FAR, ZOOM_NEAR, backOffs, bottomInset, clampIntoView, inFreeArea, turnAcross, easeArea, freeArea, MIN_FREE_PX, sameArea, viewFrame, type FreeArea, districtNameHalf, OVERVIEW_DIR, overviewDir, PORTRAIT_DIR, PORTRAIT_HOLD, stretchFov, turnGround, TURN_RATIO, VERTICAL_NUDGES, LABEL_GLOW_PX, busyness, BUSY_LINES, clamp, edgeLabelSize, fitDistance, fitView, fogDensity, FOG_REACH, LABEL_GAP, LABEL_KEEP_GAP, nameBudget, OPEN_FOG, NUDGES, placeLabels, rightInset, ZOOM_ALL_NAMES, nearestBox, PICK_TOLERANCE_PX, toleratedPick, type ScreenBox, type LabelCandidate, type V3 } from '../../../src/renderer/src/world/engine/viewMath'
 
 /** Where a point lands in the picture (-1..1 each way) for a camera at target + dir * dist. */
 function project(p: V3, target: V3, dir: V3, dist: number, fov: number, aspect: number): [number, number] {
@@ -706,6 +706,45 @@ describe("a long line's close-up: both ends beside the card", () => {
   })
 })
 
+describe('frame-rate independent easing', () => {
+  /** `seconds` of frames at `fps`, each moving `v` toward `goal` by easeShare(rate, dt), as the city's loop does. */
+  const run = (fps: number, seconds: number, rate: number, v = 0, goal = 100): number => {
+    const dt = 1 / fps
+    for (let t = 0; t < seconds - 1e-9; t += dt) v += (goal - v) * easeShare(rate, frameStep(dt))
+    return v
+  }
+
+  it('reaches the same point at the same wall time at 10, 30 and 60 fps', () => {
+    for (const rate of [FLOOR_RISE_RATE, FLOOR_TURN_RATE, FOG_RATE, 12]) {
+      for (const seconds of [0.2, 0.5, 1]) {
+        const at60 = run(60, seconds, rate)
+        expect(run(30, seconds, rate)).toBeCloseTo(at60, 6)
+        expect(run(10, seconds, rate)).toBeCloseTo(at60, 6)
+      }
+    }
+  })
+
+  it('keeps the old per-frame step at 60 fps (min(1, dt * k) with k 5, 4 and 2)', () => {
+    expect(easeShare(FLOOR_RISE_RATE, 1 / 60)).toBeCloseTo(5 / 60, 9)
+    expect(easeShare(FLOOR_TURN_RATE, 1 / 60)).toBeCloseTo(4 / 60, 9)
+    expect(easeShare(FOG_RATE, 1 / 60)).toBeCloseTo(2 / 60, 9)
+  })
+
+  it('a frame of no time (or negative) moves nothing; a long one never overshoots', () => {
+    expect(easeShare(5, 0)).toBe(0)
+    expect(easeShare(5, -1)).toBe(0)
+    expect(easeShare(5, 100)).toBeLessThanOrEqual(1)
+  })
+
+  it('a frame step is only cut at a tab-switch spike, never at a slow frame rate', () => {
+    expect(frameStep(1 / 10)).toBe(0.1)
+    expect(frameStep(0.2)).toBe(0.2)
+    expect(frameStep(5)).toBe(MAX_FRAME_DT)
+    expect(MAX_FRAME_DT).toBe(0.25)
+    expect(frameStep(-0.01)).toBe(0)
+  })
+})
+
 describe('easeArea', () => {
   const a: FreeArea = { left: 0, top: 0, right: 0, bottom: 0 }
   const goal: FreeArea = { left: 0, top: 248, right: 244, bottom: 158 }
@@ -718,6 +757,16 @@ describe('easeArea', () => {
     let cur = a
     for (let i = 0; i < 120 && !sameArea(cur, goal); i++) cur = easeArea(cur, goal, 1 / 60)
     expect(cur).toEqual(goal)
+  })
+
+  it('reaches the same area at the same wall time at 10, 30 and 60 fps', () => {
+    const at = (fps: number): FreeArea => {
+      let cur = a
+      for (let i = 0; i < fps * 0.2 - 1e-9; i++) cur = easeArea(cur, goal, frameStep(1 / fps))
+      return cur
+    }
+    const at60 = at(60)
+    for (const fps of [10, 30]) for (const k of ['left', 'top', 'right', 'bottom'] as const) expect(at(fps)[k]).toBeCloseTo(at60[k], 6)
   })
 
   it('a frame of no time (or negative) does not move it', () => {
