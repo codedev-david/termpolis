@@ -214,14 +214,16 @@ describe('threeRenderer motion', () => {
     stars.updateMatrixWorld()
     const p = stars.geometry.getAttribute('position')
     const v = new THREE.Vector3()
-    let near = Infinity
+    let inner = Infinity
     let far = 0
     for (let i = 0; i < p.count; i++) {
-      const d = v.fromBufferAttribute(p, i).applyMatrix4(stars.matrixWorld).distanceTo(cam.position)
-      near = Math.min(near, d); far = Math.max(far, d)
+      v.fromBufferAttribute(p, i).applyMatrix4(stars.matrixWorld)
+      inner = Math.min(inner, v.length())
+      far = Math.max(far, v.distanceTo(cam.position))
     }
     expect(far).toBeLessThan(cam.far)
-    expect(near).toBeGreaterThan(cam.position.distanceTo(new THREE.Vector3(...r.getCamera().target)))
+    // the camera is inside the shell: no star stands between it and the city
+    expect(inner).toBeGreaterThan(cam.position.length())
     // pushed out, each star grows with the field (its size attenuates with distance), so the stars still show
     const mat = stars.material as THREE.PointsMaterial
     expect(stars.scale.x).toBeGreaterThan(1)

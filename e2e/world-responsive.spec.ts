@@ -177,7 +177,10 @@ const sizeNow = (v: Viewport): Promise<string> =>
 
 async function emulate(v: Viewport): Promise<void> {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dpr, mobile: false })
-  await expect.poll(() => sizeNow(v), { timeout: 10_000 }).toBe('ok')
+  // The page answers once its frame is drawn: a 5K frame drawn in software, at the size left or the size asked for,
+  // can take longer than 10 s on its own.
+  const px = (s: Viewport | null): number => (s ? (s.width * s.height * s.dpr * s.dpr) / (1920 * 1080) : 1)
+  await expect.poll(() => sizeNow(v), { timeout: 10_000 * Math.max(1, px(current), px(v)) }).toBe('ok')
 }
 
 async function setViewport(v: Viewport): Promise<void> {

@@ -233,8 +233,11 @@ const NEAR_PER_FAR = 1 / 30000
 /** The starfield's shell: its inner and outer radius at scale 1. */
 const STAR_INNER = 500
 const STAR_OUTER = 1400
-/** The stars' inner radius is at least this many times the overview's distance, so the city stands in front of them. */
-const STAR_ROOM = 2.4
+/**
+ * The stars' inner radius is at least this many times the overview's distance from the middle, so the camera stays
+ * inside the shell and no star comes between it and the city. An overview up to 400 away keeps the stars as they were.
+ */
+const STAR_ROOM = 1.25
 /** A star's size at scale 1; a starfield pushed out grows its stars with it, so they show as large as before. */
 const STAR_SIZE = 1.6
 /** Half the width of a district's name on screen ("6 PARTS · 14 FILES"), kept in the overview. */
