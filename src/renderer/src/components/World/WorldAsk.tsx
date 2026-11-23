@@ -45,7 +45,7 @@ const SUGGESTIONS = [
 const stopSpeech = (): void => { window.speechSynthesis?.cancel() }
 
 export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, proposal }: WorldAskProps): JSX.Element {
-  const { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined)
+  const { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost, noMemory } = useWorldAsk(viewer, root, link?.setDoc, proposal ?? undefined)
   const design = isDesignKey(root)
   const [text, setText] = useState('')
   const [speaking, setSpeaking] = useState(false)
@@ -169,6 +169,7 @@ export function WorldAsk({ viewer, doc, root, voice: voiceOverride, link, propos
           answer={answer}
           cited={cited}
           revealed={revealed}
+          noMemory={noMemory}
           isPart={(id) => !!doc && (doc.buildings.some((b) => b.id === id) || doc.edges.some((e) => e.id === id))}
           onClose={() => { hush(); dismiss() }}
           onReplay={replay}

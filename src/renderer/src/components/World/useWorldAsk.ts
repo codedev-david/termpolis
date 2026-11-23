@@ -9,7 +9,7 @@
 // question, a replay, a dismissal and unmount all clear the pending reveal first. A design needs no viewer: it can be changed from the 2D view.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { revealMs, type WorldAnswer } from '../../../../shared/world/answerProtocol'
-import type { CitedEvidence, WorldDoc } from '../../../../shared/world/types'
+import type { AskNoMemory, CitedEvidence, WorldDoc } from '../../../../shared/world/types'
 import type { WorldViewer } from '../../world/engine'
 import { lumopolisModel } from './worldAgentModel'
 
@@ -34,6 +34,8 @@ export interface UseWorldAsk {
   playing: boolean
   /** Estimated tokens of the answer on show and of every answer since this world opened; null before the first. */
   cost: { answer: number; session: number } | null
+  /** Why the answer on show was made without the project memory (WPA); null when it had it, or there is none. */
+  noMemory: AskNoMemory | null
 }
 
 /** Shown when the question could not even reach main (the bridge failed): never the raw error. */
@@ -63,6 +65,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
   const [playing, setPlaying] = useState(false)
   const [revealed, setRevealed] = useState(0)
   const [cost, setCost] = useState<{ answer: number; session: number } | null>(null)
+  const [noMemory, setNoMemory] = useState<AskNoMemory | null>(null)
   const sessionTokens = useRef(0)
   const current = useRef<string | null>(null)
   /** Stops the running question or design change in main (set with it). */
@@ -135,6 +138,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     lastQ.current = q
     setState('thinking')
     setError(null)
+    setNoMemory(null)
     const fail = (message: string): void => {
       if (current.current !== askId) return
       current.current = null
@@ -177,6 +181,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
         spend(r.tokens)
         setAnswer(r.answer)
         setCited(r.cited)
+        setNoMemory(r.noMemory ?? null)
         setState('answered')
         reveal(v, r.answer)
       } catch {
@@ -206,6 +211,7 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     setAnswer(null)
     setCited({})
     setError(null)
+    setNoMemory(null)
     setState('idle')
   }, [clearTimers])
 
@@ -226,8 +232,9 @@ export function useWorldAsk(viewer: WorldViewer | null, root: string, onDesign?:
     setAnswer(null)
     setCited({})
     setError(null)
+    setNoMemory(null)
     setState('idle')
   }, [root, cancelCurrent, clearTimers])
 
-  return { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost }
+  return { ask, cancel, retry, replay, dismiss, state, answer, cited, revealed, error, playing, cost, noMemory }
 }

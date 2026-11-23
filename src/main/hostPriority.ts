@@ -22,7 +22,7 @@ import * as nodeOs from 'os'
 
 export interface HostPriorityOs {
   setPriority(pid: number, priority: number): void
-  constants: { priority?: { PRIORITY_BELOW_NORMAL?: number; PRIORITY_ABOVE_NORMAL?: number } }
+  constants: { priority?: { PRIORITY_BELOW_NORMAL?: number; PRIORITY_NORMAL?: number; PRIORITY_ABOVE_NORMAL?: number } }
 }
 
 export interface HostPriorityDeps {
@@ -44,7 +44,7 @@ export function __setHostPriorityDepsForTests(deps: HostPriorityDeps | null): vo
 /** The one setPriority call in src/main: this process (pid 0), at the named level. */
 function setOwnPriority(
   deps: HostPriorityDeps | undefined,
-  level: 'PRIORITY_BELOW_NORMAL' | 'PRIORITY_ABOVE_NORMAL',
+  level: 'PRIORITY_BELOW_NORMAL' | 'PRIORITY_NORMAL' | 'PRIORITY_ABOVE_NORMAL',
 ): 'set' | 'disabled' | 'failed' | 'unsupported' {
   const d: HostPriorityDeps = { ...testDeps, ...deps }
   const off = (d.env ?? process.env).TERMPOLIS_NO_HOST_PRIORITY
@@ -79,3 +79,13 @@ export function raiseHostPriority(deps?: HostPriorityDeps): HostPriorityRaise {
 }
 
 export type HostPriorityRaise = 'raised' | 'disabled' | 'failed' | 'unsupported'
+
+/** WPA (Lumopolis 2.0): the memory host's interactive lane. While a call a person is waiting on (the Ask primer, an agent's
+ *  memory_search) is queued or running, the host puts ITSELF back to normal, so a busy machine cannot starve it at
+ *  below-normal; when the lane empties it goes back below normal, since its background work is why it was lowered.
+ *  Same rules as the others: the calling process alone (pid 0), best effort, the same kill switch. On Linux and macOS an
+ *  unprivileged process may not lower its nice value again, so going back to normal is refused there ('failed', swallowed)
+ *  and the host stays below normal, as before. */
+export function setLanePriority(interactive: boolean, deps?: HostPriorityDeps): 'set' | 'disabled' | 'failed' | 'unsupported' {
+  return setOwnPriority(deps, interactive ? 'PRIORITY_NORMAL' : 'PRIORITY_BELOW_NORMAL')
+}

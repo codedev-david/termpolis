@@ -2140,6 +2140,7 @@ describe('MCP memory tools', () => {
     expect(res).toEqual([{ id: 's1', score: 0.7 }])
     expect(mem.memorySearch).toHaveBeenCalledWith({
       query: 'q', limit: 5, agentId: 'a', kind: 'lesson', taskId: 't', project: 'p', diversify: true, fuseGraph: true,
+      lane: 'interactive', // WPA: an agent waits on it, so it goes ahead of the host's background work
     })
   })
 
@@ -3801,7 +3802,7 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
       backend()
       await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
       expect((await ask()).map((r: any) => r.id)).toEqual(['own1', 'note1'])
-      expect(mem.memorySearch).toHaveBeenLastCalledWith({ query: 'cache', limit: 6, agentId: 'claude-notes' })
+      expect(mem.memorySearch).toHaveBeenLastCalledWith({ query: 'cache', limit: 6, agentId: 'claude-notes', lane: 'interactive' })
     })
 
     it('lends nothing to a search that names no project', async () => {

@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url'
 import { app, utilityProcess } from 'electron'
 import { graphKeyForRoot, graphSnapshot, type GraphSnapshot } from '../codeGraph'
 import { killUtility } from '../utilityKill'
+import { abortError } from '../hostLane'
 import type { Claim, Evidence, WorldDoc, WorldProgressEvent, WorldQuery, WorldReadResult, WorldUpdatedEvent } from '../../shared/world/types'
 import type { CloneSourceResult, SerializedError, UpdateSourceResult, WorldHead, WorldHostRequest, WorldHostResponse } from './worldHost'
 import { hideValue, type RepoAccess, type RepoLogin } from '../../shared/world/repoAccess'
@@ -79,6 +80,8 @@ export interface WorldGetOptions {
    *  It also says who asks: false is a read, true (the default, the pane's world:get) a person opening the world. Only
    *  a person opening takes a removed world back (cancelLabelling), so a pane path that opens a world must keep it on. */
   refresh?: boolean
+  /** The caller gave up (a cancelled Ask): the call is let go of and rejects with an AbortError. */
+  signal?: AbortSignal
 }
 
 export const DEFAULT_CALL_TIMEOUT_MS = 600_000
@@ -385,12 +388,24 @@ export function createWorldClient(
     return p
   }
 
-  /** Calls the host. `key`: the project the call works for; its progress keeps the call from timing out (Waiter.key). */
-  const call = async <T>(fn: string, args: unknown[], key?: string): Promise<T> => {
+  /** Calls the host. `key`: the project the call works for; its progress keeps the call from timing out (Waiter.key).
+   *  `signal` (WPA): the caller gave up (a cancelled Ask). The host has no cancel for a call, and the reads an Ask makes are
+   *  quick in-memory work there, so the call is let go of: never posted if it was not yet, or its waiter dropped, so the
+   *  answer, if it comes, is ignored. It rejects with an AbortError. */
+  const call = async <T>(fn: string, args: unknown[], key?: string, signal?: AbortSignal): Promise<T> => {
     if (disposed) throw new Error('Lumopolis host is shut down')
+    if (signal?.aborted) throw abortError()
     const tr = await start()
-    return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) throw abortError()
+    return new Promise<T>((settle, fail) => {
       const id = ++seq
+      const onAbort = (): void => {
+        clearTimeout(waiter.timer)
+        pending.delete(id)
+        fail(abortError())
+      }
+      const resolve = (v: T): void => { signal?.removeEventListener('abort', onAbort); settle(v) }
+      const reject = (e: Error): void => { signal?.removeEventListener('abort', onAbort); fail(e) }
       const expire = (): ReturnType<typeof setTimeout> =>
         setTimeout(() => {
           pending.delete(id)
@@ -405,6 +420,7 @@ export function createWorldClient(
         }
       }
       pending.set(id, waiter)
+      signal?.addEventListener('abort', onAbort, { once: true })
       try {
         tr.postMessage({ kind: 'call', id, fn, args })
       } catch (err) {
@@ -524,7 +540,7 @@ export function createWorldClient(
     async get(root: string, opts: WorldGetOptions = {}): Promise<WorldDoc | null> {
       // The pane's get is a person opening the world; Ask's (no refresh) only reads it.
       const key = keyOf(root, opts.refresh !== false)
-      const doc = await call<WorldDoc | null>('get', [key])
+      const doc = await call<WorldDoc | null>('get', [key], undefined, opts.signal)
       // A first map drawn from the listing: the compile that drew it is still running, so nothing is refreshed.
       if (doc && doc.provisional !== true) {
         known.add(key)
@@ -533,8 +549,8 @@ export function createWorldClient(
       return doc
     },
     /** A filtered view of the stored world (ids and/or text, default limit 20) with the cited evidence. */
-    async read(root: string, q: WorldQuery): Promise<WorldReadResult> {
-      return call<WorldReadResult>('read', [keyOf(root), q ?? {}])
+    async read(root: string, q: WorldQuery, opts: { signal?: AbortSignal } = {}): Promise<WorldReadResult> {
+      return call<WorldReadResult>('read', [keyOf(root), q ?? {}], undefined, opts.signal)
     },
     /** The same filtered view of a stored design world by its key, or null when none is stored. */
     async readDesign(key: string, q: WorldQuery): Promise<WorldReadResult | null> {

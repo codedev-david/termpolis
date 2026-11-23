@@ -182,6 +182,18 @@ describe('registerWorldIpc', () => {
     expect(client.relayout).toHaveBeenCalledWith('C:/repo')
   })
 
+  it('opening a world warms the asker (its memory primer) for that root, without waiting on it; a throwing warm is ignored (WPA)', async () => {
+    const warm = vi.fn()
+    const asker: WorldAsker = { ask: vi.fn(), cancel: vi.fn(), warm }
+    const { invoke } = setup(() => null, fakeSettings(), asker)
+    expect(await invoke('world:get', { root: 'C:/repo' })).toEqual({ success: true, data: DOC })
+    expect(warm).toHaveBeenCalledWith('C:/repo')
+    warm.mockImplementation(() => { throw new Error('no memory') })
+    expect(await invoke('world:get', { root: 'C:/repo' })).toEqual({ success: true, data: DOC })
+    expect(await invoke('world:get', {})).toEqual({ success: false, error: 'root required' })
+    expect(warm).toHaveBeenCalledTimes(2)
+  })
+
   it('handlers return err() shapes for a missing root or a failure', async () => {
     const { invoke, client } = setup()
     for (const args of [undefined, null, 'C:/repo', {}, { root: '   ' }, { root: 5 }]) {

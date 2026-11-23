@@ -47,7 +47,8 @@ import {
 // where they read an adjacency Map that nothing ever fills — see noGhostBrainState.test.ts.
 import { graphStats, graphRelationStats, graphCreatorStats, edgeKeysIncident, exportGraphEdges, importGraphEdges } from './memoryGraph'
 import { setSafeStorage } from './secureKeyStore'
-import { lowerHostPriority } from './hostPriority'
+import { lowerHostPriority, setLanePriority } from './hostPriority'
+import { createHostLane, abortError, LANE_LINGER_MS, type HostLaneName } from './hostLane'
 import type { WeaveNeighbour } from './mnemeWeave'
 // v1.56.0: the per-message model router's classifier runs beside the embedder it uses.
 import { routerClassify, routerLearn, routerWarm } from './routerModel'
@@ -96,8 +97,16 @@ export interface HostCallMsg {
   id: number
   fn: string
   args: unknown[]
+  /** WPA: 'interactive' for a call a person is waiting on (the Ask primer, an agent's memory_search); anything else is background. */
+  lane?: HostLaneName
 }
-export type HostRequest = HostInitMsg | HostCallMsg
+/** WPA: the caller gave up on call `id` (cancelled, or its timeout ran out). A read stops at its next await point, or is
+ *  dropped if it has not started; a write is never cancelled. No reply: the caller already settled. */
+export interface HostCancelMsg {
+  kind: 'cancel'
+  id: number
+}
+export type HostRequest = HostInitMsg | HostCallMsg | HostCancelMsg
 
 export interface HostReadyMsg { kind: 'ready'; pid: number; entries: number }
 export interface HostInitErrorMsg { kind: 'init-error'; error: SerializedError }
@@ -198,7 +207,11 @@ const MAX_NEIGHBOUR_IDS = 1000 // the real caller passes 300; bounds the payload
 // agent launches waiting on them). Handing the thread back between queries lets a search or a primer
 // that arrives mid-batch run after at most one query. Same queries, same order, same answers.
 const WEAVE_YIELD_MS = 20
-const yieldToQueue = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+// WPA: and while a call a person is waiting on is in the interactive lane, the batch waits for it to finish before its next query.
+const yieldToQueue = async (): Promise<void> => {
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  await lane.idle()
+}
 
 export async function weaveNeighboursBatch(ids: string[], k: number): Promise<Record<string, WeaveNeighbour[]>> {
   const out: Record<string, WeaveNeighbour[]> = {}
@@ -319,6 +332,25 @@ export function installKeychainGuard(osEncryptionAvailable: boolean): void {
 
 let initialised = false
 
+// WPA: the interactive fast lane (hostLane.ts). A forked host that lowered itself at start-up goes back to normal priority
+// while a call a person is waiting on is in the lane, and below normal again when the lane empties. Only a host that lowered
+// itself does: main and the unit suite import this module, and must never have their own priority changed by it.
+let hostLowered = false
+const lane = createHostLane((on) => { if (hostLowered) setLanePriority(on, { host: 'memory' }) }, { lingerMs: LANE_LINGER_MS })
+
+/** WPA: the reads a caller may cancel. Every other call (each write above all) runs to the end once it has started. */
+export const CANCELLABLE_READS: ReadonlySet<string> = new Set(['memorySearch', 'memoryList', 'memoryRelated', 'memoryGraphQuery'])
+
+/** WPA: the arguments a cancellable read is called with: memorySearch takes the signal in its options, and checks it at its
+ *  await points. Shared with memoryClient's in-process path, so a cancel reaches the search the same way in both. */
+export function argsWithSignal(fn: string, args: unknown[], signal: AbortSignal | undefined): unknown[] {
+  if (!signal || fn !== 'memorySearch') return args
+  const [opts, ...rest] = args
+  return [{ ...((opts && typeof opts === 'object' ? opts : {}) as object), signal }, ...rest]
+}
+
+const inflight = new Map<number, AbortController>()
+
 /** Run one call against the whitelist. Sync and async exports are handled uniformly (`await` on a
  *  non-promise is the value itself), so the client only ever sees Promises. */
 export async function handleCall(msg: HostCallMsg): Promise<HostResponse> {
@@ -331,13 +363,27 @@ export async function handleCall(msg: HostCallMsg): Promise<HostResponse> {
   if (!initialised) {
     return { kind: 'result', id: msg.id, ok: false, error: { name: 'Error', message: `memoryHost: not initialised (fn "${String(msg.fn)}")` } }
   }
+  const ctl = CANCELLABLE_READS.has(msg.fn) ? new AbortController() : null
+  if (ctl) inflight.set(msg.id, ctl)
+  let release: (() => void) | null = null
   try {
-    const args = Array.isArray(msg.args) ? msg.args : []
+    // A background call waits here (an await: the thread stays free) while an interactive one is in the lane.
+    release = await lane.enter(msg.lane === 'interactive' ? 'interactive' : 'background', ctl?.signal)
+    if (ctl?.signal.aborted) throw abortError()
+    const args = argsWithSignal(msg.fn, Array.isArray(msg.args) ? msg.args : [], ctl?.signal)
     const result = await (handler as (...a: unknown[]) => unknown)(...args)
     return { kind: 'result', id: msg.id, ok: true, result }
   } catch (err) {
     return { kind: 'result', id: msg.id, ok: false, error: serializeError(err) }
+  } finally {
+    release?.()
+    if (ctl) inflight.delete(msg.id)
   }
+}
+
+/** WPA: cancel a read in flight, or drop it while it waits for the lane. A write, an unknown id or a finished call: nothing. */
+export function handleCancel(msg: HostCancelMsg): void {
+  inflight.get(msg.id)?.abort()
 }
 
 /** Bring the store up with the key main unwrapped (or minted) for us. */
@@ -381,12 +427,25 @@ export async function handleMessage(msg: HostRequest): Promise<HostResponse | nu
   if (!msg || typeof msg !== 'object') return null
   if (msg.kind === 'init') return handleInit(msg)
   if (msg.kind === 'call') return await handleCall(msg)
+  if (msg.kind === 'cancel') { handleCancel(msg); return null }
   return null
 }
 
 /** @internal test-only — the child is a module singleton; let the suite re-drive init. */
 export function _resetHostForTests(): void {
   initialised = false
+  hostLowered = false
+}
+
+/** The forked host lowered its own priority at start-up, so its interactive lane may raise it again (see `lane`). Exported for
+ *  the bootstrap below and for the suite, which drives it with the priority deps faked. */
+export function _setHostLoweredForTests(v: boolean): void {
+  hostLowered = v
+}
+
+/** @internal test-only — what the lane holds right now. */
+export function _hostLaneForTests(): { interactive: number; waiting: number; inflight: number } {
+  return { interactive: lane.interactive(), waiting: lane.waiting(), inflight: inflight.size }
 }
 
 // ── Child-process bootstrap ──────────────────────────────────────────────────────────────────────
@@ -414,6 +473,9 @@ if (parentPort) {
   // The first thing a forked host does: lower its OWN priority (never another process's, never main's).
   // Kill switch TERMPOLIS_NO_HOST_PRIORITY=1. Inside this block, so main and the unit suite never run it.
   lowerHostPriority({ host: 'memory' })
+  // WPA: from here the interactive lane may put it back to normal while someone waits on a call (see `lane`). Under the
+  // kill switch the lane's setLanePriority is switched off by the same switch, so a host that stayed normal stays normal.
+  hostLowered = true
   // Search reranking runs its model on a worker_thread of this process (several WASM threads of its own), so a
   // rerank never blocks the thread that serves writes, the primer and every other memory call.
   setRerankWorkerSpawner(() => createRerankWorkerTransport())

@@ -17,11 +17,15 @@
 //
 // PURE: no electron, no fs, no store. It never catches: a read that fails fails the door the way it always did.
 
+import { abortError } from './hostLane'
+
 export interface FillBounds {
   /** What the store reads when the caller names no limit. */
   fallback: number
   /** The most a deeper read asks for (the store's own clamp where it has one). A first read at or past it has nowhere deeper to go. */
   ceiling: number
+  /** A caller that gave up (an Ask cancelled): no deeper read starts once it fires, and the fill throws an AbortError. */
+  signal?: AbortSignal
 }
 
 /**
@@ -47,6 +51,7 @@ export async function fillVisible<T>(
   let deeper = false
   // A page the store filled, that the door then cut short, may have more behind it. A page it could not fill is all there is.
   while (kept.length < target && rows.length >= size && size < bounds.ceiling) {
+    if (bounds.signal?.aborted) throw abortError()
     size = Math.min(size * 2, bounds.ceiling)
     rows = await read(size)
     kept = visible(rows)

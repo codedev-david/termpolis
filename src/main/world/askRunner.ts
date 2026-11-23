@@ -3,7 +3,7 @@
 import { parseAnswer } from '../../shared/world/answerProtocol'
 import { itemsForEvidence } from '../../shared/world/evidenceLinks'
 import { estimateTokens } from '../../shared/world/tokens'
-import type { AskRequest, AskResult, CitedEvidence, Evidence, WorldDoc, WorldReadResult } from '../../shared/world/types'
+import type { AskNoMemory, AskRequest, AskResult, CitedEvidence, Evidence, WorldDoc, WorldReadResult } from '../../shared/world/types'
 import type { ExecAgent, ExecDeps, ExecRequest, ExecResult } from '../headlessExec'
 import { isSafeModelId } from '../modelCatalog'
 import { buildAskPrompt, summarize } from './askContext'
@@ -17,8 +17,9 @@ export interface AskRunnerDeps {
   agent(): ExecAgent
   /** The environment (and, for Codex, the proxy base URL) a run in `cwd` gets. A failure here never blocks a question. */
   runEnv(agent: ExecAgent, cwd: string): Promise<{ env: Record<string, string>; baseUrl?: string }>
-  /** The memory primer for the project folder; null for none. A failure never blocks a question. */
-  primer(cwd: string): Promise<string | null>
+  /** The memory primer for the project folder; null for none. A failure never blocks a question. `signal` fires when the ask
+   *  is cancelled or the step runs out, and the primer stops reading then. Throw memoryUnavailable to say why there is none. */
+  primer(cwd: string, signal?: AbortSignal): Promise<string | null>
   timeoutMs?: number
   /** How long loading the stored world may take before the ask gives up. Default 15 s. */
   getTimeoutMs?: number
@@ -57,30 +58,48 @@ export const agentMissingMessage = (agent: ExecAgent): string => `${AGENT_NAMES[
 /** True when a failed run says the agent's program could not be found. */
 export const isMissingCli = (error: string | undefined): boolean => /ENOENT|is not recognized as/i.test(error ?? '')
 
+/** An error a primer throws to say the memory could not be used, and why (WPA: the answer then says so). */
+export interface MemoryUnavailableError extends Error { noMemory: Exclude<AskNoMemory, 'timeout'> }
+export const memoryUnavailable = (why: Exclude<AskNoMemory, 'timeout'>): MemoryUnavailableError =>
+  Object.assign(new Error(`memory unavailable: ${why}`), { noMemory: why })
+
+/** The rejection of a step that ran out (as opposed to one cancelled with the ask). */
+const RAN_OUT = 'ran out'
+
 /**
  * The step `start` begins, or a rejection once `ms` pass or `signal` aborts, whichever comes first. A cancel that
  * landed before the step began rejects at once, and the step is never started (a memory search left running costs the
- * machine). A step that runs out says so in the app log (`log`): which step, its limit and how long it took, since it is
- * then left out of the answer with nothing on screen to show it.
+ * machine). The step gets a signal of its own, which fires on either: a step given up on is stopped, not left running on
+ * the host (WPA). A step that runs out says so in the app log (`log`): which step, its limit and how long it took, since
+ * it is then left out of the answer with nothing on screen to show it, and it rejects with RAN_OUT.
  */
-const bounded = <T>(start: () => Promise<T>, ms: number, signal: AbortSignal, step: string, log: (message: string) => void): Promise<T> =>
+const bounded = <T>(start: (signal: AbortSignal) => Promise<T>, ms: number, signal: AbortSignal, step: string, log: (message: string) => void): Promise<T> =>
   new Promise<T>((resolve, reject) => {
     if (signal.aborted) { reject(new Error('stopped')); return }
     const began = Date.now()
-    const stop = (): void => reject(new Error('stopped'))
+    const own = new AbortController()
+    const stop = (): void => { own.abort(); reject(new Error('stopped')) }
     const timer = setTimeout(() => {
       log(`[world] ask: ${step} ran out after ${Date.now() - began} ms (limit ${ms} ms)`)
-      stop()
+      own.abort()
+      reject(new Error(RAN_OUT))
     }, ms)
     signal.addEventListener('abort', stop, { once: true })
     // A step that throws before it returns a promise fails here too, so its timer and listener are always cleared.
     let started: Promise<T>
-    try { started = start() } catch (err) { started = Promise.reject(err) }
+    try { started = start(own.signal) } catch (err) { started = Promise.reject(err) }
     started.then(resolve, reject).finally(() => {
       clearTimeout(timer)
       signal.removeEventListener('abort', stop)
     })
   })
+
+/** Why a primer that failed left the memory out: it ran out, or the reason it gave, or (anything else) unreachable. */
+const noMemoryOf = (err: unknown): AskNoMemory => {
+  if (err instanceof Error && err.message === RAN_OUT) return 'timeout'
+  const why = (err as Partial<MemoryUnavailableError> | null)?.noMemory
+  return why === 'locked' ? 'locked' : 'down'
+}
 
 export function createAskRunner(deps: AskRunnerDeps): AskRunner {
   const log = deps.log ?? ((message: string) => console.warn(message))
@@ -104,19 +123,19 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       let doc: WorldDoc | null
       try {
         // No background refresh from here: a refreshed world landing mid-answer would wipe the answer.
-        doc = await bounded(() => deps.client.get(root, { refresh: false }), deps.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS, ctl.signal, 'loading the map', log)
+        doc = await bounded((signal) => deps.client.get(root, { refresh: false, signal }), deps.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS, ctl.signal, 'loading the map', log)
       } catch (err) {
         if (ctl.signal.aborted) return cancelled()
         // A limit that ran out was logged by bounded; a host that failed says how, so a retry has a reason on record.
         const why = err instanceof Error ? err.message : String(err)
-        if (why !== 'stopped') log(`[world] ask: loading the map failed: ${why}`)
+        if (why !== 'stopped' && why !== RAN_OUT) log(`[world] ask: loading the map failed: ${why}`)
         return { askId, ok: false, error: MAP_FAILED }
       }
       if (ctl.signal.aborted) return cancelled()
       if (!doc) return { askId, ok: false, error: NOT_MAPPED }
       let matches: WorldReadResult
       try {
-        matches = await bounded(() => deps.client.read(root, { text: req.question, limit: 20 }), prepMs, ctl.signal, 'reading matches', log)
+        matches = await bounded((signal) => deps.client.read(root, { text: req.question, limit: 20 }, { signal }), prepMs, ctl.signal, 'reading matches', log)
       } catch {
         matches = { items: [], evidence: [] }
       }
@@ -136,6 +155,8 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       }
       if (ctl.signal.aborted) return cancelled()
       let res: ExecResult
+      // Set when the run asked for its primer and got none because the memory could not be used (not when it had no notes).
+      let noMemory: AskNoMemory | undefined
       try {
         res = await deps.exec(
           {
@@ -144,7 +165,17 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
             env: run.env,
             ...(run.baseUrl ? { baseUrl: run.baseUrl } : {})
           },
-          { ...deps.execDeps, primer: async (cwd) => { try { return await bounded(() => deps.primer(cwd), prepMs, ctl.signal, 'the memory primer', log) } catch { return null } } }
+          {
+            ...deps.execDeps,
+            primer: async (cwd) => {
+              try {
+                return await bounded((signal) => deps.primer(cwd, signal), prepMs, ctl.signal, 'the memory primer', log)
+              } catch (err) {
+                if (!ctl.signal.aborted) noMemory = noMemoryOf(err)
+                return null
+              }
+            }
+          }
         )
       } catch (e) {
         if (ctl.signal.aborted) return cancelled()
@@ -154,7 +185,11 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
       if (!res.ok && isMissingCli(res.error)) return { askId, ok: false, error: agentMissingMessage(agent) }
       if (!res.ok) return { askId, ok: false, error: `Lumopolis couldn't reach your agent: ${res.error ?? 'no answer'}` }
       const answer = parseAnswer(res.output, doc, labels)
-      return { askId, ok: true, answer, summary: summarize(req.summary, req.question, answer.text), cited: citedLabels(answer.text, labels, doc), tokens: estimateTokens(prompt) + estimateTokens(res.output) + Math.ceil(res.primerChars / 4) }
+      return {
+        askId, ok: true, answer, summary: summarize(req.summary, req.question, answer.text), cited: citedLabels(answer.text, labels, doc),
+        tokens: estimateTokens(prompt) + estimateTokens(res.output) + Math.ceil(res.primerChars / 4),
+        ...(noMemory ? { noMemory } : {})
+      }
     } finally {
       byAsk.delete(askId)
       if (byRoot.get(root) === askId) byRoot.delete(root)

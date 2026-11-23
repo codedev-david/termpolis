@@ -632,7 +632,9 @@ async function reflectOnTask(
 // terminal's transcript has already been reflected, so each pass only distils the
 // newly-appended turns. In-memory (terminal ids are per-session uuids); a lost cursor
 // just re-reads, and the content-addressed store dedups any overlap.
-import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
+import { buildContextPrimer, type PrimerRecent, type PrimerSearch } from './contextPrimer'
+import { createPrimerCache } from './primerCache'
+import { createAskPrimer } from './askPrimer'
 import { createPrimerRecent } from './primerLane'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects, getDistillWithHaiku, setDistillWithHaiku, getRerankSearch, setRerankSearch } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
@@ -2500,6 +2502,7 @@ ipcMain.handle('memory:delete', async (_, id: string) => {
   try {
     if (typeof id !== 'string' || !id) return err('id required')
     await memoryDelete(id, { keepContentHash: true })
+    dropAskPrimers()
     return ok()
   } catch (e: any) { return err(e.message) }
 })
@@ -2508,7 +2511,7 @@ ipcMain.handle('memory:delete', async (_, id: string) => {
 // structured-clonable — the renderer gets a clone error or an empty object, i.e. "your memory is
 // gone". An un-awaited memoryClear() would also return success before the store had cleared.
 ipcMain.handle('memory:count', async () => { try { return ok(await memoryCount()) } catch (e: any) { return err(e.message) } })
-ipcMain.handle('memory:clear', async () => { try { await clearNotesRecord({ manifest: fileManifest(app.getPath('userData')) }, memoryClear); return ok() } catch (e: any) { return err(e.message) } })
+ipcMain.handle('memory:clear', async () => { try { await clearNotesRecord({ manifest: fileManifest(app.getPath('userData')) }, memoryClear); dropAskPrimers(); return ok() } catch (e: any) { return err(e.message) } })
 /** What the last Weave pass drew. Null until the indexer has run one — which is itself the
  *  signal worth surfacing, because "the Weave has never run" and "the Weave runs and mints
  *  nothing" used to look identical from outside. */
@@ -2620,6 +2623,8 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       // under .worktrees, node_modules, dist ... is ever delivered to this thread by the OS.
       watchRepoForGraphAndWorld(opts.repoRoot)
     } catch { /* best effort */ }
+    // WPA: that project's memory just grew, so its Ask primer is rebuilt now, ahead of the next question.
+    void askPrimers.warm(opts.repoRoot, getPrimerLimit(), { force: true })
     return ok({ ...stats, codeGraph })
   } catch (e: any) { return err(e.message) }
 })
@@ -2711,7 +2716,9 @@ const worldLabelContext = createLabelContext({
   git: (args, cwd) => safeGitAsync(args, { cwd, timeout: GIT_TIMEOUT_MS }),
   // The brain's decisions that name the building; none while it is unavailable or locked (the context hook treats a throw as none).
   // Lazy: correctedSearch is declared further down this file.
-  memory: memoryForLabels((o) => correctedSearch(o)),
+  // WPA: a label search is background work (the background lane, rerank off), and a note with no project key never matches
+  // this project by folder name (strictProject).
+  memory: memoryForLabels((o) => correctedSearch({ ...o, strictProject: true, rerank: false, lane: 'background' })),
 })
 // Test runs for the world: what the agents' transcripts ran, and (while "Read CI results with GitHub CLI" is on, as it
 // is by default) the newest CI conclusion, only when `gh` is on PATH and the repository has a GitHub remote. Reads are
@@ -2833,14 +2840,18 @@ function watchRepoForGraphAndWorld(repoRoot: string): boolean {
 // Ask: the Lumopolis agent runs read-only with the project's memory primer (headlessPrimer) and noRemember, so
 // a question reads the brain but never writes to it. deliver and headlessPrimer are resolved at call time
 // because they are declared further down this file.
-registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, createAskRunner({
-  exec: runHeadless,
-  execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
-  agent: () => worldSettings.get().worldAgent,
-  runEnv: worldRunEnv,
-  primer: (cwd) => headlessPrimer(cwd),
-  client: worldClient,
-}), worldDesigner, {
+// WPA: the Ask's primer is askPrimer (cached, the interactive lane, cancelled with the ask), and opening a world warms it.
+registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, {
+  ...createAskRunner({
+    exec: runHeadless,
+    execDeps: { deliver: (...a) => deliverSecondOpinion(...a) },
+    agent: () => worldSettings.get().worldAgent,
+    runEnv: worldRunEnv,
+    primer: (cwd, signal) => askPrimer(cwd, signal),
+    client: worldClient,
+  }),
+  warm: (root) => { void askPrimers.warm(root, getPrimerLimit()) },
+}, worldDesigner, {
   registry: worldSources,
   designs: worldDesignStore,
   // The Lumopolis home's folder dialog. In a test run (NODE_ENV=test) TERMPOLIS_TEST_WORLD_PICK_FILE can
@@ -3098,6 +3109,7 @@ ipcMain.handle('brain:import', async () => {
     const ud = app.getPath('userData')
     const res = await mergeBrainArchive(ud, buf, realBrainFs())
     if (!res.ok) return err(res.error || 'Import failed')
+    dropAskPrimers()
     // Reload stores whose files a fresh-machine import may have restored, so they take effect now.
     try { initCompetence(ud) } catch { /* best effort */ }
     try { initIdentity(ud) } catch { /* best effort */ }
@@ -3449,7 +3461,9 @@ const SYNC_TEMPORARILY_DISABLED = "SYNC_TEMPORARILY_DISABLED: memory sync betwee
 ipcMain.handle('memory:set-sync-dir', async (_, opts: { dir: string | null }) => {
   try {
     if (opts?.dir) return err(SYNC_TEMPORARILY_DISABLED)
-    return ok(await setSyncDir(null))
+    const status = await setSyncDir(null)
+    dropAskPrimers()
+    return ok(status)
   } catch (e: any) { return err(e.message) }
 })
 
@@ -3461,27 +3475,27 @@ ipcMain.handle('memory:choose-sync-dir', async () => err(SYNC_TEMPORARILY_DISABL
 // locally and never leaves the machine, so the sync provider only sees
 // ciphertext. Returns an error (e.g. wrong passphrase) without throwing.
 ipcMain.handle('memory:set-sync-passphrase', async (_, opts: { passphrase: string }) => {
-  try { return ok(await setSyncPassphrase(opts?.passphrase ?? '')) } catch (e: any) { return err(e.message) }
+  try { const r = await setSyncPassphrase(opts?.passphrase ?? ''); dropAskPrimers(); return ok(r) } catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('memory:disable-sync-encryption', async () => {
-  try { return ok(await disableSyncEncryption()) } catch (e: any) { return err(e.message) }
+  try { const r = await disableSyncEncryption(); dropAskPrimers(); return ok(r) } catch (e: any) { return err(e.message) }
 })
 
 // WP-F: local at-rest encryption (no cross-machine sync required). Default-ON when the OS keychain is
 // available; these let the user re-enable after an opt-out, or turn it off (decrypts + remembers).
 ipcMain.handle('memory:enable-local-encryption', async () => {
-  try { return ok(await enableLocalEncryption()) } catch (e: any) { return err(e.message) }
+  try { const r = await enableLocalEncryption(); dropAskPrimers(); return ok(r) } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('memory:disable-encryption', async () => {
-  try { return ok(await disableEncryption()) } catch (e: any) { return err(e.message) }
+  try { const r = await disableEncryption(); dropAskPrimers(); return ok(r) } catch (e: any) { return err(e.message) }
 })
 
 // Decision 1: the ONLY way past a LOCKED brain, and only ever on the user's click in the Memory panel.
 // The old key file is retired (renamed aside, never deleted) and a new one minted; older memories stay
 // on disk, readable again whenever the old key works — they are never rewritten.
 ipcMain.handle('memory:start-new-key', async () => {
-  try { return ok(await startNewMemoryKey()) } catch (e: any) { return err(e.message) }
+  try { const r = await startNewMemoryKey(); dropAskPrimers(); return ok(r) } catch (e: any) { return err(e.message) }
 })
 
 /**
@@ -4077,6 +4091,46 @@ async function headlessPrimer(cwd: string): Promise<string | null> {
   })
 }
 
+/** WPA: the Ask's primer. The same digest as headlessPrimer's, made the fast way for a person who is waiting: one combined
+ *  search with rerank off, both reads in the memory host's interactive lane and under the ask's cancel signal, no deeper
+ *  re-reads (fillVisible) behind them. Corrections still apply. */
+const askPrimerSearch: PrimerSearch = async (o) => applyCorrections(await memorySearch({ ...o, rerank: false, lane: 'interactive' }))
+const askPrimerRecent = (signal?: AbortSignal): PrimerRecent =>
+  createPrimerRecent({ list: (o) => memoryList({ ...o, lane: 'interactive', ...(signal ? { signal } : {}) }), correct: (rows) => applyEntryCorrections(rows) })
+/** The finished Ask primers, per project, in memory only (primerCache.ts). Warmed when a world opens and when that
+ *  project's code ingest finishes; dropped whenever memory changes under it (dropAskPrimers). */
+const askPrimers = createPrimerCache({
+  build: (root, limit, signal) => {
+    const project = normalizeProjectSlug(root)
+    return buildContextPrimer(askPrimerSearch, {
+      query: project ? `recent work, decisions, conventions, and context for ${project}` : 'recent work, key decisions, and conventions',
+      limit,
+      maxSnippetChars: 400,
+      project: project || undefined,
+      projectPath: root,
+      recent: askPrimerRecent(signal),
+      hasWorld: worldPrimerProbe,
+      combined: true,
+      ...(signal ? { signal } : {}),
+    })
+  },
+})
+/** Drops every cached Ask primer: the memory under them changed (a delete, a clear, a correction, a key or lock change, an
+ *  import). Which project a deleted or corrected memory belonged to is the memory process's to know, so all are dropped. */
+function dropAskPrimers(): void { askPrimers.clear() }
+const askPrimer = createAskPrimer({
+  cache: askPrimers,
+  limit: () => getPrimerLimit(),
+  hostDown: () => memoryHostMode() === 'unavailable',
+  isLocked: () => memoryIsLocked(),
+})
+/** correctMemory, and the cached Ask primers dropped when it took. */
+const correctMemoryAndDrop: typeof correctMemory = (input) => {
+  const r = correctMemory(input)
+  if (r.ok) dropAskPrimers()
+  return r
+}
+
 ipcMain.handle('agent:second-opinion', async (_e, opts: { agent: string; model?: string; content: string }) => {
   try {
     const agent = opts?.agent as SecondOpinionAgent
@@ -4612,6 +4666,7 @@ async function semanticPoolOptions(
           project: opts.project,
           diversify: opts.diversify, // agent-facing recall is gated + diversified (executeTool defaults it on)
           fuseGraph: opts.fuseGraph, // …and fuses graph-connected neighbours one hop out
+          lane: 'interactive', // WPA: an agent is waiting on this, so it goes ahead of the host's background work
         }), (rows) => visibleNotes(rows, opts.project), SEARCH_READ)
         // Capture latency BEFORE the readiness probe (a second memory-process RPC) so the probe's
         // round-trip does not inflate the recall-latency SLI.
@@ -4639,7 +4694,7 @@ async function semanticPoolOptions(
           project: opts.project ? normalizeProjectSlug(opts.project) : '',
           query: opts.query,
           limit: opts.limit,
-          search: async (o) => applyCorrections(await memorySearch(o)),
+          search: async (o) => applyCorrections(await memorySearch({ ...o, lane: 'interactive' })),
         })
         // Note what the agent actually received, not what the store returned: a retracted entry
         // was never served, so an outcome must not be charged to it.
@@ -4779,7 +4834,7 @@ async function semanticPoolOptions(
       // wrong recall at the moment it surfaces, instead of filing it for a review pass
       // that never happens. Nothing is deleted — see memoryCorrection.ts.
       memoryCorrect: (opts) => {
-        const r = correctMemory({ id: opts.id, kind: opts.kind as 'retract' | 'amend' | 'demote', reason: opts.reason, replacement: opts.replacement })
+        const r = correctMemoryAndDrop({ id: opts.id, kind: opts.kind as 'retract' | 'amend' | 'demote', reason: opts.reason, replacement: opts.replacement })
         // A corrected memory no longer gets to hide what it replaced (mnemeSupersede.ts).
         if (r.ok) void memoryReleaseSupersedes(opts.id).catch(() => { /* best effort; the idle pass releases it too */ })
         return r
@@ -5274,7 +5329,7 @@ async function semanticPoolOptions(
               edgeKeys: (ids) => edgeKeysIncident(ids),
               delegatedHashes,
               isCorrected: (id) => correctionForMemory(id) !== null,
-              demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
+              demote: (id, reason) => correctMemoryAndDrop({ id, kind: 'demote', reason, by: 'termpolis' }),
               ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join, LINKED_RECHECK_MARKER),
             })
           } catch { /* the store wasn't readable: the next complete pass tries again */ }
@@ -5285,7 +5340,7 @@ async function semanticPoolOptions(
           await recheckStoredLessons({
             list: (opts) => memoryList(opts),
             isCorrected: (id) => correctionForMemory(id) !== null,
-            demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
+            demote: (id, reason) => correctMemoryAndDrop({ id, kind: 'demote', reason, by: 'termpolis' }),
             ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join),
           })
         } catch { /* the store wasn't readable: the next pass tries again */ }
@@ -5295,7 +5350,7 @@ async function semanticPoolOptions(
           await recheckStoredLessonsV2({
             list: (opts) => memoryList(opts),
             isCorrected: (id) => correctionForMemory(id) !== null,
-            demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
+            demote: (id, reason) => correctMemoryAndDrop({ id, kind: 'demote', reason, by: 'termpolis' }),
             ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join, RECHECK_V2_MARKER, 2),
           })
         } catch { /* the store wasn't readable: the next pass tries again */ }

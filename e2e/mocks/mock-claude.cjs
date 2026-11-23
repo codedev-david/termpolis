@@ -107,7 +107,11 @@ if (pIdx !== -1 && process.env.MOCK_CLAUDE_WORLD_ANSWER === '1') {
 // world-actions block ANSWER_PROTOCOL describes. MOCK_CLAUDE_REPLY_DELAY_MS holds the reply back;
 // MOCK_CLAUDE_ANSWER_PARAGRAPH=1 answers with a short paragraph citing two labels instead of one line.
 // A district-labelling prompt gets a labels reply instead, at once.
+// MOCK_CLAUDE_PID_DIR: an answer run writes its own pid there (<pid>.pid), so a spec can check a cancelled ask ended it.
 function runWorldAnswer(args, at) {
+  if (process.env.MOCK_CLAUDE_PID_DIR) {
+    try { require('fs').writeFileSync(require('path').join(process.env.MOCK_CLAUDE_PID_DIR, `${process.pid}.pid`), String(process.pid)); } catch { /* best effort */ }
+  }
   readPrompt(args, at).then((prompt) => {
     if (prompt.includes('You are labelling one district')) {
       // The labelling run Lumopolis makes when it compiles a world (src/main/world/labelPrompt.ts):
@@ -172,7 +176,9 @@ function runWorldAnswer(args, at) {
     // MOCK_CLAUDE_SLOW_MATCH: a question containing this word is answered MOCK_CLAUDE_SLOW_MS late instead.
     const slow = process.env.MOCK_CLAUDE_SLOW_MATCH && question.includes(process.env.MOCK_CLAUDE_SLOW_MATCH)
       ? Number(process.env.MOCK_CLAUDE_SLOW_MS) || 0 : 0;
-    setTimeout(() => { console.log(lines.join('\n')); process.exit(0); }, slow || delay);
+    // MOCK_CLAUDE_HANG_MATCH: a question containing this word is not answered for two minutes (a run only a cancel ends).
+    const hang = process.env.MOCK_CLAUDE_HANG_MATCH && question.includes(process.env.MOCK_CLAUDE_HANG_MATCH) ? 120000 : 0;
+    setTimeout(() => { console.log(lines.join('\n')); process.exit(0); }, hang || slow || delay);
   });
 }
 

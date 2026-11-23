@@ -1500,3 +1500,60 @@ describe('WP4a: a long first compile, the code graph after it, and the listing f
     expect(spawned[0].calls().map((c) => c.fn)).toEqual(['get'])
   })
 })
+
+describe('WPA: an Ask that is cancelled lets go of its world step', () => {
+  it('a get or read whose signal fires is dropped: it rejects at once, and the host answering later is ignored', async () => {
+    const { client, spawned } = setup({}, (t) => { t.reply = () => undefined })
+    const ctl = new AbortController()
+    const p = client.get(ROOT, { refresh: false, signal: ctl.signal })
+    await vi.waitFor(() => expect(spawned[0]?.calls()).toHaveLength(1))
+    ctl.abort()
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' })
+    const id = spawned[0].calls()[0].id
+    spawned[0].emit({ kind: 'result', id, ok: true, result: DOC })
+    const r = new AbortController()
+    const q = client.read(ROOT, { text: 'auth' }, { signal: r.signal })
+    await vi.waitFor(() => expect(spawned[0].calls()).toHaveLength(2))
+    r.abort()
+    await expect(q).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('an already-cancelled step posts nothing; one cancelled while the host starts posts nothing either', async () => {
+    const { client, spawned } = setup({}, (t) => { t.autoReady = false })
+    const done = new AbortController()
+    done.abort()
+    await expect(client.read(ROOT, { text: 'x' }, { signal: done.signal })).rejects.toMatchObject({ name: 'AbortError' })
+    const ctl = new AbortController()
+    const p = client.get(ROOT, { refresh: false, signal: ctl.signal })
+    await vi.waitFor(() => expect(spawned).toHaveLength(1))
+    ctl.abort()
+    spawned[0].emit({ kind: 'ready', pid: 1 })
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' })
+    expect(spawned[0].calls()).toHaveLength(0)
+  })
+
+  it('a step that answers before any cancel lets go of the signal: a later abort changes nothing', async () => {
+    const { client } = setup()
+    const ctl = new AbortController()
+    const remove = vi.spyOn(ctl.signal, 'removeEventListener')
+    expect(await client.get(ROOT, { refresh: false, signal: ctl.signal })).toBeNull()
+    expect(await client.read(ROOT, { text: 'x' }, { signal: ctl.signal })).toEqual(DOC)
+    expect(remove).toHaveBeenCalledTimes(2)
+    ctl.abort()
+  })
+})
+
+describe('WPA: a step with a signal that fails or is refused', () => {
+  it('a host error and a failed post still reject with their own error and let go of the signal', async () => {
+    const { client } = setup({}, (t) => {
+      t.reply = (m) => ({ kind: 'result', id: m.id, ok: false, error: { name: 'Error', message: 'no such world' } })
+    })
+    const ctl = new AbortController()
+    const remove = vi.spyOn(ctl.signal, 'removeEventListener')
+    await expect(client.read(ROOT, { text: 'x' }, { signal: ctl.signal })).rejects.toThrow('no such world')
+    expect(remove).toHaveBeenCalledTimes(1)
+    const posted = setup({}, (t) => { t.throwOnPost = true })
+    await expect(posted.client.read(ROOT, { text: 'x' }, { signal: ctl.signal })).rejects.toThrow('port closed')
+    expect(remove).toHaveBeenCalledTimes(2)
+  })
+})

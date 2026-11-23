@@ -90,6 +90,8 @@ const settingsPatchOf = (args: unknown): Partial<WorldSettings> | null => {
 export interface WorldAsker {
   ask(req: AskRequest): Promise<AskResult>
   cancel(askId: string): void
+  /** WPA: a world was opened, so an ask may follow: get ready (the memory primer) without being waited on. */
+  warm?(root: string): void
 }
 
 const MAX_QUESTION = 4000
@@ -259,7 +261,10 @@ export function registerWorldIpc(
       }
     }
 
-  ipc.handle('world:get', handler((root) => client.get(root)))
+  ipc.handle('world:get', handler((root) => {
+    try { asker?.warm?.(root) } catch { /* readying the asker never fails an open */ }
+    return client.get(root)
+  }))
   ipc.handle('world:compile', handler((root) => client.compile(root)))
   ipc.handle('world:relayout', handler((root) => client.relayout(root)))
 

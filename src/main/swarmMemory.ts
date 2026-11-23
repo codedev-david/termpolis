@@ -27,7 +27,8 @@ import { weeklyGrowth, activityOp, type TimeBucket } from './memoryTimeline'
 import { type ConsolEntry } from './mnemeConsolidate'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
 import { inspectSecret, createSecretExclusive, retireSecretFile, listRetiredSecrets, keyStorageMode } from './secureKeyStore'
-import { projectKeyOf } from './projectKey'
+import { projectKeyOf, projectKeyAliases, hasShortPart, expandShortPath } from './projectKey'
+import { abortError } from './hostLane'
 import type { CodeRef } from './codeGraph'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
 
@@ -1473,6 +1474,8 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     throw new Error('memoryWrite: content required')
   }
   assertWritable()
+  // WPA: an 8.3 short spelling of the folder is stored under its long name's key (one realpath, only when a part looks short).
+  if (hasShortPart(input.project)) input = { ...input, project: await expandShortPath(input.project as string) }
   const kind = input.kind || 'note'
   const projectSlug = input.project ? normalizeProjectSlug(input.project) : ''
   const projectKey = input.project ? projectKeyOf(input.project) : undefined // F19
@@ -2038,13 +2041,21 @@ function serializeEntry(e: MemoryEntry): string {
 // F19: match a project scope by the precise full-path key when the search supplied one
 // (so `.../acme/api` and `.../globex/api` never collide), falling back to the display slug
 // for bare-name searches and legacy entries written before projectKey existed.
+// WPA: a note keeps the key it was written with, so a scope matches every key an older spelling of the same folder was given
+// (projectKeyAliases, see projectKey.ts). `strictProject` (the map's label search) leaves out a legacy note with no key at all:
+// a folder NAME is all such a note has, and two repositories can share one.
 function matchesProject(e: MemoryEntry, opts: SearchOptions): boolean {
   if (!opts.project) return true
   if (opts.projectKey) {
-    if (e.projectKey) return e.projectKey === opts.projectKey
-    return e.project === opts.project // legacy entry (no key) — best-effort slug match
+    if (e.projectKey) return e.projectKey === opts.projectKey || !!opts.projectKeys?.includes(e.projectKey)
+    return !opts.strictProject && e.project === opts.project // legacy entry (no key) — best-effort slug match
   }
   return e.project === opts.project
+}
+
+/** WPA: a cancelled read stops at its next await point with an AbortError, and is never cached. */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError()
 }
 
 function passesFilter(e: MemoryEntry, opts: SearchOptions): boolean {
@@ -2066,6 +2077,9 @@ export interface SearchOptions {
   taskId?: string
   project?: string                // path or slug — normalized on entry
   projectKey?: string             // F19: internal — the full-path key, derived from `project` in memorySearch
+  projectKeys?: string[]          // WPA: internal — every key that folder's notes may carry (projectKeyAliases)
+  strictProject?: boolean         // WPA: a note with no project key never matches a scope by folder name (label searches)
+  signal?: AbortSignal            // WPA: the caller gave up; checked after the query embed, the keyword step and around the rerank
   diversify?: boolean             // BB2: over-fetch + MMR re-rank so near-dups don't crowd the top
   rerank?: boolean                // Tier-1: opt-in cross-encoder relevance rerank of the candidate pool
   fuseGraph?: boolean             // BB7: expand top hits one hop along graph edges (agent-facing recall)
@@ -2255,11 +2269,14 @@ export function rocchioExpand(q: number[], topVecs: number[][], beta = PRF_BETA)
   return out
 }
 function searchCacheKey(o: SearchOptions, limit: number): string {
-  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.projectKey ?? ''}|${o.diversify ? 'd' : ''}|${(o.rerank ?? rerankEnabled()) ? 'r' : ''}|${o.fuseGraph ? 'g' : ''}|${o.crossProject ? 'x' : ''}|${o.includeEntities ? 'e' : ''}`
+  return `${searchGen}|${o.query}|${limit}|${o.agentId ?? ''}|${o.kind ?? ''}|${o.taskId ?? ''}|${o.project ?? ''}|${o.projectKey ?? ''}|${o.projectKeys ? o.projectKeys.join(',') : ''}|${o.strictProject ? 's' : ''}|${o.diversify ? 'd' : ''}|${(o.rerank ?? rerankEnabled()) ? 'r' : ''}|${o.fuseGraph ? 'g' : ''}|${o.crossProject ? 'x' : ''}|${o.includeEntities ? 'e' : ''}`
 }
 
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
   if (!opts || typeof opts.query !== 'string' || !opts.query.trim()) return []
+  throwIfAborted(opts.signal)
+  // WPA: an 8.3 short spelling of the folder is read as its long name first (one realpath, only when a part looks short).
+  if (hasShortPart(opts.project)) opts = { ...opts, project: await expandShortPath(opts.project as string) }
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 100)
   // BB2: when diversifying, over-fetch a wider candidate pool so MMR has room to swap
   // near-duplicates for distinct hits; otherwise fetch exactly the requested count.
@@ -2268,7 +2285,8 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   const projectSlug = opts.project ? normalizeProjectSlug(opts.project) : ''
   if (opts.project && !projectSlug) return []
   const projectKey = opts.project ? projectKeyOf(opts.project) : undefined // F19: precise full-path scope
-  if (projectSlug) opts = { ...opts, project: projectSlug, projectKey }
+  const projectKeys = opts.project ? projectKeyAliases(opts.project) : []
+  if (projectSlug) opts = { ...opts, project: projectSlug, projectKey, ...(projectKeys.length > 1 ? { projectKeys } : {}) }
 
   const cacheKey = searchCacheKey(opts, limit)
   const cached = searchCache.get(cacheKey)
@@ -2289,6 +2307,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // Try vector search first
   let queryEmb: number[] | null = null
   try { queryEmb = await embed(opts.query, true) } catch { /* fall back */ }
+  throwIfAborted(opts.signal)
 
   const scored: MemorySearchResult[] = []
   if (queryEmb) {
@@ -2362,6 +2381,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // depending on when it was asked. Waiting costs the first recall after launch a few seconds;
   // it does NOT block the main thread, which is free to paint and echo keystrokes throughout.
   await ensureLexical()
+  throwIfAborted(opts.signal)
   if (lexicalIndex.size > 0) {
     const byId = new Map<string, MemorySearchResult>()
     for (const s of scored) byId.set(s.id, s)
@@ -2397,7 +2417,7 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
   // crossProject recall is requested against a known target key; leaves same-project untouched.
   if (opts.crossProject && opts.projectKey) {
     for (const r of scored) {
-      if (r.projectKey && r.projectKey !== opts.projectKey) r.score *= CROSS_PROJECT_PENALTY
+      if (r.projectKey && r.projectKey !== opts.projectKey && !opts.projectKeys?.includes(r.projectKey)) r.score *= CROSS_PROJECT_PENALTY
     }
   }
   // P4: learned utility — the existing recency+kind rank and capped usage nudge,
@@ -2424,9 +2444,12 @@ export async function memorySearch(opts: SearchOptions): Promise<MemorySearchRes
     // Pool by score, the same key the gate below ranks on (survivors are in learned-utility order).
     const byScore = [...survivors].sort((a, b) => b.score - a.score)
     const pool = byScore.filter((r) => r.score >= 0.25).slice(0, RERANK_POOL)
+    throwIfAborted(opts.signal)
     const rerankScorer = pool.length > 1 ? await getRerankBatchScorerWithin() : null
+    throwIfAborted(opts.signal)
     if (rerankScorer) {
       const blended = await blendRerank(opts.query, pool, rerankScorer, RERANK_ALPHA)
+      throwIfAborted(opts.signal)
       const scores = pool.map((r) => r.score) // already best-first
       const inPool = new Set<MemorySearchResult>(pool)
       survivors = [
@@ -2710,7 +2733,8 @@ export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
     const slug = normalizeProjectSlug(opts.project)
     if (!slug) return []
     const key = opts.projectKey ?? projectKeyOf(opts.project)
-    pool = pool.filter(e => matchesProject(e, { query: '', project: slug, projectKey: key }))
+    const keys = opts.projectKey ? [] : projectKeyAliases(opts.project)
+    pool = pool.filter(e => matchesProject(e, { query: '', project: slug, projectKey: key, ...(keys.length > 1 ? { projectKeys: keys } : {}) }))
   }
   // The same exclusions memorySearch applies to its results, applied to the (by now narrow) pool before it is cut.
   if (opts.active && pool.length > 0) pool = dropSuperseded(pool).filter(e => e.memoryType !== 'entity' && (usageMap.get(e.id) ?? 0) > SUPPRESS_THRESHOLD)

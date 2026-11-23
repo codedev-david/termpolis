@@ -43,6 +43,7 @@ import { utilityProcess } from 'electron'
 import { isOsEncryptionAvailable, keyStorageMode, createSecretExclusive, retireSecretFile } from './secureKeyStore'
 import {
   HOST_HANDLERS,
+  argsWithSignal,
   readKeysOf,
   setRerankSearch as inprocSetRerankSearch,
   type HostRequest,
@@ -71,6 +72,7 @@ import type { ConsolEntry } from './mnemeConsolidate'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
 import type { CodeRef } from './codeGraph'
 import { killUtility } from './utilityKill'
+import { abortError, type HostLaneName } from './hostLane'
 import {
   resolveInprocGuard, measureMemoryStoreBytes, retryDelayMs, retryReadyTimeoutMs, RETRY_CAP_MS,
   unavailableMessage, setMemoryUnavailableState,
@@ -759,14 +761,30 @@ export function stopMemoryHost(): void {
 
 // ── The call path ────────────────────────────────────────────────────────────────────────────────
 
-function inprocCall(fn: string, args: unknown[]): Promise<unknown> {
+function inprocCall(fn: string, args: unknown[], signal?: AbortSignal): Promise<unknown> {
   const handler = HOST_HANDLERS[fn] // the SAME whitelist the host dispatches through — they cannot drift
   if (typeof handler !== 'function') return Promise.reject(new Error(`memory client: unknown fn "${fn}"`))
   // Wrapped so a SYNC throw becomes a rejected promise: callers must never have to handle both.
-  return Promise.resolve().then(() => (handler as (...a: unknown[]) => unknown)(...args))
+  // WPA: the search gets the caller's signal the way the host hands it on (argsWithSignal), and checks it at its await points.
+  return Promise.resolve().then(() => (handler as (...a: unknown[]) => unknown)(...argsWithSignal(fn, args, signal)))
 }
 
-async function call<T>(fn: string, args: unknown[] = []): Promise<T> {
+/** WPA: how one call travels. `signal` cancels it (a read stops, a queued call is dropped; a write that has started finishes);
+ *  `lane: 'interactive'` puts it ahead of the host's background work (the Ask primer, an agent's memory_search). Neither
+ *  crosses the wire as an argument: an AbortSignal cannot be cloned, and the lane is the message's, not the store's. */
+export interface CallRoute {
+  signal?: AbortSignal
+  lane?: HostLaneName
+}
+
+/** Split a search's or list's options into the store's options and the route. */
+function routeOf<T extends object>(opts: T & CallRoute): { opts: T; route: CallRoute } {
+  const { signal, lane, ...rest } = opts
+  return { opts: rest as T, route: { signal, lane } }
+}
+
+async function call<T>(fn: string, args: unknown[] = [], route: CallRoute = {}): Promise<T> {
+  const { signal } = route
   // Await the handshake FIRST, then judge the mode.
   //
   // Main deliberately does NOT block on startMemoryHost() — that is the whole point of the move, so
@@ -779,6 +797,8 @@ async function call<T>(fn: string, args: unknown[] = []): Promise<T> {
   // stopped) has readyPromise === null and still rejects, which is what keeps a call from silently
   // falling through to an uninitialised in-process store and answering "you have no memories".
   if (readyPromise) { try { await readyPromise } catch { /* handled — mode is now inproc */ } }
+  // WPA: a call cancelled while it waited for the host is dropped here, before it is sent anywhere.
+  if (signal?.aborted) throw abortError()
   if (mode === 'unstarted') {
     throw new Error(`memory client: startMemoryHost() has not been called (fn "${fn}")`)
   }
@@ -786,25 +806,65 @@ async function call<T>(fn: string, args: unknown[] = []): Promise<T> {
   // can recognise: falling through to inprocCall would run the handler against a store nobody
   // initialised and answer "0 memories" — the lie this whole module exists to prevent.
   if (mode === 'unavailable') throw new Error(unavailableMessage())
-  if (mode !== 'host' || !transport) return (await inprocCall(fn, args)) as T
+  if (mode !== 'host' || !transport) {
+    if (!signal) return (await inprocCall(fn, args)) as T
+    // In-process: the search stops at its next check; the caller is answered at once either way.
+    return (await settleOrAbort(inprocCall(fn, args, signal), signal)) as T
+  }
 
   const t = transport
   const id = nextId++
   const limitMs = CALL_TIMEOUT_OVERRIDES_MS.get(fn) ?? CALL_TIMEOUT_MS
+  // WPA: tell the host to stop call `id` (a read stops at its next await point, a queued one is dropped, a write finishes).
+  // Best effort: a host that has just died has nothing to stop.
+  const sendCancel = (): void => { try { t.postMessage({ kind: 'cancel', id }) } catch { /* the host is gone */ } }
   return await new Promise<T>((resolve, reject) => {
+    let onAbort: (() => void) | null = null
+    const done = (): void => { if (onAbort) signal?.removeEventListener('abort', onAbort) }
     const timer = setTimeout(() => {
       pending.delete(id)
+      done()
+      sendCancel() // the host stops the work nobody is waiting for any more
       // A timeout is NOT a silent empty result. Say which call, and how long we waited.
       reject(new Error(`memory host timed out after ${limitMs}ms (fn "${fn}")`))
     }, limitMs)
-    pending.set(id, { fn, startedAt: Date.now(), resolve: resolve as (v: unknown) => void, reject, timer })
+    pending.set(id, {
+      fn, startedAt: Date.now(), timer,
+      resolve: (v) => { done(); resolve(v as T) },
+      reject: (e) => { done(); reject(e) },
+    })
+    if (signal) {
+      // done() takes this listener off whenever the call settles (answer, timeout, host exit, reset), so an abort that
+      // reaches it is always for a call still waiting.
+      onAbort = () => {
+        pending.delete(id)
+        clearTimeout(timer)
+        done()
+        sendCancel()
+        reject(abortError())
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
     try {
-      t.postMessage({ kind: 'call', id, fn, args })
+      t.postMessage(route.lane ? { kind: 'call', id, fn, args, lane: route.lane } : { kind: 'call', id, fn, args })
     } catch (err) {
       pending.delete(id)
       clearTimeout(timer)
+      done()
       reject(err as Error)
     }
+  })
+}
+
+/** The call's own outcome, or an AbortError the moment `signal` fires, whichever comes first. */
+function settleOrAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(abortError())
+    signal.addEventListener('abort', onAbort, { once: true })
+    work.then(
+      (v) => { signal.removeEventListener('abort', onAbort); resolve(v) },
+      (e) => { signal.removeEventListener('abort', onAbort); reject(e) },
+    )
   })
 }
 
@@ -865,12 +925,19 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
 
 // ── Proxied store API (all async — step 2 is an `await` insertion) ───────────────────────────────
 
-export const memorySearch = (opts: SearchOptions): Promise<MemorySearchResult[]> => call('memorySearch', [opts])
+// WPA: a search or a list may carry a route (CallRoute: a cancel signal, the interactive lane); it is taken off the options here.
+export const memorySearch = (opts: SearchOptions & CallRoute): Promise<MemorySearchResult[]> => {
+  const r = routeOf<SearchOptions>(opts)
+  return call('memorySearch', [r.opts], r.route)
+}
 export const memoryRelated = (opts: RelatedOptions): Promise<Array<MemorySearchResult & { relation?: string }>> => call('memoryRelated', [opts])
 export const memoryGraphQuery = (opts: GraphQueryOptions): Promise<Array<MemorySearchResult & { relation: string; distance: number }>> => call('memoryGraphQuery', [opts])
 export const memoryLink = (input: Parameters<typeof import('./swarmMemory').memoryLink>[0]): Promise<MemoryEdge | null> => call('memoryLink', [input])
 export const memoryFeedback = (input: { id: string; helpful?: boolean; query?: string }): Promise<{ id: string; used: number }> => call('memoryFeedback', [input])
-export const memoryList = (opts: ListOptions = {}): Promise<MemoryEntry[]> => call('memoryList', [opts])
+export const memoryList = (opts: ListOptions & CallRoute = {}): Promise<MemoryEntry[]> => {
+  const r = routeOf<ListOptions>(opts)
+  return call('memoryList', [r.opts], r.route)
+}
 export const memoryCount = (): Promise<number> => call('memoryCount', [])
 export const memoryClear = (): Promise<void> => call('memoryClear', [])
 export const memoryHasHash = (hash: string): Promise<boolean> => call('memoryHasHash', [hash])

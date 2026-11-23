@@ -322,8 +322,9 @@ export function execCommand(
 
 export interface ExecDeps {
   deliver: DeliverFn
-  /** Mneme's primer for the target cwd. Failures are non-fatal — a cold run beats no run. */
-  primer?: (cwd: string) => Promise<string | null>
+  /** Mneme's primer for the target cwd. Failures are non-fatal — a cold run beats no run. `signal` is the run's own: a
+   *  cancelled run stops reading memory too. */
+  primer?: (cwd: string, signal?: AbortSignal) => Promise<string | null>
   /** Write the outcome back to the brain so the next run starts warmer. */
   remember?: (input: { content: string; project: string }) => Promise<unknown>
   isWindows?: boolean
@@ -386,7 +387,7 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
   let primer: string | null = null
   if (!req.noPrimer && deps.primer) {
     try {
-      primer = await deps.primer(cwd)
+      primer = await deps.primer(cwd, req.signal)
     } catch {
       /* a cold run is still a run */
     }

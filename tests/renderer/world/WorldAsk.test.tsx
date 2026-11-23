@@ -19,7 +19,7 @@ vi.mock('../../../src/renderer/src/hooks/useVoiceInput', () => ({
   }
 }))
 import { WorldAsk } from '../../../src/renderer/src/components/World/WorldAsk'
-import { ANSWER_TEXT_CEILING, ANSWER_TEXT_MAX_HEIGHT, answerTextMaxHeight, evidenceReach } from '../../../src/renderer/src/components/World/WorldAnswer'
+import { ANSWER_TEXT_CEILING, ANSWER_TEXT_MAX_HEIGHT, NO_MEMORY_NOTE, answerTextMaxHeight, evidenceReach } from '../../../src/renderer/src/components/World/WorldAnswer'
 import { useTerminalStore } from '../../../src/renderer/src/store/terminalStore'
 import type { AskRequest, AskResult } from '../../../src/shared/world/types'
 
@@ -161,6 +161,27 @@ describe('WorldAsk', () => {
     const v = makeViewer()
     await submit(v, 'q')
     expect(screen.queryByRole('note')).toBeNull()
+  })
+
+  it('says quietly when the answer was made without the project memory, and why (WPA)', async () => {
+    for (const [why, text] of Object.entries(NO_MEMORY_NOTE)) {
+      const v = makeViewer()
+      ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'The answer.', { noMemory: why }))
+      const view = await submit(v, 'q')
+      const note = screen.getByTestId('world-answer-memory')
+      expect(note.textContent).toBe(text)
+      // Outside the answer's scroller, so it is always on show, and not an honesty note.
+      expect(screen.getByTestId('world-answer-scroll').contains(note)).toBe(false)
+      expect(screen.queryByRole('note')).toBeNull()
+      view.unmount()
+    }
+    expect(Object.keys(NO_MEMORY_NOTE).sort()).toEqual(['down', 'locked', 'timeout'])
+  })
+
+  it('shows no memory note for an answer made with the memory', async () => {
+    const v = makeViewer()
+    await submit(v, 'q')
+    expect(screen.queryByTestId('world-answer-memory')).toBeNull()
   })
 
   it('Show me again cancels running actions then replays them', async () => {

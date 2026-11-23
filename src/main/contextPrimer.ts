@@ -26,7 +26,7 @@ import { adaptiveGate, dedupeHits, diversifyHits, dropOverlapping, dropPrefixDup
 import { fillVisible } from './doorFill'
 import { KEEP_SCORE, isCandidate, lessonSubstance, withoutCandidates } from './lessonSubstance'
 import { isClaudeNote, noteFileOfTags } from './claudeNotesParse'
-import { projectKeyOf } from './projectKey'
+import { projectKeyAliases, projectKeyOf } from './projectKey'
 
 // Default number of memories injected into a primer when the caller passes no
 // explicit limit. User-tunable via the Memory panel (persisted in
@@ -60,13 +60,15 @@ export interface PrimerHit {
   correction?: { kind: string }
 }
 
-export type PrimerSearch = (opts: { query: string; limit?: number; project?: string }) => Promise<PrimerHit[]>
+/** `crossProject` (a combined read only): every project's rows in one answer, this project's first. `signal`: present only when
+ *  the caller can cancel; a search that honours it rejects once it fires. */
+export type PrimerSearch = (opts: { query: string; limit?: number; project?: string; crossProject?: boolean; signal?: AbortSignal }) => Promise<PrimerHit[]>
 
 /**
  * Newest-first listing, NOT semantic search. Powers the freshness lane below: the one
  * thing pure relevance ranking can never guarantee is "and here is what we did last".
  */
-export type PrimerRecent = (opts: { limit: number; project?: string; since?: number }) => Promise<PrimerHit[]>
+export type PrimerRecent = (opts: { limit: number; project?: string; since?: number; signal?: AbortSignal }) => Promise<PrimerHit[]>
 
 export interface PrimerOptions {
   query: string
@@ -93,6 +95,12 @@ export interface PrimerOptions {
    *  never a load). True adds worldPrimerLine(projectPath) to the footer; absent, false, or failing adds nothing.
    *  It is asked alongside the digest search, not after it. */
   hasWorld?: (projectPath: string) => boolean | Promise<boolean>
+  /** One read instead of two in a row (WPA): the project-scoped read with cross-project recall, at the most the store gives in
+   *  one read, split here into the project's rows and everyone's. No deeper reads: what that one page holds is the digest. */
+  combined?: boolean
+  /** The caller gave up (an Ask cancelled): checked between reads, and a digest whose signal fired is no digest (null), never
+   *  recorded as shown. It rides into every read, so a search that honours it stops too. */
+  signal?: AbortSignal
 }
 
 /** The footer line that tells an agent the project has a Lumopolis map behind the gateway, spelled as
@@ -209,7 +217,7 @@ export function getLastPrimerIds(): string[] { return lastPrimerIds }
 // line-range suffix. Returns the source file path for a code hit, else null.
 function codeFilePath(h: PrimerHit): string | null {
   if (h.source !== 'code') return null
-  const firstLine = (h.content || '').split('\n', 1)[0] || ''
+  const firstLine = h.content.split('\n', 1)[0] // renderLine asks only for a line with text: content is a non-empty string here
   const m = firstLine.match(/^(.+?):\d+(?:-\d+)?$/)
   return m ? m[1] : null
 }
@@ -238,7 +246,7 @@ function relativeAge(ts: number, now: number): string {
  */
 async function collectRecent(
   recent: PrimerRecent | undefined,
-  o: { slots: number; project?: string; ownProject: string; now: number; exclude: Set<string>; carried: PrimerHit[]; foreign: (h: PrimerHit) => boolean },
+  o: { slots: number; project?: string; ownProject: string; now: number; exclude: Set<string>; carried: PrimerHit[]; foreign: (h: PrimerHit) => boolean; signal?: AbortSignal },
 ): Promise<PrimerHit[]> {
   if (!recent || o.slots <= 0) return []
   let hits: PrimerHit[]
@@ -248,6 +256,7 @@ async function collectRecent(
       limit: asked,
       project: o.project,
       since: o.now - RECENT_WINDOW_MS,
+      ...(o.signal ? { signal: o.signal } : {}),
     })) || []
   } catch { return [] }
   // A lister that answers with something other than a list must not take the primer
@@ -307,7 +316,7 @@ function renderLine(h: PrimerHit, maxSnip: number, fileExists: (p: string) => bo
   // recommend — the #1 stale-memory hallucination vector.
   const path = codeFilePath(h)
   const base = path !== null && !fileExists(path)
-    ? `${h.source || 'code'} ⚠ STALE — file removed, verify before use`
+    ? 'code ⚠ STALE — file removed, verify before use' // codeFilePath finds a path only in a code hit
     : isClaudeNote(h) ? 'note' : isGatedLesson(h) ? 'lesson' : (h.source || h.kind || 'note') // a saved note says so (its age is its last edit), and so does a lesson
   // F24: stamp a relative age so recency is legible in the primer (the leading line
   // is what the agent 'holds' about the project).
@@ -319,6 +328,9 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   lastPrimerCost = { chars: 0, tokens: 0, lines: 0 }
   lastPrimerIds = []
   if (!opts.query || !opts.query.trim()) return null
+  const signal = opts.signal
+  const cancelled = (): boolean => signal?.aborted === true
+  if (cancelled()) return null
   // The Lumopolis check runs alongside the search (it never rejects), so it adds no wait of its own.
   const worldPath = opts.projectPath?.trim() ?? ''
   const worldProbe = opts.hasWorld ? projectHasWorld(opts.hasWorld, worldPath) : null
@@ -385,7 +397,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       candidateLimit,
       async (asked) => {
         try {
-          page = (await search(scope === undefined ? { query: opts.query, limit: asked } : { query: opts.query, limit: asked, project: scope })) || []
+          page = (await search({ query: opts.query, limit: asked, ...(scope === undefined ? {} : { project: scope }), ...(signal ? { signal } : {}) })) || []
           // Never more rows than were asked for (best first, so these are the ones the search meant): the folding below is quadratic in
           // the rows, and a search that ignores its limit must not hand it thousands ('primer stays linear on hostile prefixes').
           if (Array.isArray(page) && asked !== undefined && page.length > asked) page = page.slice(0, asked)
@@ -396,7 +408,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
         return page
       },
       (rows) => withoutExcluded(withoutForeignNotes(withoutCandidates(rows), scoped)),
-      { fallback: candidateLimit, ceiling: 100 },
+      { fallback: candidateLimit, ceiling: 100, ...(signal ? { signal } : {}) },
     )
   }
 
@@ -404,14 +416,39 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // falling back to the slug. Display/promotion still use the slug `project`.
   const searchScope = (opts.projectPath && opts.projectPath.trim()) ? opts.projectPath.trim() : project
   let projectHits: PrimerHit[] = []
-  if (project) {
-    try { projectHits = gate(await readCandidates(searchScope, true)) } catch { projectHits = [] }
-  }
   let globalHits: PrimerHit[] = []
-  try {
-    globalHits = gate(await readCandidates(undefined, false), project !== '')
-  } catch {
-    if (projectHits.length === 0) return null
+  if (opts.combined) {
+    // One read (WPA): the project-scoped search with cross-project recall gives this project's rows and everyone else's in one
+    // answer, the others damped so this project wins ties. It is split here the way the two reads split it: a row is this
+    // project's when it carries a key of this folder (any spelling it was written with), or, written before keys, its folder
+    // name. The global half is every row, as the unscoped read was. Rows the digest must not show are hidden as before, and
+    // there is no deeper read: what one page of the most the store gives holds is the digest.
+    const COMBINED_LIMIT = 100
+    let rows: PrimerHit[]
+    try {
+      rows = (await search({ query: opts.query, limit: COMBINED_LIMIT, ...(project ? { project: searchScope, crossProject: true } : {}), ...(signal ? { signal } : {}) })) || []
+    } catch { return null }
+    if (cancelled()) return null
+    if (!Array.isArray(rows)) rows = []
+    if (rows.length > COMBINED_LIMIT) rows = rows.slice(0, COMBINED_LIMIT)
+    const shown = withoutExcluded(withoutCandidates(rows))
+    if (project) {
+      const keys = new Set(opts.projectPath && opts.projectPath.trim() ? projectKeyAliases(opts.projectPath.trim()) : [])
+      const own = (h: PrimerHit): boolean => (keys.size > 0 && typeof h.projectKey === 'string' ? keys.has(h.projectKey) : slugOf(h) === project)
+      projectHits = gate(withoutForeignNotes(shown.filter(own), true))
+    }
+    globalHits = gate(withoutForeignNotes(shown, false), project !== '')
+  } else {
+    if (project) {
+      try { projectHits = gate(await readCandidates(searchScope, true)) } catch { projectHits = [] }
+      if (cancelled()) return null
+    }
+    try {
+      globalHits = gate(await readCandidates(undefined, false), project !== '')
+    } catch {
+      if (cancelled() || projectHits.length === 0) return null
+    }
+    if (cancelled()) return null
   }
 
   // A line is rendered once however often it is asked for: the relevance block is worked out more than once below.
@@ -534,7 +571,9 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     exclude: excludeFromRecent,
     carried: certain,
     foreign: (h) => foreignNote(h, true), // the lane is listed by the store, scoped to the folder the digest names (with none named there is no key to compare)
+    ...(signal ? { signal } : {}),
   })
+  if (cancelled()) return null
   const roomFor = (lane: PrimerHit[]): number => Math.max(0, limit - lane.length)
   let block = relevance(recentHits, roomFor(recentHits))
   // The lane may have had fewer entries than slots, and the block then had more room than "certain" allowed for: it can show
@@ -569,6 +608,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   if (body.length === 0) return null
   // Settled before the module-level "last primer" records are written, so no await sits between them and the return.
   const hasWorld = worldProbe ? await worldProbe : false
+  if (cancelled()) return null
   lastPrimerIds = [...recentHits.filter((h) => lineOf(h) !== null), ...block.shown].map((h) => h.id).filter((id): id is string => typeof id === 'string' && id !== '')
 
   // F24: only the flat (score-sorted) path is truly "most relevant first"; the project

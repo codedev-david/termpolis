@@ -53,7 +53,7 @@ describe('createAskRunner', () => {
   it('passes write:false, noRemember:true, cwd=root', async () => {
     const { runner, execFn, execDeps, client } = setup(async () => okRes('hi'))
     await runner.ask(REQ)
-    expect(client.read).toHaveBeenCalledWith('C:/repo', { text: 'What is this?', limit: 20 })
+    expect(client.read).toHaveBeenCalledWith('C:/repo', { text: 'What is this?', limit: 20 }, { signal: expect.any(AbortSignal) })
     const [req, deps] = execFn.mock.calls[0] as [ExecRequest, unknown]
     expect(req).toMatchObject({ cwd: 'C:/repo', write: false, noRemember: true, timeoutMs: 90_000 })
     expect(req.agent).toBe('claude')
@@ -75,7 +75,7 @@ describe('createAskRunner', () => {
     expect(runEnv).toHaveBeenCalledWith('codex', 'C:/repo')
     const deps = execFn.mock.calls[0][1] as { primer: (cwd: string) => Promise<string | null> }
     expect(await deps.primer('C:/repo')).toBe('PRIMER')
-    expect(primer).toHaveBeenCalledWith('C:/repo')
+    expect(primer).toHaveBeenCalledWith('C:/repo', expect.any(AbortSignal))
   })
 
   it('an unsafe model id in the request is dropped, not passed', async () => {
@@ -240,7 +240,7 @@ describe('createAskRunner', () => {
   it('loads the world without starting a background refresh', async () => {
     const { runner, client } = setup(async () => okRes('hi'))
     await runner.ask(REQ)
-    expect(client.get).toHaveBeenCalledWith('C:/repo', { refresh: false })
+    expect(client.get).toHaveBeenCalledWith('C:/repo', { refresh: false, signal: expect.any(AbortSignal) })
   })
 
   describe('nothing before the agent holds a question (round 3: a memory primer took 99 s and 108 s on a busy machine)', () => {

@@ -319,6 +319,13 @@ describe('headlessExec/runHeadless', () => {
     expect(opts).toEqual({ timeoutMs: EXEC_DEFAULT_TIMEOUT_MS, cwd: '/repo' })
   })
 
+  it('hands the run\'s cancel signal to the primer, so a cancelled run stops reading memory (WPA)', async () => {
+    const ctl = new AbortController()
+    const primer = vi.fn(async () => null)
+    await runHeadless({ task: 't', cwd: '/repo', signal: ctl.signal }, { deliver: okDeliver('ok'), primer, isDirectory: anyDir })
+    expect(primer).toHaveBeenCalledWith('/repo', ctl.signal)
+  })
+
   it('honours an explicit timeout, agent, model, write flag and folder', async () => {
     const deliver = okDeliver('ok')
     await runHeadless(

@@ -144,3 +144,21 @@ describe('fillVisible', () => {
     await expect(fillVisible(5, read, shown, BOUNDS)).rejects.toThrow('memory host exited')
   })
 })
+
+describe('fillVisible: a caller that gave up', () => {
+  const hiddenRows = (n: number): Row[] => Array.from({ length: n }, (_, i) => ({ id: `h${i}`, hidden: true }))
+  const visibleOnly = (rows: Row[]): Row[] => rows.filter((r) => !r.hidden)
+
+  it('no deeper read starts once the signal fires: the fill throws an AbortError', async () => {
+    const ctl = new AbortController()
+    const read = vi.fn(async (limit: number | undefined) => { ctl.abort(); return hiddenRows(Number(limit)) })
+    await expect(fillVisible(5, read, visibleOnly, { ...BOUNDS, signal: ctl.signal })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(read).toHaveBeenCalledTimes(1)
+  })
+
+  it('a signal that never fires reads exactly as before', async () => {
+    const read = vi.fn(async (limit: number | undefined) => hiddenRows(Number(limit)))
+    expect(await fillVisible(5, read, visibleOnly, { ...BOUNDS, signal: new AbortController().signal })).toEqual([])
+    expect(read.mock.calls.map((c) => c[0])).toEqual([5, 10, 20, 40, 80, 100])
+  })
+})

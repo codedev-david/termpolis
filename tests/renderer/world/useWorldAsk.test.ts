@@ -231,6 +231,27 @@ describe('useWorldAsk', () => {
     expect(result.current.cost).toEqual({ answer: 300, session: 300 })
   })
 
+  it('carries why an answer was made without the project memory, and clears it on the next ask, a dismissal and a root change (WPA)', async () => {
+    const v = makeViewer()
+    const { result, rerender } = renderHook(({ root }) => useWorldAsk(v as never, root), { initialProps: { root: 'A' } })
+    expect(result.current.noMemory).toBeNull()
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'one', { noMemory: 'timeout' }))
+    await act(async () => { result.current.ask('one') })
+    expect(result.current.noMemory).toBe('timeout')
+    await act(async () => { result.current.ask('two') })
+    expect(result.current.noMemory).toBeNull()
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'three', { noMemory: 'locked' }))
+    await act(async () => { result.current.ask('three') })
+    expect(result.current.noMemory).toBe('locked')
+    act(() => { result.current.dismiss() })
+    expect(result.current.noMemory).toBeNull()
+    ask.mockImplementationOnce(async (req: AskRequest) => okRes(req.askId, 'four', { noMemory: 'down' }))
+    await act(async () => { result.current.ask('four') })
+    expect(result.current.noMemory).toBe('down')
+    rerender({ root: 'B' })
+    expect(result.current.noMemory).toBeNull()
+  })
+
   it('a root change cancels the in-flight ask and resets summary, answer and state', async () => {
     const v = makeViewer()
     const { result, rerender } = renderHook(({ root }) => useWorldAsk(v as never, root), { initialProps: { root: 'A' } })

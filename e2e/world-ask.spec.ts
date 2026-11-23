@@ -15,6 +15,8 @@
  *   5. An unsupported answer says so and leaves its building fogged.
  *   6. The camera moves while the answer is still being revealed: the answer appears one sentence
  *      at a time and the mock's [A1] and [A2] markers play its steps as their sentences appear.
+ *   6b. Esc mid-answer cancels the question and ends the agent process (WPA): the mock writes its pid
+ *      to MOCK_CLAUDE_PID_DIR, and the spec checks it with process.kill(pid, 0), never a process listing.
  *   (unnumbered) The evidence chip, below.
  *   7. The renderer logged no console error and threw no page error (last, so it covers every test).
  *
@@ -40,6 +42,7 @@ let userDataDir: string
 let project: string
 let shimDir: string
 let shims: Record<string, string>
+let pidDir: string
 const consoleErrors: string[] = []
 const SLOW_MS = 4000
 
@@ -119,6 +122,7 @@ test.beforeAll(async () => {
   // external script. Elsewhere e2e/test-shims/claude, which e2eShimEnv puts on PATH, is enough.
   shims = e2eShimEnv('world-ask')
   shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-ask-shim-'))
+  pidDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-world-ask-pids-'))
   if (process.platform === 'win32') {
     const mock = path.resolve('e2e', 'mocks', 'mock-claude.cjs')
     fs.writeFileSync(path.join(shimDir, 'claude.ps1'), `& node '${mock}' @args
@@ -155,6 +159,9 @@ async function launchApp(): Promise<void> {
       // A question with "first" in it gets its reply 4 s late: far later than the second one's.
       MOCK_CLAUDE_SLOW_MATCH: 'first',
       MOCK_CLAUDE_SLOW_MS: String(SLOW_MS),
+      MOCK_CLAUDE_PID_DIR: pidDir,
+      // A question with "stalls" in it is never answered while the spec runs: only a cancel ends that agent.
+      MOCK_CLAUDE_HANG_MATCH: 'stalls',
     },
   })
   page = await app.firstWindow()
@@ -179,7 +186,7 @@ async function launchApp(): Promise<void> {
 
 test.afterAll(async () => {
   await quitApp(app)
-  for (const d of [userDataDir, project, shimDir]) {
+  for (const d of [userDataDir, project, shimDir, pidDir]) {
     try {
       if (d) fs.rmSync(d, { recursive: true, force: true })
     } catch {
@@ -324,6 +331,25 @@ test.describe.serial('Lumopolis Ask bar in the real app', () => {
     await expect(answer()).not.toContainText('[A1]')
     await expect(answer()).not.toContainText('[A2]')
     await page.emulateMedia({ reducedMotion: null })
+  })
+
+  test('6b. Esc mid-answer cancels the question and ends the agent process', async () => {
+    const alive = (pid: number): boolean => {
+      try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
+    }
+    const pidsNow = (): number[] => fs.readdirSync(pidDir).filter((f) => f.endsWith('.pid')).map((f) => Number(f.slice(0, -4)))
+    const before = new Set(pidsNow())
+    // "stalls": the mock holds its reply back two minutes, so only the cancel can end it.
+    await ask('Where does it stalls?')
+    await expect(page.locator('[role="status"]:has-text("Thinking")')).toBeVisible()
+    await expect.poll(() => pidsNow().filter((p) => !before.has(p)).length, { timeout: 30_000 }).toBeGreaterThan(0)
+    const pid = pidsNow().filter((p) => !before.has(p))[0]
+    expect(alive(pid)).toBe(true)
+    await askBox().press('Escape')
+    await expect(page.locator('[role="status"]:has-text("Thinking")')).toHaveCount(0)
+    // Ended by the cancel (its tree killed), not by its own reply two minutes from now.
+    await expect.poll(() => alive(pid), { timeout: 15_000 }).toBe(false)
+    await expect(answer()).toHaveCount(0)
   })
 })
 

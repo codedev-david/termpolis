@@ -4,7 +4,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { answerText, type WorldAnswer as Answer } from '../../../../shared/world/answerProtocol'
 import { parseAnswerMarkdown, type Inline } from '../../../../shared/world/answerMarkdown'
-import type { CitedEvidence } from '../../../../shared/world/types'
+import type { AskNoMemory, CitedEvidence } from '../../../../shared/world/types'
 import { EvidenceView } from './EvidenceView'
 
 export interface WorldAnswerPanelProps {
@@ -20,6 +20,18 @@ export interface WorldAnswerPanelProps {
   partName: (id: string) => string | undefined
   /** True when the id is a building or edge in the loaded world. */
   isPart: (id: string) => boolean
+  /** Why the answer was made without the project memory (WPA): a quiet line says so. */
+  noMemory?: AskNoMemory | null
+}
+
+/**
+ * The quiet line under an answer made without the project memory (WPA), by why. PROPOSED wording, awaiting David's
+ * sign-off (the responsive report's m3 proposal was "Answered without memory context (it took too long to load).").
+ */
+export const NO_MEMORY_NOTE: Record<AskNoMemory, string> = {
+  timeout: 'Answered without project memory (it took too long to load).',
+  locked: 'Answered without project memory (memory is locked).',
+  down: "Answered without project memory (memory couldn't be reached).",
 }
 
 /**
@@ -61,7 +73,7 @@ export function answerTextMaxHeight(reach: number | null): string {
   return reach === null ? ANSWER_TEXT_MAX_HEIGHT : `max(${ANSWER_TEXT_MAX_HEIGHT}, min(${ANSWER_TEXT_CEILING}, ${reach}px))`
 }
 
-export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, onOpenPart, partName, isPart }: WorldAnswerPanelProps): JSX.Element {
+export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, onOpenPart, partName, isPart, noMemory }: WorldAnswerPanelProps): JSX.Element {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   const blocks = parseAnswerMarkdown(answerText(answer.sentences, revealed))
   const shown = Object.keys(open).filter((k) => open[k])
@@ -184,6 +196,9 @@ export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, o
           {answer.unsupported.length > 0 && <p>The evidence doesn&apos;t say. The fogged parts aren&apos;t supported.</p>}
           {answer.uncited && <p>This answer cites no evidence.</p>}
         </div>
+      )}
+      {noMemory && (
+        <p className="mt-2 text-xs text-[#9ca3af] break-words" data-testid="world-answer-memory">{NO_MEMORY_NOTE[noMemory]}</p>
       )}
       <div className="mt-1.5">
         <button type="button" onClick={onReplay} className="text-xs px-2 py-0.5 rounded border border-[#3c3c3c] hover:bg-[#2a2d2e]">
