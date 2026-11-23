@@ -413,7 +413,8 @@ describe('safeGitAsync: one filter scan per repository, kept while its config sa
     writeFileSync(join(outer, 'x', '.git', 'config'), '')
     mkdirSync(join(outer, 'x', 'y', 'z'), { recursive: true })
     symlinkSync(join(outer, 'x', 'y', 'z'), join(sub, 'lnk2'))
-    expect(await scansOver3(outer, ['-C', join(sub, 'lnk2', '..', '..'), 'status'])).toBe(1)
+    // Written out by hand: path.join would fold the `..` away by the name before git ever sees it.
+    expect(await scansOver3(outer, ['-C', `${sub}/lnk2/../..`, 'status'])).toBe(1)
   })
 
   it('a read below a mount point (another device than the folder above it) is scanned on every read: git stops looking there', async () => {
