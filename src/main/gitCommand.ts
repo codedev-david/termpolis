@@ -11,9 +11,9 @@
 import { getExtendedPathAsync } from './agentPaths'
 import { binInsideFolder, forgetGitBin, resolveGitBin } from './binPath'
 import { execOffThread, execCaptureOffThread, execShellCaptureOffThread } from './procClient'
-import { promises as fsPromises } from 'fs'
+import { constants as fsConstants, promises as fsPromises } from 'fs'
 import { dirname, join, relative, resolve, sep } from 'path'
-import { filterOverrides, filterScanArgs, guardGitArgs, guardGitEnv, needsFilterScan } from './gitSafety'
+import { filterOverrides, filterScanArgs, guardGitArgs, guardGitEnv, needsFilterScan, type FilterScan } from './gitSafety'
 import { withSubmoduleEdits, type DirtySubmodule, type SubmoduleDeps } from './gitSubmodules'
 import { OLD_GIT_MESSAGE } from './world/gitLogin'
 
@@ -49,11 +49,12 @@ export interface GitOptions {
  * fails with code 'ENOENT', exactly as a missing git always did, so every caller degrades as it did before.
  */
 export function safeGitAsync(args: string[], opts: GitOptions): Promise<string> {
-  return guardedGit(args, opts, 0)
+  return guardedGit(args, opts, true)
 }
 
-/** safeGitAsync, `depth` submodules below the status that started it (gitSubmodules.ts MAX_DEPTH). */
-async function guardedGit(args: string[], opts: GitOptions, depth: number): Promise<string> {
+/** safeGitAsync; with `fold` false, a status inside a submodule that gitSubmodules.ts is already walking, which writes
+ *  no submodule rows of its own (that walk covers every level within one budget). */
+async function guardedGit(args: string[], opts: GitOptions, fold: boolean): Promise<string> {
   const bin = await resolveGitBin()
   if (bin === null || (await binInsideFolder(bin, opts.cwd))) throw gitNotFound()
   // The one chokepoint for git safety (gitSafety.ts): a read never runs a program the repository's own config,
@@ -61,7 +62,7 @@ async function guardedGit(args: string[], opts: GitOptions, depth: number): Prom
   // filter drivers the repository defines, so each can be switched off by name.
   const isWindows = process.platform === 'win32'
   try {
-    const overrides = needsFilterScan(args) ? await repoFilterOverrides(bin, args, opts, isWindows) : []
+    const overrides = needsFilterScan(args) ? await repoFilterOverrides(bin, args, opts, isWindows) : undefined
     const out = await execOffThread(bin, guardGitArgs(args, isWindows, overrides), {
       cwd: opts.cwd,
       timeout: opts.timeout ?? 10000,
@@ -71,7 +72,7 @@ async function guardedGit(args: string[], opts: GitOptions, depth: number): Prom
     })
     // A status leaves each submodule's dirty state out (its own config would run); it is asked for here, one guarded
     // status per submodule, and written back in (gitSubmodules.ts). Any other command comes back as git wrote it.
-    return await withSubmoduleEdits(args, opts.cwd, out, depth, submoduleDeps(opts), cachedDirtySubmodules)
+    return fold ? await withSubmoduleEdits(args, opts.cwd, out, submoduleDeps(opts), cachedDirtySubmodules) : out
   } catch (e) {
     // `code` still means what it always meant: the string 'ENOENT' when the binary was not found, a number when
     // git ran and refused. ProcError carries it across the process boundary. The git found earlier has gone
@@ -95,33 +96,29 @@ export class GitTooOldError extends Error {
 /** How long one repository's filter-driver scan is reused while the config files it reads say the same: a ceiling,
  *  so a change nothing below notices (the person's own global config, say) is seen within it. */
 const FILTER_SCAN_TTL_MS = 30_000
-/** The window where the config cannot be watched: outside a repository, or a repository whose own config includes
- *  another file. The git cache's own window (gitCache.ts GIT_CACHE_TTL_MS), so one tick's panels still share a scan. */
-const FILTER_SCAN_SHORT_TTL_MS = 1500
 /** Scans remembered at once; expired ones go first, then the oldest. */
 const FILTER_SCAN_MAX = 64
-const filterScans = new Map<string, { at: number; ttl: number; stamp: string; value: Promise<string[]> }>()
+const filterScans = new Map<string, { at: number; stamp: string; value: Promise<FilterScan> }>()
 
 /**
  * The `-c` options that switch off the filter drivers the repository at `opts.cwd` defines (gitSafety.ts
  * filterOverrides). `git config --get-regexp` exits 1 when nothing matches: no driver, nothing to switch off. Any
  * other failure, or a driver that cannot be switched off, fails the read itself: it is never run with a driver left on.
  *
- * One scan serves every folder of a repository (keyed on its git folder) for up to FILTER_SCAN_TTL_MS, and is read
- * again as soon as the text of the repository's config or config.worktree changes. Accepted race: a config edit that
- * lands after those files are read and before the command itself starts (a few milliseconds) is not seen by that one
- * command; the next read sees it. A file the repository's config includes is not read here, so such a repository
- * keeps the short window, as does a folder outside any repository.
+ * One scan serves every folder of a repository for up to FILTER_SCAN_TTL_MS, and is read again as soon as the text of
+ * the repository's config or config.worktree changes. It is kept only where this module knows, the way git itself
+ * finds it, which git folder the read opens (scanPlace); anywhere it is not sure, every read is scanned. Accepted race:
+ * a config edit that lands after those files are read and before the command itself starts (a few milliseconds) is
+ * not seen by that one command; the next read sees it.
  */
-async function repoFilterOverrides(bin: string, args: string[], opts: GitOptions, isWindows: boolean): Promise<string[]> {
+async function repoFilterOverrides(bin: string, args: string[], opts: GitOptions, isWindows: boolean): Promise<FilterScan> {
   const scanArgs = filterScanArgs(args, isWindows)
-  // Reading the config files can only fail oddly (a folder that vanished, a test's stand-in fs): the short window then.
-  const place = await scanPlace(opts.cwd, scanArgs)
-    .catch(() => ({ key: resolve(opts.cwd), args: scanArgs, stamp: '', ttl: FILTER_SCAN_SHORT_TTL_MS }))
-  const key = `${place.key}\u0000${place.args.join('\u0000')}`
+  // Anything unexpected while reading the files (a folder that vanished, a test's stand-in fs): not kept.
+  const place = await scanPlace(opts.cwd, scanArgs).catch(() => null)
+  const key = place === null ? null : `${place.key}\u0000${place.args.join('\u0000')}`
   const now = Date.now()
-  const hit = filterScans.get(key)
-  if (hit && now - hit.at < hit.ttl && hit.stamp === place.stamp) return hit.value
+  const hit = key === null ? undefined : filterScans.get(key)
+  if (hit && now - hit.at < FILTER_SCAN_TTL_MS && hit.stamp === place?.stamp) return hit.value
   const value = execOffThread(bin, scanArgs, { cwd: opts.cwd, timeout: opts.timeout ?? 10000, maxBuffer: 1024 * 1024, addEnv: guardGitEnv(scanArgs) })
     .catch((e: unknown) => {
       const code = (e as { code?: unknown } | null)?.code
@@ -132,9 +129,10 @@ async function repoFilterOverrides(bin: string, args: string[], opts: GitOptions
       throw e
     })
     .then(filterOverrides)
-  for (const [k, v] of filterScans) if (now - v.at >= v.ttl) filterScans.delete(k)
+  if (key === null || place === null) return value
+  for (const [k, v] of filterScans) if (now - v.at >= FILTER_SCAN_TTL_MS) filterScans.delete(k)
   filterScans.delete(key)
-  filterScans.set(key, { at: now, ttl: place.ttl, stamp: place.stamp, value })
+  filterScans.set(key, { at: now, stamp: place.stamp, value })
   if (filterScans.size > FILTER_SCAN_MAX) filterScans.delete(filterScans.keys().next().value as string)
   value.catch(() => {
     if (filterScans.get(key)?.value === value) filterScans.delete(key)
@@ -142,50 +140,88 @@ async function repoFilterOverrides(bin: string, args: string[], opts: GitOptions
   return value
 }
 
-/** Where a scan reads its config: the key that names the repository, the scan's arguments without the `-C` already
- *  folded into that key, the text of the config files (the stamp) and how long the scan may be kept. */
-async function scanPlace(cwd: string, scanArgs: readonly string[]): Promise<{ key: string; args: string[]; stamp: string; ttl: number }> {
-  let base = resolve(cwd)
+/** Environment variables that change which repository git opens, or where it stops looking: with any set, the files
+ *  below may not be the ones git reads. */
+const DISCOVERY_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_CEILING_DIRECTORIES', 'GIT_DISCOVERY_ACROSS_FILESYSTEM']
+
+/** Where a scan reads its config: the git folder that names the repository, the scan's arguments without the `-C`
+ *  already folded into it, and the text of the config files (the stamp). null wherever that is not certain, and the
+ *  scan is then not kept: outside a repository, a `.git` that is not a whole repository, a folder on the way up that
+ *  could be a git folder itself, a config that names another file (any
+ *  `include`), a config that cannot be read, or one of DISCOVERY_ENV set. */
+async function scanPlace(cwd: string, scanArgs: readonly string[]): Promise<{ key: string; args: string[]; stamp: string } | null> {
+  if (DISCOVERY_ENV.some((k) => process.env[k] !== undefined)) return null
+  // git walks up from the folder it is in as the system resolves it (getcwd, after each -C's chdir), links followed.
+  let base = await fsPromises.realpath(resolve(cwd))
   let gitDirArg: string | undefined
   const args: string[] = []
   for (let i = 0; i < scanArgs.length; i++) {
     const a = scanArgs[i]
-    if (a === '-C' && i + 1 < scanArgs.length) base = resolve(base, scanArgs[++i])
+    if (a === '-C' && i + 1 < scanArgs.length) base = await fsPromises.realpath(resolve(base, scanArgs[++i]))
     else {
       if (a === '--git-dir' && i + 1 < scanArgs.length) gitDirArg = scanArgs[i + 1]
       else if (a.startsWith('--git-dir=')) gitDirArg = a.slice('--git-dir='.length)
       args.push(a)
     }
   }
-  const dirs = gitDirArg !== undefined ? await gitDirs(resolve(base, gitDirArg)) : await findGitDirs(base)
-  if (dirs === null) return { key: base, args, stamp: '', ttl: FILTER_SCAN_SHORT_TTL_MS }
-  const texts = await Promise.all([join(dirs.common, 'config'), join(dirs.gitDir, 'config.worktree')].map(readOrEmpty))
-  const includes = texts.some((t) => /^\s*\[\s*include/im.test(t))
-  return { key: dirs.gitDir, args, stamp: texts.join('\u0000'), ttl: includes ? FILTER_SCAN_SHORT_TTL_MS : FILTER_SCAN_TTL_MS }
+  const dirs = gitDirArg !== undefined ? await repositoryAt(resolve(base, gitDirArg)) : await findGitDirs(base)
+  if (dirs === null) return null
+  const texts = await Promise.all([join(dirs.common, 'config'), join(dirs.gitDir, 'config.worktree')].map(configText))
+  // A config that names another file is read with that file, which no stamp here watches: any `include`, in any
+  // spelling or layout (`[includeIf …]`, `[core][include]` on one line), and the scan is not kept.
+  if (texts.some((t) => t === null || /include/i.test(t))) return null
+  return { key: dirs.gitDir, args, stamp: texts.join('\u0000') }
 }
 
-async function readOrEmpty(file: string): Promise<string> {
-  return fsPromises.readFile(file, 'utf8').catch(() => '')
+/** A file's text: '' when there is none, null when it is there but cannot be read as a file. */
+async function configText(file: string): Promise<string | null> {
+  return fsPromises.readFile(file, 'utf8').catch((e: NodeJS.ErrnoException) => (e?.code === 'ENOENT' ? '' : null))
 }
 
-/** The git folder for the repository at or above `dir` (following a `.git` file's `gitdir:`), or null. */
-async function findGitDirs(dir: string): Promise<{ gitDir: string; common: string } | null> {
+interface GitDirs { gitDir: string; common: string }
+
+/** The git folder a read in `dir` opens, found the way git's discovery finds it: at each folder from `dir` up, a
+ *  `.git` folder or `gitdir:` file first, then the folder itself as a git folder. null wherever this is not certain:
+ *  a `.git` that is not a whole repository (git would skip it, or stop), one that cannot be read, a folder on the way
+ *  that holds HEAD, objects or refs (git could open it as a repository of its own), or no repository at all. */
+async function findGitDirs(dir: string): Promise<GitDirs | null> {
   for (let at = dir; ; at = dirname(at)) {
     const dotGit = join(at, '.git')
-    const st = await fsPromises.stat(dotGit).catch(() => null)
-    if (st?.isDirectory()) return gitDirs(dotGit)
-    if (st?.isFile()) {
-      const m = /^gitdir:\s*(.+?)\s*$/m.exec(await readOrEmpty(dotGit))
-      return m ? gitDirs(resolve(at, m[1])) : null
+    const st = await fsPromises.stat(dotGit).then((s) => s, (e: NodeJS.ErrnoException) => (e?.code === 'ENOENT' ? undefined : null))
+    if (st === null) return null
+    if (st !== undefined) {
+      if (st.isDirectory()) return repositoryAt(dotGit)
+      if (!st.isFile()) return null
+      // git reads a `.git` file that says exactly `gitdir: <path>`; anything else it refuses.
+      const m = /^gitdir: (.+?)[ \t\r\n]*$/.exec(await fsPromises.readFile(dotGit, 'utf8').catch(() => ''))
+      return m ? repositoryAt(resolve(at, m[1])) : null
     }
+    if (await mayBeGitDir(at)) return null
     if (dirname(at) === at) return null
   }
 }
 
-/** A git folder and the common folder its `commondir` names (a linked worktree's), or itself. */
-async function gitDirs(gitDir: string): Promise<{ gitDir: string; common: string }> {
-  const common = (await readOrEmpty(join(gitDir, 'commondir'))).trim()
-  return { gitDir, common: common === '' ? gitDir : resolve(gitDir, common) }
+/** Whether `dir` holds anything git looks for in a git folder (HEAD, objects, refs): more than git itself needs. */
+async function mayBeGitDir(dir: string): Promise<boolean> {
+  const found = await Promise.all(['HEAD', 'objects', 'refs'].map((n) =>
+    fsPromises.lstat(join(dir, n)).then(() => true, (e: NodeJS.ErrnoException) => e?.code !== 'ENOENT')))
+  return found.includes(true)
+}
+
+/** `gitDir` and the common folder its `commondir` names, when git would take it as a repository (a HEAD that is a
+ *  file naming a ref or an object, and objects/ and refs/ folders it can enter); otherwise null. */
+async function repositoryAt(gitDir: string): Promise<GitDirs | null> {
+  const commondir = await configText(join(gitDir, 'commondir'))
+  if (commondir === null) return null
+  const common = commondir.trim() === '' ? gitDir : resolve(gitDir, commondir.trim())
+  const headIsFile = await fsPromises.lstat(join(gitDir, 'HEAD')).then((s) => s.isFile(), () => false)
+  const head = headIsFile ? await fsPromises.readFile(join(gitDir, 'HEAD'), 'utf8').catch(() => '') : ''
+  if (!/^(ref:[ \t]*refs\/[^\r\n]*|[0-9a-f]{40}|[0-9a-f]{64})[ \t\r\n]*$/.test(head)) return null
+  const enterable = (p: string): Promise<boolean> => fsPromises.stat(p).then(
+    (s) => s.isDirectory() && fsPromises.access(p, fsConstants.X_OK).then(() => true, () => false),
+    () => false)
+  const [objects, refs] = await Promise.all([enterable(join(common, 'objects')), enterable(join(common, 'refs'))])
+  return objects && refs ? { gitDir, common } : null
 }
 
 /** How long one repository's dirty-submodule answer is reused: the git cache's window (gitCache.ts GIT_CACHE_TTL_MS),
@@ -224,7 +260,7 @@ function submoduleDeps(opts: GitOptions): SubmoduleDeps {
     topLevel: repoTopLevel,
     readText: (file) => fsPromises.readFile(file, 'utf8').catch(() => null),
     exists: (p) => fsPromises.stat(p).then(() => true, () => false),
-    git: (args, cwd, depth) => guardedGit(args, { cwd, timeout: opts.timeout, maxBuffer: opts.maxBuffer }, depth),
+    git: (args, cwd) => guardedGit(args, { cwd, timeout: opts.timeout, maxBuffer: opts.maxBuffer }, false),
     join: (root, rel) => join(root, ...rel.split('/')),
     relative: (root, cwd) => relative(root, resolve(cwd)).split(sep).join('/')
   }

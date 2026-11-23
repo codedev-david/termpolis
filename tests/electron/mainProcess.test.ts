@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest'
 import { globalHotkeys } from '../../src/main/appMenu'
-import { guardGitArgs } from '../../src/main/gitSafety'
+import { filterOverrides, guardGitArgs } from '../../src/main/gitSafety'
 
 // ---------------------------------------------------------------------------
 // Collect IPC handler registrations so we can invoke them directly
@@ -2248,7 +2248,7 @@ describe('MCP handler callbacks', () => {
     const commands = mockExecSync.mock.calls.map((c: unknown[]) => String(c[0]))
     // The handler writes the command; safeGitAsync (mocked here) is where the read-only prefix goes on (gitSafety.ts).
     expect(commands.filter((c: string) => / status( |$)/.test(c))).toEqual(['git status --short'])
-    const guarded = guardGitArgs(['status', '--short'], process.platform === 'win32', [])
+    const guarded = guardGitArgs(['status', '--short'], process.platform === 'win32', filterOverrides(''))
     expect(guarded).toEqual(expect.arrayContaining(['core.fsmonitor=false', 'log.showSignature=false', '--ignore-submodules=dirty']))
     expect(guarded.some((a) => a.startsWith('core.hooksPath='))).toBe(true)
   })

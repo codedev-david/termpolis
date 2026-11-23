@@ -40,7 +40,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { safeGitAsync, runSafeCommandAsync, parseSafeCommand, isValidGitRef, repoTopLevel, GitTooOldError, _resetGitBinForTests } from '../../src/main/gitCommand'
 import { OLD_GIT_MESSAGE } from '../../src/main/world/gitLogin'
-import { guardGitArgs, UnsafeFilterError } from '../../src/main/gitSafety'
+import { filterOverrides, guardGitArgs, UnsafeFilterError } from '../../src/main/gitSafety'
 
 const GIT = process.platform === 'win32' ? 'C:\\Program Files\\Git\\cmd\\git.exe' : '/usr/bin/git'
 
@@ -130,14 +130,15 @@ describe('safeGitAsync: the filter-driver read before status and diff', () => {
     const scan = mockExecFile.mock.calls[0]
     expect(scan[1]).toEqual(['-C', '/sub', ...guardGitArgs(['config'], isWin).slice(0, -1), 'config', '--show-scope', '-z', '--get-regexp', '^filter\\.'])
     expect(scan[2]).toMatchObject({ cwd: '/repo' })
-    const over = ['-c', 'filter.evil.clean=', '-c', 'filter.evil.smudge=', '-c', 'filter.evil.process=', '-c', 'filter.evil.required=false']
+    const over = filterOverrides('local\0filter.evil.clean\nsh plant.sh\0')
+    expect([...over]).toEqual(['-c', 'filter.evil.clean=', '-c', 'filter.evil.smudge=', '-c', 'filter.evil.process=', '-c', 'filter.evil.required=false'])
     expect(command()).toEqual(guardGitArgs(['-C', '/sub', 'status', '--porcelain'], isWin, over))
   })
 
   it('exit 1 from git config means no driver: the read runs with nothing to switch off', async () => {
     answer(Object.assign(new Error('no match'), { code: 1 }))
     expect(await safeGitAsync(['diff', '--numstat'], { cwd: '/repo' })).toBe('ok')
-    expect(command()).toEqual(guardGitArgs(['diff', '--numstat'], isWin, []))
+    expect(command()).toEqual(guardGitArgs(['diff', '--numstat'], isWin, filterOverrides('')))
   })
 
   it('a git too old for the scan (no --show-scope before 2.26: a usage error, exit 129) fails every read that needs it with the old-git message, never a blank', async () => {
@@ -168,31 +169,11 @@ describe('safeGitAsync: the filter-driver read before status and diff', () => {
     expect(command()).toBeUndefined()
   })
 
-  it('one scan is shared for 1.5 s per folder and command, then read again', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
+  it('outside a repository every read is scanned, even two at once in the same folder', async () => {
     answer('')
     await Promise.all([safeGitAsync(['status'], { cwd: '/repo' }), safeGitAsync(['diff'], { cwd: '/repo' })])
-    expect(scans()).toBe(1)
-    await safeGitAsync(['status'], { cwd: '/other' })
-    expect(scans()).toBe(2)
-    vi.setSystemTime(Date.now() + 1500)
     await safeGitAsync(['status'], { cwd: '/repo' })
     expect(scans()).toBe(3)
-  })
-
-  it('a slow scan that fails after a newer one replaced it does not drop the newer one', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    let late: Cb | undefined
-    mockExecFile.mockImplementationOnce((_b: string, _a: string[], _o: unknown, cb: Cb) => { late = cb })
-    const first = safeGitAsync(['status'], { cwd: '/repo' })
-    await vi.waitFor(() => expect(late).toBeDefined())
-    vi.setSystemTime(Date.now() + 1500)
-    answer('')
-    expect(await safeGitAsync(['status'], { cwd: '/repo' })).toBe('ok')
-    late?.(Object.assign(new Error('fatal: bad config'), { code: 128 }), '', '')
-    await expect(first).rejects.toThrow(/bad config/)
-    await safeGitAsync(['status'], { cwd: '/repo' })
-    expect(scans()).toBe(2)
   })
 
   it('a read that needs no scan starts one git, and an ENOENT from the scan forgets the git it found', async () => {
@@ -218,13 +199,25 @@ describe('safeGitAsync: one filter scan per repository, kept while its config sa
   const scans = (): number => mockExecFile.mock.calls.filter((c) => (c[1] as string[]).includes('--show-scope')).length
   const status = (cwd: string, args: string[] = ['status']): Promise<string> => safeGitAsync(args, { cwd })
   const later = (ms: number): void => vi.setSystemTime(Date.now() + ms)
+  /** What git needs to take a folder as a git folder: a HEAD naming a ref, and objects/ and refs/. */
+  const gitFolder = (gitDir: string, head = 'ref: refs/heads/main\n'): void => {
+    mkdirSync(join(gitDir, 'objects'), { recursive: true })
+    mkdirSync(join(gitDir, 'refs'), { recursive: true })
+    writeFileSync(join(gitDir, 'HEAD'), head)
+  }
   /** A repository: a `.git` folder holding `config`. */
   const repo = (name: string, config = '[core]\n\tbare = false\n'): string => {
     const dir = join(tmp, name)
-    mkdirSync(join(dir, '.git'), { recursive: true })
+    gitFolder(join(dir, '.git'))
     mkdirSync(join(dir, 'src', 'deep'), { recursive: true })
     writeFileSync(join(dir, '.git', 'config'), config)
     return dir
+  }
+  /** How many scans `cwd` costs over three reads: 1 where one is kept, 3 where every read is scanned. */
+  const scansOver3 = async (cwd: string, args?: string[]): Promise<number> => {
+    mockExecFile.mockClear()
+    for (let i = 0; i < 3; i++) await status(cwd, args)
+    return scans()
   }
   beforeEach(() => {
     _resetGitBinForTests()
@@ -270,6 +263,7 @@ describe('safeGitAsync: one filter scan per repository, kept while its config sa
     const wtGit = join(main, '.git', 'worktrees', 'wt')
     mkdirSync(wtGit, { recursive: true })
     writeFileSync(join(wtGit, 'commondir'), '../..\n')
+    writeFileSync(join(wtGit, 'HEAD'), 'ref: refs/heads/wt\n')
     const wt = join(tmp, 'wt')
     mkdirSync(join(wt, 'sub'), { recursive: true })
     writeFileSync(join(wt, '.git'), `gitdir: ${wtGit}\n`)
@@ -283,36 +277,128 @@ describe('safeGitAsync: one filter scan per repository, kept while its config sa
     expect(scans()).toBe(3)
   })
 
-  it('keeps the short window where it cannot watch the config: an include, outside a repository, a bad .git file', async () => {
-    const inc = repo('inc', '[include]\n\tpath = ../other.cfg\n')
-    const bad = join(tmp, 'bad')
-    mkdirSync(bad)
-    writeFileSync(join(bad, '.git'), 'not a pointer\n')
-    for (const cwd of [inc, join(tmp, 'nowhere'), bad]) {
-      mockExecFile.mockClear()
-      await status(cwd)
-      later(1000)
-      await status(cwd)
-      expect(scans(), cwd).toBe(1)
-      later(500)
-      await status(cwd)
-      expect(scans(), cwd).toBe(2)
-    }
+  it('the hex HEAD of a detached checkout, and a 64-digit one, are a repository too', async () => {
+    const a = repo('a')
+    writeFileSync(join(a, '.git', 'HEAD'), `${'a'.repeat(40)}\n`)
+    const b = repo('b')
+    writeFileSync(join(b, '.git', 'HEAD'), 'b'.repeat(64))
+    expect(await scansOver3(a)).toBe(1)
+    expect(await scansOver3(b)).toBe(1)
   })
 
-  it('a folder whose config cannot be read the usual way still gets its scan, kept for the short window', async () => {
+  it('a config that names another file, in any spelling or layout, is scanned on every read', async () => {
+    for (const [i, config] of [
+      '[include]\n\tpath = ../other.cfg\n',
+      '[core][include]path = ../other.cfg\n',
+      '[includeIf "gitdir:/x/"]\n\tpath = ../other.cfg\n',
+      '[core]\n\tbare = false\n[  INCLUDE ]\n\tpath = x\n',
+    ].entries()) expect(await scansOver3(repo(`inc${i}`, config)), config).toBe(3)
+    const wt = repo('wt')
+    writeFileSync(join(wt, '.git', 'config.worktree'), '[Include]\npath = x\n')
+    expect(await scansOver3(wt)).toBe(3)
+  })
+
+  it('a committed git folder inside a repository whose scan is kept is a different repository, scanned on its own every time', async () => {
+    const outer = repo('outer')
+    await status(outer)
+    // The reviewer's case: a clone holding a committed folder that is itself a git folder (HEAD, objects, refs, config).
+    const evil = join(outer, 'evil')
+    gitFolder(evil)
+    writeFileSync(join(evil, 'config'), '[filter "x"]\n\tclean = sh plant.sh\n')
+    expect(await scansOver3(evil)).toBe(3)
+    expect(await scansOver3(join(evil, 'refs'))).toBe(3)
+    // Any one of the three is enough to make the folder uncertain.
+    for (const part of ['HEAD', 'objects', 'refs']) {
+      const one = join(outer, `one-${part}`)
+      mkdirSync(one)
+      if (part === 'HEAD') writeFileSync(join(one, part), 'ref: refs/heads/main\n')
+      else mkdirSync(join(one, part))
+      expect(await scansOver3(one), part).toBe(3)
+    }
+    // The outer repository's own folders still share its scan.
+    expect(await scansOver3(join(outer, 'src', 'deep'))).toBe(0)
+  })
+
+  it('a .git that git would skip or refuse means the read is not kept: empty, half a repository, a bad HEAD, a bad .git file', async () => {
+    const outer = repo('outer')
+    await status(outer)
+    const sub = (name: string): string => {
+      const dir = join(outer, name)
+      mkdirSync(dir, { recursive: true })
+      return dir
+    }
+    // The reviewer's case: an empty .git folder inside a repository whose scan is kept.
+    const empty = sub('empty')
+    mkdirSync(join(empty, '.git'))
+    expect(await scansOver3(empty)).toBe(3)
+    const head = (g: string): void => writeFileSync(join(g, 'HEAD'), 'ref: refs/heads/main\n')
+    const makers: Array<[string, (g: string) => void]> = [
+      ['no-objects', (g) => { mkdirSync(join(g, 'refs'), { recursive: true }); head(g) }],
+      ['no-refs', (g) => { mkdirSync(join(g, 'objects'), { recursive: true }); head(g) }],
+      ['no-head', (g) => { mkdirSync(join(g, 'objects'), { recursive: true }); mkdirSync(join(g, 'refs')) }],
+      ['bad-head', (g) => gitFolder(g, 'not a ref\n')],
+      ['head-folder', (g) => { mkdirSync(join(g, 'objects'), { recursive: true }); mkdirSync(join(g, 'refs')); mkdirSync(join(g, 'HEAD')) }],
+      ['objects-file', (g) => { mkdirSync(join(g, 'refs'), { recursive: true }); writeFileSync(join(g, 'objects'), ''); head(g) }],
+      ['config-folder', (g) => { gitFolder(g); mkdirSync(join(g, 'config')) }],
+      ['commondir-folder', (g) => { gitFolder(g); mkdirSync(join(g, 'commondir')) }],
+    ]
+    for (const [name, make] of makers) {
+      const dir = sub(name)
+      make(join(dir, '.git'))
+      expect(await scansOver3(dir), name).toBe(3)
+    }
+    for (const [name, text] of [['bad-file', 'not a pointer\n'], ['two-lines', 'gitdir: ../x\nmore\n'], ['to-nothing', 'gitdir: ../nowhere\n'], ['empty-file', '']]) {
+      const dir = sub(name)
+      writeFileSync(join(dir, '.git'), text)
+      expect(await scansOver3(dir), name).toBe(3)
+    }
+    expect(await scansOver3(join(tmp, 'nowhere'))).toBe(3)
+    expect(await scansOver3(tmp)).toBe(3)
+  })
+
+  it('a folder whose files cannot be read the usual way is scanned on every read', async () => {
     const dir = repo('odd')
-    const spy = vi.spyOn(fsPromises, 'stat').mockImplementation(() => { throw new Error('stand-in fs') })
+    for (const fn of ['stat', 'lstat', 'readFile', 'realpath'] as const) {
+      const spy = vi.spyOn(fsPromises, fn).mockRejectedValue(new Error('stand-in fs'))
+      try {
+        expect(await scansOver3(dir), fn).toBe(3)
+      } finally {
+        spy.mockRestore()
+      }
+    }
+    const spy = vi.spyOn(fsPromises, 'stat').mockRejectedValue(Object.assign(new Error('denied'), { code: 'EACCES' }))
     try {
-      await status(dir)
-      await status(dir)
-      expect(scans()).toBe(1)
-      later(1500)
-      await status(dir)
-      expect(scans()).toBe(2)
+      expect(await scansOver3(dir)).toBe(3)
     } finally {
       spy.mockRestore()
     }
+    expect(await scansOver3(dir)).toBe(1)
+  })
+
+  it('with an environment variable that moves git to another repository or changes where it stops looking, every read is scanned', async () => {
+    const dir = repo('env')
+    for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_CEILING_DIRECTORIES', 'GIT_DISCOVERY_ACROSS_FILESYSTEM']) {
+      vi.stubEnv(k, join(tmp, 'elsewhere'))
+      try {
+        expect(await scansOver3(dir), k).toBe(3)
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    }
+  })
+
+  it('a slow scan that fails after a newer one replaced it does not drop the newer one', async () => {
+    const dir = repo('slow')
+    let late: Cb | undefined
+    mockExecFile.mockImplementationOnce((_b: string, _a: string[], _o: unknown, cb: Cb) => { late = cb })
+    const first = status(dir)
+    await vi.waitFor(() => expect(late).toBeDefined())
+    later(30_000)
+    await status(dir)
+    late?.(Object.assign(new Error('fatal: bad config'), { code: 128 }), '', '')
+    await expect(first).rejects.toThrow(/bad config/)
+    await status(dir)
+    expect(scans()).toBe(2)
   })
 
   it('a --git-dir names the repository whose config is read', async () => {
@@ -325,6 +411,9 @@ describe('safeGitAsync: one filter scan per repository, kept while its config sa
     expect(scans()).toBe(2)
     await status(tmp, ['--git-dir', join(b, '.git'), 'status'])
     expect(scans()).toBe(3)
+    // A --git-dir git would not take as a repository is not kept.
+    mkdirSync(join(tmp, 'half'))
+    expect(await scansOver3(tmp, ['--git-dir', join(tmp, 'half'), 'status'])).toBe(3)
   })
 
   it('remembers at most 64 scans, dropping expired ones first, then the oldest', async () => {
@@ -392,6 +481,39 @@ describe('safeGitAsync: a status writes each submodule\'s dirty state back in', 
     expect(subStatuses()).toHaveLength(1)
     await safeGitAsync(['status', '--porcelain'], { cwd: first })
     expect(subStatuses()).toHaveLength(2)
+  })
+
+  it('the planted 8×3 tree on disk: one poll starts at most 64 git calls in its submodules, over every level, and at most 4 at once', async () => {
+    const names = Array.from({ length: 8 }, (_, i) => `m${i}`)
+    const plant = (dir: string, level: number): void => {
+      mkdirSync(join(dir, '.git'), { recursive: true })
+      if (level === 3) return
+      writeFileSync(join(dir, '.gitmodules'), names.map((s) => `[submodule "${s}"]\n\tpath = ${s}\n`).join(''))
+      for (const s of names) plant(join(dir, s), level + 1)
+    }
+    const top = join(tmp, 'planted')
+    plant(top, 0)
+    let running = 0
+    let most = 0
+    let inSubs = 0
+    mockExecFile.mockImplementation((_b: string, a: string[], o: { cwd: string }, cb: Cb) => {
+      if (a.includes('--show-scope')) return cb(Object.assign(new Error('none'), { code: 1 }), '', '')
+      if (o.cwd !== top) inSubs++
+      running++
+      most = Math.max(most, running)
+      setTimeout(() => {
+        running--
+        cb(null, a.includes('ls-files') ? names.map((s) => `160000 a 0\t${s}`).join('\0') : '', '')
+      }, 1)
+    })
+    await safeGitAsync(['status', '--porcelain', '-z'], { cwd: top })
+    // The superproject's own status and listing, then at most 63 more: the status every submodule asks of its own
+    // submodules is not folded again.
+    const ownStatuses = mockExecFile.mock.calls.filter((c) => (c[1] as string[]).includes('status') && (c[2] as { cwd: string }).cwd === top)
+    expect(ownStatuses).toHaveLength(1)
+    expect(inSubs).toBeLessThanOrEqual(63)
+    expect(inSubs).toBeGreaterThan(8)
+    expect(most).toBeLessThanOrEqual(4)
   })
 
   it('outside any repository, or with no .gitmodules, the status is as git wrote it', async () => {

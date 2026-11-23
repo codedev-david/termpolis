@@ -8,8 +8,9 @@
 // of its own through safeGitAsync (which scans that submodule's filters first, like any read), and a dirty one is
 // written back into the superproject's output in the row git itself would have written.
 //
-// Bounds: at most MAX_SUBMODULES_PER_POLL submodules a poll, run side by side, nested submodules MAX_DEPTH deep, and
-// the answer reused for the git cache's window. A submodule .gitmodules does not list (an embedded repository added
+// Bounds: one budget a poll over every level, MAX_GIT_PER_POLL git calls in all and MAX_GIT_AT_ONCE at once, nested
+// submodules MAX_DEPTH deep, nearest first; a submodule the budget does not reach is reported as modified, never as
+// clean. The answer is reused for the git cache's window. A submodule .gitmodules does not list (an embedded repository added
 // by hand, which git warns about) is not looked into: finding one would mean listing the whole index every poll.
 //
 // No Electron imports and no spawns of its own: gitCommand.ts hands it the guarded runner and the file reads.
@@ -17,8 +18,10 @@
 import { posix } from 'path'
 import { gitSubcommand } from './gitSafety'
 
-/** Submodules checked a poll. More than this and the rest are not looked into (the first ones in .gitmodules are). */
-export const MAX_SUBMODULES_PER_POLL = 8
+/** Git calls one poll makes to look into submodules, every level together (each listing and each status counts). */
+export const MAX_GIT_PER_POLL = 64
+/** Of those, how many run at once. */
+export const MAX_GIT_AT_ONCE = 4
 /** Submodules inside submodules, this many levels down. */
 export const MAX_DEPTH = 3
 
@@ -219,61 +222,133 @@ export interface SubmoduleDeps {
   readText: (file: string) => Promise<string | null>
   /** Whether a path exists. */
   exists: (p: string) => Promise<boolean>
-  /** A guarded read (safeGitAsync), at `depth` below the status that asked. */
-  git: (args: string[], cwd: string, depth: number) => Promise<string>
+  /** A guarded read (safeGitAsync) that writes no submodule rows of its own: this module walks the levels itself. */
+  git: (args: string[], cwd: string) => Promise<string>
   /** Joins a root and a root-relative forward-slash path into a path on this OS. */
   join: (root: string, rel: string) => string
   /** The root-relative, forward-slash form of `cwd` ('' at the root). */
   relative: (root: string, cwd: string) => string
 }
 
-/** The dirty submodules of the repository at `root`, each looked at through the guarded runner. Never throws: a
- *  submodule whose status fails (a filter that cannot be switched off, a broken checkout) is reported as not dirty. */
-export async function dirtySubmodules(root: string, untrackedNo: boolean, depth: number, d: SubmoduleDeps): Promise<DirtySubmodule[]> {
-  const text = await d.readText(d.join(root, '.gitmodules'))
-  if (text === null) return []
+/** One poll's git calls: MAX_GIT_PER_POLL in all, over every level, and at most MAX_GIT_AT_ONCE running. */
+class PollBudget {
+  private left = MAX_GIT_PER_POLL
+  private running = 0
+  private readonly waiting: (() => void)[] = []
+
+  /** Takes one call from the budget, or false when it is spent. Taken in the order asked, before any wait. */
+  take(): boolean {
+    if (this.left <= 0) return false
+    this.left--
+    return true
+  }
+
+  /** Runs a call taken from the budget once fewer than MAX_GIT_AT_ONCE are running. */
+  async run(fn: () => Promise<string>): Promise<string> {
+    while (this.running >= MAX_GIT_AT_ONCE) await new Promise<void>((resolve) => this.waiting.push(resolve))
+    this.running++
+    try {
+      return await fn()
+    } finally {
+      this.running--
+      this.waiting.shift()?.()
+    }
+  }
+}
+
+/** A repository's submodules worth asking: listed in .gitmodules (not ignored as all or dirty), a gitlink in the index,
+ *  and checked out. `unchecked` are the gitlinks past MAX_GIT_PER_POLL, never looked at. null: the listing itself was
+ *  past the budget. A missing .gitmodules or a failed listing is none. */
+async function listSubmodules(dir: string, budget: PollBudget, d: SubmoduleDeps): Promise<{ present: SubmoduleEntry[]; unchecked: SubmoduleEntry[] } | null> {
+  const none = { present: [], unchecked: [] }
+  const text = await d.readText(d.join(dir, '.gitmodules'))
+  if (text === null) return none
   const wanted = parseGitmodules(text).filter((e) => e.ignore !== 'all' && e.ignore !== 'dirty')
-  if (wanted.length === 0) return []
+  if (wanted.length === 0) return none
+  if (!budget.take()) return null
   let links: Set<string>
   try {
-    links = gitlinkPaths(await d.git(['ls-files', '-z', '-s', '--', ...wanted.map((e) => `:(literal)${e.path}`)], root, depth))
+    links = gitlinkPaths(await budget.run(() => d.git(['ls-files', '-z', '-s', '--', ...wanted.map((e) => `:(literal)${e.path}`)], dir)))
   } catch {
-    return []
+    return none
   }
-  const present: SubmoduleEntry[] = []
-  for (const e of wanted) {
-    if (present.length >= MAX_SUBMODULES_PER_POLL) break
-    if (links.has(e.path) && (await d.exists(d.join(d.join(root, e.path), '.git')))) present.push(e)
+  const linked = wanted.filter((e) => links.has(e.path))
+  const looked = linked.slice(0, MAX_GIT_PER_POLL)
+  const out = await Promise.all(looked.map((e) => d.exists(d.join(d.join(dir, e.path), '.git'))))
+  return { present: looked.filter((_, i) => out[i]), unchecked: linked.slice(MAX_GIT_PER_POLL) }
+}
+
+interface Node {
+  dir: string
+  /** The submodule of the top repository this one sits in (itself at the first level). */
+  top: string
+  noUntracked: boolean
+  depth: number
+}
+
+const RANK = { untracked: 1, modified: 2 } as const
+
+/** The dirty submodules of the repository at `root`, each looked at through the guarded runner: level by level, nearest
+ *  first, MAX_DEPTH levels down, within one PollBudget. A change in a nested submodule makes the one at the top
+ *  modified, as git reports it. One the budget did not reach (itself, or a submodule inside it) cannot be called clean,
+ *  so it is reported as modified. Never throws: a submodule whose status fails (a filter that cannot be switched off, a
+ *  broken checkout) is reported as not dirty, and its own submodules are not looked into. */
+export async function dirtySubmodules(root: string, untrackedNo: boolean, d: SubmoduleDeps): Promise<DirtySubmodule[]> {
+  const budget = new PollBudget()
+  const tops = new Map<string, DirtySubmodule['state'] | null>()
+  const mark = (top: string, state: DirtySubmodule['state'] | null): void => {
+    const now = tops.get(top) ?? null
+    if (state !== null && (now === null || RANK[state] > RANK[now])) tops.set(top, state)
   }
-  const states = await Promise.all(present.map(async (e) => {
-    const noUntracked = untrackedNo || e.ignore === 'untracked'
-    try {
-      const out = await d.git(['status', '--porcelain', '-z', ...(noUntracked ? ['--untracked-files=no'] : [])], d.join(root, e.path), depth + 1)
-      const state = submoduleState(out)
-      return state === null ? null : { path: e.path, state }
-    } catch {
-      return null
-    }
-  }))
-  return states.filter((s): s is DirtySubmodule => s !== null)
+  // The top repository first, as a parent of depth 0: its submodules are the ones reported.
+  let parents: Node[] = [{ dir: root, top: '', noUntracked: untrackedNo, depth: 0 }]
+  while (parents.length > 0) {
+    const lists = await Promise.all(parents.map((n) => listSubmodules(n.dir, budget, d)))
+    const level = parents.flatMap((n, i): Node[] => {
+      const list = lists[i]
+      if (list === null) {
+        mark(n.top, 'modified')
+        return []
+      }
+      const topOf = (e: SubmoduleEntry): string => (n.depth === 0 ? e.path : n.top)
+      if (n.depth === 0) for (const e of list.present) tops.set(e.path, null)
+      for (const e of list.unchecked) mark(topOf(e), 'modified')
+      return list.present.map((e) => ({ dir: d.join(n.dir, e.path), top: topOf(e), noUntracked: n.noUntracked || e.ignore === 'untracked', depth: n.depth + 1 }))
+    })
+    const asked = await Promise.all(level.map(async (n) => {
+      if (!budget.take()) {
+        mark(n.top, 'modified')
+        return false
+      }
+      try {
+        const out = await budget.run(() => d.git(['status', '--porcelain', '-z', ...(n.noUntracked ? ['--untracked-files=no'] : [])], n.dir))
+        const state = submoduleState(out)
+        mark(n.top, n.depth === 1 || state === null ? state : 'modified')
+        return true
+      } catch {
+        return false
+      }
+    }))
+    parents = level.filter((n, i) => asked[i] && n.depth < MAX_DEPTH)
+  }
+  return [...tops].flatMap(([path, state]) => (state === null ? [] : [{ path, state }]))
 }
 
 /** `out`, the output of a guarded `args` status run in `cwd`, with its dirty submodules written back in. Any other
- *  command, a shape this module does not know, or MAX_DEPTH reached, and `out` comes back as it is. Never throws. */
+ *  command, or a shape this module does not know, and `out` comes back as it is. Never throws. */
 export async function withSubmoduleEdits(
   args: readonly string[],
   cwd: string,
   out: string,
-  depth: number,
   d: SubmoduleDeps,
   cached: (root: string, untrackedNo: boolean, load: () => Promise<DirtySubmodule[]>) => Promise<DirtySubmodule[]>
 ): Promise<string> {
   const shape = statusShape(args)
-  if (shape === null || depth >= MAX_DEPTH) return out
+  if (shape === null) return out
   try {
     const root = await d.topLevel(cwd)
     if (root === null) return out
-    const dirty = await cached(root, shape.untrackedNo, () => dirtySubmodules(root, shape.untrackedNo, depth, d))
+    const dirty = await cached(root, shape.untrackedNo, () => dirtySubmodules(root, shape.untrackedNo, d))
     return foldSubmoduleRows(out, shape, dirty, d.relative(root, cwd))
   } catch {
     return out

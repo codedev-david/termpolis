@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  dirtySubmodules, foldSubmoduleRows, gitlinkPaths, MAX_DEPTH, MAX_SUBMODULES_PER_POLL, parseGitmodules, quotePath,
+  dirtySubmodules, foldSubmoduleRows, gitlinkPaths, MAX_DEPTH, MAX_GIT_AT_ONCE, MAX_GIT_PER_POLL, parseGitmodules, quotePath,
   statusShape, submoduleState, withSubmoduleEdits, type DirtySubmodule, type SubmoduleDeps
 } from '../../src/main/gitSubmodules'
 
@@ -118,10 +118,12 @@ describe('foldSubmoduleRows', () => {
   })
 })
 
+const TOP = '[submodule "s"]\n\tpath = s\n[submodule "t"]\n\tpath = t\n\tignore = untracked\n[submodule "u"]\n\tpath = u\n\tignore = dirty\n'
+
 function deps(over: Partial<SubmoduleDeps> = {}): SubmoduleDeps {
   return {
     topLevel: async () => '/r',
-    readText: async () => '[submodule "s"]\n\tpath = s\n[submodule "t"]\n\tpath = t\n\tignore = untracked\n[submodule "u"]\n\tpath = u\n\tignore = dirty\n',
+    readText: async (file) => (file === '/r/.gitmodules' ? TOP : null),
     exists: async () => true,
     git: async (args) => (args[0] === 'ls-files' ? '160000 a 0\ts\u0000160000 b 0\tt\0' : ' M f\0'),
     join: (root, rel) => `${root}/${rel}`,
@@ -130,24 +132,45 @@ function deps(over: Partial<SubmoduleDeps> = {}): SubmoduleDeps {
   }
 }
 
+/** A planted tree: every repository down to `levels` below /r lists `width` submodules m0…, each checked out. `status`
+ *  answers each submodule's own status by its folder. Counts the git calls and the most running at once. */
+function tree(width: number, levels: number, status: (cwd: string) => string = () => '') {
+  const names = Array.from({ length: width }, (_, i) => `m${i}`)
+  const calls: string[][] = []
+  let running = 0
+  let most = 0
+  const d = deps({
+    readText: async (file) => (file.split('/').length - 3 < levels ? names.map((p) => `[submodule "${p}"]\n\tpath = ${p}\n`).join('') : null),
+    git: async (args, cwd) => {
+      calls.push([args[0], cwd])
+      running++
+      most = Math.max(most, running)
+      await new Promise((r) => setTimeout(r, 1))
+      running--
+      return args[0] === 'ls-files' ? names.map((p) => `160000 a 0\t${p}`).join('\0') : status(cwd)
+    }
+  })
+  return { d, calls, most: () => most }
+}
+
 describe('dirtySubmodules', () => {
   it('asks each listed, checked-out gitlink for its own status, honouring ignore', async () => {
     const git = vi.fn(deps().git)
-    expect(await dirtySubmodules('/r', false, 0, deps({ git }))).toEqual([{ path: 's', state: 'modified' }, { path: 't', state: 'modified' }])
+    expect(await dirtySubmodules('/r', false, deps({ git }))).toEqual([{ path: 's', state: 'modified' }, { path: 't', state: 'modified' }])
     expect(git.mock.calls).toEqual([
-      [['ls-files', '-z', '-s', '--', ':(literal)s', ':(literal)t'], '/r', 0],
-      [['status', '--porcelain', '-z'], '/r/s', 1],
-      [['status', '--porcelain', '-z', '--untracked-files=no'], '/r/t', 1]
+      [['ls-files', '-z', '-s', '--', ':(literal)s', ':(literal)t'], '/r'],
+      [['status', '--porcelain', '-z'], '/r/s'],
+      [['status', '--porcelain', '-z', '--untracked-files=no'], '/r/t']
     ])
     const noUntracked = vi.fn(deps().git)
-    await dirtySubmodules('/r', true, 1, deps({ git: noUntracked }))
-    expect(noUntracked.mock.calls[1]).toEqual([['status', '--porcelain', '-z', '--untracked-files=no'], '/r/s', 2])
+    await dirtySubmodules('/r', true, deps({ git: noUntracked }))
+    expect(noUntracked.mock.calls[1]).toEqual([['status', '--porcelain', '-z', '--untracked-files=no'], '/r/s'])
   })
 
   it('finds nothing without a .gitmodules, without a wanted entry, or when the listing fails', async () => {
-    expect(await dirtySubmodules('/r', false, 0, deps({ readText: async () => null }))).toEqual([])
-    expect(await dirtySubmodules('/r', false, 0, deps({ readText: async () => '[submodule "u"]\n\tpath = u\n\tignore = all\n' }))).toEqual([])
-    expect(await dirtySubmodules('/r', false, 0, deps({ git: async () => { throw new Error('no') } }))).toEqual([])
+    expect(await dirtySubmodules('/r', false, deps({ readText: async () => null }))).toEqual([])
+    expect(await dirtySubmodules('/r', false, deps({ readText: async () => '[submodule "u"]\n\tpath = u\n\tignore = all\n' }))).toEqual([])
+    expect(await dirtySubmodules('/r', false, deps({ git: async () => { throw new Error('no') } }))).toEqual([])
   })
 
   it('skips one that is not a gitlink, not checked out, clean, or whose status fails', async () => {
@@ -158,18 +181,57 @@ describe('dirtySubmodules', () => {
         throw new Error(cwd)
       }
     })
-    expect(await dirtySubmodules('/r', false, 0, d)).toEqual([])
-    expect(await dirtySubmodules('/r', false, 0, deps({ git: async (a) => (a[0] === 'ls-files' ? '100644 a 0\ts\0' : ' M x\0') }))).toEqual([])
-    expect(await dirtySubmodules('/r', false, 0, deps({ git: async (a) => (a[0] === 'ls-files' ? '160000 a 0\ts\0' : '') }))).toEqual([])
-    expect(await dirtySubmodules('/r', false, 0, deps({ git: async (a) => (a[0] === 'ls-files' ? '160000 a 0\ts\0' : '?? n\0') }))).toEqual([{ path: 's', state: 'untracked' }])
+    expect(await dirtySubmodules('/r', false, d)).toEqual([])
+    expect(await dirtySubmodules('/r', false, deps({ git: async (a) => (a[0] === 'ls-files' ? '100644 a 0\ts\0' : ' M x\0') }))).toEqual([])
+    expect(await dirtySubmodules('/r', false, deps({ git: async (a) => (a[0] === 'ls-files' ? '160000 a 0\ts\0' : '') }))).toEqual([])
+    expect(await dirtySubmodules('/r', false, deps({ git: async (a) => (a[0] === 'ls-files' ? '160000 a 0\ts\0' : '?? n\0') }))).toEqual([{ path: 's', state: 'untracked' }])
   })
 
-  it('looks into at most MAX_SUBMODULES_PER_POLL a poll', async () => {
-    const n = MAX_SUBMODULES_PER_POLL + 3
-    const names = Array.from({ length: n }, (_, i) => `m${i}`)
-    const git = vi.fn(async (args: string[]) => (args[0] === 'ls-files' ? names.map((p) => `160000 a 0\t${p}`).join('\0') : ' M f\0'))
-    const d = deps({ readText: async () => names.map((p) => `[submodule "${p}"]\n\tpath = ${p}\n`).join(''), git })
-    expect(await dirtySubmodules('/r', false, 0, d)).toHaveLength(MAX_SUBMODULES_PER_POLL)
+  it('a change in a nested submodule, down to MAX_DEPTH levels, makes the top one modified; deeper is not looked into', async () => {
+    // A chain /r/m0/m0/m0/m0/m0: a status at each of the first MAX_DEPTH levels, a listing above each but the last.
+    const deepest = '/r' + '/m0'.repeat(MAX_DEPTH)
+    const t = tree(1, 5, (cwd) => (cwd === deepest ? '?? new\0' : ''))
+    expect(await dirtySubmodules('/r', false, t.d)).toEqual([{ path: 'm0', state: 'modified' }])
+    const statuses = t.calls.filter((c) => c[0] === 'status').map((c) => c[1])
+    expect(statuses).toEqual(['/r/m0', '/r/m0/m0', deepest])
+    expect(t.calls.filter((c) => c[0] === 'ls-files')).toHaveLength(MAX_DEPTH)
+    // Clean all the way down: nothing to report. Untracked files only, in the top one: untracked.
+    expect(await dirtySubmodules('/r', false, tree(2, 3).d)).toEqual([])
+    expect(await dirtySubmodules('/r', false, tree(1, 1, () => '?? n\0').d)).toEqual([{ path: 'm0', state: 'untracked' }])
+    // A nested status that fails is not dirty, and its own submodules are not looked into.
+    const failing = tree(1, 3)
+    failing.d.git = async (args, cwd) => {
+      if (cwd === '/r/m0') throw new Error('broken')
+      return args[0] === 'ls-files' ? '160000 a 0\tm0' : ' M f\0'
+    }
+    expect(await dirtySubmodules('/r', false, failing.d)).toEqual([])
+  })
+
+  it('the planted 8×3 tree: at most MAX_GIT_PER_POLL git calls a poll over every level, at most MAX_GIT_AT_ONCE at once, and what was not checked shows as modified', async () => {
+    const t = tree(8, 3)
+    const dirty = await dirtySubmodules('/r', false, t.d)
+    expect(t.calls.length).toBeLessThanOrEqual(MAX_GIT_PER_POLL)
+    expect(MAX_GIT_PER_POLL).toBe(64)
+    expect(t.most()).toBeLessThanOrEqual(MAX_GIT_AT_ONCE)
+    expect(MAX_GIT_AT_ONCE).toBe(4)
+    expect(t.calls.filter((c) => c[0] === 'status')[0][1]).toBe('/r/m0')
+    // Every top submodule has nested ones the budget did not reach: none can be called clean.
+    expect(dirty).toEqual(Array.from({ length: 8 }, (_, i) => ({ path: `m${i}`, state: 'modified' })))
+    // The same tree checked within the budget, two wide (1 + 2 + 2 + 4 + 4 + 8 calls): every one is asked, none is dirty.
+    const small = tree(2, 3)
+    expect(await dirtySubmodules('/r', false, small.d)).toEqual([])
+    expect(small.calls).toHaveLength(21)
+  })
+
+  it('more submodules than the budget in one repository: the ones past it are not looked into and show as modified', async () => {
+    const t = tree(MAX_GIT_PER_POLL + 6, 1)
+    const exists = vi.fn(async () => true)
+    t.d.exists = exists
+    const dirty = await dirtySubmodules('/r', false, t.d)
+    expect(t.calls).toHaveLength(MAX_GIT_PER_POLL)
+    expect(exists.mock.calls.length).toBeLessThanOrEqual(MAX_GIT_PER_POLL)
+    expect(dirty.map((x) => x.path)).toEqual(Array.from({ length: 7 }, (_, i) => `m${MAX_GIT_PER_POLL - 1 + i}`))
+    expect(dirty.every((x) => x.state === 'modified')).toBe(true)
   })
 })
 
@@ -177,20 +239,20 @@ describe('withSubmoduleEdits', () => {
   const pass = (_r: string, _u: boolean, load: () => Promise<DirtySubmodule[]>): Promise<DirtySubmodule[]> => load()
 
   it('writes the dirty submodules into a status it knows the shape of', async () => {
-    expect(await withSubmoduleEdits(['status', '--porcelain', '-z'], '/r', ' M a\0', 0, deps(), pass)).toBe(' M a\0 M s\0 M t\0')
+    expect(await withSubmoduleEdits(['status', '--porcelain', '-z'], '/r', ' M a\0', deps(), pass)).toBe(' M a\0 M s\0 M t\0')
   })
 
-  it('leaves any other command, an unknown shape, MAX_DEPTH, a folder outside a repository and a failure alone', async () => {
+  it('leaves any other command, an unknown shape, a folder outside a repository and a failure alone', async () => {
     const out = ' M a\0'
-    expect(await withSubmoduleEdits(['diff', '--numstat', '-z'], '/r', out, 0, deps(), pass)).toBe(out)
-    expect(await withSubmoduleEdits(['status', '--porcelain', '-z'], '/r', out, MAX_DEPTH, deps(), pass)).toBe(out)
-    expect(await withSubmoduleEdits(['status', '--porcelain', '-z'], '/r', out, 0, deps({ topLevel: async () => null }), pass)).toBe(out)
-    expect(await withSubmoduleEdits(['status', '--porcelain', '-z'], '/r', out, 0, deps({ topLevel: async () => { throw new Error('x') } }), pass)).toBe(out)
+    expect(await withSubmoduleEdits(['diff', '--numstat', '-z'], '/r', out, deps(), pass)).toBe(out)
+    expect(await withSubmoduleEdits(['status', '--porcelain', '-z', '--', 'x'], '/r', out, deps(), pass)).toBe(out)
+    expect(await withSubmoduleEdits(['status', '--porcelain', '-z'], '/r', out, deps({ topLevel: async () => null }), pass)).toBe(out)
+    expect(await withSubmoduleEdits(['status', '--porcelain', '-z'], '/r', out, deps({ topLevel: async () => { throw new Error('x') } }), pass)).toBe(out)
   })
 
   it('hands the cache the root and the untracked choice', async () => {
     const cached = vi.fn(async () => [] as DirtySubmodule[])
-    await withSubmoduleEdits(['status', '--porcelain', '--untracked-files=no'], '/r/src', '', 0, deps(), cached)
+    await withSubmoduleEdits(['status', '--porcelain', '--untracked-files=no'], '/r/src', '', deps(), cached)
     expect(cached).toHaveBeenCalledWith('/r', true, expect.any(Function))
   })
 })

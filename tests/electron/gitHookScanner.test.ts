@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { scanPushRange, scanStagedDiff } from '../../src/main/commitScan'
-import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
+import { filterOverrides, gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
 
 const require_ = createRequire(import.meta.url)
 const HOOK_PATH = join(process.cwd(), 'src', 'mcp-adapter', 'termpolis-githook.cjs')
@@ -128,7 +128,7 @@ describe('termpolis-githook — CLI contract', () => {
     const git = async (args: string[]): Promise<string> => { inApp.push(args); return '' }
     await scanStagedDiff({ git })
     await scanPushRange({ git })
-    const run = inApp.map((a) => { const g = guardGitArgs(a, process.platform === 'win32', []); return g.slice(gitSubcommand(g)!.index) })
+    const run = inApp.map((a) => { const g = guardGitArgs(a, process.platform === 'win32', filterOverrides('')); return g.slice(gitSubcommand(g)!.index) })
     expect(run).toEqual([hook.GIT_ARGS['pre-commit'], hook.GIT_ARGS['pre-push']])
   })
 

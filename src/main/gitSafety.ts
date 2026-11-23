@@ -197,15 +197,15 @@ export function needsFilterScan(args: readonly string[]): boolean {
  * `filterOverrides` just before the subcommand (so they come after, and win over, any `-c` the caller gave), and
  * displayFlags just after it. A flag the caller already gave is not repeated.
  *
- * A read that can run a filter (FILTER_SUBCOMMANDS) must be handed the overrides from its scan, even an empty list:
- * without them it throws, so a new caller cannot run one unscanned. A read asking for --textconv or --ext-diff throws
- * UnsafeReadError.
+ * A read that can run a filter (FILTER_SUBCOMMANDS) must be handed the result of its scan, as filterOverrides built
+ * it, even when that is empty: without one (or with any other list) it throws, so a new caller cannot run one
+ * unscanned. A read asking for --textconv or --ext-diff throws UnsafeReadError.
  */
-export function guardGitArgs(args: readonly string[], isWindows: boolean, filterOverrides?: readonly string[]): string[] {
+export function guardGitArgs(args: readonly string[], isWindows: boolean, filterOverrides?: FilterScan): string[] {
   const sub = gitSubcommand(args)
   if (sub === null) return [...readOnlyPrefix('', isWindows), ...args]
   if (MUTATING_SUBCOMMANDS.has(sub.name)) return [...args]
-  if (filterOverrides === undefined && FILTER_SUBCOMMANDS.has(sub.name)) {
+  if ((filterOverrides === undefined || !builtScans.has(filterOverrides)) && FILTER_SUBCOMMANDS.has(sub.name)) {
     throw new Error(`git: a ${sub.name} can run a filter driver, and was not handed the repository's filter scan (gitCommand.ts safeGitAsync)`)
   }
   const leading = args.slice(0, sub.index)
@@ -268,7 +268,13 @@ export class UnsafeFilterError extends Error {
  * A driver name holding `=` cannot be written as a `-c` key (git splits at the first `=`), so it throws rather than
  * leave that driver running.
  */
-export function filterOverrides(scan: string): string[] {
+declare const filterScanBrand: unique symbol
+/** What filterOverrides returns: the overrides from one real scan. guardGitArgs takes nothing else for a read that can
+ *  run a filter, checked by type here and by identity at run time (builtScans), so a hand-made list never passes. */
+export type FilterScan = readonly string[] & { readonly [filterScanBrand]: true }
+const builtScans = new WeakSet<readonly string[]>()
+
+export function filterOverrides(scan: string): FilterScan {
   const trusted = new Map<string, string>()
   const repoDrivers: string[] = []
   const parts = scan.split('\0')
@@ -295,5 +301,7 @@ export function filterOverrides(scan: string): string[] {
       out.push('-c', `filter.${name}.${variable}=${own ?? (variable === 'required' ? 'false' : '')}`)
     }
   }
-  return out
+  Object.freeze(out)
+  builtScans.add(out)
+  return out as readonly string[] as FilterScan
 }

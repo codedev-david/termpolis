@@ -23,7 +23,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative, sep } from 'path'
 import ts from 'typescript'
-import { MUTATING_SUBCOMMANDS, displayFlags, gitSubcommand, guardGitArgs, needsFilterScan, readOnlyPrefix } from '../../src/main/gitSafety'
+import { MUTATING_SUBCOMMANDS, displayFlags, filterOverrides, gitSubcommand, guardGitArgs, needsFilterScan, readOnlyPrefix } from '../../src/main/gitSafety'
 
 const ROOT = join(__dirname, '..', '..')
 const MAIN = join(ROOT, 'src', 'main')
@@ -258,7 +258,7 @@ function guardProblem(argv: string[], isWindows: boolean): string | null {
   if (sub === null) return null
   if (MUTATING_SUBCOMMANDS.has(sub.name)) return null
   if (!KNOWN_READS.has(sub.name)) return `subcommand '${sub.name}' is neither a known read nor a write`
-  const run = guardGitArgs(argv, isWindows, [])
+  const run = guardGitArgs(argv, isWindows, filterOverrides(''))
   const at = gitSubcommand(run)!.index
   const leading = run.slice(0, at)
   for (let i = 1; i < readOnlyPrefix(sub.name, isWindows).length; i += 2) {
@@ -269,11 +269,29 @@ function guardProblem(argv: string[], isWindows: boolean): string | null {
   return null
 }
 
-/** True when `s` calls guardGitArgs with no filter overrides (guardGitArgs then throws on a FILTER_SUBCOMMANDS read). */
+/** Calls that produce a real filter scan (gitSafety.ts FilterScan): filterOverrides builds one, repoFilterOverrides runs it. */
+const SCAN_BUILDERS = ['filterOverrides', 'repoFilterOverrides']
+const hasScanCall = (n: ts.Node): boolean => {
+  let found = false
+  walk(n, (m) => {
+    if (ts.isCallExpression(m) && SCAN_BUILDERS.includes(calleeName(m))) found = true
+  })
+  return found
+}
+
+/** True when `s` calls guardGitArgs without a real filter scan (guardGitArgs then throws on a FILTER_SUBCOMMANDS read):
+ *  no third argument, or one that is neither a scan call nor a name this file declares from one. Any list will not do. */
 function callsGuardUnscanned(s: Source): boolean {
+  const scanNames = new Set<string>()
+  walk(s.sf, (n) => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer !== undefined && hasScanCall(n.initializer)) scanNames.add(n.name.text)
+  })
   let found = false
   walk(s.sf, (n) => {
-    if (ts.isCallExpression(n) && calleeName(n) === 'guardGitArgs' && n.arguments.length < 3) found = true
+    if (!ts.isCallExpression(n) || calleeName(n) !== 'guardGitArgs') return
+    const scan = n.arguments[2]
+    const real = scan !== undefined && ((ts.isIdentifier(scan) && scanNames.has(scan.text)) || (ts.isCallExpression(scan) && SCAN_BUILDERS.includes(calleeName(scan))))
+    if (!real) found = true
   })
   return found
 }
@@ -429,6 +447,12 @@ describe('git safety guard: the detectors see what they must (self-check)', () =
     const unscanned = parse('src/main/world/worldRuns.ts', "const run = (args) => d.exec(gitBin, guardGitArgs(args, true), {}); run(['status', '--porcelain']); run(['diff-tree', '-r'])")
     expect(callsGuardUnscanned(unscanned)).toBe(true)
     expect(unscannedFilterReads(unscanned)).toEqual(['src/main/world/worldRuns.ts:1 status --porcelain'])
-    expect(callsGuardUnscanned(parse('src/main/gitCommand.ts', 'guardGitArgs(args, isWindows, overrides)'))).toBe(false)
+    const scanned = 'const overrides = needsFilterScan(args) ? await repoFilterOverrides(bin, args, opts, isWindows) : undefined\n'
+    expect(callsGuardUnscanned(parse('src/main/gitCommand.ts', `${scanned}guardGitArgs(args, isWindows, overrides)`))).toBe(false)
+    expect(callsGuardUnscanned(parse('src/main/x.ts', "guardGitArgs(args, isWindows, filterOverrides(''))"))).toBe(false)
+    // A third argument that is not a real scan is caught: a list, an undeclared name, a name built some other way.
+    for (const text of ['guardGitArgs(args, isWindows, [])', 'guardGitArgs(args, isWindows, overrides)', 'const overrides = []\nguardGitArgs(args, isWindows, overrides)', 'guardGitArgs(args, isWindows, [...filterOverrides(x)].slice(0))']) {
+      expect(callsGuardUnscanned(parse('src/main/x.ts', text)), text).toBe(true)
+    }
   })
 })

@@ -19,7 +19,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync, spawnSync } from 'child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs'
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { safeGitAsync, _resetGitBinForTests } from '../../src/main/gitCommand'
@@ -411,7 +411,8 @@ const VECTORS: Vector[] = [
       git(dir, ['config', 'core.sshCommand', runs(plantProgram('lazy-ssh'))])
       git(dir, ['config', 'protocol.ssh.allow', 'always'])
     }),
-    control: (dir) => git(dir, ['diff', '--cached', '--numstat'], true),
+    // status alone: its rename detection reads the blob of the staged rename's source, which is missing.
+    control: (dir) => git(dir, ['status', '--porcelain'], true),
     expect: ['lazy-ssh']
   },
   {
@@ -421,7 +422,8 @@ const VECTORS: Vector[] = [
       git(dir, ['config', 'remote.origin.uploadpack', runs(plantProgram('lazy-uploadpack'))])
       git(dir, ['config', 'protocol.file.allow', 'always'])
     }),
-    control: (dir) => git(dir, ['diff', '--cached', '--numstat'], true),
+    // status alone: its rename detection reads the blob of the staged rename's source, which is missing.
+    control: (dir) => git(dir, ['status', '--porcelain'], true),
     expect: ['lazy-uploadpack']
   },
   {
@@ -433,7 +435,8 @@ const VECTORS: Vector[] = [
       git(dir, ['config', 'protocol.allow', 'always'])
       git(dir, ['config', 'protocol.git.allow', 'always'])
     }),
-    control: (dir) => git(dir, ['diff', '--cached', '--numstat'], true),
+    // status alone: its rename detection reads the blob of the staged rename's source, which is missing.
+    control: (dir) => git(dir, ['status', '--porcelain'], true),
     expect: ['lazy-gitproxy']
   }
 ]
@@ -441,16 +444,20 @@ const VECTORS: Vector[] = [
 /**
  * A partial clone (as `git clone --filter=blob:none` leaves one) whose promisor remote is reached through a program
  * the repository's own config names, with the blobs of HEAD's and HEAD~1's a.txt missing: a read that needs either
- * starts `git fetch` from that remote, and the fetch runs the program. a.txt is staged and changed again on top.
+ * starts `git fetch` from that remote, and the fetch runs the program. a.txt is staged and changed again on top. b.txt
+ * is staged as renamed, with edits, to c.txt, and its blob is missing too: a plain status reads it to find the rename.
  */
 function partialClone(name: string, configure: (dir: string) => void): { dir: string; file: string; redirty: () => void } {
-  const dir = newRepo(name)
+  const dir = newRepo(name, { 'b.txt': 'one\ntwo\nthree\nfour\nfive\nsix\n' })
   writeFileSync(join(dir, 'a.txt'), 'alpha\nbeta\ngamma\n')
   git(dir, ['commit', '-q', '-am', 'second'])
   writeFileSync(join(dir, 'a.txt'), 'alpha\nBETA\ngamma\ndelta\n')
   git(dir, ['add', 'a.txt'])
   writeFileSync(join(dir, 'a.txt'), 'alpha\nBETA\ngamma\ndelta\nepsilon\n')
-  for (const rev of ['HEAD~1:a.txt', 'HEAD:a.txt']) {
+  git(dir, ['rm', '-q', 'b.txt'])
+  writeFileSync(join(dir, 'c.txt'), 'one\ntwo\nthree\nfour\nfive\nSIX\n')
+  git(dir, ['add', 'c.txt'])
+  for (const rev of ['HEAD~1:a.txt', 'HEAD:a.txt', 'HEAD:b.txt']) {
     const oid = git(dir, ['rev-parse', rev]).trim()
     const file = join(dir, '.git', 'objects', oid.slice(0, 2), oid.slice(2))
     // git writes loose objects read-only, and Windows will not unlink a read-only file.
@@ -597,6 +604,65 @@ describe('git safety harness: the person’s own setup keeps working', () => {
     expect(fired()).toEqual([])
     git(dir, ['status', '--porcelain'], true)
     expect(fired()).toEqual(['late-clean'])
+  }, TIMEOUT)
+
+  it('a committed folder that is itself a git folder is its own repository: the scan kept for the clone around it is not used there', async () => {
+    clearMarkers()
+    // The reviewer's case: a clone holding a committed folder `evil` that is a whole git folder (HEAD, objects, refs,
+    // config) whose config names a required filter and a work tree, with a warm scan for the clone itself.
+    const src = newRepo('nested-src', { '.gitattributes': '*.dat filter=nested\n', 'x.dat': 'one\n' })
+    const outer = newRepo('nested-clone')
+    const evil = join(outer, 'evil')
+    cpSync(join(src, '.git'), evil, { recursive: true })
+    git(outer, ['add', '-A'])
+    git(outer, ['commit', '-q', '-m', 'a folder that is a git folder'])
+    git(evil, ['config', 'core.bare', 'false'])
+    git(evil, ['config', 'core.worktree', slash(src)])
+    git(evil, ['config', 'filter.nested.clean', runs(plantProgram('nested-clean', 'cat\n'))])
+    git(evil, ['config', 'filter.nested.required', 'true'])
+    dirty(src, 'x.dat', 'two\n')
+    _resetGitBinForTests()
+    await safeGitAsync(['status', '--porcelain'], opts(outer))
+    await quiet(safeGitAsync(['status', '--porcelain'], opts(evil)))
+    await quiet(safeGitAsync(['status', '--porcelain', '-b', '-z'], opts(join(evil, 'refs'))))
+    await quiet(safeGitAsync(['diff', '--numstat'], opts(evil)))
+    expect(fired()).toEqual([])
+    git(evil, ['status', '--porcelain'], true)
+    expect(fired()).toEqual(['nested-clean'])
+  }, TIMEOUT)
+
+  it('an empty .git folder git skips does not stand in for the repository it skips to: an edit to that config is seen', async () => {
+    clearMarkers()
+    const outer = newRepo('empty-dotgit', { '.gitattributes': '*.dat filter=skip\n', 'x.dat': 'one\n' })
+    const sub = join(outer, 'sub')
+    mkdirSync(join(sub, '.git'), { recursive: true })
+    _resetGitBinForTests()
+    await safeGitAsync(['status', '--porcelain'], opts(sub))
+    git(outer, ['config', 'filter.skip.clean', runs(plantProgram('skip-clean', 'cat\n'))])
+    git(outer, ['config', 'filter.skip.required', 'true'])
+    dirty(outer, 'x.dat', 'two\n')
+    await quiet(safeGitAsync(['status', '--porcelain'], opts(sub)))
+    await quiet(safeGitAsync(['diff', '--numstat'], opts(sub)))
+    expect(fired()).toEqual([])
+    git(sub, ['status', '--porcelain'], true)
+    expect(fired()).toEqual(['skip-clean'])
+  }, TIMEOUT)
+
+  it('a config that includes another file on one line ([core][include]) is read again every time: a filter added to that file is seen', async () => {
+    clearMarkers()
+    const dir = newRepo('one-line-include', { '.gitattributes': '*.dat filter=inc\n', 'x.dat': 'one\n' })
+    const included = join(base, 'one-line-include.cfg')
+    writeFileSync(included, '')
+    appendFileSync(join(dir, '.git', 'config'), `[core][include]path = "${slash(included)}"\n`)
+    _resetGitBinForTests()
+    await safeGitAsync(['status', '--porcelain'], opts(dir))
+    writeFileSync(included, `[filter "inc"]\n\tclean = ${runs(plantProgram('inc-clean', 'cat\n'))}\n\trequired = true\n`)
+    dirty(dir, 'x.dat', 'two\n')
+    await quiet(safeGitAsync(['status', '--porcelain'], opts(dir)))
+    await quiet(safeGitAsync(['diff', '--numstat'], opts(dir)))
+    expect(fired()).toEqual([])
+    git(dir, ['status', '--porcelain'], true)
+    expect(fired()).toEqual(['inc-clean'])
   }, TIMEOUT)
 
   it('a mutating add in a repository with its own filter runs that filter (writes are the person’s git, unchanged)', async () => {

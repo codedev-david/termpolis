@@ -27,7 +27,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { join as pJoin, resolve as pResolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { writtenGitArgs } from './_gitArgv'
-import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
+import { filterOverrides, gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
 
 // ---------------------------------------------------------------------------
 // Hoisted mock state
@@ -1284,14 +1284,14 @@ describe('git:change-diff', () => {
     await invoke('git:change-diff', { cwd: '/repo', file: 'my notes.ts', mode: 'unstaged' })
     // The diff itself, after the filter-driver read: the read-only prefix and display flags (gitSafety.ts), then the
     // name as one element after `--`.
-    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', 'my notes.ts'], process.platform === 'win32', []))
+    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', 'my notes.ts'], process.platform === 'win32', filterOverrides('')))
   })
 
   it('stops a leading-dash filename being read as a flag', async () => {
     gitAsync(() => '')
     await invoke('git:change-diff', { cwd: '/repo', file: '--upload-pack=evil', mode: 'unstaged' })
     // The `--` separator is what makes this safe; assert it is still there.
-    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', '--upload-pack=evil'], process.platform === 'win32', []))
+    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', '--upload-pack=evil'], process.platform === 'win32', filterOverrides('')))
   })
 
   it('synthesizes a diff for an untracked file, which git itself will not diff', async () => {
