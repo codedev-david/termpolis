@@ -4204,6 +4204,16 @@ describe('Lumopolis world wiring in index.ts', () => {
     expect(await world.opts.head('/repos/x')).toEqual({ head: '', dirty: false })
   })
 
+  it('stamps staged files as dirty before the initial commit', async () => {
+    gitMock.safeGitAsync.mockRejectedValueOnce(new Error('fatal: ambiguous argument HEAD')).mockResolvedValueOnce('A  index.ts\n')
+    expect(await world.opts.head('/repos/x')).toEqual({ head: '', dirty: true })
+  })
+
+  it('keeps the revision when git status fails', async () => {
+    gitMock.safeGitAsync.mockResolvedValueOnce('abc123\n').mockRejectedValueOnce(new Error('status failed'))
+    expect(await world.opts.head('/repos/x')).toEqual({ head: 'abc123', dirty: false })
+  })
+
   it('asks git for the head and the status at once, so a live change waits for one git call, not two (round 3 D)', async () => {
     let release: (v: string) => void = () => undefined
     gitMock.safeGitAsync.mockReturnValueOnce(new Promise<string>((r) => { release = r })).mockResolvedValueOnce('')

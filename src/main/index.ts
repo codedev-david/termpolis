@@ -2803,18 +2803,13 @@ const worldClient = createWorldClient(undefined, {
   // Evidence a label may cite beyond the files: commit subjects, markdown docs lines, and the brain's decisions.
   context: worldLabelContext,
   head: async (root) => {
-    try {
-      // Both at once: a live change waits on these before the world recompiles. Both run with every live change of
-      // an open world, unasked, so the repository's own config must not run anything: safeGitAsync gives every read
-      // the read-only prefix, and status also has the repository's filter drivers switched off (gitSafety.ts).
-      const [rev, status] = await Promise.all([
-        safeGitAsync(['rev-parse', 'HEAD'], { cwd: root, timeout: 3000 }),
-        safeGitAsync(['status', '--porcelain', '--untracked-files=no'], { cwd: root, timeout: 5000 }),
-      ])
-      return { head: rev.trim(), dirty: status.trim() !== '' }
-    } catch {
-      return { head: '', dirty: false }
-    }
+    // Both reads run concurrently with every live change. safeGitAsync supplies the read-only prefix
+    // and disables filter drivers for status. An unborn HEAD can still have staged changes.
+    const [rev, status] = await Promise.all([
+      safeGitAsync(['rev-parse', 'HEAD'], { cwd: root, timeout: 3000 }).catch(() => ''),
+      safeGitAsync(['status', '--porcelain', '--untracked-files=no'], { cwd: root, timeout: 5000 }).catch(() => ''),
+    ])
+    return { head: rev.trim(), dirty: status.trim() !== '' }
   },
   // A project the code graph has not indexed yet compiles from a snapshot the world process makes (it
   // lists and parses the files there, never on the main thread), and main's own index starts in the

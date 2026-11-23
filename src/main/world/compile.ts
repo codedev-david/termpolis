@@ -85,8 +85,8 @@ export const BUILTIN_GLOSSARY: Readonly<Record<string, string>> = {
   Watcher: 'Watches files and reacts when they change'
 }
 
-/** While the status stage waits on test results (a glob of the tree, main's CI and transcripts), progress moves one
- *  point this often, up to STATUS_BEAT_TOP, so the pane never sits at one value while it waits. */
+/** While the status stage waits on manifests and test results, progress moves one point this often,
+ *  up to STATUS_BEAT_TOP, so the pane never sits at one value while it waits. */
 export const STATUS_BEAT_MS = 2000
 const STATUS_BEAT_TOP = 64
 /** Places one "Seen in code" claim cites at most. */
@@ -207,28 +207,44 @@ function expandCi(runs: TestRun[], testsByMember: Record<string, string[]>): Tes
   return runs.flatMap((r) => (r.source !== 'ci' || TEST_FILE.test(r.file) ? [r] : (testsByMember[r.file] ?? []).map((file) => ({ ...r, file }))))
 }
 
-/** Test files linked to each member: tests that import it, or share its basename stem. */
-function linkTests(snap: GraphSnapshot, g: Grouping): Record<string, string[]> {
-  const fileSet = new Set(snap.files)
-  const tests = [...fileSet].filter((f) => TEST_FILE.test(f)).sort()
-  const byTarget = new Map<string, string[]>()
+/** Tests link to their resolved imports, falling back to a unique stem match in their folder or package. */
+function linkTests(snap: GraphSnapshot, g: Grouping, manifests: string[]): Record<string, string[]> {
+  const prefix = `${snap.root.replace(/\\/g, '/').replace(/\/+$/, '')}/`
+  const packages = new Set(manifests.map((p) => p.replace(/\\/g, '/'))
+    .filter((p) => p.startsWith(prefix) && baseName(p) === 'package.json')
+    .map((p) => p.slice(prefix.length)))
+  const folder = (file: string): string => file.slice(0, file.lastIndexOf('/') + 1)
+  const nearestPackage = (dir: string): string | undefined => {
+    while (true) {
+      if (packages.has(`${dir}package.json`)) return dir
+      if (dir === '') return undefined
+      dir = folder(dir.slice(0, -1))
+    }
+  }
+  const fileSet = new Set(g.buildings.flatMap((b) => b.members))
+  const tests = [...new Set(snap.files.filter((f) => TEST_FILE.test(f)))].sort()
   const byStem = new Map<string, string[]>()
   const add = (m: Map<string, string[]>, k: string, t: string): void => void m.set(k, [...(m.get(k) ?? []), t])
+  for (const m of fileSet) add(byStem, baseName(m).replace(/\.[^.]*$/, ''), m)
+  const byTarget = new Map<string, string[]>()
   for (const t of tests) {
+    const targets = new Set<string>()
     for (const spec of snap.fileImports[t] ?? []) {
       const r = resolveImport(t, spec, fileSet)
-      if (r !== null) add(byTarget, r, t)
+      if (r !== null) targets.add(r)
     }
-    add(byStem, baseName(t).replace(TEST_FILE, ''), t)
-  }
-  const out: Record<string, string[]> = {}
-  for (const b of g.buildings) {
-    for (const m of b.members) {
-      const linked = new Set([...(byTarget.get(m) ?? []), ...(byStem.get(baseName(m).replace(/\.[^.]*$/, '')) ?? [])])
-      if (linked.size > 0) out[m] = [...linked].sort()
+    if (targets.size === 0) {
+      const dir = folder(t)
+      const pkg = nearestPackage(dir)
+      const candidates = (byStem.get(baseName(t).replace(TEST_FILE, '')) ?? []).filter((m) => {
+        const targetDir = folder(m)
+        return targetDir === dir || (pkg !== undefined && nearestPackage(targetDir) === pkg)
+      })
+      if (candidates.length === 1) targets.add(candidates[0])
     }
+    for (const target of targets) add(byTarget, target, t)
   }
-  return out
+  return Object.fromEntries(byTarget)
 }
 
 function fromPrevious(b: WorldDoc['buildings'][number]): BuildingLabel {
@@ -676,12 +692,16 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   }
 
   progress('status', 55)
-  const testsByMember = linkTests(snap, g)
-  const runs = expandCi(await beating(runsFound, (n) => progress('status', Math.min(STATUS_BEAT_TOP, 55 + n))), testsByMember)
-  const tests = contentHash(runs.map((r) => JSON.stringify([r.file, r.passed, r.at, r.source])).sort().join('\n'))
+  const [manifests, foundRuns] = await beating(Promise.all([manifestsFound, runsFound]),
+    (n) => progress('status', Math.min(STATUS_BEAT_TOP, 55 + n)))
+  const testsByMember = linkTests(snap, g, manifests)
+  const runs = expandCi(foundRuns, testsByMember)
+  const tests = contentHash(JSON.stringify([
+    Object.entries(testsByMember).sort(([a], [b]) => cmp(a, b)),
+    runs.map((r) => JSON.stringify([r.file, r.passed, r.at, r.source])).sort()
+  ]))
   const cache: StageCache = { version: STAGE_CACHE_VERSION, files: Object.fromEntries(entries), structureHash, grouping: g, tests }
-  // Status for the touched buildings only: with the grouping reused (so the same files, imports and test
-  // links), the same test results and a previous doc, an untouched building keeps its status and claims.
+  // An untouched building keeps its status and claims when grouping, test links and results are reused.
   const statusScoped = reused && previous !== null && changed !== undefined && (prior as StageCache).tests === tests
   const restatus = statusScoped ? new Set(touchedBuildings(g, previous as WorldDoc, changed as string[]).map((b) => b.id)) : null
   const prevStatus = new Map((previous?.buildings ?? []).map((b) => [b.id, b]))

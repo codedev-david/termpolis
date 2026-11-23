@@ -5,6 +5,7 @@ import { validateWorld } from '../../src/shared/world/validate'
 import { applyDesignPatch, emptyDesignDoc } from '../../src/shared/world/designPatch'
 import {
   BUILTIN_GLOSSARY,
+  STATUS_BEAT_MS,
   buildTours,
   compileWorld,
   compileWorldStaged,
@@ -459,6 +460,29 @@ describe('compileWorld', () => {
     expect(doc.externals.map((x) => x.id)).toEqual(['x-api-x-io', 'x-claude'])
     const toApi = doc.edges.filter((e) => e.to === 'x-api-x-io')
     expect(toApi.map((e) => e.from).sort()).toEqual([owner('src/a/a.ts'), owner('src/b/b.ts')].sort())
+  })
+
+  it.each([
+    { name: 'resolved import', test: 'src/search/parser.test.ts', imports: ['./parser'], manifests: ['package.json'], search: 'verified' },
+    { name: 'nearest package', test: 'src/search/tests/parser.test.ts', imports: [], manifests: ['package.json', 'src/search/package.json'], search: 'verified' },
+    { name: 'ambiguous package', test: 'src/search/parser.test.ts', imports: [], manifests: ['package.json'], search: 'gap' },
+    { name: 'no shared package', test: 'tests/parser.test.ts', imports: [], manifests: [], search: 'gap' },
+    { name: 'no basename match', test: 'src/search/other.test.ts', imports: [], manifests: ['package.json'], search: 'gap' }
+  ])('scopes a basename test link by $name', async ({ test, imports, manifests, search }) => {
+    const files = {
+      'src/search/parser.ts': 'export const search = 1',
+      'src/billing/parser.ts': 'export const billing = 1',
+      [test]: ''
+    }
+    const report = JSON.stringify({ testResults: [{ name: test, status: 'passed', endTime: 1 }] })
+    const deps = mkDeps(files, {
+      glob: async (_root, patterns) => patterns.includes('**/package.json') ? manifests.map((p) => `${ROOT}/${p}`) : [REPORT],
+      readFile: async (p) => p === REPORT ? report : (files[p.slice(ROOT.length + 1)] ?? null)
+    })
+    const doc = await compileWorld({ snap: snapOf(files, { [test]: imports }), projectKey: 'k', head: HEAD, previous: null }, deps)
+    const status = (file: string) => doc.buildings.find((b) => b.members.includes(file))?.status
+    expect(status('src/search/parser.ts')).toBe(search)
+    expect(status('src/billing/parser.ts')).toBe('gap')
   })
 
   it('a deleted file relabels its building and leaves no floor listing it; a building new since previous is labelled', async () => {
@@ -1188,7 +1212,40 @@ describe('compileWorldStaged', () => {
     expect({ ...out.doc, labelTokens: 0 }).toEqual((await staged(edited, { previous: first.doc, changed: Object.keys(edited) })).doc)
   })
 
-  it('status is worked out again only for touched buildings while the grouping and test results stand', async () => {
+  it('refreshes cached status when a new package boundary removes a test link', async () => {
+    const member = 'src/search/parser.ts'
+    const test = 'tests/parser.test.ts'
+    const files = { [member]: 'export const search = 1', [test]: '' }
+    const manifests = [`${ROOT}/package.json`]
+    const onProgress = vi.fn()
+    const deps = mkDeps(files, {
+      glob: async (_root, patterns) => patterns.includes('**/package.json') ? manifests : [],
+      transcriptRuns: async () => [{ file: test, passed: true, at: 1, source: 'transcript' }],
+      onProgress
+    })
+    const input = { snap: snapOf(files, {}), projectKey: 'k', head: HEAD }
+    const status = (doc: WorldDoc) => doc.buildings.find((b) => b.members.includes(member))?.status
+    const first = await compileWorldStaged({ ...input, previous: null }, deps)
+    expect(status(first.doc)).toBe('verified')
+    manifests.push(`${ROOT}/tests/package.json`)
+    vi.useFakeTimers()
+    try {
+      const delayedGlob: CompileDeps['glob'] = async (_root, patterns) => {
+        if (!patterns.includes('**/package.json')) return []
+        await new Promise((resolve) => setTimeout(resolve, STATUS_BEAT_MS * 2))
+        return manifests
+      }
+      const next = compileWorldStaged({ ...input, previous: first.doc, cache: first.cache, changed: [] }, { ...deps, glob: delayedGlob })
+      await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS)
+      expect(onProgress).toHaveBeenCalledWith('status', 56)
+      await vi.advanceTimersByTimeAsync(STATUS_BEAT_MS)
+      expect(status((await next).doc)).toBe('gap')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('status is worked out again only for touched buildings while the grouping, test links and test results stand', async () => {
     const first = await staged(FIXTURE)
     const viewB = (d: WorldDoc) => d.buildings.find((b) => b.members.includes('src/renderer/view.ts')) as WorldDoc['buildings'][number]
     const mainB = (d: WorldDoc) => d.buildings.find((b) => b.id === MAIN) as WorldDoc['buildings'][number]

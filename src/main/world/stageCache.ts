@@ -36,7 +36,7 @@ export interface StageCache {
   structureHash: string
   /** The grouping made from that structure, reused while the hash is unchanged. */
   grouping?: Grouping
-  /** Hash of the test results the last compile read: while it and the grouping are unchanged, an untouched building keeps its status. */
+  /** Hash of the test links and results. While it and the grouping are unchanged, an untouched building keeps its status. */
   tests?: string
 }
 
