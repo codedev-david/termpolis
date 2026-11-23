@@ -104,7 +104,8 @@ if (pIdx !== -1 && process.env.MOCK_CLAUDE_WORLD_ANSWER === '1') {
 // never passes (--permission-mode, --tools, ...), so this mode takes its own argv. The reply names
 // its question ("Answer to: <question>"), cites the first evidence label the prompt carries, and
 // asks for the first building the prompt names to be focused and its card opened, in the
-// world-actions block ANSWER_PROTOCOL describes. MOCK_CLAUDE_REPLY_DELAY_MS holds the reply back.
+// world-actions block ANSWER_PROTOCOL describes. MOCK_CLAUDE_REPLY_DELAY_MS holds the reply back;
+// MOCK_CLAUDE_ANSWER_PARAGRAPH=1 answers with a short paragraph citing two labels instead of one line.
 // A district-labelling prompt gets a labels reply instead, at once.
 function runWorldAnswer(args, at) {
   readPrompt(args, at).then((prompt) => {
@@ -151,6 +152,12 @@ function runWorldAnswer(args, at) {
     const building = (/\nbuilding (\S+):/.exec(prompt) || /\nOTHER\n([^\s:]+):/.exec(prompt) || [])[1];
     const hasEvidence = /\nE1: /.test(prompt);
     const lines = [`Answer to: ${question}`, `The first part is shown in the map${hasEvidence ? ' [E1]' : ''}.`];
+    if (process.env.MOCK_CLAUDE_ANSWER_PARAGRAPH === '1') {
+      // A typical answer's size (world-responsive.spec.ts): its first line, then a short paragraph citing the first
+      // two evidence labels the prompt carries (only those it carries).
+      const cite = (n) => (new RegExp(`\nE${n}: `).test(prompt) ? ` [E${n}]` : '');
+      lines[1] = `It starts from what is stored${cite(1)}. Then it ranks what it finds${cite(2)}.`;
+    }
     if (building && /why/i.test(question)) {
       // Nothing in the data answers a "why" question: say so and fog the building (spec gap 101).
       lines.splice(1, 1, "The evidence doesn't say why.");

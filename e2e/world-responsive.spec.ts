@@ -19,7 +19,8 @@
  * so the pane lies over them, which is checked too.
  *
  * The world is this repository with labelling off (names from the code); the Ask answer and the design are
- * mock-claude's canned ones (MOCK_CLAUDE_WORLD_ANSWER), as in world-ask.spec.ts and lumopolis-sources.spec.ts. The
+ * mock-claude's canned ones (MOCK_CLAUDE_WORLD_ANSWER), as in world-ask.spec.ts and lumopolis-sources.spec.ts, the
+ * answer a typical short paragraph citing two pieces of evidence (MOCK_CLAUDE_ANSWER_PARAGRAPH, seedEvidence). The
  * Use a token dialog comes from a clone of the local https git server of lumopolis-private-repos.spec.ts, with its
  * fake login helper; nothing is ever signed in or sent, and without that server (no git-http-backend or openssl)
  * that one dialog is skipped and says so.
@@ -52,6 +53,10 @@ const PANELS = [
 const WORLD: AuditOptions = { root: PANE, panels: PANELS, popups: ['[data-map-panel]'] }
 const RUN = responsiveViewports()
 const FULL = process.env.RESPONSIVE_FULL === '1'
+/** askRunner's MAP_FAILED: the ask could not read the stored world, and offers Retry. */
+const MAP_FAILED = "Lumopolis couldn't load this project's map. Try again."
+/** Soft polls: a size that fails one is recorded, and the run goes on to the next. */
+const softly = expect.configure({ soft: true })
 /** How near the dragged pane must come to the width asked for. */
 const SPLIT_TOLERANCE_PX = 8
 /** The median text size a laptop shows, before the pane's own scale. */
@@ -129,6 +134,7 @@ exit $LASTEXITCODE
       TERMPOLIS_SMOKE_SKIP_PICKERS: '1',
       TERMPOLIS_TEST_WORLD_PROBE: '1',
       MOCK_CLAUDE_WORLD_ANSWER: '1',
+      MOCK_CLAUDE_ANSWER_PARAGRAPH: '1',
       MOCK_CLAUDE_REPLY_DELAY_MS: '300',
     },
   })
@@ -508,11 +514,12 @@ async function litShare(): Promise<number> {
 
 /**
  * Whether the open card shows a typical answer without a scroll: its first heading and the first two items after it
- * (a claim, a sentence or a list entry; true where it has fewer). At 1366x768 with an answer open the card was held at
- * its 168 px minimum and its first items scrolled.
+ * (a claim, a sentence or a list entry; true where it has fewer), the second ending above the fade while more lies
+ * below (CARD_FADE_PX). At 1366x768 with an answer open the card was held at its 168 px minimum and its first items
+ * scrolled.
  */
 async function cardShowsTwoItems(): Promise<boolean> {
-  return page.evaluate(() => {
+  return page.evaluate((fade) => {
     const body = document.querySelector('[data-testid="world-card-body"]')
     const h = body?.querySelector('h4')
     if (!body || !h) return true
@@ -523,10 +530,17 @@ async function cardShowsTwoItems(): Promise<boolean> {
       else items.push(el)
     }
     if (items.length === 0) return true
-    return items[items.length - 1].getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 0.5 && body.scrollTop === 0
-  })
+    const end = body.getBoundingClientRect().bottom - (body.hasAttribute('data-more') ? fade : 0)
+    return items[items.length - 1].getBoundingClientRect().bottom <= end + 0.5 && body.scrollTop === 0
+  }, CARD_FADE_PX)
 }
 
+/**
+ * Whether the open card shows the start of its first line without a scroll: the first character of the first text
+ * under its first heading (the heading itself where nothing follows) ends above the card body's bottom edge. True
+ * when the card has no heading. Measured on the character, not the element, since a long claim wraps: a card too
+ * short for its first claim once showed the heading and nothing under it.
+ */
 async function cardShowsFirstLine(): Promise<boolean> {
   return page.evaluate(() => {
     const body = document.querySelector('[data-testid="world-card-body"]')
@@ -541,6 +555,197 @@ async function cardShowsFirstLine(): Promise<boolean> {
     range.setEnd(text, Math.min(1, (text.textContent ?? '').length))
     return range.getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 0.5
   })
+}
+
+/**
+ * The problems of the open card's bottom edge, empty when there are none: a line of text cut by the edge must lie in
+ * the fade (WorldCard's CARD_FADE_PX), and the fade must be drawn while anything lies below. A card held at its cap
+ * once cut a list item in half at its bottom edge, with nothing to say more lay below.
+ */
+async function cardEdgeProblems(): Promise<string[]> {
+  return page.evaluate((fade) => {
+    const body = document.querySelector<HTMLElement>('[data-testid="world-card-body"]')
+    if (!body) return []
+    const edge = body.getBoundingClientRect().bottom
+    const out: string[] = []
+    let below = false
+    const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, { acceptNode: (n) => ((n.textContent ?? '').trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) })
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const range = document.createRange()
+      range.selectNodeContents(n)
+      for (const r of Array.from(range.getClientRects())) {
+        if (r.height < 1) continue
+        if (r.bottom > edge + 0.5) below = true
+        // A line the edge cuts starts above it and ends below it; it must start inside the fade.
+        if (r.top < edge - 0.5 && r.bottom > edge + 0.5 && r.top < edge - fade - 0.5) {
+          out.push(`"${(n.textContent ?? '').trim().slice(0, 30)}" is cut at the edge ${Math.round(edge - r.top)} px into it, above the ${fade} px fade`)
+        }
+      }
+    }
+    const cs = getComputedStyle(body) as CSSStyleDeclaration & { webkitMaskImage?: string }
+    const mask = cs.maskImage || cs.webkitMaskImage || 'none'
+    if (below && (!body.hasAttribute('data-more') || mask === 'none')) out.push('text lies below the edge with no fade drawn')
+    return out
+  }, CARD_FADE_PX)
+}
+
+/** WorldCard's CARD_FADE_PX: how deep the card's bottom edge fades while more lies below. */
+const CARD_FADE_PX = 24
+
+/**
+ * The problems of the open answer, empty when it reads without a scroll: its scroller at the top, and its first line
+ * (the heading) and its first two evidence chips (E1 and E2) wholly inside the scroller's box. A chip that is not
+ * there (the answer still appearing, or the prompt carried no evidence) is named.
+ */
+async function answerProblems(): Promise<string[]> {
+  return page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>('[data-testid="world-answer-scroll"]')
+    const text = document.querySelector('[data-testid="world-answer-text"]')
+    if (!scroller || !text) return ['no answer on show']
+    const out: string[] = []
+    if (scroller.scrollTop !== 0) out.push(`the answer is scrolled ${scroller.scrollTop} px`)
+    const box = scroller.getBoundingClientRect()
+    const inside = (r: DOMRect): boolean => r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5 && r.left >= box.left - 0.5 && r.right <= box.right + 0.5
+    // The heading: the first paragraph up to its first line break.
+    const first = text.firstElementChild
+    if (!first) out.push('the answer has no text')
+    else {
+      const range = document.createRange()
+      range.setStart(first, 0)
+      const br = first.querySelector('br')
+      if (br) range.setEndBefore(br)
+      else range.setEnd(first, first.childNodes.length)
+      const lines = Array.from(range.getClientRects()).filter((r) => r.width >= 1 && r.height >= 1)
+      if (lines.length === 0 || !lines.every(inside)) out.push('the heading is not wholly on show')
+    }
+    for (const label of ['E1', 'E2']) {
+      const chip = scroller.querySelector(`button[aria-label="Evidence ${label}"]`)
+      if (!chip) out.push(`no ${label} chip`)
+      else if (!inside(chip.getBoundingClientRect())) out.push(`the ${label} chip is not wholly on show`)
+    }
+    return out
+  })
+}
+
+/** WorldLegend's LEGEND_ASIDE_PX: from this canvas width (in the legend's own pixels) the opened legend's strip is kept clear. */
+const LEGEND_ASIDE_PX = 600
+
+/**
+ * What of the city lies under the opened legend's panel: the building names on show whose boxes meet it, and the
+ * buildings a click would pick at a grid of points over it (every 8 px), whatever is drawn over them. Round 3 saw the
+ * opened legend lie over the city in a 640 px pane at 1366x768. The panel's box is scaled by the zoom it is under, as
+ * click() does, where Chromium measures a zoomed box in its own pixels.
+ */
+async function underLegend(): Promise<{ names: string[]; buildings: string[] }> {
+  return page.evaluate(() => {
+    type Pick = { kind: string; id: string } | null
+    const legend = document.querySelector('[data-testid="world-legend"]')
+    const probe = (window as unknown as { __termpolis_world?: { pickAt(x: number, y: number): Pick } }).__termpolis_world
+    if (!legend || !probe) return { names: [], buildings: [] }
+    let z = 1
+    if (typeof (legend as unknown as { currentCSSZoom?: unknown }).currentCSSZoom !== 'number') {
+      for (let e: Element | null = legend; e; e = e.parentElement) {
+        const own = parseFloat(getComputedStyle(e).zoom)
+        if (own > 0) z *= own
+      }
+    }
+    const b = legend.getBoundingClientRect()
+    const L = { left: b.left * z, top: b.top * z, right: b.right * z, bottom: b.bottom * z }
+    const meets = (r: DOMRect): boolean => Math.min(r.right, L.right) - Math.max(r.left, L.left) > 0.5 && Math.min(r.bottom, L.bottom) - Math.max(r.top, L.top) > 0.5
+    const names = Array.from(document.querySelectorAll<HTMLElement>('.lw-labels > *'))
+      .filter((el) => {
+        const cs = getComputedStyle(el)
+        return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0 && meets(el.getBoundingClientRect())
+      })
+      .map((el) => el.textContent ?? '')
+    const ids = new Set<string>()
+    for (let y = L.top + 4; y < L.bottom; y += 8) {
+      for (let x = L.left + 4; x < L.right; x += 8) {
+        const hit = probe.pickAt(x, y)
+        if (hit && hit.kind === 'node') ids.add(hit.id)
+      }
+    }
+    return { names, buildings: Array.from(ids) }
+  })
+}
+
+/**
+ * Waits for the camera's glide to end (the probe's flight) after a change that refits the city, then for the pane to
+ * be still. Two frames go first, so a glide the change has yet to start is not read as over.
+ */
+async function glideDone(state: string): Promise<void> {
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    const done = setTimeout(resolve, 1000)
+    requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(done); resolve() }))
+  }))
+  await expect.poll(
+    () => page.evaluate(() => (window as unknown as { __termpolis_world?: { drawn(): { visual: { flight: { active: boolean } } } } }).__termpolis_world?.drawn().visual.flight.active ?? false),
+    { message: `${state}: the camera's glide ends`, timeout: 15_000 * slowness },
+  ).toBe(false)
+  await still(state)
+}
+
+/**
+ * With the legend opened and the canvas wide enough for its strip to be kept clear (legendReserveFrom), no building
+ * and no building name lies under its panel. `scale` is the pane's uiScale.
+ */
+async function expectLegendClear(state: string, scale: number): Promise<void> {
+  const toggle = page.locator('[data-testid="world-legend-toggle"]')
+  if ((await toggle.count()) === 0 || (await toggle.getAttribute('aria-expanded')) !== 'true') return
+  const wide = await page.evaluate((min) => {
+    const host = document.querySelector('[data-testid="world-canvas-host"]')
+    return host !== null && host.getBoundingClientRect().width >= min
+  }, LEGEND_ASIDE_PX * scale)
+  if (!wide) return
+  const under = await underLegend()
+  expect.soft(under.buildings, `${state}: no building lies under the opened legend`).toEqual([])
+  expect.soft(under.names, `${state}: no building name lies under the opened legend`).toEqual([])
+}
+
+/**
+ * Gives the stored world's buildings evidence for an answer to cite: labelling is off here, so they have none, and
+ * an ask's prompt would carry no E labels. Each building with files and no how-claim gets one, citing its first two
+ * files (repository-relative, as the store requires). The ask reads the stored world afresh, so its prompt carries E1
+ * and E2 for mock-claude's paragraph; the pane's own copy, and so its cards, stay as drawn. A compile that saves in
+ * between drops them again, which answerProblems names as a missing chip. Written whole and moved into place, so the
+ * world host never reads half a file. Returns how many buildings were given one.
+ */
+function seedEvidence(): number {
+  const dir = path.join(userDataDir, 'world')
+  let seeded = 0
+  for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+    if (!name.endsWith('.json') || name.endsWith('.stages.json')) continue
+    const file = path.join(dir, name)
+    let doc: { buildings?: Array<{ how?: unknown[]; members?: unknown[] }> }
+    try {
+      doc = JSON.parse(fs.readFileSync(file, 'utf8'))
+    } catch {
+      continue
+    }
+    if (!Array.isArray(doc.buildings)) continue
+    let changed = false
+    for (const b of doc.buildings) {
+      const files = (Array.isArray(b.members) ? b.members : []).filter((m): m is string => typeof m === 'string' && m !== '' && !path.isAbsolute(m) && !/^[A-Za-z]:/.test(m) && !/(^|[\\/])\.\.([\\/]|$)/.test(m))
+      if (!Array.isArray(b.how) || b.how.length > 0 || files.length === 0) continue
+      b.how = [{ text: 'It is one part of the whole.', state: 'observed', evidence: files.slice(0, 2).map((ref) => ({ kind: 'file', ref })) }]
+      changed = true
+      seeded++
+    }
+    if (!changed) continue
+    fs.writeFileSync(`${file}.seed`, JSON.stringify(doc))
+    fs.renameSync(`${file}.seed`, file)
+  }
+  return seeded
+}
+
+/** The app log's Lumopolis ask lines from line `from` on (main writes it under the user data folder), and how many lines it has. */
+function askLog(from = 0): { lines: string[]; total: number } {
+  try {
+    const all = fs.readFileSync(path.join(userDataDir, 'app.log'), 'utf8').split(/\r?\n/)
+    return { lines: all.slice(from).filter((l) => l.includes('[world] ask:')), total: all.length }
+  } catch {
+    return { lines: [], total: 0 }
+  }
 }
 
 /** Opens the toolbar's More menu when the pane folds it (true), so a folded control can be reached. */
@@ -646,6 +851,8 @@ test.describe.serial('Lumopolis at every screen size', () => {
       expect.soft(bar.closeBeside, `the close button sits beside the toolbar's first row at ${tag}`).toBe(true)
       expect.soft(await faintLabels(), `no map label is drawn too faint to read at ${tag}`).toEqual([])
       expect.soft(await litShare(), `the stars and the city are drawn on the map at ${tag}`).toBeGreaterThan(0.0005)
+      const scale = uiScale(v.width, v.height, at.w)
+      await expectLegendClear(`world at ${tag}`, scale)
       await shoot(`app-world-${name}`)
 
       const toggle = page.locator('[data-testid="world-legend-toggle"]')
@@ -656,7 +863,10 @@ test.describe.serial('Lumopolis at every screen size', () => {
         await click(toggle, zoomed && !clickedZoomed)
         if (zoomed) clickedZoomed = true
         await expect(toggle).not.toHaveAttribute('aria-expanded', before ?? '')
+        // Opened or closed, the legend refits the city to what it leaves free: the glide ends before anything is measured.
+        await glideDone(`legend toggled at ${tag}`)
         await check(`legend toggled at ${tag}`)
+        await expectLegendClear(`legend toggled at ${tag}`, scale)
         await shoot(`app-legend-${name}`)
         await click(toggle)
         await expect(toggle).toHaveAttribute('aria-expanded', before ?? '')
@@ -667,6 +877,7 @@ test.describe.serial('Lumopolis at every screen size', () => {
       expect.soft(await cardOnLegend(), `the card leaves the legend clear at ${tag}`).toBe(0)
       expect.soft(await cardShowsFirstLine(), `the card shows its first heading and the line under it at ${tag}`).toBe(true)
       expect.soft(await cardShowsTwoItems(), `the card shows its first heading and two items under it at ${tag}`).toBe(true)
+      expect.soft(await cardEdgeProblems(), `the card cuts no line at its bottom edge outside its fade at ${tag}`).toEqual([])
       // With a part selected the rest is dimmed: names too faint to read are put away, not drawn as a smudge.
       expect.soft(await faintLabels(), `no map label is drawn too faint to read with the card open at ${tag}`).toEqual([])
       await check(`card at ${tag}`)
@@ -689,31 +900,48 @@ test.describe.serial('Lumopolis at every screen size', () => {
 
       if (width === null) {
         const askBox = page.getByPlaceholder('Ask about this project…')
+        // Evidence for the answer to cite, given again before each ask in case a compile saved the world meanwhile.
+        const seeded = seedEvidence()
+        const logFrom = askLog().total
         const askT0 = Date.now()
         await askBox.fill('How does the memory search work?')
         await askBox.press('Enter')
-        // The ask reads the stored world with a 15 s limit; in this software-rendered window, with the repo's own
-        // world refreshing as the run writes screenshots into it, that read can run out. The app then offers
-        // Retry, which is what a person would press: the size checks are about the answer once it is there. The
-        // answer comes from a mock agent started through PowerShell, which can take a while to start on a busy
+        // The answer comes from a mock agent started through PowerShell, which can take a while to start on a busy
         // machine, so the wait is the app's own limits: 15 s to load the world, 10 s for each of the matches, the run
         // environment and the memory primer (which took over 100 s here before it had a limit), and 90 s for the agent.
         const ASK_MS = 15_000 + 3 * 10_000 + 90_000
         const answer = page.locator('[data-testid="world-answer"]')
-        const retry = page.getByRole('alert').getByRole('button', { name: 'Retry' })
-        // A person presses Retry again while the map still can't load; the test does too, up to three times (round 3
-        // saw the read run out twice in a row at 3440x1440 while the run's own screenshots kept the world refreshing).
-        for (let tries = 0; ; tries++) {
-          await expect(answer.or(retry).first()).toBeVisible({ timeout: ASK_MS })
-          if (!(await retry.isVisible()) || tries === 3) break
-          test.info().annotations.push({ type: 'ask retried', description: `the world read ran out at ${tag}` })
-          await click(retry)
+        const alert = page.getByRole('alert').filter({ has: page.getByRole('button', { name: 'Retry' }) })
+        // Retry is pressed only for the map that could not be read (askRunner's MAP_FAILED), as a person would; any
+        // other failure fails here. Each retry is recorded with the app log's reason, and a size that needs more than
+        // one is a soft failure: round 3 saw the 15 s read run out twice in a row at 3440x1440.
+        let retries = 0
+        for (;;) {
+          await expect(answer.or(alert).first()).toBeVisible({ timeout: ASK_MS })
+          if (await answer.isVisible()) break
+          const said = (await alert.first().textContent()) ?? ''
+          expect(said, `the ask at ${tag} failed`).toContain(MAP_FAILED)
+          retries++
+          test.info().annotations.push({ type: 'ask retried', description: `${tag}, retry ${retries}: ${askLog(logFrom).lines.join(' | ') || 'nothing in the app log'}` })
+          if (retries > 3) break
+          await click(alert.first().getByRole('button', { name: 'Retry' }))
         }
+        expect.soft(retries, `the map was read for the ask at ${tag} with at most one retry`).toBeLessThanOrEqual(1)
         await expect(answer).toBeVisible({ timeout: ASK_MS })
-        test.info().annotations.push({ type: 'ask time', description: `${Math.round((Date.now() - askT0) / 1000)} s at ${tag}` })
+        const asked = askLog(logFrom).lines
+        test.info().annotations.push({ type: 'ask time', description: `${Math.round((Date.now() - askT0) / 1000)} s at ${tag}${asked.length > 0 ? `; ${asked.join(' | ')}` : ''}` })
+        // The answer reads without a scroll: its heading and the two pieces of evidence it cites.
+        await softly.poll(answerProblems, { message: `the answer's heading and its E1 and E2 read without a scroll at ${tag} (${seeded} buildings given evidence)`, timeout: 10_000 }).toEqual([])
         await check(`answer at ${tag}`)
         // The answer's card reads without a scroll even with the answer's taller ask bar under it.
-        await expect.poll(cardShowsTwoItems, { message: `the answer's card shows its first heading and two items under it at ${tag}`, timeout: 10_000 }).toBe(true)
+        await softly.poll(cardShowsTwoItems, { message: `the answer's card shows its first heading and two items under it at ${tag}`, timeout: 10_000 }).toBe(true)
+        expect.soft(await cardEdgeProblems(), `the answer's card cuts no line at its bottom edge outside its fade at ${tag}`).toEqual([])
+        // The heights the two share the pane by, for the report.
+        const heights = await page.evaluate(() => {
+          const h = (sel: string): number => Math.round(document.querySelector(sel)?.getBoundingClientRect().height ?? 0)
+          return `card ${h('[data-testid="world-card"]')} px, answer ${h('[data-testid="world-answer"]')} px (text ${h('[data-testid="world-answer-scroll"]')} px)`
+        })
+        test.info().annotations.push({ type: 'answer heights', description: `${tag}: ${heights}` })
         await shoot(`app-answer-${name}`)
         await click(page.getByRole('button', { name: 'Close answer' }))
         await expect(page.locator('[data-testid="world-answer"]')).toHaveCount(0)
