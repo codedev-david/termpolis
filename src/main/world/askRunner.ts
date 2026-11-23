@@ -114,6 +114,8 @@ export function createAskRunner(deps: AskRunnerDeps): AskRunner {
 
   const ask = async (req: AskRequest): Promise<AskResult> => {
     const { askId, root } = req
+    // An id already running is refused (ipc shows ASK_FAILED): taking over its entry would leave that run with no Cancel.
+    if (byAsk.has(askId)) throw new Error('askId already running')
     const prior = byRoot.get(root)
     if (prior !== undefined) cancel(prior)
     const ctl = new AbortController()

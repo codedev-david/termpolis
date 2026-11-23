@@ -180,3 +180,22 @@ describe('askRunner: an answer made without the project memory says why', () => 
     expect(e.message).toBe('memory unavailable: locked')
   })
 })
+
+describe('askRunner: an askId already running (S10)', () => {
+  it('a second ask with the id of one still running is refused, so the running one keeps its Cancel', async () => {
+    const hanging = async (req: ExecRequest): Promise<ExecResult> => {
+      await new Promise<void>((_r, rej) => req.signal?.addEventListener('abort', () => rej(new Error('stopped'))))
+      return okRes('never')
+    }
+    const { runner } = setup({}, hanging)
+    const first = runner.ask(REQ)
+    // Another root, so the per-root cancel leaves the first alone: only the id is shared.
+    await expect(runner.ask({ ...REQ, root: 'C:/other' })).rejects.toThrow('askId already running')
+    runner.cancel('a1')
+    expect(await first).toEqual({ askId: 'a1', ok: false, error: 'cancelled', cancelled: true })
+    // Once it is over, the id can be used again.
+    const again = runner.ask(REQ)
+    runner.cancel('a1')
+    expect(await again).toMatchObject({ cancelled: true })
+  })
+})
