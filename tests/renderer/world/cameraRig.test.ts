@@ -401,6 +401,23 @@ describe('createCameraRig', () => {
     rig.stop() // nothing to stop
   })
 
+  it('land ends a flight at its end at once and settles it; with no flight it does nothing', async () => {
+    const { w, deps, rig, run } = rigWith()
+    rig.land() // nothing to land
+    expect(w.cam).toEqual(pose(5, 5, 5))
+    const landed = vi.fn()
+    void rig.overview(false).then(landed)
+    run(100)
+    expect(rig.flying()).toBe(true)
+    rig.land()
+    expect(rig.flying()).toBe(false)
+    expect(w.cam).toEqual(deps.home())
+    await Promise.resolve()
+    expect(landed).toHaveBeenCalled()
+    run(500)
+    expect(w.cam).toEqual(deps.home())
+  })
+
   it('to flies to a pose of its own and leaves the camera free there; a card kept open stays kept', async () => {
     const { w, rig, run } = rigWith()
     const saved = pose(7, 8, 9, 1, 2, 3)

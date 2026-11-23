@@ -82,6 +82,15 @@ describe('createActionQueue', () => {
     expect(plain.mock.calls[0][1]).toEqual({ reducedMotion: false })
   })
 
+  it('reads reducedMotion before each action when given as a function: switched on mid-play, the rest follow at once', async () => {
+    let reduced = false
+    const exec = vi.fn(async (_a: WorldAction, _o: { reducedMotion: boolean }) => { reduced = true })
+    const clock = { sleep: vi.fn(async () => {}) }
+    await createActionQueue(exec, clock, { reducedMotion: () => reduced }).play(acts('a', 'b', 'c'))
+    expect(exec.mock.calls.map((c) => c[1])).toEqual([{ reducedMotion: false }, { reducedMotion: true }, { reducedMotion: true }])
+    expect(clock.sleep).not.toHaveBeenCalled() // read after the first action: already reduced, so no pause
+  })
+
   it('uses real timers by default and survives an empty play', async () => {
     vi.useFakeTimers()
     try {

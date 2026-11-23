@@ -388,8 +388,10 @@ describe('threeRenderer labels', () => {
     const built = vi.spyOn(THREE.InstancedMesh.prototype, 'getMatrixAt')
     h.frames.run(3)
     expect(built).not.toHaveBeenCalled()
-    // The camera moves: built again, once for the new view, then idle again.
+    // The camera moves: built again, once for the new view, then idle again. (A hand on the controls wakes the
+    // loop as it moves the camera; here a hover does.)
     cameraOf().position.x += 3
+    r.setHovered(null)
     h.frames.step()
     expect(built).toHaveBeenCalled()
     built.mockClear()

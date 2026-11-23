@@ -3,8 +3,11 @@ import type { WorldAction } from '../../../../shared/world/types'
 
 export interface QueueClock { sleep(ms: number): Promise<void> }
 export interface QueueOptions {
-  /** When true, exec is told to skip animation and the pause between actions is dropped. Default false. */
-  reducedMotion?: boolean
+  /**
+   * When true, exec is told to skip animation and the pause between actions is dropped. Default false. A function
+   * is asked before each action, so a reduced-motion setting switched on mid-tour is followed from the next step.
+   */
+  reducedMotion?: boolean | (() => boolean)
 }
 export interface ActionQueue {
   play(actions: WorldAction[]): Promise<void>
@@ -22,7 +25,8 @@ export function createActionQueue(
   clock: QueueClock = realClock,
   options: QueueOptions = {},
 ): ActionQueue {
-  const reducedMotion = options.reducedMotion === true
+  const rm = options.reducedMotion
+  const reduced = (): boolean => (typeof rm === 'function' ? rm() : rm === true)
   let generation = 0
   let running = false
 
@@ -40,9 +44,9 @@ export function createActionQueue(
     try {
       for (let i = 0; i < actions.length; i++) {
         if (mine !== generation) return
-        await exec(actions[i], { reducedMotion })
+        await exec(actions[i], { reducedMotion: reduced() })
         if (mine !== generation) return
-        if (!reducedMotion && i < actions.length - 1) await clock.sleep(ACTION_GAP_MS)
+        if (!reduced() && i < actions.length - 1) await clock.sleep(ACTION_GAP_MS)
       }
     } finally {
       if (mine === generation) running = false

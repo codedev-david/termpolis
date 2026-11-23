@@ -64,6 +64,10 @@ export interface RendererOptions {
    * and the close-ups' fit the same way, and district names stay above it.
    */
   bottomReserve?: number
+  /** The WebGL context was lost (a GPU reset, a driver restart): nothing is drawn until it comes back. */
+  onContextLost?: () => void
+  /** The lost context came back: the last world drawn has been built again on it. */
+  onContextRestored?: () => void
 }
 
 export interface ThreeRenderer {
@@ -124,8 +128,17 @@ export interface ThreeRenderer {
   screenPoint(id: string): { x: number; y: number } | null
   /** Points of line `id` (client pixels) that are on screen with no building in front of them: where it can be seen. */
   linePoints(id: string): Array<{ x: number; y: number }>
-  /** How many process shells and conduits the last draw put up, and how many changes are still animating. */
-  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[] }
+  /**
+   * How many process shells and conduits the last draw put up, and how many changes are still animating (as of
+   * now: the changes run on the wall clock, so a count read between frames is not a frame old). `frames`: how many
+   * frames have been drawn since the renderer was built (nothing is drawn while nothing changes).
+   */
+  drawnCounts(): { processShells: number; conduits: number; changing: number; tier: ZoomTier; drawCalls: number; buildings: number; districts: number; slabs: number; slabLooks: SlabSignals[]; frames: number }
+  /**
+   * Reduced motion was switched on or off while the view is open. On: the looping motions stand still at once, and
+   * a flight, a pulse or a change under way ends where it was going; the next flights land at once. Off: they move again.
+   */
+  setReducedMotion(reduced: boolean): void
   /** The four looping motions as they stand now (radians, or the pulse's level; all four hold still under reduced
    *  motion), and what the last draw put up: bloom, the star and dust points, the platforms and their lamps, each
    *  building's floor captions bottom to top, the orbs, the opened building and its gap, the camera flight, and how
@@ -139,8 +152,9 @@ export interface ThreeRenderer {
   stopChanges(): void
   /**
    * Stops (true) or restarts (false) the render loop. Something covering the whole view (the World
-   * home, the loading screen) pauses it, so a hidden scene costs no frames. While paused nothing
-   * moves: a camera flight or a pulse waits and goes on after the restart.
+   * home, the loading screen, a minimised window) pauses it, so a hidden scene costs no frames. While
+   * paused nothing moves: a camera flight or a pulse waits and goes on after the restart. Unpaused, a
+   * frame is drawn only while something moves or has just changed (an idle city draws nothing).
    */
   setPaused(paused: boolean): void
   dispose(): void
@@ -318,6 +332,22 @@ const EMISSIVE_TINT = '#include <emissivemap_fragment>\n#ifdef USE_COLOR\n\ttota
 const EDGE_BAND: readonly [number, number] = [0, 1]
 /** How near its rest a moving floor must come before its batch stops being refilled every frame. */
 const EASED = 1e-3
+/**
+ * Frames drawn after the last thing moved, before the loop sleeps until the next change: a label measured or moved
+ * on one frame settles on the next (placeLabels keeps the ones shown), and the batches refill once a change ends.
+ */
+export const SETTLE_FRAMES = 6
+/** The fog is put on its density once it is within this share of it (an ease never quite arrives). */
+const FOG_SETTLED = 1e-3
+/** Whether two frames' label places are the same: the same labels, each nudged the same. */
+export function sameLayout(a: ReadonlyMap<string, Nudge>, b: ReadonlyMap<string, Nudge>): boolean {
+  if (a.size !== b.size) return false
+  for (const [k, n] of b) {
+    const m = a.get(k)
+    if (!m || m[0] !== n[0] || m[1] !== n[1]) return false
+  }
+  return true
+}
 const vec = (p: Vec3): THREE.Vector3 => new THREE.Vector3(p[0], p[1], p[2])
 
 function ensureStyle(): void {
@@ -355,7 +385,22 @@ export function createThreeRenderer(host: HTMLElement, opts: RendererOptions): T
 function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Array<() => void>): ThreeRenderer {
   ensureStyle()
   const high = opts.quality === 'high'
-  const reduced = opts.reducedMotion
+  /** Reduced motion, as it stands now (setReducedMotion follows the system setting while the view is open). */
+  let reduced = opts.reducedMotion
+  // The render loop's state (see "loop" below), up here so a listener that fires while the renderer is built finds it.
+  const clock = new THREE.Clock()
+  /** The frame asked for, or 0: frames are asked for only while something moves (wake, animate). */
+  let raf = 0
+  /** The build is done and its first frame asked for: before that nothing asks for a frame. */
+  let started = false
+  let disposed = false
+  let paused = false
+  /** The WebGL context is lost: nothing is drawn until it is restored. */
+  let lost = false
+  /** Frames still to draw with nothing moving, so the labels' places settle after the last change. */
+  let idleLeft = 0
+  /** A hand, a key, a flight or a framing ended the slow turn the city opens with: it never starts again. */
+  let turnEnded = false
   const size = (): [number, number] => [Math.max(1, host.clientWidth), Math.max(1, host.clientHeight)]
   let [width, height] = size()
 
@@ -367,6 +412,36 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   renderer.info.autoReset = false // a frame's draw calls add up across the composer's passes; reset once a frame
   undo.push(() => { renderer.domElement.remove(); renderer.dispose(); renderer.forceContextLoss() }) // off the page first, whatever freeing it does
   host.appendChild(renderer.domElement)
+  /**
+   * The GPU took the WebGL context away (a driver reset, too many contexts). Default prevented, so the browser may
+   * give it back. Nothing is drawn meanwhile, and every motion under way ends where it was going at once (a flight
+   * lands, a pulse and a change end), so nothing waits on a frame that may never come.
+   */
+  const onContextLost = (e: Event): void => {
+    e.preventDefault()
+    lost = true
+    cancelAnimationFrame(raf)
+    raf = 0
+    rig.land()
+    stopPulses()
+    changes.stop()
+    opts.onContextLost?.()
+  }
+  /** The context came back with nothing on it: the last world drawn is built again (as a theme change builds it). */
+  const onContextRestored = (): void => {
+    lost = false
+    if (lastModel && lastText) draw(lastModel, lastText, allLabels)
+    wake()
+    opts.onContextRestored?.()
+  }
+  renderer.domElement.addEventListener('webglcontextlost', onContextLost)
+  renderer.domElement.addEventListener('webglcontextrestored', onContextRestored)
+  const dropContextListeners = (): void => {
+    renderer.domElement.removeEventListener('webglcontextlost', onContextLost)
+    renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored)
+  }
+  // Undone before the context is forced lost (dispose drops them first too): a renderer freed hears nothing.
+  undo.push(dropContextListeners)
   const labelRenderer = new CSS2DRenderer()
   labelRenderer.setSize(width, height)
   labelRenderer.domElement.className = 'lw-labels'
@@ -408,7 +483,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     },
     onMode: () => applyView(false),
     now: () => performance.now(),
-    reduced,
+    get reduced() { return reduced },
   })
   /**
    * The part of the view the panels leave free (freeArea). The overview is the home view, the one
@@ -462,13 +537,19 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   controls.maxDistance = 420
   controls.autoRotate = !reduced
   controls.autoRotateSpeed = 0.3
+  /** Ends the slow opening turn for good (a hand, a key or a flight took the camera). */
+  const endTurn = (): void => {
+    turnEnded = true
+    controls.autoRotate = false
+  }
   // A press only stops the turning; the hand takes the camera over once it really moves it (a plain
   // click leaves the camera, its flight and the picture as they are).
   /** Between the controls' start and end: a hand is on them (a drag), and a wheel then does nothing, as OrbitControls has it. */
   let handHeld = false
-  const onControlStart = (): void => { handHeld = true; controls.autoRotate = false; rig.press() }
-  const onControlChange = (): void => { rig.move() }
-  const onControlEnd = (): void => { handHeld = false; rig.release() }
+  // Each wakes the loop: the hand moves the camera, and the glide after it (damping) is drawn to its end.
+  const onControlStart = (): void => { handHeld = true; endTurn(); rig.press(); wake() }
+  const onControlChange = (): void => { rig.move(); wake() }
+  const onControlEnd = (): void => { handHeld = false; rig.release(); wake() }
   controls.addEventListener('start', onControlStart)
   controls.addEventListener('change', onControlChange)
   controls.addEventListener('end', onControlEnd)
@@ -1174,6 +1255,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     fog.density = fogTarget
     applyFocus()
     applyTier()
+    wake()
   }
 
   /**
@@ -1403,11 +1485,14 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
   function frame(ids: string[], instant: boolean, around?: string[]): Promise<void> {
     const from = camera.position.clone().sub(controls.target)
-    controls.autoRotate = false // a flight ends the idle turn
-    return rig.frame({ ids: [...ids], around, from }, instant)
+    endTurn() // a flight ends the idle turn
+    const flight = rig.frame({ ids: [...ids], around, from }, instant)
+    wake()
+    return flight
   }
   /** A panel opened, closed or changed size: the picture eases to the new free area and the camera follows. */
   function reframe(): void {
+    wake()
     applyView(false)
     if (!lastModel) return
     fitOverview(lastModel)
@@ -1654,6 +1739,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     pulseAnim = null
     for (const s of pulseBalls) s.visible = false
     p?.done()
+    wake()
   }
   async function pulse(edgeIds: string[], instant: boolean): Promise<void> {
     stopPulses()
@@ -1664,7 +1750,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       const e = edges.get(id)
       if (!e) continue
       const color = (e.packetMats[0] as THREE.MeshBasicMaterial).color.clone() // every line carries packets (buildConduit)
-      await new Promise<void>((resolve) => { pulseAnim = { curve: e.curve, t: 0, color, done: resolve } })
+      await new Promise<void>((resolve) => { pulseAnim = { curve: e.curve, t: 0, color, done: resolve }; wake() })
     }
   }
 
@@ -1880,7 +1966,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   const onKeyDown = (e: KeyboardEvent): void => {
     const k = e.key.toLowerCase()
     keys[k] = true
-    if ('wasdqe'.includes(k) && k.length === 1) { controls.autoRotate = false; rig.keys() }
+    if ('wasdqe'.includes(k) && k.length === 1) { endTurn(); rig.keys(); wake() }
   }
   const onKeyUp = (e: KeyboardEvent): void => { keys[e.key.toLowerCase()] = false }
   const onBlur = (): void => { for (const k of Object.keys(keys)) keys[k] = false }
@@ -1913,6 +1999,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   // boxes measured again; the host's own changes resize the view.
   const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver((changed?: ResizeObserverEntry[]) => {
     panelBoxes = null
+    wake() // the labels keep off the panels' new boxes; a pane shown again (size 0 before) draws again
     if (!changed || changed.some((e) => e.target === host)) resize()
   })
   ro?.observe(host)
@@ -2348,25 +2435,57 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
   }
 
   // ---------------- loop ----------------
-  const clock = new THREE.Clock()
+  // Frames are drawn on demand: each change (a draw, a hover, a panel, a hand on the camera, a resize) wakes the
+  // loop, which draws while anything moves (a flight, an ease, a change, a pulse, a glide, the looping motions
+  // when motion is not reduced, labels still finding their places) and SETTLE_FRAMES more, then asks for no frame
+  // until the next change. An idle city with reduced motion draws nothing.
   const fwd = new THREE.Vector3()
   const right = new THREE.Vector3()
   const up = new THREE.Vector3(0, 1, 0)
   const wp = new THREE.Vector3()
   const mv = new THREE.Vector3()
-  let raf = 0
-  let disposed = false
-  let paused = false
   let wirePulse = 0.55 + 0.45 * Math.sin(0) // the ghost pulse's level, as the last frame set it
-  // dispose() and setPaused(true) cancel the queued frame, so a frame never runs after either.
-  function animate(): void {
+  /** The labels' places the last frame drew: a frame that moves one is not idle. */
+  let lastShown: ReadonlyMap<string, Nudge> = new Map()
+  /**
+   * Something changed: frames are drawn until it settles. Asks for a frame unless one is asked for already, or
+   * nothing may draw (paused, lost, disposed, still being built).
+   */
+  function wake(): void {
+    idleLeft = SETTLE_FRAMES
+    if (raf !== 0 || !started || disposed || paused || lost) return
+    // The time spent idle is not a frame: nothing jumps on the first frame back. (The very first frame starts the clock.)
+    if (clock.running) clock.getDelta()
     raf = requestAnimationFrame(animate)
+  }
+  /**
+   * Runs the changes up to now (wall-clock time: a slow frame rate never stretches a change). A part rising after
+   * an edit changes its box with the camera still: the names' boxes are built again each frame a change runs, the
+   * frame it lands included (solidBoxes is keyed on the camera; a stopped change is redrawn).
+   */
+  function tickChanges(): void {
+    if (changes.active() > 0) solids = null
+    changes.tick(performance.now())
+  }
+  // dispose(), setPaused(true) and a lost context cancel the queued frame, so a frame never runs after any of them.
+  function animate(): void {
+    raf = 0
+    // A pane hidden (no size) draws nothing: the resize observer wakes it when it shows again.
+    if (host.clientWidth === 0 || host.clientHeight === 0) return
+    let moving = true // a frame that throws keeps the loop going, as it always did
+    try {
+      moving = drawFrame()
+    } finally {
+      idleLeft = moving ? SETTLE_FRAMES : idleLeft - 1
+      if (raf === 0 && !disposed && !paused && !lost && idleLeft > 0) raf = requestAnimationFrame(animate)
+    }
+  }
+  /** Draws one frame; returns whether anything is still moving (another frame will differ from this one). */
+  function drawFrame(): boolean {
     frameNo++
     const dt = frameStep(clock.getDelta()) // only a tab-switch spike is cut, so a slow frame rate never runs the eases in slow motion
-    // A part rising after an edit changes its box with the camera still: the names' boxes are built again each frame
-    // a change runs, the frame it lands included (solidBoxes is keyed on the camera; a stopped change is redrawn).
-    if (changes.active() > 0) solids = null
-    changes.tick(performance.now()) // wall-clock time: a slow frame rate never stretches a change
+    tickChanges()
+    let moving = changes.active() > 0
     // Reduced motion reads a frozen clock and a zero step: the rings, the fog and the wireframe pulse stand still.
     const t = reduced ? 0 : clock.elapsedTime
     const mdt = reduced ? 0 : dt
@@ -2382,17 +2501,19 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     if (keys.a) mv.sub(right)
     if (keys.e) mv.y += 1
     if (keys.q) mv.y -= 1
-    if (mv.lengthSq()) { mv.normalize().multiplyScalar(sp); camera.position.add(mv); controls.target.add(mv) }
+    if (mv.lengthSq()) { mv.normalize().multiplyScalar(sp); camera.position.add(mv); controls.target.add(mv); moving = true }
     if (!sameArea(area, areaGoal)) {
       area = easeArea(area, areaGoal, dt)
       project(area)
+      moving = true
     }
+    if (rig.flying()) moving = true
     rig.step()
     for (const n of nodes.values()) {
       n.floors.forEach((fl, k) => {
         const d = n.exploded ? fl.userData.explodedY : fl.userData.baseY
         const tr = n.exploded ? (k % 2 ? 0.12 : -0.12) : 0
-        if (Math.abs(d - fl.position.y) > EASED || Math.abs(tr - fl.rotation.y) > EASED) refill = true // a closing building's floors settle in their batch
+        if (Math.abs(d - fl.position.y) > EASED || Math.abs(tr - fl.rotation.y) > EASED) { refill = true; moving = true } // a closing building's floors settle in their batch
         fl.position.y += (d - fl.position.y) * easeShare(FLOOR_RISE_RATE, dt)
         fl.rotation.y += (tr - fl.rotation.y) * easeShare(FLOOR_TURN_RATE, dt)
         const fLabel = n.floorLabels[k]
@@ -2401,15 +2522,19 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       if (n.flow) {
         const on = n.exploded
         n.flow.line.visible = on
+        if (on && !reduced) moving = true // its flow dots run up the open building (they stand still under reduced motion)
         for (const d of n.flow.dots) {
           d.visible = on
           if (on) {
-            d.userData.t = (d.userData.t + dt * 0.35) % 1
+            d.userData.t = (d.userData.t + mdt * 0.35) % 1
             d.position.y = n.flow.y0 + (n.flow.y1 - n.flow.y0) * d.userData.t
           }
         }
       }
     }
+    // The looping motions (unless reduced): the seals' rings, the packets, the fog, the wireframe and fading pulses,
+    // the selection ring and the dust never stop, so a city with any of them draws every frame.
+    if (!reduced && (seals.length > 0 || edges.size > 0 || fogSprites.length > 0 || ghostMats.length > 0 || fadeMats.length > 0 || dustGeo !== null || selRing?.visible === true)) moving = true
     for (const s of seals) s.rotation.z += mdt * 0.8
     if (!reduced) {
       for (const e of edges.values()) {
@@ -2451,14 +2576,20 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
         pulseAnim = null
         pa.done()
       }
+      moving = true
     }
-    fog.density += (fogTarget - fog.density) * easeShare(FOG_RATE, dt)
+    // The fog eases to its density, and is put on it once the rest is too small to see.
+    if (Math.abs(fogTarget - fog.density) <= fogTarget * FOG_SETTLED) fog.density = fogTarget
+    else {
+      fog.density += (fogTarget - fog.density) * easeShare(FOG_RATE, dt)
+      moving = true
+    }
     if (dustGeo && !reduced) {
       const dp = dustGeo.attributes.position.array as Float32Array
       for (let i = 1; i < dp.length; i += 3) { dp[i] += dt * 1.1; if (dp[i] > 58) dp[i] = -2 }
       dustGeo.attributes.position.needsUpdate = true
     }
-    controls.update()
+    if (controls.update()) moving = true // the slow opening turn, or the glide after a hand lets go (damping)
     // Semantic zoom: districts (blocks, district names), buildings (blocks, building names), floors (floors, seams, floor labels).
     retier()
     // Semantic zoom and no overlaps (layLabels); then how strongly each shown label reads. District
@@ -2466,6 +2597,8 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     // read at the overview and fade a little with distance; the hovered or selected part's and its
     // neighbours' names read in full.
     const shown = layLabels()
+    if (!sameLayout(lastShown, shown)) moving = true // the labels find their places over a frame or two (placeLabels keeps the shown ones)
+    lastShown = shown
     for (const l of labels) {
       l.o.visible = shown.has(l.key)
       if (l.o.visible) nudgeLabel(l.o.element, shown.get(l.key) as Nudge)
@@ -2488,8 +2621,10 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
     else renderer.render(scene, camera)
     drawCalls = renderer.info.render.calls
     labelRenderer.render(scene, camera)
+    return moving
   }
-  raf = requestAnimationFrame(animate)
+  started = true
+  wake()
 
   return {
     canvas: renderer.domElement,
@@ -2518,6 +2653,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       // The same panels again (the stage rendered): only their boxes are measured again, since a panel can move
       // without changing size (the card's content, the ask bar's answer above it), which no ResizeObserver reports.
       panelBoxes = null
+      wake()
       if (els.length === panels.length && els.every((el, i) => el === panels[i])) return
       for (const el of panels) ro?.unobserve(el)
       panels = [...els]
@@ -2530,6 +2666,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       // Every label is measured again at its new size.
       sizes = new WeakMap()
       compactSizes = new WeakMap()
+      wake()
     },
     setTheme(name, th) {
       themeName = name
@@ -2538,15 +2675,16 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       fogTarget = fogFor()
       fog.density = fogTarget
       if (lastModel && lastText) draw(lastModel, lastText, allLabels)
-      else { scene.background = new THREE.Color(th.background); fog.color.set(th.background) }
+      else { scene.background = new THREE.Color(th.background); fog.color.set(th.background); wake() }
     },
     setFocus(f) {
       focus = f
       focusHeld = focusHolds(f)
       applyFocus()
       retier()
+      wake()
     },
-    setSelected(id) { selectedId = id; placeRing(); retier() },
+    setSelected(id) { selectedId = id; placeRing(); retier(); wake() },
     setExploded(id) {
       // Only a building opens: an orb (external) has no floors, so it never thickens the fog.
       const n = id === null ? undefined : nodes.get(id)
@@ -2554,34 +2692,44 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       for (const n of nodes.values()) n.exploded = n.id === explodedId && !n.orb
       fogTarget = fogFor()
       regroup = true
+      wake()
     },
     frame,
     // The home view (its free area has no card), from wherever the camera is: any framing is dropped.
     overview(instant) {
-      controls.autoRotate = false // a flight ends the idle turn
-      return rig.overview(instant)
+      endTurn() // a flight ends the idle turn
+      const flight = rig.overview(instant)
+      wake()
+      return flight
     },
     getCamera: () => ({ pos: [camera.position.x, camera.position.y, camera.position.z], target: [controls.target.x, controls.target.y, controls.target.z] }),
     flyTo(pose, instant) {
-      controls.autoRotate = false // a flight ends the idle turn
-      return rig.to(pose, instant)
+      endTurn() // a flight ends the idle turn
+      const flight = rig.to(pose, instant)
+      wake()
+      return flight
     },
     pulse,
     stopPulses,
     pick,
     setCursor(pointer) { renderer.domElement.style.cursor = pointer ? 'pointer' : 'default' },
-    setHovered(id) { hoveredId = id; hoverLabels = id === null ? [] : nodes.get(id)?.labels ?? [] },
+    setHovered(id) { hoveredId = id; hoverLabels = id === null ? [] : nodes.get(id)?.labels ?? []; wake() },
     visibleIds,
     isShown: (id) => { const n = nodes.get(id); return n !== undefined && (n.group.visible || districtOf.has(id)) },
     screenPoint,
     linePoints,
-    drawnCounts: () => ({
-      processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls,
+    drawnCounts: () => {
+      // The changes run on the wall clock: one whose time is up is counted done now, not when the next frame
+      // comes (a starved frame rate, a 5K view drawn in software, must not hold a finished change open).
+      tickChanges()
+      return {
+        processShells: shellCount, conduits: edges.size, changing: changes.active(), tier, drawCalls, frames: frameNo,
       buildings: [...nodes.values()].filter((n) => !n.orb).length,
       districts: lastModel ? lastModel.districts.length : 0,
-      slabs: slabMeshes.reduce((n, im) => n + (im.visible ? im.count : 0), 0),
-      slabLooks: tier === 'districts' ? slabLooks.map((sg) => ({ ...sg })) : [],
-    }),
+        slabs: slabMeshes.reduce((n, im) => n + (im.visible ? im.count : 0), 0),
+        slabLooks: tier === 'districts' ? slabLooks.map((sg) => ({ ...sg })) : [],
+      }
+    },
     motionState: () => {
       const floorOrder: Record<string, string[]> = {}
       const orbs: string[] = []
@@ -2628,6 +2776,7 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       parts = parts.filter((p) => !kept.has(p.node.group))
       regroup = true
       changes.keep(groups, performance.now())
+      wake()
     },
     animateChanges({ rise, pulse }) {
       const groups: THREE.Object3D[] = []
@@ -2639,14 +2788,29 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       for (const id of pulse) mats.push(...(nodes.get(id)?.mats ?? []))
       changes.start(groups, mats, performance.now())
       refill = true
+      wake()
     },
-    stopChanges: () => { changes.stop(); refill = true },
+    stopChanges: () => { changes.stop(); refill = true; wake() },
+    setReducedMotion(r) {
+      if (disposed || r === reduced) return
+      reduced = r
+      controls.autoRotate = !reduced && !turnEnded
+      if (reduced) {
+        // Followed at once: what is under way ends where it was going, as the next ones will.
+        rig.land()
+        stopPulses()
+        changes.stop()
+        refill = true
+        area = areaGoal
+        project(area)
+      }
+      wake()
+    },
     setPaused(p) {
       if (disposed || p === paused) return
       paused = p
-      if (p) { cancelAnimationFrame(raf); return }
-      clock.getDelta() // the pause is not a frame: nothing jumps on the first frame back
-      raf = requestAnimationFrame(animate)
+      if (p) { cancelAnimationFrame(raf); raf = 0; return }
+      wake() // the pause is not a frame: nothing jumps on the first frame back (wake resets the clock)
     },
     dispose() {
       if (disposed) return
@@ -2656,7 +2820,9 @@ function buildThreeRenderer(host: HTMLElement, opts: RendererOptions, undo: Arra
       labelRenderer.domElement.remove()
       changes.stop()
       cancelAnimationFrame(raf)
+      raf = 0
       ro?.disconnect()
+      dropContextListeners()
       host.removeEventListener('keydown', onKeyDown)
       host.removeEventListener('keyup', onKeyUp)
       host.removeEventListener('blur', onBlur, true)

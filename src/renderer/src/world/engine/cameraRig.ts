@@ -69,6 +69,8 @@ export interface CameraRig<F> {
   step(): void
   /** Ends any flight where the camera is (its promise settles). */
   stop(): void
+  /** Ends any flight where it was going: the camera is put at its end at once (its promise settles). */
+  land(): void
 }
 
 /** The default flight times, in seconds: to a framing, to the overview, and a panel's glide. */
@@ -205,5 +207,11 @@ export function createCameraRig<F>(deps: CameraRigDeps<F>): CameraRig<F> {
       if (k >= 1) stop()
     },
     stop,
+    land() {
+      const f = flight
+      if (!f) return
+      put(f.to)
+      stop()
+    },
   }
 }
