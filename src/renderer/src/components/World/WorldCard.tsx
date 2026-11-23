@@ -147,6 +147,9 @@ export function WorldCard({ html, onClose, onOpen, onTech, onConfirm, onEvidence
     if (typeof ResizeObserver !== 'function') return
     const watch = new ResizeObserver(measure)
     watch.observe(body)
+    // A capped body keeps its size when its content grows or shrinks (a late font, an icon): the content is watched too,
+    // so the fade follows what lies below.
+    for (const part of Array.from(body.children)) watch.observe(part)
     return () => watch.disconnect()
   }, [html])
   const save = (e: FormEvent): void => {

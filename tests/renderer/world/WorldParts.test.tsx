@@ -29,7 +29,8 @@ describe('WorldCard', () => {
       const { unmount } = render(<WorldCard html="<h3>Store</h3>" onClose={() => {}} onOpen={() => {}} onTech={() => {}} onConfirm={() => {}} onEvidence={() => {}} />)
       const card = screen.getByTestId('world-card')
       expect(card.style.getPropertyValue('--world-card-gutter')).toBe('')
-      expect(observed).toEqual([screen.getByTestId('world-card-body')])
+      const body = screen.getByTestId('world-card-body')
+      expect(observed).toEqual([body, body.querySelector('h3')])
       widths.client = 306
       act(() => fire())
       expect(card.style.getPropertyValue('--world-card-gutter')).toBe('14px')
@@ -78,6 +79,42 @@ describe('WorldCard', () => {
       expect(css).toContain('.world-card-body[data-more]{-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 24px),transparent),linear-gradient(#000,#000);')
       expect(css).toContain('mask-size:calc(100% - var(--world-card-gutter,0px)) 100%,var(--world-card-gutter,0px) 100%;')
       expect(css).toContain('mask-position:left top,right top;')
+    } finally {
+      spyS.mockRestore()
+      spyC.mockRestore()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('fades when the content grows, or stops when it shrinks, while the capped body keeps its size (round 4 re-review: m1)', () => {
+    // Each observer reports only the elements it watches, as a real ResizeObserver does.
+    const watching: { cb: () => void; els: Element[] }[] = []
+    vi.stubGlobal('ResizeObserver', class {
+      private w: { cb: () => void; els: Element[] }
+      constructor(cb: () => void) { this.w = { cb, els: [] }; watching.push(this.w) }
+      observe(el: Element): void { this.w.els.push(el) }
+      disconnect(): void { this.w.els = [] }
+    })
+    const resized = (el: Element): void => { for (const w of watching) if (w.els.includes(el)) w.cb() }
+    const box = { scroll: 200, client: 200 }
+    const spyS = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => box.scroll)
+    const spyC = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(() => box.client)
+    try {
+      const { rerender } = render(<WorldCard html="<h3>Store</h3><p>Holds the data</p>" onClose={() => {}} onOpen={() => {}} {...noop} />)
+      const body = screen.getByTestId('world-card-body')
+      expect(body).not.toHaveAttribute('data-more')
+      // A late font makes the paragraph taller; the body is at its cap, so only the content changes size.
+      box.scroll = 260
+      act(() => resized(body.querySelector('p') as Element))
+      expect(body).toHaveAttribute('data-more')
+      box.scroll = 200
+      act(() => resized(body.querySelector('h3') as Element))
+      expect(body).not.toHaveAttribute('data-more')
+      // A new card's content is watched in place of the old one's.
+      rerender(<WorldCard html="<h3>Longer</h3>" onClose={() => {}} onOpen={() => {}} {...noop} />)
+      box.scroll = 300
+      act(() => resized(body.querySelector('h3') as Element))
+      expect(body).toHaveAttribute('data-more')
     } finally {
       spyS.mockRestore()
       spyC.mockRestore()
