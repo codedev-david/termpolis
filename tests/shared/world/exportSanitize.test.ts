@@ -642,3 +642,88 @@ describe('sanitizeWorld: external ids', () => {
     expect(out.externals[0].id).toBe('x-notes')
   })
 })
+
+describe('a backslash in a path, by the platform that mapped the world', () => {
+  it('keeps a POSIX file name holding a backslash: on Linux and macOS it is a name character, not a separator', () => {
+    expect(relativePath('a\\b.ts', posix)).toBe('a\\b.ts')
+    expect(relativePath('src/we\\ird/x.ts', posix)).toBe('src/we\\ird/x.ts')
+    expect(relativePath('/home/dev/repo/a\\b.ts', posix)).toBe('a\\b.ts')
+    expect(relativePath('/srv/other/a\\b.ts', posix)).toBe(`${OUTSIDE}/b.ts`)
+    // A design world (no root) on Linux still knows its platform from the home folder.
+    expect(relativePath('a\\b.ts', design)).toBe('a\\b.ts')
+    expect(relativePath('', posix)).toBe('')
+  })
+
+  it('keeps it through sanitizeWorld, in members, floors, growth and file evidence', () => {
+    const doc = minimal()
+    const b = doc.buildings[0]
+    b.members = ['/home/dev/repo/src/a\\b.ts', 'lib\\c.ts']
+    b.floors[0].members = ['lib\\c.ts']
+    b.growth = { start: 'file', seed: 'lib\\c.ts', folder: 'lib\\x', merged: 0, mergedFiles: 0, folded: 0, cap: 60 }
+    b.how = [claimOf('Reads it', { kind: 'file', ref: 'lib\\c.ts' })]
+    const out = sanitizeWorld(doc, posix).buildings[0]
+    expect(out.members).toEqual(['src/a\\b.ts', 'lib\\c.ts'])
+    expect(out.floors[0].members).toEqual(['lib\\c.ts'])
+    expect(out.growth).toMatchObject({ seed: 'lib\\c.ts', folder: 'lib\\x' })
+    expect(out.how[0].evidence).toEqual([{ kind: 'file', ref: 'lib\\c.ts' }])
+  })
+
+  it('still reads a backslash as a separator for a world mapped on Windows (a drive or a UNC folder)', () => {
+    expect(relativePath('a\\b.ts', win)).toBe('a/b.ts')
+    expect(relativePath('a\\b.ts', { root: '\\\\srv\\share\\repo', home: '\\\\srv\\share', userData: '\\\\srv\\share\\data' })).toBe('a/b.ts')
+    expect(relativePath('a\\b.ts', { root: null, home: 'C:\\Users\\dev', userData: 'C:\\Users\\dev\\AppData\\Roaming\\Termpolis' })).toBe('a/b.ts')
+  })
+
+  it('reads a backslash as a separator when no folder tells the platform', () => {
+    const none: SanitizeContext = { root: null, home: '', userData: '' }
+    expect(relativePath('a\\b.ts', none)).toBe('a/b.ts')
+    expect(relativePath('..\\..\\Users\\ann\\x.ts', none)).toBe(`${OUTSIDE}/x.ts`)
+    expect(relativePath('a\\b.ts', { root: null, home: 'relative', userData: '' })).toBe('a/b.ts')
+  })
+
+  it('lets no traversal through on POSIX: a backslash `..` is part of one name, and every other form still climbs or leaves', () => {
+    // On POSIX `..\..\x` is one file named that; it climbs nothing, so nothing outside the project is named.
+    expect(relativePath('..\\..\\etc\\passwd', posix)).toBe('..\\..\\etc\\passwd')
+    expect(relativePath('../x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
+    expect(relativePath('src/../../x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
+    expect(relativePath('/home/dev/repo/../other/y.ts', posix)).toBe(`${OUTSIDE}/y.ts`)
+    expect(relativePath('/etc/hosts', posix)).toBe(`${OUTSIDE}/hosts`)
+    // A drive, UNC, long-form, tilde or file-URL path is read the Windows way on any platform, so it still leaves.
+    expect(relativePath('C:\\Users\\ann\\secret.ts', posix)).toBe(`${OUTSIDE}/secret.ts`)
+    expect(relativePath('c:\\', posix)).toBe(OUTSIDE)
+    expect(relativePath('\\\\server\\share\\x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
+    expect(relativePath('\\\\?\\C:\\Users\\ann\\y.ts', posix)).toBe(`${OUTSIDE}/y.ts`)
+    expect(relativePath('~\\notes\\y.md', posix)).toBe(`${OUTSIDE}/y.md`)
+    expect(relativePath('file:///C:/Users/ann/z.ts', posix)).toBe(`${OUTSIDE}/z.ts`)
+  })
+
+  it('never shows a folder a POSIX backslash name spells once the path is outside the project', () => {
+    // Climbing out with `/..`, the name after it keeps only its last backslash part.
+    expect(relativePath('../a\\..\\..\\home\\dev\\x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
+    expect(relativePath('/home/dev/repo/../a\\dev\\x.ts', posix)).toBe(`${OUTSIDE}/x.ts`)
+    expect(relativePath('../a\\', posix)).toBe(OUTSIDE)
+    // An absolute path not inside the project is read as before: the home folder and its children are still found.
+    expect(relativePath('/home/dev\\secret\\x', posix)).toBe(`${OUTSIDE}/x`)
+    expect(relativePath('/home/dev\\', posix)).toBe(OUTSIDE)
+    expect(relativePath('/home/dev/repo\\src\\a.ts', posix)).toBe('src/a.ts')
+    expect(sanitizeText('wrote /home/dev\\notes\\n.md today', posix)).toBe(`wrote ${OUTSIDE}/n.md today`)
+    expect(sanitizeText('wrote /home/dev/repo\\src\\a.ts today', posix)).toBe('wrote src/a.ts today')
+  })
+
+  it('lets no traversal through on Windows either', () => {
+    expect(relativePath('..\\..\\etc\\passwd', win)).toBe(`${OUTSIDE}/passwd`)
+    expect(relativePath('src\\..\\..\\x.ts', win)).toBe(`${OUTSIDE}/x.ts`)
+    expect(relativePath('C:\\Users\\dev\\repo\\..\\..\\ann\\y.ts', win)).toBe(`${OUTSIDE}/y.ts`)
+    expect(relativePath('\\\\server\\share\\x.ts', win)).toBe(`${OUTSIDE}/x.ts`)
+    expect(relativePath('/etc/hosts', win)).toBe(`${OUTSIDE}/hosts`)
+  })
+
+  it("still rewrites a Windows path written in a POSIX world's members and free text", () => {
+    const doc = minimal()
+    doc.buildings[0].members = ['C:\\Users\\ann\\repo\\a.ts']
+    doc.buildings[0].name = 'Reads C:\\Users\\ann\\x.ts'
+    const out = sanitizeWorld(doc, posix).buildings[0]
+    expect(out.members).toEqual([`${OUTSIDE}/a.ts`])
+    expect(out.name).toBe(`Reads ${OUTSIDE}/x.ts`)
+  })
+})

@@ -79,9 +79,10 @@ const isAbsolute = (p: string): boolean => /^[A-Za-z]:(\/|$)/.test(p) || p.start
 /**
  * A path in the plain form the comparisons expect: a file URL becomes its (decoded) path, every slash a single
  * forward slash (a UNC path keeps its leading two), the long forms `//?/` and `//./` lose their prefix and an admin
- * share (`//host/C$/x`) becomes its drive (`C:/x`).
+ * share (`//host/C$/x`) becomes its drive (`C:/x`). A backslash is a slash too, unless `keepBackslash` says it is a
+ * name character (backslashKept).
  */
-function plainPath(p: string): string {
+function plainPath(p: string, keepBackslash: boolean): string {
   let n = p
   const url = /^file:(?:\/\/([^/\\]*))?(.*)$/i.exec(n)
   if (url) {
@@ -89,13 +90,33 @@ function plainPath(p: string): string {
     try { n = decodeURIComponent(n) } catch { /* a stray % : keep the path as written */ }
     if (/^\/[A-Za-z]:/.test(n)) n = n.slice(1)
   }
-  n = n.replace(/\\/g, '/')
+  if (!keepBackslash) n = n.replace(/\\/g, '/')
   n = (n.startsWith('//') ? '/' : '') + n.replace(/\/{2,}/g, '/')
   const long = /^\/\/[?.]\/(unc\/)?/i.exec(n)
   if (long) n = (long[1] ? '//' : '') + n.slice(long[0].length)
   const share = /^\/\/[^/]+\/([A-Za-z])\$(?=\/|$)/.exec(n)
   if (share) n = `${share[1]}:${n.slice(share[0].length)}`
   return n
+}
+
+/**
+ * Whether the world was mapped on Windows. An export runs on the computer that mapped its world, so the context's
+ * own folders tell: a drive or a backslash in any of them means Windows, and a leading `/` with neither means Linux or
+ * macOS. With no folder to go by it counts as Windows, where a backslash is a separator: reading one that way can
+ * only expose a `..` to resolveRelative, never hide one.
+ */
+function mappedOnWindows(ctx: SanitizeContext): boolean {
+  const folders = [ctx.root ?? '', ctx.home, ctx.userData]
+  return folders.some((f) => /^[A-Za-z]:|\\/.test(f)) || !folders.some((f) => f.startsWith('/'))
+}
+
+/**
+ * Whether a backslash in `p` is a name character rather than a separator: on Linux and macOS `a\b.ts` is one file.
+ * A drive, UNC, long-form, `~` or file-URL path is written the Windows way (or a shell's), so its backslashes stay
+ * separators on any platform and such a path is still found to leave the project.
+ */
+function backslashKept(p: string, ctx: SanitizeContext): boolean {
+  return !/^(?:[A-Za-z]:|\\\\|~|file:)/i.test(p) && !mappedOnWindows(ctx)
 }
 
 /** Whether `p` (normalised) lies in or is `base` (normalised), by whole folder names; gives the segments past it. */
@@ -112,7 +133,10 @@ function under(p: string, base: string): string[] | null {
 function baseName(segments: string[]): string {
   const names = segments.filter((s) => s !== '' && s !== '.' && s !== '..')
   const last = names.length ? names[names.length - 1] : ''
-  return /^[A-Za-z]:$/.test(last) ? '' : last
+  // Only what follows a name's last backslash: a POSIX name such as `a\..\home\ann\x` that climbed out of the
+  // project (backslashKept) shows `x`, never the folders it spells.
+  const name = last.slice(last.lastIndexOf('\\') + 1)
+  return /^[A-Za-z]:$/.test(name) ? '' : name
 }
 
 const outside = (segments: string[]): string => {
@@ -137,7 +161,15 @@ function resolveRelative(segments: string[]): string {
  * name never shows. `~` stands for the home folder; `~user` is another account's, so it is outside.
  */
 export function relativePath(p: string, ctx: SanitizeContext): string {
-  let n = plainPath(p)
+  // On Linux and macOS a path inside the project keeps a backslash in a name; any other path is read as on Windows,
+  // so a mixed or Windows-written path outside the project is still found to be outside (and the home folder too).
+  if (backslashKept(p, ctx)) {
+    const kept = plainPath(p, true)
+    if (!kept.startsWith('/')) return kept ? resolveRelative(kept.split('/')) : ''
+    const inRoot = ctx.root === null ? null : under(kept.replace(/\/+$/, ''), norm(ctx.root))
+    if (inRoot) return resolveRelative(inRoot)
+  }
+  let n = plainPath(p, false)
   if (n === '~' || n.startsWith('~/')) n = norm(ctx.home) + n.slice(1)
   else if (n.startsWith('~')) return outside(n.split('/').slice(1))
   // On Windows (a drive home folder) `/c/x` and `/cygdrive/c/x` are Git Bash and Cygwin for `C:/x`.
