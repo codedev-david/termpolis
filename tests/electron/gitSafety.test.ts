@@ -158,9 +158,13 @@ describe('filterScanArgs', () => {
     expect(filterScanArgs(['status'], true)).toEqual([...PREFIX_WIN, 'config', '--show-scope', '-z', '--get-regexp', '^filter\\.'])
   })
 
-  it('keeps the -C of the command it serves and nothing else of its global options', () => {
+  it('keeps the options that choose the repository (-C, --git-dir, --work-tree, --bare), in order, and nothing else', () => {
     expect(filterScanArgs(['-C', '/r', '-c', 'a=b', '--no-pager', 'diff'], false)).toEqual([
       '-C', '/r', ...PREFIX_POSIX, 'config', '--show-scope', '-z', '--get-regexp', '^filter\\.'
+    ])
+    expect(filterScanArgs(['--git-dir', '/g', '-C', 'x', '--work-tree=/w', '--namespace', 'n', '--bare', '--git-dir=/h', '--work-tree', '/v', 'blame'], false)).toEqual([
+      '--git-dir', '/g', '-C', 'x', '--work-tree=/w', '--bare', '--git-dir=/h', '--work-tree', '/v',
+      ...PREFIX_POSIX, 'config', '--show-scope', '-z', '--get-regexp', '^filter\\.'
     ])
     expect(filterScanArgs(['--version'], false)[0]).toBe('-c')
   })

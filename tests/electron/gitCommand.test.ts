@@ -35,7 +35,7 @@ vi.mock('../../src/main/binPath', async (importOriginal) => {
   }
 })
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, promises as fsPromises, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { safeGitAsync, runSafeCommandAsync, parseSafeCommand, isValidGitRef, repoTopLevel, _resetGitBinForTests } from '../../src/main/gitCommand'
@@ -195,6 +195,136 @@ describe('safeGitAsync: the filter-driver read before status and diff', () => {
     await safeGitAsync(['add', '--', 'a.bin'], { cwd: '/repo' })
     expect(scans()).toBe(0)
     expect(command()).toEqual(['add', '--', 'a.bin'])
+  })
+})
+
+describe('safeGitAsync: one filter scan per repository, kept while its config says the same', () => {
+  type Cb = (e: Error | null, out: string, err: string) => void
+  let tmp = ''
+  const scans = (): number => mockExecFile.mock.calls.filter((c) => (c[1] as string[]).includes('--show-scope')).length
+  const status = (cwd: string, args: string[] = ['status']): Promise<string> => safeGitAsync(args, { cwd })
+  const later = (ms: number): void => vi.setSystemTime(Date.now() + ms)
+  /** A repository: a `.git` folder holding `config`. */
+  const repo = (name: string, config = '[core]\n\tbare = false\n'): string => {
+    const dir = join(tmp, name)
+    mkdirSync(join(dir, '.git'), { recursive: true })
+    mkdirSync(join(dir, 'src', 'deep'), { recursive: true })
+    writeFileSync(join(dir, '.git', 'config'), config)
+    return dir
+  }
+  beforeEach(() => {
+    _resetGitBinForTests()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    tmp = mkdtempSync(join(tmpdir(), 'tp-gitcmd-scan-'))
+    mockExecFile.mockImplementation((_b: string, a: string[], _o: unknown, cb: Cb) => {
+      if (a.includes('--show-scope')) return cb(Object.assign(new Error('none'), { code: 1 }), '', '')
+      cb(null, '', '')
+    })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  it('shares one scan across the repository’s folders for 30 s, then scans again', async () => {
+    const dir = repo('r')
+    await status(dir)
+    later(3000)
+    await status(join(dir, 'src', 'deep'))
+    await status(join(dir, 'src'), ['-C', 'deep', 'diff'])
+    expect(scans()).toBe(1)
+    later(27_000)
+    await status(dir)
+    expect(scans()).toBe(2)
+  })
+
+  it('scans again as soon as the config or config.worktree text changes', async () => {
+    const dir = repo('r')
+    await status(dir)
+    writeFileSync(join(dir, '.git', 'config'), '[filter "x"]\n\tclean = sh plant.sh\n')
+    await status(dir)
+    expect(scans()).toBe(2)
+    writeFileSync(join(dir, '.git', 'config.worktree'), '[filter "y"]\n\tclean = sh plant.sh\n')
+    await status(dir)
+    expect(scans()).toBe(3)
+    await status(dir)
+    expect(scans()).toBe(3)
+  })
+
+  it('a linked worktree reads the common config its commondir names, and is keyed apart from the main one', async () => {
+    const main = repo('main')
+    const wtGit = join(main, '.git', 'worktrees', 'wt')
+    mkdirSync(wtGit, { recursive: true })
+    writeFileSync(join(wtGit, 'commondir'), '../..\n')
+    const wt = join(tmp, 'wt')
+    mkdirSync(join(wt, 'sub'), { recursive: true })
+    writeFileSync(join(wt, '.git'), `gitdir: ${wtGit}\n`)
+    await status(join(wt, 'sub'))
+    await status(wt)
+    expect(scans()).toBe(1)
+    await status(main)
+    expect(scans()).toBe(2)
+    writeFileSync(join(main, '.git', 'config'), '[filter "x"]\n\tclean = sh plant.sh\n')
+    await status(wt)
+    expect(scans()).toBe(3)
+  })
+
+  it('keeps the short window where it cannot watch the config: an include, outside a repository, a bad .git file', async () => {
+    const inc = repo('inc', '[include]\n\tpath = ../other.cfg\n')
+    const bad = join(tmp, 'bad')
+    mkdirSync(bad)
+    writeFileSync(join(bad, '.git'), 'not a pointer\n')
+    for (const cwd of [inc, join(tmp, 'nowhere'), bad]) {
+      mockExecFile.mockClear()
+      await status(cwd)
+      later(1000)
+      await status(cwd)
+      expect(scans(), cwd).toBe(1)
+      later(500)
+      await status(cwd)
+      expect(scans(), cwd).toBe(2)
+    }
+  })
+
+  it('a folder whose config cannot be read the usual way still gets its scan, kept for the short window', async () => {
+    const dir = repo('odd')
+    const spy = vi.spyOn(fsPromises, 'stat').mockImplementation(() => { throw new Error('stand-in fs') })
+    try {
+      await status(dir)
+      await status(dir)
+      expect(scans()).toBe(1)
+      later(1500)
+      await status(dir)
+      expect(scans()).toBe(2)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('a --git-dir names the repository whose config is read', async () => {
+    const a = repo('a')
+    const b = repo('b')
+    await status(tmp, ['--git-dir', join(a, '.git'), 'status'])
+    await status(tmp, [`--git-dir=${join(a, '.git')}`, 'status'])
+    expect(scans()).toBe(2)
+    await status(tmp, ['--git-dir', join(a, '.git'), 'status'])
+    expect(scans()).toBe(2)
+    await status(tmp, ['--git-dir', join(b, '.git'), 'status'])
+    expect(scans()).toBe(3)
+  })
+
+  it('remembers at most 64 scans, dropping expired ones first, then the oldest', async () => {
+    const first = repo('first')
+    await status(first)
+    for (let i = 0; i < 64; i++) await status(repo(`r${i}`))
+    await status(first)
+    expect(scans()).toBe(66)
+    // Expired entries are cleared when the next scan is kept, so the map never holds a stale one past its window.
+    later(30_000)
+    await status(first)
+    expect(scans()).toBe(67)
+    await status(repo('r0'))
+    expect(scans()).toBe(68)
   })
 })
 

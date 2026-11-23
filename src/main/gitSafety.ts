@@ -178,17 +178,23 @@ export function guardGitArgs(args: readonly string[], isWindows: boolean, filter
   return [...leading, ...added, ...filterOverrides, sub.name, ...flags, ...rest]
 }
 
+/** Global options that choose which repository git opens, and so whose config it reads. */
+const REPO_GLOBALS = new Set(['-C', '--git-dir', '--work-tree'])
+
 /** The command that lists every filter driver setting with the scope it comes from. Reading config runs nothing;
- *  it carries the read-only prefix all the same, and the `-C` of the command it serves. */
+ *  it carries the read-only prefix all the same, and the options of the command it serves that choose the repository
+ *  (`-C`, `--git-dir`, `--work-tree`, `--bare`), so it reads the config that command will run under. The caller's own
+ *  `-c` settings are not repeated: they are the app's own, and the scan would only report them as trusted. */
 export function filterScanArgs(args: readonly string[], isWindows: boolean): string[] {
   const sub = gitSubcommand(args)
   const leading = sub === null ? [] : args.slice(0, sub.index)
   const at: string[] = []
   for (let i = 0; i < leading.length; i++) {
-    if (VALUED_GLOBALS.has(leading[i])) {
-      if (leading[i] === '-C') at.push('-C', leading[i + 1])
+    const a = leading[i]
+    if (VALUED_GLOBALS.has(a)) {
+      if (REPO_GLOBALS.has(a)) at.push(a, leading[i + 1])
       i++
-    }
+    } else if (a === '--bare' || a.startsWith('--git-dir=') || a.startsWith('--work-tree=')) at.push(a)
   }
   return [...at, ...readOnlyPrefix('config', isWindows), 'config', '--show-scope', '-z', '--get-regexp', '^filter\\.']
 }

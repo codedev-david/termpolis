@@ -551,6 +551,25 @@ describe('git safety harness: the person’s own setup keeps working', () => {
     expect(fired()).toEqual([])
   }, TIMEOUT)
 
+  it('a filter the repository adds after a scan is seen on the next read, and a --git-dir read scans that repository', async () => {
+    clearMarkers()
+    const dir = newRepo('rescan', { '.gitattributes': '*.dat filter=late\n', 'x.dat': 'one\n' })
+    _resetGitBinForTests()
+    await safeGitAsync(['status', '--porcelain'], opts(dir))
+    // Within the scan's 30 s, the repository's config gains a driver: its text changed, so the next read scans again.
+    git(dir, ['config', 'filter.late.clean', runs(plantProgram('late-clean', 'cat\n'))])
+    git(dir, ['config', 'filter.late.required', 'true'])
+    dirty(dir, 'x.dat', 'two\n')
+    await quiet(safeGitAsync(['status', '--porcelain'], opts(join(dir, '.git', '..'))))
+    await quiet(safeGitAsync(['diff', '--numstat'], opts(dir)))
+    // A read from another folder that names the repository with --git-dir and --work-tree reads that config.
+    await quiet(safeGitAsync(['--git-dir', join(dir, '.git'), '--work-tree', dir, 'status', '--porcelain'], opts(base)))
+    await quiet(safeGitAsync([`--git-dir=${join(dir, '.git')}`, `--work-tree=${dir}`, 'diff', '--numstat'], opts(base)))
+    expect(fired()).toEqual([])
+    git(dir, ['status', '--porcelain'], true)
+    expect(fired()).toEqual(['late-clean'])
+  }, TIMEOUT)
+
   it('a mutating add in a repository with its own filter runs that filter (writes are the person’s git, unchanged)', async () => {
     clearMarkers()
     const dir = newRepo('local-add', { '.gitattributes': '*.dat filter=own\n' })
