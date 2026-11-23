@@ -15,6 +15,7 @@ import { promises as fsPromises } from 'fs'
 import { dirname, join, relative, resolve, sep } from 'path'
 import { filterOverrides, filterScanArgs, guardGitArgs, guardGitEnv, needsFilterScan } from './gitSafety'
 import { withSubmoduleEdits, type DirtySubmodule, type SubmoduleDeps } from './gitSubmodules'
+import { OLD_GIT_MESSAGE } from './world/gitLogin'
 
 export interface GitOptions {
   cwd: string
@@ -42,8 +43,9 @@ export interface GitOptions {
  *
  * Argv-safe (shell: false), and git is always started by its FULL path (binPath.ts resolveGitBin: the fixed PATH
  * folders, then the install locations, so a packaged app with no git on PATH still finds it). Never by the bare
- * name: on Windows a bare `git` with `cwd` at a repository runs a `git.exe` planted in that repository. A git that
- * lies inside the folder it would run in is refused too. When there is no git, nothing is started and the call
+ * name, as defence in depth: Node's libuv resolves a bare `git` from PATH, not from `cwd` (measured on Node 24 on
+ * Windows with a stand-in `git.exe` in the cwd), but a PATH entry that is relative or empty, or another launcher,
+ * would look in the folder being read. A git that lies inside the folder it would run in is refused too. When there is no git, nothing is started and the call
  * fails with code 'ENOENT', exactly as a missing git always did, so every caller degrades as it did before.
  */
 export function safeGitAsync(args: string[], opts: GitOptions): Promise<string> {
@@ -79,6 +81,17 @@ async function guardedGit(args: string[], opts: GitOptions, depth: number): Prom
   }
 }
 
+/** Thrown by a read that needs the filter scan when git is too old to give it (`config --show-scope` arrived in git
+ *  2.26). The read is not run: without the scan its filter drivers could not be switched off. `code` lets a caller tell
+ *  it from an ordinary failure; the message is the one the panels show. */
+export class GitTooOldError extends Error {
+  readonly code = 'GIT_TOO_OLD'
+  constructor() {
+    super(OLD_GIT_MESSAGE)
+    this.name = 'GitTooOldError'
+  }
+}
+
 /** How long one repository's filter-driver scan is reused while the config files it reads say the same: a ceiling,
  *  so a change nothing below notices (the person's own global config, say) is seen within it. */
 const FILTER_SCAN_TTL_MS = 30_000
@@ -111,7 +124,11 @@ async function repoFilterOverrides(bin: string, args: string[], opts: GitOptions
   if (hit && now - hit.at < hit.ttl && hit.stamp === place.stamp) return hit.value
   const value = execOffThread(bin, scanArgs, { cwd: opts.cwd, timeout: opts.timeout ?? 10000, maxBuffer: 1024 * 1024, addEnv: guardGitEnv(scanArgs) })
     .catch((e: unknown) => {
-      if ((e as { code?: unknown } | null)?.code === 1) return ''
+      const code = (e as { code?: unknown } | null)?.code
+      if (code === 1) return ''
+      // 129 is git's usage error. The scan's options are fixed (and its -C, --git-dir and --work-tree are older than
+      // git 2), so a usage error means a git without --show-scope.
+      if (code === 129) throw new GitTooOldError()
       throw e
     })
     .then(filterOverrides)

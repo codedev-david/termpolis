@@ -13,7 +13,7 @@
 // The rule table is the app's, loaded from ./secretRules.cjs (electron-builder already
 // ships src/mcp-adapter/**/*.cjs into resources/mcp-adapter/), and
 // tests/electron/secretRulesSync.test.ts fails CI if it ever drifts from the RULES in
-// the app's scanner. The git commands mirror src/main/commitScan.ts exactly, so the
+// the app's scanner. The git commands are the ones src/main/commitScan.ts runs (see GIT_ARGS), so the
 // hook and the in-app gate return the same verdict on the same repo.
 //
 // TWO FAILURE AXES, AND THEY POINT OPPOSITE WAYS — get this right:
@@ -45,12 +45,20 @@ const MAX_BUFFER = 32 * 1024 * 1024
 // output buries the one line that tells the user what to do about it.
 const MAX_LISTED_HITS = 8
 
-// Mirrored EXACTLY from src/main/commitScan.ts — the hook and the in-app gate must scan
-// the same bytes. `log -p --not --remotes` (not `@{u}..HEAD`) is deliberate: it handles
-// brand-new branches and root commits, where a naive upstream range errors out.
+// The subcommand and options the in-app gate runs: src/main/commitScan.ts's argv as
+// gitSafety.ts guardGitArgs hands it to git, display flags included, so the hook and the
+// in-app gate scan the same bytes (tests/electron/gitHookScanner.test.ts compares them).
+// The read-only prefix and filter overrides guardGitArgs puts before the subcommand are
+// not repeated: this runs inside the person's own `git commit`, which has already run
+// their config and hooks. `log -p --not --remotes` (not `@{u}..HEAD`) is deliberate: it
+// handles brand-new branches and root commits, where a naive upstream range errors out.
+// --no-textconv is kept on purpose, and costs something: a person's own textconv (docx2txt
+// for a .docx, say) no longer turns a binary into text, so a key inside a .docx shows as
+// "Binary files differ" and is not seen. textconv is a program the repository's
+// .gitattributes picks, and a read never runs one.
 const GIT_ARGS = {
-  'pre-commit': ['diff', '--cached', '--no-color', '--no-ext-diff'],
-  'pre-push': ['log', '-p', '--no-color', '--not', '--remotes'],
+  'pre-commit': ['diff', '--no-textconv', '--submodule=short', '--ignore-submodules=dirty', '--cached', '--no-color', '--no-ext-diff'],
+  'pre-push': ['log', '--no-ext-diff', '--no-textconv', '--submodule=short', '-p', '--no-color', '--not', '--remotes'],
 }
 
 // Electron's app.getPath('userData') without Electron — SHARED so it can't drift from the app.

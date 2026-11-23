@@ -23,6 +23,8 @@ import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { scanPushRange, scanStagedDiff } from '../../src/main/commitScan'
+import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
 
 const require_ = createRequire(import.meta.url)
 const HOOK_PATH = join(process.cwd(), 'src', 'mcp-adapter', 'termpolis-githook.cjs')
@@ -66,8 +68,8 @@ const AWS_KEY = 'AKIA' + 'A'.repeat(16)
 const AWS_KEY_2 = 'AKIA' + 'B'.repeat(16)
 const OPENAI_KEY = 'sk-' + 'a'.repeat(24)
 
-const STAGED = 'diff --cached --no-color --no-ext-diff'
-const UNPUSHED = 'log -p --no-color --not --remotes'
+const STAGED = 'diff --no-textconv --submodule=short --ignore-submodules=dirty --cached --no-color --no-ext-diff'
+const UNPUSHED = 'log --no-ext-diff --no-textconv --submodule=short -p --no-color --not --remotes'
 
 /** A fake git that answers only the exact argv the scanner is expected to run, and
  *  records every call so we can prove pre-push never peeks at the staged diff. */
@@ -110,11 +112,24 @@ afterEach(() => {
 
 describe('termpolis-githook — CLI contract', () => {
   it('pre-commit scans exactly what `git commit` will capture', () => {
-    expect(hook.GIT_ARGS['pre-commit']).toEqual(['diff', '--cached', '--no-color', '--no-ext-diff'])
+    expect(hook.GIT_ARGS['pre-commit'].join(' ')).toBe(STAGED)
   })
 
   it('pre-push scans exactly what `git push` will send', () => {
-    expect(hook.GIT_ARGS['pre-push']).toEqual(['log', '-p', '--no-color', '--not', '--remotes'])
+    expect(hook.GIT_ARGS['pre-push'].join(' ')).toBe(UNPUSHED)
+  })
+
+  it('both modes run the subcommand and options the in-app gate runs once guardGitArgs has added its display flags', async () => {
+    // The in-app gate (commitScan.ts through safeGitAsync) and the hook must scan the same bytes: same diff options,
+    // so --no-textconv on both (a .docx a person's own textconv would turn into text shows as "Binary files differ"
+    // in both). The read-only prefix and filter overrides before the subcommand are left out: the hook runs inside the
+    // person's own `git commit`, which has already run their config.
+    const inApp: string[][] = []
+    const git = async (args: string[]): Promise<string> => { inApp.push(args); return '' }
+    await scanStagedDiff({ git })
+    await scanPushRange({ git })
+    const run = inApp.map((a) => { const g = guardGitArgs(a, process.platform === 'win32', []); return g.slice(gitSubcommand(g)!.index) })
+    expect(run).toEqual([hook.GIT_ARGS['pre-commit'], hook.GIT_ARGS['pre-push']])
   })
 
   it('exits 1 on a staged AWS key so git ABORTS the commit', () => {
@@ -177,7 +192,7 @@ describe('termpolis-githook — CLI contract', () => {
       [UNPUSHED]: 'commit abc123\n+const answer = 42\n',
     })
     expect(hook.main(['pre-push'], { git: g.git, readSettings: () => ON, stderr: capture().stderr })).toBe(0)
-    expect(g.calls).toEqual([['log', '-p', '--no-color', '--not', '--remotes']])
+    expect(g.calls).toEqual([UNPUSHED.split(' ')])
   })
 
   it('pre-push blocks a secret that is already in history but not yet on a remote', () => {

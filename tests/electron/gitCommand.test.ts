@@ -38,7 +38,8 @@ vi.mock('../../src/main/binPath', async (importOriginal) => {
 import { mkdirSync, mkdtempSync, promises as fsPromises, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { safeGitAsync, runSafeCommandAsync, parseSafeCommand, isValidGitRef, repoTopLevel, _resetGitBinForTests } from '../../src/main/gitCommand'
+import { safeGitAsync, runSafeCommandAsync, parseSafeCommand, isValidGitRef, repoTopLevel, GitTooOldError, _resetGitBinForTests } from '../../src/main/gitCommand'
+import { OLD_GIT_MESSAGE } from '../../src/main/world/gitLogin'
 import { guardGitArgs, UnsafeFilterError } from '../../src/main/gitSafety'
 
 const GIT = process.platform === 'win32' ? 'C:\\Program Files\\Git\\cmd\\git.exe' : '/usr/bin/git'
@@ -137,6 +138,19 @@ describe('safeGitAsync: the filter-driver read before status and diff', () => {
     answer(Object.assign(new Error('no match'), { code: 1 }))
     expect(await safeGitAsync(['diff', '--numstat'], { cwd: '/repo' })).toBe('ok')
     expect(command()).toEqual(guardGitArgs(['diff', '--numstat'], isWin, []))
+  })
+
+  it('a git too old for the scan (no --show-scope before 2.26: a usage error, exit 129) fails every read that needs it with the old-git message, never a blank', async () => {
+    const usage = Object.assign(new Error('Command failed'), { code: 129, stderr: "error: unknown option `show-scope'" })
+    answer(usage)
+    const tooOld = safeGitAsync(['status', '--porcelain', '-b', '-z'], { cwd: '/repo' })
+    await expect(tooOld).rejects.toBeInstanceOf(GitTooOldError)
+    await expect(tooOld).rejects.toThrow(OLD_GIT_MESSAGE)
+    await expect(tooOld).rejects.toMatchObject({ code: 'GIT_TOO_OLD', name: 'GitTooOldError' })
+    await expect(safeGitAsync(['diff', '--numstat'], { cwd: '/repo' })).rejects.toThrow(OLD_GIT_MESSAGE)
+    expect(command()).toBeUndefined()
+    // A read that needs no scan still runs on the old git.
+    expect(await safeGitAsync(['rev-parse', 'HEAD'], { cwd: '/repo' })).toBe('ok')
   })
 
   it('any other failure of the read fails the command, which never runs, and is not kept', async () => {

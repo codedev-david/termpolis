@@ -5,8 +5,9 @@
 // helper. Dependencies are injected so the logic is tested without a disk, a git repository or the GitHub CLI.
 // CI is read by default (David, 2026-11-18) and only where it can work: `gh` must be on PATH (found by looking at
 // the PATH folders, never by starting anything, and then started by that full path) and the repository must have a
-// GitHub remote. Git is started by its full path too (binPath.ts), never by the bare name: on Windows a bare `git`
-// with cwd at the repository would run a `git.exe` planted in it. Neither program runs if it lies inside the repository.
+// GitHub remote. Git is started by its full path too (binPath.ts), never by the bare name, as defence in depth
+// (Node's libuv looks a bare name up on PATH, not in cwd, but a relative or empty PATH entry would look in the
+// repository). Neither program runs if it lies inside the repository.
 
 import { binInside } from '../binPath'
 import { guardGitArgs, guardGitEnv } from '../gitSafety'
