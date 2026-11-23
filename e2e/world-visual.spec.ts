@@ -348,23 +348,24 @@ const overlappingDistrictLabels = (): Promise<string[]> =>
   })
 
 interface Line { id: string; from: string; to: string; label: string }
-interface World { ids: string[]; connected: string[]; names: Record<string, string>; districts: number; edges: Line[] }
+interface World { ids: string[]; connected: string[]; names: Record<string, string>; districts: number; edges: Line[]; provisional: boolean }
 
-/** Building ids from the stored world of `root` (also those with a connection, the busiest first), their names, its district count and its lines. */
+/** Building ids from the stored world of `root` (also those with a connection, the busiest first), their names, its district count and its lines,
+ *  and whether it is still the first map drawn from the file listing (or no world yet). */
 async function world(root: string): Promise<World> {
   return page.evaluate(async (r) => {
-    interface Doc { buildings: { id: string; name: string }[]; districts: unknown[]; edges: { id: string; from: string; to: string; label: string }[] }
+    interface Doc { buildings: { id: string; name: string }[]; districts: unknown[]; edges: { id: string; from: string; to: string; label: string }[]; provisional?: boolean }
     const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }> } }).termpolis
     const top = await api.gitFindRoot(r)
     const res = await api.worldGet(top.success && top.data ? top.data : r)
-    if (!res.success || !res.data) return { ids: [], connected: [], names: {}, districts: 0, edges: [] }
+    if (!res.success || !res.data) return { ids: [], connected: [], names: {}, districts: 0, edges: [], provisional: true }
     const lines = new Map<string, number>()
     for (const e of res.data.edges) for (const end of [e.from, e.to]) lines.set(end, (lines.get(end) ?? 0) + 1)
     const ids = res.data.buildings.map((b) => b.id)
     // The busiest building first: its hover labels gather over it, the case where they caught the click.
     const connected = ids.filter((id) => lines.has(id)).sort((a, b) => (lines.get(b) as number) - (lines.get(a) as number))
     const edges = res.data.edges.map((e) => ({ id: e.id, from: e.from, to: e.to, label: e.label }))
-    return { ids, connected, names: Object.fromEntries(res.data.buildings.map((b) => [b.id, b.name])), districts: res.data.districts.length, edges }
+    return { ids, connected, names: Object.fromEntries(res.data.buildings.map((b) => [b.id, b.name])), districts: res.data.districts.length, edges, provisional: res.data.provisional === true }
   }, root)
 }
 
@@ -596,6 +597,12 @@ async function checkWorld(tag: string, dir: string, themes: readonly string[]): 
   expect(first.opacity, `the pane's first frame (${first.testid}) is faded`).toBe(1)
 
   await settled(240_000)
+  // A repository past the host's first-map size (Termpolis itself) is drawn first from its file listing, with no lines,
+  // and settles in place once the complete world is done: the checks wait for that one.
+  if ((await world(dir)).provisional) {
+    await expect.poll(async () => (await world(dir)).provisional, { timeout: 240_000 }).toBe(false)
+    await settled(240_000)
+  }
   const w = await world(dir)
   const { ids, connected, names, districts } = w
   expect(ids.length).toBeGreaterThan(1)

@@ -306,6 +306,17 @@ async function settled(compileMs = 120_000): Promise<void> {
   await still('the world')
 }
 
+/** Whether the stored world of `root` is still the first map drawn from the file listing (or no world yet): a
+ *  repository past the host's first-map size (Termpolis itself) is drawn that way first, with its "Still reading the
+ *  files" notice up, and settles in place once the complete world is done. */
+const provisional = (root: string): Promise<boolean> =>
+  page.evaluate(async (r) => {
+    const api = (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string }>; worldGet: (c: string) => Promise<{ success: boolean; data?: { provisional?: boolean } | null }> } }).termpolis
+    const top = await api.gitFindRoot(r)
+    const res = await api.worldGet(top.success && top.data ? top.data : r)
+    return !res.success || !res.data || res.data.provisional === true
+  }, root)
+
 /**
  * How many times slower than at 1080p a frame is in the window now: the test renders in software, so the time a frame
  * takes grows with the pixels drawn (at 3840x2160 about 226 ms). Waits that hang on frames scale by it.
@@ -834,6 +845,11 @@ test.describe.serial('Lumopolis at every screen size', () => {
     await createTerminal('Repo', path.resolve('.'))
     await openPane()
     await settled(180_000)
+    // The loaded world is the complete one: the first map from the listing is replaced in place, its notice with it.
+    if (await provisional(path.resolve('.'))) {
+      await expect.poll(() => provisional(path.resolve('.')), { timeout: 240_000 }).toBe(false)
+      await settled(180_000)
+    }
     let clickedZoomed = false
     for (const { v, width } of LAYOUTS) {
       const at = await layoutAt(v, width)
