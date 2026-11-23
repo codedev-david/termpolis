@@ -64,6 +64,7 @@ beforeEach(() => {
   delete process.env.SHELL
   delete process.env.NVM_DIR
   delete process.env.FNM_DIR
+  delete process.env.TERMPOLIS_TEST_SHIM_DIR
   process.env.PATH = '/orig/bin'
   mockHomedir.mockReturnValue('/home/test')
 })
@@ -304,6 +305,24 @@ describe('getExtendedPath', () => {
     const out = getExtendedPath()
     expect(out.split(':')[0]).toBe('/opt/homebrew/bin')
     expect(out.endsWith(':/usr/bin')).toBe(true)
+  })
+
+  it('on linux puts the shim directory first in the test environment', () => {
+    setPlatform('linux')
+    process.env.NODE_ENV = 'test'
+    process.env.TERMPOLIS_TEST_SHIM_DIR = '/test/shims'
+
+    expect(getExtendedPath().split(':')[0]).toBe('/test/shims')
+  })
+
+  it('on linux ignores the shim directory in production', () => {
+    setPlatform('linux')
+    process.env.NODE_ENV = 'production'
+    process.env.TERMPOLIS_TEST_SHIM_DIR = '/test/shims'
+
+    const dirs = getExtendedPath().split(':')
+    expect(dirs[0]).toBe('/opt/homebrew/bin')
+    expect(dirs).not.toContain('/test/shims')
   })
 
   it('filters out the empty interactive-shell PATH when discovery fails', () => {

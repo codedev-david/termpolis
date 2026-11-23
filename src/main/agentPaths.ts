@@ -177,7 +177,8 @@ function searchPath(shellPath: string): string {
   if (process.platform === 'win32') {
     return [currentPath, ...getAgentExtraPaths(), ...windowsPathTail(currentPath)].filter(Boolean).join(';')
   }
-  return [...getAgentExtraPaths(), shellPath, currentPath].filter(Boolean).join(':')
+  const testShimDir = process.env.NODE_ENV === 'test' ? process.env.TERMPOLIS_TEST_SHIM_DIR : undefined
+  return [testShimDir, ...getAgentExtraPaths(), shellPath, currentPath].filter(Boolean).join(':')
 }
 
 export function getExtendedPath(): string {

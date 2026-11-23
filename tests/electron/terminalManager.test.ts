@@ -276,20 +276,25 @@ describe('terminalManager', () => {
   })
 
   // 4. spawnTerminal prepends bundled tools dir to PATH when tools are not installed
-  it('spawnTerminal prepends bundled tools dir to PATH when tools are missing', () => {
-    // Make the tool check fail (execSync throws = tool not found)
-    vi.mocked(execSync).mockImplementation(() => { throw new Error('not found') })
+  it('spawnTerminal prepends bundled tools dir to PATH when tools are missing', async () => {
+    // Earlier spawns cache the probe result. Load a fresh module for the missing-tools case.
+    vi.resetModules()
+    const terminalManager = await import('../../src/main/terminalManager')
+    vi.mocked(execSync).mockImplementationOnce(() => { throw new Error('not found') })
+    vi.stubEnv('PATH', '/fixture/bin')
+    vi.stubEnv('TERMPOLIS_TEST_SHIM_DIR', undefined)
 
-    // Force re-evaluation of bundledToolsNeeded cache by re-importing
-    // Since the cache is module-level, we test the env passed to pty.spawn
-    // The first spawn in the module will have already cached. We rely on the
-    // module having been freshly imported above.
-    spawnTerminal('t4', '/bin/bash', '/tmp', vi.fn())
+    try {
+      await terminalManager.spawnTerminal('t4', '/bin/bash', '/tmp', vi.fn())
 
-    const call = vi.mocked(pty.spawn).mock.calls[0]
-    const env = call[2]?.env as Record<string, string>
-    // PATH should contain the tools directory
-    expect(env?.PATH || '').toContain('tools')
+      const call = vi.mocked(pty.spawn).mock.calls[0]
+      const env = call[2]?.env as Record<string, string>
+      const separator = process.platform === 'win32' ? ';' : ':'
+      expect(env.PATH.split(separator)[0]).toMatch(/[\\/]tools[\\/][^\\/]+$/)
+    } finally {
+      terminalManager.killAll()
+      vi.unstubAllEnvs()
+    }
   })
 
   // 5. killTerminal calls pty.kill() and process.kill(pid), removes from map

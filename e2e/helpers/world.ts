@@ -127,24 +127,29 @@ export async function launchWorldApp(opts: WorldAppOptions = {}): Promise<WorldA
     env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_SMOKE_SKIP_PICKERS: '1', TERMPOLIS_TEST_WORLD_PROBE: '1', ...opts.env },
     ...(opts.videoDir ? { recordVideo: { dir: opts.videoDir, size: { width: 1280, height: 800 } } } : {}),
   })
-  const page = await app.firstWindow()
-  opts.onPage?.(page)
-  await page.waitForLoadState('domcontentloaded')
-  await page.waitForTimeout(1500)
-  await page.evaluate(() => {
-    try {
-      localStorage.setItem('termpolis.onboarding.seen.v1', '1')
-      localStorage.setItem('termpolis.telemetry.optIn', '0')
-    } catch {
-      /* ignore */
+  try {
+    const page = await app.firstWindow()
+    opts.onPage?.(page)
+    await page.waitForLoadState('domcontentloaded')
+    await page.waitForTimeout(1500)
+    await page.evaluate(() => {
+      try {
+        localStorage.setItem('termpolis.onboarding.seen.v1', '1')
+        localStorage.setItem('termpolis.telemetry.optIn', '0')
+      } catch {
+        /* ignore */
+      }
+    })
+    const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
+    if (await onboardDialog.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
+      await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
     }
-  })
-  const onboardDialog = page.locator('[aria-labelledby="onboarding-title"]')
-  if (await onboardDialog.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await page.locator('button:has-text("Skip tour")').first().click({ force: true }).catch(() => {})
-    await onboardDialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
+    return { app, page, userDataDir }
+  } catch (error) {
+    await app.close().catch(() => {})
+    throw error
   }
-  return { app, page, userDataDir }
 }
 
 /** Adds a terminal whose working folder is `cwd` (the Add Terminal dialog's folder field). */
