@@ -35,7 +35,10 @@ vi.mock('../../src/main/binPath', async (importOriginal) => {
   }
 })
 
-import { safeGitAsync, runSafeCommandAsync, parseSafeCommand, isValidGitRef, _resetGitBinForTests } from '../../src/main/gitCommand'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { safeGitAsync, runSafeCommandAsync, parseSafeCommand, isValidGitRef, repoTopLevel, _resetGitBinForTests } from '../../src/main/gitCommand'
 import { guardGitArgs, UnsafeFilterError } from '../../src/main/gitSafety'
 
 const GIT = process.platform === 'win32' ? 'C:\\Program Files\\Git\\cmd\\git.exe' : '/usr/bin/git'
@@ -192,6 +195,71 @@ describe('safeGitAsync: the filter-driver read before status and diff', () => {
     await safeGitAsync(['add', '--', 'a.bin'], { cwd: '/repo' })
     expect(scans()).toBe(0)
     expect(command()).toEqual(['add', '--', 'a.bin'])
+  })
+})
+
+describe('safeGitAsync: a status writes each submodule\'s dirty state back in', () => {
+  type Cb = (e: Error | null, out: string, err: string) => void
+  let tmp = ''
+  /** A folder holding `.git`, and with `subs`, a .gitmodules listing each with its own `.git`. */
+  const repo = (name: string, subs: string[] = []): string => {
+    const dir = join(tmp, name)
+    mkdirSync(join(dir, '.git'), { recursive: true })
+    if (subs.length > 0) {
+      writeFileSync(join(dir, '.gitmodules'), subs.map((s) => `[submodule "${s}"]\n\tpath = ${s}\n`).join(''))
+      for (const s of subs) mkdirSync(join(dir, s, '.git'), { recursive: true })
+    }
+    return dir
+  }
+  const subStatuses = (): string[] => mockExecFile.mock.calls
+    .filter((c) => (c[1] as string[]).includes('status') && /[\\/]s$/.test((c[2] as { cwd: string }).cwd))
+    .map((c) => (c[2] as { cwd: string }).cwd)
+  beforeEach(() => {
+    _resetGitBinForTests()
+    tmp = mkdtempSync(join(tmpdir(), 'tp-gitcmd-sub-'))
+    mockExecFile.mockImplementation((_b: string, a: string[], o: { cwd: string }, cb: Cb) => {
+      if (a.includes('--show-scope')) return cb(Object.assign(new Error('none'), { code: 1 }), '', '')
+      if (a.includes('ls-files')) return cb(null, '160000 a 0\ts\0', '')
+      if (a.includes('status')) return cb(null, /[\\/]s$/.test(o.cwd) ? ' M f\0' : '', '')
+      cb(null, '', '')
+    })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  it('asks the submodule once for the cache window, then again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const dir = repo('one', ['s'])
+    expect(await safeGitAsync(['status', '--porcelain', '-z'], { cwd: dir })).toBe(' M s\0')
+    expect(await safeGitAsync(['status', '--porcelain', '-z'], { cwd: join(dir, 's', '..') })).toBe(' M s\0')
+    expect(subStatuses()).toHaveLength(1)
+    vi.setSystemTime(Date.now() + 1500)
+    await safeGitAsync(['status', '--porcelain', '-z'], { cwd: dir })
+    expect(subStatuses()).toHaveLength(2)
+  })
+
+  it('remembers at most 64 repositories, dropping the oldest', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const first = repo('first', ['s'])
+    await safeGitAsync(['status', '--porcelain'], { cwd: first })
+    for (let i = 0; i < 64; i++) await safeGitAsync(['status', '--porcelain'], { cwd: repo(`r${i}`) })
+    expect(subStatuses()).toHaveLength(1)
+    await safeGitAsync(['status', '--porcelain'], { cwd: first })
+    expect(subStatuses()).toHaveLength(2)
+  })
+
+  it('outside any repository, or with no .gitmodules, the status is as git wrote it', async () => {
+    expect(await repoTopLevel(join(tmp, 'nowhere', 'deeper'))).toBeNull()
+    const plain = repo('plain')
+    expect(await repoTopLevel(join(plain, 'a', 'b'))).toBe(plain)
+    expect(await safeGitAsync(['status', '--porcelain', '-z'], { cwd: plain })).toBe('')
+    // Listed, but never checked out (no `s/.git`): not looked into.
+    const unchecked = repo('unchecked', ['s'])
+    rmSync(join(unchecked, 's', '.git'), { recursive: true })
+    expect(await safeGitAsync(['status', '--porcelain', '-z'], { cwd: unchecked })).toBe('')
+    expect(subStatuses()).toEqual([])
   })
 })
 

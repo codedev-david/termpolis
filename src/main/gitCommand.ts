@@ -11,7 +11,10 @@
 import { getExtendedPathAsync } from './agentPaths'
 import { binInsideFolder, forgetGitBin, resolveGitBin } from './binPath'
 import { execOffThread, execCaptureOffThread, execShellCaptureOffThread } from './procClient'
+import { promises as fsPromises } from 'fs'
+import { dirname, join, relative, resolve, sep } from 'path'
 import { filterOverrides, filterScanArgs, guardGitArgs, guardGitEnv, needsFilterScan } from './gitSafety'
+import { withSubmoduleEdits, type DirtySubmodule, type SubmoduleDeps } from './gitSubmodules'
 
 export interface GitOptions {
   cwd: string
@@ -43,7 +46,12 @@ export interface GitOptions {
  * lies inside the folder it would run in is refused too. When there is no git, nothing is started and the call
  * fails with code 'ENOENT', exactly as a missing git always did, so every caller degrades as it did before.
  */
-export async function safeGitAsync(args: string[], opts: GitOptions): Promise<string> {
+export function safeGitAsync(args: string[], opts: GitOptions): Promise<string> {
+  return guardedGit(args, opts, 0)
+}
+
+/** safeGitAsync, `depth` submodules below the status that started it (gitSubmodules.ts MAX_DEPTH). */
+async function guardedGit(args: string[], opts: GitOptions, depth: number): Promise<string> {
   const bin = await resolveGitBin()
   if (bin === null || (await binInsideFolder(bin, opts.cwd))) throw gitNotFound()
   // The one chokepoint for git safety (gitSafety.ts): a read never runs a program the repository's own config,
@@ -52,13 +60,16 @@ export async function safeGitAsync(args: string[], opts: GitOptions): Promise<st
   const isWindows = process.platform === 'win32'
   try {
     const overrides = needsFilterScan(args) ? await repoFilterOverrides(bin, args, opts, isWindows) : []
-    return await execOffThread(bin, guardGitArgs(args, isWindows, overrides), {
+    const out = await execOffThread(bin, guardGitArgs(args, isWindows, overrides), {
       cwd: opts.cwd,
       timeout: opts.timeout ?? 10000,
       maxBuffer: opts.maxBuffer ?? 1024 * 1024,
       // GIT_NO_LAZY_FETCH for a read: a partial clone missing an object never starts a fetch (gitSafety.ts).
       addEnv: guardGitEnv(args),
     })
+    // A status leaves each submodule's dirty state out (its own config would run); it is asked for here, one guarded
+    // status per submodule, and written back in (gitSubmodules.ts). Any other command comes back as git wrote it.
+    return await withSubmoduleEdits(args, opts.cwd, out, depth, submoduleDeps(opts), cachedDirtySubmodules)
   } catch (e) {
     // `code` still means what it always meant: the string 'ENOENT' when the binary was not found, a number when
     // git ran and refused. ProcError carries it across the process boundary. The git found earlier has gone
@@ -98,6 +109,48 @@ function repoFilterOverrides(bin: string, args: string[], opts: GitOptions, isWi
   return value
 }
 
+/** How long one repository's dirty-submodule answer is reused: the git cache's window (gitCache.ts GIT_CACHE_TTL_MS),
+ *  so the panels that wake on one tick share one look into each submodule. */
+const DIRTY_SUBMODULES_TTL_MS = 1500
+/** Repositories remembered at once; the oldest is dropped past this. */
+const DIRTY_SUBMODULES_MAX = 64
+const dirtySubmoduleCache = new Map<string, { at: number; value: Promise<DirtySubmodule[]> }>()
+
+function cachedDirtySubmodules(root: string, untrackedNo: boolean, load: () => Promise<DirtySubmodule[]>): Promise<DirtySubmodule[]> {
+  const key = `${root}\u0000${untrackedNo ? 'no' : 'all'}`
+  const now = Date.now()
+  const hit = dirtySubmoduleCache.get(key)
+  if (hit && now - hit.at < DIRTY_SUBMODULES_TTL_MS) return hit.value
+  const value = load()
+  dirtySubmoduleCache.delete(key)
+  dirtySubmoduleCache.set(key, { at: now, value })
+  if (dirtySubmoduleCache.size > DIRTY_SUBMODULES_MAX) dirtySubmoduleCache.delete(dirtySubmoduleCache.keys().next().value as string)
+  return value
+}
+
+/** The folder holding `.git` at or above `cwd`, found on disk without starting git; null outside a repository. */
+export async function repoTopLevel(cwd: string): Promise<string | null> {
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    try {
+      await fsPromises.stat(join(dir, '.git'))
+      return dir
+    } catch {
+      if (dirname(dir) === dir) return null
+    }
+  }
+}
+
+function submoduleDeps(opts: GitOptions): SubmoduleDeps {
+  return {
+    topLevel: repoTopLevel,
+    readText: (file) => fsPromises.readFile(file, 'utf8').catch(() => null),
+    exists: (p) => fsPromises.stat(p).then(() => true, () => false),
+    git: (args, cwd, depth) => guardedGit(args, { cwd, timeout: opts.timeout, maxBuffer: opts.maxBuffer }, depth),
+    join: (root, rel) => join(root, ...rel.split('/')),
+    relative: (root, cwd) => relative(root, resolve(cwd)).split(sep).join('/')
+  }
+}
+
 /** The error a missing git has always given: code 'ENOENT', and nothing was started. */
 function gitNotFound(): NodeJS.ErrnoException {
   return Object.assign(new Error('git was not found'), { code: 'ENOENT' })
@@ -107,6 +160,7 @@ function gitNotFound(): NodeJS.ErrnoException {
 export function _resetGitBinForTests(): void {
   forgetGitBin()
   filterScans.clear()
+  dirtySubmoduleCache.clear()
 }
 
 // Conservative subset of git-check-ref-format(1): start with alphanumeric,

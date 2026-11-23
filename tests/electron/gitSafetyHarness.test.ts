@@ -341,7 +341,11 @@ const VECTORS: Vector[] = [
       git(sub, ['add', '-A'])
       git(sub, ['commit', '-q', '-m', 'sub'])
       git(sub, ['config', 'filter.subf.clean', runs(plantProgram('submodule-clean', 'cat\n'))])
-      git(dir, ['add', 'sub'])
+      git(sub, ['config', 'filter.subf.required', 'true'])
+      // Listed in .gitmodules, as a cloned submodule is: the status of a superproject now looks into each one itself,
+      // through the guarded runner, which scans the submodule's own filters first (gitSubmodules.ts).
+      writeFileSync(join(dir, '.gitmodules'), '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n')
+      git(dir, ['add', 'sub', '.gitmodules'])
       git(dir, ['commit', '-q', '-m', 'gitlink'])
       return { dir, file: 'a.txt', redirty: () => dirty(sub, 'x.dat', 'two\n') }
     },
@@ -507,6 +511,44 @@ describe('git safety harness: the person’s own setup keeps working', () => {
     } finally {
       writeFileSync(globalConfig, '[user]\n\tname = Harness\n\temail = harness@example.invalid\n[core]\n\tautocrlf = false\n')
     }
+  }, TIMEOUT)
+
+  it('edits inside a submodule show on the status every panel reads, as plain git reports them, with nothing run', async () => {
+    clearMarkers()
+    const dir = newRepo('subedits', { 'z.txt': 'z\n' })
+    const subs: string[] = []
+    for (const name of ['my sub', 'other']) {
+      const sub = join(dir, name)
+      mkdirSync(sub)
+      git(sub, ['init', '-q', '-b', 'main'])
+      writeFileSync(join(sub, 's.txt'), 'one\n')
+      git(sub, ['add', '-A'])
+      git(sub, ['commit', '-q', '-m', 's1'])
+      subs.push(sub)
+    }
+    writeFileSync(join(dir, '.gitmodules'), '[submodule "my sub"]\n\tpath = my sub\n\turl = ./x\n[submodule "other"]\n\tpath = other\n\turl = ./y\n')
+    git(dir, ['add', '-A'])
+    git(dir, ['commit', '-q', '-m', 'gitlinks'])
+    mkdirSync(join(dir, 'src'))
+    // A tracked edit in one submodule, only an untracked file in the other, and a change of the superproject's own.
+    writeFileSync(join(subs[0], 's.txt'), 'two\n')
+    writeFileSync(join(subs[1], 'new.txt'), 'new\n')
+    writeFileSync(join(dir, 'z.txt'), 'zz\n')
+    _resetGitBinForTests()
+    for (const args of [['status', '--porcelain', '-b', '-z'], ['status', '--porcelain'], ['status', '--short'], ['status', '--porcelain', '--untracked-files=no']]) {
+      expect(await safeGitAsync(args, opts(dir)), args.join(' ')).toBe(git(dir, args))
+    }
+    // --short outside -z writes paths relative to the folder it ran in, as plain git does.
+    expect(await safeGitAsync(['status', '--short'], opts(join(dir, 'src')))).toBe(git(join(dir, 'src'), ['status', '--short']))
+    expect(await safeGitAsync(['status', '--porcelain', '-b', '-z'], opts(dir))).toContain(' M my sub\0')
+    // The dot and the rail read the same cached argv.
+    expect(await cachedGit(['status', '--porcelain', '-b', '-z'], opts(dir))).toBe(git(dir, ['status', '--porcelain', '-b', '-z']))
+    // Clean again: the rows go.
+    git(subs[0], ['checkout', '--', 's.txt'])
+    rmSync(join(subs[1], 'new.txt'))
+    _resetGitBinForTests()
+    expect(await safeGitAsync(['status', '--porcelain'], opts(dir))).toBe(' M z.txt\n')
+    expect(fired()).toEqual([])
   }, TIMEOUT)
 
   it('a mutating add in a repository with its own filter runs that filter (writes are the person’s git, unchanged)', async () => {
