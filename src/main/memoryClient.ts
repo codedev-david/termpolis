@@ -555,6 +555,9 @@ function onChildMessage(msg: HostResponse): void {
     if (late !== undefined) {
       timedOut.delete(msg.id)
       logLoud(`late reply: ${late} finished ${msg.ok ? 'ok' : 'with an error'} after its caller timed out`)
+      // WPA fix round 2 (R-M1): the boundary fired when the call timed out, but an async handler (the supersede pass) goes on
+      // changing the store after that, so anything read in between may be stale. Fire again now that it has really finished.
+      if (MEMORY_CHANGING.has(late)) fireMemoryChanged(late)
     }
     return // a reply to a call we rejected (or cancelled) — drop it
   }

@@ -121,6 +121,17 @@ async function longNameOf(dir: string, short: string, fs: ShortPathFs): Promise<
   return null
 }
 
+/** WPA fix round 2 (R-M4): expandShortPath remembers its answers, keyed by the input path, so a caller whose cwd is spelled
+ *  short (every memorySearch, memoryWrite and memoryList in the host, every ask and warm in main) lists the folder once, not
+ *  per call. Bounded: the least recently used path goes first past SHORT_MEMO_MAX. A found long form is kept SHORT_MEMO_HIT_MS
+ *  (a short name can be handed to another folder once its own is gone), a path left short only SHORT_MEMO_MISS_MS (the folder
+ *  may be made a moment later). One memo per file system, so a test's fake never sees the real one's answers. */
+export const SHORT_MEMO_MAX = 64
+export const SHORT_MEMO_HIT_MS = 10 * 60_000
+export const SHORT_MEMO_MISS_MS = 30_000
+interface ShortMemo { at: number; ttl: number; value: Promise<string> }
+const shortMemos = new WeakMap<ShortPathFs, Map<string, ShortMemo>>()
+
 /**
  * The long form of a Windows path with 8.3 short parts (`DAVIDE~1`): each part that looks short is replaced by the name of the
  * entry in its folder that has the same file id (WPA fix M7: a folder listing, never realpath, so a junction, a symlink or a
@@ -131,8 +142,23 @@ export async function expandShortPath(
   pathOrName: string,
   platform: NodeJS.Platform = process.platform,
   fs: ShortPathFs = realShortPathFs,
+  now: () => number = Date.now,
 ): Promise<string> {
   if (!hasShortPart(pathOrName, platform)) return pathOrName
+  let memo = shortMemos.get(fs)
+  if (!memo) { memo = new Map(); shortMemos.set(fs, memo) }
+  const at = now()
+  const known = memo.get(pathOrName)
+  memo.delete(pathOrName) // (re)inserted below: a Map keeps insertion order, so the first key is the least recently used
+  if (known && at - known.at < known.ttl) { memo.set(pathOrName, known); return known.value }
+  // A call made while the first is still scanning shares its promise. expandUncached never rejects.
+  const entry: ShortMemo = { at, ttl: SHORT_MEMO_HIT_MS, value: expandUncached(pathOrName, fs) }
+  memo.set(pathOrName, entry)
+  if (memo.size > SHORT_MEMO_MAX) memo.delete(memo.keys().next().value as string)
+  return entry.value.then((long) => { if (long === pathOrName) entry.ttl = SHORT_MEMO_MISS_MS; return long })
+}
+
+async function expandUncached(pathOrName: string, fs: ShortPathFs): Promise<string> {
   try {
     // Parts and the separators between them, alternating: ['C:', '\\', 'Users', '\\', 'DAVIDE~1', ...].
     const bits = pathOrName.trim().split(/([\\/]+)/)

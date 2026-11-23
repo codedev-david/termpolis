@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 import * as crypto from 'crypto'
 import {
   canonicalProjectPath, projectKeyOf, legacyProjectKeyOf, projectKeyAliases, expandShortPath, hasShortPart, SHORT_SCAN_MAX,
+  SHORT_MEMO_MAX, SHORT_MEMO_HIT_MS, SHORT_MEMO_MISS_MS,
 } from '../../src/main/projectKey'
 import type { ShortPathFs } from '../../src/main/projectKey'
 import { promises as fsp } from 'fs'
@@ -146,6 +147,58 @@ describe('expandShortPath (8.3 names)', () => {
     expect(await expandShortPath(5 as unknown as string, 'win32', fs)).toBe(5)
     expect(fs.reads).toEqual([])
     expect(fs.ino).not.toHaveBeenCalled()
+  })
+  describe('memoised, bounded, keyed by the input path (WPA fix round 2, R-M4)', () => {
+    const tree = (): ShortPathFs & { reads: string[] } => fakeFs(
+      { 'C:\\': ['Program Files', 'Other'] },
+      { 'C:\\PROGRA~1': 5, 'C:\\Program Files': 5, 'C:\\Other': 2, 'C:\\OTHER~1': 2, 'C:\\NOPE~1': 8 }, // NOPE~1 has an id but no long name in the folder
+    )
+    it('the same path a second time reads nothing; another spelling of the input is its own entry', async () => {
+      const fs = tree()
+      expect(await expandShortPath('C:\\PROGRA~1\\x', 'win32', fs)).toBe('C:\\Program Files\\x')
+      expect(await expandShortPath('C:\\PROGRA~1\\x', 'win32', fs)).toBe('C:\\Program Files\\x')
+      expect(fs.reads).toHaveLength(1)
+      expect(await expandShortPath('C:\\PROGRA~1\\y', 'win32', fs)).toBe('C:\\Program Files\\y')
+      expect(fs.reads).toHaveLength(2)
+    })
+    it('two calls at once share one scan', async () => {
+      const fs = tree()
+      const [a, b] = await Promise.all([expandShortPath('C:\\PROGRA~1', 'win32', fs), expandShortPath('C:\\PROGRA~1', 'win32', fs)])
+      expect([a, b]).toEqual(['C:\\Program Files', 'C:\\Program Files'])
+      expect(fs.reads).toHaveLength(1)
+    })
+    it('holds at most SHORT_MEMO_MAX paths, the least recently used forgotten first', async () => {
+      const fs = tree()
+      await expandShortPath('C:\\PROGRA~1\\first', 'win32', fs)
+      for (let n = 1; n < SHORT_MEMO_MAX; n++) await expandShortPath(`C:\\PROGRA~1\\p${n}`, 'win32', fs)
+      expect(fs.reads).toHaveLength(SHORT_MEMO_MAX)
+      await expandShortPath('C:\\PROGRA~1\\first', 'win32', fs) // used again: now the newest
+      await expandShortPath('C:\\PROGRA~1\\one-more', 'win32', fs) // past the bound: p1, the oldest, goes
+      expect(fs.reads).toHaveLength(SHORT_MEMO_MAX + 1)
+      await expandShortPath('C:\\PROGRA~1\\first', 'win32', fs)
+      expect(fs.reads).toHaveLength(SHORT_MEMO_MAX + 1)
+      await expandShortPath('C:\\PROGRA~1\\p1', 'win32', fs)
+      expect(fs.reads).toHaveLength(SHORT_MEMO_MAX + 2)
+    })
+    it('a found path is read again after SHORT_MEMO_HIT_MS, a path left short after SHORT_MEMO_MISS_MS', async () => {
+      const fs = tree()
+      let t = 1_000
+      const now = (): number => t
+      await expandShortPath('C:\\PROGRA~1', 'win32', fs, now)
+      await expandShortPath('C:\\NOPE~1', 'win32', fs, now) // not in the folder: left short
+      expect(fs.reads).toHaveLength(2)
+      t += SHORT_MEMO_MISS_MS - 1
+      await expandShortPath('C:\\NOPE~1', 'win32', fs, now)
+      expect(fs.reads).toHaveLength(2)
+      t += 1
+      expect(await expandShortPath('C:\\NOPE~1', 'win32', fs, now)).toBe('C:\\NOPE~1') // a folder made since would be found now
+      expect(fs.reads).toHaveLength(3)
+      await expandShortPath('C:\\PROGRA~1', 'win32', fs, now)
+      expect(fs.reads).toHaveLength(3)
+      t = 1_000 + SHORT_MEMO_HIT_MS
+      expect(await expandShortPath('C:\\PROGRA~1', 'win32', fs, now)).toBe('C:\\Program Files')
+      expect(fs.reads).toHaveLength(4)
+    })
   })
   it('defaults: the real file system on this platform never throws', async () => {
     const out = await expandShortPath('C:\\DOES-NOT~1\\EXIST~2')

@@ -14,7 +14,7 @@ vi.mock('electron', () => ({
 }))
 
 import {
-  handleMessage, handleCancel, argsWithSignal, CANCELLABLE_READS, _resetHostForTests, _setHostLoweredForTests, _hostLaneForTests,
+  handleMessage, handleCancel, argsWithSignal, CANCELLABLE_READS, LANE_FREE_CALLS, HOST_HANDLERS, _resetHostForTests, _setHostLoweredForTests, _hostLaneForTests,
   type HostRequest, type HostResponse,
 } from '../../src/main/memoryHost'
 import {
@@ -183,7 +183,7 @@ describe('memory host: the interactive lane', () => {
     } finally { vi.useRealTimers() }
   })
 
-  it('a write, a count or any call that is not a background read never queues on the lane: it answers while an interactive call runs (WPA fix I4)', async () => {
+  it('a single write, the router learn and the status reads never queue on the lane: they answer while an interactive call runs (WPA fix round 2, R-I1)', async () => {
     await initHost()
     await inprocWrite({ agentId: 'a', kind: 'fact', content: 'one two three' })
     const g = gatedEmbed()
@@ -194,9 +194,55 @@ describe('memory host: the interactive lane', () => {
     expect(w?.ok).toBe(true)
     const c = await call(3, 'memoryCount', [], 'background')
     expect(c?.ok).toBe(true)
+    const s = await call(4, 'getSyncStatus', [])
+    expect(s?.ok).toBe(true)
+    const r = await call(5, 'memoryReleaseSupersedes', ['no-such-note'])
+    expect(r?.ok).toBe(true)
     expect(_hostLaneForTests().waiting).toBe(0)
     g.open()
     await fast
+  })
+
+  it('the calls that skip the lane are exactly the single writes someone waits on and the status reads (Ruling 13)', () => {
+    expect([...LANE_FREE_CALLS].sort()).toEqual([
+      'embeddingsReady', 'getSyncStatus', 'memoryCount', 'memoryDelete', 'memoryFeedback', 'memoryHasHash', 'memoryLink',
+      'memoryReleaseSupersedes', 'memoryWrite', 'routerLearn',
+    ])
+    for (const fn of LANE_FREE_CALLS) expect(typeof HOST_HANDLERS[fn]).toBe('function')
+    for (const fn of ['reloadMemoryFromSync', 'compactSelfShard', 'importMemorySnapshot', 'importGraphEdges', 'memorySupersedePass',
+      'memoryArchive', 'memoryForget', 'weaveCandidates', 'weaveNeighboursBatch', 'consolidationCandidates', 'consolidationSimMatrix',
+      'persistMemoryIndex', 'memoryBackfillVectors', 'routerWarm']) {
+      expect(LANE_FREE_CALLS.has(fn)).toBe(false)
+    }
+  })
+
+  it('a bulk call (sync reload, compaction, import, supersede, forget, Weave) cannot start while an interactive call runs, and starts after BACKGROUND_MAX_WAIT_MS anyway (WPA fix round 2, R-I1)', async () => {
+    await initHost()
+    await inprocWrite({ agentId: 'a', kind: 'fact', content: 'one two three' })
+    const g = gatedEmbed()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const fast = call(1, 'memorySearch', [{ query: 'one', limit: 5 }], 'interactive')
+      await vi.advanceTimersByTimeAsync(0)
+      const done = new Set<string>()
+      const bulk: Array<[string, unknown[]]> = [
+        ['reloadMemoryFromSync', []], ['compactSelfShard', []], ['importGraphEdges', [[]]], ['memorySupersedePass', [{ max: 0 }]],
+        ['memoryForget', [{ max: 0 }]], ['weaveCandidates', [{ limit: 1 }]],
+      ]
+      const replies = bulk.map(([fn, args], i) => call(10 + i, fn, args).then((r) => { done.add(fn); return r }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(_hostLaneForTests().waiting).toBe(bulk.length) // parked on the lane: none of them has started
+      await vi.advanceTimersByTimeAsync(BACKGROUND_MAX_WAIT_MS - 1)
+      expect(done.size).toBe(0)
+      expect(_hostLaneForTests().waiting).toBe(bulk.length)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(_hostLaneForTests().waiting).toBe(0) // the cap ran out: every one has started, the interactive call still running
+      expect(done.has('reloadMemoryFromSync')).toBe(true) // the synchronous ones have already answered
+      expect(done.has('memoryForget')).toBe(true)
+      g.open()
+      await fast
+      for (const r of await Promise.all(replies)) expect(r?.kind).toBe('result')
+    } finally { vi.useRealTimers() }
   })
 
   it('the forked host goes to normal priority while an interactive call is in the lane, and back below normal after', async () => {

@@ -342,6 +342,20 @@ const lane = createHostLane((on) => { if (hostLowered) setLanePriority(on, { hos
 /** WPA: the reads a caller may cancel. Every other call (each write above all) runs to the end once it has started. */
 export const CANCELLABLE_READS: ReadonlySet<string> = new Set(['memorySearch', 'memoryList', 'memoryRelated', 'memoryGraphQuery'])
 
+/** WPA Ruling 13 (fix round 2, R-I1): the calls that never queue on the lane. Every other non-interactive call (the sync reload,
+ *  compaction, the imports, the supersede, archive and forget passes, Weave and the consolidation reads, the backfills and the
+ *  key and encryption calls) waits while an interactive call is in the lane, at most BACKGROUND_MAX_WAIT_MS, so a long
+ *  synchronous pass never starts in the middle of a call a person is waiting on, and never starves either. These skip it:
+ *  - memoryWrite, memoryLink, memoryFeedback, memoryDelete, memoryReleaseSupersedes, routerLearn: one write each, made for an
+ *    agent's tool call, the router or a click, with the caller waiting on it; each is small, and none rereads the store.
+ *  - getSyncStatus, memoryCount, memoryHasHash, embeddingsReady: status reads of a few fields. lockAwareBuild reads the lock
+ *    beside each primer build, and the search path asks embeddingsReady after each search; holding them would only slow the
+ *    call a person is waiting on. */
+export const LANE_FREE_CALLS: ReadonlySet<string> = new Set([
+  'memoryWrite', 'memoryLink', 'memoryFeedback', 'memoryDelete', 'memoryReleaseSupersedes', 'routerLearn',
+  'getSyncStatus', 'memoryCount', 'memoryHasHash', 'embeddingsReady',
+])
+
 /** WPA: the arguments a cancellable read is called with: memorySearch takes the signal in its options, and checks it at its
  *  await points. Shared with memoryClient's in-process path, so a cancel reaches the search the same way in both. */
 export function argsWithSignal(fn: string, args: unknown[], signal: AbortSignal | undefined): unknown[] {
@@ -368,13 +382,12 @@ export async function handleCall(msg: HostCallMsg): Promise<HostResponse> {
   if (ctl) inflight.set(msg.id, ctl)
   let release: (() => void) | null = null
   try {
-    // An interactive call enters the lane (and holds the host at normal priority while it runs). A background READ waits here
-    // (an await: the thread stays free) while an interactive one is in the lane, at most BACKGROUND_MAX_WAIT_MS.
-    // Ruling (WPA fix I4): every other call, each write above all, never queues on the lane. It starts the moment it arrives,
-    // so a write never waits behind reads, and once started it finishes; one whose caller has already timed out still lands,
-    // and main logs its late outcome by name (memoryClient onChildMessage).
+    // An interactive call enters the lane (and holds the host at normal priority while it runs). Every other call but the
+    // LANE_FREE_CALLS waits here (an await: the thread stays free) while an interactive one is in the lane, at most
+    // BACKGROUND_MAX_WAIT_MS (Ruling 13). Once started, a call finishes; one whose caller has already timed out still lands,
+    // and main logs its late outcome by name and fires the change boundary again for a changing call (memoryClient).
     if (msg.lane === 'interactive') release = await lane.enter('interactive')
-    else if (ctl) release = await lane.enter('background', ctl.signal)
+    else if (!LANE_FREE_CALLS.has(msg.fn)) release = await lane.enter('background', ctl?.signal)
     if (ctl?.signal.aborted) throw abortError()
     const args = argsWithSignal(msg.fn, Array.isArray(msg.args) ? msg.args : [], ctl?.signal)
     const result = await (handler as (...a: unknown[]) => unknown)(...args)

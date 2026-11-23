@@ -240,6 +240,34 @@ describe('memoryClient timeouts (WPA fix I2 and I4)', () => {
     } finally { loud.restore() }
   })
 
+  it('a changing call that timed out fires the change boundary again when it really completes; a read that lands late does not (WPA fix round 2, R-M1)', async () => {
+    const h = manualHost()
+    setMemoryHostSpawner(() => h.transport)
+    await startMemoryHost({ userDataPath: tmp })
+    const seen: string[] = []
+    onMemoryChanged((why) => seen.push(why))
+    const loud = captureLoud()
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const pass = client.memorySupersedePass({ max: 50 }).catch((e: unknown) => e)
+      const count = memoryCount().catch((e: unknown) => e)
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(isMemoryTimeout(await pass)).toBe(true)
+      expect(isMemoryTimeout(await count)).toBe(true)
+      expect(seen).toEqual(['memorySupersedePass']) // the timeout itself fires once: the pass may already have changed something
+      const calls = h.posted.filter((m): m is HostCall => m.kind === 'call')
+      const passCall = calls.find((c) => c.fn === 'memorySupersedePass') as HostCall
+      const countCall = calls.find((c) => c.fn === 'memoryCount') as HostCall
+      h.push({ kind: 'result', id: countCall.id, ok: true, result: 3 })
+      expect(seen).toEqual(['memorySupersedePass'])
+      // The async pass kept minting after its caller gave up: a digest built in between is stale, so the late reply clears again.
+      h.push({ kind: 'result', id: passCall.id, ok: true, result: { considered: 9, minted: 2 } })
+      expect(seen).toEqual(['memorySupersedePass', 'memorySupersedePass'])
+      h.push({ kind: 'result', id: passCall.id, ok: true, result: { considered: 9, minted: 2 } }) // a repeat: dropped
+      expect(seen).toHaveLength(2)
+    } finally { loud.restore() }
+  })
+
   it('remembers at most 256 timed-out calls (the oldest forgotten first)', async () => {
     const h = manualHost()
     setMemoryHostSpawner(() => h.transport)
