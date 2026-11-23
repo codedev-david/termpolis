@@ -1188,10 +1188,24 @@ test.describe.serial('Lumopolis at every screen size', () => {
         }
         // A card open over the city, with the legend as it opens by default: the notice clears both. A city this big
         // shows its districts as slabs from the overview, so a district is stepped into (a click on its slab) first.
-        let opened = await openCard()
-        if (!opened && (await intoDistrict())) {
-          await glideDone(`district at ${tag}`)
-          opened = await openCard()
+        const cardOpen = async (where: string): Promise<boolean> => {
+          if (await openCard()) return true
+          if (!(await intoDistrict())) return false
+          await glideDone(`district at ${where}`)
+          return openCard()
+        }
+        let opened = await cardOpen(tag)
+        if (!opened) {
+          // At 5K a frame drawn in software can outlast the camera's flight to the building, so the card is opened at
+          // the laptop size and the window taken back to this size with it still open: it is measured here all the same.
+          const laptop = VIEWPORTS.find((x) => x.name === '1280x800@2x') as Viewport
+          await layoutAt(laptop, null)
+          await settled()
+          if (await cardOpen(`${tag}, opened at the laptop size`)) {
+            await layoutAt(v, width)
+            await settled()
+            opened = await page.locator('[data-testid="world-card"]').isVisible()
+          }
         }
         expect.soft(opened, `a building's card opened at ${tag}`).toBe(true)
         await glideDone(`card at ${tag}`)
