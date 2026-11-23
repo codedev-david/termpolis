@@ -448,6 +448,62 @@ describe('createDesigner cancel', () => {
     expect(await failure(p)).toBe(DESIGN_REPLACED)
   })
 
+  /** The real store, with load calls held until the test lets each one go. */
+  const gatedStore = () => {
+    const real = createWorldStore(dir)
+    const gates: Array<() => void> = []
+    const store: WorldStore = { ...real, load: vi.fn(async (key: string) => { await new Promise<void>((r) => gates.push(r)); return real.load(key) }) }
+    return { real, store, gates, save: vi.spyOn(real, 'save') }
+  }
+
+  it('a refine cancelled while its design is still being opened never runs and never saves (U3)', async () => {
+    const g = gatedStore()
+    await stored(g.real)
+    const { designer, execFn } = setup(async () => okRes(reply('ok', DRAFT_OPS)), { store: g.store })
+    g.save.mockClear()
+    const p = designer.refine('design:id1', 'add a cache', '')
+    await vi.waitFor(() => expect(g.gates).toHaveLength(1))
+    expect(designer.cancel('design:id1')).toBe(false) // nothing runs yet, and the cancel still counts
+    g.gates[0]()
+    expect(await failure(p)).toBe(DESIGN_REPLACED)
+    expect(execFn).not.toHaveBeenCalled()
+    expect(g.save).not.toHaveBeenCalled()
+  })
+
+  it('a refine cancelled after its agent answered but before the save never saves (U3)', async () => {
+    const g = gatedStore()
+    await stored(g.real)
+    const { designer, execFn } = setup(async () => okRes(reply('ok', [{ op: 'addBuilding', id: 'cache', districtId: 'core', name: 'Cache' }])), { store: g.store })
+    g.save.mockClear()
+    const p = designer.refine('design:id1', 'add a cache', '')
+    await vi.waitFor(() => expect(g.gates).toHaveLength(1))
+    g.gates[0]()
+    await vi.waitFor(() => expect(g.gates).toHaveLength(2)) // the run is over: the save's own load waits
+    expect(execFn).toHaveBeenCalledTimes(1)
+    designer.cancel('design:id1')
+    g.gates[1]()
+    expect(await failure(p)).toBe(DESIGN_REPLACED)
+    expect(g.save).not.toHaveBeenCalled()
+    expect((await g.real.load('design:id1'))?.buildings.some((b) => b.id === 'cache')).toBe(false)
+  })
+
+  it('an older refine still opening its design gives way to a newer one for the same design (U3)', async () => {
+    const g = gatedStore()
+    await stored(g.real)
+    const { designer, execFn } = setup(async () => okRes(reply('ok', [{ op: 'addBuilding', id: 'cache', districtId: 'core', name: 'Cache' }])), { store: g.store })
+    const older = designer.refine('design:id1', 'old', '')
+    await vi.waitFor(() => expect(g.gates).toHaveLength(1))
+    const newer = designer.refine('design:id1', 'new', '')
+    await vi.waitFor(() => expect(g.gates).toHaveLength(2))
+    g.gates[0]()
+    expect(await failure(older)).toBe(DESIGN_REPLACED)
+    g.gates[1]()
+    await vi.waitFor(() => expect(g.gates).toHaveLength(3))
+    g.gates[2]()
+    expect((await newer).applied).toBe(1)
+    expect(execFn).toHaveBeenCalledTimes(1)
+  })
+
   it('cancel of a key with nothing running is false; a draft without a token runs under its design key', async () => {
     const { designer, execFn } = setup(async () => okRes(reply('ok', DRAFT_OPS)))
     expect(designer.cancel('draft:none')).toBe(false)

@@ -155,6 +155,18 @@ function titleFor(description: string): string {
 
 export function createDesigner(deps: DesignerDeps): Designer {
   const running = new Map<string, AbortController>()
+  /** Bumped per key by every cancel and every refine, running or not: a refine still opening its design or
+   *  waiting on its save, where there is no run to abort, sees the bump and stops there, never saving (U3). */
+  const stops = new Map<string, number>()
+  const bump = (key: string): number => {
+    const n = (stops.get(key) ?? 0) + 1
+    stops.set(key, n)
+    return n
+  }
+  /** Throws DESIGN_REPLACED once a cancel or a newer refine for the key came after `mine`. */
+  const stillMine = (key: string, mine: number): void => {
+    if (stops.get(key) !== mine) throw new DesignFailure(DESIGN_REPLACED)
+  }
   /** One writer at a time per design key: load, patch and save never interleave (propose, refine). */
   const designLock = createKeyedLock()
   const now = (): number => (deps.now ? deps.now() : Date.now())
@@ -227,8 +239,10 @@ export function createDesigner(deps: DesignerDeps): Designer {
    * Load, patch and (when anything applied) save one stored design. Callers run it under the design's
    * lock (designLock), so two writers never patch the same stale copy and the last save never drops one.
    */
-  const mutate = async (key: string, ops: DesignOp[]): Promise<{ patch: DesignPatchResult; out: WorldDoc }> => {
+  const mutate = async (key: string, ops: DesignOp[], check?: () => void): Promise<{ patch: DesignPatchResult; out: WorldDoc }> => {
     const { doc } = await open(key)
+    // A refine checks here, after the last wait before its save, that it was not cancelled meanwhile.
+    check?.()
     const patch = applyDesignPatch(doc, ops, layoutPlacer)
     if (patch.applied === 0) return { patch, out: patch.doc }
     const out = { ...patch.doc, generatedAt: now() }
@@ -258,11 +272,14 @@ export function createDesigner(deps: DesignerDeps): Designer {
     },
 
     async refine(key, message, summary, model) {
+      // Taken before the first wait, so a cancel at any point after the request arrived is seen.
+      const mine = bump(key)
       const { id, doc } = await open(key)
+      stillMine(key, mine)
       // The agent run holds no lock (it can take minutes). Its ops are applied to the design as it is
       // after the run, under the design's lock, so a propose saved meanwhile is kept, not overwritten.
       const reply = await run(key, join(deps.designsDir, id), buildDesignPrompt(doc, message, summary), model)
-      const { patch, out } = await designLock(key, () => mutate(key, reply.ops))
+      const { patch, out } = await designLock(key, () => mutate(key, reply.ops, () => stillMine(key, mine)))
       return {
         doc: out, text: reply.text, applied: patch.applied, skipped: patch.skipped.length + reply.dropped,
         summary: summarize(summary, message, reply.text), tokens: reply.tokens
@@ -287,6 +304,7 @@ export function createDesigner(deps: DesignerDeps): Designer {
     },
 
     cancel(key) {
+      bump(key)
       const ctl = running.get(key)
       if (!ctl) return false
       ctl.abort()
