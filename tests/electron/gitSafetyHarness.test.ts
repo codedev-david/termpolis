@@ -112,7 +112,13 @@ async function driveDisplayPaths(dir: string, file: string): Promise<void> {
     ['diff', '--no-color', '--no-ext-diff', `${sha}~0`], ['diff', '--name-status', sha],
     // The world's head, the context panel, unpushed commits, a log with patches.
     ['status', '--porcelain', '--untracked-files=no'], ['log', '--oneline', '-5'], ['rev-parse', '--git-path', 'hooks'],
-    ['log', '--max-count=50', '--format=%H%x00%s', '@{upstream}..HEAD'], ['log', '-p', '-1']
+    ['log', '--max-count=50', '--format=%H%x00%s', '@{upstream}..HEAD'], ['log', '-p', '-1'],
+    // Reads no panel writes today, but which can run a filter or a textconv in some form: blame of the working tree
+    // (textconv on by default), hash-object of a path, cat-file --filters and archive (smudge), describe --dirty and
+    // diff-files (refresh), ls-files --eol, grep. Each must be scanned and stay quiet; a --textconv ask is refused.
+    ['blame', '--porcelain', '--', file], ['annotate', file], ['hash-object', '--', file], ['cat-file', '--filters', `HEAD:${file}`],
+    ['archive', '--format=tar', 'HEAD'], ['describe', '--dirty', '--always'], ['diff-files'], ['diff-index', 'HEAD'],
+    ['ls-files', '--eol'], ['grep', '-n', 'e'], ['cat-file', '--textconv', `HEAD:${file}`], ['grep', '--textconv', 'e']
   ]
   await Promise.all(reads.map((args) => quiet(safeGitAsync(args, o))))
   await quiet(cachedGit(['status', '--porcelain'], o))
@@ -268,6 +274,29 @@ const VECTORS: Vector[] = [
     },
     control: (dir) => git(dir, ['show', 'HEAD'], true),
     expect: ['textconv']
+  },
+  {
+    name: 'blame of the working tree through textconv (on by default in blame)',
+    plant: () => {
+      const dir = newRepo('blametc', { '.gitattributes': '*.tc diff=evilb\n', 'x.tc': 'one\n' })
+      git(dir, ['config', 'diff.evilb.textconv', runs(plantProgram('blametc', 'cat "$1"\n'))])
+      return { dir, file: 'x.tc', redirty: () => dirty(dir, 'x.tc', 'one\ntwo\n') }
+    },
+    control: (dir) => git(dir, ['blame', '--', 'x.tc'], true),
+    expect: ['blametc']
+  },
+  {
+    name: 'filter smudge: cat-file --filters and archive put a blob through it',
+    plant: () => {
+      const dir = newRepo('smudge', { 'x.sm': 'one\n' })
+      writeFileSync(join(dir, '.gitattributes'), '*.sm filter=evils\n')
+      git(dir, ['add', '.gitattributes'])
+      git(dir, ['commit', '-q', '-m', 'attributes'])
+      git(dir, ['config', 'filter.evils.smudge', runs(plantProgram('smudge', 'cat\n'))])
+      return { dir, file: 'x.sm', redirty: () => dirty(dir, 'x.sm', 'two\n') }
+    },
+    control: (dir) => git(dir, ['cat-file', '--filters', 'HEAD:x.sm'], true),
+    expect: ['smudge']
   },
   {
     name: 'log.showSignature with gpg.program, on a signed commit',

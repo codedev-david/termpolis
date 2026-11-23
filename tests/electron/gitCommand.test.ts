@@ -136,7 +136,7 @@ describe('safeGitAsync: the filter-driver read before status and diff', () => {
   it('exit 1 from git config means no driver: the read runs with nothing to switch off', async () => {
     answer(Object.assign(new Error('no match'), { code: 1 }))
     expect(await safeGitAsync(['diff', '--numstat'], { cwd: '/repo' })).toBe('ok')
-    expect(command()).toEqual(guardGitArgs(['diff', '--numstat'], isWin))
+    expect(command()).toEqual(guardGitArgs(['diff', '--numstat'], isWin, []))
   })
 
   it('any other failure of the read fails the command, which never runs, and is not kept', async () => {
@@ -183,7 +183,7 @@ describe('safeGitAsync: the filter-driver read before status and diff', () => {
 
   it('a read that needs no scan starts one git, and an ENOENT from the scan forgets the git it found', async () => {
     answer('')
-    await safeGitAsync(['log', '-1'], { cwd: '/repo' })
+    await safeGitAsync(['rev-parse', 'HEAD'], { cwd: '/repo' })
     expect(scans()).toBe(0)
     answer(Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }))
     await expect(safeGitAsync(['status'], { cwd: '/repo2' })).rejects.toMatchObject({ code: 'ENOENT' })

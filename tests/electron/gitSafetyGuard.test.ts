@@ -23,7 +23,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative, sep } from 'path'
 import ts from 'typescript'
-import { MUTATING_SUBCOMMANDS, displayFlags, gitSubcommand, guardGitArgs, readOnlyPrefix } from '../../src/main/gitSafety'
+import { MUTATING_SUBCOMMANDS, displayFlags, gitSubcommand, guardGitArgs, needsFilterScan, readOnlyPrefix } from '../../src/main/gitSafety'
 
 const ROOT = join(__dirname, '..', '..')
 const MAIN = join(ROOT, 'src', 'main')
@@ -258,7 +258,7 @@ function guardProblem(argv: string[], isWindows: boolean): string | null {
   if (sub === null) return null
   if (MUTATING_SUBCOMMANDS.has(sub.name)) return null
   if (!KNOWN_READS.has(sub.name)) return `subcommand '${sub.name}' is neither a known read nor a write`
-  const run = guardGitArgs(argv, isWindows)
+  const run = guardGitArgs(argv, isWindows, [])
   const at = gitSubcommand(run)!.index
   const leading = run.slice(0, at)
   for (let i = 1; i < readOnlyPrefix(sub.name, isWindows).length; i += 2) {
@@ -268,6 +268,18 @@ function guardProblem(argv: string[], isWindows: boolean): string | null {
   for (const flag of displayFlags(sub.name)) if (!run.slice(at).includes(flag)) return `no ${flag}`
   return null
 }
+
+/** True when `s` calls guardGitArgs with no filter overrides (guardGitArgs then throws on a FILTER_SUBCOMMANDS read). */
+function callsGuardUnscanned(s: Source): boolean {
+  let found = false
+  walk(s.sf, (n) => {
+    if (ts.isCallExpression(n) && calleeName(n) === 'guardGitArgs' && n.arguments.length < 3) found = true
+  })
+  return found
+}
+/** Literal commands in `s` that need a filter scan, which a file calling guardGitArgs unscanned cannot give them. */
+const unscannedFilterReads = (s: Source): string[] =>
+  literalCommands(s).filter((c) => needsFilterScan(c.argv)).map((c) => `${c.at} ${c.argv.join(' ')}`)
 
 describe('git safety guard: who may start git', () => {
   it('only the listed files name git’s binary', () => {
@@ -340,6 +352,12 @@ describe('git safety guard: what git is asked', () => {
       expect(problems).toEqual([])
     }
   })
+
+  it('a file that hands guardGitArgs no filter scan writes no command that can run a filter (worldRuns)', () => {
+    const unscanned = SOURCES.filter(callsGuardUnscanned)
+    expect(unscanned.map((s) => s.rel)).toContain('src/main/world/worldRuns.ts')
+    expect(unscanned.flatMap(unscannedFilterReads)).toEqual([])
+  })
 })
 
 describe('git safety guard: the detectors see what they must (self-check)', () => {
@@ -408,5 +426,9 @@ describe('git safety guard: the detectors see what they must (self-check)', () =
     expect(guardProblem(['add', '.'], true)).toBeNull()
     expect(guardProblem(['--version'], true)).toBeNull()
     expect(guardProblem(['diff', '--cached'], false)).toBeNull()
+    const unscanned = parse('src/main/world/worldRuns.ts', "const run = (args) => d.exec(gitBin, guardGitArgs(args, true), {}); run(['status', '--porcelain']); run(['diff-tree', '-r'])")
+    expect(callsGuardUnscanned(unscanned)).toBe(true)
+    expect(unscannedFilterReads(unscanned)).toEqual(['src/main/world/worldRuns.ts:1 status --porcelain'])
+    expect(callsGuardUnscanned(parse('src/main/gitCommand.ts', 'guardGitArgs(args, isWindows, overrides)'))).toBe(false)
   })
 })

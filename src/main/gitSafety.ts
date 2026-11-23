@@ -6,9 +6,11 @@
 // own, and plain read commands reach them:
 //
 //   core.fsmonitor              status, diff, diff-tree, ls-files
-//   filter.<x>.clean / process  status, diff (a stat-dirty file is hashed through its clean filter)
+//   filter.<x>.clean / process  status, diff, blame, hash-object, describe --dirty (a working-tree file is hashed
+//     / smudge                  through its clean filter); cat-file --filters and archive (blobs go through smudge)
 //   post-index-change hook      status, diff (status refreshes and rewrites the index)
-//   diff.external, diff.<x>.command, diff.<x>.textconv   diff, show, log -p
+//   diff.external, diff.<x>.command, diff.<x>.textconv   diff, show, log -p; textconv also blame (on by default),
+//     grep --textconv, cat-file --textconv
 //   log.showSignature, format.pretty with %G, + gpg.program   log, show
 //   a submodule's own config    status and diff ask each submodule for its dirty state with a child git
 //   diff.submodule=diff         diff, show, log -p run a child diff in each changed submodule, under ITS diff.external
@@ -28,9 +30,12 @@
 //   asks it where the hooks live) and rev-parse never runs a hook.
 // - diff, show and log also carry displayFlags: no external diff, no textconv, submodules shown by commit only, and
 //   for status and diff, a submodule's dirty state is not asked for (that child git would read the submodule's own
-//   config, whose filter names nobody here has scanned).
-// - status and diff can run a clean filter, and `-c filter.<x>.clean=` needs the driver's name. So the repository's
-//   filter drivers are read first (filterScanArgs: `git config`, which reads config and runs nothing), and every
+//   config, whose filter names nobody here has scanned; gitSubmodules.ts asks each submodule itself instead). blame,
+//   annotate and grep carry --no-textconv, and diff-files and diff-index --ignore-submodules=dirty. A read that asks
+//   for --textconv or --ext-diff itself is refused, and so is describe --dirty or --broken (no way to keep it out of
+//   the submodules).
+// - A read in FILTER_SUBCOMMANDS can run a filter, and `-c filter.<x>.clean=` needs the driver's name. So the
+//   repository's filter drivers are read first (filterScanArgs: `git config`, which reads config and runs nothing), and every
 //   driver the repository's own config defines (scope local or worktree, includes counted as the file that includes
 //   them) is set back to the person's own value for it, or to none (filterOverrides). A global driver such as
 //   git-lfs's keeps working: only the repository's definitions are replaced.
@@ -72,8 +77,35 @@ export const MUTATING_SUBCOMMANDS: ReadonlySet<string> = new Set([
   'push', 'rebase', 'reset', 'restore', 'revert', 'rm', 'stash', 'submodule', 'switch', 'tag', 'worktree'
 ])
 
-/** Read subcommands that can run a clean filter: they need the repository's filter drivers read first. */
-export const FILTER_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff'])
+/** Read subcommands that can run a filter driver, or that may in some form (blame of the working tree, hash-object
+ *  of a path, cat-file --filters, archive's smudge, describe --dirty, ls-files --eol, grep, show and log): they need
+ *  the repository's filter drivers read first, and guardGitArgs refuses one handed no overrides. The scan is cached
+ *  per repository (gitCommand.ts), so scanning a form that turns out not to run a filter costs next to nothing. */
+export const FILTER_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'status', 'diff', 'diff-files', 'diff-index', 'blame', 'annotate', 'hash-object', 'cat-file', 'archive', 'describe',
+  'ls-files', 'grep', 'show', 'log', 'whatchanged'
+])
+
+/** Options a read may never ask for: each runs a program the repository's config names (diff.<x>.textconv,
+ *  diff.external). */
+const REFUSED_READ_OPTIONS = ['--textconv', '--ext-diff']
+
+/** The refused option among `options` (those before `--`) for subcommand `sub`, or undefined. describe --dirty and
+ *  --broken ask each submodule for its dirty state with a child git, which reads the submodule's own config (and its
+ *  filter), and describe has no --ignore-submodules to stop it. */
+function refusedOption(sub: string, options: readonly string[]): string | undefined {
+  const asked = REFUSED_READ_OPTIONS.find((o) => options.includes(o))
+  if (asked !== undefined || sub !== 'describe') return asked
+  return options.find((o) => /^--(dirty|broken)(=|$)/.test(o))
+}
+
+/** Thrown when a read asks for an option that would run a program the repository names. The read is not run. */
+export class UnsafeReadError extends Error {
+  constructor(option: string) {
+    super(`git: a read may not ask for ${option}, which runs a program the repository names; not run`)
+    this.name = 'UnsafeReadError'
+  }
+}
 
 /** Every transport git knows by name. A read sets each to never, so the repository's own protocol.<x>.allow cannot
  *  turn one back on (the per-transport key wins over protocol.allow, and the command line wins over the repository). */
@@ -114,7 +146,13 @@ export function displayFlags(sub: string): string[] {
     case 'log':
       return ['--no-ext-diff', '--no-textconv', '--submodule=short']
     case 'status':
+    case 'diff-files':
+    case 'diff-index':
       return ['--ignore-submodules=dirty']
+    case 'blame':
+    case 'annotate':
+    case 'grep':
+      return ['--no-textconv']
     default:
       return []
   }
@@ -158,11 +196,18 @@ export function needsFilterScan(args: readonly string[]): boolean {
  * The argument list git is started with for `args`: a write unchanged; a read with readOnlyPrefix and
  * `filterOverrides` just before the subcommand (so they come after, and win over, any `-c` the caller gave), and
  * displayFlags just after it. A flag the caller already gave is not repeated.
+ *
+ * A read that can run a filter (FILTER_SUBCOMMANDS) must be handed the overrides from its scan, even an empty list:
+ * without them it throws, so a new caller cannot run one unscanned. A read asking for --textconv or --ext-diff throws
+ * UnsafeReadError.
  */
-export function guardGitArgs(args: readonly string[], isWindows: boolean, filterOverrides: readonly string[] = []): string[] {
+export function guardGitArgs(args: readonly string[], isWindows: boolean, filterOverrides?: readonly string[]): string[] {
   const sub = gitSubcommand(args)
   if (sub === null) return [...readOnlyPrefix('', isWindows), ...args]
   if (MUTATING_SUBCOMMANDS.has(sub.name)) return [...args]
+  if (filterOverrides === undefined && FILTER_SUBCOMMANDS.has(sub.name)) {
+    throw new Error(`git: a ${sub.name} can run a filter driver, and was not handed the repository's filter scan (gitCommand.ts safeGitAsync)`)
+  }
   const leading = args.slice(0, sub.index)
   const rest = args.slice(sub.index + 1)
   const prefix = readOnlyPrefix(sub.name, isWindows)
@@ -174,8 +219,10 @@ export function guardGitArgs(args: readonly string[], isWindows: boolean, filter
   }
   const end = rest.indexOf('--')
   const options = end === -1 ? rest : rest.slice(0, end)
+  const refused = refusedOption(sub.name, options)
+  if (refused !== undefined) throw new UnsafeReadError(refused)
   const flags = displayFlags(sub.name).filter((f) => !options.includes(f))
-  return [...leading, ...added, ...filterOverrides, sub.name, ...flags, ...rest]
+  return [...leading, ...added, ...(filterOverrides ?? []), sub.name, ...flags, ...rest]
 }
 
 /** Global options that choose which repository git opens, and so whose config it reads. */
