@@ -302,6 +302,41 @@ describe('world:export', () => {
     expect((await doc.call('world:document', { root: ROOT, title: 'Shop' })).data.path).toBe('/home/ann/guide.html')
   })
 
+  it('never replaces a file the dialog did not approve: .html added after the dialog skips an existing name', async () => {
+    const mem = memFs()
+    mem.written.set('D:\\out\\notes.html', 'theirs')
+    mem.written.set('D:\\out\\notes (2).html', 'theirs too')
+    const { call } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    const res = await call('world:export', { exportId: 'x1', root: ROOT, smart: false })
+    expect(res.data.path).toBe('D:\\out\\notes (3).html')
+    expect(mem.written.get('D:\\out\\notes.html')).toBe('theirs')
+    expect(mem.written.get('D:\\out\\notes (2).html')).toBe('theirs too')
+    expect(await call('world:open-file', { path: 'D:\\out\\notes (3).html' })).toEqual(ok(true))
+    // The documentation follows the same rule.
+    const docMem = memFs()
+    docMem.written.set('/home/ann/guide.html', 'theirs')
+    const doc = setup({ mem: docMem, platform: 'linux', saveDialog: vi.fn(async () => '/home/ann/guide') })
+    expect((await doc.call('world:document', { root: ROOT, title: 'Shop' })).data.path).toBe('/home/ann/guide (2).html')
+    expect(docMem.written.get('/home/ann/guide.html')).toBe('theirs')
+  })
+
+  it('replaces a .html name the dialog approved (the dialog asked first)', async () => {
+    const mem = memFs()
+    mem.written.set('D:\\out\\notes.html', 'theirs')
+    const { call } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes.html') })
+    expect((await call('world:export', { exportId: 'x1', root: ROOT, smart: false })).data.path).toBe('D:\\out\\notes.html')
+    expect(mem.written.get('D:\\out\\notes.html')).not.toBe('theirs')
+  })
+
+  it('falls back to a random name when a hundred numbered names are all taken', async () => {
+    const mem = memFs()
+    for (let n = 1; n <= 100; n++) mem.written.set(n === 1 ? 'D:\\out\\notes.html' : `D:\\out\\notes (${n}).html`, 'theirs')
+    const { call } = setup({ mem, testSave: vi.fn(async () => 'D:\\out\\notes') })
+    const path = (await call('world:export', { exportId: 'x1', root: ROOT, smart: false })).data.path as string
+    expect(path).toMatch(/^D:\\out\\notes \([0-9a-f]{12}\)\.html$/)
+    expect([...mem.written.values()].filter((v) => v === 'theirs')).toHaveLength(100)
+  })
+
   it("model listed but the world couldn't be indexed: its own sentence and a keyword-only flag, never 'isn't installed'", async () => {
     const nothing = setup({ embed: vi.fn(async (texts: string[]) => texts.map(() => null)) })
     expect(await nothing.call('world:export', { exportId: 'x1', root: ROOT, smart: true })).toEqual({ ...err(KEYWORD_ONLY), keywordOnly: true })
