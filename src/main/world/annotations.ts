@@ -2,8 +2,8 @@
 // recompile never loses it. One JSON file per world under `<dir>/world/annotations/`, named by the
 // sha256 of the world key (any key is safe as a file name), written atomically with async fs under a lock file
 // that holds across processes. A file that does not parse reads as empty and the next add overwrites it.
-import { createHash } from 'node:crypto'
-import { access, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../shared/world/types'
 import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/world/runtimeNames'
@@ -69,40 +69,59 @@ function cleanFile(parsed: unknown): Record<string, Claim[]> {
 const annotationsFolder = (dir: string): string => join(dir, 'world', 'annotations')
 const annotationsFileOf = (dir: string, key: string): string => join(annotationsFolder(dir), `${createHash('sha256').update(key).digest('hex')}.json`)
 
-/** How often a writer looks again at another's lock on an annotation file, and the age past which a lock is taken over (its
- *  holder died mid-write: every write under it is a read, a small write and a rename). */
+/** The annotation lock's timings. A writer that finds another's lock looks again after ANNOTATION_LOCK_RETRY_MS, each pause
+ *  twice the last, up to ANNOTATION_LOCK_RETRY_MAX_MS. A lock older than ANNOTATION_LOCK_STALE_MS is taken over (its holder died
+ *  mid-write: every write under it is a read, a small write and a rename). Past ANNOTATION_LOCK_DEADLINE_MS a writer stops
+ *  waiting and goes on without the lock, so a world open or an add always ends. */
 export const ANNOTATION_LOCK_RETRY_MS = 25
+export const ANNOTATION_LOCK_RETRY_MAX_MS = 200
 export const ANNOTATION_LOCK_STALE_MS = 5_000
+export const ANNOTATION_LOCK_DEADLINE_MS = 2_000
 const pause = (ms: number): Promise<void> => new Promise((r) => { setTimeout(r, ms) })
 const codeOf = (e: unknown): string => String((e as { code?: unknown } | null)?.code ?? '')
 
 /**
  * WPA fix round 2 (R-M2): the annotation store's lock on one file, across processes. The world host adds annotations through
  * its own store and main adopts older keys' files, so the in-process keyed lock alone cannot keep them apart: each takes this
- * one too, a `<file>.lock` made with O_EXCL. A lock older than ANNOTATION_LOCK_STALE_MS is taken over. When no lock file can be
- * made at all (a read-only folder), the work runs without one, as every write did before, and fails on its own if it must.
+ * one too, a `<file>.lock` made with O_EXCL (`wx`) that holds a nonce of its own.
+ * Fix round 3 (R2-I1): it always ends. Only EEXIST is another holder: it is looked at again after a pause that doubles each
+ * time, and past ANNOTATION_LOCK_DEADLINE_MS the work goes on without the lock. Any other error making the lock (EPERM and
+ * EACCES are what Windows answers for a folder it will not let us write in), and a stale lock that cannot be removed, mean no
+ * lock can be had here: the work runs without one, as every write did before, and fails on its own if it must.
+ * Fix round 3 (R2-M2): the holder removes the lock only while it still holds its nonce, so a holder slower than
+ * ANNOTATION_LOCK_STALE_MS never removes the lock of the one that broke its own.
  */
-async function withFileLock<T>(file: string, work: () => Promise<T>): Promise<T> {
+export async function withAnnotationFileLock<T>(file: string, work: () => Promise<T>): Promise<T> {
   const lockFile = `${file}.lock`
+  const nonce = `${process.pid}:${randomUUID()}`
+  const deadline = Date.now() + ANNOTATION_LOCK_DEADLINE_MS
+  let wait = ANNOTATION_LOCK_RETRY_MS
   let held = false
   for (;;) {
     try {
-      await (await open(lockFile, 'wx')).close()
+      await writeFile(lockFile, nonce, { encoding: 'utf8', flag: 'wx' })
       held = true
       break
     } catch (err) {
-      // EPERM: Windows answers it for a lock file another process is deleting this moment.
-      if (codeOf(err) !== 'EEXIST' && codeOf(err) !== 'EPERM') break
+      if (codeOf(err) !== 'EEXIST') break // no lock can be made here
     }
-    try {
-      if (Date.now() - (await stat(lockFile)).mtimeMs >= ANNOTATION_LOCK_STALE_MS) { await rm(lockFile, { force: true }); continue }
-    } catch { continue } // released meanwhile: try again at once
-    await pause(ANNOTATION_LOCK_RETRY_MS)
+    let age = -1
+    try { age = Date.now() - (await stat(lockFile)).mtimeMs } catch { /* let go meanwhile: try again after the pause */ }
+    if (age >= ANNOTATION_LOCK_STALE_MS) {
+      try { await rm(lockFile) } catch { break } // a stale lock that cannot be removed: no lock can be had here
+    }
+    if (Date.now() >= deadline) break
+    await pause(wait)
+    wait = Math.min(wait * 2, ANNOTATION_LOCK_RETRY_MAX_MS)
   }
   try {
     return await work()
   } finally {
-    if (held) await rm(lockFile, { force: true })
+    if (held) {
+      try {
+        if ((await readFile(lockFile, 'utf8')) === nonce) await rm(lockFile, { force: true })
+      } catch { /* gone already: broken by another and let go */ }
+    }
   }
 }
 
@@ -150,7 +169,7 @@ export async function adoptAnnotationAliases(dir: string, key: string, aliasKeys
   }
   if (found.length === 0) return []
   try {
-    return await withFileLock(target, async () => {
+    return await withAnnotationFileLock(target, async () => {
       if (await exists(target)) return [] // the world host saved the new key's own file while we read
       const merged: Record<string, Claim[]> = Object.create(null)
       for (const [, claims] of found) {
@@ -196,7 +215,7 @@ export function createAnnotationStore(dir: string): AnnotationStore {
         if (clean === null) throw new Error('annotation needs text, a state and evidence')
         await mkdir(folder, { recursive: true })
         // The file lock as well as the keyed one: an adoption in main writes this file too (adoptAnnotationAliases).
-        await withFileLock(fileOf(key), async () => {
+        await withAnnotationFileLock(fileOf(key), async () => {
           const all = await read(key)
           all[itemId] = capClaims([...(all[itemId] ?? []), clean])
           await writeAtomic(fileOf(key), JSON.stringify(all))
