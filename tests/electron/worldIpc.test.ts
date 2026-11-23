@@ -319,6 +319,15 @@ describe('registerWorldIpc ask handlers', () => {
     expect(await setup(undefined, undefined, asker).invoke('world:ask', { ...GOOD, question: 'x'.repeat(4000) })).toMatchObject({ success: true })
   })
 
+  it('world:ask cleans the question first (U9): control characters but tab go, and the limit counts what is left', async () => {
+    const asker = fakeAsker()
+    const s = setup(undefined, undefined, asker)
+    await s.invoke('world:ask', { ...GOOD, question: ' Why\u0000 is\tit\u001b slow?\n' })
+    expect(asker.ask).toHaveBeenLastCalledWith({ ...GOOD, question: 'Why is\tit slow?' })
+    expect(await s.invoke('world:ask', { ...GOOD, question: 'x'.repeat(4000) + '\u0007'.repeat(10) })).toMatchObject({ success: true })
+    expect(await s.invoke('world:ask', { ...GOOD, question: '\u0000\u0007' })).toEqual({ success: false, error: 'question required (up to 4000 characters)' })
+  })
+
   it('world:ask turns a thrown asker into plain copy, never the raw error', async () => {
     const asker = fakeAsker()
     asker.ask.mockRejectedValueOnce(new Error('Lumopolis host call "get" timed out')).mockRejectedValueOnce('odd')
@@ -397,6 +406,9 @@ describe('registerWorldIpc design handlers', () => {
     expect(d.refine).toHaveBeenCalledWith('design:d1', 'Add a cache', 'Q: a', undefined)
     await s.invoke('world:design-refine', { key: 'design:d1', message: 'x'.repeat(4000) })
     expect(d.refine).toHaveBeenLastCalledWith('design:d1', 'x'.repeat(4000), '', undefined)
+    // The design change comes from the same field, so it is cleaned the same way (U9).
+    await s.invoke('world:design-refine', { key: 'design:d1', message: ' Add\u0000 a\tcache\n' })
+    expect(d.refine).toHaveBeenLastCalledWith('design:d1', 'Add a\tcache', '', undefined)
   })
 
   it.each([

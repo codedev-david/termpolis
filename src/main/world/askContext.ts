@@ -4,6 +4,7 @@
 // the other-names list (OTHER), then the active PROPOSAL, then detail by priority (selection > matches >
 // camera). The role, the answer protocol, the question and the world summary core are never dropped.
 import { ANSWER_PROTOCOL } from '../../shared/world/answerProtocol'
+import { MAX_QUESTION_CHARS } from '../../shared/world/askLimits'
 import { estimateTokens } from '../../shared/world/tokens'
 import type { Building, Claim, Evidence, Proposal, WorldDoc, WorldEdge, WorldReadResult } from '../../shared/world/types'
 
@@ -17,7 +18,6 @@ export const MAX_SUMMARY_CHARS = MAX_SUMMARY_TOKENS * 4
 const MAX_PROPOSAL_TITLE = 200
 const MAX_PROPOSAL_NAMES = 600
 const MAX_FIRST_SENTENCE = 300
-const MAX_QUESTION_CHARS = 2000
 const MAX_SUMMARY_Q_CHARS = 300
 export const ROLE = 'You explain the software shown in Termpolis Lumopolis. When the evidence does not support an answer, say so plainly instead of guessing.'
 

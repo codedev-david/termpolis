@@ -53,6 +53,7 @@ import { DESIGN_KEY_RE, DESIGN_NOT_FOUND, DesignFailure } from './designer'
 import { folderKey, forbiddenFolderReal, isProjectFolder } from './folderSafety'
 import type { SourceRegistry } from './sources'
 import type { WorldClient } from './worldClient'
+import { MAX_QUESTION_CHARS, cleanQuestion, questionFits } from '../../shared/world/askLimits'
 import type { WorldSettings, WorldSettingsStore } from './worldSettings'
 
 export interface WorldIpcMain {
@@ -97,7 +98,6 @@ export interface WorldAsker {
   prepare?(root: string): Promise<string[] | void>
 }
 
-const MAX_QUESTION = 4000
 export const ASK_FAILED = "Lumopolis couldn't answer that question. Try again."
 const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
 /** `{ model }` for a model id safe to put on a command line, else nothing: an unsafe id is dropped, never passed on. */
@@ -114,10 +114,12 @@ const askRequestOf = (args: unknown): AskRequest | string => {
   if (!nonEmpty(a.askId)) return 'askId required'
   // win32.isAbsolute accepts C:\x, C:/x and /x alike, so the check is the same on every OS.
   if (!nonEmpty(a.root) || !win32.isAbsolute(a.root)) return 'root required'
-  if (typeof a.question !== 'string' || a.question.trim() === '' || a.question.length > MAX_QUESTION) return 'question required (up to 4000 characters)'
+  // Cleaned before it is checked (U9): the limit counts what reaches the agent, the same limit the field holds to.
+  const question = typeof a.question === 'string' ? cleanQuestion(a.question) : ''
+  if (!questionFits(question)) return `question required (up to ${MAX_QUESTION_CHARS} characters)`
   if (!strings(a.selection) || !strings(a.cameraRegion)) return 'selection and cameraRegion must be string arrays'
   if (a.summary !== undefined && typeof a.summary !== 'string') return 'summary must be a string'
-  return { askId: a.askId, root: a.root, question: a.question, selection: a.selection, cameraRegion: a.cameraRegion, summary: (a.summary as string | undefined) ?? '', ...modelField(a.model), ...proposalField(a.proposalId) }
+  return { askId: a.askId, root: a.root, question, selection: a.selection, cameraRegion: a.cameraRegion, summary: (a.summary as string | undefined) ?? '', ...modelField(a.model), ...proposalField(a.proposalId) }
 }
 
 export interface WorldDesigner {
@@ -137,9 +139,11 @@ const refineRequestOf = (args: unknown): { key: string; message: string; summary
   if (!args || typeof args !== 'object') return 'design request required'
   const a = args as Record<string, unknown>
   if (typeof a.key !== 'string' || !DESIGN_KEY_RE.test(a.key)) return 'design key required'
-  if (!textOf(a.message)) return 'message required (up to 4000 characters)'
+  // A design change is typed in the ask field, so it is cleaned and limited as a question is (U9).
+  const message = typeof a.message === 'string' ? cleanQuestion(a.message) : ''
+  if (!questionFits(message)) return `message required (up to ${MAX_QUESTION_CHARS} characters)`
   if (a.summary !== undefined && typeof a.summary !== 'string') return 'summary must be a string'
-  return { key: a.key, message: a.message, summary: (a.summary as string | undefined) ?? '', ...modelField(a.model) }
+  return { key: a.key, message, summary: (a.summary as string | undefined) ?? '', ...modelField(a.model) }
 }
 
 /** The designer's own friendly failure as it is; anything else that escapes it is never shown raw. */

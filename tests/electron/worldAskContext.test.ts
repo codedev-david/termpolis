@@ -93,13 +93,19 @@ describe('buildAskPrompt', () => {
     expect(tight.labels).toEqual({})
   })
 
+  it('carries a question of the full 4,000 characters whole (U9)', () => {
+    const q = 'w'.repeat(4000)
+    expect(buildAskPrompt(base(doc(3), { question: q })).prompt).toContain('QUESTION\n' + q + '\n')
+  })
+
   it('holds the hard cap for any input: 50,000-char question and 500 districts', () => {
     const d = doc(3)
     d.districts = Array.from({ length: 500 }, (_, i) => ({ id: `d${i}`, name: `District ${'n'.repeat(40)} ${i}`, subtitle: '', hue: 0, members: [] }))
     const { prompt } = buildAskPrompt(base(d, { question: 'q'.repeat(50_000), selection: ['b1'] }))
     expect(prompt.length).toBeLessThan(MAX_PROMPT_CHARS)
-    expect(prompt).toContain('q'.repeat(1999) + '…')
-    expect(prompt).not.toContain('q'.repeat(2000))
+    // Clipped at the one shared limit, the same the field and main's check use (U9).
+    expect(prompt).toContain('q'.repeat(3999) + '…')
+    expect(prompt).not.toContain('q'.repeat(4000))
     expect(prompt.endsWith(ANSWER_PROTOCOL)).toBe(true)
   })
 
