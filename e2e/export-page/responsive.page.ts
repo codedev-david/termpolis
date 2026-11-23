@@ -5,8 +5,9 @@
 // Ask with its results, and the 2D map. The document page is checked as the long read it is. Each state is saved as
 // a PNG (to RESPONSIVE_SHOTS, default test-results/responsive-shots) for the before/after contact sheet.
 //
-// Chromium only (the electron and msedge projects): the page's layout is the same CSS everywhere, the other engines'
-// own runs cover the page working there, and four engines at every size would add minutes to every run. The blocking
+// The electron project only: the page's layout is the same CSS everywhere, the other engines' own runs cover the page
+// working there, and every engine at every size would add minutes to every run. Edge and Chrome ran it too, until
+// headless Edge on the Windows runner took over three minutes a size and ran the job past its 30 minutes. The blocking
 // run checks BLOCKING_VIEWPORTS (a tablet, a small laptop, 1080p and 4K); RESPONSIVE_FULL=1 checks all of VIEWPORTS,
 // and RESPONSIVE_ONLY names some (see responsiveViewports).
 //
@@ -128,7 +129,8 @@ async function openCard(page: Page): Promise<boolean> {
 
 for (const v of responsiveViewports()) {
   test.describe(`at ${v.name}`, () => {
-    test.skip(({ browserName }) => browserName !== 'chromium', 'the layout is checked on Chromium (electron and msedge)')
+    // The electron project is Chromium with no channel (msedge and chrome name theirs); the skip runs before the page opens.
+    test.skip(({ browserName, channel }) => browserName !== 'chromium' || !!channel, 'the layout is checked on Chromium, in the electron project')
     test(`the keyword page's city, card, Ask and 2D map fit with no overlap, cut-off or small text at ${v.name}`, async ({ open }) => {
       test.setTimeout(240_000)
       const { page } = await open(KEYWORD_HTML)
@@ -229,75 +231,77 @@ interface Box { left: number; top: number; right: number; bottom: number }
 const overlaps = (a: Box, b: Box): boolean => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1
 const show = (b: Box): string => `${Math.round(b.left)},${Math.round(b.top)} to ${Math.round(b.right)},${Math.round(b.bottom)}`
 
-for (const v of LONG_CARD_VIEWPORTS) {
-  test(`with a long card open at ${v.width}x${v.height}, the Ask box, the card and the framed building's name stay clear of one another`, async ({ open, browserName }) => {
-    test.skip(browserName !== 'chromium', 'the layout is checked on Chromium (electron and msedge)')
-    test.setTimeout(180_000)
-    const { page } = await open(KEYWORD_HTML)
-    await setViewport(page, v)
-    // Booted at this size, as a visitor's page is: the legend then starts as its chip (it opens from 1200x720).
-    await page.reload()
-    await page.evaluate(() => (window as unknown as { __worldExport: { ready: Promise<unknown> } }).__worldExport.ready)
-    await settle(page, 'city')
-    await askReady(page)
-    const ids = await ask(page, LONG_QUERY)
-    expect(ids, `${LONG_ID} among the results`).toContain(LONG_ID)
-    const pickEl = page.locator(`.wx-ask-results button.wx-ask-pick[data-id="${LONG_ID}"]`)
-    const name = ((await pickEl.locator('.wx-ask-name').textContent()) ?? '').trim()
-    await pickEl.click()
-    const card = page.locator('.wx-card')
-    await expect(card).toBeVisible()
-    await expect(card.locator('.wx-card-body h3').first()).toHaveText(name)
-    // The flight to the building, the picture's move beside the card and the label pass after it.
-    await settle(page, 'long card')
-    const boxes = await page.evaluate((name) => {
-      const box = (el: Element | null): { left: number; top: number; right: number; bottom: number } | null => {
-        if (!el || (el as HTMLElement).hidden || getComputedStyle(el).display === 'none') return null
-        const r = el.getBoundingClientRect()
-        return r.width > 0 && r.height > 0 ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null
+test.describe('with a long card open', () => {
+  test.skip(({ browserName, channel }) => browserName !== 'chromium' || !!channel, 'the layout is checked on Chromium, in the electron project')
+  for (const v of LONG_CARD_VIEWPORTS) {
+    test(`with a long card open at ${v.width}x${v.height}, the Ask box, the card and the framed building's name stay clear of one another`, async ({ open }) => {
+      test.setTimeout(180_000)
+      const { page } = await open(KEYWORD_HTML)
+      await setViewport(page, v)
+      // Booted at this size, as a visitor's page is: the legend then starts as its chip (it opens from 1200x720).
+      await page.reload()
+      await page.evaluate(() => (window as unknown as { __worldExport: { ready: Promise<unknown> } }).__worldExport.ready)
+      await settle(page, 'city')
+      await askReady(page)
+      const ids = await ask(page, LONG_QUERY)
+      expect(ids, `${LONG_ID} among the results`).toContain(LONG_ID)
+      const pickEl = page.locator(`.wx-ask-results button.wx-ask-pick[data-id="${LONG_ID}"]`)
+      const name = ((await pickEl.locator('.wx-ask-name').textContent()) ?? '').trim()
+      await pickEl.click()
+      const card = page.locator('.wx-card')
+      await expect(card).toBeVisible()
+      await expect(card.locator('.wx-card-body h3').first()).toHaveText(name)
+      // The flight to the building, the picture's move beside the card and the label pass after it.
+      await settle(page, 'long card')
+      const boxes = await page.evaluate((name) => {
+        const box = (el: Element | null): { left: number; top: number; right: number; bottom: number } | null => {
+          if (!el || (el as HTMLElement).hidden || getComputedStyle(el).display === 'none') return null
+          const r = el.getBoundingClientRect()
+          return r.width > 0 && r.height > 0 ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null
+        }
+        const stage = document.querySelector('.wx-stage') as HTMLElement
+        const labels = Array.from(document.querySelectorAll('.lw-bldg')).filter((el) => el.textContent === name).map(box).filter((b) => b !== null)
+        return { card: box(document.querySelector('.wx-card')), ask: box(document.querySelector('.wx-ask-host')), labels, stage: box(stage), low: parseFloat(getComputedStyle(stage).getPropertyValue('--wx-low')) }
+      }, name)
+      const { card: c, ask: a, labels, stage } = boxes
+      expect(c && a && stage, 'the card, the Ask box and the stage are drawn').toBeTruthy()
+      // A long card: it runs down to its cap above the toolbar's strip, or the case shows nothing.
+      expect(c!.bottom, `the ${name} card runs to its cap (${show(c!)}, stage ${show(stage!)})`).toBeGreaterThan(stage!.bottom - boxes.low - 24)
+      expect.soft(overlaps(c!, a!), `the card (${show(c!)}) and the Ask box (${show(a!)}) overlap`).toBe(false)
+      expect(labels.length, `the framed building's name (${name}) is drawn`).toBeGreaterThan(0)
+      for (const l of labels) {
+        expect.soft(overlaps(l, c!), `${name}'s name (${show(l)}) under the card (${show(c!)})`).toBe(false)
+        expect.soft(overlaps(l, a!), `${name}'s name (${show(l)}) under the Ask box (${show(a!)})`).toBe(false)
       }
-      const stage = document.querySelector('.wx-stage') as HTMLElement
-      const labels = Array.from(document.querySelectorAll('.lw-bldg')).filter((el) => el.textContent === name).map(box).filter((b) => b !== null)
-      return { card: box(document.querySelector('.wx-card')), ask: box(document.querySelector('.wx-ask-host')), labels, stage: box(stage), low: parseFloat(getComputedStyle(stage).getPropertyValue('--wx-low')) }
-    }, name)
-    const { card: c, ask: a, labels, stage } = boxes
-    expect(c && a && stage, 'the card, the Ask box and the stage are drawn').toBeTruthy()
-    // A long card: it runs down to its cap above the toolbar's strip, or the case shows nothing.
-    expect(c!.bottom, `the ${name} card runs to its cap (${show(c!)}, stage ${show(stage!)})`).toBeGreaterThan(stage!.bottom - boxes.low - 24)
-    expect.soft(overlaps(c!, a!), `the card (${show(c!)}) and the Ask box (${show(a!)}) overlap`).toBe(false)
-    expect(labels.length, `the framed building's name (${name}) is drawn`).toBeGreaterThan(0)
-    for (const l of labels) {
-      expect.soft(overlaps(l, c!), `${name}'s name (${show(l)}) under the card (${show(c!)})`).toBe(false)
-      expect.soft(overlaps(l, a!), `${name}'s name (${show(l)}) under the Ask box (${show(a!)})`).toBe(false)
-    }
-    // The answer folded away under the question, leaving a button that says what it holds and that it is collapsed;
-    // the focus went from the clicked result to the card.
-    const more = page.locator('.wx-ask-more')
-    await expect(page.locator('.wx-ask-results')).toBeHidden()
-    await expect(more).toBeVisible()
-    await expect(more).toHaveText(/^Show \d+ answers?$/)
-    await expect(more).toHaveAttribute('aria-expanded', 'false')
-    expect(await page.evaluate(() => document.activeElement?.classList.contains('wx-card') ?? false), 'the focus is on the card').toBe(true)
-    await check(page, 'long card', CITY)
-    await shoot(page, `export-keyword-longcard-${v.width}x${v.height}`)
-    // Esc closes the card: the answer comes back, and the focus goes back to the result that opened it.
-    await page.keyboard.press('Escape')
-    await expect(card).toBeHidden()
-    await expect(pickEl).toBeVisible()
-    await expect(more).toBeHidden()
-    expect(await page.evaluate((id) => document.activeElement?.getAttribute('data-id') === id, LONG_ID), 'the focus is back on the result').toBe(true)
-    await settle(page, 'card closed')
-    await shoot(page, `export-keyword-longcard-closed-${v.width}x${v.height}`)
-    // Opened again, folded again; the button brings the answer back with the card still open, focus on its first result.
-    await pickEl.click()
-    await expect(more).toBeVisible()
-    await more.click()
-    await expect(pickEl).toBeVisible()
-    await expect(card).toBeVisible()
-    expect(await page.evaluate(() => document.activeElement?.classList.contains('wx-ask-pick') ?? false), 'the focus is on a result').toBe(true)
-    // The close button closes it, and the answer stays.
-    await card.locator('.wx-card-close').click()
-    await expect(card).toBeHidden()
-    await expect(pickEl).toBeVisible()
-  })
-}
+      // The answer folded away under the question, leaving a button that says what it holds and that it is collapsed;
+      // the focus went from the clicked result to the card.
+      const more = page.locator('.wx-ask-more')
+      await expect(page.locator('.wx-ask-results')).toBeHidden()
+      await expect(more).toBeVisible()
+      await expect(more).toHaveText(/^Show \d+ answers?$/)
+      await expect(more).toHaveAttribute('aria-expanded', 'false')
+      expect(await page.evaluate(() => document.activeElement?.classList.contains('wx-card') ?? false), 'the focus is on the card').toBe(true)
+      await check(page, 'long card', CITY)
+      await shoot(page, `export-keyword-longcard-${v.width}x${v.height}`)
+      // Esc closes the card: the answer comes back, and the focus goes back to the result that opened it.
+      await page.keyboard.press('Escape')
+      await expect(card).toBeHidden()
+      await expect(pickEl).toBeVisible()
+      await expect(more).toBeHidden()
+      expect(await page.evaluate((id) => document.activeElement?.getAttribute('data-id') === id, LONG_ID), 'the focus is back on the result').toBe(true)
+      await settle(page, 'card closed')
+      await shoot(page, `export-keyword-longcard-closed-${v.width}x${v.height}`)
+      // Opened again, folded again; the button brings the answer back with the card still open, focus on its first result.
+      await pickEl.click()
+      await expect(more).toBeVisible()
+      await more.click()
+      await expect(pickEl).toBeVisible()
+      await expect(card).toBeVisible()
+      expect(await page.evaluate(() => document.activeElement?.classList.contains('wx-ask-pick') ?? false), 'the focus is on a result').toBe(true)
+      // The close button closes it, and the answer stays.
+      await card.locator('.wx-card-close').click()
+      await expect(card).toBeHidden()
+      await expect(pickEl).toBeVisible()
+    })
+  }
+})
