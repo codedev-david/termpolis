@@ -21,9 +21,9 @@ import { lowerHostPriority } from '../hostPriority'
 import { cardText } from './cardText'
 import type { Claim, Evidence, Proposal, WorldDoc, WorldQuery, WorldReadResult } from '../../shared/world/types'
 import { createAnnotationStore, hasPart, mergeAnnotations, NO_PART, withAnnotations, type AnnotationStore } from './annotations'
-import { compileWorld, compileWorldStaged, createRecompileScheduler, type CompileDeps, type StagedInput } from './compile'
+import { compileWorld, compileWorldStaged, createRecompileScheduler, scanFile, type CompileDeps, type CompileStage, type StagedInput } from './compile'
 import { snapshotFromFiles, type FileListing } from './fileSnapshot'
-import type { StageCache } from './stageCache'
+import type { StageCache, StageFile } from './stageCache'
 import type { TestRun } from './testStatus'
 import { cleanTranscriptFiles, readTranscriptRuns, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 import { MAX_DETECT_FILE_CHARS } from './detectors'
@@ -412,6 +412,24 @@ export interface WorldHostDeps {
   cloneDeps?: Partial<CloneDeps>
   /** Called as a project's label run ends, whatever ended it (tests: a run's end, not a wait, says nothing more comes). */
   onLabelRunEnd?: (projectKey: string) => void
+  /** The fewest files a listing needs for a first map drawn from it (default PROVISIONAL_MIN_FILES). */
+  provisionalMinFiles?: number
+}
+
+/**
+ * A listing of at least this many files gets a first map drawn from it (paths only, no lines yet) while the files are
+ * read: below it, the whole compile is quick enough that a second drawing would only flicker.
+ */
+export const PROVISIONAL_MIN_FILES = 2000
+/** How long the scans made from a snapshot's reads stay usable by the compile that follows it. */
+export const PRESCAN_TTL_MS = 120_000
+/** The most folders whose snapshot scans are kept at once (each is taken by the compile that follows it). */
+const MAX_PRESCANS = 4
+
+const slashRoot = (root: string): string => root.replace(/\\/g, '/').replace(/\/+$/, '')
+
+function isHead(v: unknown): v is WorldHead {
+  return typeof v === 'object' && v !== null && isStr((v as WorldHead).head) && typeof (v as WorldHead).dirty === 'boolean'
 }
 
 export interface WorldHost {
@@ -498,6 +516,38 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
   const readSource = deps.readSource ?? deps.readFile ?? ((p: string) => readCapped(p, MAX_SOURCE_READ_BYTES))
   const glob = deps.glob ?? ((root: string, patterns: string[]) => globFiles(root, patterns))
   const now = deps.now ?? Date.now
+  const provisionalMin = deps.provisionalMinFiles ?? PROVISIONAL_MIN_FILES
+  /**
+   * Per folder (the snapshot's root): the scans made from the text the snapshot read, so the compile after it reads
+   * no file a second time (WP4a). Taken by that compile; one older than PRESCAN_TTL_MS is not used.
+   */
+  const prescans = new Map<string, { at: number; scans: Map<string, StageFile | null> }>()
+  const takePrescan = (root: string): Map<string, StageFile | null> | undefined => {
+    const k = slashRoot(root)
+    const p = prescans.get(k)
+    prescans.delete(k)
+    return p && now() - p.at <= PRESCAN_TTL_MS ? p.scans : undefined
+  }
+  const withPrescan = (d: CompileDeps, scans: Map<string, StageFile | null> | undefined): CompileDeps =>
+    scans ? { ...d, scanned: (f) => scans.get(f) } : d
+  /**
+   * Per project: the first map drawn from the listing while its files are read, and when. Served by get while the
+   * compile after it runs (or, before that compile starts, for PRESCAN_TTL_MS); never stored.
+   */
+  const provisional = new Map<string, { doc: WorldDoc; at: number }>()
+  /** Projects whose compile call is running in the host. */
+  const running = new Set<string>()
+  /**
+   * Per project: the highest progress posted in the run a person started (its snapshot, then its compile), so the
+   * pane's percentage only ever rises while that run goes on.
+   */
+  const runPct = new Map<string, number>()
+  const postProgress = (projectKey: string, stage: CompileStage, pct: number): void => {
+    const top = runPct.get(projectKey)
+    const shown = top === undefined ? pct : Math.max(top, pct)
+    if (top !== undefined) runPct.set(projectKey, shown)
+    post({ kind: 'progress', projectKey, stage, pct: shown })
+  }
   const llmTimeoutMs = deps.llmTimeoutMs ?? LLM_TIMEOUT_MS
   const llmQueueTimeoutMs = deps.llmQueueTimeoutMs ?? LLM_QUEUE_TIMEOUT_MS
   const contextTimeoutMs = deps.contextTimeoutMs ?? CONTEXT_WAIT_MS
@@ -760,7 +810,30 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
       // A cloned repository's own transcripts and CI are not this machine's: no runs from main for it.
       ...(cloned ? {} : { transcriptRuns: askTranscripts(projectKey, root), ciRuns: askCi(projectKey) }),
       annotations: () => st.annotations.list(projectKey),
-      onProgress: (stage, pct) => post({ kind: 'progress', projectKey, stage, pct })
+      onProgress: (stage, pct) => postProgress(projectKey, stage, pct)
+    }
+  }
+
+  /**
+   * The first map of a world not compiled yet, from its listing alone (WP4a): every file a part, no file read, no
+   * test runs, labels from the label cache. Kept in memory and pushed as `updated`, so the pane draws it while the
+   * files are read; the full compile starts from its positions and replaces it. Nothing is drawn when a world is
+   * already stored or the run ended first. A failure here leaves only the full compile.
+   */
+  const drawFirst = async (st: HostState, key: string, paths: GraphSnapshot, head: WorldHead): Promise<void> => {
+    try {
+      if (await st.store.load(key)) return
+      // Nothing is read: every file's scan is null (no boundaries, no imports), no test report is globbed, no runs are
+      // asked of main, no progress is posted (the reads report it), and labels come from the cache alone (no model).
+      const d = depsFor(st, key, paths, null)
+      const quiet: CompileDeps = { readFile: d.readFile, readSource: d.readSource, glob: async () => [], label: d.label, now, scanned: () => null, annotations: d.annotations }
+      const out = await compile({ snap: paths, projectKey: key, head, previous: null }, quiet)
+      // The run ended first (its compile saved a world, or the snapshot failed): nothing to draw.
+      if (!runPct.has(key)) return
+      provisional.set(key, { doc: { ...out.doc, provisional: true }, at: now() })
+      post({ kind: 'updated', projectKey: key })
+    } catch (e) {
+      console.warn('[world] first map from the listing failed:', e)
     }
   }
 
@@ -790,7 +863,7 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
               missed = true
               return null
             }
-            const out = await compile(input, depsFor(st, key, cur.snap, labelled ? cacheOnly : null))
+            const out = await compile(input, withPrescan(depsFor(st, key, cur.snap, labelled ? cacheOnly : null), takePrescan(cur.snap.root)))
             const from = { snap: cur.snap, head: cur.head, ...planArg(cur.plan) }
             await saveCompiled(st, key, out, from)
             st.checked.add(key)
@@ -820,26 +893,53 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
         return null
       }
       return serial(key, async () => {
-        // A re-layout is a compile whose previous world has no positions (so it lays out afresh with
-        // the same seed) and the next layout round (so the window knows the parts moved on purpose);
-        // everything else compile carries from previous still carries.
-        const stored = await st.store.load(key)
-        const previous =
-          stored && opts?.relayout === true
-            ? { ...stored, layout: { seed: stored.layout.seed, positions: {}, round: (stored.layout.round ?? 0) + 1 } }
-            : stored
-        // With a stored stage cache every file is read but only one whose text changed is scanned again.
-        const cache = await stagesOf(st, key)
-        st.checked.delete(key)
-        const out = await compile({ snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan }, depsFor(st, key, snap, labelled ? cacheOnly : null))
-        await saveCompiled(st, key, out, { snap, head, ...plan })
-        // Every file was read and checked, and the stages saved: watcher runs may trust them now.
-        st.checked.add(key)
-        if (missed) labelLater(st, key, out.doc, { snap, head, ...plan }, out.cache)
-        return out.doc
+        // The scans the snapshot just made for this folder, if it made them: then its progress is this run's too, and
+        // only rises from where it got to; otherwise the run starts from 0.
+        const scans = takePrescan(snap.root)
+        runPct.set(key, scans ? runPct.get(key) ?? 0 : 0)
+        running.add(key)
+        try {
+          // A re-layout is a compile whose previous world has no positions (so it lays out afresh with
+          // the same seed) and the next layout round (so the window knows the parts moved on purpose);
+          // everything else compile carries from previous still carries.
+          const stored = await st.store.load(key)
+          const previous =
+            stored && opts?.relayout === true
+              ? { ...stored, layout: { seed: stored.layout.seed, positions: {}, round: (stored.layout.round ?? 0) + 1 } }
+              : stored
+          // A first map drawn from the listing: the full world starts from where its parts were drawn.
+          const drawn = previous === null ? provisional.get(key)?.doc : undefined
+          // With a stored stage cache every file is read but only one whose text changed is scanned again; a file the
+          // snapshot just read is scanned from that text, never read twice.
+          const cache = await stagesOf(st, key)
+          st.checked.delete(key)
+          const input = { snap, projectKey: key, head, previous, ...stagedArg(cache), ...plan, ...(drawn ? { layoutFrom: drawn.layout } : {}) }
+          const out = await compile(input, withPrescan(depsFor(st, key, snap, labelled ? cacheOnly : null), scans))
+          // The run's own progress is over: a label run after it reports from its own start.
+          runPct.delete(key)
+          provisional.delete(key)
+          await saveCompiled(st, key, out, { snap, head, ...plan })
+          // Every file was read and checked, and the stages saved: watcher runs may trust them now.
+          st.checked.add(key)
+          if (missed) labelLater(st, key, out.doc, { snap, head, ...plan }, out.cache)
+          return out.doc
+        } finally {
+          running.delete(key)
+          runPct.delete(key)
+          provisional.delete(key)
+        }
       })
     },
-    get: async (projectKey: unknown) => st.store.load(needKey(projectKey)),
+    // The stored world; before the first one is saved, the first map drawn from the listing (drawFirst), if any.
+    get: async (projectKey: unknown) => {
+      const key = needKey(projectKey)
+      const stored = await st.store.load(key)
+      if (stored) return stored
+      const drawn = provisional.get(key)
+      // A first map whose compile never came (the call that asked for it failed before it) is dropped.
+      if (drawn && !running.has(key) && now() - drawn.at > PRESCAN_TTL_MS) provisional.delete(key)
+      return provisional.get(key)?.doc ?? null
+    },
     // A person's confirmation: stored apart from the world (a recompile keeps it) and merged into the saved
     // doc, which is returned so the pane shows it at once. Works on design worlds as well (their files sit in
     // the same store).
@@ -881,10 +981,48 @@ export function createWorldHost(post: (msg: WorldHostResponse) => void, deps: Wo
     },
     // The structure of a folder main has not indexed yet, read and parsed here rather than on main's
     // thread. A clone's reads never follow a link out of it.
-    snapshotFromFiles: async (root: unknown) => {
+    // Each text read is scanned for the compile that follows (prescans), so it reads no file again. For a compile in
+    // flight (`opts.projectKey`, with its commit) the reads report progress, and a big listing is drawn as a first
+    // map before they finish (drawFirst).
+    snapshotFromFiles: async (root: unknown, opts?: { projectKey?: unknown; head?: unknown }) => {
       if (!isStr(root) || root === '') throw new Error('worldHost: root required')
       const read = isCloneRoot(st.userDataPath, root) ? confinedTo(root, readSource) : readSource
-      return snapshotFromFiles(root, { read, ...(deps.listFiles ? { listFiles: deps.listFiles } : {}) })
+      const early = opts && isStr(opts.projectKey) && opts.projectKey !== '' ? opts.projectKey : null
+      const head = isHead(opts?.head) ? opts.head : { head: '', dirty: false }
+      const scans = new Map<string, StageFile | null>()
+      let shown = 0
+      if (early !== null) {
+        runPct.set(early, 0)
+        postProgress(early, 'structure', 0)
+      }
+      try {
+        const snap = await snapshotFromFiles(root, {
+          read,
+          ...(deps.listFiles ? { listFiles: deps.listFiles } : {}),
+          onText: (rel, text) => void scans.set(rel, scanFile(rel, text)),
+          ...(early !== null
+            ? {
+                onListed: (paths: GraphSnapshot) => {
+                  if (paths.files.length >= provisionalMin) void drawFirst(st, early, paths, head)
+                },
+                onRead: (done: number, total: number) => {
+                  const pct = 5 + Math.floor((35 * done) / total)
+                  if (pct > shown) postProgress(early, 'boundaries', (shown = pct))
+                }
+              }
+            : {})
+        })
+        // Kept for the compile that follows; scans no compile took in time, and the oldest past MAX_PRESCANS, go.
+        const at = now()
+        for (const [k, p] of prescans) if (at - p.at > PRESCAN_TTL_MS) prescans.delete(k)
+        prescans.delete(slashRoot(root))
+        prescans.set(slashRoot(root), { at, scans })
+        while (prescans.size > MAX_PRESCANS) prescans.delete(prescans.keys().next().value as string)
+        return snap
+      } catch (e) {
+        if (early !== null) runPct.delete(early)
+        throw e
+      }
     },
     // Cancels the running clone or update and every call waiting behind it (a waiting one never starts git).
     cancelClone: async (url: unknown, ref?: unknown) => {

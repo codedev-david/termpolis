@@ -167,6 +167,10 @@ function fullDoc(): WorldDoc {
   doc.filesCapped = 20000
   doc.nestedCapped = 20000
   doc.filesUnreadable = 2
+  doc.filesRead = 20000
+  doc.filesListed = 50000
+  // A first map from the listing is never exported as one: the page shows the world it carries.
+  doc.provisional = true
   const pb: Building = { ...b, id: 'pb', growth: undefined, members: ['C:\\Users\\dev\\repo\\src\\new.ts'] }
   delete pb.growth
   const pe: WorldEdge = { ...e, id: 'pe', from: 'pb', to: 'b1' }
@@ -254,7 +258,7 @@ describe('sanitizeWorld', () => {
     expect(out).not.toHaveProperty('sessionId')
     expect(out.layers).toEqual({ plan: expect.any(Array) })
     expect(Object.keys(out).sort()).toEqual([
-      'buildings', 'cargo', 'districts', 'edges', 'externals', 'filesCapped', 'filesUnreadable', 'generatedAt', 'glossary', 'labelTokens', 'layers', 'layout',
+      'buildings', 'cargo', 'districts', 'edges', 'externals', 'filesCapped', 'filesListed', 'filesRead', 'filesUnreadable', 'generatedAt', 'glossary', 'labelTokens', 'layers', 'layout',
       'nestedCapped', 'processes', 'projectKey', 'runtimeHandSet', 'runtimeNames', 'sourceRevision', 'tours', 'version',
     ])
   })
@@ -272,6 +276,9 @@ describe('sanitizeWorld', () => {
     expect(out.filesCapped).toBe(20000)
     expect(out.filesUnreadable).toBe(2)
     expect(out.nestedCapped).toBe(20000)
+    expect(out.filesRead).toBe(20000)
+    expect(out.filesListed).toBe(50000)
+    expect(out).not.toHaveProperty('provisional')
     expect(out.edges[0]).toMatchObject({ id: 'e1', from: 'b1', to: 'b2', cargo: 'memory', tech: ['ipc'], rate: 'often', twoWay: true, twoWayStated: true })
     expect(out.layers.plan[0]).toMatchObject({ id: 'p1', title: 'Plan for .', reconcile: { matched: { pb: 'b1' }, missing: ['pb'], extra: ['b2'], changed: ['b1'], planAt: 99 }, removes: ['b2'] })
     expect(out.layers.plan[0].edges[0]).not.toHaveProperty('twoWayStated')
@@ -288,6 +295,8 @@ describe('sanitizeWorld', () => {
     expect(out).not.toHaveProperty('filesCapped')
     expect(out).not.toHaveProperty('filesUnreadable')
     expect(out).not.toHaveProperty('nestedCapped')
+    expect(out).not.toHaveProperty('filesRead')
+    expect(out).not.toHaveProperty('filesListed')
     expect(out.layout).not.toHaveProperty('round')
   })
 

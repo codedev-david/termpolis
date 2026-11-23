@@ -1,7 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { cappedNotice, filesNotice, isFilesNotice, nestedCappedNotice, nextFilesNotice, unreadableNotice } from '../../../src/renderer/src/components/World/worldNotes'
+import { cappedNotice, filesNotice, isFilesNotice, nestedCappedNotice, nextFilesNotice, provisionalNotice, readCappedNotice, unreadableNotice } from '../../../src/renderer/src/components/World/worldNotes'
 
 describe('worldNotes: what the pane says about the files a world maps', () => {
+  it('WP4a: a listing read in part says every file is shown and how many were read; a first map says it is still reading', () => {
+    expect(readCappedNotice(50000, 20000)).toBe('All 50,000 files are shown, but only 20,000 were read for the lines between them.')
+    expect(provisionalNotice()).toBe('Still reading the files: lines and details fill in when they are done.')
+    expect(filesNotice({ filesRead: 20000, filesListed: 50000 })).toBe(readCappedNotice(50000, 20000))
+    // Every file read (or a count that does not say fewer were read): nothing to say.
+    expect(filesNotice({ filesRead: 20000, filesListed: 20000 })).toBeNull()
+    expect(filesNotice({ filesRead: 20000 })).toBeNull()
+    expect(filesNotice({ filesListed: 50000 })).toBeNull()
+    expect(filesNotice({ provisional: true })).toBe(provisionalNotice())
+    expect(filesNotice({ provisional: false } as never)).toBeNull()
+    expect(filesNotice({ provisional: true, filesUnreadable: 1, filesRead: 2, filesListed: 3 })).toBe(
+      `${provisionalNotice()} ${unreadableNotice(1)} ${readCappedNotice(3, 2)}`
+    )
+    expect(isFilesNotice(readCappedNotice(50000, 20000))).toBe(true)
+    expect(isFilesNotice(provisionalNotice())).toBe(true)
+    expect(isFilesNotice(`${provisionalNotice()} ${readCappedNotice(3, 2)}`)).toBe(true)
+    // The full world's note replaces the first map's, and a full world with nothing to say clears it.
+    expect(nextFilesNotice(readCappedNotice(3, 2), provisionalNotice())).toBe(readCappedNotice(3, 2))
+    expect(nextFilesNotice(null, provisionalNotice())).toBeNull()
+  })
+
   it('the capped note says how many files the world shows, with a thousands separator', () => {
     expect(cappedNotice(20000)).toBe('Showing the first 20,000 files in this folder.')
     expect(cappedNotice(7)).toBe('Showing the first 7 files in this folder.')

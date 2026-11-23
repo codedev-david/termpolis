@@ -1409,3 +1409,94 @@ describe('read with cards and plan', () => {
     expect(spawned[0].calls()[0].args).toEqual([KEY, { cards: true, plan: true }])
   })
 })
+
+describe('WP4a: a long first compile, the code graph after it, and the listing first map', () => {
+  it('progress for the project keeps a compile from timing out; a silent one still times out', async () => {
+    vi.useFakeTimers()
+    let t!: FakeTransport
+    const { client } = setup({ callTimeoutMs: 100 }, (x) => {
+      t = x
+      x.reply = () => undefined
+    })
+    const doc = client.compile(ROOT)
+    let settled: unknown = 'pending'
+    doc.then((v) => (settled = v), (e: Error) => (settled = e.message))
+    await vi.advanceTimersByTimeAsync(0)
+    const call = t.calls()[0]
+    // Five times the timeout passes, with the host reporting progress more often than the timeout: no error.
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(60)
+      t.emit({ kind: 'progress', projectKey: KEY, stage: 'boundaries', pct: 10 + i })
+      // Progress for another project does not count for this one.
+      t.emit({ kind: 'progress', projectKey: 'other', stage: 'boundaries', pct: 10 + i })
+    }
+    expect(settled).toBe('pending')
+    t.emit({ kind: 'result', id: call.id, ok: true, result: DOC })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toEqual(DOC)
+    // A compile whose host goes quiet times out as before.
+    const quiet = client.compile(ROOT).catch((e: Error) => e.message)
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(60)
+    t.emit({ kind: 'progress', projectKey: 'other', stage: 'layout', pct: 50 })
+    await vi.advanceTimersByTimeAsync(60)
+    expect(await quiet).toBe('Lumopolis host call "compile" timed out')
+  })
+
+  it('whenCompiled resolves at once with no compile, and otherwise once every compile of the folder ended, failed or not', async () => {
+    let t!: FakeTransport
+    const { client } = setup({}, (x) => {
+      t = x
+      x.reply = () => undefined
+    })
+    let done = false
+    await client.whenCompiled(ROOT)
+    await client.whenCompiled('')
+    const first = client.compile(ROOT)
+    const second = client.relayout(ROOT).catch((e: Error) => e.message)
+    const waited = client.whenCompiled(ROOT).then(() => (done = true))
+    await flush()
+    const [a, b] = t.calls()
+    t.emit({ kind: 'result', id: a.id, ok: true, result: DOC })
+    expect(await first).toEqual(DOC)
+    await flush()
+    expect(done).toBe(false)
+    t.emit({ kind: 'result', id: b.id, ok: false, error: { message: 'boom' } })
+    expect(await second).toBe('boom')
+    await waited
+    expect(done).toBe(true)
+    // Nothing is left in flight: it answers at once again.
+    await client.whenCompiled(ROOT)
+  })
+
+  it('the snapshot made for a compile in flight carries the project and commit, so the host can draw a first map', async () => {
+    let client!: ReturnType<typeof setup>['client']
+    const made = setup({ head: async () => ({ head: 'abc', dirty: true }), snapshot: (root) => client.snapshotFromFiles(root) }, (x) => {
+      x.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: m.fn === 'snapshotFromFiles' ? SNAP : DOC })
+    })
+    client = made.client
+    expect(await client.compile(ROOT)).toEqual(DOC)
+    // On its own (no compile running) the snapshot asks for nothing more.
+    expect(await client.snapshotFromFiles(ROOT)).toEqual(SNAP)
+    expect(made.spawned[0].calls().map((c) => [c.fn, c.args])).toEqual([
+      ['snapshotFromFiles', [ROOT, { projectKey: KEY, head: { head: 'abc', dirty: true } }]],
+      ['compile', [KEY, SNAP, { head: 'abc', dirty: true }]],
+      ['snapshotFromFiles', [ROOT]]
+    ])
+  })
+
+  it('a first map from the listing is shown but never marks the world known, so no refresh starts from it', async () => {
+    const head = vi.fn(async () => ({ head: 'abc', dirty: false }))
+    const { client, spawned } = setup({ head }, (x) => {
+      x.reply = (m) => ({ kind: 'result', id: m.id, ok: true, result: m.fn === 'get' ? { ...DOC, provisional: true } : DOC })
+    })
+    expect(await client.get(ROOT)).toEqual({ ...DOC, provisional: true })
+    await flush()
+    expect(spawned[0].calls().map((c) => c.fn)).toEqual(['get'])
+    expect(head).not.toHaveBeenCalled()
+    // A watcher event for a world that is not known yet starts nothing.
+    client.notifyChanged(ROOT, ['src/a.ts'])
+    await flush()
+    expect(spawned[0].calls().map((c) => c.fn)).toEqual(['get'])
+  })
+})

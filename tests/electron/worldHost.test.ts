@@ -2606,8 +2606,10 @@ describe('the staged compile in the host', () => {
     await until(() => store.saves.length === 2)
     expect(store.saves).toHaveLength(2)
     // The boundary stage reports past 5% only while it reads files: the first pass did, the follow-up did not.
-    const scans = h.out.filter((m) => m.kind === 'progress' && m.stage === 'boundaries' && m.pct > 5)
-    expect(scans).toHaveLength(1)
+    const saved = h.out.findIndex((m) => m.kind === 'updated')
+    const scans = h.out.map((m, i) => ({ m, i })).filter(({ m }) => m.kind === 'progress' && m.stage === 'boundaries' && m.pct > 5)
+    expect(scans.length).toBeGreaterThan(0)
+    expect(scans.filter(({ i }) => i > saved)).toEqual([])
     expect(h.out.filter((m) => m.kind === 'progress' && m.stage === 'grouping')).toHaveLength(2)
   })
 

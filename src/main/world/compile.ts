@@ -28,6 +28,7 @@ import { overlayPlan } from './planOverlay'
 import { cleanRuntimeNames } from '../../shared/world/runtimeNames'
 import { readTestResults, statusFor, TEST_FILE, testClaims, type TestRun } from './testStatus'
 import { isStageCache, STAGE_CACHE_VERSION, type StageCache, type StageFile } from './stageCache'
+import { cappedReads, eachLimit, READ_CONCURRENCY } from './readCap'
 
 export type CompileStage = 'structure' | 'boundaries' | 'grouping' | 'status' | 'labelling' | 'layout'
 
@@ -46,6 +47,11 @@ export interface CompileDeps {
   /** What people confirmed in the pane, by item id, merged into the claims of the buildings and lines. Absent: none. */
   annotations?: () => Promise<Record<string, Claim[]>>
   onProgress?: (stage: CompileStage, pct: number) => void
+  /**
+   * A file's scan made from the text the snapshot already read (worldHost prescans), so a first map reads each file
+   * once: a scan, or null when the text was read but has nothing to scan. Undefined: not scanned, so it is read here.
+   */
+  scanned?: (file: string) => StageFile | null | undefined
 }
 
 export interface CompileInput {
@@ -73,7 +79,10 @@ export const BUILTIN_GLOSSARY: Readonly<Record<string, string>> = {
   Watcher: 'Watches files and reacts when they change'
 }
 
-const READ_CHUNK = 32
+/** While the status stage waits on test results (a glob of the tree, main's CI and transcripts), progress moves one
+ *  point this often, up to STATUS_BEAT_TOP, so the pane never sits at one value while it waits. */
+export const STATUS_BEAT_MS = 2000
+const STATUS_BEAT_TOP = 64
 /** Places one "Seen in code" claim cites at most. */
 const MAX_SEEN = 3
 const MAX_LABEL = 120
@@ -166,13 +175,8 @@ export function manifestServiceNames(file: string, text: string): string[] {
 }
 
 /** Runtime names the manifests under the project give, by building: a manifest's names go to the building with the most members in its folder. */
-async function manifestNames(deps: CompileDeps, root: string, g: Grouping): Promise<Map<string, string[]>> {
-  let paths: string[]
-  try {
-    paths = await deps.glob(root, MANIFEST_PATTERNS)
-  } catch {
-    paths = []
-  }
+async function manifestNames(deps: CompileDeps, root: string, g: Grouping, found: Promise<string[]>): Promise<Map<string, string[]>> {
+  const paths = await found
   const out = new Map<string, string[]>()
   const prefix = `${root.replace(/\\/g, '/')}/`
   for (const abs of paths.map((p) => p.replace(/\\/g, '/')).filter((p) => p.startsWith(prefix) && /(?:\.ya?ml|\/package\.json)$/.test(p) && !p.split('/').includes('node_modules')).sort().slice(0, MAX_MANIFESTS)) {
@@ -454,6 +458,9 @@ export interface StagedInput extends CompileInput {
   cache?: StageCache | null
   /** With a cache: the files to read again (default `changed`; absent both, every file is read and checked). */
   reread?: string[]
+  /** Positions to start from when there is no previous world: the first map drawn from the listing, so the parts
+   *  stay where they were drawn. */
+  layoutFrom?: WorldDoc['layout']
 }
 
 /** Content hash of a text: its length and two FNV-1a hashes with different seeds. */
@@ -508,7 +515,7 @@ function regroupLines(g: Grouping, prior: StageCache, entries: Map<string, Stage
 }
 
 /** The scan of one file's text, or null when it is unread or too long to scan. */
-function scanFile(f: string, text: string | null): StageFile | null {
+export function scanFile(f: string, text: string | null): StageFile | null {
   if (text === null || text.length > MAX_DETECT_FILE_CHARS) return null
   const found = serviceNames(f, text)
   const packages = packageImports(f, text)
@@ -518,6 +525,17 @@ function scanFile(f: string, text: string | null): StageFile | null {
     imports: relativeImports(f, text),
     ...(packages.length > 0 ? { packages } : {}),
     ...(found.length > 0 ? { names: found } : {})
+  }
+}
+
+/** `p`, with `beat(n)` called every STATUS_BEAT_MS while it is pending (n = 1, 2, ...). */
+async function beating<T>(p: Promise<T>, beat: (n: number) => void): Promise<T> {
+  let n = 0
+  const timer = setInterval(() => beat(++n), STATUS_BEAT_MS)
+  try {
+    return await p
+  } finally {
+    clearInterval(timer)
   }
 }
 
@@ -557,29 +575,42 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
   // Boundaries, imports and service names, from one read per file that needs one.
   const root = snap.root.replace(/\/+$/, '')
   const files = [...new Set(snap.files)].filter((f) => !isIgnored(f)).sort()
+  // Slow reads of the whole tree start now, so they overlap the file reads rather than wait behind them.
+  const manifestsFound = Promise.resolve().then(() => deps.glob(root, MANIFEST_PATTERNS)).catch((): string[] => [])
+  const runsFound = readTestResults(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns, ciRuns: deps.ciRuns })
+  // More files than a map reads: all are parts of the world, only the capped set is read (readCap.ts).
+  const traced = cappedReads(files)
+  const reads = (f: string): boolean => traced === null || traced.has(f)
   const again = new Set(input.reread ?? input.changed ?? files)
-  const kept = (f: string): boolean => prior !== null && !again.has(f) && Object.hasOwn(prior.files, f)
+  const kept = (f: string): boolean => prior !== null && reads(f) && !again.has(f) && Object.hasOwn(prior.files, f)
   const entries = new Map<string, StageFile>()
   for (const f of files) if (kept(f)) entries.set(f, (prior as StageCache).files[f])
-  const toRead = files.filter((f) => !kept(f))
+  const toRead = files.filter((f) => reads(f) && !kept(f))
   // Files whose text differs from the cache's (or that the cache lacks): with `changed` they are touched too,
   // so an edit a watcher never reported (made while the app was closed, or in a failed run) is re-labelled.
   const differs = new Set<string>()
   progress('boundaries', 5)
   const readSource = deps.readSource ?? deps.readFile
-  for (let i = 0; i < toRead.length; i += READ_CHUNK) {
-    const chunk = toRead.slice(i, i + READ_CHUNK)
-    const texts = await Promise.all(chunk.map((f) => safeRead(readSource, `${root}/${f}`)))
-    chunk.forEach((f, k) => {
-      const text = texts[k]
-      const before = prior && text !== null && Object.hasOwn(prior.files, f) ? prior.files[f] : undefined
-      // The same text as last time: the old scan stands.
-      const entry = before && before.hash === contentHash(text as string) ? before : scanFile(f, text)
-      if (entry) entries.set(f, entry)
-      if (prior && entry !== prior.files[f]) differs.add(f)
-    })
-    progress('boundaries', 5 + Math.round((35 * Math.min(toRead.length, i + READ_CHUNK)) / toRead.length))
-  }
+  const got: (StageFile | null)[] = new Array<StageFile | null>(toRead.length).fill(null)
+  let done = 0
+  let shown = 5
+  await eachLimit(toRead, READ_CONCURRENCY, async (f, i) => {
+    const before = prior && Object.hasOwn(prior.files, f) ? prior.files[f] : undefined
+    // The same text as last time: the old scan stands.
+    const pre = deps.scanned?.(f)
+    if (pre !== undefined) got[i] = before && pre && before.hash === pre.hash ? before : pre
+    else {
+      const text = await safeRead(readSource, `${root}/${f}`)
+      got[i] = before && text !== null && before.hash === contentHash(text) ? before : scanFile(f, text)
+    }
+    const pct = 5 + Math.floor((35 * ++done) / toRead.length)
+    if (pct > shown) progress('boundaries', (shown = pct))
+  })
+  toRead.forEach((f, i) => {
+    const entry = got[i]
+    if (entry) entries.set(f, entry)
+    if (prior && entry !== prior.files[f]) differs.add(f)
+  })
   const bounds: Boundary[] = []
   const names = new Map<string, string[]>()
   const scanned = new Map<string, string[]>()
@@ -601,7 +632,7 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
 
   progress('status', 55)
   const testsByMember = linkTests(snap, g)
-  const runs = expandCi(await readTestResults(snap.root, { readFile: deps.readFile, glob: deps.glob, transcriptRuns: deps.transcriptRuns, ciRuns: deps.ciRuns }), testsByMember)
+  const runs = expandCi(await beating(runsFound, (n) => progress('status', Math.min(STATUS_BEAT_TOP, 55 + n))), testsByMember)
   const tests = contentHash(runs.map((r) => JSON.stringify([r.file, r.passed, r.at, r.source])).sort().join('\n'))
   const cache: StageCache = { version: STAGE_CACHE_VERSION, files: Object.fromEntries(entries), structureHash, grouping: g, tests }
   // Status for the touched buildings only: with the grouping reused (so the same files, imports and test
@@ -691,15 +722,16 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     const id = ownerOf.get(f) as string
     runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
   }
-  for (const [id, list] of await manifestNames(deps, root, g)) runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
+  for (const [id, list] of await manifestNames(deps, root, g, manifestsFound)) runtime.set(id, new Set([...(runtime.get(id) ?? []), ...list]))
   const runtimeNames = Object.fromEntries([...runtime].sort((a, z) => cmp(a[0], z[0])).map(([id, s]) => [id, [...s].sort()]))
 
-  const layout = layoutWorld(g, previous?.layout ?? null)
+  const seed = previous?.layout ?? input.layoutFrom ?? null
+  const layout = layoutWorld(g, seed)
   const far = g.districts.reduce((m, d) => Math.max(m, Math.hypot(layout.positions[d.id][0], layout.positions[d.id][2])), 0)
   const radius = far + RING_MARGIN
   ext.externals.forEach((x, i) => {
     const angle = (2 * Math.PI * i) / ext.externals.length
-    layout.positions[x.id] = previous?.layout.positions[x.id] ?? [round2(radius * Math.cos(angle)), RING_Y, round2(radius * Math.sin(angle))]
+    layout.positions[x.id] = seed?.positions[x.id] ?? [round2(radius * Math.cos(angle)), RING_Y, round2(radius * Math.sin(angle))]
   })
 
   const doc: WorldDoc = {
@@ -719,7 +751,8 @@ export async function compileWorldStaged(input: StagedInput, deps: CompileDeps):
     runtimeNames,
     layers: { plan: [] },
     labelTokens: labels.tokens,
-    ...filesNotes(snap, root, files.length)
+    ...filesNotes(snap, root, files.length),
+    ...(traced !== null ? { filesRead: traced.size, filesListed: files.length } : {})
   }
   // Annotations are merged by item id before the plan is laid over, so a recompile never loses one.
   const merged = deps.annotations ? mergeAnnotations(doc, await deps.annotations()) : doc

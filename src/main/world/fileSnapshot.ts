@@ -20,6 +20,7 @@ import { isIgnoredPath, listRepo, MAP_FILE_CAP, type NestedWalk, type RepoListin
 import { access, readFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { walkFolder, type WalkResult } from './folderWalk'
+import { cappedReads, eachLimit, READ_CONCURRENCY, readOrder } from './readCap'
 import { readRootIgnore } from './rootIgnore'
 import { configEnv, inheritedEnv, loginConfig, loginEnv } from './gitLogin'
 import { NO_GIT_MESSAGE, nodeExecFile } from './gitSource'
@@ -166,6 +167,17 @@ export interface FileSnapshotDeps {
   listFiles?: (root: string) => Promise<FileListing>
   /** Reads one file by its absolute path; null or a rejection reads as absent. */
   read: (p: string) => Promise<string | null>
+  /** Files read at once (default READ_CONCURRENCY). */
+  concurrency?: number
+  /**
+   * The listing as a snapshot, before any file is read: every file the world shows, with no imports yet. A first map
+   * can be drawn from it (grouping needs only paths) while the reads go on.
+   */
+  onListed?: (paths: GraphSnapshot) => void
+  /** Each text read, so a scan of it never has to read the file again (the compile's boundary scan). */
+  onText?: (rel: string, text: string) => void
+  /** Reads done out of the reads there are, after each read. */
+  onRead?: (done: number, total: number) => void
 }
 
 /** A relative path that stays inside the folder: no absolute path, drive, `..` or empty segment. */
@@ -181,7 +193,8 @@ function safeRelative(file: string): string | null {
  * pane says so rather than showing an empty world. A file the world leaves out (group.ts isIgnored) is never read. A
  * capped listing records how many files are mapped (filesCapped), one whose nested repositories alone were cut the
  * cap they shared (nestedCapped); names the listing could not read pass through
- * (unreadable), for the world's count.
+ * (unreadable), for the world's count. Files are read READ_CONCURRENCY at a time, and a listing of more than
+ * MAP_FILE_CAP files has only that many read (readCap.ts cappedReads); the others join with no imports.
  */
 export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): Promise<GraphSnapshot> {
   const base = slashBase(root)
@@ -193,23 +206,59 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
     if ((e as Error).message === NO_GIT_MESSAGE) throw e
     listing = { files: [], capped: false }
   }
-  const listed = listing.files
+  const candidates: string[] = []
+  const seen = new Set<string>()
+  for (const raw of new Set(listing.files)) {
+    const rel = safeRelative(raw)
+    if (rel === null || seen.has(rel) || isIgnoredPath(rel) || !isSourceFile(`${base}/${rel}`)) continue
+    seen.add(rel)
+    candidates.push(rel)
+  }
+  candidates.sort()
+  const unreadable = listing.unreadable ?? []
+  const notes = {
+    ...(listing.nestedCapped ? { nestedCapped: MAP_FILE_CAP } : {}),
+    ...(unreadable.length > 0 ? { unreadable: [...unreadable] } : {})
+  }
+  deps.onListed?.({
+    root: base,
+    files: [...candidates],
+    symbols: [],
+    callEdges: [],
+    fileImports: Object.fromEntries(candidates.map((f) => [f, [] as string[]])),
+    ...(listing.capped ? { filesCapped: candidates.length } : {}),
+    ...notes
+  })
+  // More files than a map reads: every one is still shown, but only the capped set is read (readCap.ts), the rest
+  // join with no imports.
+  const capped = cappedReads(candidates)
+  const toRead = capped === null ? candidates : readOrder(candidates).filter((f) => capped.has(f))
+  const found: (string[] | null)[] = new Array<string[] | null>(toRead.length).fill(null)
+  let done = 0
+  await eachLimit(toRead, deps.concurrency ?? READ_CONCURRENCY, async (rel, i) => {
+    const content = await deps.read(`${base}/${rel}`).catch(() => null)
+    deps.onRead?.(++done, toRead.length)
+    if (content === null || content.length > MAX_SNAPSHOT_FILE_CHARS) return
+    deps.onText?.(rel, content)
+    const ex = extractFile(rel, content)
+    if (ex) found[i] = ex.imports
+  })
   const files: string[] = []
   const fileImports: Record<string, string[]> = {}
-  for (const raw of new Set(listed)) {
-    const rel = safeRelative(raw)
-    if (rel === null || Object.hasOwn(fileImports, rel) || isIgnoredPath(rel)) continue
-    const abs = `${base}/${rel}`
-    if (!isSourceFile(abs)) continue
-    const content = await deps.read(abs).catch(() => null)
-    if (content === null || content.length > MAX_SNAPSHOT_FILE_CHARS) continue
-    const ex = extractFile(rel, content)
-    if (!ex) continue
+  toRead.forEach((rel, i) => {
+    const imports = found[i]
+    if (imports === null) return
     files.push(rel)
-    fileImports[rel] = ex.imports
+    fileImports[rel] = imports
+  })
+  if (capped !== null) {
+    for (const rel of candidates) {
+      if (capped.has(rel)) continue
+      files.push(rel)
+      fileImports[rel] = []
+    }
   }
   files.sort()
-  const unreadable = listing.unreadable ?? []
   return {
     root: base,
     files,
@@ -217,7 +266,6 @@ export async function snapshotFromFiles(root: string, deps: FileSnapshotDeps): P
     callEdges: [],
     fileImports,
     ...(listing.capped ? { filesCapped: files.length } : {}),
-    ...(listing.nestedCapped ? { nestedCapped: MAP_FILE_CAP } : {}),
-    ...(unreadable.length > 0 ? { unreadable: [...unreadable] } : {})
+    ...notes
   }
 }

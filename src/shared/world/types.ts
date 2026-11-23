@@ -94,6 +94,13 @@ export interface WorldDoc {
   nestedCapped?: number
   /** Source files left out because their names are not valid UTF-8, so no read finds them. Absent when there are none. */
   filesUnreadable?: number
+  /** A listing of more files than a map reads: how many were read for their lines and details (the rest are parts
+   *  with no lines). Absent when every file was read. */
+  filesRead?: number
+  /** With filesRead: how many files the world shows. */
+  filesListed?: number
+  /** A first map drawn from the file listing while the files are still being read; never stored. Absent on a full world. */
+  provisional?: boolean
 }
 export type WorldAction =
   | { type: 'focus'; ids: string[] } | { type: 'highlight'; ids: string[] }

@@ -283,6 +283,7 @@ const world = vi.hoisted(() => ({
     notifyChanged: vi.fn(),
     hasWorld: vi.fn(async (_root: string) => true),
     snapshotFromFiles: vi.fn(async (root: string) => ({ root, files: ['h.ts'], symbols: [], callEdges: [], fileImports: { 'h.ts': [] } }) as any),
+    whenCompiled: vi.fn(async (_root: string) => {}),
     read: vi.fn(async (_root: string, _q: unknown) => ({ items: [], evidence: [] }) as unknown),
     onProgress: vi.fn(() => () => {}),
     onUpdated: vi.fn(() => () => {}),
@@ -4209,10 +4210,18 @@ describe('Lumopolis world wiring in index.ts', () => {
     let finish!: (v: unknown) => void
     cg.buildCodeGraph.mockImplementationOnce(() => new Promise((r) => { finish = r }) as any)
     cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
+    // WP4a Ruling R3: main's index waits until the world's compile is done, so it never competes with the first map.
+    let compiled!: () => void
+    world.client.whenCompiled.mockImplementationOnce(() => new Promise<void>((r) => { compiled = r }))
     // The build never settles here, yet the snapshot answers: the hook does not wait on it.
     expect(await world.opts.snapshot('/repos/y')).toEqual({ root: '/repos/y', files: ['h.ts'], symbols: [], callEdges: [], fileImports: { 'h.ts': [] } })
     expect(world.client.snapshotFromFiles).toHaveBeenCalledWith('/repos/y')
-    // Main's own index started in the background, through the code-graph:build path (governed, async reads).
+    expect(world.client.whenCompiled).toHaveBeenCalledWith('/repos/y')
+    await new Promise((r) => setTimeout(r, 5))
+    expect(cg.buildCodeGraph).not.toHaveBeenCalled()
+    compiled()
+    // Main's own index started in the background once the compile ended, through the code-graph:build path (governed, async reads).
+    await vi.waitFor(() => expect(cg.buildCodeGraph).toHaveBeenCalledTimes(1))
     const [deps, key] = cg.buildCodeGraph.mock.calls[0] as unknown as [any, string]
     expect(key).toBe('key:/repos/y')
     await deps.pause()
@@ -4222,6 +4231,7 @@ describe('Lumopolis world wiring in index.ts', () => {
     // A second first-world compile while that index runs starts no second one.
     cg.graphSnapshot.mockReturnValueOnce({ files: [], symbols: [], edges: [] })
     await world.opts.snapshot('/repos/y')
+    await new Promise((r) => setTimeout(r, 5))
     expect(cg.buildCodeGraph).toHaveBeenCalledTimes(1)
     finish({ symbols: 1, edges: 0 })
     await vi.waitFor(async () => {

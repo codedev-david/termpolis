@@ -2787,7 +2787,8 @@ const worldClient = createWorldClient(undefined, {
   },
   // A project the code graph has not indexed yet compiles from a snapshot the world process makes (it
   // lists and parses the files there, never on the main thread), and main's own index starts in the
-  // background (not awaited) for the next compile and the code tools. Still nothing (an unmounted
+  // background once the world's compile has finished (WP4a Ruling R3: its reads never compete with the
+  // first map), for the next compile and the code tools. Still nothing (an unmounted
   // drive, an emptied folder) is an error, never an empty world saved over the stored one: that would
   // throw away every stored position. The ipc handler answers err(message).
   snapshot: async (root): Promise<GraphSnapshot> => {
@@ -2796,7 +2797,7 @@ const worldClient = createWorldClient(undefined, {
     const snap = graphSnapshot(key, root, { structureOnly: true })
     if (snap.files.length > 0) return snap
     const built = await worldClient.snapshotFromFiles(root)
-    indexInBackground(root)
+    void worldClient.whenCompiled(root).then(() => indexInBackground(root))
     // A Build it folder starts empty: its world is the linked design's plan alone until files arrive.
     if (built.files.length === 0) {
       const source = (await worldSources.get(key))?.source

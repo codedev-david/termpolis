@@ -90,6 +90,11 @@ interface Waiter {
   resolve(v: unknown): void
   reject(e: Error): void
   timer: ReturnType<typeof setTimeout>
+  /** The project a long call works for: each progress the host reports for it starts the call's timeout again, so a
+   *  compile that keeps moving never times out while the host works. */
+  key?: string
+  /** Starts the timeout again. */
+  rearm?: () => void
 }
 
 const toError = (e: SerializedError | undefined): Error => {
@@ -318,6 +323,7 @@ export function createWorldClient(
         return
       }
       case 'progress':
+        for (const w of pending.values()) if (w.key === m.projectKey) w.rearm?.()
         emit(progressSubs, { root: roots.get(m.projectKey) ?? '', projectKey: m.projectKey, stage: m.stage, pct: m.pct })
         return
       case 'updated':
@@ -379,20 +385,30 @@ export function createWorldClient(
     return p
   }
 
-  const call = async <T>(fn: string, args: unknown[]): Promise<T> => {
+  /** Calls the host. `key`: the project the call works for; its progress keeps the call from timing out (Waiter.key). */
+  const call = async <T>(fn: string, args: unknown[], key?: string): Promise<T> => {
     if (disposed) throw new Error('Lumopolis host is shut down')
     const tr = await start()
     return new Promise<T>((resolve, reject) => {
       const id = ++seq
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        reject(new Error(`Lumopolis host call "${fn}" timed out`))
-      }, callTimeoutMs)
-      pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer })
+      const expire = (): ReturnType<typeof setTimeout> =>
+        setTimeout(() => {
+          pending.delete(id)
+          reject(new Error(`Lumopolis host call "${fn}" timed out`))
+        }, callTimeoutMs)
+      const waiter: Waiter = { resolve: resolve as (v: unknown) => void, reject, timer: expire() }
+      if (key !== undefined) {
+        waiter.key = key
+        waiter.rearm = () => {
+          clearTimeout(waiter.timer)
+          waiter.timer = expire()
+        }
+      }
+      pending.set(id, waiter)
       try {
         tr.postMessage({ kind: 'call', id, fn, args })
       } catch (err) {
-        clearTimeout(timer)
+        clearTimeout(waiter.timer)
         pending.delete(id)
         reject(err instanceof Error ? err : new Error(String(err)))
       }
@@ -422,15 +438,44 @@ export function createWorldClient(
   /** The linked plan stamp a world carries; a doc with no layers (never one the host saves) carries none. */
   const carried = (doc: WorldDoc): string => (doc.layers ? linkedPlanStamp(doc) : '')
 
-  const compileWith = async (root: string, relayout: boolean, linked?: WorldDoc | null): Promise<WorldDoc> => {
-    const key = keyOf(root, true)
-    const snap = await snapshotOf(root)
+  /** Per project: the compiles in flight (whenCompiled waits for them). */
+  const inFlight = new Map<string, Set<Promise<unknown>>>()
+  /** Per project: the commit of the compile in flight, so the host's snapshot for it can draw a first map from the
+   *  listing (snapshotFromFiles) while it reads the files. */
+  const compilingHead = new Map<string, WorldHead>()
+
+  const compileRun = async (root: string, key: string, relayout: boolean, linked?: WorldDoc | null): Promise<WorldDoc> => {
     const head = await headOf(root)
-    const plan = linked === undefined ? await planOf(key) : linked
-    const extra = { ...(relayout ? { relayout: true } : {}), ...(plan ? { plan } : {}) }
-    const doc = await call<WorldDoc>('compile', Object.keys(extra).length > 0 ? [key, snap, head, extra] : [key, snap, head])
-    known.add(key)
-    return doc
+    compilingHead.set(key, head)
+    try {
+      const snap = await snapshotOf(root)
+      const plan = linked === undefined ? await planOf(key) : linked
+      const extra = { ...(relayout ? { relayout: true } : {}), ...(plan ? { plan } : {}) }
+      const doc = await call<WorldDoc>('compile', Object.keys(extra).length > 0 ? [key, snap, head, extra] : [key, snap, head], key)
+      known.add(key)
+      return doc
+    } finally {
+      if (compilingHead.get(key) === head) compilingHead.delete(key)
+    }
+  }
+
+  const compileWith = (root: string, relayout: boolean, linked?: WorldDoc | null): Promise<WorldDoc> => {
+    let key: string
+    try {
+      key = keyOf(root, true)
+    } catch (e) {
+      return Promise.reject(e)
+    }
+    const run = compileRun(root, key, relayout, linked)
+    const runs = inFlight.get(key) ?? new Set<Promise<unknown>>()
+    inFlight.set(key, runs)
+    runs.add(run)
+    const done = (): void => {
+      runs.delete(run)
+      if (runs.size === 0 && inFlight.get(key) === runs) inFlight.delete(key)
+    }
+    run.then(done, done)
+    return run
   }
 
   /**
@@ -480,7 +525,8 @@ export function createWorldClient(
       // The pane's get is a person opening the world; Ask's (no refresh) only reads it.
       const key = keyOf(root, opts.refresh !== false)
       const doc = await call<WorldDoc | null>('get', [key])
-      if (doc) {
+      // A first map drawn from the listing: the compile that drew it is still running, so nothing is refreshed.
+      if (doc && doc.provisional !== true) {
         known.add(key)
         if (opts.refresh !== false) refreshIfStale(root, key, doc)
       }
@@ -593,7 +639,21 @@ export function createWorldClient(
      * process, for a folder main has not indexed yet, so reading and parsing a whole repository never runs
      * on the main thread. A cloned repository is read confined to its folder.
      */
-    snapshotFromFiles: (root: string): Promise<GraphSnapshot> => call('snapshotFromFiles', [root]),
+    snapshotFromFiles: (root: string): Promise<GraphSnapshot> => {
+      const key = keyOf(root)
+      const head = compilingHead.get(key)
+      // For a compile in flight: the host may draw a first map from the listing, and its progress keeps this call alive.
+      return head === undefined ? call('snapshotFromFiles', [root]) : call('snapshotFromFiles', [root, { projectKey: key, head }], key)
+    },
+    /**
+     * Resolves once no compile of `root`'s world is running (at once when none is), whatever they ended with. Main's
+     * code graph waits on it, so its reads never compete with the world's first map (WP4a Ruling R3).
+     */
+    whenCompiled: async (root: string): Promise<void> => {
+      const key = graphKeyForRoot(root)
+      const runs = key ? inFlight.get(key) : undefined
+      if (runs) await Promise.allSettled([...runs])
+    },
     /** The world with this key (graphKeyForRoot, the registry key) was removed: its labelling calls still waiting for a
      *  slot never start, running ones are answered null, and none it asks later starts a CLI until the world is asked
      *  for again. The host is told, so its label run for the world stops asking. */

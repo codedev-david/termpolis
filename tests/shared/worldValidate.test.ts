@@ -92,6 +92,28 @@ describe('validateWorld', () => {
     }
   })
 
+  it('filesRead and filesListed (a listing read in part) are kept as whole counts, junk dropped alone', () => {
+    const plain = validateWorld(fresh())
+    expect(plain.ok && ('filesRead' in plain.doc || 'filesListed' in plain.doc || 'provisional' in plain.doc)).toBe(false)
+    const kept = validateWorld({ ...fresh(), filesRead: 20000, filesListed: 50000 })
+    expect(kept.ok && [kept.doc.filesRead, kept.doc.filesListed]).toEqual([20000, 50000])
+    for (const junk of ['20000', -1, 2.5, null]) {
+      const read = validateWorld({ ...fresh(), filesRead: junk, filesListed: 50000 })
+      expect(read.ok && ['filesRead' in read.doc, read.doc.filesListed]).toEqual([false, 50000])
+      const listed = validateWorld({ ...fresh(), filesRead: 20000, filesListed: junk })
+      expect(listed.ok && [listed.doc.filesRead, 'filesListed' in listed.doc]).toEqual([20000, false])
+    }
+  })
+
+  it('provisional (a first map from the listing) is kept only as true', () => {
+    const kept = validateWorld({ ...fresh(), provisional: true })
+    expect(kept.ok && kept.doc.provisional).toBe(true)
+    for (const junk of [false, 'true', 1, null]) {
+      const r = validateWorld({ ...fresh(), provisional: junk, filesCapped: 10 })
+      expect(r.ok && ['provisional' in r.doc, r.doc.filesCapped]).toEqual([false, 10])
+    }
+  })
+
   it('filesUnreadable is optional too: a whole count is kept, junk is dropped', () => {
     expect(((r) => r.ok && 'filesUnreadable' in r.doc)(validateWorld(fresh()))).toBe(false)
     const kept = validateWorld({ ...fresh(), filesUnreadable: 3 })

@@ -7,10 +7,14 @@
  * building's members), none of the vendored ones, and no error in the pane. Last, the renderer must have logged no
  * console error and thrown no page error.
  *
+ * One more row writes a 2,400-file folder (past the host's PROVISIONAL_MIN_FILES) and checks the first map: the pane
+ * gets a world drawn from the listing (provisional) before the complete one, and the progress only rises.
+ *
  * With WORLD_SCENARIO_HUGE=1 two more rows run: huge (50,000 files) as a plain folder, where the walk stops at its cap
- * and the pane says so, and as a repository, where git lists every file. Each prints the time to the first map and
- * every process's peak working set (app.getAppMetrics) for the record. CI does not set it: each fixture writes 50,000
- * files.
+ * and the pane says so, and as a repository, where git lists every file and the pane says only 20,000 were read. Each
+ * prints the time to the first map (the first world worldGet returns, provisional or not), the time to the complete
+ * world (the first one that is not provisional), the longest wait between two progress reports, and every process's
+ * peak working set (app.getAppMetrics) for the record. CI does not set it: each fixture writes 50,000 files.
  *
  * The rows: unicode-names (a git repository, so git's quoting of non-ASCII names is in play), non-git (a plain
  * folder, walked), untracked (a file never added), vendored (dependency, build, minified and bundled files committed),
@@ -19,6 +23,7 @@
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { execFileSync } from 'child_process'
+import { createHash } from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -120,22 +125,37 @@ function realKey(p: string): string {
  */
 async function worldKey(dir: string, asFolder: boolean): Promise<string> {
   if (asFolder) return dir
-  const top = await page.evaluate(
-    (r) => (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string | null }> } }).termpolis.gitFindRoot(r),
-    dir
-  )
-  const key = top.success && top.data ? top.data : dir
+  const findRoot = async (): Promise<string | null> => {
+    const top = await page.evaluate(
+      (r) => (window as unknown as { termpolis: { gitFindRoot: (c: string) => Promise<{ success: boolean; data?: string | null }> } }).termpolis.gitFindRoot(r),
+      dir
+    )
+    return top.success && top.data ? top.data : null
+  }
+  // The app's look-up gives up after 3 s and answers null (an uncached git on a busy machine), and null reads as "no
+  // repository": the test would then map `dir`'s own spelling while the pane maps the top, two entries for one
+  // folder. Inside a repository, ask again until the app answers.
+  let found = await findRoot()
+  if (found === null && gitTopOf(dir) !== null) {
+    await expect.poll(async () => (found = await findRoot()), { message: `the app finds ${dir}'s repository top`, timeout: 20_000 }).not.toBeNull()
+  }
+  const key = found ?? dir
   expect(realKey(key), `the app finds ${dir}'s repository top as git does`).toBe(realKey(gitTop(dir)))
   return key
 }
 
-/** The repository top git itself names for `dir`, run here and not by the app; `dir` when it is in no repository. */
-function gitTop(dir: string): string {
+/** The repository top git itself names for `dir`, run here and not by the app; null when it is in no repository. */
+function gitTopOf(dir: string): string | null {
   try {
-    return execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || dir
+    return execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null
   } catch {
-    return dir
+    return null
   }
+}
+
+/** The repository top git itself names for `dir`; `dir` when it is in no repository. */
+function gitTop(dir: string): string {
+  return gitTopOf(dir) ?? dir
 }
 
 /** Every building member of the world main stored under `key`; null: no world there yet. */
@@ -146,6 +166,74 @@ async function members(key: string): Promise<string[] | null> {
     const res = await api.worldGet(k)
     return res.success && res.data ? res.data.buildings.flatMap((b) => b.members) : null
   }, key)
+}
+
+/** One look at the world under the key the recorder watches, ms after it started. */
+interface Sample { t: number; n: number | null; provisional: boolean; note: string }
+interface Recorded { samples: Sample[]; progress: { t: number; root: string; key: string; stage: string; pct: number }[] }
+
+/**
+ * Starts watching `key` in the renderer before the world is asked for: worldGet every `everyMs` until a world that is
+ * not provisional comes back (the first-map signal is the first world worldGet returns, the complete signal the first
+ * one that is not provisional), every progress report, and the pane's note at each look.
+ */
+async function startRecorder(key: string, everyMs: number): Promise<void> {
+  await page.evaluate(
+    ({ k, every }) => {
+      interface Doc { buildings: { members: string[] }[]; provisional?: boolean }
+      interface Look { t: number; n: number | null; provisional: boolean; note: string }
+      interface Api {
+        worldGet: (c: string) => Promise<{ success: boolean; data?: Doc | null }>
+        onWorldProgress: (cb: (e: { root: string; projectKey: string; stage: string; pct: number }) => void) => () => void
+      }
+      const w = window as unknown as { termpolis: Api; __wp4a?: unknown }
+      const t0 = performance.now()
+      const rec = { samples: [] as Look[], progress: [] as { t: number; root: string; key: string; stage: string; pct: number }[] }
+      // Every report, with its folder and key: recorded() keeps this world's.
+      const off = w.termpolis.onWorldProgress((e) => void rec.progress.push({ t: Math.round(performance.now() - t0), root: e.root, key: e.projectKey, stage: e.stage, pct: e.pct }))
+      w.__wp4a = rec
+      const look = async (): Promise<void> => {
+        const res = await w.termpolis.worldGet(k).catch(() => ({ success: false, data: null }))
+        const d = res.success && res.data ? res.data : null
+        const note = document.querySelector('[data-testid="world-notice"]')?.textContent ?? ''
+        rec.samples.push({ t: Math.round(performance.now() - t0), n: d ? d.buildings.reduce((a, b) => a + b.members.length, 0) : null, provisional: d?.provisional === true, note })
+        if (d && d.provisional !== true) off()
+        else setTimeout(() => void look(), every)
+      }
+      void look()
+    },
+    { k: key, every: everyMs }
+  )
+}
+
+/** What the recorder has seen so far: only `dir`'s progress (compared as real paths), since a world opened earlier in
+ *  the table may still be recompiling. */
+async function recorded(dir: string): Promise<Recorded> {
+  const r = await page.evaluate(() => {
+    const w = (window as unknown as { __wp4a: Recorded }).__wp4a
+    return { samples: [...w.samples], progress: [...w.progress] }
+  })
+  const want = realKey(dir)
+  // A report names its folder when main knows it, and always its project key (projectKey.ts: sha1 of the folder's
+  // spelling, slashes forward and lower case, 16 hex digits), so the key is checked against both spellings.
+  const keyOf = (f: string): string => createHash('sha1').update(f.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()).digest('hex').slice(0, 16)
+  const keys = new Set([keyOf(dir), keyOf(want), keyOf(fs.realpathSync.native(dir))])
+  return { samples: r.samples, progress: r.progress.filter((p) => keys.has(p.key) || (p.root !== '' && realKey(p.root) === want)) }
+}
+
+/** The first map, the complete world and the longest wait between progress reports (until the compile's 100), in ms. */
+function timings(r: Recorded): { firstMapMs: number; completeMs: number; longestQuietMs: number; risesOnly: boolean } {
+  const first = r.samples.find((s) => s.n !== null) as Sample
+  const complete = r.samples.find((s) => s.n !== null && !s.provisional) as Sample
+  const end = r.progress.findIndex((p) => p.pct >= 100)
+  const run = end < 0 ? r.progress : r.progress.slice(0, end + 1)
+  let longestQuietMs = 0
+  let risesOnly = true
+  for (let i = 1; i < run.length; i++) {
+    longestQuietMs = Math.max(longestQuietMs, run[i].t - run[i - 1].t)
+    if (run[i].pct < run[i - 1].pct) risesOnly = false
+  }
+  return { firstMapMs: first.t, completeMs: complete.t, longestQuietMs, risesOnly }
 }
 
 /** The kind of every recent world whose folder is `dir` under any spelling (compared as real paths). */
@@ -197,12 +285,52 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
     })
   }
 
+  test('mid-size folder (2,400 files): a first map from the listing comes before the complete world, and progress only rises', async () => {
+    test.setTimeout(180_000)
+    const dir = path.join(base, 'mid-size')
+    const FOLDERS = 24
+    const PER = 100
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'mid-size', version: '1.0.0' }))
+    for (let d = 0; d < FOLDERS; d++) {
+      const folder = path.join(dir, 'src', `d${d}`)
+      fs.mkdirSync(folder, { recursive: true })
+      for (let i = 0; i < PER; i++) fs.writeFileSync(path.join(folder, `f${i}.ts`), `import { v as w } from '../d${(d + 1) % FOLDERS}/f${i}'\nexport const v = ${i}\nexport const u = w\n`)
+    }
+    const key = await worldKey(dir, false)
+    await startRecorder(key, 25)
+    const mapped = await page.evaluate(
+      (r) => (window as unknown as { termpolis: { worldMapProject: (c: string) => Promise<{ success: boolean; error?: string }> } }).termpolis.worldMapProject(r),
+      key
+    )
+    expect(mapped.error ?? '').toBe('')
+    await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), dir)
+    await expectPaneOpens(page)
+    await expect.poll(async () => (await recorded(dir)).samples.some((s) => s.n !== null && !s.provisional), { timeout: 150_000, intervals: [250] }).toBe(true)
+    const r = await recorded(dir)
+    const t = timings(r)
+    const drawn = r.samples.filter((s) => s.n !== null)
+    // The first world the pane could get was drawn from the listing, every file a part, and the complete one came after.
+    expect(drawn[0].provisional, 'the first world is the first map from the listing').toBe(true)
+    expect(drawn[0].n).toBe(FOLDERS * PER)
+    expect(drawn[drawn.length - 1].n).toBe(FOLDERS * PER)
+    expect(t.firstMapMs).toBeLessThan(t.completeMs)
+    expect(t.risesOnly, `progress only rises: ${JSON.stringify(r.progress)}`).toBe(true)
+    const notes = [...new Set(drawn.filter((s) => s.provisional).map((s) => s.note))]
+    console.log(`[mid-size] ${JSON.stringify({ ...t, looks: r.samples.length, provisionalNotes: notes })}`)
+    test.info().annotations.push({ type: 'mid-size', description: JSON.stringify(t) })
+    await expect(page.locator('[data-testid="world-error"]')).toHaveCount(0)
+    await page.locator('[data-testid="world-close"]').click()
+    await expect(pane()).toHaveCount(0)
+  })
+
   for (const withGit of [false, true]) {
-  test(`huge ${withGit ? 'repository' : 'folder'} (WORLD_SCENARIO_HUGE=1 only): ${withGit ? 'git lists every file' : 'the walk stops at its cap and the pane says so'}; time and memory are printed`, async () => {
+  test(`huge ${withGit ? 'repository' : 'folder'} (WORLD_SCENARIO_HUGE=1 only): ${withGit ? 'git lists every file, 20,000 are read and the pane says so' : 'the walk stops at its cap and the pane says so'}; time and memory are printed`, async () => {
     test.skip(process.env.WORLD_SCENARIO_HUGE !== '1', 'huge writes 50,000 files; set WORLD_SCENARIO_HUGE=1 to run it')
     test.setTimeout(900_000)
     const dir = await makeScenario('huge', base, { git: withGit })
-    const started = Date.now()
+    const key = await worldKey(dir, false)
+    await startRecorder(key, 250)
     const mapped = await page.evaluate(
       (r) => (window as unknown as { termpolis: { worldMapProject: (c: string) => Promise<{ success: boolean; error?: string }> } }).termpolis.worldMapProject(r),
       dir
@@ -210,14 +338,16 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
     expect(mapped.error ?? '').toBe('')
     await page.evaluate((folder) => window.dispatchEvent(new CustomEvent('termpolis:openWorld', { detail: { folder } })), dir)
     await expectPaneOpens(page)
-    const key = await worldKey(dir, false)
-    await expect.poll(() => members(key), { message: 'a world for huge', timeout: 800_000, intervals: [1000] }).not.toBeNull()
-    const firstMapMs = Date.now() - started
+    await expect.poll(async () => (await recorded(dir)).samples.some((s) => s.n !== null && !s.provisional), { message: 'a complete world for huge', timeout: 800_000, intervals: [1000] }).toBe(true)
+    const r = await recorded(dir)
+    const t = timings(r)
+    expect(t.risesOnly, `progress only rises: ${JSON.stringify(r.progress)}`).toBe(true)
     const got = (await members(key))!
     expect(got.length).toBeGreaterThan(0)
     if (withGit) {
       expect(got.length).toBe(50_000)
       await expect(page.locator('[data-testid="world-notice"]', { hasText: 'Showing the first ' })).toHaveCount(0)
+      await expect(page.locator('[data-testid="world-notice"]')).toContainText('All 50,000 files are shown, but only 20,000 were read for the lines between them.', { timeout: 60_000 })
     } else {
       expect(got.length).toBeLessThanOrEqual(20_000)
       await expect(page.locator('[data-testid="world-notice"]')).toContainText('Showing the first ', { timeout: 60_000 })
@@ -225,7 +355,8 @@ test.describe.serial('Lumopolis over the scenario fixtures', () => {
     const peaks = await app.evaluate(({ app: eapp }) =>
       eapp.getAppMetrics().map((m) => ({ process: m.name ? `${m.type}:${m.name}` : m.type, peakMB: Math.round(m.memory.peakWorkingSetSize / 1024) }))
     )
-    const report = { git: withGit, firstMapMs, mapped: got.length, peaks }
+    const firstWasProvisional = r.samples.find((s) => s.n !== null)?.provisional === true
+    const report = { git: withGit, firstMapMs: t.firstMapMs, completeMs: t.completeMs, longestQuietMs: t.longestQuietMs, firstWasProvisional, mapped: got.length, peaks }
     console.log(`[huge] ${JSON.stringify(report)}`)
     test.info().annotations.push({ type: 'huge', description: JSON.stringify(report) })
     await page.locator('[data-testid="world-close"]').click()

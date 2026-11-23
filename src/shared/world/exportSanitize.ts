@@ -333,5 +333,7 @@ export function sanitizeWorld(doc: WorldDoc, ctx: SanitizeContext): WorldDoc {
     ...(doc.filesCapped !== undefined ? { filesCapped: doc.filesCapped } : {}),
     ...(doc.nestedCapped !== undefined ? { nestedCapped: doc.nestedCapped } : {}),
     ...(doc.filesUnreadable !== undefined ? { filesUnreadable: doc.filesUnreadable } : {}),
+    ...(doc.filesRead !== undefined ? { filesRead: doc.filesRead } : {}),
+    ...(doc.filesListed !== undefined ? { filesListed: doc.filesListed } : {}),
   }
 }
