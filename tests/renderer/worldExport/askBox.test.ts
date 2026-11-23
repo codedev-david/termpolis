@@ -248,6 +248,31 @@ describe('mountAskBox', () => {
     expect(embed).not.toHaveBeenCalled()
   })
 
+  it('answers a name written in another script, or only in emoji, by keyword and by meaning', async () => {
+    const world = [
+      entry('he', 'building', 'שלום', 'שלום מקבל את הבקשות'),
+      entry('rocket', 'building', '🚀', '🚀 starts the release'),
+      entry('en', 'building', 'Release notes', 'release notes for each version')
+    ]
+    const vectors = packInt8(world.map((_, i) => [0, 1, 2].map((h) => (h === i ? 1 : 0))))
+    const keywordOnly = mount({ entries: world, bm25: buildBm25(world.map((e) => e.text)) })
+    await keywordOnly.ask('שלום')
+    expect(keywordOnly.ids()).toEqual(['he'])
+    await keywordOnly.ask('🚀')
+    expect(keywordOnly.ids()).toEqual(['rocket'])
+    // An emoji that is no part's name has nothing to search for.
+    await keywordOnly.ask('✨')
+    expect(keywordOnly.ids()).toEqual([])
+    expect(keywordOnly.none().hidden).toBe(false)
+    // Meaning that prefers the English part still puts the named part first.
+    const smart = mount({ entries: world, bm25: buildBm25(world.map((e) => e.text)), vectors, smart: Promise.resolve({ embed: async () => new Float32Array([0, 0, 1]) }) })
+    await smart.box.ready
+    await smart.ask('🚀')
+    expect(smart.ids()[0]).toBe('rocket')
+    await smart.ask('שלום')
+    expect(smart.ids()[0]).toBe('he')
+  })
+
   it('shows No matching parts when no entry shares a word with the question', async () => {
     const { ask, ids, none } = mount()
     await ask('zebra')

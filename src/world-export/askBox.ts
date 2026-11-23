@@ -146,10 +146,10 @@ export function mountAskBox(host: HTMLElement, deps: AskBoxDeps): AskBox {
 
   const ask = async (q: string): Promise<void> => {
     const n = ++asked
-    // Nothing to search for (empty, punctuation, only common words): no ranking runs at all.
-    if (tokenize(q).length === 0) { show([]); return }
-    const keyword = bm25Scores(deps.bm25, q)
+    // Nothing to search for (empty, punctuation, only common words) and no part named so: no ranking runs at all.
     const named = nameFit(deps.entries, q)
+    if (tokenize(q).length === 0 && !named.some((x) => x > 0)) { show([]); return }
+    const keyword = bm25Scores(deps.bm25, q)
     const smartScores = await meaning(q)
     if (n !== asked) return
     show(rankAsk(deps.entries, smartScores ? { smart: smartScores, keyword, named } : { keyword, named }))

@@ -73,15 +73,24 @@ const STOP = new Set(('a an and are as at be by can do does for from has have ho
   'own so that the their them they this to up use what when where which who why will with without you your actually other ' +
   'part parts thing things app').split(' '))
 
-/** Lower-case words (camelCase and punctuation split, a crude stem, a short English stopword list removed). */
+/**
+ * Lower-case words (camelCase and punctuation split, a crude stem, a short English stopword list removed). A word is a
+ * run of letters, numbers and marks in any script, in one Unicode form (NFC), so a Hebrew, Arabic, Chinese or Cyrillic
+ * name is a word and an accented name typed composed or decomposed is the same word. A single ASCII letter or digit is
+ * no word, as before; emoji and symbols never are.
+ */
 export function tokenize(text: string): string[] {
   return text
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .normalize('NFC')
+    .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, '$1 $2')
     .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 1 && !STOP.has(t))
+    .split(/[^\p{L}\p{N}\p{M}]+/u)
+    .filter((t) => /[\p{L}\p{N}]/u.test(t) && !/^[a-z0-9]$/.test(t) && !STOP.has(t))
     .map((t) => t.replace(/(ies)$/, 'y').replace(/(ing|ed|es|s)$/, '').replace(/(.)\1$/, '$1') || t)
 }
+
+/** A name or question as typed, for the exact-name match: one Unicode form, lower case, spaces trimmed and folded. */
+const plainName = (s: string): string => s.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim()
 
 /** Rebuilt in memory from the texts, never JSON round-tripped: the null-prototype maps do not survive JSON. */
 export interface Bm25 { docs: number; avgLen: number; df: Record<string, number>; tf: Record<string, number>[]; len: number[] }
@@ -180,11 +189,16 @@ export const WHOLE_NAME = 2
  * - the question says every word of the name among other words ("how does the token proxy work"): the share of the
  *   question's words the name fills, below 1, so a question wholly inside a name always fits it better;
  * - otherwise 0, as for a name with no words of its own (a stopword, one letter, punctuation), which every question
- *   would otherwise contain.
+ *   would otherwise contain;
+ * - except that a name with no letter or number at all (an emoji, an arrow) fits a question that is that whole name,
+ *   as typed: WHOLE_NAME.
  */
 export function nameFit(entries: AskEntry[], question: string): number[] {
   const asked = Array.from(new Set(tokenize(question)))
+  const typed = plainName(question)
   return entries.map((e) => {
+    // A name with no letter or number (an emoji, an arrow) has no words: only the whole name, as typed, fits it.
+    if (!/[\p{L}\p{N}]/u.test(e.name)) return typed !== '' && plainName(e.name) === typed ? WHOLE_NAME : 0
     const name = new Set(tokenize(e.name))
     if (asked.length === 0 || name.size === 0) return 0
     if (asked.every((w) => name.has(w))) return 1 + asked.length / name.size
@@ -222,7 +236,9 @@ export function rankAsk(entries: AskEntry[], scores: { smart?: number[]; keyword
   const lead = (named ?? []).map((x, i) => (entries[i].test && x < WHOLE_NAME ? 0 : x))
   const best = lead.reduce((m, x) => Math.max(m, x), 0)
   const leads = (i: number): boolean => best > 0 && lead[i] === best
-  const first = ranked.filter(leads).sort((a, b) => KIND_LEAD[entries[a].kind] - KIND_LEAD[entries[b].kind])
+  // A whole name leads even when no keyword finds it (an emoji name has no words); a partial fit never adds a part.
+  const unranked = best >= WHOLE_NAME ? lead.map((_, i) => i).filter((i) => leads(i) && ranked.indexOf(i) < 0) : []
+  const first = ranked.filter(leads).concat(unranked).sort((a, b) => KIND_LEAD[entries[a].kind] - KIND_LEAD[entries[b].kind])
   const ids = first.concat(ranked.filter((i) => !leads(i)))
   return ids.slice(0, limit).map((i) => ({ id: entries[i].id, kind: entries[i].kind, name: entries[i].name, first: entries[i].first }))
 }

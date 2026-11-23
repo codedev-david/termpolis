@@ -383,3 +383,87 @@ describe('rankAsk', () => {
     expect(() => rankAsk(e, { keyword: [1, 2], named: [1, 0, 0] })).toThrow(/name/)
   })
 })
+
+describe('names in every script', () => {
+  const NFD_CAFE = 'Café menu'
+  const NFC_CAFE = 'Café menu'
+
+  it('tokenize keeps the letters, numbers and marks of any script, lower-cased and in one Unicode form', () => {
+    expect(tokenize('שלום עולם')).toEqual(['שלום', 'עולם'])
+    expect(tokenize('مرحبا بالعالم')).toEqual(['مرحبا', 'بالعالم'])
+    expect(tokenize('Привет Мир')).toEqual(['привет', 'мир'])
+    expect(tokenize('数据库')).toEqual(['数据库'])
+    expect(tokenize('нагрузка: 中')).toEqual(['нагрузка', '中'])
+    // Devanagari: the vowel signs and the virama are marks, part of the word.
+    expect(tokenize('नमस्ते')).toEqual(['नमस्ते'])
+    // The same accented name typed composed or decomposed is the same word.
+    expect(tokenize(NFD_CAFE)).toEqual(['café', 'menu'])
+    expect(tokenize(NFC_CAFE)).toEqual(tokenize(NFD_CAFE))
+    expect(tokenize('parseÉtat')).toEqual(['parse', 'état'])
+  })
+
+  it('tokenize finds no word in an emoji, a symbol or a lone mark, and reads English as before', () => {
+    expect(tokenize('🚀')).toEqual([])
+    expect(tokenize('🚀 → ✨')).toEqual([])
+    expect(tokenize('́')).toEqual([])
+    expect(tokenize('🚀 launch')).toEqual(['launch'])
+    expect(tokenize('remote_bridge v2 x 9')).toEqual(['remote', 'bridge', 'v2'])
+  })
+
+  const named = (id: string, name: string, text = name): AskEntry => ({ id, kind: 'building', name, first: '', text, test: false })
+
+  it('nameFit fits a name in any script, and a name with no letters or numbers only by the whole name', () => {
+    const e = [named('he', 'שלום'), named('rocket', '🚀'), named('arrow', '→'), named('cafe', NFC_CAFE)]
+    expect(nameFit(e, 'שלום')).toEqual([WHOLE_NAME, 0, 0, 0])
+    expect(nameFit(e, 'מה עושה שלום')).toEqual([1 / 3, 0, 0, 0])
+    expect(nameFit(e, '🚀')).toEqual([0, WHOLE_NAME, 0, 0])
+    expect(nameFit(e, '  🚀 ')).toEqual([0, WHOLE_NAME, 0, 0])
+    expect(nameFit(e, '→')).toEqual([0, 0, WHOLE_NAME, 0])
+    expect(nameFit(e, NFD_CAFE)).toEqual([0, 0, 0, WHOLE_NAME])
+    // Only the whole name: an emoji said among words, or twice, fits nothing.
+    expect(nameFit(e, 'what is 🚀')).toEqual([0, 0, 0, 0])
+    expect(nameFit(e, '🚀🚀')).toEqual([0, 0, 0, 0])
+    expect(nameFit(e, '')).toEqual([0, 0, 0, 0])
+    expect(nameFit([named('blank', ' ')], ' ')).toEqual([0])
+  })
+
+  it('rankAsk adds a part whose whole name is the question even when no keyword finds it, within the limit', () => {
+    const e = [named('a', 'A'), named('b', 'B'), named('c', 'C')]
+    expect(rankAsk(e, { keyword: [1, 0, 0], named: [0, 0, WHOLE_NAME] }).map((h) => h.id)).toEqual(['c', 'a'])
+    expect(rankAsk(e, { keyword: [0, 0, 0], named: [0, WHOLE_NAME, 0] }).map((h) => h.id)).toEqual(['b'])
+    expect(rankAsk(e, { keyword: [2, 1, 0], named: [0, 0, WHOLE_NAME] }, 1).map((h) => h.id)).toEqual(['c'])
+    // A test part's whole name is a lead too.
+    const t = [named('a', 'A'), { ...named('t', '🧪'), test: true }]
+    expect(rankAsk(t, { keyword: [1, 0], named: [0, WHOLE_NAME] }).map((h) => h.id)).toEqual(['t', 'a'])
+  })
+
+  const world = [
+    named('en', 'Memory host', 'Memory host keeps each note'),
+    named('he', 'שלום', 'שלום מקבל את הבקשות'),
+    named('ar', 'مرحبا', 'مرحبا يرسل الرسائل'),
+    named('zh', '数据库', '数据库 保存 数据'),
+    named('ru', 'Привет', 'Привет отвечает клиенту'),
+    named('cafe', NFC_CAFE, `${NFC_CAFE} lists the dishes`),
+    named('rocket', '🚀', '🚀 starts the release')
+  ]
+  const ix = buildBm25(world.map((x) => x.text))
+  // Meaning that always prefers the English part, as a model might for a name it cannot read.
+  const smart = world.map((x) => (x.id === 'en' ? 0.9 : 0.1))
+  const cases: [string, string][] = [
+    ['שלום', 'he'], ['مرحبا', 'ar'], ['数据库', 'zh'], ['привет', 'ru'], ['ПРИВЕТ', 'ru'],
+    [NFC_CAFE, 'cafe'], [NFD_CAFE, 'cafe'], ['café', 'cafe'], ['🚀', 'rocket'], ['memory host', 'en']
+  ]
+
+  it.each(cases)('the keyword ranking answers %j with its part first', (q, id) => {
+    expect(rankAsk(world, { keyword: bm25Scores(ix, q), named: nameFit(world, q) })[0].id).toBe(id)
+  })
+
+  it.each(cases)('the smart ranking answers %j with its part first', (q, id) => {
+    expect(rankAsk(world, { smart, keyword: bm25Scores(ix, q), named: nameFit(world, q) })[0].id).toBe(id)
+  })
+
+  it('finds a non-Latin word inside a part text by keyword', () => {
+    expect(rankAsk(world, { keyword: bm25Scores(ix, 'הבקשות'), named: nameFit(world, 'הבקשות') }).map((h) => h.id)).toEqual(['he'])
+    expect(rankAsk(world, { keyword: bm25Scores(ix, 'клиенту'), named: nameFit(world, 'клиенту') }).map((h) => h.id)).toEqual(['ru'])
+  })
+})
