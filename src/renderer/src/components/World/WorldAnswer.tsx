@@ -46,7 +46,11 @@ export function evidenceReach(box: HTMLElement): number | null {
     if (seen.has(label)) continue
     seen.add(label)
     // The scroller is the chips' offsetParent (it is positioned): offsetTop is from its top, whatever it has scrolled.
-    reach = Math.max(reach ?? 0, Math.ceil(chip.offsetTop + chip.offsetHeight))
+    // The chip is shorter than its line: the rest of the line below it counts too, or a text that ends on that line
+    // shows a scrollbar for its last few pixels.
+    const line = parseFloat(getComputedStyle(chip.parentElement as HTMLElement).lineHeight)
+    const below = line > chip.offsetHeight ? (line - chip.offsetHeight) / 2 : 0
+    reach = Math.max(reach ?? 0, Math.ceil(chip.offsetTop + chip.offsetHeight + below))
     if (seen.size === 2) break
   }
   return reach
@@ -131,7 +135,7 @@ export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, o
     })
 
   return (
-    <div className="w-full rounded border border-[#3c3c3c] bg-[#252526] text-sm text-[#d4d4d4] shadow-lg p-3" data-testid="world-answer">
+    <div className="w-full rounded border border-[#3c3c3c] bg-[#252526] text-sm text-[#d4d4d4] shadow-lg px-3 py-2" data-testid="world-answer">
       <div className="flex items-start gap-2">
         {/* Its own scroller, reachable by Tab, so a long answer scrolls with the arrow keys too. */}
         <div
@@ -143,7 +147,7 @@ export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, o
           aria-label="Answer"
           tabIndex={0}
         >
-          <div ref={textRef} className="leading-relaxed space-y-2 break-words" data-testid="world-answer-text">
+          <div ref={textRef} className="leading-normal space-y-2 break-words" data-testid="world-answer-text">
             {blocks.map((b, i) =>
               b.type === 'p' ? (
                 <p key={i}>
@@ -181,8 +185,8 @@ export function WorldAnswerPanel({ answer, cited, revealed, onClose, onReplay, o
           {answer.uncited && <p>This answer cites no evidence.</p>}
         </div>
       )}
-      <div className="mt-2">
-        <button type="button" onClick={onReplay} className="text-xs px-2 py-1 rounded border border-[#3c3c3c] hover:bg-[#2a2d2e]">
+      <div className="mt-1.5">
+        <button type="button" onClick={onReplay} className="text-xs px-2 py-0.5 rounded border border-[#3c3c3c] hover:bg-[#2a2d2e]">
           Show me again
         </button>
       </div>

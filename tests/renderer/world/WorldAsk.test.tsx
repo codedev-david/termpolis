@@ -372,7 +372,7 @@ describe('WorldAsk', () => {
       expect(ANSWER_TEXT_CEILING).toBe('8rem')
       expect(answerTextMaxHeight(null)).toBe('6rem')
       expect(answerTextMaxHeight(130)).toBe('max(6rem, min(8rem, 130px))')
-      const box = document.createElement('div')
+      const box = document.body.appendChild(document.createElement('div'))
       expect(evidenceReach(box)).toBeNull()
       const chip = (label: string, top: number, height: number): void => {
         const el = document.createElement('button')
@@ -389,6 +389,13 @@ describe('WorldAsk', () => {
       chip('E1', 30, 20)
       chip('E3', 600, 20)
       expect(evidenceReach(box)).toBe(111)
+      // In a line taller than the chip, the half of the leading below it counts: 90 + 20.4 + (24 - 20.4) / 2.
+      box.style.lineHeight = '24px'
+      expect(evidenceReach(box)).toBe(113)
+      // A line no taller than the chip adds nothing.
+      box.style.lineHeight = '20px'
+      expect(evidenceReach(box)).toBe(111)
+      box.remove()
     })
 
     it('the panel measures the reach on each render and as the text reflows, and stops watching when it goes', async () => {
