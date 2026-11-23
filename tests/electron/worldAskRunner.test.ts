@@ -395,6 +395,25 @@ describe('createAskRunner', () => {
       }
     })
 
+    it('a step that throws at once, before it returns a promise, is left out at once and never logged as run out (round 4 re-review: m2)', async () => {
+      vi.useFakeTimers()
+      try {
+        const primer = vi.fn((): Promise<string | null> => { throw new Error('memory down') })
+        const runEnv = vi.fn((): Promise<{ env: Record<string, string> }> => { throw new Error('proxy down') })
+        const { runner, client, log } = setup(primed, DOC, undefined, undefined, { primer, runEnv })
+        client.read.mockImplementationOnce(() => { throw new Error('host gone') })
+        const p = runner.ask(REQ)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(await p).toMatchObject({ ok: true, answer: { text: 'primer:null' } })
+        // The steps' timers were cleared with them: nothing fires once their limits pass.
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect(log).not.toHaveBeenCalled()
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('a cancel logs no step as run out', async () => {
       const primer = vi.fn(() => never<string | null>())
       const { runner, log } = setup(primed, DOC, undefined, undefined, { primer })

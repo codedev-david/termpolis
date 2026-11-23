@@ -73,7 +73,10 @@ const bounded = <T>(start: () => Promise<T>, ms: number, signal: AbortSignal, st
       stop()
     }, ms)
     signal.addEventListener('abort', stop, { once: true })
-    start().then(resolve, reject).finally(() => {
+    // A step that throws before it returns a promise fails here too, so its timer and listener are always cleared.
+    let started: Promise<T>
+    try { started = start() } catch (err) { started = Promise.reject(err) }
+    started.then(resolve, reject).finally(() => {
       clearTimeout(timer)
       signal.removeEventListener('abort', stop)
     })
