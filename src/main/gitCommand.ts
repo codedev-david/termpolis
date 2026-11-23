@@ -11,6 +11,7 @@
 import { getExtendedPathAsync } from './agentPaths'
 import { binInsideFolder, forgetGitBin, resolveGitBin } from './binPath'
 import { execOffThread, execCaptureOffThread, execShellCaptureOffThread } from './procClient'
+import { filterOverrides, filterScanArgs, guardGitArgs, needsFilterScan } from './gitSafety'
 
 export interface GitOptions {
   cwd: string
@@ -45,8 +46,13 @@ export interface GitOptions {
 export async function safeGitAsync(args: string[], opts: GitOptions): Promise<string> {
   const bin = await resolveGitBin()
   if (bin === null || (await binInsideFolder(bin, opts.cwd))) throw gitNotFound()
+  // The one chokepoint for git safety (gitSafety.ts): a read never runs a program the repository's own config,
+  // hooks or attributes name; a write runs exactly as the person's git would. status and diff first read which
+  // filter drivers the repository defines, so each can be switched off by name.
+  const isWindows = process.platform === 'win32'
   try {
-    return await execOffThread(bin, args, {
+    const overrides = needsFilterScan(args) ? await repoFilterOverrides(bin, args, opts, isWindows) : []
+    return await execOffThread(bin, guardGitArgs(args, isWindows, overrides), {
       cwd: opts.cwd,
       timeout: opts.timeout ?? 10000,
       maxBuffer: opts.maxBuffer ?? 1024 * 1024,
@@ -60,6 +66,36 @@ export async function safeGitAsync(args: string[], opts: GitOptions): Promise<st
   }
 }
 
+/** How long one folder's filter-driver scan is reused: the git cache's own window (gitCache.ts GIT_CACHE_TTL_MS), so
+ *  the panels that wake on one tick share one scan, as they share one status. Nothing invalidates it early: a config
+ *  edit is seen at most this long after it lands. */
+const FILTER_SCAN_TTL_MS = 1500
+const filterScans = new Map<string, { at: number; value: Promise<string[]> }>()
+
+/**
+ * The `-c` options that switch off the filter drivers the repository at `opts.cwd` defines (gitSafety.ts
+ * filterOverrides). `git config --get-regexp` exits 1 when nothing matches: no driver, nothing to switch off. Any
+ * other failure, or a driver that cannot be switched off, fails the read itself: it is never run with a driver left on.
+ */
+function repoFilterOverrides(bin: string, args: string[], opts: GitOptions, isWindows: boolean): Promise<string[]> {
+  const scanArgs = filterScanArgs(args, isWindows)
+  const key = `${opts.cwd}\u0000${scanArgs.join('\u0000')}`
+  const now = Date.now()
+  const hit = filterScans.get(key)
+  if (hit && now - hit.at < FILTER_SCAN_TTL_MS) return hit.value
+  const value = execOffThread(bin, scanArgs, { cwd: opts.cwd, timeout: opts.timeout ?? 10000, maxBuffer: 1024 * 1024 })
+    .catch((e: unknown) => {
+      if ((e as { code?: unknown } | null)?.code === 1) return ''
+      throw e
+    })
+    .then(filterOverrides)
+  filterScans.set(key, { at: now, value })
+  value.catch(() => {
+    if (filterScans.get(key)?.value === value) filterScans.delete(key)
+  })
+  return value
+}
+
 /** The error a missing git has always given: code 'ENOENT', and nothing was started. */
 function gitNotFound(): NodeJS.ErrnoException {
   return Object.assign(new Error('git was not found'), { code: 'ENOENT' })
@@ -68,6 +104,7 @@ function gitNotFound(): NodeJS.ErrnoException {
 /** Test seam: reset the cached git binary resolution. */
 export function _resetGitBinForTests(): void {
   forgetGitBin()
+  filterScans.clear()
 }
 
 // Conservative subset of git-check-ref-format(1): start with alphanumeric,

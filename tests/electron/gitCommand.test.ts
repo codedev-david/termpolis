@@ -36,6 +36,7 @@ vi.mock('../../src/main/binPath', async (importOriginal) => {
 })
 
 import { safeGitAsync, runSafeCommandAsync, parseSafeCommand, isValidGitRef, _resetGitBinForTests } from '../../src/main/gitCommand'
+import { guardGitArgs, UnsafeFilterError } from '../../src/main/gitSafety'
 
 const GIT = process.platform === 'win32' ? 'C:\\Program Files\\Git\\cmd\\git.exe' : '/usr/bin/git'
 
@@ -60,7 +61,9 @@ describe('safeGitAsync: git by its full path, never the bare name', () => {
     const [spawned, args, opts] = mockExecFile.mock.calls[0]
     expect(spawned).toBe(GIT)
     expect(spawned).not.toBe('git')
-    expect(args).toEqual(['rev-parse', '--show-toplevel'])
+    // A read carries the read-only prefix (gitSafety.ts); rev-parse keeps the hooks folder.
+    expect(args).toEqual(guardGitArgs(['rev-parse', '--show-toplevel'], process.platform === 'win32'))
+    expect(args.slice(-2)).toEqual(['rev-parse', '--show-toplevel'])
     expect(opts).toMatchObject({ cwd: '/repo', timeout: 10000, maxBuffer: 1024 * 1024 })
   })
 
@@ -96,6 +99,99 @@ describe('safeGitAsync: git by its full path, never the bare name', () => {
   it('_resetGitBinForTests forgets the cached git', () => {
     _resetGitBinForTests()
     expect(bin.forgets).toBe(1)
+  })
+})
+
+// status and diff can run a clean filter, so safeGitAsync first reads which filter drivers the repository defines
+// (gitSafety.ts filterScanArgs) and switches each off by name.
+describe('safeGitAsync: the filter-driver read before status and diff', () => {
+  type Cb = (e: Error | null, out: string, err: string) => void
+  const isScan = (a: string[]): boolean => a.includes('--show-scope')
+  const isWin = process.platform === 'win32'
+  const answer = (scan: string | Error, out = 'ok'): void => {
+    mockExecFile.mockImplementation((_b: string, a: string[], _o: unknown, cb: Cb) => {
+      if (!isScan(a)) return cb(null, out, '')
+      if (scan instanceof Error) return cb(scan, '', '')
+      cb(null, scan, '')
+    })
+  }
+  const command = (): string[] | undefined => mockExecFile.mock.calls.map((c) => c[1] as string[]).find((a) => !isScan(a))
+  const scans = (): number => mockExecFile.mock.calls.filter((c) => isScan(c[1] as string[])).length
+  beforeEach(() => _resetGitBinForTests())
+  afterEach(() => vi.useRealTimers())
+
+  it('switches off a driver the repository defines, in the same folder, with the read-only prefix', async () => {
+    answer('local\0filter.evil.clean\nsh plant.sh\0')
+    await safeGitAsync(['-C', '/sub', 'status', '--porcelain'], { cwd: '/repo' })
+    const scan = mockExecFile.mock.calls[0]
+    expect(scan[1]).toEqual(['-C', '/sub', ...guardGitArgs(['config'], isWin).slice(0, -1), 'config', '--show-scope', '-z', '--get-regexp', '^filter\\.'])
+    expect(scan[2]).toMatchObject({ cwd: '/repo' })
+    const over = ['-c', 'filter.evil.clean=', '-c', 'filter.evil.smudge=', '-c', 'filter.evil.process=', '-c', 'filter.evil.required=false']
+    expect(command()).toEqual(guardGitArgs(['-C', '/sub', 'status', '--porcelain'], isWin, over))
+  })
+
+  it('exit 1 from git config means no driver: the read runs with nothing to switch off', async () => {
+    answer(Object.assign(new Error('no match'), { code: 1 }))
+    expect(await safeGitAsync(['diff', '--numstat'], { cwd: '/repo' })).toBe('ok')
+    expect(command()).toEqual(guardGitArgs(['diff', '--numstat'], isWin))
+  })
+
+  it('any other failure of the read fails the command, which never runs, and is not kept', async () => {
+    answer(Object.assign(new Error('fatal: bad config line 3'), { code: 128 }))
+    await expect(safeGitAsync(['status'], { cwd: '/repo' })).rejects.toThrow(/bad config/)
+    expect(command()).toBeUndefined()
+    answer('')
+    expect(await safeGitAsync(['status'], { cwd: '/repo' })).toBe('ok')
+    expect(scans()).toBe(2)
+  })
+
+  it('a driver that cannot be switched off refuses the read', async () => {
+    answer('local\0filter.a=b.clean\nx\0')
+    await expect(safeGitAsync(['status'], { cwd: '/repo' })).rejects.toBeInstanceOf(UnsafeFilterError)
+    expect(command()).toBeUndefined()
+  })
+
+  it('one scan is shared for 1.5 s per folder and command, then read again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    answer('')
+    await Promise.all([safeGitAsync(['status'], { cwd: '/repo' }), safeGitAsync(['diff'], { cwd: '/repo' })])
+    expect(scans()).toBe(1)
+    await safeGitAsync(['status'], { cwd: '/other' })
+    expect(scans()).toBe(2)
+    vi.setSystemTime(Date.now() + 1500)
+    await safeGitAsync(['status'], { cwd: '/repo' })
+    expect(scans()).toBe(3)
+  })
+
+  it('a slow scan that fails after a newer one replaced it does not drop the newer one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    let late: Cb | undefined
+    mockExecFile.mockImplementationOnce((_b: string, _a: string[], _o: unknown, cb: Cb) => { late = cb })
+    const first = safeGitAsync(['status'], { cwd: '/repo' })
+    await vi.waitFor(() => expect(late).toBeDefined())
+    vi.setSystemTime(Date.now() + 1500)
+    answer('')
+    expect(await safeGitAsync(['status'], { cwd: '/repo' })).toBe('ok')
+    late?.(Object.assign(new Error('fatal: bad config'), { code: 128 }), '', '')
+    await expect(first).rejects.toThrow(/bad config/)
+    await safeGitAsync(['status'], { cwd: '/repo' })
+    expect(scans()).toBe(2)
+  })
+
+  it('a read that needs no scan starts one git, and an ENOENT from the scan forgets the git it found', async () => {
+    answer('')
+    await safeGitAsync(['log', '-1'], { cwd: '/repo' })
+    expect(scans()).toBe(0)
+    answer(Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }))
+    await expect(safeGitAsync(['status'], { cwd: '/repo2' })).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(bin.forgets).toBe(2)
+  })
+
+  it('a write runs exactly as written, with no scan', async () => {
+    answer('local\0filter.lfs.clean\nx\0')
+    await safeGitAsync(['add', '--', 'a.bin'], { cwd: '/repo' })
+    expect(scans()).toBe(0)
+    expect(command()).toEqual(['add', '--', 'a.bin'])
   })
 })
 

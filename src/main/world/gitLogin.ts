@@ -21,22 +21,17 @@
 //
 // This runs inside the world host utilityProcess: no Electron imports (worldHostImports.test.ts).
 import type { CloneDeps } from './gitSource'
+import { safetyFlags } from '../gitSafety'
 
 /** How one git run may log in. */
 export type LoginRun = { mode: 'none' } | { mode: 'machine'; interactive: boolean } | { mode: 'token'; value: string }
 
 /**
  * The flags every git command here carries: no local-file transport, no hooks, symlinks checked out as
- * plain files, and no fsmonitor program. The login settings are not here: see loginConfig.
+ * plain files, and no fsmonitor program. They live in gitSafety.ts, beside the read-only prefix every other git
+ * run in main gets, so there is one source. The login settings are not here: see loginConfig.
  */
-export function safetyFlags(isWindows: boolean): string[] {
-  return [
-    '-c', 'protocol.file.allow=never',
-    '-c', `core.hooksPath=${isWindows ? 'NUL' : '/dev/null'}`,
-    '-c', 'core.symlinks=false',
-    '-c', 'core.fsmonitor=false'
-  ]
-}
+export { safetyFlags }
 
 /** Inherited variables that would point git at another repository, index, object store or config, or
  *  run a program to ask for a login, or answer the shipped askpass with a value nobody pasted. */

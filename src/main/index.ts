@@ -2773,10 +2773,12 @@ const worldClient = createWorldClient(undefined, {
   context: worldLabelContext,
   head: async (root) => {
     try {
-      // Both at once: a live change waits on these before the world recompiles.
+      // Both at once: a live change waits on these before the world recompiles. Both run with every live change of
+      // an open world, unasked, so the repository's own config must not run anything: safeGitAsync gives every read
+      // the read-only prefix, and status also has the repository's filter drivers switched off (gitSafety.ts).
       const [rev, status] = await Promise.all([
         safeGitAsync(['rev-parse', 'HEAD'], { cwd: root, timeout: 3000 }),
-        safeGitAsync(['-c', 'core.fsmonitor=false', 'status', '--porcelain', '--untracked-files=no'], { cwd: root, timeout: 5000 }),
+        safeGitAsync(['status', '--porcelain', '--untracked-files=no'], { cwd: root, timeout: 5000 }),
       ])
       return { head: rev.trim(), dirty: status.trim() !== '' }
     } catch {
@@ -4538,16 +4540,18 @@ async function semanticPoolOptions(
       // Promise.all over safeGitAsync is the pattern the renderer-facing git handlers in
       // this same file already use; this one was just never converted. Each arm keeps its
       // own catch so a detached HEAD or an empty repo still yields the other two answers.
-      // Connected agents may call this without a prompt, in any folder they name, and
-      // `git status` runs whatever command that repo's own .git/config puts in
-      // core.fsmonitor. Switching it off (submodules inherit -c) keeps a planted config
-      // from running anything.
+      // Connected agents may call this without a prompt, in any folder they name, so the
+      // repo's own .git/config, hooks and attributes must not run anything. `-c
+      // core.fsmonitor=false` alone did not do that: a clean filter and the
+      // post-index-change hook still ran on `status`, and log.showSignature with
+      // gpg.program on `log`. safeGitAsync now gives every read the read-only prefix and
+      // switches the repo's own filter drivers off (gitSafety.ts).
       getGitStatus: async (cwd) => {
         const run = async (args: string[]) => {
           try { return (await safeGitAsync(args, { cwd, timeout: 3000 })).trim() } catch { return '' }
         }
         const [status, recentCommits, branch] = await Promise.all([
-          run(['-c', 'core.fsmonitor=false', 'status', '--short']),
+          run(['status', '--short']),
           run(['log', '--oneline', '-5']),
           run(['rev-parse', '--abbrev-ref', 'HEAD']),
         ])

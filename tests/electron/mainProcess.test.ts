@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest'
 import { globalHotkeys } from '../../src/main/appMenu'
+import { guardGitArgs } from '../../src/main/gitSafety'
 
 // ---------------------------------------------------------------------------
 // Collect IPC handler registrations so we can invoke them directly
@@ -2240,13 +2241,16 @@ describe('MCP handler callbacks', () => {
   // Connected agents call get_git_status with no prompt, in a folder they choose. `git status`
   // runs the command a repo's own .git/config names in core.fsmonitor, so a planted config
   // would run it too, unless the call switches that off.
-  it('getGitStatus switches off a repo-configured fsmonitor command', async () => {
+  it('getGitStatus asks safeGitAsync for a plain status, which switches off what a repo-configured program would run', async () => {
     mockExecSync.mockClear()
     mockExecSync.mockReturnValue(Buffer.from(''))
     await capturedMcpHandlers.getGitStatus('/repo')
     const commands = mockExecSync.mock.calls.map((c: unknown[]) => String(c[0]))
-    expect(commands).toContain('git -c core.fsmonitor=false status --short')
-    expect(commands.filter((c: string) => / status( |$)/.test(c))).toEqual(['git -c core.fsmonitor=false status --short'])
+    // The handler writes the command; safeGitAsync (mocked here) is where the read-only prefix goes on (gitSafety.ts).
+    expect(commands.filter((c: string) => / status( |$)/.test(c))).toEqual(['git status --short'])
+    const guarded = guardGitArgs(['status', '--short'], process.platform === 'win32')
+    expect(guarded).toEqual(expect.arrayContaining(['core.fsmonitor=false', 'log.showSignature=false', '--ignore-submodules=dirty']))
+    expect(guarded.some((a) => a.startsWith('core.hooksPath='))).toBe(true)
   })
 
   it('swarmSendMessage delegates to sendMessage', () => {

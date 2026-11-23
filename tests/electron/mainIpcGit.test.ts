@@ -26,6 +26,8 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { join as pJoin, resolve as pResolve } from 'node:path'
 import { tmpdir } from 'node:os'
+import { writtenGitArgs } from './_gitArgv'
+import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
 
 // ---------------------------------------------------------------------------
 // Hoisted mock state
@@ -337,15 +339,18 @@ let gitRoute: (argv: string[], opts: { cwd: string }) => string | Error = () => 
 let commandAnswer: string | Error = ''
 function git(route: (argv: string[], opts: { cwd: string }) => string | Error): void {
   gitRoute = route
-  H.execFileSync.mockImplementation((_bin: string, argv: string[], opts: { cwd: string }) => {
-    const out = gitRoute(argv, opts)
+  H.execFileSync.mockImplementation((_bin: string, raw: string[], opts: { cwd: string }) => {
+    const argv = writtenGitArgs(raw)
+    const out = argv === null ? '' : gitRoute(argv, opts)
     if (out instanceof Error) throw out
     return Buffer.from(out)
   })
   // The argv spawn carries BOTH git and — off win32 — safe commands, so the bin picks the route.
   H.execFile.mockImplementation(
-    (bin: string, argv: string[], opts: { cwd: string }, cb: (e: Error | null, out: string, err?: string) => void) => {
-      const out = isGitBin(bin) ? gitRoute(argv, opts) : commandAnswer
+    (bin: string, raw: string[], opts: { cwd: string }, cb: (e: Error | null, out: string, err?: string) => void) => {
+      // The route sees git's command as the handler wrote it (_gitArgv.ts); the filter-driver read finds none.
+      const argv = isGitBin(bin) ? writtenGitArgs(raw) : raw
+      const out = !isGitBin(bin) ? commandAnswer : argv === null ? '' : gitRoute(argv, opts)
       if (out instanceof Error) cb(out, '', String(out.message))
       else cb(null, out, '')
     },
@@ -377,9 +382,17 @@ function shell(out: string | Error): void {
 const allGitCalls = (): string[][] =>
   [...H.execFileSync.mock.calls, ...H.execFile.mock.calls]
     .filter((c) => isGitBin(c[0]))
-    .map((c) => c[1] as string[])
-/** Every git argv the ASYNC path ran, space-joined. */
-const gitAsyncCalls = (): string[] => H.execFile.mock.calls.map((c) => (c[1] as string[]).join(' '))
+    .map((c) => writtenGitArgs(c[1] as string[]))
+    .filter((argv): argv is string[] => argv !== null)
+/** The first argument list git was really started with for subcommand `sub`, read-only prefix and all. */
+const rawGitCall = (sub: string): string[] =>
+  H.execFile.mock.calls.map((c) => c[1] as string[]).find((argv) => gitSubcommand(argv)?.name === sub)!
+/** Every git argv the ASYNC path ran, as the handler wrote it, space-joined. */
+const gitAsyncCalls = (): string[] =>
+  H.execFile.mock.calls
+    .map((c) => writtenGitArgs(c[1] as string[]))
+    .filter((argv): argv is string[] => argv !== null)
+    .map((argv) => argv.join(' '))
 /** Every git argv the handlers ran, in order, space-joined. */
 const gitCalls = (): string[] => allGitCalls().map((argv) => argv.join(' '))
 /** Did git run this subcommand (`commit`, `push`, `add`, …)? */
@@ -1269,14 +1282,16 @@ describe('git:change-diff', () => {
   it('passes a filename with spaces as one argv element, never as shell text', async () => {
     gitAsync(() => '')
     await invoke('git:change-diff', { cwd: '/repo', file: 'my notes.ts', mode: 'unstaged' })
-    expect(H.execFile.mock.calls[0][1]).toEqual(['diff', '--', 'my notes.ts'])
+    // The diff itself, after the filter-driver read: the read-only prefix and display flags (gitSafety.ts), then the
+    // name as one element after `--`.
+    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', 'my notes.ts'], process.platform === 'win32'))
   })
 
   it('stops a leading-dash filename being read as a flag', async () => {
     gitAsync(() => '')
     await invoke('git:change-diff', { cwd: '/repo', file: '--upload-pack=evil', mode: 'unstaged' })
     // The `--` separator is what makes this safe; assert it is still there.
-    expect(H.execFile.mock.calls[0][1]).toEqual(['diff', '--', '--upload-pack=evil'])
+    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', '--upload-pack=evil'], process.platform === 'win32'))
   })
 
   it('synthesizes a diff for an untracked file, which git itself will not diff', async () => {
@@ -1450,7 +1465,7 @@ describe('git:unpushed', () => {
   it('asks for exactly the range the dot counts, and caps how much it will list', async () => {
     gitAsync(() => '')
     await invoke('git:unpushed', { cwd: '/repo' })
-    const argv = H.execFile.mock.calls[0][1] as string[]
+    const argv = writtenGitArgs(rawGitCall('log'))!
     expect(argv[0]).toBe('log')
     // The same range `git status` derives `ahead` from — anything else and the rail
     // would list a different set of commits than the one that made the dot pulse.

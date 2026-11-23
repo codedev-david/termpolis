@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { CI_CACHE_MS, CI_RUNS_FETCHED, GH_TIMEOUT_MS, createWorldRuns, type RunsDeps } from '../../src/main/world/worldRuns'
 import { commandOnPath } from '../../src/main/binPath'
+import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
 import { MAX_TRANSCRIPTS, TRANSCRIPT_CACHE_MS } from '../../src/main/world/transcriptRuns'
 
 const ROOT = '/repo'
@@ -13,8 +14,14 @@ const OLD = 'b'.repeat(40)
 const GH_ARGS = ['run', 'list', '--branch', 'feature/x', '--limit', String(CI_RUNS_FETCHED), '--json', 'conclusion,headSha,createdAt,databaseId,workflowName']
 const REMOTES = 'origin\tgit@github.com:o/r.git (fetch)\norigin\tgit@github.com:o/r.git (push)\n'
 /** Git's answers for the CI tests: HEAD, the branch and a GitHub remote. */
-const gitAnswer = (args: string[], head = HEAD): { stdout: string } =>
-  ({ stdout: args[0] === 'remote' ? REMOTES : args[1] === 'HEAD' ? head : 'feature/x' })
+/** Every git run carries the read-only prefix (gitSafety.ts guardGitArgs): the git command as the code wrote it. */
+const plain = (args: string[]): string[] => args.slice(gitSubcommand(args)?.index ?? 0)
+/** The argument list git is started with for a read the code wrote as `args`. */
+const guarded = (args: string[]): string[] => guardGitArgs(args, process.platform === 'win32')
+const gitAnswer = (raw: string[], head = HEAD): { stdout: string } => {
+  const args = plain(raw)
+  return { stdout: args[0] === 'remote' ? REMOTES : args[1] === 'HEAD' ? head : 'feature/x' }
+}
 const row = (over: object = {}): object => ({ conclusion: 'success', headSha: HEAD, createdAt: '2026-11-02T10:00:00Z', databaseId: 1, workflowName: 'Tests', ...over })
 
 interface Setup {
@@ -26,7 +33,8 @@ interface Setup {
 }
 function make(over: Partial<RunsDeps> = {}, o: Setup = {}): { d: RunsDeps; exec: ReturnType<typeof vi.fn>; clock: { t: number } } {
   const clock = { t: Date.parse('2026-11-03T00:00:00Z') }
-  const exec = vi.fn(async (bin: string, args: string[]) => {
+  const exec = vi.fn(async (bin: string, raw: string[]) => {
+    const args = plain(raw)
     if (bin === GH) return { stdout: JSON.stringify(o.rows ?? [row()]) }
     if (args[0] === 'remote') return { stdout: o.remotes ?? REMOTES }
     if (args[0] === 'rev-parse' && args[1] === 'HEAD') return { stdout: (o.head ?? HEAD) + '\n' }
@@ -49,10 +57,10 @@ describe('ciRuns', () => {
       { file: 'src/b.ts', passed: true, at, source: 'ci' }
     ])
     expect(exec).toHaveBeenCalledWith(GH, GH_ARGS, { cwd: ROOT, timeout: GH_TIMEOUT_MS })
-    expect(exec).toHaveBeenCalledWith(GIT, ['rev-parse', 'HEAD'], expect.objectContaining({ cwd: ROOT }))
-    expect(exec).toHaveBeenCalledWith(GIT, ['remote', '-v'], expect.objectContaining({ cwd: ROOT }))
-    expect(exec).toHaveBeenCalledWith(GIT, ['rev-parse', '--abbrev-ref', 'HEAD'], expect.objectContaining({ cwd: ROOT }))
-    expect(exec).toHaveBeenCalledWith(GIT, ['diff-tree', '--no-commit-id', '--name-only', '-r', '--root', HEAD], expect.objectContaining({ cwd: ROOT }))
+    expect(exec).toHaveBeenCalledWith(GIT, guarded(['rev-parse', 'HEAD']), expect.objectContaining({ cwd: ROOT }))
+    expect(exec).toHaveBeenCalledWith(GIT, guarded(['remote', '-v']), expect.objectContaining({ cwd: ROOT }))
+    expect(exec).toHaveBeenCalledWith(GIT, guarded(['rev-parse', '--abbrev-ref', 'HEAD']), expect.objectContaining({ cwd: ROOT }))
+    expect(exec).toHaveBeenCalledWith(GIT, guarded(['diff-tree', '--no-commit-id', '--name-only', '-r', '--root', HEAD]), expect.objectContaining({ cwd: ROOT }))
     expect(GH_TIMEOUT_MS).toBe(5000)
   })
 
@@ -196,7 +204,7 @@ describe('ciRuns', () => {
       expect(await createWorldRuns(m.d).ciRuns(ROOT)).toEqual([])
       expect(ghCalls(m.exec)).toBe(0)
     }
-    const failing = vi.fn(async (bin: string, args: string[]) => (args[0] === 'remote' ? { stdout: '', error: new Error('git') } : gitAnswer(args)))
+    const failing = vi.fn(async (bin: string, args: string[]) => (plain(args)[0] === 'remote' ? { stdout: '', error: new Error('git') } : gitAnswer(args)))
     expect(await createWorldRuns(make({ exec: failing }).d).ciRuns(ROOT)).toEqual([])
     expect(ghCalls(failing)).toBe(0)
     // Every GitHub URL shape counts, on any remote line.
@@ -211,7 +219,7 @@ describe('ciRuns', () => {
     const cases: RunsDeps['exec'][] = [
       async (bin, args) => (bin === GH ? { stdout: '', error: Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }) } : git(args)),
       async (bin, args) => (bin === GH ? { stdout: 'not json' } : git(args)),
-      async (bin, args) => (bin === GH ? { stdout: JSON.stringify([row()]) } : args[0] === 'diff-tree' ? { stdout: '', error: new Error('git') } : git(args))
+      async (bin, args) => (bin === GH ? { stdout: JSON.stringify([row()]) } : plain(args)[0] === 'diff-tree' ? { stdout: '', error: new Error('git') } : git(args))
     ]
     for (const exec of cases) expect(await ciOf({}, { exec })).toEqual([])
   })

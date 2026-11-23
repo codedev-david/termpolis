@@ -4181,7 +4181,8 @@ describe('Lumopolis world wiring in index.ts', () => {
     gitMock.safeGitAsync.mockResolvedValueOnce('abc123\n').mockResolvedValueOnce(' M src/a.ts\n')
     expect(await world.opts.head('/repos/x')).toEqual({ head: 'abc123', dirty: true })
     expect(gitMock.safeGitAsync).toHaveBeenNthCalledWith(1, ['rev-parse', 'HEAD'], expect.objectContaining({ cwd: '/repos/x' }))
-    expect(gitMock.safeGitAsync.mock.calls[1][0]).toEqual(expect.arrayContaining(['core.fsmonitor=false', 'status', '--porcelain']))
+    // A plain status: safeGitAsync gives it the read-only prefix and switches off the repository's filters (gitSafety.ts).
+    expect(gitMock.safeGitAsync.mock.calls[1][0]).toEqual(['status', '--porcelain', '--untracked-files=no'])
     gitMock.safeGitAsync.mockResolvedValueOnce('abc123').mockResolvedValueOnce('')
     expect(await world.opts.head('/repos/x')).toEqual({ head: 'abc123', dirty: false })
     gitMock.safeGitAsync.mockRejectedValueOnce(new Error('not a repo'))

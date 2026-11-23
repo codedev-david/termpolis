@@ -13,6 +13,7 @@
 // reports success.
 
 import { describe, it, expect, vi, beforeAll } from 'vitest'
+import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
 import {
   isValidGitRef,
   parseSafeCommand,
@@ -519,7 +520,7 @@ describe('IPC handler security — git:commit message injection', () => {
     mockExecFileSync.mockClear()
     const openaiKey = 'sk-' + 'a'.repeat(24)
     mockExecFileSync.mockImplementation((_bin: string, argv: string[]) =>
-      Buffer.from(argv[0] === 'log' ? `commit abc\n+key = "${openaiKey}"\n` : ''),
+      Buffer.from(gitSubcommand(argv)?.name === 'log' ? `commit abc\n+key = "${openaiKey}"\n` : ''),
     )
 
     const r = await invoke('git:push', { cwd: '/r' })
@@ -549,9 +550,11 @@ describe('IPC handler security — git read handlers pass argv safely', () => {
   ])('%s runs git with a literal argv and no shell', async (channel, args, expectedArgv) => {
     const r = await invoke(channel as string, args)
     expect(r.success).toBe(true)
-    const [bin, argv, opts] = mockExecFileSync.mock.calls[0]
+    // status and diff first read the repository's filter drivers (`git config`, gitSafety.ts); the call checked here is
+    // the command itself, with the read-only prefix a read carries and nothing added to a write.
+    const [bin, argv, opts] = mockExecFileSync.mock.calls.find((c) => gitSubcommand(c[1] as string[])?.name !== 'config')!
     expect(bin).toMatch(ABS_GIT)
-    expect(argv).toEqual(expectedArgv)
+    expect(argv).toEqual(guardGitArgs(expectedArgv as string[], process.platform === 'win32'))
     expect(opts.shell).toBe(false)
   })
 

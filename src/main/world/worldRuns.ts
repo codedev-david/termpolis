@@ -9,6 +9,7 @@
 // with cwd at the repository would run a `git.exe` planted in it. Neither program runs if it lies inside the repository.
 
 import { binInside } from '../binPath'
+import { guardGitArgs } from '../gitSafety'
 import type { TestRun } from './testStatus'
 import { MAX_TRANSCRIPTS, TRANSCRIPT_CACHE_MS } from './transcriptRuns'
 
@@ -93,7 +94,9 @@ export function createWorldRuns(d: RunsDeps): WorldRuns {
   }
 
   const run = async (gitBin: string, root: string, args: string[]): Promise<string | null> => {
-    const out = await d.exec(gitBin, args, { cwd: root, timeout: GIT_TIMEOUT_MS })
+    // Every git here only reads: the read-only prefix keeps the repository's own config from running a program
+    // (diff-tree runs core.fsmonitor without it). gitSafety.ts has the rules.
+    const out = await d.exec(gitBin, guardGitArgs(args, process.platform === 'win32'), { cwd: root, timeout: GIT_TIMEOUT_MS })
     return out.error ? null : out.stdout.trim()
   }
 
