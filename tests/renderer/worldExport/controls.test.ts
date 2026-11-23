@@ -231,11 +231,39 @@ describe('buildPage: every screen size', () => {
       observe(el: Element): void { observed.push(el) }
       disconnect(): void { /* not used */ }
     })
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => frames.push(cb))
     const { q, viewer } = setup()
     expect(observed).toEqual([q('.wx-toolbar'), q('.wx-ask-host'), q('.wx-card-body')])
     Object.defineProperty(q('.wx-toolbar'), 'offsetHeight', { value: 70 })
     fire()
+    for (const f of frames.splice(0)) f(0)
     expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(94)
+  })
+
+  it('fits on the next frame, once however many resizes arrive, so a fit that resizes a watched panel never loops the observer (WebKit reports that as a page error)', () => {
+    let fire = (): void => undefined
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: () => void) { fire = cb }
+      observe(): void { /* the elements are checked above */ }
+      disconnect(): void { /* not used */ }
+    })
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => frames.push(cb))
+    const { q, viewer } = setup()
+    Object.defineProperty(q('.wx-toolbar'), 'offsetHeight', { value: 70 })
+    viewer.setBottomReserve.mockClear()
+    fire()
+    fire()
+    // Nothing is measured or resized inside the observer's own callback.
+    expect(viewer.setBottomReserve).not.toHaveBeenCalled()
+    expect(frames).toHaveLength(1)
+    frames.splice(0)[0](0)
+    expect(viewer.setBottomReserve).toHaveBeenCalledTimes(1)
+    expect(viewer.setBottomReserve).toHaveBeenLastCalledWith(94)
+    // The next resize asks for a frame again.
+    fire()
+    expect(frames).toHaveLength(1)
   })
 
   it('groups the toolbar into what is drawn and what to do, so a narrow screen wraps whole groups', () => {

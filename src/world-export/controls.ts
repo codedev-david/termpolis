@@ -500,9 +500,16 @@ export function buildPage(parent: HTMLElement, doc: WorldDoc, meta: PageMeta): P
   }
   window.addEventListener('resize', layout)
   // A wrapping toolbar or a growing Ask box moves the strips the other panels keep clear of; a card meeting its cap
-  // gains a scrollbar (the body's content box narrows), which the close button moves clear of.
+  // gains a scrollbar (the body's content box narrows), which the close button moves clear of. The fit runs on the
+  // next frame, once per frame: fitting inside the observer's callback resizes the panels it watches, a loop WebKit
+  // reports as a page error.
   if (typeof ResizeObserver === 'function') {
-    const watch = new ResizeObserver(() => layout())
+    let queued = false
+    const watch = new ResizeObserver(() => {
+      if (queued) return
+      queued = true
+      requestAnimationFrame(() => { queued = false; layout() })
+    })
     watch.observe(toolbar)
     watch.observe(askHost)
     watch.observe(cardBody)
