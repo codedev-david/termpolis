@@ -318,6 +318,7 @@ import {
   applyRerankSearch,
   setMemoryRetryGovernor,
   routerClassify, routerLearn, routerWarm,
+  type CallRoute,
 } from './memoryClient'
 import { memoryUnavailableInfo, skipPassWhileUnavailable, isWriteRefusedMessage } from './memoryFallbackGuard'
 import { registerMemoryTraceSources } from './memoryTraceSources'
@@ -429,10 +430,17 @@ function collectEdges(createdBy?: string) {
  * the async `memoryHasHash` here instead would return a Promise per chunk — truthy — so every chunk
  * reads as "already stored" and ingestion silently writes NOTHING, forever, with no error anywhere.
  */
+/** WPA fix round 3 (R2-M1): the bulk writers' route. Transcript, code and notes ingest, consolidation summaries and the
+ *  agent-activity auto-ingest write and remove many notes that nobody is waiting on, so each call waits behind a call a person
+ *  is waiting on (at most a second), like the host's other bulk work. An agent's tool call, the router and a click send none. */
+const BULK: CallRoute = { lane: 'background' }
+const bulkWrite = (input: Parameters<typeof memoryWrite>[0]): ReturnType<typeof memoryWrite> => memoryWrite(input, BULK)
+const bulkDelete = (id: string): Promise<void> => memoryDelete(id, undefined, BULK)
+
 function ingestMemoryDeps() {
   return {
     hasHashes: memoryKnownHashes,
-    write: memoryWrite,
+    write: bulkWrite,
     patchProjects: (patches: Array<{ hash: string; project: string }>): void => {
       void memoryPatchProjects(patches).catch(() => { /* best effort — F30 backfill */ })
     },
@@ -476,7 +484,7 @@ const GRAPH_READ: FillBounds = { fallback: 20, ceiling: 100 }
  */
 /** The Claude-notes pass's memory writes, with the folders they wrote for remembered (WPA fix M9: those projects' Ask primers are
  *  warmed when the pass ends, warmNotesProjects). */
-const notesWrites = trackWrittenProjects(memoryWrite)
+const notesWrites = trackWrittenProjects(bulkWrite)
 /** Warms, with a new build each, the Ask primer of every project the last Claude-notes pass wrote notes for. */
 function warmNotesProjects(): void {
   for (const project of notesWrites.take()) void askPrimerWarm(project, { force: true })
@@ -488,7 +496,7 @@ function claudeNotesDeps(): NotesDeps {
     roots: noteRoots,
     fs: realNotesFs,
     manifest: fileManifest(app.getPath('userData')),
-    store: { write: notesWrites.write, remove: memoryDelete, list: memoryList },
+    store: { write: notesWrites.write, remove: bulkDelete, list: memoryList },
     stopped: () => appQuitting,
     // The id the store stamps on this computer's entries once memory sync has one (fix/memsync); until then, none.
     ownOrigin: async () => {
@@ -2605,7 +2613,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
     const stats = await runCodeIngest(
       {
         hasHashes: memoryKnownHashes,
-        write: memoryWrite,
+        write: bulkWrite,
         // memoryPruneCodePath resolves to the number pruned; the dep is void-returning. AWAITED, not
         // dropped: ingestCode re-asks membership right after this, and it must see the post-prune store.
         prunePath: async (filePath) => { await memoryPruneCodePath(filePath) },
@@ -5433,7 +5441,7 @@ async function semanticPoolOptions(
           await runSummarization({
             candidates: () => sumCands,
             simOf,                          // a sync (a, b) => number, rebuilt in main over the shipped matrix
-            write: (i) => memoryWrite(i),   // genuinely async, and runSummarization already awaits it
+            write: (i) => bulkWrite(i),     // genuinely async, and runSummarization already awaits it
             link: sumEdges.collect,
             now: cnow,
           })
@@ -5558,7 +5566,7 @@ async function semanticPoolOptions(
             content: event.summary,
             tags: [event.agentType].filter(Boolean) as string[],
             ...(event.taskId && { taskId: event.taskId }),
-          }).catch(() => { /* ignore */ })
+          }, BULK).catch(() => { /* ignore */ })
         }
       } catch { /* ignore */ }
     })

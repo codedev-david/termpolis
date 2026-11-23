@@ -296,6 +296,25 @@ describe('the router rides the interactive lane (WPA fix I4)', () => {
     expect(sent.lane).toBe('interactive')
     expect(sent.args).toEqual(['/u', 'what branch am I on'])
   })
+  it('memoryWrite and memoryDelete take a route: the bulk callers send lane background, their arguments unchanged; with none, no lane (WPA fix round 3, R2-M1)', async () => {
+    const h = manualHost((c) => ({ kind: 'result', id: c.id, ok: true, result: c.fn === 'memoryWrite' ? { id: 'n1' } : undefined }))
+    setMemoryHostSpawner(() => h.transport)
+    await startMemoryHost({ userDataPath: tmp })
+    const input = { agentId: 'ingest', kind: 'note', content: 'a chunk' }
+    await client.memoryWrite(input, { lane: 'background' })
+    await client.memoryDelete('n1', undefined, { lane: 'background' })
+    await client.memoryDelete('n2', { keepContentHash: true }, { lane: 'background' })
+    await client.memoryWrite(input)
+    await client.memoryDelete('n3')
+    const sent = h.posted.filter((m): m is HostCall => m.kind === 'call' && (m.fn === 'memoryWrite' || m.fn === 'memoryDelete'))
+    expect(sent.map((m) => [m.fn, m.args, m.lane])).toEqual([
+      ['memoryWrite', [input], 'background'],
+      ['memoryDelete', ['n1'], 'background'],
+      ['memoryDelete', ['n2', { keepContentHash: true }], 'background'],
+      ['memoryWrite', [input], undefined],
+      ['memoryDelete', ['n3'], undefined],
+    ])
+  })
 })
 
 describe('the thin proxies hand their name and arguments to the host (backfill)', () => {

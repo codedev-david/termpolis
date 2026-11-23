@@ -348,6 +348,8 @@ export const CANCELLABLE_READS: ReadonlySet<string> = new Set(['memorySearch', '
  *  synchronous pass never starts in the middle of a call a person is waiting on, and never starves either. These skip it:
  *  - memoryWrite, memoryLink, memoryFeedback, memoryDelete, memoryReleaseSupersedes, routerLearn: one write each, made for an
  *    agent's tool call, the router or a click, with the caller waiting on it; each is small, and none rereads the store.
+ *    Fix round 3 (R2-M1): the bulk writers (transcript, code and notes ingest, consolidation summaries, the agent-activity
+ *    auto-ingest) send their writes and removals with `lane: 'background'`, and a call sent so always waits, whatever its name.
  *  - getSyncStatus, memoryCount, memoryHasHash, embeddingsReady: status reads of a few fields. lockAwareBuild reads the lock
  *    beside each primer build, and the search path asks embeddingsReady after each search; holding them would only slow the
  *    call a person is waiting on. */
@@ -382,12 +384,12 @@ export async function handleCall(msg: HostCallMsg): Promise<HostResponse> {
   if (ctl) inflight.set(msg.id, ctl)
   let release: (() => void) | null = null
   try {
-    // An interactive call enters the lane (and holds the host at normal priority while it runs). Every other call but the
-    // LANE_FREE_CALLS waits here (an await: the thread stays free) while an interactive one is in the lane, at most
+    // An interactive call enters the lane (and holds the host at normal priority while it runs). A call sent on the background
+    // lane (ingest's writes and removals, fix round 3) and every other call but the LANE_FREE_CALLS waits here (an await: the thread stays free) while an interactive one is in the lane, at most
     // BACKGROUND_MAX_WAIT_MS (Ruling 13). Once started, a call finishes; one whose caller has already timed out still lands,
     // and main logs its late outcome by name and fires the change boundary again for a changing call (memoryClient).
     if (msg.lane === 'interactive') release = await lane.enter('interactive')
-    else if (!LANE_FREE_CALLS.has(msg.fn)) release = await lane.enter('background', ctl?.signal)
+    else if (msg.lane === 'background' || !LANE_FREE_CALLS.has(msg.fn)) release = await lane.enter('background', ctl?.signal)
     if (ctl?.signal.aborted) throw abortError()
     const args = argsWithSignal(msg.fn, Array.isArray(msg.args) ? msg.args : [], ctl?.signal)
     const result = await (handler as (...a: unknown[]) => unknown)(...args)

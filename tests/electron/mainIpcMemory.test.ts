@@ -1074,7 +1074,9 @@ describe('memory:ingest-conversations', () => {
   it('wires the ingest deps to the real store, stamping ingest-authored edges', async () => {
     await invoke('memory:ingest-conversations')
     const deps = mneme.runConversationIngest.mock.calls[0][0]
-    expect(deps.write).toBe(mem.memoryWrite)
+    // WPA fix round 3 (R2-M1): ingest writes on the background lane, its input unchanged.
+    await deps.write({ agentId: 'a', content: 'c' })
+    expect(mem.memoryWrite).toHaveBeenLastCalledWith({ agentId: 'a', content: 'c' }, { lane: 'background' })
 
     // v1.26 — THE trap. The ingest loop consumes membership as a SYNC predicate (`if
     // (deps.hasHash(h))`), and every store call is a Promise now. A Promise is TRUTHY, so wiring the
@@ -1121,7 +1123,8 @@ describe('memory:ingest-code', () => {
   it('wires the ingest deps and the graph builder to the real repo readers', async () => {
     await invoke('memory:ingest-code', { repoRoot: '/repos/x' })
     const ingestDeps = mneme.runCodeIngest.mock.calls[0][0]
-    expect(ingestDeps.write).toBe(mem.memoryWrite)
+    await ingestDeps.write({ agentId: 'code', content: 'c' }) // the background lane (WPA fix round 3, R2-M1)
+    expect(mem.memoryWrite).toHaveBeenLastCalledWith({ agentId: 'code', content: 'c' }, { lane: 'background' })
     // Same trap as the transcript ingester: the sync per-chunk predicate must NOT be an async proxy.
     expect(ingestDeps.hasHashes).toBe(mem.memoryKnownHashes)
     expect(ingestDeps.hasHash).toBeUndefined()
@@ -2681,7 +2684,7 @@ describe('memory indexer passes', () => {
     // it is asked about (and would silently score them 0).
     expect(mem.consolidationCandidates).toHaveBeenCalledWith(200)
     expect(mem.consolidationSimOf).toHaveBeenCalledWith(200)
-    expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'a', kind: 'note', content: 'c' })
+    expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'a', kind: 'note', content: 'c' }, { lane: 'background' })
     expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'a', to: 'b', relation: 'summarizes', createdBy: 'consolidate' })
   })
 
@@ -3078,7 +3081,7 @@ describe('agent-event auto-ingest into memory', () => {
     feed({ kind: 'message', summary: 'found the bug', terminalId: 't1', agentType: 'claude', taskId: 'task-9' })
     expect(mem.memoryWrite).toHaveBeenCalledWith({
       agentId: 't1', kind: 'message', content: 'found the bug', tags: ['claude'], taskId: 'task-9',
-    })
+    }, { lane: 'background' }) // the background lane (WPA fix round 3, R2-M1)
     expect(mockWebContents.send).toHaveBeenCalledWith('agentActivity:event', expect.objectContaining({ kind: 'message' }))
   })
 
@@ -3091,7 +3094,7 @@ describe('agent-event auto-ingest into memory', () => {
 
   it('falls back to "unknown" when the event names no terminal or agent', () => {
     feed({ kind: 'message', summary: 's' })
-    expect(mem.memoryWrite).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'unknown', tags: [] }))
+    expect(mem.memoryWrite).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'unknown', tags: [] }), { lane: 'background' })
   })
 
   it('ingests NOTHING for other event kinds, or a summary-less event', () => {
@@ -3635,9 +3638,10 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
     // The store: the memory client's own write / delete / list.
     mem.memoryWrite.mockClear()
     await d.store.write({ agentId: 'claude-notes', content: 'x' })
-    expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'claude-notes', content: 'x' })
+    // The notes pass writes and removes on the background lane (WPA fix round 3, R2-M1).
+    expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'claude-notes', content: 'x' }, { lane: 'background' })
     await d.store.remove('mem-1')
-    expect(mem.memoryDelete).toHaveBeenCalledWith('mem-1')
+    expect(mem.memoryDelete).toHaveBeenCalledWith('mem-1', undefined, { lane: 'background' })
     await d.store.list({ agentId: 'claude-notes', limit: 5 })
     expect(mem.memoryList).toHaveBeenCalledWith({ agentId: 'claude-notes', limit: 5 })
     expect(d.stopped()).toBe(false)

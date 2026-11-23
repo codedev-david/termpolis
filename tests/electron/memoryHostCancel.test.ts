@@ -192,7 +192,7 @@ describe('memory host: the interactive lane', () => {
     // (a write that embeds would wait on the gated embedder itself, not the lane: a delete is a write that does not embed)
     const w = await call(2, 'memoryDelete', ['no-such-note'])
     expect(w?.ok).toBe(true)
-    const c = await call(3, 'memoryCount', [], 'background')
+    const c = await call(3, 'memoryCount', [])
     expect(c?.ok).toBe(true)
     const s = await call(4, 'getSyncStatus', [])
     expect(s?.ok).toBe(true)
@@ -201,6 +201,32 @@ describe('memory host: the interactive lane', () => {
     expect(_hostLaneForTests().waiting).toBe(0)
     g.open()
     await fast
+  })
+
+  it('a write, a delete or a link sent on the background lane (ingest, the notes pass) waits like any bulk call, at most BACKGROUND_MAX_WAIT_MS (WPA fix round 3, R2-M1)', async () => {
+    await initHost()
+    await inprocWrite({ agentId: 'a', kind: 'fact', content: 'one two three' })
+    const g = gatedEmbed()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const fast = call(1, 'memorySearch', [{ query: 'one', limit: 5 }], 'interactive')
+      await vi.advanceTimersByTimeAsync(0)
+      const done = new Set<string>()
+      const bulk: Array<[string, unknown[]]> = [
+        ['memoryDelete', ['no-such-note']], ['memoryLink', [{ from: 'x', to: 'y', relation: 'follows' }]], ['memoryCount', []],
+      ]
+      const replies = bulk.map(([fn, args], i) => call(20 + i, fn, args, 'background').then((r) => { done.add(fn); return r }))
+      // The same calls sent with no lane (an agent's tool call, a click) still answer at once.
+      expect((await call(30, 'memoryDelete', ['no-such-note']))?.ok).toBe(true)
+      expect(_hostLaneForTests().waiting).toBe(bulk.length)
+      await vi.advanceTimersByTimeAsync(BACKGROUND_MAX_WAIT_MS - 1)
+      expect(done.size).toBe(0)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(_hostLaneForTests().waiting).toBe(0)
+      for (const r of await Promise.all(replies)) expect(r?.kind).toBe('result')
+      g.open()
+      await fast
+    } finally { vi.useRealTimers() }
   })
 
   it('the calls that skip the lane are exactly the single writes someone waits on and the status reads (Ruling 13)', () => {

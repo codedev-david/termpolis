@@ -998,12 +998,15 @@ function scrubForWrite(content: string): { content: string; hits: number } {
   }
 }
 
-export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
+/** WPA fix round 3 (R2-M1): `route` is how the call travels. Ingest, the notes pass and the other bulk writers send
+ *  `{ lane: 'background' }`, so their writes wait behind a call a person is waiting on like any bulk call; an agent's tool call,
+ *  the router and a click send none, and their write never queues (Ruling 13). */
+export async function memoryWrite(input: WriteInput, route?: CallRoute): Promise<MemoryEntry> {
   if (!input || typeof input.content !== 'string' || !input.content.trim()) {
     throw new Error('memoryWrite: content required')
   }
   const { content, hits } = scrubForWrite(input.content)
-  const entry = await call<MemoryEntry>('memoryWrite', [{ ...input, content }])
+  const entry = await call<MemoryEntry>('memoryWrite', [{ ...input, content }], route)
   // swarmMemory sets the transient `scrubbed` count when IT redacts. In host mode it never sees a
   // secret, so it reports nothing — preserve the contract by reporting what we redacted here.
   if (hits > 0 && entry && typeof entry === 'object') entry.scrubbed = hits
@@ -1056,8 +1059,9 @@ export const routerClassify = (dir: string, text: string): Promise<import('./rou
 export const routerLearn = (dir: string, text: string, label: string): Promise<boolean> => call('routerLearn', [dir, text, label])
 export const routerWarm = (dir: string): Promise<boolean> => call('routerWarm', [dir])
 export const memorySourceById = (id: string): Promise<string | undefined> => call('memorySourceById', [id])
-export const memoryDelete = (id: string, opts?: { keepContentHash?: boolean }): Promise<void> =>
-  call('memoryDelete', opts ? [id, opts] : [id])
+/** `route` as for memoryWrite: the notes pass's removals send the background lane (WPA fix round 3, R2-M1). */
+export const memoryDelete = (id: string, opts?: { keepContentHash?: boolean }, route?: CallRoute): Promise<void> =>
+  call('memoryDelete', opts ? [id, opts] : [id], route)
 export const memoryArchive = (id: string): Promise<void> => call('memoryArchive', [id])
 export const searchArchive = (query: string, limit = 20): Promise<MemoryEntry[]> => call('searchArchive', [query, limit])
 export const memoryPatchProjects = (patches: Array<{ hash: string; project: string }>): Promise<number> => call('memoryPatchProjects', [patches])
