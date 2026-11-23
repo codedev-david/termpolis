@@ -142,12 +142,31 @@ export async function withAnnotationFileLock<T>(file: string, work: () => Promis
   }
 }
 
-/** Write `text` to `target` whole or not at all: a temp file beside it, then a rename. The temp file never outlives a failure. */
+/** The rename errors a virus scanner or the indexer holding the file causes on Windows, for a moment. A rename refused with
+ *  one is tried again after 100 ms x the attempt, ANNOTATION_RENAME_ATTEMPTS times in all (about a second of pauses, as
+ *  graceful-fs does and as gitSource's renameWithRetry does for a world's sources); any other error throws at once. */
+export const ANNOTATION_RENAME_RETRY_CODES: readonly string[] = ['EPERM', 'EACCES', 'EBUSY']
+const ANNOTATION_RENAME_ATTEMPTS = 5
+export const ANNOTATION_RENAME_RETRY_TOTAL_MS = 100 * ((ANNOTATION_RENAME_ATTEMPTS - 1) * ANNOTATION_RENAME_ATTEMPTS) / 2
+
+async function renameRetrying(from: string, to: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await rename(from, to)
+    } catch (err) {
+      if (attempt >= ANNOTATION_RENAME_ATTEMPTS || !ANNOTATION_RENAME_RETRY_CODES.includes(codeOf(err))) throw err
+      await pause(100 * attempt)
+    }
+  }
+}
+
+/** Write `text` to `target` whole or not at all: a temp file beside it, then a rename (tried again while Windows refuses it
+ *  for a moment). The temp file never outlives a failure. */
 async function writeAtomic(target: string, text: string): Promise<void> {
   const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
   try {
     await writeFile(tmp, text, 'utf8')
-    await rename(tmp, target)
+    await renameRetrying(tmp, target)
   } catch (err) {
     await rm(tmp, { force: true })
     throw err

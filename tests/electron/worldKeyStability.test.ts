@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // `lockAlways`: every try); a lock made whose nonce cannot be written (`lockWrite`: how many times, a full disk); a lock file
 // that cannot be removed (`rmLock` 'EPERM'), or that another stale-breaker removed first (`rmLock` 'ENOENT', once).
 const faults = vi.hoisted(() => ({
-  rename: false, lock: null as string[] | null, lockAlways: null as string | null, lockWrite: 0, rmLock: null as 'EPERM' | 'ENOENT' | null,
+  rename: false, renameOnce: null as string[] | null, lock: null as string[] | null, lockAlways: null as string | null, lockWrite: 0, rmLock: null as 'EPERM' | 'ENOENT' | null,
 }))
 vi.mock('node:fs/promises', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs/promises')>()
@@ -18,7 +18,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const isLock = (p: unknown): boolean => String(p).endsWith('.lock')
   return {
     ...real,
-    rename: async (from: string, to: string) => { if (faults.rename) throw fail('EBUSY'); return real.rename(from, to) },
+    rename: async (from: string, to: string) => {
+      const once = faults.renameOnce?.shift()
+      if (once || faults.rename) throw fail(once ?? 'EBUSY')
+      return real.rename(from, to)
+    },
     open: async (...a: Parameters<typeof real.open>) => {
       if (!isLock(a[0])) return real.open(...a)
       const code = faults.lockAlways ?? faults.lock?.shift()
@@ -39,7 +43,8 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import {
   adoptAnnotationAliases, createAnnotationStore, withAnnotationFileLock, ANNOTATION_LOCK_DEADLINE_MS, ANNOTATION_LOCK_RETRY_MS,
-  ANNOTATION_LOCK_RETRY_MAX_MS, ANNOTATION_LOCK_STALE_MS, MAX_ANNOTATIONS_PER_ITEM,
+  ANNOTATION_LOCK_RETRY_MAX_MS, ANNOTATION_LOCK_STALE_MS, MAX_ANNOTATIONS_PER_ITEM, ANNOTATION_RENAME_RETRY_CODES,
+  ANNOTATION_RENAME_RETRY_TOTAL_MS,
 } from '../../src/main/world/annotations'
 import { graphKeyForRoot } from '../../src/main/codeGraph'
 import { entityDedupHash } from '../../src/main/swarmMemory'
@@ -82,8 +87,8 @@ describe('keys that must not move for a normal Windows root', () => {
 
 describe('adoptAnnotationAliases', () => {
   let dir = ''
-  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); faults.rename = false; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null })
-  afterEach(async () => { faults.rename = false; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; await rm(dir, { recursive: true, force: true }) })
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null })
+  afterEach(async () => { faults.rename = false; faults.renameOnce = null; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; await rm(dir, { recursive: true, force: true }) })
   const folder = (): string => join(dir, 'world', 'annotations')
   const fileFor = (key: string): string => join(folder(), `${sha256(key)}.json`)
   const ms = (n: number): Promise<void> => new Promise((r) => { setTimeout(r, n) })
@@ -136,6 +141,33 @@ describe('adoptAnnotationAliases', () => {
     faults.rename = true
     expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual([])
     expect((await readdir(folder())).sort()).toEqual([`${sha256('old-key')}.json`])
+  })
+
+  describe('a save the OS refuses for a moment (Defender or the indexer holding the file)', () => {
+    it('a rename refused with EPERM, EACCES or EBUSY is tried again after a short pause, and the save lands', async () => {
+      for (const code of ANNOTATION_RENAME_RETRY_CODES) {
+        faults.renameOnce = [code]
+        await createAnnotationStore(dir).add('k', `b-${code}`, claim(`saved through ${code}`))
+        expect(faults.renameOnce).toEqual([])
+      }
+      expect(Object.keys(await createAnnotationStore(dir).list('k')).sort()).toEqual(['b-EACCES', 'b-EBUSY', 'b-EPERM'])
+      expect((await readdir(folder())).filter((f) => f.endsWith('.tmp'))).toEqual([])
+    })
+    it('a rename that keeps being refused gives up after about a second, throws, and leaves no temp file', async () => {
+      faults.rename = true
+      const t0 = Date.now()
+      await expect(createAnnotationStore(dir).add('k', 'b1', claim('never saved'))).rejects.toMatchObject({ code: 'EBUSY' })
+      const took = Date.now() - t0
+      expect(took).toBeGreaterThanOrEqual(ANNOTATION_RENAME_RETRY_TOTAL_MS - 20)
+      expect(took).toBeLessThan(ANNOTATION_RENAME_RETRY_TOTAL_MS + 1_500)
+      expect((await readdir(folder())).filter((f) => f.endsWith('.tmp'))).toEqual([])
+    })
+    it('any other rename error is not tried again', async () => {
+      faults.renameOnce = ['ENOENT']
+      const t0 = Date.now()
+      await expect(createAnnotationStore(dir).add('k', 'b1', claim('gone'))).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(Date.now() - t0).toBeLessThan(90)
+    })
   })
 
   describe('the annotation store lock holds across processes (R-M2)', () => {
