@@ -1,6 +1,6 @@
 // WPA item 1: the finished primer, cached per project in main, stale-while-revalidate, in memory only.
 import { describe, it, expect, vi } from 'vitest'
-import { createPrimerCache, PRIMER_FRESH_MS, PRIMER_CACHE_MAX } from '../../src/main/primerCache'
+import { createPrimerCache, PRIMER_FRESH_MS, PRIMER_CACHE_MAX, PRIMER_MAX_AGE_MS } from '../../src/main/primerCache'
 import { projectKeyOf } from '../../src/main/projectKey'
 
 const ROOT = '/srv/work/termpolis'
@@ -15,11 +15,11 @@ const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
 
 function harness(build?: (root: string, limit: number, signal?: AbortSignal) => Promise<string | null>) {
   let clock = 1_000
-  const calls: Array<{ root: string; limit: number; signal?: AbortSignal }> = []
+  const calls: Array<{ root: string; limit: number; signal?: AbortSignal; lane?: string }> = []
   let n = 0
   const b = build ?? (async (root: string, limit: number) => `primer ${++n} for ${root} at ${limit}`)
   const cache = createPrimerCache({
-    build: (root, limit, signal) => { calls.push({ root, limit, signal }); return b(root, limit, signal) },
+    build: (root, limit, signal, lane) => { calls.push({ root, limit, signal, lane }); return b(root, limit, signal) },
     now: () => clock,
   })
   return { cache, calls, advance: (ms: number) => { clock += ms } }
@@ -61,19 +61,60 @@ describe('primerCache', () => {
     await tick()
     expect(calls).toHaveLength(2)
     expect(calls[1].signal).toBeUndefined() // a background refresh is nobody's to cancel
+    expect(calls.map((c) => c.lane)).toEqual(['interactive', 'background']) // an ask's build is interactive; the refresh is not
     expect(await cache.get(ROOT, 10)).toBe(`primer 2 for ${ROOT} at 10`)
   })
 
-  it('a refresh that fails or finds nothing keeps the stale primer', async () => {
+  it('a refresh that fails drops the stale primer: the next ask builds again and gets the failure (WPA fix I1)', async () => {
     let fail = false
     let n = 0
-    const { cache, advance } = harness(async () => { if (fail) throw new Error('host down'); return `p${++n}` })
+    const { cache, calls, advance } = harness(async () => { if (fail) throw new Error('host down'); return `p${++n}` })
     await cache.get(ROOT, 10)
     fail = true
     advance(PRIMER_FRESH_MS + 1)
-    expect(await cache.get(ROOT, 10)).toBe('p1')
+    expect(await cache.get(ROOT, 10)).toBe('p1') // this ask still gets it at once
     await tick()
-    expect(await cache.get(ROOT, 10)).toBe('p1')
+    expect(cache.size()).toBe(0)
+    await expect(cache.get(ROOT, 10)).rejects.toThrow('host down')
+    expect(calls).toHaveLength(3)
+  })
+
+  it('a refresh that finds nothing drops the stale primer too: the next ask is told there is none', async () => {
+    let none = false
+    const { cache, advance } = harness(async () => (none ? null : 'p'))
+    await cache.get(ROOT, 10)
+    none = true
+    advance(PRIMER_FRESH_MS + 1)
+    expect(await cache.get(ROOT, 10)).toBe('p')
+    await tick()
+    expect(cache.has(ROOT, 10)).toBe(false)
+    expect(await cache.get(ROOT, 10)).toBeNull()
+  })
+
+  it('a refresh that lands after a newer build stored leaves the newer one alone', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    let first = true
+    const { cache, advance } = harness(() => {
+      if (first) { first = false; return Promise.resolve('p1') }
+      const d = deferred<string | null>(); gates.push(d); return d.promise
+    })
+    await cache.get(ROOT, 10)
+    advance(PRIMER_FRESH_MS + 1)
+    await cache.get(ROOT, 10) // starts the refresh (gates[0])
+    const forced = cache.warm(ROOT, 10, { force: true }) // a newer build (gates[1])
+    gates[1].resolve('newer')
+    await forced
+    gates[0].reject(new Error('old refresh failed'))
+    await tick()
+    expect(await cache.get(ROOT, 10)).toBe('newer')
+  })
+
+  it('a primer older than PRIMER_MAX_AGE_MS is never served: the ask builds afresh and waits for it', async () => {
+    const { cache, calls, advance } = harness()
+    await cache.get(ROOT, 10)
+    advance(PRIMER_MAX_AGE_MS + 1)
+    expect(await cache.get(ROOT, 10)).toBe(`primer 2 for ${ROOT} at 10`)
+    expect(calls.map((c) => c.lane)).toEqual(['interactive', 'interactive'])
   })
 
   it('a null build is never cached: the next ask builds again', async () => {
@@ -156,6 +197,32 @@ describe('primerCache', () => {
     advance(PRIMER_FRESH_MS + 1)
     await cache.warm(ROOT, 10)
     expect(await cache.get(ROOT, 10)).toBe('w3')
+  })
+
+  it('warm reads on the background lane; warm with force always starts a new build, even with one running (WPA fix M4, M5)', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    const a = cache.warm(ROOT, 10)
+    const b = cache.warm(ROOT, 10, { force: true })
+    expect(calls).toHaveLength(2)
+    expect(calls.map((c) => c.lane)).toEqual(['background', 'background'])
+    gates[1].resolve('after the ingest')
+    await b
+    gates[0].resolve('before the ingest')
+    await a
+    expect(await cache.get(ROOT, 10)).toBe('after the ingest') // the older build never overwrites the newer one
+  })
+
+  it('an ask never joins a build started before a drop: it builds anew', async () => {
+    const gates: Array<ReturnType<typeof deferred<string | null>>> = []
+    const { cache, calls } = harness(() => { const d = deferred<string | null>(); gates.push(d); return d.promise })
+    void cache.warm(ROOT, 10)
+    cache.clear()
+    const p = cache.get(ROOT, 10)
+    expect(calls).toHaveLength(2)
+    gates[0].resolve('read before the clear')
+    gates[1].resolve('read after')
+    expect(await p).toBe('read after')
   })
 
   it('warm with force rebuilds a fresh entry (memory ingest finished), keeping the old one until the new one lands', async () => {

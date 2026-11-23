@@ -318,6 +318,7 @@ const MEMC = vi.hoisted(() => ({
   createMemoryHostTransport: vi.fn(),
   stopMemoryHost: vi.fn(),
   memoryHostMode: vi.fn(() => 'host'),
+  onMemoryChanged: vi.fn(() => () => {}),
   memoryKnownHashes: vi.fn(async () => [] as string[]),
   weaveNeighboursBatch: vi.fn(async () => ({}) as Record<string, unknown[]>),
   memorySupersedePass: vi.fn(async () => ({ considered: 0, minted: 0 })),

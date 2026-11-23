@@ -96,7 +96,9 @@ export interface PrimerOptions {
    *  It is asked alongside the digest search, not after it. */
   hasWorld?: (projectPath: string) => boolean | Promise<boolean>
   /** One read instead of two in a row (WPA): the project-scoped read with cross-project recall, at the most the store gives in
-   *  one read, split here into the project's rows and everyone's. No deeper reads: what that one page holds is the digest. */
+   *  one read, split here into the project's rows and everyone's. No deeper reads: what that one page holds is the digest.
+   *  Unlike the two-read path, a combined read that FAILS throws its error (the Ask says why it has no memory); an empty
+   *  answer is still no digest (null), and a cancelled one is null too. */
   combined?: boolean
   /** The caller gave up (an Ask cancelled): checked between reads, and a digest whose signal fired is no digest (null), never
    *  recorded as shown. It rides into every read, so a search that honours it stops too. */
@@ -427,7 +429,12 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     let rows: PrimerHit[]
     try {
       rows = (await search({ query: opts.query, limit: COMBINED_LIMIT, ...(project ? { project: searchScope, crossProject: true } : {}), ...(signal ? { signal } : {}) })) || []
-    } catch { return null }
+    } catch (e) {
+      // WPA fix I2: a read that failed (the memory process restarting, a call that timed out, a store that cannot answer) is not
+      // "no notes", so it is the caller's to tell apart: the error goes up. A cancelled ask is owed no reason.
+      if (cancelled()) return null
+      throw e
+    }
     if (cancelled()) return null
     if (!Array.isArray(rows)) rows = []
     if (rows.length > COMBINED_LIMIT) rows = rows.slice(0, COMBINED_LIMIT)

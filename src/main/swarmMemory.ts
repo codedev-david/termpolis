@@ -1474,7 +1474,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
     throw new Error('memoryWrite: content required')
   }
   assertWritable()
-  // WPA: an 8.3 short spelling of the folder is stored under its long name's key (one realpath, only when a part looks short).
+  // WPA: an 8.3 short spelling of the folder is stored under its long name's key (only the parts that look short, each by a folder listing).
   if (hasShortPart(input.project)) input = { ...input, project: await expandShortPath(input.project as string) }
   const kind = input.kind || 'note'
   const projectSlug = input.project ? normalizeProjectSlug(input.project) : ''
@@ -2275,7 +2275,7 @@ function searchCacheKey(o: SearchOptions, limit: number): string {
 export async function memorySearch(opts: SearchOptions): Promise<MemorySearchResult[]> {
   if (!opts || typeof opts.query !== 'string' || !opts.query.trim()) return []
   throwIfAborted(opts.signal)
-  // WPA: an 8.3 short spelling of the folder is read as its long name first (one realpath, only when a part looks short).
+  // WPA: an 8.3 short spelling of the folder is read as its long name first (only the parts that look short, each by a folder listing).
   if (hasShortPart(opts.project)) opts = { ...opts, project: await expandShortPath(opts.project as string) }
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 100)
   // BB2: when diversifying, over-fetch a wider candidate pool so MMR has room to swap
@@ -2739,6 +2739,14 @@ export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
   // The same exclusions memorySearch applies to its results, applied to the (by now narrow) pool before it is cut.
   if (opts.active && pool.length > 0) pool = dropSuperseded(pool).filter(e => e.memoryType !== 'entity' && (usageMap.get(e.id) ?? 0) > SUPPRESS_THRESHOLD)
   return pool.slice(0, limit)
+}
+
+/** memoryList as the memory host serves it (WPA fix I5): an 8.3 short spelling of the folder is read as its long name first, as a
+ *  search's is, so the primer's recent listing finds the notes a search finds. memoryList itself stays sync for the store's own
+ *  callers, which only ever pass a folder already spelled out. */
+export async function memoryListLong(opts: ListOptions = {}): Promise<MemoryEntry[]> {
+  if (hasShortPart(opts?.project)) opts = { ...opts, project: await expandShortPath(opts.project as string) }
+  return memoryList(opts)
 }
 
 export function memoryCount(): number {

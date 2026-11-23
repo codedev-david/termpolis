@@ -1,6 +1,8 @@
 // WPA item 1: the memory host's interactive fast lane, and the host's own priority while it is in use.
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { createHostLane, abortError, LANE_LINGER_MS } from '../../src/main/hostLane'
+import {
+  createHostLane, abortError, LANE_LINGER_MS, BACKGROUND_MAX_WAIT_MS, memoryTimeoutError, isMemoryTimeout, MEMORY_TIMEOUT_CODE,
+} from '../../src/main/hostLane'
 import { setLanePriority } from '../../src/main/hostPriority'
 
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
@@ -165,6 +167,87 @@ describe('createHostLane', () => {
     i()
     await p
     expect(free).toBe(true)
+  })
+
+  describe('no starvation (WPA fix I4)', () => {
+    afterEach(() => { vi.useRealTimers() })
+
+    it('a background call under an endless stream of interactive calls starts after the max wait, not never', async () => {
+      vi.useFakeTimers()
+      const lane = createHostLane()
+      let started = false
+      // Each interactive call enters before the one before it leaves: the lane is never empty.
+      let cur = await lane.enter('interactive')
+      const bg = lane.enter('background').then((r) => { started = true; return r })
+      for (let t = 0; t < BACKGROUND_MAX_WAIT_MS - 100; t += 100) {
+        const next = await lane.enter('interactive')
+        cur()
+        cur = next
+        await vi.advanceTimersByTimeAsync(100)
+      }
+      expect(started).toBe(false)
+      expect(lane.interactive()).toBe(1)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(started).toBe(true)
+      expect(lane.waiting()).toBe(0) // its timer took it off the waiters
+      ;(await bg)()
+      cur()
+    })
+
+    it('idle() under an endless stream resolves after the max wait too (a Weave batch keeps going)', async () => {
+      vi.useFakeTimers()
+      const lane = createHostLane(() => {}, { maxWaitMs: 300 })
+      const i = await lane.enter('interactive')
+      let free = false
+      const p = lane.idle().then(() => { free = true })
+      await vi.advanceTimersByTimeAsync(299)
+      expect(free).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await p
+      expect(free).toBe(true)
+      expect(lane.waiting()).toBe(0)
+      i()
+    })
+
+    it('a call that waited its max and went is not run again when the lane later empties', async () => {
+      vi.useFakeTimers()
+      const lane = createHostLane(() => {}, { maxWaitMs: 50 })
+      const i = await lane.enter('interactive')
+      let runs = 0
+      const bg = lane.enter('background').then(() => { runs++ })
+      await vi.advanceTimersByTimeAsync(50)
+      await bg
+      i()
+      await vi.advanceTimersByTimeAsync(100)
+      expect(runs).toBe(1)
+    })
+
+    it('a cancel while waiting clears the max-wait timer: nothing fires later', async () => {
+      vi.useFakeTimers()
+      const lane = createHostLane(() => {}, { maxWaitMs: 50 })
+      const i = await lane.enter('interactive')
+      const ctl = new AbortController()
+      const bg = lane.enter('background', ctl.signal)
+      ctl.abort()
+      await expect(bg).rejects.toMatchObject({ name: 'AbortError' })
+      expect(vi.getTimerCount()).toBe(0)
+      i()
+    })
+
+    it('the max wait is short: about a second', () => {
+      expect(BACKGROUND_MAX_WAIT_MS).toBeGreaterThanOrEqual(250)
+      expect(BACKGROUND_MAX_WAIT_MS).toBeLessThanOrEqual(2_000)
+    })
+  })
+
+  it('memoryTimeoutError keeps the message it always had and carries a code isMemoryTimeout knows', () => {
+    const e = memoryTimeoutError('memorySearch', 60_000)
+    expect(e.message).toBe('memory host timed out after 60000ms (fn "memorySearch")')
+    expect(e.code).toBe(MEMORY_TIMEOUT_CODE)
+    expect(isMemoryTimeout(e)).toBe(true)
+    expect(isMemoryTimeout(new Error('memory host timed out after 5ms'))).toBe(false)
+    expect(isMemoryTimeout(null)).toBe(false)
+    expect(isMemoryTimeout('MEMORY_TIMEOUT')).toBe(false)
   })
 
   it('abortError is an AbortError', () => {

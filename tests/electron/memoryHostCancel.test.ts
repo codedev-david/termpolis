@@ -25,7 +25,7 @@ import {
   initSwarmMemory, memoryWrite as inprocWrite, _resetForTests, _setEmbeddingsAvailable, _setEmbedFnForTests,
 } from '../../src/main/swarmMemory'
 import { __setHostPriorityDepsForTests } from '../../src/main/hostPriority'
-import { LANE_LINGER_MS } from '../../src/main/hostLane'
+import { LANE_LINGER_MS, BACKGROUND_MAX_WAIT_MS } from '../../src/main/hostLane'
 
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
 
@@ -148,19 +148,55 @@ describe('memory host: cancel', () => {
 })
 
 describe('memory host: the interactive lane', () => {
-  it('a background call waits while an interactive call runs, then runs', async () => {
+  it('a background read waits while an interactive call runs, then runs', async () => {
     await initHost()
     await inprocWrite({ agentId: 'a', kind: 'fact', content: 'one two three' })
     const g = gatedEmbed()
     const order: string[] = []
     const fast = call(1, 'memorySearch', [{ query: 'one', limit: 5 }], 'interactive').then((r) => { order.push('interactive'); return r })
     await tick()
-    const bg = call(2, 'memoryCount', []).then((r) => { order.push('background'); return r })
+    const bg = call(2, 'memoryList', [{ limit: 5 }], 'background').then((r) => { order.push('background'); return r })
     await tick(); await tick()
     expect(order).toEqual([])
     g.open()
     await Promise.all([fast, bg])
     expect(order).toEqual(['interactive', 'background'])
+  })
+
+  it('a background read under an interactive call that never ends goes after BACKGROUND_MAX_WAIT_MS (WPA fix I4)', async () => {
+    await initHost()
+    await inprocWrite({ agentId: 'a', kind: 'fact', content: 'one two three' })
+    const g = gatedEmbed()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const fast = call(1, 'memorySearch', [{ query: 'one', limit: 5 }], 'interactive')
+      await vi.advanceTimersByTimeAsync(0)
+      let done = false
+      const bg = call(2, 'memoryList', [{ limit: 5 }], 'background').then((r) => { done = true; return r })
+      await vi.advanceTimersByTimeAsync(BACKGROUND_MAX_WAIT_MS - 1)
+      expect(done).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(done).toBe(true)
+      expect((await bg)?.ok).toBe(true)
+      g.open()
+      await fast
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a write, a count or any call that is not a background read never queues on the lane: it answers while an interactive call runs (WPA fix I4)', async () => {
+    await initHost()
+    await inprocWrite({ agentId: 'a', kind: 'fact', content: 'one two three' })
+    const g = gatedEmbed()
+    const fast = call(1, 'memorySearch', [{ query: 'one', limit: 5 }], 'interactive')
+    await tick()
+    // (a write that embeds would wait on the gated embedder itself, not the lane: a delete is a write that does not embed)
+    const w = await call(2, 'memoryDelete', ['no-such-note'])
+    expect(w?.ok).toBe(true)
+    const c = await call(3, 'memoryCount', [], 'background')
+    expect(c?.ok).toBe(true)
+    expect(_hostLaneForTests().waiting).toBe(0)
+    g.open()
+    await fast
   })
 
   it('the forked host goes to normal priority while an interactive call is in the lane, and back below normal after', async () => {

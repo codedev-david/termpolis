@@ -127,6 +127,11 @@ describe('askRunner: an answer made without the project memory says why', () => 
     expect(await runner.ask(REQ)).toMatchObject({ ok: true, answer: { text: 'primer:null' }, noMemory: 'locked' })
   })
 
+  it('one memory call that ran out of time inside the primer says timeout (WPA fix I2)', async () => {
+    const { runner } = setup({ primer: vi.fn(async () => { throw memoryUnavailable('timeout') }) })
+    expect(await runner.ask(REQ)).toMatchObject({ ok: true, noMemory: 'timeout' })
+  })
+
   it('the memory process down, or any other failure to read it', async () => {
     const down = setup({ primer: vi.fn(async () => { throw memoryUnavailable('down') }) })
     expect(await down.runner.ask(REQ)).toMatchObject({ ok: true, noMemory: 'down' })

@@ -86,8 +86,10 @@ describe('buildContextPrimer: combined read', () => {
     expect(out).toContain('row 0 about')
   })
 
-  it('a failing combined read is no digest (it never throws); a non-list answer is no rows', async () => {
-    expect(await buildContextPrimer(async () => { throw new Error('host down') }, { ...base, projectPath: ROOT, combined: true })).toBeNull()
+  it('a failing combined read throws its error (a failure is not "no notes", WPA fix I2); an empty or non-list answer is no rows', async () => {
+    const down = new Error('memory host exited (during memorySearch)')
+    await expect(buildContextPrimer(async () => { throw down }, { ...base, projectPath: ROOT, combined: true })).rejects.toBe(down)
+    expect(await buildContextPrimer(async () => [], { ...base, projectPath: ROOT, combined: true })).toBeNull()
     expect(await buildContextPrimer(async () => null as unknown as PrimerHit[], { ...base, projectPath: ROOT, combined: true })).toBeNull()
     expect(await buildContextPrimer(async () => ({ rows: ROWS }) as unknown as PrimerHit[], { ...base, projectPath: ROOT, combined: true })).toBeNull()
   })
@@ -143,6 +145,12 @@ describe('buildContextPrimer: cancel', () => {
     let n = 0
     const search: PrimerSearch = async () => { if (++n === 2) { ctl.abort(); throw new Error('cancelled') } return ROWS }
     expect(await buildContextPrimer(search, { ...base, projectPath: ROOT, signal: ctl.signal })).toBeNull()
+  })
+
+  it('a combined read that fails after a cancel is no digest, not an error (the cancelled ask is owed no reason)', async () => {
+    const ctl = new AbortController()
+    const out = await buildContextPrimer(async () => { ctl.abort(); throw new Error('AbortError') }, { ...base, projectPath: ROOT, combined: true, signal: ctl.signal })
+    expect(out).toBeNull()
   })
 
   it('already cancelled: no read at all', async () => {

@@ -72,7 +72,7 @@ import type { ConsolEntry } from './mnemeConsolidate'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
 import type { CodeRef } from './codeGraph'
 import { killUtility } from './utilityKill'
-import { abortError, type HostLaneName } from './hostLane'
+import { abortError, memoryTimeoutError, type HostLaneName } from './hostLane'
 import {
   resolveInprocGuard, measureMemoryStoreBytes, retryDelayMs, retryReadyTimeoutMs, RETRY_CAP_MS,
   unavailableMessage, setMemoryUnavailableState,
@@ -138,6 +138,10 @@ let initParams: HostInitMsg | null = null
 let readyPromise: Promise<void> | null = null
 let nextId = 1
 const pending = new Map<number, Pending>()
+// WPA fix I4: calls whose caller timed out, by id, so their late outcome is logged by name instead of dropped unseen. Bounded:
+// the oldest is forgotten first (a reply that late is not worth a line).
+const timedOut = new Map<number, string>()
+const TIMED_OUT_MAX = 256
 const restartTimes: number[] = []
 let scrubber: MemoryScrubber | null = null
 let scrubbedWrites = 0
@@ -215,6 +219,8 @@ export function _resetMemoryClientForTests(): void {
   try { transport?.kill() } catch { /* already gone */ }
   for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error('memory client reset')) }
   pending.clear()
+  timedOut.clear()
+  changeListeners.clear()
   spawner = null
   transport = null
   mode = 'unstarted'
@@ -345,6 +351,7 @@ function fallBackToInProcess(why: string): void {
   setMemoryUnavailableState(null)
   transport = null
   mode = 'inproc'
+  fireMemoryChanged('store restarted') // the store was loaded afresh, here: what it holds (or whether it opens) may differ
   if (!initParams) return
   // The in-process module is the same swarmMemory the host would have used, and every write already
   // went to the same JSONL on disk — so re-initialising here reloads the store rather than losing it.
@@ -541,7 +548,16 @@ function onChildMessage(msg: HostResponse): void {
   if (!msg || typeof msg !== 'object') return
   if (msg.kind !== 'result') return // 'ready' / 'init-error' are consumed by the handshake below
   const p = pending.get(msg.id)
-  if (!p) return // a late reply to a call we already timed out / rejected — drop it
+  if (!p) {
+    // A late reply to a call we already timed out: its caller is gone, but what happened is said (WPA fix I4: a write that
+    // timed out still lands, and the log is where that shows). Only the name and the outcome: never memory content.
+    const late = timedOut.get(msg.id)
+    if (late !== undefined) {
+      timedOut.delete(msg.id)
+      logLoud(`late reply: ${late} finished ${msg.ok ? 'ok' : 'with an error'} after its caller timed out`)
+    }
+    return // a reply to a call we rejected (or cancelled) — drop it
+  }
   pending.delete(msg.id)
   clearTimeout(p.timer)
   const tookMs = Date.now() - p.startedAt
@@ -649,6 +665,7 @@ async function spawnAndInit(opts: SpawnOptions = {}): Promise<void> {
         clearTimeout(timer)
         mode = 'host'
         hostReadyAt = Date.now()
+        fireMemoryChanged('store restarted') // a start or a respawn loaded the store afresh (and may have found it locked)
         logLoud(`store is OFF the main thread — utilityProcess pid ${msg.pid}, ${msg.entries} entries`)
         resolve()
         return
@@ -783,7 +800,72 @@ function routeOf<T extends object>(opts: T & CallRoute): { opts: T; route: CallR
   return { opts: rest as T, route: { signal, lane } }
 }
 
+// ── The change boundary (WPA fix I3) ──────────────────────────────────────────────────────────────
+/**
+ * Every call that can take notes out of what a read returns, hide them, or change whether the store opens at all. A listener
+ * (main's Ask primer cache) is told after such a call settles, so nothing built from the memory before it is served after it.
+ * One place, at the boundary every memory call crosses, so a new delete path cannot forget to tell it: `changed` says whether
+ * this outcome changed anything (a count of 0 removed nothing). A call that FAILS is always reported: it may have changed
+ * part of the store before it failed.
+ */
+const MEMORY_CHANGING: ReadonlyMap<string, (result: unknown, args: unknown[]) => boolean> = new Map<string, (result: unknown, args: unknown[]) => boolean>([
+  ['memoryDelete', () => true],
+  ['memoryArchive', () => true],
+  ['memoryClear', () => true],
+  ['importMemorySnapshot', () => true],
+  ['importGraphEdges', () => true],
+  ['reloadMemoryFromSync', () => true],
+  ['setSyncDir', () => true],
+  ['setSyncPassphrase', () => true],
+  ['disableSyncEncryption', () => true],
+  ['disableEncryption', () => true],
+  ['enableLocalEncryption', () => true],
+  ['adoptEncryptionKeyB64', () => true],
+  ['startNewMemoryKeyB64', () => true],
+  ['memoryForget', (n) => typeof n !== 'number' || n > 0],
+  ['memoryPruneCodePath', (n) => typeof n !== 'number' || n > 0],
+  ['memoryPatchProjects', (n) => typeof n !== 'number' || n > 0],
+  ['memoryReleaseSupersedes', (n) => typeof n !== 'number' || n > 0],
+  ['memorySupersedePass', (r) => !(r && typeof r === 'object' && (r as { minted?: unknown }).minted === 0)],
+  ['compactSelfShard', (r) => !(r && typeof r === 'object' && (r as { compacted?: unknown }).compacted === false)],
+  ['memoryLink', (_r, a) => { const rel = (a[0] as { relation?: unknown } | undefined)?.relation; return rel === 'supersedes' || rel === 'superseded-by' }],
+  ['memoryFeedback', (_r, a) => (a[0] as { helpful?: unknown } | undefined)?.helpful === false],
+])
+
+/** The calls the change boundary reports (for the test that holds every delete path to it). */
+export const MEMORY_CHANGING_CALLS: ReadonlySet<string> = new Set(MEMORY_CHANGING.keys())
+
+const changeListeners = new Set<(why: string) => void>()
+
+/** Be told whenever the memory may have changed under what was read from it (see MEMORY_CHANGING), and when the store
+ *  (re)starts. Returns the unsubscribe. A listener that throws is ignored. */
+export function onMemoryChanged(listener: (why: string) => void): () => void {
+  changeListeners.add(listener)
+  return () => { changeListeners.delete(listener) }
+}
+
+function fireMemoryChanged(why: string): void {
+  for (const l of [...changeListeners]) { try { l(why) } catch { /* a listener's failure is its own */ } }
+}
+
 async function call<T>(fn: string, args: unknown[] = [], route: CallRoute = {}): Promise<T> {
+  const changed = MEMORY_CHANGING.get(fn)
+  if (!changed) return callRaw<T>(fn, args, route)
+  let result: T
+  try {
+    result = await callRaw<T>(fn, args, route)
+  } catch (e) {
+    fireMemoryChanged(fn)
+    throw e
+  }
+  if (changed(result, args)) fireMemoryChanged(fn)
+  return result
+}
+
+/** @internal test-only: send any host fn through the client's call path (the change boundary included). */
+export const _callForTests = (fn: string, args: unknown[] = []): Promise<unknown> => call(fn, args)
+
+async function callRaw<T>(fn: string, args: unknown[] = [], route: CallRoute = {}): Promise<T> {
   const { signal } = route
   // Await the handshake FIRST, then judge the mode.
   //
@@ -824,9 +906,11 @@ async function call<T>(fn: string, args: unknown[] = [], route: CallRoute = {}):
     const timer = setTimeout(() => {
       pending.delete(id)
       done()
-      sendCancel() // the host stops the work nobody is waiting for any more
-      // A timeout is NOT a silent empty result. Say which call, and how long we waited.
-      reject(new Error(`memory host timed out after ${limitMs}ms (fn "${fn}")`))
+      sendCancel() // the host stops the work nobody is waiting for any more (a read; a write that started finishes)
+      timedOut.set(id, fn)
+      if (timedOut.size > TIMED_OUT_MAX) timedOut.delete(timedOut.keys().next().value as number)
+      // A timeout is NOT a silent empty result. Say which call, and how long we waited (coded, so a caller can tell it apart).
+      reject(memoryTimeoutError(fn, limitMs))
     }, limitMs)
     pending.set(id, {
       fn, startedAt: Date.now(), timer,
@@ -963,7 +1047,9 @@ export const importGraphEdges = (jsonl: string): Promise<number> => call('import
 export const memoryRecentActivity = (limit = 14): Promise<ActivityRow[]> => call('memoryRecentActivity', [limit])
 export const embeddingsReady = (): Promise<boolean> => call('embeddingsReady', [])
 // v1.56.0 per-message model router (routerModel.ts), run where the embedder lives.
-export const routerClassify = (dir: string, text: string): Promise<import('./routerModel').ClassifyResult> => call('routerClassify', [dir, text])
+// WPA fix I4: the router's caller waits on it (a 5 s deadline), so it rides the interactive lane: never queued behind background work.
+export const routerClassify = (dir: string, text: string): Promise<import('./routerModel').ClassifyResult> =>
+  call('routerClassify', [dir, text], { lane: 'interactive' })
 export const routerLearn = (dir: string, text: string, label: string): Promise<boolean> => call('routerLearn', [dir, text, label])
 export const routerWarm = (dir: string): Promise<boolean> => call('routerWarm', [dir])
 export const memorySourceById = (id: string): Promise<string | undefined> => call('memorySourceById', [id])

@@ -261,6 +261,7 @@ vi.mock('../../src/main/memoryClient', () => ({
   createMemoryHostTransport: vi.fn(),
   stopMemoryHost: vi.fn(),
   memoryHostMode: vi.fn(() => 'host'),
+  onMemoryChanged: vi.fn(() => () => {}),
   setMemoryScrubber: vi.fn(),
   memoryWrite: vi.fn(async () => ({ id: 'm1' })),
   memorySearch: vi.fn(async () => []),

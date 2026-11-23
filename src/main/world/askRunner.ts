@@ -59,8 +59,9 @@ export const agentMissingMessage = (agent: ExecAgent): string => `${AGENT_NAMES[
 export const isMissingCli = (error: string | undefined): boolean => /ENOENT|is not recognized as/i.test(error ?? '')
 
 /** An error a primer throws to say the memory could not be used, and why (WPA: the answer then says so). */
-export interface MemoryUnavailableError extends Error { noMemory: Exclude<AskNoMemory, 'timeout'> }
-export const memoryUnavailable = (why: Exclude<AskNoMemory, 'timeout'>): MemoryUnavailableError =>
+// 'timeout': one memory call ran out of time inside the primer (WPA fix I2), as the whole step running out is.
+export interface MemoryUnavailableError extends Error { noMemory: AskNoMemory }
+export const memoryUnavailable = (why: AskNoMemory): MemoryUnavailableError =>
   Object.assign(new Error(`memory unavailable: ${why}`), { noMemory: why })
 
 /** The rejection of a step that ran out (as opposed to one cancelled with the ask). */
@@ -98,7 +99,7 @@ const bounded = <T>(start: (signal: AbortSignal) => Promise<T>, ms: number, sign
 const noMemoryOf = (err: unknown): AskNoMemory => {
   if (err instanceof Error && err.message === RAN_OUT) return 'timeout'
   const why = (err as Partial<MemoryUnavailableError> | null)?.noMemory
-  return why === 'locked' ? 'locked' : 'down'
+  return why === 'locked' || why === 'timeout' ? why : 'down'
 }
 
 export function createAskRunner(deps: AskRunnerDeps): AskRunner {

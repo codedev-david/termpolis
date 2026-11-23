@@ -163,6 +163,7 @@ const mem = vi.hoisted(() => ({
   createMemoryHostTransport: vi.fn(),
   stopMemoryHost: vi.fn(),
   memoryHostMode: vi.fn(() => 'host'),
+  onMemoryChanged: vi.fn(() => () => {}),
   memoryHostPid: vi.fn(() => 4242),
   // The graph lives in the memory process with the store — so these are ASYNC, like every other
   // proxied read. They were the last thing still being read from the in-main module (a singleton

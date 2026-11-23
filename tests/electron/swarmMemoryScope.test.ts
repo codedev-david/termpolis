@@ -5,7 +5,7 @@ import * as os from 'os'
 import * as path from 'path'
 import * as crypto from 'crypto'
 import {
-  initSwarmMemory, memorySearch, memoryList, memoryWrite, _resetForTests, _setEmbedFnForTests, _setEmbeddingsAvailable,
+  initSwarmMemory, memorySearch, memoryList, memoryListLong, memoryWrite, _resetForTests, _setEmbedFnForTests, _setEmbeddingsAvailable,
 } from '../../src/main/swarmMemory'
 import { projectKeyOf } from '../../src/main/projectKey'
 import { setRerankBatchScorer, _resetRerankForTests } from '../../src/main/crossEncoderRerank'
@@ -78,6 +78,15 @@ describe('project-key aliases (no migration)', () => {
     const e = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'narwhal tusk measurements', project: spelled })
     expect(e.projectKey).toBe(projectKeyOf(target))
     expect(ids(await memorySearch({ query: 'narwhal tusk', project: spelled, limit: 5 }))).toEqual([e.id])
+    // WPA fix I5: the recent listing the host serves spells the folder out too.
+    expect(ids(await memoryListLong({ project: spelled }))).toEqual([e.id])
+  })
+
+  it('memoryListLong: a folder with no short part, or none at all, is listed as memoryList lists it', async () => {
+    drop([line('n1', 'beluga song notes', { project: 'repo', projectKey: sha('/srv/x/repo') })])
+    initSwarmMemory(dir)
+    expect(ids(await memoryListLong({ project: '/srv/x/repo' }))).toEqual(['n1'])
+    expect(ids(await memoryListLong())).toEqual(['n1'])
   })
 })
 

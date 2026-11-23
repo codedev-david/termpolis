@@ -31,7 +31,7 @@ import {
   startNewMemoryKey,
   type KeyFileProblem,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback,
-  memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats,
+  memoryListLong, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats,
   memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete,
   consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
@@ -275,7 +275,8 @@ export function startNewMemoryKeyB64(b64: string, readKeysB64: string[]): Return
 
 export const HOST_HANDLERS: Record<string, HostHandler> = {
   // reads
-  memorySearch, memoryRelated, memoryGraphQuery, memoryList, memoryCount, memoryHasHash,
+  // memoryList is served by memoryListLong: an 8.3 short folder is spelled out first, as memorySearch does (WPA fix I5).
+  memorySearch, memoryRelated, memoryGraphQuery, memoryList: memoryListLong, memoryCount, memoryHasHash,
   memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady,
   memorySourceById, memoryLessons, searchArchive, symbolHistory, weaveCandidates, weaveNeighbours,
   consolidationCandidates, vectorRamStats, memoryScrubStats, getSyncStatus, exportMemorySnapshot,
@@ -367,8 +368,13 @@ export async function handleCall(msg: HostCallMsg): Promise<HostResponse> {
   if (ctl) inflight.set(msg.id, ctl)
   let release: (() => void) | null = null
   try {
-    // A background call waits here (an await: the thread stays free) while an interactive one is in the lane.
-    release = await lane.enter(msg.lane === 'interactive' ? 'interactive' : 'background', ctl?.signal)
+    // An interactive call enters the lane (and holds the host at normal priority while it runs). A background READ waits here
+    // (an await: the thread stays free) while an interactive one is in the lane, at most BACKGROUND_MAX_WAIT_MS.
+    // Ruling (WPA fix I4): every other call, each write above all, never queues on the lane. It starts the moment it arrives,
+    // so a write never waits behind reads, and once started it finishes; one whose caller has already timed out still lands,
+    // and main logs its late outcome by name (memoryClient onChildMessage).
+    if (msg.lane === 'interactive') release = await lane.enter('interactive')
+    else if (ctl) release = await lane.enter('background', ctl.signal)
     if (ctl?.signal.aborted) throw abortError()
     const args = argsWithSignal(msg.fn, Array.isArray(msg.args) ? msg.args : [], ctl?.signal)
     const result = await (handler as (...a: unknown[]) => unknown)(...args)

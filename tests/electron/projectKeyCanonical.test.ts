@@ -2,8 +2,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import * as crypto from 'crypto'
 import {
-  canonicalProjectPath, projectKeyOf, legacyProjectKeyOf, projectKeyAliases, expandShortPath, hasShortPart,
+  canonicalProjectPath, projectKeyOf, legacyProjectKeyOf, projectKeyAliases, expandShortPath, hasShortPart, SHORT_SCAN_MAX,
 } from '../../src/main/projectKey'
+import type { ShortPathFs } from '../../src/main/projectKey'
+import { promises as fsp } from 'fs'
+import * as os from 'os'
+import * as path from 'path'
 
 const sha = (s: string): string => crypto.createHash('sha1').update(s).digest('hex').slice(0, 16)
 
@@ -70,10 +74,10 @@ describe('legacyProjectKeyOf and projectKeyAliases', () => {
   })
   it('a Windows path also matches notes written from Git Bash', () => {
     const a = projectKeyAliases('C:\\Users\\X\\repo', 'win32')
-    expect(a).toEqual([sha('c:/users/x/repo'), sha('/c/users/x/repo')])
+    expect(a).toEqual([sha('c:/users/x/repo'), sha('/c/users/x/repo'), sha('/cygdrive/c/users/x/repo')])
   })
   it('a Git Bash path matches the canonical key and its own old key', () => {
-    expect(projectKeyAliases('/c/Users/X/repo', 'win32')).toEqual([sha('c:/users/x/repo'), sha('/c/users/x/repo')])
+    expect(projectKeyAliases('/c/Users/X/repo', 'win32')).toEqual([sha('c:/users/x/repo'), sha('/c/users/x/repo'), sha('/cygdrive/c/users/x/repo')])
   })
   it('doubled separators: the old key of that spelling is kept as an alias', () => {
     expect(projectKeyAliases('/home/x//repo', 'linux')).toEqual([sha('/home/x/repo'), sha('/home/x//repo')])
@@ -83,7 +87,7 @@ describe('legacyProjectKeyOf and projectKeyAliases', () => {
     expect(projectKeyAliases('repo', 'linux')).toEqual([])
   })
   it('a drive root folder path keeps its alias', () => {
-    expect(projectKeyAliases('D:\\repo', 'win32')).toEqual([sha('d:/repo'), sha('/d/repo')])
+    expect(projectKeyAliases('D:\\repo', 'win32')).toEqual([sha('d:/repo'), sha('/d/repo'), sha('/cygdrive/d/repo')])
   })
   it('defaults to this platform', () => {
     expect(projectKeyAliases('/repo/a')[0]).toBe(projectKeyOf('/repo/a'))
@@ -91,23 +95,61 @@ describe('legacyProjectKeyOf and projectKeyAliases', () => {
 })
 
 describe('expandShortPath (8.3 names)', () => {
-  it('resolves a path with a short part to its long form, once', async () => {
-    const realpath = vi.fn(async () => 'C:\\Users\\DavidEngelhart\\repos\\t')
-    expect(await expandShortPath('C:\\Users\\DAVIDE~1\\repos\\t', 'win32', realpath)).toBe('C:\\Users\\DavidEngelhart\\repos\\t')
-    expect(realpath).toHaveBeenCalledTimes(1)
-    expect(projectKeyOf(await expandShortPath('C:\\Users\\DAVIDE~1\\repos\\t', 'win32', realpath), 'win32'))
-      .toBe(projectKeyOf('C:\\Users\\DavidEngelhart\\repos\\t', 'win32'))
+  // A fake folder tree: names per folder, and a file id per full path.
+  const fakeFs = (tree: Record<string, string[]>, ids: Record<string, number>): ShortPathFs & { reads: string[] } => {
+    const reads: string[] = []
+    return {
+      reads,
+      readdir: vi.fn(async (dir: string) => { reads.push(dir); if (!tree[dir]) throw new Error('ENOENT'); return tree[dir] }),
+      ino: vi.fn(async (p: string) => { if (ids[p] === undefined) throw new Error('ENOENT'); return ids[p] }),
+    }
+  }
+  it('spells out each short part by the entry of its folder with the same file id, and only those parts', async () => {
+    const fs = fakeFs(
+      { 'C:\\Users\\': ['Public', 'DavidEngelhart', 'Default'], 'C:\\Users\\DavidEngelhart\\repos\\': ['termpolis-t3', 'TERMPO~2'] },
+      { 'C:\\Users\\DAVIDE~1': 7, 'C:\\Users\\Public': 1, 'C:\\Users\\DavidEngelhart': 7, 'C:\\Users\\Default': 3,
+        'C:\\Users\\DavidEngelhart\\repos\\TERMPO~1': 9, 'C:\\Users\\DavidEngelhart\\repos\\termpolis-t3': 9 },
+    )
+    const out = await expandShortPath('C:\\Users\\DAVIDE~1\\repos\\TERMPO~1\\src', 'win32', fs)
+    expect(out).toBe('C:\\Users\\DavidEngelhart\\repos\\termpolis-t3\\src')
+    expect(fs.reads).toEqual(['C:\\Users\\', 'C:\\Users\\DavidEngelhart\\repos\\']) // never the folders with no short part
+    expect(projectKeyOf(out, 'win32')).toBe(projectKeyOf('C:\\Users\\DavidEngelhart\\repos\\termpolis-t3\\src', 'win32'))
   })
-  it('a path with no short part, another platform, or non-text is never resolved', async () => {
-    const realpath = vi.fn(async () => 'x')
-    expect(await expandShortPath('C:\\Users\\David\\repos', 'win32', realpath)).toBe('C:\\Users\\David\\repos')
-    expect(await expandShortPath('/home/a~1/x', 'linux', realpath)).toBe('/home/a~1/x')
-    expect(await expandShortPath(5 as unknown as string, 'win32', realpath)).toBe(5)
-    expect(realpath).not.toHaveBeenCalled()
+  it('the likely names (squeezed, uppercased, starting with the part before the ~) are compared first', async () => {
+    const fs = fakeFs({ 'C:\\': ['aaa', 'bbb', 'Program Files'] }, { 'C:\\PROGRA~1': 5, 'C:\\aaa': 1, 'C:\\bbb': 2, 'C:\\Program Files': 5 })
+    expect(await expandShortPath('C:\\PROGRA~1', 'win32', fs)).toBe('C:\\Program Files')
+    expect((fs.ino as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual(['C:\\PROGRA~1', 'C:\\Program Files'])
   })
-  it('a path that cannot be resolved, or an empty answer, comes back as it was', async () => {
-    expect(await expandShortPath('C:\\NOPE~1\\x', 'win32', async () => { throw new Error('ENOENT') })).toBe('C:\\NOPE~1\\x')
-    expect(await expandShortPath('C:\\NOPE~1\\x', 'win32', async () => '')).toBe('C:\\NOPE~1\\x')
+  it('a name that only looks short is kept as the folder spells it; forward separators are kept', async () => {
+    const fs = fakeFs({ 'C:/': ['Build~1'] }, { 'C:/BUILD~1': 4 })
+    expect(await expandShortPath('C:/BUILD~1/x', 'win32', fs)).toBe('C:/Build~1/x')
+    expect(await expandShortPath('C:/BUILD~1/', 'win32', fs)).toBe('C:/Build~1/')
+  })
+  it('a part with no matching id, a file system with no ids, a missing folder, or a folder past the scan cap leaves the path as it was', async () => {
+    expect(await expandShortPath('C:\\NOPE~1\\x', 'win32', fakeFs({ 'C:\\': ['a'] }, { 'C:\\NOPE~1': 8, 'C:\\a': 1 }))).toBe('C:\\NOPE~1\\x')
+    expect(await expandShortPath('C:\\NOPE~1', 'win32', fakeFs({ 'C:\\': ['NOPE'] }, { 'C:\\NOPE~1': 0, 'C:\\NOPE': 0 }))).toBe('C:\\NOPE~1')
+    expect(await expandShortPath('C:\\NOPE~1', 'win32', fakeFs({}, {}))).toBe('C:\\NOPE~1')
+    expect(await expandShortPath('C:\\NOPE~1', 'win32', fakeFs({}, { 'C:\\NOPE~1': 3 }))).toBe('C:\\NOPE~1')
+    const many = Array.from({ length: SHORT_SCAN_MAX }, (_, n) => `z${n}`)
+    const ids: Record<string, number> = { 'C:\\LONG~1': 99, 'C:\\last': 99 }
+    for (const n of many) ids[`C:\\${n}`] = 1
+    expect(await expandShortPath('C:\\LONG~1', 'win32', fakeFs({ 'C:\\': [...many, 'last'] }, ids))).toBe('C:\\LONG~1')
+  })
+  it('an entry that cannot be read is skipped, and the next one is compared', async () => {
+    const fs = fakeFs({ 'C:\\': ['gone', 'Right'] }, { 'C:\\RIGHT~1': 6, 'C:\\Right': 6 })
+    expect(await expandShortPath('C:\\RIGHT~1', 'win32', fs)).toBe('C:\\Right')
+  })
+  it('a path with no short part, another platform, or non-text is never read', async () => {
+    const fs = fakeFs({}, {})
+    expect(await expandShortPath('C:\\Users\\David\\repos', 'win32', fs)).toBe('C:\\Users\\David\\repos')
+    expect(await expandShortPath('/home/a~1/x', 'linux', fs)).toBe('/home/a~1/x')
+    expect(await expandShortPath(5 as unknown as string, 'win32', fs)).toBe(5)
+    expect(fs.reads).toEqual([])
+    expect(fs.ino).not.toHaveBeenCalled()
+  })
+  it('defaults: the real file system on this platform never throws', async () => {
+    const out = await expandShortPath('C:\\DOES-NOT~1\\EXIST~2')
+    expect(typeof out).toBe('string')
   })
   it('hasShortPart: only a Windows path with a short-looking part', () => {
     expect(hasShortPart('C:\\Users\\DAVIDE~1\\x', 'win32')).toBe(true)
@@ -116,8 +158,54 @@ describe('expandShortPath (8.3 names)', () => {
     expect(hasShortPart(7, 'win32')).toBe(false)
     expect(typeof hasShortPart('/x')).toBe('boolean')
   })
-  it('defaults: the real realpath on this platform never throws', async () => {
-    const out = await expandShortPath('C:\\DOES-NOT~1\\EXIST~2')
-    expect(typeof out).toBe('string')
+})
+
+describe('WPA fix M1/M7: shell spellings and the Cygwin alias', () => {
+  it('a quoted path, a file:// URI and a WSL /mnt/c path read as the folder they name', () => {
+    const want = 'c:/users/x/repo'
+    expect(canonicalProjectPath('"C:\\Users\\X\\repo"', 'win32')).toBe(want)
+    expect(canonicalProjectPath('file:///C:/Users/X/repo', 'win32')).toBe(want)
+    expect(canonicalProjectPath('/mnt/c/Users/X/repo', 'win32')).toBe(want)
+    expect(canonicalProjectPath('/C:/Users/X/repo', 'win32')).toBe(want)
+  })
+  it('a note written from Cygwin before WPA keeps matching', () => {
+    expect(projectKeyAliases('C:\\Users\\X\\repo', 'win32')).toContain(legacyProjectKeyOf('/cygdrive/c/Users/X/repo'))
+    expect(projectKeyAliases('/cygdrive/c/Users/X/repo', 'win32')).toContain(legacyProjectKeyOf('/cygdrive/c/Users/X/repo'))
+  })
+  it('a path the shell reader cannot read (a POSIX folder on Windows, a relative one on Linux) is keyed as given', () => {
+    expect(canonicalProjectPath('/usr/bin', 'win32')).toBe('/usr/bin')
+    expect(canonicalProjectPath('rel/x', 'linux')).toBe('rel/x')
+  })
+  it('a quoted drive root is a bare drive: nothing to key on', () => {
+    expect(canonicalProjectPath('"C:'+String.fromCharCode(92)+'"', 'win32')).toBe('')
+  })
+  it('normal Windows roots keep the key they had before WPA (M2: world stores, code graphs, annotations key on these)', () => {
+    for (const r of ['C:\\Users\\DavidEngelhart\\repos\\termpolis', 'D:\\work\\api', 'C:\\Users\\X\\My Repo']) {
+      expect(projectKeyOf(r, 'win32')).toBe(legacyProjectKeyOf(r))
+    }
+  })
+})
+
+describe('expandShortPath on a real Windows file system (8.3 names)', () => {
+  it('spells out a real short name, and keeps a junction as the junction (no realpath)', async (ctx) => {
+    if (process.platform !== 'win32') { console.warn('skipped: 8.3 short names exist only on Windows'); ctx.skip(); return }
+    const parent = await fsp.mkdtemp(path.join(os.tmpdir(), 'wpa83-'))
+    try {
+      await fsp.mkdir(path.join(parent, 'longfoldernamewpa'))
+      await fsp.mkdir(path.join(parent, 'targetfolderwpa'))
+      let shortOn = true
+      try { await fsp.lstat(path.join(parent, 'LONGFO~1')) } catch { shortOn = false }
+      if (!shortOn) { console.warn('skipped: 8.3 short names are turned off on this volume (fsutil 8dot3name)'); ctx.skip(); return }
+      // The temp folder may itself be spelled short (TEMP under `DAVIDE~1`): its long form is the base every answer starts with.
+      const base = await expandShortPath(parent)
+      expect(hasShortPart(base)).toBe(false)
+      expect(await expandShortPath(path.join(parent, 'LONGFO~1', 'inner'))).toBe(path.join(base, 'longfoldernamewpa', 'inner'))
+      await fsp.symlink(path.join(parent, 'targetfolderwpa'), path.join(parent, 'junctionnamewpa'), 'junction')
+      expect(await expandShortPath(path.join(parent, 'JUNCTI~1'))).toBe(path.join(base, 'junctionnamewpa'))
+    } finally {
+      // The junction first, as a link (never through it), then the folder.
+      await fsp.rm(path.join(parent, 'junctionnamewpa'), { force: true }).catch(() => fsp.rmdir(path.join(parent, 'junctionnamewpa')).catch(() => {}))
+      await fsp.rm(parent, { recursive: true, force: true })
+    }
   })
 })

@@ -301,7 +301,7 @@ import { initRecallBench, loadBenchBaseline, saveBenchBaseline } from './recallB
 //
 // normalizeProjectSlug / projectKeyOf / entityDedupHash are pure string helpers and stay SYNC.
 import {
-  startMemoryHost, setMemoryHostSpawner, createMemoryHostTransport, stopMemoryHost, memoryHostMode, memoryHostPid,
+  startMemoryHost, setMemoryHostSpawner, createMemoryHostTransport, stopMemoryHost, memoryHostMode, memoryHostPid, onMemoryChanged,
   graphStats, graphRelationStats,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryKnownHashes, edgeKeysIncident, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
@@ -474,6 +474,13 @@ const GRAPH_READ: FillBounds = { fallback: 20, ceiling: 100 }
  * returns `walkRoots(transcriptRoots('claude'))`, so every sign-in profile's notes are read. Its comment lists what that switch
  * needs besides (the removal of a note that is gone must first be made to work per root).
  */
+/** The Claude-notes pass's memory writes, with the folders they wrote for remembered (WPA fix M9: those projects' Ask primers are
+ *  warmed when the pass ends, warmNotesProjects). */
+const notesWrites = trackWrittenProjects(memoryWrite)
+/** Warms, with a new build each, the Ask primer of every project the last Claude-notes pass wrote notes for. */
+function warmNotesProjects(): void {
+  for (const project of notesWrites.take()) void askPrimerWarm(project, { force: true })
+}
 function claudeNotesDeps(): NotesDeps {
   return {
     enabled: getIndexClaudeNotes,
@@ -481,7 +488,7 @@ function claudeNotesDeps(): NotesDeps {
     roots: noteRoots,
     fs: realNotesFs,
     manifest: fileManifest(app.getPath('userData')),
-    store: { write: memoryWrite, remove: memoryDelete, list: memoryList },
+    store: { write: notesWrites.write, remove: memoryDelete, list: memoryList },
     stopped: () => appQuitting,
     // The id the store stamps on this computer's entries once memory sync has one (fix/memsync); until then, none.
     ownOrigin: async () => {
@@ -634,7 +641,9 @@ async function reflectOnTask(
 // just re-reads, and the content-addressed store dedups any overlap.
 import { buildContextPrimer, type PrimerRecent, type PrimerSearch } from './contextPrimer'
 import { createPrimerCache } from './primerCache'
-import { createAskPrimer } from './askPrimer'
+import { createAskPrimer, createAskPrimerWarm, lockAwareBuild, trackWrittenProjects } from './askPrimer'
+import { expandShortPath } from './projectKey'
+import type { HostLaneName } from './hostLane'
 import { createPrimerRecent } from './primerLane'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings, getLearnFromConversations, setLearnFromConversations, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects, getDistillWithHaiku, setDistillWithHaiku, getRerankSearch, setRerankSearch } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
@@ -2624,7 +2633,7 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       watchRepoForGraphAndWorld(opts.repoRoot)
     } catch { /* best effort */ }
     // WPA: that project's memory just grew, so its Ask primer is rebuilt now, ahead of the next question.
-    void askPrimers.warm(opts.repoRoot, getPrimerLimit(), { force: true })
+    void askPrimerWarm(opts.repoRoot, { force: true })
     return ok({ ...stats, codeGraph })
   } catch (e: any) { return err(e.message) }
 })
@@ -2850,7 +2859,7 @@ registerWorldIpc(ipcMain, worldClient, () => mainWindow, worldSettings, {
     primer: (cwd, signal) => askPrimer(cwd, signal),
     client: worldClient,
   }),
-  warm: (root) => { void askPrimers.warm(root, getPrimerLimit()) },
+  warm: (root) => { void askPrimerWarm(root) },
 }, worldDesigner, {
   registry: worldSources,
   designs: worldDesignStore,
@@ -3214,7 +3223,7 @@ registerClaudeNotesIpc(ipcMain, {
   status: () => notesStatus(fileManifest(app.getPath('userData'))),
   remove: () => removeImportedNotes(claudeNotesDeps()),
   // Turning the notes on starts a pass now, not at the next 30-minute tick; a locked memory just waits.
-  passSoon: () => { void memoryIsLocked().then((locked) => (locked ? undefined : runClaudeNotesIngest(claudeNotesDeps()))).catch(() => {}) },
+  passSoon: () => { void memoryIsLocked().then((locked) => (locked ? undefined : runClaudeNotesIngest(claudeNotesDeps()))).then(() => warmNotesProjects(), () => warmNotesProjects()) },
 })
 
 // The record of what memory did (memoryAudit.ts): how big it is, and clearing it. Settings > Memory & Learning > Activity record.
@@ -4094,36 +4103,46 @@ async function headlessPrimer(cwd: string): Promise<string | null> {
 /** WPA: the Ask's primer. The same digest as headlessPrimer's, made the fast way for a person who is waiting: one combined
  *  search with rerank off, both reads in the memory host's interactive lane and under the ask's cancel signal, no deeper
  *  re-reads (fillVisible) behind them. Corrections still apply. */
-const askPrimerSearch: PrimerSearch = async (o) => applyCorrections(await memorySearch({ ...o, rerank: false, lane: 'interactive' }))
-const askPrimerRecent = (signal?: AbortSignal): PrimerRecent =>
-  createPrimerRecent({ list: (o) => memoryList({ ...o, lane: 'interactive', ...(signal ? { signal } : {}) }), correct: (rows) => applyEntryCorrections(rows) })
-/** The finished Ask primers, per project, in memory only (primerCache.ts). Warmed when a world opens and when that
- *  project's code ingest finishes; dropped whenever memory changes under it (dropAskPrimers). */
+const askPrimerSearch = (lane: HostLaneName): PrimerSearch => async (o) => applyCorrections(await memorySearch({ ...o, rerank: false, lane }))
+const askPrimerRecent = (signal: AbortSignal | undefined, lane: HostLaneName): PrimerRecent =>
+  createPrimerRecent({ list: (o) => memoryList({ ...o, lane, ...(signal ? { signal } : {}) }), correct: (rows) => applyEntryCorrections(rows) })
+/** The finished Ask primers, per project, in memory only (primerCache.ts). Warmed when a world opens, when that project's code
+ *  ingest finishes and when the Claude-notes pass wrote notes for it; dropped whenever memory changes under it (onMemoryChanged
+ *  below). An ask's build reads on the interactive lane; a warm-up's and a refresh's on the background lane. A build that lands
+ *  while the store is locked is refused (lockAwareBuild), so a locked store is never served a digest. */
 const askPrimers = createPrimerCache({
-  build: (root, limit, signal) => {
+  build: lockAwareBuild((root, limit, signal, lane = 'interactive') => {
     const project = normalizeProjectSlug(root)
-    return buildContextPrimer(askPrimerSearch, {
+    return buildContextPrimer(askPrimerSearch(lane), {
       query: project ? `recent work, decisions, conventions, and context for ${project}` : 'recent work, key decisions, and conventions',
       limit,
       maxSnippetChars: 400,
       project: project || undefined,
       projectPath: root,
-      recent: askPrimerRecent(signal),
+      recent: askPrimerRecent(signal, lane),
       hasWorld: worldPrimerProbe,
       combined: true,
       ...(signal ? { signal } : {}),
     })
-  },
+  }, () => memoryIsLocked()),
 })
 /** Drops every cached Ask primer: the memory under them changed (a delete, a clear, a correction, a key or lock change, an
  *  import). Which project a deleted or corrected memory belonged to is the memory process's to know, so all are dropped. */
 function dropAskPrimers(): void { askPrimers.clear() }
+// WPA fix I3: one boundary. Every memory call that removes, supersedes or reloads notes (delete, archive, forget, the supersede
+// and release passes, a sync reload, a key or encryption change, an import), and the store restarting, drops the primers.
+onMemoryChanged(() => dropAskPrimers())
+/** WPA fix I5: the Ask's folder with its 8.3 short parts spelled out, before it keys the cache and scopes the reads. */
+const expandAskRoot = (root: string): Promise<string> => expandShortPath(root)
 const askPrimer = createAskPrimer({
   cache: askPrimers,
   limit: () => getPrimerLimit(),
   hostDown: () => memoryHostMode() === 'unavailable',
   isLocked: () => memoryIsLocked(),
+  expand: expandAskRoot,
 })
+/** Warms a folder's Ask primer (background lane; never rejects). `force` after an ingest: always a new build. */
+const askPrimerWarm = createAskPrimerWarm({ cache: askPrimers, limit: () => getPrimerLimit(), expand: expandAskRoot })
 /** correctMemory, and the cached Ask primers dropped when it took. */
 const correctMemoryAndDrop: typeof correctMemory = (input) => {
   const r = correctMemory(input)
@@ -5312,6 +5331,7 @@ async function semanticPoolOptions(
         let notesMore = false
         try {
           const notes = await runClaudeNotesIngest(claudeNotesDeps())
+          warmNotesProjects()
           notesWritten = notes.chunksWritten
           notesMore = notes.truncated
           // An idle pass reads nothing, so it cannot retry a removal that memory being locked left queued: this does.
