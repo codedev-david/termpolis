@@ -697,6 +697,10 @@ test.describe.serial('Lumopolis in the real app', () => {
     })
     expect(saved).not.toBeNull()
     await page.getByTestId('world-bookmarks').click() // close the menu
+    // Test 7 leaves its glossary card open; in a narrow pane a card takes most of the height, so it is closed first
+    // and the click lands on a building rather than under the card.
+    if (await card().isVisible().catch(() => false)) await page.locator('[data-testid="world-card-close"]').click()
+    await expect(card()).toHaveCount(0)
     await clickABuilding() // the camera moves to frame it
     await expect.poll(async () => {
       const c = await cam()
