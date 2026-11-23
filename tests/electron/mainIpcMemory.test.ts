@@ -1964,7 +1964,8 @@ describe('memory:reflect-session', () => {
     expect(mneme.distillEpisode).toHaveBeenCalledWith({ id: 'ep1' }, {}) // distiller OFF by default → no llm
 
     await reflexDeps.write({ agentId: 'a', kind: 'note', content: 'c' })
-    expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'a', kind: 'note', content: 'c' })
+    // Reflection runs after a session segment with nobody waiting: the background lane (WPA final minors, R3-M1).
+    expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'a', kind: 'note', content: 'c' }, { lane: 'background' })
 
     expect(reflexDeps.resolveCode(['foo'], '/repos/x')).toEqual([{ symbol: 'foo', file: 'a.ts' }])
     expect(cg.resolveCodeRefs).toHaveBeenCalledWith(['foo'], 'key:/repos/x')
@@ -1984,7 +1985,7 @@ describe('memory:reflect-session', () => {
       agentId: 'mneme', kind: 'fact', memoryType: 'entity', content: 'parseArgs',
       source: 'mneme', importance: 0.3, project: 'repo-a',
       hash: 'edh:parseArgs:pk:repo-a', // dedup hash scoped BY PROJECT KEY
-    }))
+    }), { lane: 'background' }) // an entity stub is reflection's write too: the background lane (WPA final minors, R3-M1)
   })
 
   it('mints an unscoped entity when no project is given, and skips blank names entirely', async () => {

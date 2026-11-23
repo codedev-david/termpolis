@@ -3,7 +3,7 @@
 // sha256 of the world key (any key is safe as a file name), written atomically with async fs under a lock file
 // that holds across processes. A file that does not parse reads as empty and the next add overwrites it.
 import { createHash, randomUUID } from 'node:crypto'
-import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, open, readFile, rename, rm, stat, writeFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Claim, ClaimState, Evidence, EvidenceKind, WorldDoc } from '../../shared/world/types'
 import { isRuntimeText, namesOfRuntimeText, runtimeText } from '../../shared/world/runtimeNames'
@@ -90,6 +90,9 @@ const codeOf = (e: unknown): string => String((e as { code?: unknown } | null)?.
  * lock can be had here: the work runs without one, as every write did before, and fails on its own if it must.
  * Fix round 3 (R2-M2): the holder removes the lock only while it still holds its nonce, so a holder slower than
  * ANNOTATION_LOCK_STALE_MS never removes the lock of the one that broke its own.
+ * Final minors (R3-M2): two writers that break the same stale lock both try again, since the one whose delete finds it gone
+ * (ENOENT) lost only the race to delete it. A lock made whose nonce cannot be written (a full disk) is ours and empty: it is
+ * removed, so nobody waits on it, and the take is tried once more; a second such failure means no lock here.
  */
 export async function withAnnotationFileLock<T>(file: string, work: () => Promise<T>): Promise<T> {
   const lockFile = `${file}.lock`
@@ -97,18 +100,32 @@ export async function withAnnotationFileLock<T>(file: string, work: () => Promis
   const deadline = Date.now() + ANNOTATION_LOCK_DEADLINE_MS
   let wait = ANNOTATION_LOCK_RETRY_MS
   let held = false
+  let unwritten = false
   for (;;) {
+    let made: FileHandle | null = null
     try {
-      await writeFile(lockFile, nonce, { encoding: 'utf8', flag: 'wx' })
-      held = true
-      break
+      made = await open(lockFile, 'wx')
     } catch (err) {
       if (codeOf(err) !== 'EEXIST') break // no lock can be made here
     }
-    let age = -1
-    try { age = Date.now() - (await stat(lockFile)).mtimeMs } catch { /* let go meanwhile: try again after the pause */ }
-    if (age >= ANNOTATION_LOCK_STALE_MS) {
-      try { await rm(lockFile) } catch { break } // a stale lock that cannot be removed: no lock can be had here
+    if (made) {
+      let wrote = false
+      try { await made.writeFile(nonce, 'utf8'); wrote = true } catch { /* a full disk: made, but empty */ }
+      try { await made.close() } catch { /* the lock file stands, written or not */ }
+      if (wrote) { held = true; break }
+      // Made but not written: the empty lock is ours. Remove it either way, so nobody waits on it.
+      let removed = true
+      try { await rm(lockFile, { force: true }) } catch { removed = false }
+      if (unwritten || !removed) break // the second time, or it cannot be removed: no lock here
+      unwritten = true
+    } else {
+      let age = -1
+      try { age = Date.now() - (await stat(lockFile)).mtimeMs } catch { /* let go meanwhile: try again after the pause */ }
+      if (age >= ANNOTATION_LOCK_STALE_MS) {
+        try { await rm(lockFile) } catch (err) {
+          if (codeOf(err) !== 'ENOENT') break // a stale lock that cannot be removed: no lock can be had here
+        } // ENOENT: another writer broke it first; try again
+      }
     }
     if (Date.now() >= deadline) break
     await pause(wait)

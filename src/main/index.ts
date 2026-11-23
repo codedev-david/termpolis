@@ -430,9 +430,10 @@ function collectEdges(createdBy?: string) {
  * the async `memoryHasHash` here instead would return a Promise per chunk — truthy — so every chunk
  * reads as "already stored" and ingestion silently writes NOTHING, forever, with no error anywhere.
  */
-/** WPA fix round 3 (R2-M1): the bulk writers' route. Transcript, code and notes ingest, consolidation summaries and the
- *  agent-activity auto-ingest write and remove many notes that nobody is waiting on, so each call waits behind a call a person
- *  is waiting on (at most a second), like the host's other bulk work. An agent's tool call, the router and a click send none. */
+/** WPA fix round 3 (R2-M1): the bulk writers' route. Transcript, code and notes ingest, consolidation summaries, the
+ *  agent-activity auto-ingest and reflection (its lessons and entity stubs, final minors R3-M1) write and remove many notes that
+ *  nobody is waiting on, so each call waits behind a call a person is waiting on (at most a second), like the host's other bulk
+ *  work. An agent's tool call, the router and a click send none. */
 const BULK: CallRoute = { lane: 'background' }
 const bulkWrite = (input: Parameters<typeof memoryWrite>[0]): ReturnType<typeof memoryWrite> => memoryWrite(input, BULK)
 const bulkDelete = (id: string): Promise<void> => memoryDelete(id, undefined, BULK)
@@ -525,7 +526,7 @@ async function ensureEntityNode(name: string, project?: string): Promise<string 
       // WP-D: scope the DEDUP hash by projectKey so `parse` in repoA and repoB are DISTINCT entity
       // nodes (no false cross-repo conflation). Content stays the bare name (entities:[content] clean).
       hash: entityDedupHash(n, project ? projectKeyOf(project) : undefined),
-    })
+    }, BULK)
     return e?.id ?? null
   } catch {
     return null
@@ -623,7 +624,7 @@ async function reflectOnTask(
       },
       {
         distill: (ep) => distillEpisode(ep, distillerEnabled() && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
-        write: (input) => memoryWrite(input),
+        write: (input) => bulkWrite(input),
         recordOutcome,
         now: Date.now(),
         link: edges.collect,
@@ -3431,7 +3432,7 @@ ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', asyn
           return onSessionEpisode(episode, {
             distill: (ep) => distillEpisode(ep, distillerEnabled() && isHighValueEpisode(ep) ? { llm: headlessDistiller } : {}),
             write: async (input) => {
-              try { return await memoryWrite(input) } catch (e: any) {
+              try { return await bulkWrite(input) } catch (e: any) {
                 if (isWriteRefusedMessage(e?.message)) refused = true
                 throw e
               }

@@ -918,6 +918,20 @@ describe('reflectOnTask — the edges a reflection asks for', () => {
     }))
   })
 
+  it('writes its lessons on the background lane: nobody waits on a reflection (WPA final minors, R3-M1)', async () => {
+    let wrote: unknown = '<never called>'
+    X.onTaskComplete.mockImplementationOnce(async (_ep: unknown, deps: ReflexDeps) => {
+      wrote = await deps.write({ agentId: 'mneme', kind: 'note', content: 'a lesson' } as never)
+      return { fired: true, lessons: 1 }
+    })
+    M.memoryWrite.mockClear()
+
+    mcp().swarmUpdateTask('task-3', 'completed', 'done')
+
+    await vi.waitFor(() => expect(wrote).not.toBe('<never called>'))
+    expect(M.memoryWrite).toHaveBeenCalledWith({ agentId: 'mneme', kind: 'note', content: 'a lesson' }, { lane: 'background' })
+  })
+
   it('resolves code references for an episode that carries no project', async () => {
     // `project ?? ''` -- graphKeyForRoot takes a string, and a swarm task is not required to
     // carry a project. The dep must still answer with a CodeRef array, not blow up the reflex.

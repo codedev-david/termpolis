@@ -349,7 +349,8 @@ export const CANCELLABLE_READS: ReadonlySet<string> = new Set(['memorySearch', '
  *  - memoryWrite, memoryLink, memoryFeedback, memoryDelete, memoryReleaseSupersedes, routerLearn: one write each, made for an
  *    agent's tool call, the router or a click, with the caller waiting on it; each is small, and none rereads the store.
  *    Fix round 3 (R2-M1): the bulk writers (transcript, code and notes ingest, consolidation summaries, the agent-activity
- *    auto-ingest) send their writes and removals with `lane: 'background'`, and a call sent so always waits, whatever its name.
+ *    auto-ingest, and reflection's lessons and entity stubs since the final minors, R3-M1) send their writes and removals with
+ *    `lane: 'background'`, and a call sent so always waits, whatever its name.
  *  - getSyncStatus, memoryCount, memoryHasHash, embeddingsReady: status reads of a few fields. lockAwareBuild reads the lock
  *    beside each primer build, and the search path asks embeddingsReady after each search; holding them would only slow the
  *    call a person is waiting on. */

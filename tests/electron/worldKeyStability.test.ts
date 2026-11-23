@@ -7,8 +7,11 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Faults the adoption must survive: a rename that fails; lock files that cannot be made (`lock`: the codes, one per try;
-// `lockAlways`: every try); a lock file that cannot be removed (`rmLock`).
-const faults = vi.hoisted(() => ({ rename: false, lock: null as string[] | null, lockAlways: null as string | null, rmLock: false }))
+// `lockAlways`: every try); a lock made whose nonce cannot be written (`lockWrite`: how many times, a full disk); a lock file
+// that cannot be removed (`rmLock` 'EPERM'), or that another stale-breaker removed first (`rmLock` 'ENOENT', once).
+const faults = vi.hoisted(() => ({
+  rename: false, lock: null as string[] | null, lockAlways: null as string | null, lockWrite: 0, rmLock: null as 'EPERM' | 'ENOENT' | null,
+}))
 vi.mock('node:fs/promises', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs/promises')>()
   const fail = (code: string): Error => (code === 'none' ? new Error('no code at all') : Object.assign(new Error(code), { code }))
@@ -16,14 +19,21 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return {
     ...real,
     rename: async (from: string, to: string) => { if (faults.rename) throw fail('EBUSY'); return real.rename(from, to) },
-    writeFile: async (...a: Parameters<typeof real.writeFile>) => {
-      if (isLock(a[0])) {
-        const code = faults.lockAlways ?? faults.lock?.shift()
-        if (code) throw fail(code)
-      }
-      return real.writeFile(...a)
+    open: async (...a: Parameters<typeof real.open>) => {
+      if (!isLock(a[0])) return real.open(...a)
+      const code = faults.lockAlways ?? faults.lock?.shift()
+      if (code) throw fail(code)
+      const made = await real.open(...a)
+      if (faults.lockWrite <= 0) return made
+      faults.lockWrite--
+      return { writeFile: async () => { throw fail('ENOSPC') }, close: () => made.close() }
     },
-    rm: async (...a: Parameters<typeof real.rm>) => { if (faults.rmLock && isLock(a[0])) throw fail('EPERM'); return real.rm(...a) },
+    rm: async (...a: Parameters<typeof real.rm>) => {
+      const code = isLock(a[0]) ? faults.rmLock : null
+      if (!code) return real.rm(...a)
+      if (code === 'ENOENT') { faults.rmLock = null; await real.rm(...a) } // the other breaker's delete landed first
+      throw fail(code)
+    },
   }
 })
 
@@ -72,8 +82,8 @@ describe('keys that must not move for a normal Windows root', () => {
 
 describe('adoptAnnotationAliases', () => {
   let dir = ''
-  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); faults.rename = false; faults.lock = null; faults.lockAlways = null; faults.rmLock = false })
-  afterEach(async () => { faults.rename = false; faults.lock = null; faults.lockAlways = null; faults.rmLock = false; await rm(dir, { recursive: true, force: true }) })
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'world-annot-alias-')); faults.rename = false; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null })
+  afterEach(async () => { faults.rename = false; faults.lock = null; faults.lockAlways = null; faults.lockWrite = 0; faults.rmLock = null; await rm(dir, { recursive: true, force: true }) })
   const folder = (): string => join(dir, 'world', 'annotations')
   const fileFor = (key: string): string => join(folder(), `${sha256(key)}.json`)
   const ms = (n: number): Promise<void> => new Promise((r) => { setTimeout(r, n) })
@@ -197,7 +207,7 @@ describe('adoptAnnotationAliases', () => {
       await writeFile(lock, 'a dead holder', 'utf8')
       const past = new Date(Date.now() - ANNOTATION_LOCK_STALE_MS - 1_000)
       await utimes(lock, past, past)
-      faults.rmLock = true
+      faults.rmLock = 'EPERM'
       const t0 = Date.now()
       expect(await adoptAnnotationAliases(dir, 'new-key', ['old-key'])).toEqual(['old-key'])
       expect(Date.now() - t0).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS)
@@ -220,6 +230,45 @@ describe('adoptAnnotationAliases', () => {
       expect(Object.keys(await createAnnotationStore(dir).list('new-key')).sort()).toEqual(['b1', 'b2'])
       expect(await readFile(lock, 'utf8')).toBe('a live holder that never lets go')
     }, 15_000)
+    it('two writers break the same stale lock: the one whose delete finds it already gone (ENOENT) takes the lock after all, never runs without it (R3-M2)', async () => {
+      await mkdir(folder(), { recursive: true })
+      const file = fileFor('k')
+      const lock = `${file}.lock`
+      await writeFile(lock, 'a dead holder', 'utf8')
+      const past = new Date(Date.now() - ANNOTATION_LOCK_STALE_MS - 1_000)
+      await utimes(lock, past, past)
+      faults.rmLock = 'ENOENT'
+      let inside = ''
+      expect(await withAnnotationFileLock(file, async () => { inside = await readFile(lock, 'utf8'); return 1 })).toBe(1)
+      expect(faults.rmLock).toBeNull()
+      expect(inside).toMatch(/^\d+:\S{8,}$/) // held, with its nonce
+      await expect(readFile(lock, 'utf8')).rejects.toThrow()
+    })
+    it('a lock made but never written (a full disk) is removed and the take tried once more; failing twice, the work runs without one and leaves no empty lock behind (R3-M2)', async () => {
+      await mkdir(folder(), { recursive: true })
+      const file = fileFor('k')
+      const lock = `${file}.lock`
+      faults.lockWrite = 1
+      let inside = ''
+      await withAnnotationFileLock(file, async () => { inside = await readFile(lock, 'utf8') })
+      expect(faults.lockWrite).toBe(0)
+      expect(inside).toMatch(/^\d+:\S{8,}$/)
+      await expect(readFile(lock, 'utf8')).rejects.toThrow()
+
+      faults.lockWrite = 2
+      const t0 = Date.now()
+      expect(await withAnnotationFileLock(file, async () => { await expect(readFile(lock, 'utf8')).rejects.toThrow(); return 5 })).toBe(5)
+      expect(faults.lockWrite).toBe(0)
+      expect(Date.now() - t0).toBeLessThan(ANNOTATION_LOCK_DEADLINE_MS)
+      expect((await readdir(folder())).filter((f) => f.endsWith('.lock'))).toEqual([]) // no orphan for others to wait 2 s on
+
+      // An empty lock of ours that cannot be removed either: no lock here, at once (not tried again on top of it).
+      faults.lockWrite = 1
+      faults.rmLock = 'EPERM'
+      expect(await withAnnotationFileLock(file, async () => 6)).toBe(6)
+      expect(faults.lockWrite).toBe(0)
+      expect(await readFile(lock, 'utf8')).toBe('')
+    })
     it('a holder lets go of its lock only while the lock is still its own (its nonce), never a successor that broke it (R2-M2)', async () => {
       await mkdir(folder(), { recursive: true })
       const file = fileFor('k')
