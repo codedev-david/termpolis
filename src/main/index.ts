@@ -2268,8 +2268,9 @@ ipcMain.handle('git:changes', async (_, { cwd }: { cwd: string }) => {
 })
 
 // One spawn per terminal per tick. The rail's three would buy nothing a dot can show.
-// Returns null outside a repo (or with no git at all) so the dot simply stays hidden
-// instead of painting an error onto a sidebar row.
+// Returns null only when git itself says the folder is not a repository, and the dot says so. Any other failure (a
+// read that timed out, a git that cannot start) is no answer about the folder: it comes back as a failure, and the dot
+// keeps what it last knew.
 ipcMain.handle('git:change-counts', async (_, { cwd }: { cwd: string }) => {
   try {
     // Same argv as the rail's first command above, so on a repo with both open this is one spawn
@@ -2279,7 +2280,10 @@ ipcMain.handle('git:change-counts', async (_, { cwd }: { cwd: string }) => {
       { cwd, timeout: 5000, maxBuffer: 8 * 1024 * 1024 },
     )
     return ok(countChanges(status))
-  } catch { return ok(null) }
+  } catch (e: any) {
+    if (/not a git repository/i.test(`${e?.message ?? ''} ${e?.stderr ?? ''}`)) return ok(null)
+    return err(String(e?.message ?? e))
+  }
 })
 
 ipcMain.handle('git:change-diff', async (

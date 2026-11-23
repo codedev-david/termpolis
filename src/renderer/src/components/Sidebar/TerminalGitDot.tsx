@@ -41,7 +41,8 @@ interface Props {
 }
 
 export function TerminalGitDot({ terminalId, cwd }: Props) {
-  const [counts, setCounts] = useState<GitChangeCounts | null>(null)
+  // undefined: no answer yet (or every read so far failed); null: git says this folder is not a repository.
+  const [counts, setCounts] = useState<GitChangeCounts | null | undefined>(undefined)
 
   useEffect(() => {
     // Keyed by REPO, not by terminal. This used to own a per-terminal subscription, so
@@ -52,14 +53,29 @@ export function TerminalGitDot({ terminalId, cwd }: Props) {
     // the duplication is gone. It also settles the old hazard in the other direction:
     // pollingService ids are global, and two dots on one repo no longer collide because
     // they are now deliberately the same subscriber.
-    setCounts(null)
+    setCounts(undefined)
     return subscribeCounts(cwd, setCounts)
   }, [cwd])
 
-  // No repo here (or no answer yet). Render the glyph anyway, dimmed and inert, so the
+  // No answer yet: the same dim glyph, claiming nothing about the folder (a slow or failed read is not "no repo").
+  if (counts === undefined) {
+    return (
+      <span
+        data-testid={`git-dot-${terminalId}`}
+        data-repo="unknown"
+        data-dirty="false"
+        aria-hidden="true"
+        className="text-[10px] px-1 leading-none text-[#3a3f4a]"
+      >
+        <i className="fa-solid fa-code-branch"></i>
+      </span>
+    )
+  }
+
+  // No repo here, as git says. Render the glyph anyway, dimmed and inert, so the
   // sidebar's shape does not change the instant someone cd's into a repo — the mark
   // lights up in place instead of appearing from nowhere.
-  if (!counts) {
+  if (counts === null) {
     return (
       <span
         data-testid={`git-dot-${terminalId}`}

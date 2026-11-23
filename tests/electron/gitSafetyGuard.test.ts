@@ -23,7 +23,10 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative, sep } from 'path'
 import ts from 'typescript'
-import { MUTATING_SUBCOMMANDS, displayFlags, filterOverrides, gitSubcommand, guardGitArgs, needsFilterScan, readOnlyPrefix } from '../../src/main/gitSafety'
+import { MUTATING_SUBCOMMANDS, displayFlags, gitSubcommand, guardGitArgs, needsFilterScan, readOnlyPrefix } from '../../src/main/gitSafety'
+import { scanOf } from './_gitArgv'
+
+const EMPTY_SCAN = await scanOf()
 
 const ROOT = join(__dirname, '..', '..')
 const MAIN = join(ROOT, 'src', 'main')
@@ -99,8 +102,23 @@ function namesGitBinary(s: Source): string[] {
   return out
 }
 
+/** Whether `argv` is the list runFilterScan (gitSafety.ts) hands its runner: the first parameter of the function
+ *  passed as runFilterScan's third argument, which it calls with filterScanArgs' list and nothing else. */
+function scanRunnerArgs(argv: ts.Expression): boolean {
+  if (!ts.isIdentifier(argv)) return false
+  for (let n: ts.Node | undefined = argv.parent; n !== undefined; n = n.parent) {
+    if (!ts.isArrowFunction(n) && !ts.isFunctionExpression(n)) continue
+    const first = n.parameters[0]
+    if (first === undefined || !ts.isIdentifier(first.name) || first.name.text !== argv.text) continue
+    const call = n.parent
+    return ts.isCallExpression(call) && calleeName(call) === 'runFilterScan' && call.arguments[2] === n
+  }
+  return false
+}
+
 /** Whether `argv`, handed to git in `s`, is built by the safety builders. */
 function guardedArgv(s: Source, argv: ts.Expression): boolean {
+  if (scanRunnerArgs(argv)) return true
   if (ts.isCallExpression(argv)) return ['guardGitArgs', 'filterScanArgs'].includes(calleeName(argv))
   if (ts.isArrayLiteralExpression(argv)) {
     const first = argv.elements[0]
@@ -197,7 +215,7 @@ function spawnsWithoutReadEnv(s: Source): string[] {
     const spawner = SPAWNERS.has(calleeName(n))
     const isGit = (ts.isIdentifier(bin) && (bin.text === 'gitBin' || (GIT_BIN_NAMES.has(bin.text) && spawner)))
     if (!isGit) return
-    const built = (ts.isCallExpression(argv) && ['guardGitArgs', 'filterScanArgs'].includes(calleeName(argv))) ||
+    const built = scanRunnerArgs(argv) || (ts.isCallExpression(argv) && ['guardGitArgs', 'filterScanArgs'].includes(calleeName(argv))) ||
       (ts.isIdentifier(argv) && new RegExp(`\\b${argv.text}\\s*=\\s*(guardGitArgs|filterScanArgs)\\(`).test(s.text))
     const bad = passThrough(n) ? forwardsOptions(n) && !/\baddEnv\b/.test(opts!.getText(s.sf)) : built && !carriesReadEnv(s, opts)
     if (bad) out.push(`${s.rel}:${lineOf(s, n)} ${n.getText(s.sf).slice(0, 120)}`)
@@ -258,7 +276,7 @@ function guardProblem(argv: string[], isWindows: boolean): string | null {
   if (sub === null) return null
   if (MUTATING_SUBCOMMANDS.has(sub.name)) return null
   if (!KNOWN_READS.has(sub.name)) return `subcommand '${sub.name}' is neither a known read nor a write`
-  const run = guardGitArgs(argv, isWindows, filterOverrides(''))
+  const run = guardGitArgs(argv, isWindows, EMPTY_SCAN)
   const at = gitSubcommand(run)!.index
   const leading = run.slice(0, at)
   for (let i = 1; i < readOnlyPrefix(sub.name, isWindows).length; i += 2) {
@@ -269,8 +287,28 @@ function guardProblem(argv: string[], isWindows: boolean): string | null {
   return null
 }
 
-/** Calls that produce a real filter scan (gitSafety.ts FilterScan): filterOverrides builds one, repoFilterOverrides runs it. */
-const SCAN_BUILDERS = ['filterOverrides', 'repoFilterOverrides']
+/** The call that produces a real filter scan (gitSafety.ts FilterScan): the scan itself, gitCommand.ts repoFilterOverrides.
+ *  filterOverrides only reads a scan's text, and its result is no scan. */
+const SCAN_BUILDERS = ['repoFilterOverrides']
+
+/** Where src/main makes a filter scan other than inside gitCommand.ts repoFilterOverrides: a call to runFilterScan (the
+ *  only maker of a FilterScan, gitSafety.ts) anywhere else, or another function by the scan's name. */
+function scanMakersElsewhere(s: Source): string[] {
+  const out: string[] = []
+  const visit = (n: ts.Node, inScan: boolean): void => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === 'repoFilterOverrides') {
+      if (s.rel !== 'src/main/gitCommand.ts') out.push(`${s.rel}:${lineOf(s, n)} function repoFilterOverrides`)
+      // Outside gitCommand.ts the declaration itself is the finding; what it calls is not reported twice.
+      inScan = true
+    }
+    if (ts.isIdentifier(n) && n.text === 'runFilterScan' && !inScan && s.rel !== 'src/main/gitSafety.ts' && !ts.isImportSpecifier(n.parent)) {
+      out.push(`${s.rel}:${lineOf(s, n)} runFilterScan`)
+    }
+    ts.forEachChild(n, (c) => visit(c, inScan))
+  }
+  visit(s.sf, false)
+  return out
+}
 const hasScanCall = (n: ts.Node): boolean => {
   let found = false
   walk(n, (m) => {
@@ -289,7 +327,9 @@ function callsGuardUnscanned(s: Source): boolean {
   let found = false
   walk(s.sf, (n) => {
     if (!ts.isCallExpression(n) || calleeName(n) !== 'guardGitArgs') return
-    const scan = n.arguments[2]
+    let scan = n.arguments[2] as ts.Expression | undefined
+    // `await repoFilterOverrides(…)` written in place is the scan itself.
+    while (scan !== undefined && (ts.isAwaitExpression(scan) || ts.isParenthesizedExpression(scan))) scan = scan.expression
     const real = scan !== undefined && ((ts.isIdentifier(scan) && scanNames.has(scan.text)) || (ts.isCallExpression(scan) && SCAN_BUILDERS.includes(calleeName(scan))))
     if (!real) found = true
   })
@@ -376,6 +416,12 @@ describe('git safety guard: what git is asked', () => {
     expect(unscanned.map((s) => s.rel)).toContain('src/main/world/worldRuns.ts')
     expect(unscanned.flatMap(unscannedFilterReads)).toEqual([])
   })
+
+  it('a filter scan is made only by the scan itself: runFilterScan is called in src/main only inside gitCommand.ts repoFilterOverrides', () => {
+    expect(SOURCES.flatMap(scanMakersElsewhere)).toEqual([])
+    const gitCommand = SOURCES.find((s) => s.rel === 'src/main/gitCommand.ts')!
+    expect(gitCommand.text).toMatch(/async function repoFilterOverrides\([^]*?runFilterScan\(/)
+  })
 })
 
 describe('git safety guard: the detectors see what they must (self-check)', () => {
@@ -404,11 +450,15 @@ describe('git safety guard: the detectors see what they must (self-check)', () =
       'const f = async (bin) => execCaptureOffThread(bin, args, o)',
       "run(gitBin, ['status'])",
       'binInside(gitBin, root, rp)',
-      "const wrap = async (gitBin, root, args) => d.exec(gitBin, guardGitArgs(args, true), {}); wrap(gitBin, root, ['status'])"
+      "const wrap = async (gitBin, root, args) => d.exec(gitBin, guardGitArgs(args, true), {}); wrap(gitBin, root, ['status'])",
+      'runFilterScan(args, true, (runArgs) => execOffThread(bin, runArgs, {}))',
+      'other(args, true, (runArgs) => execOffThread(bin, runArgs, {}))',
+      'runFilterScan(args, true, (runArgs, more) => execOffThread(bin, more, {}))'
     ].join('\n'))
     expect(unguardedSpawns(s).map((h) => h.split(' ')[0])).toEqual([
       'src/main/world/worldRuns.ts:1', 'src/main/world/worldRuns.ts:2', 'src/main/world/worldRuns.ts:6', 'src/main/world/worldRuns.ts:7',
-      'src/main/world/worldRuns.ts:9', 'src/main/world/worldRuns.ts:10', 'src/main/world/worldRuns.ts:14', 'src/main/world/worldRuns.ts:15'
+      'src/main/world/worldRuns.ts:9', 'src/main/world/worldRuns.ts:10', 'src/main/world/worldRuns.ts:14', 'src/main/world/worldRuns.ts:15',
+      'src/main/world/worldRuns.ts:19', 'src/main/world/worldRuns.ts:20'
     ])
     expect(unguardedSpawns(parse('src/main/world/fileSnapshot.ts', 'exec(bin, args, {})'))).toEqual([])
   })
@@ -422,10 +472,13 @@ describe('git safety guard: the detectors see what they must (self-check)', () =
       'const exec = async (bin, args, o) => execCaptureOffThread(bin, args, { cwd: o.cwd })',
       'const exec2 = async (bin, args, o) => execCaptureOffThread(bin, args, { cwd: o.cwd, addEnv: o.addEnv })',
       "deps.execFile(gitBin, [...safetyFlags(true), 'ls-files'], {})",
-      'execOffThread(bin, guardGitArgs(a, true))'
+      'execOffThread(bin, guardGitArgs(a, true))',
+      'runFilterScan(a, true, (runArgs) => execOffThread(bin, runArgs, { cwd }))',
+      'runFilterScan(a, true, (runArgs) => execOffThread(bin, runArgs, { cwd, addEnv: guardGitEnv(runArgs) }))'
     ].join('\n'))
     expect(spawnsWithoutReadEnv(s).map((h) => h.split(' ')[0])).toEqual([
-      'src/main/world/worldRuns.ts:1', 'src/main/world/worldRuns.ts:3', 'src/main/world/worldRuns.ts:5', 'src/main/world/worldRuns.ts:8'
+      'src/main/world/worldRuns.ts:1', 'src/main/world/worldRuns.ts:3', 'src/main/world/worldRuns.ts:5', 'src/main/world/worldRuns.ts:8',
+      'src/main/world/worldRuns.ts:9'
     ])
   })
 
@@ -449,10 +502,24 @@ describe('git safety guard: the detectors see what they must (self-check)', () =
     expect(unscannedFilterReads(unscanned)).toEqual(['src/main/world/worldRuns.ts:1 status --porcelain'])
     const scanned = 'const overrides = needsFilterScan(args) ? await repoFilterOverrides(bin, args, opts, isWindows) : undefined\n'
     expect(callsGuardUnscanned(parse('src/main/gitCommand.ts', `${scanned}guardGitArgs(args, isWindows, overrides)`))).toBe(false)
-    expect(callsGuardUnscanned(parse('src/main/x.ts', "guardGitArgs(args, isWindows, filterOverrides(''))"))).toBe(false)
-    // A third argument that is not a real scan is caught: a list, an undeclared name, a name built some other way.
-    for (const text of ['guardGitArgs(args, isWindows, [])', 'guardGitArgs(args, isWindows, overrides)', 'const overrides = []\nguardGitArgs(args, isWindows, overrides)', 'guardGitArgs(args, isWindows, [...filterOverrides(x)].slice(0))']) {
+    expect(callsGuardUnscanned(parse('src/main/x.ts', 'guardGitArgs(args, isWindows, await repoFilterOverrides(bin, args, opts, isWindows))'))).toBe(false)
+    // A third argument that is not the scan itself is caught: a list, an undeclared name, a name built some other way,
+    // and filterOverrides, which reads any text it is handed and runs no scan.
+    for (const text of [
+      'guardGitArgs(args, isWindows, [])', 'guardGitArgs(args, isWindows, overrides)', 'const overrides = []\nguardGitArgs(args, isWindows, overrides)',
+      'guardGitArgs(args, isWindows, [...filterOverrides(x)].slice(0))', "guardGitArgs(args, isWindows, filterOverrides(''))",
+      "const overrides = filterOverrides('')\nguardGitArgs(args, isWindows, overrides)", 'guardGitArgs(args, isWindows, EMPTY_SCAN)'
+    ]) {
       expect(callsGuardUnscanned(parse('src/main/x.ts', text)), text).toBe(true)
     }
+  })
+
+  it('a filter scan made anywhere but inside gitCommand.ts repoFilterOverrides is caught', () => {
+    const inside = 'async function repoFilterOverrides(bin, args, opts, isWindows) { return runFilterScan(args, isWindows, run) }'
+    expect(scanMakersElsewhere(parse('src/main/gitCommand.ts', `import { runFilterScan } from './gitSafety'\n${inside}`))).toEqual([])
+    expect(scanMakersElsewhere(parse('src/main/gitSafety.ts', 'export async function runFilterScan() {}\nrunFilterScan()'))).toEqual([])
+    expect(scanMakersElsewhere(parse('src/main/gitCommand.ts', `${inside}\nconst forged = await runFilterScan(args, w, async () => '')`))).toEqual(['src/main/gitCommand.ts:2 runFilterScan'])
+    expect(scanMakersElsewhere(parse('src/main/x.ts', inside))).toEqual(['src/main/x.ts:1 function repoFilterOverrides'])
+    expect(scanMakersElsewhere(parse('src/main/x.ts', 'const make = runFilterScan\nimport * as g from "./gitSafety"; g.runFilterScan(a, w, f)'))).toEqual(['src/main/x.ts:1 runFilterScan', 'src/main/x.ts:2 runFilterScan'])
   })
 })

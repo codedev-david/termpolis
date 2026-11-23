@@ -65,16 +65,15 @@ function refresh(cwd: string, watch: RepoWatch): Promise<void> {
   // after teardown in any host that has no bridge (tests, the pre-preload first paint).
   if (typeof get !== 'function') return Promise.resolve()
 
+  // Only an answer is passed on: counts, or null when git said this is not a repository. A read that failed or timed
+  // out says nothing about the folder, so every dot keeps what it last showed (or nothing, before any answer).
   const run = get(cwd)
-    .then(res => {
-      watch.last = res?.success ? res.data ?? null : null
-    })
-    .catch(() => {
-      watch.last = null
-    })
-    .then(() => {
-      watch.answered = true
+    .then(res => (res?.success ? { counts: res.data ?? null } : null), () => null)
+    .then(answer => {
       watch.inFlight = null
+      if (answer === null) return
+      watch.last = answer.counts
+      watch.answered = true
       // Snapshot: a watcher is free to unsubscribe from inside its own callback.
       for (const w of [...watch.watchers]) {
         if (watch.watchers.has(w)) {
@@ -115,7 +114,7 @@ export function subscribeCounts(cwd: string, onCounts: Watcher): () => void {
   } else {
     watch.watchers.add(onCounts)
     // Only once there IS an answer — otherwise a late joiner would be told "not a repo"
-    // on the strength of a poll that hasn't come back yet.
+    // on the strength of a poll that hasn't come back yet (or that failed).
     if (watch.answered) {
       try { onCounts(watch.last) } catch { /* as above */ }
     }

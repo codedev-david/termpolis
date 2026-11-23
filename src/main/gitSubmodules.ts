@@ -222,12 +222,22 @@ export interface SubmoduleDeps {
   readText: (file: string) => Promise<string | null>
   /** Whether a path exists. */
   exists: (p: string) => Promise<boolean>
-  /** A guarded read (safeGitAsync) that writes no submodule rows of its own: this module walks the levels itself. */
-  git: (args: string[], cwd: string) => Promise<string>
+  /** A guarded read (safeGitAsync) that writes no submodule rows of its own: this module walks the levels itself.
+   *  `start` is asked once for each further git the read must start first (a filter scan the cache does not hold);
+   *  when it answers false the read starts nothing and throws PollBudgetSpent. */
+  git: (args: string[], cwd: string, start?: () => boolean) => Promise<string>
   /** Joins a root and a root-relative forward-slash path into a path on this OS. */
   join: (root: string, rel: string) => string
   /** The root-relative, forward-slash form of `cwd` ('' at the root). */
   relative: (root: string, cwd: string) => string
+}
+
+/** Thrown by SubmoduleDeps.git when a git it had to start first did not fit in the poll's budget: nothing was started. */
+export class PollBudgetSpent extends Error {
+  constructor() {
+    super('the poll has no git calls left')
+    this.name = 'PollBudgetSpent'
+  }
 }
 
 /** One poll's git calls: MAX_GIT_PER_POLL in all, over every level, and at most MAX_GIT_AT_ONCE running. */
@@ -242,6 +252,9 @@ class PollBudget {
     this.left--
     return true
   }
+
+  /** take, for a git a read starts on its own first (its filter scan): handed to SubmoduleDeps.git as `start`. */
+  readonly extra = (): boolean => this.take()
 
   /** Runs a call taken from the budget once fewer than MAX_GIT_AT_ONCE are running. */
   async run(fn: () => Promise<string>): Promise<string> {
@@ -268,9 +281,10 @@ async function listSubmodules(dir: string, budget: PollBudget, d: SubmoduleDeps)
   if (!budget.take()) return null
   let links: Set<string>
   try {
-    links = gitlinkPaths(await budget.run(() => d.git(['ls-files', '-z', '-s', '--', ...wanted.map((e) => `:(literal)${e.path}`)], dir)))
-  } catch {
-    return none
+    links = gitlinkPaths(await budget.run(() => d.git(['ls-files', '-z', '-s', '--', ...wanted.map((e) => `:(literal)${e.path}`)], dir, budget.extra)))
+  } catch (e) {
+    // A listing the budget stopped is not an empty one: what it would have listed cannot be called clean.
+    return e instanceof PollBudgetSpent ? null : none
   }
   const linked = wanted.filter((e) => links.has(e.path))
   const looked = linked.slice(0, MAX_GIT_PER_POLL)
@@ -321,11 +335,13 @@ export async function dirtySubmodules(root: string, untrackedNo: boolean, d: Sub
         return false
       }
       try {
-        const out = await budget.run(() => d.git(['status', '--porcelain', '-z', ...(n.noUntracked ? ['--untracked-files=no'] : [])], n.dir))
+        const out = await budget.run(() => d.git(['status', '--porcelain', '-z', ...(n.noUntracked ? ['--untracked-files=no'] : [])], n.dir, budget.extra))
         const state = submoduleState(out)
         mark(n.top, n.depth === 1 || state === null ? state : 'modified')
         return true
-      } catch {
+      } catch (e) {
+        // Its scan did not fit in the budget: not looked at, so not clean.
+        if (e instanceof PollBudgetSpent) mark(n.top, 'modified')
         return false
       }
     }))

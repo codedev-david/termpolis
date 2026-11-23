@@ -14,8 +14,13 @@ import {
   needsFilterScan,
   nullDevice,
   readOnlyPrefix,
-  safetyFlags
+  runFilterScan,
+  safetyFlags,
+  type FilterScan
 } from '../../src/main/gitSafety'
+import { scanOf } from './_gitArgv'
+
+const EMPTY_SCAN = await scanOf()
 
 /** Every transport off, the blanket key and each protocol by name (a repository's `protocol.ssh.allow=always` beats the
  *  blanket key, and only a per-protocol key from the command line beats that). */
@@ -111,8 +116,8 @@ describe('needsFilterScan', () => {
 
 describe('guardGitArgs', () => {
   it('a read gets the prefix before the subcommand and the display flags after it', () => {
-    expect(guardGitArgs(['status', '--porcelain', '-b', '-z'], true, filterOverrides(''))).toEqual([...PREFIX_WIN, 'status', '--ignore-submodules=dirty', '--porcelain', '-b', '-z'])
-    expect(guardGitArgs(['diff', '--cached', '--', 'a b.ts'], false, filterOverrides(''))).toEqual([
+    expect(guardGitArgs(['status', '--porcelain', '-b', '-z'], true, EMPTY_SCAN)).toEqual([...PREFIX_WIN, 'status', '--ignore-submodules=dirty', '--porcelain', '-b', '-z'])
+    expect(guardGitArgs(['diff', '--cached', '--', 'a b.ts'], false, EMPTY_SCAN)).toEqual([
       ...PREFIX_POSIX, 'diff', '--no-ext-diff', '--no-textconv', '--submodule=short', '--ignore-submodules=dirty', '--cached', '--', 'a b.ts'
     ])
     expect(guardGitArgs(['rev-parse', 'HEAD'], true)).toEqual([...readOnlyPrefix('rev-parse', true), 'rev-parse', 'HEAD'])
@@ -128,27 +133,27 @@ describe('guardGitArgs', () => {
     expect(guardGitArgs(['-C', '/r', 'add', '--', 'f'], true)).toEqual(['-C', '/r', 'add', '--', 'f'])
   })
 
-  it('global options stay first; the prefix and filter overrides come after them, so they win over a caller -c', () => {
-    const over = filterOverrides('local\0filter.x.clean\nv\0')
+  it('global options stay first; the prefix and filter overrides come after them, so they win over a caller -c', async () => {
+    const over = await scanOf('local\0filter.x.clean\nv\0')
     expect(guardGitArgs(['-C', '/r', '-c', 'core.fsmonitor=true', 'status'], true, over)).toEqual([
       '-C', '/r', '-c', 'core.fsmonitor=true', ...PREFIX_WIN, ...over, 'status', '--ignore-submodules=dirty'
     ])
   })
 
   it('a prefix pair the caller already gave with the same value is not repeated (case of the key ignored)', () => {
-    expect(guardGitArgs(['-c', 'Core.FSMonitor=false', 'log'], true, filterOverrides(''))).toEqual([
+    expect(guardGitArgs(['-c', 'Core.FSMonitor=false', 'log'], true, EMPTY_SCAN)).toEqual([
       '-c', 'Core.FSMonitor=false', '-c', 'core.hooksPath=NUL', '-c', 'log.showSignature=false', '-c', 'format.pretty=medium', ...NO_TRANSPORT,
       'log', '--no-ext-diff', '--no-textconv', '--submodule=short'
     ])
     // A dangling `-c` and a pair with no `=` are passed through and never match.
-    expect(guardGitArgs(['-c', 'novalue', 'log'], false, filterOverrides('')).slice(0, 4)).toEqual(['-c', 'novalue', '-c', 'core.fsmonitor=false'])
+    expect(guardGitArgs(['-c', 'novalue', 'log'], false, EMPTY_SCAN).slice(0, 4)).toEqual(['-c', 'novalue', '-c', 'core.fsmonitor=false'])
   })
 
   it('a display flag the caller already gave before `--` is not repeated; one after `--` is a path and does not count', () => {
-    expect(guardGitArgs(['diff', '--cached', '--no-color', '--no-ext-diff'], false, filterOverrides(''))).toEqual([
+    expect(guardGitArgs(['diff', '--cached', '--no-color', '--no-ext-diff'], false, EMPTY_SCAN)).toEqual([
       ...PREFIX_POSIX, 'diff', '--no-textconv', '--submodule=short', '--ignore-submodules=dirty', '--cached', '--no-color', '--no-ext-diff'
     ])
-    expect(guardGitArgs(['diff', '--', '--no-textconv'], false, filterOverrides(''))).toEqual([
+    expect(guardGitArgs(['diff', '--', '--no-textconv'], false, EMPTY_SCAN)).toEqual([
       ...PREFIX_POSIX, 'diff', '--no-ext-diff', '--no-textconv', '--submodule=short', '--ignore-submodules=dirty', '--', '--no-textconv'
     ])
   })
@@ -158,20 +163,22 @@ describe('guardGitArgs', () => {
   })
 
   it('blame, annotate and grep carry --no-textconv (blame runs textconv by default); one already given is kept once', () => {
-    expect(guardGitArgs(['blame', '--porcelain', '--', 'x.dat'], false, filterOverrides(''))).toEqual([...PREFIX_POSIX, 'blame', '--no-textconv', '--porcelain', '--', 'x.dat'])
-    expect(guardGitArgs(['annotate', 'x.dat'], false, filterOverrides(''))).toEqual([...PREFIX_POSIX, 'annotate', '--no-textconv', 'x.dat'])
-    expect(guardGitArgs(['grep', '--no-textconv', '-n', 'needle'], false, filterOverrides(''))).toEqual([...PREFIX_POSIX, 'grep', '--no-textconv', '-n', 'needle'])
+    expect(guardGitArgs(['blame', '--porcelain', '--', 'x.dat'], false, EMPTY_SCAN)).toEqual([...PREFIX_POSIX, 'blame', '--no-textconv', '--porcelain', '--', 'x.dat'])
+    expect(guardGitArgs(['annotate', 'x.dat'], false, EMPTY_SCAN)).toEqual([...PREFIX_POSIX, 'annotate', '--no-textconv', 'x.dat'])
+    expect(guardGitArgs(['grep', '--no-textconv', '-n', 'needle'], false, EMPTY_SCAN)).toEqual([...PREFIX_POSIX, 'grep', '--no-textconv', '-n', 'needle'])
   })
 
   it('a read that can run a filter throws when it is handed no filter scan, so it cannot be run unscanned', () => {
     for (const sub of FILTER_SUBCOMMANDS) {
       expect(() => guardGitArgs([sub], true), sub).toThrow(/can run a filter driver, and was not handed the repository's filter scan/)
-      expect(() => guardGitArgs(['-C', '/r', sub], false, filterOverrides('')), sub).not.toThrow()
-      // Only what filterOverrides built passes: a hand-made list, or a copy of a real one, is no scan.
-      for (const fake of [[], [...filterOverrides('')], ['-c', 'filter.x.clean=']]) {
-        expect(() => guardGitArgs([sub], true, fake as unknown as ReturnType<typeof filterOverrides>), sub).toThrow(/was not handed the repository's filter scan/)
+      expect(() => guardGitArgs(['-C', '/r', sub], false, EMPTY_SCAN), sub).not.toThrow()
+      // Only what the scan itself made passes: a hand-made list, a copy of a real one, or filterOverrides' own reading of
+      // a scan's text (which anyone could hand any text) is no scan.
+      for (const fake of [[], [...EMPTY_SCAN], ['-c', 'filter.x.clean='], filterOverrides(''), filterOverrides('local\0filter.x.clean\nv\0')]) {
+        expect(() => guardGitArgs([sub], true, fake as unknown as FilterScan), sub).toThrow(/was not handed the repository's filter scan/)
       }
     }
+    expect(Object.isFrozen(EMPTY_SCAN)).toBe(true)
     expect(Object.isFrozen(filterOverrides('local\0filter.x.clean\nv\0'))).toBe(true)
     expect(() => guardGitArgs(['diff-tree', '-r', 'HEAD'], true)).not.toThrow()
     expect(() => guardGitArgs(['remote', '-v'], true)).not.toThrow()
@@ -179,18 +186,33 @@ describe('guardGitArgs', () => {
 
   it('a read asking for --textconv or --ext-diff is refused before `--`; after `--` it is a path', () => {
     for (const args of [['cat-file', '--textconv', 'HEAD:x.dat'], ['grep', '--textconv', 'needle'], ['diff', '--ext-diff'], ['show', '--ext-diff', 'HEAD'], ['blame', '--textconv', 'x']]) {
-      expect(() => guardGitArgs(args, true, filterOverrides('')), args.join(' ')).toThrow(UnsafeReadError)
+      expect(() => guardGitArgs(args, true, EMPTY_SCAN), args.join(' ')).toThrow(UnsafeReadError)
     }
-    expect(() => guardGitArgs(['log', '-p', '--textconv'], false, filterOverrides(''))).toThrow(/may not ask for --textconv, which runs a program the repository names; not run/)
-    expect(guardGitArgs(['grep', 'needle', '--', '--textconv'], false, filterOverrides('')).slice(-2)).toEqual(['--', '--textconv'])
+    expect(() => guardGitArgs(['log', '-p', '--textconv'], false, EMPTY_SCAN)).toThrow(/may not ask for --textconv, which runs a program the repository names; not run/)
+    expect(guardGitArgs(['grep', 'needle', '--', '--textconv'], false, EMPTY_SCAN).slice(-2)).toEqual(['--', '--textconv'])
     // A write is the person's own command and is left alone.
     expect(guardGitArgs(['commit', '--ext-diff'], true)).toEqual(['commit', '--ext-diff'])
     expect(new UnsafeReadError('--textconv').name).toBe('UnsafeReadError')
     // describe --dirty asks each submodule for its state with a child git, and has no --ignore-submodules.
-    for (const o of ['--dirty', '--dirty=-x', '--broken']) expect(() => guardGitArgs(['describe', o], true, filterOverrides('')), o).toThrow(UnsafeReadError)
-    expect(() => guardGitArgs(['describe', '--always', '--', '--dirty'], true, filterOverrides(''))).not.toThrow()
-    expect(() => guardGitArgs(['describe', '--dirtyish'], true, filterOverrides(''))).not.toThrow()
-    expect(() => guardGitArgs(['log', '--dirty'], true, filterOverrides(''))).not.toThrow()
+    for (const o of ['--dirty', '--dirty=-x', '--broken']) expect(() => guardGitArgs(['describe', o], true, EMPTY_SCAN), o).toThrow(UnsafeReadError)
+    expect(() => guardGitArgs(['describe', '--always', '--', '--dirty'], true, EMPTY_SCAN)).not.toThrow()
+    expect(() => guardGitArgs(['describe', '--dirtyish'], true, EMPTY_SCAN)).not.toThrow()
+    expect(() => guardGitArgs(['log', '--dirty'], true, EMPTY_SCAN)).not.toThrow()
+  })
+})
+
+describe('runFilterScan', () => {
+  it('runs filterScanArgs for the read through the runner it is handed, and reads the answer with filterOverrides', async () => {
+    const seen: string[][] = []
+    const scan = await runFilterScan(['-C', '/r', 'diff', '--numstat'], true, async (a) => { seen.push(a); return 'local\0filter.x.clean\nv\0' })
+    expect(seen).toEqual([filterScanArgs(['-C', '/r', 'diff', '--numstat'], true)])
+    expect([...scan]).toEqual([...filterOverrides('local\0filter.x.clean\nv\0')])
+    expect(guardGitArgs(['diff'], true, scan)).toContain('filter.x.required=false')
+  })
+
+  it('a runner that fails, or an answer naming a driver that cannot be switched off, makes no scan', async () => {
+    await expect(runFilterScan(['status'], false, async () => { throw new Error('git died') })).rejects.toThrow('git died')
+    await expect(runFilterScan(['status'], false, async () => 'local\0filter.a=b.clean\nx\0')).rejects.toThrow(UnsafeFilterError)
   })
 })
 

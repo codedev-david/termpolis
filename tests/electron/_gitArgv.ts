@@ -4,7 +4,11 @@
 // writtenGitArgs undoes the first two and returns null for the third, so a router can answer `argv[0] === 'status'`
 // as it always did. Whether the guard itself is there is the business of gitSafety.test.ts, gitSafetyGuard.test.ts and
 // gitSafetyHarness.test.ts.
-import { displayFlags, gitSubcommand } from '../../src/main/gitSafety'
+import { displayFlags, gitSubcommand, runFilterScan, type FilterScan } from '../../src/main/gitSafety'
+
+/** A real filter scan (gitSafety.ts runFilterScan, the only maker of one) whose git printed `text`: what guardGitArgs
+ *  is handed for a repository with those drivers. With nothing, a repository with none. */
+export const scanOf = (text = ''): Promise<FilterScan> => runFilterScan(['status'], false, async () => text)
 
 /** True for the filter-driver read safeGitAsync runs before status and diff. */
 export function isFilterScan(argv: readonly string[]): boolean {

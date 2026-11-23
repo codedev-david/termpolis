@@ -49,39 +49,66 @@ const liveDot = async (): Promise<HTMLElement> => {
 describe('TerminalGitDot — the inert mark', () => {
   // The mark exists on every terminal so people learn where to look. Outside a repo it
   // is a dim glyph with no click target, rather than a button onto an empty panel.
-  const expectInert = () => {
+  // 'false' is git's own answer, "Not a git repository"; 'unknown' is no answer yet (pending, timed out, failed):
+  // the same dim glyph, saying nothing about the folder.
+  const expectInert = (repo: 'false' | 'unknown' = 'unknown') => {
     const el = dot()
     expect(el).toBeInTheDocument()
-    expect(el).toHaveAttribute('data-repo', 'false')
+    expect(el).toHaveAttribute('data-repo', repo)
     expect(el).toHaveAttribute('data-dirty', 'false')
     expect(el!.tagName).toBe('SPAN')
     expect(el!.className).not.toContain('animate-pulse-git')
+    if (repo === 'false') {
+      expect(el).toHaveAttribute('aria-label', 'Not a git repository')
+      expect(el).toHaveAttribute('title', 'Not a git repository')
+    } else {
+      expect(el).not.toHaveAttribute('aria-label')
+      expect(el).not.toHaveAttribute('title')
+      expect(el).toHaveAttribute('aria-hidden', 'true')
+    }
   }
 
-  it('shows the inert mark before the first result arrives', () => {
+  it('shows the inert mark before the first result arrives, claiming nothing about the folder', () => {
+    gitChangeCounts.mockReturnValue(new Promise(() => {}))
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
-    expectInert()
+    expectInert('unknown')
   })
 
-  it('shows the inert mark outside a repo (handler returns null)', async () => {
+  it('says "Not a git repository" only when git says so (handler returns null)', async () => {
     gitChangeCounts.mockResolvedValue({ success: true, data: null })
     render(<TerminalGitDot terminalId="t1" cwd="/not-a-repo" />)
-    await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
-    expectInert()
+    await waitFor(() => expect(dot()).toHaveAttribute('data-repo', 'false'))
+    expectInert('false')
   })
 
-  it('shows the inert mark when the call fails', async () => {
-    gitChangeCounts.mockResolvedValue({ success: false, error: 'boom' })
+  it('a status that timed out or failed is no answer: the mark stays unknown, never "Not a git repository"', async () => {
+    gitChangeCounts.mockResolvedValue({ success: false, error: 'git timed out' })
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
     await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
-    expectInert()
+    await new Promise((r) => setTimeout(r, 0))
+    expectInert('unknown')
   })
 
-  it('shows the inert mark when the promise rejects', async () => {
+  it('shows the unknown mark when the promise rejects', async () => {
     gitChangeCounts.mockRejectedValue(new Error('git missing'))
     render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
     await waitFor(() => expect(gitChangeCounts).toHaveBeenCalled())
-    expectInert()
+    await new Promise((r) => setTimeout(r, 0))
+    expectInert('unknown')
+  })
+
+  it('a status that times out after an answer keeps the dot as it was', async () => {
+    gitChangeCounts.mockResolvedValue({ success: true, data: counts({ unstaged: 2 }) })
+    render(<TerminalGitDot terminalId="t1" cwd="/repo" />)
+    const live = await liveDot()
+    expect(live).toHaveAttribute('data-dirty', 'true')
+    gitChangeCounts.mockResolvedValue({ success: false, error: 'git timed out' })
+    const tick = (subscribe as any).mock.calls.filter((c: any[]) => c[0] === 'git-counts-/repo').pop()
+    tick[1]()
+    await waitFor(() => expect(gitChangeCounts).toHaveBeenCalledTimes(2))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(dot()).toHaveAttribute('data-repo', 'true')
+    expect(dot()).toHaveAttribute('data-dirty', 'true')
   })
 
   it('does not open the Changes rail when the inert mark is clicked', async () => {
@@ -107,7 +134,7 @@ describe('TerminalGitDot — the inert mark', () => {
     // after unmount in a host that has no bridge yet.
     delete (window as any).termpolis
     expect(() => render(<TerminalGitDot terminalId="t1" cwd="/repo" />)).not.toThrow()
-    expectInert()
+    expectInert('unknown')
   })
 })
 

@@ -19,7 +19,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync, spawnSync } from 'child_process'
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs'
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { safeGitAsync, _resetGitBinForTests } from '../../src/main/gitCommand'
@@ -629,6 +629,57 @@ describe('git safety harness: the person’s own setup keeps working', () => {
     expect(fired()).toEqual([])
     git(evil, ['status', '--porcelain'], true)
     expect(fired()).toEqual(['nested-clean'])
+  }, TIMEOUT)
+
+  /** An attacker's git folder at `gitDir`: a copy of a repository whose x.dat runs a required filter planted as `name`,
+   *  with its work tree that repository, and x.dat there edited. */
+  function attackerGitDir(gitDir: string, name: string): void {
+    const src = newRepo(`${name}-src`, { '.gitattributes': `*.dat filter=${name}\n`, 'x.dat': 'one\n' })
+    cpSync(join(src, '.git'), gitDir, { recursive: true })
+    git(gitDir, ['config', 'core.bare', 'false'])
+    git(gitDir, ['config', 'core.worktree', slash(src)])
+    git(gitDir, ['config', `filter.${name}.clean`, runs(plantProgram(`${name}-clean`, 'cat\n'))])
+    git(gitDir, ['config', `filter.${name}.required`, 'true'])
+    dirty(src, 'x.dat', 'two\n')
+  }
+
+  it('a .git file naming `../.git ` (a trailing space) is the folder `.git ` git opens, never the clone’s kept scan', async () => {
+    // Windows refuses a path with a trailing space, so git never opens such a folder there.
+    if (isWindows) return
+    clearMarkers()
+    const proj = newRepo('ws-proj')
+    attackerGitDir(join(proj, '.git '), 'ws')
+    const sub = join(proj, 'sub')
+    mkdirSync(sub)
+    writeFileSync(join(sub, '.git'), 'gitdir: ../.git \n')
+    _resetGitBinForTests()
+    await safeGitAsync(['status', '--porcelain'], opts(proj))
+    await quiet(safeGitAsync(['status', '--porcelain'], opts(sub)))
+    await quiet(safeGitAsync(['diff', '--numstat'], opts(sub)))
+    expect(fired()).toEqual([])
+    git(sub, ['status', '--porcelain'], true)
+    expect(fired()).toEqual(['ws-clean'])
+  }, TIMEOUT)
+
+  it('a .git file whose path climbs out of a link (`lnk/../../.git`) is the folder git opens through the link, never the clone’s kept scan', async () => {
+    // Windows resolves `..` by the name before any link, so there the folder git opens is the one the name says.
+    if (isWindows) return
+    clearMarkers()
+    const proj = newRepo('ln-proj')
+    attackerGitDir(join(proj, 'a', '.git'), 'ln')
+    mkdirSync(join(proj, 'a', 'b', 'c'), { recursive: true })
+    const sub = join(proj, 'sub')
+    mkdirSync(sub)
+    symlinkSync(join(proj, 'a', 'b', 'c'), join(sub, 'lnk'))
+    // By the name, sub/lnk/../../.git is proj/.git; through the link it is proj/a/.git.
+    writeFileSync(join(sub, '.git'), 'gitdir: lnk/../../.git\n')
+    _resetGitBinForTests()
+    await safeGitAsync(['status', '--porcelain'], opts(proj))
+    await quiet(safeGitAsync(['status', '--porcelain'], opts(sub)))
+    await quiet(safeGitAsync(['diff', '--numstat'], opts(sub)))
+    expect(fired()).toEqual([])
+    git(sub, ['status', '--porcelain'], true)
+    expect(fired()).toEqual(['ln-clean'])
   }, TIMEOUT)
 
   it('an empty .git folder git skips does not stand in for the repository it skips to: an edit to that config is seen', async () => {

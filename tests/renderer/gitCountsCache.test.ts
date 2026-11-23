@@ -127,24 +127,68 @@ describe('shared per-repo git counts', () => {
   })
 
   it('reports null when git says this is not a repo', async () => {
-    bridge.mockResolvedValue({ success: false })
+    bridge.mockResolvedValue({ success: true, data: null })
     const cb = vi.fn()
     subscribeCounts('/not-a-repo', cb)
     await settle()
     expect(cb).toHaveBeenCalledWith(null)
+    // A late joiner is told the same.
+    const late = vi.fn()
+    subscribeCounts('/not-a-repo', late)
+    expect(late).toHaveBeenCalledWith(null)
   })
 
-  it('reports null when the call rejects, and keeps polling afterwards', async () => {
+  // A status that timed out or failed says nothing about the folder: never "not a repo".
+  it('a failure while the first answer is pending tells nobody anything: the dot stays unknown', async () => {
+    bridge.mockResolvedValue({ success: false, error: 'git timed out' })
+    const cb = vi.fn()
+    subscribeCounts('/repo', cb)
+    await settle()
+    expect(cb).not.toHaveBeenCalled()
+    const late = vi.fn()
+    subscribeCounts('/repo', late)
+    expect(late).not.toHaveBeenCalled()
+    // The next answer that does come back is handed on.
+    bridge.mockResolvedValue(ok({ staged: 1 }))
+    tickFor('/repo')
+    await settle()
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ staged: 1 }))
+    expect(late).toHaveBeenCalledWith(expect.objectContaining({ staged: 1 }))
+  })
+
+  it('a failure or a rejection after an answer keeps the last answer, and polling goes on', async () => {
+    bridge.mockResolvedValue(ok({ unstaged: 3 }))
+    const cb = vi.fn()
+    subscribeCounts('/repo', cb)
+    await settle()
+    expect(cb).toHaveBeenCalledTimes(1)
+    bridge.mockResolvedValueOnce({ success: false, error: 'git timed out' })
+    tickFor('/repo')
+    await settle()
+    bridge.mockRejectedValueOnce(new Error('git exploded'))
+    tickFor('/repo')
+    await settle()
+    expect(cb).toHaveBeenCalledTimes(1)
+    expect(cb).not.toHaveBeenCalledWith(null)
+    const late = vi.fn()
+    subscribeCounts('/repo', late)
+    expect(late).toHaveBeenCalledWith(expect.objectContaining({ unstaged: 3 }))
+    bridge.mockResolvedValue(ok({ staged: 2 }))
+    tickFor('/repo')
+    await settle()
+    expect(cb).toHaveBeenLastCalledWith(expect.objectContaining({ staged: 2 }))
+  })
+
+  it('a rejection before any answer is no answer either', async () => {
     bridge.mockRejectedValueOnce(new Error('git exploded'))
     const cb = vi.fn()
     subscribeCounts('/repo', cb)
     await settle()
-    expect(cb).toHaveBeenCalledWith(null)
-
-    bridge.mockResolvedValue(ok({ staged: 2 }))
+    expect(cb).not.toHaveBeenCalled()
+    bridge.mockResolvedValue({ success: true, data: null })
     tickFor('/repo')
     await settle()
-    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ staged: 2 }))
+    expect(cb).toHaveBeenCalledWith(null)
   })
 
   it('does nothing at all without a cwd or without a bridge', async () => {

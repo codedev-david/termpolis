@@ -26,8 +26,10 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { join as pJoin, resolve as pResolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { writtenGitArgs } from './_gitArgv'
-import { filterOverrides, gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
+import { gitSubcommand, guardGitArgs } from '../../src/main/gitSafety'
+import { scanOf, writtenGitArgs } from './_gitArgv'
+
+const EMPTY_SCAN = await scanOf()
 
 // ---------------------------------------------------------------------------
 // Hoisted mock state
@@ -1259,6 +1261,19 @@ describe('git:change-counts', () => {
     const r = await invoke('git:change-counts', { cwd: '/tmp' })
     expect(r.success).toBe(true)
     expect(r.data).toBeNull()
+    gitAsync(() => new Error('fatal: Not a git repository (or any of the parent directories): .git'))
+    expect(await invoke('git:change-counts', { cwd: '/tmp/other' })).toEqual({ success: true, data: null })
+  })
+
+  it('a status that times out or fails for any other reason is a failure, never "not a repository": the dot keeps what it knew', async () => {
+    // The dot says "Not a git repository" only when git says so. A read that ran out of time (a slow disk, a busy
+    // runner), a git that cannot start, or any other error is no answer about the folder.
+    gitAsync(() => Object.assign(new Error('git timed out after 5000 ms'), { code: 'ETIMEDOUT', killed: true, signal: 'SIGTERM' }))
+    const timedOut = await invoke('git:change-counts', { cwd: '/repo-slow' })
+    expect(timedOut.success).toBe(false)
+    expect(timedOut.data).toBeUndefined()
+    gitAsync(() => new Error('fatal: unable to read index'))
+    expect((await invoke('git:change-counts', { cwd: '/repo-broken' })).success).toBe(false)
   })
 })
 
@@ -1285,14 +1300,14 @@ describe('git:change-diff', () => {
     await invoke('git:change-diff', { cwd: '/repo', file: 'my notes.ts', mode: 'unstaged' })
     // The diff itself, after the filter-driver read: the read-only prefix and display flags (gitSafety.ts), then the
     // name as one element after `--`.
-    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', 'my notes.ts'], process.platform === 'win32', filterOverrides('')))
+    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', 'my notes.ts'], process.platform === 'win32', EMPTY_SCAN))
   })
 
   it('stops a leading-dash filename being read as a flag', async () => {
     gitAsync(() => '')
     await invoke('git:change-diff', { cwd: '/repo', file: '--upload-pack=evil', mode: 'unstaged' })
     // The `--` separator is what makes this safe; assert it is still there.
-    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', '--upload-pack=evil'], process.platform === 'win32', filterOverrides('')))
+    expect(rawGitCall('diff')).toEqual(guardGitArgs(['diff', '--', '--upload-pack=evil'], process.platform === 'win32', EMPTY_SCAN))
   })
 
   it('synthesizes a diff for an untracked file, which git itself will not diff', async () => {

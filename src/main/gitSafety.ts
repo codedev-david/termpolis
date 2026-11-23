@@ -197,7 +197,7 @@ export function needsFilterScan(args: readonly string[]): boolean {
  * `filterOverrides` just before the subcommand (so they come after, and win over, any `-c` the caller gave), and
  * displayFlags just after it. A flag the caller already gave is not repeated.
  *
- * A read that can run a filter (FILTER_SUBCOMMANDS) must be handed the result of its scan, as filterOverrides built
+ * A read that can run a filter (FILTER_SUBCOMMANDS) must be handed the result of its scan, as runFilterScan made
  * it, even when that is empty: without one (or with any other list) it throws, so a new caller cannot run one
  * unscanned. A read asking for --textconv or --ext-diff throws UnsafeReadError.
  */
@@ -261,20 +261,36 @@ export class UnsafeFilterError extends Error {
   }
 }
 
+declare const filterScanBrand: unique symbol
+/** What runFilterScan returns: the overrides from one real scan. guardGitArgs takes nothing else for a read that can
+ *  run a filter, checked by type here and by identity at run time (builtScans), so a hand-made list, a copy, or
+ *  filterOverrides' reading of any text never passes. */
+export type FilterScan = readonly string[] & { readonly [filterScanBrand]: true }
+const builtScans = new WeakSet<readonly string[]>()
+
+/** Runs the scan filterScanArgs writes for one read and prints its output (gitCommand.ts repoFilterOverrides hands
+ *  the guarded git). */
+export type ScanRunner = (scanArgs: string[]) => Promise<string>
+
+/**
+ * The filter scan for `args`: runs filterScanArgs through `run`, and reads its output with filterOverrides. The only
+ * maker of a FilterScan; in src/main it is called only by gitCommand.ts repoFilterOverrides (gitSafetyGuard.test.ts),
+ * so the scan a read is handed is the scan git printed.
+ */
+export async function runFilterScan(args: readonly string[], isWindows: boolean, run: ScanRunner): Promise<FilterScan> {
+  const out = filterOverrides(await run(filterScanArgs(args, isWindows)))
+  builtScans.add(out)
+  return out as FilterScan
+}
+
 /**
  * The `-c` options that switch off every filter driver the repository's own config defines, from the output of
  * filterScanArgs (`scope NUL key LF value NUL`, repeated). Each such driver gets its four settings back from the
  * person's own config (system, global, command line) or, where they have none, no program and `required=false`.
  * A driver name holding `=` cannot be written as a `-c` key (git splits at the first `=`), so it throws rather than
- * leave that driver running.
+ * leave that driver running. Only a reading of the text it is handed: its result is no FilterScan (runFilterScan).
  */
-declare const filterScanBrand: unique symbol
-/** What filterOverrides returns: the overrides from one real scan. guardGitArgs takes nothing else for a read that can
- *  run a filter, checked by type here and by identity at run time (builtScans), so a hand-made list never passes. */
-export type FilterScan = readonly string[] & { readonly [filterScanBrand]: true }
-const builtScans = new WeakSet<readonly string[]>()
-
-export function filterOverrides(scan: string): FilterScan {
+export function filterOverrides(scan: string): readonly string[] {
   const trusted = new Map<string, string>()
   const repoDrivers: string[] = []
   const parts = scan.split('\0')
@@ -301,7 +317,5 @@ export function filterOverrides(scan: string): FilterScan {
       out.push('-c', `filter.${name}.${variable}=${own ?? (variable === 'required' ? 'false' : '')}`)
     }
   }
-  Object.freeze(out)
-  builtScans.add(out)
-  return out as readonly string[] as FilterScan
+  return Object.freeze(out)
 }

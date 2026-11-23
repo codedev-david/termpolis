@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  dirtySubmodules, foldSubmoduleRows, gitlinkPaths, MAX_DEPTH, MAX_GIT_AT_ONCE, MAX_GIT_PER_POLL, parseGitmodules, quotePath,
+  dirtySubmodules, foldSubmoduleRows, gitlinkPaths, MAX_DEPTH, MAX_GIT_AT_ONCE, MAX_GIT_PER_POLL, parseGitmodules, PollBudgetSpent, quotePath,
   statusShape, submoduleState, withSubmoduleEdits, type DirtySubmodule, type SubmoduleDeps
 } from '../../src/main/gitSubmodules'
 
@@ -157,14 +157,14 @@ describe('dirtySubmodules', () => {
   it('asks each listed, checked-out gitlink for its own status, honouring ignore', async () => {
     const git = vi.fn(deps().git)
     expect(await dirtySubmodules('/r', false, deps({ git }))).toEqual([{ path: 's', state: 'modified' }, { path: 't', state: 'modified' }])
-    expect(git.mock.calls).toEqual([
+    expect(git.mock.calls.map(([a, c]) => [a, c])).toEqual([
       [['ls-files', '-z', '-s', '--', ':(literal)s', ':(literal)t'], '/r'],
       [['status', '--porcelain', '-z'], '/r/s'],
       [['status', '--porcelain', '-z', '--untracked-files=no'], '/r/t']
     ])
     const noUntracked = vi.fn(deps().git)
     await dirtySubmodules('/r', true, deps({ git: noUntracked }))
-    expect(noUntracked.mock.calls[1]).toEqual([['status', '--porcelain', '-z', '--untracked-files=no'], '/r/s'])
+    expect(noUntracked.mock.calls[1].slice(0, 2)).toEqual([['status', '--porcelain', '-z', '--untracked-files=no'], '/r/s'])
   })
 
   it('finds nothing without a .gitmodules, without a wanted entry, or when the listing fails', async () => {
@@ -221,6 +221,42 @@ describe('dirtySubmodules', () => {
     const small = tree(2, 3)
     expect(await dirtySubmodules('/r', false, small.d)).toEqual([])
     expect(small.calls).toHaveLength(21)
+  })
+
+  it('a filter scan each read starts on the way counts against the same budget: at most MAX_GIT_PER_POLL starts a poll, scans included', async () => {
+    // As gitCommand.ts does on a cold scan cache: each read first asks start() for its scan, and is refused when the
+    // budget is spent (PollBudgetSpent), before either git is started.
+    const withScans = (t: ReturnType<typeof tree>): { d: SubmoduleDeps; starts: () => number } => {
+      let scans = 0
+      const inner = t.d.git
+      return {
+        d: { ...t.d, git: async (args, cwd, start) => {
+          if (start && !start()) throw new PollBudgetSpent()
+          scans++
+          return inner(args, cwd)
+        } },
+        starts: () => scans + t.calls.length
+      }
+    }
+    const big = tree(8, 3)
+    const b = withScans(big)
+    expect(await dirtySubmodules('/r', false, b.d)).toEqual(Array.from({ length: 8 }, (_, i) => ({ path: `m${i}`, state: 'modified' })))
+    expect(b.starts()).toBeLessThanOrEqual(MAX_GIT_PER_POLL)
+    // Within the budget with its scans (21 reads, 42 starts): every one is asked, none is dirty.
+    const small = tree(2, 3)
+    const s2 = withScans(small)
+    expect(await dirtySubmodules('/r', false, s2.d)).toEqual([])
+    expect(s2.starts()).toBe(42)
+    // A listing whose scan the budget refused: its submodules cannot be called clean.
+    let n = 0
+    const refused = withScans(tree(1, 3))
+    const d = { ...refused.d, git: async (args: string[], cwd: string, start?: () => boolean) => {
+      if (args[0] === 'ls-files' && ++n === 2) throw new PollBudgetSpent()
+      return refused.d.git(args, cwd, start)
+    } }
+    expect(await dirtySubmodules('/r', false, d)).toEqual([{ path: 'm0', state: 'modified' }])
+    // Any other failure of a listing is still none.
+    expect(await dirtySubmodules('/r', false, deps({ git: async () => { throw new Error('broken') } }))).toEqual([])
   })
 
   it('more submodules than the budget in one repository: the ones past it are not looked into and show as modified', async () => {
